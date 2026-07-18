@@ -22,8 +22,8 @@ func TestCheckHarbordReadinessAcceptsMigrateCommandOutput(t *testing.T) {
 	if err := NewMigrateCmd(logger.NewSilentLogger(), connections).Run(); err != nil {
 		t.Fatalf("run harbord migrate: %v", err)
 	}
-	if !databaseConnection.Migrator().HasTable("operation_journal_state") {
-		t.Fatal("harbord migrate did not create the journal schema")
+	if !databaseConnection.Migrator().HasTable("harbor_state") {
+		t.Fatal("harbord migrate did not create the final Harbor state schema")
 	}
 
 	if err := CheckHarbordReadiness(context.Background(), connections); err != nil {
@@ -65,7 +65,7 @@ func TestCheckHarbordReadinessReportsPendingMigrations(t *testing.T) {
 	if !strings.Contains(err.Error(), "harbord migrate") {
 		t.Fatalf("pending error lacks migration guidance: %v", err)
 	}
-	if databaseConnection.Migrator().HasTable("operation_journal_state") {
+	if databaseConnection.Migrator().HasTable("harbor_state") {
 		t.Fatal("readiness check applied a pending migration")
 	}
 }
