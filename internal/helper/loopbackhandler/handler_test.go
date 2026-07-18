@@ -221,6 +221,15 @@ func handlerObservation(state loopback.State) loopback.Observation {
 			InterfaceIndex: handlerTestLoopback.Index,
 			NativeLoopback: true,
 			InterfaceKind:  handlerTestLoopback.Kind,
+			Linux: &loopback.LinuxAssignmentFact{
+				Scope:                    loopback.LinuxAddressScopeHost,
+				Flags:                    1 << 7,
+				Label:                    handlerTestLoopback.Name,
+				AddressMatchesLocal:      true,
+				CacheInfoPresent:         true,
+				ValidLifetimeSeconds:     ^uint32(0),
+				PreferredLifetimeSeconds: ^uint32(0),
+			},
 		}}
 	}
 	return observation
