@@ -183,6 +183,49 @@ func TestProjectProjectionMigrationRejectsNonCanonicalSlugs(t *testing.T) {
 	}
 }
 
+// TestProjectProjectionMigrationRejectsScalarConstraintViolations covers bounded text, flags, revisions, and scoped uniqueness.
+func TestProjectProjectionMigrationRejectsScalarConstraintViolations(t *testing.T) {
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	defer closeOperationMigrationDatabase(t, connections)
+	applyProjectProjectionMigrations(t, databaseConnection)
+	seedProjectionOwners(t, databaseConnection)
+	if err := databaseConnection.Exec(`INSERT INTO project_resources
+		(project_id, resource_id, name, kind, url, owner_kind, owner_app_id)
+		VALUES ('project-01', 'docs', 'Docs', 'documentation', 'https://one.test/docs', 'app', 'api')`).Error; err != nil {
+		t.Fatalf("insert resource for recency constraints: %v", err)
+	}
+
+	statements := []string{
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('project-favorite', 'Favorite', '/work/favorite', 'favorite', 'stopped', 2, '2026-07-18T12:00:00Z', 3)`,
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('project-zero-revision', 'Revision', '/work/revision', 'revision', 'stopped', 0, '2026-07-18T12:00:00Z', 0)`,
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES (' project-whitespace', 'Whitespace', '/work/whitespace', 'whitespace', 'stopped', 0, '2026-07-18T12:00:00Z', 3)`,
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('project-name-space', ' Name', '/work/name-space', 'name-space', 'stopped', 0, '2026-07-18T12:00:00Z', 3)`,
+		fmt.Sprintf(`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('%s', 'Long ID', '/work/long-id', 'long-id', 'stopped', 0, '2026-07-18T12:00:00Z', 3)`, strings.Repeat("a", 257)),
+		fmt.Sprintf(`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('project-long-name', '%s', '/work/long-name', 'long-name', 'stopped', 0, '2026-07-18T12:00:00Z', 3)`, strings.Repeat("a", 513)),
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('project-duplicate-slug', 'Duplicate Slug', '/work/duplicate-slug', 'one', 'stopped', 0, '2026-07-18T12:00:00Z', 3)`,
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES ('project-duplicate-revision', 'Duplicate Revision', '/work/duplicate-revision', 'duplicate-revision', 'stopped', 0, '2026-07-18T12:00:00Z', 1)`,
+		`INSERT INTO project_apps (project_id, app_id, name, state, active, required)
+			VALUES ('project-01', 'bad-active', 'Bad Active', 'ready', 2, 0)`,
+		`INSERT INTO project_apps (project_id, app_id, name, state, active, required)
+			VALUES ('project-01', 'bad-required', 'Bad Required', 'ready', 1, 2)`,
+		`INSERT INTO project_services (project_id, service_id, name, kind, state, owner, selection, required)
+			VALUES ('project-01', 'bad-required', 'Bad Required', 'database', 'ready', 'compose', 'selected', 2)`,
+		`INSERT INTO recent_resources (project_id, resource_id, accessed_at, sequence)
+			VALUES ('project-01', 'docs', '2026-07-18T12:01:00Z', 0)`,
+	}
+	for _, statement := range statements {
+		assertMigrationStatementFails(t, databaseConnection, statement)
+	}
+}
+
 // TestProjectProjectionMigrationRejectsBrokenOwnership verifies every resource belongs to exactly one entity in its own project.
 func TestProjectProjectionMigrationRejectsBrokenOwnership(t *testing.T) {
 	connections, databaseConnection := openOperationMigrationDatabase(t)
