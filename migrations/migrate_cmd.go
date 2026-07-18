@@ -96,10 +96,6 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 			continue
 		}
 
-		if err := m.Up(dbConn); err != nil {
-			return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
-		}
-
 		record := migrationRecord{
 			Name:       m.Name(),
 			App:        stream.App,
@@ -107,8 +103,8 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 			SourcePath: m.SourcePath(),
 			AppliedAt:  time.Now(),
 		}
-		if err := dbConn.Table("migrations").Create(&record).Error; err != nil {
-			return applied, err
+		if err := applyMigration(dbConn, m, record); err != nil {
+			return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
 		}
 
 		console.Successf("applied %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
@@ -116,6 +112,20 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 	}
 
 	return applied, nil
+}
+
+// applyMigration commits schema changes and their ledger identity as one unit.
+func applyMigration(dbConn *gorm.DB, migration Migration, record migrationRecord) error {
+	return dbConn.Transaction(func(tx *gorm.DB) error {
+		if err := migration.Up(tx); err != nil {
+			return fmt.Errorf("apply schema: %w", err)
+		}
+		if err := tx.Table("migrations").Create(&record).Error; err != nil {
+			return fmt.Errorf("record migration: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // migrationRecord stores the migration identity fields that make app-scoped runs auditable.

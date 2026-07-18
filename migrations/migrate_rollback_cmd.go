@@ -6,6 +6,7 @@ import (
 	"github.com/goforj/harbor/internal/console"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/logger"
+	"gorm.io/gorm"
 )
 
 // MigrateRollbackCmd rolls back applied database migrations for the selected migration stream.
@@ -88,12 +89,8 @@ func (c *MigrateRollbackCmd) rollbackStream(stream migrationStream) (int, error)
 			break
 		}
 
-		if err := m.Down(dbConn); err != nil {
+		if err := rollbackMigration(dbConn, m); err != nil {
 			return rollbackCount, fmt.Errorf("failed to rollback migration %s: %w", m.Name(), err)
-		}
-
-		if err := dbConn.Exec(`DELETE FROM migrations WHERE name = ?`, m.Name()).Error; err != nil {
-			return rollbackCount, err
 		}
 
 		console.Successf("reverted %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
@@ -101,4 +98,18 @@ func (c *MigrateRollbackCmd) rollbackStream(stream migrationStream) (int, error)
 	}
 
 	return rollbackCount, nil
+}
+
+// rollbackMigration commits reverse schema changes and ledger removal as one unit.
+func rollbackMigration(dbConn *gorm.DB, migration Migration) error {
+	return dbConn.Transaction(func(tx *gorm.DB) error {
+		if err := migration.Down(tx); err != nil {
+			return fmt.Errorf("revert schema: %w", err)
+		}
+		if err := tx.Exec(`DELETE FROM migrations WHERE name = ?`, migration.Name()).Error; err != nil {
+			return fmt.Errorf("remove migration record: %w", err)
+		}
+
+		return nil
+	})
 }
