@@ -2,4 +2,6 @@ build/bin
 node_modules
 frontend/dist/*
 !frontend/dist/.gitkeep
+frontend/playwright-report/
+frontend/test-results/
 frontend/package.json.md5
