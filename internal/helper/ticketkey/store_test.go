@@ -59,6 +59,42 @@ func TestLoadOrCreateRetainsIdentityAcrossRestart(t *testing.T) {
 	assertStoreLayout(t, directory)
 }
 
+// TestLoadRequiresEstablishedIdentity proves ticket issuance cannot rotate missing authority after machine ownership exists.
+func TestLoadRequiresEstablishedIdentity(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "helper-ticket-key")
+	store := mustStore(t, directory)
+	defer store.Close()
+
+	if key, err := store.Load(context.Background()); key != nil || !errors.Is(err, ErrKeyNotEstablished) {
+		t.Fatalf("Load(absent) = %x, %v, want ErrKeyNotEstablished", key, err)
+	}
+	if entries, err := os.ReadDir(directory); err != nil || len(entries) != 0 {
+		t.Fatalf("Load(absent) entries = %#v, error = %v, want empty store", entries, err)
+	}
+
+	created, err := store.LoadOrCreate(context.Background())
+	if err != nil {
+		t.Fatalf("LoadOrCreate() error = %v", err)
+	}
+	loaded, err := store.Load(nil)
+	if err != nil {
+		t.Fatalf("Load(established) error = %v", err)
+	}
+	if !created.Equal(loaded) {
+		t.Fatal("Load() returned a different established identity")
+	}
+	if &created[0] == &loaded[0] {
+		t.Fatal("Load() shared caller-mutable key bytes")
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if key, err := store.Load(context.Background()); key != nil || !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("Load(closed) = %x, %v, want ErrStoreClosed", key, err)
+	}
+}
+
 // TestConcurrentFirstCreationUsesOneWinner verifies independent daemon instances converge on one atomic publication.
 func TestConcurrentFirstCreationUsesOneWinner(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "helper-ticket-key")

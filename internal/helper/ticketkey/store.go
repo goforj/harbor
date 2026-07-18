@@ -73,6 +73,25 @@ func (store *Store) Close() error {
 	return store.filesystem.Close()
 }
 
+// Load returns the established signing identity without creating replacement authority when it is absent.
+func (store *Store) Load(ctx context.Context) (ed25519.PrivateKey, error) {
+	ctx = normalizeContext(ctx)
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if err := store.ready(ctx); err != nil {
+		return nil, err
+	}
+
+	privateKey, err := store.load()
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrKeyNotEstablished
+	}
+	if err != nil {
+		return nil, err
+	}
+	return clonePrivateKey(privateKey), nil
+}
+
 // LoadOrCreate reloads the exact signing identity or atomically publishes one first-run identity.
 func (store *Store) LoadOrCreate(ctx context.Context) (ed25519.PrivateKey, error) {
 	ctx = normalizeContext(ctx)

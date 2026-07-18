@@ -6,6 +6,8 @@ import (
 )
 
 var (
+	// ErrKeyNotEstablished reports that no signing identity has been published for an established installation.
+	ErrKeyNotEstablished = errors.New("helper ticket signing key is not established")
 	// ErrStoreClosed reports use after the signing-key store released its rooted filesystem handle.
 	ErrStoreClosed = errors.New("helper ticket key store is closed")
 )
