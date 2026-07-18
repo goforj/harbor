@@ -83,6 +83,16 @@ func (err *StaleRevisionError) Error() string {
 	)
 }
 
+// ProjectNotFoundError reports that no durable project has the requested ID.
+type ProjectNotFoundError struct {
+	ProjectID domain.ProjectID
+}
+
+// Error describes the missing project identity.
+func (err *ProjectNotFoundError) Error() string {
+	return fmt.Sprintf("project %q was not found", err.ProjectID)
+}
+
 // CorruptStateError reports a durable row that cannot be represented by Harbor's domain model.
 type CorruptStateError struct {
 	Entity string
