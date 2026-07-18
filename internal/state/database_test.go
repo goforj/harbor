@@ -1,12 +1,18 @@
 package state
 
 import (
+	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/harbor/internal/inspects"
 )
 
 // TestConfigureDatabaseUsesUserDataPath verifies the default named connection cannot inherit a checkout-relative root database.
@@ -30,8 +36,11 @@ func TestConfigureDatabaseUsesUserDataPath(t *testing.T) {
 	if environment[databaseDriverKey] != databaseDriver {
 		t.Fatalf("driver = %q, want %q", environment[databaseDriverKey], databaseDriver)
 	}
-	if environment[databaseDSNKey] != want {
-		t.Fatalf("DSN = %q, want %q", environment[databaseDSNKey], want)
+	if !strings.HasPrefix(environment[databaseDSNKey], want+"?") {
+		t.Fatalf("DSN = %q, want path prefix %q", environment[databaseDSNKey], want)
+	}
+	if environment[databaseMaxOpenKey] != databasePoolSize || environment[databaseMaxIdleKey] != databasePoolSize {
+		t.Fatalf("pool limits = open %q idle %q, want %q", environment[databaseMaxOpenKey], environment[databaseMaxIdleKey], databasePoolSize)
 	}
 }
 
@@ -54,7 +63,7 @@ func TestConfigureDatabasePreservesExplicitNamedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configure database: %v", err)
 	}
-	if got != want || environment[databaseDSNKey] != want {
+	if got != want || !strings.HasPrefix(environment[databaseDSNKey], want+"?") {
 		t.Fatalf("configured path = %q, DSN %q, want %q", got, environment[databaseDSNKey], want)
 	}
 }
@@ -87,6 +96,79 @@ func TestConfigureDatabaseRejectsAnotherDriver(t *testing.T) {
 	}, func(string) error { return nil }))
 	if err == nil || !strings.Contains(err.Error(), "requires SQLite") {
 		t.Fatalf("error = %v, want SQLite driver error", err)
+	}
+}
+
+// TestHarborSQLiteDSNEnforcesConnectionPolicy verifies custom options cannot disable required journal guarantees.
+func TestHarborSQLiteDSNEnforcesConnectionPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "harbor.db")
+	dsn, err := harborSQLiteDSN(path + "?_pragma=foreign_keys(0)&cache=private&_txlock=deferred")
+	if err != nil {
+		t.Fatalf("build Harbor SQLite DSN: %v", err)
+	}
+	databasePath, rawQuery, found := strings.Cut(dsn, "?")
+	if !found || databasePath != path {
+		t.Fatalf("DSN path = %q, want %q", databasePath, path)
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		t.Fatalf("parse DSN query: %v", err)
+	}
+	if values.Get("_txlock") != "immediate" || values.Get("cache") != "private" {
+		t.Fatalf("DSN options = %#v, want immediate transaction and preserved cache option", values)
+	}
+	wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "journal_mode(WAL)", "synchronous(FULL)"}
+	if got := values["_pragma"]; !reflect.DeepEqual(got, wantPragmas) {
+		t.Fatalf("DSN pragmas = %#v, want %#v", got, wantPragmas)
+	}
+}
+
+// TestConfiguredDatabaseAppliesSQLitePolicy verifies the generated named accessor receives Harbor's runtime connection guarantees.
+func TestConfiguredDatabaseAppliesSQLitePolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "harbor.db")
+	t.Setenv(databaseDriverKey, databaseDriver)
+	t.Setenv(databaseDSNKey, path)
+	t.Setenv(databaseSQLiteKey, "")
+	t.Setenv(databasePathKey, "")
+
+	if _, err := ConfigureDatabase(); err != nil {
+		t.Fatalf("configure database: %v", err)
+	}
+	connections := database.NewConnections(inspects.NewManager())
+	t.Cleanup(func() {
+		if err := connections.Close(context.Background()); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
+	databaseConnection, err := connections.GetHarbord()
+	if err != nil {
+		t.Fatalf("open named database: %v", err)
+	}
+
+	var journalMode string
+	var foreignKeys, busyTimeout, synchronous int
+	for _, query := range []struct {
+		statement string
+		target    any
+	}{
+		{statement: "PRAGMA journal_mode", target: &journalMode},
+		{statement: "PRAGMA foreign_keys", target: &foreignKeys},
+		{statement: "PRAGMA busy_timeout", target: &busyTimeout},
+		{statement: "PRAGMA synchronous", target: &synchronous},
+	} {
+		if err := databaseConnection.Raw(query.statement).Scan(query.target).Error; err != nil {
+			t.Fatalf("query %s: %v", query.statement, err)
+		}
+	}
+	if journalMode != "wal" || foreignKeys != 1 || busyTimeout != 5000 || synchronous != 2 {
+		t.Fatalf("SQLite policy = journal %q foreign %d busy %d synchronous %d", journalMode, foreignKeys, busyTimeout, synchronous)
+	}
+	sqlDatabase, err := databaseConnection.DB()
+	if err != nil {
+		t.Fatalf("resolve sql database: %v", err)
+	}
+	if got := sqlDatabase.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("maximum open connections = %d, want 1", got)
 	}
 }
 
@@ -127,6 +209,35 @@ func TestPrepareDatabasePathCreatesOwnerOnlyDirectory(t *testing.T) {
 	}
 }
 
+// TestPrepareDatabasePathPreservesExistingDirectoryMode verifies explicit database overrides cannot chmod a shared parent.
+func TestPrepareDatabasePathPreservesExistingDirectoryMode(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("create existing directory: %v", err)
+	}
+	if err := prepareDatabasePath(filepath.Join(directory, "harbor.db")); err != nil {
+		t.Fatalf("prepare database path: %v", err)
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatalf("stat existing directory: %v", err)
+	}
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o755 {
+		t.Fatalf("existing directory mode = %o, want unchanged mode 755", got)
+	}
+}
+
+// TestPrepareDatabasePathRejectsFileParent verifies an override cannot treat an existing file as a state directory.
+func TestPrepareDatabasePathRejectsFileParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, []byte("occupied"), 0o600); err != nil {
+		t.Fatalf("create parent file: %v", err)
+	}
+	if err := prepareDatabasePath(filepath.Join(path, "harbor.db")); err == nil {
+		t.Fatal("prepareDatabasePath unexpectedly accepted a file parent")
+	}
+}
+
 // TestPrepareDatabasePathRejectsRelativeAndEmptyPaths verifies daemon state never depends on its working directory.
 func TestPrepareDatabasePathRejectsRelativeAndEmptyPaths(t *testing.T) {
 	for _, path := range []string{"", filepath.Join("relative", "harbor.db")} {
@@ -138,7 +249,7 @@ func TestPrepareDatabasePathRejectsRelativeAndEmptyPaths(t *testing.T) {
 
 // TestPrepareDatabasePathAcceptsMemoryDSNs keeps repository unit tests independent from a durable user directory.
 func TestPrepareDatabasePathAcceptsMemoryDSNs(t *testing.T) {
-	for _, path := range []string{":memory:", "file::memory:"} {
+	for _, path := range []string{":memory:", "file::memory:", ":memory:?cache=shared"} {
 		if err := prepareDatabasePath(path); err != nil {
 			t.Fatalf("prepareDatabasePath(%q): %v", path, err)
 		}

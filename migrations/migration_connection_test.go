@@ -17,9 +17,10 @@ func TestAutoRegisterMigrationsByConnection(t *testing.T) {
 	writeSQL(t, filepath.Join(dir, "billing", "ledger"), "2026_01_04_ledger", "CREATE TABLE ledger_test (id INTEGER);", "DROP TABLE ledger_test;")
 
 	originalFS := migrationFS
+	originalRegistry := append([]Migration(nil), registry...)
 	t.Cleanup(func() {
 		migrationFS = originalFS
-		resetRegistry()
+		registry = originalRegistry
 	})
 	migrationFS = os.DirFS(dir)
 	resetRegistry()
@@ -51,6 +52,7 @@ func TestAutoRegisterMigrationsByConnection(t *testing.T) {
 	}
 }
 
+// writeSQL creates one migration pair in the filesystem used by the registry test.
 func writeSQL(t *testing.T, dir, name, up, down string) {
 	t.Helper()
 
@@ -67,6 +69,7 @@ func writeSQL(t *testing.T, dir, name, up, down string) {
 	}
 }
 
+// resetRegistry isolates registration assertions from production migrations embedded at package startup.
 func resetRegistry() {
 	registry = nil
 }

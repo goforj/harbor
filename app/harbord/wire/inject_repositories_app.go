@@ -4,12 +4,16 @@
 package wire
 
 import (
+	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/wire"
 )
 
 // repositorySet is a wire set for generated repositories.
 var repositorySet = wire.NewSet(
 	wire.Value(repositorySetPlaceholder{}),
+	models.NewOperationJournalStateRepo,
+	models.NewOperationRepo,
+	models.NewOperationTransitionRepo,
 )
 
 // repositorySetPlaceholder keeps repositorySet non-empty until repos are generated.

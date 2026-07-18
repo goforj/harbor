@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,10 @@ const (
 	databaseDSNKey     = "DB_HARBORD_DSN"
 	databaseSQLiteKey  = "DB_HARBORD_SQLITE_DATABASE"
 	databasePathKey    = "DB_HARBORD_DATABASE"
+	databaseMaxOpenKey = "DB_HARBORD_MAX_OPEN_CONNECTIONS"
+	databaseMaxIdleKey = "DB_HARBORD_MAX_IDLE_CONNECTIONS"
 	databaseDriver     = "sqlite"
+	databasePoolSize   = "1"
 )
 
 // databaseConfiguration keeps process-wide environment mutation behind a testable boundary.
@@ -56,36 +60,97 @@ func configureDatabase(configuration databaseConfiguration) (string, error) {
 	if err := configuration.preparePath(path); err != nil {
 		return "", err
 	}
+	dsn, err := harborSQLiteDSN(path)
+	if err != nil {
+		return "", err
+	}
 	if err := configuration.set(databaseDriverKey, databaseDriver); err != nil {
 		return "", fmt.Errorf("configure Harbor database driver: %w", err)
 	}
-	if err := configuration.set(databaseDSNKey, path); err != nil {
+	if err := configuration.set(databaseDSNKey, dsn); err != nil {
 		return "", fmt.Errorf("configure Harbor database path: %w", err)
 	}
+	if err := configuration.set(databaseMaxOpenKey, databasePoolSize); err != nil {
+		return "", fmt.Errorf("configure Harbor database writer limit: %w", err)
+	}
+	if err := configuration.set(databaseMaxIdleKey, databasePoolSize); err != nil {
+		return "", fmt.Errorf("configure Harbor database idle limit: %w", err)
+	}
 
-	return path, nil
+	databasePath, _, _ := strings.Cut(path, "?")
+	return databasePath, nil
+}
+
+// harborSQLiteDSN applies the durability and concurrency policy to every connection the GoForj registry may open.
+func harborSQLiteDSN(path string) (string, error) {
+	databasePath, rawQuery, _ := strings.Cut(strings.TrimSpace(path), "?")
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", fmt.Errorf("parse Harbor database options: %w", err)
+	}
+	values.Set("_txlock", "immediate")
+	values.Del("_pragma")
+	for _, pragma := range []string{
+		"busy_timeout(5000)",
+		"foreign_keys(1)",
+		"journal_mode(WAL)",
+		"synchronous(FULL)",
+	} {
+		values.Add("_pragma", pragma)
+	}
+	return databasePath + "?" + values.Encode(), nil
 }
 
 // prepareDatabasePath creates Harbor's final data directory with owner-only Unix permissions before GoForj opens SQLite.
 func prepareDatabasePath(path string) error {
-	if path == ":memory:" || path == "file::memory:" {
+	databasePath, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if databasePath == ":memory:" || databasePath == "file::memory:" {
 		return nil
 	}
-	if path == "" {
+	if databasePath == "" {
 		return fmt.Errorf("Harbor database path must not be empty")
 	}
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("Harbor database path %q must be absolute", path)
+	if !filepath.IsAbs(databasePath) {
+		return fmt.Errorf("Harbor database path %q must be absolute", databasePath)
 	}
 
-	directory := filepath.Dir(filepath.Clean(path))
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create Harbor data directory: %w", err)
+	directory := filepath.Dir(filepath.Clean(databasePath))
+	exists, err := databaseDirectoryExists(directory)
+	if err != nil {
+		return err
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return fmt.Errorf("secure Harbor data directory: %w", err)
+	if exists {
+		return nil
+	}
+
+	parent := filepath.Dir(directory)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return fmt.Errorf("create Harbor data directory parent: %w", err)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("create Harbor data directory: %w", err)
+		}
+		if _, validationErr := databaseDirectoryExists(directory); validationErr != nil {
+			return validationErr
+		}
 	}
 	return nil
+}
+
+// databaseDirectoryExists distinguishes a usable existing directory from an unsafe filesystem entry.
+func databaseDirectoryExists(directory string) (bool, error) {
+	info, err := os.Stat(directory)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect Harbor data directory: %w", err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("Harbor data directory %q is not a directory", directory)
+	}
+	return true, nil
 }
 
 // firstEnvironmentValue returns the first non-empty named connection setting in GoForj precedence order.
