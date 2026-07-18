@@ -13,6 +13,7 @@ require (
 	github.com/goforj/str/v2 v2.0.1
 	github.com/goforj/wire v1.2.0
 	github.com/joho/godotenv v1.5.1
+	github.com/miekg/dns v1.1.72
 	github.com/rs/zerolog v1.35.1
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
@@ -27,6 +28,10 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/mod v0.31.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/tools v0.40.0 // indirect
 	modernc.org/libc v1.22.5 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
 	modernc.org/memory v1.5.0 // indirect
