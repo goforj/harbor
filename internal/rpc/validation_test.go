@@ -218,6 +218,9 @@ func TestPayloadAndTokenDiagnostics(t *testing.T) {
 	if _, err := DecodePayload[struct{}](Envelope{Payload: json.RawMessage(`not-json`)}); err == nil {
 		t.Fatal("malformed payload decoded")
 	}
+	if err := validateWireToken("build version", "v1.2.3+linux.amd64", maxVersionLength); err != nil {
+		t.Fatalf("semantic build metadata was rejected: %v", err)
+	}
 	for _, token := range []string{"", strings.Repeat("a", maxRequestIDLength+1), "unicode-⚓"} {
 		if err := validateWireToken("request ID", token, maxRequestIDLength); err == nil {
 			t.Fatalf("token %q accepted", token)

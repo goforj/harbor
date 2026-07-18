@@ -45,7 +45,7 @@ func isWireTokenCharacter(character byte) bool {
 	}
 
 	switch character {
-	case '.', '_', '-', ':':
+	case '.', '_', '-', ':', '+':
 		return true
 	default:
 		return false
