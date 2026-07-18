@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
 
 const (
@@ -41,6 +42,15 @@ type Store struct {
 	root   *os.Root
 	clock  helper.Clock
 	closed bool
+}
+
+// OpenDefault opens the installer-provisioned replay directory without creating or repairing it.
+func OpenDefault() (*Store, error) {
+	paths, err := machinepaths.Resolve()
+	if err != nil {
+		return nil, fmt.Errorf("resolve helper replay store: %w", err)
+	}
+	return Open(paths.ReplayDirectory)
 }
 
 // Open retains one existing absolute replay directory using the system clock.

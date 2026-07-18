@@ -3,6 +3,7 @@ package replaystore
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
 
 // fixedClock returns one deterministic instant for durable replay tests.
@@ -195,6 +197,25 @@ func TestOpenRejectsUnsafeDirectoriesAndClosedUse(t *testing.T) {
 	}
 	if err := store.Consume(context.Background(), replayTestClaim(clock.now)); !errors.Is(err, helper.ErrReplayProtectionUnavailable) {
 		t.Fatalf("Consume() after close error = %v", err)
+	}
+}
+
+// TestOpenDefaultNeverProvisions proves production composition cannot create privileged replay storage itself.
+func TestOpenDefaultNeverProvisions(t *testing.T) {
+	paths, err := machinepaths.Resolve()
+	if err != nil {
+		return
+	}
+	_, beforeErr := os.Lstat(paths.ReplayDirectory)
+	store, openErr := OpenDefault()
+	if openErr == nil {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close default replay store: %v", err)
+		}
+	}
+	_, afterErr := os.Lstat(paths.ReplayDirectory)
+	if errors.Is(beforeErr, fs.ErrNotExist) && !errors.Is(afterErr, fs.ErrNotExist) {
+		t.Fatalf("OpenDefault() provisioned absent path %q", paths.ReplayDirectory)
 	}
 }
 
