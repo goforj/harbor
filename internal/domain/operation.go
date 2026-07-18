@@ -9,6 +9,11 @@ import (
 // OperationKind identifies one bounded daemon mutation such as setting a favorite.
 type OperationKind string
 
+const (
+	// OperationKindProjectUnregister identifies the atomic removal of one registered project.
+	OperationKindProjectUnregister OperationKind = "project.unregister"
+)
+
 // Operation records the durable state of one idempotent intent.
 type Operation struct {
 	ID          OperationID    `json:"id"`
@@ -55,6 +60,9 @@ func (operation Operation) Validate() error {
 	}
 	if err := validateOperationKind(operation.Kind); err != nil {
 		return err
+	}
+	if operation.Kind == OperationKindProjectUnregister && operation.ProjectID == "" {
+		return fmt.Errorf("project unregister operation must identify a project")
 	}
 	if err := operation.State.Validate(); err != nil {
 		return err

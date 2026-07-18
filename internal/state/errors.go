@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/goforj/harbor/internal/domain"
 )
@@ -91,6 +92,31 @@ type ProjectNotFoundError struct {
 // Error describes the missing project identity.
 func (err *ProjectNotFoundError) Error() string {
 	return fmt.Sprintf("project %q was not found", err.ProjectID)
+}
+
+// ProjectBusyError reports that active operations still own work for a project whose unregister operation is completing.
+type ProjectBusyError struct {
+	ProjectID    domain.ProjectID
+	OperationIDs []domain.OperationID
+}
+
+// Error describes the active operation identities that prevent unregister completion.
+func (err *ProjectBusyError) Error() string {
+	identities := make([]string, 0, len(err.OperationIDs))
+	for _, operationID := range err.OperationIDs {
+		identities = append(identities, fmt.Sprintf("%q", operationID))
+	}
+	return fmt.Sprintf("project %q has active operations: %s", err.ProjectID, strings.Join(identities, ", "))
+}
+
+// ResourceNotFoundError reports that no projected resource has the requested project-scoped identity.
+type ResourceNotFoundError struct {
+	Reference domain.ResourceRef
+}
+
+// Error describes the missing project-scoped resource identity.
+func (err *ResourceNotFoundError) Error() string {
+	return fmt.Sprintf("resource %q was not found in project %q", err.Reference.ResourceID, err.Reference.ProjectID)
 }
 
 // CorruptStateError reports a durable row that cannot be represented by Harbor's domain model.

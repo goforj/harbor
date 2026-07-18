@@ -137,6 +137,12 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 					RequestedProjectID:  operation.ProjectID,
 				}
 			}
+			if _, err := validateRetainedSequenceBounds(tx); err != nil {
+				return err
+			}
+			if _, err := operationHistoryInTransaction(tx, existingRecord); err != nil {
+				return err
+			}
 			record = existingRecord
 			return nil
 		}
@@ -225,6 +231,9 @@ func (journal *OperationJournal) Transition(
 				Expected:    expectedRevision,
 				Actual:      current.Revision,
 			}
+		}
+		if current.Operation.Kind == domain.OperationKindProjectUnregister && next == domain.OperationSucceeded {
+			return fmt.Errorf("project unregister operations must complete through the project Store")
 		}
 
 		nextOperation, err := current.Operation.Transition(next, phase, at, problem)
@@ -499,8 +508,11 @@ func readSnapshotOperations(tx *gorm.DB, sequence domain.Sequence) ([]OperationR
 	return records, nil
 }
 
-// allocateHarborSequence advances and reads the global singleton counter inside the caller's transaction.
+// allocateHarborSequence validates retained sequence bounds, then advances and reads the singleton inside the caller's transaction.
 func allocateHarborSequence(tx *gorm.DB) (domain.Sequence, error) {
+	if _, err := validateRetainedSequenceBounds(tx); err != nil {
+		return 0, err
+	}
 	updated := tx.Model(&models.HarborState{}).
 		Where("id = ?", harborStateSingletonID).
 		UpdateColumn("sequence", gorm.Expr("sequence + 1"))

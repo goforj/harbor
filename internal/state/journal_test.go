@@ -52,6 +52,39 @@ var operationJournalTestSchema = []string{
 		sequence INTEGER NOT NULL,
 		UNIQUE (operation_id, ordinal)
 	)`,
+	`CREATE TABLE projects (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT NOT NULL,
+		revision INTEGER NOT NULL
+	)`,
+	`CREATE TABLE recent_resources (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT NOT NULL,
+		resource_id TEXT NOT NULL,
+		sequence INTEGER NOT NULL
+	)`,
+}
+
+// TestOperationJournalRejectsRewoundGlobalHighWater verifies the shared allocator protects journal writers too.
+func TestOperationJournalRejectsRewoundGlobalHighWater(t *testing.T) {
+	journal, connection := newOperationJournalTestHarness(t)
+	if err := connection.Exec("INSERT INTO projects (project_id, revision) VALUES ('project-ahead', 1)").Error; err != nil {
+		t.Fatalf("insert retained project owner: %v", err)
+	}
+	operation := newOperationJournalTestOperation(t, "operation-rewound", "intent-rewound", "project-ahead", "project.start", operationJournalTestTime())
+	if _, err := journal.Enqueue(context.Background(), operation); err == nil || !strings.Contains(err.Error(), "sequence exceeds Harbor high-water 0") {
+		t.Fatalf("rewound journal error = %v", err)
+	}
+	if sequence := mustOperationJournalSequence(t, journal); sequence != 0 {
+		t.Fatalf("journal high-water after rejection = %d, want 0", sequence)
+	}
+	var count int64
+	if err := connection.Model(&models.Operation{}).Count(&count).Error; err != nil {
+		t.Fatalf("count operations after rejection: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("operation count after rejection = %d, want 0", count)
+	}
 }
 
 // TestOperationJournalEnqueueReplaysMatchingIntent verifies retries return the original durable identity without consuming sequence.
@@ -89,6 +122,97 @@ func TestOperationJournalEnqueueReplaysMatchingIntent(t *testing.T) {
 	}
 	if len(transitions) != 1 || transitions[0].Ordinal != 1 || transitions[0].Sequence != 1 || transitions[0].PreviousState != nil {
 		t.Fatalf("initial transition history = %#v", transitions)
+	}
+}
+
+// TestOperationJournalEnqueueReplayValidatesDurableEvidence verifies idempotent reads cannot bypass retained ordering or operation history checks.
+func TestOperationJournalEnqueueReplayValidatesDurableEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		corrupt func(*testing.T, *gorm.DB, domain.OperationID)
+		want    string
+	}{
+		{
+			name: "history",
+			corrupt: func(t *testing.T, connection *gorm.DB, operationID domain.OperationID) {
+				t.Helper()
+				if err := connection.Model(&models.OperationTransition{}).
+					Where("operation_id = ? AND ordinal = 1", string(operationID)).
+					Update("phase", "damaged").Error; err != nil {
+					t.Fatalf("corrupt replay history: %v", err)
+				}
+			},
+			want: "phase does not match latest transition",
+		},
+		{
+			name: "retained bounds",
+			corrupt: func(t *testing.T, connection *gorm.DB, _ domain.OperationID) {
+				t.Helper()
+				if err := connection.Exec("INSERT INTO projects (project_id, revision) VALUES ('project-ahead', 2)").Error; err != nil {
+					t.Fatalf("insert future retained owner: %v", err)
+				}
+			},
+			want: "project revision maximum sequence exceeds Harbor high-water 1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			journal, connection := newOperationJournalTestHarness(t)
+			requestedAt := operationJournalTestTime()
+			original := newOperationJournalTestOperation(t, "operation-replay-evidence", "intent-replay-evidence", "project-a", "project.start", requestedAt)
+			if _, err := journal.Enqueue(context.Background(), original); err != nil {
+				t.Fatalf("enqueue original operation: %v", err)
+			}
+			test.corrupt(t, connection, original.ID)
+			retry := newOperationJournalTestOperation(t, "operation-retry-evidence", original.IntentID, original.ProjectID, original.Kind, requestedAt.Add(time.Minute))
+			if _, err := journal.Enqueue(context.Background(), retry); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("damaged replay error = %v, want %q", err, test.want)
+			}
+			if sequence := mustOperationJournalSequence(t, journal); sequence != 1 {
+				t.Fatalf("sequence after damaged replay = %d, want 1", sequence)
+			}
+		})
+	}
+}
+
+// TestOperationJournalReservesUnregisterSuccessForStore verifies only the atomic project Store path may publish removal success.
+func TestOperationJournalReservesUnregisterSuccessForStore(t *testing.T) {
+	journal, _ := newOperationJournalTestHarness(t)
+	requestedAt := operationJournalTestTime()
+	operation := newOperationJournalTestOperation(
+		t,
+		"operation-unregister-reserved",
+		"intent-unregister-reserved",
+		"project-a",
+		domain.OperationKindProjectUnregister,
+		requestedAt,
+	)
+	queued, err := journal.Enqueue(context.Background(), operation)
+	if err != nil {
+		t.Fatalf("enqueue unregister operation: %v", err)
+	}
+	running := mustOperationJournalTransition(t, journal, queued, domain.OperationRunning, "removing", requestedAt.Add(time.Second), nil)
+	if _, err := journal.Transition(
+		context.Background(), operation.ID, running.Revision, domain.OperationSucceeded, "removed", requestedAt.Add(2*time.Second), nil,
+	); err == nil || !strings.Contains(err.Error(), "must complete through the project Store") {
+		t.Fatalf("generic unregister success error = %v", err)
+	}
+	if sequence := mustOperationJournalSequence(t, journal); sequence != running.Revision {
+		t.Fatalf("sequence after reserved success = %d, want %d", sequence, running.Revision)
+	}
+	persisted, err := journal.Operation(context.Background(), operation.ID)
+	if err != nil || persisted.Revision != running.Revision || persisted.Operation.State != domain.OperationRunning {
+		t.Fatalf("operation after reserved success = %#v, error %v", persisted, err)
+	}
+
+	problem := &domain.Problem{Code: "remove_failed", Message: "The project could not be removed."}
+	failed, err := journal.Transition(
+		context.Background(), operation.ID, running.Revision, domain.OperationFailed, "remove failed", requestedAt.Add(2*time.Second), problem,
+	)
+	if err != nil {
+		t.Fatalf("fail unregister through generic journal: %v", err)
+	}
+	if failed.Revision != running.Revision+1 || failed.Operation.State != domain.OperationFailed {
+		t.Fatalf("failed unregister = %#v", failed)
 	}
 }
 
@@ -683,6 +807,144 @@ func TestOperationJournalHonorsContext(t *testing.T) {
 	}
 	if _, err := journal.Operation(cancelled, operation.ID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled read error = %v, want context.Canceled", err)
+	}
+}
+
+// TestValidateRetainedSequenceBoundsRejectsMixedNonpositiveOwners verifies MIN checks cover every retained ordering table.
+func TestValidateRetainedSequenceBoundsRejectsMixedNonpositiveOwners(t *testing.T) {
+	tests := []struct {
+		name   string
+		insert func(*testing.T, *gorm.DB, int)
+		want   string
+	}{
+		{
+			name: "projects",
+			insert: func(t *testing.T, connection *gorm.DB, nonpositive int) {
+				t.Helper()
+				if err := connection.Exec("INSERT INTO projects (project_id, revision) VALUES ('project-positive', 1), ('project-nonpositive', ?)", nonpositive).Error; err != nil {
+					t.Fatalf("insert project bounds: %v", err)
+				}
+			},
+			want: "project revision minimum uses a nonpositive sequence",
+		},
+		{
+			name: "recent resources",
+			insert: func(t *testing.T, connection *gorm.DB, nonpositive int) {
+				t.Helper()
+				if err := connection.Exec(`INSERT INTO recent_resources (project_id, resource_id, sequence)
+					VALUES ('project-a', 'resource-positive', 1), ('project-a', 'resource-nonpositive', ?)`, nonpositive).Error; err != nil {
+					t.Fatalf("insert recency bounds: %v", err)
+				}
+			},
+			want: "recent resource sequence minimum uses a nonpositive sequence",
+		},
+		{
+			name: "operations",
+			insert: func(t *testing.T, connection *gorm.DB, nonpositive int) {
+				t.Helper()
+				at := operationJournalTestTime()
+				if err := connection.Exec(`INSERT INTO operations
+					(id, intent_id, kind, state, phase, requested_at, revision)
+					VALUES ('operation-positive', 'intent-positive', 'project.start', 'queued', 'queued', ?, 1),
+					       ('operation-nonpositive', 'intent-nonpositive', 'project.start', 'queued', 'queued', ?, ?)`, at, at, nonpositive).Error; err != nil {
+					t.Fatalf("insert operation bounds: %v", err)
+				}
+			},
+			want: "operation revision minimum uses a nonpositive sequence",
+		},
+		{
+			name: "operation transitions",
+			insert: func(t *testing.T, connection *gorm.DB, nonpositive int) {
+				t.Helper()
+				at := operationJournalTestTime()
+				if err := connection.Exec(`INSERT INTO operation_transitions
+					(operation_id, ordinal, state, phase, occurred_at, sequence)
+					VALUES ('operation-positive', 1, 'queued', 'queued', ?, 1),
+					       ('operation-nonpositive', 1, 'queued', 'queued', ?, ?)`, at, at, nonpositive).Error; err != nil {
+					t.Fatalf("insert transition bounds: %v", err)
+				}
+			},
+			want: "operation transition sequence minimum uses a nonpositive sequence",
+		},
+	}
+	for _, test := range tests {
+		for _, nonpositive := range []int{0, -1} {
+			boundName := "zero"
+			if nonpositive < 0 {
+				boundName = "negative"
+			}
+			t.Run(test.name+"/"+boundName, func(t *testing.T) {
+				_, connection := newOperationJournalTestHarness(t)
+				if err := connection.Exec("UPDATE harbor_state SET sequence = 1 WHERE id = 1").Error; err != nil {
+					t.Fatalf("set sequence high-water: %v", err)
+				}
+				test.insert(t, connection, nonpositive)
+				if _, err := validateRetainedSequenceBounds(connection); err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("mixed bound error = %v, want %q", err, test.want)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateRetainedSequenceBoundsRejectsNullOwner verifies the indexed minimum exposes NULL values without scanning retained rows.
+func TestValidateRetainedSequenceBoundsRejectsNullOwner(t *testing.T) {
+	_, connection := newOperationJournalTestHarness(t)
+	if err := connection.Exec("ALTER TABLE projects RENAME TO projects_strict").Error; err != nil {
+		t.Fatalf("rename projects table: %v", err)
+	}
+	if err := connection.Exec(`CREATE TABLE projects (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT NOT NULL,
+		revision INTEGER
+	)`).Error; err != nil {
+		t.Fatalf("create nullable projects table: %v", err)
+	}
+	if err := connection.Exec("INSERT INTO projects (project_id, revision) VALUES ('project-positive', 1), ('project-null', NULL)").Error; err != nil {
+		t.Fatalf("insert nullable project bounds: %v", err)
+	}
+	if err := connection.Exec("UPDATE harbor_state SET sequence = 1 WHERE id = 1").Error; err != nil {
+		t.Fatalf("set sequence high-water: %v", err)
+	}
+	if _, err := validateRetainedSequenceBounds(connection); err == nil || !strings.Contains(err.Error(), "project revision") || !strings.Contains(err.Error(), "must not be NULL") {
+		t.Fatalf("NULL retained owner error = %v", err)
+	}
+}
+
+// TestValidateRetainedSequenceBoundsUsesIndexedExtrema verifies retained table size cannot turn preflight into a full-history scan.
+func TestValidateRetainedSequenceBoundsUsesIndexedExtrema(t *testing.T) {
+	_, connection := newOperationJournalTestHarness(t)
+	const callback = "harbor:test_retained_bounds_queries"
+	queries := make([]string, 0, 8)
+	if err := connection.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		query := strings.ToLower(tx.Statement.SQL.String())
+		if strings.Contains(query, " as value") {
+			queries = append(queries, query)
+		}
+	}); err != nil {
+		t.Fatalf("register retained bounds query observer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = connection.Callback().Query().Remove(callback)
+	})
+
+	if _, err := validateRetainedSequenceBounds(connection); err != nil {
+		t.Fatalf("validate clean retained bounds: %v", err)
+	}
+	if len(queries) != 8 {
+		t.Fatalf("retained bounds query count = %d, want 8: %#v", len(queries), queries)
+	}
+	for index, query := range queries {
+		for _, fragment := range []string{" as value", "order by", "limit 1"} {
+			if !strings.Contains(query, fragment) {
+				t.Fatalf("retained bounds query %d = %q, missing %q", index, query, fragment)
+			}
+		}
+		for _, scan := range []string{"count(", "min(", "max("} {
+			if strings.Contains(query, scan) {
+				t.Fatalf("retained bounds query %d = %q, contains full-history aggregate %q", index, query, scan)
+			}
+		}
 	}
 }
 

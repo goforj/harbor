@@ -6,6 +6,32 @@ import (
 	"time"
 )
 
+// TestOperationKindProjectUnregisterKeepsStableWireValue verifies clients can persist the reserved lifecycle kind.
+func TestOperationKindProjectUnregisterKeepsStableWireValue(t *testing.T) {
+	t.Parallel()
+	if OperationKindProjectUnregister != "project.unregister" {
+		t.Fatalf("OperationKindProjectUnregister = %q, want project.unregister", OperationKindProjectUnregister)
+	}
+}
+
+// TestProjectUnregisterOperationRequiresProject keeps reserved operations completable through the atomic store path.
+func TestProjectUnregisterOperationRequiresProject(t *testing.T) {
+	t.Parallel()
+	requestedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := NewOperation(
+		"operation-unregister",
+		"intent-unregister",
+		OperationKindProjectUnregister,
+		"",
+		requestedAt,
+	); err == nil || !strings.Contains(err.Error(), "must identify a project") {
+		t.Fatalf("NewOperation(project unregister without project) error = %v", err)
+	}
+	if _, err := NewOperation("operation-host", "intent-host", "host.setup", "", requestedAt); err != nil {
+		t.Fatalf("NewOperation(unscoped host operation) error = %v", err)
+	}
+}
+
 // TestOperationTransitionCompletesApprovalLifecycle proves approval is visible and safely retryable.
 func TestOperationTransitionCompletesApprovalLifecycle(t *testing.T) {
 	t.Parallel()
@@ -212,6 +238,7 @@ func TestNewOperationRejectsInvalidIdentityAndTime(t *testing.T) {
 		{name: "intent ID", id: "operation-01", kind: "project.favorite.set", at: requestedAt},
 		{name: "operation kind", id: "operation-01", intentID: "intent-01", at: requestedAt},
 		{name: "project ID", id: "operation-01", intentID: "intent-01", kind: "project.favorite.set", projectID: " project-01", at: requestedAt},
+		{name: "unregister project ID", id: "operation-01", intentID: "intent-01", kind: OperationKindProjectUnregister, at: requestedAt},
 		{name: "zero time", id: "operation-01", intentID: "intent-01", kind: "project.favorite.set"},
 	}
 
@@ -252,6 +279,10 @@ func TestOperationValidateRejectsInvalidGeneralFields(t *testing.T) {
 		{name: "intent ID", mutate: func(operation *Operation) { operation.IntentID = "" }},
 		{name: "project ID", mutate: func(operation *Operation) { operation.ProjectID = " project-01" }},
 		{name: "kind", mutate: func(operation *Operation) { operation.Kind = "" }},
+		{name: "unregister project", mutate: func(operation *Operation) {
+			operation.Kind = OperationKindProjectUnregister
+			operation.ProjectID = ""
+		}},
 		{name: "state", mutate: func(operation *Operation) { operation.State = "unknown" }},
 		{name: "phase", mutate: func(operation *Operation) { operation.Phase = "" }},
 		{name: "requested time", mutate: func(operation *Operation) { operation.RequestedAt = time.Time{} }},
