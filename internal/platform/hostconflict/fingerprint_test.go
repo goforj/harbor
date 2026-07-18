@@ -128,6 +128,15 @@ func TestFingerprintIncludesPlatformSpecificScopeAndIPv6Facts(t *testing.T) {
 	if fingerprint := mustFingerprint(t, windows); fingerprint == reference {
 		t.Fatal("Fingerprint() omitted Windows compartment")
 	}
+	windows = safeWindowsObservation(t)
+	reference = mustFingerprint(t, windows)
+	windows.Loopback.Interface.WindowsLUID++
+	windows.Routes.Matching[0].Interface.WindowsLUID++
+	selected := windows.Routes.Matching[0]
+	windows.Routes.Selected = &selected
+	if fingerprint := mustFingerprint(t, windows); fingerprint == reference {
+		t.Fatal("Fingerprint() omitted Windows interface LUID")
+	}
 
 	macOS := safeMacOSObservation(t)
 	macOS.Sockets.Endpoints = []SocketFact{tcpIPv6Wildcard(IPv6OnlyEnabled, true)}
@@ -177,10 +186,10 @@ func TestFingerprintRejectsInvalidFacts(t *testing.T) {
 	}
 }
 
-// TestFingerprintKnownVector fixes the v1 canonical encoding across platforms and implementations.
+// TestFingerprintKnownVector fixes the v2 canonical encoding across platforms and implementations.
 func TestFingerprintKnownVector(t *testing.T) {
 	fingerprint := mustFingerprint(t, safeLinuxObservation(t))
-	const want = "5856007b47cd85cf8124d331a8d677823ccb113fe97c2874f4c201eaf5c46267"
+	const want = "055a2bb2d1895c5e1dfd536cd3360d69a6e8c784110ce6594956814d5ced6016"
 	if fingerprint != want {
 		t.Fatalf("Fingerprint() = %q, want %q", fingerprint, want)
 	}

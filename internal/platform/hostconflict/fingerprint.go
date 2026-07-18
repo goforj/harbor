@@ -9,7 +9,7 @@ import (
 	"slices"
 )
 
-const observationFingerprintDomain = "goforj.harbor.host-conflict-observation.v1\x00"
+const observationFingerprintDomain = "goforj.harbor.host-conflict-observation.v2\x00"
 
 // Fingerprint returns a deterministic digest over validated raw facts and their recomputed classifications.
 //
@@ -147,7 +147,8 @@ func appendPolicy(destination []byte, policy PolicyFacts) []byte {
 // appendInterface encodes the complete interface identity.
 func appendInterface(destination []byte, identity InterfaceIdentity) []byte {
 	destination = appendString(destination, identity.Name)
-	return binary.AppendUvarint(destination, uint64(identity.Index))
+	destination = binary.AppendUvarint(destination, uint64(identity.Index))
+	return binary.AppendUvarint(destination, identity.WindowsLUID)
 }
 
 // appendPrefix encodes an IPv4 prefix as its address plus bounded bit length.

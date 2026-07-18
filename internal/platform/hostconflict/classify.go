@@ -132,7 +132,7 @@ func classifyPolicy(observation Observation) State {
 	// prove a current endpoint conflict. Socket enumeration supplies that fact;
 	// fingerprinting the setting prevents a ticket from surviving a policy change.
 	for _, fact := range facts.RouteLocalnet {
-		if fact.Interface != observation.Loopback.Interface && fact.Enabled {
+		if !sameInterfaceAuthority(PlatformLinux, fact.Interface, observation.Loopback.Interface) && fact.Enabled {
 			return StateConflict
 		}
 	}

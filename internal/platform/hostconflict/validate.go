@@ -49,10 +49,10 @@ func validateRouteFact(observation Observation, fact RouteFact) error {
 	if !destination.Contains(observation.Request.Candidate()) {
 		return fmt.Errorf("route destination %s does not match candidate %s", destination, observation.Request.Candidate())
 	}
-	if err := fact.Interface.Validate(); err != nil {
+	if err := fact.Interface.validateForPlatform(observation.Scope.Platform); err != nil {
 		return err
 	}
-	isSelectedLoopback := fact.Interface == observation.Loopback.Interface
+	isSelectedLoopback := sameInterfaceAuthority(observation.Scope.Platform, fact.Interface, observation.Loopback.Interface)
 	if fact.NativeLoopback != isSelectedLoopback {
 		return fmt.Errorf("route native-loopback fact does not match selected interface")
 	}
@@ -143,17 +143,17 @@ func validatePolicy(observation Observation) error {
 	if len(facts.RouteLocalnet) > maximumPolicyInterfaces {
 		return fmt.Errorf("host conflict policy: route_localnet facts exceed limit %d", maximumPolicyInterfaces)
 	}
-	seen := make(map[InterfaceIdentity]struct{}, len(facts.RouteLocalnet))
+	seen := make(map[uint32]struct{}, len(facts.RouteLocalnet))
 	loopbackSeen := false
 	for index, fact := range facts.RouteLocalnet {
-		if err := fact.Interface.Validate(); err != nil {
+		if err := fact.Interface.validateForPlatform(PlatformLinux); err != nil {
 			return fmt.Errorf("host conflict policy: route_localnet fact %d: %w", index, err)
 		}
-		if _, exists := seen[fact.Interface]; exists {
+		if _, exists := seen[fact.Interface.Index]; exists {
 			return fmt.Errorf("host conflict policy: duplicate route_localnet interface %s", fact.Interface.Name)
 		}
-		seen[fact.Interface] = struct{}{}
-		if fact.Interface == observation.Loopback.Interface {
+		seen[fact.Interface.Index] = struct{}{}
+		if sameInterfaceAuthority(PlatformLinux, fact.Interface, observation.Loopback.Interface) {
 			loopbackSeen = true
 		}
 	}

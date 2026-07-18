@@ -182,13 +182,16 @@ func TestInterfaceAndLoopbackValidation(t *testing.T) {
 	tests := []struct {
 		platform Platform
 		kind     LoopbackKind
+		luid     uint64
 	}{
 		{platform: PlatformLinux, kind: LoopbackKindLinuxNative},
 		{platform: PlatformMacOS, kind: LoopbackKindMacOSNative},
-		{platform: PlatformWindows, kind: LoopbackKindWindowsSoftware},
+		{platform: PlatformWindows, kind: LoopbackKindWindowsSoftware, luid: 48},
 	}
 	for _, test := range tests {
-		identity := LoopbackIdentity{Interface: valid, Kind: test.kind}
+		platformInterface := valid
+		platformInterface.WindowsLUID = test.luid
+		identity := LoopbackIdentity{Interface: platformInterface, Kind: test.kind}
 		if err := identity.Validate(test.platform); err != nil {
 			t.Errorf("Validate(%s) error = %v", test.platform, err)
 		}
@@ -199,6 +202,14 @@ func TestInterfaceAndLoopbackValidation(t *testing.T) {
 	}
 	if err := (LoopbackIdentity{Interface: valid}).Validate("plan9"); err == nil {
 		t.Fatal("Validate() with unsupported platform error = nil")
+	}
+	if err := (LoopbackIdentity{Interface: valid, Kind: LoopbackKindWindowsSoftware}).Validate(PlatformWindows); err == nil {
+		t.Fatal("Validate() with missing Windows LUID error = nil")
+	}
+	foreign := valid
+	foreign.WindowsLUID = 48
+	if err := (LoopbackIdentity{Interface: foreign, Kind: LoopbackKindLinuxNative}).Validate(PlatformLinux); err == nil {
+		t.Fatal("Validate() with Windows LUID on Linux error = nil")
 	}
 }
 
@@ -264,6 +275,33 @@ func TestObservationValidateRejectsMalformedRouteFacts(t *testing.T) {
 	observation.Routes.Selected = &selected
 	if err := observation.Validate(); err == nil {
 		t.Fatal("Validate() with too many route facts error = nil")
+	}
+
+	windowsObservation := safeWindowsObservation(t)
+	windowsObservation.Routes.Matching[0].Interface.WindowsLUID = 0
+	selected = windowsObservation.Routes.Matching[0]
+	windowsObservation.Routes.Selected = &selected
+	if err := windowsObservation.Validate(); err == nil {
+		t.Fatal("Validate() with missing Windows route LUID error = nil")
+	}
+
+	observation = safeLinuxObservation(t)
+	observation.Routes.Matching[0].Interface.WindowsLUID = 48
+	selected = observation.Routes.Matching[0]
+	observation.Routes.Selected = &selected
+	if err := observation.Validate(); err == nil {
+		t.Fatal("Validate() with Windows route LUID on Linux error = nil")
+	}
+}
+
+// TestObservationTreatsInterfaceNamesAsDisplayEvidence keeps native identity authoritative across alias changes.
+func TestObservationTreatsInterfaceNamesAsDisplayEvidence(t *testing.T) {
+	observation := safeWindowsObservation(t)
+	observation.Routes.Matching[0].Interface.Name = "Renamed Loopback"
+	selected := observation.Routes.Matching[0]
+	observation.Routes.Selected = &selected
+	if err := observation.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
@@ -456,7 +494,7 @@ func safeWindowsObservation(t *testing.T) Observation {
 		t.Fatalf("NewWindowsScope() error = %v", err)
 	}
 	loopback := LoopbackIdentity{
-		Interface: InterfaceIdentity{Name: "Loopback Pseudo-Interface 1", Index: 12},
+		Interface: InterfaceIdentity{Name: "Loopback Pseudo-Interface 1", Index: 12, WindowsLUID: 48},
 		Kind:      LoopbackKindWindowsSoftware,
 	}
 	baseline := baselineRoute(loopback.Interface)

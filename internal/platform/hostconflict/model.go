@@ -213,8 +213,9 @@ func (s NetworkScope) Validate() error {
 
 // InterfaceIdentity identifies one interface within the observation's networking scope.
 type InterfaceIdentity struct {
-	Name  string
-	Index uint32
+	Name        string
+	Index       uint32
+	WindowsLUID uint64
 }
 
 // Validate rejects interface identities that are not bounded canonical host facts.
@@ -226,6 +227,34 @@ func (i InterfaceIdentity) Validate() error {
 		return fmt.Errorf("host conflict interface: %w", err)
 	}
 	return nil
+}
+
+// validateForPlatform rejects interface identities that carry missing or foreign platform authority.
+func (i InterfaceIdentity) validateForPlatform(platform Platform) error {
+	if err := i.Validate(); err != nil {
+		return err
+	}
+	if platform == PlatformWindows {
+		if i.WindowsLUID == 0 {
+			return fmt.Errorf("host conflict interface: Windows LUID must be greater than zero")
+		}
+		return nil
+	}
+	if i.WindowsLUID != 0 {
+		return fmt.Errorf("host conflict interface: Windows LUID is invalid on %s", platform)
+	}
+	return nil
+}
+
+// sameInterfaceAuthority compares stable native identity while treating names as display evidence.
+func sameInterfaceAuthority(platform Platform, left InterfaceIdentity, right InterfaceIdentity) bool {
+	if left.Index != right.Index {
+		return false
+	}
+	if platform == PlatformWindows {
+		return left.WindowsLUID != 0 && left.WindowsLUID == right.WindowsLUID
+	}
+	return true
 }
 
 // LoopbackKind identifies the platform proof used for Harbor's selected native loopback.
@@ -248,7 +277,7 @@ type LoopbackIdentity struct {
 
 // Validate rejects loopback identities that do not match the observation platform.
 func (i LoopbackIdentity) Validate(platform Platform) error {
-	if err := i.Interface.Validate(); err != nil {
+	if err := i.Interface.validateForPlatform(platform); err != nil {
 		return err
 	}
 	want := LoopbackKind("")
