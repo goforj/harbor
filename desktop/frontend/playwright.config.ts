@@ -1,7 +1,17 @@
+import { createHash } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig, devices } from '@playwright/test'
+
+const artifactScope = createHash('sha256')
+  .update(fileURLToPath(new URL('.', import.meta.url)))
+  .digest('hex')
+  .slice(0, 12)
 
 export default defineConfig({
   testDir: './e2e',
+  outputDir: join(tmpdir(), 'goforj-harbor-playwright', artifactScope),
   fullyParallel: true,
   reporter: 'list',
   use: {
