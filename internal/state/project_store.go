@@ -131,60 +131,70 @@ func (store *Store) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 
 	var snapshot domain.Snapshot
 	err = builder.Transaction(func(tx *gorm.DB) error {
-		sequence, err := readSnapshotSequence(tx)
-		if err != nil {
-			return err
+		read, readErr := store.readSnapshot(tx)
+		if readErr != nil {
+			return readErr
 		}
-		if err := validateOptionalNetworkSequenceOwner(tx, sequence); err != nil {
-			return err
-		}
-		projectRecords, err := readProjectRecords(tx)
-		if err != nil {
-			return err
-		}
-		operationRecords, err := readSnapshotOperations(tx, sequence)
-		if err != nil {
-			return err
-		}
-		recentRecords, err := readRecentResourceRecords(tx)
-		if err != nil {
-			return err
-		}
-		if err := validateVisibleSequences(sequence, projectRecords, operationRecords, recentRecords); err != nil {
-			return err
-		}
-		if err := validateOperationSequenceHistory(tx, sequence, projectRecords, operationRecords, recentRecords); err != nil {
-			return err
-		}
-
-		capturedAt := store.now().UTC().Round(0)
-		if err := validateStoredTime("snapshot capture time", capturedAt); err != nil {
-			return err
-		}
-		snapshot = domain.Snapshot{
-			SchemaVersion:     domain.SnapshotSchemaVersion,
-			Sequence:          sequence,
-			CapturedAt:        capturedAt,
-			Projects:          make([]domain.ProjectSnapshot, 0, len(projectRecords)),
-			Operations:        make([]domain.Operation, 0, len(operationRecords)),
-			RecentResourceIDs: make([]domain.ResourceRef, 0, len(recentRecords)),
-		}
-		for _, record := range projectRecords {
-			snapshot.Projects = append(snapshot.Projects, record.Project)
-		}
-		for _, record := range operationRecords {
-			snapshot.Operations = append(snapshot.Operations, record.Operation)
-		}
-		for _, record := range recentRecords {
-			snapshot.RecentResourceIDs = append(snapshot.RecentResourceIDs, record.Reference)
-		}
-		if err := snapshot.Validate(); err != nil {
-			return corruptStateError("snapshot", strconv.FormatUint(uint64(sequence), 10), err)
-		}
+		snapshot = read
 		return nil
 	})
 	if err != nil {
 		return domain.Snapshot{}, fmt.Errorf("read Harbor snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
+// readSnapshot keeps every client projection and its global ownership proof on one transaction-local read path.
+func (store *Store) readSnapshot(tx *gorm.DB) (domain.Snapshot, error) {
+	sequence, err := readSnapshotSequence(tx)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	if err := validateOptionalNetworkSequenceOwner(tx, sequence); err != nil {
+		return domain.Snapshot{}, err
+	}
+	projectRecords, err := readProjectRecords(tx)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	operationRecords, err := readSnapshotOperations(tx, sequence)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	recentRecords, err := readRecentResourceRecords(tx)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	if err := validateVisibleSequences(sequence, projectRecords, operationRecords, recentRecords); err != nil {
+		return domain.Snapshot{}, err
+	}
+	if err := validateOperationSequenceHistory(tx, sequence, projectRecords, operationRecords, recentRecords); err != nil {
+		return domain.Snapshot{}, err
+	}
+
+	capturedAt := store.now().UTC().Round(0)
+	if err := validateStoredTime("snapshot capture time", capturedAt); err != nil {
+		return domain.Snapshot{}, err
+	}
+	snapshot := domain.Snapshot{
+		SchemaVersion:     domain.SnapshotSchemaVersion,
+		Sequence:          sequence,
+		CapturedAt:        capturedAt,
+		Projects:          make([]domain.ProjectSnapshot, 0, len(projectRecords)),
+		Operations:        make([]domain.Operation, 0, len(operationRecords)),
+		RecentResourceIDs: make([]domain.ResourceRef, 0, len(recentRecords)),
+	}
+	for _, record := range projectRecords {
+		snapshot.Projects = append(snapshot.Projects, record.Project)
+	}
+	for _, record := range operationRecords {
+		snapshot.Operations = append(snapshot.Operations, record.Operation)
+	}
+	for _, record := range recentRecords {
+		snapshot.RecentResourceIDs = append(snapshot.RecentResourceIDs, record.Reference)
+	}
+	if err := snapshot.Validate(); err != nil {
+		return domain.Snapshot{}, corruptStateError("snapshot", strconv.FormatUint(uint64(sequence), 10), err)
 	}
 	return snapshot, nil
 }
