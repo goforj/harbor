@@ -38,6 +38,48 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  platform-loopback:
+    name: Loopback lifecycle (${{ matrix.name }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            binary: harbor-loopback.test
+          - name: macOS
+            os: macos-14
+            binary: harbor-loopback.test
+          - name: Windows
+            os: windows-2022
+            binary: harbor-loopback.test.exe
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build focused platform test
+        run: go test -c -o "${{ runner.temp }}/${{ matrix.binary }}" ./internal/platform/loopback
+
+      - name: Exercise loopback lifecycle on Unix
+        if: runner.os != 'Windows'
+        run: sudo env HARBOR_PRIVILEGED_LOOPBACK_TEST=1 "${{ runner.temp }}/${{ matrix.binary }}" -test.run '^TestPrivilegedAdapterLifecycle$' -test.v
+
+      - name: Exercise loopback lifecycle on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:HARBOR_PRIVILEGED_LOOPBACK_TEST = "1"
+          & "${{ runner.temp }}\${{ matrix.binary }}" -test.run '^TestPrivilegedAdapterLifecycle$' -test.v
+
   frontend:
     name: Frontend
     runs-on: ubuntu-24.04
