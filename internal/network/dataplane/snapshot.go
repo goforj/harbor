@@ -37,7 +37,7 @@ func (state State) Validate() error {
 
 // DNSStatus reports authoritative listener ownership without exposing server internals.
 type DNSStatus struct {
-	// Configured reports whether the desired generation contains any exact DNS records.
+	// Configured reports whether the desired generation owns the authoritative DNS listener.
 	Configured bool
 	// Address is the exact shared UDP and TCP listener when configured.
 	Address netip.AddrPort
@@ -49,7 +49,7 @@ type DNSStatus struct {
 
 // IngressStatus reports shared HTTP and HTTPS listener ownership.
 type IngressStatus struct {
-	// Configured reports whether the desired generation contains HTTP-class routes.
+	// Configured reports whether the desired generation owns the paired HTTP and HTTPS listeners.
 	Configured bool
 	// HTTPAddress is the exact redirect listener when configured.
 	HTTPAddress netip.AddrPort
@@ -173,9 +173,6 @@ func (snapshot Snapshot) Validate() error {
 	if snapshot.Ingress.Configured {
 		routes += snapshot.Ingress.Routes
 	}
-	if routes == 0 && snapshot.DNS.Configured {
-		return fmt.Errorf("data plane DNS status has records without configured routes")
-	}
 	if routes != 0 && !snapshot.DNS.Configured {
 		return fmt.Errorf("data plane snapshot routes require configured DNS")
 	}
@@ -255,8 +252,8 @@ func validateDNSStatus(status DNSStatus) error {
 	if err := validateLoopbackEndpoint("data plane DNS status", status.Address); err != nil {
 		return err
 	}
-	if status.Records <= 0 {
-		return fmt.Errorf("configured data plane DNS status must contain records")
+	if status.Records < 0 {
+		return fmt.Errorf("configured data plane DNS status cannot contain a negative record count")
 	}
 	return nil
 }
@@ -278,8 +275,8 @@ func validateIngressStatus(status IngressStatus) error {
 	if status.HTTPAddress.Addr() != status.HTTPSAddress.Addr() || status.HTTPAddress == status.HTTPSAddress {
 		return fmt.Errorf("configured data plane ingress status contains inconsistent paired listeners")
 	}
-	if status.Routes <= 0 {
-		return fmt.Errorf("configured data plane ingress status must contain routes")
+	if status.Routes < 0 {
+		return fmt.Errorf("configured data plane ingress status cannot contain a negative route count")
 	}
 	return nil
 }

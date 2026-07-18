@@ -15,8 +15,9 @@ const maximumEndpointIDLength = 128
 
 // ListenerPlan identifies the exact shared DNS and HTTP sockets Harbor will own.
 //
-// DNS is required whenever any route exists. HTTP and HTTPS are required together only
-// when HTTP routes exist. Native listeners belong to their individual NativeRoute values.
+// DNS is required whenever any route exists. HTTP and HTTPS are always configured as a pair.
+// Shared listeners may remain configured before routes are published so host integration
+// does not flap as projects register and unregister. Native listeners belong to routes.
 type ListenerPlan struct {
 	// DNS is the shared authoritative UDP and TCP socket for derived exact-name records.
 	DNS netip.AddrPort
@@ -171,7 +172,7 @@ func (state DesiredState) TTL() time.Duration {
 
 // Empty reports whether this generation intentionally owns no network listeners.
 func (state DesiredState) Empty() bool {
-	return len(state.httpRoutes) == 0 && len(state.nativeRoutes) == 0
+	return state.listeners == (ListenerPlan{}) && len(state.httpRoutes) == 0 && len(state.nativeRoutes) == 0
 }
 
 // validate rejects forged zero values before they can acquire listeners.
@@ -267,17 +268,11 @@ func validateListenerRequirements(plan ListenerPlan, httpRoutes int, nativeRoute
 	hasRoutes := httpRoutes != 0 || nativeRoutes != 0
 	hasDNS := plan.DNS != (netip.AddrPort{})
 	hasIngress := plan.HTTP != (netip.AddrPort{}) || plan.HTTPS != (netip.AddrPort{})
-	if hasRoutes != hasDNS {
-		if hasRoutes {
-			return fmt.Errorf("data plane desired state: DNS listener is required when routes exist")
-		}
-		return fmt.Errorf("data plane desired state: DNS listener requires at least one route")
+	if hasRoutes && !hasDNS {
+		return fmt.Errorf("data plane desired state: DNS listener is required when routes exist")
 	}
-	if (httpRoutes != 0) != hasIngress {
-		if httpRoutes != 0 {
-			return fmt.Errorf("data plane desired state: HTTP and HTTPS listeners are required for HTTP routes")
-		}
-		return fmt.Errorf("data plane desired state: HTTP and HTTPS listeners require at least one HTTP route")
+	if httpRoutes != 0 && !hasIngress {
+		return fmt.Errorf("data plane desired state: HTTP and HTTPS listeners are required for HTTP routes")
 	}
 	return nil
 }

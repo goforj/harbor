@@ -75,6 +75,27 @@ func TestNewDesiredStateAcceptsEmptyGeneration(t *testing.T) {
 	}
 }
 
+// TestNewDesiredStateAcceptsInfrastructureOnlyGeneration keeps installed shared listeners stable between project routes.
+func TestNewDesiredStateAcceptsInfrastructureOnlyGeneration(t *testing.T) {
+	listeners := testListenerPlan()
+	desired, err := NewDesiredState(listeners, nil, nil, 0)
+	if err != nil {
+		t.Fatalf("NewDesiredState(infrastructure only) error = %v", err)
+	}
+	if desired.Empty() {
+		t.Fatal("DesiredState.Empty() = true for configured shared listeners")
+	}
+	if desired.ListenerPlan() != listeners {
+		t.Fatalf("ListenerPlan() = %#v, want %#v", desired.ListenerPlan(), listeners)
+	}
+	if records := desired.DNSRecords(); records == nil || len(records) != 0 {
+		t.Fatalf("DNSRecords() = %#v, want initialized empty collection", records)
+	}
+	if err := desired.validate(); err != nil {
+		t.Fatalf("DesiredState.validate() error = %v", err)
+	}
+}
+
 // TestNewDesiredStateCanonicalizesIPv4MappedEndpoints verifies socket collision checks use one IPv4 representation.
 func TestNewDesiredStateCanonicalizesIPv4MappedEndpoints(t *testing.T) {
 	mapped := func(value string, port uint16) netip.AddrPort {
@@ -141,9 +162,7 @@ func TestNewDesiredStateRejectsInconsistentRoutes(t *testing.T) {
 		want      string
 	}{
 		{name: "routes need DNS", listeners: ListenerPlan{HTTP: testEndpoint("127.0.0.1:18080"), HTTPS: testEndpoint("127.0.0.1:18443")}, http: []HTTPRoute{validHTTP}, want: "DNS listener is required"},
-		{name: "DNS needs routes", listeners: ListenerPlan{DNS: testEndpoint("127.0.0.1:10530")}, want: "requires at least one route"},
 		{name: "HTTP needs ingress", listeners: ListenerPlan{DNS: testEndpoint("127.0.0.1:10530")}, http: []HTTPRoute{validHTTP}, want: "listeners are required"},
-		{name: "ingress needs HTTP", listeners: testListenerPlan(), native: []NativeRoute{validNative}, want: "listeners require at least one HTTP route"},
 		{name: "noncanonical HTTP host", listeners: testListenerPlan(), http: []HTTPRoute{{ID: validHTTP.ID, Host: "App.Test.", Upstream: validHTTP.Upstream}}, want: "must use canonical form"},
 		{name: "wildcard HTTP host", listeners: testListenerPlan(), http: []HTTPRoute{{ID: validHTTP.ID, Host: "*.app.test", Upstream: validHTTP.Upstream}}, want: "unsupported"},
 		{name: "noncanonical native host", listeners: ListenerPlan{DNS: testEndpoint("127.0.0.1:10530")}, native: []NativeRoute{{ID: validNative.ID, Host: "MYSQL.app.test", Listen: validNative.Listen, Upstream: validNative.Upstream}}, want: "must be lowercase"},

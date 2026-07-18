@@ -34,7 +34,7 @@ type Config struct {
 	// Desired is the complete validated route and listener generation.
 	Desired DesiredState
 	// CertificateProvider supplies certificates only for already-authorized exact HTTP hosts.
-	// It is required when Desired contains HTTP routes and intentionally optional otherwise.
+	// It is required whenever Desired owns the paired HTTP and HTTPS listeners.
 	CertificateProvider httpingress.CertificateProvider
 	// StartupTimeout bounds the interval between listener acquisition and child readiness.
 	// Zero selects Harbor's conservative default.
@@ -124,7 +124,7 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 		done:                   make(chan struct{}),
 		relays:                 make([]managedRelay, 0, len(config.Desired.nativeRoutes)),
 	}
-	if !config.Desired.Empty() {
+	if config.Desired.listeners.DNS != (netip.AddrPort{}) {
 		dnsConfig := dnsserver.DefaultConfig(config.Desired.listeners.DNS.Addr(), config.Desired.listeners.DNS.Port())
 		dnsConfig.ShutdownTimeout = config.ShutdownTimeout
 		server, err := dnsserver.NewServer(dnsConfig, config.Desired.dnsSnapshot)
@@ -133,7 +133,7 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 		}
 		runtime.dns = server
 	}
-	if len(config.Desired.httpRoutes) != 0 {
+	if config.Desired.listeners.HTTP != (netip.AddrPort{}) {
 		router, err := httpingress.NewRouter(httpingress.Config{}, config.Desired.ingressSnapshot)
 		if err != nil {
 			return nil, fmt.Errorf("create data plane HTTP router: %w", err)
@@ -689,8 +689,8 @@ func validateRuntimeConfig(config Config) error {
 	if config.ShutdownTimeout < time.Millisecond || config.ShutdownTimeout > maximumShutdownTimeout {
 		return fmt.Errorf("data plane shutdown timeout must be between 1ms and %s", maximumShutdownTimeout)
 	}
-	if len(config.Desired.httpRoutes) != 0 && config.CertificateProvider == nil {
-		return fmt.Errorf("data plane certificate provider is required for HTTP routes")
+	if config.Desired.listeners.HTTP != (netip.AddrPort{}) && config.CertificateProvider == nil {
+		return fmt.Errorf("data plane certificate provider is required for HTTP ingress")
 	}
 	return nil
 }

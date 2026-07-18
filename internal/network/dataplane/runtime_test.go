@@ -53,6 +53,41 @@ func TestRuntimeEmptyGenerationLifecycle(t *testing.T) {
 	}
 }
 
+// TestRuntimeInfrastructureOnlyGenerationLifecycle proves shared sockets remain owned before any project route exists.
+func TestRuntimeInfrastructureOnlyGenerationLifecycle(t *testing.T) {
+	ingress := reserveTCPPorts(t, 2)
+	desired := mustDesiredState(t, ListenerPlan{
+		DNS:   reserveDNSPort(t),
+		HTTP:  ingress[0],
+		HTTPS: ingress[1],
+	}, nil, nil)
+	runtime := mustRuntime(t, Config{Desired: desired, CertificateProvider: inertCertificateProvider()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	snapshot := runtime.Snapshot()
+	if snapshot.State != StateReady || !snapshot.DNS.Configured || !snapshot.DNS.Running || snapshot.DNS.Records != 0 {
+		t.Fatalf("ready DNS snapshot = %#v", snapshot.DNS)
+	}
+	if !snapshot.Ingress.Configured || !snapshot.Ingress.Running || snapshot.Ingress.Routes != 0 {
+		t.Fatalf("ready ingress snapshot = %#v", snapshot.Ingress)
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("Snapshot().Validate() error = %v", err)
+	}
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if terminal := runtime.Snapshot(); terminal.State != StateStopped {
+		t.Fatalf("terminal Snapshot() = %#v", terminal)
+	} else if err := terminal.Validate(); err != nil {
+		t.Fatalf("terminal Snapshot().Validate() error = %v", err)
+	}
+}
+
 // TestRuntimeConcurrentCloseIsIdempotent verifies every caller observes one fully joined shutdown.
 func TestRuntimeConcurrentCloseIsIdempotent(t *testing.T) {
 	runtime := mustRuntime(t, Config{Desired: mustDesiredState(t, ListenerPlan{}, nil, nil)})
@@ -234,6 +269,7 @@ func TestNewRuntimeRejectsInvalidConfiguration(t *testing.T) {
 		[]HTTPRoute{{ID: "http:app", Host: "app.test", Upstream: testEndpoint("127.0.0.1:41001")}},
 		nil,
 	)
+	infrastructureDesired := mustDesiredState(t, testListenerPlan(), nil, nil)
 	empty := mustDesiredState(t, ListenerPlan{}, nil, nil)
 	certificate := inertCertificateProvider()
 	tests := []struct {
@@ -244,6 +280,7 @@ func TestNewRuntimeRejectsInvalidConfiguration(t *testing.T) {
 	}{
 		{name: "forged desired", config: Config{}, dependencies: runtimeDependencies{listen: listenExactTCP}, want: "NewDesiredState"},
 		{name: "missing certificate", config: Config{Desired: httpDesired}, dependencies: runtimeDependencies{listen: listenExactTCP}, want: "certificate provider"},
+		{name: "missing infrastructure certificate", config: Config{Desired: infrastructureDesired}, dependencies: runtimeDependencies{listen: listenExactTCP}, want: "certificate provider"},
 		{name: "short startup", config: Config{Desired: empty, CertificateProvider: certificate, StartupTimeout: time.Nanosecond}, dependencies: runtimeDependencies{listen: listenExactTCP}, want: "startup timeout"},
 		{name: "long startup", config: Config{Desired: empty, CertificateProvider: certificate, StartupTimeout: maximumStartupTimeout + time.Nanosecond}, dependencies: runtimeDependencies{listen: listenExactTCP}, want: "startup timeout"},
 		{name: "short shutdown", config: Config{Desired: empty, CertificateProvider: certificate, ShutdownTimeout: time.Nanosecond}, dependencies: runtimeDependencies{listen: listenExactTCP}, want: "shutdown timeout"},
