@@ -78,6 +78,12 @@ func open(directory string, clock helper.Clock) (*Store, error) {
 			root.Close(),
 		)
 	}
+	if err := validatePlatformRoot(root); err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("open helper replay store %q: validate retained directory: %w", directory, err),
+			root.Close(),
+		)
+	}
 	return &Store{path: directory, root: root, clock: clock}, nil
 }
 
@@ -108,7 +114,7 @@ func (store *Store) Consume(ctx context.Context, claim helper.ReplayClaim) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	file, err := store.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := createPlatformFile(store.root, store.path, name)
 	if errors.Is(err, fs.ErrExist) {
 		return store.classifyExisting(name, record)
 	}

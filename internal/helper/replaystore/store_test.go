@@ -227,6 +227,7 @@ func replayTestDirectory(t *testing.T) string {
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatalf("create replay directory: %v", err)
 	}
+	preparePlatformTestDirectory(t, directory)
 	return directory
 }
 

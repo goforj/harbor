@@ -8,6 +8,11 @@ import (
 	"syscall"
 )
 
+// createPlatformFile creates one owner-private tombstone beneath the already verified directory handle.
+func createPlatformFile(root *os.Root, _ string, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+}
+
 // securePlatformFile relies on exclusive creation with mode 0600 inside the verified owner-private root.
 func securePlatformFile(_ *os.File) error {
 	return nil
@@ -22,6 +27,11 @@ func validatePlatformDirectory(_ string, info os.FileInfo) error {
 	if !ok || int(status.Uid) != os.Geteuid() {
 		return fmt.Errorf("directory is not owned by the helper identity")
 	}
+	return nil
+}
+
+// validatePlatformRoot relies on SameFile matching the retained handle to the already validated Unix metadata.
+func validatePlatformRoot(_ *os.Root) error {
 	return nil
 }
 
