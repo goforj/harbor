@@ -16,7 +16,12 @@ import (
 	"gorm.io/gorm"
 )
 
-const networkInitializeTestMigrationName = "2026_07_18_152632_create_network_persistence"
+const (
+	// networkInitializeTestMigrationName identifies the base production network schema used by state tests.
+	networkInitializeTestMigrationName = "2026_07_18_152632_create_network_persistence"
+	// networkInitializeTestDigestMigrationName identifies the replay-proof upgrade applied after the base schema.
+	networkInitializeTestDigestMigrationName = "2026_07_18_175743_add_network_release_set_digest"
+)
 
 // TestStoreInitializeNetworkCommitsCompleteAggregate verifies the first write owns one global revision and every hidden host fact.
 func TestStoreInitializeNetworkCommitsCompleteAggregate(t *testing.T) {
@@ -840,22 +845,31 @@ func newNetworkInitializeTestHarnessWithConnections(t *testing.T, projects bool,
 	return store, connection
 }
 
-// applyNetworkInitializeTestMigration applies Harbor's embedded production network schema to the state harness.
+// applyNetworkInitializeTestMigration applies Harbor's embedded production network migrations in durable schema order.
 func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 	t.Helper()
-	for _, migration := range migrations.GetMigrations() {
-		if migration.Name() != networkInitializeTestMigrationName ||
-			migration.App() != "harbord" ||
-			migration.Connection() != "default" ||
-			(migration.Driver() != "" && migration.Driver() != "sqlite") {
-			continue
+	for _, name := range []string{networkInitializeTestMigrationName, networkInitializeTestDigestMigrationName} {
+		found := false
+		for _, migration := range migrations.GetMigrations() {
+			if migration.Name() != name ||
+				migration.App() != "harbord" ||
+				migration.Connection() != "default" ||
+				(migration.Driver() != "" && migration.Driver() != "sqlite") {
+				continue
+			}
+			if err := migration.Up(connection); err != nil {
+				t.Fatalf("apply embedded network migration %q: %v", name, err)
+			}
+			found = true
+			break
 		}
-		if err := migration.Up(connection); err != nil {
-			t.Fatalf("apply embedded network persistence migration: %v", err)
+		if !found {
+			t.Fatalf("embedded network migration %q was not registered", name)
 		}
-		return
 	}
-	t.Fatalf("embedded network persistence migration %q was not registered", networkInitializeTestMigrationName)
+	if !connection.Migrator().HasColumn("network_project_releases", "release_set_digest") {
+		t.Fatal("embedded network migrations did not install release_set_digest")
+	}
 }
 
 // networkInitializeTestEmptyRequest returns the valid host-only initialization shape used before projects exist.

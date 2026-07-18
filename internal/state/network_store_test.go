@@ -101,7 +101,8 @@ var networkStoreReadTestSchema = []string{
 		began_at DATETIME,
 		completion_generation INTEGER,
 		completed_at DATETIME,
-		release_evidence TEXT
+		release_evidence TEXT,
+		release_set_digest TEXT
 	)`,
 }
 

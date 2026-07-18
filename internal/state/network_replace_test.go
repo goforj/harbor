@@ -1266,18 +1266,47 @@ func networkReplaceTestCompleteRelease(
 	releasedAt := completedAt.Add(-3 * time.Minute)
 	quarantinedAt := completedAt.Add(-2 * time.Minute)
 	reuseAfter := completedAt.Add(time.Minute)
+	releases := make([]NetworkLeaseRelease, 0, len(leases))
 	for _, lease := range leases {
+		key, err := networkLeaseKeyFromModel(projectID, lease.Kind, lease.SecondaryId)
+		if err != nil {
+			t.Fatalf("restore completed release lease key: %v", err)
+		}
+		address, err := parseCanonicalNetworkAddress("completed release lease", lease.Address)
+		if err != nil {
+			t.Fatalf("restore completed release lease address: %v", err)
+		}
+		release := NetworkLeaseRelease{
+			Lease: identity.Lease{
+				Key:     key,
+				Address: address,
+				Ownership: identity.Ownership{
+					InstallationID: identity.InstallationID(lease.OwnershipInstallationId),
+					Generation:     uint64(lease.OwnershipGeneration),
+				},
+			},
+			ReleaseGeneration: uint64(150 + lease.Id),
+			ReleaseEvidence:   "verified completed release",
+			ReleasedAt:        releasedAt,
+			QuarantinedAt:     quarantinedAt,
+			ReuseAfter:        reuseAfter,
+			QuarantineReason:  "completed project release pending safe reuse",
+		}
+		if err := release.Validate(); err != nil {
+			t.Fatalf("build completed release fact: %v", err)
+		}
+		releases = append(releases, release)
 		updated := connection.Model(&models.LoopbackAddressLease{}).
 			Where("id = ? AND state = ?", lease.Id, "leased").
 			Updates(map[string]any{
 				"project_id":         nil,
 				"state":              "quarantined",
-				"release_generation": 150 + lease.Id,
-				"release_evidence":   "verified completed release",
-				"released_at":        releasedAt,
-				"quarantined_at":     quarantinedAt,
-				"reuse_after":        reuseAfter,
-				"quarantine_reason":  "completed project release pending safe reuse",
+				"release_generation": release.ReleaseGeneration,
+				"release_evidence":   release.ReleaseEvidence,
+				"released_at":        release.ReleasedAt,
+				"quarantined_at":     release.QuarantinedAt,
+				"reuse_after":        release.ReuseAfter,
+				"quarantine_reason":  release.QuarantineReason,
 			})
 		if updated.Error != nil || updated.RowsAffected != 1 {
 			t.Fatalf("quarantine completed release lease %d: rows %d, error %v", lease.Id, updated.RowsAffected, updated.Error)
@@ -1294,6 +1323,7 @@ func networkReplaceTestCompleteRelease(
 		CompletionGeneration: null.IntFrom(200),
 		CompletedAt:          &completedAt,
 		ReleaseEvidence:      null.StringFrom("verified completed project release"),
+		ReleaseSetDigest:     null.StringFrom(projectNetworkReleaseSetDigest(releases)),
 	}
 	if err := connection.Create(&row).Error; err != nil {
 		t.Fatalf("insert completed network project release: %v", err)

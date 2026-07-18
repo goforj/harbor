@@ -716,7 +716,7 @@ func networkReleasesFromModels(
 			if _, exists := knownProjects[projectID]; !exists {
 				return nil, corruptStateError("network project release", key, fmt.Errorf("project %q is missing", projectID))
 			}
-			if row.CompletionGeneration.Valid || row.CompletedAt != nil || row.ReleaseEvidence.Valid {
+			if row.CompletionGeneration.Valid || row.CompletedAt != nil || row.ReleaseEvidence.Valid || row.ReleaseSetDigest.Valid {
 				return nil, corruptStateError("network project release", key, fmt.Errorf("releasing row contains completion fields"))
 			}
 			releases[projectID] = networkReleaseState{}
@@ -740,6 +740,12 @@ func networkReleasesFromModels(
 				return nil, corruptStateError("network project release", key, fmt.Errorf("release evidence is required"))
 			}
 			if err := validateNetworkEvidence("project release evidence", row.ReleaseEvidence.String); err != nil {
+				return nil, corruptStateError("network project release", key, err)
+			}
+			if !row.ReleaseSetDigest.Valid {
+				return nil, corruptStateError("network project release", key, fmt.Errorf("release set digest is required"))
+			}
+			if err := validateProjectNetworkReleaseSetDigest(row.ReleaseSetDigest.String); err != nil {
 				return nil, corruptStateError("network project release", key, err)
 			}
 			releases[projectID] = networkReleaseState{Completed: true, CompletedAt: *row.CompletedAt}

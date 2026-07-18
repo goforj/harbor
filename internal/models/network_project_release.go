@@ -21,6 +21,7 @@ type NetworkProjectRelease struct {
 	CompletionGeneration null.Int    `gorm:"column:completion_generation" json:"completion_generation"`
 	CompletedAt          *time.Time  `gorm:"column:completed_at" json:"completed_at"`
 	ReleaseEvidence      null.String `gorm:"column:release_evidence" json:"release_evidence"`
+	ReleaseSetDigest     null.String "gorm:\"column:release_set_digest\" json:\"release_set_digest\""
 }
 
 // TableName returns the database table name.

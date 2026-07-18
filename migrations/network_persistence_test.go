@@ -9,7 +9,14 @@ import (
 	"gorm.io/gorm"
 )
 
-const networkPersistenceMigrationName = "2026_07_18_152632_create_network_persistence"
+const (
+	// networkPersistenceMigrationName identifies the original production network schema migration.
+	networkPersistenceMigrationName = "2026_07_18_152632_create_network_persistence"
+	// networkReleaseDigestMigrationName identifies the replay-proof schema upgrade.
+	networkReleaseDigestMigrationName = "2026_07_18_175743_add_network_release_set_digest"
+	// networkMigrationReleaseSetDigest is the canonical digest fixture accepted by the upgraded schema.
+	networkMigrationReleaseSetDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 
 // TestNetworkPersistenceMigrationCreatesDurableSchema verifies the embedded migration owns the complete network aggregate without creating competing revision owners.
 func TestNetworkPersistenceMigrationCreatesDurableSchema(t *testing.T) {
@@ -89,6 +96,9 @@ func TestNetworkPersistenceMigrationCreatesDurableSchema(t *testing.T) {
 			t.Fatalf("public_endpoint_leases persists runtime-only column %q", forbidden)
 		}
 	}
+	if !migrationTableHasColumn(t, databaseConnection, "network_project_releases", "release_set_digest") {
+		t.Fatal("network_project_releases is missing release_set_digest")
+	}
 }
 
 // TestNetworkPersistenceMigrationStagesProjectRelease verifies restrictive ownership, verified quarantine, replacement allocation, and replay evidence survive project deletion.
@@ -146,8 +156,9 @@ func TestNetworkPersistenceMigrationStagesProjectRelease(t *testing.T) {
 		state = 'completed',
 		completion_generation = 2,
 		completed_at = '2026-07-18T12:04:00Z',
-		release_evidence = 'all endpoints removed and host release verified'
-		WHERE operation_id = 'operation-release'`)
+		release_evidence = 'all endpoints removed and host release verified',
+		release_set_digest = ?
+		WHERE operation_id = 'operation-release'`, networkMigrationReleaseSetDigest)
 	mustExecNetworkMigration(t, databaseConnection, "DELETE FROM projects WHERE project_id = 'project-orders'")
 
 	var lease struct {
@@ -165,16 +176,17 @@ func TestNetworkPersistenceMigrationStagesProjectRelease(t *testing.T) {
 	}
 
 	var release struct {
-		ProjectID       *string
-		SourceProjectID string
-		State           string
-		ReleaseEvidence string
+		ProjectID        *string
+		SourceProjectID  string
+		State            string
+		ReleaseEvidence  string
+		ReleaseSetDigest string
 	}
-	if err := databaseConnection.Raw(`SELECT project_id, source_project_id, state, release_evidence
+	if err := databaseConnection.Raw(`SELECT project_id, source_project_id, state, release_evidence, release_set_digest
 		FROM network_project_releases WHERE operation_id = 'operation-release'`).Scan(&release).Error; err != nil {
 		t.Fatalf("read completed project release: %v", err)
 	}
-	if release.ProjectID != nil || release.SourceProjectID != "project-orders" || release.State != "completed" || release.ReleaseEvidence == "" {
+	if release.ProjectID != nil || release.SourceProjectID != "project-orders" || release.State != "completed" || release.ReleaseEvidence == "" || release.ReleaseSetDigest != networkMigrationReleaseSetDigest {
 		t.Fatalf("completed release = %#v, want replay evidence independent of the deleted project", release)
 	}
 	assertMigrationStatementFails(t, databaseConnection, "DELETE FROM operations WHERE id = 'operation-release'")
@@ -230,9 +242,14 @@ func TestNetworkPersistenceMigrationRejectsInvalidFacts(t *testing.T) {
 		fmt.Sprintf(`INSERT INTO public_endpoint_leases (network_state_id, project_id, endpoint_id, protocol, hostname, address, port, loopback_address_lease_id, generation, created_at, updated_at) VALUES (1, 'project-one', 'http-with-lease', 'http', 'http-lease.project-one.test', '127.77.0.10', 443, %d, 1, '2026-07-18T12:00:00Z', '2026-07-18T12:00:00Z')`, leaseID),
 		`INSERT INTO public_endpoint_leases (network_state_id, project_id, endpoint_id, protocol, hostname, address, port, loopback_address_lease_id, generation, created_at, updated_at) VALUES (1, 'project-one', 'bad-protocol', 'udp', 'udp.project-one.test', '127.0.0.1', 53, NULL, 1, '2026-07-18T12:00:00Z', '2026-07-18T12:00:00Z')`,
 		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at) VALUES (1, 'missing-project', 'missing-project', 'operation-one', 'releasing', 1, '2026-07-18T12:00:00Z')`,
-		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 1, '2026-07-18T12:01:00Z', 'released')`,
-		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', NULL)`,
+		fmt.Sprintf(`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence, release_set_digest) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 1, '2026-07-18T12:01:00Z', 'released', '%s')`, networkMigrationReleaseSetDigest),
+		fmt.Sprintf(`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence, release_set_digest) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', NULL, '%s')`, networkMigrationReleaseSetDigest),
 		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence) VALUES (1, 'project-one', 'project-one', 'operation-one', 'releasing', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', 'released')`,
+		fmt.Sprintf(`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, release_set_digest) VALUES (1, 'project-one', 'project-one', 'operation-one', 'releasing', 1, '2026-07-18T12:00:00Z', '%s')`, networkMigrationReleaseSetDigest),
+		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', 'released')`,
+		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence, release_set_digest) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', 'released', 'abcd')`,
+		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence, release_set_digest) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', 'released', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF')`,
+		`INSERT INTO network_project_releases (network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence, release_set_digest) VALUES (1, NULL, 'project-one', 'operation-one', 'completed', 1, '2026-07-18T12:00:00Z', 2, '2026-07-18T12:01:00Z', 'released', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg')`,
 	}
 	for _, statement := range invalidStatements {
 		assertMigrationStatementFails(t, databaseConnection, statement)
@@ -261,6 +278,129 @@ func TestNetworkPersistenceMigrationRejectsInvalidFacts(t *testing.T) {
 		(network_state_id, project_id, endpoint_id, protocol, hostname, address, port, loopback_address_lease_id, generation, created_at, updated_at)
 		VALUES (1, 'project-two', 'project-two-mysql', 'tcp', 'mysql.project-two.test', '127.77.0.11', 3306, ?, 1, '2026-07-18T12:00:00Z', '2026-07-18T12:00:00Z')`, secondLeaseID)
 	assertNetworkMigrationForeignKeys(t, databaseConnection)
+}
+
+// TestNetworkReleaseSetDigestMigrationUpgradesAndRollsBack proves releasing rows permit reversible upgrades while completed replay proof cannot be destroyed.
+func TestNetworkReleaseSetDigestMigrationUpgradesAndRollsBack(t *testing.T) {
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	defer closeOperationMigrationDatabase(t, connections)
+	applyProjectProjectionMigrations(t, databaseConnection)
+	if err := networkPersistenceMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply original network persistence migration: %v", err)
+	}
+	seedNetworkMigrationProject(t, databaseConnection, "project-upgrade", "operation-upgrade", 1, 2)
+	insertNetworkMigrationState(t, databaseConnection, 3)
+	mustExecNetworkMigration(t, databaseConnection, `INSERT INTO network_project_releases
+		(network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at)
+		VALUES (1, 'project-upgrade', 'project-upgrade', 'operation-upgrade', 'releasing', 1, '2026-07-18T12:02:00Z')`)
+
+	if err := ensureMigrationsTable(databaseConnection); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+	migration := networkReleaseDigestMigration(t)
+	record := migrationRecord{
+		Name:       migration.Name(),
+		App:        migration.App(),
+		Connection: migration.Connection(),
+		SourcePath: migration.SourcePath(),
+		AppliedAt:  time.Date(2026, time.July, 18, 12, 3, 0, 0, time.UTC),
+	}
+	if err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
+		t.Fatalf("apply network release digest migration: %v", err)
+	}
+	if !migrationTableHasColumn(t, databaseConnection, "network_project_releases", "release_set_digest") {
+		t.Fatal("upgraded network_project_releases is missing release_set_digest")
+	}
+	var releasingDigest *string
+	if err := databaseConnection.Raw(`SELECT release_set_digest FROM network_project_releases WHERE operation_id = 'operation-upgrade'`).Scan(&releasingDigest).Error; err != nil {
+		t.Fatalf("read upgraded releasing digest: %v", err)
+	}
+	if releasingDigest != nil {
+		t.Fatalf("upgraded releasing digest = %q, want NULL", *releasingDigest)
+	}
+
+	if err := rollbackSQLiteMigration(databaseConnection, migration); err != nil {
+		t.Fatalf("rollback network release digest migration: %v", err)
+	}
+	if migrationTableHasColumn(t, databaseConnection, "network_project_releases", "release_set_digest") {
+		t.Fatal("rolled-back network_project_releases retained release_set_digest")
+	}
+	var release struct {
+		State            string
+		ReleaseEvidence  string
+		ReleaseSetDigest string
+	}
+	if err := databaseConnection.Raw(`SELECT state, release_evidence FROM network_project_releases WHERE operation_id = 'operation-upgrade'`).Scan(&release).Error; err != nil {
+		t.Fatalf("read rolled-back release: %v", err)
+	}
+	if release.State != "releasing" || release.ReleaseEvidence != "" {
+		t.Fatalf("rolled-back release = %#v, want preserved releasing marker", release)
+	}
+	if countAtomicityMigrationRecords(t, databaseConnection, migration.Name()) != 0 {
+		t.Fatal("rolled-back release digest migration retained its ledger record")
+	}
+
+	if err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
+		t.Fatalf("reapply network release digest migration: %v", err)
+	}
+	mustExecNetworkMigration(t, databaseConnection, `UPDATE network_project_releases SET
+		project_id = NULL,
+		state = 'completed',
+		completion_generation = 2,
+		completed_at = '2026-07-18T12:04:00Z',
+		release_evidence = 'verified release',
+		release_set_digest = ?
+		WHERE operation_id = 'operation-upgrade'`, networkMigrationReleaseSetDigest)
+	if err := rollbackSQLiteMigration(databaseConnection, migration); err == nil {
+		t.Fatal("rollback discarded a completed release digest")
+	}
+	if !migrationTableHasColumn(t, databaseConnection, "network_project_releases", "release_set_digest") {
+		t.Fatal("failed rollback removed release_set_digest")
+	}
+	if err := databaseConnection.Raw(`SELECT state, release_evidence, release_set_digest FROM network_project_releases WHERE operation_id = 'operation-upgrade'`).Scan(&release).Error; err != nil {
+		t.Fatalf("read release after rejected rollback: %v", err)
+	}
+	if release.State != "completed" || release.ReleaseEvidence != "verified release" || release.ReleaseSetDigest != networkMigrationReleaseSetDigest {
+		t.Fatalf("release after rejected rollback = %#v, want intact completion proof", release)
+	}
+	if countAtomicityMigrationRecords(t, databaseConnection, migration.Name()) != 1 {
+		t.Fatal("failed rollback removed the release digest migration ledger record")
+	}
+}
+
+// TestNetworkReleaseSetDigestMigrationRejectsUnverifiableCompletion proves an old completion cannot be silently upgraded without its exact release set.
+func TestNetworkReleaseSetDigestMigrationRejectsUnverifiableCompletion(t *testing.T) {
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	defer closeOperationMigrationDatabase(t, connections)
+	applyProjectProjectionMigrations(t, databaseConnection)
+	if err := networkPersistenceMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply original network persistence migration: %v", err)
+	}
+	seedNetworkMigrationProject(t, databaseConnection, "project-completed", "operation-completed", 1, 2)
+	insertNetworkMigrationState(t, databaseConnection, 3)
+	mustExecNetworkMigration(t, databaseConnection, `INSERT INTO network_project_releases
+		(network_state_id, project_id, source_project_id, operation_id, state, begin_generation, began_at, completion_generation, completed_at, release_evidence)
+		VALUES (1, NULL, 'project-completed', 'operation-completed', 'completed', 1, '2026-07-18T12:02:00Z', 2, '2026-07-18T12:04:00Z', 'legacy release')`)
+	if err := ensureMigrationsTable(databaseConnection); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+	migration := networkReleaseDigestMigration(t)
+	err := applySQLiteMigration(databaseConnection, migration, migrationRecord{
+		Name:       migration.Name(),
+		App:        migration.App(),
+		Connection: migration.Connection(),
+		SourcePath: migration.SourcePath(),
+		AppliedAt:  time.Date(2026, time.July, 18, 12, 5, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("release digest migration accepted an unverifiable completed release")
+	}
+	if migrationTableHasColumn(t, databaseConnection, "network_project_releases", "release_set_digest") {
+		t.Fatal("failed release digest migration retained its column")
+	}
+	if countAtomicityMigrationRecords(t, databaseConnection, migration.Name()) != 0 {
+		t.Fatal("failed release digest migration retained a ledger record")
+	}
 }
 
 // TestNetworkPersistenceMigrationRollbackTracksLedger verifies the production reverse migration removes only its schema and ledger identity.
@@ -353,6 +493,9 @@ func applyNetworkPersistenceMigrations(t *testing.T, databaseConnection *gorm.DB
 	if err := networkPersistenceMigration(t).Up(databaseConnection); err != nil {
 		t.Fatalf("apply network persistence migration: %v", err)
 	}
+	if err := networkReleaseDigestMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply network release digest migration: %v", err)
+	}
 }
 
 // networkPersistenceMigration finds the production network migration through Harbor's embedded registry.
@@ -364,6 +507,18 @@ func networkPersistenceMigration(t *testing.T) Migration {
 		}
 	}
 	t.Fatalf("network persistence migration %q is not registered", networkPersistenceMigrationName)
+	return nil
+}
+
+// networkReleaseDigestMigration finds the release digest upgrade through Harbor's embedded registry.
+func networkReleaseDigestMigration(t *testing.T) Migration {
+	t.Helper()
+	for _, migration := range selectMigrations("harbord", "default", "sqlite") {
+		if migration.Name() == networkReleaseDigestMigrationName {
+			return migration
+		}
+	}
+	t.Fatalf("network release digest migration %q is not registered", networkReleaseDigestMigrationName)
 	return nil
 }
 

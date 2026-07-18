@@ -128,6 +128,7 @@ func TestNetworkRecordFromModelsAcceptsCompletedReleaseBeforeProjectDeletion(t *
 		CompletionGeneration: null.IntFrom(101),
 		CompletedAt:          &completedAt,
 		ReleaseEvidence:      null.StringFrom(" verified release evidence "),
+		ReleaseSetDigest:     null.StringFrom("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
 	}}
 
 	record, initialized, err := networkRecordFromModels(rows)
@@ -482,6 +483,9 @@ func TestNetworkReleaseConversionRejectsCorruption(t *testing.T) {
 			rows.ReleaseOwners[0].ProjectId = null.StringFrom("project-gamma")
 		}), want: "project \"project-gamma\" is missing"},
 		{name: "releasing completion fields", mutate: addReleaseMutation(func(rows *networkModelRows) { rows.Releases[0].CompletionGeneration = null.IntFrom(101) }), want: "contains completion fields"},
+		{name: "releasing release digest", mutate: addReleaseMutation(func(rows *networkModelRows) {
+			rows.Releases[0].ReleaseSetDigest = null.StringFrom("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+		}), want: "contains completion fields"},
 		{name: "unsupported state", mutate: addReleaseMutation(func(rows *networkModelRows) { rows.Releases[0].State = "cancelled" }), want: "unsupported"},
 		{name: "completed project retained", mutate: completedReleaseMutation(func(rows *networkModelRows) { rows.Releases[0].ProjectId = null.StringFrom("project-alpha") }), want: "clear its active project"},
 		{name: "completed generation missing", mutate: completedReleaseMutation(func(rows *networkModelRows) { rows.Releases[0].CompletionGeneration = null.Int{} }), want: "completion generation"},
@@ -496,6 +500,18 @@ func TestNetworkReleaseConversionRejectsCorruption(t *testing.T) {
 		{name: "completed evidence oversized", mutate: completedReleaseMutation(func(rows *networkModelRows) {
 			rows.Releases[0].ReleaseEvidence = null.StringFrom(strings.Repeat("x", maximumNetworkEvidenceLength+1))
 		}), want: "release evidence exceeds"},
+		{name: "completed release digest missing", mutate: completedReleaseMutation(func(rows *networkModelRows) {
+			rows.Releases[0].ReleaseSetDigest = null.String{}
+		}), want: "release set digest is required"},
+		{name: "completed release digest short", mutate: completedReleaseMutation(func(rows *networkModelRows) {
+			rows.Releases[0].ReleaseSetDigest = null.StringFrom("abcd")
+		}), want: "64 lowercase hexadecimal"},
+		{name: "completed release digest uppercase", mutate: completedReleaseMutation(func(rows *networkModelRows) {
+			rows.Releases[0].ReleaseSetDigest = null.StringFrom("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF")
+		}), want: "64 lowercase hexadecimal"},
+		{name: "completed release digest nonhex", mutate: completedReleaseMutation(func(rows *networkModelRows) {
+			rows.Releases[0].ReleaseSetDigest = null.StringFrom("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg")
+		}), want: "64 lowercase hexadecimal"},
 		{name: "completed active lease retained", mutate: completedReleaseMutation(func(*networkModelRows) {}), want: "retains active address leases"},
 	}
 	for _, test := range tests {
@@ -559,6 +575,42 @@ func TestNetworkCompletedReleaseAllowsDeletedProjectWithoutQuarantine(t *testing
 	}
 	if got := record.Reservations.SuppressedProjectIDs; !reflect.DeepEqual(got, []domain.ProjectID{"project-alpha"}) {
 		t.Fatalf("suppressed projects = %v", got)
+	}
+}
+
+// TestNetworkCompletedReleaseSurvivesConsumedLeaseRow proves a tombstone remains readable after its original address row is reused by another project.
+func TestNetworkCompletedReleaseSurvivesConsumedLeaseRow(t *testing.T) {
+	rows := validNetworkModelRows()
+	completedReleaseMutation(func(rows *networkModelRows) {
+		betaProject := rows.Projects[0]
+		betaLease := rows.Leases[0]
+		betaEndpoint := rows.Endpoints[0]
+		reusedPrimary := activeNetworkLeaseModel(
+			rows.Leases[1].Id,
+			"project-gamma",
+			"primary",
+			"",
+			rows.Leases[1].Address,
+			3,
+		)
+		rows.Projects = []models.Project{betaProject, {Id: 63, ProjectId: "project-gamma"}}
+		rows.Leases = []models.LoopbackAddressLease{betaLease, reusedPrimary}
+		rows.Endpoints = []models.PublicEndpointLease{betaEndpoint}
+	})(&rows)
+	digest := rows.Releases[0].ReleaseSetDigest.String
+
+	record, initialized, err := networkRecordFromModels(rows)
+	if err != nil || !initialized {
+		t.Fatalf("completed release after lease reuse initialized = %t, error %v", initialized, err)
+	}
+	if got := networkLeaseKeys(record.Leases); !reflect.DeepEqual(got, []string{"project-beta/primary", "project-gamma/primary"}) {
+		t.Fatalf("leases after tombstone reuse = %v", got)
+	}
+	if got := record.Reservations.SuppressedProjectIDs; !reflect.DeepEqual(got, []domain.ProjectID{"project-alpha"}) {
+		t.Fatalf("suppressed projects after tombstone reuse = %v", got)
+	}
+	if rows.Releases[0].ReleaseSetDigest.String != digest || digest == "" {
+		t.Fatal("completed tombstone lost its release-set replay identity")
 	}
 }
 
@@ -905,6 +957,7 @@ func completedReleaseMutation(mutate func(*networkModelRows)) func(*networkModel
 		rows.Releases[0].CompletionGeneration = null.IntFrom(101)
 		rows.Releases[0].CompletedAt = &completedAt
 		rows.Releases[0].ReleaseEvidence = null.StringFrom(" verified release evidence ")
+		rows.Releases[0].ReleaseSetDigest = null.StringFrom("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 		mutate(rows)
 	})
 }
