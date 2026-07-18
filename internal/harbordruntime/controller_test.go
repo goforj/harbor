@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/trust/certificates"
 	"github.com/goforj/harbor/internal/trust/localca"
@@ -25,18 +25,20 @@ import (
 
 const controllerTestWait = 3 * time.Second
 
-// testSnapshotSource returns deterministic durable state while recording construction-time access.
-type testSnapshotSource struct {
-	snapshot domain.Snapshot
-	err      error
-	calls    atomic.Int64
-	entered  chan struct{}
-	block    bool
-	after    func()
+// testRuntimeStateSource returns one deterministic aggregate while recording construction-time access.
+type testRuntimeStateSource struct {
+	snapshot           domain.Snapshot
+	network            state.NetworkRecord
+	networkInitialized bool
+	err                error
+	calls              atomic.Int64
+	entered            chan struct{}
+	block              bool
+	after              func()
 }
 
-// Snapshot returns the configured state or waits for cancellation at a controlled startup boundary.
-func (source *testSnapshotSource) Snapshot(ctx context.Context) (domain.Snapshot, error) {
+// RuntimeState returns the configured state or waits for cancellation at a controlled startup boundary.
+func (source *testRuntimeStateSource) RuntimeState(ctx context.Context) (state.RuntimeState, error) {
 	source.calls.Add(1)
 	if source.entered != nil {
 		select {
@@ -47,15 +49,23 @@ func (source *testSnapshotSource) Snapshot(ctx context.Context) (domain.Snapshot
 	}
 	if source.block {
 		<-ctx.Done()
-		return domain.Snapshot{}, ctx.Err()
+		return state.RuntimeState{}, ctx.Err()
 	}
 	if err := ctx.Err(); err != nil {
-		return domain.Snapshot{}, err
+		return state.RuntimeState{}, err
 	}
 	if source.after != nil {
 		source.after()
 	}
-	return source.snapshot, source.err
+	network := source.network
+	if !source.networkInitialized && reflect.DeepEqual(network, state.NetworkRecord{}) {
+		network = validControllerUninitializedNetwork()
+	}
+	return state.RuntimeState{
+		Snapshot:           source.snapshot,
+		Network:            network,
+		NetworkInitialized: source.networkInitialized,
+	}, source.err
 }
 
 // testEventLog records cleanup order without imposing timing on the controller.
@@ -103,12 +113,12 @@ func (store *testMaterialStore) CreateAuthority(context.Context, *localca.Author
 	return errors.New("test material store does not create authorities")
 }
 
-// LoadLeaf is unavailable because an empty generation never requests leaf material.
+// LoadLeaf is unavailable because controller lifecycle tests never authorize a routed host.
 func (store *testMaterialStore) LoadLeaf(context.Context, *localca.Authority, []string) (localca.Leaf, error) {
 	return localca.Leaf{}, errors.New("test material store does not load leaves")
 }
 
-// PutLeaf is unavailable because an empty generation never publishes leaf material.
+// PutLeaf is unavailable because controller lifecycle tests never authorize a routed host.
 func (store *testMaterialStore) PutLeaf(context.Context, *localca.Authority, localca.Leaf) error {
 	return errors.New("test material store does not persist leaves")
 }
@@ -126,21 +136,23 @@ func (store *testMaterialStore) Close() error {
 	return store.closeErr
 }
 
-// testCertificateAuthority exposes only public material because empty startup issues no leaves.
+// testCertificateAuthority exposes public material and records provider propagation without issuing leaves.
 type testCertificateAuthority struct {
-	root      certificates.Root
-	rootErr   error
-	afterRoot func()
+	root             certificates.Root
+	rootErr          error
+	afterRoot        func()
+	certificateCalls atomic.Int64
 }
 
-// EnsureLeaf rejects unexpected leaf issuance in the transitional empty generation.
+// EnsureLeaf rejects issuance because listener-only generations have no authorized host.
 func (authority *testCertificateAuthority) EnsureLeaf(context.Context, string) (certificates.LeafResult, error) {
-	return certificates.LeafResult{}, errors.New("empty generation must not ensure leaves")
+	return certificates.LeafResult{}, errors.New("listener-only generation must not ensure leaves")
 }
 
-// Certificate rejects unexpected TLS selection in the transitional empty generation.
+// Certificate records provider calls while keeping controller tests independent from TLS fixtures.
 func (authority *testCertificateAuthority) Certificate(context.Context, string) (*tls.Certificate, error) {
-	return nil, errors.New("empty generation must not select certificates")
+	authority.certificateCalls.Add(1)
+	return nil, errors.New("test certificate is unavailable")
 }
 
 // PublicRoot returns deterministic public-only authority metadata.
@@ -299,7 +311,19 @@ func validControllerSnapshot() domain.Snapshot {
 	}
 }
 
-// validControllerProject returns one legal aggregate that cannot yet be mapped to network intent.
+// validControllerUninitializedNetwork returns the explicit empty aggregate for a host that has not completed setup.
+func validControllerUninitializedNetwork() state.NetworkRecord {
+	return state.NetworkRecord{
+		Leases:      []identity.Lease{},
+		Quarantines: []identity.Quarantine{},
+		Reservations: state.DataPlaneReservations{
+			Endpoints:            []state.EndpointReservation{},
+			SuppressedProjectIDs: []domain.ProjectID{},
+		},
+	}
+}
+
+// validControllerProject returns one legal project for lifecycle and durable projection fixtures.
 func validControllerProject() domain.ProjectSnapshot {
 	return domain.ProjectSnapshot{
 		ID:        "orders",
@@ -333,25 +357,6 @@ func emptyDesiredState() dataplane.DesiredState {
 	return desired
 }
 
-// nonemptyDesiredState constructs one valid native route solely to test transitional rejection.
-func nonemptyDesiredState() dataplane.DesiredState {
-	desired, err := dataplane.NewDesiredState(
-		dataplane.ListenerPlan{DNS: netip.MustParseAddrPort("127.0.0.1:10530")},
-		nil,
-		[]dataplane.NativeRoute{{
-			ID:       "tcp:mysql",
-			Host:     "mysql.orders.test",
-			Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
-			Upstream: netip.MustParseAddrPort("127.0.0.1:43106"),
-		}},
-		0,
-	)
-	if err != nil {
-		panic(err)
-	}
-	return desired
-}
-
 // newTestDataPlane creates one ready-capable fake with initialized status collections.
 func newTestDataPlane(events *testEventLog) *testDataPlane {
 	return &testDataPlane{
@@ -375,7 +380,7 @@ func testControllerDependencies(
 		bootstrap: func(context.Context, certificates.MaterialStore, certificates.Config) (certificateAuthority, error) {
 			return authority, nil
 		},
-		newDesiredState: func() (dataplane.DesiredState, error) {
+		newDesiredState: func(state.RuntimeState) (dataplane.DesiredState, error) {
 			return emptyDesiredState(), nil
 		},
 		newDataPlane: func(dataplane.Config) (dataPlane, error) {
@@ -386,7 +391,7 @@ func testControllerDependencies(
 }
 
 // newFakeController constructs one normal controller or fails the owning test immediately.
-func newFakeController(t *testing.T, source snapshotSource, dependencies dependencies) *Controller {
+func newFakeController(t *testing.T, source runtimeStateSource, dependencies dependencies) *Controller {
 	t.Helper()
 	controller, err := newController(source, dependencies)
 	if err != nil {
@@ -407,7 +412,7 @@ func waitControllerSignal(t *testing.T, signal <-chan struct{}, name string) {
 
 // TestControllerConstructionIsSideEffectFree verifies dependency assembly performs neither durable reads nor material opens.
 func TestControllerConstructionIsSideEffectFree(t *testing.T) {
-	source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 	material := &testMaterialStore{}
 	authority := &testCertificateAuthority{root: validTestRoot()}
 	runtime := newTestDataPlane(nil)
@@ -420,7 +425,7 @@ func TestControllerConstructionIsSideEffectFree(t *testing.T) {
 
 	controller := newFakeController(t, source, dependencies)
 	if source.calls.Load() != 0 || opens.Load() != 0 || material.closes.Load() != 0 {
-		t.Fatalf("construction effects = snapshot %d, opens %d, closes %d", source.calls.Load(), opens.Load(), material.closes.Load())
+		t.Fatalf("construction effects = runtime state %d, opens %d, closes %d", source.calls.Load(), opens.Load(), material.closes.Load())
 	}
 	select {
 	case <-controller.Done():
@@ -448,8 +453,8 @@ func TestProductionControllerConstructionPublishesItsShutdownBudget(t *testing.T
 
 // TestNewControllerRejectsIncompleteDependencies verifies all required seams fail at construction.
 func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
-	source := &testSnapshotSource{snapshot: validControllerSnapshot()}
-	var typedNilSource *testSnapshotSource
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
+	var typedNilSource *testRuntimeStateSource
 	material := &testMaterialStore{}
 	authority := &testCertificateAuthority{root: validTestRoot()}
 	runtime := newTestDataPlane(nil)
@@ -457,7 +462,7 @@ func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		source       snapshotSource
+		source       runtimeStateSource
 		dependencies dependencies
 	}{
 		{name: "source", source: nil, dependencies: valid},
@@ -485,7 +490,7 @@ func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 func TestControllerRejectsProjectsBeforeMaterialMutation(t *testing.T) {
 	snapshot := validControllerSnapshot()
 	snapshot.Projects = []domain.ProjectSnapshot{validControllerProject()}
-	source := &testSnapshotSource{snapshot: snapshot}
+	source := &testRuntimeStateSource{snapshot: snapshot}
 	material := &testMaterialStore{}
 	var opens atomic.Int64
 	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, newTestDataPlane(nil))
@@ -505,10 +510,123 @@ func TestControllerRejectsProjectsBeforeMaterialMutation(t *testing.T) {
 	waitControllerSignal(t, controller.Done(), "project rejection")
 }
 
+// TestControllerRejectsInvalidRuntimeStateBeforeMaterialMutation proves network corruption cannot reach protected certificate storage.
+func TestControllerRejectsInvalidRuntimeStateBeforeMaterialMutation(t *testing.T) {
+	source := &testRuntimeStateSource{
+		snapshot:           validControllerSnapshot(),
+		network:            state.NetworkRecord{},
+		networkInitialized: true,
+	}
+	material := &testMaterialStore{}
+	var opens atomic.Int64
+	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, newTestDataPlane(nil))
+	dependencies.openMaterial = func() (certificateMaterialStore, error) {
+		opens.Add(1)
+		return material, nil
+	}
+	controller := newFakeController(t, source, dependencies)
+
+	err := controller.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "validate durable state") {
+		t.Fatalf("Start() error = %v, want durable aggregate validation failure", err)
+	}
+	if opens.Load() != 0 || material.closes.Load() != 0 {
+		t.Fatalf("invalid aggregate touched material: opens %d, closes %d", opens.Load(), material.closes.Load())
+	}
+	waitControllerSignal(t, controller.Done(), "invalid aggregate rejection")
+}
+
+// TestControllerRejectsDesiredProjectionBeforeMaterialMutation proves pure projection failures do not acquire protected state.
+func TestControllerRejectsDesiredProjectionBeforeMaterialMutation(t *testing.T) {
+	projectionErr := errors.New("desired projection failed")
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
+	material := &testMaterialStore{}
+	var opens atomic.Int64
+	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, newTestDataPlane(nil))
+	dependencies.newDesiredState = func(state.RuntimeState) (dataplane.DesiredState, error) {
+		return dataplane.DesiredState{}, projectionErr
+	}
+	dependencies.openMaterial = func() (certificateMaterialStore, error) {
+		opens.Add(1)
+		return material, nil
+	}
+	controller := newFakeController(t, source, dependencies)
+
+	err := controller.Start(context.Background())
+	if !errors.Is(err, projectionErr) {
+		t.Fatalf("Start() error = %v, want %v", err, projectionErr)
+	}
+	if opens.Load() != 0 || material.closes.Load() != 0 {
+		t.Fatalf("projection failure touched material: opens %d, closes %d", opens.Load(), material.closes.Load())
+	}
+	waitControllerSignal(t, controller.Done(), "projection rejection")
+}
+
+// TestControllerStartsInitializedInfrastructureGeneration verifies the exact durable aggregate and certificate provider reach the data plane.
+func TestControllerStartsInitializedInfrastructureGeneration(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	source := &testRuntimeStateSource{
+		snapshot:           runtimeState.Snapshot,
+		network:            runtimeState.Network,
+		networkInitialized: true,
+	}
+	material := &testMaterialStore{}
+	authority := &testCertificateAuthority{root: validTestRoot()}
+	runtime := newTestDataPlane(nil)
+	dependencies := testControllerDependencies(material, authority, runtime)
+	var desiredInput state.RuntimeState
+	dependencies.newDesiredState = func(input state.RuntimeState) (dataplane.DesiredState, error) {
+		desiredInput = input
+		return desiredStateFromRuntimeState(input)
+	}
+	var captured dataplane.Config
+	dependencies.newDataPlane = func(config dataplane.Config) (dataPlane, error) {
+		captured = config
+		return runtime, nil
+	}
+	controller := newFakeController(t, source, dependencies)
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !reflect.DeepEqual(desiredInput, runtimeState) {
+		t.Fatalf("desired factory input = %#v, want exact runtime state %#v", desiredInput, runtimeState)
+	}
+	wantListeners := dataplane.ListenerPlan{
+		DNS:   runtimeState.Network.Reservations.Listeners.DNS.Bind,
+		HTTP:  runtimeState.Network.Reservations.Listeners.HTTP.Bind,
+		HTTPS: runtimeState.Network.Reservations.Listeners.HTTPS.Bind,
+	}
+	if got := captured.Desired.ListenerPlan(); got != wantListeners {
+		t.Fatalf("data plane listeners = %#v, want %#v", got, wantListeners)
+	}
+	if len(captured.Desired.HTTPRoutes()) != 0 || len(captured.Desired.NativeRoutes()) != 0 || len(captured.Desired.DNSRecords()) != 0 {
+		t.Fatalf("data plane published pending routes: HTTP %v, native %v, DNS %v", captured.Desired.HTTPRoutes(), captured.Desired.NativeRoutes(), captured.Desired.DNSRecords())
+	}
+	if captured.CertificateProvider == nil {
+		t.Fatal("data plane config omitted the bootstrapped certificate provider")
+	}
+	if _, err := captured.CertificateProvider(context.Background(), "orders.test"); err == nil {
+		t.Fatal("captured certificate provider did not call the fake authority")
+	}
+	if authority.certificateCalls.Load() != 1 {
+		t.Fatalf("certificate authority calls = %d, want one through captured config", authority.certificateCalls.Load())
+	}
+	if captured.StartupTimeout != 0 || captured.ShutdownTimeout != 0 {
+		t.Fatalf("data plane lifecycle overrides = startup %s, shutdown %s, want defaults", captured.StartupTimeout, captured.ShutdownTimeout)
+	}
+	if err := controller.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if runtime.closes.Load() != 1 || material.closes.Load() != 1 {
+		t.Fatalf("cleanup calls = runtime %d, material %d, want one each", runtime.closes.Load(), material.closes.Load())
+	}
+}
+
 // TestControllerStartsEmptyGenerationAndClosesInOrder proves readiness and defensive status publication.
 func TestControllerStartsEmptyGenerationAndClosesInOrder(t *testing.T) {
 	events := &testEventLog{}
-	source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 	material := &testMaterialStore{events: events}
 	authority := &testCertificateAuthority{root: validTestRoot()}
 	runtime := newTestDataPlane(events)
@@ -569,63 +687,62 @@ func TestControllerStartupFailuresRollbackOwnedResources(t *testing.T) {
 
 	tests := []struct {
 		name              string
-		mutate            func(*testSnapshotSource, *testMaterialStore, *testCertificateAuthority, *testDataPlane, *dependencies)
+		mutate            func(*testRuntimeStateSource, *testMaterialStore, *testCertificateAuthority, *testDataPlane, *dependencies)
 		want              error
 		wantMaterialClose int64
 		wantRuntimeClose  int64
 	}{
-		{name: "state read", mutate: func(source *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
+		{name: "state read", mutate: func(source *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
 			source.err = readErr
 		}, want: readErr},
-		{name: "state validation", mutate: func(source *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
+		{name: "state validation", mutate: func(source *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
 			source.snapshot.Projects = nil
 		}, want: errors.New("validate durable state")},
-		{name: "material open", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "material open", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			dependencies.openMaterial = func() (certificateMaterialStore, error) { return nil, openErr }
 		}, want: openErr},
-		{name: "nil material", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "nil material", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			dependencies.openMaterial = func() (certificateMaterialStore, error) { return nil, nil }
 		}, want: errors.New("returned nil")},
-		{name: "typed nil material", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "typed nil material", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			var material *testMaterialStore
 			dependencies.openMaterial = func() (certificateMaterialStore, error) { return material, nil }
 		}, want: errors.New("returned nil")},
-		{name: "bootstrap", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "bootstrap", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			dependencies.bootstrap = func(context.Context, certificates.MaterialStore, certificates.Config) (certificateAuthority, error) {
 				return nil, bootstrapErr
 			}
 		}, want: bootstrapErr, wantMaterialClose: 1},
-		{name: "nil authority", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "nil authority", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			dependencies.bootstrap = func(context.Context, certificates.MaterialStore, certificates.Config) (certificateAuthority, error) {
 				return nil, nil
 			}
 		}, want: errors.New("returned nil"), wantMaterialClose: 1},
-		{name: "typed nil authority", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "typed nil authority", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			var authority *testCertificateAuthority
 			dependencies.bootstrap = func(context.Context, certificates.MaterialStore, certificates.Config) (certificateAuthority, error) {
 				return authority, nil
 			}
 		}, want: errors.New("returned nil"), wantMaterialClose: 1},
-		{name: "public root", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, authority *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
+		{name: "public root", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, authority *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
 			authority.rootErr = rootErr
 		}, want: rootErr, wantMaterialClose: 1},
-		{name: "desired", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
-			dependencies.newDesiredState = func() (dataplane.DesiredState, error) { return dataplane.DesiredState{}, desiredErr }
-		}, want: desiredErr, wantMaterialClose: 1},
-		{name: "nonempty desired", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
-			dependencies.newDesiredState = func() (dataplane.DesiredState, error) { return nonemptyDesiredState(), nil }
-		}, want: errors.New("must be empty"), wantMaterialClose: 1},
-		{name: "runtime factory", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "desired", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+			dependencies.newDesiredState = func(state.RuntimeState) (dataplane.DesiredState, error) {
+				return dataplane.DesiredState{}, desiredErr
+			}
+		}, want: desiredErr},
+		{name: "runtime factory", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			dependencies.newDataPlane = func(dataplane.Config) (dataPlane, error) { return nil, runtimeFactoryErr }
 		}, want: runtimeFactoryErr, wantMaterialClose: 1},
-		{name: "nil runtime", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "nil runtime", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			dependencies.newDataPlane = func(dataplane.Config) (dataPlane, error) { return nil, nil }
 		}, want: errors.New("returned nil"), wantMaterialClose: 1},
-		{name: "typed nil runtime", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+		{name: "typed nil runtime", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 			var runtime *testDataPlane
 			dependencies.newDataPlane = func(dataplane.Config) (dataPlane, error) { return runtime, nil }
 		}, want: errors.New("returned nil"), wantMaterialClose: 1},
-		{name: "runtime start", mutate: func(_ *testSnapshotSource, _ *testMaterialStore, _ *testCertificateAuthority, runtime *testDataPlane, _ *dependencies) {
+		{name: "runtime start", mutate: func(_ *testRuntimeStateSource, _ *testMaterialStore, _ *testCertificateAuthority, runtime *testDataPlane, _ *dependencies) {
 			runtime.startErr = startErr
 		}, want: startErr, wantMaterialClose: 1, wantRuntimeClose: 1},
 	}
@@ -633,7 +750,7 @@ func TestControllerStartupFailuresRollbackOwnedResources(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			events := &testEventLog{}
-			source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+			source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 			material := &testMaterialStore{events: events}
 			authority := &testCertificateAuthority{root: validTestRoot()}
 			runtime := newTestDataPlane(events)
@@ -662,19 +779,19 @@ func TestControllerStartupFailuresRollbackOwnedResources(t *testing.T) {
 func TestControllerHonorsCancellationAtStartupBoundaries(t *testing.T) {
 	tests := []struct {
 		name              string
-		mutate            func(context.CancelFunc, *testSnapshotSource, *testCertificateAuthority, *testDataPlane, *dependencies)
+		mutate            func(context.CancelFunc, *testRuntimeStateSource, *testCertificateAuthority, *testDataPlane, *dependencies)
 		wantMaterialClose int64
 		wantRuntimeClose  int64
 	}{
 		{
-			name: "after durable snapshot",
-			mutate: func(cancel context.CancelFunc, source *testSnapshotSource, _ *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
+			name: "after durable runtime state",
+			mutate: func(cancel context.CancelFunc, source *testRuntimeStateSource, _ *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
 				source.after = cancel
 			},
 		},
 		{
 			name: "after material open",
-			mutate: func(cancel context.CancelFunc, _ *testSnapshotSource, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
+			mutate: func(cancel context.CancelFunc, _ *testRuntimeStateSource, _ *testCertificateAuthority, _ *testDataPlane, dependencies *dependencies) {
 				openMaterial := dependencies.openMaterial
 				dependencies.openMaterial = func() (certificateMaterialStore, error) {
 					material, err := openMaterial()
@@ -686,14 +803,14 @@ func TestControllerHonorsCancellationAtStartupBoundaries(t *testing.T) {
 		},
 		{
 			name: "after public root",
-			mutate: func(cancel context.CancelFunc, _ *testSnapshotSource, authority *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
+			mutate: func(cancel context.CancelFunc, _ *testRuntimeStateSource, authority *testCertificateAuthority, _ *testDataPlane, _ *dependencies) {
 				authority.afterRoot = cancel
 			},
 			wantMaterialClose: 1,
 		},
 		{
 			name: "after data plane start",
-			mutate: func(cancel context.CancelFunc, _ *testSnapshotSource, _ *testCertificateAuthority, runtime *testDataPlane, _ *dependencies) {
+			mutate: func(cancel context.CancelFunc, _ *testRuntimeStateSource, _ *testCertificateAuthority, runtime *testDataPlane, _ *dependencies) {
 				runtime.afterStart = cancel
 			},
 			wantMaterialClose: 1,
@@ -703,7 +820,7 @@ func TestControllerHonorsCancellationAtStartupBoundaries(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+			source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 			material := &testMaterialStore{}
 			authority := &testCertificateAuthority{root: validTestRoot()}
 			runtime := newTestDataPlane(nil)
@@ -736,7 +853,7 @@ func TestControllerHonorsCancellationAtStartupBoundaries(t *testing.T) {
 
 // TestControllerRetainsParentDeadlineCause verifies private lifecycle cancellation does not erase the parent reason.
 func TestControllerRetainsParentDeadlineCause(t *testing.T) {
-	source := &testSnapshotSource{snapshot: validControllerSnapshot(), block: true}
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot(), block: true}
 	controller := newFakeController(
 		t,
 		source,
@@ -760,7 +877,7 @@ func errorMatches(got error, want error) bool {
 // TestControllerCloseRacingStartupCancelsAndRollsBack verifies shutdown cannot strand a partial generation.
 func TestControllerCloseRacingStartupCancelsAndRollsBack(t *testing.T) {
 	t.Run("durable read", func(t *testing.T) {
-		source := &testSnapshotSource{snapshot: validControllerSnapshot(), entered: make(chan struct{}), block: true}
+		source := &testRuntimeStateSource{snapshot: validControllerSnapshot(), entered: make(chan struct{}), block: true}
 		material := &testMaterialStore{}
 		controller := newFakeController(t, source, testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, newTestDataPlane(nil)))
 		startResult := make(chan error, 1)
@@ -779,7 +896,7 @@ func TestControllerCloseRacingStartupCancelsAndRollsBack(t *testing.T) {
 
 	t.Run("data plane start", func(t *testing.T) {
 		events := &testEventLog{}
-		source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+		source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 		material := &testMaterialStore{events: events}
 		runtime := newTestDataPlane(events)
 		runtime.blockStart = true
@@ -835,7 +952,7 @@ func TestControllerCancellationDuringRuntimeStartRetainsRollbackFailure(t *testi
 			runtime.startErr = rollbackFailure
 			controller := newFakeController(
 				t,
-				&testSnapshotSource{snapshot: validControllerSnapshot()},
+				&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 				testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 			)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -872,7 +989,7 @@ func TestControllerCancellationDuringRuntimeStartRetainsRollbackFailure(t *testi
 
 // TestControllerStopClaimPreventsPostSnapshotMutation proves ordered shutdown is visible before startup can acquire material.
 func TestControllerStopClaimPreventsPostSnapshotMutation(t *testing.T) {
-	source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 	material := &testMaterialStore{}
 	var opens atomic.Int64
 	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, newTestDataPlane(nil))
@@ -907,7 +1024,7 @@ func TestControllerConcurrentCloseIsIdempotent(t *testing.T) {
 	runtime := newTestDataPlane(nil)
 	controller := newFakeController(
 		t,
-		&testSnapshotSource{snapshot: validControllerSnapshot()},
+		&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 		testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 	)
 	if err := controller.Start(context.Background()); err != nil {
@@ -942,7 +1059,7 @@ func TestControllerShutdownWaitersHonorTheirOwnContext(t *testing.T) {
 	runtime.closeEntered = make(chan struct{})
 	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
 	dependencies.cleanupTimeout = controllerTestWait
-	controller := newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+	controller := newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -995,7 +1112,7 @@ func TestControllerRetainsUnexpectedExitWhenDonePrecedesIntent(t *testing.T) {
 				runtime := newTestDataPlane(nil)
 				controller := newFakeController(
 					t,
-					&testSnapshotSource{snapshot: validControllerSnapshot()},
+					&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 					testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 				)
 				ctx, cancel := context.WithCancel(context.Background())
@@ -1047,7 +1164,7 @@ func TestControllerTreatsDoneAfterIntentAsExpected(t *testing.T) {
 			runtime.closeEntered = make(chan struct{})
 			dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
 			dependencies.cleanupTimeout = controllerTestWait
-			controller := newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+			controller := newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			if err := controller.Start(ctx); err != nil {
@@ -1074,7 +1191,7 @@ func TestControllerPropagatesUnexpectedRuntimeFailure(t *testing.T) {
 	runtime := newTestDataPlane(nil)
 	controller := newFakeController(
 		t,
-		&testSnapshotSource{snapshot: validControllerSnapshot()},
+		&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 		testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 	)
 	if err := controller.Start(context.Background()); err != nil {
@@ -1108,7 +1225,7 @@ func TestControllerRetainsAuthorityAcrossBrokenRuntimeCleanup(t *testing.T) {
 			runtime.closeMode = test.mode
 			dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
 			dependencies.cleanupTimeout = 20 * time.Millisecond
-			controller := newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+			controller := newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 			if err := controller.Start(context.Background()); err != nil {
 				t.Fatalf("Start() error = %v", err)
 			}
@@ -1149,7 +1266,7 @@ func TestControllerCompletionIncludesMaterialClose(t *testing.T) {
 	runtime := newTestDataPlane(nil)
 	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
 	dependencies.cleanupTimeout = 20 * time.Millisecond
-	controller := newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+	controller := newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -1184,7 +1301,7 @@ func TestControllerEscalatesCloseThatOutlivesChildDone(t *testing.T) {
 	runtime.closeEntered = make(chan struct{})
 	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
 	dependencies.cleanupTimeout = 20 * time.Millisecond
-	controller := newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+	controller := newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -1209,7 +1326,7 @@ func TestControllerRejectsNilAndPreclosedRuntimeCompletion(t *testing.T) {
 		runtime.done = nil
 		controller := newFakeController(
 			t,
-			&testSnapshotSource{snapshot: validControllerSnapshot()},
+			&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 			testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 		)
 		err := controller.Start(context.Background())
@@ -1228,7 +1345,7 @@ func TestControllerRejectsNilAndPreclosedRuntimeCompletion(t *testing.T) {
 		runtime.closeMode = testCloseBlocks
 		dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
 		dependencies.cleanupTimeout = 20 * time.Millisecond
-		controller := newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+		controller := newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 		err := controller.Start(context.Background())
 		if !errors.Is(err, ErrRuntimeShutdownIncomplete) {
 			t.Fatalf("Start() error = %v, want %v", err, ErrRuntimeShutdownIncomplete)
@@ -1252,7 +1369,7 @@ func TestControllerRejectsNilAndPreclosedRuntimeCompletion(t *testing.T) {
 		}
 		controller := newFakeController(
 			t,
-			&testSnapshotSource{snapshot: validControllerSnapshot()},
+			&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 			testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 		)
 		err := controller.Start(context.Background())
@@ -1273,7 +1390,7 @@ func TestControllerRejectsNilAndPreclosedRuntimeCompletion(t *testing.T) {
 		runtime.complete(nil)
 		controller := newFakeController(
 			t,
-			&testSnapshotSource{snapshot: validControllerSnapshot()},
+			&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 			testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 		)
 		err := controller.Start(context.Background())
@@ -1300,7 +1417,7 @@ func TestControllerRejectsNilAndPreclosedRuntimeCompletion(t *testing.T) {
 			}
 			controller := newFakeController(
 				t,
-				&testSnapshotSource{snapshot: validControllerSnapshot()},
+				&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 				testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime),
 			)
 			err := controller.Start(context.Background())
@@ -1346,7 +1463,7 @@ func TestControllerZeroAndClosedBehavior(t *testing.T) {
 
 	controller := newFakeController(
 		t,
-		&testSnapshotSource{snapshot: validControllerSnapshot()},
+		&testRuntimeStateSource{snapshot: validControllerSnapshot()},
 		testControllerDependencies(&testMaterialStore{}, &testCertificateAuthority{root: validTestRoot()}, newTestDataPlane(nil)),
 	)
 	if err := controller.Start(nil); err == nil {
@@ -1365,7 +1482,7 @@ func TestControllerZeroAndClosedBehavior(t *testing.T) {
 
 // TestControllerInternalLifecycleGuards verifies invariant failures remain explicit rather than publishing partial state.
 func TestControllerInternalLifecycleGuards(t *testing.T) {
-	source := &testSnapshotSource{snapshot: validControllerSnapshot()}
+	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 	material := &testMaterialStore{}
 	authority := &testCertificateAuthority{root: validTestRoot()}
 	runtime := newTestDataPlane(nil)
@@ -1565,7 +1682,7 @@ func realController(t *testing.T, directory string, config certificates.Config) 
 	dependencies.openMaterial = func() (certificateMaterialStore, error) {
 		return materialstore.Open(directory)
 	}
-	return newFakeController(t, &testSnapshotSource{snapshot: validControllerSnapshot()}, dependencies)
+	return newFakeController(t, &testRuntimeStateSource{snapshot: validControllerSnapshot()}, dependencies)
 }
 
 // runRealController starts, observes, and closes one production generation.

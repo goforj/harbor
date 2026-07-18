@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/trust/certificates"
@@ -35,9 +34,9 @@ var (
 	ErrRuntimeShutdownIncomplete = errors.New("Harbor data plane shutdown did not complete")
 )
 
-// snapshotSource supplies the complete durable state considered before startup performs any filesystem mutation.
-type snapshotSource interface {
-	Snapshot(context.Context) (domain.Snapshot, error)
+// runtimeStateSource supplies one consistent durable runtime aggregate before startup performs any filesystem mutation.
+type runtimeStateSource interface {
+	RuntimeState(context.Context) (state.RuntimeState, error)
 }
 
 // certificateMaterialStore joins the certificate manager's persistence contract with controller-owned closure.
@@ -68,8 +67,8 @@ type materialStoreOpener func() (certificateMaterialStore, error)
 // certificateBootstrapper loads or creates the one persisted authority used by the controller generation.
 type certificateBootstrapper func(context.Context, certificates.MaterialStore, certificates.Config) (certificateAuthority, error)
 
-// desiredStateFactory creates the immutable network generation after certificate authority is available.
-type desiredStateFactory func() (dataplane.DesiredState, error)
+// desiredStateFactory creates the immutable network generation from the already-validated durable aggregate.
+type desiredStateFactory func(state.RuntimeState) (dataplane.DesiredState, error)
 
 // dataPlaneFactory constructs a listener generation without starting it.
 type dataPlaneFactory func(dataplane.Config) (dataPlane, error)
@@ -100,7 +99,7 @@ const (
 type Controller struct {
 	mutex                 sync.RWMutex
 	initialized           bool
-	source                snapshotSource
+	source                runtimeStateSource
 	dependencies          dependencies
 	state                 controllerState
 	parentContext         context.Context
@@ -136,7 +135,7 @@ func NewController(source *state.Store) (*Controller, error) {
 }
 
 // newController validates every required boundary before retaining the side-effect-free assembly.
-func newController(source snapshotSource, dependencies dependencies) (*Controller, error) {
+func newController(source runtimeStateSource, dependencies dependencies) (*Controller, error) {
 	if requiredInterfaceIsNil(source) {
 		return nil, fmt.Errorf("create harbord runtime controller: durable state source is required")
 	}
@@ -166,26 +165,30 @@ func newController(source snapshotSource, dependencies dependencies) (*Controlle
 	}, nil
 }
 
-// Start validates durable state before opening certificate material and publishing one ready empty generation.
+// Start validates durable state before opening certificate material and publishing its infrastructure generation.
 func (controller *Controller) Start(ctx context.Context) error {
 	runContext, err := controller.beginStart(ctx)
 	if err != nil {
 		return err
 	}
 
-	snapshot, err := controller.source.Snapshot(runContext)
+	runtimeState, err := controller.source.RuntimeState(runContext)
 	if err != nil {
 		return controller.failStart(fmt.Errorf("start harbord runtime: read durable state: %w", err), nil, nil)
 	}
-	if err := snapshot.Validate(); err != nil {
+	if err := runtimeState.Validate(); err != nil {
 		return controller.failStart(fmt.Errorf("start harbord runtime: validate durable state: %w", err), nil, nil)
 	}
-	if len(snapshot.Projects) != 0 {
+	if !runtimeState.NetworkInitialized && len(runtimeState.Snapshot.Projects) != 0 {
 		return controller.failStart(
-			fmt.Errorf("start harbord runtime: %w: found %d registered projects", ErrProjectsRequireNetworkProjection, len(snapshot.Projects)),
+			fmt.Errorf("start harbord runtime: %w: found %d registered projects", ErrProjectsRequireNetworkProjection, len(runtimeState.Snapshot.Projects)),
 			nil,
 			nil,
 		)
+	}
+	desired, err := controller.dependencies.newDesiredState(runtimeState)
+	if err != nil {
+		return controller.failStart(fmt.Errorf("start harbord runtime: construct data plane: %w", err), nil, nil)
 	}
 	if err := controller.startupInterruption(runContext); err != nil {
 		return controller.failStart(err, nil, nil)
@@ -217,14 +220,10 @@ func (controller *Controller) Start(ctx context.Context) error {
 		return controller.failStart(err, material, nil)
 	}
 
-	desired, err := controller.dependencies.newDesiredState()
-	if err != nil {
-		return controller.failStart(fmt.Errorf("start harbord runtime: construct empty data plane: %w", err), material, nil)
-	}
-	if !desired.Empty() {
-		return controller.failStart(errors.New("start harbord runtime: transitional desired state must be empty"), material, nil)
-	}
-	runtime, err := controller.dependencies.newDataPlane(dataplane.Config{Desired: desired})
+	runtime, err := controller.dependencies.newDataPlane(dataplane.Config{
+		Desired:             desired,
+		CertificateProvider: authority.Certificate,
+	})
 	if err != nil {
 		return controller.failStart(fmt.Errorf("start harbord runtime: construct data plane: %w", err), material, nil)
 	}
@@ -784,9 +783,7 @@ func productionDependencies() dependencies {
 		) (certificateAuthority, error) {
 			return certificates.Bootstrap(ctx, store, config)
 		},
-		newDesiredState: func() (dataplane.DesiredState, error) {
-			return dataplane.NewDesiredState(dataplane.ListenerPlan{}, nil, nil, 0)
-		},
+		newDesiredState: desiredStateFromRuntimeState,
 		newDataPlane: func(config dataplane.Config) (dataPlane, error) {
 			return dataplane.NewRuntime(config)
 		},
@@ -794,8 +791,9 @@ func productionDependencies() dependencies {
 	}
 }
 
-// compile-time interface checks keep future trust changes from drifting across the controller boundary.
+// compile-time interface checks keep production state, trust, and network changes from drifting across the controller boundary.
 var (
+	_ runtimeStateSource       = (*state.Store)(nil)
 	_ certificateMaterialStore = (*materialstore.Store)(nil)
 	_ certificateAuthority     = (*certificates.Manager)(nil)
 	_ dataPlane                = (*dataplane.Runtime)(nil)
