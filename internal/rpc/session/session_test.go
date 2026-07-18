@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -1041,6 +1042,363 @@ func TestConfiguredHandshakeTimeoutsReturnDeadlineExceeded(t *testing.T) {
 	})
 }
 
+// TestServerIdleTimeoutClosesNegotiatedConnection verifies the daemon reports
+// one stable semantic cause instead of a transport-specific timeout.
+func TestServerIdleTimeoutClosesNegotiatedConnection(t *testing.T) {
+	config := testServerConfig(nil)
+	config.IdleTimeout = 20 * time.Millisecond
+	peer := newRawServerPeer(t, config)
+
+	select {
+	case err := <-peer.done:
+		if !errors.Is(err, ErrIdleTimeout) {
+			t.Fatalf("server error = %v, want idle timeout", err)
+		}
+		if err.Error() != ErrIdleTimeout.Error() {
+			t.Fatalf("server error text = %q, want %q", err, ErrIdleTimeout)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("idle negotiated connection did not close")
+	}
+}
+
+// TestServerIdleTimeoutWaitsForActiveAndQueuedWork verifies request deadlines,
+// not connection idleness, remain responsible for bounding accepted handlers.
+func TestServerIdleTimeoutWaitsForActiveAndQueuedWork(t *testing.T) {
+	const idleTimeout = 100 * time.Millisecond
+
+	started := make(chan string, 2)
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	handler := func(ctx context.Context, request Request) (any, error) {
+		started <- request.ID
+		release := releaseFirst
+		if request.ID == "request-2" {
+			release = releaseSecond
+		}
+		select {
+		case <-release:
+			return struct{}{}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	config := testServerConfig(map[string]Handler{"block": handler})
+	config.IdleTimeout = idleTimeout
+	config.MaxConcurrentRequests = 1
+	config.MaxQueuedRequests = 1
+	peer := newRawServerPeer(t, config)
+	first, err := rpc.NewRequestEnvelope(
+		peer.protocol,
+		"request-1",
+		"block",
+		time.Now().Add(5*time.Second),
+		struct{}{},
+	)
+	if err != nil {
+		t.Fatalf("create first request: %v", err)
+	}
+	if err := peer.writer.WriteEnvelope(first); err != nil {
+		t.Fatalf("write first request: %v", err)
+	}
+	if requestID := <-started; requestID != "request-1" {
+		t.Fatalf("first started request = %q, want request-1", requestID)
+	}
+	second, err := rpc.NewRequestEnvelope(
+		peer.protocol,
+		"request-2",
+		"block",
+		time.Now().Add(5*time.Second),
+		struct{}{},
+	)
+	if err != nil {
+		t.Fatalf("create second request: %v", err)
+	}
+	if err := peer.writer.WriteEnvelope(second); err != nil {
+		t.Fatalf("write queued request: %v", err)
+	}
+	third, err := rpc.NewRequestEnvelope(
+		peer.protocol,
+		"request-3",
+		"block",
+		time.Now().Add(5*time.Second),
+		struct{}{},
+	)
+	if err != nil {
+		t.Fatalf("create capacity request: %v", err)
+	}
+	if err := peer.writer.WriteEnvelope(third); err != nil {
+		t.Fatalf("write capacity request: %v", err)
+	}
+	if err := peer.connection.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set capacity response deadline: %v", err)
+	}
+	capacityResponse, err := peer.reader.ReadEnvelope()
+	if err != nil {
+		t.Fatalf("read capacity response: %v", err)
+	}
+	if capacityResponse.RequestID != "request-3" || capacityResponse.Error == nil ||
+		capacityResponse.Error.Code != rpc.ErrorCodeUnavailable {
+		t.Fatalf("capacity response = %+v, want unavailable request-3", capacityResponse)
+	}
+
+	select {
+	case err := <-peer.done:
+		t.Fatalf("server stopped during active and queued work: %v", err)
+	case <-time.After(3 * idleTimeout):
+	}
+	close(releaseFirst)
+	firstResponse, err := peer.reader.ReadEnvelope()
+	if err != nil {
+		t.Fatalf("read first response: %v", err)
+	}
+	if firstResponse.RequestID != "request-1" {
+		t.Fatalf("first response ID = %q, want request-1", firstResponse.RequestID)
+	}
+	if requestID := <-started; requestID != "request-2" {
+		t.Fatalf("second started request = %q, want request-2", requestID)
+	}
+	select {
+	case err := <-peer.done:
+		t.Fatalf("server stopped during second accepted request: %v", err)
+	case <-time.After(3 * idleTimeout):
+	}
+	close(releaseSecond)
+	secondResponse, err := peer.reader.ReadEnvelope()
+	if err != nil {
+		t.Fatalf("read second response: %v", err)
+	}
+	if secondResponse.RequestID != "request-2" {
+		t.Fatalf("second response ID = %q, want request-2", secondResponse.RequestID)
+	}
+	if err := peer.connection.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear response deadline: %v", err)
+	}
+
+	select {
+	case err := <-peer.done:
+		if !errors.Is(err, ErrIdleTimeout) {
+			t.Fatalf("server error after work = %v, want idle timeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not re-arm idle timeout after work")
+	}
+}
+
+// TestRequestAcceptanceAtIdleExpiryHasOneWinner exercises the timer and
+// request-accounting boundary without depending on scheduler timing.
+func TestRequestAcceptanceAtIdleExpiryHasOneWinner(t *testing.T) {
+	config := testServerConfig(map[string]Handler{
+		"block": func(ctx context.Context, _ Request) (any, error) {
+			<-ctx.Done()
+
+			return nil, ctx.Err()
+		},
+	})
+	config.IdleTimeout = time.Hour
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	for iteration := range 100 {
+		serverConnection, clientConnection := net.Pipe()
+		active := newServerConnection(
+			server,
+			serverConnection,
+			rpc.NewDefaultFrameReader(serverConnection),
+			rpc.NewDefaultFrameWriter(io.Discard),
+			Peer{Protocol: rpc.Version{Major: 1}},
+		)
+		active.startIdleTimeout()
+		active.requestsMu.Lock()
+		cycle := active.idleCycle
+		active.requestsMu.Unlock()
+		envelope, createErr := rpc.NewRequestEnvelope(
+			rpc.Version{Major: 1},
+			fmt.Sprintf("request-%d", iteration),
+			"block",
+			time.Now().Add(time.Second),
+			struct{}{},
+		)
+		if createErr != nil {
+			t.Fatalf("create boundary request: %v", createErr)
+		}
+		start := make(chan struct{})
+		accepted := make(chan error, 1)
+		expired := make(chan struct{})
+		go func() {
+			<-start
+			accepted <- active.acceptRequest(envelope)
+		}()
+		go func() {
+			<-start
+			active.expireIdleTimeout(cycle)
+			close(expired)
+		}()
+		close(start)
+		acceptErr := <-accepted
+		<-expired
+
+		if acceptErr == nil {
+			active.cancelRequests()
+			active.work.Wait()
+			if terminalErr := active.terminalError(); terminalErr != nil {
+				t.Fatalf("iteration %d accepted request but terminated: %v", iteration, terminalErr)
+			}
+		} else {
+			if !errors.Is(acceptErr, ErrIdleTimeout) {
+				t.Fatalf("iteration %d acceptance error = %v, want idle timeout", iteration, acceptErr)
+			}
+			if !errors.Is(active.terminalError(), ErrIdleTimeout) {
+				t.Fatalf("iteration %d terminal error = %v, want idle timeout", iteration, active.terminalError())
+			}
+		}
+		active.stopIdleTimeout()
+		active.terminate(nil)
+		_ = clientConnection.Close()
+	}
+}
+
+// TestTerminalConnectionRejectsRequestsAndIdleCallbacks verifies timer and
+// dispatch paths cannot revive or overwrite an already-terminal connection.
+func TestTerminalConnectionRejectsRequestsAndIdleCallbacks(t *testing.T) {
+	config := testServerConfig(nil)
+	config.IdleTimeout = time.Hour
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	active := newServerConnection(
+		server,
+		serverConnection,
+		rpc.NewDefaultFrameReader(serverConnection),
+		rpc.NewDefaultFrameWriter(io.Discard),
+		Peer{Protocol: rpc.Version{Major: 1}},
+	)
+	active.startIdleTimeout()
+	active.requestsMu.Lock()
+	cycle := active.idleCycle
+	active.requestsMu.Unlock()
+	active.terminate(context.Canceled)
+
+	active.expireIdleTimeout(cycle)
+	if !errors.Is(active.terminalError(), context.Canceled) {
+		t.Fatalf("idle callback replaced terminal error: %v", active.terminalError())
+	}
+	active.stopIdleTimeout()
+	active.requestsMu.Lock()
+	active.armIdleTimeoutLocked()
+	timer := active.idleTimer
+	active.requestsMu.Unlock()
+	if timer != nil {
+		t.Fatal("terminal connection re-armed its idle timer")
+	}
+
+	envelope, err := rpc.NewRequestEnvelope(
+		rpc.Version{Major: 1},
+		"request-after-close",
+		"missing",
+		time.Now().Add(time.Second),
+		struct{}{},
+	)
+	if err != nil {
+		t.Fatalf("create request after close: %v", err)
+	}
+	if err := active.acceptRequest(envelope); !errors.Is(err, ErrClosed) {
+		t.Fatalf("request after close error = %v, want ErrClosed", err)
+	}
+}
+
+// TestIdleTimerStopAndConnectionCloseAreRaceSafe repeatedly overlaps timer
+// invalidation, expiry, and transport termination to expose lifecycle races.
+func TestIdleTimerStopAndConnectionCloseAreRaceSafe(t *testing.T) {
+	config := testServerConfig(nil)
+	config.IdleTimeout = time.Hour
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	for range 200 {
+		serverConnection, clientConnection := net.Pipe()
+		active := newServerConnection(
+			server,
+			serverConnection,
+			rpc.NewDefaultFrameReader(serverConnection),
+			rpc.NewDefaultFrameWriter(io.Discard),
+			Peer{Protocol: rpc.Version{Major: 1}},
+		)
+		active.startIdleTimeout()
+		active.requestsMu.Lock()
+		cycle := active.idleCycle
+		active.requestsMu.Unlock()
+		start := make(chan struct{})
+		var raced sync.WaitGroup
+		for _, operation := range []func(){
+			active.stopIdleTimeout,
+			func() { active.expireIdleTimeout(cycle) },
+			func() { active.terminate(context.Canceled) },
+		} {
+			raced.Add(1)
+			go func() {
+				defer raced.Done()
+				<-start
+				operation()
+			}()
+		}
+		close(start)
+		raced.Wait()
+		terminalErr := active.terminalError()
+		if !errors.Is(terminalErr, context.Canceled) && !errors.Is(terminalErr, ErrIdleTimeout) {
+			t.Fatalf("terminal error = %v, want cancellation or idle timeout", terminalErr)
+		}
+		_ = clientConnection.Close()
+	}
+}
+
+// TestUnknownCancelsDoNotRefreshIdleTimeout verifies a peer cannot retain an
+// otherwise unused daemon connection by sending correlation-free traffic.
+func TestUnknownCancelsDoNotRefreshIdleTimeout(t *testing.T) {
+	config := testServerConfig(nil)
+	config.IdleTimeout = 40 * time.Millisecond
+	peer := newRawServerPeer(t, config)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case err := <-peer.done:
+			if !errors.Is(err, ErrIdleTimeout) {
+				t.Fatalf("server error = %v, want idle timeout", err)
+			}
+			return
+		case <-ticker.C:
+			envelope, err := rpc.NewCancelEnvelope(peer.protocol, "unknown-request")
+			if err != nil {
+				t.Fatalf("create unknown cancel: %v", err)
+			}
+			if err := peer.writer.WriteEnvelope(envelope); err != nil {
+				select {
+				case terminalErr := <-peer.done:
+					if !errors.Is(terminalErr, ErrIdleTimeout) {
+						t.Fatalf("server error = %v, want idle timeout", terminalErr)
+					}
+					return
+				case <-time.After(time.Second):
+					t.Fatalf("write unknown cancel: %v", err)
+				}
+			}
+		case <-deadline.C:
+			t.Fatal("unknown cancels kept an idle connection alive")
+		}
+	}
+}
+
 // TestServerCancellationJoinsActiveHandler verifies shutdown wakes the reader and request work.
 func TestServerCancellationJoinsActiveHandler(t *testing.T) {
 	started := make(chan struct{})
@@ -1176,6 +1534,12 @@ func TestServerConfigurationValidationCoversEachBoundary(t *testing.T) {
 			},
 		},
 		{
+			name: "negative idle timeout",
+			configure: func(config *ServerConfig) {
+				config.IdleTimeout = -time.Second
+			},
+		},
+		{
 			name: "negative concurrent limit",
 			configure: func(config *ServerConfig) {
 				config.MaxConcurrentRequests = -1
@@ -1221,6 +1585,9 @@ func TestServerConfigurationValidationCoversEachBoundary(t *testing.T) {
 	server, err := NewServer(testServerConfig(nil))
 	if err != nil {
 		t.Fatalf("new valid server: %v", err)
+	}
+	if server.config.IdleTimeout != defaultIdleTimeout {
+		t.Fatalf("default idle timeout = %s, want %s", server.config.IdleTimeout, defaultIdleTimeout)
 	}
 	if err := server.Serve(t.Context(), nil); err == nil {
 		t.Fatal("Serve accepted a nil connection")

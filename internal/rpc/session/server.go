@@ -8,6 +8,7 @@ import (
 	"net"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/goforj/harbor/internal/rpc"
 )
@@ -160,22 +161,25 @@ func (s *Server) negotiate(
 
 // serverConnection owns request accounting and terminal state for one peer.
 type serverConnection struct {
-	server     *Server
-	connection net.Conn
-	reader     *rpc.FrameReader
-	writer     *rpc.FrameWriter
-	peer       Peer
-	context    context.Context
-	cancel     context.CancelFunc
-	workers    chan struct{}
-	slots      chan struct{}
-	requestsMu sync.Mutex
-	requests   map[string]context.CancelFunc
-	work       sync.WaitGroup
-	terminal   chan struct{}
-	termOnce   sync.Once
-	termMu     sync.Mutex
-	termErr    error
+	server      *Server
+	connection  net.Conn
+	reader      *rpc.FrameReader
+	writer      *rpc.FrameWriter
+	peer        Peer
+	context     context.Context
+	cancel      context.CancelFunc
+	workers     chan struct{}
+	slots       chan struct{}
+	requestsMu  sync.Mutex
+	requests    map[string]context.CancelFunc
+	idleTimer   *time.Timer
+	idleCycle   uint64
+	idleExpired bool
+	work        sync.WaitGroup
+	terminal    chan struct{}
+	termOnce    sync.Once
+	termMu      sync.Mutex
+	termErr     error
 }
 
 // newServerConnection initializes fixed-capacity accounting before peer input is read.
@@ -207,6 +211,8 @@ func newServerConnection(
 func (s *serverConnection) run(ctx context.Context) error {
 	watchDone := make(chan struct{})
 	go s.watchContext(ctx, watchDone)
+	s.startIdleTimeout()
+	defer s.stopIdleTimeout()
 
 	readErr := s.readLoop()
 	if errors.Is(readErr, io.EOF) {
@@ -292,6 +298,20 @@ func (s *serverConnection) acceptRequest(envelope rpc.Envelope) error {
 	}
 
 	s.requestsMu.Lock()
+	if s.idleExpired {
+		s.requestsMu.Unlock()
+		cancel()
+		<-s.slots
+		return ErrIdleTimeout
+	}
+	select {
+	case <-s.terminal:
+		s.requestsMu.Unlock()
+		cancel()
+		<-s.slots
+		return ErrClosed
+	default:
+	}
 	if _, exists := s.requests[envelope.RequestID]; exists {
 		s.requestsMu.Unlock()
 		cancel()
@@ -299,6 +319,7 @@ func (s *serverConnection) acceptRequest(envelope rpc.Envelope) error {
 		return fmt.Errorf("%w: duplicate in-flight request ID", ErrProtocolViolation)
 	}
 	s.requests[envelope.RequestID] = cancel
+	s.disarmIdleTimeoutLocked()
 	s.requestsMu.Unlock()
 
 	s.work.Add(1)
@@ -403,7 +424,9 @@ func (s *serverConnection) writeResponse(response rpc.Envelope) error {
 	}
 }
 
-// cancelRequest delivers peer cancellation only to a currently active request ID.
+// cancelRequest delivers peer cancellation only to a currently active request
+// ID. Cancels do not refresh idle lifetime because otherwise an idle peer could
+// retain daemon resources indefinitely without submitting bounded work.
 func (s *serverConnection) cancelRequest(requestID string) {
 	s.requestsMu.Lock()
 	cancel := s.requests[requestID]
@@ -418,10 +441,76 @@ func (s *serverConnection) finishRequest(requestID string) {
 	s.requestsMu.Lock()
 	cancel := s.requests[requestID]
 	delete(s.requests, requestID)
-	s.requestsMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	if len(s.requests) == 0 {
+		s.armIdleTimeoutLocked()
+	}
+	s.requestsMu.Unlock()
+}
+
+// startIdleTimeout arms the negotiated connection only after handshake work is complete.
+func (s *serverConnection) startIdleTimeout() {
+	s.requestsMu.Lock()
+	s.armIdleTimeoutLocked()
+	s.requestsMu.Unlock()
+}
+
+// stopIdleTimeout releases timer resources before Serve returns.
+func (s *serverConnection) stopIdleTimeout() {
+	s.requestsMu.Lock()
+	s.disarmIdleTimeoutLocked()
+	s.requestsMu.Unlock()
+}
+
+// armIdleTimeoutLocked starts a fresh idle lifetime when no accepted work remains.
+func (s *serverConnection) armIdleTimeoutLocked() {
+	if s.idleExpired || len(s.requests) != 0 {
+		return
+	}
+	select {
+	case <-s.terminal:
+		return
+	default:
+	}
+
+	s.disarmIdleTimeoutLocked()
+	s.idleCycle++
+	cycle := s.idleCycle
+	s.idleTimer = time.AfterFunc(s.server.config.IdleTimeout, func() {
+		s.expireIdleTimeout(cycle)
+	})
+}
+
+// disarmIdleTimeoutLocked invalidates callbacks that may already be waiting on request state.
+func (s *serverConnection) disarmIdleTimeoutLocked() {
+	s.idleCycle++
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
+	}
+}
+
+// expireIdleTimeout closes only a connection that remained idle for the timer's full cycle.
+func (s *serverConnection) expireIdleTimeout(cycle uint64) {
+	s.requestsMu.Lock()
+	if s.idleExpired || s.idleCycle != cycle || len(s.requests) != 0 {
+		s.requestsMu.Unlock()
+		return
+	}
+	select {
+	case <-s.terminal:
+		s.requestsMu.Unlock()
+		return
+	default:
+	}
+	s.idleExpired = true
+	s.idleTimer = nil
+	s.idleCycle++
+	s.requestsMu.Unlock()
+
+	s.terminate(ErrIdleTimeout)
 }
 
 // cancelRequests makes connection teardown visible to every accepted handler.

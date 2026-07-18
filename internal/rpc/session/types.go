@@ -12,6 +12,7 @@ import (
 
 const (
 	defaultHandshakeTimeout      = 5 * time.Second
+	defaultIdleTimeout           = 5 * time.Minute
 	defaultRequestTimeout        = 30 * time.Second
 	defaultMaxConcurrentRequests = 16
 	defaultMaxQueuedRequests     = 32
@@ -26,6 +27,8 @@ var (
 	ErrBusy = errors.New("RPC session request capacity is exhausted")
 	// ErrProtocolViolation reports peer input that cannot safely continue on the connection.
 	ErrProtocolViolation = errors.New("RPC protocol violation")
+	// ErrIdleTimeout reports a negotiated connection that remained without accepted work.
+	ErrIdleTimeout = errors.New("RPC session idle timeout")
 )
 
 // Peer describes the identity and features established by protocol negotiation.
@@ -80,6 +83,9 @@ type ServerConfig struct {
 	ObserveError ErrorObserver
 	// HandshakeTimeout bounds unauthenticated negotiation work; zero uses five seconds.
 	HandshakeTimeout time.Duration
+	// IdleTimeout bounds negotiated connections only while they have no accepted
+	// requests; zero uses five minutes.
+	IdleTimeout time.Duration
 	// MaxConcurrentRequests bounds handlers executing on one connection; zero uses 16.
 	MaxConcurrentRequests int
 	// MaxQueuedRequests bounds accepted requests waiting for a handler slot; zero uses 32.
@@ -202,6 +208,12 @@ func normalizedServerConfig(config ServerConfig) (ServerConfig, error) {
 	}
 	if config.HandshakeTimeout == 0 {
 		config.HandshakeTimeout = defaultHandshakeTimeout
+	}
+	if config.IdleTimeout < 0 {
+		return ServerConfig{}, errors.New("server idle timeout cannot be negative")
+	}
+	if config.IdleTimeout == 0 {
+		config.IdleTimeout = defaultIdleTimeout
 	}
 	if config.MaxConcurrentRequests < 0 || config.MaxConcurrentRequests > maximumRequestLimit {
 		return ServerConfig{}, fmt.Errorf("maximum concurrent requests must be between 0 and %d", maximumRequestLimit)
