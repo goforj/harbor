@@ -38,10 +38,7 @@ func Sign(ticket helper.Ticket, privateKey ed25519.PrivateKey, now time.Time) (E
 	if err != nil {
 		return Envelope{}, err
 	}
-	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
-	if !ok || len(publicKey) != ed25519.PublicKeySize {
-		return Envelope{}, errors.New("sign helper ticket: Ed25519 public key is invalid")
-	}
+	publicKey := privateKey.Public().(ed25519.PublicKey)
 
 	return Envelope{
 		Version:   EnvelopeVersion,
