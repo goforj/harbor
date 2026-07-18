@@ -1,0 +1,256 @@
+name: Hosted platform network API smoke
+
+# This workflow is hosted-runner API smoke coverage. Installer elevation, UAC prompts,
+# reboot persistence, and released-product behavior require separate platform evidence.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11
+  HARBOR_PROOF_PORT: "3306"
+
+jobs:
+  project-identity:
+    name: Hosted API smoke (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+          - name: macOS
+            os: macos-15
+          - name: Windows
+            os: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run portable proof tests
+        run: go test ./internal/platformproof ./cmd/platformproof
+
+      - name: Provision Linux proof identities
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ownership_file="${RUNNER_TEMP}/harbor-proof-owned"
+          interface="lo"
+          interface_index="$(cat "/sys/class/net/${interface}/ifindex")"
+          rm -f "$ownership_file"
+          touch "$ownership_file"
+          for address in 127.77.254.10 127.77.254.11; do
+            if ip -o -4 address show | awk '{print $4}' | grep -Fxq "$address/32"; then
+              echo "proof identity already exists: $address" >&2
+              exit 1
+            fi
+            sudo ip address add "$address/32" dev "$interface"
+            mapfile -t observations < <(ip -o -4 address show dev "$interface" | awk -v target="$address/32" '$4 == target {print $1, $2, $4}')
+            if [[ ${#observations[@]} -ne 1 ]]; then
+              echo "could not uniquely observe provisioned identity: $address" >&2
+              exit 1
+            fi
+            read -r observed_index observed_interface observed_address <<< "${observations[0]}"
+            observed_index="${observed_index%:}"
+            if [[ "$observed_index" != "$interface_index" || "$observed_interface" != "$interface" || "$observed_address" != "$address/32" ]]; then
+              echo "provisioned identity does not match its intended interface: $address" >&2
+              exit 1
+            fi
+            printf 'linux\t%s\t%s\t%s\n' "$interface" "$interface_index" "$address" >> "$ownership_file"
+          done
+
+      - name: Provision macOS proof identities
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ownership_file="${RUNNER_TEMP}/harbor-proof-owned"
+          interface="lo0"
+          interface_index="$(python3 -c 'import socket; print(socket.if_nametoindex("lo0"))')"
+          rm -f "$ownership_file"
+          touch "$ownership_file"
+          for address in 127.77.254.10 127.77.254.11; do
+            if ifconfig -a | awk -v target="$address" '$1 == "inet" && $2 == target {found=1} END {exit !found}'; then
+              echo "proof identity already exists: $address" >&2
+              exit 1
+            fi
+            sudo ifconfig "$interface" alias "$address" 255.255.255.255
+            observation_count="$(ifconfig "$interface" | awk -v target="$address" '$1 == "inet" && $2 == target {count++} END {print count+0}')"
+            if [[ "$observation_count" != "1" ]]; then
+              echo "could not uniquely observe provisioned identity: $address" >&2
+              exit 1
+            fi
+            printf 'darwin\t%s\t%s\t%s\n' "$interface" "$interface_index" "$address" >> "$ownership_file"
+          done
+
+      - name: Provision Windows proof identities
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ownershipPath = Join-Path $env:RUNNER_TEMP 'harbor-proof-owned.jsonl'
+          Remove-Item $ownershipPath -ErrorAction SilentlyContinue
+          New-Item $ownershipPath -ItemType File | Out-Null
+          $loopbackAddress = Get-NetIPAddress -AddressFamily IPv4 -IPAddress 127.0.0.1 -PolicyStore ActiveStore -ErrorAction Stop | Select-Object -First 1
+          $loopbackInterface = Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $loopbackAddress.InterfaceIndex -ErrorAction Stop
+          if ($loopbackInterface.InterfaceAlias -notmatch 'Loopback') {
+            throw "127.0.0.1 is not attached to a verified loopback interface"
+          }
+          foreach ($address in @('127.77.254.10', '127.77.254.11')) {
+            if (Get-NetIPAddress -AddressFamily IPv4 -IPAddress $address -PolicyStore ActiveStore -ErrorAction SilentlyContinue) {
+              throw "proof identity already exists: $address"
+            }
+            New-NetIPAddress -InterfaceIndex $loopbackInterface.InterfaceIndex -IPAddress $address -PrefixLength 32 -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+            $observation = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $loopbackInterface.InterfaceIndex -IPAddress $address -PolicyStore ActiveStore -ErrorAction Stop)
+            if ($observation.Count -ne 1 -or $observation[0].PrefixLength -ne 32) {
+              throw "could not uniquely observe provisioned identity: $address"
+            }
+            [ordered]@{
+              platform = 'windows'
+              interface_index = [int]$loopbackInterface.InterfaceIndex
+              interface_alias = [string]$loopbackInterface.InterfaceAlias
+              address = $address
+            } | ConvertTo-Json -Compress | Add-Content -LiteralPath $ownershipPath
+          }
+
+      - name: Verify explicit identity setup
+        run: go test -tags=platformproof ./internal/platformproof -run 'TestPlatformProofAddressesAreExplicit|TestPlatformProjectIdentities' -count=1
+
+      - name: Record project identity evidence
+        run: go run ./cmd/platformproof project-identity --addresses "${{ env.HARBOR_PROOF_ADDRESSES }}" --port "${{ env.HARBOR_PROOF_PORT }}" > project-identity.json
+
+      - name: Remove Linux proof identities
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          ownership_file="${RUNNER_TEMP}/harbor-proof-owned"
+          if [[ -f "$ownership_file" ]]; then
+            while IFS=$'\t' read -r platform interface expected_index address extra; do
+              if [[ "$platform" != "linux" || -n "$extra" || -z "$interface" || -z "$expected_index" || -z "$address" ]]; then
+                echo "invalid Linux ownership record" >&2
+                exit 1
+              fi
+              current_index="$(cat "/sys/class/net/${interface}/ifindex" 2>/dev/null || true)"
+              mapfile -t observations < <(ip -o -4 address show dev "$interface" 2>/dev/null | awk -v target="$address/32" '$4 == target {print $1, $2, $4}')
+              if [[ "$current_index" != "$expected_index" || ${#observations[@]} -ne 1 ]]; then
+                echo "Linux ownership mismatch; refusing to remove $address" >&2
+                exit 1
+              fi
+              read -r observed_index observed_interface observed_address <<< "${observations[0]}"
+              observed_index="${observed_index%:}"
+              if [[ "$observed_index" != "$expected_index" || "$observed_interface" != "$interface" || "$observed_address" != "$address/32" ]]; then
+                echo "Linux interface observation changed; refusing to remove $address" >&2
+                exit 1
+              fi
+              sudo ip address delete "$address/32" dev "$interface"
+            done < "$ownership_file"
+          fi
+          for address in 127.77.254.10 127.77.254.11; do
+            if ip -o -4 address show | awk '{print $4}' | grep -Fxq "$address/32"; then
+              echo "proof identity remains after cleanup: $address" >&2
+              exit 1
+            fi
+          done
+
+      - name: Remove macOS proof identities
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          ownership_file="${RUNNER_TEMP}/harbor-proof-owned"
+          if [[ -f "$ownership_file" ]]; then
+            while IFS=$'\t' read -r platform interface expected_index address extra; do
+              if [[ "$platform" != "darwin" || -n "$extra" || -z "$interface" || -z "$expected_index" || -z "$address" ]]; then
+                echo "invalid macOS ownership record" >&2
+                exit 1
+              fi
+              current_index="$(python3 -c 'import socket, sys; print(socket.if_nametoindex(sys.argv[1]))' "$interface" 2>/dev/null || true)"
+              observation_count="$(ifconfig "$interface" 2>/dev/null | awk -v target="$address" '$1 == "inet" && $2 == target {count++} END {print count+0}')"
+              if [[ "$current_index" != "$expected_index" || "$observation_count" != "1" ]]; then
+                echo "macOS ownership mismatch; refusing to remove $address" >&2
+                exit 1
+              fi
+              sudo ifconfig "$interface" -alias "$address"
+            done < "$ownership_file"
+          fi
+          for address in 127.77.254.10 127.77.254.11; do
+            if ifconfig -a | awk -v target="$address" '$1 == "inet" && $2 == target {found=1} END {exit !found}'; then
+              echo "proof identity remains after cleanup: $address" >&2
+              exit 1
+            fi
+          done
+
+      - name: Remove Windows proof identities
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ownershipPath = Join-Path $env:RUNNER_TEMP 'harbor-proof-owned.jsonl'
+          if (Test-Path $ownershipPath) {
+            foreach ($line in Get-Content -LiteralPath $ownershipPath) {
+              $record = $line | ConvertFrom-Json -ErrorAction Stop
+              if ($record.platform -ne 'windows' -or -not $record.interface_index -or -not $record.interface_alias -or -not $record.address) {
+                throw 'invalid Windows ownership record'
+              }
+              $currentInterface = @(Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $record.interface_index -ErrorAction Stop)
+              $currentAddress = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $record.interface_index -IPAddress $record.address -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+              if ($currentInterface.Count -ne 1 -or $currentInterface[0].InterfaceAlias -ne $record.interface_alias -or $currentAddress.Count -ne 1 -or $currentAddress[0].PrefixLength -ne 32) {
+                throw "Windows ownership mismatch; refusing to remove $($record.address)"
+              }
+              $currentAddress[0] | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
+            }
+          }
+          foreach ($address in @('127.77.254.10', '127.77.254.11')) {
+            if (Get-NetIPAddress -AddressFamily IPv4 -IPAddress $address -PolicyStore ActiveStore -ErrorAction SilentlyContinue) {
+              throw "proof identity remains after cleanup: $address"
+            }
+          }
+
+      - name: Record cleanup evidence
+        if: always()
+        run: go run ./cmd/platformproof identity-absent --addresses "${{ env.HARBOR_PROOF_ADDRESSES }}" > cleanup.json
+
+      - name: Upload platform evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: platform-proof-${{ matrix.name }}
+          path: |
+            project-identity.json
+            cleanup.json
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-evidence:
+    name: Verify platform evidence
+    needs: project-identity
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download platform evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: platform-proof-*
+          path: platform-evidence
+
+      - name: Enforce required platform assertions
+        run: go run ./cmd/platformproof verify --root platform-evidence --commit "${{ github.sha }}" --platforms linux,darwin,windows --port 3306 --require-runner-identity
