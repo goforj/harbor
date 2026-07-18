@@ -10,10 +10,35 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 )
 
-const maxIdentityTokenLength = 255
+const (
+	maximumInstallationIDLength = 128
+	maximumLeaseTokenLength     = 255
+)
 
 // InstallationID identifies the Harbor installation that owns a host projection.
 type InstallationID string
+
+// Validate requires 1 to 128 ASCII bytes from letters, digits, dots, underscores, and hyphens with alphanumeric boundaries.
+func (i InstallationID) Validate() error {
+	value := string(i)
+	if value == "" {
+		return fmt.Errorf("installation ID is required")
+	}
+	if len(value) > maximumInstallationIDLength {
+		return fmt.Errorf("installation ID exceeds %d bytes", maximumInstallationIDLength)
+	}
+	if !installationIDAlphanumeric(value[0]) || !installationIDAlphanumeric(value[len(value)-1]) {
+		return fmt.Errorf("installation ID must start and end with an ASCII letter or digit")
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if installationIDAlphanumeric(character) || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return fmt.Errorf("installation ID contains a character outside ASCII letters, digits, dots, underscores, and hyphens")
+	}
+	return nil
+}
 
 // Ownership binds a lease to one installation ownership generation.
 type Ownership struct {
@@ -32,7 +57,7 @@ func NewOwnership(installationID InstallationID, generation uint64) (Ownership, 
 
 // Validate rejects ownership values that cannot safely mark a host projection.
 func (o Ownership) Validate() error {
-	if err := validateIdentityToken("installation ID", string(o.InstallationID)); err != nil {
+	if err := o.InstallationID.Validate(); err != nil {
 		return err
 	}
 	if o.Generation == 0 {
@@ -94,7 +119,7 @@ func (k LeaseKey) Validate() error {
 	if k.SecondaryID == "" {
 		return nil
 	}
-	if err := validateIdentityToken("secondary ID", k.SecondaryID); err != nil {
+	if err := validateLeaseToken("secondary ID", k.SecondaryID); err != nil {
 		return fmt.Errorf("identity lease key: %w", err)
 	}
 	return nil
@@ -182,8 +207,8 @@ func (c Conflict) Validate(pool Pool) error {
 	return nil
 }
 
-// validateIdentityToken bounds ownership and lease keys without assigning filesystem semantics to them.
-func validateIdentityToken(label string, value string) error {
+// validateLeaseToken preserves opaque lease identities without assigning filesystem semantics to them.
+func validateLeaseToken(label string, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", label)
 	}
@@ -193,8 +218,8 @@ func validateIdentityToken(label string, value string) error {
 	if value != strings.TrimSpace(value) {
 		return fmt.Errorf("%s must not have surrounding whitespace", label)
 	}
-	if len(value) > maxIdentityTokenLength {
-		return fmt.Errorf("%s exceeds %d bytes", label, maxIdentityTokenLength)
+	if len(value) > maximumLeaseTokenLength {
+		return fmt.Errorf("%s exceeds %d bytes", label, maximumLeaseTokenLength)
 	}
 	for _, character := range value {
 		if unicode.IsControl(character) || unicode.IsSpace(character) {
@@ -202,6 +227,13 @@ func validateIdentityToken(label string, value string) error {
 		}
 	}
 	return nil
+}
+
+// installationIDAlphanumeric keeps installation identity boundaries independent from path-like punctuation.
+func installationIDAlphanumeric(character byte) bool {
+	return (character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		(character >= '0' && character <= '9')
 }
 
 // sameOwnership compares the installation and generation as one indivisible authority marker.

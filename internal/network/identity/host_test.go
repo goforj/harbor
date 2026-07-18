@@ -7,10 +7,48 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/domain"
 )
+
+// TestInstallationIDValidation verifies the shared helper-facing installation identity contract.
+func TestInstallationIDValidation(t *testing.T) {
+	valid := []InstallationID{
+		"a",
+		"A0._-z",
+		InstallationID(strings.Repeat("a", maximumInstallationIDLength)),
+	}
+	for _, installationID := range valid {
+		if err := installationID.Validate(); err != nil {
+			t.Fatalf("InstallationID(%q).Validate() error = %v", installationID, err)
+		}
+	}
+
+	tests := []struct {
+		name           string
+		installationID InstallationID
+		contains       string
+	}{
+		{name: "empty", contains: "required"},
+		{name: "too long", installationID: InstallationID(strings.Repeat("a", maximumInstallationIDLength+1)), contains: "exceeds"},
+		{name: "leading dot", installationID: ".harbor", contains: "start and end"},
+		{name: "leading underscore", installationID: "_harbor", contains: "start and end"},
+		{name: "trailing hyphen", installationID: "harbor-", contains: "start and end"},
+		{name: "path punctuation", installationID: "harbor/local", contains: "outside ASCII"},
+		{name: "other punctuation", installationID: "harbor+local", contains: "outside ASCII"},
+		{name: "whitespace", installationID: "harbor local", contains: "outside ASCII"},
+		{name: "non ASCII", installationID: "hárbor", contains: "outside ASCII"},
+		{name: "invalid UTF-8", installationID: InstallationID(string([]byte{0xff})), contains: "ASCII"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.installationID.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("InstallationID(%q).Validate() error = %v, want substring %q", test.installationID, err, test.contains)
+			}
+		})
+	}
+}
 
 // fakeHost proves the consumer-owned interfaces can be implemented independently.
 type fakeHost struct{}
@@ -59,11 +97,7 @@ func TestOwnershipValidation(t *testing.T) {
 		contains       string
 	}{
 		{name: "empty installation", generation: 1, contains: "installation ID is required"},
-		{name: "surrounding whitespace", installationID: " installation-a", generation: 1, contains: "surrounding whitespace"},
-		{name: "internal whitespace", installationID: "installation a", generation: 1, contains: "must not contain whitespace"},
-		{name: "control character", installationID: "installation\x00a", generation: 1, contains: "control characters"},
-		{name: "invalid UTF-8", installationID: InstallationID(string([]byte{utf8.RuneSelf})), generation: 1, contains: "valid UTF-8"},
-		{name: "too long", installationID: InstallationID(strings.Repeat("a", maxIdentityTokenLength+1)), generation: 1, contains: "exceeds"},
+		{name: "invalid installation", installationID: "installation a", generation: 1, contains: "outside ASCII"},
 		{name: "zero generation", installationID: "installation-a", contains: "greater than zero"},
 	}
 	for _, test := range tests {
@@ -92,6 +126,15 @@ func TestLeaseKeyValidation(t *testing.T) {
 	}
 	if _, err := NewSecondaryKey(domain.ProjectID("alpha"), "bad secondary"); err == nil || !strings.Contains(err.Error(), "whitespace") {
 		t.Fatalf("whitespace NewSecondaryKey() error = %v", err)
+	}
+	if _, err := NewSecondaryKey(domain.ProjectID("alpha"), "région-é"); err != nil {
+		t.Fatalf("UTF-8 NewSecondaryKey() error = %v", err)
+	}
+	if _, err := NewSecondaryKey(domain.ProjectID("alpha"), strings.Repeat("s", maximumLeaseTokenLength)); err != nil {
+		t.Fatalf("maximum-length NewSecondaryKey() error = %v", err)
+	}
+	if _, err := NewSecondaryKey(domain.ProjectID("alpha"), strings.Repeat("s", maximumLeaseTokenLength+1)); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized NewSecondaryKey() error = %v", err)
 	}
 	if _, err := NewPrimaryKey(domain.ProjectID(" alpha")); err == nil || !strings.Contains(err.Error(), "project ID") {
 		t.Fatalf("invalid NewPrimaryKey() error = %v", err)

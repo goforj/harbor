@@ -35,6 +35,42 @@ func TestExpectedObservationValidate(t *testing.T) {
 	}
 }
 
+// TestTicketValidateInstallationIDContract verifies helper admission uses the shared installation identity domain.
+func TestTicketValidateInstallationIDContract(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	valid := []string{
+		"a",
+		"A0._-z",
+		strings.Repeat("a", maximumIDLength),
+	}
+	for _, installationID := range valid {
+		ticket := validTestTicket(now, OperationEnsureLoopbackIdentity)
+		ticket.InstallationID = installationID
+		if err := ticket.Validate(now); err != nil {
+			t.Fatalf("Ticket.Validate() installation ID %q error = %v", installationID, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		strings.Repeat("a", maximumIDLength+1),
+		".harbor",
+		"_harbor",
+		"harbor-",
+		"harbor/local",
+		"harbor+local",
+		"hárbor",
+	}
+	for _, installationID := range invalid {
+		ticket := validTestTicket(now, OperationEnsureLoopbackIdentity)
+		ticket.InstallationID = installationID
+		err := ticket.Validate(now)
+		if err == nil || requestErrorCode(t, err) != ErrorCodeInvalidTicket {
+			t.Fatalf("Ticket.Validate() installation ID %q error = %v, want invalid ticket", installationID, err)
+		}
+	}
+}
+
 // TestTicketValidate covers every ticket field and operation-specific precondition.
 func TestTicketValidate(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
