@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,14 @@ const operationJournalSingletonID = 1
 type OperationRecord struct {
 	Operation domain.Operation
 	Revision  domain.Sequence
+}
+
+// JournalSnapshot couples the current durable sequence with the active operations visible at that same database instant.
+type JournalSnapshot struct {
+	// Sequence is the latest globally committed journal sequence.
+	Sequence domain.Sequence
+	// Operations contains non-terminal operations in durable revision order.
+	Operations []domain.Operation
 }
 
 // OperationTransition records one append-only lifecycle edge and its global sequence.
@@ -341,6 +350,32 @@ func (journal *OperationJournal) ActiveOperations(ctx context.Context) ([]Operat
 	return records, nil
 }
 
+// Snapshot returns the journal sequence and active operations from one consistent read transaction.
+func (journal *OperationJournal) Snapshot(ctx context.Context) (JournalSnapshot, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return JournalSnapshot{}, err
+	}
+	connection, err := journal.connections.GetHarbord()
+	if err != nil {
+		return JournalSnapshot{}, fmt.Errorf("open operation journal snapshot: %w", err)
+	}
+
+	var snapshot JournalSnapshot
+	err = connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		read, err := readJournalSnapshot(tx)
+		if err != nil {
+			return err
+		}
+		snapshot = read
+		return nil
+	})
+	if err != nil {
+		return JournalSnapshot{}, fmt.Errorf("read operation journal snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
 // Transitions returns an operation's complete append-only history in ordinal order.
 func (journal *OperationJournal) Transitions(ctx context.Context, operationID domain.OperationID) ([]OperationTransition, error) {
 	ctx = normalizeContext(ctx)
@@ -380,6 +415,87 @@ func (journal *OperationJournal) CurrentSequence(ctx context.Context) (domain.Se
 		return 0, fmt.Errorf("read operation journal sequence: %w", err)
 	}
 	return operationSequenceFromModel(*row)
+}
+
+// readJournalSnapshot validates the singleton sequence and every active operation before returning transaction-local state.
+func readJournalSnapshot(tx *gorm.DB) (JournalSnapshot, error) {
+	sequence, err := readSnapshotSequence(tx)
+	if err != nil {
+		return JournalSnapshot{}, err
+	}
+	records, err := readSnapshotOperations(tx, sequence)
+	if err != nil {
+		return JournalSnapshot{}, err
+	}
+
+	operations := make([]domain.Operation, 0, len(records))
+	for _, record := range records {
+		operations = append(operations, record.Operation)
+	}
+	return JournalSnapshot{Sequence: sequence, Operations: operations}, nil
+}
+
+// readSnapshotSequence reads every singleton-table row so weakened schemas cannot hide extra journal authorities.
+func readSnapshotSequence(tx *gorm.DB) (domain.Sequence, error) {
+	var rows []models.OperationJournalState
+	if err := tx.Order("id ASC").Find(&rows).Error; err != nil {
+		return 0, fmt.Errorf("read operation journal snapshot sequence: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, corruptStateError("operation journal state", "1", fmt.Errorf("singleton row is missing"))
+	}
+	for _, row := range rows {
+		if _, err := operationSequenceFromModel(row); err != nil {
+			return 0, err
+		}
+	}
+	return operationSequenceFromModel(rows[0])
+}
+
+// readSnapshotOperations validates and deterministically orders every non-terminal operation visible in the transaction.
+func readSnapshotOperations(tx *gorm.DB, sequence domain.Sequence) ([]OperationRecord, error) {
+	var rows []models.Operation
+	if err := tx.
+		Where("state NOT IN ? OR state IS NULL", []string{
+			string(domain.OperationSucceeded),
+			string(domain.OperationFailed),
+			string(domain.OperationCancelled),
+		}).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("read active operation snapshot: %w", err)
+	}
+
+	records := make([]OperationRecord, 0, len(rows))
+	for _, row := range rows {
+		record, err := operationRecordFromModel(row)
+		if err != nil {
+			return nil, err
+		}
+		if record.Revision > sequence {
+			return nil, corruptStateError(
+				"operation",
+				string(record.Operation.ID),
+				fmt.Errorf("revision %d exceeds journal sequence %d", record.Revision, sequence),
+			)
+		}
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].Revision != records[j].Revision {
+			return records[i].Revision < records[j].Revision
+		}
+		return records[i].Operation.ID < records[j].Operation.ID
+	})
+	for index := 1; index < len(records); index++ {
+		if records[index-1].Revision == records[index].Revision {
+			return nil, corruptStateError(
+				"operation",
+				string(records[index].Operation.ID),
+				fmt.Errorf("revision %d is also used by operation %q", records[index].Revision, records[index-1].Operation.ID),
+			)
+		}
+	}
+	return records, nil
 }
 
 // mutate serializes SQLite writers within the daemon and executes one immediate transaction.
