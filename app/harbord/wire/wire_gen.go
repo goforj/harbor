@@ -8,11 +8,14 @@ package wire
 
 import (
 	"github.com/goforj/harbor/app/harbord"
+	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/cmd"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/makecmd"
+	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/runtime"
+	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/migrations"
 )
 
@@ -26,7 +29,21 @@ func InitializeApplication() (App, error) {
 	resourcesCmd := cmd.NewResourcesCmd()
 	aboutCmd := cmd.NewAboutCmd()
 	helloWorldCmd := cmd.NewHelloWorldCmd(appLogger)
-	commands := harbordapp.NewCommands(resourcesCmd, aboutCmd, helloWorldCmd)
+	harborStateRepo := models.NewHarborStateRepo(connections)
+	projectRepo := models.NewProjectRepo(connections)
+	mutationCoordinator := state.NewMutationCoordinator(connections)
+	store := state.NewStore(harborStateRepo, projectRepo, mutationCoordinator)
+	authorityAuthority := authority.NewAuthority(store)
+	server, err := provideControlServer(authorityAuthority)
+	if err != nil {
+		return App{}, err
+	}
+	readinessCheck := provideHarbordReadiness(connections)
+	runner, err := provideDaemonRunner(server, readinessCheck)
+	if err != nil {
+		return App{}, err
+	}
+	commands := harbordapp.NewCommands(resourcesCmd, aboutCmd, helloWorldCmd, runner)
 	commandCmd := makecmd.NewCommandCmd()
 	migrationCmd := makecmd.NewMigrationCmd()
 	modelCmd := makecmd.NewModelCmd(connections)

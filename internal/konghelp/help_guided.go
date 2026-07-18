@@ -52,7 +52,7 @@ func printGuidedRootHelp(out io.Writer, modelHelp string, node *kong.Node, maint
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, categoryHeader("Flags"))
-	renderHelpRows(out, []helpRow{helpRow{name: "-h, --help", help: "Show help"}}, "  ")
+	renderHelpRows(out, guidedFlagRows(node), "  ")
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, categoryHeader("Learn more"))
@@ -84,17 +84,15 @@ func PrintGuidedCommandHelp(out io.Writer, node *kong.Node) {
 		renderExternalCLIPositionals(out, node.Positional)
 	}
 
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, categoryHeader("Flags"))
+	renderHelpRows(out, guidedFlagRows(node), "  ")
+}
+
+// guidedFlagRows preserves visible Kong flags while guaranteeing the universal help affordance once.
+func guidedFlagRows(node *kong.Node) []helpRow {
 	rows := commandHelpRows(node)
-	if len(rows) > len(node.Positional) {
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, categoryHeader("Flags"))
-		rows = withHelpRow(rows[len(node.Positional):])
-		renderHelpRows(out, rows, "  ")
-	} else {
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, categoryHeader("Flags"))
-		renderHelpRows(out, []helpRow{helpRow{name: "-h, --help", help: "Show help"}}, "  ")
-	}
+	return withHelpRow(rows[len(node.Positional):])
 }
 
 // withHelpRow ensures the guided layout always exposes the universal help affordance.
