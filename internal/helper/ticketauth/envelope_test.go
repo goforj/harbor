@@ -71,6 +71,58 @@ func TestEnvelopeCodecRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEnvelopeCodecPreservesRequirementBounds keeps valid route-only and maximum tickets within persistent limits.
+func TestEnvelopeCodecPreservesRequirementBounds(t *testing.T) {
+	maximum := make([]helper.SocketRequirement, helper.MaximumSocketRequirements)
+	for index := range maximum {
+		maximum[index] = helper.SocketRequirement{Transport: helper.SocketTransportTCP4, Port: uint16(index + 1)}
+	}
+	for name, requirements := range map[string][]helper.SocketRequirement{
+		"route only": {},
+		"maximum":    maximum,
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := envelopeTestTime()
+			publicKey, privateKey := envelopeTestKey(t, 10)
+			ticket := envelopeTestTicket(now)
+			ticket.ExpectedPreAssignment.Requirements = requirements
+			envelope, err := Sign(ticket, privateKey, now)
+			if err != nil {
+				t.Fatalf("Sign() error = %v", err)
+			}
+			encoded, err := Encode(envelope)
+			if err != nil {
+				t.Fatalf("Encode() error = %v", err)
+			}
+			decoded, err := Decode(encoded)
+			if err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			verified, err := decoded.Verify(publicKey, now)
+			if err != nil {
+				t.Fatalf("Verify() error = %v", err)
+			}
+			if !reflect.DeepEqual(verified.ExpectedPreAssignment.Requirements, requirements) {
+				t.Fatalf("requirements = %#v, want %#v", verified.ExpectedPreAssignment.Requirements, requirements)
+			}
+		})
+	}
+}
+
+// TestEnvelopeSignatureKnownVector fixes the v2 signed authority shape and domain separator.
+func TestEnvelopeSignatureKnownVector(t *testing.T) {
+	now := envelopeTestTime()
+	_, privateKey := envelopeTestKey(t, 9)
+	envelope, err := Sign(envelopeTestTicket(now), privateKey, now)
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+	const want = "IYCaxRjPz6648sVGvPJM+pWRwdIDQg5AJw96D7whrOM4RYlQuJzC1AkMmojlkxPFWTTRnw04GVS8XwtCLjuXAg=="
+	if envelope.Signature != want {
+		t.Fatalf("signature = %q, want %q", envelope.Signature, want)
+	}
+}
+
 // TestEnvelopeDecodeRejectsNoncanonicalShapes covers ambiguity at every nested object boundary.
 func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 	now := envelopeTestTime()
@@ -93,16 +145,17 @@ func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 		t.Fatalf("decode fixture objects: %v", err)
 	}
 	var ticketObjects struct {
-		Version             json.RawMessage `json:"version"`
-		Operation           json.RawMessage `json:"operation"`
-		InstallationID      json.RawMessage `json:"installation_id"`
-		RequesterIdentity   json.RawMessage `json:"requester_identity"`
-		OwnershipGeneration json.RawMessage `json:"ownership_generation"`
-		ApprovedPool        json.RawMessage `json:"approved_pool"`
-		ApprovedAddress     json.RawMessage `json:"approved_address"`
-		ExpectedObservation json.RawMessage `json:"expected_observation"`
-		Nonce               json.RawMessage `json:"nonce"`
-		ExpiresAt           json.RawMessage `json:"expires_at"`
+		Version               json.RawMessage `json:"version"`
+		Operation             json.RawMessage `json:"operation"`
+		InstallationID        json.RawMessage `json:"installation_id"`
+		RequesterIdentity     json.RawMessage `json:"requester_identity"`
+		OwnershipGeneration   json.RawMessage `json:"ownership_generation"`
+		ApprovedPool          json.RawMessage `json:"approved_pool"`
+		ApprovedAddress       json.RawMessage `json:"approved_address"`
+		ExpectedObservation   json.RawMessage `json:"expected_observation"`
+		ExpectedPreAssignment json.RawMessage `json:"expected_pre_assignment"`
+		Nonce                 json.RawMessage `json:"nonce"`
+		ExpiresAt             json.RawMessage `json:"expires_at"`
 	}
 	if err := json.Unmarshal(objects.Ticket, &ticketObjects); err != nil {
 		t.Fatalf("decode fixture ticket: %v", err)
@@ -110,6 +163,26 @@ func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 	valid := string(canonical)
 	ticket := string(objects.Ticket)
 	observation := string(ticketObjects.ExpectedObservation)
+	preAssignment := string(ticketObjects.ExpectedPreAssignment)
+	var preAssignmentObjects struct {
+		Fingerprint  json.RawMessage `json:"fingerprint"`
+		Requirements json.RawMessage `json:"requirements"`
+	}
+	if err := json.Unmarshal(ticketObjects.ExpectedPreAssignment, &preAssignmentObjects); err != nil {
+		t.Fatalf("decode fixture pre-assignment: %v", err)
+	}
+	var requirements []json.RawMessage
+	if err := json.Unmarshal(preAssignmentObjects.Requirements, &requirements); err != nil || len(requirements) == 0 {
+		t.Fatalf("decode fixture requirements = %d, %v", len(requirements), err)
+	}
+	requirement := string(requirements[0])
+	var requirementObjects struct {
+		Transport json.RawMessage `json:"transport"`
+		Port      json.RawMessage `json:"port"`
+	}
+	if err := json.Unmarshal(requirements[0], &requirementObjects); err != nil {
+		t.Fatalf("decode fixture requirement: %v", err)
+	}
 	tests := []struct {
 		name string
 		body string
@@ -123,7 +196,7 @@ func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 		{name: "missing envelope field", body: strings.Replace(valid, `,"signature":`+string(objects.Signature), "", 1)},
 		{name: "unknown envelope field", body: strings.TrimSuffix(valid, "}") + `,"unknown":true}`},
 		{name: "case alias envelope field", body: strings.Replace(valid, `"version":`, `"Version":`, 1)},
-		{name: "duplicate envelope field", body: strings.Replace(valid, `"version":`, `"version":1,"version":`, 1)},
+		{name: "duplicate envelope field", body: strings.Replace(valid, `"version":`, `"version":2,"version":`, 1)},
 		{name: "escaped envelope field", body: strings.Replace(valid, `"version":`, `"\u0076ersion":`, 1)},
 		{name: "missing ticket field", body: strings.Replace(valid, ticket, strings.Replace(ticket, `,"nonce":`+string(ticketObjects.Nonce), "", 1), 1)},
 		{name: "unknown ticket field", body: strings.Replace(valid, ticket, strings.TrimSuffix(ticket, "}")+`,"unknown":true}`, 1)},
@@ -133,6 +206,17 @@ func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 		{name: "unknown observation field", body: strings.Replace(valid, observation, strings.TrimSuffix(observation, "}")+`,"unknown":true}`, 1)},
 		{name: "case alias observation field", body: strings.Replace(valid, observation, strings.Replace(observation, `"state":`, `"State":`, 1), 1)},
 		{name: "duplicate observation field", body: strings.Replace(valid, observation, strings.Replace(observation, `"state":`, `"state":"absent","state":`, 1), 1)},
+		{name: "null pre-assignment", body: strings.Replace(valid, preAssignment, "null", 1)},
+		{name: "missing pre-assignment fingerprint", body: strings.Replace(valid, preAssignment, strings.Replace(preAssignment, `"fingerprint":`+string(preAssignmentObjects.Fingerprint)+`,`, "", 1), 1)},
+		{name: "missing pre-assignment requirements", body: strings.Replace(valid, preAssignment, strings.Replace(preAssignment, `,"requirements":`+string(preAssignmentObjects.Requirements), "", 1), 1)},
+		{name: "unknown pre-assignment field", body: strings.Replace(valid, preAssignment, strings.TrimSuffix(preAssignment, "}")+`,"unknown":true}`, 1)},
+		{name: "case alias pre-assignment field", body: strings.Replace(valid, preAssignment, strings.Replace(preAssignment, `"fingerprint":`, `"Fingerprint":`, 1), 1)},
+		{name: "duplicate pre-assignment field", body: strings.Replace(valid, preAssignment, strings.Replace(preAssignment, `"fingerprint":`, `"fingerprint":"duplicate","fingerprint":`, 1), 1)},
+		{name: "missing requirement transport", body: strings.Replace(valid, requirement, strings.Replace(requirement, `"transport":`+string(requirementObjects.Transport)+`,`, "", 1), 1)},
+		{name: "missing requirement port", body: strings.Replace(valid, requirement, strings.Replace(requirement, `,"port":`+string(requirementObjects.Port), "", 1), 1)},
+		{name: "unknown requirement field", body: strings.Replace(valid, requirement, strings.TrimSuffix(requirement, "}")+`,"unknown":true}`, 1)},
+		{name: "case alias requirement field", body: strings.Replace(valid, requirement, strings.Replace(requirement, `"transport":`, `"Transport":`, 1), 1)},
+		{name: "duplicate requirement field", body: strings.Replace(valid, requirement, strings.Replace(requirement, `"port":`, `"port":1,"port":`, 1), 1)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -156,7 +240,7 @@ func TestEnvelopeCodecBounds(t *testing.T) {
 	if _, err := Encode(invalidTime); err == nil {
 		t.Fatal("Encode() accepted a time outside JSON's canonical range")
 	}
-	expanding := []byte(`{"version":1,"public_key":"` + strings.Repeat("<", 3000) + `","ticket":{},"signature":""}`)
+	expanding := []byte(`{"version":2,"public_key":"` + strings.Repeat("<", 3000) + `","ticket":{},"signature":""}`)
 	if len(expanding) > MaxEnvelopeBytes {
 		t.Fatal("expanding decode fixture unexpectedly exceeds the input bound")
 	}
@@ -179,7 +263,7 @@ func TestEnvelopeBootstrapRejectsInvalidInputs(t *testing.T) {
 		t.Fatal("VerifyBootstrap() accepted an invalid public key")
 	}
 	invalidEnvelope := valid
-	invalidEnvelope.Version++
+	invalidEnvelope.Version = EnvelopeVersion - 1
 	if _, _, err := invalidEnvelope.VerifyBootstrap(now); err == nil {
 		t.Fatal("VerifyBootstrap() accepted an invalid envelope")
 	}
@@ -207,6 +291,16 @@ func TestEnvelopeSignRejectsInvalidInputs(t *testing.T) {
 	invalidTicket.ApprovedAddress = "192.0.2.1"
 	if _, err := Sign(invalidTicket, privateKey, now); err == nil {
 		t.Fatal("Sign() accepted an invalid ticket")
+	}
+	unboundTicket := envelopeTestTicket(now)
+	unboundTicket.ExpectedPreAssignment = nil
+	if _, err := Sign(unboundTicket, privateKey, now); err == nil {
+		t.Fatal("Sign() accepted an absent ensure without pre-assignment evidence")
+	}
+	misplacedTicket := envelopeTestTicket(now)
+	misplacedTicket.ExpectedObservation.State = helper.ObservationOwned
+	if _, err := Sign(misplacedTicket, privateKey, now); err == nil {
+		t.Fatal("Sign() accepted pre-assignment evidence on an owned ensure")
 	}
 	if _, err := Sign(envelopeTestTicket(now), ed25519.PrivateKey("short"), now); err == nil {
 		t.Fatal("Sign() accepted an invalid private key")
@@ -252,6 +346,15 @@ func TestEnvelopeVerifyRejectsSubstitution(t *testing.T) {
 		{name: "ticket address", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ApprovedAddress = "127.77.0.11" }},
 		{name: "ticket observation state", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedObservation.State = helper.ObservationOwned }},
 		{name: "ticket observation", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedObservation.Fingerprint = strings.Repeat("b", 64) }},
+		{name: "ticket pre-assignment presence", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedPreAssignment = nil }},
+		{name: "ticket pre-assignment fingerprint", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedPreAssignment.Fingerprint = strings.Repeat("c", 64) }},
+		{name: "ticket pre-assignment transport", key: publicKey, mutate: func(value *Envelope) {
+			value.Ticket.ExpectedPreAssignment.Requirements[0].Transport = helper.SocketTransportUDP4
+		}},
+		{name: "ticket pre-assignment port", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedPreAssignment.Requirements[0].Port++ }},
+		{name: "ticket pre-assignment requirement count", key: publicKey, mutate: func(value *Envelope) {
+			value.Ticket.ExpectedPreAssignment.Requirements = append(value.Ticket.ExpectedPreAssignment.Requirements, helper.SocketRequirement{Transport: helper.SocketTransportUDP4, Port: 123})
+		}},
 		{name: "ticket nonce", key: publicKey, mutate: func(value *Envelope) { value.Ticket.Nonce = strings.Repeat("z", 32) }},
 		{name: "ticket expiry", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpiresAt = value.Ticket.ExpiresAt.Add(time.Second) }},
 		{name: "signature", key: publicKey, mutate: func(value *Envelope) {
@@ -262,7 +365,7 @@ func TestEnvelopeVerifyRejectsSubstitution(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			candidate := valid
+			candidate := cloneEnvelope(valid)
 			test.mutate(&candidate)
 			_, err := candidate.Verify(test.key, now)
 			if err == nil {
@@ -273,6 +376,17 @@ func TestEnvelopeVerifyRejectsSubstitution(t *testing.T) {
 			}
 		})
 	}
+}
+
+// cloneEnvelope isolates optional signed authority slices before substitution tests mutate them.
+func cloneEnvelope(envelope Envelope) Envelope {
+	clone := envelope
+	if envelope.Ticket.ExpectedPreAssignment != nil {
+		expected := *envelope.Ticket.ExpectedPreAssignment
+		expected.Requirements = append([]helper.SocketRequirement{}, expected.Requirements...)
+		clone.Ticket.ExpectedPreAssignment = &expected
+	}
+	return clone
 }
 
 // TestEnvelopeVerifyRejectsSignedTicketOutsideItsTimeWindow proves signatures do not override admission time.
@@ -316,6 +430,13 @@ func envelopeTestTicket(now time.Time) helper.Ticket {
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("a", 64),
+		},
+		ExpectedPreAssignment: &helper.ExpectedPreAssignment{
+			Fingerprint: strings.Repeat("b", 64),
+			Requirements: []helper.SocketRequirement{
+				{Transport: helper.SocketTransportTCP4, Port: 443},
+				{Transport: helper.SocketTransportUDP4, Port: 53},
+			},
 		},
 		Nonce:     strings.Repeat("n", 32),
 		ExpiresAt: now.Add(time.Minute),

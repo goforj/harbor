@@ -31,7 +31,7 @@ func TestDecodeRequestAcceptsStrictEnvelope(t *testing.T) {
 // TestDecodeRequestRejectsAmbiguousJSON covers size, shape, duplicate, and framing failures.
 func TestDecodeRequestRejectsAmbiguousJSON(t *testing.T) {
 	reference := strings.Repeat("a", ticketReferenceLength)
-	validBody := `{"version":1,"ticket_reference":"` + reference + `"}`
+	validBody := `{"version":2,"ticket_reference":"` + reference + `"}`
 	tests := []struct {
 		name string
 		body string
@@ -44,15 +44,15 @@ func TestDecodeRequestRejectsAmbiguousJSON(t *testing.T) {
 		{name: "string", body: `"request"`, code: ErrorCodeInvalidJSON},
 		{name: "number", body: `1`, code: ErrorCodeInvalidJSON},
 		{name: "missing version", body: `{"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "missing reference", body: `{"version":1}`, code: ErrorCodeInvalidJSON},
+		{name: "missing reference", body: `{"version":2}`, code: ErrorCodeInvalidJSON},
 		{name: "null version", body: `{"version":null,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "null reference", body: `{"version":1,"ticket_reference":null}`, code: ErrorCodeInvalidJSON},
-		{name: "case alias version", body: `{"Version":1,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "case alias reference", body: `{"version":1,"Ticket_Reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "camel alias reference", body: `{"version":1,"ticketReference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "case-fold collision", body: `{"version":1,"Version":1,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "duplicate version", body: `{"version":1,"version":1,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "duplicate escaped version", body: `{"version":1,"\u0076ersion":1,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "null reference", body: `{"version":2,"ticket_reference":null}`, code: ErrorCodeInvalidJSON},
+		{name: "case alias version", body: `{"Version":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "case alias reference", body: `{"version":2,"Ticket_Reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "camel alias reference", body: `{"version":2,"ticketReference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "case-fold collision", body: `{"version":2,"Version":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "duplicate version", body: `{"version":2,"version":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "duplicate escaped version", body: `{"version":2,"\u0076ersion":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
 		{name: "direct ticket", body: strings.TrimSuffix(validBody, "}") + `,"ticket":{}}`, code: ErrorCodeInvalidJSON},
 		{name: "direct operation", body: strings.TrimSuffix(validBody, "}") + `,"operation":"ensure_loopback_identity"}`, code: ErrorCodeInvalidJSON},
 		{name: "direct address", body: strings.TrimSuffix(validBody, "}") + `,"approved_address":"127.0.0.2"}`, code: ErrorCodeInvalidJSON},

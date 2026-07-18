@@ -244,6 +244,10 @@ func testRedeemerTicket(now time.Time, requester string) helper.Ticket {
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("a", 64),
 		},
+		ExpectedPreAssignment: &helper.ExpectedPreAssignment{
+			Fingerprint:  strings.Repeat("b", 64),
+			Requirements: []helper.SocketRequirement{},
+		},
 		Nonce:     strings.Repeat("n", 32),
 		ExpiresAt: now.Add(time.Minute),
 	}

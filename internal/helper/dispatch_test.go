@@ -182,6 +182,25 @@ func TestDispatcherDispatchRejectsInvalidRedeemedTicketBeforeReplay(t *testing.T
 	}
 }
 
+// TestDispatcherDispatchRejectsUnboundPreAssignmentBeforeReplay keeps absent-state mutation authority out of handlers.
+func TestDispatcherDispatchRejectsUnboundPreAssignmentBeforeReplay(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	reference := testTicketReference()
+	ticket := validTestTicket(now, OperationEnsureLoopbackIdentity)
+	ticket.ExpectedPreAssignment = nil
+	guard := newTestReplayGuard()
+	handler := newTestLoopbackHandler()
+	dispatcher := NewDispatcher(newTestTicketRedeemer(reference, ticket), newTestClock(now), guard, handler)
+
+	response, err := dispatcher.Dispatch(context.Background(), validTestRequest(reference))
+	if err == nil || response.Error == nil || response.Error.Code != ErrorCodeInvalidTicket {
+		t.Fatalf("unexpected unbound-ticket result: response=%#v error=%v", response, err)
+	}
+	if guard.consumeCount() != 0 || handler.callCount() != 0 {
+		t.Fatalf("replay/handler calls = %d/%d, want 0/0", guard.consumeCount(), handler.callCount())
+	}
+}
+
 // TestDispatcherDispatchConsumesFailedMutation verifies a handler failure cannot make a ticket reusable.
 func TestDispatcherDispatchConsumesFailedMutation(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)

@@ -35,6 +35,83 @@ func TestExpectedObservationValidate(t *testing.T) {
 	}
 }
 
+// TestSocketRequirementValidate covers the complete transport and port allowlist.
+func TestSocketRequirementValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		requirement SocketRequirement
+		wantError   bool
+	}{
+		{name: "TCP", requirement: SocketRequirement{Transport: SocketTransportTCP4, Port: 443}},
+		{name: "UDP", requirement: SocketRequirement{Transport: SocketTransportUDP4, Port: 53}},
+		{name: "unknown transport", requirement: SocketRequirement{Transport: "tcp6", Port: 443}, wantError: true},
+		{name: "empty transport", requirement: SocketRequirement{Port: 443}, wantError: true},
+		{name: "zero port", requirement: SocketRequirement{Transport: SocketTransportTCP4}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.requirement.Validate()
+			if test.wantError && err == nil {
+				t.Fatal("Validate() error = nil")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+// TestExpectedPreAssignmentValidate enforces explicit bounded requirements in unique transport-then-port order.
+func TestExpectedPreAssignmentValidate(t *testing.T) {
+	maximum := make([]SocketRequirement, MaximumSocketRequirements)
+	for index := range maximum {
+		maximum[index] = SocketRequirement{Transport: SocketTransportTCP4, Port: uint16(index + 1)}
+	}
+	tests := []struct {
+		name      string
+		expected  ExpectedPreAssignment
+		wantError bool
+	}{
+		{name: "route only", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{}}},
+		{name: "canonical", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{
+			{Transport: SocketTransportTCP4, Port: 53},
+			{Transport: SocketTransportTCP4, Port: 3306},
+			{Transport: SocketTransportUDP4, Port: 53},
+		}}},
+		{name: "maximum", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: maximum}},
+		{name: "missing fingerprint", expected: ExpectedPreAssignment{Requirements: []SocketRequirement{}}, wantError: true},
+		{name: "uppercase fingerprint", expected: ExpectedPreAssignment{Fingerprint: strings.Repeat("A", fingerprintLength), Requirements: []SocketRequirement{}}, wantError: true},
+		{name: "non hexadecimal fingerprint", expected: ExpectedPreAssignment{Fingerprint: strings.Repeat("z", fingerprintLength), Requirements: []SocketRequirement{}}, wantError: true},
+		{name: "implicit requirements", expected: ExpectedPreAssignment{Fingerprint: testFingerprint()}, wantError: true},
+		{name: "too many", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: append(maximum, SocketRequirement{Transport: SocketTransportTCP4, Port: 129})}, wantError: true},
+		{name: "unknown transport", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{{Transport: "tcp6", Port: 443}}}, wantError: true},
+		{name: "zero port", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{{Transport: SocketTransportTCP4}}}, wantError: true},
+		{name: "transport order", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{
+			{Transport: SocketTransportUDP4, Port: 53},
+			{Transport: SocketTransportTCP4, Port: 53},
+		}}, wantError: true},
+		{name: "port order", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{
+			{Transport: SocketTransportTCP4, Port: 443},
+			{Transport: SocketTransportTCP4, Port: 80},
+		}}, wantError: true},
+		{name: "duplicate", expected: ExpectedPreAssignment{Fingerprint: testFingerprint(), Requirements: []SocketRequirement{
+			{Transport: SocketTransportTCP4, Port: 443},
+			{Transport: SocketTransportTCP4, Port: 443},
+		}}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.expected.Validate()
+			if test.wantError && err == nil {
+				t.Fatal("Validate() error = nil")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
 // TestTicketValidateInstallationIDContract verifies helper admission uses the shared installation identity domain.
 func TestTicketValidateInstallationIDContract(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
@@ -79,6 +156,7 @@ func TestTicketValidate(t *testing.T) {
 		mutate func(*Ticket)
 		code   ErrorCode
 	}{
+		{name: "previous version", mutate: func(ticket *Ticket) { ticket.Version-- }, code: ErrorCodeInvalidTicket},
 		{name: "unsupported version", mutate: func(ticket *Ticket) { ticket.Version++ }, code: ErrorCodeInvalidTicket},
 		{name: "unknown operation", mutate: func(ticket *Ticket) { ticket.Operation = "run_command" }, code: ErrorCodeInvalidTicket},
 		{name: "empty installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "" }, code: ErrorCodeInvalidTicket},
@@ -99,9 +177,17 @@ func TestTicketValidate(t *testing.T) {
 		{name: "non loopback address", mutate: func(ticket *Ticket) { ticket.ApprovedAddress = "192.0.2.10" }, code: ErrorCodeInvalidTicket},
 		{name: "IPv6 loopback address", mutate: func(ticket *Ticket) { ticket.ApprovedAddress = "::1" }, code: ErrorCodeInvalidTicket},
 		{name: "invalid observation", mutate: func(ticket *Ticket) { ticket.ExpectedObservation.Fingerprint = "bad" }, code: ErrorCodeInvalidTicket},
+		{name: "absent ensure without pre-assignment", mutate: func(ticket *Ticket) { ticket.ExpectedPreAssignment = nil }, code: ErrorCodeInvalidTicket},
+		{name: "absent ensure with invalid pre-assignment", mutate: func(ticket *Ticket) { ticket.ExpectedPreAssignment.Fingerprint = "bad" }, code: ErrorCodeInvalidTicket},
+		{name: "owned ensure with pre-assignment", mutate: func(ticket *Ticket) { ticket.ExpectedObservation.State = ObservationOwned }, code: ErrorCodeInvalidTicket},
+		{name: "release with pre-assignment", mutate: func(ticket *Ticket) {
+			ticket.Operation = OperationReleaseLoopbackIdentity
+			ticket.ExpectedObservation.State = ObservationOwned
+		}, code: ErrorCodeInvalidTicket},
 		{name: "release absent observation", mutate: func(ticket *Ticket) {
 			ticket.Operation = OperationReleaseLoopbackIdentity
 			ticket.ExpectedObservation.State = ObservationAbsent
+			ticket.ExpectedPreAssignment = nil
 		}, code: ErrorCodeInvalidTicket},
 		{name: "short nonce", mutate: func(ticket *Ticket) { ticket.Nonce = "short" }, code: ErrorCodeInvalidTicket},
 		{name: "path nonce", mutate: func(ticket *Ticket) { ticket.Nonce = strings.Repeat("a", 31) + "/" }, code: ErrorCodeInvalidTicket},
@@ -133,6 +219,7 @@ func TestRequestValidate(t *testing.T) {
 		name    string
 		request Request
 	}{
+		{name: "previous version", request: Request{Version: ProtocolVersion - 1, TicketReference: testTicketReference()}},
 		{name: "unsupported version", request: Request{Version: ProtocolVersion + 1, TicketReference: testTicketReference()}},
 		{name: "empty reference", request: Request{Version: ProtocolVersion}},
 		{name: "short reference", request: Request{Version: ProtocolVersion, TicketReference: "short"}},
@@ -173,7 +260,14 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 	}
 	ownedEnsure := validTestTicket(now, OperationEnsureLoopbackIdentity)
 	ownedEnsure.ExpectedObservation.State = ObservationOwned
+	ownedEnsure.ExpectedPreAssignment = nil
 	tickets = append(tickets, ownedEnsure)
+	portEnsure := validTestTicket(now, OperationEnsureLoopbackIdentity)
+	portEnsure.ExpectedPreAssignment.Requirements = []SocketRequirement{
+		{Transport: SocketTransportTCP4, Port: 443},
+		{Transport: SocketTransportUDP4, Port: 53},
+	}
+	tickets = append(tickets, portEnsure)
 	maximumExpiry := validTestTicket(now, OperationEnsureLoopbackIdentity)
 	maximumExpiry.ExpiresAt = now.Add(MaxTicketLifetime)
 	tickets = append(tickets, maximumExpiry)
@@ -191,7 +285,7 @@ func validTestTicket(now time.Time, operation Operation) Ticket {
 	if operation == OperationReleaseLoopbackIdentity {
 		state = ObservationOwned
 	}
-	return Ticket{
+	ticket := Ticket{
 		Version:             ProtocolVersion,
 		Operation:           operation,
 		InstallationID:      "harbor-test-installation",
@@ -206,6 +300,15 @@ func validTestTicket(now time.Time, operation Operation) Ticket {
 		Nonce:     strings.Repeat("n", minimumNonceLength),
 		ExpiresAt: now.Add(time.Minute),
 	}
+	if operation == OperationEnsureLoopbackIdentity {
+		ticket.ExpectedPreAssignment = testExpectedPreAssignment()
+	}
+	return ticket
+}
+
+// testExpectedPreAssignment returns an explicit route-only safety observation.
+func testExpectedPreAssignment() *ExpectedPreAssignment {
+	return &ExpectedPreAssignment{Fingerprint: strings.Repeat("b", fingerprintLength), Requirements: []SocketRequirement{}}
 }
 
 // validTestRequest returns the complete wire envelope for an opaque reference.

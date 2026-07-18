@@ -305,6 +305,10 @@ func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedempt
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("b", 64),
 		},
+		ExpectedPreAssignment: &helper.ExpectedPreAssignment{
+			Fingerprint:  strings.Repeat("d", 64),
+			Requirements: []helper.SocketRequirement{},
+		},
 		Nonce:     strings.Repeat("c", 32),
 		ExpiresAt: now.Add(time.Minute),
 	}

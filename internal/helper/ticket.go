@@ -7,7 +7,7 @@ import (
 )
 
 // ProtocolVersion is the only helper ticket and response version this build accepts.
-const ProtocolVersion uint16 = 1
+const ProtocolVersion uint16 = 2
 
 // MaxTicketLifetime bounds how long a captured helper ticket can remain useful.
 const MaxTicketLifetime = 5 * time.Minute
@@ -22,6 +22,9 @@ const (
 	fingerprintLength     = 64
 	ticketReferenceLength = 64
 )
+
+// MaximumSocketRequirements bounds the native port capabilities one pre-assignment observation may authorize.
+const MaximumSocketRequirements = 128
 
 // Operation identifies an allowlisted privileged helper effect.
 type Operation string
@@ -60,18 +63,91 @@ func (o ExpectedObservation) Validate() error {
 	return nil
 }
 
+// SocketTransport identifies one IPv4 socket capability protected by a pre-assignment observation.
+type SocketTransport string
+
+const (
+	// SocketTransportTCP4 identifies an IPv4 TCP listener requirement.
+	SocketTransportTCP4 SocketTransport = "tcp4"
+	// SocketTransportUDP4 identifies an IPv4 UDP bind requirement.
+	SocketTransportUDP4 SocketTransport = "udp4"
+)
+
+// SocketRequirement identifies one transport and nonzero port protected before address assignment.
+type SocketRequirement struct {
+	Transport SocketTransport `json:"transport"`
+	Port      uint16          `json:"port"`
+}
+
+// Validate rejects requirements that do not identify one concrete IPv4 socket capability.
+func (r SocketRequirement) Validate() error {
+	if r.Transport != SocketTransportTCP4 && r.Transport != SocketTransportUDP4 {
+		return newRequestError(ErrorCodeInvalidTicket, "pre-assignment socket transport is invalid")
+	}
+	if r.Port == 0 {
+		return newRequestError(ErrorCodeInvalidTicket, "pre-assignment socket port must be positive")
+	}
+	return nil
+}
+
+// ExpectedPreAssignment binds an absent-state ensure to the independently observed route and socket safety facts.
+type ExpectedPreAssignment struct {
+	Fingerprint  string              `json:"fingerprint"`
+	Requirements []SocketRequirement `json:"requirements"`
+}
+
+// Validate verifies the fingerprint and explicit canonical transport-then-port requirement order.
+func (e ExpectedPreAssignment) Validate() error {
+	if !validFingerprint(e.Fingerprint) {
+		return newRequestError(ErrorCodeInvalidTicket, "expected pre-assignment fingerprint is invalid")
+	}
+	if e.Requirements == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "expected pre-assignment requirements must be explicit")
+	}
+	if len(e.Requirements) > MaximumSocketRequirements {
+		return newRequestError(ErrorCodeInvalidTicket, "expected pre-assignment requirements exceed the protocol bound")
+	}
+	for index, requirement := range e.Requirements {
+		if err := requirement.Validate(); err != nil {
+			return err
+		}
+		if index > 0 && compareSocketRequirements(e.Requirements[index-1], requirement) >= 0 {
+			return newRequestError(ErrorCodeInvalidTicket, "expected pre-assignment requirements are not unique canonical order")
+		}
+	}
+	return nil
+}
+
+// compareSocketRequirements orders requirements by transport and then numeric port.
+func compareSocketRequirements(left SocketRequirement, right SocketRequirement) int {
+	if left.Transport < right.Transport {
+		return -1
+	}
+	if left.Transport > right.Transport {
+		return 1
+	}
+	if left.Port < right.Port {
+		return -1
+	}
+	if left.Port > right.Port {
+		return 1
+	}
+	return 0
+}
+
 // Ticket authorizes exactly one bounded loopback identity operation.
 type Ticket struct {
-	Version             uint16              `json:"version"`
-	Operation           Operation           `json:"operation"`
-	InstallationID      string              `json:"installation_id"`
-	RequesterIdentity   string              `json:"requester_identity"`
-	OwnershipGeneration uint64              `json:"ownership_generation"`
-	ApprovedPool        string              `json:"approved_pool"`
-	ApprovedAddress     string              `json:"approved_address"`
-	ExpectedObservation ExpectedObservation `json:"expected_observation"`
-	Nonce               string              `json:"nonce"`
-	ExpiresAt           time.Time           `json:"expires_at"`
+	Version               uint16                 `json:"version"`
+	Operation             Operation              `json:"operation"`
+	InstallationID        string                 `json:"installation_id"`
+	RequesterIdentity     string                 `json:"requester_identity"`
+	OwnershipGeneration   uint64                 `json:"ownership_generation"`
+	ApprovedPool          string                 `json:"approved_pool"`
+	ApprovedAddress       string                 `json:"approved_address"`
+	ExpectedObservation   ExpectedObservation    `json:"expected_observation"`
+	ExpectedPreAssignment *ExpectedPreAssignment `json:"expected_pre_assignment,omitempty"`
+	Nonce                 string                 `json:"nonce"`
+	ExpiresAt             time.Time              `json:"expires_at"`
 }
 
 // Validate verifies the ticket against the current time without touching host state.
@@ -104,6 +180,16 @@ func (t Ticket) Validate(now time.Time) error {
 	}
 	if err := t.ExpectedObservation.Validate(); err != nil {
 		return err
+	}
+	if t.Operation == OperationEnsureLoopbackIdentity && t.ExpectedObservation.State == ObservationAbsent {
+		if t.ExpectedPreAssignment == nil {
+			return newRequestError(ErrorCodeInvalidTicket, "absent ensure requires an expected pre-assignment observation")
+		}
+		if err := t.ExpectedPreAssignment.Validate(); err != nil {
+			return err
+		}
+	} else if t.ExpectedPreAssignment != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "expected pre-assignment observation is not allowed for this operation")
 	}
 	if t.Operation == OperationReleaseLoopbackIdentity && t.ExpectedObservation.State != ObservationOwned {
 		return newRequestError(ErrorCodeInvalidTicket, "release requires an owned expected observation")

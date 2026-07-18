@@ -14,8 +14,8 @@ import (
 
 const (
 	// EnvelopeVersion is the only signed helper-ticket representation this build accepts.
-	EnvelopeVersion       uint16 = 1
-	ticketSignatureDomain        = "goforj.harbor/helper-ticket:v1\x00"
+	EnvelopeVersion       uint16 = 2
+	ticketSignatureDomain        = "goforj.harbor/helper-ticket:v2\x00"
 )
 
 // Envelope carries one signed ticket and the verifier proposed during first-install ownership claim.
