@@ -169,13 +169,13 @@ func operationTransitionModelFromDomain(transition OperationTransition) (models.
 	}, nil
 }
 
-// operationSequenceFromModel validates the singleton journal row before exposing its global sequence.
-func operationSequenceFromModel(row models.OperationJournalState) (domain.Sequence, error) {
+// harborStateSequenceFromModel validates the singleton Harbor row before exposing its global sequence.
+func harborStateSequenceFromModel(row models.HarborState) (domain.Sequence, error) {
 	if row.Id != 1 {
-		return 0, corruptStateError("operation journal state", strconv.Itoa(row.Id), fmt.Errorf("singleton ID must be 1"))
+		return 0, corruptStateError("harbor state", strconv.Itoa(row.Id), fmt.Errorf("singleton ID must be 1"))
 	}
 	if row.Sequence < 0 {
-		return 0, corruptStateError("operation journal state", "1", fmt.Errorf("sequence must not be negative"))
+		return 0, corruptStateError("harbor state", "1", fmt.Errorf("sequence must not be negative"))
 	}
 	return domain.Sequence(row.Sequence), nil
 }

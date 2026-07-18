@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const operationJournalSingletonID = 1
+const harborStateSingletonID = 1
 
 // OperationRecord couples a durable domain operation to its optimistic revision.
 type OperationRecord struct {
@@ -86,7 +86,7 @@ type OperationJournal struct {
 	connections *database.Connections
 	operations  *models.OperationRepo
 	transitions *models.OperationTransitionRepo
-	state       *models.OperationJournalStateRepo
+	harborState *models.HarborStateRepo
 	mutationMu  sync.Mutex
 }
 
@@ -95,13 +95,13 @@ func NewOperationJournal(
 	connections *database.Connections,
 	operations *models.OperationRepo,
 	transitions *models.OperationTransitionRepo,
-	state *models.OperationJournalStateRepo,
+	harborState *models.HarborStateRepo,
 ) *OperationJournal {
 	return &OperationJournal{
 		connections: connections,
 		operations:  operations,
 		transitions: transitions,
-		state:       state,
+		harborState: harborState,
 	}
 }
 
@@ -156,7 +156,7 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 			}
 		}
 
-		sequence, err := allocateOperationSequence(tx)
+		sequence, err := allocateHarborSequence(tx)
 		if err != nil {
 			return err
 		}
@@ -236,7 +236,7 @@ func (journal *OperationJournal) Transition(
 		}
 		lastTransition := history[len(history)-1]
 
-		sequence, err := allocateOperationSequence(tx)
+		sequence, err := allocateHarborSequence(tx)
 		if err != nil {
 			return err
 		}
@@ -404,17 +404,17 @@ func (journal *OperationJournal) Transitions(ctx context.Context, operationID do
 	return transitions, nil
 }
 
-// CurrentSequence returns the latest globally committed operation journal sequence.
+// CurrentSequence returns the latest globally committed Harbor mutation sequence.
 func (journal *OperationJournal) CurrentSequence(ctx context.Context) (domain.Sequence, error) {
 	ctx = normalizeContext(ctx)
-	row, err := journal.state.WithContext(ctx).ByID(operationJournalSingletonID)
+	row, err := journal.harborState.WithContext(ctx).ByID(harborStateSingletonID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, corruptStateError("operation journal state", "1", fmt.Errorf("singleton row is missing"))
+		return 0, corruptStateError("harbor state", "1", fmt.Errorf("singleton row is missing"))
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read operation journal sequence: %w", err)
+		return 0, fmt.Errorf("read Harbor sequence: %w", err)
 	}
-	return operationSequenceFromModel(*row)
+	return harborStateSequenceFromModel(*row)
 }
 
 // readJournalSnapshot validates the singleton sequence and every active operation before returning transaction-local state.
@@ -437,19 +437,19 @@ func readJournalSnapshot(tx *gorm.DB) (JournalSnapshot, error) {
 
 // readSnapshotSequence reads every singleton-table row so weakened schemas cannot hide extra journal authorities.
 func readSnapshotSequence(tx *gorm.DB) (domain.Sequence, error) {
-	var rows []models.OperationJournalState
+	var rows []models.HarborState
 	if err := tx.Order("id ASC").Find(&rows).Error; err != nil {
-		return 0, fmt.Errorf("read operation journal snapshot sequence: %w", err)
+		return 0, fmt.Errorf("read Harbor snapshot sequence: %w", err)
 	}
 	if len(rows) == 0 {
-		return 0, corruptStateError("operation journal state", "1", fmt.Errorf("singleton row is missing"))
+		return 0, corruptStateError("harbor state", "1", fmt.Errorf("singleton row is missing"))
 	}
 	for _, row := range rows {
-		if _, err := operationSequenceFromModel(row); err != nil {
+		if _, err := harborStateSequenceFromModel(row); err != nil {
 			return 0, err
 		}
 	}
-	return operationSequenceFromModel(rows[0])
+	return harborStateSequenceFromModel(rows[0])
 }
 
 // readSnapshotOperations validates and deterministically orders every non-terminal operation visible in the transaction.
@@ -512,22 +512,22 @@ func (journal *OperationJournal) mutate(ctx context.Context, mutation func(*gorm
 	return connection.WithContext(ctx).Transaction(mutation)
 }
 
-// allocateOperationSequence advances and reads the singleton counter inside the caller's transaction.
-func allocateOperationSequence(tx *gorm.DB) (domain.Sequence, error) {
-	updated := tx.Model(&models.OperationJournalState{}).
-		Where("id = ?", operationJournalSingletonID).
+// allocateHarborSequence advances and reads the global singleton counter inside the caller's transaction.
+func allocateHarborSequence(tx *gorm.DB) (domain.Sequence, error) {
+	updated := tx.Model(&models.HarborState{}).
+		Where("id = ?", harborStateSingletonID).
 		UpdateColumn("sequence", gorm.Expr("sequence + 1"))
 	if updated.Error != nil {
-		return 0, fmt.Errorf("advance operation journal sequence: %w", updated.Error)
+		return 0, fmt.Errorf("advance Harbor sequence: %w", updated.Error)
 	}
 	if updated.RowsAffected != 1 {
-		return 0, corruptStateError("operation journal state", "1", fmt.Errorf("singleton row is missing"))
+		return 0, corruptStateError("harbor state", "1", fmt.Errorf("singleton row is missing"))
 	}
-	var row models.OperationJournalState
-	if err := tx.Where("id = ?", operationJournalSingletonID).First(&row).Error; err != nil {
-		return 0, fmt.Errorf("read advanced operation journal sequence: %w", err)
+	var row models.HarborState
+	if err := tx.Where("id = ?", harborStateSingletonID).First(&row).Error; err != nil {
+		return 0, fmt.Errorf("read advanced Harbor sequence: %w", err)
 	}
-	return operationSequenceFromModel(row)
+	return harborStateSequenceFromModel(row)
 }
 
 // findOperationByID distinguishes an absent row from a storage failure inside a mutation transaction.

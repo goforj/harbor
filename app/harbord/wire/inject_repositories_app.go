@@ -11,9 +11,14 @@ import (
 // repositorySet is a wire set for generated repositories.
 var repositorySet = wire.NewSet(
 	wire.Value(repositorySetPlaceholder{}),
-	models.NewOperationJournalStateRepo,
+	models.NewHarborStateRepo,
 	models.NewOperationRepo,
 	models.NewOperationTransitionRepo,
+	models.NewProjectAppRepo,
+	models.NewProjectRepo,
+	models.NewProjectResourceRepo,
+	models.NewProjectServiceRepo,
+	models.NewRecentResourceRepo,
 )
 
 // repositorySetPlaceholder keeps repositorySet non-empty until repos are generated.

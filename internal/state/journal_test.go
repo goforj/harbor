@@ -18,11 +18,11 @@ import (
 
 // operationJournalTestSchema stays intentionally permissive so corruption tests can bypass production constraints and prove reads fail closed.
 var operationJournalTestSchema = []string{
-	`CREATE TABLE operation_journal_state (
+	`CREATE TABLE harbor_state (
 		id INTEGER PRIMARY KEY,
 		sequence INTEGER NOT NULL
 	)`,
-	`INSERT INTO operation_journal_state (id, sequence) VALUES (1, 0)`,
+	`INSERT INTO harbor_state (id, sequence) VALUES (1, 0)`,
 	`CREATE TABLE operations (
 		id TEXT PRIMARY KEY,
 		intent_id TEXT NOT NULL UNIQUE,
@@ -651,17 +651,17 @@ func TestOperationJournalRejectsHistoryGapsBeforeAppend(t *testing.T) {
 // TestOperationJournalRejectsCorruptSingleton verifies the global sequence cannot be read from malformed durable state.
 func TestOperationJournalRejectsCorruptSingleton(t *testing.T) {
 	journal, connection := newOperationJournalTestHarness(t)
-	if err := connection.Model(&models.OperationJournalState{}).Where("id = 1").Update("sequence", -1).Error; err != nil {
+	if err := connection.Model(&models.HarborState{}).Where("id = 1").Update("sequence", -1).Error; err != nil {
 		t.Fatalf("corrupt journal singleton: %v", err)
 	}
 	_, err := journal.CurrentSequence(context.Background())
-	assertCorruptStateError(t, err, "operation journal state")
+	assertCorruptStateError(t, err, "harbor state")
 
-	if err := connection.Where("id = 1").Delete(&models.OperationJournalState{}).Error; err != nil {
+	if err := connection.Where("id = 1").Delete(&models.HarborState{}).Error; err != nil {
 		t.Fatalf("remove journal singleton: %v", err)
 	}
 	_, err = journal.CurrentSequence(context.Background())
-	assertCorruptStateError(t, err, "operation journal state")
+	assertCorruptStateError(t, err, "harbor state")
 }
 
 // TestOperationJournalHonorsContext verifies cancellation prevents mutations and nil contexts remain usable.
@@ -715,7 +715,7 @@ func newOperationJournalTestHarness(t *testing.T) (*OperationJournal, *gorm.DB) 
 		connections,
 		models.NewOperationRepo(connections),
 		models.NewOperationTransitionRepo(connections),
-		models.NewOperationJournalStateRepo(connections),
+		models.NewHarborStateRepo(connections),
 	), connection
 }
 
@@ -759,7 +759,7 @@ func mustOperationJournalSequence(t *testing.T, journal *OperationJournal) domai
 	t.Helper()
 	sequence, err := journal.CurrentSequence(context.Background())
 	if err != nil {
-		t.Fatalf("read operation journal sequence: %v", err)
+		t.Fatalf("read Harbor sequence: %v", err)
 	}
 	return sequence
 }

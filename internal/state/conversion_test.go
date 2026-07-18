@@ -190,13 +190,13 @@ func TestOperationTransitionValidateRejectsInvalidValues(t *testing.T) {
 	}
 }
 
-// TestOperationSequenceFromModelRejectsWrongSingleton verifies only the seeded journal row can represent global sequence state.
-func TestOperationSequenceFromModelRejectsWrongSingleton(t *testing.T) {
-	for _, row := range []models.OperationJournalState{{Id: 2, Sequence: 1}, {Id: 1, Sequence: -1}} {
-		_, err := operationSequenceFromModel(row)
-		assertCorruptStateError(t, err, "operation journal state")
+// TestHarborStateSequenceFromModelRejectsWrongSingleton verifies only the seeded Harbor row can represent global sequence state.
+func TestHarborStateSequenceFromModelRejectsWrongSingleton(t *testing.T) {
+	for _, row := range []models.HarborState{{Id: 2, Sequence: 1}, {Id: 1, Sequence: -1}} {
+		_, err := harborStateSequenceFromModel(row)
+		assertCorruptStateError(t, err, "harbor state")
 	}
-	sequence, err := operationSequenceFromModel(models.OperationJournalState{Id: 1, Sequence: 0})
+	sequence, err := harborStateSequenceFromModel(models.HarborState{Id: 1, Sequence: 0})
 	if err != nil || sequence != 0 {
 		t.Fatalf("zero singleton sequence = %d, %v", sequence, err)
 	}

@@ -90,22 +90,22 @@ func TestOperationJournalSnapshotRejectsCrossRecordCorruption(t *testing.T) {
 			name: "missing singleton",
 			corrupt: func(t *testing.T, journal *OperationJournal) {
 				connection := operationJournalTestConnection(t, journal)
-				if err := connection.Exec("DELETE FROM operation_journal_state").Error; err != nil {
+				if err := connection.Exec("DELETE FROM harbor_state").Error; err != nil {
 					t.Fatalf("delete singleton: %v", err)
 				}
 			},
-			entity: "operation journal state",
+			entity: "harbor state",
 			want:   "singleton row is missing",
 		},
 		{
 			name: "extra singleton",
 			corrupt: func(t *testing.T, journal *OperationJournal) {
 				connection := operationJournalTestConnection(t, journal)
-				if err := connection.Exec("INSERT INTO operation_journal_state (id, sequence) VALUES (2, 0)").Error; err != nil {
+				if err := connection.Exec("INSERT INTO harbor_state (id, sequence) VALUES (2, 0)").Error; err != nil {
 					t.Fatalf("insert extra singleton: %v", err)
 				}
 			},
-			entity: "operation journal state",
+			entity: "harbor state",
 			want:   "singleton ID must be 1",
 		},
 		{
@@ -116,7 +116,7 @@ func TestOperationJournalSnapshotRejectsCrossRecordCorruption(t *testing.T) {
 					t.Fatalf("enqueue operation: %v", err)
 				}
 				connection := operationJournalTestConnection(t, journal)
-				if err := connection.Exec("UPDATE operation_journal_state SET sequence = 0 WHERE id = 1").Error; err != nil {
+				if err := connection.Exec("UPDATE harbor_state SET sequence = 0 WHERE id = 1").Error; err != nil {
 					t.Fatalf("rewind singleton: %v", err)
 				}
 			},
