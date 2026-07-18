@@ -5,37 +5,180 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goforj/harbor/internal/helper"
 )
 
-// TestRunFailsClosed verifies the seed executable cannot redeem even a canonical opaque reference.
-func TestRunFailsClosed(t *testing.T) {
-	request := helper.Request{
-		Version:         helper.ProtocolVersion,
-		TicketReference: helper.TicketReference("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+// TestProductionDependenciesExposeFixedComposition proves the entrypoint declares every required authority adapter.
+func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
+	dependencies := productionDependencies()
+	if dependencies.openTicketRedeemer == nil || dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil {
+		t.Fatal("production dependencies are incomplete")
 	}
+	if handler := dependencies.newLoopbackIdentityHandler(); handler == nil {
+		t.Fatal("production loopback handler is nil")
+	}
+}
+
+// TestRunOpensCompleteAuthorityBeforeReading proves one request cannot be consumed under partial durable composition.
+func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	reference, redemption := testRedemption(now)
+	request := helper.Request{Version: helper.ProtocolVersion, TicketReference: reference}
 	body, err := json.Marshal(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
 
+	events := make([]string, 0, 10)
+	reader := &recordingReader{reader: bytes.NewReader(body), events: &events}
+	dependencies := successfulTestDependencies(&events, redemption)
 	var output bytes.Buffer
-	err = run(context.Background(), bytes.NewReader(body), &output, fixedClock{now: time.Now().UTC()})
-	if !errors.Is(err, helper.ErrTicketRedemptionUnavailable) {
-		t.Fatalf("run error = %v, want ticket redemption unavailable", err)
+	if err := run(context.Background(), reader, &output, fixedClock{now: now}, dependencies); err != nil {
+		t.Fatalf("run: %v", err)
 	}
+
 	var response helper.Response
 	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.OK || response.Error == nil || response.Error.Code != helper.ErrorCodeAuthenticationUnavailable {
+	if !response.OK || response.Error != nil || response.Result == nil {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	wantEvents := []string{
+		"open ticket redeemer",
+		"open replay guard",
+		"new loopback handler",
+		"read request",
+		"redeem ticket",
+		"consume replay claim",
+		"ensure loopback identity",
+		"close replay guard",
+		"close ticket redeemer",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+// TestRunStopsBeforeReadingWhenRedeemerOpenFails verifies absent authentication authority reaches no other boundary.
+func TestRunStopsBeforeReadingWhenRedeemerOpenFails(t *testing.T) {
+	openErr := errors.New("ticket redeemer open failed")
+	events := make([]string, 0, 1)
+	dependencies := runtimeDependencies{
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			events = append(events, "open ticket redeemer")
+			return nil, openErr
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			t.Fatal("replay guard was opened without authentication authority")
+			return nil, nil
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			t.Fatal("loopback handler was constructed without authentication authority")
+			return nil
+		},
+	}
+	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	var output bytes.Buffer
+	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
+	if !errors.Is(err, openErr) {
+		t.Fatalf("run error = %v, want redeemer open failure", err)
+	}
+	wantEvents := []string{"open ticket redeemer"}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output = %q, want no response before complete composition", output.String())
+	}
+}
+
+// TestRunClosesRedeemerWhenReplayOpenFails verifies partial composition leaves stdin untouched and releases retained authority.
+func TestRunClosesRedeemerWhenReplayOpenFails(t *testing.T) {
+	openErr := errors.New("replay open failed")
+	closeErr := errors.New("redeemer close failed")
+	events := make([]string, 0, 3)
+	dependencies := runtimeDependencies{
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			events = append(events, "open ticket redeemer")
+			return &testTicketRedeemer{events: &events, closeErr: closeErr}, nil
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			events = append(events, "open replay guard")
+			return nil, openErr
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			t.Fatal("loopback handler was constructed after replay composition failed")
+			return nil
+		},
+	}
+	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	var output bytes.Buffer
+	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
+	if !errors.Is(err, openErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("run error = %v, want open and close failures", err)
+	}
+	wantEvents := []string{"open ticket redeemer", "open replay guard", "close ticket redeemer"}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output = %q, want no response before complete composition", output.String())
+	}
+}
+
+// TestRunClosesEveryAuthorityAfterServeFailure proves response failure cannot strand retained privileged handles.
+func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
+	redeemerCloseErr := errors.New("redeemer close failed")
+	replayCloseErr := errors.New("replay close failed")
+	events := make([]string, 0, 6)
+	dependencies := runtimeDependencies{
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			events = append(events, "open ticket redeemer")
+			return &testTicketRedeemer{events: &events, closeErr: redeemerCloseErr}, nil
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			events = append(events, "open replay guard")
+			return &testReplayGuard{events: &events, closeErr: replayCloseErr}, nil
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			events = append(events, "new loopback handler")
+			return &testLoopbackHandler{events: &events}
+		},
+	}
+	reader := &recordingReader{reader: bytes.NewReader(nil), events: &events}
+	var output bytes.Buffer
+	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
+	if err == nil || !errors.Is(err, redeemerCloseErr) || !errors.Is(err, replayCloseErr) {
+		t.Fatalf("run error = %v, want request and both close failures", err)
+	}
+	wantEvents := []string{
+		"open ticket redeemer",
+		"open replay guard",
+		"new loopback handler",
+		"read request",
+		"close replay guard",
+		"close ticket redeemer",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+	var response helper.Response
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.OK || response.Error == nil || response.Error.Code != helper.ErrorCodeInvalidJSON {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
 
+// fixedClock supplies deterministic trusted time to entrypoint tests.
 type fixedClock struct {
 	now time.Time
 }
@@ -44,3 +187,137 @@ type fixedClock struct {
 func (c fixedClock) Now() time.Time {
 	return c.now
 }
+
+// recordingReader records the first attempt to consume caller-controlled bytes.
+type recordingReader struct {
+	reader   *bytes.Reader
+	events   *[]string
+	recorded bool
+}
+
+// Read records the authority ordering before forwarding request bytes.
+func (reader *recordingReader) Read(buffer []byte) (int, error) {
+	if !reader.recorded {
+		reader.recorded = true
+		*reader.events = append(*reader.events, "read request")
+	}
+	return reader.reader.Read(buffer)
+}
+
+// testTicketRedeemer supplies one authenticated redemption while exposing lifecycle ordering.
+type testTicketRedeemer struct {
+	redemption helper.TicketRedemption
+	events     *[]string
+	closeErr   error
+}
+
+// Redeem returns the independently bound test authority.
+func (redeemer *testTicketRedeemer) Redeem(_ context.Context, _ helper.TicketReference) (helper.TicketRedemption, error) {
+	*redeemer.events = append(*redeemer.events, "redeem ticket")
+	return redeemer.redemption, nil
+}
+
+// Close records release of the retained ticket topology.
+func (redeemer *testTicketRedeemer) Close() error {
+	*redeemer.events = append(*redeemer.events, "close ticket redeemer")
+	return redeemer.closeErr
+}
+
+// testReplayGuard records durable replay admission and lifecycle ordering.
+type testReplayGuard struct {
+	events   *[]string
+	closeErr error
+}
+
+// Consume records the single-use admission boundary.
+func (guard *testReplayGuard) Consume(_ context.Context, _ helper.ReplayClaim) error {
+	*guard.events = append(*guard.events, "consume replay claim")
+	return nil
+}
+
+// Close records release of the retained replay directory.
+func (guard *testReplayGuard) Close() error {
+	*guard.events = append(*guard.events, "close replay guard")
+	return guard.closeErr
+}
+
+// testLoopbackHandler returns bounded evidence without touching the host network.
+type testLoopbackHandler struct {
+	events *[]string
+}
+
+// EnsureLoopbackIdentity returns a verified owned postcondition for the approved address.
+func (handler *testLoopbackHandler) EnsureLoopbackIdentity(_ context.Context, ticket helper.Ticket) (helper.MutationEvidence, error) {
+	*handler.events = append(*handler.events, "ensure loopback identity")
+	return helper.MutationEvidence{
+		Changed: true,
+		Address: ticket.ApprovedAddress,
+		Observation: helper.ExpectedObservation{
+			State:       helper.ObservationOwned,
+			Fingerprint: strings.Repeat("d", 64),
+		},
+	}, nil
+}
+
+// ReleaseLoopbackIdentity returns a verified absent postcondition for the approved address.
+func (handler *testLoopbackHandler) ReleaseLoopbackIdentity(_ context.Context, ticket helper.Ticket) (helper.MutationEvidence, error) {
+	*handler.events = append(*handler.events, "release loopback identity")
+	return helper.MutationEvidence{
+		Changed: true,
+		Address: ticket.ApprovedAddress,
+		Observation: helper.ExpectedObservation{
+			State:       helper.ObservationAbsent,
+			Fingerprint: strings.Repeat("e", 64),
+		},
+	}, nil
+}
+
+// successfulTestDependencies creates the complete in-memory authority graph used by the entrypoint test.
+func successfulTestDependencies(events *[]string, redemption helper.TicketRedemption) runtimeDependencies {
+	return runtimeDependencies{
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			*events = append(*events, "open ticket redeemer")
+			return &testTicketRedeemer{redemption: redemption, events: events}, nil
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			*events = append(*events, "open replay guard")
+			return &testReplayGuard{events: events}, nil
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			*events = append(*events, "new loopback handler")
+			return &testLoopbackHandler{events: events}
+		},
+	}
+}
+
+// testRedemption builds one canonical ticket and its independently authenticated admission binding.
+func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedemption) {
+	reference := helper.TicketReference(strings.Repeat("a", 64))
+	ticket := helper.Ticket{
+		Version:             helper.ProtocolVersion,
+		Operation:           helper.OperationEnsureLoopbackIdentity,
+		InstallationID:      "harbor-helper-test",
+		RequesterIdentity:   "test-requester",
+		OwnershipGeneration: 7,
+		ApprovedPool:        "127.77.0.0/24",
+		ApprovedAddress:     "127.77.0.10",
+		ExpectedObservation: helper.ExpectedObservation{
+			State:       helper.ObservationAbsent,
+			Fingerprint: strings.Repeat("b", 64),
+		},
+		Nonce:     strings.Repeat("c", 32),
+		ExpiresAt: now.Add(time.Minute),
+	}
+	return reference, helper.TicketRedemption{
+		Ticket: ticket,
+		Admission: helper.TicketAdmission{
+			TicketReference:     reference,
+			RequesterIdentity:   ticket.RequesterIdentity,
+			InstallationID:      ticket.InstallationID,
+			OwnershipGeneration: ticket.OwnershipGeneration,
+			ApprovedPool:        ticket.ApprovedPool,
+		},
+	}
+}
+
+var _ io.Reader = (*recordingReader)(nil)
