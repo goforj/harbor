@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const observationFingerprintDomain = "goforj.harbor.loopback-observation.v2\x00"
+const observationFingerprintDomain = "goforj.harbor.loopback-observation.v3\x00"
 
 // Fingerprint returns a stable digest of the host facts captured by the observation.
 //
@@ -120,7 +120,46 @@ func validateFingerprintAssignment(observation Observation, assignment Assignmen
 	} else if assignment.Windows != nil {
 		return fmt.Errorf("non-Windows assignment contains Windows attributes")
 	}
+	if observation.Loopback.Kind == InterfaceKindLinuxNative {
+		if err := validateFingerprintLinuxAssignment(assignment.Linux); err != nil {
+			return err
+		}
+	} else if assignment.Linux != nil {
+		return fmt.Errorf("non-Linux assignment contains Linux attributes")
+	}
 	return nil
+}
+
+// validateFingerprintLinuxAssignment rejects scope values the Linux backend cannot emit.
+func validateFingerprintLinuxAssignment(fact *LinuxAssignmentFact) error {
+	if fact == nil {
+		return fmt.Errorf("Linux assignment attributes are missing")
+	}
+	switch fact.Scope {
+	case LinuxAddressScopeUniverse,
+		LinuxAddressScopeSite,
+		LinuxAddressScopeLink,
+		LinuxAddressScopeHost,
+		LinuxAddressScopeNowhere,
+		LinuxAddressScopeUnknown:
+		if len(fact.Label) > maximumLinuxLabel || strings.ContainsRune(fact.Label, 0) {
+			return fmt.Errorf("Linux address label is malformed")
+		}
+		if fact.AdditionalAttributesSHA256 != "" {
+			if len(fact.AdditionalAttributesSHA256) != 64 {
+				return fmt.Errorf("Linux additional-attribute fingerprint is malformed")
+			}
+			for _, character := range fact.AdditionalAttributesSHA256 {
+				if character >= '0' && character <= '9' || character >= 'a' && character <= 'f' {
+					continue
+				}
+				return fmt.Errorf("Linux additional-attribute fingerprint is malformed")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("Linux address scope %q is unsupported", fact.Scope)
+	}
 }
 
 // validateFingerprintWindowsAssignment rejects enum values that the Windows backend cannot emit.
@@ -199,6 +238,17 @@ func fingerprintAssignment(assignment AssignmentFact) []byte {
 	encoded = binary.AppendUvarint(encoded, uint64(assignment.InterfaceIndex))
 	encoded = appendFingerprintBool(encoded, assignment.NativeLoopback)
 	encoded = appendFingerprintString(encoded, string(assignment.InterfaceKind))
+	encoded = appendFingerprintBool(encoded, assignment.Linux != nil)
+	if assignment.Linux != nil {
+		encoded = appendFingerprintString(encoded, string(assignment.Linux.Scope))
+		encoded = binary.AppendUvarint(encoded, uint64(assignment.Linux.Flags))
+		encoded = appendFingerprintString(encoded, assignment.Linux.Label)
+		encoded = appendFingerprintBool(encoded, assignment.Linux.AddressMatchesLocal)
+		encoded = appendFingerprintBool(encoded, assignment.Linux.CacheInfoPresent)
+		encoded = binary.AppendUvarint(encoded, uint64(assignment.Linux.ValidLifetimeSeconds))
+		encoded = binary.AppendUvarint(encoded, uint64(assignment.Linux.PreferredLifetimeSeconds))
+		encoded = appendFingerprintString(encoded, assignment.Linux.AdditionalAttributesSHA256)
+	}
 	encoded = appendFingerprintBool(encoded, assignment.Windows != nil)
 	if assignment.Windows == nil {
 		return encoded

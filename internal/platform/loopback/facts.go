@@ -6,6 +6,7 @@ const (
 	maximumInterfaceFacts  = 4096
 	maximumAssignmentFacts = 8
 	maximumInterfaceName   = 1024
+	maximumLinuxLabel      = 15
 )
 
 // InterfaceKind identifies the operating-system fact that verified an interface as loopback.
@@ -38,7 +39,47 @@ type AssignmentFact struct {
 	InterfaceIndex int
 	NativeLoopback bool
 	InterfaceKind  InterfaceKind
-	Windows        *WindowsAssignmentFact
+	// Linux preserves the rtnetlink attributes that distinguish Harbor's exact address shape.
+	Linux   *LinuxAssignmentFact
+	Windows *WindowsAssignmentFact
+}
+
+// LinuxAddressScope classifies the routing scope reported by rtnetlink for an IPv4 address.
+type LinuxAddressScope string
+
+const (
+	// LinuxAddressScopeUniverse identifies a globally scoped address.
+	LinuxAddressScopeUniverse LinuxAddressScope = "universe"
+	// LinuxAddressScopeSite identifies Linux's retained, deprecated site scope.
+	LinuxAddressScopeSite LinuxAddressScope = "site"
+	// LinuxAddressScopeLink identifies an address confined to its link.
+	LinuxAddressScopeLink LinuxAddressScope = "link"
+	// LinuxAddressScopeHost identifies an address confined to the local host.
+	LinuxAddressScopeHost LinuxAddressScope = "host"
+	// LinuxAddressScopeNowhere identifies an address that is not usable in any routing scope.
+	LinuxAddressScopeNowhere LinuxAddressScope = "nowhere"
+	// LinuxAddressScopeUnknown identifies a scope value outside Linux's documented set.
+	LinuxAddressScopeUnknown LinuxAddressScope = "unknown"
+)
+
+// LinuxAssignmentFact contains the rtnetlink attributes required for Harbor's exact active shape.
+type LinuxAssignmentFact struct {
+	// Scope preserves whether the kernel confined the address to the local host.
+	Scope LinuxAddressScope
+	// Flags preserves kernel state such as permanent, deprecated, or tentative assignment.
+	Flags uint32
+	// Label preserves the kernel alias that atomically participates in deletion matching.
+	Label string
+	// AddressMatchesLocal proves IFA_ADDRESS names the same host as IFA_LOCAL.
+	AddressMatchesLocal bool
+	// CacheInfoPresent distinguishes a missing lifetime record from explicit zero lifetimes.
+	CacheInfoPresent bool
+	// ValidLifetimeSeconds preserves the remaining validity reported by IFA_CACHEINFO.
+	ValidLifetimeSeconds uint32
+	// PreferredLifetimeSeconds preserves the preferred lifetime reported by IFA_CACHEINFO.
+	PreferredLifetimeSeconds uint32
+	// AdditionalAttributesSHA256 binds every attribute outside Harbor's exact allowlist.
+	AdditionalAttributesSHA256 string
 }
 
 // AddressOrigin classifies the bounded origin fact reported for a Windows address.

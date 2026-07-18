@@ -12,7 +12,7 @@ var (
 	testAddress   = netip.MustParseAddr("127.77.0.10")
 	testLoopback  = InterfaceFact{Name: "native-loopback", Index: 1, Kind: InterfaceKindLinuxNative, NativeLoopback: true}
 	testForeign   = InterfaceFact{Name: "foreign", Index: 2}
-	testExactFact = AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceIndex: testLoopback.Index}
+	testExactFact = AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceIndex: testLoopback.Index, Linux: exactLinuxFact()}
 )
 
 // fakeBackend records exact effects while allowing each observation boundary to be controlled.
@@ -58,7 +58,7 @@ func (f *fakeBackend) ensure(_ context.Context, interf InterfaceFact, prefix net
 		return f.ensureErr
 	}
 	if !f.skipEnsureEffect {
-		f.assignmentFacts = []AssignmentFact{{Address: prefix.Addr(), PrefixLength: prefix.Bits(), InterfaceIndex: interf.Index}}
+		f.assignmentFacts = []AssignmentFact{{Address: prefix.Addr(), PrefixLength: prefix.Bits(), InterfaceIndex: interf.Index, Linux: exactLinuxFact()}}
 	}
 	return f.ensureErr
 }
@@ -94,9 +94,9 @@ func TestObserveClassifiesBoundedFacts(t *testing.T) {
 	}{
 		{name: "absent", want: StateAbsent},
 		{name: "exact", assignments: []AssignmentFact{testExactFact}, want: StateExact},
-		{name: "foreign", assignments: []AssignmentFact{{Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index}}, want: StateForeign},
-		{name: "non host prefix", assignments: []AssignmentFact{{Address: testAddress, PrefixLength: 8, InterfaceIndex: testLoopback.Index}}, want: StateNonHostPrefix},
-		{name: "ambiguous", assignments: []AssignmentFact{testExactFact, {Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index}}, want: StateAmbiguous},
+		{name: "foreign", assignments: []AssignmentFact{{Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index, Linux: exactLinuxFact()}}, want: StateForeign},
+		{name: "non host prefix", assignments: []AssignmentFact{{Address: testAddress, PrefixLength: 8, InterfaceIndex: testLoopback.Index, Linux: exactLinuxFact()}}, want: StateNonHostPrefix},
+		{name: "ambiguous", assignments: []AssignmentFact{testExactFact, {Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index, Linux: exactLinuxFact()}}, want: StateAmbiguous},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -251,6 +251,54 @@ func TestObserveRequiresWindowsActiveAssignmentAttributes(t *testing.T) {
 	mismatchedLUID.Windows = &attributes
 	platform.assignmentFacts = []AssignmentFact{mismatchedLUID}
 	_, err = newAdapter(platform).Observe(context.Background(), testAddress)
+	assertErrorKind(t, err, ErrorKindInvalidFacts)
+}
+
+// TestObserveRequiresLinuxExactAssignmentAttributes keeps externally shaped addresses out of StateExact.
+func TestObserveRequiresLinuxExactAssignmentAttributes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*LinuxAssignmentFact)
+		want   State
+	}{
+		{name: "exact", want: StateExact},
+		{name: "global scope", mutate: func(fact *LinuxAssignmentFact) { fact.Scope = LinuxAddressScopeUniverse }, want: StateAttributeConflict},
+		{name: "unknown scope", mutate: func(fact *LinuxAssignmentFact) { fact.Scope = LinuxAddressScopeUnknown }, want: StateAttributeConflict},
+		{name: "secondary flag", mutate: func(fact *LinuxAssignmentFact) { fact.Flags |= 1 }, want: StateAttributeConflict},
+		{name: "missing permanent flag", mutate: func(fact *LinuxAssignmentFact) { fact.Flags = 0 }, want: StateAttributeConflict},
+		{name: "custom label", mutate: func(fact *LinuxAssignmentFact) { fact.Label = "native-loopback:foreign" }, want: StateAttributeConflict},
+		{name: "peer mismatch", mutate: func(fact *LinuxAssignmentFact) { fact.AddressMatchesLocal = false }, want: StateAttributeConflict},
+		{name: "missing cache info", mutate: func(fact *LinuxAssignmentFact) { fact.CacheInfoPresent = false }, want: StateAttributeConflict},
+		{name: "finite valid lifetime", mutate: func(fact *LinuxAssignmentFact) { fact.ValidLifetimeSeconds = 60 }, want: StateAttributeConflict},
+		{name: "finite preferred lifetime", mutate: func(fact *LinuxAssignmentFact) { fact.PreferredLifetimeSeconds = 60 }, want: StateAttributeConflict},
+		{name: "additional semantics", mutate: func(fact *LinuxAssignmentFact) { fact.AdditionalAttributesSHA256 = strings.Repeat("a", 64) }, want: StateAttributeConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fact := testExactFact
+			attributes := *exactLinuxFact()
+			fact.Linux = &attributes
+			if test.mutate != nil {
+				test.mutate(fact.Linux)
+			}
+			observation, err := newAdapter(newFakeBackend(fact)).Observe(context.Background(), testAddress)
+			if err != nil {
+				t.Fatalf("Observe() error = %v", err)
+			}
+			if observation.State != test.want {
+				t.Fatalf("Observe() state = %q, want %q", observation.State, test.want)
+			}
+		})
+	}
+
+	missing := testExactFact
+	missing.Linux = nil
+	_, err := newAdapter(newFakeBackend(missing)).Observe(context.Background(), testAddress)
+	assertErrorKind(t, err, ErrorKindInvalidFacts)
+
+	darwinLoopback := InterfaceFact{Name: "lo0", Index: 1, Kind: InterfaceKindDarwinNative, NativeLoopback: true}
+	darwinAssignment := AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceIndex: 1, Linux: exactLinuxFact()}
+	_, err = newAdapter(&fakeBackend{interfaceFacts: []InterfaceFact{darwinLoopback}, assignmentFacts: []AssignmentFact{darwinAssignment}}).Observe(context.Background(), testAddress)
 	assertErrorKind(t, err, ErrorKindInvalidFacts)
 }
 
@@ -412,9 +460,9 @@ func TestConditionalMutationsApplyExactMatchingObservations(t *testing.T) {
 // TestEnsureRejectsConflictingAssignments proves ensure never repairs foreign or malformed state destructively.
 func TestEnsureRejectsConflictingAssignments(t *testing.T) {
 	assignments := [][]AssignmentFact{
-		{{Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index}},
-		{{Address: testAddress, PrefixLength: 8, InterfaceIndex: testLoopback.Index}},
-		{testExactFact, {Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index}},
+		{{Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index, Linux: exactLinuxFact()}},
+		{{Address: testAddress, PrefixLength: 8, InterfaceIndex: testLoopback.Index, Linux: exactLinuxFact()}},
+		{testExactFact, {Address: testAddress, PrefixLength: 32, InterfaceIndex: testForeign.Index, Linux: exactLinuxFact()}},
 	}
 	for _, facts := range assignments {
 		platform := newFakeBackend(facts...)
@@ -483,7 +531,7 @@ func TestReleaseRemovesOnlyObservedExactAssignments(t *testing.T) {
 
 // TestReleaseRejectsConflictsAndFailures proves no unsafe delete is attempted or hidden.
 func TestReleaseRejectsConflictsAndFailures(t *testing.T) {
-	platform := newFakeBackend(AssignmentFact{Address: testAddress, PrefixLength: 8, InterfaceIndex: testLoopback.Index})
+	platform := newFakeBackend(AssignmentFact{Address: testAddress, PrefixLength: 8, InterfaceIndex: testLoopback.Index, Linux: exactLinuxFact()})
 	_, err := newAdapter(platform).Release(context.Background(), testAddress)
 	assertErrorKind(t, err, ErrorKindConflict)
 	if platform.releaseCalls != 0 {
@@ -564,5 +612,18 @@ func exactWindowsFact() *WindowsAssignmentFact {
 		ValidLifetimeSeconds:     ^uint32(0),
 		PreferredLifetimeSeconds: ^uint32(0),
 		DADState:                 AddressStatePreferred,
+	}
+}
+
+// exactLinuxFact returns the permanent, host-only address shape created by the Linux backend.
+func exactLinuxFact() *LinuxAssignmentFact {
+	return &LinuxAssignmentFact{
+		Scope:                    LinuxAddressScopeHost,
+		Flags:                    linuxPermanentAddressFlag,
+		Label:                    testLoopback.Name,
+		AddressMatchesLocal:      true,
+		CacheInfoPresent:         true,
+		ValidLifetimeSeconds:     ^uint32(0),
+		PreferredLifetimeSeconds: ^uint32(0),
 	}
 }

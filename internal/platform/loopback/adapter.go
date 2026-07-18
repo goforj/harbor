@@ -346,6 +346,12 @@ func validateAssignments(address netip.Addr, assignments []AssignmentFact, inter
 		assignment.InterfaceName = interf.Name
 		assignment.NativeLoopback = interf.NativeLoopback
 		assignment.InterfaceKind = interf.Kind
+		if loopback.Kind == InterfaceKindLinuxNative && assignment.Linux == nil {
+			return nil, fmt.Errorf("Linux assignment attributes are missing")
+		}
+		if loopback.Kind != InterfaceKindLinuxNative && assignment.Linux != nil {
+			return nil, fmt.Errorf("non-Linux assignment contains Linux attributes")
+		}
 		if loopback.Kind == InterfaceKindWindowsSoftware && assignment.Windows == nil {
 			return nil, fmt.Errorf("Windows assignment attributes are missing")
 		}
@@ -384,10 +390,28 @@ func classify(loopback InterfaceFact, assignments []AssignmentFact) State {
 	if assignment.PrefixLength != 32 {
 		return StateNonHostPrefix
 	}
+	if loopback.Kind == InterfaceKindLinuxNative && !exactLinuxAttributes(assignment.Linux, loopback.Name) {
+		return StateAttributeConflict
+	}
 	if loopback.Kind == InterfaceKindWindowsSoftware && !exactWindowsAttributes(assignment.Windows) {
 		return StateAttributeConflict
 	}
 	return StateExact
+}
+
+const linuxPermanentAddressFlag uint32 = 1 << 7
+
+// exactLinuxAttributes proves the address has the same host-only, permanent shape Harbor creates.
+func exactLinuxAttributes(fact *LinuxAssignmentFact, interfaceName string) bool {
+	return fact != nil &&
+		fact.Scope == LinuxAddressScopeHost &&
+		fact.Flags == linuxPermanentAddressFlag &&
+		fact.Label == interfaceName &&
+		fact.AddressMatchesLocal &&
+		fact.CacheInfoPresent &&
+		fact.ValidLifetimeSeconds == ^uint32(0) &&
+		fact.PreferredLifetimeSeconds == ^uint32(0) &&
+		fact.AdditionalAttributesSHA256 == ""
 }
 
 // exactWindowsAttributes proves the address is usable as well as configured with Harbor's exact active shape.

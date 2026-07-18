@@ -23,6 +23,7 @@ func TestObservationFingerprintCanonicalizesEquivalentFacts(t *testing.T) {
 		PrefixLength:   24,
 		InterfaceName:  "ethernet-7",
 		InterfaceIndex: 7,
+		Linux:          exactLinuxFact(),
 	}
 	ordered := fingerprintLinuxObservation(StateAmbiguous, first, second)
 	reversed := fingerprintLinuxObservation(StateAmbiguous, second, first)
@@ -63,10 +64,14 @@ func TestObservationFingerprintIncludesEveryObservationFact(t *testing.T) {
 			observation.Assignments[0].Windows.InterfaceLUID = observation.Loopback.WindowsLUID
 		}},
 		{name: "loopback and assignment kind", mutate: func(observation *Observation) {
+			observation.Loopback.Name = "native-loopback"
 			observation.Loopback.Kind = InterfaceKindLinuxNative
 			observation.Loopback.WindowsLUID = 0
+			observation.Assignments[0].InterfaceName = observation.Loopback.Name
 			observation.Assignments[0].InterfaceKind = InterfaceKindLinuxNative
 			observation.Assignments[0].Windows = nil
+			observation.Assignments[0].Linux = exactLinuxFact()
+			observation.Assignments[0].Linux.Label = observation.Loopback.Name
 		}},
 		{name: "classified state and prefix", mutate: func(observation *Observation) {
 			observation.Assignments[0].PrefixLength = 31
@@ -134,6 +139,7 @@ func TestFingerprintAssignmentEncodingIncludesEveryField(t *testing.T) {
 		{name: "interface index", mutate: func(fact *AssignmentFact) { fact.InterfaceIndex++ }},
 		{name: "native loopback", mutate: func(fact *AssignmentFact) { fact.NativeLoopback = false }},
 		{name: "interface kind", mutate: func(fact *AssignmentFact) { fact.InterfaceKind = InterfaceKindDarwinNative }},
+		{name: "Linux presence", mutate: func(fact *AssignmentFact) { fact.Linux = exactLinuxFact() }},
 		{name: "Windows presence", mutate: func(fact *AssignmentFact) { fact.Windows = nil }},
 		{name: "Windows interface LUID", mutate: func(fact *AssignmentFact) { fact.Windows.InterfaceLUID++ }},
 		{name: "skip as source", mutate: func(fact *AssignmentFact) { fact.Windows.SkipAsSource = false }},
@@ -155,10 +161,38 @@ func TestFingerprintAssignmentEncodingIncludesEveryField(t *testing.T) {
 	}
 }
 
+// TestFingerprintLinuxAssignmentEncodingIncludesEveryField binds every native safety attribute to ticket evidence.
+func TestFingerprintLinuxAssignmentEncodingIncludesEveryField(t *testing.T) {
+	reference := fingerprintLinuxAssignment("native-loopback", 1, 32)
+	referenceEncoding := fingerprintAssignment(reference)
+	tests := []struct {
+		name   string
+		mutate func(*LinuxAssignmentFact)
+	}{
+		{name: "scope", mutate: func(fact *LinuxAssignmentFact) { fact.Scope = LinuxAddressScopeLink }},
+		{name: "flags", mutate: func(fact *LinuxAssignmentFact) { fact.Flags++ }},
+		{name: "label", mutate: func(fact *LinuxAssignmentFact) { fact.Label += ":other" }},
+		{name: "peer match", mutate: func(fact *LinuxAssignmentFact) { fact.AddressMatchesLocal = false }},
+		{name: "cache presence", mutate: func(fact *LinuxAssignmentFact) { fact.CacheInfoPresent = false }},
+		{name: "valid lifetime", mutate: func(fact *LinuxAssignmentFact) { fact.ValidLifetimeSeconds-- }},
+		{name: "preferred lifetime", mutate: func(fact *LinuxAssignmentFact) { fact.PreferredLifetimeSeconds-- }},
+		{name: "additional attributes", mutate: func(fact *LinuxAssignmentFact) { fact.AdditionalAttributesSHA256 = strings.Repeat("a", 64) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fact := cloneFingerprintAssignment(reference)
+			test.mutate(fact.Linux)
+			if slices.Equal(fingerprintAssignment(fact), referenceEncoding) {
+				t.Fatalf("fingerprintAssignment() omitted Linux %s", test.name)
+			}
+		})
+	}
+}
+
 // TestObservationFingerprintAcceptsEveryClassifiedState keeps validation aligned with the mutation policy's state model.
 func TestObservationFingerprintAcceptsEveryClassifiedState(t *testing.T) {
 	exact := fingerprintLinuxAssignment("native-loopback", 1, 32)
-	foreign := AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceName: "ethernet-2", InterfaceIndex: 2}
+	foreign := AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceName: "ethernet-2", InterfaceIndex: 2, Linux: exactLinuxFact()}
 	tests := []Observation{
 		fingerprintLinuxObservation(StateAbsent),
 		fingerprintLinuxObservation(StateExact, exact),
@@ -261,15 +295,56 @@ func TestObservationFingerprintRejectsMalformedFacts(t *testing.T) {
 	if fingerprint, err := nonWindows.Fingerprint(); err == nil {
 		t.Fatalf("Fingerprint() with Windows LUID on Linux = %q, want error", fingerprint)
 	}
+	invalidLinux := fingerprintLinuxObservation(StateExact, fingerprintLinuxAssignment("native-loopback", 1, 32))
+	invalidLinux.Assignments[0].Linux.Scope = "invalid"
+	if fingerprint, err := invalidLinux.Fingerprint(); err == nil {
+		t.Fatalf("Fingerprint() with invalid Linux scope = %q, want error", fingerprint)
+	}
+	missingLinux := fingerprintLinuxObservation(StateExact, fingerprintLinuxAssignment("native-loopback", 1, 32))
+	missingLinux.Assignments[0].Linux = nil
+	if fingerprint, err := missingLinux.Fingerprint(); err == nil {
+		t.Fatalf("Fingerprint() without Linux attributes = %q, want error", fingerprint)
+	}
+	nonLinux := fingerprintLinuxObservation(StateExact, fingerprintLinuxAssignment("native-loopback", 1, 32))
+	nonLinux.Loopback.Kind = InterfaceKindDarwinNative
+	nonLinux.Assignments[0].InterfaceKind = InterfaceKindDarwinNative
+	if fingerprint, err := nonLinux.Fingerprint(); err == nil {
+		t.Fatalf("Fingerprint() with Linux attributes on Darwin = %q, want error", fingerprint)
+	}
+	for name, fingerprintValue := range map[string]string{
+		"short":     "abcd",
+		"uppercase": strings.Repeat("A", 64),
+		"nonhex":    strings.Repeat("g", 64),
+	} {
+		t.Run("Linux additional attributes "+name, func(t *testing.T) {
+			observation := fingerprintLinuxObservation(StateAttributeConflict, fingerprintLinuxAssignment("native-loopback", 1, 32))
+			observation.Assignments[0].Linux.AdditionalAttributesSHA256 = fingerprintValue
+			if fingerprint, err := observation.Fingerprint(); err == nil {
+				t.Fatalf("Fingerprint() = %q, want error", fingerprint)
+			}
+		})
+	}
+	for name, label := range map[string]string{
+		"too long": strings.Repeat("x", maximumLinuxLabel+1),
+		"nul":      "lo\x00foreign",
+	} {
+		t.Run("Linux label "+name, func(t *testing.T) {
+			observation := fingerprintLinuxObservation(StateAttributeConflict, fingerprintLinuxAssignment("native-loopback", 1, 32))
+			observation.Assignments[0].Linux.Label = label
+			if fingerprint, err := observation.Fingerprint(); err == nil {
+				t.Fatalf("Fingerprint() = %q, want error", fingerprint)
+			}
+		})
+	}
 }
 
-// TestObservationFingerprintKnownVector fixes the v2 encoding across implementations and platforms.
+// TestObservationFingerprintKnownVector fixes the v3 encoding across implementations and platforms.
 func TestObservationFingerprintKnownVector(t *testing.T) {
 	fingerprint, err := fingerprintWindowsObservation().Fingerprint()
 	if err != nil {
 		t.Fatalf("Fingerprint() error = %v", err)
 	}
-	const want = "f3e7766d13773ee2cc4882af054e08a9d699473c256e87dec8540997dd2a3bfe"
+	const want = "57f8af834912cf4676fb0ee8c9b4892d6d52321b57258fb036bf0eb68fc0454b"
 	if fingerprint != want {
 		t.Fatalf("Fingerprint() = %q, want %q", fingerprint, want)
 	}
@@ -315,6 +390,7 @@ func fingerprintLinuxAssignment(name string, index int, prefixLength int) Assign
 		InterfaceIndex: index,
 		NativeLoopback: index == 1,
 		InterfaceKind:  InterfaceKindLinuxNative,
+		Linux:          exactLinuxFact(),
 	}
 }
 
@@ -361,9 +437,13 @@ func cloneFingerprintObservation(observation Observation) Observation {
 	return clone
 }
 
-// cloneFingerprintAssignment copies optional Windows attributes so callers can mutate them independently.
+// cloneFingerprintAssignment copies optional platform attributes so callers can mutate them independently.
 func cloneFingerprintAssignment(assignment AssignmentFact) AssignmentFact {
 	clone := assignment
+	if assignment.Linux != nil {
+		linux := *assignment.Linux
+		clone.Linux = &linux
+	}
 	if assignment.Windows != nil {
 		windows := *assignment.Windows
 		clone.Windows = &windows
