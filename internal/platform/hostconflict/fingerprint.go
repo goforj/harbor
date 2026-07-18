@@ -9,7 +9,7 @@ import (
 	"slices"
 )
 
-const observationFingerprintDomain = "goforj.harbor.host-conflict-observation.v2\x00"
+const observationFingerprintDomain = "goforj.harbor.host-conflict-observation.v3\x00"
 
 // Fingerprint returns a deterministic digest over validated raw facts and their recomputed classifications.
 //
@@ -92,6 +92,7 @@ func encodeRoute(fact RouteFact) []byte {
 	encoded = appendBool(encoded, fact.NativeLoopback)
 	encoded = appendOptionalAddress(encoded, fact.Gateway)
 	encoded = appendString(encoded, string(fact.Normalization))
+	encoded = binary.AppendUvarint(encoded, fact.NativeFlags)
 	return encoded
 }
 

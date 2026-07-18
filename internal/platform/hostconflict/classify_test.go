@@ -84,6 +84,7 @@ func TestClassifyRoutesCoversSafeConflictAndIndeterminateShapes(t *testing.T) {
 				Interface:      observation.Loopback.Interface,
 				NativeLoopback: true,
 				Normalization:  RouteNormalizationMacOSCloneUnresolved,
+				NativeFlags:    1,
 			}
 			observation.Routes.Matching = append(observation.Routes.Matching, clone)
 			observation.Routes.Selected = &clone

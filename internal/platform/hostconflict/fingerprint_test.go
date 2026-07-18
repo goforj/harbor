@@ -151,11 +151,20 @@ func TestFingerprintIncludesPlatformSpecificScopeAndIPv6Facts(t *testing.T) {
 		Interface:      macOS.Loopback.Interface,
 		NativeLoopback: true,
 		Normalization:  RouteNormalizationMacOSCloneUnresolved,
+		NativeFlags:    1,
 	}
 	macOS.Routes.Matching = append(macOS.Routes.Matching, clone)
 	macOS.Routes.Selected = &clone
 	if fingerprint := mustFingerprint(t, macOS); fingerprint == reference {
 		t.Fatal("Fingerprint() omitted route normalization")
+	}
+	macOS = safeMacOSObservation(t)
+	reference = mustFingerprint(t, macOS)
+	macOS.Routes.Matching[0].NativeFlags++
+	selected = macOS.Routes.Matching[0]
+	macOS.Routes.Selected = &selected
+	if fingerprint := mustFingerprint(t, macOS); fingerprint == reference {
+		t.Fatal("Fingerprint() omitted native route flags")
 	}
 }
 
@@ -186,10 +195,10 @@ func TestFingerprintRejectsInvalidFacts(t *testing.T) {
 	}
 }
 
-// TestFingerprintKnownVector fixes the v2 canonical encoding across platforms and implementations.
+// TestFingerprintKnownVector fixes the v3 canonical encoding across platforms and implementations.
 func TestFingerprintKnownVector(t *testing.T) {
 	fingerprint := mustFingerprint(t, safeLinuxObservation(t))
-	const want = "055a2bb2d1895c5e1dfd536cd3360d69a6e8c784110ce6594956814d5ced6016"
+	const want = "6e5ce6166e5f311070054527b634abbd7215dbe674d460f5d1dbfca286fc3fae"
 	if fingerprint != want {
 		t.Fatalf("Fingerprint() = %q, want %q", fingerprint, want)
 	}

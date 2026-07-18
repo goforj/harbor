@@ -284,6 +284,13 @@ func TestObservationValidateRejectsMalformedRouteFacts(t *testing.T) {
 	if err := windowsObservation.Validate(); err == nil {
 		t.Fatal("Validate() with missing Windows route LUID error = nil")
 	}
+	windowsObservation = safeWindowsObservation(t)
+	windowsObservation.Routes.Matching[0].NativeFlags = 1
+	selected = windowsObservation.Routes.Matching[0]
+	windowsObservation.Routes.Selected = &selected
+	if err := windowsObservation.Validate(); err == nil {
+		t.Fatal("Validate() with native route flags on Windows error = nil")
+	}
 
 	observation = safeLinuxObservation(t)
 	observation.Routes.Matching[0].Interface.WindowsLUID = 48
@@ -291,6 +298,29 @@ func TestObservationValidateRejectsMalformedRouteFacts(t *testing.T) {
 	observation.Routes.Selected = &selected
 	if err := observation.Validate(); err == nil {
 		t.Fatal("Validate() with Windows route LUID on Linux error = nil")
+	}
+
+	observation = safeLinuxObservation(t)
+	observation.Routes.Matching[0].NativeFlags = 1
+	selected = observation.Routes.Matching[0]
+	observation.Routes.Selected = &selected
+	if err := observation.Validate(); err == nil {
+		t.Fatal("Validate() with native route flags on Linux error = nil")
+	}
+
+	macOSObservation := safeMacOSObservation(t)
+	macOSObservation.Routes.Matching[0].NativeFlags = 0
+	selected = macOSObservation.Routes.Matching[0]
+	macOSObservation.Routes.Selected = &selected
+	if err := macOSObservation.Validate(); err == nil {
+		t.Fatal("Validate() with missing macOS native route flags error = nil")
+	}
+	macOSObservation = safeMacOSObservation(t)
+	macOSObservation.Routes.Matching[0].NativeFlags = uint64(^uint32(0)) + 1
+	selected = macOSObservation.Routes.Matching[0]
+	macOSObservation.Routes.Selected = &selected
+	if err := macOSObservation.Validate(); err == nil {
+		t.Fatal("Validate() with oversized macOS native route flags error = nil")
 	}
 }
 
@@ -321,6 +351,7 @@ func TestObservationValidateRejectsMalformedCloneShapes(t *testing.T) {
 			Interface:      observation.Loopback.Interface,
 			NativeLoopback: true,
 			Normalization:  RouteNormalizationMacOSCloneUnresolved,
+			NativeFlags:    1,
 		}
 		mutate(&clone)
 		observation.Routes.Matching = append(observation.Routes.Matching, clone)
@@ -477,6 +508,7 @@ func safeMacOSObservation(t *testing.T) Observation {
 		Kind:      LoopbackKindMacOSNative,
 	}
 	baseline := baselineRoute(loopback.Interface)
+	baseline.NativeFlags = 1
 	return Observation{
 		Request:  mustRequest(t),
 		Scope:    NewMacOSScope(),

@@ -308,13 +308,14 @@ const (
 	RouteNormalizationMacOSCloneUnresolved RouteNormalization = "macos-clone-unresolved"
 )
 
-// RouteFact describes one normalized route whose destination matches the candidate.
+// RouteFact describes one normalized route whose destination matches the candidate, including native flags that bind safety-relevant platform state.
 type RouteFact struct {
 	Destination    netip.Prefix
 	Interface      InterfaceIdentity
 	NativeLoopback bool
 	Gateway        netip.Addr
 	Normalization  RouteNormalization
+	NativeFlags    uint64
 }
 
 // RouteSnapshot contains the selected route and every normalized route matching the candidate.

@@ -61,6 +61,16 @@ func validateRouteFact(observation Observation, fact RouteFact) error {
 			return fmt.Errorf("route gateway %s is not a canonical IPv4 next hop", fact.Gateway)
 		}
 	}
+	switch observation.Scope.Platform {
+	case PlatformMacOS:
+		if fact.NativeFlags == 0 || fact.NativeFlags > uint64(^uint32(0)) {
+			return fmt.Errorf("macOS route native flags must be a nonzero uint32")
+		}
+	case PlatformLinux, PlatformWindows:
+		if fact.NativeFlags != 0 {
+			return fmt.Errorf("route native flags are invalid on %s", observation.Scope.Platform)
+		}
+	}
 	switch fact.Normalization {
 	case RouteNormalizationDirect:
 		return nil
