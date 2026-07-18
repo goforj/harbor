@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  root-go:
+    name: Root Go (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+          - name: macOS
+            os: macos-14
+          - name: Windows
+            os: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: desktop/frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build production frontend
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Chromium smoke tests
+        run: npm run test:e2e -- --project=chromium
+
+      - name: Stage production frontend
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-frontend
+          path: desktop/frontend/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  native-desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: frontend
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            go_tags: -tags=webkit2_41
+            build_args: -tags webkit2_41
+          - name: macOS
+            os: macos-14
+            go_tags: ""
+            build_args: ""
+          - name: Windows
+            os: windows-2022
+            go_tags: ""
+            build_args: ""
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Restore production frontend
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-frontend
+          path: desktop/frontend/dist
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Test desktop module
+        working-directory: desktop
+        run: go test ${{ matrix.go_tags }} ./...
+
+      - name: Vet desktop module
+        working-directory: desktop
+        run: go vet ${{ matrix.go_tags }} ./...
+
+      - name: Build native desktop application
+        working-directory: desktop
+        run: wails build -s ${{ matrix.build_args }}

@@ -1,10 +1,10 @@
 # Frontend
 
-Status: proposed
+Status: foundation implemented
 
 Last updated: 2026-07-18
 
-Harbor does not need a new frontend foundation. The canonical GoForj Vue starter already provides the Vue, TypeScript, Vite, Tailwind, shadcn-vue, routing, theming, command-menu, and application-shell conventions Harbor needs. Harbor should inherit that foundation and spend its design effort on the operational product.
+Harbor does not need a new frontend foundation. The canonical GoForj Vue starter provides the Vue, TypeScript, Vite, Tailwind, shadcn-vue, routing, theming, command-menu, and application-shell conventions Harbor needs. Harbor inherits that foundation and spends its design effort on the operational product.
 
 ## Decision
 
@@ -19,6 +19,20 @@ The initial import records the exact GoForj commit. It copies only tracked files
 Do not enable the Vue starter in Harbor's root `.goforj.yml` merely to obtain these files. GoForj correctly renders a normal App frontend under `cmd/<app>/frontend`, while Harbor's desktop boundary is `desktop/frontend`. Import the pinned tree with Git archive semantics after preserving the Wails-generated outer application structure; never recursively copy the starter's working directory.
 
 The starter is the structural authority. Lerd is the initial visual anchor. Harbor uses the starter's shadcn-vue components to express Lerd's compact rail, master/detail geometry, dense rows, thin boundaries, restrained surfaces, status treatment, and responsive list-to-detail behavior. This is a starting point, not a permanent constraint on Harbor's visual identity.
+
+## Implementation status
+
+The first desktop foundation is present under `desktop/`:
+
+- stable Wails v2.13 hosts the embedded application in an isolated Go 1.25 module;
+- the tracked GoForj starter snapshot is recorded at commit `aecc0762f9cfcfc9bfbaad3dc4e215afcf858b43`;
+- the complete app-owned shadcn-vue primitive layer remains under `src/components/ui`;
+- Harbor owns the rail, contextual browser, detail views, compact navigation, status presentation, command search, and virtualized logs under its product component and view directories;
+- hash routing, Pinia snapshot ordering, light/dark/system themes, typed bridge adapters, deterministic browser fixtures, Vitest, and Playwright are wired and exercised;
+- Vite restores the tracked empty embed marker after production builds so the nested Go module also compiles before frontend assets are generated;
+- the CI workflow requests root Go validation and nested Wails compilation on Ubuntu, macOS, and Windows, with browser behavior exercised once on Ubuntu before its production assets are reused by the native build matrix.
+
+Frontend-only development uses the fixture adapter. When the SPA detects a Wails runtime, it requires the native `Snapshot` and `OpenResource` bindings and fails visibly if they are absent; it never substitutes fixture state for real machine state. Those bindings, daemon event transport, tray integration, and native packaging evidence remain implementation work rather than capabilities implied by the shell.
 
 ## Preserved starter foundation
 
@@ -36,7 +50,7 @@ Harbor components live outside `src/components/ui`. They compose the primitive l
 
 The starter's demonstration application is not part of that preservation boundary. Harbor does not inherit its authentication flows, example component pages, starter navigation, GoForj logo, browser session model, or `/api` proxy. Those are examples for a generated web application, not desktop infrastructure.
 
-## Required desktop adaptations
+## Desktop adaptations
 
 The browser-served starter and an embedded Wails SPA have a small number of intentional seams:
 
@@ -46,10 +60,10 @@ The browser-served starter and an embedded Wails SPA have a small number of inte
 - replace the starter auth/session layer with a narrow typed Harbor bridge;
 - replace starter routes, views, navigation, and branding with Harbor product surfaces;
 - add Pinia for immutable daemon snapshots, connection state, ordered events, and optimistic-operation markers;
-- add direct log virtualization only when the log surface is introduced;
-- add Vitest, Vue Test Utils, and Playwright with the first Harbor-owned frontend behavior rather than carrying unexercised test dependencies.
+- virtualize the log surface while preserving ordered source identity and whitespace;
+- exercise Harbor-owned frontend behavior with Vitest, Vue Test Utils, and Playwright rather than carrying unexercised test dependencies.
 
-The frontend must not receive a raw daemon socket, bearer token, Docker socket, command runner, or unrestricted filesystem access. A typed `harborBridge` is its only product boundary. The production adapter calls narrow Wails bindings and subscribes to Wails events; a mock adapter drives browser development, component tests, and deterministic failure states.
+The frontend must not receive a raw daemon socket, bearer token, Docker socket, command runner, or unrestricted filesystem access. A typed `harborBridge` is its only product boundary. The native adapter is limited to narrow Wails bindings and snapshot events; a mock adapter drives browser development, component tests, and deterministic failure states.
 
 ## Shell and component map
 
@@ -68,7 +82,7 @@ The first Harbor shell keeps the GoForj starter's application composition while 
 | Progress and feedback | `Skeleton`, `Progress`, `Sonner` | quiet loading, persistent failure state, transient success feedback |
 | Logs | `ScrollArea`, controls, Harbor virtual list | dense monospaced stream with filters, follow/pause, and explicit gaps |
 
-Harbor-owned components should describe the product rather than wrap every primitive mechanically. Expected first-level components include `HarborRail`, `ContextPane`, `ContextGroup`, `ProjectRow`, `ServiceRow`, `DetailHeader`, `StatusBadge`, `ResourceAction`, and `LogStream`.
+Harbor-owned components describe the product rather than wrapping every primitive mechanically. The first shell includes `HarborRail`, `HarborMobileNav`, `ContextPane`, `EntityRow`, `HarborCommandMenu`, `ThemeMenu`, `StatusBadge`, and `LogStream`; destination views own their project-, service-, and system-specific composition.
 
 ## Visual tokens
 
@@ -120,12 +134,16 @@ Every reconnect begins with a fresh snapshot and then applies ordered events aft
 
 ## Testing
 
-Frontend confidence is layered:
+Frontend confidence is layered. The implemented browser layer currently includes:
 
-- TypeScript checking and the production Vite build on every supported desktop OS;
-- Vitest and Vue Test Utils for stores, routing, state presentation, keyboard behavior, and product components through the mock bridge;
+- TypeScript checking and a production Vite build;
+- Vitest coverage for bridge selection, snapshot ordering, recovery, lookup, and failure behavior;
+- Playwright coverage for navigation, command metadata search, compact utility access, and the three-, two-, and one-pane workflows against deterministic fixtures.
+
+The remaining native layer requires:
+
+- green hosted evidence from the three-platform workflow on each reviewed revision;
 - accessibility assertions for dialogs, menus, tabs, tooltips, focus restoration, and state labels;
-- Playwright for the responsive three-, two-, and one-pane workflows against deterministic fixtures;
 - Wails-native smoke for bindings, events, close/hide behavior, relaunch, and platform WebView differences;
 - snapshot/event contract fixtures shared with Go tests so the CLI, desktop backend, and frontend agree on protocol meaning.
 
