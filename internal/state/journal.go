@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/goforj/harbor/internal/database"
@@ -87,7 +86,7 @@ type OperationJournal struct {
 	operations  *models.OperationRepo
 	transitions *models.OperationTransitionRepo
 	harborState *models.HarborStateRepo
-	mutationMu  sync.Mutex
+	mutations   *MutationCoordinator
 }
 
 // NewOperationJournal constructs a journal from the generated repositories for the named harbord database.
@@ -96,12 +95,14 @@ func NewOperationJournal(
 	operations *models.OperationRepo,
 	transitions *models.OperationTransitionRepo,
 	harborState *models.HarborStateRepo,
+	mutations *MutationCoordinator,
 ) *OperationJournal {
 	return &OperationJournal{
 		connections: connections,
 		operations:  operations,
 		transitions: transitions,
 		harborState: harborState,
+		mutations:   mutations,
 	}
 }
 
@@ -116,7 +117,7 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 	}
 
 	var record OperationRecord
-	err := journal.mutate(ctx, func(tx *gorm.DB) error {
+	err := journal.mutations.mutate(ctx, "operation journal", func(tx *gorm.DB) error {
 		existing, found, err := findOperationByIntent(tx, operation.IntentID)
 		if err != nil {
 			return err
@@ -206,7 +207,7 @@ func (journal *OperationJournal) Transition(
 	}
 
 	var result OperationRecord
-	err := journal.mutate(ctx, func(tx *gorm.DB) error {
+	err := journal.mutations.mutate(ctx, "operation journal", func(tx *gorm.DB) error {
 		row, found, err := findOperationByID(tx, operationID)
 		if err != nil {
 			return err
@@ -496,20 +497,6 @@ func readSnapshotOperations(tx *gorm.DB, sequence domain.Sequence) ([]OperationR
 		}
 	}
 	return records, nil
-}
-
-// mutate serializes SQLite writers within the daemon and executes one immediate transaction.
-func (journal *OperationJournal) mutate(ctx context.Context, mutation func(*gorm.DB) error) error {
-	journal.mutationMu.Lock()
-	defer journal.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	connection, err := journal.connections.GetHarbord()
-	if err != nil {
-		return fmt.Errorf("open operation journal: %w", err)
-	}
-	return connection.WithContext(ctx).Transaction(mutation)
 }
 
 // allocateHarborSequence advances and reads the global singleton counter inside the caller's transaction.

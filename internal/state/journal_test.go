@@ -716,6 +716,7 @@ func newOperationJournalTestHarness(t *testing.T) (*OperationJournal, *gorm.DB) 
 		models.NewOperationRepo(connections),
 		models.NewOperationTransitionRepo(connections),
 		models.NewHarborStateRepo(connections),
+		NewMutationCoordinator(connections),
 	), connection
 }
 

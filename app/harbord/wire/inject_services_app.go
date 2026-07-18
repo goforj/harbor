@@ -15,5 +15,6 @@ import (
 var appSet = wire.NewSet(
 	harbordapp.NewLifecycleRegistry,
 	runtime.NewTimeouts,
+	state.NewMutationCoordinator,
 	state.NewOperationJournal,
 )
