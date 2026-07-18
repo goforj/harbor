@@ -86,6 +86,9 @@ func (store *Store) Project(ctx context.Context, projectID domain.ProjectID) (Pr
 		if err != nil {
 			return err
 		}
+		if err := validateOptionalNetworkSequenceOwner(tx, sequence); err != nil {
+			return err
+		}
 		read, err := readProjectRecord(tx, projectID)
 		if err != nil {
 			return err
@@ -120,6 +123,9 @@ func (store *Store) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 	err = builder.Transaction(func(tx *gorm.DB) error {
 		sequence, err := readSnapshotSequence(tx)
 		if err != nil {
+			return err
+		}
+		if err := validateOptionalNetworkSequenceOwner(tx, sequence); err != nil {
 			return err
 		}
 		projectRecords, err := readProjectRecords(tx)
@@ -394,7 +400,7 @@ func validateProjectSequenceOwner(tx *gorm.DB, record ProjectRecord) error {
 		return sequenceOwnerCollision(sequence, owner, "operation transition "+strconv.Quote(transitions[0].OperationId))
 	}
 
-	return nil
+	return validateNetworkSequenceCollision(tx, sequence, owner)
 }
 
 // sequenceOwnerCollision gives targeted and complete snapshot reads one corruption shape for cross-table reuse.

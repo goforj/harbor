@@ -384,6 +384,19 @@ func validateOperationHistorySequenceOwners(
 			)
 		}
 	}
+	networkRevision, networkExists, err := readOptionalNetworkSequenceOwner(tx)
+	if err != nil {
+		return err
+	}
+	if networkExists {
+		if transition, exists := expected[int(networkRevision)]; exists {
+			return sequenceOwnerCollision(
+				int(networkRevision),
+				operationHistorySequenceOwner(transition),
+				"network state",
+			)
+		}
+	}
 	return nil
 }
 
@@ -817,6 +830,9 @@ func validateRetainedSequenceBounds(tx *gorm.DB) (domain.Sequence, error) {
 			return 0, err
 		}
 	}
+	if err := validateOptionalNetworkSequenceOwner(tx, highWater); err != nil {
+		return 0, err
+	}
 	return highWater, nil
 }
 
@@ -1043,7 +1059,7 @@ func validateRecentSequenceOwner(tx *gorm.DB, record RecentResourceRecord) error
 	if len(transitions) != 0 {
 		return sequenceOwnerCollision(sequence, owner, "operation transition "+strconv.Quote(transitions[0].OperationId))
 	}
-	return nil
+	return validateNetworkSequenceCollision(tx, sequence, owner)
 }
 
 // scopedMutationKey formats the durable natural identity shared by resource and recency mutations.
