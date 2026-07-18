@@ -64,6 +64,55 @@ func TestUnixTransportAuthenticatesBothPeers(t *testing.T) {
 	}
 }
 
+// TestUnixTransportWriteDeadline verifies authenticated sockets expose native timeout semantics to RPC writers.
+func TestUnixTransportWriteDeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "harbord.sock")
+	listener, err := listenUnix(path, uint32(os.Geteuid()), readUnixPeerIdentity)
+	if err != nil {
+		t.Fatalf("listen on Unix endpoint: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	type acceptResult struct {
+		connection Conn
+		err        error
+	}
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		connection, err := listener.Accept()
+		accepted <- acceptResult{connection: connection, err: err}
+	}()
+
+	client, err := dialUnix(context.Background(), path, uint32(os.Geteuid()), readUnixPeerIdentity)
+	if err != nil {
+		t.Fatalf("dial Unix endpoint: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	result := <-accepted
+	if result.err != nil {
+		t.Fatalf("accept Unix connection: %v", result.err)
+	}
+	t.Cleanup(func() { _ = result.connection.Close() })
+
+	if err := client.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("set expired Unix write deadline: %v", err)
+	}
+	t.Cleanup(func() { _ = client.SetWriteDeadline(time.Time{}) })
+
+	_, writeErr := client.Write([]byte("deadline"))
+	if err := client.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatalf("reset Unix write deadline: %v", err)
+	}
+	var timeoutError net.Error
+	if !errors.As(writeErr, &timeoutError) {
+		t.Fatalf("write error = %v, want net.Error", writeErr)
+	}
+	if !timeoutError.Timeout() {
+		t.Fatalf("write error = %v, want timeout", writeErr)
+	}
+}
+
 // TestUnixTransportRejectsDifferentUser verifies admission fails before an RPC handshake can begin.
 func TestUnixTransportRejectsDifferentUser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "harbord.sock")
