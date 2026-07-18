@@ -113,7 +113,7 @@ func validateTTL(ttl time.Duration) (uint32, error) {
 
 // validateRecord restricts DNS publication to exact Harbor-owned IPv4 loopback endpoints.
 func validateRecord(record Record) error {
-	if err := validateName(record.Name); err != nil {
+	if err := ValidateName(record.Name); err != nil {
 		return err
 	}
 	address := record.Address.Unmap()
@@ -123,8 +123,8 @@ func validateRecord(record Record) error {
 	return nil
 }
 
-// validateName enforces the canonical host form used by Harbor state and certificate SANs.
-func validateName(name string) error {
+// ValidateName enforces the canonical exact-host form shared by durable reservations, DNS, and certificate SANs.
+func ValidateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("name is required")
 	}
