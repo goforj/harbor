@@ -213,6 +213,15 @@ func (project ProjectSnapshot) Validate() error {
 	if err := validateDomainTime("project updated time", project.UpdatedAt); err != nil {
 		return err
 	}
+	if project.Apps == nil {
+		return fmt.Errorf("project collections must not be nil: apps")
+	}
+	if project.Services == nil {
+		return fmt.Errorf("project collections must not be nil: services")
+	}
+	if project.Resources == nil {
+		return fmt.Errorf("project collections must not be nil: resources")
+	}
 
 	apps := make(map[AppID]struct{}, len(project.Apps))
 	for _, app := range project.Apps {
@@ -283,6 +292,15 @@ func (snapshot Snapshot) Validate() error {
 	}
 	if err := validateDomainTime("snapshot capture time", snapshot.CapturedAt); err != nil {
 		return err
+	}
+	if snapshot.Projects == nil {
+		return fmt.Errorf("snapshot collections must not be nil: projects")
+	}
+	if snapshot.Operations == nil {
+		return fmt.Errorf("snapshot collections must not be nil: operations")
+	}
+	if snapshot.RecentResourceIDs == nil {
+		return fmt.Errorf("snapshot collections must not be nil: recent_resource_ids")
 	}
 
 	projects := make(map[ProjectID]ProjectSnapshot, len(snapshot.Projects))

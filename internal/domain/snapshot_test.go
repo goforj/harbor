@@ -189,6 +189,34 @@ func TestProjectSnapshotValidateRejectsInvalidProjectFields(t *testing.T) {
 	}
 }
 
+// TestProjectSnapshotValidateRejectsNilCollections keeps every project collection encoded as an array.
+func TestProjectSnapshotValidateRejectsNilCollections(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*ProjectSnapshot)
+		want   string
+	}{
+		{name: "Apps", mutate: func(project *ProjectSnapshot) { project.Apps = nil }, want: "apps"},
+		{name: "services", mutate: func(project *ProjectSnapshot) { project.Services = nil }, want: "services"},
+		{name: "resources", mutate: func(project *ProjectSnapshot) { project.Resources = nil }, want: "resources"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			project := validSnapshot(t).Projects[0]
+			test.mutate(&project)
+			err := project.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want nil %s collection error", err, test.want)
+			}
+		})
+	}
+}
+
 // TestResourceSnapshotValidateRestrictsOpenableURLs prevents credentials and unsafe schemes from entering the browser-opening contract.
 func TestResourceSnapshotValidateRestrictsOpenableURLs(t *testing.T) {
 	t.Parallel()
@@ -269,6 +297,34 @@ func TestSnapshotValidateRejectsDuplicateAndDanglingReferences(t *testing.T) {
 			err := snapshot.Validate()
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Validate() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestSnapshotValidateRejectsNilCollections keeps every top-level collection encoded as an array.
+func TestSnapshotValidateRejectsNilCollections(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*Snapshot)
+		want   string
+	}{
+		{name: "projects", mutate: func(snapshot *Snapshot) { snapshot.Projects = nil }, want: "projects"},
+		{name: "operations", mutate: func(snapshot *Snapshot) { snapshot.Operations = nil }, want: "operations"},
+		{name: "recent resources", mutate: func(snapshot *Snapshot) { snapshot.RecentResourceIDs = nil }, want: "recent_resource_ids"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := validSnapshot(t)
+			test.mutate(&snapshot)
+			err := snapshot.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want nil %s collection error", err, test.want)
 			}
 		})
 	}
