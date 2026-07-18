@@ -15,7 +15,7 @@ import (
 func TestRunFailsClosed(t *testing.T) {
 	request := helper.Request{
 		Version:         helper.ProtocolVersion,
-		TicketReference: helper.TicketReference("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"),
+		TicketReference: helper.TicketReference("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 	}
 	body, err := json.Marshal(request)
 	if err != nil {

@@ -16,12 +16,11 @@ const MaxTicketLifetime = 5 * time.Minute
 const MaxTicketRedemptionDuration = 15 * time.Second
 
 const (
-	minimumNonceLength     = 32
-	maximumNonceLength     = 128
-	maximumIDLength        = 128
-	fingerprintLength      = 64
-	minimumReferenceLength = 32
-	maximumReferenceLength = 128
+	minimumNonceLength    = 32
+	maximumNonceLength    = 128
+	maximumIDLength       = 128
+	fingerprintLength     = 64
+	ticketReferenceLength = 64
 )
 
 // Operation identifies an allowlisted privileged helper effect.
@@ -127,9 +126,9 @@ func (t Ticket) Validate(now time.Time) error {
 // TicketReference is an opaque single-use lookup handle understood only by the fixed ticket redeemer.
 type TicketReference string
 
-// Validate verifies only the reference's canonical wire bounds without interpreting its contents.
+// Validate verifies the reference is the canonical lowercase encoding of 32 random bytes.
 func (r TicketReference) Validate() error {
-	if !validToken(string(r), minimumReferenceLength, maximumReferenceLength) {
+	if !validLowerHex(string(r), ticketReferenceLength) {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket reference is invalid")
 	}
 	return nil
@@ -160,7 +159,12 @@ func validApprovedAddress(value string) bool {
 
 // validFingerprint accepts the canonical lowercase SHA-256 representation used by host observations.
 func validFingerprint(value string) bool {
-	if len(value) != fingerprintLength {
+	return validLowerHex(value, fingerprintLength)
+}
+
+// validLowerHex accepts one exact-width lowercase hexadecimal representation.
+func validLowerHex(value string, length int) bool {
+	if len(value) != length {
 		return false
 	}
 	for _, character := range value {

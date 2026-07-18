@@ -47,7 +47,7 @@ func TestDispatcherDispatchAllowlistedOperations(t *testing.T) {
 // TestDispatcherDispatchPassesOnlyOpaqueReferenceToRedeemer verifies request data cannot select an adapter or ticket.
 func TestDispatcherDispatchPassesOnlyOpaqueReferenceToRedeemer(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
-	reference := TicketReference(strings.Repeat("r", minimumReferenceLength))
+	reference := TicketReference(strings.Repeat("a", ticketReferenceLength))
 	redeemer := newTestTicketRedeemer(reference, validTestTicket(now, OperationEnsureLoopbackIdentity))
 	dispatcher := NewDispatcher(redeemer, newTestClock(now), newTestReplayGuard(), newTestLoopbackHandler())
 
@@ -302,7 +302,7 @@ func TestDispatcherDispatchRejectsAdmissionBindingMismatch(t *testing.T) {
 		mutate func(*TicketAdmission)
 	}{
 		{name: "wrong reference", mutate: func(admission *TicketAdmission) {
-			admission.TicketReference = TicketReference(strings.Repeat("x", minimumReferenceLength))
+			admission.TicketReference = TicketReference(strings.Repeat("b", ticketReferenceLength))
 		}},
 		{name: "wrong requester", mutate: func(admission *TicketAdmission) { admission.RequesterIdentity = "uid-2000" }},
 		{name: "wrong installation", mutate: func(admission *TicketAdmission) { admission.InstallationID = "other-installation" }},

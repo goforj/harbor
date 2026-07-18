@@ -30,7 +30,7 @@ func TestDecodeRequestAcceptsStrictEnvelope(t *testing.T) {
 
 // TestDecodeRequestRejectsAmbiguousJSON covers size, shape, duplicate, and framing failures.
 func TestDecodeRequestRejectsAmbiguousJSON(t *testing.T) {
-	reference := strings.Repeat("r", minimumReferenceLength)
+	reference := strings.Repeat("a", ticketReferenceLength)
 	validBody := `{"version":1,"ticket_reference":"` + reference + `"}`
 	tests := []struct {
 		name string

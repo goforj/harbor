@@ -136,8 +136,10 @@ func TestRequestValidate(t *testing.T) {
 		{name: "unsupported version", request: Request{Version: ProtocolVersion + 1, TicketReference: testTicketReference()}},
 		{name: "empty reference", request: Request{Version: ProtocolVersion}},
 		{name: "short reference", request: Request{Version: ProtocolVersion, TicketReference: "short"}},
-		{name: "long reference", request: Request{Version: ProtocolVersion, TicketReference: TicketReference(strings.Repeat("r", maximumReferenceLength+1))}},
-		{name: "path reference", request: Request{Version: ProtocolVersion, TicketReference: TicketReference(strings.Repeat("r", minimumReferenceLength-2) + "/x")}},
+		{name: "long reference", request: Request{Version: ProtocolVersion, TicketReference: TicketReference(strings.Repeat("a", ticketReferenceLength+1))}},
+		{name: "path reference", request: Request{Version: ProtocolVersion, TicketReference: TicketReference(strings.Repeat("a", ticketReferenceLength-2) + "/x")}},
+		{name: "uppercase reference", request: Request{Version: ProtocolVersion, TicketReference: TicketReference(strings.Repeat("A", ticketReferenceLength))}},
+		{name: "non hexadecimal reference", request: Request{Version: ProtocolVersion, TicketReference: TicketReference(strings.Repeat("r", ticketReferenceLength))}},
 	}
 
 	for _, test := range tests {
@@ -148,11 +150,9 @@ func TestRequestValidate(t *testing.T) {
 		})
 	}
 
-	for _, length := range []int{minimumReferenceLength, maximumReferenceLength} {
-		request := validTestRequest(TicketReference(strings.Repeat("r", length)))
-		if err := request.Validate(); err != nil {
-			t.Fatalf("validate %d-byte reference: %v", length, err)
-		}
+	request := validTestRequest(TicketReference(strings.Repeat("a", ticketReferenceLength)))
+	if err := request.Validate(); err != nil {
+		t.Fatalf("validate canonical reference: %v", err)
 	}
 }
 
@@ -215,7 +215,7 @@ func validTestRequest(reference TicketReference) Request {
 
 // testTicketReference returns one canonical high-entropy-shaped opaque handle.
 func testTicketReference() TicketReference {
-	return TicketReference(strings.Repeat("r", minimumReferenceLength))
+	return TicketReference(strings.Repeat("a", ticketReferenceLength))
 }
 
 // testFingerprint returns a canonical observation digest without coupling tests to hashing details.
