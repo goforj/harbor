@@ -92,6 +92,24 @@ func TestCertificateReturnsIndependentDER(t *testing.T) {
 	}
 }
 
+// TestValidateCurrentTracksRootUsability gives persistence a current-time admission check without exposing authority internals.
+func TestValidateCurrentTracksRootUsability(t *testing.T) {
+	t.Parallel()
+	current := fixedTime
+	authority := mustAuthority(t, Config{Now: func() time.Time { return current }})
+	if err := authority.ValidateCurrent(); err != nil {
+		t.Fatalf("ValidateCurrent() error = %v", err)
+	}
+	current = fixedTime.Add(defaultCAValidity + time.Hour)
+	if err := authority.ValidateCurrent(); err == nil || !strings.Contains(err.Error(), "not currently valid") {
+		t.Fatalf("ValidateCurrent(expired) error = %v", err)
+	}
+	current = time.Time{}
+	if err := authority.ValidateCurrent(); err == nil || !strings.Contains(err.Error(), "zero time") {
+		t.Fatalf("ValidateCurrent(zero clock) error = %v", err)
+	}
+}
+
 // TestIssueCreatesExactServerCertificate verifies deterministic SANs, constraints, and TLS trust.
 func TestIssueCreatesExactServerCertificate(t *testing.T) {
 	t.Parallel()
@@ -148,6 +166,147 @@ func TestLoadRoundTripRetainsIdentity(t *testing.T) {
 		t.Fatalf("loaded Issue() error = %v", err)
 	}
 	assertTLSHandshake(t, loaded, leaf, "orders.test", true)
+}
+
+// TestLoadLeafRoundTripRetainsExactIdentity proves restart reload preserves a durable leaf without weakening its host scope.
+func TestLoadLeafRoundTripRetainsExactIdentity(t *testing.T) {
+	t.Parallel()
+	authority := mustAuthority(t, Config{Now: func() time.Time { return fixedTime }})
+	issued, err := authority.Issue(context.Background(), []string{"Orders.TEST.", "admin.orders.test"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	loaded, err := authority.LoadLeaf(
+		issued.Material.CertificatePEM,
+		issued.Material.PrivateKeyPEM,
+		[]string{"admin.orders.test", "orders.test"},
+	)
+	if err != nil {
+		t.Fatalf("LoadLeaf() error = %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Hosts, issued.Hosts) {
+		t.Fatalf("LoadLeaf() hosts = %#v, want %#v", loaded.Hosts, issued.Hosts)
+	}
+	if loaded.Material.Fingerprint != issued.Material.Fingerprint {
+		t.Fatalf("LoadLeaf() fingerprint = %q, want %q", loaded.Material.Fingerprint, issued.Material.Fingerprint)
+	}
+	assertTLSHandshake(t, authority, loaded, "orders.test", true)
+	assertTLSHandshake(t, authority, loaded, "unknown.test", false)
+}
+
+// TestLoadLeafRejectsForeignOrCorruptMaterial keeps persisted leaf recovery bound to one root, key, and exact host set.
+func TestLoadLeafRejectsForeignOrCorruptMaterial(t *testing.T) {
+	t.Parallel()
+	authority := mustAuthority(t, Config{Now: func() time.Time { return fixedTime }})
+	issued, err := authority.Issue(context.Background(), []string{"orders.test"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	second, err := authority.Issue(context.Background(), []string{"billing.test"})
+	if err != nil {
+		t.Fatalf("Issue(second) error = %v", err)
+	}
+	foreignAuthority := mustAuthority(t, Config{Now: func() time.Time { return fixedTime }})
+	foreign, err := foreignAuthority.Issue(context.Background(), []string{"orders.test"})
+	if err != nil {
+		t.Fatalf("Issue(foreign) error = %v", err)
+	}
+	tests := []struct {
+		name        string
+		certificate []byte
+		key         []byte
+		hosts       []string
+		message     string
+	}{
+		{name: "invalid hosts", certificate: issued.Material.CertificatePEM, key: issued.Material.PrivateKeyPEM, hosts: []string{"orders.example"}, message: "beneath .test"},
+		{name: "corrupt certificate", certificate: []byte("corrupt"), key: issued.Material.PrivateKeyPEM, hosts: issued.Hosts, message: "CERTIFICATE"},
+		{name: "corrupt key", certificate: issued.Material.CertificatePEM, key: []byte("corrupt"), hosts: issued.Hosts, message: "PRIVATE KEY"},
+		{name: "mismatched key", certificate: issued.Material.CertificatePEM, key: second.Material.PrivateKeyPEM, hosts: issued.Hosts, message: "does not match"},
+		{name: "mismatched host", certificate: issued.Material.CertificatePEM, key: issued.Material.PrivateKeyPEM, hosts: []string{"billing.test"}, message: "requested exact hosts"},
+		{name: "foreign authority", certificate: foreign.Material.CertificatePEM, key: foreign.Material.PrivateKeyPEM, hosts: foreign.Hosts, message: "authority key"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := authority.LoadLeaf(test.certificate, test.key, test.hosts); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("LoadLeaf() error = %v, want containing %q", err, test.message)
+			}
+		})
+	}
+}
+
+// TestLoadLeafRevalidatesCurrentTime ensures startup cannot reactivate an expired leaf or an unusable root.
+func TestLoadLeafRevalidatesCurrentTime(t *testing.T) {
+	t.Parallel()
+	current := fixedTime
+	authority := mustAuthority(t, Config{Now: func() time.Time { return current }})
+	issued, err := authority.Issue(context.Background(), []string{"orders.test"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+
+	current = fixedTime.Add(defaultLeafValidity + time.Hour)
+	if _, err := authority.LoadLeaf(issued.Material.CertificatePEM, issued.Material.PrivateKeyPEM, issued.Hosts); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("LoadLeaf(expired leaf) error = %v", err)
+	}
+	current = fixedTime.Add(defaultCAValidity + time.Hour)
+	if _, err := authority.LoadLeaf(issued.Material.CertificatePEM, issued.Material.PrivateKeyPEM, issued.Hosts); err == nil || !strings.Contains(err.Error(), "CA certificate is not currently valid") {
+		t.Fatalf("LoadLeaf(expired root) error = %v", err)
+	}
+	current = time.Time{}
+	if _, err := authority.LoadLeaf(issued.Material.CertificatePEM, issued.Material.PrivateKeyPEM, issued.Hosts); err == nil || !strings.Contains(err.Error(), "zero time") {
+		t.Fatalf("LoadLeaf(zero clock) error = %v", err)
+	}
+}
+
+// TestLoadLeafRejectsPersistedLongLivedCertificate preserves Harbor's renewal policy across restart.
+func TestLoadLeafRejectsPersistedLongLivedCertificate(t *testing.T) {
+	t.Parallel()
+	authority := mustAuthority(t, Config{Now: func() time.Time { return fixedTime }})
+	issued, err := authority.Issue(context.Background(), []string{"orders.test"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	privateKey, ok := issued.TLSCertificate.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("issued private key type = %T, want *ecdsa.PrivateKey", issued.TLSCertificate.PrivateKey)
+	}
+	template := *issued.TLSCertificate.Leaf
+	template.NotAfter = template.NotBefore.Add(maximumLeafValidity + maximumBackdate + time.Second)
+	der, err := x509.CreateCertificate(rand.Reader, &template, authority.certificate, &privateKey.PublicKey, authority.privateKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate() error = %v", err)
+	}
+	material, err := encodeMaterial(certificate, privateKey)
+	if err != nil {
+		t.Fatalf("encodeMaterial() error = %v", err)
+	}
+	if _, err := authority.LoadLeaf(material.CertificatePEM, material.PrivateKeyPEM, issued.Hosts); err == nil || !strings.Contains(err.Error(), "maximum lifetime") {
+		t.Fatalf("LoadLeaf(long-lived) error = %v", err)
+	}
+}
+
+// TestCanonicalHostsReturnsIndependentSortedNames keeps persistence identifiers stable without retaining caller slices.
+func TestCanonicalHostsReturnsIndependentSortedNames(t *testing.T) {
+	t.Parallel()
+	hosts := []string{"Orders.TEST.", "admin.orders.test"}
+	canonical, err := CanonicalHosts(hosts)
+	if err != nil {
+		t.Fatalf("CanonicalHosts() error = %v", err)
+	}
+	hosts[0] = "mutated.test"
+	want := []string{"admin.orders.test", "orders.test"}
+	if !reflect.DeepEqual(canonical, want) {
+		t.Fatalf("CanonicalHosts() = %#v, want %#v", canonical, want)
+	}
+	if _, err := CanonicalHosts([]string{"orders.test", "ORDERS.TEST."}); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("CanonicalHosts(duplicate) error = %v", err)
+	}
 }
 
 // TestLoadValidatesPolicyAndClock verifies syntactically valid persisted material still fails semantic admission.
@@ -603,10 +762,14 @@ func TestVerifyLeafRejectsPolicyDrift(t *testing.T) {
 	}{
 		{name: "serial", mutate: func(certificate *x509.Certificate) { certificate.SerialNumber = nil }, message: "serial number"},
 		{name: "CA", mutate: func(certificate *x509.Certificate) { certificate.IsCA = true }, message: "basic constraints"},
+		{name: "path length", mutate: func(certificate *x509.Certificate) { certificate.MaxPathLen = 0 }, message: "basic constraints"},
 		{name: "key usage", mutate: func(certificate *x509.Certificate) { certificate.KeyUsage = x509.KeyUsageKeyEncipherment }, message: "key usage"},
 		{name: "extended usage", mutate: func(certificate *x509.Certificate) {
 			certificate.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 		}, message: "server-auth"},
+		{name: "unknown extended usage", mutate: func(certificate *x509.Certificate) {
+			certificate.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 2, 3, 4}}
+		}, message: "unknown extended key usage"},
 		{name: "authority key", mutate: func(certificate *x509.Certificate) { certificate.AuthorityKeyId = []byte("wrong") }, message: "authority key"},
 		{name: "public key", mutate: func(certificate *x509.Certificate) { certificate.PublicKey = &rsa.PublicKey{} }, message: "ECDSA P-256"},
 		{name: "subject key", mutate: func(certificate *x509.Certificate) { certificate.SubjectKeyId = []byte("wrong") }, message: "subject key"},
@@ -615,9 +778,24 @@ func TestVerifyLeafRejectsPolicyDrift(t *testing.T) {
 		{name: "non-DNS name", mutate: func(certificate *x509.Certificate) {
 			certificate.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
 		}, message: "DNS names only"},
+		{name: "name constraint", mutate: func(certificate *x509.Certificate) {
+			certificate.ExcludedDNSDomains = []string{".test"}
+		}, message: "name constraints"},
+		{name: "authority information access", mutate: func(certificate *x509.Certificate) {
+			certificate.OCSPServer = []string{"https://ocsp.example.test"}
+		}, message: "authority information access"},
+		{name: "CRL distribution", mutate: func(certificate *x509.Certificate) {
+			certificate.CRLDistributionPoints = []string{"https://crl.example.test"}
+		}, message: "CRL distribution"},
+		{name: "certificate policy", mutate: func(certificate *x509.Certificate) {
+			certificate.PolicyIdentifiers = []asn1.ObjectIdentifier{{1, 2, 3, 4}}
+		}, message: "certificate policies"},
 		{name: "critical extension", mutate: func(certificate *x509.Certificate) {
 			certificate.UnhandledCriticalExtensions = append(certificate.UnhandledCriticalExtensions, certificate.Extensions[0].Id)
 		}, message: "critical extension"},
+		{name: "unsupported extension", mutate: func(certificate *x509.Certificate) {
+			certificate.Extensions = append(certificate.Extensions, pkix.Extension{Id: asn1.ObjectIdentifier{1, 2, 3, 4}})
+		}, message: "unsupported extension"},
 		{name: "lifetime", mutate: func(certificate *x509.Certificate) { certificate.NotAfter = certificate.NotBefore }, message: "lifetime"},
 		{name: "signature", mutate: func(certificate *x509.Certificate) { certificate.Signature = []byte("bad") }, message: "signature is invalid"},
 	}

@@ -38,6 +38,9 @@ const (
 	rootSubjectKeyID    = "2.5.29.14"
 	rootKeyUsage        = "2.5.29.15"
 	rootBasicConstraint = "2.5.29.19"
+	leafSubjectAltName  = "2.5.29.17"
+	leafAuthorityKeyID  = "2.5.29.35"
+	leafExtendedUsage   = "2.5.29.37"
 )
 
 // Config controls certificate lifetimes and supplies deterministic boundaries for tests.
@@ -188,6 +191,68 @@ func (authority *Authority) Certificate() *x509.Certificate {
 		panic(fmt.Sprintf("localca: retained certificate became unparsable: %v", err))
 	}
 	return certificate
+}
+
+// ValidateCurrent proves the retained root remains usable at the authority's configured clock.
+func (authority *Authority) ValidateCurrent() error {
+	authority.mutex.Lock()
+	defer authority.mutex.Unlock()
+	now, err := currentTime(authority.config.Now)
+	if err != nil {
+		return err
+	}
+	if err := authority.validateRoot(now); err != nil {
+		return fmt.Errorf("validate local CA: %w", err)
+	}
+	return nil
+}
+
+// CanonicalHosts validates and returns Harbor's deterministic exact-name certificate identity.
+func CanonicalHosts(hosts []string) ([]string, error) {
+	return canonicalizeHosts(hosts)
+}
+
+// LoadLeaf parses a persisted server certificate and proves it still belongs to this authority and exact host set.
+func (authority *Authority) LoadLeaf(certificatePEM, privateKeyPEM []byte, expectedHosts []string) (Leaf, error) {
+	canonicalHosts, err := canonicalizeHosts(expectedHosts)
+	if err != nil {
+		return Leaf{}, err
+	}
+	certificate, err := parseCertificatePEM(certificatePEM)
+	if err != nil {
+		return Leaf{}, fmt.Errorf("load local certificate: %w", err)
+	}
+	privateKey, err := parsePrivateKeyPEM(privateKeyPEM)
+	if err != nil {
+		return Leaf{}, fmt.Errorf("load local certificate private key: %w", err)
+	}
+	material, err := encodeMaterial(certificate, privateKey)
+	if err != nil {
+		return Leaf{}, fmt.Errorf("load local certificate material: %w", err)
+	}
+	tlsCertificate, err := tls.X509KeyPair(material.CertificatePEM, material.PrivateKeyPEM)
+	if err != nil {
+		return Leaf{}, fmt.Errorf("load local certificate pair: %w", err)
+	}
+
+	authority.mutex.Lock()
+	defer authority.mutex.Unlock()
+	now, err := currentTime(authority.config.Now)
+	if err != nil {
+		return Leaf{}, err
+	}
+	if err := authority.validateRoot(now); err != nil {
+		return Leaf{}, fmt.Errorf("load local certificate: %w", err)
+	}
+	if err := authority.verifyLeaf(certificate, canonicalHosts, now); err != nil {
+		return Leaf{}, fmt.Errorf("validate loaded local certificate: %w", err)
+	}
+	tlsCertificate.Leaf = certificate
+	return Leaf{
+		Hosts:          append([]string(nil), canonicalHosts...),
+		Material:       material,
+		TLSCertificate: tlsCertificate,
+	}, nil
 }
 
 // Issue generates one short-lived server certificate for registered exact .test domains.
@@ -352,7 +417,7 @@ func (authority *Authority) verifyLeaf(certificate *x509.Certificate, hosts []st
 	if certificate.SerialNumber == nil || certificate.SerialNumber.Sign() <= 0 {
 		return fmt.Errorf("leaf certificate must have a positive serial number")
 	}
-	if certificate.IsCA || !certificate.BasicConstraintsValid {
+	if certificate.IsCA || !certificate.BasicConstraintsValid || certificate.MaxPathLen != -1 || certificate.MaxPathLenZero {
 		return fmt.Errorf("leaf certificate has invalid basic constraints")
 	}
 	if certificate.KeyUsage != x509.KeyUsageDigitalSignature {
@@ -360,6 +425,9 @@ func (authority *Authority) verifyLeaf(certificate *x509.Certificate, hosts []st
 	}
 	if len(certificate.ExtKeyUsage) != 1 || certificate.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
 		return fmt.Errorf("leaf certificate is not server-auth only")
+	}
+	if len(certificate.UnknownExtKeyUsage) != 0 {
+		return fmt.Errorf("leaf certificate contains an unknown extended key usage")
 	}
 	if !bytes.Equal(certificate.AuthorityKeyId, authority.certificate.SubjectKeyId) {
 		return fmt.Errorf("leaf certificate has an invalid authority key identifier")
@@ -380,11 +448,33 @@ func (authority *Authority) verifyLeaf(certificate *x509.Certificate, hosts []st
 	if len(certificate.IPAddresses) != 0 || len(certificate.EmailAddresses) != 0 || len(certificate.URIs) != 0 {
 		return fmt.Errorf("leaf certificate must contain DNS names only")
 	}
+	if certificate.PermittedDNSDomainsCritical || len(certificate.PermittedDNSDomains) != 0 || len(certificate.ExcludedDNSDomains) != 0 || len(certificate.PermittedIPRanges) != 0 || len(certificate.ExcludedIPRanges) != 0 || len(certificate.PermittedEmailAddresses) != 0 || len(certificate.ExcludedEmailAddresses) != 0 || len(certificate.PermittedURIDomains) != 0 || len(certificate.ExcludedURIDomains) != 0 {
+		return fmt.Errorf("leaf certificate must not contain name constraints")
+	}
+	if len(certificate.OCSPServer) != 0 || len(certificate.IssuingCertificateURL) != 0 {
+		return fmt.Errorf("leaf certificate must not contain authority information access locations")
+	}
+	if len(certificate.CRLDistributionPoints) != 0 {
+		return fmt.Errorf("leaf certificate must not contain CRL distribution points")
+	}
+	if len(certificate.PolicyIdentifiers) != 0 || len(certificate.Policies) != 0 || certificate.InhibitAnyPolicy > 0 || certificate.InhibitAnyPolicyZero || certificate.InhibitPolicyMapping > 0 || certificate.InhibitPolicyMappingZero || certificate.RequireExplicitPolicy > 0 || certificate.RequireExplicitPolicyZero || len(certificate.PolicyMappings) != 0 {
+		return fmt.Errorf("leaf certificate must not contain certificate policies")
+	}
 	if len(certificate.UnhandledCriticalExtensions) != 0 {
 		return fmt.Errorf("leaf certificate contains an unsupported critical extension")
 	}
+	for _, extension := range certificate.Extensions {
+		switch extension.Id.String() {
+		case rootSubjectKeyID, rootKeyUsage, rootBasicConstraint, leafSubjectAltName, leafAuthorityKeyID, leafExtendedUsage:
+		default:
+			return fmt.Errorf("leaf certificate contains unsupported extension %s", extension.Id.String())
+		}
+	}
 	if certificate.NotBefore.Before(authority.certificate.NotBefore) || certificate.NotAfter.After(authority.certificate.NotAfter) || !certificate.NotAfter.After(certificate.NotBefore) {
 		return fmt.Errorf("leaf certificate lifetime escapes its CA")
+	}
+	if certificate.NotAfter.Sub(certificate.NotBefore) > maximumLeafValidity+maximumBackdate {
+		return fmt.Errorf("leaf certificate exceeds Harbor's maximum lifetime")
 	}
 	if err := certificate.CheckSignatureFrom(authority.certificate); err != nil {
 		return fmt.Errorf("leaf certificate signature is invalid: %w", err)
