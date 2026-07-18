@@ -12,12 +12,19 @@ import (
 var repositorySet = wire.NewSet(
 	wire.Value(repositorySetPlaceholder{}),
 	models.NewHarborStateRepo,
+	models.NewLoopbackAddressLeaseRepo,
+	models.NewNetworkPoolCandidateRepo,
+	models.NewNetworkProjectReleaseRepo,
+	models.NewNetworkSetupEvidenceRepo,
+	models.NewNetworkSharedListenerRepo,
+	models.NewNetworkStateRepo,
 	models.NewOperationRepo,
 	models.NewOperationTransitionRepo,
 	models.NewProjectAppRepo,
 	models.NewProjectRepo,
 	models.NewProjectResourceRepo,
 	models.NewProjectServiceRepo,
+	models.NewPublicEndpointLeaseRepo,
 	models.NewRecentResourceRepo,
 )
 
