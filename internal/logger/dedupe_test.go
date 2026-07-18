@@ -3,6 +3,7 @@ package logger
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -137,7 +138,7 @@ func TestConcurrentLoggerEmitsDoNotLeakFields(t *testing.T) {
 	t.Setenv("APP_LOG_FORMAT", "json")
 	t.Setenv(logDedupeEnabledEnv, "false")
 
-	log := newAppLoggerWithWriters(loadLogConfig(), 0, &bytes.Buffer{}, &bytes.Buffer{})
+	log := newAppLoggerWithWriters(loadLogConfig(), 0, io.Discard, io.Discard)
 
 	const workers = 16
 	const perWorker = 64
@@ -194,7 +195,7 @@ func TestConcurrentContextLoggersPreserveResolvedContextFields(t *testing.T) {
 	t.Setenv("APP_LOG_FORMAT", "json")
 	t.Setenv(logDedupeEnabledEnv, "false")
 
-	base := newAppLoggerWithWriters(loadLogConfig(), 0, &bytes.Buffer{}, &bytes.Buffer{})
+	base := newAppLoggerWithWriters(loadLogConfig(), 0, io.Discard, io.Discard)
 
 	var (
 		mu      sync.Mutex
