@@ -36,7 +36,7 @@ Frontend-only development uses the fixture adapter. When the SPA detects a Wails
 
 ## Preserved starter foundation
 
-These files and conventions should remain verbatim until a concrete Harbor requirement forces a change:
+These files and conventions form the preserved starter boundary. Harbor currently has one documented primitive-level exception: `CommandItem` prefers an explicit `value` when indexing search text so the command palette can find relevant metadata without rendering it in the visible label. The remaining primitive source should stay verbatim until a concrete Harbor requirement forces a change:
 
 - `components.json`, including the `new-york` style, neutral base, CSS variables, Lucide selection, and aliases;
 - `src/components/ui/**`, which is the source-owned shadcn-vue primitive layer;

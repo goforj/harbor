@@ -37,6 +37,8 @@ npm run test:e2e
 npm run build
 ```
 
+On Linux, use `npx playwright install --with-deps` in place of the browser install command so Playwright's system libraries are present too.
+
 Validate the nested Go module separately from the repository root:
 
 ```sh
@@ -56,10 +58,10 @@ wails build
 
 Ubuntu 24.04 requires GTK3, WebKit2GTK 4.1, and the `webkit2_41` Wails build tag. Native packaging also depends on the platform prerequisites documented by Wails.
 
-The daemon bindings, native tray, and platform packaging remain later milestone work. The root Harbor module remains independent of Wails and its native dependencies.
+The daemon bindings and native tray remain later milestone work. The scaffolded Wails icons are development placeholders; Harbor branding, signed installers, dependency notices, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
 
 ## Continuous integration
 
 The repository workflow runs root Go tests on Ubuntu, macOS, and Windows. It separately builds the frontend, runs its browser tests, and then tests, vets, and compiles the nested Wails module on all three operating systems.
 
-These hosted builds prove source and packaging compilation. They do not replace interactive native smoke for WebView behavior, close-to-hide, relaunch, tray integration, or platform trust and networking operations.
+These hosted builds prove source compilation and Wails' unsigned application-bundle step. They do not produce release installers or replace interactive native smoke for WebView behavior, close-to-hide, relaunch, tray integration, or platform trust and networking operations.
