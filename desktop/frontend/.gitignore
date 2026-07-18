@@ -2,6 +2,7 @@ dist/*
 !dist/.gitkeep
 coverage/
 node_modules/
+.vite/
 package.json.md5
 playwright-report/
 test-results/
