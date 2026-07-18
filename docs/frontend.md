@@ -32,7 +32,7 @@ The first desktop foundation is present under `desktop/`:
 - Vite restores the tracked empty embed marker after production builds so the nested Go module also compiles before frontend assets are generated;
 - the CI workflow requests root Go validation and nested Wails compilation on Ubuntu, macOS, and Windows, with browser behavior exercised once on Ubuntu before its production assets are reused by the native build matrix.
 
-Frontend-only development uses the fixture adapter. When the SPA detects a Wails runtime, it requires the native `Snapshot` and `OpenResource` bindings and fails visibly if they are absent; it never substitutes fixture state for real machine state. Those bindings, daemon event transport, tray integration, and native packaging evidence remain implementation work rather than capabilities implied by the shell.
+Frontend-only development and `wails dev` use the fixture adapter while the native bindings are absent, with an explicit `Development fixture` marker in the UI. Production Wails builds require the native `Snapshot` and `OpenResource` bindings and fail visibly if they are absent; they never substitute fixture state for real machine state. Those bindings, daemon event transport, tray integration, and native packaging evidence remain implementation work rather than capabilities implied by the shell.
 
 ## Preserved starter foundation
 

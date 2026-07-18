@@ -6,6 +6,8 @@ import ContextPane from '@/components/harbor/ContextPane.vue'
 import HarborCommandMenu from '@/components/harbor/HarborCommandMenu.vue'
 import HarborMobileNav from '@/components/harbor/HarborMobileNav.vue'
 import HarborRail from '@/components/harbor/HarborRail.vue'
+import { harborBridgeMode } from '@/bridge'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { Toaster } from '@/components/ui/sonner'
@@ -61,6 +63,14 @@ onBeforeUnmount(() => {
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="harbor-workspace" :data-has-detail="hasDetail">
+      <Badge
+        v-if="harborBridgeMode === 'fixture'"
+        variant="outline"
+        class="pointer-events-none fixed top-3 right-3 z-50 border-amber-500/35 bg-background/90 text-[10px] font-medium tracking-wide text-amber-600 uppercase shadow-sm backdrop-blur dark:text-amber-400"
+      >
+        Development fixture
+      </Badge>
+
       <div class="harbor-rail-slot">
         <HarborRail @command="commandOpen = true" />
       </div>

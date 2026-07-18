@@ -21,7 +21,7 @@ npm ci
 npm run dev
 ```
 
-The fixture is selected only in a normal browser. A Wails runtime without Harbor's native daemon bindings reports an unavailable state instead of presenting fixture data as real machine state.
+`wails dev` also uses that fixture while native daemon bindings are absent and marks the window `Development fixture`. A production Wails build without the bindings reports an unavailable state instead of presenting fixture data as real machine state.
 
 ## Tests
 
