@@ -23,6 +23,7 @@ type Client struct {
 	connection net.Conn
 	reader     *rpc.FrameReader
 	writer     *rpc.FrameWriter
+	writes     *sessionWriter
 	peer       Peer
 	nextID     atomic.Uint64
 	pendingMu  sync.Mutex
@@ -73,6 +74,7 @@ func NewClient(ctx context.Context, connection net.Conn, config ClientConfig) (*
 		}
 		return nil, err
 	}
+	client.writes = newSessionWriter(connection, client.writer, normalized.WriteTimeout, client.terminate)
 	go client.readLoop()
 
 	return client, nil
@@ -107,7 +109,7 @@ func (c *Client) Call(ctx context.Context, method string, payload any) (json.Raw
 	if err := c.addPending(requestID, call); err != nil {
 		return nil, err
 	}
-	if err := c.writer.WriteEnvelope(envelope); err != nil {
+	if err := c.writes.writeEnvelope(envelope); err != nil {
 		c.removePending(requestID, call)
 		c.terminate(fmt.Errorf("write request: %w", err))
 		return nil, c.closedError()
@@ -133,7 +135,7 @@ func (c *Client) Call(ctx context.Context, method string, payload any) (json.Raw
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			cancelEnvelope, createErr := rpc.NewCancelEnvelope(c.peer.Protocol, requestID)
 			if createErr == nil {
-				if writeErr := c.writer.WriteEnvelope(cancelEnvelope); writeErr != nil {
+				if writeErr := c.writes.writeEnvelope(cancelEnvelope); writeErr != nil {
 					c.terminate(fmt.Errorf("write cancellation: %w", writeErr))
 				}
 			}

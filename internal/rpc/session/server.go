@@ -164,7 +164,7 @@ type serverConnection struct {
 	server      *Server
 	connection  net.Conn
 	reader      *rpc.FrameReader
-	writer      *rpc.FrameWriter
+	writes      *sessionWriter
 	peer        Peer
 	context     context.Context
 	cancel      context.CancelFunc
@@ -192,11 +192,10 @@ func newServerConnection(
 ) *serverConnection {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &serverConnection{
+	active := &serverConnection{
 		server:     server,
 		connection: connection,
 		reader:     reader,
-		writer:     writer,
 		peer:       peer,
 		context:    ctx,
 		cancel:     cancel,
@@ -205,6 +204,9 @@ func newServerConnection(
 		requests:   make(map[string]context.CancelFunc),
 		terminal:   make(chan struct{}),
 	}
+	active.writes = newSessionWriter(connection, writer, server.config.WriteTimeout, active.terminate)
+
+	return active
 }
 
 // run reads until either side closes, then cancels and joins every accepted request.
@@ -279,7 +281,7 @@ func (s *serverConnection) acceptRequest(envelope rpc.Envelope) error {
 			return err
 		}
 
-		return s.writer.WriteEnvelope(response)
+		return s.writeResponse(response)
 	}
 
 	requestContext, cancel, err := envelope.RequestContext(s.context)
@@ -294,7 +296,7 @@ func (s *serverConnection) acceptRequest(envelope rpc.Envelope) error {
 			return responseErr
 		}
 
-		return s.writer.WriteEnvelope(response)
+		return s.writeResponse(response)
 	}
 
 	s.requestsMu.Lock()
@@ -420,7 +422,7 @@ func (s *serverConnection) writeResponse(response rpc.Envelope) error {
 	case <-s.terminal:
 		return ErrClosed
 	default:
-		return s.writer.WriteEnvelope(response)
+		return s.writes.writeEnvelope(response)
 	}
 }
 

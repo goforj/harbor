@@ -1534,6 +1534,12 @@ func TestServerConfigurationValidationCoversEachBoundary(t *testing.T) {
 			},
 		},
 		{
+			name: "negative write timeout",
+			configure: func(config *ServerConfig) {
+				config.WriteTimeout = -time.Second
+			},
+		},
+		{
 			name: "negative idle timeout",
 			configure: func(config *ServerConfig) {
 				config.IdleTimeout = -time.Second
@@ -1589,6 +1595,9 @@ func TestServerConfigurationValidationCoversEachBoundary(t *testing.T) {
 	if server.config.IdleTimeout != defaultIdleTimeout {
 		t.Fatalf("default idle timeout = %s, want %s", server.config.IdleTimeout, defaultIdleTimeout)
 	}
+	if server.config.WriteTimeout != defaultWriteTimeout {
+		t.Fatalf("default write timeout = %s, want %s", server.config.WriteTimeout, defaultWriteTimeout)
+	}
 	if err := server.Serve(t.Context(), nil); err == nil {
 		t.Fatal("Serve accepted a nil connection")
 	}
@@ -1626,6 +1635,12 @@ func TestClientConfigurationValidationCoversEachBoundary(t *testing.T) {
 			},
 		},
 		{
+			name: "negative write timeout",
+			configure: func(config *ClientConfig) {
+				config.WriteTimeout = -time.Second
+			},
+		},
+		{
 			name: "negative request timeout",
 			configure: func(config *ClientConfig) {
 				config.RequestTimeout = -time.Second
@@ -1658,6 +1673,13 @@ func TestClientConfigurationValidationCoversEachBoundary(t *testing.T) {
 	}
 	if _, err := NewClient(t.Context(), nil, testClientConfig()); err == nil {
 		t.Fatal("NewClient accepted a nil connection")
+	}
+	normalized, err := normalizedClientConfig(testClientConfig())
+	if err != nil {
+		t.Fatalf("normalize valid client config: %v", err)
+	}
+	if normalized.WriteTimeout != defaultWriteTimeout {
+		t.Fatalf("default write timeout = %s, want %s", normalized.WriteTimeout, defaultWriteTimeout)
 	}
 }
 

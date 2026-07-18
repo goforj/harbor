@@ -12,6 +12,7 @@ import (
 
 const (
 	defaultHandshakeTimeout      = 5 * time.Second
+	defaultWriteTimeout          = 5 * time.Second
 	defaultIdleTimeout           = 5 * time.Minute
 	defaultRequestTimeout        = 30 * time.Second
 	defaultMaxConcurrentRequests = 16
@@ -29,6 +30,8 @@ var (
 	ErrProtocolViolation = errors.New("RPC protocol violation")
 	// ErrIdleTimeout reports a negotiated connection that remained without accepted work.
 	ErrIdleTimeout = errors.New("RPC session idle timeout")
+	// ErrWriteTimeout reports a post-handshake frame that could not be written in time.
+	ErrWriteTimeout = errors.New("RPC session write timeout")
 )
 
 // Peer describes the identity and features established by protocol negotiation.
@@ -83,6 +86,8 @@ type ServerConfig struct {
 	ObserveError ErrorObserver
 	// HandshakeTimeout bounds unauthenticated negotiation work; zero uses five seconds.
 	HandshakeTimeout time.Duration
+	// WriteTimeout bounds each post-handshake frame write; zero uses five seconds.
+	WriteTimeout time.Duration
 	// IdleTimeout bounds negotiated connections only while they have no accepted
 	// requests; zero uses five minutes.
 	IdleTimeout time.Duration
@@ -104,6 +109,8 @@ type ClientConfig struct {
 	Capabilities []rpc.Capability
 	// HandshakeTimeout bounds initial negotiation; zero uses five seconds.
 	HandshakeTimeout time.Duration
+	// WriteTimeout bounds each post-handshake frame write; zero uses five seconds.
+	WriteTimeout time.Duration
 	// RequestTimeout supplies a deadline when Call receives a context without one; zero uses 30 seconds.
 	RequestTimeout time.Duration
 	// MaxPendingRequests bounds concurrent calls and cancelled calls awaiting a response; zero uses 64.
@@ -209,6 +216,12 @@ func normalizedServerConfig(config ServerConfig) (ServerConfig, error) {
 	if config.HandshakeTimeout == 0 {
 		config.HandshakeTimeout = defaultHandshakeTimeout
 	}
+	if config.WriteTimeout < 0 {
+		return ServerConfig{}, errors.New("server write timeout cannot be negative")
+	}
+	if config.WriteTimeout == 0 {
+		config.WriteTimeout = defaultWriteTimeout
+	}
 	if config.IdleTimeout < 0 {
 		return ServerConfig{}, errors.New("server idle timeout cannot be negative")
 	}
@@ -275,6 +288,12 @@ func normalizedClientConfig(config ClientConfig) (ClientConfig, error) {
 	}
 	if config.HandshakeTimeout == 0 {
 		config.HandshakeTimeout = defaultHandshakeTimeout
+	}
+	if config.WriteTimeout < 0 {
+		return ClientConfig{}, errors.New("client write timeout cannot be negative")
+	}
+	if config.WriteTimeout == 0 {
+		config.WriteTimeout = defaultWriteTimeout
 	}
 	if config.RequestTimeout < 0 {
 		return ClientConfig{}, errors.New("client request timeout cannot be negative")
