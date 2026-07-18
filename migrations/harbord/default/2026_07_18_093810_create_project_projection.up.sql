@@ -6,7 +6,13 @@ CREATE TABLE projects (
     project_id TEXT NOT NULL UNIQUE CHECK (length(CAST(project_id AS BLOB)) BETWEEN 1 AND 256 AND project_id = trim(project_id)),
     name TEXT NOT NULL CHECK (length(CAST(name AS BLOB)) BETWEEN 1 AND 512 AND name = trim(name)),
     path TEXT NOT NULL UNIQUE CHECK (length(CAST(path AS BLOB)) > 0 AND path = trim(path)),
-    slug TEXT NOT NULL UNIQUE CHECK (length(CAST(slug AS BLOB)) BETWEEN 1 AND 256 AND slug = trim(slug)),
+    slug TEXT NOT NULL UNIQUE CHECK (
+        length(CAST(slug AS BLOB)) BETWEEN 1 AND 63
+        AND slug = lower(slug)
+        AND slug NOT GLOB '*[^a-z0-9-]*'
+        AND substr(slug, 1, 1) <> '-'
+        AND substr(slug, -1, 1) <> '-'
+    ),
     state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'rebuilding', 'degraded', 'failed', 'stopping', 'unavailable')),
     favorite BOOLEAN NOT NULL CHECK (favorite IN (0, 1)),
     updated_at DATETIME NOT NULL,

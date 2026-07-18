@@ -189,6 +189,46 @@ func TestProjectSnapshotValidateRejectsInvalidProjectFields(t *testing.T) {
 	}
 }
 
+// TestProjectSnapshotValidateRequiresCanonicalDNSLabelSlug keeps persisted project domains unique after DNS normalization.
+func TestProjectSnapshotValidateRequiresCanonicalDNSLabelSlug(t *testing.T) {
+	t.Parallel()
+
+	for _, slug := range []string{"a", "orders", "orders-api", "orders2-api3", "123"} {
+		slug := slug
+		t.Run("valid "+slug, func(t *testing.T) {
+			t.Parallel()
+			project := validSnapshot(t).Projects[0]
+			project.Slug = slug
+			if err := project.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+
+	invalid := map[string]string{
+		"empty":           "",
+		"uppercase":       "Orders",
+		"underscore":      "orders_api",
+		"dot":             "orders.api",
+		"leading hyphen":  "-orders",
+		"trailing hyphen": "orders-",
+		"Unicode":         "ordérs",
+		"too long":        strings.Repeat("a", 64),
+	}
+	for name, slug := range invalid {
+		name := name
+		slug := slug
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			project := validSnapshot(t).Projects[0]
+			project.Slug = slug
+			if err := project.Validate(); err == nil || !strings.Contains(err.Error(), "project slug") {
+				t.Fatalf("Validate() error = %v, want project slug error", err)
+			}
+		})
+	}
+}
+
 // TestProjectSnapshotValidateRejectsNilCollections keeps every project collection encoded as an array.
 func TestProjectSnapshotValidateRejectsNilCollections(t *testing.T) {
 	t.Parallel()

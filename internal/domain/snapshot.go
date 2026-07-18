@@ -204,7 +204,7 @@ func (project ProjectSnapshot) Validate() error {
 	if err := validateProjectPath(project.Path); err != nil {
 		return err
 	}
-	if err := validateIdentifier("project slug", project.Slug); err != nil {
+	if err := validateProjectSlug(project.Slug); err != nil {
 		return err
 	}
 	if err := project.State.Validate(); err != nil {
@@ -257,6 +257,26 @@ func (project ProjectSnapshot) Validate() error {
 		if err := validateResourceOwnerReference(resource.Owner, apps, services); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
+	}
+	return nil
+}
+
+// validateProjectSlug requires the canonical DNS label that registration will place beneath the owned development suffix.
+func validateProjectSlug(slug string) error {
+	if slug == "" {
+		return fmt.Errorf("project slug must not be empty")
+	}
+	if len(slug) > 63 {
+		return fmt.Errorf("project slug must not exceed 63 bytes")
+	}
+	if slug[0] == '-' || slug[len(slug)-1] == '-' {
+		return fmt.Errorf("project slug must start and end with a letter or digit")
+	}
+	for _, character := range slug {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-' {
+			continue
+		}
+		return fmt.Errorf("project slug must contain only lowercase ASCII letters, digits, and hyphens")
 	}
 	return nil
 }

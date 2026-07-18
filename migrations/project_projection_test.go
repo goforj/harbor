@@ -1,6 +1,8 @@
 package migrations
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"gorm.io/gorm"
@@ -159,6 +161,25 @@ func TestProjectProjectionMigrationRejectsInvalidEnums(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assertMigrationStatementFails(t, databaseConnection, test.statement)
 		})
+	}
+}
+
+// TestProjectProjectionMigrationRejectsNonCanonicalSlugs verifies direct writers cannot bypass project DNS-label normalization.
+func TestProjectProjectionMigrationRejectsNonCanonicalSlugs(t *testing.T) {
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	defer closeOperationMigrationDatabase(t, connections)
+	applyProjectProjectionMigrations(t, databaseConnection)
+
+	invalid := []string{"Orders", "orders_api", "orders.api", "-orders", "orders-", "ordérs", strings.Repeat("a", 64)}
+	for index, slug := range invalid {
+		assertMigrationStatementFails(t, databaseConnection, `INSERT INTO projects
+			(project_id, name, path, slug, state, favorite, updated_at, revision)
+			VALUES (?, 'Invalid', ?, ?, 'stopped', 0, '2026-07-18T12:00:00Z', ?)`,
+			fmt.Sprintf("invalid-project-%d", index),
+			fmt.Sprintf("/work/invalid-%d", index),
+			slug,
+			index+1,
+		)
 	}
 }
 
