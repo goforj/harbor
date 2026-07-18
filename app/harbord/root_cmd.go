@@ -5,13 +5,17 @@ package harbordapp
 
 import (
 	"github.com/goforj/harbor/internal/makecmd"
+	"github.com/goforj/harbor/migrations"
 )
 
 // RootCmd owns the generated app command surface, including app-local make commands.
 type RootCmd struct {
 	Commands
-	MakeCommandCmd   makecmd.CommandCmd   `cmd:""`
-	MakeMigrationCmd makecmd.MigrationCmd `cmd:""`
+	MakeCommandCmd     makecmd.CommandCmd            `cmd:""`
+	MakeMigrationCmd   makecmd.MigrationCmd          `cmd:""`
+	MakeModelCmd       makecmd.ModelCmd              `cmd:""`
+	MigrateCmd         migrations.MigrateCmd         `cmd:""`
+	MigrateRollbackCmd migrations.MigrateRollbackCmd `cmd:""`
 }
 
 // NewRootCmd assembles framework and app-owned commands on this App's command surface.
@@ -19,10 +23,16 @@ func NewRootCmd(
 	commands *Commands,
 	makeCommandCmd *makecmd.CommandCmd,
 	makeMigrationCmd *makecmd.MigrationCmd,
+	makeModelCmd *makecmd.ModelCmd,
+	migrateCmd *migrations.MigrateCmd,
+	migrateRollbackCmd *migrations.MigrateRollbackCmd,
 ) *RootCmd {
 	return &RootCmd{
-		Commands:         *commands,
-		MakeCommandCmd:   *makeCommandCmd,
-		MakeMigrationCmd: *makeMigrationCmd,
+		Commands:           *commands,
+		MakeCommandCmd:     *makeCommandCmd,
+		MakeMigrationCmd:   *makeMigrationCmd,
+		MakeModelCmd:       *makeModelCmd,
+		MigrateCmd:         *migrateCmd,
+		MigrateRollbackCmd: *migrateRollbackCmd,
 	}
 }

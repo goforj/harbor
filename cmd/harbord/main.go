@@ -5,6 +5,7 @@ import (
 	"github.com/goforj/harbor/app/harbord/wire"
 	"github.com/goforj/harbor/internal/cmd"
 	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/harbor/internal/state"
 
 	"os"
 )
@@ -22,6 +23,9 @@ func main() {
 		console.Fatalf("%v", err)
 	} else if handled {
 		return
+	}
+	if _, err := state.ConfigureDatabase(); err != nil {
+		console.Fatalf("configuring state database: %v", err)
 	}
 	application, err := wire.InitializeApplication()
 	if err != nil {

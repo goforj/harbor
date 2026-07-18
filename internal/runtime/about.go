@@ -162,6 +162,10 @@ func (s *AboutService) Build() AboutReport {
 			AppURL: env.Get("APP_URL", "http://localhost:3000"),
 		},
 	}
+	if appComponents.HasDatabase() {
+		report.Build.MigrationsPath = aboutPresence("migrations")
+		report.Databases = aboutDatabaseReports()
+	}
 	if raw := strings.TrimSpace(env.Get("LIGHTHOUSE_URL", "")); raw != "" {
 		if env.GetBool("LIGHTHOUSE_ENABLED", "true") {
 			report.Network.LighthouseURL = raw
@@ -195,6 +199,9 @@ func (s *AboutService) sections(report AboutReport, appComponents AppComponents)
 
 	if rows := aboutNetworkRows(report.Network); len(rows) > 0 {
 		sections = append(sections, AboutSectionData{Title: "Network", Rows: rows})
+	}
+	if appComponents.HasDatabase() {
+		sections = append(sections, AboutSectionData{Title: "Databases", Connections: aboutDatabaseConnections(report.Databases)})
 	}
 
 	return sections
@@ -276,6 +283,9 @@ func aboutMailConnections(mails []AboutMail) []AboutConnectionData {
 func aboutComponents(appComponents AppComponents) []string {
 	components := []string{}
 	components = append(components, "lighthouse")
+	if appComponents.HasDatabase() {
+		components = append(components, "database")
+	}
 	return components
 }
 

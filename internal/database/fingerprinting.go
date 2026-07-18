@@ -1,0 +1,325 @@
+package database
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode"
+
+	"github.com/goforj/str/v2"
+)
+
+var (
+	dbInListPattern    = regexp.MustCompile(`(?i)\bIN\s*\((?:\s*\?\s*,)*\s*\?\s*\)`)
+	dbValuesPattern    = regexp.MustCompile(`(?i)\bVALUES\s*\((?:[^()]|\([^()]*\))*\)`)
+	dbUUIDPattern      = regexp.MustCompile(`\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	dbHexBlobPattern   = regexp.MustCompile(`\b[0-9a-f]{24,}\b`)
+	dbLongTokenPattern = regexp.MustCompile(`\b[a-z0-9_]{32,}\b`)
+)
+
+const (
+	dbMaxFingerprintLength       = 512
+	dbMaxFingerprintTokenCount   = 64
+	dbMaxQueryShapeLength        = 160
+	dbMaxInspectQueryShapeLength = 2048
+)
+
+func fingerprintDBQuery(sql string) string {
+	normalized := normalizeDBQueryFingerprint(sql)
+	if normalized == "" {
+		return "unknown"
+	}
+	sum := sha1.Sum([]byte(normalized))
+	return hex.EncodeToString(sum[:4])
+}
+
+func normalizeDBQueryFingerprint(sql string) string {
+	sql = normalizeDBSQL(sql)
+	if sql == "" {
+		return ""
+	}
+	sql = normalizeDBSQLTokens(sql, false)
+	sql = dbInListPattern.ReplaceAllStringFunc(sql, func(_ string) string {
+		return "IN (?)"
+	})
+	sql = dbValuesPattern.ReplaceAllStringFunc(sql, func(match string) string {
+		upper := strings.ToUpper(match)
+		if !strings.HasPrefix(upper, "VALUES") {
+			return match
+		}
+		return "VALUES (?)"
+	})
+	sql = strings.ToLower(sql)
+	sql = strings.Join(strings.Fields(sql), " ")
+	return sql
+}
+
+func normalizeDBInspectQuery(sql string) string {
+	sql = normalizeDBSQL(sql)
+	if sql == "" {
+		return ""
+	}
+	sql = normalizeDBSQLTokens(sql, true)
+	sql = dbInListPattern.ReplaceAllStringFunc(sql, func(_ string) string {
+		return "IN (?)"
+	})
+	sql = dbValuesPattern.ReplaceAllStringFunc(sql, func(match string) string {
+		upper := strings.ToUpper(match)
+		if !strings.HasPrefix(upper, "VALUES") {
+			return match
+		}
+		return "VALUES (?)"
+	})
+	sql = strings.ToLower(sql)
+	sql = strings.Join(strings.Fields(sql), " ")
+	return sql
+}
+
+func normalizeDBSQL(sql string) string {
+	sql = strings.Join(strings.Fields(sql), " ")
+	if sql == "" {
+		return ""
+	}
+	return sql
+}
+
+func normalizeDBSQLTokens(sql string, inspectMode bool) string {
+	tokens := make([]string, 0, len(sql)/4)
+	for i := 0; i < len(sql); {
+		ch := sql[i]
+		switch {
+		case isDBWhitespace(ch):
+			i++
+		case ch == '\'' || ch == '"':
+			tokens = append(tokens, "?")
+			i = consumeDBQuotedLiteral(sql, i)
+		case ch == '`':
+			token, next := consumeDBBacktickIdentifier(sql, i)
+			if token != "" {
+				tokens = append(tokens, token)
+			}
+			i = next
+		case ch == '$' && i+1 < len(sql) && isDBDigit(sql[i+1]):
+			tokens = append(tokens, "?")
+			i = consumeDBDollarPlaceholder(sql, i)
+		case (ch == ':' || ch == '@') && i+1 < len(sql) && isDBIdentStart(sql[i+1]):
+			tokens = append(tokens, "?")
+			i = consumeDBNamedPlaceholder(sql, i)
+		case isDBDigit(ch):
+			token, next := consumeDBNumericOrOpaque(sql, i, inspectMode)
+			tokens = append(tokens, token)
+			i = next
+		case isDBIdentStart(ch):
+			token, next := consumeDBIdentifier(sql, i)
+			tokens = append(tokens, token)
+			i = next
+		default:
+			tokens = append(tokens, string(ch))
+			i++
+		}
+	}
+	return compactDBSQLTokens(tokens)
+}
+
+func dbQueryShapeLabel(sql string) string {
+	normalized := normalizeDBInspectQuery(sql)
+	if normalized == "" {
+		return "unknown"
+	}
+	if len(normalized) <= dbMaxQueryShapeLength {
+		return normalized
+	}
+	return strings.TrimSpace(normalized[:dbMaxQueryShapeLength-3]) + "..."
+}
+
+func dbQueryInspectShape(sql string) string {
+	normalized := normalizeDBInspectQuery(sql)
+	if normalized == "" {
+		return "unknown"
+	}
+	if len(normalized) <= dbMaxInspectQueryShapeLength {
+		return normalized
+	}
+	return strings.TrimSpace(normalized[:dbMaxInspectQueryShapeLength-3]) + "..."
+}
+
+func isSafeDBFingerprintShape(sql string) bool {
+	if sql == "" {
+		return false
+	}
+	if len(sql) > dbMaxFingerprintLength {
+		return false
+	}
+	fields := strings.Fields(sql)
+	if len(fields) > dbMaxFingerprintTokenCount {
+		return false
+	}
+	if dbUUIDPattern.MatchString(sql) {
+		return false
+	}
+	if dbHexBlobPattern.MatchString(sql) {
+		return false
+	}
+	if dbLongTokenPattern.MatchString(sql) {
+		return false
+	}
+	return true
+}
+
+func compactDBSQLTokens(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		switch token {
+		case ",", ")", "]":
+			trimDBBuilderTrailingSpace(&b)
+			b.WriteString(token)
+			b.WriteByte(' ')
+		case "(":
+			if b.Len() > 0 {
+				last := b.String()[b.Len()-1]
+				if last != ' ' {
+					b.WriteByte(' ')
+				}
+			}
+			b.WriteString(token)
+		default:
+			if b.Len() > 0 {
+				last := b.String()[b.Len()-1]
+				if last != '(' && last != ' ' {
+					b.WriteByte(' ')
+				}
+			}
+			b.WriteString(strings.ToLower(token))
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func trimDBBuilderTrailingSpace(b *strings.Builder) {
+	if b.Len() == 0 {
+		return
+	}
+	s := b.String()
+	if s[len(s)-1] != ' ' {
+		return
+	}
+	b.Reset()
+	b.WriteString(strings.TrimRight(s, " "))
+}
+
+func isDBWhitespace(ch byte) bool {
+	return unicode.IsSpace(rune(ch))
+}
+
+func isDBDigit(ch byte) bool {
+	return ch >= '0' && ch <= '9'
+}
+
+func isDBIdentStart(ch byte) bool {
+	return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+}
+
+func isDBIdentPart(ch byte) bool {
+	return isDBIdentStart(ch) || isDBDigit(ch) || ch == '.' || ch == '$'
+}
+
+func isDBOpaquePart(ch byte) bool {
+	return isDBIdentPart(ch) || ch == '-'
+}
+
+func consumeDBQuotedLiteral(sql string, start int) int {
+	quote := sql[start]
+	i := start + 1
+	for i < len(sql) {
+		if sql[i] == quote {
+			if quote == '\'' && i+1 < len(sql) && sql[i+1] == '\'' {
+				i += 2
+				continue
+			}
+			return i + 1
+		}
+		if sql[i] == '\\' && i+1 < len(sql) {
+			i += 2
+			continue
+		}
+		i++
+	}
+	return len(sql)
+}
+
+func consumeDBBacktickIdentifier(sql string, start int) (string, int) {
+	i := start + 1
+	for i < len(sql) && sql[i] != '`' {
+		i++
+	}
+	if i >= len(sql) {
+		return str.Of(sql[start:]).Trim().ToLower().String(), len(sql)
+	}
+	return strings.ToLower(sql[start : i+1]), i + 1
+}
+
+func consumeDBDollarPlaceholder(sql string, start int) int {
+	i := start + 1
+	for i < len(sql) && isDBDigit(sql[i]) {
+		i++
+	}
+	return i
+}
+
+func consumeDBNamedPlaceholder(sql string, start int) int {
+	i := start + 1
+	for i < len(sql) && (isDBIdentStart(sql[i]) || isDBDigit(sql[i])) {
+		i++
+	}
+	return i
+}
+
+func consumeDBNumericOrOpaque(sql string, start int, inspectMode bool) (string, int) {
+	i := start
+	hasAlphaOrDash := false
+	for i < len(sql) && isDBOpaquePart(sql[i]) {
+		if (sql[i] >= 'a' && sql[i] <= 'z') || (sql[i] >= 'A' && sql[i] <= 'Z') || sql[i] == '-' || sql[i] == '_' {
+			hasAlphaOrDash = true
+		}
+		i++
+	}
+	token := sql[start:i]
+	if inspectMode && hasAlphaOrDash {
+		return "?", i
+	}
+	if isDBNumericLiteral(token) {
+		return "?", i
+	}
+	return strings.ToLower(token), i
+}
+
+func consumeDBIdentifier(sql string, start int) (string, int) {
+	i := start
+	for i < len(sql) && isDBIdentPart(sql[i]) {
+		i++
+	}
+	token := strings.ToLower(sql[start:i])
+	if dbHexBlobPattern.MatchString(token) || dbLongTokenPattern.MatchString(token) {
+		return "?", i
+	}
+	return token, i
+}
+
+func isDBNumericLiteral(token string) bool {
+	if token == "" {
+		return false
+	}
+	if _, err := strconv.ParseFloat(token, 64); err == nil {
+		return true
+	}
+	return false
+}

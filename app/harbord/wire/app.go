@@ -15,6 +15,7 @@ import (
 
 	"github.com/goforj/harbor/app/harbord"
 	"github.com/goforj/harbor/internal/cmd"
+	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/konghelp"
 	"github.com/goforj/harbor/internal/logger"
@@ -28,6 +29,7 @@ type App struct {
 	inspects    *inspects.Manager
 	lifecycle   *runtime.Lifecycle
 	appTimeouts *runtime.Timeouts
+	db          *database.Connections
 }
 
 // RootCmd returns the root command of the application
@@ -164,8 +166,14 @@ func (a *App) logShutdownError(err error, command string, args []string, origin 
 		Msg(msg)
 }
 
+// DB returns the database connection registry.
+func (a *App) DB() *database.Connections {
+	return a.db
+}
+
 // NewApplication creates a new App instance
 func NewApplication(
+	db *database.Connections,
 	appLogger *logger.AppLogger,
 	rootCmd *harbordapp.RootCmd,
 	appTimeouts *runtime.Timeouts,
@@ -175,11 +183,13 @@ func NewApplication(
 	lifecycleManager := runtime.NewLifecycle(appTimeouts)
 
 	attachInspectLogSink(appLogger, inspectManager)
+	registerDatabaseShutdown(lifecycleManager, appLogger, db)
 	lifecycleRegistry.Register(lifecycleManager)
 
 	return App{
 		rootCmd:     rootCmd,
 		logger:      appLogger,
+		db:          db,
 		inspects:    inspectManager,
 		lifecycle:   lifecycleManager,
 		appTimeouts: appTimeouts,
@@ -205,6 +215,18 @@ func attachInspectLogSink(appLogger *logger.AppLogger, inspectManager *inspects.
 			Message: entry.Message,
 			Fields:  fields,
 		})
+	})
+}
+
+// registerDatabaseShutdown closes database connections through the shared lifecycle manager.
+func registerDatabaseShutdown(lifecycleManager *runtime.Lifecycle, appLogger *logger.AppLogger, db *database.Connections) {
+	lifecycleManager.On(runtime.Shutdown, func(ctx context.Context) error {
+		appLogger.Debug().Msg("Shutting down database connections...")
+		if err := db.Close(ctx); err != nil {
+			return err
+		}
+		appLogger.Debug().Msg("Database connections shut down")
+		return nil
 	})
 }
 

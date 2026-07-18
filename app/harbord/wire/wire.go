@@ -16,6 +16,7 @@ func InitializeApplication() (App, error) {
 	wire.Build(
 		appSet,
 		cmdSet,
+		databaseSet,
 		logger.ProvideAppLogger,
 		managerSet,
 		NewApplication,

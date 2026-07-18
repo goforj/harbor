@@ -1,0 +1,436 @@
+package migrations
+
+import (
+	"embed"
+	"io/fs"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/goforj/env/v2"
+	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/str/v2"
+	"gorm.io/gorm"
+)
+
+// registry holds all registered migrations.
+var registry []Migration
+
+// Migration defines a registered SQL migration and the stream that owns it.
+type Migration interface {
+	Name() string
+	App() string
+	Connection() string
+	DatabaseConnection() string
+	SourcePath() string
+	Driver() string
+	Up(dbConn *gorm.DB) error
+	Down(dbConn *gorm.DB) error
+}
+
+// RegisterMigration registers a new migration.
+func RegisterMigration(m Migration) {
+	registry = append(registry, m)
+}
+
+// GetMigrations returns all registered migrations.
+func GetMigrations() []Migration {
+	return registry
+}
+
+//go:embed * */*
+var files embed.FS
+
+// migrationFS is the filesystem used for migration SQL lookup.
+var migrationFS fs.FS = files
+
+func init() {
+	if err := AutoRegisterMigrations(); err != nil {
+		panic(err)
+	}
+}
+
+// AutoRegisterMigrations automatically registers all SQL migrations.
+func AutoRegisterMigrations() error {
+	migrationPaths := make(map[string]struct{})
+	if err := fs.WalkDir(migrationFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		if strings.HasSuffix(path, ".up.sql") {
+			migrationPaths[path] = struct{}{}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	for path := range migrationPaths {
+		app, connection, name, pathBase, driver := parseMigrationPath(path)
+
+		downFilename := pathBase + ".down.sql"
+		if _, err := migrationFS.Open(downFilename); err != nil {
+			console.Warnf("migration %s is missing Down file (%s)", pathBase, downFilename)
+		}
+
+		registerSQLMigration(app, connection, name, pathBase, driver)
+	}
+
+	return nil
+}
+
+// GetMigrationSQL reads the SQL file from the embedded file system.
+func GetMigrationSQL(filename string) (string, error) {
+	data, err := fs.ReadFile(migrationFS, filename)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// registerSQLMigration registers a SQL migration with the app and connection identity needed for orchestration.
+func registerSQLMigration(app, connection, name, pathBase, driver string) {
+	RegisterMigration(&migration{app: app, connection: connection, pathBase: pathBase, driver: driver, name: name})
+}
+
+// migration represents a SQL migration.
+type migration struct {
+	app        string
+	name       string
+	connection string
+	pathBase   string
+	driver     string
+}
+
+// Name returns the name of the migration.
+func (m *migration) Name() string {
+	return m.name
+}
+
+// App returns the app that owns this migration stream.
+func (m *migration) App() string {
+	return m.app
+}
+
+// Connection returns the connection name for this migration.
+func (m *migration) Connection() string {
+	return m.connection
+}
+
+// DatabaseConnection returns the flat database connection name used by the generated database registry.
+func (m *migration) DatabaseConnection() string {
+	return databaseConnectionName(m.app, m.connection)
+}
+
+// SourcePath returns the embedded migration path without its direction suffix.
+func (m *migration) SourcePath() string {
+	return m.pathBase
+}
+
+// Driver returns the database driver for this migration.
+// Empty means the migration applies to all drivers.
+func (m *migration) Driver() string {
+	return m.driver
+}
+
+// Up executes the Up migration SQL.
+func (m *migration) Up(dbConn *gorm.DB) error {
+	sql, err := GetMigrationSQL(m.pathBase + ".up.sql")
+	if err != nil {
+		return err
+	}
+	return execSQLStatements(dbConn, sql)
+}
+
+// Down executes the Down migration SQL.
+func (m *migration) Down(dbConn *gorm.DB) error {
+	sql, err := GetMigrationSQL(m.pathBase + ".down.sql")
+	if err != nil {
+		return err
+	}
+	return execSQLStatements(dbConn, sql)
+}
+
+func execSQLStatements(dbConn *gorm.DB, sqlText string) error {
+	for _, stmt := range splitSQLStatements(sqlText) {
+		if err := dbConn.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func splitSQLStatements(sqlText string) []string {
+	parts := strings.Split(sqlText, ";")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		stmt := stripLeadingSQLComments(strings.TrimSpace(part))
+		if stmt == "" {
+			continue
+		}
+		out = append(out, stmt)
+	}
+	return out
+}
+
+func stripLeadingSQLComments(stmt string) string {
+	s := strings.TrimSpace(stmt)
+	for s != "" {
+		if strings.HasPrefix(s, "--") {
+			if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+				s = strings.TrimSpace(s[idx+1:])
+				continue
+			}
+			return ""
+		}
+		if strings.HasPrefix(s, "/*") {
+			if idx := strings.Index(s, "*/"); idx >= 0 {
+				s = strings.TrimSpace(s[idx+2:])
+				continue
+			}
+			return ""
+		}
+		break
+	}
+	return s
+}
+
+// parseMigrationPath returns app, connection, migration name, path base, and driver.
+func parseMigrationPath(path string) (string, string, string, string, string) {
+	basePath := strings.TrimSuffix(path, ".up.sql")
+	safe := str.Of(filepath.ToSlash(basePath)).TrimPrefix("./").String()
+	parts := str.Of(safe).Split("/")
+	driver := ""
+	namePart := parts[len(parts)-1]
+	tokens := str.Of(namePart).Split(".")
+	if len(tokens) > 1 {
+		candidate := normalizeDriverName(tokens[len(tokens)-1])
+		if candidate != "" {
+			driver = candidate
+			namePart = strings.Join(tokens[:len(tokens)-1], ".")
+		}
+	}
+	if len(parts) >= 3 {
+		return normalizeAppName(parts[0]), normalizeConnectionName(parts[1]), namePart, safe, driver
+	}
+	if len(parts) < 2 {
+		return "app", "default", namePart, safe, driver
+	}
+	return "app", normalizeConnectionName(parts[0]), namePart, safe, driver
+}
+
+// normalizeAppName returns the app name used for migration ownership.
+func normalizeAppName(value string) string {
+	name := str.Of(value).Trim().ToLower()
+	if name.IsEmpty() {
+		return "app"
+	}
+	return name.String()
+}
+
+// normalizeConnectionName returns a trimmed, lowercase connection name.
+func normalizeConnectionName(value string) string {
+	name := str.Of(value).Trim().ToLower()
+	if name.IsEmpty() {
+		return "default"
+	}
+	return name.String()
+}
+
+// databaseConnectionName maps app-scoped migration connections onto the generated flat database registry.
+func databaseConnectionName(app, connection string) string {
+	app = normalizeAppName(app)
+	connection = normalizeConnectionName(connection)
+	if app == "app" {
+		return connection
+	}
+	if connection == "default" {
+		return str.Of(app).Snake().String()
+	}
+	return str.Of(app + "_" + connection).Snake().String()
+}
+
+// activeMigrationApp resolves the app selected for this command.
+func activeMigrationApp() string {
+	app := str.Of(env.Get("FORJ_APP", "")).Trim()
+	if !app.IsBlank() {
+		return normalizeAppName(app.String())
+	}
+	return "app"
+}
+
+// unqualifiedForjCommand reports whether the framework delegated an unqualified generated App command.
+func unqualifiedForjCommand() bool {
+	return str.Of(env.Get("FORJ_COMMAND_PREFIX", "")).Trim().String() == "forj"
+}
+
+// activeDriverName resolves the active DB driver from runtime env.
+func activeDriverName() string {
+	return normalizeDriverName(env.Get("DB_DRIVER", ""))
+}
+
+// normalizeDriverName normalizes DB driver aliases to canonical names.
+func normalizeDriverName(value string) string {
+	switch str.Of(value).Trim().ToLower().String() {
+	case "mysql", "mariadb":
+		return "mysql"
+	case "postgres", "postgresql":
+		return "postgres"
+	case "sqlite", "sqlite3":
+		return "sqlite"
+	default:
+		return ""
+	}
+}
+
+func migrationMatchesDriver(m Migration, activeDriver string) bool {
+	driver := normalizeDriverName(m.Driver())
+	if driver == "" {
+		return true
+	}
+	if activeDriver == "" {
+		return false
+	}
+	return driver == activeDriver
+}
+
+// selectMigrations returns one driver-compatible migration per migration name for one app stream.
+func selectMigrations(app, connection, activeDriver string) []Migration {
+	app = normalizeAppName(app)
+	connection = normalizeConnectionName(connection)
+	preferred := make(map[string]Migration)
+	for _, m := range GetMigrations() {
+		if m.App() != app {
+			continue
+		}
+		if m.Connection() != connection {
+			continue
+		}
+		if !migrationMatchesDriver(m, activeDriver) {
+			continue
+		}
+
+		existing, ok := preferred[m.Name()]
+		if !ok {
+			preferred[m.Name()] = m
+			continue
+		}
+
+		// Prefer driver-specific migration over generic when both exist.
+		if normalizeDriverName(existing.Driver()) == "" && normalizeDriverName(m.Driver()) != "" {
+			preferred[m.Name()] = m
+		}
+	}
+
+	migrations := make([]Migration, 0, len(preferred))
+	for _, m := range preferred {
+		migrations = append(migrations, m)
+	}
+	sort.Slice(migrations, func(i, j int) bool {
+		return migrations[i].Name() < migrations[j].Name()
+	})
+	return migrations
+}
+
+type migrationStream struct {
+	App                string
+	Connection         string
+	DatabaseConnection string
+}
+
+// knownMigrationStreams derives app/connection streams from the registered migration files.
+func knownMigrationStreams() []migrationStream {
+	seen := map[string]migrationStream{}
+	for _, m := range GetMigrations() {
+		stream := migrationStream{
+			App:                normalizeAppName(m.App()),
+			Connection:         normalizeConnectionName(m.Connection()),
+			DatabaseConnection: databaseConnectionName(m.App(), m.Connection()),
+		}
+		seen[stream.App+"/"+stream.Connection] = stream
+	}
+
+	streams := make([]migrationStream, 0, len(seen))
+	for _, stream := range seen {
+		streams = append(streams, stream)
+	}
+	sort.Slice(streams, func(i, j int) bool {
+		if streams[i].App != streams[j].App {
+			if streams[i].App == "app" {
+				return true
+			}
+			if streams[j].App == "app" {
+				return false
+			}
+			return streams[i].App < streams[j].App
+		}
+		if streams[i].Connection == "default" {
+			return true
+		}
+		if streams[j].Connection == "default" {
+			return false
+		}
+		return streams[i].Connection < streams[j].Connection
+	})
+	return streams
+}
+
+// hasMultiAppMigrationLayout reports whether any migration stream belongs to a named app.
+func hasMultiAppMigrationLayout() bool {
+	for _, stream := range knownMigrationStreams() {
+		if stream.App != "app" {
+			return true
+		}
+	}
+	return false
+}
+
+// migrationStreamsForApp returns every registered connection stream for one app.
+func migrationStreamsForApp(app string) []migrationStream {
+	app = normalizeAppName(app)
+	var streams []migrationStream
+	for _, stream := range knownMigrationStreams() {
+		if stream.App == app {
+			streams = append(streams, stream)
+		}
+	}
+	return streams
+}
+
+// migrationPlan chooses the streams a migrate command should run for the active invocation.
+func migrationPlan(activeApp, connection string) []migrationStream {
+	activeApp = normalizeAppName(activeApp)
+	connection = str.Of(connection).Trim().ToLower().String()
+	if connection != "" {
+		return []migrationStream{
+			{
+				App:                activeApp,
+				Connection:         normalizeConnectionName(connection),
+				DatabaseConnection: databaseConnectionName(activeApp, connection),
+			},
+		}
+	}
+	if hasMultiAppMigrationLayout() && activeApp == "app" && unqualifiedForjCommand() {
+		return knownMigrationStreams()
+	}
+	if hasMultiAppMigrationLayout() {
+		streams := migrationStreamsForApp(activeApp)
+		if len(streams) > 0 {
+			return streams
+		}
+		return nil
+	}
+	return []migrationStream{
+		{
+			App:                activeApp,
+			Connection:         "default",
+			DatabaseConnection: databaseConnectionName(activeApp, "default"),
+		},
+	}
+}

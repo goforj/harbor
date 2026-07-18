@@ -16,6 +16,7 @@ var cmdSet = wire.NewSet(
 	harbordapp.NewCommands,
 	harbordapp.NewRootCmd,
 	cmd.NewAboutCmd,
+	cmd.NewDBShellCmd,
 	makecmd.NewCommandCmd,
 	makecmd.NewMigrationCmd,
 )

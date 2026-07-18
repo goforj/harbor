@@ -9,15 +9,19 @@ package wire
 import (
 	"github.com/goforj/harbor/app/harbord"
 	"github.com/goforj/harbor/internal/cmd"
+	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/makecmd"
 	"github.com/goforj/harbor/internal/runtime"
+	"github.com/goforj/harbor/migrations"
 )
 
 // Injectors from wire.go:
 
 // InitializeApplication initializes the application by providing all the dependencies.
 func InitializeApplication() (App, error) {
+	manager := provideInspectManager()
+	connections := database.NewConnections(manager)
 	appLogger := logger.ProvideAppLogger()
 	resourcesCmd := cmd.NewResourcesCmd()
 	aboutCmd := cmd.NewAboutCmd()
@@ -25,10 +29,12 @@ func InitializeApplication() (App, error) {
 	commands := harbordapp.NewCommands(resourcesCmd, aboutCmd, helloWorldCmd)
 	commandCmd := makecmd.NewCommandCmd()
 	migrationCmd := makecmd.NewMigrationCmd()
-	rootCmd := harbordapp.NewRootCmd(commands, commandCmd, migrationCmd)
+	modelCmd := makecmd.NewModelCmd(connections)
+	migrateCmd := migrations.NewMigrateCmd(appLogger, connections)
+	migrateRollbackCmd := migrations.NewMigrateRollbackCmd(appLogger, connections)
+	rootCmd := harbordapp.NewRootCmd(commands, commandCmd, migrationCmd, modelCmd, migrateCmd, migrateRollbackCmd)
 	timeouts := runtime.NewTimeouts()
 	lifecycleRegistry := harbordapp.NewLifecycleRegistry()
-	manager := provideInspectManager()
-	app := NewApplication(appLogger, rootCmd, timeouts, lifecycleRegistry, manager)
+	app := NewApplication(connections, appLogger, rootCmd, timeouts, lifecycleRegistry, manager)
 	return app, nil
 }

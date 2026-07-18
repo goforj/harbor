@@ -1,0 +1,315 @@
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/goforj/env/v2"
+	"github.com/goforj/harbor/internal/inspects"
+	"github.com/goforj/str/v2"
+	"gorm.io/gorm"
+	gormLogger "gorm.io/gorm/logger"
+)
+
+// Connections manages lazy database connections keyed by name.
+type Connections struct {
+	mu             sync.Mutex
+	opened         map[string]*gorm.DB
+	inspectManager *inspects.Manager
+}
+
+// NewConnections creates a new lazy connection registry.
+func NewConnections(
+	inspectManager *inspects.Manager,
+) *Connections {
+	return &Connections{
+		opened:         make(map[string]*gorm.DB),
+		inspectManager: inspectManager,
+	}
+}
+
+// Default returns the default connection.
+func (c *Connections) Default() (*gorm.DB, error) {
+	return c.get(defaultConnectionName())
+}
+
+// Connection returns a connection by name, defaulting to the default connection.
+func (c *Connections) Connection(name string) (*gorm.DB, error) {
+	if name == "" || name == "default" {
+		return c.Default()
+	}
+	return c.get(name)
+}
+
+// Close closes any opened sql.DB handles managed by the registry.
+func (c *Connections) Close(ctx context.Context) error {
+	c.mu.Lock()
+	opened := make(map[string]*gorm.DB, len(c.opened))
+	for name, db := range c.opened {
+		opened[name] = db
+	}
+	c.mu.Unlock()
+
+	var joined error
+	for name, db := range opened {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return errors.Join(joined, ctx.Err())
+			default:
+			}
+		}
+		if db == nil {
+			continue
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			joined = errors.Join(joined, fmt.Errorf("database %s: %w", name, err))
+			continue
+		}
+		if err := sqlDB.Close(); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("database %s: %w", name, err))
+		}
+	}
+	return joined
+}
+
+// get returns a connection by name, opening it on first use.
+// Callers should pass normalized lowercase names.
+func (c *Connections) get(name string) (*gorm.DB, error) {
+	c.mu.Lock()
+	if db, ok := c.opened[name]; ok {
+		c.mu.Unlock()
+		return db, nil
+	}
+	c.mu.Unlock()
+
+	db, err := c.openConnection(name)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.opened[name] = db
+	c.mu.Unlock()
+	return db, nil
+}
+
+// defaultConnectionName returns the default connection name from the environment.
+func defaultConnectionName() string {
+	if name := str.Of(env.WithPrefix("DB").Get("DEFAULT", "")).Trim().ToLower().String(); name != "" {
+		return name
+	}
+	return "default"
+}
+
+func dbScope(name string) env.Scope {
+	scope := env.WithPrefix("DB")
+	if name == "default" {
+		return scope
+	}
+	return scope.Child(str.Of(name).Snake().ToUpper().String())
+}
+
+// envKey returns the environment key for the given connection name and suffix.
+func envKey(name, suffix string) string {
+	return dbScope(name).Key(suffix)
+}
+
+// envOr returns the connection-scoped environment value or the root fallback.
+func envOr(name, suffix string) string {
+	scope := dbScope(name)
+	if value := scope.Get(suffix, ""); value != "" {
+		return value
+	}
+	return env.WithPrefix("DB").Get(suffix, "")
+}
+
+// databaseEnvOr prefers driver-specific database names when a driver needs a different shape.
+func databaseEnvOr(name, driver string) string {
+	switch driver {
+	case "sqlite", "sqlite3":
+		if value := envOr(name, "SQLITE_DATABASE"); value != "" {
+			return value
+		}
+	}
+	return envOr(name, "DATABASE")
+}
+
+// openConnection opens a new database connection for the name.
+func (c *Connections) openConnection(name string) (*gorm.DB, error) {
+	driver := str.Of(envOr(name, "DRIVER")).Trim().ToLower().String()
+	if driver == "" {
+		driver = "sqlite"
+	}
+
+	dsn := str.Of(envOr(name, "DSN")).Trim().String()
+	if dsn == "" {
+		var err error
+		dsn, err = buildDSN(name, driver)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	logMode := gormLogger.Silent
+	if str.Of(envOr(name, "QUERY_LOGGING")).Trim().ToLower().String() == "true" {
+		logMode = gormLogger.Info
+	}
+
+	dialector, err := openDialector(driver, dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	slowQueryThreshold := dbScope(name).GetDuration("SLOW_QUERY_THRESHOLD", env.Get("DB_SLOW_QUERY_THRESHOLD", ""))
+	if slowQueryThreshold <= 0 {
+		slowQueryThreshold = 250 * time.Millisecond
+	}
+
+	queryLogger := newGORMQueryLogger(logMode, slowQueryThreshold)
+
+	db, err := gorm.Open(dialector, &gorm.Config{
+		SkipDefaultTransaction:                   true,
+		DisableForeignKeyConstraintWhenMigrating: true,
+		DisableAutomaticPing:                     false,
+		FullSaveAssociations:                     false,
+		Logger:                                   queryLogger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+
+	maxIdle := getIntEnv(name, "MAX_IDLE_CONNECTIONS", "DB_MAX_IDLE_CONNECTIONS", "MYSQL_MAX_IDLE_CONNECTIONS")
+	if maxIdle > 0 {
+		sqlDB.SetMaxIdleConns(maxIdle)
+	}
+
+	maxOpen := getIntEnv(name, "MAX_OPEN_CONNECTIONS", "DB_MAX_OPEN_CONNECTIONS", "MYSQL_MAX_OPEN_CONNECTIONS")
+	if maxOpen > 0 {
+		sqlDB.SetMaxOpenConns(maxOpen)
+	}
+
+	lifetimeMinutes := getIntEnv(name, "CONN_MAX_LIFETIME_MINUTES", "DB_CONN_MAX_LIFETIME_MINUTES")
+	if lifetimeMinutes == 0 {
+		lifetimeMinutes = 3
+	}
+	sqlDB.SetConnMaxLifetime(time.Minute * time.Duration(lifetimeMinutes))
+
+	if err := sqlDB.Ping(); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func newGORMQueryLogger(level gormLogger.LogLevel, slowThreshold time.Duration) gormLogger.Interface {
+	return gormLogger.New(
+		log.New(newGORMSingleLineWriter(os.Stderr), "", 0),
+		gormLogger.Config{
+			SlowThreshold:             slowThreshold,
+			LogLevel:                  level,
+			IgnoreRecordNotFoundError: false,
+			ParameterizedQueries:      false,
+			Colorful:                  true,
+		},
+	)
+}
+
+// buildDSN builds a driver-specific DSN from environment variables.
+func buildDSN(name, driver string) (string, error) {
+	host := envOr(name, "HOST")
+	port := envOr(name, "PORT")
+	user := envOr(name, "USERNAME")
+	pass := envOr(name, "PASSWORD")
+	database := databaseEnvOr(name, driver)
+
+	switch driver {
+	case "mysql", "mariadb":
+		if host == "" || port == "" || user == "" || database == "" {
+			return "", fmt.Errorf("missing connection info for %s", name)
+		}
+		return fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?charset=utf8mb4&parseTime=True&loc=Local",
+			user,
+			pass,
+			host,
+			port,
+			database,
+		), nil
+	case "postgres", "postgresql":
+		if host == "" || port == "" || user == "" || database == "" {
+			return "", fmt.Errorf("missing connection info for %s", name)
+		}
+		return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+			host,
+			user,
+			pass,
+			database,
+			port,
+		), nil
+	case "sqlite", "sqlite3":
+		if database == "" {
+			database = defaultSQLiteDatabase(name)
+		}
+		if err := ensureSQLitePath(database); err != nil {
+			return "", err
+		}
+		return database, nil
+	default:
+		return "", fmt.Errorf("unsupported driver %q", driver)
+	}
+}
+
+// defaultSQLiteDatabase returns the local SQLite path used when DB env is absent.
+func defaultSQLiteDatabase(name string) string {
+	name = str.Of(name).Trim().ToLower().String()
+	if name == "" || name == "default" {
+		return filepath.Join("_data", "sqlite", "app.db")
+	}
+	return filepath.Join("_data", "sqlite", name+".db")
+}
+
+// ensureSQLitePath creates the parent directory for file-backed SQLite DSNs.
+func ensureSQLitePath(dsn string) error {
+	if dsn == "" || dsn == ":memory:" || dsn == "file::memory:" {
+		return nil
+	}
+	path := dsn
+	if strings.HasPrefix(path, "file:") {
+		path = strings.TrimPrefix(path, "file:")
+		if idx := strings.Index(path, "?"); idx != -1 {
+			path = path[:idx]
+		}
+	}
+	dir := filepath.Dir(path)
+	if dir == "." {
+		return nil
+	}
+	return os.MkdirAll(dir, 0755)
+}
+
+// getIntEnv returns the first parsed integer value from connection-specific or fallback keys.
+func getIntEnv(name, suffix string, fallbackKeys ...string) int {
+	scope := dbScope(name)
+	if scope.Get(suffix, "") != "" {
+		return scope.GetInt(suffix, "")
+	}
+	for _, key := range fallbackKeys {
+		if env.Get(key, "") != "" {
+			return env.GetInt(key, "")
+		}
+	}
+	return 0
+}

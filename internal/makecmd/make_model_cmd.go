@@ -1,0 +1,1956 @@
+package makecmd
+
+import (
+	"database/sql"
+	_ "embed"
+	"errors"
+	"fmt"
+	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/null/v6"
+	"github.com/goforj/str/v2"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"gopkg.in/yaml.v3"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"text/template"
+)
+
+// Model generator constants define default names and relationship syntax tokens.
+const (
+	// defaultModelPackage is the fallback package name for generated models.
+	defaultModelPackage   = "models"
+	internalPackagePrefix = "internal"
+	moduleLinePrefix      = "module "
+	defaultIDFieldName    = "Id"
+
+	relationshipTypePoly       = "poly"
+	relationshipTypeManyToMany = "many-many"
+	relationshipTypeOneToMany  = "1-many"
+	relationshipViaSeparator   = " via "
+	relationshipArrowSeparator = "->"
+	relationshipTokenSeparator = " "
+	relationshipKeySeparator   = ":"
+)
+
+// ModelCmd generates models and repository helpers from database tables.
+type ModelCmd struct {
+	Config        string   `help:"Optional path to YAML relationship config" default:".db-relationships.yaml"`
+	Table         string   `arg:"" help:"Table name to generate model for"`
+	Output        string   `help:"Directory to write the model to" default:"./internal/models"`
+	Package       string   `help:"Package under internal to write the model to" short:"p"`
+	Encrypt       []string `help:"Comma-separated column or field names to encrypt" name:"encrypt"`
+	Compress      []string `help:"Comma-separated column or field names to compress" name:"compress"`
+	Remove        bool     `help:"Remove the generated model file and repository wiring instead of creating it."`
+	DryRun        bool     `name:"dry-run" help:"Preview remove changes without writing files."`
+	Open          bool     `short:"o" help:"Open the generated model in your editor."`
+	NoOpen        bool     `name:"no-open" help:"Do not open the generated model, even when FORJ_MAKE_OPEN would."`
+	MakeOpen      string   `name:"make-open" env:"FORJ_MAKE_OPEN" default:"auto" hidden:""`
+	EditorCommand string   `name:"editor" env:"FORJ_EDITOR" hidden:""`
+
+	db *database.Connections
+}
+
+// NewModelCmd builds a ModelCmd with dependencies wired.
+func NewModelCmd(db *database.Connections) *ModelCmd {
+	return &ModelCmd{db: db}
+}
+
+// Signature defines CLI metadata for this command.
+func (*ModelCmd) Signature() string {
+	return `name:"make:model" help:"Create a new model"`
+}
+
+// Help defines extended CLI help for this command.
+func (*ModelCmd) Help() string {
+	return commandExamples(
+		commandExample("make:model", "users"),
+	)
+}
+
+// ColumnInfo describes a database column discovered during model generation.
+type ColumnInfo struct {
+	Column        string
+	DataType      string
+	IsNullable    string
+	ColumnType    string
+	ColumnKey     null.String
+	ColumnDefault null.String
+}
+
+// FieldDefinition describes a Go struct field generated for a model.
+type FieldDefinition struct {
+	Name string
+	Type string
+	Tags string
+}
+
+// ModelDefinition contains all data needed to render or update a model file.
+type ModelDefinition struct {
+	ModelName           string
+	TableName           string
+	Fields              []FieldDefinition
+	Imports             map[string]bool
+	RelationshipStrings []string
+	PackageName         string
+	HookSource          string
+}
+
+// FieldDirective records requested generated behavior for a field.
+type FieldDirective struct {
+	Encrypt  bool
+	Compress bool
+}
+
+// HookField describes a model field that needs generated hook behavior.
+type HookField struct {
+	Name     string
+	Nullable bool
+	Encrypt  bool
+	Compress bool
+}
+
+// Relationship describes a generated relationship field and its key mapping.
+type Relationship struct {
+	Type          string
+	LocalKey      string
+	RemoteTable   string
+	RemoteKey     string
+	JoinTable     string
+	JoinLocalKey  string
+	JoinRemoteKey string
+	FieldName     string
+	PolyName      string
+	PolyValue     string
+	PolyIDKey     string
+	PolyTypeKey   string
+}
+
+// RelationshipConfig maps table names to relationship declarations.
+type RelationshipConfig map[string][]string
+
+// Run executes the make:model command.
+func (c *ModelCmd) Run() error {
+	if c.Remove {
+		if err := c.remove(); err != nil {
+			console.Fatalf("%v", err)
+		}
+		return nil
+	}
+	if err := validateGeneratedFileOpenFlags(c.Open, c.NoOpen); err != nil {
+		return err
+	}
+
+	updated, filename, err := c.run()
+	if err != nil {
+		console.Fatalf("%v", err)
+		return nil
+	}
+
+	if updated {
+		console.Successf("updated model %s", filename)
+	} else {
+		console.Successf("generated model %s", filename)
+	}
+	return maybeOpenGeneratedFile(generatedFileOpenOptions{
+		Path:          filename,
+		Line:          1,
+		Open:          c.Open,
+		NoOpen:        c.NoOpen,
+		Mode:          c.MakeOpen,
+		EditorCommand: c.EditorCommand,
+	})
+}
+
+func (c *ModelCmd) remove() error {
+	modelName := c.modelName()
+	if modelName == "" {
+		return fmt.Errorf("model table cannot be empty")
+	}
+
+	outputPath := filepath.Join(c.outputDir(), str.Of(modelName).Snake().String()+".go")
+	if err := removeGeneratedFile(outputPath, c.DryRun); err != nil {
+		return err
+	}
+	return c.removeRepositoryProvider(modelName)
+}
+
+func (c *ModelCmd) modelName() string {
+	table := str.Of(c.Table).Trim().String()
+	if table == "" {
+		return ""
+	}
+	return str.Of(table).Singular().Pascal().String()
+}
+
+// run executes model generation and returns whether it updated an existing file.
+func (c *ModelCmd) run() (bool, string, error) {
+	conn, err := c.db.Default()
+	if err != nil {
+		return false, "", err
+	}
+	sqlDB, err := conn.DB()
+	if err != nil {
+		return false, "", err
+	}
+	driver := conn.Dialector.Name()
+	columns, err := c.inspectTable(sqlDB, driver, c.Table)
+	if err != nil {
+		return false, "", err
+	}
+	if len(columns) == 0 {
+		return false, "", c.missingTableError(sqlDB, driver, c.Table)
+	}
+
+	relConfig, err := c.parseRelationshipConfig()
+	if err != nil {
+		return false, "", err
+	}
+	if err := c.validateRelationshipKeys(relConfig, driver); err != nil {
+		return false, "", fmt.Errorf("relationship config validation failed: %w", err)
+	}
+
+	directives, err := c.fieldDirectives(columns)
+	if err != nil {
+		return false, "", err
+	}
+
+	def, err := c.buildModelDefinition(c.Table, columns, relConfig, directives)
+	if err != nil {
+		return false, "", err
+	}
+	def.PackageName = c.packageName()
+	dbImportPath, err := c.databaseImportPath()
+	if err != nil {
+		return false, "", err
+	}
+	def.Imports[dbImportPath] = true
+	def.Imports["gorm.io/gorm"] = true
+
+	outputDir := c.outputDir()
+	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
+		return false, "", err
+	}
+
+	filename := filepath.Join(outputDir, str.Of(def.ModelName).Snake().String()+".go")
+	_, statErr := os.Stat(filename)
+	isUpdate := statErr == nil
+	if isUpdate {
+		if err := updateModelFile(filename, def); err != nil {
+			return false, "", err
+		}
+	} else {
+		src, err := c.renderModel(def)
+		if err != nil {
+			return false, "", err
+		}
+		formatted, err := format.Source([]byte(src))
+		if err != nil {
+			return false, "", fmt.Errorf("could not format source: %w", err)
+		}
+		if err := os.WriteFile(filename, formatted, 0644); err != nil {
+			return false, "", err
+		}
+	}
+
+	if err := c.ensureRepositoryProvider(def.ModelName); err != nil {
+		return false, "", err
+	}
+
+	return isUpdate, filename, nil
+}
+
+// parseRelationshipConfig reads the relationship YAML file into structures.
+func (c *ModelCmd) parseRelationshipConfig() (map[string][]Relationship, error) {
+	if c.Config == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(c.Config)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var raw RelationshipConfig
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	result := make(map[string][]Relationship)
+	for table, rels := range raw {
+		for _, line := range rels {
+			parts := strings.SplitN(line, relationshipTokenSeparator, 2)
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid relationship line %q", line)
+			}
+			relType := str.Of(parts[0]).Trim().String()
+			segments := strings.SplitN(str.Of(parts[1]).Trim().String(), relationshipViaSeparator, 2)
+			arrow := str.Of(segments[0]).Trim().String()
+			arrowParts := strings.SplitN(arrow, relationshipArrowSeparator, 2)
+			if len(arrowParts) != 2 {
+				return nil, fmt.Errorf("invalid relationship arrow %q", line)
+			}
+			localKey := str.Of(arrowParts[0]).Trim().String()
+			rightTokens := strings.Fields(str.Of(arrowParts[1]).Trim().String())
+			if len(rightTokens) == 0 {
+				return nil, fmt.Errorf("invalid relationship target %q", line)
+			}
+			targetParts := strings.SplitN(rightTokens[0], relationshipKeySeparator, 2)
+			if len(targetParts) != 2 {
+				return nil, fmt.Errorf("invalid relationship target %q", line)
+			}
+			rel := Relationship{
+				Type:        relType,
+				LocalKey:    localKey,
+				RemoteTable: str.Of(targetParts[0]).Trim().String(),
+				RemoteKey:   str.Of(targetParts[1]).Trim().String(),
+			}
+			if relType == relationshipTypePoly {
+				idTypeParts := strings.Split(localKey, ",")
+				if len(idTypeParts) != 2 {
+					return nil, fmt.Errorf("invalid polymorphic keys %q", line)
+				}
+				rel.PolyIDKey = str.Of(idTypeParts[0]).Trim().String()
+				rel.PolyTypeKey = str.Of(idTypeParts[1]).Trim().String()
+				rel.PolyValue = str.Of(rel.RemoteTable).Trim().String()
+				if len(rightTokens) > 1 {
+					for i := 1; i < len(rightTokens); i++ {
+						if rightTokens[i] == "as" && i+1 < len(rightTokens) {
+							rel.PolyName = rightTokens[i+1]
+							i++
+							continue
+						}
+						if strings.HasPrefix(rightTokens[i], "value=") {
+							rel.PolyValue = str.Of(rightTokens[i]).TrimPrefix("value=").Trim().String()
+						}
+					}
+				}
+			}
+			if relType == relationshipTypeManyToMany && len(segments) != 2 {
+				return nil, fmt.Errorf("missing join table in relationship %q", line)
+			}
+			if len(segments) == 2 {
+				viaParts := strings.Split(str.Of(segments[1]).Trim().String(), relationshipKeySeparator)
+				if len(viaParts) < 2 {
+					return nil, fmt.Errorf("invalid join clause %q", line)
+				}
+				if len(viaParts) >= 2 {
+					rel.JoinTable = str.Of(viaParts[0]).Trim().String()
+					rel.JoinLocalKey = str.Of(viaParts[1]).Trim().String()
+					if len(viaParts) >= 3 {
+						rel.JoinRemoteKey = str.Of(viaParts[2]).Trim().String()
+					}
+				}
+			}
+			result[table] = append(result[table], rel)
+		}
+	}
+	return result, nil
+}
+
+// inspectTable returns the column metadata for a table.
+func (c *ModelCmd) inspectTable(db *sql.DB, driver, table string) ([]ColumnInfo, error) {
+	if driver == "sqlite" || driver == "sqlite3" {
+		return inspectSQLiteTable(db, table)
+	}
+	schema, err := currentSchema(db, driver)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_TYPE, COLUMN_KEY, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`
+	args := []any{schema, table}
+	if driver == "postgres" {
+		query = `SELECT column_name, data_type, is_nullable, udt_name, NULL::text AS column_key, column_default FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []ColumnInfo
+	for rows.Next() {
+		var col ColumnInfo
+		if err := rows.Scan(&col.Column, &col.DataType, &col.IsNullable, &col.ColumnType, &col.ColumnKey, &col.ColumnDefault); err != nil {
+			return nil, err
+		}
+		cols = append(cols, col)
+	}
+	return cols, nil
+}
+
+// missingTableError builds an error when a table is missing or empty.
+func (c *ModelCmd) missingTableError(db *sql.DB, driver, table string) error {
+	exists, err := c.tableExists(db, driver, table)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("table %q has no columns", table)
+	}
+
+	hint := c.tableNameHint(db, driver, table)
+	if hint != "" {
+		return fmt.Errorf("table %q not found (did you mean %q?)", table, hint)
+	}
+	return fmt.Errorf("table %q not found", table)
+}
+
+// tableExists reports whether the table exists in the current database.
+func (c *ModelCmd) tableExists(db *sql.DB, driver, table string) (bool, error) {
+	if driver == "sqlite" || driver == "sqlite3" {
+		return sqliteTableExists(db, table)
+	}
+	schema, err := currentSchema(db, driver)
+	if err != nil {
+		return false, err
+	}
+	var count int
+	query := `SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`
+	args := []any{schema, table}
+	if driver == "postgres" {
+		query = `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2`
+	}
+	if err := db.QueryRow(query, args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// tableNameHint returns a pluralized/singularized hint when available.
+func (c *ModelCmd) tableNameHint(db *sql.DB, driver, table string) string {
+	singular := str.Of(table).Singular().String()
+	if singular != table {
+		if ok, _ := c.tableExists(db, driver, singular); ok {
+			return singular
+		}
+	}
+	plural := str.Of(table).Plural().String()
+	if plural != table {
+		if ok, _ := c.tableExists(db, driver, plural); ok {
+			return plural
+		}
+	}
+	return ""
+}
+
+// inspectSQLiteTable returns column metadata for a SQLite table.
+func inspectSQLiteTable(db *sql.DB, table string) ([]ColumnInfo, error) {
+	query := fmt.Sprintf("PRAGMA table_info(%s)", table)
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []ColumnInfo
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			colType string
+			notnull int
+			def     sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &def, &pk); err != nil {
+			return nil, err
+		}
+		dataType := sqliteDataType(colType)
+		nullable := "YES"
+		if notnull == 1 {
+			nullable = "NO"
+		}
+		columnKey := null.NewString("", false)
+		if pk == 1 {
+			columnKey = null.StringFrom("PRI")
+		}
+		cols = append(cols, ColumnInfo{
+			Column:        name,
+			DataType:      dataType,
+			IsNullable:    nullable,
+			ColumnType:    colType,
+			ColumnKey:     columnKey,
+			ColumnDefault: null.NewString(def.String, def.Valid),
+		})
+	}
+	return cols, nil
+}
+
+// sqliteTableExists reports whether a SQLite table exists.
+func sqliteTableExists(db *sql.DB, table string) (bool, error) {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?", table).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// sqliteTableColumnNames returns the column names for a SQLite table.
+func sqliteTableColumnNames(db *sql.DB, table string) ([]string, error) {
+	query := fmt.Sprintf("PRAGMA table_info(%s)", table)
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			colType string
+			notnull int
+			def     sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &def, &pk); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// sqliteDataType normalizes the SQLite column type to a base name.
+func sqliteDataType(typeName string) string {
+	base := str.Of(typeName).Before("(").Trim().String()
+	if base == "" {
+		base = typeName
+	}
+	return str.Of(base).Trim().ToLower().String()
+}
+
+// buildModelDefinition constructs fields, tags, and relationships for a model.
+func (c *ModelCmd) buildModelDefinition(table string, columns []ColumnInfo, relMap map[string][]Relationship, directives map[string]FieldDirective) (ModelDefinition, error) {
+	modelName := str.Of(table).Singular().Pascal().String()
+	fields := []FieldDefinition{}
+	imports := map[string]bool{}
+	usedNames := map[string]bool{}
+	hookFields := []HookField{}
+
+	// Column field definitions
+	for _, col := range columns {
+		fieldName := str.Of(col.Column).Pascal().String()
+		goType, imp := sqlTypeToGoType(col)
+		if imp != "" {
+			imports[imp] = true
+		}
+		forjTag := buildForjTag(directives[col.Column])
+		tags := fmt.Sprintf("gorm:\"column:%s\" json:\"%s\"", col.Column, col.Column)
+		if forjTag != "" {
+			tags = tags + " " + forjTag
+		}
+		fields = append(fields, FieldDefinition{
+			Name: fieldName,
+			Type: goType,
+			Tags: tags,
+		})
+		usedNames[fieldName] = true
+
+		if directives[col.Column].Encrypt || directives[col.Column].Compress {
+			nullable, ok := isNullableStringType(goType)
+			if !ok {
+				return ModelDefinition{}, fmt.Errorf("field %q must be string or null.String for encrypt/compress", col.Column)
+			}
+			hookFields = append(hookFields, HookField{
+				Name:     fieldName,
+				Nullable: nullable,
+				Encrypt:  directives[col.Column].Encrypt,
+				Compress: directives[col.Column].Compress,
+			})
+		}
+	}
+
+	// Relationship field definitions
+	if rels, ok := relMap[table]; ok {
+		remoteCounts := map[string]int{}
+		for _, rel := range rels {
+			key := rel.RemoteTable + ":" + rel.Type
+			remoteCounts[key]++
+		}
+		for i, rel := range rels {
+			relatedModel := str.Of(rel.RemoteTable).Singular().Pascal().String()
+			var fieldType, fieldName, foreignKeyField, referenceField string
+			var joinTable, joinLocalField, joinRemoteField string
+
+			// Find struct field names for given SQL columns
+			localStructField := findStructFieldName(columns, rel.LocalKey)
+			referenceField = defaultIDFieldName // default fallback
+
+			if rel.Type == relationshipTypeManyToMany {
+				fieldType = "[]*" + relatedModel
+				fieldName = str.Of(relatedModel).Plural().Pascal().String()
+				foreignKeyField = localStructField
+				referenceField = str.Of(rel.RemoteKey).Pascal().String()
+				joinTable = rel.JoinTable
+				joinLocalField = str.Of(rel.JoinLocalKey).Pascal().String()
+				joinRemoteField = str.Of(rel.JoinRemoteKey).Pascal().String()
+			} else if rel.Type == relationshipTypeOneToMany {
+				// Parent (this model) has many children
+				fieldType = "[]*" + relatedModel
+				fieldName = str.Of(relatedModel).Plural().Pascal().String()
+				foreignKeyField = str.Of(rel.RemoteKey).Pascal().String() // child model FK
+				referenceField = localStructField                         // this model PK
+			} else if rel.Type == relationshipTypePoly {
+				fieldType = "[]*" + relatedModel
+				fieldName = str.Of(relatedModel).Plural().Pascal().String()
+				if rel.PolyName != "" {
+					fieldName = rel.PolyName
+				}
+			} else {
+				// Parent (this model) has one child
+				fieldType = "*" + relatedModel
+				fieldName = relatedModel
+				foreignKeyField = localStructField
+				referenceField = str.Of(rel.RemoteKey).Pascal().String()
+			}
+
+			if remoteCounts[rel.RemoteTable+":"+rel.Type] > 1 || usedNames[fieldName] {
+				fieldName = disambiguateRelationshipFieldName(rel, fieldName)
+			}
+			if usedNames[fieldName] {
+				fieldName = uniqueRelationshipFieldName(fieldName, usedNames)
+			}
+			usedNames[fieldName] = true
+			rels[i].FieldName = fieldName
+
+			tag := ""
+			if rel.Type == relationshipTypeManyToMany {
+				tag = fmt.Sprintf("gorm:\"many2many:%s;joinForeignKey:%s;joinReferences:%s;foreignKey:%s;references:%s\" json:\"%s\"",
+					joinTable, joinLocalField, joinRemoteField, foreignKeyField, referenceField, str.Of(fieldName).Snake().String())
+			} else if rel.Type == relationshipTypePoly {
+				polyName := rel.PolyName
+				if polyName == "" {
+					polyName = fieldName
+				}
+				polyTypeField := str.Of(rel.PolyTypeKey).Pascal().String()
+				polyIDField := str.Of(rel.PolyIDKey).Pascal().String()
+				if rel.PolyValue != "" {
+					tag = fmt.Sprintf("gorm:\"polymorphic:%s;polymorphicValue:%s;polymorphicType:%s;polymorphicId:%s\" json:\"%s\"",
+						polyName, rel.PolyValue, polyTypeField, polyIDField, str.Of(fieldName).Snake().String())
+				} else {
+					tag = fmt.Sprintf("gorm:\"polymorphic:%s;polymorphicType:%s;polymorphicId:%s\" json:\"%s\"",
+						polyName, polyTypeField, polyIDField, str.Of(fieldName).Snake().String())
+				}
+			} else {
+				tag = fmt.Sprintf("gorm:\"foreignKey:%s;references:%s\" json:\"%s\"",
+					foreignKeyField, referenceField, str.Of(fieldName).Snake().String())
+			}
+			fields = append(fields, FieldDefinition{
+				Name: fieldName,
+				Type: fieldType,
+				Tags: tag,
+			})
+		}
+		relMap[table] = rels
+	}
+
+	relationshipStrings := generateNestedRelationshipPaths(table, relMap, nil, "")
+	hookSource := buildHookSource(modelName, hookFields)
+	if hookSource != "" {
+		if usesEncrypt(hookFields) {
+			imports["github.com/goforj/crypt"] = true
+		}
+		if usesCompress(hookFields) {
+			imports["github.com/klauspost/compress/zstd"] = true
+			imports["strings"] = true
+			if usesCompressionOnly(hookFields) {
+				imports["encoding/base64"] = true
+			}
+		}
+	}
+
+	return ModelDefinition{
+		ModelName:           modelName,
+		TableName:           table,
+		Fields:              fields,
+		Imports:             imports,
+		RelationshipStrings: relationshipStrings,
+		HookSource:          hookSource,
+	}, nil
+}
+
+// fieldDirectives maps configured field selectors to column directives.
+func (c *ModelCmd) fieldDirectives(columns []ColumnInfo) (map[string]FieldDirective, error) {
+	encryptSelectors := parseFieldSelectors(c.Encrypt)
+	compressSelectors := parseFieldSelectors(c.Compress)
+	directives := make(map[string]FieldDirective)
+	matchedEncrypt := make(map[string]bool)
+	matchedCompress := make(map[string]bool)
+
+	for _, col := range columns {
+		key := normalizeSelector(col.Column)
+		dir := FieldDirective{}
+		if encryptSelectors[key] {
+			dir.Encrypt = true
+			matchedEncrypt[key] = true
+		}
+		if compressSelectors[key] {
+			dir.Compress = true
+			matchedCompress[key] = true
+		}
+		if dir.Encrypt || dir.Compress {
+			directives[col.Column] = dir
+		}
+	}
+
+	for selector := range encryptSelectors {
+		if !matchedEncrypt[selector] {
+			return nil, fmt.Errorf("unknown encrypt field %q", selector)
+		}
+	}
+	for selector := range compressSelectors {
+		if !matchedCompress[selector] {
+			return nil, fmt.Errorf("unknown compress field %q", selector)
+		}
+	}
+
+	return directives, nil
+}
+
+// parseFieldSelectors normalizes a list of field selectors into a set.
+func parseFieldSelectors(values []string) map[string]bool {
+	result := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			normalized := normalizeSelector(part)
+			if normalized == "" {
+				continue
+			}
+			result[normalized] = true
+		}
+	}
+	return result
+}
+
+// normalizeSelector converts a field selector to a canonical form.
+func normalizeSelector(value string) string {
+	trimmed := str.Of(value).Trim().String()
+	if trimmed == "" {
+		return ""
+	}
+	return str.Of(trimmed).Snake().ToLower().String()
+}
+
+// buildForjTag renders the forj tag for directives.
+func buildForjTag(directive FieldDirective) string {
+	parts := []string{}
+	if directive.Encrypt {
+		parts = append(parts, "encrypt")
+	}
+	if directive.Compress {
+		parts = append(parts, "compress")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("forj:%q", strings.Join(parts, ","))
+}
+
+// isNullableStringType returns whether the Go type is a nullable string and supported.
+func isNullableStringType(goType string) (bool, bool) {
+	switch goType {
+	case "string":
+		return false, true
+	case "null.String":
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// buildHookSource renders hook methods for encryption and compression.
+func buildHookSource(modelName string, fields []HookField) string {
+	if len(fields) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("// BeforeSave GORM hook.\n")
+	sb.WriteString(fmt.Sprintf("func (s *%s) BeforeSave(tx *gorm.DB) (err error) {\n", modelName))
+	for _, field := range fields {
+		writeBeforeSaveHook(&sb, field)
+	}
+	sb.WriteString("\treturn nil\n")
+	sb.WriteString("}\n\n")
+
+	sb.WriteString("// AfterFind GORM hook.\n")
+	sb.WriteString(fmt.Sprintf("func (s *%s) AfterFind(tx *gorm.DB) (err error) {\n", modelName))
+	for _, field := range fields {
+		writeAfterFindHook(&sb, field)
+	}
+	sb.WriteString("\treturn nil\n")
+	sb.WriteString("}\n")
+
+	return sb.String()
+}
+
+// writeBeforeSaveHook emits BeforeSave logic for a field.
+func writeBeforeSaveHook(sb *strings.Builder, field HookField) {
+	valueExpr := "s." + field.Name
+	assignExpr := "s." + field.Name + " = value"
+	guard := valueExpr + " != \"\""
+	if field.Nullable {
+		valueExpr = valueExpr + ".String"
+		assignExpr = "s." + field.Name + ".String = value"
+		guard = "s." + field.Name + ".Valid"
+	}
+
+	sb.WriteString(fmt.Sprintf("\tif %s {\n", guard))
+	sb.WriteString(fmt.Sprintf("\t\tvalue := %s\n", valueExpr))
+
+	if field.Compress {
+		sb.WriteString("\t\tencoder, err := zstd.NewWriter(nil)\n")
+		sb.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		sb.WriteString("\t\tcompressed := encoder.EncodeAll([]byte(value), nil)\n")
+		if field.Encrypt {
+			sb.WriteString("\t\tvalue = string(compressed)\n")
+		} else {
+			sb.WriteString("\t\tvalue = base64.StdEncoding.EncodeToString(compressed)\n")
+		}
+	}
+
+	if field.Encrypt {
+		sb.WriteString("\t\tencrypted, err := crypt.Encrypt(value)\n")
+		sb.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		sb.WriteString("\t\tvalue = encrypted\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("\t\t%s\n", assignExpr))
+	sb.WriteString("\t}\n")
+}
+
+// writeAfterFindHook emits AfterFind logic for a field.
+func writeAfterFindHook(sb *strings.Builder, field HookField) {
+	valueExpr := "s." + field.Name
+	assignExpr := "s." + field.Name + " = value"
+	guard := valueExpr + " != \"\""
+	if field.Nullable {
+		valueExpr = valueExpr + ".String"
+		assignExpr = "s." + field.Name + ".String = value"
+		guard = "s." + field.Name + ".Valid"
+	}
+
+	sb.WriteString(fmt.Sprintf("\tif %s {\n", guard))
+	sb.WriteString(fmt.Sprintf("\t\tvalue := %s\n", valueExpr))
+
+	if field.Encrypt {
+		sb.WriteString("\t\tdecrypted, err := crypt.Decrypt(value)\n")
+		sb.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		sb.WriteString("\t\tvalue = decrypted\n")
+	}
+
+	if field.Compress {
+		sb.WriteString("\t\tdecoder, err := zstd.NewReader(nil)\n")
+		sb.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		sb.WriteString("\t\tdefer decoder.Close()\n")
+		sb.WriteString("\t\tvar raw []byte\n")
+		if field.Encrypt {
+			sb.WriteString("\t\traw = []byte(value)\n")
+		} else {
+			sb.WriteString("\t\traw, err = base64.StdEncoding.DecodeString(value)\n")
+			sb.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		}
+		sb.WriteString("\t\tdecompressed, err := decoder.DecodeAll(raw, nil)\n")
+		sb.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		sb.WriteString("\t\tvalue = strings.TrimSpace(string(decompressed))\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("\t\t%s\n", assignExpr))
+	sb.WriteString("\t}\n")
+}
+
+// usesEncrypt reports whether any field uses encryption.
+func usesEncrypt(fields []HookField) bool {
+	for _, field := range fields {
+		if field.Encrypt {
+			return true
+		}
+	}
+	return false
+}
+
+// usesCompress reports whether any field uses compression.
+func usesCompress(fields []HookField) bool {
+	for _, field := range fields {
+		if field.Compress {
+			return true
+		}
+	}
+	return false
+}
+
+// usesCompressionOnly reports whether any field uses compression without encryption.
+func usesCompressionOnly(fields []HookField) bool {
+	for _, field := range fields {
+		if field.Compress && !field.Encrypt {
+			return true
+		}
+	}
+	return false
+}
+
+// updateModelFile updates only the model struct in an existing file.
+func updateModelFile(path string, def ModelDefinition) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.ParseComments)
+	if err != nil {
+		return err
+	}
+
+	structType, err := findModelStruct(file, def.ModelName)
+	if err != nil {
+		return err
+	}
+
+	structType.Fields.List = mergeModelFields(structType.Fields.List, def.Fields)
+	if def.HookSource != "" {
+		if err := removeHookFunctions(file, def); err != nil {
+			return err
+		}
+	}
+	ensureImports(file, def.Imports)
+
+	var buf strings.Builder
+	if err := format.Node(&buf, fset, file); err != nil {
+		return err
+	}
+	rendered := buf.String()
+	if def.HookSource != "" {
+		updated, err := injectHookSource(rendered, def)
+		if err != nil {
+			return err
+		}
+		rendered = updated
+	}
+	formatted, err := format.Source([]byte(rendered))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, formatted, 0644)
+}
+
+// removeHookFunctions removes existing hook methods for the model.
+func removeHookFunctions(file *ast.File, def ModelDefinition) error {
+	removeMethod(file, def.ModelName, "BeforeSave")
+	removeMethod(file, def.ModelName, "AfterFind")
+	return nil
+}
+
+// hasMethod reports whether a model method exists on the receiver.
+func hasMethod(file *ast.File, recvType, method string) bool {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Name.Name != method {
+			continue
+		}
+		recv := receiverTypeName(fn.Recv.List[0].Type)
+		if recv == recvType {
+			return true
+		}
+	}
+	return false
+}
+
+// removeMethod removes the method for a model receiver.
+func removeMethod(file *ast.File, recvType, method string) {
+	decls := file.Decls[:0]
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Name.Name != method {
+			decls = append(decls, decl)
+			continue
+		}
+		if receiverTypeName(fn.Recv.List[0].Type) != recvType {
+			decls = append(decls, decl)
+		}
+	}
+	file.Decls = decls
+}
+
+// injectHookSource inserts hook methods before the repository section.
+func injectHookSource(src string, def ModelDefinition) (string, error) {
+	hooks := strings.TrimSpace(def.HookSource)
+	if hooks == "" {
+		return src, nil
+	}
+
+	const hooksHeader = "\n//\n// Model hooks\n//\n"
+	const repoHeader = "\n//\n// Repository\n//\n"
+
+	if hookIdx := strings.Index(src, hooksHeader); hookIdx != -1 {
+		if repoIdx := strings.Index(src, repoHeader); repoIdx != -1 && repoIdx > hookIdx {
+			start := hookIdx + len(hooksHeader)
+			return src[:start] + "\n" + hooks + "\n\n" + src[repoIdx:], nil
+		}
+	}
+
+	if idx := strings.Index(src, repoHeader); idx != -1 {
+		return src[:idx] + "\n" + hooks + "\n" + src[idx:], nil
+	}
+
+	repoType := "type " + def.ModelName + "Repo"
+	if idx := strings.Index(src, repoType); idx != -1 {
+		return src[:idx] + "\n" + hooks + "\n\n" + src[idx:], nil
+	}
+
+	return src + "\n\n" + hooks + "\n", nil
+}
+
+// receiverTypeName returns the receiver type name.
+func receiverTypeName(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.StarExpr:
+		if ident, ok := v.X.(*ast.Ident); ok {
+			return ident.Name
+		}
+	}
+	return ""
+}
+
+// findModelStruct locates the struct type for a model name.
+func findModelStruct(file *ast.File, modelName string) (*ast.StructType, error) {
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != modelName {
+				continue
+			}
+			structType, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				return nil, fmt.Errorf("type %q is not a struct", modelName)
+			}
+			return structType, nil
+		}
+	}
+	return nil, fmt.Errorf("model struct %q not found", modelName)
+}
+
+// mergeModelFields updates struct fields based on the latest schema.
+func mergeModelFields(existing []*ast.Field, defs []FieldDefinition) []*ast.Field {
+	existingByColumn := map[string]*ast.Field{}
+	existingByName := map[string]*ast.Field{}
+	existingOrder := []*ast.Field{}
+	for _, field := range existing {
+		existingOrder = append(existingOrder, field)
+		if len(field.Names) == 0 {
+			continue
+		}
+		column := str.Of(extractColumnTag(field.Tag)).ToLower().String()
+		if column != "" {
+			existingByColumn[column] = field
+			continue
+		}
+		existingByName[str.Of(field.Names[0].Name).ToLower().String()] = field
+	}
+
+	columnDefs := []FieldDefinition{}
+	nonColumnDefs := []FieldDefinition{}
+	defByColumn := map[string]FieldDefinition{}
+	defOrder := []string{}
+	defNames := map[string]bool{}
+	for _, defField := range defs {
+		defNames[str.Of(defField.Name).ToLower().String()] = true
+		column := str.Of(extractColumnTagFromString(defField.Tags)).ToLower().String()
+		if column == "" {
+			nonColumnDefs = append(nonColumnDefs, defField)
+			continue
+		}
+		columnDefs = append(columnDefs, defField)
+		defByColumn[column] = defField
+		defOrder = append(defOrder, column)
+	}
+
+	updated := []*ast.Field{}
+	used := map[*ast.Field]bool{}
+	for _, column := range defOrder {
+		defField := defByColumn[column]
+		if field, ok := existingByColumn[column]; ok {
+			applyFieldUpdate(field, defField)
+			updated = append(updated, field)
+			used[field] = true
+			continue
+		}
+		if field, ok := existingByName[str.Of(defField.Name).ToLower().String()]; ok {
+			applyFieldUpdate(field, defField)
+			updated = append(updated, field)
+			used[field] = true
+			continue
+		}
+		updated = append(updated, newField(defField))
+	}
+
+	for _, defField := range nonColumnDefs {
+		if field, ok := existingByName[str.Of(defField.Name).ToLower().String()]; ok {
+			applyFieldUpdate(field, defField)
+			updated = append(updated, field)
+			used[field] = true
+			continue
+		}
+		updated = append(updated, newField(defField))
+	}
+
+	for _, field := range existingOrder {
+		if used[field] {
+			continue
+		}
+		if len(field.Names) == 0 {
+			updated = append(updated, field)
+			continue
+		}
+		column := str.Of(extractColumnTag(field.Tag)).ToLower().String()
+		if column != "" {
+			continue
+		}
+		if isGeneratedRelationshipField(field) && !defNames[str.Of(field.Names[0].Name).ToLower().String()] {
+			continue
+		}
+		if defNames[str.Of(field.Names[0].Name).ToLower().String()] {
+			continue
+		}
+		updated = append(updated, field)
+	}
+
+	return updated
+}
+
+// applyFieldUpdate updates the field type while preserving tags.
+// applyFieldUpdate updates the field type and tags.
+func applyFieldUpdate(field *ast.Field, def FieldDefinition) {
+	parsed, err := parser.ParseExpr(def.Type)
+	if err == nil {
+		field.Type = parsed
+	}
+	if field.Tag != nil && field.Tag.Value != "" && !isGeneratedRelationshipField(field) {
+		if forjTag := extractForjTag(def.Tags); forjTag != "" {
+			if merged, ok := updateForjTag(field.Tag.Value, forjTag); ok {
+				field.Tag.Value = formatStructTagLiteral(merged)
+			}
+		}
+		return
+	}
+	field.Tag = &ast.BasicLit{
+		Kind:  token.STRING,
+		Value: formatStructTagLiteral(def.Tags),
+	}
+}
+
+// newField constructs a struct field from a definition.
+func newField(def FieldDefinition) *ast.Field {
+	parsed, err := parser.ParseExpr(def.Type)
+	if err != nil {
+		parsed = ast.NewIdent(def.Type)
+	}
+	return &ast.Field{
+		Names: []*ast.Ident{ast.NewIdent(def.Name)},
+		Type:  parsed,
+		Tag: &ast.BasicLit{
+			Kind:  token.STRING,
+			Value: strconv.Quote(def.Tags),
+		},
+	}
+}
+
+// extractColumnTag reads the gorm column tag from an AST tag literal.
+func extractColumnTag(tag *ast.BasicLit) string {
+	if tag == nil {
+		return ""
+	}
+	raw, err := strconv.Unquote(tag.Value)
+	if err != nil {
+		return ""
+	}
+	return extractColumnTagFromString(raw)
+}
+
+// extractColumnTagFromString extracts a gorm column name from a struct tag.
+func extractColumnTagFromString(tag string) string {
+	gormTag := reflect.StructTag(tag).Get("gorm")
+	if gormTag == "" {
+		return ""
+	}
+	parts := strings.Split(gormTag, ";")
+	for _, part := range parts {
+		part = str.Of(part).Trim().String()
+		if str.Of(part).HasPrefix("column:") {
+			return str.Of(part).TrimPrefix("column:").Trim().String()
+		}
+	}
+	return ""
+}
+
+// extractForjTag returns the forj tag value from a struct tag string.
+func extractForjTag(tag string) string {
+	return reflect.StructTag(tag).Get("forj")
+}
+
+// updateForjTag upserts the forj tag value.
+func updateForjTag(existingLiteral, forjValue string) (string, bool) {
+	raw, err := strconv.Unquote(existingLiteral)
+	if err != nil {
+		return "", false
+	}
+	clean := removeTagKey(raw, "forj")
+	if str.Of(clean).Trim().IsBlank() {
+		return fmt.Sprintf("forj:%q", forjValue), true
+	}
+	return clean + " " + fmt.Sprintf("forj:%q", forjValue), true
+}
+
+// formatStructTagLiteral wraps a tag string in backticks for Go struct tags.
+func formatStructTagLiteral(tag string) string {
+	return "`" + tag + "`"
+}
+
+// removeTagKey strips a tag key from a struct tag literal.
+func removeTagKey(tag, key string) string {
+	re := regexp.MustCompile(`\s*` + regexp.QuoteMeta(key) + `:"[^"]*"`)
+	clean := re.ReplaceAllString(tag, "")
+	return strings.TrimSpace(strings.Join(strings.Fields(clean), " "))
+}
+
+// isGeneratedRelationshipField reports whether a field has a generated relationship tag.
+func isGeneratedRelationshipField(field *ast.Field) bool {
+	if field == nil || field.Tag == nil {
+		return false
+	}
+	raw, err := strconv.Unquote(field.Tag.Value)
+	if err != nil {
+		return false
+	}
+	gormTag := reflect.StructTag(raw).Get("gorm")
+	if gormTag == "" {
+		return false
+	}
+	tag := str.Of(gormTag)
+	return tag.Contains("foreignKey:") || tag.Contains("many2many:") || tag.Contains("polymorphic:")
+}
+
+// ensureImports adds missing import paths to the file.
+func ensureImports(file *ast.File, imports map[string]bool) bool {
+	if len(imports) == 0 {
+		return false
+	}
+
+	added := false
+	existing := map[string]bool{}
+	for _, imp := range file.Imports {
+		existing[strings.Trim(imp.Path.Value, "\"")] = true
+	}
+
+	var importDecl *ast.GenDecl
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if ok && gen.Tok == token.IMPORT {
+			importDecl = gen
+			break
+		}
+	}
+	if importDecl == nil {
+		importDecl = &ast.GenDecl{Tok: token.IMPORT}
+		file.Decls = append([]ast.Decl{importDecl}, file.Decls...)
+	}
+
+	for path := range imports {
+		if existing[path] {
+			continue
+		}
+		spec := &ast.ImportSpec{
+			Path: &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(path)},
+		}
+		importDecl.Specs = append(importDecl.Specs, spec)
+		added = true
+	}
+	return added
+}
+
+// findStructFieldName maps a SQL column to its Go struct field name.
+func findStructFieldName(columns []ColumnInfo, colName string) string {
+	for _, col := range columns {
+		if strings.EqualFold(col.Column, colName) {
+			return str.Of(col.Column).Pascal().String()
+		}
+	}
+	return str.Of(colName).Pascal().String() // fallback
+}
+
+// generateNestedRelationshipPaths builds preload paths for related models.
+func generateNestedRelationshipPaths(
+	table string,
+	relMap map[string][]Relationship,
+	visited map[string]bool,
+	prefix string,
+) []string {
+	if visited == nil {
+		visited = map[string]bool{}
+	}
+	if visited[table] {
+		return nil
+	}
+	visited[table] = true
+
+	var result []string
+	for _, rel := range relMap[table] {
+		field := rel.FieldName
+		if field == "" {
+			field = str.Of(rel.RemoteTable).Singular().Pascal().String()
+			if rel.Type == relationshipTypeOneToMany {
+				field = str.Of(field).Plural().Pascal().String()
+			}
+		}
+		fullPath := prefix + field
+		result = append(result, fullPath)
+
+		// 🔁 Fix: copy visited map to isolate branches
+		childVisited := copyVisitedMap(visited)
+
+		nested := generateNestedRelationshipPaths(rel.RemoteTable, relMap, childVisited, fullPath+".")
+		result = append(result, nested...)
+	}
+	return result
+}
+
+// copyVisitedMap clones the visited map for nested traversal.
+func copyVisitedMap(original map[string]bool) map[string]bool {
+	newMap := make(map[string]bool)
+	for k, v := range original {
+		newMap[k] = v
+	}
+	return newMap
+}
+
+// disambiguateRelationshipFieldName resolves duplicate relationship field names.
+func disambiguateRelationshipFieldName(rel Relationship, fallback string) string {
+	if rel.Type == relationshipTypePoly {
+		if rel.PolyName != "" && rel.PolyValue != "" {
+			return rel.PolyName + str.Of(rel.PolyValue).Pascal().String()
+		}
+		if rel.PolyName != "" {
+			return rel.PolyName
+		}
+		return fallback
+	}
+	if rel.Type == relationshipTypeOneToMany {
+		remoteKey := str.Of(rel.RemoteKey).TrimSuffix("_id").Pascal().String()
+		if remoteKey != "" {
+			return remoteKey
+		}
+		return fallback
+	}
+	localKey := str.Of(rel.LocalKey).TrimSuffix("_id").Pascal().String()
+	if localKey != "" {
+		return localKey
+	}
+	return fallback
+}
+
+// uniqueRelationshipFieldName returns a unique relationship name with a suffix.
+func uniqueRelationshipFieldName(base string, used map[string]bool) string {
+	// Prefer a short suffix that signals relationship intent.
+	candidate := base + "Ref"
+	if !used[candidate] {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		candidate = fmt.Sprintf("%sRef%d", base, i)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+}
+
+// sqlTypeToGoType converts SQL column types into Go types and imports.
+func sqlTypeToGoType(col ColumnInfo) (string, string) {
+	switch col.DataType {
+	case "int", "integer", "bigint", "smallint", "mediumint", "tinyint":
+		if col.IsNullable == "YES" {
+			return "null.Int", "github.com/goforj/null/v6"
+		}
+		return "int", ""
+	case "varchar", "character varying", "text", "longtext":
+		if col.IsNullable == "YES" {
+			return "null.String", "github.com/goforj/null/v6"
+		}
+		return "string", ""
+	case "datetime", "timestamp", "timestamp without time zone", "timestamp with time zone":
+		if col.IsNullable == "YES" {
+			return "*time.Time", "time"
+		}
+		return "time.Time", "time"
+	case "date":
+		if col.IsNullable == "YES" {
+			return "*time.Time", "time"
+		}
+		return "time.Time", "time"
+	case "float", "double", "double precision", "real", "numeric", "decimal":
+		return "float64", ""
+	case "boolean":
+		if col.IsNullable == "YES" {
+			return "null.Bool", "github.com/goforj/null/v6"
+		}
+		return "bool", ""
+	case "json", "jsonb":
+		return "string", ""
+	case "uuid":
+		if col.IsNullable == "YES" {
+			return "null.String", "github.com/goforj/null/v6"
+		}
+		return "string", ""
+	case "bytea":
+		return "[]byte", ""
+	case "blob":
+		return "[]byte", ""
+	default:
+		return "string", ""
+	}
+}
+
+//go:embed model.tmpl
+var modelTmpl []byte
+
+// renderModel renders the template with the provided definition.
+func (c *ModelCmd) renderModel(def ModelDefinition) (string, error) {
+	tmpl := template.Must(template.New("model").Parse(string(modelTmpl)))
+	var sb strings.Builder
+	if err := tmpl.Execute(&sb, def); err != nil {
+		return "", err
+	}
+	return sb.String(), nil
+}
+
+// ensureRepositoryProvider registers the repo constructor in app/wire/inject_repositories_app.go.
+func (c *ModelCmd) ensureRepositoryProvider(modelName string) error {
+	repoCtor := "New" + modelName + "Repo"
+	repoPackage := c.packageName()
+	repoImportPath, err := c.repositoryImportPath()
+	if err != nil {
+		return err
+	}
+	wirePath := activeAppWireFile("inject_repositories_app.go", filepath.Join("app", "wire", "inject_repositories.go"), filepath.Join("wire", "inject_repositories_app.go"), filepath.Join("wire", "inject_repositories.go"))
+
+	_, err = updateRepositorySet(wirePath, repoImportPath, repoPackage, repoCtor)
+	return err
+}
+
+func (c *ModelCmd) removeRepositoryProvider(modelName string) error {
+	repoCtor := "New" + modelName + "Repo"
+	repoPackage := c.packageName()
+	repoImportPath, err := c.repositoryImportPath()
+	if err != nil {
+		return err
+	}
+	wirePath := activeAppWireFile("inject_repositories_app.go", filepath.Join("app", "wire", "inject_repositories.go"), filepath.Join("wire", "inject_repositories_app.go"), filepath.Join("wire", "inject_repositories.go"))
+
+	imports, providers, hasPlaceholder, err := readRepositorySet(wirePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			console.Infof("No repository wiring file found: %s", wirePath)
+			return nil
+		}
+		return err
+	}
+
+	provider := fmt.Sprintf("%s.%s", repoPackage, repoCtor)
+	updatedProviders := make([]string, 0, len(providers))
+	removed := false
+	for _, existing := range providers {
+		if existing == provider {
+			removed = true
+			continue
+		}
+		updatedProviders = append(updatedProviders, existing)
+	}
+	if !removed {
+		console.Infof("No repository provider found for %s in %s", modelName, wirePath)
+		return nil
+	}
+
+	packageStillUsed := false
+	for _, existing := range updatedProviders {
+		if strings.HasPrefix(existing, repoPackage+".") {
+			packageStillUsed = true
+			break
+		}
+	}
+	if !packageStillUsed {
+		delete(imports, repoImportPath)
+	}
+
+	if c.DryRun {
+		console.Infof("Would remove %s from %s", provider, wirePath)
+		return nil
+	}
+	if err := writeRepositorySetFile(wirePath, imports, updatedProviders, hasPlaceholder); err != nil {
+		return err
+	}
+	console.Successf("Removed %s from %s", provider, wirePath)
+	return nil
+}
+
+// updateRepositorySet ensures the repository wire set includes the provider.
+func updateRepositorySet(path, repoImportPath, repoPackage, repoCtor string) (bool, error) {
+	imports, providers, hasPlaceholder, err := readRepositorySet(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if imports == nil {
+		imports = make(map[string]string)
+	}
+
+	changed := false
+	if _, ok := imports["github.com/goforj/wire"]; !ok {
+		imports["github.com/goforj/wire"] = ""
+		changed = true
+	}
+	if _, ok := imports[repoImportPath]; !ok {
+		alias := ""
+		if repoPackage != filepath.Base(repoImportPath) {
+			alias = repoPackage
+		}
+		imports[repoImportPath] = alias
+		changed = true
+	}
+
+	provider := fmt.Sprintf("%s.%s", repoPackage, repoCtor)
+	if !containsProvider(providers, provider) {
+		providers = append(providers, provider)
+		changed = true
+	}
+
+	if !hasPlaceholder {
+		hasPlaceholder = true
+		changed = true
+	}
+
+	if !changed {
+		return false, nil
+	}
+
+	if err := writeRepositorySetFile(path, imports, providers, hasPlaceholder); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// readRepositorySet reads the repository wire set file when present.
+func readRepositorySet(path string) (map[string]string, []string, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.ParseComments)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	imports := make(map[string]string)
+	for _, imp := range file.Imports {
+		importPath := strings.Trim(imp.Path.Value, "\"")
+		alias := ""
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		imports[importPath] = alias
+	}
+
+	providers := []string{}
+	hasPlaceholder := false
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range valueSpec.Names {
+				if name.Name != "repositorySet" || i >= len(valueSpec.Values) {
+					continue
+				}
+				call, ok := valueSpec.Values[i].(*ast.CallExpr)
+				if !ok || !isWireNewSet(call.Fun) {
+					continue
+				}
+				providers, hasPlaceholder = extractRepositoryProviders(call.Args)
+			}
+		}
+	}
+
+	return imports, providers, hasPlaceholder, nil
+}
+
+// extractRepositoryProviders returns providers and detects placeholder entries.
+func extractRepositoryProviders(args []ast.Expr) ([]string, bool) {
+	providers := []string{}
+	hasPlaceholder := false
+	for _, arg := range args {
+		switch value := arg.(type) {
+		case *ast.SelectorExpr:
+			pkgIdent, ok := value.X.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			providers = append(providers, fmt.Sprintf("%s.%s", pkgIdent.Name, value.Sel.Name))
+		case *ast.CallExpr:
+			if isWireValuePlaceholder(value) {
+				hasPlaceholder = true
+			}
+		}
+	}
+	return providers, hasPlaceholder
+}
+
+// isWireNewSet reports whether the function expression is wire.NewSet.
+func isWireNewSet(fun ast.Expr) bool {
+	selector, ok := fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkgIdent, ok := selector.X.(*ast.Ident)
+	return ok && pkgIdent.Name == "wire" && selector.Sel.Name == "NewSet"
+}
+
+// isWireValuePlaceholder reports whether the call is wire.Value(repositorySetPlaceholder{}).
+func isWireValuePlaceholder(call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkgIdent, ok := selector.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != "wire" || selector.Sel.Name != "Value" {
+		return false
+	}
+	if len(call.Args) != 1 {
+		return false
+	}
+	composite, ok := call.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	ident, ok := composite.Type.(*ast.Ident)
+	return ok && ident.Name == "repositorySetPlaceholder"
+}
+
+// containsProvider checks for a provider entry.
+func containsProvider(providers []string, provider string) bool {
+	for _, existing := range providers {
+		if existing == provider {
+			return true
+		}
+	}
+	return false
+}
+
+// writeRepositorySetFile renders the repository wire set file.
+func writeRepositorySetFile(path string, imports map[string]string, providers []string, includePlaceholder bool) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+		return err
+	}
+
+	content := renderRepositorySetFile(imports, providers, includePlaceholder)
+	formatted, err := format.Source([]byte(content))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, formatted, 0644)
+}
+
+// renderRepositorySetFile renders the repository wire set content.
+func renderRepositorySetFile(imports map[string]string, providers []string, includePlaceholder bool) string {
+	var sb strings.Builder
+	sb.WriteString("// App-owned Wire injector. EDIT THIS FILE.\n")
+	sb.WriteString("// Add repository providers here, or use `forj make:model`.\n\n")
+	sb.WriteString("package wire\n\n")
+	sb.WriteString("import (\n")
+
+	importPaths := []string{}
+	for path := range imports {
+		if path == "github.com/goforj/wire" {
+			continue
+		}
+		importPaths = append(importPaths, path)
+	}
+	sort.Strings(importPaths)
+
+	sb.WriteString("\t\"github.com/goforj/wire\"\n")
+	for _, path := range importPaths {
+		alias := imports[path]
+		if alias != "" && alias != filepath.Base(path) {
+			sb.WriteString(fmt.Sprintf("\t%s %q\n", alias, path))
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("\t%q\n", path))
+	}
+	sb.WriteString(")\n\n")
+
+	sb.WriteString("// repositorySet is a wire set for generated repositories.\n")
+	sb.WriteString("var repositorySet = wire.NewSet(\n")
+	if includePlaceholder {
+		sb.WriteString("\twire.Value(repositorySetPlaceholder{}),\n")
+	}
+
+	sort.Strings(providers)
+	for _, provider := range providers {
+		sb.WriteString(fmt.Sprintf("\t%s,\n", provider))
+	}
+	sb.WriteString(")\n\n")
+	sb.WriteString("// repositorySetPlaceholder keeps repositorySet non-empty until repos are generated.\n")
+	sb.WriteString("type repositorySetPlaceholder struct{}\n")
+	return sb.String()
+}
+
+// outputDir resolves the output directory for the generated model.
+func (c *ModelCmd) outputDir() string {
+	pkg := str.Of(c.Package).Trim().String()
+	if str.Of(pkg).IsEmpty() {
+		return c.Output
+	}
+
+	pkg = str.Of(pkg).TrimChars("/").TrimPrefix(internalPackagePrefix + "/").String()
+	return filepath.Join(append([]string{internalPackagePrefix}, generatedPackagePathPartsFromPath(pkg)...)...)
+}
+
+// packageName resolves the package name for the generated model.
+func (c *ModelCmd) packageName() string {
+	pkg := str.Of(c.Package).Trim().String()
+	if str.Of(pkg).IsEmpty() {
+		return defaultModelPackage
+	}
+
+	pkg = str.Of(pkg).TrimChars("/").TrimPrefix(internalPackagePrefix + "/").String()
+	parts := generatedPackagePathPartsFromPath(pkg)
+	if len(parts) == 0 {
+		return defaultModelPackage
+	}
+	return parts[len(parts)-1]
+}
+
+// repositoryImportPath resolves the import path for generated repositories.
+func (c *ModelCmd) repositoryImportPath() (string, error) {
+	mod, err := c.moduleName()
+	if err != nil {
+		return "", err
+	}
+
+	pkg := str.Of(c.Package).Trim().String()
+	if str.Of(pkg).IsEmpty() {
+		pkg = defaultModelPackage
+	} else {
+		pkg = str.Of(pkg).TrimChars("/").TrimPrefix(internalPackagePrefix + "/").String()
+		parts := generatedPackagePathPartsFromPath(pkg)
+		if len(parts) == 0 {
+			pkg = defaultModelPackage
+		} else {
+			pkg = filepath.ToSlash(filepath.Join(parts...))
+		}
+	}
+	return fmt.Sprintf("%s/%s/%s", mod, internalPackagePrefix, pkg), nil
+}
+
+// databaseImportPath resolves the import path for database.
+func (c *ModelCmd) databaseImportPath() (string, error) {
+	mod, err := c.moduleName()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s/database", mod, internalPackagePrefix), nil
+}
+
+// moduleName reads the go.mod file and returns the module name.
+func (c *ModelCmd) moduleName() (string, error) {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		return "", err
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if str.Of(line).HasPrefix(moduleLinePrefix) {
+			return str.Of(line).TrimPrefix(moduleLinePrefix).Trim().String(), nil
+		}
+	}
+
+	return "", fmt.Errorf("module name not found in go.mod")
+}
+
+// currentSchema returns the current schema/database name for the active driver.
+func currentSchema(db *sql.DB, driver string) (string, error) {
+	if driver == "postgres" {
+		var schema string
+		if err := db.QueryRow("SELECT current_schema()").Scan(&schema); err != nil {
+			return "", err
+		}
+		return schema, nil
+	}
+	if driver == "sqlite" || driver == "sqlite3" {
+		return "main", nil
+	}
+	var dbName string
+	if err := db.QueryRow("SELECT DATABASE()").Scan(&dbName); err != nil {
+		return "", err
+	}
+	return dbName, nil
+}
+
+// validateRelationshipKeys verifies that configured keys exist in the schema.
+func (c *ModelCmd) validateRelationshipKeys(relMap map[string][]Relationship, driver string) error {
+	conn, err := c.db.Default()
+	if err != nil {
+		return err
+	}
+	sqlDB, err := conn.DB()
+	if err != nil {
+		return err
+	}
+
+	schema, err := currentSchema(sqlDB, driver)
+	if err != nil {
+		return err
+	}
+
+	validatedCols := make(map[string]map[string]bool)
+
+	getTableColumns := func(table string) (map[string]bool, error) {
+		if cols, ok := validatedCols[table]; ok {
+			return cols, nil
+		}
+		cols := make(map[string]bool)
+		if driver == "sqlite" || driver == "sqlite3" {
+			names, err := sqliteTableColumnNames(sqlDB, table)
+			if err != nil {
+				return nil, err
+			}
+			for _, name := range names {
+				cols[name] = true
+			}
+			validatedCols[table] = cols
+			return cols, nil
+		}
+		query := `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`
+		args := []any{schema, table}
+		if driver == "postgres" {
+			query = `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`
+		}
+		rows, err := sqlDB.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return nil, err
+			}
+			cols[name] = true
+		}
+		validatedCols[table] = cols
+		return cols, nil
+	}
+
+	for fromTable, rels := range relMap {
+		fromCols, err := getTableColumns(fromTable)
+		if err != nil {
+			return fmt.Errorf("failed to fetch columns for table '%s': %w", fromTable, err)
+		}
+		for i := range rels {
+			rel := rels[i]
+			toCols, err := getTableColumns(rel.RemoteTable)
+			if err != nil {
+				return fmt.Errorf("failed to fetch columns for table '%s': %w", rel.RemoteTable, err)
+			}
+
+			if rel.Type == relationshipTypePoly {
+				if rel.PolyIDKey == "" || rel.PolyTypeKey == "" {
+					return fmt.Errorf("missing polymorphic keys for relationship from '%s' to '%s'", fromTable, rel.RemoteTable)
+				}
+				if !toCols[rel.PolyIDKey] || !toCols[rel.PolyTypeKey] {
+					return fmt.Errorf("invalid polymorphic keys '%s,%s' in relationship from '%s' to '%s'", rel.PolyIDKey, rel.PolyTypeKey, fromTable, rel.RemoteTable)
+				}
+				if !toCols[rel.RemoteKey] {
+					return fmt.Errorf("invalid remote key '%s' in relationship from '%s' to '%s'", rel.RemoteKey, fromTable, rel.RemoteTable)
+				}
+				continue
+			}
+
+			if !fromCols[rel.LocalKey] {
+				return fmt.Errorf("invalid local key '%s' in relationship from '%s' to '%s'", rel.LocalKey, fromTable, rel.RemoteTable)
+			}
+			if !toCols[rel.RemoteKey] {
+				return fmt.Errorf("invalid remote key '%s' in relationship from '%s' to '%s'", rel.RemoteKey, fromTable, rel.RemoteTable)
+			}
+			if rel.Type == relationshipTypeManyToMany && rel.JoinTable != "" {
+				if rel.JoinLocalKey == "" || rel.JoinRemoteKey == "" {
+					joinCols, err := getTableColumns(rel.JoinTable)
+					if err != nil {
+						return fmt.Errorf("failed to fetch columns for table '%s': %w", rel.JoinTable, err)
+					}
+					inferred, err := inferJoinRemoteKey(joinCols, rel.JoinLocalKey, rel.RemoteTable)
+					if err != nil {
+						return fmt.Errorf("missing join keys for relationship from '%s' to '%s'", fromTable, rel.RemoteTable)
+					}
+					rel.JoinRemoteKey = inferred
+				}
+				joinCols, err := getTableColumns(rel.JoinTable)
+				if err != nil {
+					return fmt.Errorf("failed to fetch columns for table '%s': %w", rel.JoinTable, err)
+				}
+				if !joinCols[rel.JoinLocalKey] {
+					return fmt.Errorf("invalid join local key '%s' in relationship from '%s' to '%s'", rel.JoinLocalKey, fromTable, rel.RemoteTable)
+				}
+				if !joinCols[rel.JoinRemoteKey] {
+					return fmt.Errorf("invalid join remote key '%s' in relationship from '%s' to '%s'", rel.JoinRemoteKey, fromTable, rel.RemoteTable)
+				}
+			} else if rel.Type == relationshipTypeManyToMany && rel.JoinTable == "" {
+				return fmt.Errorf("missing join table for relationship from '%s' to '%s'", fromTable, rel.RemoteTable)
+			}
+			rels[i] = rel
+		}
+		relMap[fromTable] = rels
+	}
+	return nil
+}
+
+// inferJoinRemoteKey finds a join table column for the remote side.
+func inferJoinRemoteKey(joinCols map[string]bool, joinLocalKey, remoteTable string) (string, error) {
+	if len(joinCols) == 0 {
+		return "", fmt.Errorf("join table has no columns")
+	}
+	singular := str.Of(remoteTable).Singular().Snake().String()
+	preferred := singular + "_id"
+	if preferred != joinLocalKey && joinCols[preferred] {
+		return preferred, nil
+	}
+	for col := range joinCols {
+		if col == joinLocalKey {
+			continue
+		}
+		if str.Of(col).HasSuffix("_id") {
+			return col, nil
+		}
+	}
+	return "", fmt.Errorf("unable to infer join remote key")
+}

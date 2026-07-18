@@ -1,0 +1,223 @@
+package database
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNormalizeDBQueryFingerprint(t *testing.T) {
+	cases := map[string]string{
+		"SELECT * FROM users WHERE email = 'a@example.com' AND org_id = 42":                              "select * from users where email = ? and org_id = ?",
+		`SELECT * FROM users WHERE email = "a@example.com" AND status = $1`:                              "select * from users where email = ? and status = ?",
+		"SELECT * FROM users WHERE id IN (1, 2, 3, 4)":                                                   "select * from users where id in (?)",
+		"INSERT INTO users (name, age) VALUES ('chris', 42)":                                             "insert into users (name, age) values (?)",
+		"UPDATE users SET last_seen_at = :last_seen_at WHERE id = @id":                                   "update users set last_seen_at = ? where id = ?",
+		"  SELECT   *  FROM   users\tWHERE id = 1  ":                                                     "select * from users where id = ?",
+		"SELECT c.id,\n c.monitor_id,\n c.checked_at FROM monitor_checks c WHERE c.monitor_id IN (1, 2)": "select c.id, c.monitor_id, c.checked_at from monitor_checks c where c.monitor_id in (?)",
+	}
+	for sql, want := range cases {
+		if got := normalizeDBQueryFingerprint(sql); got != want {
+			t.Fatalf("normalizeDBQueryFingerprint(%q): got %q want %q", sql, got, want)
+		}
+	}
+}
+
+func TestFingerprintDBQueryStableForEquivalentShapes(t *testing.T) {
+	a := "SELECT * FROM users WHERE email = 'a@example.com' AND org_id = 42"
+	b := "SELECT * FROM users WHERE email = 'b@example.com' AND org_id = 99"
+
+	if gotA, gotB := fingerprintDBQuery(a), fingerprintDBQuery(b); gotA != gotB {
+		t.Fatalf("fingerprints differ: %q vs %q", gotA, gotB)
+	}
+}
+
+func TestFingerprintDBQueryHashesSuspiciousResidualEntropy(t *testing.T) {
+	cases := []string{
+		"SELECT * FROM users WHERE request_id = 123e4567-e89b-12d3-a456-426614174000",
+		"SELECT * FROM uploads WHERE blob_key = abcdef0123456789abcdef0123456789abcdef0123456789",
+		"SELECT * FROM sessions WHERE opaque = thisisaverylongresidualtokenthatshouldnotbecomeametricshape",
+	}
+
+	for _, sql := range cases {
+		if got := fingerprintDBQuery(sql); got == "unknown" || got == "" {
+			t.Fatalf("fingerprintDBQuery(%q): got %q, want stable hash", sql, got)
+		}
+	}
+}
+
+func TestFingerprintDBQueryHashesOversizedNormalizedShape(t *testing.T) {
+	sql := "SELECT * FROM audit_log WHERE " + strings.Repeat("field = ? OR ", 80) + "id = ?"
+	if got := fingerprintDBQuery(sql); got == "unknown" || got == "" {
+		t.Fatalf("fingerprintDBQuery(oversized): got %q, want stable hash", got)
+	}
+}
+
+func TestDBQueryShapeLabelTruncatesSafeShapes(t *testing.T) {
+	sql := "SELECT * FROM audit_log WHERE " + strings.Repeat("status = ? OR ", 12) + "id = ?"
+	got := dbQueryShapeLabel(sql)
+	if got == "unknown" {
+		t.Fatalf("dbQueryShapeLabel(%q): got unknown unexpectedly", sql)
+	}
+	if len(got) > dbMaxQueryShapeLength {
+		t.Fatalf("dbQueryShapeLabel length = %d, want <= %d", len(got), dbMaxQueryShapeLength)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("dbQueryShapeLabel(%q): expected ellipsis, got %q", sql, got)
+	}
+}
+
+func TestDBQueryShapeLabelNormalizesRepresentativeQueries(t *testing.T) {
+	cases := []struct {
+		name         string
+		sql          string
+		wantContains []string
+		wantAbsent   []string
+		wantExact    string
+	}{
+		{
+			name:         "select with aliases and in list",
+			sql:          "SELECT c.id, c.monitor_id, c.checked_at, c.status, c.duration_ms FROM monitor_checks c WHERE c.monitor_id IN (1, 2) ORDER BY c.checked_at DESC",
+			wantContains: []string{"select c.id, c.monitor_id, c.checked_at", "where c.monitor_id in (?)", "order by c.checked_at desc"},
+		},
+		{
+			name:         "uuid literal is parameterized",
+			sql:          "SELECT * FROM users WHERE request_id = 123e4567-e89b-12d3-a456-426614174000",
+			wantContains: []string{"request_id = ?"},
+			wantAbsent:   []string{"123e4567-e89b-12d3-a456-426614174000"},
+		},
+		{
+			name:         "long blob token is parameterized",
+			sql:          "SELECT * FROM uploads WHERE blob_key = abcdef0123456789abcdef0123456789abcdef0123456789",
+			wantContains: []string{"blob_key = ?"},
+			wantAbsent:   []string{"abcdef0123456789abcdef0123456789abcdef0123456789"},
+		},
+		{
+			name:         "long opaque token is parameterized",
+			sql:          "SELECT * FROM sessions WHERE opaque = thisisaverylongresidualtokenthatshouldnotbecomeametricshape",
+			wantContains: []string{"opaque = ?"},
+			wantAbsent:   []string{"thisisaverylongresidualtokenthatshouldnotbecomeametricshape"},
+		},
+		{
+			name:         "insert values are collapsed",
+			sql:          "INSERT INTO monitor_checks (monitor_id, status, metadata) VALUES (1, 'up', '{\"ok\":true}')",
+			wantContains: []string{"insert into monitor_checks (monitor_id, status, metadata) values (?)"},
+			wantAbsent:   []string{"{\"ok\":true}", "'up'"},
+		},
+		{
+			name:         "named placeholders are normalized",
+			sql:          "UPDATE monitors SET last_checked_at = :last_checked_at, status = @status WHERE id = @id",
+			wantContains: []string{"update monitors set last_checked_at = ?, status = ? where id = ?"},
+			wantAbsent:   []string{":last_checked_at", "@status", "@id"},
+		},
+		{
+			name:         "postgres placeholders are normalized",
+			sql:          "SELECT * FROM incidents WHERE monitor_id = $1 AND status = $2",
+			wantContains: []string{"where monitor_id = ? and status = ?"},
+			wantAbsent:   []string{"$1", "$2"},
+		},
+		{
+			name:         "cte remains readable",
+			sql:          "WITH recent AS (SELECT * FROM incidents WHERE monitor_id = 42) SELECT * FROM recent WHERE resolved_at IS NULL",
+			wantContains: []string{"with recent as (select * from incidents where monitor_id = ?)", "select * from recent where resolved_at is null"},
+		},
+		{
+			name:         "join with limit and offset stays shaped",
+			sql:          "SELECT m.id, i.summary FROM monitors m LEFT JOIN incidents i ON i.monitor_id = m.id WHERE m.enabled = true ORDER BY m.created_at DESC LIMIT 10 OFFSET 3",
+			wantContains: []string{"select m.id, i.summary from monitors m left join incidents i on i.monitor_id = m.id", "where m.enabled = true", "limit ? offset ?"},
+		},
+		{
+			name:         "union all remains readable",
+			sql:          "SELECT id FROM monitors WHERE id = 1 UNION ALL SELECT id FROM monitors WHERE id = 2",
+			wantContains: []string{"select id from monitors where id = ? union all select id from monitors where id = ?"},
+		},
+		{
+			name:         "case expression keeps placeholders",
+			sql:          "SELECT CASE WHEN status = 'up' THEN 1 ELSE 0 END AS healthy FROM monitors WHERE id = 9",
+			wantContains: []string{"select case when status = ? then ? else ? end as healthy from monitors where id = ?"},
+			wantAbsent:   []string{"'up'", "9"},
+		},
+		{
+			name:         "insert on conflict stays shaped",
+			sql:          "INSERT INTO monitors (id, name) VALUES (1, 'api') ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+			wantContains: []string{"insert into monitors (id, name) values (?) on conflict (id) do update set name = excluded.name"},
+			wantAbsent:   []string{"'api'"},
+		},
+		{
+			name:         "update returning stays shaped",
+			sql:          "UPDATE incidents SET resolved_at = NOW(), summary = 'ok' WHERE id = 41 RETURNING id, resolved_at",
+			wantContains: []string{"update incidents set resolved_at = now (), summary = ? where id = ? returning id, resolved_at"},
+			wantAbsent:   []string{"'ok'", "41"},
+		},
+		{
+			name:         "delete with returning stays shaped",
+			sql:          "DELETE FROM alerts WHERE monitor_id IN (1,2,3) RETURNING id",
+			wantContains: []string{"delete from alerts where monitor_id in (?) returning id"},
+		},
+		{
+			name:         "json path query stays shaped",
+			sql:          "SELECT payload->>'status' FROM checks WHERE payload->>'request_id' = 'abc123'",
+			wantContains: []string{"select payload - > > ? from checks where payload - > > ? = ?"},
+		},
+		{
+			name:      "blank query is unknown",
+			sql:       "   ",
+			wantExact: "unknown",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dbQueryShapeLabel(tc.sql)
+			if tc.wantExact != "" {
+				if got != tc.wantExact {
+					t.Fatalf("dbQueryShapeLabel(%q): got %q want %q", tc.sql, got, tc.wantExact)
+				}
+				return
+			}
+			if got == "unknown" {
+				t.Fatalf("dbQueryShapeLabel(%q): got unknown unexpectedly", tc.sql)
+			}
+			if strings.Contains(got, "\n") {
+				t.Fatalf("dbQueryShapeLabel(%q): got multiline shape %q", tc.sql, got)
+			}
+			if len(got) > dbMaxQueryShapeLength {
+				t.Fatalf("dbQueryShapeLabel(%q): length = %d, want <= %d", tc.sql, len(got), dbMaxQueryShapeLength)
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("dbQueryShapeLabel(%q): got %q, want substring %q", tc.sql, got, want)
+				}
+			}
+			for _, unwanted := range tc.wantAbsent {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("dbQueryShapeLabel(%q): got %q, unexpected substring %q", tc.sql, got, unwanted)
+				}
+			}
+		})
+	}
+}
+
+func TestDBQueryInspectShapeDoesNotFallBackForUnsafeShapes(t *testing.T) {
+	sql := "SELECT * FROM users WHERE request_id = 123e4567-e89b-12d3-a456-426614174000"
+	got := dbQueryInspectShape(sql)
+	if got == "unknown" {
+		t.Fatalf("dbQueryInspectShape(%q): got unknown unexpectedly", sql)
+	}
+	if !strings.Contains(got, "request_id = ?") {
+		t.Fatalf("dbQueryInspectShape(%q): got %q", sql, got)
+	}
+}
+
+func TestDBQueryInspectShapeTruncatesOversizedShapes(t *testing.T) {
+	sql := "SELECT * FROM audit_log WHERE " + strings.Repeat("field = ? OR ", 220) + "id = ?"
+	got := dbQueryInspectShape(sql)
+	if got == "unknown" {
+		t.Fatalf("dbQueryInspectShape(%q): got unknown unexpectedly", sql)
+	}
+	if len(got) > dbMaxInspectQueryShapeLength {
+		t.Fatalf("dbQueryInspectShape length = %d, want <= %d", len(got), dbMaxInspectQueryShapeLength)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("dbQueryInspectShape(%q): expected ellipsis, got %q", sql, got)
+	}
+}

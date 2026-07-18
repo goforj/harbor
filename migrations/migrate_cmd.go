@@ -1,0 +1,197 @@
+package migrations
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/harbor/internal/logger"
+	"gorm.io/gorm"
+)
+
+// MigrateCmd runs database migrations for the selected app stream.
+type MigrateCmd struct {
+	Step       int    `help:"Number of migrations to apply" default:"0"` // 0 = all
+	DryRun     bool   `help:"Show what would run without applying"`
+	Connection string `help:"Database connection name"`
+
+	logger *logger.AppLogger
+	db     *database.Connections
+}
+
+// NewMigrateCmd creates a migration command with database access.
+func NewMigrateCmd(
+	logger *logger.AppLogger,
+	db *database.Connections,
+) *MigrateCmd {
+	return &MigrateCmd{
+		logger: logger,
+		db:     db,
+	}
+}
+
+// Signature defines CLI metadata for this command.
+func (*MigrateCmd) Signature() string {
+	return `name:"migrate" help:"Run database migration"`
+}
+
+// Run executes the command.
+func (c *MigrateCmd) Run() error {
+	streams := migrationPlan(activeMigrationApp(), c.Connection)
+	if len(streams) == 0 {
+		console.Successf("migrations complete (0)")
+		return nil
+	}
+
+	total := 0
+	for _, stream := range streams {
+		applied, err := c.runStream(stream)
+		if err != nil {
+			console.Fatalf("%v", err)
+			return nil
+		}
+		total += applied
+	}
+
+	if c.DryRun {
+		console.Successf("dry-run complete (%d)", total)
+		return nil
+	}
+	console.Successf("migrations complete (%d)", total)
+	return nil
+}
+
+func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
+	dbConn, err := c.db.Connection(stream.DatabaseConnection)
+	if err != nil {
+		return 0, err
+	}
+	if err := ensureMigrationsTable(dbConn); err != nil {
+		return 0, err
+	}
+
+	var existing []string
+	dbConn.Raw("SELECT name FROM migrations").Scan(&existing)
+	existingMap := map[string]bool{}
+	for _, name := range existing {
+		existingMap[name] = true
+	}
+
+	activeDriver := normalizeDriverName(dbConn.Dialector.Name())
+	candidates := selectMigrations(stream.App, stream.Connection, activeDriver)
+
+	applied := 0
+	for _, m := range candidates {
+		if existingMap[m.Name()] {
+			continue
+		}
+		if c.Step > 0 && applied >= c.Step {
+			break
+		}
+
+		if c.DryRun {
+			console.Infof("would apply %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
+			applied++
+			continue
+		}
+
+		if err := m.Up(dbConn); err != nil {
+			return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
+		}
+
+		record := migrationRecord{
+			Name:       m.Name(),
+			App:        stream.App,
+			Connection: stream.Connection,
+			SourcePath: m.SourcePath(),
+			AppliedAt:  time.Now(),
+		}
+		if err := dbConn.Table("migrations").Create(&record).Error; err != nil {
+			return applied, err
+		}
+
+		console.Successf("applied %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
+		applied++
+	}
+
+	return applied, nil
+}
+
+// migrationRecord stores the migration identity fields that make app-scoped runs auditable.
+type migrationRecord struct {
+	ID         uint
+	Name       string
+	App        string
+	Connection string
+	SourcePath string
+	AppliedAt  time.Time
+}
+
+// TableName keeps GORM column migration pointed at the existing migrations table.
+func (migrationRecord) TableName() string {
+	return "migrations"
+}
+
+// ensureMigrationsTable creates the migration table and adds app metadata columns for older databases.
+func ensureMigrationsTable(dbConn *gorm.DB) error {
+	driver := dbConn.Dialector.Name()
+	ddl := ""
+	switch driver {
+	case "postgres":
+		ddl = `
+CREATE TABLE IF NOT EXISTS migrations (
+	id BIGSERIAL PRIMARY KEY,
+	name VARCHAR(255) NOT NULL UNIQUE,
+	app VARCHAR(255) NOT NULL DEFAULT 'app',
+	connection VARCHAR(255) NOT NULL DEFAULT 'default',
+	source_path VARCHAR(512) NOT NULL DEFAULT '',
+	applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+	case "sqlite":
+		ddl = `
+CREATE TABLE IF NOT EXISTS migrations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	app TEXT NOT NULL DEFAULT 'app',
+	connection TEXT NOT NULL DEFAULT 'default',
+	source_path TEXT NOT NULL DEFAULT '',
+	applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+	default:
+		ddl = `
+CREATE TABLE IF NOT EXISTS migrations (
+	id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+	name VARCHAR(255) NOT NULL UNIQUE,
+	app VARCHAR(255) NOT NULL DEFAULT 'app',
+	connection VARCHAR(255) NOT NULL DEFAULT 'default',
+	source_path VARCHAR(512) NOT NULL DEFAULT '',
+	applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+	}
+	if err := dbConn.Exec(ddl).Error; err != nil {
+		return fmt.Errorf("failed to create migrations table: %w", err)
+	}
+	if err := ensureMigrationColumn(dbConn, "app"); err != nil {
+		return err
+	}
+	if err := ensureMigrationColumn(dbConn, "connection"); err != nil {
+		return err
+	}
+	if err := ensureMigrationColumn(dbConn, "source_path"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ensureMigrationColumn adds a metadata column only when an existing migration table is missing it.
+func ensureMigrationColumn(dbConn *gorm.DB, column string) error {
+	if dbConn.Migrator().HasColumn("migrations", column) {
+		return nil
+	}
+	if err := dbConn.Migrator().AddColumn(&migrationRecord{}, column); err != nil {
+		return fmt.Errorf("failed to add migrations.%s: %w", column, err)
+	}
+	return nil
+}

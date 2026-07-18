@@ -87,7 +87,7 @@ var Apps = []AppInfo{
 			Docker:           false,
 			DatabaseMySQL:    false,
 			DatabasePostgres: false,
-			DatabaseSQLite:   false,
+			DatabaseSQLite:   true,
 			Scheduler:        false,
 			Cache:            false,
 			Jobs:             false,

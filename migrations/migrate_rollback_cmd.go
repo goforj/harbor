@@ -1,0 +1,104 @@
+package migrations
+
+import (
+	"fmt"
+
+	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/harbor/internal/logger"
+)
+
+// MigrateRollbackCmd rolls back applied database migrations for the selected migration stream.
+type MigrateRollbackCmd struct {
+	Step       int    `help:"Number of recent migrations to rollback" default:"1"`
+	Connection string `help:"Database connection name"`
+
+	logger *logger.AppLogger
+	db     *database.Connections
+}
+
+// NewMigrateRollbackCmd creates a rollback command with database access.
+func NewMigrateRollbackCmd(logger *logger.AppLogger, db *database.Connections) *MigrateRollbackCmd {
+	return &MigrateRollbackCmd{Step: 1, logger: logger, db: db}
+}
+
+// Signature defines CLI metadata for this command.
+func (*MigrateRollbackCmd) Signature() string {
+	return `name:"migrate:rollback" help:"Rollback database migration"`
+}
+
+// Run executes rollback for one or more app-scoped migration streams.
+func (c *MigrateRollbackCmd) Run() error {
+	streams := migrationPlan(activeMigrationApp(), c.Connection)
+	if len(streams) == 0 {
+		console.Infof("no migrations rolled back")
+		console.Successf("rollback complete (0)")
+		return nil
+	}
+
+	total := 0
+	for _, stream := range streams {
+		rolledBack, err := c.rollbackStream(stream)
+		if err != nil {
+			console.Fatalf("%v", err)
+			return nil
+		}
+		total += rolledBack
+	}
+
+	if total == 0 {
+		console.Infof("no migrations rolled back")
+	}
+	console.Successf("rollback complete (%d)", total)
+
+	return nil
+}
+
+// rollbackStream rolls back the newest applied migrations for one app-scoped connection stream.
+func (c *MigrateRollbackCmd) rollbackStream(stream migrationStream) (int, error) {
+	dbConn, err := c.db.Connection(stream.DatabaseConnection)
+	if err != nil {
+		return 0, err
+	}
+	if err := ensureMigrationsTable(dbConn); err != nil {
+		return 0, err
+	}
+
+	var applied []string
+	err = dbConn.Table("migrations").Select("name").Scan(&applied).Error
+	if err != nil {
+		return 0, err
+	}
+
+	appliedSet := make(map[string]bool)
+	for _, name := range applied {
+		appliedSet[name] = true
+	}
+
+	activeDriver := normalizeDriverName(dbConn.Dialector.Name())
+	all := selectMigrations(stream.App, stream.Connection, activeDriver)
+
+	rollbackCount := 0
+	for i := len(all) - 1; i >= 0; i-- {
+		m := all[i]
+		if !appliedSet[m.Name()] {
+			continue
+		}
+		if rollbackCount >= c.Step {
+			break
+		}
+
+		if err := m.Down(dbConn); err != nil {
+			return rollbackCount, fmt.Errorf("failed to rollback migration %s: %w", m.Name(), err)
+		}
+
+		if err := dbConn.Exec(`DELETE FROM migrations WHERE name = ?`, m.Name()).Error; err != nil {
+			return rollbackCount, err
+		}
+
+		console.Successf("reverted %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
+		rollbackCount++
+	}
+
+	return rollbackCount, nil
+}
