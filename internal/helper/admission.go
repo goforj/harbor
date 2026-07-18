@@ -54,6 +54,7 @@ func ticketsEqual(left Ticket, right Ticket) bool {
 		left.InstallationID == right.InstallationID &&
 		left.RequesterIdentity == right.RequesterIdentity &&
 		left.OwnershipGeneration == right.OwnershipGeneration &&
+		left.ApprovedPool == right.ApprovedPool &&
 		left.ApprovedAddress == right.ApprovedAddress &&
 		left.ExpectedObservation == right.ExpectedObservation &&
 		left.Nonce == right.Nonce &&

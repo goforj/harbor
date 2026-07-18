@@ -69,6 +69,7 @@ type Ticket struct {
 	InstallationID      string              `json:"installation_id"`
 	RequesterIdentity   string              `json:"requester_identity"`
 	OwnershipGeneration uint64              `json:"ownership_generation"`
+	ApprovedPool        string              `json:"approved_pool"`
 	ApprovedAddress     string              `json:"approved_address"`
 	ExpectedObservation ExpectedObservation `json:"expected_observation"`
 	Nonce               string              `json:"nonce"`
@@ -95,8 +96,16 @@ func (t Ticket) Validate(now time.Time) error {
 	if t.OwnershipGeneration == 0 {
 		return newRequestError(ErrorCodeInvalidTicket, "ownership generation must be positive")
 	}
+	pool, err := netip.ParsePrefix(t.ApprovedPool)
+	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {
+		return newRequestError(ErrorCodeInvalidTicket, "approved pool must be a canonical IPv4 loopback prefix")
+	}
 	if !validApprovedAddress(t.ApprovedAddress) {
 		return newRequestError(ErrorCodeInvalidTicket, "approved address must be canonical IPv4 loopback")
+	}
+	address, _ := netip.ParseAddr(t.ApprovedAddress)
+	if !pool.Contains(address) {
+		return newRequestError(ErrorCodeInvalidTicket, "approved address must belong to the approved pool")
 	}
 	if err := t.ExpectedObservation.Validate(); err != nil {
 		return err

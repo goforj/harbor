@@ -349,6 +349,7 @@ func TestDispatcherDispatchRejectsExactTicketSubstitution(t *testing.T) {
 		{name: "installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "other-installation" }},
 		{name: "peer", mutate: func(ticket *Ticket) { ticket.RequesterIdentity = "uid-2000" }},
 		{name: "generation", mutate: func(ticket *Ticket) { ticket.OwnershipGeneration++ }},
+		{name: "pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "127.78.0.0/24" }},
 		{name: "address", mutate: func(ticket *Ticket) { ticket.ApprovedAddress = "127.77.0.11" }},
 		{name: "observation", mutate: func(ticket *Ticket) { ticket.ExpectedObservation.Fingerprint = strings.Repeat("b", fingerprintLength) }},
 		{name: "nonce", mutate: func(ticket *Ticket) { ticket.Nonce = strings.Repeat("z", minimumNonceLength) }},
