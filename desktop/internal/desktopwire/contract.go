@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	// MethodAddProject is the generated Wails method that selects and registers one local project.
+	MethodAddProject = "AddProject"
 	// MethodOpenResource is the generated Wails method that opens one reviewed project resource.
 	MethodOpenResource = "OpenResource"
 	// MethodSnapshot is the generated Wails method that returns complete desktop-visible state.
@@ -23,8 +25,29 @@ const (
 	SnapshotEventName = "harbor:snapshot"
 )
 
+// AddProjectResult distinguishes a dismissed native picker from a completed daemon registration.
+type AddProjectResult struct {
+	Canceled     bool                         `json:"canceled"`
+	Registration *control.ProjectRegistration `json:"registration,omitempty"`
+}
+
+// Validate reports whether the picker outcome contains exactly the state appropriate to its disposition.
+func (result AddProjectResult) Validate() error {
+	if result.Canceled {
+		if result.Registration != nil {
+			return fmt.Errorf("canceled project selection must not contain a registration")
+		}
+		return nil
+	}
+	if result.Registration == nil {
+		return fmt.Errorf("completed project selection must contain a registration")
+	}
+	return result.Registration.Validate()
+}
+
 // AppContract is the complete exported method surface Wails may bind from App.
 type AppContract interface {
+	AddProject() (AddProjectResult, error)
 	OpenResource(projectID string, resourceID string) error
 	Snapshot() (domain.Snapshot, error)
 	Status() (control.DaemonStatus, error)
@@ -41,6 +64,7 @@ type MethodContract struct {
 func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
+		MethodAddProject:   {},
 		MethodOpenResource: []string{"projectId", "resourceId"},
 		MethodSnapshot:     []string{},
 		MethodStatus:       []string{},

@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
+import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
 import type { ConnectionEvent, DaemonStatus, HarborSnapshot } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
@@ -289,6 +290,48 @@ describe('Harbor store', () => {
     expect(store.error).toBeNull()
     expect(store.snapshot?.sequence).toBe(42)
     expect(store.snapshotStale).toBe(false)
+  })
+
+  it('stages a successful registration immediately and confirms it from a fresh snapshot', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const registration = structuredClone(harborWireFixture.add_project.registration)
+    const confirmed = mockSnapshot()
+    confirmed.sequence = registration.revision
+    confirmed.projects.push(registration.project)
+    const snapshotRead = deferred<HarborSnapshot>()
+    vi.spyOn(harborBridge, 'addProject').mockResolvedValueOnce({ canceled: false, registration })
+    vi.spyOn(harborBridge, 'getSnapshot').mockReturnValueOnce(snapshotRead.promise)
+
+    const adding = store.addProject()
+    await vi.waitFor(() => expect(store.projectById('inventory')?.name).toBe('Inventory'))
+
+    expect(store.addingProject).toBe(true)
+    expect(store.snapshot?.sequence).toBe(43)
+    expect(store.snapshotStale).toBe(true)
+    snapshotRead.resolve(confirmed)
+
+    await expect(adding).resolves.toMatchObject({ created: true, project: { id: 'inventory' } })
+    expect(store.addingProject).toBe(false)
+    expect(store.snapshotStale).toBe(false)
+    expect(store.projectRegistrationError).toBeNull()
+  })
+
+  it('keeps picker cancellation silent and reports registration failures', async () => {
+    const store = useHarborStore()
+    const addProject = vi.spyOn(harborBridge, 'addProject').mockResolvedValueOnce({ canceled: true })
+
+    await expect(store.addProject()).resolves.toBeNull()
+    expect(store.projectRegistrationError).toBeNull()
+
+    addProject.mockRejectedValueOnce(new Error('selected folder is not a GoForj project'))
+    await expect(store.addProject()).resolves.toBeNull()
+    expect(store.projectRegistrationError).toBe('selected folder is not a GoForj project')
+
+    addProject.mockResolvedValueOnce({ canceled: false })
+    await expect(store.addProject()).resolves.toBeNull()
+    expect(store.projectRegistrationError).toBe('Harbor returned an incomplete project registration.')
+    expect(store.addingProject).toBe(false)
   })
 
   it('delegates resource opening with both scoped identities', async () => {

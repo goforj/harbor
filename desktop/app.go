@@ -28,6 +28,7 @@ var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
 type controlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
+	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
 	Done() <-chan struct{}
 	Close() error
 }
@@ -40,6 +41,9 @@ type eventEmitter = desktopwire.RawEmitter
 
 // resourceOpener delegates a reviewed resource URL to the operating system browser.
 type resourceOpener func(context.Context, string)
+
+// directoryChooser keeps the native folder picker deterministic in adapter tests.
+type directoryChooser func(context.Context, runtime.OpenDialogOptions) (string, error)
 
 // windowRestorer raises the existing Wails window after the single-instance lock rejects a second process.
 type windowRestorer func(context.Context)
@@ -78,6 +82,7 @@ type App struct {
 	clientFactory  clientFactory
 	events         desktopwire.Emitter
 	open           resourceOpener
+	choose         directoryChooser
 	restore        windowRestorer
 	wait           waitFunc
 	reconnectDelay time.Duration
@@ -98,11 +103,42 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		clientFactory:  factory,
 		events:         desktopwire.NewEmitter(emit),
 		open:           open,
+		choose:         runtime.OpenDirectoryDialog,
 		restore:        runtime.Show,
 		wait:           wait,
 		reconnectDelay: desktopReconnectDelay,
 		pollInterval:   desktopPollInterval,
 	}
+}
+
+// AddProject lets the operating system choose a directory before asking the connected daemon to register it.
+func (a *App) AddProject() (desktopwire.AddProjectResult, error) {
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return desktopwire.AddProjectResult{}, err
+	}
+
+	path, err := a.choose(ctx, runtime.OpenDialogOptions{
+		Title:                "Add a GoForj project",
+		ResolvesAliases:      true,
+		CanCreateDirectories: false,
+	})
+	if err != nil {
+		return desktopwire.AddProjectResult{}, fmt.Errorf("choose GoForj project directory: %w", err)
+	}
+	if path == "" {
+		return desktopwire.AddProjectResult{Canceled: true}, nil
+	}
+
+	registration, err := client.RegisterProject(ctx, control.RegisterProjectRequest{Path: path})
+	if err != nil {
+		return desktopwire.AddProjectResult{}, fmt.Errorf("register GoForj project: %w", err)
+	}
+	result := desktopwire.AddProjectResult{Registration: &registration}
+	if err := result.Validate(); err != nil {
+		return desktopwire.AddProjectResult{}, fmt.Errorf("validate project registration: %w", err)
+	}
+	return result, nil
 }
 
 // newDesktopClient adapts the concrete control client to the desktop's narrow lifecycle interface.

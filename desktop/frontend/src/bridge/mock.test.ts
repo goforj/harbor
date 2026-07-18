@@ -26,6 +26,7 @@ describe('Harbor mock bridge', () => {
       disconnected: { state: 'disconnected' },
     })
     expect(harborWireFixture.methods).toEqual({
+      add_project: 'AddProject',
       open_resource: 'OpenResource',
       snapshot: 'Snapshot',
       status: 'Status',
@@ -45,6 +46,25 @@ describe('Harbor mock bridge', () => {
     expect(second.projects[0].name).toBe('Orders API')
     expect(mockSnapshot().projects[0].name).toBe('Orders API')
     expect(mockStatus()).toMatchObject({ snapshot_schema_version: 1, protocol: { major: 1, minor: 0 } })
+  })
+
+  it('registers the generated pending project once and replays it without duplication', async () => {
+    const bridge = createMockBridge()
+
+    const created = await bridge.addProject()
+    const replayed = await bridge.addProject()
+    const snapshot = await bridge.getSnapshot()
+
+    expect(created).toMatchObject({
+      canceled: false,
+      registration: {
+        created: true,
+        project: { id: 'inventory', name: 'Inventory', state: 'stopped' },
+      },
+    })
+    expect(replayed.registration?.created).toBe(false)
+    expect(snapshot.sequence).toBe(43)
+    expect(snapshot.projects.filter((project) => project.id === 'inventory')).toHaveLength(1)
   })
 
   it('opens a known project-scoped resource without giving the new page an opener', async () => {

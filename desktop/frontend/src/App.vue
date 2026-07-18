@@ -24,6 +24,12 @@ watch(() => harbor.actionError, (message) => {
   }
 })
 
+watch(() => harbor.projectRegistrationError, (message) => {
+  if (message) {
+    toast.error('Harbor could not add the project', { description: message })
+  }
+})
+
 const hasDetail = computed(() => {
   if (route.name === 'overview') {
     return true

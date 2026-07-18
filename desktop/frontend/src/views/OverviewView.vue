@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import {
   Activity,
   ArrowUpRight,
   Boxes,
   Clock3,
   FolderKanban,
+  FolderPlus,
   RefreshCw,
   Server,
   TriangleAlert,
@@ -15,9 +17,12 @@ import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Spinner } from '@/components/ui/spinner'
 import { useHarborStore } from '@/stores/harbor'
 
 const store = useHarborStore()
+const router = useRouter()
 const recentProjects = computed(() => [...store.projects]
   .sort((left, right) => Number(right.favorite) - Number(left.favorite) || right.updated_at.localeCompare(left.updated_at))
   .slice(0, 4))
@@ -27,6 +32,20 @@ const capturedAt = computed(() => store.snapshot?.captured_at
 
 async function openResource(projectId: string, resourceId: string) {
   await store.openResource(projectId, resourceId)
+}
+
+async function addProject() {
+  const registration = await store.addProject()
+  if (!registration) {
+    return
+  }
+
+  toast.success(registration.created
+    ? `${registration.project.name} added`
+    : `${registration.project.name} is already in Harbor`, {
+    description: registration.created ? 'Stopped; routing is not configured yet.' : undefined,
+  })
+  await router.push(`/projects/${encodeURIComponent(registration.project.id)}`)
 }
 </script>
 
@@ -43,10 +62,17 @@ async function openResource(projectId: string, resourceId: string) {
           Snapshot {{ capturedAt }}
         </p>
       </div>
-      <Button variant="outline" size="sm" :disabled="store.loading" @click="store.refresh">
-        <RefreshCw :class="['size-3.5', store.loading && 'animate-spin']" aria-hidden="true" />
-        Refresh
-      </Button>
+      <div class="flex items-center gap-2">
+        <Button size="sm" :disabled="store.addingProject || store.connectionState !== 'connected'" @click="addProject">
+          <Spinner v-if="store.addingProject" aria-hidden="true" />
+          <FolderPlus v-else class="size-3.5" aria-hidden="true" />
+          {{ store.addingProject ? 'Adding…' : 'Add project' }}
+        </Button>
+        <Button variant="outline" size="sm" :disabled="store.loading" @click="store.refresh">
+          <RefreshCw :class="['size-3.5', store.loading && 'animate-spin']" aria-hidden="true" />
+          Refresh
+        </Button>
+      </div>
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
@@ -99,7 +125,20 @@ async function openResource(projectId: string, resourceId: string) {
                 <ArrowUpRight class="size-3.5 shrink-0 text-muted-foreground" />
               </RouterLink>
             </div>
-            <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No projects are registered yet.</p>
+            <Empty v-else class="border-0 py-10">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><FolderPlus aria-hidden="true" /></EmptyMedia>
+                <EmptyTitle>Add your first project</EmptyTitle>
+                <EmptyDescription>Choose a GoForj project folder to keep it available in Harbor.</EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent>
+                <Button :disabled="store.addingProject || store.connectionState !== 'connected'" @click="addProject">
+                  <Spinner v-if="store.addingProject" aria-hidden="true" />
+                  <FolderPlus v-else class="size-4" aria-hidden="true" />
+                  {{ store.addingProject ? 'Adding project…' : 'Choose a project folder' }}
+                </Button>
+              </EmptyContent>
+            </Empty>
           </CardContent>
         </Card>
 

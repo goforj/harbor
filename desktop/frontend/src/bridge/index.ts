@@ -13,6 +13,7 @@ function createUnavailableBridge(): HarborBridge {
   const unavailable = () => Promise.reject(new Error('Harbor daemon bindings are not available in this desktop build.'))
 
   return {
+    addProject: unavailable,
     getStatus: unavailable,
     getSnapshot: unavailable,
     openResource: unavailable,

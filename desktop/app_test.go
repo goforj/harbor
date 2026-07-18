@@ -13,6 +13,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // fakeControlClient keeps lifecycle and response behavior explicit in desktop adapter tests.
@@ -23,6 +24,9 @@ type fakeControlClient struct {
 	snapshot     domain.Snapshot
 	snapshotErr  error
 	snapshotHook func()
+	registration control.ProjectRegistration
+	registerErr  error
+	registerPath string
 	done         chan struct{}
 	closeOnce    sync.Once
 	closeCount   atomic.Int32
@@ -39,8 +43,9 @@ func newFakeControlClient() *fakeControlClient {
 			SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
 			Sequence:              8,
 		},
-		snapshot: testSnapshot(),
-		done:     make(chan struct{}),
+		snapshot:     testSnapshot(),
+		registration: testRegistration(),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -64,6 +69,14 @@ func (client *fakeControlClient) Snapshot(_ context.Context) (domain.Snapshot, e
 	return snapshot, err
 }
 
+// RegisterProject records the selected path and returns the configured authoritative mutation result.
+func (client *fakeControlClient) RegisterProject(_ context.Context, request control.RegisterProjectRequest) (control.ProjectRegistration, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.registerPath = request.Path
+	return client.registration, client.registerErr
+}
+
 // Done exposes terminal connection state to the desktop owner loop.
 func (client *fakeControlClient) Done() <-chan struct{} {
 	return client.done
@@ -83,7 +96,7 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.restore == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.restore == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
 }
@@ -487,6 +500,101 @@ func TestSnapshotRejectsInvalidDaemonState(t *testing.T) {
 	}
 }
 
+// TestAddProjectPreservesPickerAndRegistrationOutcomes covers every user-visible boundary in the native selection flow.
+func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disconnected", func(t *testing.T) {
+		app := testApp()
+		chosen := false
+		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+			chosen = true
+			return "/workspace/orders", nil
+		}
+
+		if _, err := app.AddProject(); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("AddProject() error = %v, want disconnected", err)
+		}
+		if chosen {
+			t.Fatal("AddProject() opened a picker without a daemon connection")
+		}
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		app, client := connectedTestApp()
+		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) { return "", nil }
+
+		result, err := app.AddProject()
+		if err != nil {
+			t.Fatalf("AddProject() error = %v", err)
+		}
+		if !result.Canceled || result.Registration != nil {
+			t.Fatalf("AddProject() = %+v, want canceled result", result)
+		}
+		if client.registerPath != "" {
+			t.Fatalf("RegisterProject() path = %q after cancel", client.registerPath)
+		}
+	})
+
+	t.Run("picker failure", func(t *testing.T) {
+		app, _ := connectedTestApp()
+		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+			return "", errors.New("dialog unavailable")
+		}
+
+		if _, err := app.AddProject(); err == nil || !strings.Contains(err.Error(), "dialog unavailable") {
+			t.Fatalf("AddProject() error = %v, want picker failure", err)
+		}
+	})
+
+	t.Run("registration failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.registerErr = errors.New("not a GoForj project")
+		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+			return "/workspace/orders", nil
+		}
+
+		if _, err := app.AddProject(); err == nil || !strings.Contains(err.Error(), "not a GoForj project") {
+			t.Fatalf("AddProject() error = %v, want registration failure", err)
+		}
+	})
+
+	t.Run("invalid daemon result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.registration = control.ProjectRegistration{}
+		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+			return "/workspace/orders", nil
+		}
+
+		if _, err := app.AddProject(); err == nil || !strings.Contains(err.Error(), "validate project registration") {
+			t.Fatalf("AddProject() error = %v, want validation failure", err)
+		}
+	})
+
+	t.Run("registered", func(t *testing.T) {
+		app, client := connectedTestApp()
+		var options runtime.OpenDialogOptions
+		app.choose = func(_ context.Context, selectedOptions runtime.OpenDialogOptions) (string, error) {
+			options = selectedOptions
+			return "/workspace/orders", nil
+		}
+
+		result, err := app.AddProject()
+		if err != nil {
+			t.Fatalf("AddProject() error = %v", err)
+		}
+		if result.Canceled || result.Registration == nil || result.Registration.Project.Name != "Orders" {
+			t.Fatalf("AddProject() = %+v, want Orders registration", result)
+		}
+		if client.registerPath != "/workspace/orders" {
+			t.Fatalf("RegisterProject() path = %q, want selected path", client.registerPath)
+		}
+		if options.Title != "Add a GoForj project" || !options.ResolvesAliases || options.CanCreateDirectories {
+			t.Fatalf("picker options = %+v, want reviewed project-directory settings", options)
+		}
+	})
+}
+
 // TestOpenResourceUsesFreshProjectScopedState proves JavaScript cannot supply a URL or rely on a globally unique resource ID.
 func TestOpenResourceUsesFreshProjectScopedState(t *testing.T) {
 	t.Parallel()
@@ -700,6 +808,15 @@ func testApp() *App {
 	)
 }
 
+// connectedTestApp creates a desktop adapter with one installed fake daemon connection.
+func connectedTestApp() (*App, *fakeControlClient) {
+	app := testApp()
+	client := newFakeControlClient()
+	app.ctx = context.Background()
+	app.client = client
+	return app, client
+}
+
 // testSnapshot returns the smallest valid snapshot with one project-scoped HTTP resource.
 func testSnapshot() domain.Snapshot {
 	return domain.Snapshot{
@@ -731,6 +848,20 @@ func testSnapshot() domain.Snapshot {
 		},
 		Operations:        []domain.Operation{},
 		RecentResourceIDs: []domain.ResourceRef{{ProjectID: "orders", ResourceID: "web"}},
+	}
+}
+
+// testRegistration returns a valid inert registration without claiming network-backed resources.
+func testRegistration() control.ProjectRegistration {
+	project := testSnapshot().Projects[0]
+	project.State = domain.ProjectStopped
+	project.Apps = []domain.AppSnapshot{}
+	project.Services = []domain.ServiceSnapshot{}
+	project.Resources = []domain.ResourceSnapshot{}
+	return control.ProjectRegistration{
+		Project:  project,
+		Revision: 9,
+		Created:  true,
 	}
 }
 

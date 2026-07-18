@@ -3,10 +3,56 @@ package desktopwire
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 )
+
+// TestAddProjectResultValidateRequiresExactlyOneOutcome keeps picker cancellation distinct from registration failure.
+func TestAddProjectResultValidateRequiresExactlyOneOutcome(t *testing.T) {
+	t.Parallel()
+
+	registration := control.ProjectRegistration{
+		Project: domain.ProjectSnapshot{
+			ID:        "orders",
+			Name:      "Orders",
+			Path:      "/workspace/orders",
+			Slug:      "orders",
+			State:     domain.ProjectStopped,
+			UpdatedAt: time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC),
+			Apps:      []domain.AppSnapshot{},
+			Services:  []domain.ServiceSnapshot{},
+			Resources: []domain.ResourceSnapshot{},
+		},
+		Revision: 1,
+		Created:  true,
+	}
+	tests := []struct {
+		name   string
+		result AddProjectResult
+		want   string
+	}{
+		{name: "canceled", result: AddProjectResult{Canceled: true}},
+		{name: "registered", result: AddProjectResult{Registration: &registration}},
+		{name: "both", result: AddProjectResult{Canceled: true, Registration: &registration}, want: "must not contain"},
+		{name: "neither", result: AddProjectResult{}, want: "must contain"},
+		{name: "invalid registration", result: AddProjectResult{Registration: &control.ProjectRegistration{}}, want: "project ID"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.result.Validate()
+			if test.want == "" && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
 
 // TestEmitterMethodsMatchEventContracts prevents an event name, payload, or typed emission method from drifting independently.
 func TestEmitterMethodsMatchEventContracts(t *testing.T) {

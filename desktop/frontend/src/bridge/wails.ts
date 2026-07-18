@@ -26,7 +26,8 @@ declare global {
 
 export function hasWailsBridge(): boolean {
   const app = window.go?.main?.App
-  return typeof app?.Status === 'function'
+  return typeof app?.AddProject === 'function'
+    && typeof app.Status === 'function'
     && typeof app.Snapshot === 'function'
     && typeof app.OpenResource === 'function'
     && hasWailsEventRuntime(window.runtime)
@@ -39,10 +40,12 @@ export function hasWailsRuntime(): boolean {
 export function createWailsBridge(): HarborBridge {
   const app = window.go?.main?.App
   const runtime = window.runtime
+  const addProject = app?.AddProject
   const status = app?.Status
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
-  if (typeof status !== 'function'
+  if (typeof addProject !== 'function'
+    || typeof status !== 'function'
     || typeof snapshot !== 'function'
     || typeof openResource !== 'function'
     || !hasWailsEventRuntime(runtime)) {
@@ -50,6 +53,7 @@ export function createWailsBridge(): HarborBridge {
   }
 
   return {
+    addProject: () => addProject(),
     getStatus: () => status(),
     getSnapshot: () => snapshot(),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),

@@ -23,6 +23,8 @@ npm run dev
 
 `wails dev` uses the native desktop bindings and connects to `harbord`. Browser-only development uses a Go-generated, TypeScript-checked fixture for the exact daemon wire shape and marks the page `Development fixture`. Production fails closed when native bindings or the event runtime are incomplete. A browser production build may opt into fixture data explicitly with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is for browser builds and cannot override a detected Wails runtime with incomplete bindings.
 
+The Overview's **Add project** action opens the operating system's directory picker and asks the connected daemon to register the selected GoForj checkout. The CLI equivalent is `harbor add [path] [--json]`. Registration records a stopped project; it does not start containers or configure DNS, certificates, or routing.
+
 ## Tests
 
 Validate the frontend independently:

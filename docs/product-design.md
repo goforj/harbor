@@ -102,8 +102,8 @@ First run is an explicit setup, not a silent installer side effect.
 2. It verifies the installed Go version, `forj`, Docker/Compose when the project needs containers, and platform prerequisites.
 3. The user approves the narrowly scoped privileged setup. A separate one-shot helper runs with root/Administrator authority to install the required loopback, resolver, trust, and low-port state, then exits. Harbor shows the exact categories of host state it will own and how uninstall reverses them. If background reconciliation later needs another approved mutation, it records `requires approval`; only an interactive desktop or CLI action opens the OS consent flow, and cancellation remains safely retryable.
 4. Harbor starts the per-user daemon and verifies DNS, HTTP, TLS, and a native TCP loopback probe end to end.
-5. The user chooses a project directory or runs `harbor add <path>`.
-6. Harbor displays the discovered Apps, services, and proposed domains before registration is committed.
+5. The user chooses a project directory or runs `harbor add [path] [--json]`.
+6. Harbor records the checkout as a stopped project. App, service, container, and network discovery happen in later lifecycle work rather than being implied by registration.
 
 The setup result has three visible states:
 
@@ -115,19 +115,18 @@ Limited mode must never silently change public ports while showing a healthy sta
 
 ## Register a project
 
-Registration performs a read-only discovery followed by an explicit apply:
+Registration deliberately has a smaller boundary than project startup:
 
-1. Canonicalize the selected path and reject a duplicate registration or a path outside the user's accessible filesystem.
-2. Locate `.goforj.yml` and run the versioned, non-executing GoForj project-description command.
-3. Validate the descriptor version, project slug, Apps, required endpoint collisions, existing Compose identity, and both GoForj CLI and generated-project capabilities.
-4. Present the default domains and any conflicts. The user can choose a different project slug before apply.
-5. Reserve a stable project ID and loopback identity.
-6. Reconcile DNS, certificate, and ingress state.
-7. Add the project in the stopped state.
+1. The desktop opens the operating system's directory picker, or the CLI accepts `harbor add [path] [--json]`.
+2. Harbor canonicalizes the selected path, requires a regular `.goforj.yml`, and derives basic presentation metadata without executing project code or applying the project's environment to the daemon.
+3. The daemon allocates an opaque project ID and records a stopped project with no Apps, services, resources, or routes.
+4. Repeating the same canonical path returns the existing registration instead of creating a duplicate.
+
+Project description, endpoint planning, containers, DNS, certificates, and ingress belong to later lifecycle work. A successful registration does not imply that any of them are ready.
 
 Registration does not start Apps, run migrations, pull images, or update dependencies.
 
-An older project can register as `read-only` or `upgrade required` when the current `forj` can describe it but its checked-in generated App lacks managed overlay or listener hooks. Harbor can open that checkout and explain the exact explicit GoForj update/render prerequisite; it never auto-renders during registration or pretends the project has full managed behavior.
+Compatibility classification such as `read-only` or `upgrade required` belongs to later project discovery. Registration does not auto-render a checkout or claim that it already supports Harbor-managed startup.
 
 Harbor supports direct registration, not broad “park every folder” behavior, in the first release. A future directory scan may list directories containing `.goforj.yml`, but it remains read-only until each project is registered.
 
@@ -380,7 +379,7 @@ Linux desktop environments differ in tray and notification support. Harbor must 
 Essential GUI behavior has a CLI equivalent and structured output where automation is useful:
 
 ```text
-harbor add [path]
+harbor add [path] [--json]
 harbor list [--json]
 harbor status [project] [--json]
 harbor daemon status [--json]

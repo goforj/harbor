@@ -16,6 +16,17 @@ test('navigates from the Harbor overview to the project list', async ({ page }) 
   await expect(page.getByText('Billing', { exact: true }).first()).toBeVisible()
 })
 
+test('adds the selected project and opens its detail immediately', async ({ page }) => {
+  await page.goto('/#/overview')
+
+  await page.getByRole('button', { name: 'Add project', exact: true }).click()
+
+  await expect(page).toHaveURL(/#\/projects\/inventory$/)
+  await expect(page.getByRole('heading', { name: 'Inventory' })).toBeVisible()
+  await expect(page.getByText('Inventory added', { exact: true })).toBeVisible()
+  await expect(page.getByText('Stopped; routing is not configured yet.', { exact: true })).toBeVisible()
+})
+
 test('uses a single detail surface and a back path at narrow widths', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 760 })
   await page.goto('/#/projects/orders-api')
@@ -144,6 +155,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
     window.go = {
       main: {
         App: {
+          async AddProject() {
+            return { canceled: true }
+          },
           async OpenResource() {},
           async Status() {
             return {
@@ -189,6 +203,8 @@ test('uses native bindings and recovers after the first snapshot read fails', as
   await expect(detail.getByRole('heading', { name: 'Overview' })).toBeVisible()
   await expect(detail.getByText('Connected to Harbor. Waiting for the first snapshot.')).toBeHidden()
   await expect(detail.getByText('Harbor daemon is starting')).toBeHidden()
+  await expect(detail.getByText('Add your first project', { exact: true })).toBeVisible()
+  await expect(detail.getByRole('button', { name: 'Choose a project folder', exact: true })).toBeVisible()
 })
 
 test('keeps a missing first snapshot in an explicit waiting state and announces stale state once', async ({ page }) => {
@@ -203,6 +219,9 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
     window.go = {
       main: {
         App: {
+          async AddProject() {
+            return { canceled: true }
+          },
           async OpenResource() {},
           async Status() {
             return {

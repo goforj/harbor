@@ -93,6 +93,17 @@ export interface ProjectSnapshot {
   resources: ResourceSnapshot[]
 }
 
+export interface ProjectRegistration {
+  project: ProjectSnapshot
+  revision: number
+  created: boolean
+}
+
+export interface AddProjectResult {
+  canceled: boolean
+  registration?: ProjectRegistration
+}
+
 export interface Problem {
   code: string
   message: string

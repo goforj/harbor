@@ -6,6 +6,7 @@ import type {
   ConnectionState,
   DaemonStatus,
   HarborSnapshot,
+  ProjectRegistration,
   ProjectResource,
   ProjectService,
 } from '@/domain/harbor'
@@ -16,8 +17,10 @@ export const useHarborStore = defineStore('harbor', () => {
   const connectionState = ref<ConnectionState>('connecting')
   const snapshotStale = ref(true)
   const refreshing = ref(false)
+  const addingProject = ref(false)
   const error = ref<string | null>(null)
   const actionError = ref<string | null>(null)
+  const projectRegistrationError = ref<string | null>(null)
   let connectionEpoch = 0
   let statusRequest = 0
   let refreshRequest = 0
@@ -224,6 +227,55 @@ export const useHarborStore = defineStore('harbor', () => {
     return services.value.find((service) => service.project_id === projectId && service.id === serviceId)
   }
 
+  function stageProjectRegistration(registration: ProjectRegistration) {
+    const current = snapshot.value
+    if (!current || registration.revision < current.sequence) {
+      return
+    }
+
+    const projects = [...current.projects]
+    const existingIndex = projects.findIndex((project) => project.id === registration.project.id)
+    if (existingIndex < 0) {
+      projects.push(registration.project)
+    }
+    else {
+      projects[existingIndex] = registration.project
+    }
+    snapshot.value = {
+      ...current,
+      sequence: registration.revision,
+      projects,
+    }
+    snapshotStale.value = true
+  }
+
+  async function addProject(): Promise<ProjectRegistration | null> {
+    addingProject.value = true
+    projectRegistrationError.value = null
+    try {
+      const result = await harborBridge.addProject()
+      if (result.canceled) {
+        return null
+      }
+      if (!result.registration) {
+        throw new Error('Harbor returned an incomplete project registration.')
+      }
+
+      stageProjectRegistration(result.registration)
+      await refresh()
+      return result.registration
+    }
+    catch (cause) {
+      projectRegistrationError.value = cause instanceof Error
+        ? cause.message
+        : 'Harbor could not add the project.'
+      return null
+    }
+    finally {
+      addingProject.value = false
+    }
+  }
+
   async function openResource(projectId: string, resourceId: string) {
     actionError.value = null
     try {
@@ -240,9 +292,11 @@ export const useHarborStore = defineStore('harbor', () => {
     connectionMessage,
     snapshotStale,
     refreshing,
+    addingProject,
     loading,
     error,
     actionError,
+    projectRegistrationError,
     projects,
     services,
     resources,
@@ -255,6 +309,7 @@ export const useHarborStore = defineStore('harbor', () => {
     dispose,
     projectById,
     serviceById,
+    addProject,
     openResource,
   }
 })

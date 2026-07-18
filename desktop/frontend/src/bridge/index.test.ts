@@ -3,11 +3,12 @@ import { createHarborBridge, selectHarborBridge } from './index'
 import { createWailsBridge } from './wails'
 
 function installAppBindings() {
+  const AddProject = vi.fn().mockResolvedValue({ canceled: true })
   const Status = vi.fn().mockResolvedValue({ state: 'ready' })
   const Snapshot = vi.fn().mockResolvedValue({ schema_version: 1, sequence: 7 })
   const OpenResource = vi.fn().mockResolvedValue(undefined)
-  window.go = { main: { App: { Status, Snapshot, OpenResource } } }
-  return { OpenResource, Snapshot, Status }
+  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource } } }
+  return { AddProject, OpenResource, Snapshot, Status }
 }
 
 function installEventRuntime() {
@@ -100,7 +101,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { OpenResource } = installAppBindings()
+    const { AddProject, OpenResource } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -108,10 +109,12 @@ describe('Harbor bridge selection', () => {
       expect(selection.mode).toBe('native')
       await selection.bridge.getStatus()
       await selection.bridge.getSnapshot()
+      await selection.bridge.addProject()
       await selection.bridge.openResource('orders', 'application')
     }
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
+    expect(AddProject).toHaveBeenCalledTimes(2)
   })
 
   it('subscribes to authoritative snapshot payloads and cancels the exact Wails listener', () => {
