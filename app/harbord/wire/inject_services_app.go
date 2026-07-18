@@ -8,10 +8,12 @@ import (
 
 	"github.com/goforj/harbor/app/harbord"
 	"github.com/goforj/harbor/internal/runtime"
+	"github.com/goforj/harbor/internal/state"
 )
 
 // appSet is a wire set that provides application-level services and dependencies.
 var appSet = wire.NewSet(
 	harbordapp.NewLifecycleRegistry,
 	runtime.NewTimeouts,
+	state.NewOperationJournal,
 )
