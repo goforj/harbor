@@ -1,67 +1,70 @@
+//go:build !integration
+
 package migrations
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
 
-// testMigration supplies transaction-aware schema callbacks to migration command tests.
-type testMigration struct {
+// atomicityTestMigration supplies transaction-aware schema callbacks to the SQLite migration tests.
+type atomicityTestMigration struct {
 	name string
 	up   func(*gorm.DB) error
 	down func(*gorm.DB) error
 }
 
 // Name returns the deterministic ledger identity used by the test migration.
-func (migration *testMigration) Name() string {
+func (migration *atomicityTestMigration) Name() string {
 	return migration.name
 }
 
 // App identifies the test migration's application stream.
-func (*testMigration) App() string {
-	return "harbord"
+func (*atomicityTestMigration) App() string {
+	return "app"
 }
 
 // Connection identifies the test migration's application-local connection.
-func (*testMigration) Connection() string {
+func (*atomicityTestMigration) Connection() string {
 	return "default"
 }
 
-// DatabaseConnection identifies the named database used by the test migration.
-func (*testMigration) DatabaseConnection() string {
-	return "harbord"
+// DatabaseConnection identifies the generated database registry connection.
+func (*atomicityTestMigration) DatabaseConnection() string {
+	return "default"
 }
 
 // SourcePath returns the deterministic embedded-style path used in the ledger.
-func (migration *testMigration) SourcePath() string {
-	return "harbord/default/" + migration.name
+func (migration *atomicityTestMigration) SourcePath() string {
+	return "app/default/" + migration.name
 }
 
-// Driver restricts the test migration to the SQLite harness.
-func (*testMigration) Driver() string {
+// Driver restricts the test migration to the SQLite transaction path.
+func (*atomicityTestMigration) Driver() string {
 	return "sqlite"
 }
 
 // Up delegates the forward schema change to the test case.
-func (migration *testMigration) Up(databaseConnection *gorm.DB) error {
+func (migration *atomicityTestMigration) Up(databaseConnection *gorm.DB) error {
 	return migration.up(databaseConnection)
 }
 
 // Down delegates the reverse schema change to the test case.
-func (migration *testMigration) Down(databaseConnection *gorm.DB) error {
+func (migration *atomicityTestMigration) Down(databaseConnection *gorm.DB) error {
 	return migration.down(databaseConnection)
 }
 
-// TestApplyMigrationIsAtomic verifies neither failed DDL nor failed ledger writes leave partial schema.
-func TestApplyMigrationIsAtomic(t *testing.T) {
+// TestSQLiteApplyMigrationIsAtomic verifies neither failed DDL nor failed ledger writes leave partial schema.
+func TestSQLiteApplyMigrationIsAtomic(t *testing.T) {
 	t.Run("schema failure", func(t *testing.T) {
-		_, databaseConnection := newMigrationReadinessHarness(t)
-		createMigrationReadinessLedger(t, databaseConnection)
+		databaseConnection := newMigrationAtomicityDatabase(t)
 		failure := errors.New("schema failed after creating a table")
-		migration := &testMigration{
+		migration := &atomicityTestMigration{
 			name: "atomic_schema_failure",
 			up: func(tx *gorm.DB) error {
 				if err := tx.Exec("CREATE TABLE atomic_schema_failure (id INTEGER PRIMARY KEY)").Error; err != nil {
@@ -72,16 +75,15 @@ func TestApplyMigrationIsAtomic(t *testing.T) {
 			down: func(*gorm.DB) error { return nil },
 		}
 
-		err := applyMigration(databaseConnection, migration, testMigrationRecord(migration))
+		err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration))
 		if !errors.Is(err, failure) {
-			t.Fatalf("applyMigration() error = %v, want %v", err, failure)
+			t.Fatalf("applySQLiteMigration() error = %v, want %v", err, failure)
 		}
-		assertMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_schema_failure")
+		assertAtomicityMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_schema_failure")
 	})
 
 	t.Run("ledger failure", func(t *testing.T) {
-		_, databaseConnection := newMigrationReadinessHarness(t)
-		createMigrationReadinessLedger(t, databaseConnection)
+		databaseConnection := newMigrationAtomicityDatabase(t)
 		if err := databaseConnection.Exec(`CREATE TRIGGER reject_migration_insert
 			BEFORE INSERT ON migrations
 			BEGIN
@@ -89,7 +91,7 @@ func TestApplyMigrationIsAtomic(t *testing.T) {
 			END`).Error; err != nil {
 			t.Fatalf("create rejecting insert trigger: %v", err)
 		}
-		migration := &testMigration{
+		migration := &atomicityTestMigration{
 			name: "atomic_ledger_failure",
 			up: func(tx *gorm.DB) error {
 				return tx.Exec("CREATE TABLE atomic_ledger_failure (id INTEGER PRIMARY KEY)").Error
@@ -97,20 +99,19 @@ func TestApplyMigrationIsAtomic(t *testing.T) {
 			down: func(*gorm.DB) error { return nil },
 		}
 
-		if err := applyMigration(databaseConnection, migration, testMigrationRecord(migration)); err == nil {
-			t.Fatal("applyMigration() accepted a rejected ledger insert")
+		if err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration)); err == nil {
+			t.Fatal("applySQLiteMigration() accepted a rejected ledger insert")
 		}
-		assertMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_ledger_failure")
+		assertAtomicityMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_ledger_failure")
 	})
 }
 
-// TestRollbackMigrationIsAtomic verifies failed reverse DDL and failed ledger removal restore applied state.
-func TestRollbackMigrationIsAtomic(t *testing.T) {
+// TestSQLiteRollbackMigrationIsAtomic verifies failed reverse DDL and failed ledger removal restore applied state.
+func TestSQLiteRollbackMigrationIsAtomic(t *testing.T) {
 	t.Run("schema failure", func(t *testing.T) {
-		_, databaseConnection := newMigrationReadinessHarness(t)
-		createMigrationReadinessLedger(t, databaseConnection)
+		databaseConnection := newMigrationAtomicityDatabase(t)
 		failure := errors.New("reverse schema failed after dropping a table")
-		migration := &testMigration{
+		migration := &atomicityTestMigration{
 			name: "atomic_reverse_schema_failure",
 			up:   func(*gorm.DB) error { return nil },
 			down: func(tx *gorm.DB) error {
@@ -120,26 +121,25 @@ func TestRollbackMigrationIsAtomic(t *testing.T) {
 				return failure
 			},
 		}
-		seedAppliedMigration(t, databaseConnection, migration)
+		seedAtomicityMigration(t, databaseConnection, migration)
 
-		err := rollbackMigration(databaseConnection, migration)
+		err := rollbackSQLiteMigration(databaseConnection, migration)
 		if !errors.Is(err, failure) {
-			t.Fatalf("rollbackMigration() error = %v, want %v", err, failure)
+			t.Fatalf("rollbackSQLiteMigration() error = %v, want %v", err, failure)
 		}
-		assertMigrationPresent(t, databaseConnection, migration.Name(), "atomic_reverse_schema_failure")
+		assertAtomicityMigrationPresent(t, databaseConnection, migration.Name(), "atomic_reverse_schema_failure")
 	})
 
 	t.Run("ledger failure", func(t *testing.T) {
-		_, databaseConnection := newMigrationReadinessHarness(t)
-		createMigrationReadinessLedger(t, databaseConnection)
-		migration := &testMigration{
+		databaseConnection := newMigrationAtomicityDatabase(t)
+		migration := &atomicityTestMigration{
 			name: "atomic_reverse_ledger_failure",
 			up:   func(*gorm.DB) error { return nil },
 			down: func(tx *gorm.DB) error {
 				return tx.Exec("DROP TABLE atomic_reverse_ledger_failure").Error
 			},
 		}
-		seedAppliedMigration(t, databaseConnection, migration)
+		seedAtomicityMigration(t, databaseConnection, migration)
 		if err := databaseConnection.Exec(`CREATE TRIGGER reject_migration_delete
 			BEFORE DELETE ON migrations
 			BEGIN
@@ -148,18 +148,17 @@ func TestRollbackMigrationIsAtomic(t *testing.T) {
 			t.Fatalf("create rejecting delete trigger: %v", err)
 		}
 
-		if err := rollbackMigration(databaseConnection, migration); err == nil {
-			t.Fatal("rollbackMigration() accepted a rejected ledger deletion")
+		if err := rollbackSQLiteMigration(databaseConnection, migration); err == nil {
+			t.Fatal("rollbackSQLiteMigration() accepted a rejected ledger deletion")
 		}
-		assertMigrationPresent(t, databaseConnection, migration.Name(), "atomic_reverse_ledger_failure")
+		assertAtomicityMigrationPresent(t, databaseConnection, migration.Name(), "atomic_reverse_ledger_failure")
 	})
 }
 
-// TestMigrationTransactionCommitsSchemaAndLedger verifies the successful path changes both sides together.
-func TestMigrationTransactionCommitsSchemaAndLedger(t *testing.T) {
-	_, databaseConnection := newMigrationReadinessHarness(t)
-	createMigrationReadinessLedger(t, databaseConnection)
-	migration := &testMigration{
+// TestSQLiteMigrationTransactionCommitsSchemaAndLedger verifies the successful path changes both sides together.
+func TestSQLiteMigrationTransactionCommitsSchemaAndLedger(t *testing.T) {
+	databaseConnection := newMigrationAtomicityDatabase(t)
+	migration := &atomicityTestMigration{
 		name: "atomic_success",
 		up: func(tx *gorm.DB) error {
 			return tx.Exec("CREATE TABLE atomic_success (id INTEGER PRIMARY KEY)").Error
@@ -169,19 +168,42 @@ func TestMigrationTransactionCommitsSchemaAndLedger(t *testing.T) {
 		},
 	}
 
-	if err := applyMigration(databaseConnection, migration, testMigrationRecord(migration)); err != nil {
-		t.Fatalf("applyMigration() error = %v", err)
+	if err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration)); err != nil {
+		t.Fatalf("applySQLiteMigration() error = %v", err)
 	}
-	assertMigrationPresent(t, databaseConnection, migration.Name(), "atomic_success")
+	assertAtomicityMigrationPresent(t, databaseConnection, migration.Name(), "atomic_success")
 
-	if err := rollbackMigration(databaseConnection, migration); err != nil {
-		t.Fatalf("rollbackMigration() error = %v", err)
+	if err := rollbackSQLiteMigration(databaseConnection, migration); err != nil {
+		t.Fatalf("rollbackSQLiteMigration() error = %v", err)
 	}
-	assertMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_success")
+	assertAtomicityMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_success")
 }
 
-// testMigrationRecord builds the exact ledger row committed beside a test schema.
-func testMigrationRecord(migration Migration) migrationRecord {
+// newMigrationAtomicityDatabase opens an isolated file-backed database so transaction tests use one durable SQLite schema.
+func newMigrationAtomicityDatabase(t *testing.T) *gorm.DB {
+	t.Helper()
+	databaseConnection, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open SQLite migration database: %v", err)
+	}
+	if err := ensureMigrationsTable(databaseConnection); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+	sqlDatabase, err := databaseConnection.DB()
+	if err != nil {
+		t.Fatalf("open SQLite connection pool: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDatabase.Close(); err != nil {
+			t.Errorf("close SQLite migration database: %v", err)
+		}
+	})
+
+	return databaseConnection
+}
+
+// migrationAtomicityRecord builds the exact ledger row committed beside a test schema.
+func migrationAtomicityRecord(migration Migration) migrationRecord {
 	return migrationRecord{
 		Name:       migration.Name(),
 		App:        migration.App(),
@@ -191,42 +213,42 @@ func testMigrationRecord(migration Migration) migrationRecord {
 	}
 }
 
-// seedAppliedMigration creates the schema and ledger state expected before rollback.
-func seedAppliedMigration(t *testing.T, databaseConnection *gorm.DB, migration Migration) {
+// seedAtomicityMigration creates the schema and ledger state expected before rollback.
+func seedAtomicityMigration(t *testing.T, databaseConnection *gorm.DB, migration Migration) {
 	t.Helper()
 	if err := databaseConnection.Exec("CREATE TABLE " + migration.Name() + " (id INTEGER PRIMARY KEY)").Error; err != nil {
 		t.Fatalf("create applied test table: %v", err)
 	}
-	record := testMigrationRecord(migration)
+	record := migrationAtomicityRecord(migration)
 	if err := databaseConnection.Table("migrations").Create(&record).Error; err != nil {
 		t.Fatalf("create applied migration record: %v", err)
 	}
 }
 
-// assertMigrationAbsent verifies both sides of a failed forward migration rolled back.
-func assertMigrationAbsent(t *testing.T, databaseConnection *gorm.DB, migrationName string, tableName string) {
+// assertAtomicityMigrationAbsent verifies a transaction left neither schema nor ledger state behind.
+func assertAtomicityMigrationAbsent(t *testing.T, databaseConnection *gorm.DB, migrationName string, tableName string) {
 	t.Helper()
 	if databaseConnection.Migrator().HasTable(tableName) {
-		t.Fatalf("failed migration retained table %q", tableName)
+		t.Fatalf("migration retained table %q", tableName)
 	}
-	if countMigrationRecords(t, databaseConnection, migrationName) != 0 {
-		t.Fatalf("failed migration retained ledger record %q", migrationName)
+	if countAtomicityMigrationRecords(t, databaseConnection, migrationName) != 0 {
+		t.Fatalf("migration retained ledger record %q", migrationName)
 	}
 }
 
-// assertMigrationPresent verifies both sides of a failed rollback remain applied.
-func assertMigrationPresent(t *testing.T, databaseConnection *gorm.DB, migrationName string, tableName string) {
+// assertAtomicityMigrationPresent verifies a transaction retained both schema and ledger state.
+func assertAtomicityMigrationPresent(t *testing.T, databaseConnection *gorm.DB, migrationName string, tableName string) {
 	t.Helper()
 	if !databaseConnection.Migrator().HasTable(tableName) {
-		t.Fatalf("failed rollback removed table %q", tableName)
+		t.Fatalf("migration removed table %q", tableName)
 	}
-	if countMigrationRecords(t, databaseConnection, migrationName) != 1 {
-		t.Fatalf("failed rollback removed ledger record %q", migrationName)
+	if countAtomicityMigrationRecords(t, databaseConnection, migrationName) != 1 {
+		t.Fatalf("migration changed ledger record %q", migrationName)
 	}
 }
 
-// countMigrationRecords returns the number of ledger rows for one migration identity.
-func countMigrationRecords(t *testing.T, databaseConnection *gorm.DB, migrationName string) int64 {
+// countAtomicityMigrationRecords returns the number of ledger rows for one migration identity.
+func countAtomicityMigrationRecords(t *testing.T, databaseConnection *gorm.DB, migrationName string) int64 {
 	t.Helper()
 	var count int64
 	if err := databaseConnection.Table("migrations").Where("name = ?", migrationName).Count(&count).Error; err != nil {

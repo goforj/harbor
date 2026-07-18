@@ -89,8 +89,18 @@ func (c *MigrateRollbackCmd) rollbackStream(stream migrationStream) (int, error)
 			break
 		}
 
-		if err := rollbackMigration(dbConn, m); err != nil {
-			return rollbackCount, fmt.Errorf("failed to rollback migration %s: %w", m.Name(), err)
+		if activeDriver == "sqlite" {
+			if err := rollbackSQLiteMigration(dbConn, m); err != nil {
+				return rollbackCount, fmt.Errorf("failed to rollback migration %s: %w", m.Name(), err)
+			}
+		} else {
+			if err := m.Down(dbConn); err != nil {
+				return rollbackCount, fmt.Errorf("failed to rollback migration %s: %w", m.Name(), err)
+			}
+
+			if err := dbConn.Exec(`DELETE FROM migrations WHERE name = ?`, m.Name()).Error; err != nil {
+				return rollbackCount, err
+			}
 		}
 
 		console.Successf("reverted %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
@@ -100,8 +110,8 @@ func (c *MigrateRollbackCmd) rollbackStream(stream migrationStream) (int, error)
 	return rollbackCount, nil
 }
 
-// rollbackMigration commits reverse schema changes and ledger removal as one unit.
-func rollbackMigration(dbConn *gorm.DB, migration Migration) error {
+// rollbackSQLiteMigration keeps transactional SQLite DDL and its ledger identity from diverging on failure.
+func rollbackSQLiteMigration(dbConn *gorm.DB, migration Migration) error {
 	return dbConn.Transaction(func(tx *gorm.DB) error {
 		if err := migration.Down(tx); err != nil {
 			return fmt.Errorf("revert schema: %w", err)

@@ -96,15 +96,32 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 			continue
 		}
 
-		record := migrationRecord{
-			Name:       m.Name(),
-			App:        stream.App,
-			Connection: stream.Connection,
-			SourcePath: m.SourcePath(),
-			AppliedAt:  time.Now(),
-		}
-		if err := applyMigration(dbConn, m, record); err != nil {
-			return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
+		if activeDriver == "sqlite" {
+			record := migrationRecord{
+				Name:       m.Name(),
+				App:        stream.App,
+				Connection: stream.Connection,
+				SourcePath: m.SourcePath(),
+				AppliedAt:  time.Now(),
+			}
+			if err := applySQLiteMigration(dbConn, m, record); err != nil {
+				return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
+			}
+		} else {
+			if err := m.Up(dbConn); err != nil {
+				return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
+			}
+
+			record := migrationRecord{
+				Name:       m.Name(),
+				App:        stream.App,
+				Connection: stream.Connection,
+				SourcePath: m.SourcePath(),
+				AppliedAt:  time.Now(),
+			}
+			if err := dbConn.Table("migrations").Create(&record).Error; err != nil {
+				return applied, err
+			}
 		}
 
 		console.Successf("applied %s → app=%s connection=%s database=%s", m.Name(), stream.App, stream.Connection, stream.DatabaseConnection)
@@ -114,8 +131,8 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 	return applied, nil
 }
 
-// applyMigration commits schema changes and their ledger identity as one unit.
-func applyMigration(dbConn *gorm.DB, migration Migration, record migrationRecord) error {
+// applySQLiteMigration keeps transactional SQLite DDL and its ledger identity from diverging on failure.
+func applySQLiteMigration(dbConn *gorm.DB, migration Migration, record migrationRecord) error {
 	return dbConn.Transaction(func(tx *gorm.DB) error {
 		if err := migration.Up(tx); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
