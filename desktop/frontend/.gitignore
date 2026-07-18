@@ -1,0 +1,8 @@
+dist/*
+!dist/.gitkeep
+coverage/
+node_modules/
+package.json.md5
+playwright-report/
+test-results/
+wailsjs/

@@ -1,0 +1,264 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar-background);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-status-ready: var(--status-ready);
+  --color-status-working: var(--status-working);
+  --color-status-degraded: var(--status-degraded);
+  --color-status-failed: var(--status-failed);
+  --color-status-stopped: var(--status-stopped);
+  --color-status-unavailable: var(--status-unavailable);
+}
+
+:root {
+  --radius: 0.5rem;
+  --background: #f7f7f7;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #c9271d;
+  --primary-foreground: #ffffff;
+  --secondary: #ededed;
+  --secondary-foreground: #202020;
+  --muted: #efefef;
+  --muted-foreground: #666666;
+  --accent: #e9e9e9;
+  --accent-foreground: #171717;
+  --destructive: #c9271d;
+  --destructive-foreground: #ffffff;
+  --border: #dedede;
+  --input: #d3d3d3;
+  --ring: #c9271d;
+  --chart-1: #c9271d;
+  --chart-2: #178453;
+  --chart-3: #356fc5;
+  --chart-4: #b76b00;
+  --chart-5: #8a4bb3;
+  --sidebar-background: #f1f1f1;
+  --sidebar-foreground: #262626;
+  --sidebar-primary: #c9271d;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e4e4e4;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #d8d8d8;
+  --sidebar-ring: #e52b1d;
+  --status-ready: #178453;
+  --status-working: #356fc5;
+  --status-degraded: #a85f00;
+  --status-failed: #c9271d;
+  --status-stopped: #737373;
+  --status-unavailable: #737373;
+}
+
+.dark {
+  --background: #0d0d0d;
+  --foreground: #f2f2f2;
+  --card: #161616;
+  --card-foreground: #f2f2f2;
+  --popover: #191919;
+  --popover-foreground: #f2f2f2;
+  --primary: #ff2d20;
+  --primary-foreground: #0d0d0d;
+  --secondary: #222222;
+  --secondary-foreground: #eeeeee;
+  --muted: #202020;
+  --muted-foreground: #9b9b9b;
+  --accent: #292929;
+  --accent-foreground: #ffffff;
+  --destructive: #ef5047;
+  --destructive-foreground: #ffffff;
+  --border: #262626;
+  --input: #333333;
+  --ring: #ff2d20;
+  --chart-1: #ff2d20;
+  --chart-2: #48b985;
+  --chart-3: #6f9fec;
+  --chart-4: #e2a23b;
+  --chart-5: #b98bd5;
+  --sidebar-background: #161616;
+  --sidebar-foreground: #e8e8e8;
+  --sidebar-primary: #ff2d20;
+  --sidebar-primary-foreground: #0d0d0d;
+  --sidebar-accent: #252525;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #262626;
+  --sidebar-ring: #ff2d20;
+  --status-ready: #48b985;
+  --status-working: #6f9fec;
+  --status-degraded: #e2a23b;
+  --status-failed: #ef6259;
+  --status-stopped: #8a8a8a;
+  --status-unavailable: #8a8a8a;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  html {
+    background: var(--background);
+  }
+
+  body {
+    @apply m-0 bg-background text-foreground antialiased;
+    min-width: 320px;
+    overflow: hidden;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  code,
+  pre {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+
+  ::selection {
+    color: var(--primary-foreground);
+    background: color-mix(in srgb, var(--primary) 75%, transparent);
+  }
+
+  * {
+    scrollbar-color: var(--input) transparent;
+    scrollbar-width: thin;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: var(--input);
+  }
+}
+
+.harbor-workspace {
+  display: grid;
+  grid-template: minmax(0, 1fr) 64px / minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--background);
+}
+
+.harbor-rail-slot {
+  display: none;
+}
+
+.harbor-context-slot,
+.harbor-detail-slot {
+  grid-area: 1 / 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.harbor-detail-slot {
+  display: none;
+  background: var(--background);
+}
+
+.harbor-workspace[data-has-detail="true"] .harbor-context-slot {
+  display: none;
+}
+
+.harbor-workspace[data-has-detail="true"] .harbor-detail-slot {
+  display: block;
+}
+
+.harbor-mobile-slot {
+  grid-area: 2 / 1;
+}
+
+@media (min-width: 700px) {
+  .harbor-workspace {
+    grid-template: minmax(0, 1fr) / 56px minmax(0, 1fr);
+  }
+
+  .harbor-rail-slot {
+    display: flex;
+    grid-area: 1 / 1;
+  }
+
+  .harbor-context-slot,
+  .harbor-detail-slot {
+    grid-area: 1 / 2;
+  }
+
+  .harbor-mobile-slot {
+    display: none;
+  }
+}
+
+@media (min-width: 1100px) {
+  .harbor-workspace {
+    grid-template-columns: 56px clamp(224px, 20vw, 256px) minmax(0, 1fr);
+  }
+
+  .harbor-context-slot,
+  .harbor-workspace[data-has-detail="true"] .harbor-context-slot {
+    display: block;
+    grid-area: 1 / 2;
+    border-right: 1px solid var(--border);
+  }
+
+  .harbor-detail-slot,
+  .harbor-workspace[data-has-detail="true"] .harbor-detail-slot {
+    display: block;
+    grid-area: 1 / 3;
+  }
+}
