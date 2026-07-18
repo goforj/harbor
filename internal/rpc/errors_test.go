@@ -1,0 +1,48 @@
+package rpc
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+// TestNewWireErrorFromCauseNeverSerializesCause verifies filesystem paths,
+// credentials, and other internal diagnostics remain daemon-local.
+func TestNewWireErrorFromCauseNeverSerializesCause(t *testing.T) {
+	const secret = "token=secret-value /Users/person/private/project"
+	wireError := NewWireErrorFromCause(ErrorCodeInternal, errors.New(secret))
+	encoded, err := json.Marshal(wireError)
+	if err != nil {
+		t.Fatalf("marshal wire error: %v", err)
+	}
+	if strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), "private/project") {
+		t.Fatalf("wire error exposed cause: %s", encoded)
+	}
+}
+
+// TestWireErrorRejectsMultilineAndInvisibleMessages verifies a peer-facing error
+// cannot forge adjacent log or UI lines with Unicode separators and controls.
+func TestWireErrorRejectsMultilineAndInvisibleMessages(t *testing.T) {
+	for _, message := range []string{
+		"line one\nline two",
+		"line one\u2028line two",
+		"line one\u2029line two",
+		"hidden\u2060format",
+		string([]byte{0xff}),
+	} {
+		wireError := WireError{Code: ErrorCodeInternal, Message: message}
+		if err := wireError.Validate(); err == nil {
+			t.Fatalf("message %q accepted", message)
+		}
+	}
+}
+
+// TestWireErrorAcceptsUnknownAdditiveCode verifies older clients can surface a
+// future machine-readable failure without silently reclassifying it.
+func TestWireErrorAcceptsUnknownAdditiveCode(t *testing.T) {
+	wireError := WireError{Code: "future_state", Message: "The operation needs a newer client."}
+	if err := wireError.Validate(); err != nil {
+		t.Fatalf("validate future code: %v", err)
+	}
+}

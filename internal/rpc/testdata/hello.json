@@ -1,0 +1,1 @@
+{"kind":"hello","payload":{"protocol_ranges":[{"min":{"major":1,"minor":0},"max":{"major":1,"minor":3}}],"role":"cli","client_version":"0.1.0","capabilities":["events.v1","operations.v1"]}}
