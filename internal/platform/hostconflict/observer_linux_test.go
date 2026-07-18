@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goforj/harbor/internal/platform/linuxnetlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -23,22 +24,14 @@ type linuxExchangeCall struct {
 	messageType uint16
 	flags       uint16
 	payload     []byte
-	multipart   bool
+	completion  linuxnetlink.Completion
 }
 
 // scriptedLinuxNetlink returns fixture replies in request order.
 type scriptedLinuxNetlink struct {
-	replies []linuxNetlinkReply
+	replies []linuxnetlink.Reply
 	errors  []error
 	calls   []linuxExchangeCall
-}
-
-// linuxTestDatagramResult supplies one transaction-state fixture.
-type linuxTestDatagramResult struct {
-	payload   []byte
-	address   *unix.SockaddrNetlink
-	oversized bool
-	err       error
 }
 
 // linuxTestProcFixture models a verified procfs tree with injectable operation failures.
@@ -63,13 +56,13 @@ type linuxTestObservationSession struct {
 	closeErr error
 }
 
-// exchange fails because pass-orchestration fixtures replace every native fact collector.
-func (session *linuxTestObservationSession) exchange(context.Context, uint16, uint16, []byte, bool) (linuxNetlinkReply, error) {
-	return linuxNetlinkReply{}, errors.New("unexpected pass fixture exchange")
+// Exchange fails because pass-orchestration fixtures replace every native fact collector.
+func (session *linuxTestObservationSession) Exchange(context.Context, uint16, uint16, []byte, linuxnetlink.Completion) (linuxnetlink.Reply, error) {
+	return linuxnetlink.Reply{}, errors.New("unexpected pass fixture exchange")
 }
 
-// close records that a successful or poisoned pass session cannot be reused.
-func (session *linuxTestObservationSession) close() error {
+// Close records that a successful or poisoned pass session cannot be reused.
+func (session *linuxTestObservationSession) Close() error {
 	session.closed++
 	return session.closeErr
 }
@@ -84,30 +77,17 @@ type linuxTestPassFixture struct {
 	error          error
 }
 
-// exchange records a defensive payload copy before consuming its scripted result.
-func (script *scriptedLinuxNetlink) exchange(_ context.Context, messageType uint16, flags uint16, payload []byte, multipart bool) (linuxNetlinkReply, error) {
-	script.calls = append(script.calls, linuxExchangeCall{messageType: messageType, flags: flags, payload: append([]byte(nil), payload...), multipart: multipart})
+// Exchange records a defensive payload copy before consuming its scripted result.
+func (script *scriptedLinuxNetlink) Exchange(_ context.Context, messageType uint16, flags uint16, payload []byte, completion linuxnetlink.Completion) (linuxnetlink.Reply, error) {
+	script.calls = append(script.calls, linuxExchangeCall{messageType: messageType, flags: flags, payload: append([]byte(nil), payload...), completion: completion})
 	index := len(script.calls) - 1
 	if index < len(script.errors) && script.errors[index] != nil {
-		return linuxNetlinkReply{}, script.errors[index]
+		return linuxnetlink.Reply{}, script.errors[index]
 	}
 	if index >= len(script.replies) {
-		return linuxNetlinkReply{}, errors.New("unexpected fixture exchange")
+		return linuxnetlink.Reply{}, errors.New("unexpected fixture exchange")
 	}
 	return script.replies[index], nil
-}
-
-// linuxTestDatagramSource consumes a bounded fixture queue and fails if the transaction over-reads it.
-func linuxTestDatagramSource(t *testing.T, results []linuxTestDatagramResult, calls *int) linuxNetlinkDatagramSource {
-	t.Helper()
-	return func(context.Context, int) ([]byte, *unix.SockaddrNetlink, bool, error) {
-		if *calls >= len(results) {
-			t.Fatal("receiveLinuxNetlinkWith() requested an unexpected datagram")
-		}
-		result := results[*calls]
-		*calls = *calls + 1
-		return result.payload, result.address, result.oversized, result.err
-	}
 }
 
 // linuxTestProcOperations returns deterministic syscall seams for the fixture tree.
@@ -235,12 +215,23 @@ func linuxTestPassOperations(fixture *linuxTestPassFixture) linuxPassOperations 
 			}
 			return fixture.observation.Scope, nil
 		},
-		open: func(protocol int) (linuxObservationSession, error) {
-			if fixture.failAt == "route-open" && protocol == unix.NETLINK_ROUTE || fixture.failAt == "socket-open" && protocol == unix.NETLINK_SOCK_DIAG {
+		openRoute: func() (linuxObservationSession, error) {
+			if fixture.failAt == "route-open" {
 				return nil, fixture.error
 			}
 			session := &linuxTestObservationSession{}
-			if fixture.failAt == "route-close" && protocol == unix.NETLINK_ROUTE || fixture.failAt == "socket-close" && protocol == unix.NETLINK_SOCK_DIAG {
+			if fixture.failAt == "route-close" {
+				session.closeErr = fixture.error
+			}
+			fixture.sessions = append(fixture.sessions, session)
+			return session, nil
+		},
+		openSocketDiag: func() (linuxObservationSession, error) {
+			if fixture.failAt == "socket-open" {
+				return nil, fixture.error
+			}
+			session := &linuxTestObservationSession{}
+			if fixture.failAt == "socket-close" {
 				session.closeErr = fixture.error
 			}
 			fixture.sessions = append(fixture.sessions, session)
@@ -331,16 +322,23 @@ func TestObserveStableLinuxPropagatesCancellationAndPassErrors(t *testing.T) {
 	}); !errors.Is(err, sentinel) {
 		t.Fatalf("observeStableLinux(failure) error = %v", err)
 	}
-	calls := 0
-	observation, err := observeStableLinux(context.Background(), reference.Request, 1000, func(context.Context, Request, uint32) (Observation, error) {
-		calls++
-		if calls == 1 {
-			return Observation{}, errLinuxNetlinkInterrupted
-		}
-		return reference, nil
-	})
-	if err != nil || calls != 3 || observation.Scope.Platform != PlatformLinux {
-		t.Fatalf("observeStableLinux(interrupted) = %#v, calls %d, error %v", observation, calls, err)
+	for name, retryable := range map[string]error{
+		"interrupted": linuxnetlink.ErrInterrupted,
+		"reply limit": linuxnetlink.ErrReplyLimit,
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			observation, err := observeStableLinux(context.Background(), reference.Request, 1000, func(context.Context, Request, uint32) (Observation, error) {
+				calls++
+				if calls == 1 {
+					return Observation{}, retryable
+				}
+				return reference, nil
+			})
+			if err != nil || calls != 3 || observation.Scope.Platform != PlatformLinux {
+				t.Fatalf("observeStableLinux() = %#v, calls %d, error %v", observation, calls, err)
+			}
+		})
 	}
 	if _, err := observeStableLinux(context.Background(), reference.Request, 1000, func(context.Context, Request, uint32) (Observation, error) {
 		return Observation{}, nil
@@ -348,7 +346,7 @@ func TestObserveStableLinuxPropagatesCancellationAndPassErrors(t *testing.T) {
 		t.Fatalf("observeStableLinux(invalid facts) error = %v", err)
 	}
 	if _, err := observeStableLinux(context.Background(), reference.Request, 1000, func(context.Context, Request, uint32) (Observation, error) {
-		return Observation{}, errLinuxNetlinkInterrupted
+		return Observation{}, linuxnetlink.ErrInterrupted
 	}); err == nil || !strings.Contains(err.Error(), "could not complete") {
 		t.Fatalf("observeStableLinux(interrupted exhaustion) error = %v", err)
 	}
@@ -432,508 +430,11 @@ func TestObserveLinuxRejectsInvalidAndCanceledRequests(t *testing.T) {
 	}
 }
 
-// TestLinuxNetlinkCodecsRejectAmbiguousFrames covers request identity, alignment, and signed status parsing.
-func TestLinuxNetlinkCodecsRejectAmbiguousFrames(t *testing.T) {
-	payload := []byte{1, 2, 3}
-	datagram := marshalLinuxNetlinkRequest(unix.RTM_NEWLINK, unix.NLM_F_MULTI, 7, 41, payload)
-	messages, err := parseLinuxNetlinkDatagram(datagram, 41, 7)
-	if err != nil {
-		t.Fatalf("parseLinuxNetlinkDatagram() error = %v", err)
-	}
-	if len(messages) != 1 || messages[0].messageType != unix.RTM_NEWLINK || !reflect.DeepEqual(messages[0].payload, payload) {
-		t.Fatalf("parseLinuxNetlinkDatagram() = %#v", messages)
-	}
-
-	tests := []struct {
-		name   string
-		mutate func([]byte) []byte
-	}{
-		{name: "short header", mutate: func(frame []byte) []byte { return frame[:unix.SizeofNlMsghdr-1] }},
-		{name: "short length", mutate: func(frame []byte) []byte { binary.NativeEndian.PutUint32(frame[:4], 4); return frame }},
-		{name: "long length", mutate: func(frame []byte) []byte {
-			binary.NativeEndian.PutUint32(frame[:4], uint32(len(frame)+4))
-			return frame
-		}},
-		{name: "wrong sequence", mutate: func(frame []byte) []byte { binary.NativeEndian.PutUint32(frame[8:12], 8); return frame }},
-		{name: "wrong port", mutate: func(frame []byte) []byte { binary.NativeEndian.PutUint32(frame[12:16], 42); return frame }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			frame := test.mutate(append([]byte(nil), datagram...))
-			if _, err := parseLinuxNetlinkDatagram(frame, 41, 7); err == nil {
-				t.Fatal("parseLinuxNetlinkDatagram() error = nil")
-			}
-		})
-	}
-
-	zero := make([]byte, 4)
-	if err := parseLinuxNetlinkError(zero); err != nil {
-		t.Fatalf("parseLinuxNetlinkError(ACK) error = %v", err)
-	}
-	negativePermission := -int32(unix.EPERM)
-	binary.NativeEndian.PutUint32(zero, uint32(negativePermission))
-	if err := parseLinuxNetlinkError(zero); !errors.Is(err, unix.EPERM) {
-		t.Fatalf("parseLinuxNetlinkError(EPERM) error = %v", err)
-	}
-	if err := parseLinuxNetlinkError(nil); err == nil {
-		t.Fatal("parseLinuxNetlinkError(short) error = nil")
-	}
-	binary.NativeEndian.PutUint32(zero, 1)
-	if err := parseLinuxNetlinkError(zero); err == nil {
-		t.Fatal("parseLinuxNetlinkError(positive) error = nil")
-	}
-	if err := parseLinuxNetlinkDone(nil); err != nil {
-		t.Fatalf("parseLinuxNetlinkDone(empty) error = %v", err)
-	}
-	if err := parseLinuxNetlinkDone([]byte{0}); err == nil {
-		t.Fatal("parseLinuxNetlinkDone(short) error = nil")
-	}
-	binary.NativeEndian.PutUint32(zero, 0)
-	if err := parseLinuxNetlinkDone(zero); err != nil {
-		t.Fatalf("parseLinuxNetlinkDone(zero) error = %v", err)
-	}
-	interrupted := -int32(unix.EINTR)
-	binary.NativeEndian.PutUint32(zero, uint32(interrupted))
-	if err := parseLinuxNetlinkDone(zero); !errors.Is(err, unix.EINTR) {
-		t.Fatalf("parseLinuxNetlinkDone(EINTR) error = %v", err)
-	}
-	binary.NativeEndian.PutUint32(zero, 1)
-	if err := parseLinuxNetlinkDone(zero); err == nil {
-		t.Fatal("parseLinuxNetlinkDone(positive) error = nil")
-	}
-}
-
-// TestReceiveLinuxNetlinkEnforcesTransactionCompleteness covers interruption, sender, and termination rules.
-func TestReceiveLinuxNetlinkEnforcesTransactionCompleteness(t *testing.T) {
-	const portID = 41
-	const sequence = 7
-	kernel := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
-	data := marshalLinuxNetlinkRequest(unix.RTM_NEWROUTE, 0, sequence, portID, []byte{1})
-	multipartData := marshalLinuxNetlinkRequest(unix.RTM_NEWROUTE, unix.NLM_F_MULTI, sequence, portID, []byte{1})
-	donePayload := make([]byte, 4)
-	done := marshalLinuxNetlinkRequest(unix.NLMSG_DONE, unix.NLM_F_MULTI, sequence, portID, donePayload)
-
-	t.Run("non-multipart terminates on data", func(t *testing.T) {
-		calls := 0
-		reply, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, false, 2, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: data, address: kernel}}, &calls))
-		if err != nil || calls != 1 || reply.truncated || len(reply.messages) != 1 {
-			t.Fatalf("receiveLinuxNetlinkWith() = %#v, calls %d, error %v", reply, calls, err)
-		}
-	})
-
-	t.Run("multipart requires done", func(t *testing.T) {
-		calls := 0
-		reply, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, true, 2, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: multipartData, address: kernel}, {payload: done, address: kernel}}, &calls))
-		if err != nil || calls != 2 || reply.truncated || len(reply.messages) != 1 {
-			t.Fatalf("receiveLinuxNetlinkWith() = %#v, calls %d, error %v", reply, calls, err)
-		}
-	})
-
-	t.Run("data after done is rejected", func(t *testing.T) {
-
-		calls := 0
-		datagram := append(append([]byte(nil), done...), data...)
-		_, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, true, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: datagram, address: kernel}}, &calls))
-		if err == nil {
-			t.Fatal("receiveLinuxNetlinkWith(data after DONE) error = nil")
-		}
-	})
-
-	t.Run("missing done reaches bound", func(t *testing.T) {
-		calls := 0
-		_, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, true, 2, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: multipartData, address: kernel}, {payload: multipartData, address: kernel}}, &calls))
-		if !errors.Is(err, errLinuxNetlinkReplyLimit) {
-			t.Fatalf("receiveLinuxNetlinkWith() error = %v", err)
-		}
-	})
-
-	for name, fixture := range map[string]linuxTestDatagramResult{
-		"dump interrupted": {payload: marshalLinuxNetlinkRequest(unix.RTM_NEWROUTE, unix.NLM_F_MULTI|unix.NLM_F_DUMP_INTR, sequence, portID, []byte{1}), address: kernel},
-		"overrun":          {payload: marshalLinuxNetlinkRequest(unix.NLMSG_OVERRUN, 0, sequence, portID, nil), address: kernel},
-		"ENOBUFS":          {err: unix.ENOBUFS},
-	} {
-		t.Run(name, func(t *testing.T) {
-			calls := 0
-			_, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, true, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{fixture}, &calls))
-			if !errors.Is(err, errLinuxNetlinkInterrupted) {
-				t.Fatalf("receiveLinuxNetlinkWith() error = %v", err)
-			}
-		})
-	}
-
-	for name, address := range map[string]*unix.SockaddrNetlink{
-		"missing sender":      nil,
-		"foreign sender port": {Family: unix.AF_NETLINK, Pid: 9},
-		"multicast sender":    {Family: unix.AF_NETLINK, Groups: 1},
-	} {
-		t.Run(name, func(t *testing.T) {
-			calls := 0
-			_, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, false, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: data, address: address}}, &calls))
-			if err == nil {
-				t.Fatal("receiveLinuxNetlinkWith(foreign sender) error = nil")
-			}
-		})
-	}
-
-	t.Run("oversized datagram", func(t *testing.T) {
-		calls := 0
-		_, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, true, 2, linuxTestDatagramSource(t, []linuxTestDatagramResult{{address: kernel, oversized: true}}, &calls))
-		if !errors.Is(err, errLinuxNetlinkReplyLimit) || calls != 1 {
-			t.Fatalf("receiveLinuxNetlinkWith(oversized) calls %d, error %v", calls, err)
-		}
-	})
-
-	t.Run("source failure", func(t *testing.T) {
-		sentinel := errors.New("source fixture failure")
-		calls := 0
-		_, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, true, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{{err: sentinel}}, &calls))
-		if !errors.Is(err, sentinel) {
-			t.Fatalf("receiveLinuxNetlinkWith(source failure) error = %v", err)
-		}
-	})
-
-	t.Run("noop precedes data", func(t *testing.T) {
-		calls := 0
-		noop := marshalLinuxNetlinkRequest(unix.NLMSG_NOOP, 0, sequence, portID, nil)
-		datagram := append(noop, data...)
-		reply, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, false, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: datagram, address: kernel}}, &calls))
-		if err != nil || len(reply.messages) != 1 {
-			t.Fatalf("receiveLinuxNetlinkWith(NOOP) = %#v, error %v", reply, err)
-		}
-	})
-
-	t.Run("error ACK precedes data", func(t *testing.T) {
-		calls := 0
-		ack := marshalLinuxNetlinkRequest(unix.NLMSG_ERROR, 0, sequence, portID, make([]byte, 4))
-		datagram := append(ack, data...)
-		reply, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, false, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: datagram, address: kernel}}, &calls))
-		if err != nil || len(reply.messages) != 1 {
-			t.Fatalf("receiveLinuxNetlinkWith(ACK) = %#v, error %v", reply, err)
-		}
-	})
-
-	for name, status := range map[string]int32{"error": -int32(unix.EPERM), "invalid": 1} {
-		t.Run("error reply "+name, func(t *testing.T) {
-			payload := make([]byte, 4)
-			binary.NativeEndian.PutUint32(payload, uint32(status))
-			calls := 0
-			frame := marshalLinuxNetlinkRequest(unix.NLMSG_ERROR, 0, sequence, portID, payload)
-			if _, err := receiveLinuxNetlinkWith(context.Background(), 1, portID, sequence, false, 1, linuxTestDatagramSource(t, []linuxTestDatagramResult{{payload: frame, address: kernel}}, &calls)); err == nil {
-				t.Fatal("receiveLinuxNetlinkWith(error reply) error = nil")
-			}
-		})
-	}
-}
-
-// TestReceiveLinuxNetlinkDatagramChecksPeekAndConsume covers MSG_TRUNC and source-address mechanics.
-func TestReceiveLinuxNetlinkDatagramChecksPeekAndConsume(t *testing.T) {
-	frame := []byte{1, 2, 3, 4}
-	kernel := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
-	ready := func(context.Context, int, int16) error { return nil }
-
-	t.Run("exact", func(t *testing.T) {
-		calls := 0
-		recvmsg := func(_ int, payload []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			calls++
-			if flags&unix.MSG_PEEK != 0 {
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			}
-			copy(payload, frame)
-			return len(frame), 0, 0, kernel, nil
-		}
-		payload, address, oversized, err := receiveLinuxNetlinkDatagramWith(context.Background(), 1, ready, recvmsg)
-		if err != nil || oversized || calls != 2 || address.Pid != 0 || !reflect.DeepEqual(payload, frame) {
-			t.Fatalf("receiveLinuxNetlinkDatagramWith() = %v, %#v, %t, calls %d, error %v", payload, address, oversized, calls, err)
-		}
-	})
-
-	t.Run("oversized", func(t *testing.T) {
-		recvmsg := func(_ int, _ []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if flags&unix.MSG_PEEK != 0 {
-				return linuxMaximumDatagramBytes + 1, 0, unix.MSG_TRUNC, kernel, nil
-			}
-			return linuxMaximumDatagramBytes + 1, 0, unix.MSG_TRUNC, kernel, nil
-		}
-		payload, _, oversized, err := receiveLinuxNetlinkDatagramWith(context.Background(), 1, ready, recvmsg)
-		if err != nil || !oversized || payload != nil {
-			t.Fatalf("receiveLinuxNetlinkDatagramWith(oversized) = %v, %t, %v", payload, oversized, err)
-		}
-	})
-
-	for name, receive := range map[string]linuxNetlinkRecvmsg{
-		"empty": func(_ int, _ []byte, _ []byte, _ int) (int, int, int, unix.Sockaddr, error) {
-			return 0, 0, 0, kernel, nil
-		},
-		"peek failure": func(_ int, _ []byte, _ []byte, _ int) (int, int, int, unix.Sockaddr, error) {
-			return 0, 0, 0, kernel, errors.New("peek fixture failure")
-		},
-		"unexpected truncation": func(_ int, _ []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if flags&unix.MSG_PEEK != 0 {
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			}
-			return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-		},
-		"changed length": func(_ int, _ []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if flags&unix.MSG_PEEK != 0 {
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			}
-			return len(frame) - 1, 0, 0, kernel, nil
-		},
-		"wrong address": func(_ int, _ []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if flags&unix.MSG_PEEK != 0 {
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			}
-			return len(frame), 0, 0, &unix.SockaddrInet4{}, nil
-		},
-		"receive failure": func(_ int, _ []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if flags&unix.MSG_PEEK != 0 {
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			}
-			return 0, 0, 0, kernel, errors.New("receive fixture failure")
-		},
-		"oversized not truncated": func(_ int, _ []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if flags&unix.MSG_PEEK != 0 {
-				return linuxMaximumDatagramBytes + 1, 0, unix.MSG_TRUNC, kernel, nil
-			}
-			return linuxMaximumDatagramBytes + 1, 0, 0, kernel, nil
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, _, _, err := receiveLinuxNetlinkDatagramWith(context.Background(), 1, ready, receive); err == nil {
-				t.Fatal("receiveLinuxNetlinkDatagramWith() error = nil")
-			}
-		})
-	}
-
-	sentinel := errors.New("poll fixture failure")
-	if _, _, _, err := receiveLinuxNetlinkDatagramWith(context.Background(), 1, func(context.Context, int, int16) error { return sentinel }, nil); !errors.Is(err, sentinel) {
-		t.Fatalf("receiveLinuxNetlinkDatagramWith(poll failure) error = %v", err)
-	}
-
-	t.Run("retries transient syscalls", func(t *testing.T) {
-		calls := 0
-		recvmsg := func(_ int, payload []byte, _ []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			calls++
-			switch calls {
-			case 1:
-				return 0, 0, 0, kernel, unix.EINTR
-			case 2:
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			case 3:
-				return 0, 0, 0, kernel, unix.EAGAIN
-			case 4:
-				return len(frame), 0, unix.MSG_TRUNC, kernel, nil
-			default:
-				copy(payload, frame)
-				return len(frame), 0, 0, kernel, nil
-			}
-		}
-		payload, _, _, err := receiveLinuxNetlinkDatagramWith(context.Background(), 1, ready, recvmsg)
-		if err != nil || calls != 5 || !reflect.DeepEqual(payload, frame) {
-			t.Fatalf("receiveLinuxNetlinkDatagramWith(retries) = %v, calls %d, error %v", payload, calls, err)
-		}
-	})
-}
-
-// TestOpenLinuxNetlinkWithRequiresStrictOptions covers setup cleanup and option failure.
-func TestOpenLinuxNetlinkWithRequiresStrictOptions(t *testing.T) {
-	closed := 0
-	options := make([]int, 0, 3)
-	operations := linuxNetlinkOpenOperations{
-		socket: func(int, int, int) (int, error) { return 17, nil },
-		bind:   func(int, unix.Sockaddr) error { return nil },
-		setSocketOption: func(_ int, _ int, option int, _ int) error {
-			options = append(options, option)
-			return nil
-		},
-		localAddress: func(int) (unix.Sockaddr, error) { return &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Pid: 22}, nil },
-		close: func(int) error {
-			closed++
-			return nil
-		},
-	}
-	client, err := openLinuxNetlinkWith(unix.NETLINK_ROUTE, operations)
-	if err != nil {
-		t.Fatalf("openLinuxNetlinkWith() error = %v", err)
-	}
-	if !reflect.DeepEqual(options, []int{unix.NETLINK_EXT_ACK, unix.NETLINK_CAP_ACK, unix.NETLINK_GET_STRICT_CHK}) {
-		t.Fatalf("netlink options = %v", options)
-	}
-	if err := client.close(); err != nil || closed != 1 {
-		t.Fatalf("client.close() = %v, closes %d", err, closed)
-	}
-
-	sentinel := errors.New("option fixture failure")
-	closed = 0
-	operations.setSocketOption = func(_ int, _ int, option int, _ int) error {
-		if option == unix.NETLINK_CAP_ACK {
-			return sentinel
-		}
-		return nil
-	}
-	if _, err := openLinuxNetlinkWith(unix.NETLINK_ROUTE, operations); !errors.Is(err, sentinel) {
-		t.Fatalf("openLinuxNetlinkWith(option failure) error = %v", err)
-	}
-	if closed != 1 {
-		t.Fatalf("openLinuxNetlinkWith(option failure) closes = %d, want 1", closed)
-	}
-}
-
-// TestOpenLinuxNetlinkWithRejectsEverySetupFailure proves partial descriptors never escape cleanup.
-func TestOpenLinuxNetlinkWithRejectsEverySetupFailure(t *testing.T) {
-	sentinel := errors.New("setup fixture failure")
-	tests := []struct {
-		name   string
-		mutate func(*linuxNetlinkOpenOperations)
-	}{
-		{name: "socket", mutate: func(operations *linuxNetlinkOpenOperations) {
-			operations.socket = func(int, int, int) (int, error) { return -1, sentinel }
-		}},
-		{name: "bind", mutate: func(operations *linuxNetlinkOpenOperations) {
-			operations.bind = func(int, unix.Sockaddr) error { return sentinel }
-		}},
-		{name: "local address", mutate: func(operations *linuxNetlinkOpenOperations) {
-			operations.localAddress = func(int) (unix.Sockaddr, error) { return nil, sentinel }
-		}},
-		{name: "wrong family", mutate: func(operations *linuxNetlinkOpenOperations) {
-			operations.localAddress = func(int) (unix.Sockaddr, error) { return &unix.SockaddrInet4{}, nil }
-		}},
-		{name: "zero port", mutate: func(operations *linuxNetlinkOpenOperations) {
-			operations.localAddress = func(int) (unix.Sockaddr, error) { return &unix.SockaddrNetlink{}, nil }
-		}},
-		{name: "multicast local", mutate: func(operations *linuxNetlinkOpenOperations) {
-			operations.localAddress = func(int) (unix.Sockaddr, error) { return &unix.SockaddrNetlink{Pid: 1, Groups: 1}, nil }
-		}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			closed := 0
-			operations := linuxNetlinkOpenOperations{
-				socket:          func(int, int, int) (int, error) { return 17, nil },
-				bind:            func(int, unix.Sockaddr) error { return nil },
-				setSocketOption: func(int, int, int, int) error { return nil },
-				localAddress:    func(int) (unix.Sockaddr, error) { return &unix.SockaddrNetlink{Pid: 22}, nil },
-				close:           func(int) error { closed++; return nil },
-			}
-			test.mutate(&operations)
-			_, err := openLinuxNetlinkWith(unix.NETLINK_ROUTE, operations)
-			if err == nil {
-				t.Fatal("openLinuxNetlinkWith() error = nil")
-			}
-			wantClosed := 1
-			if test.name == "socket" {
-				wantClosed = 0
-			}
-			if closed != wantClosed {
-				t.Fatalf("openLinuxNetlinkWith() closes = %d, want %d", closed, wantClosed)
-			}
-		})
-	}
-	closeSentinel := errors.New("close fixture failure")
-	client := &linuxNetlinkClient{fileDescriptor: 17, closeFile: func(int) error { return closeSentinel }}
-	if err := client.close(); !errors.Is(err, closeSentinel) {
-		t.Fatalf("client.close() error = %v", err)
-	}
-}
-
-// TestSendLinuxNetlinkWithRetriesOnlyExpectedConditions covers EINTR, backpressure, and fatal errors.
-func TestSendLinuxNetlinkWithRetriesOnlyExpectedConditions(t *testing.T) {
-	sentinel := errors.New("send fixture failure")
-	calls := 0
-	err := sendLinuxNetlinkWith(context.Background(), 1, []byte{1}, func(int, []byte, int, unix.Sockaddr) error {
-		calls++
-		if calls == 1 {
-			return unix.EINTR
-		}
-		if calls == 2 {
-			return unix.EAGAIN
-		}
-		return nil
-	}, func(context.Context, int, int16) error { return nil })
-	if err != nil || calls != 3 {
-		t.Fatalf("sendLinuxNetlinkWith(retries) calls = %d, error %v", calls, err)
-	}
-	if err := sendLinuxNetlinkWith(context.Background(), 1, nil, func(int, []byte, int, unix.Sockaddr) error { return sentinel }, func(context.Context, int, int16) error { return nil }); !errors.Is(err, sentinel) {
-		t.Fatalf("sendLinuxNetlinkWith(fatal) error = %v", err)
-	}
-	if err := sendLinuxNetlinkWith(context.Background(), 1, nil, func(int, []byte, int, unix.Sockaddr) error { return unix.EWOULDBLOCK }, func(context.Context, int, int16) error { return sentinel }); !errors.Is(err, sentinel) {
-		t.Fatalf("sendLinuxNetlinkWith(poll failure) error = %v", err)
-	}
-}
-
-// TestPollLinuxNetlinkWithCoversDeadlineAndReadiness validates cancellation without wall-clock sleeps.
-func TestPollLinuxNetlinkWithCoversDeadlineAndReadiness(t *testing.T) {
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := pollLinuxNetlinkWith(canceled, 1, unix.POLLIN, time.Now, func([]unix.PollFd, int) (int, error) { return 0, nil }); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pollLinuxNetlinkWith(canceled) error = %v", err)
-	}
-	deadline := time.Unix(100, 0)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	if err := pollLinuxNetlinkWith(ctx, 1, unix.POLLIN, func() time.Time { return deadline }, func([]unix.PollFd, int) (int, error) { return 0, nil }); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("pollLinuxNetlinkWith(deadline) error = %v", err)
-	}
-
-	sentinel := errors.New("poll fixture failure")
-	if err := pollLinuxNetlinkWith(context.Background(), 1, unix.POLLIN, time.Now, func([]unix.PollFd, int) (int, error) { return 0, sentinel }); !errors.Is(err, sentinel) {
-		t.Fatalf("pollLinuxNetlinkWith(failure) error = %v", err)
-	}
-	calls := 0
-	err := pollLinuxNetlinkWith(context.Background(), 1, unix.POLLIN, time.Now, func(descriptors []unix.PollFd, _ int) (int, error) {
-		calls++
-		if calls == 1 {
-			return 0, unix.EINTR
-		}
-		if calls == 2 {
-			return 0, nil
-		}
-		descriptors[0].Revents = unix.POLLIN
-		return 1, nil
-	})
-	if err != nil || calls != 3 {
-		t.Fatalf("pollLinuxNetlinkWith(retries) calls = %d, error %v", calls, err)
-	}
-	if err := pollLinuxNetlinkWith(context.Background(), 1, unix.POLLIN, time.Now, func(descriptors []unix.PollFd, _ int) (int, error) {
-		descriptors[0].Revents = unix.POLLNVAL
-		return 1, nil
-	}); err == nil {
-		t.Fatal("pollLinuxNetlinkWith(POLLNVAL) error = nil")
-	}
-}
-
-// TestLinuxAttributeCodecPreservesDuplicates proves padding and repeated authority fields remain visible.
-func TestLinuxAttributeCodecPreservesDuplicates(t *testing.T) {
-	payload := marshalLinuxNetlinkAttribute(nil, unix.RTA_UID, []byte{1, 2, 3, 4})
-	payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_UID, []byte{5, 6, 7, 8})
-	attributes, err := parseLinuxNetlinkAttributes(payload)
-	if err != nil {
-		t.Fatalf("parseLinuxNetlinkAttributes() error = %v", err)
-	}
-	if len(attributes[unix.RTA_UID]) != 2 {
-		t.Fatalf("RTA_UID values = %d, want 2", len(attributes[unix.RTA_UID]))
-	}
-	if _, _, err := oneLinuxAttribute(attributes, unix.RTA_UID); err == nil {
-		t.Fatal("oneLinuxAttribute(duplicate) error = nil")
-	}
-	if _, err := parseLinuxNetlinkAttributes([]byte{3, 0, 1, 0}); err == nil {
-		t.Fatal("parseLinuxNetlinkAttributes(short length) error = nil")
-	}
-	flagged := marshalLinuxNetlinkAttribute(nil, unix.RTA_UID|0x4000, []byte{1, 2, 3, 4})
-	flaggedAttributes, err := parseLinuxNetlinkAttributes(flagged)
-	if err != nil {
-		t.Fatalf("parseLinuxNetlinkAttributes(flagged) error = %v", err)
-	}
-	if _, _, err := oneLinuxAttribute(flaggedAttributes, unix.RTA_UID); err == nil {
-		t.Fatal("oneLinuxAttribute(flagged) error = nil")
-	}
-}
-
 // TestObserveLinuxInterfacesSelectsKernelLoopback exercises raw link parsing and strict loopback cardinality.
 func TestObserveLinuxInterfacesSelectsKernelLoopback(t *testing.T) {
-	script := &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: []linuxNetlinkMessage{
-		{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(1, "loop", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)},
-		{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(2, "eth0", unix.IFF_UP|unix.IFF_RUNNING, unix.ARPHRD_ETHER)},
+	script := &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: []linuxnetlink.Message{
+		{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(1, "loop", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)},
+		{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(2, "eth0", unix.IFF_UP|unix.IFF_RUNNING, unix.ARPHRD_ETHER)},
 	}}}}
 	snapshot, err := observeLinuxInterfaces(context.Background(), script)
 	if err != nil {
@@ -942,56 +443,47 @@ func TestObserveLinuxInterfacesSelectsKernelLoopback(t *testing.T) {
 	if snapshot.loopback.Interface != (InterfaceIdentity{Name: "loop", Index: 1}) || len(snapshot.ordered) != 2 {
 		t.Fatalf("observeLinuxInterfaces() = %#v", snapshot)
 	}
-	if len(script.calls) != 1 || script.calls[0].messageType != unix.RTM_GETLINK || !script.calls[0].multipart || len(script.calls[0].payload) != unix.SizeofIfInfomsg {
+	if len(script.calls) != 1 || script.calls[0].messageType != unix.RTM_GETLINK || script.calls[0].completion != linuxnetlink.CompletionDump || len(script.calls[0].payload) != unix.SizeofIfInfomsg {
 		t.Fatalf("observeLinuxInterfaces() calls = %#v", script.calls)
 	}
 
-	missing := &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(2, "eth0", unix.IFF_UP, unix.ARPHRD_ETHER)}}}}}
+	missing := &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(2, "eth0", unix.IFF_UP, unix.ARPHRD_ETHER)}}}}}
 	if _, err := observeLinuxInterfaces(context.Background(), missing); err == nil {
 		t.Fatal("observeLinuxInterfaces(no loopback) error = nil")
 	}
 }
 
-// TestObserveLinuxInterfacesRejectsAmbiguousDumps covers repeated identities, malformed facts, and kernel interruption.
+// TestObserveLinuxInterfacesRejectsAmbiguousDumps covers repeated identities and malformed facts.
 func TestObserveLinuxInterfacesRejectsAmbiguousDumps(t *testing.T) {
 	loopback := linuxTestLinkPayload(1, "lo", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)
 	tests := []struct {
 		name     string
-		reply    linuxNetlinkReply
+		reply    linuxnetlink.Reply
 		wantFail bool
-		check    func(*testing.T, linuxInterfaceSnapshot)
 	}{
-		{name: "unexpected type", reply: linuxNetlinkReply{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: loopback}}}, wantFail: true},
-		{name: "duplicate index", reply: linuxNetlinkReply{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: loopback}, {messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(1, "other", unix.IFF_UP, unix.ARPHRD_ETHER)}}}, wantFail: true},
-		{name: "duplicate name", reply: linuxNetlinkReply{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: loopback}, {messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(2, "lo", unix.IFF_UP, unix.ARPHRD_ETHER)}}}, wantFail: true},
-		{name: "multiple native", reply: linuxNetlinkReply{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: loopback}, {messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(2, "lo2", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)}}}, wantFail: true},
-		{name: "truncated", reply: linuxNetlinkReply{truncated: true, messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: loopback}}}, check: func(t *testing.T, snapshot linuxInterfaceSnapshot) {
-			if snapshot.complete || !snapshot.truncated {
-				t.Fatalf("truncated snapshot = %#v", snapshot)
-			}
-		}},
+		{name: "unexpected type", reply: linuxnetlink.Reply{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: loopback}}}, wantFail: true},
+		{name: "duplicate index", reply: linuxnetlink.Reply{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWLINK, Payload: loopback}, {Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(1, "other", unix.IFF_UP, unix.ARPHRD_ETHER)}}}, wantFail: true},
+		{name: "duplicate name", reply: linuxnetlink.Reply{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWLINK, Payload: loopback}, {Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(2, "lo", unix.IFF_UP, unix.ARPHRD_ETHER)}}}, wantFail: true},
+		{name: "multiple native", reply: linuxnetlink.Reply{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWLINK, Payload: loopback}, {Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(2, "lo2", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)}}}, wantFail: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			snapshot, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{test.reply}})
+			_, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{test.reply}})
 			if test.wantFail && err == nil {
 				t.Fatal("observeLinuxInterfaces() error = nil")
 			}
 			if !test.wantFail && err != nil {
 				t.Fatalf("observeLinuxInterfaces() error = %v", err)
 			}
-			if test.check != nil {
-				test.check(t, snapshot)
-			}
 		})
 	}
-	messages := make([]linuxNetlinkMessage, 0, maximumPolicyInterfaces+2)
-	messages = append(messages, linuxNetlinkMessage{messageType: unix.RTM_NEWLINK, payload: loopback})
+	messages := make([]linuxnetlink.Message, 0, maximumPolicyInterfaces+2)
+	messages = append(messages, linuxnetlink.Message{Type: unix.RTM_NEWLINK, Payload: loopback})
 	for index := 2; index <= maximumPolicyInterfaces+1; index++ {
-		messages = append(messages, linuxNetlinkMessage{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(uint32(index), "e"+strconv.Itoa(index), unix.IFF_UP, unix.ARPHRD_ETHER)})
+		messages = append(messages, linuxnetlink.Message{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(uint32(index), "e"+strconv.Itoa(index), unix.IFF_UP, unix.ARPHRD_ETHER)})
 	}
-	messages = append(messages, linuxNetlinkMessage{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(maximumPolicyInterfaces+1, "duplicate", unix.IFF_UP, unix.ARPHRD_ETHER)})
-	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: messages}}}); err == nil {
+	messages = append(messages, linuxnetlink.Message{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(maximumPolicyInterfaces+1, "duplicate", unix.IFF_UP, unix.ARPHRD_ETHER)})
+	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: messages}}}); err == nil {
 		t.Fatal("observeLinuxInterfaces(duplicate beyond bound) error = nil")
 	}
 }
@@ -1003,9 +495,9 @@ func TestParseLinuxInterfaceRejectsMalformedNames(t *testing.T) {
 		"short":          valid[:unix.SizeofIfInfomsg-1],
 		"zero index":     linuxTestLinkPayload(0, "lo", unix.IFF_UP, unix.ARPHRD_LOOPBACK),
 		"missing name":   make([]byte, unix.SizeofIfInfomsg),
-		"unterminated":   marshalLinuxNetlinkAttribute(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, []byte("lo")),
-		"embedded null":  marshalLinuxNetlinkAttribute(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, []byte{'l', 0, 'o', 0}),
-		"duplicate name": marshalLinuxNetlinkAttribute(valid, unix.IFLA_IFNAME, []byte("other\x00")),
+		"unterminated":   linuxTestMarshalAttribute(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, []byte("lo")),
+		"embedded null":  linuxTestMarshalAttribute(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, []byte{'l', 0, 'o', 0}),
+		"duplicate name": linuxTestMarshalAttribute(valid, unix.IFLA_IFNAME, []byte("other\x00")),
 		"long name":      linuxTestLinkPayload(1, "abcdefghijklmnop", unix.IFF_UP, unix.ARPHRD_LOOPBACK),
 		"control name":   linuxTestLinkPayload(1, "bad\n", unix.IFF_UP, unix.ARPHRD_LOOPBACK),
 	}
@@ -1024,43 +516,49 @@ func TestObserveLinuxInterfacesCoversExchangeAndRetentionFailures(t *testing.T) 
 	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{errors: []error{sentinel}}); !errors.Is(err, sentinel) {
 		t.Fatalf("observeLinuxInterfaces(exchange failure) error = %v", err)
 	}
-	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: []byte{1}}}}}}); err == nil {
+	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWLINK, Payload: []byte{1}}}}}}); err == nil {
 		t.Fatal("observeLinuxInterfaces(parse failure) error = nil")
 	}
-	messages := make([]linuxNetlinkMessage, 0, maximumPolicyInterfaces+1)
+	messages := make([]linuxnetlink.Message, 0, maximumPolicyInterfaces+1)
 	for index := 1; index <= maximumPolicyInterfaces; index++ {
-		messages = append(messages, linuxNetlinkMessage{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(uint32(index), "e"+strconv.Itoa(index), unix.IFF_UP, unix.ARPHRD_ETHER)})
+		messages = append(messages, linuxnetlink.Message{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(uint32(index), "e"+strconv.Itoa(index), unix.IFF_UP, unix.ARPHRD_ETHER)})
 	}
-	messages = append(messages, linuxNetlinkMessage{messageType: unix.RTM_NEWLINK, payload: linuxTestLinkPayload(maximumPolicyInterfaces+1, "lo", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)})
-	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: messages}}}); err == nil || !strings.Contains(err.Error(), "outside") {
+	messages = append(messages, linuxnetlink.Message{Type: unix.RTM_NEWLINK, Payload: linuxTestLinkPayload(maximumPolicyInterfaces+1, "lo", unix.IFF_UP|unix.IFF_RUNNING|unix.IFF_LOOPBACK, unix.ARPHRD_LOOPBACK)})
+	if _, err := observeLinuxInterfaces(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: messages}}}); err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("observeLinuxInterfaces(loopback outside bound) error = %v", err)
 	}
 }
 
 // TestLinuxRouteLookupBindsUIDProtocolAndPort verifies policy-routing selectors use native and network byte order correctly.
 func TestLinuxRouteLookupBindsUIDProtocolAndPort(t *testing.T) {
-	payload := marshalLinuxRouteLookup(testCandidate, 501, SocketRequirement{Transport: TransportUDP4, Port: 5353})
+	payload, err := marshalLinuxRouteLookup(testCandidate, 501, SocketRequirement{Transport: TransportUDP4, Port: 5353})
+	if err != nil {
+		t.Fatalf("marshalLinuxRouteLookup() error = %v", err)
+	}
 	if binary.NativeEndian.Uint32(payload[8:12]) != unix.RTM_F_LOOKUP_TABLE|unix.RTM_F_FIB_MATCH {
 		t.Fatalf("route flags = %#x", binary.NativeEndian.Uint32(payload[8:12]))
 	}
-	attributes, err := parseLinuxNetlinkAttributes(payload[unix.SizeofRtMsg:])
+	attributes, err := linuxnetlink.ParseAttributes(payload[unix.SizeofRtMsg:])
 	if err != nil {
-		t.Fatalf("parseLinuxNetlinkAttributes() error = %v", err)
+		t.Fatalf("linuxnetlink.ParseAttributes() error = %v", err)
 	}
-	if got := binary.NativeEndian.Uint32(attributes[unix.RTA_UID][0].payload); got != 501 {
+	if got := binary.NativeEndian.Uint32(attributes[unix.RTA_UID][0].Payload); got != 501 {
 		t.Fatalf("RTA_UID = %d, want 501", got)
 	}
-	if got := attributes[unix.RTA_IP_PROTO][0].payload; !reflect.DeepEqual(got, []byte{unix.IPPROTO_UDP}) {
+	if got := attributes[unix.RTA_IP_PROTO][0].Payload; !reflect.DeepEqual(got, []byte{unix.IPPROTO_UDP}) {
 		t.Fatalf("RTA_IP_PROTO = %v", got)
 	}
-	if got := binary.BigEndian.Uint16(attributes[unix.RTA_DPORT][0].payload); got != 5353 {
+	if got := binary.BigEndian.Uint16(attributes[unix.RTA_DPORT][0].Payload); got != 5353 {
 		t.Fatalf("RTA_DPORT = %d, want 5353", got)
 	}
 
-	generic := marshalLinuxRouteLookup(testCandidate, 501, SocketRequirement{})
-	genericAttributes, err := parseLinuxNetlinkAttributes(generic[unix.SizeofRtMsg:])
+	generic, err := marshalLinuxRouteLookup(testCandidate, 501, SocketRequirement{})
 	if err != nil {
-		t.Fatalf("parseLinuxNetlinkAttributes(generic) error = %v", err)
+		t.Fatalf("marshalLinuxRouteLookup(generic) error = %v", err)
+	}
+	genericAttributes, err := linuxnetlink.ParseAttributes(generic[unix.SizeofRtMsg:])
+	if err != nil {
+		t.Fatalf("linuxnetlink.ParseAttributes(generic) error = %v", err)
 	}
 	if len(genericAttributes[unix.RTA_IP_PROTO]) != 0 || len(genericAttributes[unix.RTA_DPORT]) != 0 {
 		t.Fatalf("generic route selectors = %#v", genericAttributes)
@@ -1117,14 +615,14 @@ func TestParseLinuxRouteRejectsMalformedAuthorityFields(t *testing.T) {
 	missingDestination[7] = unix.RTN_LOCAL
 	noncanonical := marshalLinuxRouteMessage(unix.AF_INET, 8, 0)
 	noncanonical[7] = unix.RTN_LOCAL
-	noncanonical = marshalLinuxNetlinkAttribute(noncanonical, unix.RTA_DST, []byte{127, 1, 0, 0})
+	noncanonical = linuxTestMarshalAttribute(noncanonical, unix.RTA_DST, []byte{127, 1, 0, 0})
 	oif := make([]byte, 4)
 	binary.NativeEndian.PutUint32(oif, 1)
-	noncanonical = marshalLinuxNetlinkAttribute(noncanonical, unix.RTA_OIF, oif)
-	duplicateDestination := marshalLinuxNetlinkAttribute(append([]byte(nil), valid...), unix.RTA_DST, []byte{127, 0, 0, 0})
-	duplicateInterface := marshalLinuxNetlinkAttribute(append([]byte(nil), valid...), unix.RTA_OIF, oif)
-	duplicateGateway := marshalLinuxNetlinkAttribute(append([]byte(nil), valid...), unix.RTA_GATEWAY, []byte{192, 0, 2, 1})
-	duplicateGateway = marshalLinuxNetlinkAttribute(duplicateGateway, unix.RTA_GATEWAY, []byte{192, 0, 2, 2})
+	noncanonical = linuxTestMarshalAttribute(noncanonical, unix.RTA_OIF, oif)
+	duplicateDestination := linuxTestMarshalAttribute(append([]byte(nil), valid...), unix.RTA_DST, []byte{127, 0, 0, 0})
+	duplicateInterface := linuxTestMarshalAttribute(append([]byte(nil), valid...), unix.RTA_OIF, oif)
+	duplicateGateway := linuxTestMarshalAttribute(append([]byte(nil), valid...), unix.RTA_GATEWAY, []byte{192, 0, 2, 1})
+	duplicateGateway = linuxTestMarshalAttribute(duplicateGateway, unix.RTA_GATEWAY, []byte{192, 0, 2, 2})
 	for name, payload := range map[string][]byte{
 		"short":                 valid[:unix.SizeofRtMsg-1],
 		"wrong family":          wrongFamily,
@@ -1193,10 +691,10 @@ func TestObserveLinuxRoutesRequiresEveryFlowToSelectTheDumpedRoute(t *testing.T)
 	interfaces := linuxTestInterfaces()
 	baseline := linuxTestRoutePayload(netip.MustParsePrefix("127.0.0.0/8"), unix.RTN_LOCAL, 1, netip.Addr{}, nil)
 	defaultRoute := linuxTestRoutePayload(netip.MustParsePrefix("0.0.0.0/0"), unix.RTN_UNICAST, 2, netip.MustParseAddr("192.0.2.1"), nil)
-	script := &scriptedLinuxNetlink{replies: []linuxNetlinkReply{
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}, {messageType: unix.RTM_NEWROUTE, payload: defaultRoute}}},
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}}},
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}}},
+	script := &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}, {Type: unix.RTM_NEWROUTE, Payload: defaultRoute}}},
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}}},
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}}},
 	}}
 	snapshot, err := observeLinuxRoutes(context.Background(), script, request, 1000, interfaces)
 	if err != nil {
@@ -1208,12 +706,15 @@ func TestObserveLinuxRoutesRequiresEveryFlowToSelectTheDumpedRoute(t *testing.T)
 	if len(script.calls) != 3 {
 		t.Fatalf("route calls = %d, want 3", len(script.calls))
 	}
+	if script.calls[0].completion != linuxnetlink.CompletionDump || script.calls[1].completion != linuxnetlink.CompletionData || script.calls[2].completion != linuxnetlink.CompletionData {
+		t.Fatalf("route completions = %#v", script.calls)
+	}
 
 	different := linuxTestRoutePayload(netip.MustParsePrefix("0.0.0.0/0"), unix.RTN_UNICAST, 2, netip.MustParseAddr("192.0.2.1"), nil)
-	script = &scriptedLinuxNetlink{replies: []linuxNetlinkReply{
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}, {messageType: unix.RTM_NEWROUTE, payload: defaultRoute}}},
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}}},
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: different}}},
+	script = &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}, {Type: unix.RTM_NEWROUTE, Payload: defaultRoute}}},
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}}},
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: different}}},
 	}}
 	snapshot, err = observeLinuxRoutes(context.Background(), script, request, 1000, interfaces)
 	if err != nil {
@@ -1224,7 +725,7 @@ func TestObserveLinuxRoutesRequiresEveryFlowToSelectTheDumpedRoute(t *testing.T)
 	}
 }
 
-// TestObserveLinuxRoutesPreservesIncompleteAndTruncatedEvidence covers dump and selection failure shapes.
+// TestObserveLinuxRoutesPreservesIncompleteAndTruncatedEvidence covers unrepresentable facts and retention bounds.
 func TestObserveLinuxRoutesPreservesIncompleteAndTruncatedEvidence(t *testing.T) {
 	request, err := NewPreAssignmentRequest(testCandidate, nil)
 	if err != nil {
@@ -1236,12 +737,12 @@ func TestObserveLinuxRoutesPreservesIncompleteAndTruncatedEvidence(t *testing.T)
 	if _, err := observeLinuxRoutes(context.Background(), &scriptedLinuxNetlink{errors: []error{sentinel}}, request, 1000, interfaces); !errors.Is(err, sentinel) {
 		t.Fatalf("observeLinuxRoutes(exchange failure) error = %v", err)
 	}
-	for name, payload := range map[string]linuxNetlinkMessage{
-		"unexpected type": {messageType: unix.RTM_NEWLINK, payload: baseline},
-		"parse failure":   {messageType: unix.RTM_NEWROUTE, payload: []byte{1}},
+	for name, payload := range map[string]linuxnetlink.Message{
+		"unexpected type": {Type: unix.RTM_NEWLINK, Payload: baseline},
+		"parse failure":   {Type: unix.RTM_NEWROUTE, Payload: []byte{1}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := observeLinuxRoutes(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: []linuxNetlinkMessage{payload}}}}, request, 1000, interfaces)
+			_, err := observeLinuxRoutes(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: []linuxnetlink.Message{payload}}}}, request, 1000, interfaces)
 			if err == nil {
 				t.Fatal("observeLinuxRoutes() error = nil")
 			}
@@ -1249,33 +750,24 @@ func TestObserveLinuxRoutesPreservesIncompleteAndTruncatedEvidence(t *testing.T)
 	}
 	nonmatching := linuxTestRoutePayload(netip.MustParsePrefix("192.0.2.0/24"), unix.RTN_UNICAST, 2, netip.Addr{}, nil)
 	unrepresentable := linuxTestRoutePayload(linuxOrdinaryLoopbackPrefix, unix.RTN_BLACKHOLE, 1, netip.Addr{}, nil)
-	script := &scriptedLinuxNetlink{replies: []linuxNetlinkReply{
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: nonmatching}, {messageType: unix.RTM_NEWROUTE, payload: unrepresentable}, {messageType: unix.RTM_NEWROUTE, payload: baseline}}},
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}}},
+	script := &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: nonmatching}, {Type: unix.RTM_NEWROUTE, Payload: unrepresentable}, {Type: unix.RTM_NEWROUTE, Payload: baseline}}},
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}}},
 	}}
 	snapshot, err := observeLinuxRoutes(context.Background(), script, request, 1000, interfaces)
 	if err != nil || snapshot.Complete || snapshot.Selected == nil || snapshot.Truncated {
 		t.Fatalf("observeLinuxRoutes(unrepresentable) = %#v, error %v", snapshot, err)
 	}
 
-	script = &scriptedLinuxNetlink{replies: []linuxNetlinkReply{
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}}},
-		{truncated: true},
-	}}
-	snapshot, err = observeLinuxRoutes(context.Background(), script, request, 1000, interfaces)
-	if err != nil || snapshot.Complete || !snapshot.Truncated || snapshot.Selected != nil {
-		t.Fatalf("observeLinuxRoutes(truncated selection) = %#v, error %v", snapshot, err)
-	}
-
-	many := make([]linuxNetlinkMessage, 0, maximumRouteFacts+1)
+	many := make([]linuxnetlink.Message, 0, maximumRouteFacts+1)
 	defaultRoute := linuxTestRoutePayload(netip.MustParsePrefix("0.0.0.0/0"), unix.RTN_UNICAST, 2, netip.MustParseAddr("192.0.2.1"), nil)
 	for index := 0; index < maximumRouteFacts; index++ {
-		many = append(many, linuxNetlinkMessage{messageType: unix.RTM_NEWROUTE, payload: defaultRoute})
+		many = append(many, linuxnetlink.Message{Type: unix.RTM_NEWROUTE, Payload: defaultRoute})
 	}
-	many = append(many, linuxNetlinkMessage{messageType: unix.RTM_NEWROUTE, payload: baseline})
-	script = &scriptedLinuxNetlink{replies: []linuxNetlinkReply{
-		{messages: many},
-		{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: baseline}}},
+	many = append(many, linuxnetlink.Message{Type: unix.RTM_NEWROUTE, Payload: baseline})
+	script = &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{
+		{Messages: many},
+		{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: baseline}}},
 	}}
 	snapshot, err = observeLinuxRoutes(context.Background(), script, request, 1000, interfaces)
 	if err != nil || snapshot.Complete || !snapshot.Truncated || len(snapshot.Matching) != maximumRouteFacts {
@@ -1292,27 +784,23 @@ func TestObserveLinuxSelectedRoutesCoversIncompleteReplies(t *testing.T) {
 	interfaces := linuxTestInterfaces()
 	baseline := linuxTestRoutePayload(linuxOrdinaryLoopbackPrefix, unix.RTN_LOCAL, 1, netip.Addr{}, nil)
 	sentinel := errors.New("selection fixture failure")
-	if _, _, _, err := observeLinuxSelectedRoutes(context.Background(), &scriptedLinuxNetlink{errors: []error{sentinel}}, request, 1000, interfaces); !errors.Is(err, sentinel) {
+	if _, _, err := observeLinuxSelectedRoutes(context.Background(), &scriptedLinuxNetlink{errors: []error{sentinel}}, request, 1000, interfaces); !errors.Is(err, sentinel) {
 		t.Fatalf("observeLinuxSelectedRoutes(exchange failure) error = %v", err)
 	}
-	for name, reply := range map[string]linuxNetlinkReply{
-		"truncated":       {truncated: true},
+	for name, reply := range map[string]linuxnetlink.Reply{
 		"missing message": {},
-		"wrong type":      {messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWLINK, payload: baseline}}},
-		"nonmatching":     {messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: linuxTestRoutePayload(netip.MustParsePrefix("192.0.2.0/24"), unix.RTN_UNICAST, 2, netip.Addr{}, nil)}}},
-		"unrepresentable": {messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: linuxTestRoutePayload(linuxOrdinaryLoopbackPrefix, unix.RTN_BLACKHOLE, 1, netip.Addr{}, nil)}}},
+		"wrong type":      {Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWLINK, Payload: baseline}}},
+		"nonmatching":     {Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: linuxTestRoutePayload(netip.MustParsePrefix("192.0.2.0/24"), unix.RTN_UNICAST, 2, netip.Addr{}, nil)}}},
+		"unrepresentable": {Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: linuxTestRoutePayload(linuxOrdinaryLoopbackPrefix, unix.RTN_BLACKHOLE, 1, netip.Addr{}, nil)}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			selected, complete, truncated, err := observeLinuxSelectedRoutes(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{reply}}, request, 1000, interfaces)
+			selected, complete, err := observeLinuxSelectedRoutes(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{reply}}, request, 1000, interfaces)
 			if err != nil || selected != nil || complete {
-				t.Fatalf("observeLinuxSelectedRoutes() = %#v, complete %t truncated %t error %v", selected, complete, truncated, err)
-			}
-			if name == "truncated" && !truncated {
-				t.Fatal("observeLinuxSelectedRoutes(truncated) truncated = false")
+				t.Fatalf("observeLinuxSelectedRoutes() = %#v, complete %t error %v", selected, complete, err)
 			}
 		})
 	}
-	if _, _, _, err := observeLinuxSelectedRoutes(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: []linuxNetlinkMessage{{messageType: unix.RTM_NEWROUTE, payload: []byte{1}}}}}}, request, 1000, interfaces); err == nil {
+	if _, _, err := observeLinuxSelectedRoutes(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: []linuxnetlink.Message{{Type: unix.RTM_NEWROUTE, Payload: []byte{1}}}}}}, request, 1000, interfaces); err == nil {
 		t.Fatal("observeLinuxSelectedRoutes(parse failure) error = nil")
 	}
 }
@@ -1362,7 +850,7 @@ func TestLinuxInetDiagCodecRejectsMalformedAndMappedMessages(t *testing.T) {
 	badPadding[12] = 1
 	badAttribute := linuxTestInetDiagPayload(unix.AF_INET6, linuxTCPListenState, 443, netip.IPv6Unspecified(), map[uint16][]byte{linuxInetDiagSKV6Only: {1, 0}})
 	duplicateAttribute := linuxTestInetDiagPayload(unix.AF_INET6, linuxTCPListenState, 443, netip.IPv6Unspecified(), map[uint16][]byte{linuxInetDiagSKV6Only: {1}})
-	duplicateAttribute = marshalLinuxNetlinkAttribute(duplicateAttribute, linuxInetDiagSKV6Only, []byte{1})
+	duplicateAttribute = linuxTestMarshalAttribute(duplicateAttribute, linuxInetDiagSKV6Only, []byte{1})
 	for name, fixture := range map[string]struct {
 		payload  []byte
 		family   uint8
@@ -1396,7 +884,7 @@ func TestLinuxInetDiagCodecRejectsMalformedAndMappedMessages(t *testing.T) {
 	}
 }
 
-// TestObserveLinuxSocketsQueriesEachFamilyAndProtocol covers bounded aggregation and truncated dumps.
+// TestObserveLinuxSocketsQueriesEachFamilyAndProtocol covers bounded aggregation across complete dumps.
 func TestObserveLinuxSocketsQueriesEachFamilyAndProtocol(t *testing.T) {
 	request, err := NewPreAssignmentRequest(testCandidate, []SocketRequirement{
 		{Transport: TransportTCP4, Port: 443},
@@ -1405,21 +893,26 @@ func TestObserveLinuxSocketsQueriesEachFamilyAndProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPreAssignmentRequest() error = %v", err)
 	}
-	script := &scriptedLinuxNetlink{replies: []linuxNetlinkReply{
-		{messages: []linuxNetlinkMessage{{messageType: unix.SOCK_DIAG_BY_FAMILY, payload: linuxTestInetDiagPayload(unix.AF_INET, linuxTCPListenState, 443, netip.IPv4Unspecified(), nil)}}},
+	script := &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{
+		{Messages: []linuxnetlink.Message{{Type: unix.SOCK_DIAG_BY_FAMILY, Payload: linuxTestInetDiagPayload(unix.AF_INET, linuxTCPListenState, 443, netip.IPv4Unspecified(), nil)}}},
 		{},
-		{messages: []linuxNetlinkMessage{{messageType: unix.SOCK_DIAG_BY_FAMILY, payload: linuxTestInetDiagPayload(unix.AF_INET, 7, 53, testCandidate, nil)}}},
-		{truncated: true},
+		{Messages: []linuxnetlink.Message{{Type: unix.SOCK_DIAG_BY_FAMILY, Payload: linuxTestInetDiagPayload(unix.AF_INET, 7, 53, testCandidate, nil)}}},
+		{},
 	}}
 	snapshot, err := observeLinuxSockets(context.Background(), script, request)
 	if err != nil {
 		t.Fatalf("observeLinuxSockets() error = %v", err)
 	}
-	if snapshot.Complete || !snapshot.Truncated || len(snapshot.Endpoints) != 2 || len(script.calls) != 4 {
+	if !snapshot.Complete || snapshot.Truncated || len(snapshot.Endpoints) != 2 || len(script.calls) != 4 {
 		t.Fatalf("observeLinuxSockets() = %#v, calls %d", snapshot, len(script.calls))
 	}
 	if script.calls[0].payload[0] != unix.AF_INET || script.calls[1].payload[0] != unix.AF_INET6 || script.calls[2].payload[1] != unix.IPPROTO_UDP {
 		t.Fatalf("socket calls = %#v", script.calls)
+	}
+	for _, call := range script.calls {
+		if call.completion != linuxnetlink.CompletionDump {
+			t.Fatalf("socket completion = %d, want dump", call.completion)
+		}
 	}
 }
 
@@ -1433,12 +926,12 @@ func TestObserveLinuxSocketsRejectsIncompleteAndMalformedDumps(t *testing.T) {
 	if _, err := observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{errors: []error{sentinel}}, request); !errors.Is(err, sentinel) {
 		t.Fatalf("observeLinuxSockets(exchange failure) error = %v", err)
 	}
-	for name, message := range map[string]linuxNetlinkMessage{
-		"wrong type": {messageType: unix.RTM_NEWROUTE},
-		"short":      {messageType: unix.SOCK_DIAG_BY_FAMILY, payload: []byte{1}},
+	for name, message := range map[string]linuxnetlink.Message{
+		"wrong type": {Type: unix.RTM_NEWROUTE},
+		"short":      {Type: unix.SOCK_DIAG_BY_FAMILY, Payload: []byte{1}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: []linuxNetlinkMessage{message}}}}, request)
+			_, err := observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: []linuxnetlink.Message{message}}}}, request)
 			if err == nil {
 				t.Fatal("observeLinuxSockets() error = nil")
 			}
@@ -1446,17 +939,17 @@ func TestObserveLinuxSocketsRejectsIncompleteAndMalformedDumps(t *testing.T) {
 	}
 
 	missingV6Only := linuxTestInetDiagPayload(unix.AF_INET6, linuxTCPListenState, 443, netip.IPv6Unspecified(), nil)
-	snapshot, err := observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{}, {messages: []linuxNetlinkMessage{{messageType: unix.SOCK_DIAG_BY_FAMILY, payload: missingV6Only}}}}}, request)
+	snapshot, err := observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{}, {Messages: []linuxnetlink.Message{{Type: unix.SOCK_DIAG_BY_FAMILY, Payload: missingV6Only}}}}}, request)
 	if err != nil || snapshot.Complete || snapshot.Truncated || len(snapshot.Endpoints) != 1 {
 		t.Fatalf("observeLinuxSockets(missing SKV6ONLY) = %#v, error %v", snapshot, err)
 	}
 
-	messages := make([]linuxNetlinkMessage, maximumSocketFacts+1)
+	messages := make([]linuxnetlink.Message, maximumSocketFacts+1)
 	payload := linuxTestInetDiagPayload(unix.AF_INET, linuxTCPListenState, 443, netip.IPv4Unspecified(), nil)
 	for index := range messages {
-		messages[index] = linuxNetlinkMessage{messageType: unix.SOCK_DIAG_BY_FAMILY, payload: payload}
+		messages[index] = linuxnetlink.Message{Type: unix.SOCK_DIAG_BY_FAMILY, Payload: payload}
 	}
-	snapshot, err = observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{replies: []linuxNetlinkReply{{messages: messages}, {}}}, request)
+	snapshot, err = observeLinuxSockets(context.Background(), &scriptedLinuxNetlink{replies: []linuxnetlink.Reply{{Messages: messages}, {}}}, request)
 	if err != nil || snapshot.Complete || !snapshot.Truncated || len(snapshot.Endpoints) != maximumSocketFacts {
 		t.Fatalf("observeLinuxSockets(limit) = %#v, error %v", snapshot, err)
 	}
@@ -1785,13 +1278,22 @@ func linuxTestInterfaces() linuxInterfaceSnapshot {
 	}
 }
 
+// linuxTestMarshalAttribute appends one bounded fixture attribute whose encoding cannot fail.
+func linuxTestMarshalAttribute(destination []byte, attributeType uint16, payload []byte) []byte {
+	encoded, err := linuxnetlink.MarshalAttribute(destination, attributeType, payload)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
+
 // linuxTestLinkPayload constructs one raw ifinfomsg fixture with an IFLA_IFNAME attribute.
 func linuxTestLinkPayload(index uint32, name string, flags uint32, hardware uint16) []byte {
 	payload := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint16(payload[2:4], hardware)
 	binary.NativeEndian.PutUint32(payload[4:8], index)
 	binary.NativeEndian.PutUint32(payload[8:12], flags)
-	return marshalLinuxNetlinkAttribute(payload, unix.IFLA_IFNAME, append([]byte(name), 0))
+	return linuxTestMarshalAttribute(payload, unix.IFLA_IFNAME, append([]byte(name), 0))
 }
 
 // linuxTestRoutePayload constructs one raw rtmsg fixture with optional additional attributes.
@@ -1805,19 +1307,19 @@ func linuxTestRoutePayload(destination netip.Prefix, routeType uint8, interfaceI
 	}
 	if destination.Bits() != 0 {
 		address := destination.Addr().As4()
-		payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_DST, address[:])
+		payload = linuxTestMarshalAttribute(payload, unix.RTA_DST, address[:])
 	}
 	if interfaceIndex != 0 {
 		encoded := make([]byte, 4)
 		binary.NativeEndian.PutUint32(encoded, interfaceIndex)
-		payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_OIF, encoded)
+		payload = linuxTestMarshalAttribute(payload, unix.RTA_OIF, encoded)
 	}
 	if gateway.IsValid() {
 		encoded := gateway.As4()
-		payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_GATEWAY, encoded[:])
+		payload = linuxTestMarshalAttribute(payload, unix.RTA_GATEWAY, encoded[:])
 	}
 	for attributeType, value := range additional {
-		payload = marshalLinuxNetlinkAttribute(payload, attributeType, value)
+		payload = linuxTestMarshalAttribute(payload, attributeType, value)
 	}
 	return payload
 }
@@ -1836,7 +1338,7 @@ func linuxTestInetDiagPayload(family uint8, state uint8, port uint16, address ne
 		copy(payload[8:24], encoded[:])
 	}
 	for attributeType, value := range additional {
-		payload = marshalLinuxNetlinkAttribute(payload, attributeType, value)
+		payload = linuxTestMarshalAttribute(payload, attributeType, value)
 	}
 	return payload
 }

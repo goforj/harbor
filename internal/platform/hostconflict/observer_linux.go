@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/goforj/harbor/internal/platform/linuxnetlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -16,20 +17,26 @@ const linuxObservationRetries = 3
 // linuxObservationPass supplies one complete kernel pass so stability policy can be tested without host races.
 type linuxObservationPass func(context.Context, Request, uint32) (Observation, error)
 
-// linuxObservationSession combines one sequenced netlink port with explicit lifecycle cleanup.
+// linuxNetlinkExchanger isolates host-conflict codecs from the shared native transport in tests.
+type linuxNetlinkExchanger interface {
+	Exchange(context.Context, uint16, uint16, []byte, linuxnetlink.Completion) (linuxnetlink.Reply, error)
+}
+
+// linuxObservationSession combines one sequenced shared netlink port with explicit lifecycle cleanup.
 type linuxObservationSession interface {
 	linuxNetlinkExchanger
-	close() error
+	Close() error
 }
 
 // linuxPassOperations isolates orchestration failures from native fact codecs.
 type linuxPassOperations struct {
-	namespace  func() (NetworkScope, error)
-	open       func(int) (linuxObservationSession, error)
-	interfaces func(context.Context, linuxNetlinkExchanger) (linuxInterfaceSnapshot, error)
-	routes     func(context.Context, linuxNetlinkExchanger, Request, uint32, linuxInterfaceSnapshot) (RouteSnapshot, error)
-	sockets    func(context.Context, linuxNetlinkExchanger, Request) (SocketSnapshot, error)
-	policy     func(context.Context, linuxInterfaceSnapshot) (*LinuxPolicyFacts, error)
+	namespace      func() (NetworkScope, error)
+	openRoute      func() (linuxObservationSession, error)
+	openSocketDiag func() (linuxObservationSession, error)
+	interfaces     func(context.Context, linuxNetlinkExchanger) (linuxInterfaceSnapshot, error)
+	routes         func(context.Context, linuxNetlinkExchanger, Request, uint32, linuxInterfaceSnapshot) (RouteSnapshot, error)
+	sockets        func(context.Context, linuxNetlinkExchanger, Request) (SocketSnapshot, error)
+	policy         func(context.Context, linuxInterfaceSnapshot) (*LinuxPolicyFacts, error)
 }
 
 // ObserveLinux returns two consecutive matching observations from the caller's current network namespace.
@@ -62,7 +69,7 @@ func observeStableLinux(ctx context.Context, request Request, requesterUID uint3
 		}
 		observation, err := observe(ctx, request, requesterUID)
 		if err != nil {
-			if errors.Is(err, errLinuxNetlinkInterrupted) || errors.Is(err, errLinuxNetlinkReplyLimit) {
+			if errors.Is(err, linuxnetlink.ErrInterrupted) || errors.Is(err, linuxnetlink.ErrReplyLimit) {
 				transactionRetries++
 				previousFingerprint = ""
 				continue
@@ -87,14 +94,13 @@ func observeStableLinux(ctx context.Context, request Request, requesterUID uint3
 // observeLinuxPass gathers scope, routes, sockets, and policy before proving the thread stayed in that scope.
 func observeLinuxPass(ctx context.Context, request Request, requesterUID uint32) (Observation, error) {
 	operations := linuxPassOperations{
-		namespace: observeLinuxNamespace,
-		open: func(protocol int) (linuxObservationSession, error) {
-			return openLinuxNetlink(protocol)
-		},
-		interfaces: observeLinuxInterfaces,
-		routes:     observeLinuxRoutes,
-		sockets:    observeLinuxSockets,
-		policy:     observeLinuxPolicy,
+		namespace:      observeLinuxNamespace,
+		openRoute:      func() (linuxObservationSession, error) { return linuxnetlink.OpenRoute() },
+		openSocketDiag: func() (linuxObservationSession, error) { return linuxnetlink.OpenSocketDiag() },
+		interfaces:     observeLinuxInterfaces,
+		routes:         observeLinuxRoutes,
+		sockets:        observeLinuxSockets,
+		policy:         observeLinuxPolicy,
 	}
 	return observeLinuxPassWith(ctx, request, requesterUID, operations)
 }
@@ -105,36 +111,36 @@ func observeLinuxPassWith(ctx context.Context, request Request, requesterUID uin
 	if err != nil {
 		return Observation{}, err
 	}
-	routeClient, err := operations.open(unix.NETLINK_ROUTE)
+	routeClient, err := operations.openRoute()
 	if err != nil {
 		return Observation{}, err
 	}
 	interfaces, err := operations.interfaces(ctx, routeClient)
 	if err != nil {
-		_ = routeClient.close()
+		_ = routeClient.Close()
 		return Observation{}, err
 	}
 	routes, err := operations.routes(ctx, routeClient, request, requesterUID, interfaces)
 	if err != nil {
-		_ = routeClient.close()
+		_ = routeClient.Close()
 		return Observation{}, err
 	}
-	if err := routeClient.close(); err != nil {
+	if err := routeClient.Close(); err != nil {
 		return Observation{}, err
 	}
 
 	sockets := SocketSnapshot{Complete: true}
 	if len(request.Requirements()) > 0 {
-		diagnosticClient, err := operations.open(unix.NETLINK_SOCK_DIAG)
+		diagnosticClient, err := operations.openSocketDiag()
 		if err != nil {
 			return Observation{}, err
 		}
 		sockets, err = operations.sockets(ctx, diagnosticClient, request)
 		if err != nil {
-			_ = diagnosticClient.close()
+			_ = diagnosticClient.Close()
 			return Observation{}, err
 		}
-		if err := diagnosticClient.close(); err != nil {
+		if err := diagnosticClient.Close(); err != nil {
 			return Observation{}, err
 		}
 	}

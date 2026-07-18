@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 
+	"github.com/goforj/harbor/internal/platform/linuxnetlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -33,23 +34,22 @@ type linuxInterfaceSnapshot struct {
 func observeLinuxInterfaces(ctx context.Context, client linuxNetlinkExchanger) (linuxInterfaceSnapshot, error) {
 	request := make([]byte, unix.SizeofIfInfomsg)
 	request[0] = unix.AF_UNSPEC
-	reply, err := client.exchange(ctx, unix.RTM_GETLINK, unix.NLM_F_DUMP, request, true)
+	reply, err := client.Exchange(ctx, unix.RTM_GETLINK, unix.NLM_F_DUMP, request, linuxnetlink.CompletionDump)
 	if err != nil {
 		return linuxInterfaceSnapshot{}, err
 	}
 	snapshot := linuxInterfaceSnapshot{
-		byIndex:   make(map[uint32]linuxInterface),
-		complete:  !reply.truncated,
-		truncated: reply.truncated,
+		byIndex:  make(map[uint32]linuxInterface),
+		complete: true,
 	}
 	seenNames := make(map[string]struct{})
 	seenIndexes := make(map[uint32]struct{})
 	loopbacks := make([]linuxInterface, 0, 1)
-	for _, message := range reply.messages {
-		if message.messageType != unix.RTM_NEWLINK {
-			return linuxInterfaceSnapshot{}, fmt.Errorf("host conflict Linux link dump returned message type %d", message.messageType)
+	for _, message := range reply.Messages {
+		if message.Type != unix.RTM_NEWLINK {
+			return linuxInterfaceSnapshot{}, fmt.Errorf("host conflict Linux link dump returned message type %d", message.Type)
 		}
-		linuxInterface, err := parseLinuxInterface(message.payload)
+		linuxInterface, err := parseLinuxInterface(message.Payload)
 		if err != nil {
 			return linuxInterfaceSnapshot{}, err
 		}
@@ -93,11 +93,11 @@ func parseLinuxInterface(payload []byte) (linuxInterface, error) {
 	if index <= 0 {
 		return linuxInterface{}, fmt.Errorf("host conflict Linux link message has invalid interface index %d", index)
 	}
-	attributes, err := parseLinuxNetlinkAttributes(payload[unix.SizeofIfInfomsg:])
+	attributes, err := linuxnetlink.ParseAttributes(payload[unix.SizeofIfInfomsg:])
 	if err != nil {
 		return linuxInterface{}, err
 	}
-	namePayload, ok, err := oneLinuxAttribute(attributes, unix.IFLA_IFNAME)
+	namePayload, ok, err := linuxnetlink.OneAttribute(attributes, unix.IFLA_IFNAME)
 	if err != nil {
 		return linuxInterface{}, err
 	}
@@ -125,19 +125,19 @@ func parseLinuxInterface(payload []byte) (linuxInterface, error) {
 
 // observeLinuxRoutes combines the all-table dump with FIB_MATCH selections for every requested flow.
 func observeLinuxRoutes(ctx context.Context, client linuxNetlinkExchanger, request Request, requesterUID uint32, interfaces linuxInterfaceSnapshot) (RouteSnapshot, error) {
-	reply, err := client.exchange(ctx, unix.RTM_GETROUTE, unix.NLM_F_DUMP, marshalLinuxRouteMessage(unix.AF_INET, 0, 0), true)
+	reply, err := client.Exchange(ctx, unix.RTM_GETROUTE, unix.NLM_F_DUMP, marshalLinuxRouteMessage(unix.AF_INET, 0, 0), linuxnetlink.CompletionDump)
 	if err != nil {
 		return RouteSnapshot{}, err
 	}
 	snapshot := RouteSnapshot{
-		Complete:  interfaces.complete && !reply.truncated,
-		Truncated: interfaces.truncated || reply.truncated,
+		Complete:  interfaces.complete,
+		Truncated: interfaces.truncated,
 	}
-	for _, message := range reply.messages {
-		if message.messageType != unix.RTM_NEWROUTE {
-			return RouteSnapshot{}, fmt.Errorf("host conflict Linux route dump returned message type %d", message.messageType)
+	for _, message := range reply.Messages {
+		if message.Type != unix.RTM_NEWROUTE {
+			return RouteSnapshot{}, fmt.Errorf("host conflict Linux route dump returned message type %d", message.Type)
 		}
-		fact, matches, representable, err := parseLinuxRoute(message.payload, request.Candidate(), interfaces)
+		fact, matches, representable, err := parseLinuxRoute(message.Payload, request.Candidate(), interfaces)
 		if err != nil {
 			return RouteSnapshot{}, err
 		}
@@ -156,12 +156,9 @@ func observeLinuxRoutes(ctx context.Context, client linuxNetlinkExchanger, reque
 		snapshot.Matching = append(snapshot.Matching, fact)
 	}
 
-	selected, selectedComplete, selectedTruncated, err := observeLinuxSelectedRoutes(ctx, client, request, requesterUID, interfaces)
+	selected, selectedComplete, err := observeLinuxSelectedRoutes(ctx, client, request, requesterUID, interfaces)
 	if err != nil {
 		return RouteSnapshot{}, err
-	}
-	if selectedTruncated {
-		snapshot.Truncated = true
 	}
 	if !selectedComplete {
 		snapshot.Complete = false
@@ -178,29 +175,26 @@ func observeLinuxRoutes(ctx context.Context, client linuxNetlinkExchanger, reque
 }
 
 // observeLinuxSelectedRoutes proves UID and every protocol-port lookup choose the same normalized FIB route.
-func observeLinuxSelectedRoutes(ctx context.Context, client linuxNetlinkExchanger, request Request, requesterUID uint32, interfaces linuxInterfaceSnapshot) (*RouteFact, bool, bool, error) {
+func observeLinuxSelectedRoutes(ctx context.Context, client linuxNetlinkExchanger, request Request, requesterUID uint32, interfaces linuxInterfaceSnapshot) (*RouteFact, bool, error) {
 	lookups := append([]SocketRequirement{{}}, request.Requirements()...)
 	var selected *RouteFact
 	complete := true
-	truncated := false
 	for _, requirement := range lookups {
-		payload := marshalLinuxRouteLookup(request.Candidate(), requesterUID, requirement)
-		reply, err := client.exchange(ctx, unix.RTM_GETROUTE, 0, payload, false)
+		payload, err := marshalLinuxRouteLookup(request.Candidate(), requesterUID, requirement)
 		if err != nil {
-			return nil, false, false, err
+			return nil, false, err
 		}
-		if reply.truncated {
-			complete = false
-			truncated = true
-			continue
+		reply, err := client.Exchange(ctx, unix.RTM_GETROUTE, 0, payload, linuxnetlink.CompletionData)
+		if err != nil {
+			return nil, false, err
 		}
-		if len(reply.messages) != 1 || reply.messages[0].messageType != unix.RTM_NEWROUTE {
+		if len(reply.Messages) != 1 || reply.Messages[0].Type != unix.RTM_NEWROUTE {
 			complete = false
 			continue
 		}
-		fact, matches, representable, err := parseLinuxSelectedRoute(reply.messages[0].payload, request.Candidate(), interfaces)
+		fact, matches, representable, err := parseLinuxSelectedRoute(reply.Messages[0].Payload, request.Candidate(), interfaces)
 		if err != nil {
-			return nil, false, false, err
+			return nil, false, err
 		}
 		if !matches || !representable {
 			complete = false
@@ -218,7 +212,7 @@ func observeLinuxSelectedRoutes(ctx context.Context, client linuxNetlinkExchange
 	if !complete {
 		selected = nil
 	}
-	return selected, complete, truncated, nil
+	return selected, complete, nil
 }
 
 // marshalLinuxRouteMessage encodes the fixed rtmsg shared by dumps and selected lookups.
@@ -231,25 +225,38 @@ func marshalLinuxRouteMessage(family uint8, destinationBits uint8, flags uint32)
 }
 
 // marshalLinuxRouteLookup binds kernel policy routing to the requesting UID and exact protected flow.
-func marshalLinuxRouteLookup(candidate netip.Addr, requesterUID uint32, requirement SocketRequirement) []byte {
+func marshalLinuxRouteLookup(candidate netip.Addr, requesterUID uint32, requirement SocketRequirement) ([]byte, error) {
 	payload := marshalLinuxRouteMessage(unix.AF_INET, 32, unix.RTM_F_LOOKUP_TABLE|unix.RTM_F_FIB_MATCH)
 	candidateBytes := candidate.As4()
-	payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_DST, candidateBytes[:])
+	var err error
+	payload, err = linuxnetlink.MarshalAttribute(payload, unix.RTA_DST, candidateBytes[:])
+	if err != nil {
+		return nil, fmt.Errorf("host conflict Linux encode route destination: %w", err)
+	}
 	uid := make([]byte, 4)
 	binary.NativeEndian.PutUint32(uid, requesterUID)
-	payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_UID, uid)
+	payload, err = linuxnetlink.MarshalAttribute(payload, unix.RTA_UID, uid)
+	if err != nil {
+		return nil, fmt.Errorf("host conflict Linux encode route UID: %w", err)
+	}
 	if requirement.Port == 0 {
-		return payload
+		return payload, nil
 	}
 	protocol := byte(unix.IPPROTO_TCP)
 	if requirement.Transport == TransportUDP4 {
 		protocol = unix.IPPROTO_UDP
 	}
-	payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_IP_PROTO, []byte{protocol})
+	payload, err = linuxnetlink.MarshalAttribute(payload, unix.RTA_IP_PROTO, []byte{protocol})
+	if err != nil {
+		return nil, fmt.Errorf("host conflict Linux encode route protocol: %w", err)
+	}
 	port := make([]byte, 2)
 	binary.BigEndian.PutUint16(port, requirement.Port)
-	payload = marshalLinuxNetlinkAttribute(payload, unix.RTA_DPORT, port)
-	return payload
+	payload, err = linuxnetlink.MarshalAttribute(payload, unix.RTA_DPORT, port)
+	if err != nil {
+		return nil, fmt.Errorf("host conflict Linux encode route port: %w", err)
+	}
+	return payload, nil
 }
 
 // parseLinuxRoute identifies candidate-matching prefixes before deciding whether the model can preserve them.
@@ -274,11 +281,11 @@ func parseLinuxRouteForSelection(payload []byte, candidate netip.Addr, interface
 	if destinationBits < 0 || destinationBits > 32 {
 		return RouteFact{}, false, false, fmt.Errorf("host conflict Linux route has invalid prefix length %d", destinationBits)
 	}
-	attributes, err := parseLinuxNetlinkAttributes(payload[unix.SizeofRtMsg:])
+	attributes, err := linuxnetlink.ParseAttributes(payload[unix.SizeofRtMsg:])
 	if err != nil {
 		return RouteFact{}, false, false, err
 	}
-	destinationPayload, destinationPresent, err := oneLinuxAttribute(attributes, unix.RTA_DST)
+	destinationPayload, destinationPresent, err := linuxnetlink.OneAttribute(attributes, unix.RTA_DST)
 	if err != nil {
 		return RouteFact{}, false, false, err
 	}
@@ -320,7 +327,7 @@ func parseLinuxRouteForSelection(payload []byte, candidate netip.Addr, interface
 	if err := validateLinuxOptionalUint32Attribute(attributes, unix.RTA_PRIORITY); err != nil {
 		return RouteFact{}, false, false, err
 	}
-	interfacePayload, interfacePresent, err := oneLinuxAttribute(attributes, unix.RTA_OIF)
+	interfacePayload, interfacePresent, err := linuxnetlink.OneAttribute(attributes, unix.RTA_OIF)
 	if err != nil {
 		return RouteFact{}, false, false, err
 	}
@@ -332,7 +339,7 @@ func parseLinuxRouteForSelection(payload []byte, candidate netip.Addr, interface
 	if !exists {
 		return RouteFact{}, true, false, nil
 	}
-	gatewayPayload, gatewayPresent, err := oneLinuxAttribute(attributes, unix.RTA_GATEWAY)
+	gatewayPayload, gatewayPresent, err := linuxnetlink.OneAttribute(attributes, unix.RTA_GATEWAY)
 	if err != nil {
 		return RouteFact{}, false, false, err
 	}
@@ -363,7 +370,7 @@ func parseLinuxRouteForSelection(payload []byte, candidate netip.Addr, interface
 }
 
 // linuxRouteAttributesRepresentable admits only fields whose route-selection meaning is preserved or validated.
-func linuxRouteAttributesRepresentable(attributes map[uint16][]linuxNetlinkAttribute) bool {
+func linuxRouteAttributesRepresentable(attributes map[uint16][]linuxnetlink.Attribute) bool {
 	for attributeType := range attributes {
 		switch attributeType {
 		case unix.RTA_DST, unix.RTA_OIF, unix.RTA_GATEWAY, unix.RTA_PRIORITY, unix.RTA_PREFSRC, unix.RTA_TABLE:
@@ -376,8 +383,8 @@ func linuxRouteAttributesRepresentable(attributes map[uint16][]linuxNetlinkAttri
 }
 
 // linuxRouteTable resolves the extended table attribute without accepting contradictory encodings.
-func linuxRouteTable(headerTable uint8, attributes map[uint16][]linuxNetlinkAttribute) (uint32, error) {
-	tablePayload, tablePresent, err := oneLinuxAttribute(attributes, unix.RTA_TABLE)
+func linuxRouteTable(headerTable uint8, attributes map[uint16][]linuxnetlink.Attribute) (uint32, error) {
+	tablePayload, tablePresent, err := linuxnetlink.OneAttribute(attributes, unix.RTA_TABLE)
 	if err != nil {
 		return 0, err
 	}
@@ -396,8 +403,8 @@ func linuxRouteTable(headerTable uint8, attributes map[uint16][]linuxNetlinkAttr
 }
 
 // validateLinuxOptionalIPv4Attribute rejects duplicate or non-IPv4 route preferences.
-func validateLinuxOptionalIPv4Attribute(attributes map[uint16][]linuxNetlinkAttribute, attributeType uint16) error {
-	payload, present, err := oneLinuxAttribute(attributes, attributeType)
+func validateLinuxOptionalIPv4Attribute(attributes map[uint16][]linuxnetlink.Attribute, attributeType uint16) error {
+	payload, present, err := linuxnetlink.OneAttribute(attributes, attributeType)
 	if err != nil {
 		return err
 	}
@@ -408,8 +415,8 @@ func validateLinuxOptionalIPv4Attribute(attributes map[uint16][]linuxNetlinkAttr
 }
 
 // validateLinuxOptionalUint32Attribute rejects duplicate or non-native scalar route metadata.
-func validateLinuxOptionalUint32Attribute(attributes map[uint16][]linuxNetlinkAttribute, attributeType uint16) error {
-	payload, present, err := oneLinuxAttribute(attributes, attributeType)
+func validateLinuxOptionalUint32Attribute(attributes map[uint16][]linuxnetlink.Attribute, attributeType uint16) error {
+	payload, present, err := linuxnetlink.OneAttribute(attributes, attributeType)
 	if err != nil {
 		return err
 	}
@@ -417,21 +424,6 @@ func validateLinuxOptionalUint32Attribute(attributes map[uint16][]linuxNetlinkAt
 		return fmt.Errorf("host conflict Linux route attribute %d is not uint32", attributeType)
 	}
 	return nil
-}
-
-// oneLinuxAttribute rejects duplicate authority-bearing attributes instead of accepting an arbitrary value.
-func oneLinuxAttribute(attributes map[uint16][]linuxNetlinkAttribute, attributeType uint16) ([]byte, bool, error) {
-	values := attributes[attributeType]
-	if len(values) == 0 {
-		return nil, false, nil
-	}
-	if len(values) != 1 {
-		return nil, false, fmt.Errorf("host conflict Linux netlink message repeats attribute %d", attributeType)
-	}
-	if values[0].flags != 0 {
-		return nil, false, fmt.Errorf("host conflict Linux netlink attribute %d has unsupported encoding flags", attributeType)
-	}
-	return values[0].payload, true, nil
 }
 
 // routeFactCount preserves duplicate kernel routes because multiplicity is part of conflict evidence.

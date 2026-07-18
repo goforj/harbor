@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 
+	"github.com/goforj/harbor/internal/platform/linuxnetlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,19 +25,15 @@ func observeLinuxSockets(ctx context.Context, client linuxNetlinkExchanger, requ
 	protocols := requestedLinuxSocketProtocols(request)
 	for _, protocol := range protocols {
 		for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
-			reply, err := client.exchange(ctx, unix.SOCK_DIAG_BY_FAMILY, unix.NLM_F_DUMP, marshalLinuxInetDiagRequest(family, protocol), true)
+			reply, err := client.Exchange(ctx, unix.SOCK_DIAG_BY_FAMILY, unix.NLM_F_DUMP, marshalLinuxInetDiagRequest(family, protocol), linuxnetlink.CompletionDump)
 			if err != nil {
 				return SocketSnapshot{}, err
 			}
-			if reply.truncated {
-				snapshot.Complete = false
-				snapshot.Truncated = true
-			}
-			for _, message := range reply.messages {
-				if message.messageType != unix.SOCK_DIAG_BY_FAMILY {
-					return SocketSnapshot{}, fmt.Errorf("host conflict Linux socket dump returned message type %d", message.messageType)
+			for _, message := range reply.Messages {
+				if message.Type != unix.SOCK_DIAG_BY_FAMILY {
+					return SocketSnapshot{}, fmt.Errorf("host conflict Linux socket dump returned message type %d", message.Type)
 				}
-				fact, relevant, complete, err := parseLinuxInetDiagMessage(message.payload, family, protocol, request)
+				fact, relevant, complete, err := parseLinuxInetDiagMessage(message.Payload, family, protocol, request)
 				if err != nil {
 					return SocketSnapshot{}, err
 				}
@@ -110,11 +107,11 @@ func parseLinuxInetDiagMessage(payload []byte, expectedFamily uint8, expectedPro
 	if expectedProtocol == unix.IPPROTO_TCP && payload[1] != linuxTCPListenState {
 		return SocketFact{}, false, false, fmt.Errorf("host conflict Linux TCP diagnostic returned non-listening state %d", payload[1])
 	}
-	attributes, err := parseLinuxNetlinkAttributes(payload[linuxInetDiagMessageBytes:])
+	attributes, err := linuxnetlink.ParseAttributes(payload[linuxInetDiagMessageBytes:])
 	if err != nil {
 		return SocketFact{}, false, false, err
 	}
-	v6OnlyPayload, v6OnlyPresent, err := oneLinuxAttribute(attributes, linuxInetDiagSKV6Only)
+	v6OnlyPayload, v6OnlyPresent, err := linuxnetlink.OneAttribute(attributes, linuxInetDiagSKV6Only)
 	if err != nil {
 		return SocketFact{}, false, false, err
 	}
