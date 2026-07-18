@@ -8,10 +8,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper"
 )
 
 const (
-	maximumInstallationIDLength = 128
+	maximumInstallationIDLength = helper.MaximumInstallationIDLength
 	maximumLeaseTokenLength     = 255
 )
 
@@ -20,24 +21,7 @@ type InstallationID string
 
 // Validate requires 1 to 128 ASCII bytes from letters, digits, dots, underscores, and hyphens with alphanumeric boundaries.
 func (i InstallationID) Validate() error {
-	value := string(i)
-	if value == "" {
-		return fmt.Errorf("installation ID is required")
-	}
-	if len(value) > maximumInstallationIDLength {
-		return fmt.Errorf("installation ID exceeds %d bytes", maximumInstallationIDLength)
-	}
-	if !installationIDAlphanumeric(value[0]) || !installationIDAlphanumeric(value[len(value)-1]) {
-		return fmt.Errorf("installation ID must start and end with an ASCII letter or digit")
-	}
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if installationIDAlphanumeric(character) || character == '.' || character == '_' || character == '-' {
-			continue
-		}
-		return fmt.Errorf("installation ID contains a character outside ASCII letters, digits, dots, underscores, and hyphens")
-	}
-	return nil
+	return helper.ValidateInstallationID(string(i))
 }
 
 // Ownership binds a lease to one installation ownership generation.
@@ -227,13 +211,6 @@ func validateLeaseToken(label string, value string) error {
 		}
 	}
 	return nil
-}
-
-// installationIDAlphanumeric keeps installation identity boundaries independent from path-like punctuation.
-func installationIDAlphanumeric(character byte) bool {
-	return (character >= 'a' && character <= 'z') ||
-		(character >= 'A' && character <= 'Z') ||
-		(character >= '0' && character <= '9')
 }
 
 // sameOwnership compares the installation and generation as one indivisible authority marker.

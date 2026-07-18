@@ -4,8 +4,6 @@ import (
 	"net/netip"
 	"strings"
 	"time"
-
-	"github.com/goforj/harbor/internal/network/identity"
 )
 
 // ProtocolVersion is the only helper ticket and response version this build accepts.
@@ -88,7 +86,7 @@ func (t Ticket) Validate(now time.Time) error {
 	if !validToken(t.DaemonIdentity, 1, maximumIDLength) {
 		return newRequestError(ErrorCodeInvalidTicket, "daemon identity is invalid")
 	}
-	if err := identity.InstallationID(t.InstallationID).Validate(); err != nil {
+	if err := ValidateInstallationID(t.InstallationID); err != nil {
 		return newRequestError(ErrorCodeInvalidTicket, "installation ID is invalid")
 	}
 	if !validToken(t.RequesterIdentity, 1, maximumIDLength) {
