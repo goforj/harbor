@@ -283,6 +283,7 @@ func TestStoreReadReportsRepositoryOpenFailures(t *testing.T) {
 	store := NewStore(
 		models.NewHarborStateRepo(connections),
 		models.NewProjectRepo(connections),
+		models.NewNetworkStateRepo(connections),
 		NewMutationCoordinator(connections),
 	)
 
@@ -294,6 +295,9 @@ func TestStoreReadReportsRepositoryOpenFailures(t *testing.T) {
 	}
 	if _, err := store.Snapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "open Harbor snapshot") {
 		t.Fatalf("snapshot open error = %v", err)
+	}
+	if _, _, err := store.Network(context.Background()); err == nil || !strings.Contains(err.Error(), "open network state") {
+		t.Fatalf("network open error = %v", err)
 	}
 }
 
@@ -890,6 +894,7 @@ func newProjectStoreReadTestHarness(t *testing.T, maximumConnections int, clock 
 	return newStore(
 		models.NewHarborStateRepo(connections),
 		models.NewProjectRepo(connections),
+		models.NewNetworkStateRepo(connections),
 		NewMutationCoordinator(connections),
 		clock,
 	), connection

@@ -98,6 +98,7 @@ func TestNewAuthorityUsesCurrentBuild(t *testing.T) {
 	store := state.NewStore(
 		models.NewHarborStateRepo(connections),
 		models.NewProjectRepo(connections),
+		models.NewNetworkStateRepo(connections),
 		state.NewMutationCoordinator(connections),
 	)
 	want := buildinfo.Current()

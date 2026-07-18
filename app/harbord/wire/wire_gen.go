@@ -32,8 +32,9 @@ func InitializeApplication() (App, error) {
 	helloWorldCmd := cmd.NewHelloWorldCmd(appLogger)
 	harborStateRepo := models.NewHarborStateRepo(connections)
 	projectRepo := models.NewProjectRepo(connections)
+	networkStateRepo := models.NewNetworkStateRepo(connections)
 	mutationCoordinator := state.NewMutationCoordinator(connections)
-	store := state.NewStore(harborStateRepo, projectRepo, mutationCoordinator)
+	store := state.NewStore(harborStateRepo, projectRepo, networkStateRepo, mutationCoordinator)
 	authorityAuthority := authority.NewAuthority(store)
 	server, err := provideControlServer(authorityAuthority)
 	if err != nil {

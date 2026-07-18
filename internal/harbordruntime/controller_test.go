@@ -434,7 +434,7 @@ func TestControllerConstructionIsSideEffectFree(t *testing.T) {
 
 // TestProductionControllerConstructionPublishesItsShutdownBudget verifies assembly remains inert and gives the outer daemon a stable bound.
 func TestProductionControllerConstructionPublishesItsShutdownBudget(t *testing.T) {
-	controller, err := NewController(state.NewStore(nil, nil, nil))
+	controller, err := NewController(state.NewStore(nil, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}

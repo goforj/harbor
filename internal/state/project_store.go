@@ -14,33 +14,43 @@ import (
 
 // Store owns the complete durable Harbor projection and its shared global ordering.
 type Store struct {
-	harborState *models.HarborStateRepo
-	projects    *models.ProjectRepo
-	mutations   *MutationCoordinator
-	now         func() time.Time
+	harborState  *models.HarborStateRepo
+	projects     *models.ProjectRepo
+	networkState *models.NetworkStateRepo
+	mutations    *MutationCoordinator
+	now          func() time.Time
 }
 
 // NewStore creates the aggregate store from generated named-database repositories and the shared writer coordinator.
 func NewStore(
 	harborState *models.HarborStateRepo,
 	projects *models.ProjectRepo,
+	networkState *models.NetworkStateRepo,
 	mutations *MutationCoordinator,
 ) *Store {
-	return newStore(harborState, projects, mutations, time.Now)
+	return newStore(
+		harborState,
+		projects,
+		networkState,
+		mutations,
+		time.Now,
+	)
 }
 
 // newStore keeps snapshot capture time deterministic in persistence tests.
 func newStore(
 	harborState *models.HarborStateRepo,
 	projects *models.ProjectRepo,
+	networkState *models.NetworkStateRepo,
 	mutations *MutationCoordinator,
 	now func() time.Time,
 ) *Store {
 	return &Store{
-		harborState: harborState,
-		projects:    projects,
-		mutations:   mutations,
-		now:         now,
+		harborState:  harborState,
+		projects:     projects,
+		networkState: networkState,
+		mutations:    mutations,
+		now:          now,
 	}
 }
 
