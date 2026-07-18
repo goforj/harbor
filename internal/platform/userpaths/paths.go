@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 )
 
-const databaseFilename = "harbor.db"
+const (
+	databaseFilename     = "harbor.db"
+	certificateDirectory = "certificates"
+)
 
 // environmentLookup keeps path policy testable without mutating process-wide environment state.
 type environmentLookup func(string) (string, bool)
@@ -28,6 +31,16 @@ func DatabasePath() (string, error) {
 	}
 
 	return filepath.Join(directory, databaseFilename), nil
+}
+
+// CertificateDirectory returns the dedicated per-user directory for Harbor-owned certificate material.
+func CertificateDirectory() (string, error) {
+	directory, err := DataDirectory()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(directory, certificateDirectory), nil
 }
 
 // resolveHomeDirectory rejects ambiguous relative paths because daemon state must not depend on its working directory.

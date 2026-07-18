@@ -67,3 +67,19 @@ func TestDatabasePathLivesUnderDataDirectory(t *testing.T) {
 		t.Fatalf("database path = %q, want %q", path, want)
 	}
 }
+
+// TestCertificateDirectoryLivesUnderDataDirectory verifies private material cannot drift from Harbor's durable state root.
+func TestCertificateDirectoryLivesUnderDataDirectory(t *testing.T) {
+	directory, err := DataDirectory()
+	if err != nil {
+		t.Fatalf("resolve data directory: %v", err)
+	}
+
+	path, err := CertificateDirectory()
+	if err != nil {
+		t.Fatalf("resolve certificate directory: %v", err)
+	}
+	if want := filepath.Join(directory, certificateDirectory); path != want {
+		t.Fatalf("certificate directory = %q, want %q", path, want)
+	}
+}
