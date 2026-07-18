@@ -11,6 +11,7 @@ import (
 	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/cmd"
 	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/makecmd"
 	"github.com/goforj/harbor/internal/models"
@@ -38,8 +39,15 @@ func InitializeApplication() (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	readinessCheck := provideHarbordReadiness(connections)
-	runner, err := provideDaemonRunner(server, readinessCheck)
+	readinessCheck, err := provideHarbordReadiness(connections)
+	if err != nil {
+		return App{}, err
+	}
+	controller, err := harbordruntime.NewController(store)
+	if err != nil {
+		return App{}, err
+	}
+	runner, err := provideDaemonRunner(server, readinessCheck, controller)
 	if err != nil {
 		return App{}, err
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
+	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/runtime"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -21,6 +22,7 @@ var appSet = wire.NewSet(
 	state.NewMutationCoordinator,
 	state.NewOperationJournal,
 	state.NewStore,
+	harbordruntime.NewController,
 	authority.NewAuthority,
 	provideControlServer,
 	provideHarbordReadiness,

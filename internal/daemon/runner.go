@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 
@@ -12,23 +13,48 @@ import (
 )
 
 const (
-	defaultMaxConnections = 64
-	maximumConnections    = 1024
-	initialAcceptBackoff  = 10 * time.Millisecond
-	maximumAcceptBackoff  = time.Second
+	defaultMaxConnections      = 64
+	maximumConnections         = 1024
+	initialAcceptBackoff       = 10 * time.Millisecond
+	maximumAcceptBackoff       = time.Second
+	defaultRuntimeCloseTimeout = time.Minute
 )
+
+var (
+	// ErrRuntimeCleanupIncomplete reports that Runtime.Close returned or reached its bound before complete resource release.
+	ErrRuntimeCleanupIncomplete = errors.New("daemon runtime cleanup is incomplete")
+	errRuntimeStopped           = errors.New("daemon runtime stopped unexpectedly")
+)
+
+// retainedAuthorities keeps fail-closed process locks reachable when a broken runtime provides no terminal signal.
+var retainedAuthorities struct {
+	sync.Mutex
+	locks []authorityLock
+}
 
 // ConnectionServer serves one authenticated local connection until the peer or daemon closes it.
 type ConnectionServer interface {
 	Serve(ctx context.Context, connection local.Conn) error
 }
 
+// Runtime owns the daemon's long-lived DNS, ingress, and native relay generation.
+type Runtime interface {
+	// Start acquires the complete runtime generation and returns after it is ready.
+	Start(ctx context.Context) error
+	// Done closes after the runtime relinquishes every owned resource.
+	Done() <-chan struct{}
+	// Err returns the retained terminal runtime failure when one exists.
+	Err() error
+	// Close requests idempotent shutdown and waits for complete resource release.
+	Close(ctx context.Context) error
+}
+
 // ReadinessCheck verifies that durable daemon state is safe to open without mutating it.
 type ReadinessCheck func(ctx context.Context) error
 
-// ErrorObserver receives connection-local failures that do not stop daemon authority.
+// ErrorObserver receives operational failures that cannot be returned synchronously by Run.
 //
-// Observers must return promptly because accept retry and connection cleanup call them inline.
+// Observers may run concurrently or after Run returns and must return promptly.
 type ErrorObserver func(err error)
 
 // RunnerConfig describes the application services owned by a foreground Harbor daemon.
@@ -37,11 +63,16 @@ type RunnerConfig struct {
 	Server ConnectionServer
 	// Readiness verifies that the daemon's durable schema is already ready to use.
 	Readiness ReadinessCheck
+	// Runtime owns network infrastructure for the complete authenticated endpoint lifetime.
+	Runtime Runtime
+	// RuntimeCloseTimeout is the outer cleanup budget after IPC fully joins.
+	// Zero uses a default that exceeds Harbor's nested controller and data-plane cleanup budgets.
+	RuntimeCloseTimeout time.Duration
 	// MaxConnections bounds accepted connections, including peers still negotiating a session.
 	// A zero value uses Harbor's conservative per-user default; values above Harbor's hard safety
 	// limit are rejected before allocating connection accounting.
 	MaxConnections int
-	// ObserveError optionally records rejected peers, retryable accepts, and session failures.
+	// ObserveError optionally records rejected peers, session failures, and asynchronous authority-release failures.
 	ObserveError ErrorObserver
 }
 
@@ -106,6 +137,13 @@ type connectionRegistry struct {
 type errorCollector struct {
 	mutex sync.Mutex
 	err   error
+}
+
+// serveResult keeps endpoint termination distinct from cleanup that intentional cancellation must retain.
+type serveResult struct {
+	terminalErr    error
+	cleanupErr     error
+	runtimeStopped bool
 }
 
 // add preserves one cleanup failure for the foreground runner's eventual result.
@@ -177,11 +215,17 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 
 // newRunner validates all required wiring before the daemon acquires process authority.
 func newRunner(config RunnerConfig, dependencies runnerDependencies) (*Runner, error) {
-	if config.Server == nil {
+	if requiredInterfaceIsNil(config.Server) {
 		return nil, errors.New("create daemon runner: connection server is required")
 	}
 	if config.Readiness == nil {
 		return nil, errors.New("create daemon runner: readiness check is required")
+	}
+	if requiredInterfaceIsNil(config.Runtime) {
+		return nil, errors.New("create daemon runner: runtime is required")
+	}
+	if config.RuntimeCloseTimeout < 0 {
+		return nil, errors.New("create daemon runner: runtime close timeout cannot be negative")
 	}
 	if config.MaxConnections < 0 {
 		return nil, errors.New("create daemon runner: maximum connections cannot be negative")
@@ -208,6 +252,9 @@ func newRunner(config RunnerConfig, dependencies runnerDependencies) (*Runner, e
 	if config.MaxConnections == 0 {
 		config.MaxConnections = defaultMaxConnections
 	}
+	if config.RuntimeCloseTimeout == 0 {
+		config.RuntimeCloseTimeout = defaultRuntimeCloseTimeout
+	}
 
 	return &Runner{
 		config:      config,
@@ -218,7 +265,7 @@ func newRunner(config RunnerConfig, dependencies runnerDependencies) (*Runner, e
 	}, nil
 }
 
-// Run holds daemon authority until cancellation or an endpoint-level failure completes joined shutdown.
+// Run holds daemon authority through joined shutdown and transfers it to a terminal waiter when cleanup remains incomplete.
 func (runner *Runner) Run(ctx context.Context) (runErr error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -231,44 +278,308 @@ func (runner *Runner) Run(ctx context.Context) (runErr error) {
 	if lock == nil {
 		return errors.New("acquire daemon authority: process lock factory returned no lock")
 	}
+	var runtimeDone <-chan struct{}
 	defer func() {
-		if err := lock.Release(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("release daemon authority: %w", err))
+		if err := runner.releaseAuthority(lock, runtimeDone, runErr); err != nil {
+			runErr = joinDistinct(runErr, fmt.Errorf("release daemon authority: %w", err))
 		}
 	}()
 
 	if err := runner.config.Readiness(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return fmt.Errorf("verify daemon state readiness: %w", err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
+	defer cancelRuntime()
+	started, err := runner.startRuntime(ctx, runtimeContext, cancelRuntime)
+	if err != nil {
+		return fmt.Errorf("start daemon runtime: %w", err)
+	}
+	if !started {
+		return nil
+	}
+	runtimeDone = runner.config.Runtime.Done()
+	if ctx.Err() != nil {
+		return runner.closeRuntime(runtimeDone)
+	}
+	if runtimeDone == nil {
+		return joinDistinct(
+			errors.New("start daemon runtime: runtime returned no completion signal"),
+			runner.closeRuntime(runtimeDone),
+		)
+	}
+	select {
+	case <-ctx.Done():
+		return runner.closeRuntime(runtimeDone)
+	case <-runtimeDone:
+		if ctx.Err() != nil {
+			return runner.closeRuntime(runtimeDone)
+		}
+		return runner.runtimeTermination(runtimeDone)
+	default:
 	}
 
 	listener, err := runner.listen()
 	if err != nil {
-		return fmt.Errorf("open authenticated daemon endpoint: %w", err)
+		var terminal error
+		if ctx.Err() == nil {
+			terminal = fmt.Errorf("open authenticated daemon endpoint: %w", err)
+		}
+		return joinDistinct(terminal, runner.closeRuntime(runtimeDone))
 	}
 	if listener == nil {
-		return errors.New("open authenticated daemon endpoint: listener factory returned no listener")
+		var terminal error
+		if ctx.Err() == nil {
+			terminal = errors.New("open authenticated daemon endpoint: listener factory returned no listener")
+		}
+		return joinDistinct(terminal, runner.closeRuntime(runtimeDone))
 	}
 
-	return runner.serve(ctx, listener)
+	served := runner.serve(ctx, listener, runtimeDone)
+	return runner.finishServe(ctx, served, runtimeDone)
+}
+
+// finishServe rechecks child termination after the watcher joins before classifying endpoint cleanup.
+func (runner *Runner) finishServe(ctx context.Context, served serveResult, runtimeDone <-chan struct{}) error {
+	if !served.runtimeStopped && signalClosed(runtimeDone) {
+		served.runtimeStopped = true
+	}
+	result := served.cleanupErr
+	if ctx.Err() == nil {
+		result = joinDistinct(result, served.terminalErr)
+		if served.runtimeStopped {
+			result = joinDistinct(result, runner.runtimeTermination(runtimeDone))
+		} else {
+			result = joinDistinct(result, runner.closeRuntime(runtimeDone))
+		}
+		return result
+	}
+	return joinDistinct(result, runner.closeRuntime(runtimeDone))
+}
+
+// startRuntime lets caller cancellation interrupt startup without owning the runtime's post-start lifetime.
+func (runner *Runner) startRuntime(
+	caller context.Context,
+	runtimeContext context.Context,
+	cancelRuntime context.CancelFunc,
+) (bool, error) {
+	result := make(chan error, 1)
+	go func() {
+		result <- runner.config.Runtime.Start(runtimeContext)
+	}()
+
+	select {
+	case err := <-result:
+		return classifyRuntimeStartResult(caller.Err(), err)
+	case <-caller.Done():
+		cancelRuntime()
+		return classifyRuntimeStartResult(caller.Err(), <-result)
+	}
+}
+
+// classifyRuntimeStartResult suppresses only cancellation-exclusive startup results after caller cancellation.
+func classifyRuntimeStartResult(callerErr error, startErr error) (bool, error) {
+	if callerErr == nil {
+		return startErr == nil, startErr
+	}
+	if startErr == nil {
+		return true, nil
+	}
+	if isCancellationOnly(startErr) {
+		return false, nil
+	}
+	return false, startErr
+}
+
+// isCancellationOnly reports whether every leaf in one error tree is cancellation or deadline expiration.
+func isCancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		found := false
+		for _, cause := range joined.Unwrap() {
+			if cause == nil {
+				continue
+			}
+			found = true
+			if !isCancellationOnly(cause) {
+				return false
+			}
+		}
+		return found
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if cause := wrapped.Unwrap(); cause != nil {
+			return isCancellationOnly(cause)
+		}
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// closeRuntime applies an outer cleanup bound after IPC no longer admits or serves clients.
+func (runner *Runner) closeRuntime(runtimeDone <-chan struct{}) error {
+	if err := runner.closeRuntimeCause(runtimeDone); err != nil {
+		return fmt.Errorf("close daemon runtime: %w", err)
+	}
+	return nil
+}
+
+// closeRuntimeCause bounds a possibly broken Close and preserves its native result when available.
+func (runner *Runner) closeRuntimeCause(runtimeDone <-chan struct{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), runner.config.RuntimeCloseTimeout)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- runner.config.Runtime.Close(ctx)
+	}()
+
+	var closeErr error
+	timedOut := false
+	select {
+	case closeErr = <-result:
+	case <-ctx.Done():
+		closeErr = ctx.Err()
+		timedOut = true
+	}
+	if runtimeDone == nil {
+		if timedOut || closeErr != nil {
+			return joinDistinct(closeErr, ErrRuntimeCleanupIncomplete)
+		}
+		return closeErr
+	}
+	if !signalClosed(runtimeDone) {
+		return joinDistinct(closeErr, ErrRuntimeCleanupIncomplete)
+	}
+	return closeErr
+}
+
+// runtimeTermination reports unexpected infrastructure loss and closes an already-terminal runtime idempotently.
+func (runner *Runner) runtimeTermination(runtimeDone <-chan struct{}) error {
+	terminal := runner.config.Runtime.Err()
+	closeErr := runner.closeRuntimeCause(runtimeDone)
+	if terminal == nil {
+		return joinDistinct(errRuntimeStopped, wrapRuntimeClose(closeErr))
+	}
+	if closeErr == nil || errors.Is(terminal, closeErr) {
+		return fmt.Errorf("daemon runtime stopped unexpectedly: %w", terminal)
+	}
+	if errors.Is(closeErr, terminal) {
+		return fmt.Errorf("daemon runtime stopped unexpectedly: %w", closeErr)
+	}
+	return errors.Join(
+		fmt.Errorf("daemon runtime stopped unexpectedly: %w", terminal),
+		wrapRuntimeClose(closeErr),
+	)
+}
+
+// releaseAuthority releases proven terminal ownership or retains it until safety can be established.
+func (runner *Runner) releaseAuthority(lock authorityLock, runtimeDone <-chan struct{}, runErr error) error {
+	if runtimeDone == nil {
+		if errors.Is(runErr, ErrRuntimeCleanupIncomplete) {
+			retainAuthority(lock)
+			return nil
+		}
+		return lock.Release()
+	}
+	if signalClosed(runtimeDone) {
+		return lock.Release()
+	}
+	go func() {
+		<-runtimeDone
+		if err := lock.Release(); err != nil {
+			runner.observe(fmt.Errorf("release daemon authority after runtime cleanup: %w", err))
+		}
+	}()
+	return nil
+}
+
+// retainAuthority keeps an unverifiable runtime's process lock alive until process termination.
+func retainAuthority(lock authorityLock) {
+	retainedAuthorities.Lock()
+	retainedAuthorities.locks = append(retainedAuthorities.locks, lock)
+	retainedAuthorities.Unlock()
+}
+
+// signalClosed reports completion without blocking lifecycle classification.
+func signalClosed(signal <-chan struct{}) bool {
+	if signal == nil {
+		return false
+	}
+	select {
+	case <-signal:
+		return true
+	default:
+		return false
+	}
+}
+
+// wrapRuntimeClose labels runtime cleanup without manufacturing an error for a clean close.
+func wrapRuntimeClose(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("close daemon runtime: %w", err)
+}
+
+// joinDistinct preserves the broader error when one result already contains the other.
+func joinDistinct(left error, right error) error {
+	if left == nil {
+		return right
+	}
+	if right == nil {
+		return left
+	}
+	if errors.Is(left, right) {
+		return left
+	}
+	if errors.Is(right, left) {
+		return right
+	}
+	return errors.Join(left, right)
+}
+
+// requiredInterfaceIsNil rejects typed-nil required collaborators before daemon authority is acquired.
+func requiredInterfaceIsNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // serve accepts bounded connections and centralizes endpoint teardown before Run releases authority.
-func (runner *Runner) serve(ctx context.Context, listener local.Listener) error {
-	serveContext, cancelServe := context.WithCancel(ctx)
+func (runner *Runner) serve(ctx context.Context, listener local.Listener, runtimeDone <-chan struct{}) serveResult {
+	// Admission stops before listener closure, while sessions retain the lock-last listener-before-session order.
+	admissionContext, cancelAdmission := context.WithCancel(context.Background())
+	sessionContext, cancelSessions := context.WithCancel(context.Background())
 	registry := newConnectionRegistry()
 	slots := make(chan struct{}, runner.config.MaxConnections)
 	connectionErrors := &errorCollector{}
 	var workers sync.WaitGroup
 	var shutdownOnce sync.Once
 	var shutdownErr error
+	runtimeStopped := false
 
 	shutdown := func() {
 		shutdownOnce.Do(func() {
 			connections := registry.beginShutdown()
-			cancelServe()
+			cancelAdmission()
 			if err := listener.Close(); err != nil {
 				shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close daemon listener: %w", err))
 			}
+			cancelSessions()
 			for _, connection := range connections {
 				_ = connection.Close()
 			}
@@ -282,23 +593,32 @@ func (runner *Runner) serve(ctx context.Context, listener local.Listener) error 
 		select {
 		case <-ctx.Done():
 			shutdown()
+		case <-runtimeDone:
+			runtimeStopped = true
+			shutdown()
 		case <-stopWatcher:
 		}
 	}()
 
-	acceptErr := runner.accept(serveContext, listener, registry, slots, &workers, connectionErrors)
+	acceptErr := runner.accept(admissionContext, sessionContext, listener, registry, slots, &workers, connectionErrors)
 	shutdown()
 	close(stopWatcher)
 	<-watcherDone
 	workers.Wait()
-	cancelServe()
+	cancelAdmission()
+	cancelSessions()
 
-	return errors.Join(acceptErr, shutdownErr, connectionErrors.result())
+	return serveResult{
+		terminalErr:    acceptErr,
+		cleanupErr:     errors.Join(shutdownErr, connectionErrors.result()),
+		runtimeStopped: runtimeStopped,
+	}
 }
 
 // accept retries connection-local admission failures but returns endpoint failures to the daemon owner.
 func (runner *Runner) accept(
-	ctx context.Context,
+	admissionContext context.Context,
+	sessionContext context.Context,
 	listener local.Listener,
 	registry *connectionRegistry,
 	slots chan struct{},
@@ -309,7 +629,7 @@ func (runner *Runner) accept(
 	for {
 		select {
 		case slots <- struct{}{}:
-		case <-ctx.Done():
+		case <-admissionContext.Done():
 			return nil
 		}
 
@@ -321,7 +641,7 @@ func (runner *Runner) accept(
 					err = errors.Join(err, fmt.Errorf("close connection returned by failed accept: %w", closeErr))
 				}
 			}
-			if ctx.Err() != nil {
+			if admissionContext.Err() != nil {
 				return nil
 			}
 			if !runner.retryAccept(err) {
@@ -330,8 +650,8 @@ func (runner *Runner) accept(
 
 			consecutiveFailures++
 			runner.observe(fmt.Errorf("retry local daemon accept: %w", err))
-			if err := runner.acceptDelay(ctx, consecutiveFailures); err != nil {
-				if ctx.Err() != nil {
+			if err := runner.acceptDelay(admissionContext, consecutiveFailures); err != nil {
+				if admissionContext.Err() != nil {
 					return nil
 				}
 				return fmt.Errorf("back off local daemon accept: %w", err)
@@ -354,7 +674,7 @@ func (runner *Runner) accept(
 		}
 
 		workers.Add(1)
-		go runner.serveConnection(ctx, managed, registry, slots, workers, connectionErrors)
+		go runner.serveConnection(sessionContext, managed, registry, slots, workers, connectionErrors)
 	}
 }
 
