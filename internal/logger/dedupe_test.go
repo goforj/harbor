@@ -1,0 +1,423 @@
+package logger
+
+import (
+	"bytes"
+	"context"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/goforj/harbor/internal/inspects"
+	"github.com/goforj/harbor/internal/runtime"
+)
+
+func TestNormalizeLogEntrySignatureIgnoresDynamicFields(t *testing.T) {
+	entryA := LogEntry{
+		Level:   "info",
+		Message: "HTTP Request",
+		Fields: map[string]any{
+			"method":  "GET",
+			"status":  200,
+			"uri":     "/health",
+			"latency": "0.01ms",
+		},
+	}
+	entryB := LogEntry{
+		Level:   "info",
+		Message: "HTTP Request",
+		Fields: map[string]any{
+			"method":  "GET",
+			"status":  200,
+			"uri":     "/health",
+			"latency": "9.99ms",
+			"error":   "request failed: trace=abc123",
+		},
+	}
+	sigA := normalizeLogEntrySignature(entryA)
+	sigB := normalizeLogEntrySignature(entryB)
+	if sigA == "" || sigB == "" {
+		t.Fatalf("expected non-empty structured signatures")
+	}
+	if sigA != sigB {
+		t.Fatalf("expected equal structured signatures, got %q != %q", sigA, sigB)
+	}
+}
+
+func TestBuildEventSignatureIgnoresDynamicFieldsAndFieldOrder(t *testing.T) {
+	fieldsA := []eventField{
+		{key: "method", value: "GET"},
+		{key: "status", value: 200},
+		{key: "uri", value: "/health"},
+		{key: "latency", value: "0.01ms"},
+	}
+	fieldsB := []eventField{
+		{key: "uri", value: "/health"},
+		{key: "status", value: 200},
+		{key: "method", value: "GET"},
+		{key: "latency", value: "9.99ms"},
+		{key: "error", value: "request failed: trace=abc123"},
+	}
+
+	sigA := buildEventSignature("info", "HTTP Request", fieldsA, true)
+	sigB := buildEventSignature("info", "HTTP Request", fieldsB, true)
+	if sigA == "" || sigB == "" {
+		t.Fatalf("expected non-empty event signatures")
+	}
+	if sigA != sigB {
+		t.Fatalf("expected equal event signatures, got %q != %q", sigA, sigB)
+	}
+}
+
+func TestBuildEventSignaturePreservesFluentFieldOrderWithoutSorting(t *testing.T) {
+	fieldsA := []eventField{
+		{key: "method", value: "GET"},
+		{key: "status", value: 200},
+		{key: "uri", value: "/health"},
+	}
+	fieldsB := []eventField{
+		{key: "uri", value: "/health"},
+		{key: "status", value: 200},
+		{key: "method", value: "GET"},
+	}
+
+	sigA := buildEventSignature("info", "HTTP Request", fieldsA, false)
+	sigB := buildEventSignature("info", "HTTP Request", fieldsB, false)
+	if sigA == "" || sigB == "" {
+		t.Fatalf("expected non-empty event signatures")
+	}
+	if sigA == sigB {
+		t.Fatalf("expected ordered event signatures to preserve field order, got %q", sigA)
+	}
+}
+
+func TestBuildHTTPAccessSignatureIgnoresLatencyAndError(t *testing.T) {
+	contextFields := []eventField{
+		{key: "source", value: "http"},
+	}
+
+	sigA := buildHTTPAccessSignature("/-/health", 200, "GET", contextFields)
+	sigB := buildHTTPAccessSignature("/-/health", 200, "GET", contextFields)
+	if sigA == "" || sigB == "" {
+		t.Fatalf("expected non-empty HTTP access signatures")
+	}
+	if sigA != sigB {
+		t.Fatalf("expected equal HTTP access signatures, got %q != %q", sigA, sigB)
+	}
+}
+
+func TestEventPoolDoesNotLeakFieldsAcrossEmits(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv(logDedupeEnabledEnv, "false")
+
+	log := newAppLoggerWithWriters(loadLogConfig(), 0, &bytes.Buffer{}, &bytes.Buffer{})
+	entries := make([]LogEntry, 0, 2)
+	log.AddSink(func(entry LogEntry) {
+		entries = append(entries, entry)
+	})
+
+	log.Info().Str("route", "/first").Msg("first")
+	log.Info().Int("status", 200).Msg("second")
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 sink entries, got %d", len(entries))
+	}
+	if got := ensureLogEntryFields(&entries[0])["route"]; got != "/first" {
+		t.Fatalf("expected first route field, got %#v", got)
+	}
+	if _, ok := ensureLogEntryFields(&entries[1])["route"]; ok {
+		t.Fatalf("expected pooled event to reset route field, got %#v", entries[1].Fields["route"])
+	}
+	if got := ensureLogEntryFields(&entries[1])["status"]; got != 200 {
+		t.Fatalf("expected second status field, got %#v", got)
+	}
+}
+
+func TestConcurrentLoggerEmitsDoNotLeakFields(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv(logDedupeEnabledEnv, "false")
+
+	log := newAppLoggerWithWriters(loadLogConfig(), 0, &bytes.Buffer{}, &bytes.Buffer{})
+
+	const workers = 16
+	const perWorker = 64
+
+	var (
+		mu      sync.Mutex
+		entries = make([]LogEntry, 0, workers*perWorker)
+		wg      sync.WaitGroup
+	)
+
+	log.AddSink(func(entry LogEntry) {
+		mu.Lock()
+		entries = append(entries, entry)
+		mu.Unlock()
+	})
+
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				log.Info().
+					Int("worker", worker).
+					Int("seq", i).
+					Str("message_kind", "concurrent").
+					Msg("parallel")
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(entries) != workers*perWorker {
+		t.Fatalf("expected %d entries, got %d", workers*perWorker, len(entries))
+	}
+	for _, entry := range entries {
+		fields := ensureLogEntryFields(&entry)
+		if entry.Message != "parallel" {
+			t.Fatalf("expected message parallel, got %#v", entry.Message)
+		}
+		if fields["message_kind"] != "concurrent" {
+			t.Fatalf("expected message_kind field, got %#v", fields["message_kind"])
+		}
+		if _, ok := fields["worker"]; !ok {
+			t.Fatalf("expected worker field, got %#v", fields)
+		}
+		if _, ok := fields["seq"]; !ok {
+			t.Fatalf("expected seq field, got %#v", fields)
+		}
+	}
+}
+
+func TestConcurrentContextLoggersPreserveResolvedContextFields(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv(logDedupeEnabledEnv, "false")
+
+	base := newAppLoggerWithWriters(loadLogConfig(), 0, &bytes.Buffer{}, &bytes.Buffer{})
+
+	var (
+		mu      sync.Mutex
+		entries = make([]LogEntry, 0, 64)
+		wg      sync.WaitGroup
+	)
+
+	base.AddSink(func(entry LogEntry) {
+		mu.Lock()
+		entries = append(entries, entry)
+		mu.Unlock()
+	})
+
+	const workers = 8
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := runtime.WithSource(context.Background(), runtime.SourceHTTP)
+			ctx = inspects.WithInspectID(ctx, "inspect-"+string(rune('a'+worker)))
+			log := base.WithContext(ctx)
+			for i := 0; i < 8; i++ {
+				log.Info().Int("worker", worker).Msg("ctx")
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(entries) != workers*8 {
+		t.Fatalf("expected %d entries, got %d", workers*8, len(entries))
+	}
+	for _, entry := range entries {
+		fields := ensureLogEntryFields(&entry)
+		if entry.Message != "ctx" {
+			t.Fatalf("expected ctx message, got %#v", entry.Message)
+		}
+		if fields["source"] != "http" {
+			t.Fatalf("expected source http, got %#v", fields["source"])
+		}
+		inspectID, _ := fields["inspect_id"].(string)
+		if !strings.HasPrefix(inspectID, "inspect-") {
+			t.Fatalf("expected inspect id prefix, got %#v", fields["inspect_id"])
+		}
+	}
+}
+
+func TestDedupeWriterSuppressesRepeatedLines(t *testing.T) {
+	t.Setenv(logDedupeEnabledEnv, "true")
+	t.Setenv(logDedupeWindowMSEnv, "5000")
+	t.Setenv(logDedupeBurstEnv, "2")
+	t.Setenv(logDedupeSummaryEveryEnv, "2")
+
+	var out bytes.Buffer
+	w := newDedupeWriter(&out)
+	line := "Test › API › HTTP Request · latency 0.00ms · method GET · status 200 · uri /health #http.Server.Log\n"
+	for i := 0; i < 6; i++ {
+		if _, err := w.Write([]byte(line)); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	}
+	got := out.String()
+	if strings.Count(got, "HTTP Request") > 4 {
+		t.Fatalf("expected dedupe suppression, got output:\n%s", got)
+	}
+	if !strings.Contains(got, "(occurred") {
+		t.Fatalf("expected summary line, got output:\n%s", got)
+	}
+}
+
+func TestDedupeWriterHandlesInterleavedLines(t *testing.T) {
+	t.Setenv(logDedupeEnabledEnv, "true")
+	t.Setenv(logDedupeWindowMSEnv, "5000")
+	t.Setenv(logDedupeBurstEnv, "1")
+	t.Setenv(logDedupeSummaryEveryEnv, "1")
+
+	var out bytes.Buffer
+	w := newDedupeWriter(&out)
+	health := "Test › API › HTTP Request · latency 0.00ms · method GET · status 200 · uri /health #http.Server.Log\n"
+	metrics := "Test › API › HTTP Request · latency 0.00ms · method GET · status 200 · uri /metrics #http.Server.Log\n"
+	seq := []string{health, metrics, health, metrics, health, metrics}
+	for _, line := range seq {
+		if _, err := w.Write([]byte(line)); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	}
+	got := out.String()
+	if strings.Count(got, "(occurred") < 2 {
+		t.Fatalf("expected interleaved dedupe summaries, got output:\n%s", got)
+	}
+}
+
+func TestSinkDedupeSuppressesRepeatedEntries(t *testing.T) {
+	t.Setenv(logDedupeEnabledEnv, "true")
+	t.Setenv(logDedupeWindowMSEnv, "5000")
+	t.Setenv(logDedupeBurstEnv, "1")
+	t.Setenv(logDedupeSummaryEveryEnv, "2")
+
+	d := newSinkDedupe()
+	entry := LogEntry{
+		Level:   "info",
+		Message: "HTTP Request",
+		Fields: map[string]any{
+			"method":  "GET",
+			"status":  200,
+			"uri":     "/health",
+			"latency": "0.01ms",
+		},
+	}
+
+	emit, summary := d.filter(entry)
+	if !emit || summary != nil {
+		t.Fatalf("first event should emit without summary")
+	}
+
+	emit, summary = d.filter(entry)
+	if emit || summary != nil {
+		t.Fatalf("second event should be suppressed")
+	}
+
+	emit, summary = d.filter(entry)
+	if emit {
+		t.Fatalf("third event should remain suppressed")
+	}
+	if summary == nil {
+		t.Fatalf("expected summary event after threshold")
+	}
+	if got := summary.Fields["occurred"]; got != "2x" {
+		t.Fatalf("expected occurred field to be 2x, got: %v", got)
+	}
+	if got := summary.Fields["dedupe"]; got != "summary" {
+		t.Fatalf("expected dedupe field to be summary, got: %v", got)
+	}
+	if got, ok := summary.Fields["deduped"]; !ok || got != true {
+		t.Fatalf("expected deduped marker in summary fields")
+	}
+}
+
+func TestSinkDedupeInterleavedEntriesSummarizeIndependently(t *testing.T) {
+	t.Setenv(logDedupeEnabledEnv, "true")
+	t.Setenv(logDedupeWindowMSEnv, "5000")
+	t.Setenv(logDedupeBurstEnv, "1")
+	t.Setenv(logDedupeSummaryEveryEnv, "1")
+
+	d := newSinkDedupe()
+	health := LogEntry{
+		Level:   "info",
+		Message: "HTTP Request",
+		Fields: map[string]any{
+			"method":  "GET",
+			"status":  200,
+			"uri":     "/health",
+			"latency": "0.01ms",
+		},
+	}
+	metrics := LogEntry{
+		Level:   "info",
+		Message: "HTTP Request",
+		Fields: map[string]any{
+			"method":  "GET",
+			"status":  200,
+			"uri":     "/metrics",
+			"latency": "0.01ms",
+		},
+	}
+
+	var summaries int
+	seq := []LogEntry{health, metrics, health, metrics}
+	for _, entry := range seq {
+		emit, summary := d.filter(entry)
+		if emit {
+			continue
+		}
+		if summary != nil {
+			summaries++
+		}
+	}
+	if summaries < 2 {
+		t.Fatalf("expected at least 2 summaries for interleaved structured entries, got %d", summaries)
+	}
+}
+
+func TestSinkDedupeEmitsSummaryOnWindowRollover(t *testing.T) {
+	t.Setenv(logDedupeEnabledEnv, "true")
+	t.Setenv(logDedupeWindowMSEnv, "5")
+	t.Setenv(logDedupeBurstEnv, "1")
+	t.Setenv(logDedupeSummaryEveryEnv, "1000")
+
+	d := newSinkDedupe()
+	entry := LogEntry{
+		Level:   "info",
+		Message: "HTTP Request",
+		Fields: map[string]any{
+			"method":  "GET",
+			"status":  401,
+			"uri":     "/api/v1/hello",
+			"latency": "0.03ms",
+		},
+	}
+
+	emit, summary := d.filter(entry)
+	if !emit || summary != nil {
+		t.Fatalf("first event should emit without summary")
+	}
+
+	emit, summary = d.filter(entry)
+	if emit || summary != nil {
+		t.Fatalf("second event should be suppressed without summary")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	emit, summary = d.filter(entry)
+	if !emit {
+		t.Fatalf("rollover event should emit")
+	}
+	if summary == nil {
+		t.Fatalf("expected rollover summary")
+	}
+	if got := summary.Fields["occurred"]; got != "1x" {
+		t.Fatalf("expected occurred field to be 1x, got: %v", got)
+	}
+	if got := summary.Fields["dedupe"]; got != "summary" {
+		t.Fatalf("expected dedupe field to be summary, got: %v", got)
+	}
+}

@@ -4,10 +4,10 @@ Status: proposed, with platform proof gates called out below
 
 ## Contract
 
-Harbor's network promise is user-facing:
+Harbor's network promise is user-facing on the published OS/browser/client support matrix:
 
 - application URLs have stable `.test` names and no arbitrary port suffix;
-- HTTPS is locally trusted;
+- HTTPS is locally trusted by every browser and native client listed for that platform profile;
 - raw infrastructure keeps its protocol-native port;
 - several projects can expose the same native ports concurrently;
 - no project `.env`, Compose file, or documented port needs a machine-specific edit;
@@ -50,7 +50,7 @@ Example with two projects:
 | Public endpoint | DNS answer | Harbor listener | Private upstream |
 |---|---:|---:|---:|
 | `https://orders.test` | `127.0.0.1` | `127.0.0.1:443` | `127.0.0.1:43101` |
-| `https://api.orders.test` | `127.0.0.1` | `127.0.0.1:443` | `127.0.0.1:43102` |
+| `https://admin.orders.test` (named App) | `127.0.0.1` | `127.0.0.1:443` | `127.0.0.1:43102` |
 | `https://mail.orders.test` | `127.0.0.1` | `127.0.0.1:443` | `127.0.0.1:43103` |
 | `mysql.orders.test:3306` | `127.77.0.10` | `127.77.0.10:3306` | `127.0.0.1:43106` |
 | `redis.orders.test:6379` | `127.77.0.10` | `127.77.0.10:6379` | `127.0.0.1:43107` |
@@ -82,9 +82,9 @@ Default conventions are:
 |---|---|
 | Default App | `<project>.test` |
 | Named App | `<app>.<project>.test` |
-| API when separately addressable | `api.<project>.test` or the App-scoped name supplied by GoForj |
-| Lighthouse | `lighthouse.<project>.test` |
-| API Index | `api-index.<project>.test` |
+| API | The owning App domain and routes supplied by GoForj |
+| Lighthouse | `https://<app-domain>/lighthouse` unless GoForj resolves another URL |
+| API Reference / Swagger | `https://<app-domain>/swagger` unless GoForj resolves another URL; the GoForj API Index remains its backing artifact |
 | Mailpit web UI | `mail.<project>.test` |
 | Mail SMTP | `smtp.<project>.test:1025` |
 | MySQL | `mysql.<project>.test:3306` |
@@ -101,7 +101,9 @@ The DNS server answers only registered exact names. A certificate may contain se
 
 ## Address leases
 
-Harbor selects an unused private portion of IPv4 loopback during setup and stores that pool as machine-local state. It does not assume an example range is free merely because it belongs to `127.0.0.0/8`.
+Harbor selects an unused private portion of IPv4 loopback during setup and stores that pool as machine-local state. It does not assume an example range is free merely because it belongs to `127.0.0.0/8`. Full mode must prove capacity for at least the documented concurrent-project limit plus secondary same-port identities; V1's minimum acceptance capacity is three full projects and one secondary identity per project.
+
+Creating or persisting those addresses is an elevated host mutation on platforms such as macOS and commonly Linux; Windows also requires an approved native configuration path. The unprivileged daemon requests `EnsureLoopbackIdentity` from the one-shot helper. The helper runs as root/Administrator, verifies that the address and installation ownership are safe, applies only that operation, returns evidence, and exits. The daemon then independently proves it can bind the address before committing the lease.
 
 Each project lease contains:
 
@@ -119,7 +121,9 @@ Harbor checks the complete address before assignment:
 - a foreign listener on any required port;
 - another resolver's answer;
 - Harbor state from a previous installation;
-- Docker or virtualization reservations observed on the machine.
+- an actual bind probe on the candidate address and every required port.
+
+Pool exhaustion is deterministic: registration remains uncommitted, shows the required and available identity counts, and never reuses an active or quarantined lease. The release support profile records the proven capacity and reboot restoration time.
 
 IPv6 is not published in the first release. DNS returns A records only, and the ingress does not create an intermittent AAAA path it cannot support equivalently. IPv6 requires its own stable lease, loopback binding, firewall, Docker, and test design before enablement.
 
@@ -127,11 +131,13 @@ IPv6 is not published in the first release. DNS returns A records only, and the 
 
 Harbor runs an authoritative DNS server for its `.test` zone. It does not forward unrelated queries. The OS resolver sends only the `.test` suffix to Harbor, so existing DHCP, VPN, corporate split-DNS, and user resolver choices remain responsible for every other name.
 
+Setup first inspects existing `.test` resolver routes, NRPT rules, hosts entries, DNS answers, and known local-development ownership markers. Harbor refuses full mode when another tool already owns the suffix. An explicit takeover/migration flow must identify that tool, snapshot only the affected policy, and receive user confirmation; ordinary setup cannot silently shadow it. Uninstall restores an adopted prior rule only when its compare-and-swap precondition still matches, preserving concurrent foreign changes.
+
 The server supports UDP and TCP, applies the same record snapshot atomically, and returns:
 
 - an A record and bounded TTL for a registered endpoint;
 - NXDOMAIN for an unregistered `.test` name;
-- no AAAA answer in the first release;
+- authoritative NOERROR/NODATA for AAAA in the first release;
 - refusal for names outside Harbor's zone.
 
 The daemon builds a candidate record set, validates duplicate names and address ownership, commits it to the DNS server, and then verifies resolution through both a direct DNS query and the operating system resolver.
@@ -173,7 +179,7 @@ The ingress supports the application behavior GoForj already needs:
 
 Connection count, header size, body policy, TLS handshake, upstream connect, read, write, idle, and upgraded-connection limits are explicit and tested. A slow or broken project cannot exhaust the daemon's entire ingress.
 
-The local CA and leaf lifecycle is defined in [architecture.md](./architecture.md). Each leaf contains only registered exact domains. Trust is verified with an OS-native client, not merely by checking that a certificate file exists.
+The local CA and leaf lifecycle is defined in [architecture.md](./architecture.md). Each leaf contains only registered exact domains. Trust is verified with the supported Safari, Edge, Chrome, Firefox, sandbox-package, and OS-native client combinations declared for that platform profile, not merely by checking that a certificate file exists. A Linux packaging/browser combination that uses a separate trust store is either integrated and tested or visibly outside full mode.
 
 ## Native TCP relays
 
@@ -187,12 +193,13 @@ protocol + project loopback IP + native public port
 The relay does not parse or modify MySQL, PostgreSQL, Redis, SMTP, or other application protocols. It provides:
 
 - bounded concurrent connections;
-- connect and idle timeouts appropriate to long-lived database clients;
+- an upstream connect timeout, bounded connection count, TCP keepalive, and shutdown deadlines, but no application-idle timeout by default because healthy database pools may be idle for hours;
 - half-close support;
 - byte and connection observations without payload logging;
 - graceful listener replacement;
 - readiness based on an upstream-specific probe supplied by GoForj when available;
-- no listener until the address and upstream ownership are verified.
+- no listener until the address and upstream ownership are verified;
+- continuing process/container ownership checks, with immediate unpublish/degrade if the private port is released and claimed by a foreign process.
 
 If two resources in one project need the same TCP port, Harbor gives the second resource its own project-owned loopback address. It never silently offsets the public port.
 
@@ -200,7 +207,7 @@ Literal `localhost:3306` cannot identify a project when several projects use MyS
 
 ## Go App upstreams
 
-Harbor gives each HTTP App a private loopback port and a public HTTPS URL. GoForj applies these as a final managed runtime overlay after its normal project environment layers:
+Harbor gives each HTTP App a private loopback port and a public HTTPS URL. GoForj applies these through an App-final managed overlay after its normal project environment layers:
 
 ```text
 bind address: 127.0.0.1
@@ -210,41 +217,49 @@ public URL:    https://<app-domain>
 
 The private port is not written to `.env` and may change after a complete session recreation. The public domain is stable.
 
-Metrics and any other auxiliary HTTP listener must have a configurable bind address before Harbor exposes it. Harbor cannot safely manage a generated listener that always binds all interfaces.
+Metrics and every other auxiliary listener must have a configurable bind address before Harbor exposes it. Harbor cannot safely manage a generated listener that always binds all interfaces. Generated combined HTTP metrics and Lighthouse are routes on the App's existing listener, not additional ports; standalone worker/scheduler metrics are listeners only for the active command shapes that open them. Every active listener is present in the session plan. Because current arbitrary custom runtimes/watchers have no typed endpoint metadata, any such process blocks full mode until GoForj can declare, assign, enforce, and observe its listener contract.
 
 ## Compose upstreams
 
-GoForj continues to own Compose intent and lifecycle commands. In a managed session, its final runtime overlay gives each published service a private loopback host port:
+GoForj continues to own Compose intent and lifecycle commands. In a managed session, a command-local publication environment gives each published service a private loopback host port:
 
 ```text
 IP_ADDRESS=127.0.0.1
 DB_MYSQL_PORT=<private lease>
 DB_POSTGRES_PORT=<private lease>
-REDIS_PORT=<private lease>
+REDIS_PUBLISH_PORT=<private lease>
 MAILPIT_SMTP_PORT=<private lease>
 MAILPIT_HTTP_PORT=<private lease>
 GRAFANA_PORT=<private lease>
 ```
 
-These names illustrate today's generated template; Harbor sends semantic endpoint assignments and GoForj maps them to the correct current keys.
+These names illustrate the intended purpose-specific mapping. Today's generated template overloads `REDIS_PORT`; GoForj must add `REDIS_PUBLISH_PORT` with a backward-compatible fallback for standalone projects. Harbor sends semantic endpoint assignments and GoForj maps them to current template keys. Publication keys are never applied to App processes, whose `REDIS_PORT` remains the native connection port.
 
 The public database/cache/mail endpoint remains the native port on the project loopback address. Web dashboards go through HTTP ingress. Containers communicate with each other through Compose service DNS and container ports, not through host loopback domains.
 
-Harbor sets a deterministic Compose project name and requires ownership labels. It inspects the resulting publication and fails if Docker bound `0.0.0.0` or `::`. It routes to the published host port, never to a Docker container IP, because Docker Desktop places container networks inside a VM.
+Each project keeps its own Compose project and persistent volumes. Harbor does not point every GoForj app at one global MySQL, Redis, Mailpit, or observability stack. The shared ingress makes separate services convenient without weakening their data, version, configuration, restart, or failure isolation.
 
-Containers that need to call a host App use `host.docker.internal`; native Linux Compose adds the supported host-gateway mapping. This is separate from public `.test` resolution.
+Managed startup has an explicit route barrier. After GoForj's typed Compose phase reports the actual private publications, Harbor verifies their ownership, starts the corresponding native relays, and acknowledges readiness. Only then does GoForj run host-side database setup or migrations using public names such as `mysql.<project>.test:3306`.
 
-The Docker socket is treated as privileged. Only the constrained daemon adapter can use it.
+Registration asks GoForj to discover the existing directory-derived Compose project identity and adopts it when a checkout already has containers or named volumes. A fresh project may use a stable Harbor-derived identity. Harbor never changes identity during ordinary start; doing so would create a new set of named volumes and make existing data appear lost. GoForj reports the identity, Compose's built-in labels, any labels injected through the session override, and the actual publication. Harbor fails if the reported binding is `0.0.0.0` or `::` and routes to the published host port, never a Docker container IP, because Docker Desktop places container networks inside a VM.
+
+Containers cannot reach an App bound only to host `127.0.0.1` merely by resolving `host.docker.internal`; on native Linux that name normally reaches the bridge gateway, not loopback. For observability and any other required container-to-host callback, managed `forj dev` hosts a narrow in-process relay on the platform's proven container-only host interface and forwards only the session's registered loopback targets. GoForj owns this relay because it owns Compose and observes the relevant network; Harbor plans its port and consumes typed evidence without opening Docker. Session scrape targets are mounted from runtime storage outside the checkout. The relay never binds a LAN interface and is torn down with the session. Containers continue to use Compose DNS for container-to-container traffic.
+
+The Docker socket is treated as privileged. `harbord` never opens it; GoForj owns Compose mutation and sends typed observations and logs through the managed-session protocol.
+
+Full mode requires Docker Engine 28.0.0 or a Docker Desktop release containing an equivalent or newer engine. Older engines have documented cases where localhost-published ports are reachable from the same L2 segment. Setup and doctor verify the engine and insecure direct-routing/firewall modes, and a peer-reachability test backs the version check.
 
 ## Low ports
 
-The daemon stays unprivileged. The platform proof phase selects and verifies the narrowest supported path for `80`, `443`, and Windows DNS `53`:
+The daemon stays unprivileged. The target V1 mechanisms for `80`, `443`, and Windows DNS `53` are below; Phase 0 must prove them before they become production decisions:
 
-| Platform | Candidate mechanism to prove |
+| Platform | Target mechanism to prove |
 |---|---|
-| macOS | An owned launchd socket/redirect arrangement or narrowly installed packet-filter rule forwards loopback 80/443 to unprivileged ingress; the daemon never runs as root. |
-| Linux | An owned loopback redirect to high ports, or a narrowly bounded `CAP_NET_BIND_SERVICE` service definition; never broad root or a generic passwordless command. |
-| Windows | Direct Winsock bind where supported; otherwise an exact URL reservation only if the chosen HTTP stack uses HTTP.sys. DNS 53 is bound on its dedicated Harbor loopback identity. |
+| macOS | The helper installs an owned PF anchor that redirects loopback 80/443 to `harbord`'s unprivileged high listeners and an owned boot rule that reloads only that anchor. |
+| Linux | The helper installs an owned nftables loopback-output redirect from 80/443 to unprivileged high listeners. Each supported firewall/backend profile must preserve foreign rules; unsupported backends block full mode. |
+| Windows | The medium-integrity, unelevated daemon binds 80/443 and dedicated-loopback DNS 53 directly through Winsock. The test must prove no HTTP.sys reservation or elevated broker is required. |
+
+These targets preserve the normal runtime architecture: no long-lived root broker and no network capability on the full daemon. The one-shot product installer is not a listener or networking broker. If a target OS cannot support its mechanism, Phase 0 must revise the process and threat model explicitly—adding a narrow persistent broker only if justified—rather than quietly granting broad authority to `harbord`.
 
 An occupied low port is a failed capability with owner evidence and repair guidance. Harbor does not terminate the process, move the public endpoint to `:8443`, or report the project ready.
 
@@ -268,8 +283,8 @@ Candidate address mechanisms are:
 | Platform | Candidate | Unproven question that blocks support |
 |---|---|---|
 | macOS | `lo0` aliases managed through a typed helper and durable owned startup configuration. | Minimum durable alias mechanism and Docker Desktop interaction across reboot. |
-| Linux | The kernel's loopback range where bindable, with explicit `lo` addresses on systems that require them. | Behavior across supported network managers, firewall backends, rootless Docker/Podman, and non-systemd support. |
-| Windows | Distinct addresses on the loopback pseudo-interface or an installed loopback adapter, managed through native APIs. | A supported, repeatable, removable method across supported Windows releases and Docker Desktop. |
+| Linux | The kernel's loopback range where bindable, with explicit `lo` addresses on systems that require them. | Behavior on the declared Ubuntu 24.04, NetworkManager/systemd-resolved, nftables, rootful Docker Engine profile. Rootless Docker, Podman, other firewall/resolver stacks, and non-systemd systems remain preview until separately proved. |
+| Windows | The helper uses the native IP Helper API against an interface verified as loopback by immutable native properties, with explicit persistence and `SkipAsSource` behavior. It never accepts an interface index/name from a request. | A supported, repeatable, removable method across supported Windows releases and Docker Desktop that never changes a physical NIC, DHCP, or its routes. |
 
 If Windows cannot meet the native same-port test, Harbor may ship an explicitly limited Windows preview with translated ports, but it must not call that mode feature parity. The first full cross-platform release remains blocked until the invariant passes.
 

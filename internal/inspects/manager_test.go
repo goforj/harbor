@@ -1,0 +1,677 @@
+package inspects
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"os"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/goforj/harbor/internal/runtime"
+)
+
+func assertIntAttr(t *testing.T, value any, want int, name string) {
+	t.Helper()
+
+	switch got := value.(type) {
+	case int:
+		if got != want {
+			t.Fatalf("%s attr = %v, want %d", name, got, want)
+		}
+	case int64:
+		if got != int64(want) {
+			t.Fatalf("%s attr = %v, want %d", name, got, want)
+		}
+	case float64:
+		if got != float64(want) {
+			t.Fatalf("%s attr = %v, want %d", name, got, want)
+		}
+	default:
+		t.Fatalf("%s attr = %v (%T), want %d", name, value, value, want)
+	}
+}
+
+func newTestManager(t *testing.T) *Manager {
+	t.Helper()
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	return NewManager()
+}
+
+// TestPrimitiveObservationEventsRetainNormalizedAttributes verifies the owned DTO boundary preserves the existing inspect timeline contract.
+func TestPrimitiveObservationEventsRetainNormalizedAttributes(t *testing.T) {
+	manager := newTestManager(t)
+	ctx := manager.Begin(context.Background(), runtime.SourceHTTP, "request", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	manager.RecordCacheEvent(ctx, CacheOperationInspectEvent{
+		Name:      " sessions ",
+		Operation: " get ",
+		Key:       " session:42 ",
+		Driver:    " memory ",
+		Hit:       true,
+		Duration:  2 * time.Millisecond,
+	})
+	manager.RecordStorageEvent(ctx, StorageOperationInspectEvent{
+		Operation: " put ",
+		Disk:      " public ",
+		Path:      " avatars/42.png ",
+		Driver:    " local ",
+		Duration:  3 * time.Millisecond,
+	})
+	queueErr := errors.New("retry scheduled")
+	manager.RecordQueueEvent(ctx, QueueInspectEvent{
+		Kind:      "process_retried",
+		Driver:    "redis",
+		Queue:     "critical",
+		JobName:   "emails:send",
+		JobKey:    "email-42",
+		Attempt:   2,
+		Scheduled: true,
+		Duration:  4 * time.Millisecond,
+		Err:       queueErr,
+	})
+
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("load inspect record: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect record")
+	}
+	if len(record.Events) != 3 {
+		t.Fatalf("inspect event count = %d, want 3", len(record.Events))
+	}
+
+	cacheEvent := record.Events[0]
+	if cacheEvent.Kind != EventKindCache || cacheEvent.Name != "get" || cacheEvent.Status != statusOK {
+		t.Fatalf("cache inspect event = %#v", cacheEvent)
+	}
+	if cacheEvent.Attributes["cache"] != "sessions" || cacheEvent.Attributes["key"] != "session:42" || cacheEvent.Attributes["driver"] != "memory" || cacheEvent.Attributes["hit"] != true {
+		t.Fatalf("cache inspect attributes = %#v", cacheEvent.Attributes)
+	}
+	assertIntAttr(t, cacheEvent.Attributes["duration_ms"], 2, "cache duration_ms")
+
+	storageEvent := record.Events[1]
+	if storageEvent.Kind != EventKindStorage || storageEvent.Name != "put" || storageEvent.Status != statusOK {
+		t.Fatalf("storage inspect event = %#v", storageEvent)
+	}
+	if storageEvent.Attributes["disk"] != "public" || storageEvent.Attributes["path"] != "avatars/42.png" || storageEvent.Attributes["driver"] != "local" {
+		t.Fatalf("storage inspect attributes = %#v", storageEvent.Attributes)
+	}
+	assertIntAttr(t, storageEvent.Attributes["duration_ms"], 3, "storage duration_ms")
+
+	queueEvent := record.Events[2]
+	if queueEvent.Kind != EventKindQueue || queueEvent.Name != "process_retried" || queueEvent.Status != statusError {
+		t.Fatalf("queue inspect event = %#v", queueEvent)
+	}
+	if queueEvent.Attributes["queue"] != "critical" || queueEvent.Attributes["job_name"] != "emails:send" || queueEvent.Attributes["job_key"] != "email-42" || queueEvent.Attributes["driver"] != "redis" {
+		t.Fatalf("queue inspect attributes = %#v", queueEvent.Attributes)
+	}
+	assertIntAttr(t, queueEvent.Attributes["attempt"], 2, "queue attempt")
+	assertIntAttr(t, queueEvent.Attributes["duration_ms"], 4, "queue duration_ms")
+	if queueEvent.Attributes["scheduled"] != true || queueEvent.Attributes["error"] != queueErr.Error() {
+		t.Fatalf("queue inspect outcome attributes = %#v", queueEvent.Attributes)
+	}
+}
+
+func TestManagerBuffersInFlightUntilFinish(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), "http", "request", map[string]string{"path": "/health"})
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	recorder.RecordEvent(InspectEvent{
+		Kind:    EventKindLog,
+		Message: "hello",
+	})
+
+	if _, ok, err := manager.ByID(context.Background(), recorder.InspectID()); err != nil {
+		t.Fatalf("ByID before finish error = %v", err)
+	} else if ok {
+		t.Fatal("expected inspect record to remain in-flight before finish")
+	}
+
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID after finish error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect record after finish")
+	}
+	if record.Summary.EventCount != 1 {
+		t.Fatalf("expected event count 1, got %d", record.Summary.EventCount)
+	}
+	if len(record.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(record.Events))
+	}
+}
+
+func TestNewConfigFallsBackToMaxTotalWhenUnset(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_MAX_TOTAL", "")
+
+	cfg := NewConfig()
+	if cfg.MaxTotal != defaultInspectMaxTotal {
+		t.Fatalf("expected default max total %d, got %d", defaultInspectMaxTotal, cfg.MaxTotal)
+	}
+	if cfg.SampleRate != 1.0 {
+		t.Fatalf("expected default sample rate 1.0, got %f", cfg.SampleRate)
+	}
+}
+
+func TestManagerRespectsMaxInflight(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+	manager.config.MaxInflight = 1
+
+	first := manager.Begin(context.Background(), "http", "first", nil)
+	if RecorderFromContext(first) == nil {
+		t.Fatal("expected first inspect recorder")
+	}
+
+	second := manager.Begin(context.Background(), "http", "second", nil)
+	if RecorderFromContext(second) != nil {
+		t.Fatal("expected second inspect to be rejected by max inflight")
+	}
+}
+
+func TestManagerRespectsSampleRate(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	manager.config.SampleRate = 0
+	if recorder := RecorderFromContext(manager.Begin(context.Background(), "http", "sampled-out", nil)); recorder != nil {
+		t.Fatal("expected inspect to be skipped when sample rate is 0")
+	}
+
+	manager.config.SampleRate = 1
+	if recorder := RecorderFromContext(manager.Begin(context.Background(), "http", "sampled-in", nil)); recorder == nil {
+		t.Fatal("expected inspect to be captured when sample rate is 1")
+	}
+}
+
+func TestManagerRetainsLatestEventsInOrderWithinMaxEvents(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+	manager.config.MaxEvents = 3
+
+	ctx := manager.Begin(context.Background(), "http", "request", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	for i := 1; i <= 5; i++ {
+		recorder.RecordEvent(InspectEvent{
+			Kind:    EventKindLog,
+			Message: "event-" + strconv.Itoa(i),
+		})
+	}
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect")
+	}
+	if len(record.Events) != 3 {
+		t.Fatalf("expected 3 retained events, got %d", len(record.Events))
+	}
+	if record.Events[0].Message != "event-3" || record.Events[1].Message != "event-4" || record.Events[2].Message != "event-5" {
+		t.Fatalf("unexpected retained event order: %+v", []string{
+			record.Events[0].Message,
+			record.Events[1].Message,
+			record.Events[2].Message,
+		})
+	}
+	if record.Events[0].Seq != 3 || record.Events[1].Seq != 4 || record.Events[2].Seq != 5 {
+		t.Fatalf("unexpected retained event seqs: %d %d %d", record.Events[0].Seq, record.Events[1].Seq, record.Events[2].Seq)
+	}
+}
+
+func TestBeginBindsSourceAndRecorderWithSingleInspectContext(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), runtime.SourceHTTP, "GET /health", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+	if got := runtime.SourceFromContext(ctx); got != runtime.SourceHTTP {
+		t.Fatalf("expected source %q, got %q", runtime.SourceHTTP, got)
+	}
+	if got := InspectIDFromContext(ctx); got != recorder.InspectID() {
+		t.Fatalf("expected inspect id %q, got %q", recorder.InspectID(), got)
+	}
+}
+
+func TestFinishedInspectContextRemainsUsable(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	type contextKey struct{}
+	manager := NewManager()
+
+	base := context.WithValue(context.Background(), contextKey{}, "preserved")
+	ctx := manager.Begin(base, runtime.SourceHTTP, "GET /health", nil)
+	manager.Finish(ctx, statusOK, nil)
+
+	if got := ctx.Value(contextKey{}); got != "preserved" {
+		t.Fatalf("expected context value to survive inspect finish, got %#v", got)
+	}
+	if got := InspectIDFromContext(ctx); got == "" {
+		t.Fatal("expected inspect id to remain readable after finish")
+	}
+}
+
+type capturePublisher struct {
+	mu      sync.Mutex
+	records []Record
+}
+
+func (p *capturePublisher) Publish(record Record) {
+	p.mu.Lock()
+	p.records = append(p.records, record)
+	p.mu.Unlock()
+}
+
+func TestManagerPublishOnlySkipsLocalPersistence(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+	publisher := &capturePublisher{}
+	manager.SetPublisher(publisher)
+	manager.SetPublishOnly(true)
+
+	ctx := manager.Begin(context.Background(), "jobs", "job-run", map[string]string{"job_name": "test"})
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+	recorder.RecordEvent(InspectEvent{
+		Kind:    EventKindLog,
+		Message: "published",
+	})
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	if _, ok, err := manager.ByID(context.Background(), inspectID); err != nil {
+		t.Fatalf("ByID error = %v", err)
+	} else if ok {
+		t.Fatal("expected publish-only inspect to skip local persistence")
+	}
+
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	if len(publisher.records) != 1 {
+		t.Fatalf("expected 1 published record, got %d", len(publisher.records))
+	}
+	if publisher.records[0].Summary.TraceID != inspectID {
+		t.Fatalf("expected published trace id %s, got %s", inspectID, publisher.records[0].Summary.TraceID)
+	}
+}
+
+func TestManagerCaptureGateSkipsNewInspect(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+	active := false
+	manager.SetCaptureGate(func() bool {
+		return active
+	})
+
+	inactive := manager.Begin(context.Background(), "http", "request", nil)
+	if recorder := RecorderFromContext(inactive); recorder != nil {
+		t.Fatalf("expected inactive capture gate to skip recorder, got %q", recorder.InspectID())
+	}
+
+	active = true
+	captured := manager.Begin(context.Background(), "http", "request", nil)
+	recorder := RecorderFromContext(captured)
+	if recorder == nil {
+		t.Fatal("expected active capture gate to allow recorder")
+	}
+	manager.Finish(captured, statusOK, nil)
+}
+
+func TestRecordQueryEventNormalizesInspectEvent(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), "jobs", "query-run", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	manager.RecordQueryEvent(ctx, DatabaseQueryInspectEvent{
+		Connection:   "default",
+		Driver:       "sqlite",
+		Operation:    "query",
+		Target:       "users",
+		Status:       "ok",
+		Fingerprint:  "fp123",
+		Shape:        "select * from users where email = ?",
+		RawSQL:       "SELECT * FROM users WHERE email = 'a@example.com'",
+		RowsAffected: 1,
+		Duration:     25 * time.Millisecond,
+	})
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect")
+	}
+	if len(record.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(record.Events))
+	}
+
+	event := record.Events[0]
+	if event.Kind != EventKindQuery {
+		t.Fatalf("event kind = %q, want %q", event.Kind, EventKindQuery)
+	}
+	if event.Name != "query" {
+		t.Fatalf("event name = %q, want query", event.Name)
+	}
+	if event.Status != "ok" {
+		t.Fatalf("event status = %q, want ok", event.Status)
+	}
+	if got := event.Attributes["connection"]; got != "default" {
+		t.Fatalf("connection attr = %v, want default", got)
+	}
+	if got := event.Attributes["driver"]; got != "sqlite" {
+		t.Fatalf("driver attr = %v, want sqlite", got)
+	}
+	if got := event.Attributes["target"]; got != "users" {
+		t.Fatalf("target attr = %v, want users", got)
+	}
+	if got := event.Attributes["fingerprint"]; got != "fp123" {
+		t.Fatalf("fingerprint attr = %v, want fp123", got)
+	}
+	assertIntAttr(t, event.Attributes["rows"], 1, "rows")
+}
+
+func TestRecordMailEventNormalizesInspectEvent(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), "jobs", "mail-run", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	manager.RecordMailEvent(ctx, MailSendInspectEvent{
+		Name:     "default",
+		Driver:   "smtp",
+		Duration: 25 * time.Millisecond,
+	})
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect")
+	}
+	if len(record.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(record.Events))
+	}
+
+	event := record.Events[0]
+	if event.Kind != EventKindMail {
+		t.Fatalf("event kind = %q, want %q", event.Kind, EventKindMail)
+	}
+	if event.Name != "default" {
+		t.Fatalf("event name = %q, want default", event.Name)
+	}
+	if event.Status != "ok" {
+		t.Fatalf("event status = %q, want ok", event.Status)
+	}
+	if got := event.Attributes["driver"]; got != "smtp" {
+		t.Fatalf("driver attr = %v, want smtp", got)
+	}
+	assertIntAttr(t, event.Attributes["duration_ms"], 25, "duration_ms")
+}
+
+func TestRecordLogNormalizesInspectEvent(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), "jobs", "log-run", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	manager.RecordLog(ctx, LogInspectEvent{
+		Level:   "WARN",
+		Message: " job delayed ",
+		Fields: map[string]any{
+			"job_id": "j_123",
+		},
+	})
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect")
+	}
+	if len(record.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(record.Events))
+	}
+
+	event := record.Events[0]
+	if event.Kind != EventKindLog {
+		t.Fatalf("event kind = %q, want %q", event.Kind, EventKindLog)
+	}
+	if event.Level != "warn" {
+		t.Fatalf("event level = %q, want warn", event.Level)
+	}
+	if event.Message != "job delayed" {
+		t.Fatalf("event message = %q, want job delayed", event.Message)
+	}
+	if got := event.Attributes["job_id"]; got != "j_123" {
+		t.Fatalf("job_id attr = %v, want j_123", got)
+	}
+}
+
+func TestRecordHTTPExchangeNormalizesInspectEvent(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), "http", "request", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	manager.RecordHTTPExchange(ctx, HTTPExchangeInspectEvent{
+		Method:      "POST",
+		Scheme:      "https",
+		Host:        "api.example.com",
+		URI:         "/v1/users",
+		RequestBody: `{"name":"alice"}`,
+		RequestHeadersRaw: []HTTPHeader{
+			{Name: "Content-Type", Value: "application/json"},
+		},
+		RequestBodyRaw: `{"name":"alice"}`,
+		ResponseStatus: 201,
+		ResponseHeaders: []HTTPHeader{
+			{Name: "Content-Type", Value: "application/json"},
+		},
+		ResponseBody: `{"id":"u_123"}`,
+	})
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect")
+	}
+	if len(record.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(record.Events))
+	}
+
+	event := record.Events[0]
+	if event.Kind != EventKindHTTP {
+		t.Fatalf("event kind = %q, want %q", event.Kind, EventKindHTTP)
+	}
+	if event.Status != "ok" {
+		t.Fatalf("event status = %q, want ok", event.Status)
+	}
+	if event.HTTP == nil {
+		t.Fatal("expected http payload")
+	}
+	if event.HTTP.Method != "POST" {
+		t.Fatalf("http method = %q, want POST", event.HTTP.Method)
+	}
+	if event.HTTP.URI != "/v1/users" {
+		t.Fatalf("http uri = %q, want /v1/users", event.HTTP.URI)
+	}
+	if event.HTTP.ResponseStatus != 201 {
+		t.Fatalf("http response status = %d, want 201", event.HTTP.ResponseStatus)
+	}
+	if event.HTTP.ResponseBody != `{"id":"u_123"}` {
+		t.Fatalf("http response body = %q", event.HTTP.ResponseBody)
+	}
+}
+
+func TestRecordHTTPExchangeFromHeadersNormalizesInspectEvent(t *testing.T) {
+	t.Setenv("LIGHTHOUSE_ENABLED", "true")
+	t.Setenv("LIGHTHOUSE_INSPECT_ENABLED", "true")
+
+	manager := NewManager()
+
+	ctx := manager.Begin(context.Background(), "http", "request", nil)
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+
+	manager.RecordHTTPExchangeFromHeaders(
+		ctx,
+		"POST",
+		"https",
+		"api.example.com",
+		"/v1/users",
+		`{"name":"alice"}`,
+		http.Header{"Content-Type": []string{"application/json"}},
+		`{"name":"alice"}`,
+		201,
+		http.Header{"Content-Type": []string{"application/json"}},
+		`{"id":"u_123"}`,
+	)
+	inspectID := recorder.InspectID()
+	manager.Finish(ctx, statusOK, nil)
+
+	record, ok, err := manager.ByID(context.Background(), inspectID)
+	if err != nil {
+		t.Fatalf("ByID error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted inspect")
+	}
+	if len(record.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(record.Events))
+	}
+
+	event := record.Events[0]
+	if event.HTTP == nil {
+		t.Fatal("expected http payload")
+	}
+	if got := len(event.HTTP.RequestHeadersRaw); got != 1 {
+		t.Fatalf("request header count = %d, want 1", got)
+	}
+	if got := len(event.HTTP.ResponseHeaders); got != 1 {
+		t.Fatalf("response header count = %d, want 1", got)
+	}
+}
+
+func TestBeginHTTPStartsHTTPInspect(t *testing.T) {
+	manager := newTestManager(t)
+
+	ctx := manager.BeginHTTP(context.Background(), "GET /-/health")
+	recorder := RecorderFromContext(ctx)
+	if recorder == nil {
+		t.Fatal("expected recorder")
+	}
+	if recorder.source != runtime.SourceHTTP {
+		t.Fatalf("expected source http, got %q", recorder.source)
+	}
+	if recorder.name != "GET /-/health" {
+		t.Fatalf("expected normalized name, got %q", recorder.name)
+	}
+	manager.Finish(ctx, statusOK, nil)
+}
+
+func TestInspectPerformanceBudget(t *testing.T) {
+	if os.Getenv("INSPECT_SKIP_PERF_BUDGET") == "1" {
+		t.Skip("inspect performance budget skipped")
+	}
+	result := testing.Benchmark(BenchmarkInspectBeginFinish)
+	if ns := result.NsPerOp(); ns > 250_000 {
+		t.Fatalf("inspect begin/finish budget exceeded: got %dns/op want <=250000", ns)
+	}
+	if allocs := result.AllocsPerOp(); allocs > 1_500 {
+		t.Fatalf("inspect begin/finish alloc budget exceeded: got %d want <=1500", allocs)
+	}
+	if bytes := result.AllocedBytesPerOp(); bytes > 200_000 {
+		t.Fatalf("inspect begin/finish bytes budget exceeded: got %d want <=200000", bytes)
+	}
+}

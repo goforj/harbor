@@ -1,0 +1,244 @@
+package cmd
+
+import (
+	"encoding/base64"
+	"fmt"
+	"github.com/goforj/env/v2"
+	"github.com/joho/godotenv"
+	"os"
+	"strings"
+)
+
+// CompiledEnvDefaultsBase64 stores build-time unset-only env defaults.
+var CompiledEnvDefaultsBase64 string
+
+// CompiledEnvOverridesBase64 stores build-time forced env overrides.
+var CompiledEnvOverridesBase64 string
+
+// LoadEnv applies compiled overrides/defaults, loads .env files, then
+// reconciles any compiled APP_ENV behavior that should influence layered file
+// selection.
+func LoadEnv() error {
+	overrideAppEnv, hasOverride, err := compiledEnvValue(strings.TrimSpace(CompiledEnvOverridesBase64), "APP_ENV")
+	if err != nil {
+		return err
+	}
+	defaultAppEnv, hasDefault, err := compiledEnvValue(strings.TrimSpace(CompiledEnvDefaultsBase64), "APP_ENV")
+	if err != nil {
+		return err
+	}
+
+	if err := ApplyCompiledEnvOverrides(); err != nil {
+		return err
+	}
+	if err := ApplyCompiledEnvDefaults(); err != nil {
+		return err
+	}
+	if err := env.Load(); err != nil {
+		return err
+	}
+	if err := ApplyCompiledEnvOverrides(); err != nil {
+		return err
+	}
+
+	appEnvBeforeAppOverlay := os.Getenv("APP_ENV")
+	switch {
+	case hasOverride:
+		if err := os.Setenv("APP_ENV", overrideAppEnv); err != nil {
+			return fmt.Errorf("set compiled APP_ENV override: %w", err)
+		}
+		if err := loadCompiledAppEnvFile(overrideAppEnv); err != nil {
+			return err
+		}
+	case hasDefault && os.Getenv("APP_ENV") == defaultAppEnv:
+		if err := loadCompiledAppEnvFile(defaultAppEnv); err != nil {
+			return err
+		}
+	}
+
+	if err := ApplyAppEnvOverlay(); err != nil {
+		return err
+	}
+	if appEnvAfterAppOverlay := os.Getenv("APP_ENV"); appEnvAfterAppOverlay != "" && appEnvAfterAppOverlay != appEnvBeforeAppOverlay {
+		if err := loadCompiledAppEnvFile(appEnvAfterAppOverlay); err != nil {
+			return err
+		}
+		if err := ApplyAppEnvOverlay(); err != nil {
+			return err
+		}
+	}
+	if err := ApplyCompiledEnvOverrides(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ApplyCompiledEnvDefaults seeds compiled env defaults only for keys that are
+// still unset in the process environment.
+func ApplyCompiledEnvDefaults() error {
+	return applyCompiledEnvMap(strings.TrimSpace(CompiledEnvDefaultsBase64), false)
+}
+
+// ApplyCompiledEnvOverrides force-applies compiled env overrides regardless of
+// existing OS or .env-provided values.
+func ApplyCompiledEnvOverrides() error {
+	return applyCompiledEnvMap(strings.TrimSpace(CompiledEnvOverridesBase64), true)
+}
+
+// ApplyAppEnvOverlay promotes active app-prefixed env values over base keys.
+func ApplyAppEnvOverlay() error {
+	prefix := activeAppEnvPrefix()
+	if prefix == "" {
+		return nil
+	}
+	prefix += "_"
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		baseKey := strings.TrimPrefix(key, prefix)
+		if !appOverlayKeyAllowed(baseKey) {
+			continue
+		}
+		if err := os.Setenv(baseKey, value); err != nil {
+			return fmt.Errorf("set app env overlay %s from %s: %w", baseKey, key, err)
+		}
+	}
+	return nil
+}
+
+func activeAppEnvPrefix() string {
+	app := strings.TrimSpace(os.Getenv("FORJ_APP"))
+	if app == "" || app == "app" {
+		return ""
+	}
+	parts := strings.FieldsFunc(app, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' ' || r == '.'
+	})
+	for i, part := range parts {
+		parts[i] = strings.ToUpper(part)
+	}
+	return strings.Join(parts, "_")
+}
+
+func appOverlayKeyAllowed(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	switch key {
+	case "FORJ_APP":
+		return false
+	default:
+		return true
+	}
+}
+
+func applyCompiledEnvMap(raw string, force bool) error {
+	if raw == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		if force {
+			return fmt.Errorf("decode compiled env overrides: %w", err)
+		}
+		return fmt.Errorf("decode compiled env defaults: %w", err)
+	}
+	pairs, err := parseCompiledEnvDefaults(string(decoded))
+	if err != nil {
+		return err
+	}
+	for _, pair := range pairs {
+		if !force {
+			if _, ok := os.LookupEnv(pair.key); ok {
+				continue
+			}
+		}
+		if err := os.Setenv(pair.key, pair.value); err != nil {
+			if force {
+				return fmt.Errorf("set compiled env override %s: %w", pair.key, err)
+			}
+			return fmt.Errorf("set compiled env default %s: %w", pair.key, err)
+		}
+	}
+	return nil
+}
+
+type compiledEnvDefault struct {
+	key   string
+	value string
+}
+
+func parseCompiledEnvDefaults(raw string) ([]compiledEnvDefault, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	entries := strings.Split(raw, ",")
+	pairs := make([]compiledEnvDefault, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("compiled env defaults contain an empty entry")
+		}
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("compiled env default %q must be KEY=value", entry)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("compiled env default %q has an empty key", entry)
+		}
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("compiled env default %q is duplicated", key)
+		}
+		seen[key] = struct{}{}
+		pairs = append(pairs, compiledEnvDefault{
+			key:   key,
+			value: strings.TrimSpace(value),
+		})
+	}
+	return pairs, nil
+}
+
+func compiledEnvValue(raw string, key string) (string, bool, error) {
+	if raw == "" {
+		return "", false, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return "", false, fmt.Errorf("decode compiled env defaults: %w", err)
+	}
+	pairs, err := parseCompiledEnvDefaults(string(decoded))
+	if err != nil {
+		return "", false, err
+	}
+	for _, pair := range pairs {
+		if pair.key == key {
+			return pair.value, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func loadCompiledAppEnvFile(appEnv string) error {
+	appEnv = strings.TrimSpace(appEnv)
+	if appEnv == "" {
+		return nil
+	}
+	path := ".env." + appEnv
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat compiled APP_ENV file %s: %w", path, err)
+	}
+	if err := godotenv.Overload(path); err != nil {
+		return fmt.Errorf("load compiled APP_ENV file %s: %w", path, err)
+	}
+	return nil
+}

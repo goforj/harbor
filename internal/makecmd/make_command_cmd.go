@@ -1,0 +1,508 @@
+package makecmd
+
+import (
+	"bytes"
+	_ "embed"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/template"
+
+	"github.com/goforj/str/v2"
+
+	"github.com/goforj/harbor/internal/console"
+)
+
+// CommandCmd creates app-owned CLI commands so generated apps keep command wiring close to their source.
+type CommandCmd struct {
+	Name                 string            `arg:"" help:"Name of the command (e.g. HelloWorld)"`
+	OutputDir            string            `short:"d" help:"Directory to write the command file to. Grouped names default to their owning package path." default:"./internal/cmd"`
+	CmdName              string            `name:"name" short:"n" aliases:"signature" help:"Override the command signature name (e.g. hello:world)"`
+	Remove               bool              `help:"Remove the generated command file and wiring instead of creating it."`
+	DryRun               bool              `name:"dry-run" help:"Preview remove changes without writing files."`
+	Open                 bool              `short:"o" help:"Open the generated command in your editor."`
+	NoOpen               bool              `name:"no-open" help:"Do not open the generated command, even when FORJ_MAKE_OPEN would."`
+	MakeOpen             string            `name:"make-open" env:"FORJ_MAKE_OPEN" default:"auto" hidden:""`
+	EditorCommand        string            `name:"editor" env:"FORJ_EDITOR" hidden:""`
+	ReservedCommandNames CommandNameOwners `kong:"-"`
+}
+
+type commandTarget struct {
+	rawName     string
+	structName  string
+	outputDir   string
+	outputPath  string
+	commandName string
+	helpText    string
+}
+
+// defaultCommandOutputDir is the fallback package for ungrouped commands.
+const defaultCommandOutputDir = "./internal/cmd"
+
+// Signature exposes make:command as preboot metadata so generation can run before full app startup.
+func (*CommandCmd) Signature() string {
+	return `name:"make:command" help:"Create a new CLI command" goforj:"preboot"`
+}
+
+// NewCommandCmd includes delegated native command names so generated commands cannot shadow forj commands.
+func NewCommandCmd() *CommandCmd {
+	return &CommandCmd{ReservedCommandNames: delegatedNativeCommandNames}
+}
+
+// Help shows examples for colocated commands because this generator is commonly reached through delegated forj.
+func (*CommandCmd) Help() string {
+	return commandExamples(
+		commandExample("make:command", "reports:sync"),
+		commandExample("make:command", "Sync", "-d", "./internal/billing/reports", "--name", "reports:sync"),
+	)
+}
+
+// Run writes the command and app wiring in one pass so the next generate/build sees a complete command graph.
+func (c *CommandCmd) Run() error {
+	target := c.resolveCommandTarget()
+	if c.Remove {
+		return c.remove(target)
+	}
+	if err := validateGeneratedFileOpenFlags(c.Open, c.NoOpen); err != nil {
+		return err
+	}
+
+	if err := c.validateCommandNameAvailable(target.commandName); err != nil {
+		return err
+	}
+
+	if err := c.writeCommandFile(target); err != nil {
+		return err
+	}
+
+	if err := c.injectIntoWireFile(target); err != nil {
+		return err
+	}
+
+	if err := c.injectIntoRootCmd(target); err != nil {
+		return err
+	}
+
+	return maybeOpenGeneratedFile(generatedFileOpenOptions{
+		Path:          target.outputPath,
+		Line:          1,
+		Open:          c.Open,
+		NoOpen:        c.NoOpen,
+		Mode:          c.MakeOpen,
+		EditorCommand: c.EditorCommand,
+	})
+}
+
+func (c *CommandCmd) remove(target commandTarget) error {
+	if err := removeGeneratedFile(target.outputPath, c.DryRun); err != nil {
+		return err
+	}
+	if err := c.removeFromWireFile(target); err != nil {
+		return err
+	}
+	return c.removeFromRootCmd(target)
+}
+
+func (c *CommandCmd) resolveCommandTarget() commandTarget {
+	return c.resolveCommandTargetFromName(c.Name)
+}
+
+func (c *CommandCmd) resolveCommandTargetFromName(name string) commandTarget {
+	rawName := str.Of(name).Trim().String()
+	structBase, outputDir := c.resolveCommandLocation(rawName)
+	structName := ensureCmdSuffix(str.Of(structBase).Pascal().String())
+	commandName := c.resolveCommandName(rawName, structName)
+	fileName := str.Of(structName).Snake().String() + ".go"
+
+	return commandTarget{
+		rawName:     rawName,
+		structName:  structName,
+		outputDir:   outputDir,
+		outputPath:  filepath.Join(outputDir, fileName),
+		commandName: commandName,
+		helpText:    str.Of(structName).TrimSuffix("Cmd").String() + " command",
+	}
+}
+
+func (c *CommandCmd) resolveCommandLocation(rawName string) (string, string) {
+	structBase := rawName
+	outputDir := c.OutputDir
+	parts := str.Of(rawName).Split(":")
+	if len(parts) <= 1 {
+		return structBase, outputDir
+	}
+
+	action := str.Of(parts[len(parts)-1]).Trim().String()
+	if action == "" {
+		return structBase, outputDir
+	}
+
+	// Grouped commands colocate with their owning package by default.
+	// Example: billing:reports:sync -> internal/billing/reports/SyncCmd.
+	if isDefaultCommandOutputDir(outputDir) {
+		if packageParts := generatedPackagePathParts(parts[:len(parts)-1]); len(packageParts) > 0 {
+			outputDir = filepath.Join(append([]string{".", "internal"}, packageParts...)...)
+		}
+	}
+	return action, outputDir
+}
+
+func (c *CommandCmd) resolveCommandName(rawName string, structName string) string {
+	commandName := str.Of(c.CmdName).Trim().String()
+	if commandName != "" {
+		return generatedCommandSignatureName(commandName)
+	}
+	if rawName != "" {
+		return generatedCommandSignatureName(rawName)
+	}
+	base := str.Of(structName).TrimSuffix("Cmd").String()
+	return generatedCommandSignatureName(base + ":cmd")
+}
+
+// writeCommandFile renders the command implementation into its owning package.
+func (c *CommandCmd) writeCommandFile(target commandTarget) error {
+	if err := os.MkdirAll(filepath.Dir(target.outputPath), os.ModePerm); err != nil {
+		return err
+	}
+
+	moduleName, err := getGoModuleName()
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	tmpl := template.Must(template.New("cmd").Parse(commandTemplate))
+	err = tmpl.Execute(&buf, map[string]string{
+		"StructName":  target.structName,
+		"ModulePath":  moduleName,
+		"PackageName": generatedPackageName(target.outputDir, "cmd"),
+		"CommandName": target.commandName,
+		"HelpText":    target.helpText,
+		"AliasClause": "",
+		"GroupClause": "",
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := writeGeneratorGoFile(target.outputPath, buf.Bytes()); err != nil {
+		return err
+	}
+
+	console.Successf("Generated command file: %s", target.outputPath)
+	return nil
+}
+
+// injectIntoWireFile registers the command constructor with the app command wire set.
+func (c *CommandCmd) injectIntoWireFile(target commandTarget) error {
+	injectPath := activeAppWireFile("inject_cmd_app.go", "./app/wire/inject_cmd.go", "./app/providers.go", "./internal/cmd/wire.go")
+
+	moduleName, err := getGoModuleName()
+	if err != nil {
+		return err
+	}
+
+	packageName := generatedPackageName(target.outputDir, "cmd")
+	packageRef := generatedPackageRef(target.outputDir, "cmd")
+	relPath := strings.TrimPrefix(filepath.ToSlash(target.outputDir), "./")
+	importPath := fmt.Sprintf("%s/%s", moduleName, relPath)
+	constructor := fmt.Sprintf("New%s", target.structName)
+	if !isRootCommandOutputDir(target.outputDir) {
+		constructor = fmt.Sprintf("%s.New%s", packageRef, target.structName)
+	} else if usesAppCommandWirePath(injectPath) {
+		constructor = fmt.Sprintf("cmd.New%s", target.structName)
+	}
+
+	data, err := os.ReadFile(injectPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", injectPath, err)
+	}
+	content := string(data)
+
+	if !isRootCommandOutputDir(target.outputDir) && !strings.Contains(content, importPath) {
+		lines := strings.Split(content, "\n")
+		lines = insertImportIfMissing(lines, importPath, importAliasForPackageRef(packageName, packageRef))
+		content = strings.Join(lines, "\n")
+	}
+
+	if !strings.Contains(content, constructor) {
+		lines := strings.Split(content, "\n")
+		lines = insertIntoCallBlock(lines, commandWireSetDeclaration(injectPath), fmt.Sprintf("\t%s,", constructor))
+		content = strings.Join(lines, "\n")
+	}
+	if err := writeGeneratorGoFile(injectPath, []byte(content)); err != nil {
+		return fmt.Errorf("writing %s: %w", injectPath, err)
+	}
+
+	console.Successf("Injected into %s: %s", injectPath, constructor)
+
+	return nil
+}
+
+func (c *CommandCmd) removeFromWireFile(target commandTarget) error {
+	injectPath := activeAppWireFile("inject_cmd_app.go", "./app/wire/inject_cmd.go", "./app/providers.go", "./internal/cmd/wire.go")
+
+	moduleName, err := getGoModuleName()
+	if err != nil {
+		return err
+	}
+
+	packageRef := generatedPackageRef(target.outputDir, "cmd")
+	relPath := strings.TrimPrefix(filepath.ToSlash(target.outputDir), "./")
+	importPath := fmt.Sprintf("%s/%s", moduleName, relPath)
+	constructor := fmt.Sprintf("New%s", target.structName)
+	if !isRootCommandOutputDir(target.outputDir) {
+		constructor = fmt.Sprintf("%s.New%s", packageRef, target.structName)
+	} else if usesAppCommandWirePath(injectPath) {
+		constructor = fmt.Sprintf("cmd.New%s", target.structName)
+	}
+
+	lines, _, err := readGeneratorGoFile(injectPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", injectPath, err)
+	}
+	original := append([]string{}, lines...)
+	constructorLine := fmt.Sprintf("\t%s,", constructor)
+	lines, removed := removeExactLine(lines, constructorLine)
+	if !isRootCommandOutputDir(target.outputDir) {
+		lines = removeGoImportIfUnused(lines, importPath, packageRef+".")
+	}
+	changed, err := writeGeneratorGoLinesIfChanged(injectPath, original, lines, c.DryRun)
+	if err != nil {
+		return err
+	}
+	if removed {
+		if c.DryRun {
+			console.Infof("Would remove %s from %s", strings.TrimSpace(constructorLine), injectPath)
+		} else {
+			console.Successf("Removed %s from %s", strings.TrimSpace(constructorLine), injectPath)
+		}
+	} else if !changed {
+		console.Infof("No matching command provider found in %s", injectPath)
+	}
+	return nil
+}
+
+// usesAppCommandWirePath detects app-owned command wiring across current and transitional app layouts.
+func usesAppCommandWirePath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	return strings.HasPrefix(normalized, "app/") && (strings.HasSuffix(normalized, "/wire/inject_cmd_app.go") || strings.HasSuffix(normalized, "/wire/inject_cmd.go") || strings.HasSuffix(normalized, "/providers.go"))
+}
+
+// commandWireSetDeclaration returns the provider set anchor expected by the selected command injector.
+func commandWireSetDeclaration(path string) string {
+	normalized := filepath.ToSlash(path)
+	if strings.HasPrefix(normalized, "app/") && strings.HasSuffix(normalized, "/wire/inject_cmd_app.go") {
+		return "var appCommandSet = wire.NewSet("
+	}
+	if strings.HasPrefix(normalized, "app/") && strings.HasSuffix(normalized, "/wire/inject_cmd.go") {
+		return "var cmdSet = wire.NewSet("
+	}
+	return "var AppCommandSet = wire.NewSet("
+}
+
+// isAppCommandsPath detects command registration files for both default and named apps.
+func isAppCommandsPath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	return strings.HasPrefix(normalized, "app/") && strings.HasSuffix(normalized, "/commands.go")
+}
+
+// injectIntoRootCmd registers the command on Commands so Kong can expose it.
+func (c *CommandCmd) injectIntoRootCmd(target commandTarget) error {
+	rootPath := activeAppFile("commands.go", "./internal/cmd/app_commands.go")
+	moduleName, err := getGoModuleName()
+	if err != nil {
+		return fmt.Errorf("getGoModuleName: %w", err)
+	}
+
+	data, err := os.ReadFile(rootPath)
+	if err != nil {
+		return fmt.Errorf("reading root_cmd.go: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	commandsType := appCommandsTypeName(lines)
+	commandsConstructor := "New" + commandsType
+	commandsLiteral := fmt.Sprintf("return &%s{", commandsType)
+
+	outputPkg := generatedPackageName(target.outputDir, "cmd")
+	packageRef := generatedPackageRef(target.outputDir, "cmd")
+	usePrefix := !isRootCommandOutputDir(target.outputDir)
+	useCmdPrefix := isRootCommandOutputDir(target.outputDir) && isAppCommandsPath(rootPath)
+
+	pkgPrefix := ""
+	if usePrefix {
+		pkgPrefix = str.Of(packageRef).UcFirst().String()
+	}
+
+	fieldName := pkgPrefix + target.structName
+	paramName := str.Of(pkgPrefix).Camel().String() + target.structName
+	typeName := target.structName
+
+	if usePrefix {
+		relPath := strings.TrimPrefix(filepath.ToSlash(target.outputDir), "./")
+		importPath := fmt.Sprintf("%s/%s", moduleName, relPath)
+		lines = insertImportIfMissing(lines, importPath, importAliasForPackageRef(outputPkg, packageRef))
+	}
+
+	var fieldType string
+	if usePrefix {
+		fieldType = fmt.Sprintf("%s.%s", packageRef, typeName)
+	} else if useCmdPrefix {
+		fieldType = fmt.Sprintf("cmd.%s", typeName)
+	} else {
+		fieldType = typeName
+	}
+	fieldLine := fmt.Sprintf("\t%s %s `cmd:\"\"`", fieldName, fieldType)
+	fieldExists := containsLine(lines, fieldLine)
+	if !fieldExists {
+		lines = insertBeforeClosingBrace(lines, fmt.Sprintf("type %s struct {", commandsType), fieldLine)
+	}
+
+	var paramLine string
+	if usePrefix {
+		paramLine = fmt.Sprintf("\t%s *%s.%s,", paramName, packageRef, typeName)
+	} else if useCmdPrefix {
+		paramLine = fmt.Sprintf("\t%s *cmd.%s,", paramName, typeName)
+	} else {
+		paramLine = fmt.Sprintf("\t%s *%s,", paramName, typeName)
+	}
+	paramExists := containsLine(lines, paramLine)
+	if !paramExists {
+		lines = insertIntoFuncParams(lines, commandsConstructor, paramLine)
+	}
+
+	returnLine := fmt.Sprintf("\t\t%s: *%s,", fieldName, paramName)
+	returnExists := containsLine(lines, returnLine)
+	if !returnExists {
+		lines = insertBeforeClosingBrace(lines, commandsLiteral, returnLine)
+	}
+
+	if fieldExists && paramExists && returnExists {
+		console.Infof("%s already exists in %s", fieldName, rootPath)
+		return nil
+	}
+
+	lines = normalizeImports(lines)
+
+	if err := writeGeneratorGoLines(rootPath, lines); err != nil {
+		return fmt.Errorf("writing root_cmd.go: %w", err)
+	}
+
+	console.Successf("Injected into %s: %s", commandsType, fieldName)
+
+	return nil
+}
+
+func (c *CommandCmd) removeFromRootCmd(target commandTarget) error {
+	rootPath := activeAppFile("commands.go", "./internal/cmd/app_commands.go")
+	moduleName, err := getGoModuleName()
+	if err != nil {
+		return fmt.Errorf("getGoModuleName: %w", err)
+	}
+
+	lines, _, err := readGeneratorGoFile(rootPath)
+	if err != nil {
+		return fmt.Errorf("reading root_cmd.go: %w", err)
+	}
+	original := append([]string{}, lines...)
+	commandsType := appCommandsTypeName(lines)
+
+	packageRef := generatedPackageRef(target.outputDir, "cmd")
+	usePrefix := !isRootCommandOutputDir(target.outputDir)
+	useCmdPrefix := isRootCommandOutputDir(target.outputDir) && isAppCommandsPath(rootPath)
+
+	pkgPrefix := ""
+	if usePrefix {
+		pkgPrefix = str.Of(packageRef).UcFirst().String()
+	}
+
+	fieldName := pkgPrefix + target.structName
+	paramName := str.Of(pkgPrefix).Camel().String() + target.structName
+	typeName := target.structName
+
+	var fieldType string
+	if usePrefix {
+		fieldType = fmt.Sprintf("%s.%s", packageRef, typeName)
+	} else if useCmdPrefix {
+		fieldType = fmt.Sprintf("cmd.%s", typeName)
+	} else {
+		fieldType = typeName
+	}
+	fieldLine := fmt.Sprintf("\t%s %s `cmd:\"\"`", fieldName, fieldType)
+	var paramLine string
+	if usePrefix {
+		paramLine = fmt.Sprintf("\t%s *%s.%s,", paramName, packageRef, typeName)
+	} else if useCmdPrefix {
+		paramLine = fmt.Sprintf("\t%s *cmd.%s,", paramName, typeName)
+	} else {
+		paramLine = fmt.Sprintf("\t%s *%s,", paramName, typeName)
+	}
+	returnLine := fmt.Sprintf("\t\t%s: *%s,", fieldName, paramName)
+
+	var removed bool
+	lines, removedField := removeExactLine(lines, fieldLine)
+	lines, removedParam := removeExactLine(lines, paramLine)
+	lines, removedReturn := removeExactLine(lines, returnLine)
+	removed = removedField || removedParam || removedReturn
+	if usePrefix {
+		relPath := strings.TrimPrefix(filepath.ToSlash(target.outputDir), "./")
+		importPath := fmt.Sprintf("%s/%s", moduleName, relPath)
+		lines = removeGoImportIfUnused(lines, importPath, packageRef+".")
+	}
+
+	changed, err := writeGeneratorGoLinesIfChanged(rootPath, original, lines, c.DryRun)
+	if err != nil {
+		return err
+	}
+	if removed {
+		if c.DryRun {
+			console.Infof("Would remove %s from %s in %s", fieldName, commandsType, rootPath)
+		} else {
+			console.Successf("Removed %s from %s in %s", fieldName, commandsType, rootPath)
+		}
+	} else if !changed {
+		console.Infof("No matching %s wiring found in %s", commandsType, rootPath)
+	}
+	return nil
+}
+
+// appCommandsTypeName preserves compatibility with render-once files that still use AppCommands.
+func appCommandsTypeName(lines []string) string {
+	for _, line := range lines {
+		if strings.Contains(line, "type AppCommands struct {") {
+			return "AppCommands"
+		}
+	}
+	return "Commands"
+}
+
+// commandTemplate contains the generated command implementation template.
+//
+//go:embed make_command.tmpl
+var commandTemplate string
+
+// isRootCommandOutputDir reports whether outputDir points at the CLI wiring package.
+func isRootCommandOutputDir(outputDir string) bool {
+	return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(outputDir)), "./") == "internal/cmd"
+}
+
+// isDefaultCommandOutputDir reports whether the user left the command output at its default.
+func isDefaultCommandOutputDir(outputDir string) bool {
+	return filepath.Clean(outputDir) == filepath.Clean(defaultCommandOutputDir)
+}
+
+// generatedCommandSignatureName normalizes inferred command names to the lowercase CLI shape Kong should expose.
+func generatedCommandSignatureName(name string) string {
+	parts := str.Of(name).Trim().Split(":")
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		segment := str.Of(part).Trim().Kebab().ToLower().String()
+		if segment == "" {
+			continue
+		}
+		clean = append(clean, segment)
+	}
+	return strings.Join(clean, ":")
+}

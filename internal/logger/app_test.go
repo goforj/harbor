@@ -1,0 +1,408 @@
+package logger_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/goforj/harbor/internal/inspects"
+	"github.com/goforj/harbor/internal/logger"
+	"github.com/goforj/harbor/internal/runtime"
+)
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+
+	var output bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&output, reader)
+		close(done)
+	}()
+
+	fn()
+
+	_ = writer.Close()
+	os.Stderr = original
+	<-done
+	_ = reader.Close()
+
+	return output.String()
+}
+
+func stripANSI(value string) string {
+	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	return re.ReplaceAllString(value, "")
+}
+
+func TestAppLoggerConsoleInfoIncludesPrefix(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › HTTP")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Info().Str("prefix", "/api/v1").Msg("Registering route group")
+	})
+	output = stripANSI(output)
+
+	if !regexp.MustCompile(`HTTP\s+Registering route group`).MatchString(output) {
+		t.Fatalf("expected component and message, got %q", output)
+	}
+	if !strings.Contains(output, "→ prefix=/api/v1") {
+		t.Fatalf("expected key=value metadata, got %q", output)
+	}
+	if strings.Contains(output, "#") {
+		t.Fatalf("did not expect caller metadata, got %q", output)
+	}
+	if strings.Contains(output, "Registering route group") && regexp.MustCompile(`\d{2}:\d{2}:\d{2}\.\d{3}`).MatchString(output) {
+		t.Fatalf("did not expect timestamp by default, got %q", output)
+	}
+}
+
+type callerProbe struct{}
+
+func (p *callerProbe) Emit(appLogger *logger.AppLogger) {
+	appLogger.Info().Msg("Caller")
+}
+
+func TestAppLoggerConsoleCallerToggle(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › HTTP")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "1")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		var probe callerProbe
+		probe.Emit(appLogger)
+	})
+	output = stripANSI(output)
+
+	if !strings.Contains(output, "caller=logger_test.callerProbe.Emit") {
+		t.Fatalf("expected caller metadata, got %q", output)
+	}
+}
+
+func TestAppLoggerConsoleCallerZeroDisablesCaller(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › HTTP")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "0")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		var probe callerProbe
+		probe.Emit(appLogger)
+	})
+	output = stripANSI(output)
+
+	if strings.Contains(output, "caller=") {
+		t.Fatalf("expected caller metadata to be disabled, got %q", output)
+	}
+}
+
+func TestAppLoggerConsoleWarnMark(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › Scheduler")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Warn().Msg("Warning")
+	})
+	output = stripANSI(output)
+
+	if !regexp.MustCompile(`Scheduler\s+Warning`).MatchString(output) {
+		t.Fatalf("expected semantic warning output, got %q", output)
+	}
+}
+
+func TestAppLoggerConsoleErrorUsesSingleLineMetadata(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › Database")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Error().Err(fmt.Errorf("query timeout\ncontext deadline exceeded")).Msg("Query failed")
+	})
+	output = stripANSI(output)
+
+	if !regexp.MustCompile(`Database\s+Query failed`).MatchString(output) {
+		t.Fatalf("expected semantic error output, got %q", output)
+	}
+	if !strings.Contains(output, "→ error=query timeout | context deadline exceeded") {
+		t.Fatalf("expected single-line error metadata, got %q", output)
+	}
+}
+
+func TestAppLoggerJSONFormat(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv("APP_LOG_PREFIX", "Test › API")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "1")
+	t.Setenv("APP_ENV", "local")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Info().Str("route", "/api/v1").Msg("Registering route")
+	})
+	output = strings.TrimSpace(output)
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, output)
+	}
+	if payload["level"] != "info" {
+		t.Fatalf("expected level info, got %#v", payload["level"])
+	}
+	if payload["message"] != "Registering route" {
+		t.Fatalf("expected message, got %#v", payload["message"])
+	}
+	if payload["app"] != "Test" {
+		t.Fatalf("expected app field, got %#v", payload["app"])
+	}
+	if payload["component"] != "API" {
+		t.Fatalf("expected component field, got %#v", payload["component"])
+	}
+	if payload["env"] != "local" {
+		t.Fatalf("expected env field, got %#v", payload["env"])
+	}
+	if payload["route"] != "/api/v1" {
+		t.Fatalf("expected route field, got %#v", payload["route"])
+	}
+	if _, ok := payload["caller"]; !ok {
+		t.Fatalf("expected caller field, got %#v", payload)
+	}
+	if _, ok := payload["time"]; ok {
+		t.Fatalf("did not expect time field by default, got %#v", payload)
+	}
+}
+
+func TestAppLoggerConsoleSubprocessPrefix(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › API")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("FORJ_COMMAND_ORIGIN", "scheduler_command")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Info().Msg("Subprocess")
+	})
+	output = stripANSI(output)
+
+	if !regexp.MustCompile(`API\s+Subprocess`).MatchString(output) {
+		t.Fatalf("expected component-scoped subprocess console output, got %q", output)
+	}
+}
+
+func TestAppLoggerConsoleTimeToggle(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › HTTP")
+	t.Setenv("APP_LOG_TIME", "1")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Info().Msg("Timed")
+	})
+	output = stripANSI(output)
+
+	if !regexp.MustCompile(`\d{2}:\d{2}:\d{2}\.\d{3} HTTP\s+Timed`).MatchString(output) {
+		t.Fatalf("expected timestamped console output, got %q", output)
+	}
+}
+
+func TestAppLoggerConsoleTimeZeroDisablesTimestamp(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "")
+	t.Setenv("APP_LOG_PREFIX", "Test › HTTP")
+	t.Setenv("APP_LOG_TIME", "0")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		appLogger.Info().Msg("Untimed")
+	})
+	output = stripANSI(output)
+
+	if regexp.MustCompile(`\d{2}:\d{2}:\d{2}\.\d{3}`).MatchString(output) {
+		t.Fatalf("expected timestamp to be disabled, got %q", output)
+	}
+}
+
+func TestAppLoggerWithComponentOverridesPrefix(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv("APP_LOG_PREFIX", "Test")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	output := captureStderr(t, func() {
+		appLogger := logger.NewAppLogger()
+		child := appLogger.WithComponent("Jobs")
+		child.Info().Msg("Worker started")
+	})
+	output = strings.TrimSpace(output)
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, output)
+	}
+	if payload["app"] != "Test" {
+		t.Fatalf("expected app field, got %#v", payload["app"])
+	}
+	if payload["component"] != "Jobs" {
+		t.Fatalf("expected component field, got %#v", payload["component"])
+	}
+}
+
+func TestSilentLoggerWithComponentStaysSilent(t *testing.T) {
+	output := captureStderr(t, func() {
+		logger.NewSilentLogger().WithComponent("HTTP").Info().Msg("should stay silent")
+	})
+	if strings.TrimSpace(output) != "" {
+		t.Fatalf("expected no output from silent component logger, got %q", output)
+	}
+}
+
+func TestAppLoggerWithContextAddsInspectFieldsToSinkEntries(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv("APP_LOG_PREFIX", "Test › API")
+	t.Setenv("APP_LOG_TIME", "")
+	t.Setenv("APP_LOG_CALLER", "")
+
+	appLogger := logger.NewAppLogger()
+	entries := make([]logger.LogEntry, 0, 1)
+	appLogger.AddSink(func(entry logger.LogEntry) {
+		entries = append(entries, entry)
+	})
+
+	ctx := runtime.WithSource(context.Background(), runtime.SourceHTTP)
+	ctx = inspects.WithInspectID(ctx, "inspect-123")
+	appLogger.WithContext(ctx).Info().Str("route", "/api/v1/monitors/42").Msg("loaded")
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 sink entry, got %d", len(entries))
+	}
+	if entries[0].Fields["inspect_id"] != "inspect-123" {
+		t.Fatalf("expected inspect_id field, got %#v", entries[0].Fields["inspect_id"])
+	}
+	if entries[0].Fields["source"] != "http" {
+		t.Fatalf("expected source field, got %#v", entries[0].Fields["source"])
+	}
+	if entries[0].Fields["route"] != "/api/v1/monitors/42" {
+		t.Fatalf("expected route field, got %#v", entries[0].Fields["route"])
+	}
+}
+
+func TestAppLoggerHTTPAccessAddsInspectFieldsToSinkEntries(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+
+	appLogger := logger.NewAppLogger()
+	entries := make([]logger.LogEntry, 0, 1)
+	appLogger.AddSink(func(entry logger.LogEntry) {
+		entries = append(entries, entry)
+	})
+
+	ctx := runtime.WithSource(context.Background(), runtime.SourceHTTP)
+	ctx = inspects.WithInspectID(ctx, "inspect-123")
+	appLogger.WithContext(ctx).HTTPAccess("/-/health", 200, "GET", 80*time.Microsecond, nil, "203.0.113.9")
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 sink entry, got %d", len(entries))
+	}
+	fields := entries[0].Fields
+	if fields["inspect_id"] != "inspect-123" {
+		t.Fatalf("expected inspect_id field, got %#v", fields["inspect_id"])
+	}
+	if fields["source"] != "http" {
+		t.Fatalf("expected source field, got %#v", fields["source"])
+	}
+	if fields["uri"] != "/-/health" {
+		t.Fatalf("expected uri field, got %#v", fields["uri"])
+	}
+	if fields["client_ip"] != "203.0.113.9" {
+		t.Fatalf("expected client_ip field, got %#v", fields["client_ip"])
+	}
+}
+
+func TestAppLoggerEventDedupeRunsBeforeWriterParsing(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv("APP_LOG_PREFIX", "Test › HTTP")
+	t.Setenv("APP_LOG_DEDUPE_ENABLED", "true")
+	t.Setenv("APP_LOG_DEDUPE_BURST", "1")
+	t.Setenv("APP_LOG_DEDUPE_SUMMARY_EVERY", "2")
+	t.Setenv("APP_LOG_DEDUPE_WINDOW_MS", "10000")
+
+	appLogger := logger.NewAppLogger()
+	entries := make([]logger.LogEntry, 0, 2)
+	appLogger.AddSink(func(entry logger.LogEntry) {
+		entries = append(entries, entry)
+	})
+
+	for _, latency := range []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond} {
+		appLogger.HTTPAccess("/-/health", 200, "GET", latency, nil)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 sink entries after dedupe, got %d", len(entries))
+	}
+	if entries[0].Message != "HTTP Request" {
+		t.Fatalf("expected first sink message HTTP Request, got %#v", entries[0].Message)
+	}
+	if entries[1].Fields["occurred"] != "2x" {
+		t.Fatalf("expected sink summary occurred marker, got %#v", entries[1].Fields["occurred"])
+	}
+	if entries[1].Fields["dedupe"] != "summary" {
+		t.Fatalf("expected sink summary dedupe marker, got %#v", entries[1].Fields["dedupe"])
+	}
+}
+
+func TestAppLoggerFatalExitsProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_APP_LOGGER_FATAL") == "1" {
+		t.Setenv("APP_LOG_FORMAT", "json")
+		appLogger := logger.NewAppLogger()
+		appLogger.Fatal().Str("component", "test").Msg("fatal boom")
+		t.Fatal("expected fatal logger to exit")
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAppLoggerFatalExitsProcess$")
+	cmd.Env = append(os.Environ(), "GO_WANT_APP_LOGGER_FATAL=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected subprocess to exit non-zero")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected exec.ExitError, got %T: %v", err, err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit code 1, got %d\n%s", exitErr.ExitCode(), string(output))
+	}
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		t.Fatal("expected fatal logger output before exit")
+	}
+	if !strings.Contains(trimmed, `"message":"fatal boom"`) {
+		t.Fatalf("expected fatal message in output, got %s", trimmed)
+	}
+}

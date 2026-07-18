@@ -17,8 +17,8 @@ Harbor coordinates projects; GoForj understands them.
 | build, render, migration, and lifecycle tasks | Multi-project coordination |
 | native watcher graph and child process groups | Outer managed-session ownership |
 | App/resource discovery semantics | Desktop, tray, CLI, notifications, and log retention |
-| project Compose intent | Deterministic Compose identity and observed endpoint routing |
-| API Index, Lighthouse, and framework tooling | Presenting and opening those resolved resources |
+| project Compose intent and existing Compose identity | Machine-local endpoint coordination and observed routing |
+| API Index artifacts, API Reference, Lighthouse, and framework tooling | Presenting and opening those resolved resources |
 
 Harbor must not import `goforj` internal packages, parse `.goforj.yml` independently, scrape `forj dev` output, infer resources from Compose YAML, or reproduce the watcher graph.
 
@@ -68,11 +68,13 @@ GoForj should expose:
 forj project:describe --json
 ```
 
-The command reads `.goforj.yml`, the project render/resource plans, and generated conventions. It must not:
+The command reads `.goforj.yml`, checked-in generated metadata, and generated conventions. Some effective topology exists only in `.env` or `.env.example` today, including selected drivers, local/external placement, Compose profiles, consumers, and endpoint affinity. GoForj may resolve those files through a pure, read-only topology path because it owns their semantics. It must emit no environment value, must not apply values to the command process, and must digest only the normalized non-secret topology—not the raw environment files.
+
+The command must not:
 
 - execute the generated application;
 - run Wire, generation, migrations, shell tasks, or Compose;
-- load or return secret values;
+- return secret values or derive stable IDs from credential-bearing material;
 - pull images or modules;
 - mutate the checkout.
 
@@ -90,11 +92,17 @@ An illustrative v1 shape is:
   },
   "goforj": {
     "version": "v0.0.0",
-    "capabilities": [
+    "cli_capabilities": [
       "managed-dev.v1",
-      "runtime-overlay.v1",
       "resource-snapshot.v1"
-    ]
+    ],
+    "generated_project": {
+      "generation": "...",
+      "capabilities": [
+        "runtime-overlay-hook.v1",
+        "managed-listeners.v1"
+      ]
+    }
   },
   "apps": [
     {
@@ -112,16 +120,18 @@ An illustrative v1 shape is:
       ]
     }
   ],
-  "services": [
+  "service_requirements": [
     {
-      "id": "mysql",
+      "id": "requirement.database.primary",
+      "service_key": "mysql",
       "kind": "database",
       "driver": "mysql",
       "owner": "compose",
       "lifecycle": "project",
+      "consumers": ["app"],
       "endpoints": [
         {
-          "id": "mysql",
+          "id": "endpoint.database.primary.tcp",
           "protocol": "tcp",
           "native_port": 3306,
           "visibility": "host"
@@ -131,13 +141,15 @@ An illustrative v1 shape is:
   ],
   "resources": [
     {
-      "id": "api-index",
-      "name": "API Index",
+      "id": "swagger",
+      "name": "API Reference",
       "category": "docs",
       "protocol": "http",
       "owner": "app",
       "app": "app",
       "runtime": "http",
+      "path": "/swagger",
+      "backing_artifact": "api-index",
       "enabled": true
     }
   ]
@@ -148,14 +160,17 @@ The exact schema should be proved with generated fixtures before it is frozen. I
 
 - stable IDs, not display names, join static intent to live events;
 - default and named Apps use the same shape;
-- services distinguish Compose-managed, external, and available-but-not-selected intent;
+- available Apps are distinct from the active Apps and runtime implementations selected for a live session;
+- service requirements distinguish Compose-managed, external, and available-but-not-selected intent;
+- every requirement and endpoint has its own stable, non-secret ID, even when several requirements share a service key;
+- endpoint-affinity and active-consumer relationships are preserved as explicit mappings rather than collapsed into one `mysql` or `redis` record; when affinity depends on credential-bearing material, GoForj emits only a deterministic equivalence-group label assigned from sorted structural membership after comparing values in memory, never the value or its raw hash;
 - endpoints state protocol and native public port without disclosing credentials;
 - resources preserve GoForj categories, ownership, App/runtime identity, and ordering;
 - paths are project-relative unless a canonical root is required by the invocation contract;
 - unknown future capability names are ignored, while an unsupported schema major fails clearly;
 - descriptor generation is deterministic and golden-tested.
 
-Harbor stores the schema version and digest. A digest change triggers a re-description and a reviewed reconciliation, not an automatic render.
+Harbor stores the schema version and normalized topology digest. A digest change triggers a re-description and a reviewed reconciliation, not an automatic render.
 
 ## Managed development session
 
@@ -173,16 +188,30 @@ Startup ordering matters:
 
 1. acquire the existing project dev lock;
 2. load and validate the static project descriptor;
-3. connect, negotiate protocol/capabilities, and register the session;
-4. receive a semantic runtime plan from Harbor;
-5. load the normal project environment, then apply the final managed overlay;
-6. run current setup, pre-task, Compose, migration, build, and watcher behavior;
-7. publish the compiled watcher/resource snapshot and ordered lifecycle events;
-8. accept only advertised typed actions.
+3. capture any inherited control/ticket reference before project environment files can affect process state;
+4. load normal environment layers and resolve the active App/runtime set, including `dev.apps`, `FORJ_APP`, build-only Apps, and custom runtime overrides;
+5. connect, negotiate CLI and generated-project capabilities, and register the session;
+6. receive and validate a semantic plan covering every active listener and service requirement, then materialize the App overlay through an internal trusted handle;
+7. build the selected Apps, preserving GoForj's current build-before-setup dependency;
+8. run explicitly phased foreground `pre-compose` tasks;
+9. start the typed Compose phase with command-local publication assignments;
+10. report actual Compose publications and wait for Harbor to verify and activate required native routes;
+11. after Harbor acknowledges that barrier, run `post-compose` readiness tasks, database setup/migrations with the App connection overlay, then `post-migrate` tasks;
+12. start the watcher graph, publish complete snapshots and ordered lifecycle events, and accept only advertised typed actions.
 
-The handshake must happen before pre-tasks so Compose receives Harbor's private publication assignments.
+The handshake must happen before lifecycle tasks. Full managed mode replaces the flat `dev.pre` list with stable task IDs and explicit `pre-compose`, `post-compose`, and `post-migrate` phases. GoForj migrates framework-owned generated tasks: Compose becomes the typed phase, database wait belongs after the route barrier, and generated frontend preparation receives its appropriate foreground phase. It does not classify arbitrary legacy/custom commands from their names or shell text. An unphased custom task makes the project upgrade-required until the user assigns a phase; a managed lifecycle task must finish in its process group and leave no detached descendants or listeners. Long-running work belongs in a declared runtime/watcher.
 
-If Harbor is absent, an ordinary `forj dev` behaves exactly as it does now. An explicit `--no-harbor` or equivalent disables automatic attach. A failed optional attach falls back only before lifecycle work starts and reports the reason; it cannot switch port policy halfway through startup.
+Shutdown receives the same treatment. The generated raw `dev.down` Compose command becomes a typed Compose-down phase that retains the exact implementation, adopted/fresh project identity, profiles, publication environment, and untracked override set selected at startup. Optional custom shutdown tasks must declare `pre-compose-down` or `post-compose-down`; ambiguous legacy commands block managed mode. GoForj keeps session artifacts alive until all configured down behavior finishes and never adds volume deletion implicitly.
+
+The publication barrier prevents a migration configured for `mysql.<project>.test:3306` from running before Harbor can relay that name to the newly started private Compose port.
+
+If Harbor is absent, an ordinary `forj dev` behaves exactly as it does now. An explicit `--no-harbor` disables discovery and attachment. Ordinary daemon absence or an unregistered project falls back silently before lifecycle work. If a reachable daemon says the project is registered but rejects, conflicts, or times out during attachment, GoForj stops before lifecycle work and directs the user to repair Harbor or explicitly use `--no-harbor`; it cannot switch port policy halfway through startup.
+
+### Terminal-owned attachment
+
+A terminal-launched `forj dev` discovers the owner-only daemon endpoint in the platform-standard per-user runtime location. It connects over peer-authenticated IPC and sends its canonical project root, descriptor digest, client nonce, CLI capabilities, generated-project capabilities, and proposed active App/runtime set. The daemon validates the peer UID/SID, registration, digest, and absence of another active session before returning a short-lived credential bound to that root, peer, nonce, and session.
+
+This exchange completes before any lifecycle task. A Harbor-launched session instead receives an inherited one-use ticket and endpoint reference. Neither credential appears in argv or the project checkout, and neither can attach another root or control machine setup.
 
 ## Runtime plan
 
@@ -194,23 +223,34 @@ Harbor sends semantic assignments, not hardcoded environment-key names:
   "session_id": "...",
   "apps": {
     "app": {
+      "active": true,
       "runtimes": {
         "http": {
           "bind_host": "127.0.0.1",
           "bind_port": 43101,
-          "public_url": "https://orders.test"
+          "public_url": "https://orders.test",
+          "routes": {
+            "health": "/-/health",
+            "ready": "/-/ready",
+            "metrics": "/metrics",
+            "lighthouse_agent": "/lighthouse/ws/agent"
+          }
         }
       }
     }
   },
-  "services": {
-    "mysql": {
+  "service_endpoints": {
+    "endpoint.database.primary.tcp": {
+      "requirement_id": "requirement.database.primary",
+      "consumers": ["app"],
       "publish_host": "127.0.0.1",
       "publish_port": 43106,
       "public_host": "mysql.orders.test",
       "public_port": 3306
     },
-    "redis": {
+    "endpoint.cache.primary.tcp": {
+      "requirement_id": "requirement.cache.primary",
+      "consumers": ["app", "worker"],
       "publish_host": "127.0.0.1",
       "publish_port": 43107,
       "public_host": "redis.orders.test",
@@ -220,21 +260,30 @@ Harbor sends semantic assignments, not hardcoded environment-key names:
 }
 ```
 
-GoForj validates every ID and maps the assignments through its current project, App, and resource plans. Harbor does not need to know whether a current template uses `DB_MYSQL_PORT`, an App-prefixed key, or a future typed config field.
+GoForj validates every ID and maps the assignments through its current project, App, service-requirement, and resource plans. Stable IDs are assigned from normalized structural identity, not from the current affinity hash when that hash may include a credential-bearing DSN. Harbor does not need to know whether a current template uses `DB_MYSQL_PORT`, an App-prefixed key, or a future typed config field.
 
-## Final runtime overlay
+The plan covers every listener-bearing active command shape. A generated combined HTTP `run` has one listener whose routes include health, readiness, `/metrics`, and Lighthouse; those routes are not separate ports. Standalone worker or scheduler commands receive their own metrics listener only when that active command actually opens one. SPAs are build nodes, not listeners, unless an explicitly modeled development server exists.
+
+Current custom `run.exec` commands and `dev.watches` have no endpoint or bind metadata. Any arbitrary custom process therefore blocks full mode by default, even if no collision is currently observed. Supporting one requires a future typed endpoint declaration, a Harbor-assigned bind contract, process-group ownership, and post-start observation that GoForj can enforce; Harbor never assumes a shell command is listener-free.
+
+## Runtime assignment layers
 
 A managed endpoint assignment must beat normal project files without modifying them.
 
-GoForj materializes a session-scoped, owner-only runtime overlay after validating the semantic plan. It applies that overlay:
+GoForj materializes three separate outputs after validating the semantic plan:
+
+1. a command-local Compose publication environment containing private host addresses and private high ports;
+2. an App-final connection overlay containing public domains, native service ports, and private App listener assignments;
+3. session artifacts such as a Compose override and metrics scrape targets, stored outside the checkout.
+
+The publication environment is applied only to the typed Compose command. It must not leak into App, build, migration, or watcher environments. The App overlay is applied:
 
 - after every `env.Load` or `env.Reload` inside `forj dev`;
-- to lifecycle and Compose command environments;
-- to build and watcher child environments;
+- to the runtime and migration child environments that need App connection values;
 - after the generated App's existing `.env`, compiled default/override, and named-App overlay sequence;
 - again on every managed App process start.
 
-The generated App needs a narrow runtime-overlay hook in its existing `LoadEnv` path. The hook reads only the file reference inherited for this process, validates its version and ownership, and applies direct App-local endpoint assignments last. It is a local development/runtime mechanism, not a new committed environment layer.
+The generated App needs a narrow runtime-overlay hook in its existing `LoadEnv` path. `forj dev` retains the validated overlay handle internally and passes it to each child through an inherited descriptor/handle or another owner-only mechanism that is not rediscovered from project environment. The generated App captures that reference before its own project environment load, validates its version and ownership, and applies direct App-local assignments last. A project file cannot replace the overlay locator. This is a local development/runtime mechanism, not a new committed environment layer.
 
 For the default App, a materialized overlay may include values corresponding to:
 
@@ -248,30 +297,36 @@ REDIS_HOST=redis.orders.test
 REDIS_PORT=6379
 MAIL_SMTP_HOST=smtp.orders.test
 MAIL_SMTP_PORT=1025
-IP_ADDRESS=127.0.0.1
+LIGHTHOUSE_URL=ws://127.0.0.1:<private-app-port>/lighthouse/ws/agent
 ```
 
-Private Compose publications use their own private host-port values in the lifecycle command environment. App connection values use the stable public domain and native port. They are related but are not the same values.
+`LIGHTHOUSE_URL` is the private WebSocket transport used by generated agents and devwatch. The public, user-facing Lighthouse URL is a separate resolved HTTPS resource. It is not written into this transport key.
+
+Private Compose publications use values such as `IP_ADDRESS=127.0.0.1` and explicit `*_PUBLISH_PORT` keys only in the Compose command environment. App connection values use the stable public domain and native port. They are related but are not the same values. Where a current template overloads a key—most notably `REDIS_PORT` for both host publication and App connection—the generated Compose template gains a purpose-specific `REDIS_PUBLISH_PORT` (and analogous keys where needed) with a backward-compatible fallback to the existing key for standalone projects. Managed mode never assigns one process-wide map and hopes both meanings coincide.
 
 Named Apps receive their resolved App-specific overlay after GoForj's existing prefix rules. The session protocol uses App IDs rather than making Harbor reproduce prefix normalization.
+
+Dynamic metrics scrape configuration is mounted from session runtime storage through an untracked Compose override. It must not rewrite or rebuild the checked-in `containers/observability/vmagent/metrics-targets.json`. A container-to-host scrape cannot rely on `host.docker.internal` reaching an App bound to `127.0.0.1`. Managed `forj dev`, which owns Compose and can observe its network, hosts a narrow in-process session relay from the platform's container-only host interface to registered loopback metrics targets. Harbor allocates the relay endpoint and validates GoForj's typed observation but does not inspect Docker itself. The relay accepts only the session's fixed target set, never binds a LAN interface, and exits with the session. Phase 0 must identify and prove the exact Docker Engine/Desktop interface path per platform; observability is not full-mode capable where no container-only path exists.
 
 The managed overlay contains endpoint and session values, not project secrets. Harbor must not read `.env` to construct it. GoForj can combine the overlay with the normal secret-bearing environment in memory without reporting secrets back to Harbor.
 
 ## Session snapshot
 
-After setup, GoForj publishes one authoritative snapshot:
+GoForj publishes an initial planned snapshot after negotiation, publication observations at the Compose barrier, and one authoritative runtime snapshot after the watcher graph starts:
 
 - project and descriptor identity;
 - session owner (`harbor` or `terminal`);
-- Apps, runtimes, SPAs, builds, and custom watchers;
+- available and active Apps, runtimes, SPAs, builds, custom watchers, and enforceable/unmanaged bind status;
 - graph dependencies and criticality;
-- current watcher/process state;
+- watcher coverage, latest build result, process state, and runtime-probe readiness as distinct facts;
 - resolved public resources;
 - managed Compose service intent and observations available to GoForj;
 - supported actions;
 - current operation and readiness state.
 
 Snapshots are complete replacements. Events after a snapshot carry a monotonic sequence so Harbor can recover from reconnect without guessing what it missed.
+
+Harbor joins those GoForj facts with its own DNS, route, relay, TLS, and public-probe facts. A process-start event or GoForj's current `Dev ready` message cannot by itself mark a public endpoint ready.
 
 ## Events
 
@@ -287,8 +342,8 @@ The event envelope includes at least:
   "kind": "watcher.state_changed",
   "app_id": "app",
   "watcher_id": "app.runtime",
-  "previous_state": "starting",
-  "state": "ready"
+  "previous_state": "stopped",
+  "state": "started"
 }
 ```
 
@@ -299,11 +354,11 @@ Required event families are:
 - watcher build, start, rebuild, failure, recovery, and stop;
 - process start and exit with PID, exit code, timing, and intentional-stop reason;
 - resource snapshot change and readiness;
-- raw stdout/stderr log chunks with source identity;
+- pre-decoration process log chunks with source identity and honest stream provenance (`stdout`, `stderr`, or `pty/combined`);
 - explicit backpressure/drop notification;
 - descriptor/configuration change requiring refresh.
 
-Log IDs cannot be based only on millisecond timestamps. Ordering comes from a session sequence assigned before send.
+Log IDs cannot be based only on millisecond timestamps. Ordering comes from a session sequence assigned before send. A Harbor-managed process may use separate pipes; a terminal-owned Unix watcher may retain its PTY and must report `pty/combined` rather than invent stdout/stderr separation. GoForj adds the capture hook before TUI or Lighthouse decoration.
 
 ## Actions
 
@@ -311,7 +366,7 @@ The session advertises the actions it supports. Initial bounded actions are:
 
 - restart App runtime;
 - rebuild App;
-- restart SPA or custom watcher;
+- rebuild a SPA or restart a custom watcher;
 - restart all runtime watchers without replaying project down/up tasks;
 - render through the existing GoForj flow;
 - stop the session gracefully;
@@ -340,13 +395,18 @@ A Harbor-owned session is started and monitored by `harbord`. Daemon recovery ve
 
 Managed mode must preserve GoForj's service plan and lifecycle policy while adding machine-local coordination:
 
-- set a deterministic `COMPOSE_PROJECT_NAME` derived from the stable Harbor project ID;
-- add stable ownership labels to generated services where Compose supports them;
-- apply private loopback publication assignments through the final runtime overlay;
+- discover and persist the checkout's existing directory-derived Compose project identity during registration;
+- adopt running containers, networks, and named volumes that match that identity before the first managed start;
+- use a stable Harbor-derived identity only for a fresh project with no prior Compose state;
+- use Compose's built-in project labels and, when needed, inject Harbor session labels through an external untracked override rather than tracked generated output;
+- apply private loopback publication assignments through the command-local Compose environment;
 - preserve profiles such as optional Redis;
-- observe the actual published host address and port before routing;
+- report the actual published host address and port, then wait for Harbor's route-ready acknowledgement before database setup or migration;
+- retain the same Compose implementation, project identity, profiles, command-local environment, and session override for typed shutdown;
 - distinguish stop from volume/data destruction;
 - keep current sibling/project-relative test behavior unrelated to Harbor intact.
+
+Registration never changes an adopted Compose identity during ordinary start. Moving to another identity is a separate, explicit, data-aware migration that inventories volumes and offers rollback; otherwise existing databases can appear empty while their original volumes remain orphaned.
 
 GoForj should own detection and invocation of a supported Compose implementation instead of baking `docker-compose` v1 shell text into the Harbor contract. The cross-platform path must be tested with Docker Engine on Linux and Docker Desktop on macOS and Windows.
 
@@ -374,13 +434,13 @@ Before Harbor consumes it, GoForj should fix known drift:
 - keep credentials and secret values out of descriptions;
 - make `forj dev`, Atlas, Lighthouse, and Harbor consume the same resolved model.
 
-The API Index and its generated examples are deliberate GoForj value. Harbor opens and surfaces that existing resource; it must not replace it with a desktop-generated route list. Lighthouse remains the execution-inspection surface; Harbor supplies a stable link and a small session summary rather than duplicating its explorers.
+The API Index and its generated examples are deliberate GoForj value. Today `build/api_index.json` is the backing artifact and the browser-facing resource is the generated API Reference/Swagger route, normally `/swagger`. Harbor opens that existing resolved resource and describes its API Index backing; it must not invent a direct API Index URL or replace it with a desktop-generated route list. If GoForj later exposes the raw index as a stable resource, it enters the same projection. Lighthouse remains the execution-inspection surface; Harbor supplies a stable link and a small session summary rather than duplicating its explorers.
 
 ## Configuration changes
 
-GoForj already watches root `.env*` and App trees. In managed mode:
+GoForj already watches root `.env*` and App trees, but not `.goforj.yml`. Managed mode adds an explicit owner-config watcher:
 
-1. GoForj detects and reloads owner configuration as it does today;
+1. GoForj detects `.env*`, App-tree, and `.goforj.yml` changes through their appropriate watcher paths;
 2. it reapplies the managed overlay after the reload;
 3. it produces a new descriptor/resource digest when topology changed;
 4. Harbor plans any DNS, certificate, listener, or private-port delta;
@@ -415,11 +475,22 @@ Versioning is capability-based:
 
 - descriptor schema version;
 - managed-session protocol range;
-- runtime-overlay schema version;
+- GoForj CLI capabilities;
+- checked-in generated-project capabilities, including the runtime-overlay hook and bind controls;
+- runtime-overlay and session-artifact schema versions;
 - individual capabilities and action versions;
 - minimum compatible GoForj version shown in diagnostics.
 
 A new GoForj release may add fields and capabilities without requiring a Harbor release. Removing or changing semantics requires a new protocol/schema major with a migration window.
+
+A current `forj` binary may statically describe an older checkout when its checked-in format is understood. That does not make the project fully manageable. Full mode requires both the CLI/session capabilities and the generated-project hooks used by that project. Registration records one of these compatibility states:
+
+- `managed`: all required capabilities are present;
+- `read-only`: Harbor can describe and open the checkout/resources but cannot start it safely;
+- `upgrade-required`: an explicit GoForj update and/or render is needed;
+- `unavailable`: the descriptor cannot be understood safely.
+
+Read-only and upgrade-required projects can still open their checkout and run standalone `forj dev --no-harbor`; Harbor does not fake full mode by scraping output. It also never renders during discovery or start. An explicit user-selected `forj render`—or a future reviewable plan/apply command—must list affected generated files before apply, preserve normal compatibility policy, regenerate every mirror from its authoritative source, and require review. The implementing releases must publish an exact compatible CLI and generated-project version matrix; this design does not invent version numbers before those capabilities exist.
 
 Harbor does not require projects to raise their Go version. The GoForj integration should use the oldest Go release its implementation and required dependencies actually need, and document an exact constraint before any increase.
 
@@ -428,16 +499,27 @@ Harbor does not require projects to raise their Go version. The GoForj integrati
 The GoForj side is ready when fixtures prove:
 
 - default and multiple named Apps describe deterministically;
-- static description executes no project code and contains no secret values;
+- static description executes no project code, emits no secret values, and hashes normalized non-secret topology rather than raw environment files;
 - standalone `forj dev` is byte-for-byte behaviorally unchanged when Harbor is absent;
-- managed startup receives its plan before pre-tasks and Compose;
+- terminal attach validates peer/root/session binding before lifecycle work, while explicit `--no-harbor` bypasses attachment;
+- managed startup receives its plan before phased lifecycle work, reports actual Compose publications, and waits for Harbor before post-Compose readiness and migration;
 - project `.env` and `.env.host` cannot overwrite the final managed endpoint overlay;
+- a generated App's project environment cannot replace the trusted overlay reference it captures before load;
 - an environment reload reapplies the overlay;
+- command-local Compose publication values never become App connection values, including Redis;
 - Apps bind private loopback ports while `APP_URL` uses the public HTTPS domain;
+- combined HTTP routes are not modeled as extra listeners, standalone auxiliary listeners are planned, and any undeclared custom process blocks full mode; Lighthouse's private transport remains distinct from its public resource URL;
 - Compose binds only private loopback high ports;
+- a seeded existing Compose project is adopted with its data intact and no replacement volume set;
+- managed stop targets that exact adopted/fresh Compose identity through the retained override set, phases custom down work explicitly, and never deletes volumes;
+- dynamic metrics targets live outside the checkout and container scraping reaches the narrow host relay on every OS;
+- start, reload, and stop leave the generated checkout clean;
 - App restart does not invoke `down_on_exit` or restart unrelated services;
 - ordered state and log events recover from disconnect through snapshot plus sequence;
-- resource URLs, health paths, API Index, Lighthouse, and named Apps are correct;
+- PTY/combined and separate stdout/stderr streams retain honest provenance before presentation decoration;
+- resource URLs, health paths, API Reference/API Index backing, Lighthouse, and named Apps are correct;
+- an older generated project is visibly read-only or upgrade-required until its required hooks are rendered explicitly;
+- `.goforj.yml` changes are detected by a dedicated watcher and never trigger an automatic render;
 - terminal-owned and Harbor-owned session recovery is safe;
 - the largest supported generated composition passes on macOS, Linux, and Windows;
 - GoForj's generators/templates are changed at their source, regenerated, and verified diff-free.

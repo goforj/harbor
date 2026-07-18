@@ -1,0 +1,202 @@
+package makecmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/goforj/env/v2"
+	"github.com/goforj/str/v2"
+
+	"github.com/goforj/harbor/internal/console"
+)
+
+// MigrationCmd creates SQL migration pairs using the app's configured database driver set.
+type MigrationCmd struct {
+	Name          string `arg:"" help:"Name of the migration (e.g. AddUsersTable)"`
+	Connection    string `help:"Database connection name" default:"default"`
+	Remove        bool   `help:"Remove migration files matching this name instead of creating them."`
+	DryRun        bool   `name:"dry-run" help:"Preview remove changes without writing files."`
+	Open          bool   `short:"o" help:"Open the generated up migration in your editor."`
+	NoOpen        bool   `name:"no-open" help:"Do not open the generated migration, even when FORJ_MAKE_OPEN would."`
+	MakeOpen      string `name:"make-open" env:"FORJ_MAKE_OPEN" default:"auto" hidden:""`
+	EditorCommand string `name:"editor" env:"FORJ_EDITOR" hidden:""`
+}
+
+// Signature exposes make:migration as preboot metadata because migrations can be scaffolded before DB startup.
+func (*MigrationCmd) Signature() string {
+	return `name:"make:migration" help:"Create a new migration" goforj:"preboot"`
+}
+
+// NewMigrationCmd keeps migration generation dependency-free so every generated app can create migrations.
+func NewMigrationCmd() *MigrationCmd {
+	return &MigrationCmd{}
+}
+
+// Help shows the direct migration examples that work through both forj delegation and built app binaries.
+func (*MigrationCmd) Help() string {
+	return commandExamples(
+		commandExample("make:migration", "create_users"),
+		commandExample("make:migration", "create_users", "--connection", "default"),
+	)
+}
+
+// Run creates driver-specific migration files so multi-database apps keep their schema files aligned.
+func (c *MigrationCmd) Run() error {
+	if c.Remove {
+		return c.remove()
+	}
+	if err := validateGeneratedFileOpenFlags(c.Open, c.NoOpen); err != nil {
+		return err
+	}
+
+	name := str.Of(c.Name).Trim().String()
+	if name == "" {
+		return fmt.Errorf("migration name cannot be empty")
+	}
+
+	timestamp := time.Now().Format("2006_01_02_150405")
+	snake := str.Of(name).Snake().String()
+	baseName := fmt.Sprintf("%s_%s", timestamp, snake)
+
+	connName := str.Of(c.Connection).Trim().ToLower().String()
+	if connName == "" {
+		connName = "default"
+	}
+
+	drivers := resolveSupportedMigrationDrivers()
+	if len(drivers) == 0 {
+		return fmt.Errorf("no supported drivers resolved from DB_SUPPORTED_DRIVERS/DB_DRIVER")
+	}
+
+	migrationsDir := appMigrationDir(connName)
+
+	if err := os.MkdirAll(migrationsDir, os.ModePerm); err != nil {
+		return err
+	}
+
+	openPath := ""
+	for _, driver := range drivers {
+		upPath := filepath.Join(migrationsDir, fmt.Sprintf("%s.%s.up.sql", baseName, driver))
+		downPath := filepath.Join(migrationsDir, fmt.Sprintf("%s.%s.down.sql", baseName, driver))
+		if len(drivers) == 1 {
+			// Keep legacy naming when only one DB driver is supported.
+			upPath = filepath.Join(migrationsDir, baseName+".up.sql")
+			downPath = filepath.Join(migrationsDir, baseName+".down.sql")
+		}
+
+		if err := os.WriteFile(upPath, []byte(fmt.Sprintf("-- Up migration (%s)\n", driver)), 0644); err != nil {
+			return err
+		}
+
+		if err := os.WriteFile(downPath, []byte(fmt.Sprintf("-- Down migration (%s)\n", driver)), 0644); err != nil {
+			return err
+		}
+
+		console.Successf("generated %s", upPath)
+		console.Successf("generated %s", downPath)
+		if openPath == "" {
+			openPath = upPath
+		}
+	}
+
+	return maybeOpenGeneratedFile(generatedFileOpenOptions{
+		Path:          openPath,
+		Line:          1,
+		Open:          c.Open,
+		NoOpen:        c.NoOpen,
+		Mode:          c.MakeOpen,
+		EditorCommand: c.EditorCommand,
+	})
+}
+
+func (c *MigrationCmd) remove() error {
+	name := str.Of(c.Name).Trim().String()
+	if name == "" {
+		return fmt.Errorf("migration name cannot be empty")
+	}
+	snake := str.Of(name).Snake().String()
+
+	connName := str.Of(c.Connection).Trim().ToLower().String()
+	if connName == "" {
+		connName = "default"
+	}
+	migrationsDir := appMigrationDir(connName)
+
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			console.Infof("No migration directory found: %s", migrationsDir)
+			return nil
+		}
+		return err
+	}
+
+	matched := false
+	needle := "_" + snake + "."
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		fileName := entry.Name()
+		if !strings.Contains(fileName, needle) {
+			continue
+		}
+		if !strings.HasSuffix(fileName, ".up.sql") && !strings.HasSuffix(fileName, ".down.sql") {
+			continue
+		}
+		matched = true
+		path := filepath.Join(migrationsDir, fileName)
+		if c.DryRun {
+			console.Infof("Would remove migration file: %s", path)
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		console.Successf("Removed migration file: %s", path)
+	}
+	if !matched {
+		console.Infof("No migration files found for %s in %s", snake, migrationsDir)
+	}
+	return nil
+}
+
+// resolveSupportedMigrationDrivers returns the migration drivers requested by environment.
+func resolveSupportedMigrationDrivers() []string {
+	var drivers []string
+	for _, part := range env.GetSlice("DB_SUPPORTED_DRIVERS", "") {
+		driver := normalizeMigrationDriver(part)
+		if driver == "" || slices.Contains(drivers, driver) {
+			continue
+		}
+		drivers = append(drivers, driver)
+	}
+	if len(drivers) > 0 {
+		return drivers
+	}
+
+	defaultDriver := normalizeMigrationDriver(env.Get("DB_DRIVER", ""))
+	if defaultDriver != "" {
+		return []string{defaultDriver}
+	}
+
+	return []string{"sqlite"}
+}
+
+// normalizeMigrationDriver converts database driver aliases to migration suffixes.
+func normalizeMigrationDriver(driver string) string {
+	switch str.Of(driver).Trim().ToLower().String() {
+	case "mysql", "mariadb":
+		return "mysql"
+	case "postgres", "postgresql":
+		return "postgres"
+	case "sqlite", "sqlite3":
+		return "sqlite"
+	default:
+		return ""
+	}
+}

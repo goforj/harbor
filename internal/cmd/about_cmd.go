@@ -1,0 +1,610 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/goforj/str/v2"
+
+	"github.com/goforj/harbor/internal/runtime"
+)
+
+const (
+	aboutANSIReset = "\033[0m"
+	aboutANSIBold  = "\033[1m"
+
+	aboutFGBrightWhite = "\033[97m"
+	aboutFGWhite       = "\033[37m"
+	aboutFGCyan        = "\033[36m"
+	aboutFGGreen       = "\033[32m"
+	aboutFGRed         = "\033[31m"
+	aboutFGYellow      = "\033[33m"
+	aboutFGMuted       = "\033[90m"
+
+	aboutSectionMarker       = "♦"
+	aboutHealthyStatusMarker = "✓"
+	aboutContentIndent       = "  "
+	aboutColumnGap           = "  "
+)
+
+// AboutCmd prints a dense snapshot of the current app environment and configured services.
+type AboutCmd struct {
+	JSON    bool `help:"Print as JSON"`
+	NoColor bool `help:"Disable ANSI colors"`
+
+	service *runtime.AboutService
+}
+
+// Signature defines CLI metadata for this command.
+func (*AboutCmd) Signature() string {
+	return `name:"about" help:"Show environment and configured services for this app" goforj:"preboot"`
+}
+
+// NewAboutCmd creates a new AboutCmd.
+func NewAboutCmd() *AboutCmd {
+	return &AboutCmd{service: runtime.NewAboutService()}
+}
+
+// Run executes the command.
+func (c *AboutCmd) Run() error {
+	report := c.aboutService().Build()
+	if c.JSON {
+		out, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
+	}
+
+	fmt.Print(c.renderAboutSections(report.Sections))
+	return nil
+}
+
+func (c *AboutCmd) aboutService() *runtime.AboutService {
+	if c.service == nil {
+		c.service = runtime.NewAboutService()
+	}
+	return c.service
+}
+
+func (c *AboutCmd) renderAboutSections(sections []runtime.AboutSectionData) string {
+	ctx := aboutRenderContextForSections(sections)
+	out := make([]string, 0, len(sections))
+	for _, section := range sections {
+		out = append(out, c.renderAboutSectionWithContext(section, ctx))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (c *AboutCmd) renderAboutSection(section runtime.AboutSectionData) string {
+	return c.renderAboutSectionWithContext(section, aboutRenderContextForSections([]runtime.AboutSectionData{section}))
+}
+
+func (c *AboutCmd) renderAboutSectionWithContext(section runtime.AboutSectionData, ctx aboutRenderContext) string {
+	lines := []string{c.renderSectionHeader(section.Title)}
+	if len(section.Rows) > 0 {
+		lines = append(lines, c.renderSectionRows(section, ctx)...)
+	}
+	if len(section.Connections) > 0 {
+		lines = append(lines, c.renderConnectionInventory(section, ctx)...)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func (c *AboutCmd) renderSectionHeader(title string) string {
+	return c.colorize(aboutFGCyan, "", aboutSectionMarker) + " " + c.colorize(aboutFGBrightWhite, aboutANSIBold, title)
+}
+
+type aboutRenderContext struct {
+	contentIndent    string
+	firstColumnWidth int
+	driverWidth      int
+	termWidth        int
+}
+
+func aboutRenderContextForSections(sections []runtime.AboutSectionData) aboutRenderContext {
+	ctx := aboutRenderContext{
+		contentIndent:    aboutContentIndent,
+		firstColumnWidth: 14,
+		driverWidth:      6,
+		termWidth:        aboutTerminalWidth(),
+	}
+	for _, section := range sections {
+		for _, row := range section.Rows {
+			if width := len(aboutSectionDisplayKey(section.Title, row.Key)); width > ctx.firstColumnWidth {
+				ctx.firstColumnWidth = width
+			}
+		}
+		for _, connection := range section.Connections {
+			if width := len(aboutDisplayValue(connection.Name)); width > ctx.firstColumnWidth {
+				ctx.firstColumnWidth = width
+			}
+			if driver := strings.TrimSpace(aboutDetailMap(connection.Details)["Driver"]); driver != "" && len(driver) > ctx.driverWidth {
+				ctx.driverWidth = len(driver)
+			}
+		}
+	}
+	return ctx
+}
+
+func aboutSectionDisplayKey(sectionTitle string, key string) string {
+	if sectionTitle == "Network" {
+		return strings.TrimSuffix(key, " URL")
+	}
+	return key
+}
+
+func (c *AboutCmd) renderSectionRows(section runtime.AboutSectionData, ctx aboutRenderContext) []string {
+	lines := make([]string, 0, len(section.Rows))
+	for _, row := range section.Rows {
+		keyText := aboutSectionDisplayKey(section.Title, row.Key)
+		if section.Title == "Build" && keyText == "Components" {
+			lines = append(lines, c.renderComponentsRow(keyText, row.Value, ctx)...)
+			continue
+		}
+
+		key := c.colorize(aboutFGWhite, "", padAboutKey(keyText, ctx.firstColumnWidth))
+		value := aboutDecoratedDisplayValue(row.Value)
+		valueWidth := aboutValueColumnWidth(ctx)
+		wrapped := aboutWrapValue(value, valueWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{"-"}
+		}
+		lines = append(lines, ctx.contentIndent+key+aboutColumnGap+c.colorize(aboutValueColor(wrapped[0]), "", wrapped[0]))
+		for _, continuation := range wrapped[1:] {
+			lines = append(lines, aboutContinuationPrefix(ctx)+c.colorize(aboutValueColor(continuation), "", continuation))
+		}
+	}
+	return lines
+}
+
+func (c *AboutCmd) renderComponentsRow(keyText string, value string, ctx aboutRenderContext) []string {
+	components := aboutComponentValues(value)
+	if len(components) == 0 {
+		key := c.colorize(aboutFGWhite, "", padAboutKey(keyText, ctx.firstColumnWidth))
+		return []string{ctx.contentIndent + key + aboutColumnGap + aboutDisplayValue(value)}
+	}
+
+	rows := aboutComponentGridRows(components, aboutValueColumnWidth(ctx))
+	key := c.colorize(aboutFGWhite, "", padAboutKey(keyText, ctx.firstColumnWidth))
+	lines := make([]string, 0, len(rows))
+	for idx, row := range rows {
+		prefix := aboutContinuationPrefix(ctx)
+		if idx == 0 {
+			prefix = ctx.contentIndent + key + aboutColumnGap
+		}
+		lines = append(lines, prefix+c.colorize(aboutFGMuted, "", row))
+	}
+	return lines
+}
+
+func aboutValueColumnWidth(ctx aboutRenderContext) int {
+	width := ctx.termWidth - len(ctx.contentIndent) - ctx.firstColumnWidth - len(aboutColumnGap)
+	if width < 32 {
+		return 32
+	}
+	return width
+}
+
+func aboutContinuationPrefix(ctx aboutRenderContext) string {
+	return ctx.contentIndent + strings.Repeat(" ", ctx.firstColumnWidth) + aboutColumnGap
+}
+
+func (c *AboutCmd) renderConnectionInventory(section runtime.AboutSectionData, ctx aboutRenderContext) []string {
+	rows := aboutConnectionInventoryRows(section.Title, section.Connections)
+	if len(rows) == 0 {
+		return nil
+	}
+
+	widths := aboutInventoryWidths(rows)
+	if len(widths) > 0 && widths[0] < ctx.firstColumnWidth {
+		widths[0] = ctx.firstColumnWidth
+	}
+	if len(widths) > 1 && widths[1] < ctx.driverWidth {
+		widths[1] = ctx.driverWidth
+	}
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		lines = append(lines, ctx.contentIndent+c.renderInventoryRow(row, widths))
+	}
+	return lines
+}
+
+func (c *AboutCmd) renderInventoryRow(row aboutInventoryRow, widths []int) string {
+	parts := make([]string, 0, len(row.Values))
+	for idx, value := range row.Values {
+		display := aboutDecoratedDisplayValue(value)
+		padded := padAboutKey(display, widths[idx])
+		parts = append(parts, c.colorize(aboutInventoryValueColor(idx, display), "", padded))
+	}
+	return strings.TrimRight(strings.Join(parts, "  "), " ")
+}
+
+type aboutInventoryRow struct {
+	Values []string
+}
+
+func aboutConnectionInventoryRows(sectionTitle string, connections []runtime.AboutConnectionData) []aboutInventoryRow {
+	rows := make([]aboutInventoryRow, 0, len(connections))
+	for _, connection := range connections {
+		details := aboutDetailMap(connection.Details)
+		consumed := map[string]bool{"Driver": true}
+		values := []string{connection.Name}
+		if driver := strings.TrimSpace(details["Driver"]); driver != "" {
+			values = append(values, driver)
+		}
+
+		primary, primaryConsumed := aboutPrimaryInventoryValues(sectionTitle, details)
+		values = append(values, primary...)
+		for key := range primaryConsumed {
+			consumed[key] = true
+		}
+
+		for _, detail := range connection.Details {
+			key := strings.TrimSpace(detail.Key)
+			value := strings.TrimSpace(detail.Value)
+			if key == "" || value == "" || consumed[key] {
+				continue
+			}
+			values = append(values, aboutInlineDetail(key, value))
+		}
+		rows = append(rows, aboutInventoryRow{Values: values})
+	}
+	return rows
+}
+
+func aboutPrimaryInventoryValues(sectionTitle string, details map[string]string) ([]string, map[string]bool) {
+	consumed := make(map[string]bool)
+	switch sectionTitle {
+	case "Databases":
+		return aboutDatabaseInventoryValues(details, consumed), consumed
+	case "Mail":
+		return aboutMailInventoryValues(details, consumed), consumed
+	case "Storages":
+		return aboutStorageInventoryValues(details, consumed), consumed
+	case "Caches":
+		return aboutCacheInventoryValues(details, consumed), consumed
+	case "Queues":
+		return aboutQueueInventoryValues(details, consumed), consumed
+	case "Events":
+		return aboutEventInventoryValues(details, consumed), consumed
+	default:
+		return nil, consumed
+	}
+}
+
+func aboutDatabaseInventoryValues(details map[string]string, consumed map[string]bool) []string {
+	values := make([]string, 0, 2)
+	if address := aboutHostPort(details["Host"], details["Port"]); address != "" {
+		values = append(values, address)
+		consumed["Host"] = true
+		consumed["Port"] = true
+	} else if dsn := strings.TrimSpace(details["DSN"]); dsn != "" {
+		values = append(values, dsn)
+		consumed["DSN"] = true
+	}
+	if database := strings.TrimSpace(details["Database"]); database != "" {
+		values = append(values, database)
+		consumed["Database"] = true
+	}
+	return values
+}
+
+func aboutMailInventoryValues(details map[string]string, consumed map[string]bool) []string {
+	values := aboutTakeDetails(details, consumed, "From Address", "From Name")
+	if endpoint := aboutFirstDetail(details, consumed, "Endpoint", "Domain", "Region"); endpoint != "" {
+		values = append(values, endpoint)
+	} else if address := aboutHostPort(details["Host"], details["Port"]); address != "" {
+		values = append(values, address)
+		consumed["Host"] = true
+		consumed["Port"] = true
+	}
+	return values
+}
+
+func aboutStorageInventoryValues(details map[string]string, consumed map[string]bool) []string {
+	return aboutTakeFirstDetail(details, consumed, "Root", "Bucket", "Remote", "Address", "URL", "Endpoint", "Host")
+}
+
+func aboutCacheInventoryValues(details map[string]string, consumed map[string]bool) []string {
+	return aboutTakeFirstDetail(details, consumed, "Address", "Directory", "Bucket", "Table", "URL", "DSN")
+}
+
+func aboutQueueInventoryValues(details map[string]string, consumed map[string]bool) []string {
+	values := aboutTakeDetails(details, consumed, "Queue Name")
+	if workers := strings.TrimSpace(details["Workers"]); workers != "" {
+		values = append(values, aboutWorkersValue(workers))
+		consumed["Workers"] = true
+	}
+	values = append(values, aboutTakeFirstDetail(details, consumed, "Address", "URL", "DSN")...)
+	return values
+}
+
+func aboutEventInventoryValues(details map[string]string, consumed map[string]bool) []string {
+	return aboutTakeFirstDetail(details, consumed, "Address", "URL", "Brokers", "Project ID", "Region", "Endpoint")
+}
+
+func aboutInventoryWidths(rows []aboutInventoryRow) []int {
+	maxColumns := 0
+	for _, row := range rows {
+		if len(row.Values) > maxColumns {
+			maxColumns = len(row.Values)
+		}
+	}
+	widths := make([]int, maxColumns)
+	for _, row := range rows {
+		for idx, value := range row.Values {
+			if width := len(aboutDecoratedDisplayValue(value)); width > widths[idx] {
+				widths[idx] = width
+			}
+		}
+	}
+	return widths
+}
+
+func aboutDetailMap(detailsList []runtime.AboutField) map[string]string {
+	details := make(map[string]string, len(detailsList))
+	for _, detail := range detailsList {
+		details[detail.Key] = detail.Value
+	}
+	return details
+}
+
+func aboutTakeDetails(details map[string]string, consumed map[string]bool, keys ...string) []string {
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := strings.TrimSpace(details[key])
+		if value == "" {
+			continue
+		}
+		values = append(values, value)
+		consumed[key] = true
+	}
+	return values
+}
+
+func aboutTakeFirstDetail(details map[string]string, consumed map[string]bool, keys ...string) []string {
+	if value := aboutFirstDetail(details, consumed, keys...); value != "" {
+		return []string{value}
+	}
+	return nil
+}
+
+func aboutFirstDetail(details map[string]string, consumed map[string]bool, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(details[key])
+		if value == "" {
+			continue
+		}
+		consumed[key] = true
+		return value
+	}
+	return ""
+}
+
+func aboutHostPort(host string, port string) string {
+	host = strings.TrimSpace(host)
+	port = strings.TrimSpace(port)
+	switch {
+	case host != "" && port != "":
+		return host + ":" + port
+	case host != "":
+		return host
+	case port != "":
+		return port
+	default:
+		return ""
+	}
+}
+
+func aboutWorkersValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "1" {
+		return "1 worker"
+	}
+	return value + " workers"
+}
+
+func aboutInlineDetail(key string, value string) string {
+	return aboutInlineKey(key) + "=" + value
+}
+
+func aboutInlineKey(key string) string {
+	return str.Of(key).ToLower().Trim().ReplaceAll(" ", "_").ReplaceAll("-", "_").String()
+}
+
+func aboutDisplayValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
+func aboutDecoratedDisplayValue(value string) string {
+	value = aboutDisplayValue(value)
+	if aboutStatusColor(value) == aboutFGGreen {
+		return aboutHealthyStatusMarker + " " + value
+	}
+	return value
+}
+
+func aboutComponentValues(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	separator := ","
+	if !strings.Contains(value, ",") {
+		separator = " "
+	}
+	raw := strings.Split(value, separator)
+	components := make([]string, 0, len(raw))
+	for _, component := range raw {
+		component = strings.TrimSpace(component)
+		if component != "" {
+			components = append(components, component)
+		}
+	}
+	return components
+}
+
+func aboutComponentGridRows(components []string, width int) []string {
+	if len(components) == 0 {
+		return nil
+	}
+	columnWidth := aboutMaxStringWidth(components)
+	columns := 4
+	for columns > 1 && columns*columnWidth+(columns-1)*len(aboutColumnGap) > width {
+		columns--
+	}
+
+	rows := make([]string, 0, (len(components)+columns-1)/columns)
+	for start := 0; start < len(components); start += columns {
+		end := start + columns
+		if end > len(components) {
+			end = len(components)
+		}
+		parts := make([]string, 0, end-start)
+		for idx, component := range components[start:end] {
+			if idx == end-start-1 {
+				parts = append(parts, component)
+				continue
+			}
+			parts = append(parts, padAboutKey(component, columnWidth))
+		}
+		rows = append(rows, strings.TrimRight(strings.Join(parts, aboutColumnGap), " "))
+	}
+	return rows
+}
+
+func aboutMaxStringWidth(values []string) int {
+	width := 0
+	for _, value := range values {
+		if len(value) > width {
+			width = len(value)
+		}
+	}
+	return width
+}
+
+func aboutWrapValue(value string, width int) []string {
+	if width <= 0 || len(value) <= width {
+		return []string{value}
+	}
+
+	tokens := strings.Split(value, ", ")
+	if len(tokens) == 1 {
+		tokens = strings.Fields(value)
+	}
+	if len(tokens) == 0 {
+		return []string{value}
+	}
+
+	lines := make([]string, 0, 2)
+	current := ""
+	separator := " "
+	if strings.Contains(value, ", ") {
+		separator = ", "
+	}
+	for _, token := range tokens {
+		next := token
+		if current != "" {
+			next = current + separator + token
+		}
+		if len(next) <= width {
+			current = next
+			continue
+		}
+		if current != "" {
+			lines = append(lines, current)
+		}
+		current = token
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	if len(lines) == 0 {
+		return []string{value}
+	}
+	return lines
+}
+
+func padAboutKey(value string, width int) string {
+	return fmt.Sprintf("%-*s", width, value)
+}
+
+func aboutInventoryValueColor(idx int, value string) string {
+	switch idx {
+	case 0:
+		return aboutFGWhite
+	case 1:
+		return aboutFGGreen
+	default:
+		return aboutValueColor(value)
+	}
+}
+
+func aboutValueColor(value string) string {
+	if color := aboutStatusColor(value); color != "" {
+		return color
+	}
+	if aboutLooksLikeAddressURLPath(value) {
+		return aboutFGMuted
+	}
+	return ""
+}
+
+func aboutStatusColor(value string) string {
+	value = str.Of(value).Trim().TrimPrefix(aboutHealthyStatusMarker + " ").String()
+	switch str.Of(value).Trim().ToLower().String() {
+	case "present", "healthy", "ready", "ok", "up", "available":
+		return aboutFGGreen
+	case "missing", "error", "failed", "down", "unavailable":
+		return aboutFGRed
+	case "warning", "warn", "degraded", "stale":
+		return aboutFGYellow
+	default:
+		return ""
+	}
+}
+
+func aboutLooksLikeAddressURLPath(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "-" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, prefix := range []string{"http://", "https://", "ws://", "wss://", "tcp://", "redis://", "mysql://", "postgres://", "postgresql://"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	if strings.Contains(value, "/") || strings.Contains(value, "\\") {
+		return true
+	}
+	if strings.Contains(value, ":") && aboutContainsDigit(value) {
+		return true
+	}
+	return false
+}
+
+func aboutContainsDigit(value string) bool {
+	for _, char := range value {
+		if char >= '0' && char <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *AboutCmd) colorize(fg string, attrs string, value string) string {
+	if c.NoColor || value == "" {
+		return value
+	}
+	if fg == "" && attrs == "" {
+		return value
+	}
+	return fg + attrs + value + aboutANSIReset
+}

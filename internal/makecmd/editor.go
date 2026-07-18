@@ -1,0 +1,428 @@
+package makecmd
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/str/v2"
+	"golang.org/x/term"
+)
+
+const (
+	generatedFileOpenAuto   = "auto"
+	generatedFileOpenAlways = "always"
+	generatedFileOpenNever  = "never"
+)
+
+type generatedFileOpenOptions struct {
+	Path          string
+	Line          int
+	Open          bool
+	NoOpen        bool
+	Mode          string
+	EditorCommand string
+}
+
+type generatedFileOpenDecision struct {
+	open     bool
+	explicit bool
+}
+
+type generatedFileEditorCommand struct {
+	command string
+	args    []string
+}
+
+type generatedFileEditorResolver struct {
+	lookPath  func(string) (string, error)
+	env       func(string) string
+	processes func() []string
+}
+
+type generatedFileEditorCandidate struct {
+	name         string
+	commands     []string
+	processNames []string
+	macApp       string
+}
+
+func validateGeneratedFileOpenFlags(open, noOpen bool) error {
+	if open && noOpen {
+		return fmt.Errorf("--open and --no-open cannot be used together")
+	}
+
+	return nil
+}
+
+func maybeOpenGeneratedFile(options generatedFileOpenOptions) error {
+	if err := validateGeneratedFileOpenFlags(options.Open, options.NoOpen); err != nil {
+		return err
+	}
+
+	decision, invalidMode := generatedFileOpenDecisionFor(
+		options.Open,
+		options.NoOpen,
+		options.Mode,
+		generatedFileOpenIsInteractive(),
+		generatedFileOpenIsCI(),
+	)
+	if invalidMode != "" {
+		console.Warnf("Ignoring invalid FORJ_MAKE_OPEN value %q; expected auto, always, or never", invalidMode)
+	}
+	if !decision.open {
+		return nil
+	}
+
+	command, ok := resolveGeneratedFileEditorCommand(options.EditorCommand, options.Path, options.Line, exec.LookPath)
+	if !ok {
+		if decision.explicit {
+			console.Warnf("No editor command found; set FORJ_EDITOR to open generated files")
+		}
+		return nil
+	}
+
+	cmd := exec.Command(command.command, command.args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	if err := cmd.Start(); err != nil {
+		if decision.explicit {
+			console.Warnf("Unable to open generated file with %s: %v", command.command, err)
+		}
+		return nil
+	}
+
+	console.Infof("Opening %s", options.Path)
+	return nil
+}
+
+func generatedFileOpenDecisionFor(open, noOpen bool, mode string, interactive, ci bool) (generatedFileOpenDecision, string) {
+	if noOpen {
+		return generatedFileOpenDecision{open: false, explicit: true}, ""
+	}
+	if open {
+		return generatedFileOpenDecision{open: true, explicit: true}, ""
+	}
+
+	normalizedMode := str.Of(mode).Trim().ToLower().String()
+	if normalizedMode == "" {
+		normalizedMode = generatedFileOpenAuto
+	}
+
+	switch normalizedMode {
+	case generatedFileOpenNever:
+		return generatedFileOpenDecision{open: false, explicit: true}, ""
+	case generatedFileOpenAlways:
+		return generatedFileOpenDecision{open: true, explicit: true}, ""
+	case generatedFileOpenAuto:
+		return generatedFileOpenDecision{open: interactive && !ci, explicit: false}, ""
+	default:
+		return generatedFileOpenDecision{open: interactive && !ci, explicit: false}, mode
+	}
+}
+
+func generatedFileOpenIsInteractive() bool {
+	return term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+func generatedFileOpenIsCI() bool {
+	value := strings.TrimSpace(os.Getenv("CI"))
+	return value != "" && value != "0" && strings.ToLower(value) != "false"
+}
+
+func resolveGeneratedFileEditorCommand(configured, path string, line int, lookPath func(string) (string, error)) (generatedFileEditorCommand, bool) {
+	return resolveGeneratedFileEditorCommandWith(configured, path, line, generatedFileEditorResolver{
+		lookPath:  lookPath,
+		env:       os.Getenv,
+		processes: generatedFileRunningProcessNames,
+	})
+}
+
+func resolveGeneratedFileEditorCommandWith(configured, path string, line int, resolver generatedFileEditorResolver) (generatedFileEditorCommand, bool) {
+	path = generatedFileOpenPath(path)
+	projectRoot := generatedFileOpenProjectRoot(path)
+	line = generatedFileOpenLine(line)
+	if resolver.lookPath == nil {
+		resolver.lookPath = exec.LookPath
+	}
+	if resolver.env == nil {
+		resolver.env = os.Getenv
+	}
+	if resolver.processes == nil {
+		resolver.processes = generatedFileRunningProcessNames
+	}
+
+	configured = strings.TrimSpace(configured)
+	if strings.HasPrefix(configured, "#") {
+		configured = ""
+	}
+
+	if configured != "" {
+		parts := strings.Fields(configured)
+		if len(parts) == 0 {
+			return generatedFileEditorCommand{}, false
+		}
+
+		return buildGeneratedFileEditorCommand(parts[0], parts[1:], path, line, projectRoot), true
+	}
+
+	for _, candidate := range generatedFileTerminalEditorCandidates(resolver.env) {
+		if command, ok := resolveGeneratedFileEditorCandidate(candidate, path, line, resolver.lookPath, true); ok {
+			return command, true
+		}
+	}
+
+	processes := resolver.processes()
+	for _, candidate := range generatedFileEditorCandidates() {
+		if generatedFileEditorProcessIsRunning(candidate, processes) {
+			if command, ok := resolveGeneratedFileEditorCandidate(candidate, path, line, resolver.lookPath, true); ok {
+				return command, true
+			}
+		}
+	}
+
+	for _, candidate := range generatedFileEditorCandidates() {
+		if command, ok := resolveGeneratedFileEditorCandidate(candidate, path, line, resolver.lookPath, false); ok {
+			return command, true
+		}
+	}
+
+	return generatedFileEditorCommand{}, false
+}
+
+func resolveGeneratedFileEditorCandidate(candidate generatedFileEditorCandidate, path string, line int, lookPath func(string) (string, error), allowMacOpen bool) (generatedFileEditorCommand, bool) {
+	projectRoot := generatedFileOpenProjectRoot(path)
+	for _, commandName := range candidate.commands {
+		command, err := lookPath(commandName)
+		if err == nil {
+			return buildGeneratedFileEditorCommand(command, nil, path, line, projectRoot), true
+		}
+	}
+
+	if allowMacOpen && runtime.GOOS == "darwin" && candidate.macApp != "" {
+		openCommand, err := lookPath("open")
+		if err == nil {
+			return generatedFileEditorCommand{command: openCommand, args: []string{"-a", candidate.macApp, path}}, true
+		}
+	}
+
+	return generatedFileEditorCommand{}, false
+}
+
+func generatedFileTerminalEditorCandidates(env func(string) string) []generatedFileEditorCandidate {
+	termProgram := str.Of(env("TERM_PROGRAM")).Trim().ToLower().String()
+	terminalEmulator := str.Of(env("TERMINAL_EMULATOR")).Trim().ToLower().String()
+
+	switch {
+	case strings.Contains(terminalEmulator, "jetbrains"):
+		return []generatedFileEditorCandidate{
+			generatedFileEditorCandidateByName("goland"),
+			generatedFileEditorCandidateByName("idea"),
+		}
+	case env("CURSOR_TRACE_ID") != "" || strings.Contains(termProgram, "cursor"):
+		return []generatedFileEditorCandidate{generatedFileEditorCandidateByName("cursor")}
+	case env("VSCODE_IPC_HOOK_CLI") != "" || termProgram == "vscode":
+		return []generatedFileEditorCandidate{generatedFileEditorCandidateByName("code")}
+	case strings.Contains(termProgram, "zed"):
+		return []generatedFileEditorCandidate{generatedFileEditorCandidateByName("zed")}
+	default:
+		return nil
+	}
+}
+
+func generatedFileEditorProcessIsRunning(candidate generatedFileEditorCandidate, processes []string) bool {
+	for _, process := range processes {
+		processName := generatedFileEditorName(process)
+		for _, candidateName := range candidate.processNames {
+			if processName == candidateName || strings.Contains(processName, candidateName) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func generatedFileRunningProcessNames() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+
+	output, err := exec.Command("ps", "-eo", "comm=").Output()
+	if err != nil {
+		output, err = exec.Command("ps", "-axo", "comm=").Output()
+		if err != nil {
+			return nil
+		}
+	}
+
+	lines := strings.Split(string(output), "\n")
+	processes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		name := strings.TrimSpace(line)
+		if name != "" {
+			processes = append(processes, name)
+		}
+	}
+
+	return processes
+}
+
+func buildGeneratedFileEditorCommand(command string, baseArgs []string, path string, line int, projectRoot string) generatedFileEditorCommand {
+	args, handledPath := generatedFileEditorTemplateArgs(baseArgs, path, line, projectRoot)
+	if handledPath {
+		return generatedFileEditorCommand{command: command, args: args}
+	}
+
+	switch generatedFileEditorName(command) {
+	case "code", "cursor":
+		args = append(args, "--reuse-window", "--goto", fmt.Sprintf("%s:%d", path, line))
+	case "goland", "idea":
+		if projectRoot != "" {
+			args = append(args, projectRoot)
+		}
+		args = append(args, "--line", strconv.Itoa(line), path)
+	default:
+		args = append(args, path)
+	}
+
+	return generatedFileEditorCommand{command: command, args: args}
+}
+
+func generatedFileEditorTemplateArgs(args []string, path string, line int, projectRoot string) ([]string, bool) {
+	resolved := make([]string, 0, len(args))
+	handledPath := false
+	location := fmt.Sprintf("%s:%d", path, line)
+	for _, arg := range args {
+		next := str.Of(arg).
+			ReplaceAll("{file}", path).
+			ReplaceAll("{line}", strconv.Itoa(line)).
+			ReplaceAll("{location}", location).
+			ReplaceAll("{project}", projectRoot).
+			String()
+		if next != arg {
+			handledPath = handledPath ||
+				strings.Contains(arg, "{file}") ||
+				strings.Contains(arg, "{location}") ||
+				strings.Contains(arg, "{project}")
+		}
+		resolved = append(resolved, next)
+	}
+
+	return resolved, handledPath
+}
+
+func generatedFileEditorName(command string) string {
+	name := strings.ToLower(filepath.Base(command))
+	if runtime.GOOS == "windows" {
+		name = str.Of(name).TrimSuffix(".exe").TrimSuffix(".cmd").String()
+	}
+
+	return name
+}
+
+func generatedFileEditorCandidates() []generatedFileEditorCandidate {
+	return []generatedFileEditorCandidate{
+		{
+			name:         "goland",
+			commands:     []string{"goland"},
+			processNames: []string{"goland", "goland64"},
+			macApp:       "GoLand",
+		},
+		{
+			name:         "cursor",
+			commands:     []string{"cursor"},
+			processNames: []string{"cursor", "cursor helper"},
+			macApp:       "Cursor",
+		},
+		{
+			name:         "code",
+			commands:     []string{"code"},
+			processNames: []string{"code", "code helper", "visual studio code"},
+			macApp:       "Visual Studio Code",
+		},
+		{
+			name:         "zed",
+			commands:     []string{"zed"},
+			processNames: []string{"zed"},
+			macApp:       "Zed",
+		},
+		{
+			name:         "idea",
+			commands:     []string{"idea"},
+			processNames: []string{"idea", "idea64", "intellij idea"},
+			macApp:       "IntelliJ IDEA",
+		},
+	}
+}
+
+func generatedFileEditorCandidateByName(name string) generatedFileEditorCandidate {
+	for _, candidate := range generatedFileEditorCandidates() {
+		if candidate.name == name {
+			return candidate
+		}
+	}
+
+	return generatedFileEditorCandidate{}
+}
+
+func generatedFileOpenPath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+
+	return absolute
+}
+
+func generatedFileOpenProjectRoot(path string) string {
+	start := path
+	if info, err := os.Stat(start); err == nil && !info.IsDir() {
+		start = filepath.Dir(start)
+	} else if err != nil {
+		start = filepath.Dir(start)
+	}
+
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return ""
+	}
+	for {
+		for _, marker := range []string{".goforj.yml", "go.mod", ".git"} {
+			if _, err := os.Stat(filepath.Join(current, marker)); err == nil {
+				return current
+			}
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	absolute, err := filepath.Abs(workingDir)
+	if err != nil {
+		return workingDir
+	}
+	return absolute
+}
+
+func generatedFileOpenLine(line int) int {
+	if line < 1 {
+		return 1
+	}
+
+	return line
+}

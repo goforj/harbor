@@ -7,7 +7,8 @@ Status: proposed
 Harbor should be delivered as cross-platform vertical proofs, not a desktop mock followed by late networking discovery.
 
 ```text
-platform proof
+CI product environment
+    → platform proof
     → daemon/state/IPC/helper
     → DNS/TLS/HTTP/native ingress
     → GoForj descriptor and managed session
@@ -17,6 +18,25 @@ platform proof
 ```
 
 Each phase has a stop condition. If the same-port loopback model or system resolver path cannot be made safe on a target platform, the project changes its support claim before product UI builds assumptions around it.
+
+## Phase -1: test fleet and evidence contract
+
+Goal: make “tested on macOS, Linux, and Windows” an enforceable claim before platform code exists.
+
+Deliver:
+
+- protected-ref GitHub-hosted controller workflows plus one-job just-in-time product workers;
+- actual VM/host provisioning, clean-image restoration or destruction, and fail-fast capacity checks;
+- repository/workflow-restricted runner groups and exact-SHA admission for privileged public-repository jobs;
+- interactive macOS and Ubuntu desktop sessions plus a Windows local-administrator account running Harbor at filtered medium integrity with UAC;
+- supported Docker Engine/Desktop installations and reboot-capable guests;
+- a versioned capability/evidence manifest with assertion IDs and a required final verifier;
+- a hosted provisioning/reservation preflight that fails the exact head SHA and cancels stranded jobs before an unmatched self-hosted label can queue indefinitely;
+- named infrastructure ownership, cost budget, image-update policy, and out-of-band job/destruction logs.
+
+### Exit gate
+
+A synthetic workflow proves one trusted head SHA through hosted mutation jobs and all three product profiles, survives a guest reboot, reports zero skipped assertions, cleans its owned namespace, and destroys/reprovisions every worker. Missing capacity fails visibly rather than leaving an optional or indefinitely queued check.
 
 ## Phase 0: platform proof
 
@@ -37,6 +57,10 @@ Build the smallest headless harness that can:
 
 Implement the first required GitHub Actions platform-network jobs during this phase. A manual spike is not enough because these mechanisms will regress with OS images and security updates.
 
+In parallel, build a non-authoritative visual prototype from screenshots pinned to the researched Lerd commit. It validates the narrow rail, grouped contextual list, project/service/system detail, responsive collapse, onboarding language, and helper-consent flow against representative Harbor data. It has no daemon authority and does not allow UI preference to override a failed platform proof.
+
+Also spike the real helper and service packaging shape on every OS: code-signing/admission APIs, one-use ticket transport, service/launch definitions, atomic replacement, and uninstall ownership. Disposable shell probes may explore an OS mechanism in Phase 0, but production phases must use the typed production helper API.
+
 ### Platform decisions to close
 
 | Decision | Evidence required |
@@ -48,10 +72,12 @@ Implement the first required GitHub Actions platform-network jobs during this ph
 | Low ports | Each OS has a narrow, update-safe mechanism and detects foreign listeners. |
 | Docker binding | Engine/Desktop publishes only private loopback high ports and Harbor reaches those host ports. |
 | Multi-user policy | V1 reliably detects and rejects a second active machine profile. |
+| Product test profiles | Exact OS build, architecture, resolver/firewall/trust/browser/Wails/Docker stack is pinned and reproducible. |
+| Helper packaging | Signed helper admission, consent, update replacement, and uninstall can be implemented without a broad or persistent grant. |
 
 ### Exit gate
 
-The exact same automated test connects to two named endpoints on `:3306` and receives different project responses on all three operating systems. System resolution and trusted HTTPS also pass. Cleanup returns each machine to its baseline.
+The exact same automated test connects to two named endpoints on `:3306` and receives different project responses on all three operating systems. System resolution, trusted HTTPS, low-port behavior, helper admission, and a reboot/restore cycle also pass. Cleanup removes Harbor's exact owned projections while preserving guarded foreign state.
 
 If one platform fails, choose explicitly:
 
@@ -67,6 +93,9 @@ Goal: establish one safe authority before adding project behavior.
 
 Deliver:
 
+- scaffold Harbor as a current-valid GoForj project whose default App builds the `harbor` CLI and whose named `harbord` App owns the daemon;
+- add bespoke build-only `harbor-helper` and `harbor-installer` entrypoints with dependency allowlists; neither may use the generated App environment/bootstrap/command dispatcher;
+- develop Harbor with ordinary standalone `forj dev`, and land/prove the explicit `--no-harbor` bypass in GoForj before any automatic Harbor attachment ships;
 - `harbord` per-user lifecycle and lock;
 - `harbor` CLI for status, setup, doctor, and daemon control;
 - owner-only Unix socket and Windows named-pipe IPC;
@@ -111,15 +140,24 @@ Goal: integrate through public, versioned GoForj behavior rather than internal k
 
 Work in `goforj/goforj`:
 
-- add deterministic `forj project:describe --json`;
+- add deterministic `forj project:describe --json` with a pure, value-free resolver for environment-selected topology;
+- model service requirements/endpoints and consumer bindings with stable non-secret IDs;
 - consolidate the current resource projections and correct known URL/health drift;
-- add a configurable bind host for metrics and any auxiliary listener Harbor manages;
+- distinguish CLI capabilities from checked-in generated-project capabilities;
+- add a configurable bind host for metrics and every auxiliary listener Harbor manages;
 - add domain-neutral managed mode to `forj dev`;
-- add the semantic runtime-plan handshake before pre-tasks;
-- add the final runtime overlay to `forj dev` and generated App `LoadEnv`;
+- add peer-authenticated terminal attach and the semantic all-listener runtime-plan handshake before lifecycle tasks;
+- replace flat generated lifecycle work with stable `pre-compose`, typed Compose, `post-compose`, and `post-migrate` phases plus typed Compose-down with `pre/post-compose-down`; reject ambiguous legacy custom tasks until explicitly phased;
+- require arbitrary custom runtimes/watchers to declare enforceable typed endpoints or block full mode;
+- split command-local Compose publication assignments from the App-final connection overlay;
+- add purpose-specific publication keys such as `REDIS_PUBLISH_PORT` with standalone-compatible fallbacks;
+- add the trusted final overlay hook to `forj dev` and generated App `LoadEnv`;
+- add the actual-publication/route-ready barrier between typed Compose and post-Compose readiness/database setup/migrations;
+- materialize session Compose overrides and metrics targets outside the checkout, with a Docker-gateway-only callback relay proved per OS;
 - expose typed watcher/process/resource snapshots, events, logs, and actions;
+- add an explicit `.goforj.yml` watcher and keep build/process/runtime/public readiness as distinct facts;
 - distinguish scoped managed restart from outer process exit/down behavior;
-- provide deterministic Compose identity/labels and supported Compose invocation;
+- discover and adopt existing Compose identity/volumes, use built-in or session-override labels, and define explicit identity migration separately;
 - remove current Windows build, shell, signal, terminal, and Compose blockers;
 - update authoritative templates/generators and regenerate all checked-in mirrors.
 
@@ -129,14 +167,14 @@ Work in Harbor:
 - GoForj version/capability negotiation;
 - managed and terminal-owned session adapters;
 - private endpoint plan allocation;
-- constrained Docker/Compose observation;
+- typed Compose observations and logs received from GoForj, with no Harbor Docker-socket access;
 - project/App/service/resource snapshots;
 - ordered log ingestion and bounded storage;
 - start, stop, scoped restart, open, logs, status, remove, and doctor CLI commands.
 
 ### Exit gate
 
-The generated-fixture workflow starts three full GoForj projects concurrently on macOS, Linux, and Windows. Each has trusted HTTPS, MySQL `:3306`, Redis `:6379`, mail, API Index, Lighthouse, and selected observability links. Stopping or restarting one does not affect the others or delete volumes. Standalone `forj dev` remains compatible without Harbor.
+The generated-fixture workflow starts three full GoForj projects concurrently on macOS, Linux, and Windows. Each has trusted HTTPS, MySQL `:3306`, Redis `:6379`, mail, the API Reference backed by its generated API Index, Lighthouse, and selected observability links. A separately seeded existing Compose project is adopted with its data intact. Stopping or restarting one does not affect the others, dirty a checkout, or delete volumes. Standalone `forj dev` remains compatible without Harbor, and an older generated project is honestly read-only/upgrade-required until an explicit render supplies the required hooks.
 
 ## Phase 4: desktop experience
 
@@ -144,14 +182,18 @@ Goal: add the Lerd-influenced visual control surface without moving authority in
 
 Deliver:
 
-- pinned Wails v3 desktop module and native build matrix;
+- the Wails App boundary spike: root named App if cleanly supported, otherwise a nested module wired into the same `.goforj.yml` dev graph;
+- pinned Wails v3 dependency and native build matrix;
 - first-run explanation, setup progress, and end-to-end verification;
-- three-pane Overview, Projects, Services, and System shell;
-- project address-bar header and Overview, Apps, Services, Resources, Logs, Network, and Diagnostics tabs;
+- three-pane shell with four destinations: Overview, Projects, Services, and System (including Settings);
+- narrow icon rail, grouped dense contextual lists, and persistent detail pane validated by the Phase 0 prototype;
+- project address-bar header with Overview, Logs, Network, and Diagnostics as the four primary views;
+- App/service ownership sections and resource actions inside Overview rather than duplicate top-level trees;
+- Overview/command-palette resource search that returns to the owning App or service;
 - start, stop, scoped restart, open, copy, registration, and removal flows;
 - ordered live logs with source filters and gap indicators;
 - tray with aggregate status, recent/running projects, quick actions, doctor, and open-window action;
-- native notifications for high-value failure/recovery events;
+- default close-to-hide, native-menu/shortcut UI Quit, first-close explanation, no-tray recovery, and best-effort native notifications while the UI is alive;
 - accessible keyboard, screen-reader, contrast, and reduced-motion behavior;
 - responsive one/two/three-pane layouts;
 - UI/CLI parity tests against the same daemon API.
@@ -171,7 +213,9 @@ Deliver:
 - signed native installers and packages;
 - macOS signing/notarization, Windows Authenticode, and supported Linux packages;
 - coordinated signed updater for desktop, daemon, CLI, helper, service definitions, and state schema;
-- verified rollback after a failed post-update check;
+- whole-bundle channel/sequence binding, anti-replay/downgrade checks, key rotation/revocation, and mix-and-match rejection;
+- build-once/promote-by-digest provenance with isolated short-lived signing identity;
+- transaction-scoped rollback capsule and schema snapshot for a failed, still-uncommitted `N-1` to candidate update;
 - reboot, login/logout, sleep/resume, VPN/network-change, Docker restart, and partial-operation recovery;
 - exact ownership-based uninstall;
 - release-generated platform support evidence;
@@ -186,13 +230,16 @@ The release commit passes installer, reboot, cleanup, Docker, managed-GoForj, an
 
 The work that can invalidate the product is intentionally first:
 
-1. Windows stable loopback identities and NRPT/port-53 behavior;
-2. macOS durable aliases and low-port behavior;
-3. Docker Desktop private publications on both desktop platforms;
-4. GoForj Windows managed-session readiness;
-5. runtime-overlay precedence across both `forj dev` and generated App loading;
-6. one authoritative resource projection;
-7. Wails v3 stability and packaging.
+1. reproducible, secure, reboot-capable product workers for all three OS profiles;
+2. Windows stable loopback identities and NRPT/port-53 behavior;
+3. macOS durable aliases and low-port behavior;
+4. Docker Desktop private publications and the container-to-host metrics relay on both desktop platforms;
+5. GoForj Windows managed-session readiness;
+6. typed Compose publication barrier before migration;
+7. split Compose/App assignment precedence across `forj dev` and generated App loading;
+8. existing Compose identity/data adoption;
+9. one authoritative resource projection;
+10. Wails v3 stability and packaging.
 
 UI polish, notifications, and convenience actions must not pull effort ahead of these proofs.
 
@@ -207,7 +254,7 @@ Each capability lands as a vertical slice:
 | TLS | CA/leaf/persistence | native trust store and low ports | trusted HTTPS works |
 | Native service | relay state machine | system DNS plus two native listeners | native port remains unchanged |
 | GoForj App | descriptor/runtime plan | live managed session | public URL and private bind separate |
-| Compose | service plan mapping | Engine/Desktop generated fixtures | no public/LAN binding |
+| Compose | requirement/consumer and publication/App mapping | Engine/Desktop generated fixtures plus seeded identity adoption | no public/LAN binding or apparent data loss |
 | Recovery | operation journal | daemon/reboot/network fault injection | state heals without foreign mutation |
 | Desktop | snapshot-driven view model | native Wails smoke | UI exit does not own runtime |
 
@@ -217,6 +264,7 @@ Harbor v1 is not defined by the presence of a window. It is defined by these inv
 
 - one daemon owns state;
 - three GoForj projects run concurrently;
+- their data-bearing Compose services remain independently owned per project;
 - public HTTP/TLS and native service endpoints are stable;
 - no repository port or environment file is rewritten;
 - GoForj, not Harbor, owns project semantics;

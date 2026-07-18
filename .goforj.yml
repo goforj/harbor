@@ -1,0 +1,22 @@
+project_name: harbor
+module_name: github.com/goforj/harbor
+updated_at: 2026-07-17 23:23:48 CDT
+dev:
+  pre: []
+  down: []
+  auto_migrate: false
+  down_on_exit: true
+  sound_on_watch_error: true
+  wire_paths:
+    - app/wire
+  apps: {}
+render:
+  components: [cli]
+  starter_kit: none
+  help_format: guided
+  goforj_version: 0.19.0
+apps:
+  harbord:
+    components: [cli]
+    starter_kit: none
+    help_format: guided

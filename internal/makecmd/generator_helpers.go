@@ -1,0 +1,689 @@
+package makecmd
+
+import (
+	"fmt"
+	"go/format"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/goforj/str/v2"
+
+	"github.com/goforj/harbor/internal/console"
+)
+
+type goImportSpec struct {
+	alias string
+	path  string
+}
+
+func formatGoFile(path string) error {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return writeGeneratorGoFile(path, src)
+}
+
+func readGeneratorGoFile(path string) ([]string, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	content := string(data)
+	return strings.Split(content, "\n"), content, nil
+}
+
+// firstExistingGeneratedPath lets generators prefer the current app layout while still supporting older renders.
+func firstExistingGeneratedPath(paths ...string) string {
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	return paths[0]
+}
+
+// activeAppName lets delegated app commands scope app-owned registration without adding generator flags.
+func activeAppName() string {
+	app := str.Of(os.Getenv("FORJ_APP")).Trim()
+	if !app.IsBlank() && appNameIsSafe(app.String()) {
+		return app.String()
+	}
+	return "app"
+}
+
+// activeAppDir maps the implicit default app to app/ and named apps to app/<app>/.
+func activeAppDir() string {
+	app := activeAppName()
+	if app == "app" {
+		return "app"
+	}
+	return filepath.Join("app", app)
+}
+
+// activeAppFile keeps legacy fallback paths available only for the default single-app.
+func activeAppFile(file string, legacyPaths ...string) string {
+	path := filepath.Join(activeAppDir(), file)
+	if activeAppName() != "app" {
+		return path
+	}
+	return firstExistingGeneratedPath(append([]string{path}, legacyPaths...)...)
+}
+
+// activeAppWireFile scopes app-owned Wire injector mutations to the active app composition root.
+func activeAppWireFile(file string, legacyPaths ...string) string {
+	return activeAppFile(filepath.Join("wire", file), legacyPaths...)
+}
+
+// appMigrationDir resolves where migration files belong for the active app.
+func appMigrationDir(connection string) string {
+	connection = str.Of(connection).Trim().ToLower().String()
+	if connection == "" {
+		connection = "default"
+	}
+	app := activeAppName()
+	if app != "app" || hasNamedApps() || hasAppMigrationLayout() {
+		return filepath.Join("migrations", app, connection)
+	}
+	if connection == "default" {
+		return "migrations"
+	}
+	return filepath.Join("migrations", connection)
+}
+
+// hasNamedApps detects conventional app entrypoints without requiring project config.
+func hasNamedApps() bool {
+	entries, err := os.ReadDir("cmd")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == "app" || !appNameIsSafe(entry.Name()) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("cmd", entry.Name(), "main.go")); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAppMigrationLayout keeps generators in expanded layout after migrations have been moved.
+func hasAppMigrationLayout() bool {
+	if _, err := os.Stat(filepath.Join("migrations", "app")); err == nil {
+		return true
+	}
+	return false
+}
+
+// appNameIsSafe prevents environment-provided app names from escaping app/.
+func appNameIsSafe(app string) bool {
+	if app == "." || app == ".." {
+		return false
+	}
+	for _, r := range app {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func writeGeneratorGoFile(path string, src []byte) error {
+	formatted, err := format.Source(src)
+	if err != nil {
+		return fmt.Errorf("gofmt error: %w", err)
+	}
+	if err := os.WriteFile(path, formatted, 0644); err != nil {
+		return err
+	}
+	return refreshWireGeneratedFile(path)
+}
+
+func refreshWireGeneratedFile(path string) error {
+	cleanPath := filepath.Clean(path)
+	if filepath.Base(cleanPath) == "wire_gen.go" || filepath.Base(filepath.Dir(cleanPath)) != "wire" {
+		return nil
+	}
+
+	wireDir := filepath.Dir(cleanPath)
+	if _, err := os.Stat(filepath.Join(wireDir, "wire.go")); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	cmd := exec.Command("go", "run", "github.com/goforj/wire/cmd/wire@v1.2.0")
+	if wirePath, err := exec.LookPath("wire"); err == nil {
+		cmd = exec.Command(wirePath)
+	}
+	cmd.Dir = wireDir
+	cmd.Env = append(os.Environ(), "WIRE_INCREMENTAL=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("wire generate %s: %w\n%s", wireDir, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func writeGeneratorGoLines(path string, lines []string) error {
+	return writeGeneratorGoFile(path, []byte(strings.Join(lines, "\n")))
+}
+
+func writeGeneratorGoLinesIfChanged(path string, original []string, updated []string, dryRun bool) (bool, error) {
+	if strings.Join(original, "\n") == strings.Join(updated, "\n") {
+		return false, nil
+	}
+	if dryRun {
+		return true, nil
+	}
+	return true, writeGeneratorGoLines(path, updated)
+}
+
+func removeGeneratedFile(path string, dryRun bool) error {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			console.Infof("No generated file found: %s", path)
+			return nil
+		}
+		return err
+	}
+	if dryRun {
+		console.Infof("Would remove generated file: %s", path)
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	console.Successf("Removed generated file: %s", path)
+	return nil
+}
+
+func containsLine(lines []string, target string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) == strings.TrimSpace(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeExactLine(lines []string, target string) ([]string, bool) {
+	removed := false
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == strings.TrimSpace(target) {
+			removed = true
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, removed
+}
+
+func removeExactBlock(lines []string, block []string) ([]string, bool) {
+	if len(block) == 0 || len(lines) < len(block) {
+		return lines, false
+	}
+	for i := 0; i <= len(lines)-len(block); i++ {
+		matched := true
+		for j := range block {
+			if strings.TrimSpace(lines[i+j]) != strings.TrimSpace(block[j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			out := append([]string{}, lines[:i]...)
+			out = append(out, lines[i+len(block):]...)
+			return out, true
+		}
+	}
+	return lines, false
+}
+
+func insertBeforeClosingBrace(lines []string, structStartMarker string, insert string) []string {
+	inStruct := false
+	for i, line := range lines {
+		if strings.Contains(line, structStartMarker) {
+			inStruct = true
+			continue
+		}
+		if inStruct && strings.TrimSpace(line) == "}" {
+			return append(lines[:i], append([]string{insert}, lines[i:]...)...)
+		}
+	}
+	return lines
+}
+
+func insertIntoFuncParams(lines []string, funcName string, insert string) []string {
+	foundFunc := false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if !foundFunc && strings.Contains(line, "func "+funcName+"(") {
+			foundFunc = true
+			continue
+		}
+		if foundFunc && strings.HasPrefix(strings.TrimSpace(line), ")") {
+			lines = append(lines[:i], append([]string{insert}, lines[i:]...)...)
+			break
+		}
+	}
+	return lines
+}
+
+func getGoModuleName() (string, error) {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line := str.Of(line).Trim()
+		if line.HasPrefix("module ") {
+			return line.TrimPrefix("module ").Trim().String(), nil
+		}
+	}
+	return "", fmt.Errorf("module name not found")
+}
+
+func ensureCmdSuffix(name string) string {
+	clean := str.Of(name).Trim()
+	if clean.IsBlank() {
+		return "ExampleCmd"
+	}
+	if clean.HasSuffix("Cmd") {
+		return clean.String()
+	}
+	return clean.String() + "Cmd"
+}
+
+func importAliasForPackageRef(packageName string, packageRef string) string {
+	if packageName == packageRef {
+		return ""
+	}
+	return packageRef
+}
+
+// generatedPackageName returns the Go package declaration name for an output directory.
+// For example, internal/billing_portal becomes billingportal, and an empty basename returns the fallback.
+func generatedPackageName(outputDir string, fallback string) string {
+	name := generatedPackageSegment(filepath.Base(outputDir))
+	if name == "" {
+		return fallback
+	}
+	return name
+}
+
+// generatedPackageRef returns the Go import reference used when wiring generated packages.
+// For example, internal/billing_portal becomes billingportal, and internal/billing/usage_reports becomes billingUsagereports.
+func generatedPackageRef(outputDir string, fallback string) string {
+	rel := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(outputDir)), "./")
+	parts := strings.Split(rel, "/")
+	if len(parts) > 1 && parts[0] == "internal" {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return generatedPackageName(outputDir, fallback)
+	}
+
+	var b strings.Builder
+	for i, part := range parts {
+		clean := generatedPackageSegment(part)
+		if clean == "" {
+			continue
+		}
+		if i == 0 {
+			b.WriteString(str.Of(clean).Camel().String())
+			continue
+		}
+		b.WriteString(str.Of(clean).Pascal().String())
+	}
+	if b.Len() == 0 {
+		return generatedPackageName(outputDir, fallback)
+	}
+	return b.String()
+}
+
+// generatedPackagePathParts returns compact directory names for grouped make command names.
+// For example, Billing:UsageReports is split by callers and becomes []string{"billing", "usagereports"}.
+func generatedPackagePathParts(parts []string) []string {
+	packageParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		clean := generatedPackageSegment(part)
+		if clean == "" {
+			continue
+		}
+		packageParts = append(packageParts, clean)
+	}
+	return packageParts
+}
+
+// generatedPackagePathPartsFromPath normalizes slash-separated package paths into compact path segments.
+// For example, internal/billing_portal becomes []string{"internal", "billingportal"}.
+func generatedPackagePathPartsFromPath(pkg string) []string {
+	return generatedPackagePathParts(strings.Split(filepath.ToSlash(pkg), "/"))
+}
+
+// generatedPackageSegment converts one user-provided name segment into a compact lowercase Go package segment.
+// For example, BillingPortal and billing_portal both become billingportal.
+func generatedPackageSegment(part string) string {
+	return str.Of(part).Trim().Snake().ReplaceAll("_", "").String()
+}
+
+func insertImportIfMissing(lines []string, importPath string, aliases ...string) []string {
+	alias := ""
+	if len(aliases) > 0 {
+		alias = strings.TrimSpace(aliases[0])
+	}
+	spec := goImportSpec{alias: alias, path: importPath}
+
+	hasImport := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "import (") {
+			hasImport = true
+			for j := i + 1; j < len(lines); j++ {
+				if strings.TrimSpace(lines[j]) == ")" {
+					for _, imp := range lines[i+1 : j] {
+						existing, ok := parseGoImportSpec(imp)
+						if ok && existing.path == importPath {
+							return lines
+						}
+					}
+					lines = append(lines[:j], append([]string{renderGoImportSpec(spec)}, lines[j:]...)...)
+					break
+				}
+			}
+			break
+		}
+	}
+	if hasImport {
+		return normalizeImports(lines)
+	}
+
+	var importLines []int
+	var imports []goImportSpec
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "import ") {
+			importLines = append(importLines, i)
+			existing, ok := parseGoImportSpec(line)
+			if ok {
+				imports = append(imports, existing)
+			}
+		}
+	}
+	if len(importLines) > 0 {
+		for _, imp := range imports {
+			if imp.path == importPath {
+				return normalizeImports(lines)
+			}
+		}
+		imports = append(imports, spec)
+		block := []string{"import ("}
+		for _, imp := range imports {
+			block = append(block, renderGoImportSpec(imp))
+		}
+		block = append(block, ")")
+
+		start := importLines[0]
+		lines = append(lines[:start], append(block, lines[start+1:]...)...)
+		for i := len(importLines) - 1; i > 0; i-- {
+			idx := importLines[i]
+			lines = append(lines[:idx], lines[idx+1:]...)
+		}
+		return normalizeImports(lines)
+	}
+
+	for i, line := range lines {
+		if strings.HasPrefix(line, "package ") {
+			insert := []string{"", str.Of(renderGoImportSpec(spec)).Trim().Prepend("import ").Trim().String(), ""}
+			lines = append(lines[:i+1], append(insert, lines[i+1:]...)...)
+			return normalizeImports(lines)
+		}
+	}
+	return lines
+}
+
+func parseGoImportSpec(line string) (goImportSpec, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+		return goImportSpec{}, false
+	}
+	if strings.HasPrefix(trimmed, "import ") {
+		trimmed = str.Of(trimmed).TrimPrefix("import ").Trim().String()
+	}
+	if trimmed == "(" || trimmed == ")" {
+		return goImportSpec{}, false
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return goImportSpec{}, false
+	}
+	if path, err := strconv.Unquote(fields[0]); err == nil {
+		return goImportSpec{path: path}, true
+	}
+	if len(fields) >= 2 {
+		path, err := strconv.Unquote(fields[1])
+		if err == nil {
+			return goImportSpec{alias: fields[0], path: path}, true
+		}
+	}
+	return goImportSpec{}, false
+}
+
+func renderGoImportSpec(spec goImportSpec) string {
+	if spec.alias == "" {
+		return fmt.Sprintf("\t%q", spec.path)
+	}
+	return fmt.Sprintf("\t%s %q", spec.alias, spec.path)
+}
+
+func removeGoImportIfUnused(lines []string, importPath string, reference string) []string {
+	if reference != "" && goBodyContainsReference(lines, reference) {
+		return lines
+	}
+	return removeGoImport(lines, importPath)
+}
+
+func goBodyContainsReference(lines []string, reference string) bool {
+	inImportBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "import (") {
+			inImportBlock = true
+			continue
+		}
+		if inImportBlock {
+			if trimmed == ")" {
+				inImportBlock = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "import ") {
+			continue
+		}
+		if strings.Contains(line, reference) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeGoImport(lines []string, importPath string) []string {
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "import (") {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == ")" {
+				block := make([]string, 0, j-i-1)
+				for _, imp := range lines[i+1 : j] {
+					spec, ok := parseGoImportSpec(imp)
+					if ok && spec.path == importPath {
+						continue
+					}
+					if strings.TrimSpace(imp) != "" {
+						block = append(block, imp)
+					}
+				}
+				if len(block) == 0 {
+					out := append([]string{}, lines[:i]...)
+					out = append(out, lines[j+1:]...)
+					return out
+				}
+				out := append([]string{}, lines[:i+1]...)
+				out = append(out, block...)
+				out = append(out, lines[j:]...)
+				return normalizeImports(out)
+			}
+		}
+	}
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "import (") {
+			continue
+		}
+		spec, ok := parseGoImportSpec(line)
+		if ok && spec.path == importPath {
+			out := append([]string{}, lines[:i]...)
+			out = append(out, lines[i+1:]...)
+			return out
+		}
+	}
+	return lines
+}
+
+func normalizeImports(lines []string) []string {
+	var blockStart int = -1
+	var blockEnd int = -1
+	var imports []goImportSpec
+	var singleImportLines []int
+	seen := make(map[string]struct{})
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if blockStart == -1 && strings.HasPrefix(trimmed, "import (") {
+			blockStart = i
+			continue
+		}
+		if blockStart != -1 && blockEnd == -1 {
+			if strings.TrimSpace(line) == ")" {
+				blockEnd = i
+				continue
+			}
+			spec, ok := parseGoImportSpec(line)
+			if ok {
+				key := spec.alias + "\x00" + spec.path
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					imports = append(imports, spec)
+				}
+			}
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "import ") && !strings.HasPrefix(trimmed, "import (") {
+			singleImportLines = append(singleImportLines, i)
+			spec, ok := parseGoImportSpec(line)
+			if ok {
+				key := spec.alias + "\x00" + spec.path
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					imports = append(imports, spec)
+				}
+			}
+		}
+	}
+
+	if blockStart != -1 {
+		for i := len(singleImportLines) - 1; i >= 0; i-- {
+			idx := singleImportLines[i]
+			lines = append(lines[:idx], lines[idx+1:]...)
+		}
+		block := []string{"import ("}
+		for _, imp := range imports {
+			block = append(block, renderGoImportSpec(imp))
+		}
+		block = append(block, ")")
+		lines = append(lines[:blockStart], append(block, lines[blockEnd+1:]...)...)
+		return lines
+	}
+
+	if len(singleImportLines) <= 1 {
+		return lines
+	}
+
+	block := []string{"import ("}
+	for _, imp := range imports {
+		block = append(block, renderGoImportSpec(imp))
+	}
+	block = append(block, ")")
+
+	start := singleImportLines[0]
+	lines = append(lines[:start], append(block, lines[start+1:]...)...)
+	for i := len(singleImportLines) - 1; i > 0; i-- {
+		idx := singleImportLines[i]
+		lines = append(lines[:idx], lines[idx+1:]...)
+	}
+	return lines
+}
+
+func insertIntoCallBlock(lines []string, startMarker string, insert string) []string {
+	if containsLine(lines, insert) {
+		return lines
+	}
+	for i, line := range lines {
+		if !strings.Contains(line, startMarker) {
+			continue
+		}
+		afterMarker := line[strings.Index(line, startMarker)+len(startMarker):]
+		if closeIndex := strings.Index(afterMarker, ")"); closeIndex >= 0 {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			before := line[:strings.Index(line, startMarker)+len(startMarker)]
+			afterClose := afterMarker[closeIndex+1:]
+			replacement := []string{
+				before,
+				insert,
+				indent + ")" + afterClose,
+			}
+			return append(lines[:i], append(replacement, lines[i+1:]...)...)
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == ")" {
+				return append(lines[:j], append([]string{insert}, lines[j:]...)...)
+			}
+		}
+	}
+	return lines
+}
+
+func insertAfterMarkerIfMissing(lines []string, marker string, insert string) []string {
+	if containsLine(lines, insert) {
+		return lines
+	}
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			return append(lines[:i+1], append([]string{insert}, lines[i+1:]...)...)
+		}
+	}
+	return lines
+}

@@ -1,0 +1,442 @@
+package logger
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/goforj/str/v2"
+)
+
+const (
+	logDedupeEnabledEnv       = "APP_LOG_DEDUPE_ENABLED"
+	logDedupeWindowMSEnv      = "APP_LOG_DEDUPE_WINDOW_MS"
+	logDedupeBurstEnv         = "APP_LOG_DEDUPE_BURST"
+	logDedupeSummaryEveryEnv  = "APP_LOG_DEDUPE_SUMMARY_EVERY"
+	defaultDedupeWindowMS     = 1200
+	defaultDedupeBurst        = 2
+	defaultDedupeSummaryEvery = 1000
+)
+
+type dedupeWriter struct {
+	out           io.Writer
+	enabled       bool
+	window        time.Duration
+	burst         int
+	summaryEvery  int
+	maxKeys       int
+	compactEvery  int
+	opsSinceSweep int
+	mu            sync.Mutex
+	pending       bytes.Buffer
+	entries       map[string]*dedupeEntry
+}
+
+type dedupeEntry struct {
+	windowStart            time.Time
+	lastSeen               time.Time
+	sampleLine             string
+	emittedInWindow        int
+	suppressedSinceSummary int
+}
+
+type sinkDedupe struct {
+	enabled       bool
+	window        time.Duration
+	burst         int
+	summaryEvery  int
+	maxKeys       int
+	compactEvery  int
+	opsSinceSweep int
+	mu            sync.Mutex
+	entries       map[string]*sinkDedupeEntry
+}
+
+type sinkDedupeEntry struct {
+	windowStart            time.Time
+	lastSeen               time.Time
+	sample                 LogEntry
+	emittedInWindow        int
+	suppressedSinceSummary int
+}
+
+func (e *sinkDedupeEntry) hasSample() bool {
+	if e == nil {
+		return false
+	}
+	return e.sample.Level != "" || e.sample.Message != "" || e.sample.Time != "" || !e.sample.TimeValue.IsZero() || e.sample.Fields != nil
+}
+
+var (
+	ansiRegexp        = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	bulletSplitRegexp = regexp.MustCompile(`[·•]`)
+	kvRegexp          = regexp.MustCompile(`^\s*([a-zA-Z0-9_]+)=(.+?)\s*$`)
+	spaceRegexp       = regexp.MustCompile(`\s+`)
+	ignoreKeys        = map[string]struct{}{
+		"latency":    {},
+		"duration":   {},
+		"elapsed_ms": {},
+		"time":       {},
+		"ts":         {},
+		"error":      {},
+		"err":        {},
+	}
+)
+
+func newDedupeWriter(out io.Writer) *dedupeWriter {
+	window := time.Duration(getEnvInt(logDedupeWindowMSEnv, defaultDedupeWindowMS)) * time.Millisecond
+	if window <= 0 {
+		window = time.Duration(defaultDedupeWindowMS) * time.Millisecond
+	}
+	burst := getEnvInt(logDedupeBurstEnv, defaultDedupeBurst)
+	if burst < 0 {
+		burst = defaultDedupeBurst
+	}
+	summaryEvery := getEnvInt(logDedupeSummaryEveryEnv, defaultDedupeSummaryEvery)
+	if summaryEvery <= 0 {
+		summaryEvery = defaultDedupeSummaryEvery
+	}
+	return &dedupeWriter{
+		out:          out,
+		enabled:      getEnvBool(logDedupeEnabledEnv, true),
+		window:       window,
+		burst:        burst,
+		summaryEvery: summaryEvery,
+		maxKeys:      512,
+		compactEvery: 64,
+		entries:      make(map[string]*dedupeEntry),
+	}
+}
+
+func newSinkDedupe() *sinkDedupe {
+	window := time.Duration(getEnvInt(logDedupeWindowMSEnv, defaultDedupeWindowMS)) * time.Millisecond
+	if window <= 0 {
+		window = time.Duration(defaultDedupeWindowMS) * time.Millisecond
+	}
+	burst := getEnvInt(logDedupeBurstEnv, defaultDedupeBurst)
+	if burst < 0 {
+		burst = defaultDedupeBurst
+	}
+	summaryEvery := getEnvInt(logDedupeSummaryEveryEnv, defaultDedupeSummaryEvery)
+	if summaryEvery <= 0 {
+		summaryEvery = defaultDedupeSummaryEvery
+	}
+	return &sinkDedupe{
+		enabled:      getEnvBool(logDedupeEnabledEnv, true),
+		window:       window,
+		burst:        burst,
+		summaryEvery: summaryEvery,
+		maxKeys:      512,
+		compactEvery: 64,
+		entries:      make(map[string]*sinkDedupeEntry),
+	}
+}
+
+func (d *sinkDedupe) filter(entry LogEntry) (bool, *LogEntry) {
+	if d == nil || !d.enabled {
+		return true, nil
+	}
+	sig := entry.signature
+	if sig == "" {
+		sig = normalizeLogEntrySignature(entry)
+	}
+	if sig == "" {
+		return true, nil
+	}
+	now := time.Now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state := d.entries[sig]
+	if state == nil {
+		state = &sinkDedupeEntry{windowStart: now}
+		d.entries[sig] = state
+	}
+	var windowSummary *LogEntry
+	if state.windowStart.IsZero() || now.Sub(state.windowStart) > d.window {
+		if state.suppressedSinceSummary > 0 {
+			windowSummary = d.summaryEntryLocked(state, now)
+		}
+		state.windowStart = now
+		state.emittedInWindow = 0
+		state.suppressedSinceSummary = 0
+		state.sample = LogEntry{}
+	}
+	state.lastSeen = now
+	if state.emittedInWindow < d.burst {
+		state.emittedInWindow++
+		d.compactLocked(now)
+		return true, windowSummary
+	}
+	if !state.hasSample() {
+		state.sample = cloneLogEntry(entry)
+	}
+	state.suppressedSinceSummary++
+	if state.suppressedSinceSummary >= d.summaryEvery {
+		summary := d.summaryEntryLocked(state, now)
+		state.suppressedSinceSummary = 0
+		d.compactLocked(now)
+		return false, summary
+	}
+	d.compactLocked(now)
+	return false, nil
+}
+
+func (d *sinkDedupe) summaryEntryLocked(state *sinkDedupeEntry, now time.Time) *LogEntry {
+	if state == nil || state.suppressedSinceSummary <= 0 {
+		return nil
+	}
+	summary := cloneLogEntry(state.sample)
+	if summary.Message == "" {
+		summary.Message = "Log event"
+	}
+	fields := ensureLogEntryFields(&summary)
+	for _, key := range []string{"latency", "duration", "elapsed_ms", "time", "ts"} {
+		delete(fields, key)
+	}
+	fields["occurred"] = fmt.Sprintf("%dx", state.suppressedSinceSummary)
+	fields["dedupe"] = "summary"
+	fields["deduped"] = true
+	summary.Time = ""
+	summary.TimeValue = now
+	return &summary
+}
+
+func (d *sinkDedupe) compactLocked(now time.Time) {
+	if len(d.entries) <= d.maxKeys {
+		d.opsSinceSweep = 0
+		return
+	}
+	d.opsSinceSweep++
+	if d.opsSinceSweep < d.compactEvery {
+		return
+	}
+	d.opsSinceSweep = 0
+	cutoff := now.Add(-2 * d.window)
+	for key, entry := range d.entries {
+		if entry == nil || entry.lastSeen.Before(cutoff) {
+			delete(d.entries, key)
+		}
+	}
+}
+
+func normalizeLogEntrySignature(entry LogEntry) string {
+	base := strings.TrimSpace(entry.Message)
+	if base == "" {
+		base = strings.TrimSpace(entry.Level)
+	}
+	if base == "" {
+		return ""
+	}
+	parts := make([]string, 0, len(entry.Fields)+1)
+	if level := str.Of(entry.Level).Trim().ToLower().String(); level != "" {
+		parts = append(parts, "level="+level)
+	}
+	for key, value := range entry.Fields {
+		k := str.Of(key).Trim().ToLower().String()
+		if k == "" {
+			continue
+		}
+		if _, skip := ignoreKeys[k]; skip {
+			continue
+		}
+		parts = append(parts, k+"="+strings.TrimSpace(fmt.Sprintf("%v", value)))
+	}
+	sort.Strings(parts)
+	if len(parts) == 0 {
+		return base
+	}
+	return base + "|" + strings.Join(parts, "|")
+}
+
+func cloneLogEntry(entry LogEntry) LogEntry {
+	cloned := LogEntry{
+		Level:     entry.Level,
+		Message:   entry.Message,
+		Time:      entry.Time,
+		TimeValue: entry.TimeValue,
+		signature: entry.signature,
+	}
+	if entry.Fields != nil {
+		cloned.Fields = make(map[string]any, len(entry.Fields))
+		for key, value := range entry.Fields {
+			cloned.Fields[key] = value
+		}
+	}
+	if len(entry.orderedFields) > 0 {
+		cloned.orderedFields = make([]eventField, len(entry.orderedFields))
+		copy(cloned.orderedFields, entry.orderedFields)
+	}
+	cloned.compact = entry.compact
+	return cloned
+}
+
+func (w *dedupeWriter) Write(p []byte) (int, error) {
+	if w == nil || w.out == nil || !w.enabled {
+		if w == nil || w.out == nil {
+			return len(p), nil
+		}
+		_, err := w.out.Write(p)
+		return len(p), err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, _ = w.pending.Write(p)
+
+	for {
+		data := w.pending.Bytes()
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			break
+		}
+		line := string(data[:idx])
+		rest := append([]byte(nil), data[idx+1:]...)
+		w.pending.Reset()
+		if len(rest) > 0 {
+			_, _ = w.pending.Write(rest)
+		}
+		w.writeLineLocked(strings.TrimRight(line, "\r"))
+	}
+	return len(p), nil
+}
+
+func (w *dedupeWriter) writeLineLocked(line string) {
+	if line == "" {
+		_, _ = io.WriteString(w.out, "\n")
+		return
+	}
+	now := time.Now()
+	sig := normalizeLogSignature(line)
+	if sig == "" {
+		_, _ = io.WriteString(w.out, line+"\n")
+		return
+	}
+	entry := w.entries[sig]
+	if entry == nil {
+		entry = &dedupeEntry{windowStart: now}
+		w.entries[sig] = entry
+	}
+	if entry.windowStart.IsZero() || now.Sub(entry.windowStart) > w.window {
+		if entry.suppressedSinceSummary > 0 {
+			w.emitSummaryForEntryLocked(entry)
+		}
+		entry.windowStart = now
+		entry.emittedInWindow = 0
+		entry.suppressedSinceSummary = 0
+	}
+	entry.lastSeen = now
+	entry.sampleLine = line
+	if entry.emittedInWindow < w.burst {
+		entry.emittedInWindow++
+		_, _ = io.WriteString(w.out, line+"\n")
+		w.compactEntriesLocked(now)
+		return
+	}
+	entry.suppressedSinceSummary++
+	if entry.suppressedSinceSummary >= w.summaryEvery {
+		w.emitSummaryForEntryLocked(entry)
+	}
+	w.compactEntriesLocked(now)
+}
+
+func (w *dedupeWriter) emitSummaryForEntryLocked(entry *dedupeEntry) {
+	if entry == nil || entry.suppressedSinceSummary <= 0 {
+		return
+	}
+	summary := fmt.Sprintf("%s (occurred %dx)\n", entry.sampleLine, entry.suppressedSinceSummary)
+	_, _ = io.WriteString(w.out, summary)
+	entry.suppressedSinceSummary = 0
+}
+
+func (w *dedupeWriter) compactEntriesLocked(now time.Time) {
+	if len(w.entries) <= w.maxKeys {
+		w.opsSinceSweep = 0
+		return
+	}
+	w.opsSinceSweep++
+	if w.opsSinceSweep < w.compactEvery {
+		return
+	}
+	w.opsSinceSweep = 0
+	cutoff := now.Add(-2 * w.window)
+	for key, entry := range w.entries {
+		if entry == nil || entry.lastSeen.Before(cutoff) {
+			delete(w.entries, key)
+		}
+	}
+}
+
+func normalizeLogSignature(line string) string {
+	plain := ansiRegexp.ReplaceAllString(line, "")
+	plain = strings.ReplaceAll(plain, "\u00a0", " ")
+	plain = strings.TrimSpace(spaceRegexp.ReplaceAllString(plain, " "))
+	parts := bulletSplitRegexp.Split(plain, -1)
+	if len(parts) == 0 {
+		return strings.TrimSpace(plain)
+	}
+	base := str.Of(parts[0]).Trim().ReplaceAll("  ", " ").String()
+	if idx := strings.Index(base, "→"); idx >= 0 {
+		base = strings.TrimSpace(base[:idx])
+	}
+	if len(parts) == 1 {
+		return base
+	}
+	fields := make([]string, 0, len(parts))
+	for _, part := range parts[1:] {
+		field := strings.TrimSpace(part)
+		if field == "" {
+			continue
+		}
+		matches := kvRegexp.FindStringSubmatch(field)
+		if len(matches) != 3 {
+			continue
+		}
+		key := str.Of(matches[1]).Trim().ToLower().String()
+		value := strings.TrimSpace(matches[2])
+		if _, skip := ignoreKeys[key]; skip {
+			continue
+		}
+		if idx := strings.Index(value, " #"); idx > 0 {
+			value = strings.TrimSpace(value[:idx])
+		}
+		fields = append(fields, key+"="+value)
+	}
+	sort.Strings(fields)
+	normalized := make([]string, 0, len(fields)+1)
+	normalized = append(normalized, base)
+	normalized = append(normalized, fields...)
+	return strings.Join(normalized, "|")
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	raw := str.Of(os.Getenv(key)).Trim().ToLower().String()
+	if raw == "" {
+		return defaultValue
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultValue
+	}
+	return n
+}

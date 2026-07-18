@@ -1,0 +1,29 @@
+package cmd
+
+import (
+	"github.com/goforj/harbor/internal/logger"
+)
+
+// HelloWorldCmd is a test command
+type HelloWorldCmd struct {
+	logger *logger.AppLogger
+}
+
+// Signature defines CLI metadata for this command.
+func (*HelloWorldCmd) Signature() string {
+	return `name:"hello:world" help:"Hello world command"`
+}
+
+// NewHelloWorldCmd creates a new HelloWorldCmd
+func NewHelloWorldCmd(logger *logger.AppLogger) *HelloWorldCmd {
+	return &HelloWorldCmd{
+		logger: logger,
+	}
+}
+
+// Run executes the command.
+func (c *HelloWorldCmd) Run() error {
+	c.logger.Info().Msg("Hello world!")
+
+	return nil
+}
