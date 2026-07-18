@@ -8,7 +8,7 @@ Harbor is daemon-first. The desktop is a control surface, not the process that k
 
 ```mermaid
 flowchart LR
-    UI[Wails desktop and tray] -->|owner-only IPC| D[harbord]
+    UI[Wails v2 desktop and Go tray client] -->|owner-only IPC| D[harbord]
     CLI[harbor CLI] -->|owner-only IPC| D
     F[forj dev managed session] <-->|session protocol| D
 
@@ -35,7 +35,7 @@ Four executable roles participate in normal operation. A fifth one-shot lifecycl
 |---|---|---|
 | `harbord` | Desired state, reconciliation, DNS, ingress, outer managed-session supervision, events, logs, and diagnostics. | Inner App/watcher supervision, Compose mutation, direct Docker-socket access, project semantics, arbitrary privileged operations. |
 | `harbor` CLI | Human and automation client for the daemon. | Direct state, Docker/Compose, resolver, or project-file mutation. |
-| Harbor desktop | Wails window, tray, notifications, and settings client. | Durable runtime state or privileged host work. |
+| Harbor desktop | Wails v2 window, Go tray integration, notifications, and settings client. | Durable runtime state or privileged host work. |
 | `harbor-helper` | Apply one approved host mutation with only the OS authority that operation requires, then exit. | Network access, project execution, Docker access, arbitrary commands, or long-lived state. |
 | `harbor-installer` | Independently verify and atomically apply one signed Harbor component bundle to fixed product locations, then exit. | Project execution, Docker access, arbitrary destinations, unsigned components, update download, or long-lived state. |
 
@@ -90,6 +90,12 @@ cmd/helper/             bespoke one-shot `harbor-helper` entrypoint
 
 cmd/installer/          bespoke one-shot `harbor-installer` entrypoint
 
+desktop/                nested Wails v2 module and frontend
+├── go.mod             isolates Wails and native desktop dependencies
+├── main.go
+├── wails.json
+└── frontend/          pinned GoForj Vue starter import and Harbor UI
+
 internal/
 ├── domain/             pure identities, states, transitions, and validation
 ├── rpc/                local protocol and clients
@@ -104,26 +110,6 @@ internal/
 └── doctor/             evidence and owned repairs
 ```
 
-The Wails spike chooses one additional, mutually exclusive shape.
-
-Root-module named App:
-
-```text
-cmd/desktop/
-app/desktop/
-app/desktop/wire/
-desktop/frontend/       Wails configuration and frontend assets
-```
-
-Nested desktop module:
-
-```text
-desktop/
-├── go.mod
-├── main.go
-└── frontend/
-```
-
 Named Apps share `internal/domain` and generated protocol packages, but they do not import another App's composition or Wire package. Current GoForj participation is explicit rather than inferred:
 
 | Boundary | `dev.apps` / `dev.watches` behavior |
@@ -132,8 +118,7 @@ Named Apps share `internal/domain` and generated protocol packages, but they do 
 | `harbord` | Build to `./bin/harbord`; explicit full-process `run.exec` starts the foreground daemon. |
 | `harbor-helper` | Bespoke build-only custom watcher; not a generated App and never elevated by `forj dev`. |
 | `harbor-installer` | Bespoke build-only custom watcher; not a generated App and never elevated by `forj dev`. |
-| root-module `desktop` | Named App with a Wails-owned custom full-process runtime proved by the spike. |
-| nested `desktop` | Not a `dev.apps` entry; a custom `dev.watches` entry runs Wails in `./desktop`. |
+| `desktop` | Nested module, not a `dev.apps` entry; a custom `dev.watches` entry runs Wails in `./desktop`. |
 
 The headless portion starts from this valid current-GoForj shape:
 
@@ -161,33 +146,33 @@ dev:
       exec: go build -o ./bin/harbor-installer ./cmd/installer
 ```
 
-The Wails spike adds exactly one of the two desktop entries and verifies the final YAML through GoForj's parser and live watcher tests. One ordinary standalone `forj dev --no-harbor` then develops the selected graph. Developing Harbor must never launch the helper or installer elevated or leave either running as a watcher.
+The desktop phase adds its custom development entry and verifies the final YAML through GoForj's parser and live watcher tests. One ordinary standalone `forj dev --no-harbor` then develops the complete graph. Developing Harbor must never launch the helper or installer elevated or leave either running as a watcher.
 
 Interfaces are owned by the consumer package and describe semantic operations such as `EnsureResolverRoute` or `InstallTrustAnchor`. Platform implementations do not translate a Linux service file into another operating system's model.
 
 The helper and installer deliberately do not use GoForj's generated App main, environment loader, preboot path, Wire composition, or generic RootCmd. Those surfaces load project configuration and inherit the project-wide component envelope, which is incompatible with a privileged boundary. They are bespoke minimal entrypoints represented as build-only custom dev nodes. Each has a separate dependency allowlist proving that networking clients, Docker, project execution, desktop, dotenv/compiled environment, and generic command dispatch cannot enter the binary.
 
-Wails gets a focused proof before its repository boundary is frozen:
+The nested module is deliberate: Wails, WebView, CGO, frontend, and tray requirements must not raise the minimum Go version or native dependency floor of `harbor`, `harbord`, `harbor-helper`, or `harbor-installer`. The focused desktop proof instead decides the tray process boundary:
 
-1. try a `desktop` named App in the root module with Wails' supported custom layout;
-2. verify Wails build/dev, frontend assets, tray, and platform packaging;
-3. inspect the resulting Go version floor, CGO requirements, dependency graph, and impact on `harbor`, `harbord`, `harbor-helper`, and `harbor-installer`;
-4. if those concerns leak into headless release/build policy, keep `desktop/` as a nested Wails module and register its build/watch commands in `.goforj.yml`'s development graph;
-5. keep daemon IPC as the boundary in either layout.
-
-The desktop is one product App even when a nested module is the correct build boundary. A desktop toolchain choice must not raise the minimum Go version of GoForj or the headless Harbor binaries without a concrete constraint.
+1. pin a stable Wails v2 release and a maintained cross-platform Go tray candidate;
+2. prove their native event loops, close/hide behavior, single-instance focus, menus, and packaging together on macOS, Linux, and Windows;
+3. prefer one desktop process when the integration is reliable;
+4. if the native loops cannot coexist safely, move only the tray into a stateless `harbor-tray` daemon client;
+5. keep daemon IPC as the authority boundary in either shape.
 
 Harbor has a bootstrap rule: developing Harbor itself uses ordinary standalone `forj dev` before attachment exists and explicit `forj dev --no-harbor` once that capability ships, unless a separately installed Harbor is intentionally selected. Builds, tests, setup repair, and release must never require the checkout's in-progress daemon to already manage itself.
 
 ## Desktop boundary
 
-Wails v3 provides the window, menus, tray, native notifications, and bindings. As of 2026-07-18 it is still alpha, so Harbor must pin an exact release or commit and keep the dependency behind the selected desktop package/build boundary.
+A pinned stable Wails v2 release owns the native window, menus, WebView, single-instance behavior, and narrow Go bindings. Wails v2 does not own the tray. Harbor uses a separately selected Go tray implementation, preferring same-process integration after it passes the three-platform event-loop proof. A stateless `harbor-tray` client is the fallback, not a second runtime authority.
+
+The embedded frontend is a plain Vue 3, TypeScript, Vite, and Tailwind CSS 4 SPA based on a pinned import of GoForj's source-owned shadcn-vue starter. Harbor preserves that primitive layer, uses Pinia for daemon snapshot/event presentation, and speaks through a typed bridge with a matching browser-test mock. Hash history keeps packaged navigation independent of a web-server fallback. [Frontend](./frontend.md) defines the source ownership and visual adaptation boundary.
 
 The desktop Go backend is an ordinary daemon client. Frontend code never receives a raw daemon socket, bearer token, Docker socket, project command runner, or unrestricted filesystem API. Wails services expose narrow operations such as `ListProjects`, `StartProject`, and `OpenResource` and validate every argument again at the daemon boundary.
 
 `OpenResource` validates an `http` or `https` URL against the daemon's current resource snapshot and opens it in the system browser. Harbor never navigates its bridge-enabled WebView to a project App, API Index, Lighthouse, service dashboard, or any other project-controlled content. Unexpected main-frame navigation and raw-message origins are rejected.
 
-Wails single-instance behavior only focuses an existing window. It is not the daemon lock. By default, closing the last window hides it and leaves the desktop process alive for tray and best-effort notifications. `Quit Harbor UI` in the native application menu (`Cmd+Q` on macOS, `Ctrl+Q` elsewhere) explicitly exits only the client; `Stop Harbor daemon` is a separate operation and neither action implicitly stops projects. On a Linux desktop without a usable tray, relaunch focuses the hidden single instance, the native Quit path remains available, and the CLI remains the runtime recovery path.
+Desktop single-instance behavior only focuses an existing window. It is not the daemon lock. By default, closing the last window hides it and leaves the desktop process alive for tray and best-effort notifications. `Quit Harbor UI` in the native application menu (`Cmd+Q` on macOS, `Ctrl+Q` elsewhere) explicitly exits only the client; `Stop Harbor daemon` is a separate operation and neither action implicitly stops projects. On a Linux desktop without a usable tray, relaunch focuses the hidden single instance, the native Quit path remains available, and the CLI remains the runtime recovery path.
 
 Bundled frontend assets are local. Harbor does not load remote application code into its bridge-enabled WebView.
 
@@ -366,7 +351,7 @@ Harbor support bundles are generated locally, show a preview, redact known secre
 
 ## Privilege boundary
 
-The Wails process and `harbord` never run elevated. This does not mean Harbor avoids elevated installation work: `harbor-helper` is elevated through the operating system's normal consent flow only when a host mutation requires it.
+The desktop process and `harbord` never run elevated. This does not mean Harbor avoids elevated installation work: `harbor-helper` is elevated through the operating system's normal consent flow only when a host mutation requires it.
 
 The initial Windows full-mode profile uses an interactive local-administrator account running Harbor under its normal filtered, medium-integrity token. UAC elevates the same account to its linked high token, so the user SID and `CurrentUser\Root` profile remain the same. A true non-admin account that must supply a different administrator's credentials is preview-only until Harbor can prove split-identity admission and keep user-scoped trust mutation in the original user's unelevated context; the helper must never write the consenting administrator's profile by accident.
 

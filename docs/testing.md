@@ -19,7 +19,7 @@ Before Phase 0 can claim a platform result, Harbor needs a versioned test fleet 
 - infrastructure provisions a clean VM or supported dedicated host image, obtains a just-in-time one-job runner registration, and destroys or reprovisions the machine after the job; GitHub's `ephemeral` runner flag alone is not machine destruction;
 - runner groups are restricted to this repository and named workflows, and privileged jobs execute only a maintainer-approved exact head SHA;
 - workers expose no cloud metadata, internal network access, signing credentials, package-publishing credentials, or reusable GitHub token;
-- images, Docker Desktop/Engine versions, browsers, resolver backend, trust store, Wails dependencies, and interactive-session setup are versioned;
+- images, Docker Desktop/Engine versions, browsers, resolver backend, trust store, Wails v2, Node, Vue/Vite, GTK/WebKit, tray dependencies, and interactive-session setup are versioned;
 - capacity has a named maintainer, budget, provisioning timeout, and hosted control-plane preflight; a required product job is dispatched only after its exact JIT worker is provisioned and reserved;
 - provisioning, job, cleanup, and destruction evidence is retained out of band and tied to the exact head SHA.
 
@@ -40,7 +40,7 @@ Use versioned Ubuntu, macOS, and Windows labels and record GitHub's attested run
 - HTTP/TLS router and TCP relay tests on high ports;
 - state migration and reconciliation tests;
 - CLI/daemon IPC and process supervision;
-- Wails/frontend builds where the image provides its documented toolchain;
+- Wails v2 desktop builds, `vue-tsc`, Vitest/Vue Test Utils, production Vite builds, and Playwright browser runs where the image provides the pinned toolchain;
 - race-enabled Go tests;
 - package construction and non-privileged smoke tests.
 
@@ -198,7 +198,7 @@ The job proves:
 
 Foreign-state fixtures cover macOS PF anchors and launchd entries, Linux nftables/iptables rules plus systemd units/capabilities, and Windows firewall/HTTP.sys reservations. Harbor must add and remove only its namespaced rule and preserve rule order/semantics outside that namespace.
 
-The daemon and Wails process are asserted to run unelevated and outside a system service identity. During ordinary setup/repair on macOS and Linux, only the one-shot helper receives elevation; the installer is exercised separately only for explicit product lifecycle transactions. On Windows the product worker proves a medium-integrity daemon can bind the selected low ports directly. No long-lived networking broker or ambient network capability may appear unless Phase 0 explicitly changes the architecture and its tests.
+The daemon and desktop processes are asserted to run unelevated and outside a system service identity. During ordinary setup/repair on macOS and Linux, only the one-shot helper receives elevation; the installer is exercised separately only for explicit product lifecycle transactions. On Windows the product worker proves a medium-integrity daemon can bind the selected low ports directly. No long-lived networking broker or ambient network capability may appear unless Phase 0 explicitly changes the architecture and its tests.
 
 ## Privileged helper tests
 
@@ -308,12 +308,14 @@ IPC platform tests verify:
 - a session credential cannot control another project or machine setup;
 - desktop close/crash/relaunch does not stop the daemon or project;
 - default close hides the window, the one-time first-close explanation is accessible, native-menu `Cmd/Ctrl+Q` exits only the UI, and relaunch focuses the hidden single instance even when no tray is available;
-- Wails single-instance data is treated as untrusted and cannot invoke an arbitrary daemon action;
+- desktop single-instance data is treated as untrusted and cannot invoke an arbitrary daemon action;
 - project/API Reference/Lighthouse URLs open in an instrumented system browser and never navigate the bridge-enabled WebView;
 - unexpected main-frame origins, raw-message origins, and frontend-supplied resource URLs are rejected;
 - no raw socket, credential, shell, Docker operation, or unrestricted path reaches the frontend bridge.
 
-Frontend component tests exercise the exact four-destination rail, grouped dense list, detail pane, resource command palette, System/Settings compact overflow, keyboard navigation, accessible state labels, responsive collapse, operation progress, and parity with daemon snapshots and CLI actions.
+Frontend tests run the same view model against the mock and Wails-backed bridge contracts. Vitest and Vue Test Utils exercise Pinia snapshot/event ordering, the exact four-destination rail, grouped dense list, detail pane, resource command palette, System/Settings compact overflow, shadcn keyboard/focus behavior, accessible state labels, operation progress, and parity with daemon snapshots and CLI actions. Playwright covers light/dark themes and the 56px rail, contextual pane, detail pane, and three-to-two-to-one-pane transitions against deterministic fixtures.
+
+Large-stream tests prove log virtualization preserves ordering, source identity, gap markers, follow/pause behavior, keyboard access, and screen-reader context without rendering the entire retained history.
 
 End-to-end desktop smoke runs inside real interactive sessions: a per-user LaunchAgent/login session on macOS hardware, an interactive Windows local-administrator account running Harbor at medium integrity with UAC, and the pinned Ubuntu desktop display server with the declared GTK/WebKit and tray/notification implementation. It covers first-run consent handoff, window/tray behavior, system-browser opening, notification permission denial/acceptance, and UI restart. Headless service sessions, Windows Server, Xvfb-only rendering, or a successful Wails compile do not substitute for this product check.
 
@@ -369,10 +371,10 @@ The initial full-mode product profiles are deliberately narrow enough to prove:
 | Profile | Initial target family | Required product environment |
 |---|---|---|
 | macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, PF/launchd integration, system WebKit, Safari plus pinned Chrome/Firefox, Docker Desktop, interactive login session. |
-| Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK4 and WebKitGTK 6.0, pinned Chrome/Firefox, rootful Docker Engine 28+, systemd user service. |
+| Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v2's `webkit2_41` build tag, pinned Chrome/Firefox, rootful Docker Engine 28+, systemd user service. |
 | Windows | Windows 11 24H2 on x86-64 | NRPT, `CurrentUser\Root`, WebView2, pinned Edge/Chrome/Firefox, Docker Desktop with WSL2, interactive local-administrator account running Harbor at medium integrity with UAC. |
 
-Intel macOS, Linux ARM64, other distributions/desktops/resolver stacks, and the Wails legacy GTK3 path remain preview until equivalent dedicated evidence exists. This is an architecture/support statement, not a cross-compilation limitation.
+Intel macOS, Linux ARM64, and other distributions, desktops, resolver stacks, or Wails runtime combinations remain preview until equivalent dedicated evidence exists. This is an architecture/support statement, not a cross-compilation limitation.
 
 Each release replaces each family label with the exact tested OS point release/build, architecture, GitHub-hosted runtime image version or custom image digest, resolver and firewall backend, trust scope, browser/runtime versions, Wails commit and GTK/WebKit/WebView version, Docker version, and package format. A moving family label alone never turns a cell green.
 

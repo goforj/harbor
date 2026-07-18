@@ -13,7 +13,7 @@ CI product environment
     → DNS/TLS/HTTP/native ingress
     → GoForj descriptor and managed session
     → three-project acceptance on every OS
-    → Wails desktop and tray
+    → Wails v2 desktop, Vue/shadcn frontend, and Go tray integration
     → installers, recovery, signed update, release
 ```
 
@@ -57,7 +57,7 @@ Build the smallest headless harness that can:
 
 Implement the first required GitHub Actions platform-network jobs during this phase. A manual spike is not enough because these mechanisms will regress with OS images and security updates.
 
-In parallel, build a non-authoritative visual prototype from screenshots pinned to the researched Lerd commit. It validates the narrow rail, grouped contextual list, project/service/system detail, responsive collapse, onboarding language, and helper-consent flow against representative Harbor data. It has no daemon authority and does not allow UI preference to override a failed platform proof.
+In parallel, import a pinned tracked snapshot of GoForj's Vue starter as the non-authoritative frontend baseline. Keep its source-owned shadcn-vue primitives intact, replace the demonstration application with representative Harbor data behind a mock bridge, and adapt Lerd's pinned density, three-pane layout, and initial tokens through those components. This source becomes the Wails frontend rather than a throwaway mock. It has no daemon authority during the prototype phase and cannot allow UI preference to override a failed platform proof.
 
 Also spike the real helper and service packaging shape on every OS: code-signing/admission APIs, one-use ticket transport, service/launch definitions, atomic replacement, and uninstall ownership. Disposable shell probes may explore an OS mechanism in Phase 0, but production phases must use the typed production helper API.
 
@@ -182,8 +182,14 @@ Goal: add the Lerd-influenced visual control surface without moving authority in
 
 Deliver:
 
-- the Wails App boundary spike: root named App if cleanly supported, otherwise a nested module wired into the same `.goforj.yml` dev graph;
-- pinned Wails v3 dependency and native build matrix;
+- a nested `desktop/` module wired into the same `.goforj.yml` development graph;
+- a pinned stable Wails v2 dependency and native build matrix;
+- the recorded GoForj starter source commit, Vue 3, TypeScript, Vite, Tailwind CSS 4, app-owned shadcn-vue components backed by Reka UI, and Lucide icons;
+- the Phase 0 production-bound frontend source embedded without replacing its primitive layer;
+- WebView-safe hash routing, a typed Wails bridge, a matching mock bridge, and Pinia snapshot/event stores;
+- Vitest, Vue Test Utils, Playwright, and a production Vite build;
+- a virtualized log stream that preserves source ordering, gaps, follow/pause, and accessibility;
+- attributed Lerd styling adaptation through Harbor semantic tokens and component composition;
 - first-run explanation, setup progress, and end-to-end verification;
 - three-pane shell with four destinations: Overview, Projects, Services, and System (including Settings);
 - narrow icon rail, grouped dense contextual lists, and persistent detail pane validated by the Phase 0 prototype;
@@ -192,13 +198,14 @@ Deliver:
 - Overview/command-palette resource search that returns to the owning App or service;
 - start, stop, scoped restart, open, copy, registration, and removal flows;
 - ordered live logs with source filters and gap indicators;
-- tray with aggregate status, recent/running projects, quick actions, doctor, and open-window action;
+- a proved Go tray integration with aggregate status, recent/running projects, quick actions, doctor, and open-window action;
+- a same-process tray/window event-loop decision on all three platforms, with a stateless `harbor-tray` daemon client only if those loops cannot coexist reliably;
 - default close-to-hide, native-menu/shortcut UI Quit, first-close explanation, no-tray recovery, and best-effort native notifications while the UI is alive;
 - accessible keyboard, screen-reader, contrast, and reduced-motion behavior;
 - responsive one/two/three-pane layouts;
 - UI/CLI parity tests against the same daemon API.
 
-Because Wails v3 is alpha as of the design date, pin the exact version and re-evaluate its status before this phase. Wails instability may keep the desktop labeled preview, but it cannot delay or weaken the headless daemon contract.
+Pin the exact stable Wails v2 and tray releases. The nested desktop module owns their Go, CGO, WebView, and native runtime requirements so they do not raise the headless binaries' minimum Go version or platform dependency floor.
 
 ### Exit gate
 
@@ -239,7 +246,7 @@ The work that can invalidate the product is intentionally first:
 7. split Compose/App assignment precedence across `forj dev` and generated App loading;
 8. existing Compose identity/data adoption;
 9. one authoritative resource projection;
-10. Wails v3 stability and packaging.
+10. Wails v2 packaging and cross-platform tray integration.
 
 UI polish, notifications, and convenience actions must not pull effort ahead of these proofs.
 

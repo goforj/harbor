@@ -9,16 +9,16 @@ This design was informed by:
 - the public Laravel Herd product and documentation;
 - a local, pinned audit of Yerd;
 - a local, pinned audit of Lerd;
-- current official Wails v3 and operating-system documentation;
-- a clean worktree of current `goforj/goforj` main.
+- current official Wails v2 documentation, with v3 evaluated as the alpha alternative;
+- a clean worktree of current `goforj/goforj` main, including its Vue/shadcn starter.
 
-The repositories were studied for architecture, process ownership, IPC, privilege, DNS, TLS, proxying, service orchestration, persistence, UI, updates, tests, and cross-platform behavior. No Yerd or Lerd code or visual asset was copied into Harbor.
+The repositories were studied for architecture, process ownership, IPC, privilege, DNS, TLS, proxying, service orchestration, persistence, UI, updates, tests, and cross-platform behavior. The research phase copied no Yerd or Lerd source or visual asset. The implementation design now deliberately allows a narrow, attributed adaptation of Lerd's MIT-licensed visual shell through GoForj's Vue/shadcn foundation.
 
 ## Synthesis
 
 The design conclusion is:
 
-> Use Yerd as Harbor's control-plane reference, Lerd as its operational edge-case, test, and visual-layout reference, and Herd as its product-experience reference. Copy none wholesale. Keep GoForj as the authority for project semantics.
+> Use Yerd as Harbor's control-plane reference, Lerd as its operational edge-case, test, and visual-layout reference, and Herd as its product-experience reference. Use GoForj's Vue starter as the frontend foundation and keep GoForj authoritative for project semantics. Copy no reference product wholesale.
 
 The references solve related PHP development problems. Harbor has a distinct requirement: several host-run Go Apps and project-owned Compose stacks must coexist while raw services retain their native ports. That makes stable per-project loopback identity a core Harbor capability rather than an optional web-domain convenience.
 
@@ -126,9 +126,9 @@ Lerd's clearest product contribution is its information architecture:
 - project-scoped service cards and a cross-project system view;
 - tray state that leads back to the richer dashboard.
 
-Harbor adapts that three-pane discipline and density to Projects, Apps, Services, their resource actions, Network, and Diagnostics. It uses its own visual identity and code.
+Harbor adapts that three-pane discipline and density to Projects, Apps, Services, their resource actions, Network, and Diagnostics. The implementation starts from GoForj's Vue/shadcn starter and translates selected Lerd spacing, pane geometry, surface, border, and initial palette decisions into Harbor's semantic tokens and local components.
 
-The early Harbor prototype should use the pinned [dashboard](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/assets/screenshots/dashboard.png), [sites list](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/assets/screenshots/sites-list.png), [site detail](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/assets/screenshots/site-detail-overview.png), [services list](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/assets/screenshots/services-list.png), and [system view](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/assets/screenshots/system.png) only as annotated layout references. Harbor does not reuse their assets.
+The visual implementation references Lerd's pinned [`app.css`](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/internal/ui/web/src/app.css), [`App.svelte`](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/internal/ui/web/src/App.svelte), [`NavRail.svelte`](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/internal/ui/web/src/components/NavRail.svelte), [`SidePanel.svelte`](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/internal/ui/web/src/components/SidePanel.svelte), and list/detail/mobile primitives. Harbor does not carry over Lerd's Svelte stores, router, API client, PHP-specific screens, branding, icon catalog, or product assets.
 
 ### Architecture Harbor does not adopt
 
@@ -146,20 +146,21 @@ Lerd is more valuable to Harbor as a catalog of platform failures, tests, and go
 
 ## Wails
 
-Official sources include the Wails v3 [status](https://v3.wails.io/status/), [application lifecycle](https://v3.wails.io/concepts/lifecycle/), [window behavior](https://v3.wails.io/features/windows/basics/), [system tray](https://v3.wails.io/features/menus/systray/), [single instance](https://v3.wails.io/guides/single-instance/), [services/bindings](https://v3.wails.io/features/bindings/services/), [bridge](https://v3.wails.io/concepts/bridge/), and [releases](https://github.com/wailsapp/wails/releases).
+Official sources include the Wails v2 [application options](https://wails.io/docs/reference/options/), [runtime](https://wails.io/docs/reference/runtime/intro/), [Linux build guidance](https://wails.io/docs/gettingstarted/building/), and [releases/status](https://github.com/wailsapp/wails). Wails' maintainer confirms the relevant [v2 tray/window limitation](https://github.com/wailsapp/wails/issues/2989). The maintained [`fyne.io/systray`](https://github.com/fyne-io/systray) library is the current tray candidate because it supports macOS, Linux, and Windows and exposes `RunWithExternalLoop` for another UI toolkit; selection still depends on a real three-platform integration proof.
 
 As of the research date:
 
-- Wails v3 is marked alpha; v2 is the stable line.
-- The observed v3 release was `v3.0.0-alpha2.117`, dated 2026-07-08.
-- The current v3 installation guide requires Go 1.25+, and its default Linux path uses GTK4 with WebKitGTK 6.0 on Ubuntu 24.04+; the GTK3/WebKit2GTK 4.1 path is explicitly legacy and scheduled for removal in v3.1.
-- v3 provides the window, menu, tray, single-instance, and Go/frontend binding primitives Harbor wants.
+- Wails v2 is the stable line and v3 remains alpha.
+- Wails v2 provides the window, menu, hide-on-close, single-instance, event, and Go/frontend binding primitives Harbor needs.
+- Wails v2 does not provide Harbor's tray integration. The tray's native event loop and window visibility synchronization therefore require an explicit proof rather than an assumed same-process composition.
+- On Ubuntu 24.04, Wails v2 uses GTK3 and WebKit2GTK 4.1 with the documented `webkit2_41` build tag.
+- The current tray candidate requires CGO and uses StatusNotifier/AppIndicator over D-Bus on Linux; older or tray-less desktop environments may not display it.
 - Tray support varies by Linux desktop and cannot be reliably detected as a universal capability.
 - Wails services live inside the desktop process and are not OS services.
 - Wails' updater does not coordinate a desktop, daemon, helper, service definitions, schema migration, and rollback as one product update.
-- The fast-moving alpha documentation and toolchain requirements reinforce the need to pin and derive the actual module/toolchain constraint.
+- The exact Wails and tray releases, module requirements, build tags, and native runtime requirements must be pinned and recorded.
 
-Decision: use a pinned Wails v3 only as the unprivileged desktop client. First prove it as a GoForj named App; move it to a nested module if its Go/CGO/frontend toolchain would otherwise raise or contaminate headless binary requirements. Keep Harbor preview/beta until the desktop and packaging matrix is credible. The headless control plane must survive a Wails replacement.
+Decision: use a pinned stable Wails v2 release in `desktop/`. Prove same-process tray integration with the selected Go tray library on macOS, Linux, and Windows before freezing that process boundary; if the native loops cannot coexist reliably, use a stateless tray client over daemon IPC. The nested module isolates desktop Go, CGO, WebView, and frontend requirements from the headless binaries. The control plane must survive either a tray split or a future Wails replacement.
 
 ## Platform sources
 
@@ -209,11 +210,12 @@ Primary design/context sources include [App structure](https://github.com/goforj
 - Arbitrary custom App commands and watchers currently have no typed endpoint metadata, so they must block full mode until GoForj can declare and enforce their listener contract.
 - Current Windows blockers in `forj dev` must be fixed before Harbor can claim Windows-managed project parity.
 - The old systray sketch's lasting principles are useful—keep desktop dependencies out of `forj`, keep the tray thin, consume the resource registry—but its proposed in-memory tray session manager is superseded by Harbor's persistent daemon.
+- `templates/starter-kits/vue/frontend` is a complete source-owned Vue 3, TypeScript, Vite, Tailwind CSS 4, and shadcn-vue application baseline. Harbor imports a pinned tracked snapshot, preserves its primitive layer, and replaces its web-authentication/demo content with desktop product surfaces. The exact GoForj commit is recorded when that import occurs.
 
 Harbor should not depend on the proposed extension system. Future extensions can enter Harbor through the same static descriptor and live resource/session projection after GoForj implements them.
 
 ## License and attribution boundary
 
-Yerd and Lerd are MIT-licensed, but this phase copied no source code. If a later implementation ports substantial code rather than independently applying an architectural pattern, maintainers must review the pinned repository license and preserve the required copyright and permission notice.
+Yerd and Lerd are MIT-licensed. The research phase copied no source, but the frontend implementation intentionally permits adapting a narrow part of Lerd's visual shell. Any copied or substantially adapted Lerd CSS or component structure retains the Lerd copyright and MIT permission notice in `THIRD_PARTY_NOTICES.md` and packaged notices.
 
-Product layouts, behaviors, and platform cases are design inputs. Harbor uses its own code, brand, frontend assets, protocol, and GoForj-specific model.
+GoForj's starter is imported as first-party source from a recorded commit. Harbor retains its own brand, product assets, protocol, and GoForj-specific model; neither reference-product branding nor product assets are reused.

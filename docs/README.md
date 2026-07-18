@@ -22,8 +22,9 @@ No repository port files need to change, and stopping or unregistering a project
 | Area | Decision |
 |---|---|
 | Authority | `harbord` is the sole Harbor state writer and reconciler. |
-| Repository | Harbor is a GoForj project with the CLI as the required default App and `harbord` as a named App. Privileged helper/installer entrypoints stay bespoke; Wails is a named App when feasible or a nested module in the same dev graph. |
-| Desktop | Wails is a thin, replaceable client; closing it does not stop projects. |
+| Repository | Harbor's CLI and daemon remain GoForj Apps. The desktop is a nested Wails v2 module in the same development graph; privileged helper/installer entrypoints stay bespoke. |
+| Desktop | Stable Wails v2 hosts a thin, replaceable client. Tray integration is a separate Go capability proved against the native event loops; closing the UI does not stop projects. |
+| Frontend | Harbor starts from GoForj's source-owned Vue/shadcn starter, keeps its primitive layer intact, and builds Harbor-specific views from those components. Lerd is the initial visual anchor for density, layout, and interaction styling. |
 | GoForj | GoForj describes and runs projects through versioned contracts; Harbor does not parse terminal output or reproduce `.goforj.yml` semantics. |
 | Project intent | `.goforj.yml` remains authoritative. Harbor does not introduce a repository-owned manifest. |
 | HTTP | One local HTTP/TLS ingress routes exact domains by Host and SNI. |
@@ -38,6 +39,7 @@ No repository port files need to change, and stopping or unregistering a project
 ## Documents
 
 - [Product design](./product-design.md) defines the user model, workflows, UI, lifecycle, and product boundary.
+- [Frontend](./frontend.md) defines the inherited GoForj starter foundation, Harbor component boundary, Lerd styling adaptation, state bridge, and UI test strategy.
 - [Architecture](./architecture.md) defines processes, ownership, IPC, state, reconciliation, privilege, packaging, and recovery.
 - [Networking](./networking.md) defines loopback identities, DNS, TLS, HTTP ingress, native-port relays, and container connectivity.
 - [GoForj integration](./goforj-integration.md) defines the project descriptor, managed development session, runtime overlay, resource projection, and ownership split.
@@ -47,4 +49,4 @@ No repository port files need to change, and stopping or unregistering a project
 
 ## Design rule
 
-Use Yerd as the control-plane reference, Lerd as the operational edge-case, test, and visual-layout reference, and Herd as the product-experience reference. In particular, Harbor adopts Lerd's narrow navigation rail, dense contextual list, and persistent detail pane—not its code or assets. Copy none of them wholesale. Harbor's framework contract must follow GoForj as it exists today.
+Use Yerd as the control-plane reference, Lerd as the operational edge-case, test, and visual-layout reference, and Herd as the product-experience reference. Harbor's frontend begins with GoForj's own Vue/shadcn starter rather than a new scaffold. Lerd's narrow navigation rail, dense contextual list, persistent detail pane, and selected styling are adapted through those source-owned shadcn components; Lerd branding and product-specific assets are not copied. Harbor's framework contract must follow GoForj as it exists today.

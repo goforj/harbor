@@ -54,7 +54,7 @@ Removing a project from Harbor unregisters domains and machine-local state. It n
 
 ### The desktop is optional
 
-Projects and the daemon continue to run if the Wails window or tray exits. Users can perform all essential operations with `harbor` from a terminal. Tray support varies by Linux desktop, so it cannot be the only recovery path.
+Projects and the daemon continue to run if the desktop window or tray client exits. Users can perform all essential operations with `harbor` from a terminal. Tray support varies by Linux desktop, so it cannot be the only recovery path.
 
 ### Diagnostics before magic
 
@@ -196,6 +196,12 @@ Harbor should adapt Lerd's strongest visual idea: a compact navigation rail, a c
 
 The rail is intentionally icon-width. Each icon has an accessible name, tooltip, keyboard shortcut, and visible selected state; it does not expand into a permanent text sidebar. The contextual pane is a dense, grouped list. The detail pane is the only large canvas.
 
+### Implementation anchor
+
+The implementation starts from a complete, pinned import of GoForj's Vue starter. Harbor preserves its app-owned shadcn-vue primitive source and expresses the rail, panes, rows, tabs, menus, confirmations, tooltips, command palette, and responsive surfaces through those components instead of creating a parallel UI kit.
+
+Lerd's density and visual treatment are the initial anchor. Harbor maps selected pane dimensions, spacing, surfaces, borders, and colors into semantic Tailwind tokens and shadcn component composition so the product can evolve without rewriting every view. The detailed ownership and adaptation boundary is defined in [Frontend](./frontend.md).
+
 The destination map is exact: Home opens `Overview`, the project icon opens `Projects`, the service icon opens `Services`, and the gear opens `System`. Settings is a section inside System rather than a fifth rail destination. The Harbor mark is branding, not an action.
 
 ### Overview
@@ -300,7 +306,7 @@ Services are never presented as a global undifferentiated pool when GoForj owns 
 
 The cross-project Services area is an aggregated view, not a shared runtime. By default, `orders` MySQL and `billing` MySQL are separate containers and volumes even though both appear at native port `3306` through different domains. This is what allows either project to select a different version, restart independently, and retain or remove its own data without affecting the other.
 
-Visual state must use text and icon shape as well as color. The layout must collapse to two panes and then one pane at narrower window sizes without hiding any operation that exists in the CLI. Harbor should use its own identity and assets; the Lerd influence is information architecture, not copied frontend code or visual assets.
+Visual state must use text and icon shape as well as color. The layout must collapse to two panes and then one pane at narrower window sizes without hiding any operation that exists in the CLI. Harbor uses its own identity and product assets. Its layout and selected initial styling are adapted from Lerd through Harbor-owned Tailwind tokens and shadcn-vue components; Lerd branding, application logic, and product assets are not reused.
 
 ## Project detail
 
