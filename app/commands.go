@@ -13,6 +13,7 @@ type Commands struct {
 	ResourcesCmd  cmd.ResourcesCmd  `cmd:""`
 	AboutCmd      cmd.AboutCmd      `cmd:""`
 	HelloWorldCmd cmd.HelloWorldCmd `cmd:""`
+	DaemonCmd     cmd.DaemonCmd     `cmd:""`
 }
 
 // NewCommands creates a new Commands instance with the given commands.
@@ -20,10 +21,12 @@ func NewCommands(
 	resourcesCmd *cmd.ResourcesCmd,
 	aboutCmd *cmd.AboutCmd,
 	helloWorldCmd *cmd.HelloWorldCmd,
+	daemonCmd *cmd.DaemonCmd,
 ) *Commands {
 	return &Commands{
 		ResourcesCmd:  *resourcesCmd,
 		AboutCmd:      *aboutCmd,
 		HelloWorldCmd: *helloWorldCmd,
+		DaemonCmd:     *daemonCmd,
 	}
 }

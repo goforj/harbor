@@ -1,0 +1,64 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+
+	"github.com/goforj/harbor/internal/control"
+	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/rpc"
+)
+
+// daemonControlClient is the narrow control connection used for one CLI request.
+type daemonControlClient interface {
+	Status(context.Context) (control.DaemonStatus, error)
+	Snapshot(context.Context) (domain.Snapshot, error)
+	Close() error
+}
+
+// daemonConnect opens one authenticated control connection when a command runs.
+type daemonConnect func(context.Context) (daemonControlClient, error)
+
+// DaemonClient gives CLI commands one-shot access to the local Harbor daemon.
+type DaemonClient struct {
+	connect daemonConnect
+}
+
+// NewDaemonClient creates a lazy CLI client without opening a daemon connection.
+func NewDaemonClient() *DaemonClient {
+	return newDaemonClient(func(ctx context.Context) (daemonControlClient, error) {
+		return control.NewClient(ctx, control.ClientConfig{Role: rpc.RoleCLI})
+	})
+}
+
+// newDaemonClient keeps connection timing and cleanup observable in command tests.
+func newDaemonClient(connect daemonConnect) *DaemonClient {
+	return &DaemonClient{connect: connect}
+}
+
+// Status reads one daemon status and closes the one-shot control connection.
+func (client *DaemonClient) Status(ctx context.Context) (control.DaemonStatus, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.DaemonStatus, error) {
+		return connection.Status(ctx)
+	})
+}
+
+// Snapshot reads one authoritative snapshot and closes the one-shot control connection.
+func (client *DaemonClient) Snapshot(ctx context.Context) (domain.Snapshot, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (domain.Snapshot, error) {
+		return connection.Snapshot(ctx)
+	})
+}
+
+// withDaemonConnection retains both request and cleanup failures for operator diagnosis.
+func withDaemonConnection[T any](ctx context.Context, client *DaemonClient, call func(daemonControlClient) (T, error)) (result T, err error) {
+	connection, err := client.connect(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		err = errors.Join(err, connection.Close())
+	}()
+
+	return call(connection)
+}
