@@ -86,7 +86,7 @@ jobs:
               echo "proof identity already exists: $address" >&2
               exit 1
             fi
-            sudo ifconfig "$interface" alias "$address" 255.255.255.255
+            sudo ifconfig "$interface" inet "$address/32" alias
             observation_count="$(ifconfig "$interface" | awk -v target="$address" '$1 == "inet" && $2 == target {count++} END {print count+0}')"
             if [[ "$observation_count" != "1" ]]; then
               echo "could not uniquely observe provisioned identity: $address" >&2
@@ -180,7 +180,7 @@ jobs:
                 echo "macOS ownership mismatch; refusing to remove $address" >&2
                 exit 1
               fi
-              sudo ifconfig "$interface" -alias "$address"
+              sudo ifconfig "$interface" inet "$address" -alias
             done < "$ownership_file"
           fi
           for address in 127.77.254.10 127.77.254.11; do
