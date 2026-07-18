@@ -304,10 +304,10 @@ func TestDispatcherDispatchRejectsAdmissionBindingMismatch(t *testing.T) {
 		{name: "wrong reference", mutate: func(admission *TicketAdmission) {
 			admission.TicketReference = TicketReference(strings.Repeat("x", minimumReferenceLength))
 		}},
-		{name: "wrong daemon", mutate: func(admission *TicketAdmission) { admission.DaemonIdentity = "other-daemon" }},
-		{name: "wrong peer", mutate: func(admission *TicketAdmission) { admission.PeerIdentity = "uid-2000" }},
+		{name: "wrong requester", mutate: func(admission *TicketAdmission) { admission.RequesterIdentity = "uid-2000" }},
 		{name: "wrong installation", mutate: func(admission *TicketAdmission) { admission.InstallationID = "other-installation" }},
 		{name: "wrong generation", mutate: func(admission *TicketAdmission) { admission.OwnershipGeneration++ }},
+		{name: "wrong pool", mutate: func(admission *TicketAdmission) { admission.ApprovedPool = "127.78.0.0/24" }},
 	}
 
 	for _, test := range tests {
@@ -335,8 +335,8 @@ func TestDispatcherDispatchRejectsAdmissionBindingMismatch(t *testing.T) {
 	}
 }
 
-// TestDispatcherDispatchRejectsExactTicketSubstitution verifies no redeemed mutation field can escape its authenticated copy.
-func TestDispatcherDispatchRejectsExactTicketSubstitution(t *testing.T) {
+// TestTicketRedemptionValidateLeavesSignedFieldsToRedeemer keeps admission bindings from duplicating signed-ticket authentication.
+func TestTicketRedemptionValidateLeavesSignedFieldsToRedeemer(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 	reference := testTicketReference()
 	tests := []struct {
@@ -344,36 +344,22 @@ func TestDispatcherDispatchRejectsExactTicketSubstitution(t *testing.T) {
 		mutate func(*Ticket)
 	}{
 		{name: "version", mutate: func(ticket *Ticket) { ticket.Version++ }},
-		{name: "operation", mutate: func(ticket *Ticket) { ticket.Operation = OperationReleaseLoopbackIdentity }},
-		{name: "daemon", mutate: func(ticket *Ticket) { ticket.DaemonIdentity = "other-daemon" }},
-		{name: "installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "other-installation" }},
-		{name: "peer", mutate: func(ticket *Ticket) { ticket.RequesterIdentity = "uid-2000" }},
-		{name: "generation", mutate: func(ticket *Ticket) { ticket.OwnershipGeneration++ }},
-		{name: "pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "127.78.0.0/24" }},
+		{name: "operation", mutate: func(ticket *Ticket) {
+			ticket.Operation = OperationReleaseLoopbackIdentity
+			ticket.ExpectedObservation.State = ObservationOwned
+		}},
 		{name: "address", mutate: func(ticket *Ticket) { ticket.ApprovedAddress = "127.77.0.11" }},
 		{name: "observation", mutate: func(ticket *Ticket) { ticket.ExpectedObservation.Fingerprint = strings.Repeat("b", fingerprintLength) }},
 		{name: "nonce", mutate: func(ticket *Ticket) { ticket.Nonce = strings.Repeat("z", minimumNonceLength) }},
 		{name: "expiry", mutate: func(ticket *Ticket) { ticket.ExpiresAt = ticket.ExpiresAt.Add(time.Second) }},
-		{name: "expiry location", mutate: func(ticket *Ticket) { ticket.ExpiresAt = ticket.ExpiresAt.In(time.FixedZone("UTC alias", 0)) }},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			authorized := validTestTicket(now, OperationEnsureLoopbackIdentity)
-			redemption := redemptionForTicket(reference, authorized)
+			redemption := redemptionForTicket(reference, validTestTicket(now, OperationEnsureLoopbackIdentity))
 			test.mutate(&redemption.Ticket)
-			redeemer := newTestTicketRedeemer(reference, authorized)
-			redeemer.redemption = redemption
-			clock := newTestClock(now)
-			guard := newTestReplayGuard()
-			dispatcher := NewDispatcher(redeemer, clock, guard, newTestLoopbackHandler())
-
-			response, err := dispatcher.Dispatch(context.Background(), validTestRequest(reference))
-			if !errors.Is(err, ErrTicketRedemptionFailed) || response.Error == nil || response.Error.Code != ErrorCodeAuthenticationFailed {
-				t.Fatalf("unexpected substitution result: response=%#v error=%v", response, err)
-			}
-			if clock.callCount() != 0 || guard.consumeCount() != 0 {
-				t.Fatalf("clock/replay calls = %d/%d, want 0/0", clock.callCount(), guard.consumeCount())
+			if err := redemption.validate(reference); err != nil {
+				t.Fatalf("validate redemption: %v", err)
 			}
 		})
 	}
@@ -531,17 +517,16 @@ func (r *testTicketRedeemer) redeemedReferences() []TicketReference {
 	return append([]TicketReference(nil), r.references...)
 }
 
-// redemptionForTicket binds a test ticket to independently copied admission facts.
+// redemptionForTicket keeps independent admission fixtures visibly separate from signed ticket construction.
 func redemptionForTicket(reference TicketReference, ticket Ticket) TicketRedemption {
 	return TicketRedemption{
 		Ticket: ticket,
 		Admission: TicketAdmission{
 			TicketReference:     reference,
-			DaemonIdentity:      ticket.DaemonIdentity,
-			PeerIdentity:        ticket.RequesterIdentity,
-			InstallationID:      ticket.InstallationID,
-			OwnershipGeneration: ticket.OwnershipGeneration,
-			AuthorizedTicket:    ticket,
+			RequesterIdentity:   "uid-1000",
+			InstallationID:      "harbor-test-installation",
+			OwnershipGeneration: 7,
+			ApprovedPool:        "127.77.0.0/24",
 		},
 	}
 }

@@ -65,7 +65,6 @@ func (o ExpectedObservation) Validate() error {
 type Ticket struct {
 	Version             uint16              `json:"version"`
 	Operation           Operation           `json:"operation"`
-	DaemonIdentity      string              `json:"daemon_identity"`
 	InstallationID      string              `json:"installation_id"`
 	RequesterIdentity   string              `json:"requester_identity"`
 	OwnershipGeneration uint64              `json:"ownership_generation"`
@@ -83,9 +82,6 @@ func (t Ticket) Validate(now time.Time) error {
 	}
 	if t.Operation != OperationEnsureLoopbackIdentity && t.Operation != OperationReleaseLoopbackIdentity {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
-	}
-	if !validToken(t.DaemonIdentity, 1, maximumIDLength) {
-		return newRequestError(ErrorCodeInvalidTicket, "daemon identity is invalid")
 	}
 	if err := ValidateInstallationID(t.InstallationID); err != nil {
 		return newRequestError(ErrorCodeInvalidTicket, "installation ID is invalid")

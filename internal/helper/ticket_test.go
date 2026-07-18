@@ -81,8 +81,6 @@ func TestTicketValidate(t *testing.T) {
 	}{
 		{name: "unsupported version", mutate: func(ticket *Ticket) { ticket.Version++ }, code: ErrorCodeInvalidTicket},
 		{name: "unknown operation", mutate: func(ticket *Ticket) { ticket.Operation = "run_command" }, code: ErrorCodeInvalidTicket},
-		{name: "empty daemon", mutate: func(ticket *Ticket) { ticket.DaemonIdentity = "" }, code: ErrorCodeInvalidTicket},
-		{name: "path daemon", mutate: func(ticket *Ticket) { ticket.DaemonIdentity = "../daemon" }, code: ErrorCodeInvalidTicket},
 		{name: "empty installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "" }, code: ErrorCodeInvalidTicket},
 		{name: "dot installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "." }, code: ErrorCodeInvalidTicket},
 		{name: "punctuated installation boundary", mutate: func(ticket *Ticket) { ticket.InstallationID = "-harbor" }, code: ErrorCodeInvalidTicket},
@@ -196,7 +194,6 @@ func validTestTicket(now time.Time, operation Operation) Ticket {
 	return Ticket{
 		Version:             ProtocolVersion,
 		Operation:           operation,
-		DaemonIdentity:      "harbord-test-daemon",
 		InstallationID:      "harbor-test-installation",
 		RequesterIdentity:   "uid-1000",
 		OwnershipGeneration: 7,

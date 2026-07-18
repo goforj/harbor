@@ -74,7 +74,23 @@ func TestEnvelopeVerifyRejectsSubstitution(t *testing.T) {
 		{name: "version", key: publicKey, mutate: func(value *Envelope) { value.Version++ }},
 		{name: "public key", key: publicKey, mutate: func(value *Envelope) { value.PublicKey = base64.StdEncoding.EncodeToString(otherPublicKey) }},
 		{name: "noncanonical public key", key: publicKey, mutate: func(value *Envelope) { value.PublicKey = strings.TrimRight(value.PublicKey, "=") }},
-		{name: "ticket", key: publicKey, mutate: func(value *Envelope) { value.Ticket.Nonce = strings.Repeat("z", 32) }},
+		{name: "ticket version", key: publicKey, mutate: func(value *Envelope) { value.Ticket.Version++ }},
+		{name: "ticket operation", key: publicKey, mutate: func(value *Envelope) {
+			value.Ticket.Operation = helper.OperationReleaseLoopbackIdentity
+			value.Ticket.ExpectedObservation.State = helper.ObservationOwned
+		}},
+		{name: "ticket installation", key: publicKey, mutate: func(value *Envelope) { value.Ticket.InstallationID = "other-installation" }},
+		{name: "ticket requester", key: publicKey, mutate: func(value *Envelope) { value.Ticket.RequesterIdentity = "2000" }},
+		{name: "ticket generation", key: publicKey, mutate: func(value *Envelope) { value.Ticket.OwnershipGeneration++ }},
+		{name: "ticket pool", key: publicKey, mutate: func(value *Envelope) {
+			value.Ticket.ApprovedPool = "127.78.0.0/24"
+			value.Ticket.ApprovedAddress = "127.78.0.10"
+		}},
+		{name: "ticket address", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ApprovedAddress = "127.77.0.11" }},
+		{name: "ticket observation state", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedObservation.State = helper.ObservationOwned }},
+		{name: "ticket observation", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpectedObservation.Fingerprint = strings.Repeat("b", 64) }},
+		{name: "ticket nonce", key: publicKey, mutate: func(value *Envelope) { value.Ticket.Nonce = strings.Repeat("z", 32) }},
+		{name: "ticket expiry", key: publicKey, mutate: func(value *Envelope) { value.Ticket.ExpiresAt = value.Ticket.ExpiresAt.Add(time.Second) }},
 		{name: "signature", key: publicKey, mutate: func(value *Envelope) {
 			value.Signature = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
 		}},
@@ -85,8 +101,12 @@ func TestEnvelopeVerifyRejectsSubstitution(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := valid
 			test.mutate(&candidate)
-			if _, err := candidate.Verify(test.key, now); err == nil {
+			_, err := candidate.Verify(test.key, now)
+			if err == nil {
 				t.Fatal("Verify() accepted substituted authority")
+			}
+			if strings.HasPrefix(test.name, "ticket ") && !strings.Contains(err.Error(), "signature is invalid") {
+				t.Fatalf("Verify() ticket substitution error = %v, want signature rejection", err)
 			}
 		})
 	}
@@ -125,7 +145,6 @@ func envelopeTestTicket(now time.Time) helper.Ticket {
 	return helper.Ticket{
 		Version:             helper.ProtocolVersion,
 		Operation:           helper.OperationEnsureLoopbackIdentity,
-		DaemonIdentity:      "harbord-test-daemon",
 		InstallationID:      "harbor-test-installation",
 		RequesterIdentity:   "1000",
 		OwnershipGeneration: 1,
