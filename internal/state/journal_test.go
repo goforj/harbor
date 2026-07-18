@@ -125,6 +125,300 @@ func TestOperationJournalEnqueueReplaysMatchingIntent(t *testing.T) {
 	}
 }
 
+// TestOperationJournalEnqueueFreezesReleasedProject verifies only exact read-only retries cross a teardown marker.
+func TestOperationJournalEnqueueFreezesReleasedProject(t *testing.T) {
+	store, _, journal, running, request, _ := newNetworkReleaseTestHarness(t, 1)
+	staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+	if err != nil {
+		t.Fatalf("stage network release: %v", err)
+	}
+	wantSequence := staged.Record.Revision
+	requestedAt := request.At.Add(time.Minute)
+	blocked := newOperationJournalTestOperation(
+		t,
+		"operation-release-blocked",
+		"intent-release-blocked",
+		request.ProjectID,
+		"project.refresh",
+		requestedAt,
+	)
+	if _, err := journal.Enqueue(context.Background(), blocked); err == nil {
+		t.Fatal("new project operation during release unexpectedly enqueued")
+	} else {
+		assertProjectNetworkReleaseActive(
+			t, err, request.ProjectID, running.Operation.ID, ProjectNetworkReleaseReleasing, "enqueue operation",
+		)
+	}
+
+	retry := newOperationJournalTestOperation(
+		t,
+		"operation-release-retry",
+		running.Operation.IntentID,
+		request.ProjectID,
+		domain.OperationKindProjectUnregister,
+		requestedAt,
+	)
+	replayed, err := journal.Enqueue(context.Background(), retry)
+	if err != nil || replayed.Operation.ID != running.Operation.ID || replayed.Revision != running.Revision ||
+		replayed.Operation.State != running.Operation.State {
+		t.Fatalf("replay staged owner = %#v, error %v, want %#v", replayed, err, running)
+	}
+	conflictingIntent := newOperationJournalTestOperation(
+		t,
+		"operation-release-intent-conflict",
+		running.Operation.IntentID,
+		"project-beta",
+		"project.refresh",
+		requestedAt,
+	)
+	if _, err := journal.Enqueue(context.Background(), conflictingIntent); err == nil {
+		t.Fatal("conflicting intent during release unexpectedly enqueued")
+	} else {
+		var conflict *IntentConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("conflicting intent error = %v, want IntentConflictError", err)
+		}
+	}
+	conflictingID := newOperationJournalTestOperation(
+		t,
+		running.Operation.ID,
+		"intent-release-id-conflict",
+		request.ProjectID,
+		domain.OperationKindProjectUnregister,
+		requestedAt,
+	)
+	if _, err := journal.Enqueue(context.Background(), conflictingID); err == nil {
+		t.Fatal("conflicting operation ID during release unexpectedly enqueued")
+	} else {
+		var conflict *OperationIDConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("conflicting operation ID error = %v, want OperationIDConflictError", err)
+		}
+	}
+	if sequence := mustOperationJournalSequence(t, journal); sequence != wantSequence {
+		t.Fatalf("sequence after blocked/replayed enqueue = %d, want %d", sequence, wantSequence)
+	}
+
+	other := newOperationJournalTestOperation(
+		t,
+		"operation-release-other-project",
+		"intent-release-other-project",
+		"project-beta",
+		"project.refresh",
+		requestedAt,
+	)
+	otherRecord, err := journal.Enqueue(context.Background(), other)
+	if err != nil || otherRecord.Revision != wantSequence+1 {
+		t.Fatalf("enqueue unrelated project = %#v, error %v", otherRecord, err)
+	}
+	global := networkReleaseGuardTestGlobalOperation(t, "operation-release-global", requestedAt)
+	globalRecord, err := journal.Enqueue(context.Background(), global)
+	if err != nil || globalRecord.Revision != wantSequence+2 {
+		t.Fatalf("enqueue global operation = %#v, error %v", globalRecord, err)
+	}
+}
+
+// TestOperationJournalTransitionRestrictsReleaseOwner verifies staged teardown stays recoverable until Store completion.
+func TestOperationJournalTransitionRestrictsReleaseOwner(t *testing.T) {
+	t.Run("approval cycle", func(t *testing.T) {
+		store, _, journal, running, request, _ := newNetworkReleaseTestHarness(t, 1)
+		staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+		if err != nil {
+			t.Fatalf("stage network release: %v", err)
+		}
+		approval, err := journal.Transition(
+			context.Background(),
+			running.Operation.ID,
+			running.Revision,
+			domain.OperationRequiresApproval,
+			"waiting for approval",
+			request.At.Add(time.Minute),
+			nil,
+		)
+		if err != nil || approval.Revision != staged.Record.Revision+1 {
+			t.Fatalf("require approval during release = %#v, error %v", approval, err)
+		}
+		resumed, err := journal.Transition(
+			context.Background(),
+			approval.Operation.ID,
+			approval.Revision,
+			domain.OperationRunning,
+			"resuming release",
+			request.At.Add(2*time.Minute),
+			nil,
+		)
+		if err != nil || resumed.Revision != approval.Revision+1 {
+			t.Fatalf("resume approved release = %#v, error %v", resumed, err)
+		}
+	})
+
+	for _, terminal := range []domain.OperationState{domain.OperationFailed, domain.OperationCancelled} {
+		terminal := terminal
+		t.Run(string(terminal), func(t *testing.T) {
+			store, _, journal, running, request, _ := newNetworkReleaseTestHarness(t, 1)
+			staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+			if err != nil {
+				t.Fatalf("stage network release: %v", err)
+			}
+			var problem *domain.Problem
+			if terminal == domain.OperationFailed {
+				problem = &domain.Problem{Code: "release_failed", Message: "The network release needs recovery."}
+			}
+			_, err = journal.Transition(
+				context.Background(),
+				running.Operation.ID,
+				running.Revision,
+				terminal,
+				"release "+string(terminal),
+				request.At.Add(time.Minute),
+				problem,
+			)
+			assertProjectNetworkReleaseActive(
+				t, err, request.ProjectID, running.Operation.ID, ProjectNetworkReleaseReleasing, "transition operation",
+			)
+			if sequence := mustOperationJournalSequence(t, journal); sequence != staged.Record.Revision {
+				t.Fatalf("sequence after rejected %s = %d, want %d", terminal, sequence, staged.Record.Revision)
+			}
+			persisted, readErr := journal.Operation(context.Background(), running.Operation.ID)
+			if readErr != nil || persisted.Operation.ID != running.Operation.ID || persisted.Revision != running.Revision ||
+				persisted.Operation.State != running.Operation.State {
+				t.Fatalf("owner after rejected %s = %#v, error %v", terminal, persisted, readErr)
+			}
+		})
+	}
+
+	t.Run("success remains Store owned", func(t *testing.T) {
+		store, _, journal, running, request, _ := newNetworkReleaseTestHarness(t, 1)
+		staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+		if err != nil {
+			t.Fatalf("stage network release: %v", err)
+		}
+		_, err = journal.Transition(
+			context.Background(),
+			running.Operation.ID,
+			running.Revision,
+			domain.OperationSucceeded,
+			"released",
+			request.At.Add(time.Minute),
+			nil,
+		)
+		if err == nil || !strings.Contains(err.Error(), "must complete through the project Store") {
+			t.Fatalf("generic release success error = %v", err)
+		}
+		if sequence := mustOperationJournalSequence(t, journal); sequence != staged.Record.Revision {
+			t.Fatalf("sequence after generic success = %d, want %d", sequence, staged.Record.Revision)
+		}
+	})
+}
+
+// TestOperationJournalTransitionRejectsNonOwnerBesideRelease verifies impossible active peers fail as corruption.
+func TestOperationJournalTransitionRejectsNonOwnerBesideRelease(t *testing.T) {
+	store, connection, journal, _, request, _ := newNetworkReleaseTestHarness(t, 1)
+	staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+	if err != nil {
+		t.Fatalf("stage network release: %v", err)
+	}
+	var marker models.NetworkProjectRelease
+	if err := connection.Where("operation_id = ?", string(request.OperationID)).First(&marker).Error; err != nil {
+		t.Fatalf("read release marker: %v", err)
+	}
+	if err := connection.Delete(&marker).Error; err != nil {
+		t.Fatalf("temporarily remove release marker: %v", err)
+	}
+	peer := newOperationJournalTestOperation(
+		t,
+		"operation-release-peer",
+		"intent-release-peer",
+		request.ProjectID,
+		"project.refresh",
+		request.At.Add(time.Minute),
+	)
+	queued, err := journal.Enqueue(context.Background(), peer)
+	if err != nil {
+		t.Fatalf("enqueue peer before restoring marker: %v", err)
+	}
+	runningPeer, err := journal.Transition(
+		context.Background(), queued.Operation.ID, queued.Revision, domain.OperationRunning, "refreshing", request.At.Add(2*time.Minute), nil,
+	)
+	if err != nil {
+		t.Fatalf("start peer before restoring marker: %v", err)
+	}
+	if err := connection.Create(&marker).Error; err != nil {
+		t.Fatalf("restore release marker: %v", err)
+	}
+	_, err = journal.Transition(
+		context.Background(),
+		runningPeer.Operation.ID,
+		runningPeer.Revision,
+		domain.OperationCancelled,
+		"cancelled",
+		request.At.Add(3*time.Minute),
+		nil,
+	)
+	var corrupt *CorruptStateError
+	if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "does not own release operation") {
+		t.Fatalf("non-owner transition error = %v", err)
+	}
+	if sequence := mustOperationJournalSequence(t, journal); sequence != staged.Record.Revision+2 {
+		t.Fatalf("sequence after rejected peer transition = %d, want %d", sequence, staged.Record.Revision+2)
+	}
+}
+
+// TestOperationJournalPreservesMigratedEmptyNetwork verifies a complete schema without a root is still pre-network state.
+func TestOperationJournalPreservesMigratedEmptyNetwork(t *testing.T) {
+	journal, connection := newOperationJournalTestHarness(t)
+	installNetworkReleaseGuardSchema(t, connection)
+	requestedAt := operationJournalTestTime()
+	operation := newOperationJournalTestOperation(t, "operation-empty-network", "intent-empty-network", "project-a", "project.refresh", requestedAt)
+	queued, err := journal.Enqueue(context.Background(), operation)
+	if err != nil {
+		t.Fatalf("enqueue with migrated-empty network: %v", err)
+	}
+	running, err := journal.Transition(
+		context.Background(), queued.Operation.ID, queued.Revision, domain.OperationRunning, "refreshing", requestedAt.Add(time.Second), nil,
+	)
+	if err != nil || running.Revision != 2 {
+		t.Fatalf("transition with migrated-empty network = %#v, error %v", running, err)
+	}
+}
+
+// TestOperationJournalEnqueueReplayPrecedesPartialSchemaGuard verifies idempotent reads retain conflict precedence.
+func TestOperationJournalEnqueueReplayPrecedesPartialSchemaGuard(t *testing.T) {
+	journal, connection := newOperationJournalTestHarness(t)
+	requestedAt := operationJournalTestTime()
+	original := newOperationJournalTestOperation(t, "operation-partial-original", "intent-partial", "project-a", "project.refresh", requestedAt)
+	first, err := journal.Enqueue(context.Background(), original)
+	if err != nil {
+		t.Fatalf("enqueue before partial schema: %v", err)
+	}
+	if err := connection.Exec(networkStoreReadTestSchema[0]).Error; err != nil {
+		t.Fatalf("install partial network schema: %v", err)
+	}
+	retry := newOperationJournalTestOperation(t, "operation-partial-retry", original.IntentID, original.ProjectID, original.Kind, requestedAt.Add(time.Minute))
+	replayed, err := journal.Enqueue(context.Background(), retry)
+	if err != nil || replayed.Operation.ID != first.Operation.ID || replayed.Revision != first.Revision {
+		t.Fatalf("replay across partial schema = %#v, error %v", replayed, err)
+	}
+	conflict := newOperationJournalTestOperation(t, "operation-partial-conflict", original.IntentID, "project-b", "project.stop", requestedAt.Add(time.Minute))
+	if _, err := journal.Enqueue(context.Background(), conflict); err == nil {
+		t.Fatal("partial-schema intent conflict unexpectedly enqueued")
+	} else {
+		var typed *IntentConflictError
+		if !errors.As(err, &typed) {
+			t.Fatalf("partial-schema conflict error = %v, want IntentConflictError", err)
+		}
+	}
+	newOperation := newOperationJournalTestOperation(t, "operation-partial-new", "intent-partial-new", "project-a", "project.refresh", requestedAt.Add(time.Minute))
+	_, err = journal.Enqueue(context.Background(), newOperation)
+	var corrupt *CorruptStateError
+	if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "network persistence schema is incomplete") {
+		t.Fatalf("new operation with partial schema error = %v", err)
+	}
+	if sequence := mustOperationJournalSequence(t, journal); sequence != first.Revision {
+		t.Fatalf("sequence after partial-schema checks = %d, want %d", sequence, first.Revision)
+	}
+}
+
 // TestOperationJournalEnqueueReplayValidatesDurableEvidence verifies idempotent reads cannot bypass retained ordering or operation history checks.
 func TestOperationJournalEnqueueReplayValidatesDurableEvidence(t *testing.T) {
 	for _, test := range []struct {

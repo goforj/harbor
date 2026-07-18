@@ -183,6 +183,148 @@ func TestStorePutProjectRollsBackUniqueConflicts(t *testing.T) {
 	}
 }
 
+// TestStoreProjectWritersFreezeStagedNetworkRelease verifies topology and recency cannot move after route suppression.
+func TestStoreProjectWritersFreezeStagedNetworkRelease(t *testing.T) {
+	store, _, _, running, request, _ := newNetworkReleaseTestHarness(t, 1)
+	staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+	if err != nil {
+		t.Fatalf("stage network release: %v", err)
+	}
+	wantSequence := staged.Record.Revision
+	target, err := store.Project(context.Background(), request.ProjectID)
+	if err != nil {
+		t.Fatalf("read target project: %v", err)
+	}
+	changed := target.Project
+	changed.Name = "changed during release"
+	changed.UpdatedAt = changed.UpdatedAt.Add(time.Minute)
+	if _, err := store.PutProject(context.Background(), changed); err == nil {
+		t.Fatal("put during release unexpectedly succeeded")
+	} else {
+		assertProjectNetworkReleaseActive(
+			t, err, request.ProjectID, running.Operation.ID, ProjectNetworkReleaseReleasing, "put project",
+		)
+	}
+	reference := domain.ResourceRef{ProjectID: request.ProjectID, ResourceID: "docs"}
+	if _, err := store.RecordRecentResource(context.Background(), reference); err == nil {
+		t.Fatal("recency during release unexpectedly succeeded")
+	} else {
+		assertProjectNetworkReleaseActive(
+			t, err, request.ProjectID, running.Operation.ID, ProjectNetworkReleaseReleasing, "record recent resource",
+		)
+	}
+	if sequence := projectStoreMutationSequence(t, store); sequence != wantSequence {
+		t.Fatalf("sequence after frozen writers = %d, want %d", sequence, wantSequence)
+	}
+	persisted, err := store.Project(context.Background(), request.ProjectID)
+	if err != nil || persisted.Project.Name == changed.Name {
+		t.Fatalf("target after frozen put = %#v, error %v", persisted, err)
+	}
+
+	other, err := store.Project(context.Background(), "project-beta")
+	if err != nil {
+		t.Fatalf("read other project: %v", err)
+	}
+	other.Project.Favorite = !other.Project.Favorite
+	other.Project.UpdatedAt = other.Project.UpdatedAt.Add(time.Minute)
+	updated, err := store.PutProject(context.Background(), other.Project)
+	if err != nil {
+		t.Fatalf("put unrelated project during release: %v", err)
+	}
+	if updated.Revision != wantSequence+1 {
+		t.Fatalf("unrelated project revision = %d, want %d", updated.Revision, wantSequence+1)
+	}
+}
+
+// TestStorePutProjectRejectsCompletedReleaseTombstone verifies deletion cannot make a project ID writable again.
+func TestStorePutProjectRejectsCompletedReleaseTombstone(t *testing.T) {
+	store, connection, _, running, request, _ := newNetworkReleaseTestHarness(t, 1)
+	project, err := store.Project(context.Background(), request.ProjectID)
+	if err != nil {
+		t.Fatalf("read project before release: %v", err)
+	}
+	staged, err := store.BeginProjectNetworkRelease(context.Background(), request)
+	if err != nil {
+		t.Fatalf("stage network release: %v", err)
+	}
+	completed := completeNetworkReleaseGuardTest(t, store, running, request, staged)
+	removedAt := completed.Release.Completion.CompletedAt.Add(time.Minute)
+	removed, err := store.CompleteProjectUnregister(
+		context.Background(), request.ProjectID, request.OperationID, running.Revision, "project removed", removedAt,
+	)
+	if err != nil || removed.Operation.State != domain.OperationSucceeded {
+		t.Fatalf("complete project removal = %#v, error %v", removed, err)
+	}
+	var sourceProjectID string
+	var activeProjectID *string
+	if err := connection.Raw(
+		"SELECT source_project_id, project_id FROM network_project_releases WHERE operation_id = ?",
+		string(request.OperationID),
+	).Row().Scan(&sourceProjectID, &activeProjectID); err != nil {
+		t.Fatalf("read completed tombstone identity: %v", err)
+	}
+	if sourceProjectID != string(request.ProjectID) || activeProjectID != nil {
+		t.Fatalf("completed tombstone identity = source %q active %#v", sourceProjectID, activeProjectID)
+	}
+	wantSequence := removed.Revision
+	if _, err := store.PutProject(context.Background(), project.Project); err == nil {
+		t.Fatal("project resurrection over tombstone unexpectedly succeeded")
+	} else {
+		assertProjectNetworkReleaseActive(
+			t, err, request.ProjectID, request.OperationID, ProjectNetworkReleaseCompleted, "put project",
+		)
+	}
+	if sequence := projectStoreMutationSequence(t, store); sequence != wantSequence {
+		t.Fatalf("sequence after rejected resurrection = %d, want %d", sequence, wantSequence)
+	}
+}
+
+// TestStoreProjectWritersPreserveOptionalNetworkLifecycle verifies legacy and fully migrated empty databases stay writable.
+func TestStoreProjectWritersPreserveOptionalNetworkLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		install func(*testing.T, *gorm.DB)
+	}{
+		{name: "legacy"},
+		{name: "migrated empty", install: installNetworkReleaseGuardSchema},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+			if test.install != nil {
+				test.install(t, connection)
+			}
+			project := projectStoreMutationTestProject(domain.ProjectID("project-" + strings.ReplaceAll(test.name, " ", "-")))
+			put, err := store.PutProject(context.Background(), project)
+			if err != nil || put.Revision != 1 {
+				t.Fatalf("put optional-network project = %#v, error %v", put, err)
+			}
+			recent, err := store.RecordRecentResource(
+				context.Background(),
+				domain.ResourceRef{ProjectID: project.ID, ResourceID: "docs"},
+			)
+			if err != nil || recent.Sequence != 2 {
+				t.Fatalf("record optional-network recency = %#v, error %v", recent, err)
+			}
+		})
+	}
+}
+
+// TestStorePutProjectRejectsPartialNetworkSchema verifies optional persistence cannot be mistaken for migrated emptiness.
+func TestStorePutProjectRejectsPartialNetworkSchema(t *testing.T) {
+	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	if err := connection.Exec(networkStoreReadTestSchema[0]).Error; err != nil {
+		t.Fatalf("install partial network schema: %v", err)
+	}
+	_, err := store.PutProject(context.Background(), projectStoreMutationTestProject("project-partial-network"))
+	var corrupt *CorruptStateError
+	if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "network persistence schema is incomplete") {
+		t.Fatalf("partial-schema put error = %v", err)
+	}
+	if sequence := projectStoreMutationSequence(t, store); sequence != 0 {
+		t.Fatalf("sequence after partial-schema put = %d, want 0", sequence)
+	}
+}
+
 // TestStoreCompleteProjectUnregisterCommitsAndReplaysAtomically verifies removal and success share one sequence and exact retries consume none.
 func TestStoreCompleteProjectUnregisterCommitsAndReplaysAtomically(t *testing.T) {
 	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)

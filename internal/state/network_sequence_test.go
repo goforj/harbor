@@ -26,9 +26,9 @@ func TestOptionalNetworkSequenceSupportsLegacyAndUninitializedDatabases(t *testi
 		}
 	})
 
-	t.Run("migrated empty table", func(t *testing.T) {
+	t.Run("migrated empty schema", func(t *testing.T) {
 		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
-		createNetworkSequenceTestTable(t, connection)
+		applyNetworkInitializeTestMigration(t, connection)
 		if _, exists, err := readOptionalNetworkSequenceOwner(connection); err != nil || exists {
 			t.Fatalf("empty network owner = exists %t, error %v", exists, err)
 		}
@@ -40,29 +40,48 @@ func TestOptionalNetworkSequenceSupportsLegacyAndUninitializedDatabases(t *testi
 			t.Fatalf("empty-network project put = %#v, error %v", record, err)
 		}
 	})
+
+	t.Run("partial schema", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+		createNetworkSequenceTestTable(t, connection)
+		project := emptyProjectStoreMutationProject("project-partial-network")
+		_, err := store.PutProject(context.Background(), project)
+		var corrupt *CorruptStateError
+		if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "network persistence schema is incomplete") {
+			t.Fatalf("partial-schema project put error = %v", err)
+		}
+		if highWater := networkSequenceTestHighWater(t, connection); highWater != 0 {
+			t.Fatalf("partial-schema high-water = %d, want 0", highWater)
+		}
+	})
 }
 
 // TestOptionalNetworkSequenceAllowsDistinctCommittedOwnership verifies a valid root participates in allocation without blocking later owners.
 func TestOptionalNetworkSequenceAllowsDistinctCommittedOwnership(t *testing.T) {
-	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
-	createNetworkSequenceTestTable(t, connection)
-	insertNetworkSequenceTestRoot(t, connection, 1)
-	mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 1 WHERE id = 1")
+	store, connection := newNetworkInitializeTestHarness(t, true)
+	initialized, err := store.InitializeNetwork(context.Background(), networkMutationTestInitializeRequest())
+	if err != nil || initialized.Record.Revision != 7 {
+		t.Fatalf("initialize committed network owner = %#v, error %v", initialized, err)
+	}
 
 	revision, exists, err := readOptionalNetworkSequenceOwner(connection)
-	if err != nil || !exists || revision != 1 {
+	if err != nil || !exists || revision != 7 {
 		t.Fatalf("committed network owner = revision %d, exists %t, error %v", revision, exists, err)
 	}
 	if _, err := store.Snapshot(context.Background()); err != nil {
 		t.Fatalf("read snapshot with committed network owner: %v", err)
 	}
-	project := emptyProjectStoreMutationProject("project-after-network")
-	record, err := store.PutProject(context.Background(), project)
-	if err != nil || record.Revision != 2 {
-		t.Fatalf("project after network owner = %#v, error %v, want revision 2", record, err)
+	project, err := store.Project(context.Background(), "project-alpha")
+	if err != nil {
+		t.Fatalf("read project after network owner: %v", err)
 	}
-	if highWater := networkSequenceTestHighWater(t, connection); highWater != 2 {
-		t.Fatalf("high-water after distinct project owner = %d, want 2", highWater)
+	project.Project.Favorite = !project.Project.Favorite
+	record, err := store.PutProject(context.Background(), project.Project)
+	if err != nil || record.Revision != 8 {
+		t.Fatalf("project after network owner = %#v, error %v, want revision 8", record, err)
+	}
+	if highWater := networkSequenceTestHighWater(t, connection); highWater != 8 {
+		t.Fatalf("high-water after distinct project owner = %d, want 8", highWater)
 	}
 }
 
@@ -275,9 +294,12 @@ func TestStoreSnapshotRejectsNetworkSequenceCollisions(t *testing.T) {
 
 // TestNetworkSequencePreflightRejectsFutureRootWithoutConsumption verifies every writer sees the optional root before advancing authority.
 func TestNetworkSequencePreflightRejectsFutureRootWithoutConsumption(t *testing.T) {
-	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
-	createNetworkSequenceTestTable(t, connection)
-	insertNetworkSequenceTestRoot(t, connection, 1)
+	store, connection := newNetworkInitializeTestHarness(t, false)
+	initialized, err := store.InitializeNetwork(context.Background(), networkInitializeTestEmptyRequest())
+	if err != nil || initialized.Record.Revision != 1 {
+		t.Fatalf("initialize future network root = %#v, error %v", initialized, err)
+	}
+	mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 0 WHERE id = 1")
 
 	project := emptyProjectStoreMutationProject("project-network-future")
 	if _, err := store.PutProject(context.Background(), project); err == nil || !strings.Contains(err.Error(), "exceeds captured sequence 0") {

@@ -29,6 +29,13 @@ func (store *Store) PutProject(ctx context.Context, project domain.ProjectSnapsh
 
 	var result ProjectRecord
 	err := store.mutations.mutate(ctx, "project projection", func(tx *gorm.DB) error {
+		boundary, err := readProjectNetworkReleaseBoundary(tx, project.ID)
+		if err != nil {
+			return err
+		}
+		if err := rejectProjectNetworkReleaseMutation(boundary, project.ID, "put project"); err != nil {
+			return err
+		}
 		if err := validateExistingProjectMutationSequenceOwner(tx, project.ID); err != nil {
 			return err
 		}
@@ -466,6 +473,13 @@ func (store *Store) RecordRecentResource(ctx context.Context, reference domain.R
 
 	var result RecentResourceRecord
 	err := store.mutations.mutate(ctx, "recent resource", func(tx *gorm.DB) error {
+		boundary, err := readProjectNetworkReleaseBoundary(tx, reference.ProjectID)
+		if err != nil {
+			return err
+		}
+		if err := rejectProjectNetworkReleaseMutation(boundary, reference.ProjectID, "record recent resource"); err != nil {
+			return err
+		}
 		accessedAt := store.now().UTC().Round(0)
 		if err := validateStoredTime("recent resource access time", accessedAt); err != nil {
 			return err

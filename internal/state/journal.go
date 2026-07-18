@@ -162,6 +162,13 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 				RequestedIntentID: operation.IntentID,
 			}
 		}
+		boundary, err := readProjectNetworkReleaseBoundary(tx, operation.ProjectID)
+		if err != nil {
+			return err
+		}
+		if err := rejectProjectNetworkReleaseMutation(boundary, operation.ProjectID, "enqueue operation"); err != nil {
+			return err
+		}
 
 		sequence, err := allocateHarborSequence(tx)
 		if err != nil {
@@ -242,6 +249,13 @@ func (journal *OperationJournal) Transition(
 		}
 		history, err := operationHistoryInTransaction(tx, current)
 		if err != nil {
+			return err
+		}
+		boundary, err := readProjectNetworkReleaseBoundary(tx, current.Operation.ProjectID)
+		if err != nil {
+			return err
+		}
+		if err := validateProjectNetworkReleaseTransition(boundary, current.Operation, next); err != nil {
 			return err
 		}
 		lastTransition := history[len(history)-1]
