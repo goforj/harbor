@@ -3,6 +3,7 @@ module github.com/goforj/harbor
 go 1.26.1
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/alecthomas/kong v1.16.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -13,6 +14,7 @@ require (
 	github.com/goforj/wire v1.2.0
 	github.com/joho/godotenv v1.5.1
 	github.com/rs/zerolog v1.35.1
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.2
@@ -54,6 +56,5 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 )
