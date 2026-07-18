@@ -12,6 +12,9 @@ const maximumIdentifierBytes = 256
 // Sequence orders authoritative Harbor snapshots and state events.
 type Sequence uint64
 
+// MaximumSequence keeps JSON ordering exact across Go and JavaScript clients.
+const MaximumSequence Sequence = 1<<53 - 1
+
 // ProjectID identifies one registered Harbor project independently of its path or slug.
 type ProjectID string
 

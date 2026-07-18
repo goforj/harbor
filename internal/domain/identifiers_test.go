@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+// TestMaximumSequenceIsExactlyRepresentable verifies the shared ordering ceiling survives JavaScript-number transport.
+func TestMaximumSequenceIsExactlyRepresentable(t *testing.T) {
+	t.Parallel()
+
+	if MaximumSequence != Sequence(1<<53-1) {
+		t.Fatalf("MaximumSequence = %d, want JavaScript Number.MAX_SAFE_INTEGER", MaximumSequence)
+	}
+	if converted := Sequence(float64(MaximumSequence)); converted != MaximumSequence {
+		t.Fatalf("float64 round trip = %d, want %d", converted, MaximumSequence)
+	}
+}
+
 // TestTypedIdentifiersValidate exercises each ID type through its public validator.
 func TestTypedIdentifiersValidate(t *testing.T) {
 	t.Parallel()

@@ -56,6 +56,9 @@ func TestOperationModelFromDomainRejectsInvalidInput(t *testing.T) {
 	if _, err := operationModelFromDomain(operation, 0); err == nil {
 		t.Fatal("zero operation revision unexpectedly converted")
 	}
+	if _, err := sequenceToModelInt("operation revision", domain.MaximumSequence+1, false); err == nil {
+		t.Fatal("cross-client-inexact sequence unexpectedly converted")
+	}
 	if strconvIntSize() < 64 {
 		t.Skip("sequence overflow case requires a wider public sequence than model int")
 	}
@@ -192,7 +195,15 @@ func TestOperationTransitionValidateRejectsInvalidValues(t *testing.T) {
 
 // TestHarborStateSequenceFromModelRejectsWrongSingleton verifies only the seeded Harbor row can represent global sequence state.
 func TestHarborStateSequenceFromModelRejectsWrongSingleton(t *testing.T) {
-	for _, row := range []models.HarborState{{Id: 2, Sequence: 1}, {Id: 1, Sequence: -1}} {
+	rows := []models.HarborState{
+		{Id: 2, Sequence: 1},
+		{Id: 1, Sequence: -1},
+	}
+	if strconvIntSize() >= 64 {
+		tooLarge := uint64(domain.MaximumSequence) + 1
+		rows = append(rows, models.HarborState{Id: 1, Sequence: int(tooLarge)})
+	}
+	for _, row := range rows {
 		_, err := harborStateSequenceFromModel(row)
 		assertCorruptStateError(t, err, "harbor state")
 	}

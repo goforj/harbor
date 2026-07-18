@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,14 +163,13 @@ func TestRequestRejectsNonUTCDeadline(t *testing.T) {
 	}
 }
 
-// TestEventRejectsUnrepresentableSequence verifies protocol counters cannot
-// overflow the durable signed-integer journal.
+// TestEventRejectsUnrepresentableSequence verifies every protocol counter remains exact in JavaScript clients.
 func TestEventRejectsUnrepresentableSequence(t *testing.T) {
 	if _, err := NewEventEnvelope(Version{Major: 1}, "snapshot.changed", MaximumSequence, struct{}{}); err != nil {
 		t.Fatalf("maximum sequence rejected: %v", err)
 	}
-	if _, err := NewEventEnvelope(Version{Major: 1}, "snapshot.changed", uint64(math.MaxInt64)+1, struct{}{}); err == nil {
-		t.Fatal("overflow sequence accepted")
+	if _, err := NewEventEnvelope(Version{Major: 1}, "snapshot.changed", MaximumSequence+1, struct{}{}); err == nil {
+		t.Fatal("inexact JavaScript sequence accepted")
 	}
 }
 

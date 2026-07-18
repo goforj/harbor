@@ -177,6 +177,9 @@ func harborStateSequenceFromModel(row models.HarborState) (domain.Sequence, erro
 	if row.Sequence < 0 {
 		return 0, corruptStateError("harbor state", "1", fmt.Errorf("sequence must not be negative"))
 	}
+	if domain.Sequence(row.Sequence) > domain.MaximumSequence {
+		return 0, corruptStateError("harbor state", "1", fmt.Errorf("sequence exceeds the cross-client ordering range"))
+	}
 	return domain.Sequence(row.Sequence), nil
 }
 
@@ -273,6 +276,9 @@ func copyTimePointer(value *time.Time) *time.Time {
 
 // sequenceToModelInt rejects global sequence values that cannot fit generated integer fields.
 func sequenceToModelInt(name string, value domain.Sequence, allowZero bool) (int, error) {
+	if value > domain.MaximumSequence {
+		return 0, fmt.Errorf("%s exceeds the cross-client ordering range", name)
+	}
 	return unsignedToModelInt(name, uint64(value), allowZero)
 }
 

@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"time"
+
+	"github.com/goforj/harbor/internal/domain"
 )
 
 const (
-	// MaximumSequence keeps protocol counters representable by Harbor's durable
-	// SQLite journal and every supported platform's signed integer boundary.
-	MaximumSequence uint64 = math.MaxInt64
+	// MaximumSequence keeps protocol counters exact in both Go and JavaScript clients.
+	MaximumSequence uint64 = uint64(domain.MaximumSequence)
 )
 
 // Kind identifies the stable semantic shape carried by an envelope.
