@@ -77,29 +77,20 @@ func TestPrivilegedAdapterLifecycle(t *testing.T) {
 	}
 }
 
-// assertPrivilegedAddressReady waits for Windows DAD and proves the exact address can own a TCP socket on every platform.
+// assertPrivilegedAddressReady proves a successful Ensure returned an immediately usable address on every platform.
 func assertPrivilegedAddressReady(t *testing.T, ctx context.Context, address netip.Addr) {
 	t.Helper()
-	var lastErr error
-	for {
-		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", net.JoinHostPort(address.String(), "0"))
-		if err == nil {
-			bound, ok := listener.Addr().(*net.TCPAddr)
-			if !ok || bound.AddrPort().Addr().Unmap() != address {
-				actual := listener.Addr().String()
-				_ = listener.Close()
-				t.Fatalf("listener bound %q instead of %s", actual, address)
-			}
-			if err := listener.Close(); err != nil {
-				t.Fatalf("close readiness listener: %v", err)
-			}
-			return
-		}
-		lastErr = err
-		select {
-		case <-ctx.Done():
-			t.Fatalf("address %s did not become bindable: %v: %v", address, lastErr, ctx.Err())
-		case <-time.After(50 * time.Millisecond):
-		}
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", net.JoinHostPort(address.String(), "0"))
+	if err != nil {
+		t.Fatalf("successful Ensure returned unbindable address %s: %v", address, err)
+	}
+	bound, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || bound.AddrPort().Addr().Unmap() != address {
+		actual := listener.Addr().String()
+		_ = listener.Close()
+		t.Fatalf("listener bound %q instead of %s", actual, address)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close readiness listener: %v", err)
 	}
 }

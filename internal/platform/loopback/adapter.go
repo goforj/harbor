@@ -275,9 +275,15 @@ func selectLoopback(interfaces []InterfaceFact) (InterfaceFact, error) {
 			if !validInterfaceKind(fact.Kind) {
 				return InterfaceFact{}, fmt.Errorf("native loopback kind is unsupported")
 			}
+			if fact.Kind == InterfaceKindWindowsSoftware && fact.WindowsLUID == 0 {
+				return InterfaceFact{}, fmt.Errorf("Windows native loopback LUID is missing")
+			}
+			if fact.Kind != InterfaceKindWindowsSoftware && fact.WindowsLUID != 0 {
+				return InterfaceFact{}, fmt.Errorf("non-Windows native loopback contains a Windows LUID")
+			}
 			candidates = append(candidates, fact)
-		} else if fact.Kind != "" {
-			return InterfaceFact{}, fmt.Errorf("ordinary interface reports a native loopback kind")
+		} else if fact.Kind != "" || fact.WindowsLUID != 0 {
+			return InterfaceFact{}, fmt.Errorf("ordinary interface reports native loopback identity")
 		}
 	}
 	if len(candidates) == 0 {
@@ -343,6 +349,12 @@ func validateAssignments(address netip.Addr, assignments []AssignmentFact, inter
 		if loopback.Kind == InterfaceKindWindowsSoftware && assignment.Windows == nil {
 			return nil, fmt.Errorf("Windows assignment attributes are missing")
 		}
+		if loopback.Kind == InterfaceKindWindowsSoftware && assignment.Windows.InterfaceLUID == 0 {
+			return nil, fmt.Errorf("Windows assignment LUID is missing")
+		}
+		if loopback.Kind == InterfaceKindWindowsSoftware && assignment.InterfaceIndex == loopback.Index && assignment.Windows.InterfaceLUID != loopback.WindowsLUID {
+			return nil, fmt.Errorf("Windows assignment LUID does not match the selected loopback")
+		}
 		if loopback.Kind != InterfaceKindWindowsSoftware && assignment.Windows != nil {
 			return nil, fmt.Errorf("non-Windows assignment contains Windows attributes")
 		}
@@ -378,12 +390,13 @@ func classify(loopback InterfaceFact, assignments []AssignmentFact) State {
 	return StateExact
 }
 
-// exactWindowsAttributes proves the active address has Harbor's manual, skip-as-source, infinite-lifetime shape.
+// exactWindowsAttributes proves the address is usable as well as configured with Harbor's exact active shape.
 func exactWindowsAttributes(fact *WindowsAssignmentFact) bool {
 	return fact != nil &&
 		fact.SkipAsSource &&
 		fact.PrefixOrigin == AddressOriginManual &&
 		fact.SuffixOrigin == AddressOriginManual &&
 		fact.ValidLifetimeSeconds == ^uint32(0) &&
-		fact.PreferredLifetimeSeconds == ^uint32(0)
+		fact.PreferredLifetimeSeconds == ^uint32(0) &&
+		fact.DADState == AddressStatePreferred
 }

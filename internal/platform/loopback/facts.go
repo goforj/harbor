@@ -26,6 +26,8 @@ type InterfaceFact struct {
 	Index          int
 	Kind           InterfaceKind
 	NativeLoopback bool
+	// WindowsLUID preserves the stable Windows interface identity across index reuse.
+	WindowsLUID uint64
 }
 
 // AssignmentFact describes one exact address assignment reported by the host.
@@ -83,6 +85,8 @@ const (
 
 // WindowsAssignmentFact contains the IP Helper attributes required for Harbor's active assignment shape.
 type WindowsAssignmentFact struct {
+	// InterfaceLUID preserves the stable interface identity reported with the address row.
+	InterfaceLUID            uint64
 	SkipAsSource             bool
 	PrefixOrigin             AddressOrigin
 	SuffixOrigin             AddressOrigin
@@ -120,13 +124,13 @@ type Observation struct {
 // Change reports the facts before and after one requested mutation.
 type Change struct {
 	// Attempted distinguishes a platform call from an already-satisfied request.
-	Attempted     bool
+	Attempted bool
 	// Changed reports an observed state transition, not merely a successful command exit.
-	Changed       bool
+	Changed bool
 	// Indeterminate means the platform call began but a fresh bounded observation could not classify its effect.
 	Indeterminate bool
 	// Before is the complete observation that admitted or rejected the platform call.
-	Before        Observation
+	Before Observation
 	// After is populated when no call was needed or post-call reconciliation completed.
-	After         Observation
+	After Observation
 }

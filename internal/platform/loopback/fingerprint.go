@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const observationFingerprintDomain = "goforj.harbor.loopback-observation.v1\x00"
+const observationFingerprintDomain = "goforj.harbor.loopback-observation.v2\x00"
 
 // Fingerprint returns a stable digest of the host facts captured by the observation.
 //
@@ -27,6 +27,7 @@ func (o Observation) Fingerprint() (string, error) {
 	payload = appendFingerprintAddress(payload, o.Address)
 	payload = appendFingerprintString(payload, o.Loopback.Name)
 	payload = binary.AppendUvarint(payload, uint64(o.Loopback.Index))
+	payload = binary.AppendUvarint(payload, o.Loopback.WindowsLUID)
 	payload = appendFingerprintString(payload, string(o.Loopback.Kind))
 	payload = appendFingerprintBool(payload, o.Loopback.NativeLoopback)
 	payload = appendFingerprintString(payload, string(o.State))
@@ -82,6 +83,12 @@ func validateFingerprintLoopback(loopback InterfaceFact) error {
 	if !validInterfaceKind(loopback.Kind) {
 		return fmt.Errorf("native loopback kind is unsupported")
 	}
+	if loopback.Kind == InterfaceKindWindowsSoftware && loopback.WindowsLUID == 0 {
+		return fmt.Errorf("Windows native loopback LUID is missing")
+	}
+	if loopback.Kind != InterfaceKindWindowsSoftware && loopback.WindowsLUID != 0 {
+		return fmt.Errorf("non-Windows native loopback contains a Windows LUID")
+	}
 	return nil
 }
 
@@ -107,6 +114,9 @@ func validateFingerprintAssignment(observation Observation, assignment Assignmen
 		if err := validateFingerprintWindowsAssignment(assignment.Windows); err != nil {
 			return err
 		}
+		if assignment.InterfaceIndex == observation.Loopback.Index && assignment.Windows.InterfaceLUID != observation.Loopback.WindowsLUID {
+			return fmt.Errorf("Windows assignment LUID does not match the selected loopback")
+		}
 	} else if assignment.Windows != nil {
 		return fmt.Errorf("non-Windows assignment contains Windows attributes")
 	}
@@ -117,6 +127,9 @@ func validateFingerprintAssignment(observation Observation, assignment Assignmen
 func validateFingerprintWindowsAssignment(fact *WindowsAssignmentFact) error {
 	if fact == nil {
 		return fmt.Errorf("Windows assignment attributes are missing")
+	}
+	if fact.InterfaceLUID == 0 {
+		return fmt.Errorf("Windows assignment LUID is missing")
 	}
 	if !validFingerprintPrefixOrigin(fact.PrefixOrigin) {
 		return fmt.Errorf("Windows prefix origin %q is unsupported", fact.PrefixOrigin)
@@ -190,6 +203,7 @@ func fingerprintAssignment(assignment AssignmentFact) []byte {
 	if assignment.Windows == nil {
 		return encoded
 	}
+	encoded = binary.AppendUvarint(encoded, assignment.Windows.InterfaceLUID)
 	encoded = appendFingerprintBool(encoded, assignment.Windows.SkipAsSource)
 	encoded = appendFingerprintString(encoded, string(assignment.Windows.PrefixOrigin))
 	encoded = appendFingerprintString(encoded, string(assignment.Windows.SuffixOrigin))

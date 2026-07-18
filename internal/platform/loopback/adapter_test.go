@@ -150,6 +150,9 @@ func TestObserveRejectsUnsafeInterfaceFacts(t *testing.T) {
 		{name: "missing kind", interfaces: []InterfaceFact{{Name: "native", Index: 1, NativeLoopback: true}}, want: ErrorKindInvalidFacts},
 		{name: "unknown kind", interfaces: []InterfaceFact{{Name: "native", Index: 1, Kind: "unknown", NativeLoopback: true}}, want: ErrorKindInvalidFacts},
 		{name: "kind on ordinary interface", interfaces: []InterfaceFact{testLoopback, {Name: "ordinary", Index: 3, Kind: InterfaceKindLinuxNative}}, want: ErrorKindInvalidFacts},
+		{name: "Windows loopback without LUID", interfaces: []InterfaceFact{{Name: "native", Index: 1, Kind: InterfaceKindWindowsSoftware, NativeLoopback: true}}, want: ErrorKindInvalidFacts},
+		{name: "Windows LUID on Linux loopback", interfaces: []InterfaceFact{{Name: "native", Index: 1, Kind: InterfaceKindLinuxNative, NativeLoopback: true, WindowsLUID: 101}}, want: ErrorKindInvalidFacts},
+		{name: "Windows LUID on ordinary interface", interfaces: []InterfaceFact{testLoopback, {Name: "ordinary", Index: 3, WindowsLUID: 101}}, want: ErrorKindInvalidFacts},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -196,7 +199,7 @@ func TestObserveRejectsUnsafeAssignmentFacts(t *testing.T) {
 
 // TestObserveRequiresWindowsActiveAssignmentAttributes keeps externally shaped addresses out of StateExact.
 func TestObserveRequiresWindowsActiveAssignmentAttributes(t *testing.T) {
-	loopback := InterfaceFact{Name: "Loopback Pseudo-Interface 1", Index: 1, Kind: InterfaceKindWindowsSoftware, NativeLoopback: true}
+	loopback := InterfaceFact{Name: "Loopback Pseudo-Interface 1", Index: 1, Kind: InterfaceKindWindowsSoftware, NativeLoopback: true, WindowsLUID: 101}
 	exact := AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceIndex: loopback.Index, Windows: exactWindowsFact()}
 	tests := []struct {
 		name   string
@@ -209,8 +212,11 @@ func TestObserveRequiresWindowsActiveAssignmentAttributes(t *testing.T) {
 		{name: "automatic suffix", mutate: func(fact *WindowsAssignmentFact) { fact.SuffixOrigin = AddressOriginRandom }, want: StateAttributeConflict},
 		{name: "finite valid lifetime", mutate: func(fact *WindowsAssignmentFact) { fact.ValidLifetimeSeconds = 60 }, want: StateAttributeConflict},
 		{name: "finite preferred lifetime", mutate: func(fact *WindowsAssignmentFact) { fact.PreferredLifetimeSeconds = 60 }, want: StateAttributeConflict},
-		{name: "tentative remains exact assignment evidence", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateTentative }, want: StateExact},
-		{name: "duplicate remains exact assignment evidence", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateDuplicate }, want: StateExact},
+		{name: "tentative is not ready", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateTentative }, want: StateAttributeConflict},
+		{name: "duplicate is unusable", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateDuplicate }, want: StateAttributeConflict},
+		{name: "invalid is unusable", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateInvalid }, want: StateAttributeConflict},
+		{name: "deprecated is unusable", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateDeprecated }, want: StateAttributeConflict},
+		{name: "unknown is unusable", mutate: func(fact *WindowsAssignmentFact) { fact.DADState = AddressStateUnknown }, want: StateAttributeConflict},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -238,11 +244,19 @@ func TestObserveRequiresWindowsActiveAssignmentAttributes(t *testing.T) {
 	}
 	_, err := newAdapter(platform).Observe(context.Background(), testAddress)
 	assertErrorKind(t, err, ErrorKindInvalidFacts)
+
+	mismatchedLUID := exact
+	attributes := *exact.Windows
+	attributes.InterfaceLUID++
+	mismatchedLUID.Windows = &attributes
+	platform.assignmentFacts = []AssignmentFact{mismatchedLUID}
+	_, err = newAdapter(platform).Observe(context.Background(), testAddress)
+	assertErrorKind(t, err, ErrorKindInvalidFacts)
 }
 
 // TestMutationsRejectWindowsAttributeConflicts prevents manual-looking foreign state from being adopted or removed.
 func TestMutationsRejectWindowsAttributeConflicts(t *testing.T) {
-	loopback := InterfaceFact{Name: "Loopback Pseudo-Interface 1", Index: 1, Kind: InterfaceKindWindowsSoftware, NativeLoopback: true}
+	loopback := InterfaceFact{Name: "Loopback Pseudo-Interface 1", Index: 1, Kind: InterfaceKindWindowsSoftware, NativeLoopback: true, WindowsLUID: 101}
 	attributes := exactWindowsFact()
 	attributes.SkipAsSource = false
 	assignment := AssignmentFact{Address: testAddress, PrefixLength: 32, InterfaceIndex: loopback.Index, Windows: attributes}
@@ -543,6 +557,7 @@ func assertErrorKind(t *testing.T, err error, want ErrorKind) {
 // exactWindowsFact returns the active, nonpersistent address shape created by the Windows backend.
 func exactWindowsFact() *WindowsAssignmentFact {
 	return &WindowsAssignmentFact{
+		InterfaceLUID:            101,
 		SkipAsSource:             true,
 		PrefixOrigin:             AddressOriginManual,
 		SuffixOrigin:             AddressOriginManual,

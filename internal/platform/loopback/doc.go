@@ -9,7 +9,7 @@
 // Windows effects are active assignments with infinite address lifetimes, not
 // persistent configuration. IP Helper removes them when the adapter is reset or
 // the machine restarts, so a higher-level reconciler must restore desired state.
-// StateExact describes the assignment shape; Windows duplicate-address
-// detection remains an observed fact, while the identity HostProber separately
-// proves socket readiness before a durable lease is committed.
+// StateExact requires Windows to report the assignment Preferred after
+// duplicate-address detection. The identity HostProber separately proves
+// end-to-end socket readiness before a durable lease is committed.
 package loopback

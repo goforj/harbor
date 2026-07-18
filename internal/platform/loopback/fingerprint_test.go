@@ -58,8 +58,13 @@ func TestObservationFingerprintIncludesEveryObservationFact(t *testing.T) {
 			observation.Loopback.Index = 22
 			observation.Assignments[0].InterfaceIndex = observation.Loopback.Index
 		}},
+		{name: "Windows loopback LUID", mutate: func(observation *Observation) {
+			observation.Loopback.WindowsLUID++
+			observation.Assignments[0].Windows.InterfaceLUID = observation.Loopback.WindowsLUID
+		}},
 		{name: "loopback and assignment kind", mutate: func(observation *Observation) {
 			observation.Loopback.Kind = InterfaceKindLinuxNative
+			observation.Loopback.WindowsLUID = 0
 			observation.Assignments[0].InterfaceKind = InterfaceKindLinuxNative
 			observation.Assignments[0].Windows = nil
 		}},
@@ -96,6 +101,7 @@ func TestObservationFingerprintIncludesEveryObservationFact(t *testing.T) {
 		}},
 		{name: "Windows DAD state", mutate: func(observation *Observation) {
 			observation.Assignments[0].Windows.DADState = AddressStateTentative
+			observation.State = StateAttributeConflict
 		}},
 	}
 
@@ -129,6 +135,7 @@ func TestFingerprintAssignmentEncodingIncludesEveryField(t *testing.T) {
 		{name: "native loopback", mutate: func(fact *AssignmentFact) { fact.NativeLoopback = false }},
 		{name: "interface kind", mutate: func(fact *AssignmentFact) { fact.InterfaceKind = InterfaceKindDarwinNative }},
 		{name: "Windows presence", mutate: func(fact *AssignmentFact) { fact.Windows = nil }},
+		{name: "Windows interface LUID", mutate: func(fact *AssignmentFact) { fact.Windows.InterfaceLUID++ }},
 		{name: "skip as source", mutate: func(fact *AssignmentFact) { fact.Windows.SkipAsSource = false }},
 		{name: "prefix origin", mutate: func(fact *AssignmentFact) { fact.Windows.PrefixOrigin = AddressOriginOther }},
 		{name: "suffix origin", mutate: func(fact *AssignmentFact) { fact.Windows.SuffixOrigin = AddressOriginOther }},
@@ -187,6 +194,7 @@ func TestObservationFingerprintRejectsMalformedFacts(t *testing.T) {
 		}},
 		{name: "ordinary selected interface", mutate: func(observation *Observation) { observation.Loopback.NativeLoopback = false }},
 		{name: "unknown loopback kind", mutate: func(observation *Observation) { observation.Loopback.Kind = "unknown" }},
+		{name: "zero Windows loopback LUID", mutate: func(observation *Observation) { observation.Loopback.WindowsLUID = 0 }},
 		{name: "too many assignments", mutate: func(observation *Observation) {
 			observation.Assignments = make([]AssignmentFact, maximumAssignmentFacts+1)
 			for index := range observation.Assignments {
@@ -222,6 +230,8 @@ func TestObservationFingerprintRejectsMalformedFacts(t *testing.T) {
 			observation.State = StateForeign
 		}},
 		{name: "missing Windows attributes", mutate: func(observation *Observation) { observation.Assignments[0].Windows = nil }},
+		{name: "zero Windows assignment LUID", mutate: func(observation *Observation) { observation.Assignments[0].Windows.InterfaceLUID = 0 }},
+		{name: "mismatched Windows assignment LUID", mutate: func(observation *Observation) { observation.Assignments[0].Windows.InterfaceLUID++ }},
 		{name: "invalid Windows prefix origin", mutate: func(observation *Observation) { observation.Assignments[0].Windows.PrefixOrigin = "invalid" }},
 		{name: "prefix-only origin used as suffix", mutate: func(observation *Observation) {
 			observation.Assignments[0].Windows.SuffixOrigin = AddressOriginRouterAdvertisement
@@ -246,15 +256,20 @@ func TestObservationFingerprintRejectsMalformedFacts(t *testing.T) {
 	if fingerprint, err := nonWindows.Fingerprint(); err == nil {
 		t.Fatalf("Fingerprint() with Windows facts on Linux = %q, want error", fingerprint)
 	}
+	nonWindows = fingerprintLinuxObservation(StateAbsent)
+	nonWindows.Loopback.WindowsLUID = 101
+	if fingerprint, err := nonWindows.Fingerprint(); err == nil {
+		t.Fatalf("Fingerprint() with Windows LUID on Linux = %q, want error", fingerprint)
+	}
 }
 
-// TestObservationFingerprintKnownVector fixes the v1 encoding across implementations and platforms.
+// TestObservationFingerprintKnownVector fixes the v2 encoding across implementations and platforms.
 func TestObservationFingerprintKnownVector(t *testing.T) {
 	fingerprint, err := fingerprintWindowsObservation().Fingerprint()
 	if err != nil {
 		t.Fatalf("Fingerprint() error = %v", err)
 	}
-	const want = "eeb482c99187b58a1ebc790f3a030c6eab9c9c5ccf84bf5e421bdb2157dc4832"
+	const want = "f3e7766d13773ee2cc4882af054e08a9d699473c256e87dec8540997dd2a3bfe"
 	if fingerprint != want {
 		t.Fatalf("Fingerprint() = %q, want %q", fingerprint, want)
 	}
@@ -310,6 +325,7 @@ func fingerprintWindowsObservation() Observation {
 		Index:          12,
 		Kind:           InterfaceKindWindowsSoftware,
 		NativeLoopback: true,
+		WindowsLUID:    1001,
 	}
 	return Observation{
 		Address:  testAddress,
@@ -323,6 +339,7 @@ func fingerprintWindowsObservation() Observation {
 			NativeLoopback: true,
 			InterfaceKind:  loopback.Kind,
 			Windows: &WindowsAssignmentFact{
+				InterfaceLUID:            loopback.WindowsLUID,
 				SkipAsSource:             true,
 				PrefixOrigin:             AddressOriginManual,
 				SuffixOrigin:             AddressOriginManual,
