@@ -2,7 +2,7 @@
 
 This nested module contains Harbor's replaceable desktop client. It presents daemon state through Wails without owning project lifecycle, networking, or durable runtime state.
 
-Wails v2.13 requires Go 1.25, so the nested module keeps its toolchain and native desktop dependencies out of Harbor's headless module.
+The nested module uses Go 1.26.1 because it imports Harbor's root control and domain packages, whose module requires that version. Keeping Wails here still prevents its native desktop dependencies from entering Harbor's headless module.
 
 ## Development
 
@@ -21,7 +21,7 @@ npm ci
 npm run dev
 ```
 
-`wails dev` also uses that fixture while native daemon bindings are absent and marks the window `Development fixture`. A production Wails build without the bindings reports an unavailable state instead of presenting fixture data as real machine state.
+`wails dev` uses the native desktop bindings and connects to `harbord`. Browser-only development uses a Go-generated, TypeScript-checked fixture for the exact daemon wire shape and marks the page `Development fixture`. Production fails closed when native bindings or the event runtime are incomplete. A browser production build may opt into fixture data explicitly with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is for browser builds and cannot override a detected Wails runtime with incomplete bindings.
 
 ## Tests
 
@@ -58,7 +58,7 @@ wails build
 
 Ubuntu 24.04 requires GTK3, WebKit2GTK 4.1, and the `webkit2_41` Wails build tag. Native packaging also depends on the platform prerequisites documented by Wails.
 
-The daemon bindings and native tray remain later milestone work. The scaffolded Wails icons are development placeholders; Harbor branding, signed installers, dependency notices, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
+The native tray remains later milestone work. The scaffolded Wails icons are development placeholders; Harbor branding, signed installers, dependency notices, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
 
 ## Continuous integration
 

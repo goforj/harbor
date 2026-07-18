@@ -1,75 +1,137 @@
-export type HarborStatus = 'ready' | 'working' | 'degraded' | 'failed' | 'stopped' | 'unavailable'
-
 export type Destination = 'overview' | 'projects' | 'services' | 'system'
 
-export interface AppSummary {
-  id: string
-  name: string
-  command: string
-  status: HarborStatus
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
+
+export interface ConnectionEvent {
+  state: ConnectionState
 }
 
-export interface ServiceSummary {
-  id: string
-  projectId: string
-  projectName: string
-  name: string
-  kind: 'database' | 'cache' | 'mail' | 'observability'
-  endpoint: string
-  privateEndpoint: string
-  status: HarborStatus
-  owner: 'managed' | 'external'
+export type ProjectState =
+  | 'stopped'
+  | 'starting'
+  | 'ready'
+  | 'rebuilding'
+  | 'degraded'
+  | 'failed'
+  | 'stopping'
+  | 'unavailable'
+
+export type EntityState = 'ready' | 'working' | 'degraded' | 'failed' | 'stopped' | 'unavailable'
+
+export type OperationState =
+  | 'queued'
+  | 'running'
+  | 'requires_approval'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+
+export type HarborStatus = ProjectState | EntityState | OperationState
+
+export interface ProtocolVersion {
+  major: number
+  minor: number
 }
 
-export interface ResourceSummary {
+export interface DaemonBuild {
+  version: string
+  revision?: string
+  modified: boolean
+}
+
+export interface DaemonStatus {
+  state: 'ready'
+  build: DaemonBuild
+  protocol: ProtocolVersion
+  capabilities: string[]
+  snapshot_schema_version: number
+  sequence: number
+}
+
+export interface AppSnapshot {
   id: string
-  projectId: string
-  projectName: string
-  serviceId?: string
   name: string
-  kind: 'application' | 'api-reference' | 'lighthouse' | 'mail' | 'observability'
+  state: EntityState
+  active: boolean
+  required: boolean
+}
+
+export interface ServiceSnapshot {
+  id: string
+  name: string
+  kind: string
+  state: EntityState
+  owner: 'compose' | 'external'
+  selection: 'selected' | 'available'
+  required: boolean
+}
+
+export interface ResourceOwner {
+  kind: 'app' | 'service'
+  app_id?: string
+  service_id?: string
+}
+
+export interface ResourceSnapshot {
+  id: string
+  name: string
+  kind: string
+  owner: ResourceOwner
   url: string
 }
 
-export interface LogLine {
-  id: number
-  timestamp: string
-  source: string
-  stream: 'stdout' | 'stderr' | 'combined'
-  message: string
-}
-
-export interface ProjectSummary {
+export interface ProjectSnapshot {
   id: string
   name: string
   path: string
-  domain: string
-  status: HarborStatus
+  slug: string
+  state: ProjectState
   favorite: boolean
-  updatedAt: string
-  apps: AppSummary[]
-  services: ServiceSummary[]
-  resources: ResourceSummary[]
-  logs: LogLine[]
+  updated_at: string
+  apps: AppSnapshot[]
+  services: ServiceSnapshot[]
+  resources: ResourceSnapshot[]
 }
 
-export interface SystemCheck {
+export interface Problem {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+export interface Operation {
   id: string
-  name: string
-  detail: string
-  status: HarborStatus
+  intent_id: string
+  kind: string
+  project_id?: string
+  state: OperationState
+  phase: string
+  problem?: Problem
+  requested_at: string
+  started_at?: string
+  finished_at?: string
+}
+
+export interface ResourceRef {
+  project_id: string
+  resource_id: string
 }
 
 export interface HarborSnapshot {
+  schema_version: number
   sequence: number
-  capturedAt: string
-  projects: ProjectSummary[]
-  services: ServiceSummary[]
-  recentResources: ResourceSummary[]
-  system: SystemCheck[]
+  captured_at: string
+  projects: ProjectSnapshot[]
+  operations: Operation[]
+  recent_resource_ids: ResourceRef[]
 }
 
-export interface HarborSnapshotEvent {
-  type: 'snapshot'
-  snapshot: HarborSnapshot
+export interface ProjectService extends ServiceSnapshot {
+  project_id: string
+  project_name: string
+}
+
+export interface ProjectResource extends ResourceSnapshot {
+  project_id: string
+  project_name: string
 }

@@ -24,15 +24,15 @@ The starter is the structural authority. Lerd is the initial visual anchor. Harb
 
 The first desktop foundation is present under `desktop/`:
 
-- stable Wails v2.13 hosts the embedded application in an isolated Go 1.25 module;
+- stable Wails v2.13 hosts the embedded application in an isolated Go 1.26.1 module, matching the Harbor root packages imported by the desktop while keeping Wails dependencies out of the headless root module;
 - the tracked GoForj starter snapshot is recorded at commit `aecc0762f9cfcfc9bfbaad3dc4e215afcf858b43`;
 - the complete app-owned shadcn-vue primitive layer remains under `src/components/ui`;
-- Harbor owns the rail, contextual browser, detail views, compact navigation, status presentation, command search, and virtualized logs under its product component and view directories;
-- hash routing, Pinia snapshot ordering, light/dark/system themes, typed bridge adapters, deterministic browser fixtures, Vitest, and Playwright are wired and exercised;
+- Harbor owns the rail, contextual browser, detail views, compact navigation, status presentation, and command search under its product component and view directories;
+- hash routing, Pinia connection epochs and snapshot ordering, light/dark/system themes, typed bridge adapters, a Go-generated deterministic browser fixture, Vitest, and Playwright are wired and exercised;
 - Vite restores the tracked empty embed marker after production builds so the nested Go module also compiles before frontend assets are generated;
 - the CI workflow requests root Go validation and nested Wails compilation on Ubuntu, macOS, and Windows, with browser behavior exercised once on Ubuntu before its production assets are reused by the native build matrix.
 
-Frontend-only development and `wails dev` use the fixture adapter while the native bindings are absent, with an explicit `Development fixture` marker in the UI. Production Wails builds require the native `Snapshot` and `OpenResource` bindings and fail visibly if they are absent; they never substitute fixture state for real machine state. Those bindings, daemon event transport, tray integration, and native packaging evidence remain implementation work rather than capabilities implied by the shell.
+Frontend-only browser development uses the fixture adapter, with an explicit `Development fixture` marker in the UI. `wails dev` and packaged builds use the native `Status`, `Snapshot`, and `OpenResource` bindings plus typed `harbor:connection` and `harbor:snapshot` events. Production fails visibly when those bindings or the event runtime are incomplete. A browser production build can request fixture data with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is browser-only and cannot override a detected Wails runtime with incomplete bindings. Tray integration and native packaging evidence remain implementation work rather than capabilities implied by the shell.
 
 ## Preserved starter foundation
 
@@ -60,10 +60,9 @@ The browser-served starter and an embedded Wails SPA have a small number of inte
 - replace the starter auth/session layer with a narrow typed Harbor bridge;
 - replace starter routes, views, navigation, and branding with Harbor product surfaces;
 - add Pinia for immutable daemon snapshots, connection state, ordered events, and optimistic-operation markers;
-- virtualize the log surface while preserving ordered source identity and whitespace;
 - exercise Harbor-owned frontend behavior with Vitest, Vue Test Utils, and Playwright rather than carrying unexercised test dependencies.
 
-The frontend must not receive a raw daemon socket, bearer token, Docker socket, command runner, or unrestricted filesystem access. A typed `harborBridge` is its only product boundary. The native adapter is limited to narrow Wails bindings and snapshot events; a mock adapter drives browser development, component tests, and deterministic failure states.
+The frontend must not receive a raw daemon socket, bearer token, Docker socket, command runner, or unrestricted filesystem access. A typed `harborBridge` is its only product boundary. The native adapter is limited to narrow Wails bindings plus connection and snapshot events; a mock adapter drives browser development, component tests, and deterministic failure states.
 
 ## Shell and component map
 
@@ -80,9 +79,8 @@ The first Harbor shell keeps the GoForj starter's application composition while 
 | Narrow layout | `Sheet` or `Drawer` plus router state | one-surface list-to-detail navigation and compact destination bar |
 | Destructive action | `AlertDialog` | explicit scope and consequence near the operation |
 | Progress and feedback | `Skeleton`, `Progress`, `Sonner` | quiet loading, persistent failure state, transient success feedback |
-| Logs | `ScrollArea`, controls, Harbor virtual list | dense monospaced stream with filters, follow/pause, and explicit gaps |
 
-Harbor-owned components describe the product rather than wrapping every primitive mechanically. The first shell includes `HarborRail`, `HarborMobileNav`, `ContextPane`, `EntityRow`, `HarborCommandMenu`, `ThemeMenu`, `StatusBadge`, and `LogStream`; destination views own their project-, service-, and system-specific composition.
+Harbor-owned components describe the product rather than wrapping every primitive mechanically. The first shell includes `HarborRail`, `HarborMobileNav`, `ContextPane`, `EntityRow`, `HarborCommandMenu`, `ThemeMenu`, and `StatusBadge`; destination views own their project-, service-, and system-specific composition.
 
 ## Visual tokens
 
@@ -130,22 +128,22 @@ Pinia snapshot stores
 Harbor views composed from shadcn-vue primitives
 ```
 
-Every reconnect begins with a fresh snapshot and then applies ordered events after that snapshot's sequence. Components render explicit loading, disconnected, stale, empty, partial, and failed states. Product actions return operation identities and reconcile against daemon state rather than treating a button click as proof of success.
+Every reconnect starts a new connection epoch. The last replacement snapshot remains visible but explicitly stale until the first validated snapshot from that connection arrives, and sequence suppression applies only within that connection. Components render explicit loading, disconnected, stale, empty, partial, and failed states. Product actions return operation identities and reconcile against daemon state rather than treating a button click as proof of success.
 
 ## Testing
 
 Frontend confidence is layered. The implemented browser layer currently includes:
 
 - TypeScript checking and a production Vite build;
-- Vitest coverage for bridge selection, snapshot ordering, recovery, lookup, and failure behavior;
-- Playwright coverage for navigation, command metadata search, compact utility access, and the three-, two-, and one-pane workflows against deterministic fixtures.
+- Vitest coverage for bridge selection, connection epochs, snapshot ordering, status request races, recovery, lookup, and failure behavior;
+- Playwright coverage for navigation, command metadata search, compact utility access, and the three-, two-, and one-pane workflows against deterministic fixtures;
+- a checked-in TypeScript contract artifact generated and validated by Go, consumed by the native bridge, compile-checked with `satisfies`, and exercised by frontend tests; it declares exact Wails method arity and parameter/result types, binds event names to payload types, and covers every connection payload plus active and terminal state examples.
 
 The remaining native layer requires:
 
 - green hosted evidence from the three-platform workflow on each reviewed revision;
 - accessibility assertions for dialogs, menus, tabs, tooltips, focus restoration, and state labels;
-- Wails-native smoke for bindings, events, close/hide behavior, relaunch, and platform WebView differences;
-- snapshot/event contract fixtures shared with Go tests so the CLI, desktop backend, and frontend agree on protocol meaning.
+- Wails-native smoke for bindings, events, close/hide behavior, relaunch, and platform WebView differences.
 
 Browser tests prove the SPA. They do not replace native Wails smoke on macOS, Linux, and Windows.
 

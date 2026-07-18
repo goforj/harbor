@@ -31,21 +31,29 @@ const props = withDefaults(defineProps<{
 const statusPresentation = computed<StatusPresentation>(() => {
   switch (props.status) {
     case 'ready':
+    case 'succeeded':
       return {
-        label: 'Ready',
+        label: props.status === 'succeeded' ? 'Succeeded' : 'Ready',
         icon: Check,
         classes: 'border-status-ready/25 bg-status-ready/10 text-status-ready',
       }
     case 'working':
+    case 'starting':
+    case 'rebuilding':
+    case 'queued':
+    case 'running':
       return {
-        label: 'Working',
+        label: props.status === 'working'
+          ? 'Working'
+          : props.status.charAt(0).toUpperCase() + props.status.slice(1),
         icon: Loader2,
         classes: 'border-status-working/25 bg-status-working/10 text-status-working',
         iconClasses: 'animate-spin',
       }
     case 'degraded':
+    case 'requires_approval':
       return {
-        label: 'Needs attention',
+        label: props.status === 'requires_approval' ? 'Requires approval' : 'Needs attention',
         icon: TriangleAlert,
         classes: 'border-status-degraded/30 bg-status-degraded/10 text-status-degraded',
       }
@@ -56,8 +64,14 @@ const statusPresentation = computed<StatusPresentation>(() => {
         classes: 'border-status-failed/30 bg-status-failed/10 text-status-failed',
       }
     case 'stopped':
+    case 'stopping':
+    case 'cancelled':
       return {
-        label: 'Stopped',
+        label: props.status === 'cancelled'
+          ? 'Cancelled'
+          : props.status === 'stopping'
+            ? 'Stopping'
+            : 'Stopped',
         icon: Circle,
         classes: 'border-status-stopped/25 bg-status-stopped/10 text-status-stopped',
       }

@@ -12,8 +12,8 @@ test('navigates from the Harbor overview to the project list', async ({ page }) 
   await page.getByRole('button', { name: 'Projects', exact: true }).click()
 
   await expect(page).toHaveURL(/#\/projects(?:\/|$)/)
-  await expect(page.getByText('orders-api', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('billing', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Orders API', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Billing', { exact: true }).first()).toBeVisible()
 })
 
 test('uses a single detail surface and a back path at narrow widths', async ({ page }) => {
@@ -24,13 +24,13 @@ test('uses a single detail surface and a back path at narrow widths', async ({ p
   await expect(page.locator('.harbor-context-slot')).toBeHidden()
   await expect(page.locator('.harbor-detail-slot')).toBeVisible()
   await expect(page.locator('.harbor-mobile-slot')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'orders-api' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Orders API' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Back to projects' }).click()
 
   await expect(page).toHaveURL(/#\/projects$/)
   await expect(page.locator('.harbor-context-slot')).toBeVisible()
-  await expect(page.getByText('Running · 2', { exact: true })).toBeVisible()
+  await expect(page.getByText('Active · 2', { exact: true })).toBeVisible()
 })
 
 test('moves from two panes to three panes at the desktop breakpoint', async ({ page }) => {
@@ -49,14 +49,22 @@ test('moves from two panes to three panes at the desktop breakpoint', async ({ p
   await expect(page.getByRole('link', { name: 'Back to projects' })).toBeHidden()
 })
 
-test('searches command metadata that is not rendered in item labels', async ({ page }) => {
+test('routes services with project and service identities', async ({ page }) => {
+  await page.goto('/#/services/orders-api/mysql')
+
+  await expect(page.getByRole('heading', { name: 'MySQL' })).toBeVisible()
+  await expect(page.getByText('orders-api', { exact: true }).first()).toBeVisible()
+  await expect(page).toHaveURL(/#\/services\/orders-api\/mysql$/)
+})
+
+test('searches authoritative project metadata that is not rendered in item labels', async ({ page }) => {
   await page.goto('/#/overview')
   await page.keyboard.press('Control+k')
 
   const dialog = page.getByRole('dialog', { name: 'Command Menu' })
   await expect(dialog).toBeVisible()
   await dialog.getByPlaceholder('Search projects, services, and Harbor…').fill('/workspace/apps/billing')
-  await expect(dialog.getByText('billing', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('Billing', { exact: true })).toBeVisible()
 })
 
 test('opens and closes the command menu with accessible keyboard focus', async ({ page }) => {
@@ -75,41 +83,78 @@ test('opens and closes the command menu with accessible keyboard focus', async (
 
   await expect(dialog).toBeHidden()
   await expect(trigger).toBeFocused()
-
-  await page.keyboard.press('Control+k')
-  await expect(dialog).toBeVisible()
-  await expect(search).toBeFocused()
-
-  await search.press('Escape')
-  await expect(dialog).toBeHidden()
 })
 
-test('focuses and reveals the section selected by a system route', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 640 })
-  await page.goto('/#/system/settings')
+test('renders only status and snapshot facts on the system page', async ({ page }) => {
+  await page.goto('/#/system')
 
-  const sectionNavigation = page.getByRole('navigation', { name: 'System sections' })
-  const settingsLink = sectionNavigation.getByRole('link', { name: 'Settings' })
-  const systemMain = page.locator('main[aria-labelledby="system-title"]')
-
-  await expect(settingsLink).toHaveAttribute('aria-current', 'page')
-  await expect(page.locator('#settings')).toBeFocused()
-  await expect.poll(() => systemMain.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-
-  await sectionNavigation.getByRole('link', { name: 'HTTPS & trust' }).click()
-
-  await expect(page).toHaveURL(/#\/system\/trust$/)
-  await expect(sectionNavigation.getByRole('link', { name: 'HTTPS & trust' })).toHaveAttribute('aria-current', 'page')
-  await expect(page.locator('#trust')).toBeFocused()
+  await expect(page.locator('#system-title')).toBeVisible()
+  await expect(page.getByText('Daemon status')).toBeVisible()
+  await expect(page.getByText('Snapshot', { exact: true })).toBeVisible()
+  await expect(page.getByText('control.v1')).toBeVisible()
+  await expect(page.getByText('DNS and ingress')).toHaveCount(0)
+  await expect(page.getByText('HTTPS and trust')).toHaveCount(0)
 })
 
-test('presents an unavailable native shell and recovers after retry', async ({ page }) => {
+test('fails closed for a production browser unless its fixture is explicitly requested', async ({ page }) => {
+  await page.goto('/#/overview')
+
+  const result = await page.evaluate(async () => {
+    delete window.go
+    delete window.runtime
+
+    const bridgeModulePath = '/src/bridge/index.ts'
+    const bridgeModule = await import(/* @vite-ignore */ bridgeModulePath) as {
+      selectHarborBridge(development: boolean, browserFixture: boolean): {
+        bridge: { getSnapshot(): Promise<{ sequence: number }> }
+        mode: string
+      }
+    }
+
+    const unavailable = bridgeModule.selectHarborBridge(false, false)
+    let unavailableMessage = ''
+    try {
+      await unavailable.bridge.getSnapshot()
+    }
+    catch (error) {
+      unavailableMessage = error instanceof Error ? error.message : String(error)
+    }
+
+    const fixture = bridgeModule.selectHarborBridge(false, true)
+    const snapshot = await fixture.bridge.getSnapshot()
+    return {
+      fixtureMode: fixture.mode,
+      fixtureSequence: snapshot.sequence,
+      unavailableMessage,
+      unavailableMode: unavailable.mode,
+    }
+  })
+
+  expect(result).toEqual({
+    fixtureMode: 'fixture',
+    fixtureSequence: 42,
+    unavailableMessage: 'Harbor daemon bindings are not available in this desktop build.',
+    unavailableMode: 'unavailable',
+  })
+})
+
+test('uses native bindings and recovers after the first snapshot read fails', async ({ page }) => {
   await page.addInitScript(() => {
     let snapshotAttempts = 0
     window.go = {
       main: {
         App: {
           async OpenResource() {},
+          async Status() {
+            return {
+              state: 'ready',
+              build: { version: 'dev', modified: false },
+              protocol: { major: 1, minor: 0 },
+              capabilities: ['control.v1'],
+              snapshot_schema_version: 1,
+              sequence: 1,
+            }
+          },
           async Snapshot() {
             snapshotAttempts += 1
             if (snapshotAttempts === 1) {
@@ -117,12 +162,12 @@ test('presents an unavailable native shell and recovers after retry', async ({ p
             }
 
             return {
+              schema_version: 1,
               sequence: 1,
-              capturedAt: '2026-07-18T14:35:20Z',
+              captured_at: '2026-07-18T14:35:20Z',
               projects: [],
-              services: [],
-              recentResources: [],
-              system: [],
+              operations: [],
+              recent_resource_ids: [],
             }
           },
         },
@@ -136,13 +181,100 @@ test('presents an unavailable native shell and recovers after retry', async ({ p
   await page.goto('/#/overview')
 
   const detail = page.locator('.harbor-detail-slot')
-  await expect(detail.getByText('Harbor could not load local state')).toBeVisible()
+  await expect(detail.getByText('Connected to Harbor. Waiting for the first snapshot.')).toBeVisible()
   await expect(detail.getByText('Harbor daemon is starting')).toBeVisible()
 
   await detail.getByRole('button', { name: 'Try again' }).click()
 
   await expect(detail.getByRole('heading', { name: 'Overview' })).toBeVisible()
-  await expect(detail.getByText('Harbor could not load local state')).toBeHidden()
+  await expect(detail.getByText('Connected to Harbor. Waiting for the first snapshot.')).toBeHidden()
+  await expect(detail.getByText('Harbor daemon is starting')).toBeHidden()
+})
+
+test('keeps a missing first snapshot in an explicit waiting state and announces stale state once', async ({ page }) => {
+  await page.addInitScript(() => {
+    const listeners = new Map<string, (payload: unknown) => void>()
+    const testWindow = window as typeof window & {
+      emitHarborConnection(payload: { state: 'connecting' | 'connected' | 'disconnected' }): void
+      emitHarborSnapshot(payload: unknown): void
+    }
+    testWindow.emitHarborConnection = (payload) => listeners.get('harbor:connection')?.(payload)
+    testWindow.emitHarborSnapshot = (payload) => listeners.get('harbor:snapshot')?.(payload)
+    window.go = {
+      main: {
+        App: {
+          async OpenResource() {},
+          async Status() {
+            return {
+              state: 'ready',
+              build: { version: 'dev', modified: false },
+              protocol: { major: 1, minor: 0 },
+              capabilities: ['control.v1'],
+              snapshot_schema_version: 1,
+              sequence: 1,
+            }
+          },
+          async Snapshot() {
+            throw new Error('snapshot endpoint unavailable')
+          },
+        },
+      },
+    }
+    window.runtime = {
+      EventsOn(eventName, callback) {
+        listeners.set(eventName, callback as (payload: unknown) => void)
+        return () => listeners.delete(eventName)
+      },
+      EventsOff: (eventName) => listeners.delete(eventName),
+    }
+  })
+  await page.goto('/#/overview')
+
+  const detail = page.locator('.harbor-detail-slot')
+  await expect(page.getByText('Connected to Harbor. Waiting for the first snapshot.', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('snapshot endpoint unavailable', { exact: true }).first()).toBeVisible()
+  await expect(detail.getByRole('heading', { name: 'Overview' })).toHaveCount(0)
+  await expect(page.getByText('No overview yet', { exact: true })).toHaveCount(0)
+
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & {
+      emitHarborConnection(payload: { state: 'connecting' | 'connected' | 'disconnected' }): void
+    }
+    testWindow.emitHarborConnection({ state: 'connecting' })
+  })
+  await expect(page.getByText('Connecting to Harbor', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('snapshot endpoint unavailable', { exact: true }).first()).toBeVisible()
+
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & {
+      emitHarborConnection(payload: { state: 'connecting' | 'connected' | 'disconnected' }): void
+    }
+    testWindow.emitHarborConnection({ state: 'connected' })
+  })
+  await expect(page.getByText('Connected to Harbor. Waiting for the first snapshot.', { exact: true }).first()).toBeVisible()
+  await expect(detail.getByRole('heading', { name: 'Overview' })).toHaveCount(0)
+
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & { emitHarborSnapshot(payload: unknown): void }
+    testWindow.emitHarborSnapshot({
+      schema_version: 1,
+      sequence: 1,
+      captured_at: '2026-07-18T14:35:20Z',
+      projects: [],
+      operations: [],
+      recent_resource_ids: [],
+    })
+  })
+  await expect(detail.getByRole('heading', { name: 'Overview' })).toBeVisible()
+
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & {
+      emitHarborConnection(payload: { state: 'connecting' | 'connected' | 'disconnected' }): void
+    }
+    testWindow.emitHarborConnection({ state: 'disconnected' })
+  })
+  await expect(page.getByText('Harbor daemon is disconnected.', { exact: true })).toHaveCount(2)
+  await expect(page.locator('[role="status"]').filter({ hasText: 'Harbor daemon is disconnected.' })).toHaveCount(1)
 })
 
 test('keeps search and appearance reachable from mobile navigation', async ({ page }) => {
@@ -155,4 +287,37 @@ test('keeps search and appearance reachable from mobile navigation', async ({ pa
   await page.getByRole('menuitem', { name: 'Search Harbor' }).click()
 
   await expect(page.getByRole('dialog', { name: 'Command Menu' })).toBeVisible()
+})
+
+test('keeps the development fixture marker clear of mobile navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 760 })
+  await page.goto('/#/overview')
+
+  const marker = page.getByText('Development fixture', { exact: true })
+  const navigation = page.locator('.harbor-mobile-slot')
+  await expect(marker).toBeVisible()
+  await expect(navigation).toBeVisible()
+
+  const markerBox = await marker.boundingBox()
+  const navigationBox = await navigation.boundingBox()
+  expect(markerBox).not.toBeNull()
+  expect(navigationBox).not.toBeNull()
+  if (!markerBox || !navigationBox) {
+    throw new Error('fixture marker and navigation must have measurable bounds')
+  }
+  expect(markerBox.y + markerBox.height).toBeLessThanOrEqual(navigationBox.y)
+})
+
+test('reports resource-open failures without leaving an unhandled action', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.open = () => {
+      throw new Error('The browser rejected the request')
+    }
+  })
+  await page.goto('/#/overview')
+
+  await page.getByRole('button', { name: 'Open Application for Orders API' }).click()
+
+  await expect(page.getByText('Harbor could not open the resource', { exact: true })).toBeVisible()
+  await expect(page.getByText('The browser rejected the request', { exact: true })).toBeVisible()
 })

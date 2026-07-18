@@ -1,0 +1,755 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/goforj/harbor/internal/control"
+	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/rpc"
+	"github.com/wailsapp/wails/v2/pkg/options"
+)
+
+// fakeControlClient keeps lifecycle and response behavior explicit in desktop adapter tests.
+type fakeControlClient struct {
+	mu           sync.Mutex
+	status       control.DaemonStatus
+	statusErr    error
+	snapshot     domain.Snapshot
+	snapshotErr  error
+	snapshotHook func()
+	done         chan struct{}
+	closeOnce    sync.Once
+	closeCount   atomic.Int32
+}
+
+// newFakeControlClient creates a connected test client with a valid replacement snapshot.
+func newFakeControlClient() *fakeControlClient {
+	return &fakeControlClient{
+		status: control.DaemonStatus{
+			State:                 control.DaemonStateReady,
+			Build:                 control.Build{Version: "test"},
+			Protocol:              rpc.Version{Major: 1},
+			Capabilities:          []rpc.Capability{control.CapabilityV1},
+			SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
+			Sequence:              8,
+		},
+		snapshot: testSnapshot(),
+		done:     make(chan struct{}),
+	}
+}
+
+// Status returns the configured daemon status or test failure.
+func (client *fakeControlClient) Status(_ context.Context) (control.DaemonStatus, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return client.status, client.statusErr
+}
+
+// Snapshot returns a defensive copy of the configured replacement snapshot.
+func (client *fakeControlClient) Snapshot(_ context.Context) (domain.Snapshot, error) {
+	client.mu.Lock()
+	snapshot := cloneSnapshot(client.snapshot)
+	err := client.snapshotErr
+	hook := client.snapshotHook
+	client.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return snapshot, err
+}
+
+// Done exposes terminal connection state to the desktop owner loop.
+func (client *fakeControlClient) Done() <-chan struct{} {
+	return client.done
+}
+
+// Close terminates the fake connection exactly once.
+func (client *fakeControlClient) Close() error {
+	client.closeOnce.Do(func() {
+		client.closeCount.Add(1)
+		close(client.done)
+	})
+	return nil
+}
+
+// TestNewAppWiresProductionDependencies covers the zero-configuration Wails composition without starting a daemon connection.
+func TestNewAppWiresProductionDependencies(t *testing.T) {
+	t.Parallel()
+
+	app := NewApp()
+	if app.clientFactory == nil || app.open == nil || app.restore == nil || app.wait == nil {
+		t.Fatal("NewApp() left a production dependency unwired")
+	}
+}
+
+// TestNewDesktopClientHonorsCancellation verifies the concrete adapter forwards the desktop request context.
+func TestNewDesktopClientHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := newDesktopClient(ctx, control.ClientConfig{Role: rpc.RoleDesktop}); err == nil {
+		t.Fatal("newDesktopClient() error = nil for cancelled dial")
+	}
+}
+
+// TestAppLifecycleConnectsAsDesktopAndPublishesSnapshots covers startup, polling, and joined shutdown ownership.
+func TestAppLifecycleConnectsAsDesktopAndPublishesSnapshots(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeControlClient()
+	roles := make(chan rpc.Role, 1)
+	emitted := make(chan domain.Snapshot, 1)
+	connections := make(chan ConnectionState, 2)
+	app := newApp(
+		func(_ context.Context, config control.ClientConfig) (controlClient, error) {
+			roles <- config.Role
+			return client, nil
+		},
+		func(_ context.Context, event string, values ...interface{}) {
+			switch event {
+			case snapshotEventName:
+				emitted <- values[0].(domain.Snapshot)
+			case connectionEventName:
+				connections <- values[0].(ConnectionEvent).State
+			default:
+				t.Errorf("unexpected event = %q", event)
+			}
+		},
+		func(context.Context, string) {},
+		func(ctx context.Context, _ time.Duration) bool {
+			<-ctx.Done()
+			return false
+		},
+	)
+
+	app.startup(context.Background())
+	select {
+	case role := <-roles:
+		if role != rpc.RoleDesktop {
+			t.Fatalf("role = %q, want %q", role, rpc.RoleDesktop)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("desktop client was not created")
+	}
+	select {
+	case snapshot := <-emitted:
+		if snapshot.Sequence != client.snapshot.Sequence {
+			t.Fatalf("emitted sequence = %d, want %d", snapshot.Sequence, client.snapshot.Sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial snapshot was not emitted")
+	}
+	for _, want := range []ConnectionState{ConnectionConnecting, ConnectionConnected} {
+		select {
+		case got := <-connections:
+			if got != want {
+				t.Fatalf("connection state = %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("connection state %q was not emitted", want)
+		}
+	}
+
+	app.shutdown(context.Background())
+	if client.closeCount.Load() != 1 {
+		t.Fatalf("Close() count = %d, want 1", client.closeCount.Load())
+	}
+}
+
+// TestStartupRejectsCompetingLifecycle prevents two owner goroutines from sharing one desktop instance.
+func TestStartupRejectsCompetingLifecycle(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	app.startup(context.Background())
+	defer app.shutdown(context.Background())
+	defer func() {
+		if recover() == nil {
+			t.Fatal("startup() panic = nil for second active lifecycle")
+		}
+	}()
+	app.startup(context.Background())
+}
+
+// TestSecondInstanceBeforeStartupIsInert keeps an early platform callback from using a missing Wails context.
+func TestSecondInstanceBeforeStartupIsInert(t *testing.T) {
+	t.Parallel()
+
+	testApp().onSecondInstanceLaunch(options.SecondInstanceData{})
+}
+
+// TestSecondInstanceRestoresTheOwnedWindow verifies relaunch remains presentation-only.
+func TestSecondInstanceRestoresTheOwnedWindow(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	app.ctx = context.Background()
+	restored := false
+	app.restore = func(context.Context) { restored = true }
+	app.onSecondInstanceLaunch(options.SecondInstanceData{})
+	if !restored {
+		t.Fatal("onSecondInstanceLaunch() did not restore the Wails window")
+	}
+}
+
+// TestAppReconnectsAfterDialFailure proves daemon startup order does not strand the desktop in a fixture state.
+func TestAppReconnectsAfterDialFailure(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeControlClient()
+	var attempts atomic.Int32
+	emitted := make(chan struct{}, 1)
+	connections := make(chan ConnectionState, 4)
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) {
+			if attempts.Add(1) == 1 {
+				return nil, errors.New("daemon is starting")
+			}
+			return client, nil
+		},
+		func(_ context.Context, event string, values ...interface{}) {
+			if event == snapshotEventName {
+				emitted <- struct{}{}
+				return
+			}
+			connections <- values[0].(ConnectionEvent).State
+		},
+		func(context.Context, string) {},
+		func(ctx context.Context, _ time.Duration) bool {
+			if attempts.Load() == 1 {
+				return true
+			}
+			<-ctx.Done()
+			return false
+		},
+	)
+
+	app.startup(context.Background())
+	select {
+	case <-emitted:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot was not emitted after reconnect")
+	}
+	app.shutdown(context.Background())
+	if attempts.Load() != 2 {
+		t.Fatalf("connection attempts = %d, want 2", attempts.Load())
+	}
+	for index, want := range []ConnectionState{
+		ConnectionConnecting,
+		ConnectionDisconnected,
+		ConnectionConnecting,
+		ConnectionConnected,
+	} {
+		select {
+		case got := <-connections:
+			if got != want {
+				t.Fatalf("connection state %d = %q, want %q", index, got, want)
+			}
+		default:
+			t.Fatalf("connection state %d = missing, want %q", index, want)
+		}
+	}
+}
+
+// TestRunStopsWhenReconnectWaitIsCancelled covers a daemon that remains unavailable through shutdown.
+func TestRunStopsWhenReconnectWaitIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	var waits atomic.Int32
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) {
+			return nil, errors.New("unavailable")
+		},
+		func(context.Context, string, ...interface{}) {},
+		func(context.Context, string) {},
+		func(context.Context, time.Duration) bool { waits.Add(1); return false },
+	)
+	done := make(chan struct{})
+	app.run(context.Background(), done)
+	select {
+	case <-done:
+	default:
+		t.Fatal("run() did not report completion")
+	}
+	if waits.Load() != 1 {
+		t.Fatalf("wait count = %d, want 1", waits.Load())
+	}
+}
+
+// TestRunClosesClientWhenLifecycleEndsDuringDial covers a factory that returns after cancellation.
+func TestRunClosesClientWhenLifecycleEndsDuringDial(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeControlClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	app := testApp()
+	app.ctx = context.Background()
+	app.clientFactory = func(context.Context, control.ClientConfig) (controlClient, error) {
+		cancel()
+		return client, nil
+	}
+	done := make(chan struct{})
+	app.run(ctx, done)
+	if client.closeCount.Load() != 1 {
+		t.Fatalf("Close() count = %d, want 1", client.closeCount.Load())
+	}
+}
+
+// TestPollStopsForContextConnectionAndRetryBoundaries covers every terminal polling decision.
+func TestPollStopsForContextConnectionAndRetryBoundaries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("context", func(t *testing.T) {
+		client := newFakeControlClient()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		testApp().poll(ctx, client)
+	})
+
+	t.Run("connection", func(t *testing.T) {
+		client := newFakeControlClient()
+		_ = client.Close()
+		testApp().poll(context.Background(), client)
+	})
+
+	t.Run("snapshot failure", func(t *testing.T) {
+		client := newFakeControlClient()
+		client.snapshotErr = errors.New("read failed")
+		var waits atomic.Int32
+		app := newApp(
+			func(context.Context, control.ClientConfig) (controlClient, error) { return client, nil },
+			func(context.Context, string, ...interface{}) { t.Fatal("invalid snapshot was emitted") },
+			func(context.Context, string) {},
+			func(context.Context, time.Duration) bool { waits.Add(1); return false },
+		)
+		app.poll(context.Background(), client)
+		if waits.Load() != 0 {
+			t.Fatalf("wait count = %d, want 0 before reconnect", waits.Load())
+		}
+	})
+
+	t.Run("snapshot failure then connection close", func(t *testing.T) {
+		client := newFakeControlClient()
+		client.snapshotErr = errors.New("read failed")
+		client.snapshotHook = func() { _ = client.Close() }
+		var waits atomic.Int32
+		app := newApp(
+			func(context.Context, control.ClientConfig) (controlClient, error) { return client, nil },
+			func(context.Context, string, ...interface{}) { t.Fatal("invalid snapshot was emitted") },
+			func(context.Context, string) {},
+			func(context.Context, time.Duration) bool { waits.Add(1); return false },
+		)
+		app.poll(context.Background(), client)
+		if waits.Load() != 0 {
+			t.Fatalf("wait count = %d, want 0 after connection closed", waits.Load())
+		}
+	})
+}
+
+// TestAppReconnectsAfterSnapshotFailureAndPublishesNewBaseline proves one unusable authority read starts a fresh ordering epoch.
+func TestAppReconnectsAfterSnapshotFailureAndPublishesNewBaseline(t *testing.T) {
+	t.Parallel()
+
+	first := newFakeControlClient()
+	second := newFakeControlClient()
+	second.snapshot.Sequence = 3
+	first.snapshotHook = func() {
+		first.mu.Lock()
+		first.snapshotErr = errors.New("snapshot authority failed")
+		first.snapshotHook = nil
+		first.mu.Unlock()
+	}
+
+	var attempts atomic.Int32
+	var pollWaits atomic.Int32
+	snapshots := make(chan domain.Sequence, 2)
+	connections := make(chan ConnectionState, 5)
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) {
+			if attempts.Add(1) == 1 {
+				return first, nil
+			}
+			return second, nil
+		},
+		func(_ context.Context, event string, values ...interface{}) {
+			switch event {
+			case snapshotEventName:
+				snapshots <- values[0].(domain.Snapshot).Sequence
+			case connectionEventName:
+				connections <- values[0].(ConnectionEvent).State
+			}
+		},
+		func(context.Context, string) {},
+		func(ctx context.Context, duration time.Duration) bool {
+			if duration == time.Millisecond {
+				if pollWaits.Add(1) == 1 {
+					return true
+				}
+				<-ctx.Done()
+				return false
+			}
+			return true
+		},
+	)
+	app.pollInterval = time.Millisecond
+	app.reconnectDelay = 2 * time.Millisecond
+
+	app.startup(context.Background())
+	gotSnapshots := make([]domain.Sequence, 0, 2)
+	for range 2 {
+		select {
+		case sequence := <-snapshots:
+			gotSnapshots = append(gotSnapshots, sequence)
+		case <-time.After(time.Second):
+			app.shutdown(context.Background())
+			t.Fatal("timed out waiting for snapshots across reconnect")
+		}
+	}
+	app.shutdown(context.Background())
+
+	if attempts.Load() != 2 {
+		t.Fatalf("connection attempts = %d, want 2", attempts.Load())
+	}
+	if gotSnapshots[0] != 8 || gotSnapshots[1] != 3 {
+		t.Fatalf("snapshot sequences = %v, want [8 3] across reconnect", gotSnapshots)
+	}
+	for index, want := range []ConnectionState{
+		ConnectionConnecting,
+		ConnectionConnected,
+		ConnectionDisconnected,
+		ConnectionConnecting,
+		ConnectionConnected,
+	} {
+		select {
+		case got := <-connections:
+			if got != want {
+				t.Fatalf("connection state %d = %q, want %q", index, got, want)
+			}
+		default:
+			t.Fatalf("connection state %d = missing, want %q", index, want)
+		}
+	}
+}
+
+// TestAppExportedReadsRequireAndUseCurrentConnection verifies the Wails surface never dials ad hoc.
+func TestAppExportedReadsRequireAndUseCurrentConnection(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	if _, err := app.Status(); !errors.Is(err, errDaemonDisconnected) {
+		t.Fatalf("Status() error = %v, want disconnected", err)
+	}
+	if _, err := app.Snapshot(); !errors.Is(err, errDaemonDisconnected) {
+		t.Fatalf("Snapshot() error = %v, want disconnected", err)
+	}
+
+	client := newFakeControlClient()
+	app.ctx = context.Background()
+	app.client = client
+	status, err := app.Status()
+	if err != nil || status.Sequence != 8 {
+		t.Fatalf("Status() = (%+v, %v), want sequence 8", status, err)
+	}
+	snapshot, err := app.Snapshot()
+	if err != nil || snapshot.Sequence != 8 {
+		t.Fatalf("Snapshot() = (sequence %d, %v), want sequence 8", snapshot.Sequence, err)
+	}
+
+	client.statusErr = errors.New("status failed")
+	client.snapshotErr = errors.New("snapshot failed")
+	if _, err := app.Status(); err == nil || !strings.Contains(err.Error(), "status failed") {
+		t.Fatalf("Status() error = %v, want wrapped failure", err)
+	}
+	if _, err := app.Snapshot(); err == nil || !strings.Contains(err.Error(), "snapshot failed") {
+		t.Fatalf("Snapshot() error = %v, want wrapped failure", err)
+	}
+}
+
+// TestSnapshotRejectsInvalidDaemonState keeps even injected control clients behind domain validation.
+func TestSnapshotRejectsInvalidDaemonState(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	client := newFakeControlClient()
+	client.snapshot.Projects = nil
+	app.ctx = context.Background()
+	app.client = client
+
+	if _, err := app.Snapshot(); err == nil || !strings.Contains(err.Error(), "validate Harbor snapshot") {
+		t.Fatalf("Snapshot() error = %v, want validation failure", err)
+	}
+}
+
+// TestOpenResourceUsesFreshProjectScopedState proves JavaScript cannot supply a URL or rely on a globally unique resource ID.
+func TestOpenResourceUsesFreshProjectScopedState(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeControlClient()
+	secondProject := client.snapshot.Projects[0]
+	secondProject.Apps = append([]domain.AppSnapshot(nil), secondProject.Apps...)
+	secondProject.Services = append([]domain.ServiceSnapshot(nil), secondProject.Services...)
+	secondProject.Resources = append([]domain.ResourceSnapshot(nil), secondProject.Resources...)
+	secondProject.ID = "billing"
+	secondProject.Name = "Billing"
+	secondProject.Path = "/workspace/billing"
+	secondProject.Slug = "billing"
+	secondProject.Resources[0].URL = "https://billing.example.test"
+	client.snapshot.Projects = append(client.snapshot.Projects, secondProject)
+	var opened string
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) { return client, nil },
+		func(context.Context, string, ...interface{}) {},
+		func(_ context.Context, target string) { opened = target },
+		func(context.Context, time.Duration) bool { return false },
+	)
+	app.ctx = context.Background()
+	app.client = client
+
+	if err := app.OpenResource("billing", "web"); err != nil {
+		t.Fatalf("OpenResource() error = %v", err)
+	}
+	if opened != "https://billing.example.test" {
+		t.Fatalf("opened URL = %q, want billing resource", opened)
+	}
+}
+
+// TestOpenResourceRejectsInvalidAndMissingIdentities covers every client-controlled lookup boundary.
+func TestOpenResourceRejectsInvalidAndMissingIdentities(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeControlClient()
+	app := testApp()
+	if err := app.OpenResource("orders", "web"); !errors.Is(err, errDaemonDisconnected) {
+		t.Fatalf("OpenResource() disconnected error = %v, want disconnected", err)
+	}
+	app.ctx = context.Background()
+	app.client = client
+
+	tests := []struct {
+		name       string
+		projectID  string
+		resourceID string
+		want       string
+	}{
+		{name: "invalid project", resourceID: "web", want: "project ID"},
+		{name: "invalid resource", projectID: "orders", want: "resource ID"},
+		{name: "missing project", projectID: "billing", resourceID: "web", want: "project \"billing\" was not found"},
+		{name: "missing resource", projectID: "orders", resourceID: "mail", want: "resource \"mail\" was not found"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			err := app.OpenResource(test.projectID, test.resourceID)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("OpenResource() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+
+	client.snapshotErr = errors.New("read failed")
+	if err := app.OpenResource("orders", "web"); err == nil || !strings.Contains(err.Error(), "read failed") {
+		t.Fatalf("OpenResource() read error = %v, want wrapped failure", err)
+	}
+	client.snapshotErr = nil
+	client.snapshot.Projects = nil
+	if err := app.OpenResource("orders", "web"); err == nil || !strings.Contains(err.Error(), "validate Harbor snapshot") {
+		t.Fatalf("OpenResource() validation error = %v, want invalid snapshot", err)
+	}
+}
+
+// TestEmitSnapshotRejectsInvalidUnchangedAndStaleState prevents polling from repeatedly publishing one durable revision.
+func TestEmitSnapshotRejectsInvalidUnchangedAndStaleState(t *testing.T) {
+	t.Parallel()
+
+	var sequences []domain.Sequence
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) { return newFakeControlClient(), nil },
+		func(_ context.Context, _ string, values ...interface{}) {
+			sequences = append(sequences, values[0].(domain.Snapshot).Sequence)
+		},
+		func(context.Context, string) {},
+		func(context.Context, time.Duration) bool { return false },
+	)
+
+	snapshot := testSnapshot()
+	cursor := snapshotCursor{}
+	app.emitSnapshot(context.Background(), snapshot, &cursor)
+	app.emitSnapshot(context.Background(), snapshot, &cursor)
+	stale := snapshot
+	stale.Sequence--
+	app.emitSnapshot(context.Background(), stale, &cursor)
+	invalid := snapshot
+	invalid.SchemaVersion = 0
+	app.emitSnapshot(context.Background(), invalid, &cursor)
+
+	newer := snapshot
+	newer.Sequence++
+	app.emitSnapshot(context.Background(), newer, &cursor)
+
+	if len(sequences) != 2 || sequences[0] != 8 || sequences[1] != 9 {
+		t.Fatalf("emitted sequences = %v, want [8 9]", sequences)
+	}
+}
+
+// TestEmitSnapshotResetsOrderingForEachNegotiatedConnection prevents a restarted daemon from being hidden by an old cursor.
+func TestEmitSnapshotResetsOrderingForEachNegotiatedConnection(t *testing.T) {
+	t.Parallel()
+
+	var sequences []domain.Sequence
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) { return newFakeControlClient(), nil },
+		func(_ context.Context, event string, values ...interface{}) {
+			if event == snapshotEventName {
+				sequences = append(sequences, values[0].(domain.Snapshot).Sequence)
+			}
+		},
+		func(context.Context, string) {},
+		func(context.Context, time.Duration) bool { return false },
+	)
+
+	snapshot := testSnapshot()
+	firstConnection := snapshotCursor{}
+	secondConnection := snapshotCursor{}
+	app.emitSnapshot(context.Background(), snapshot, &firstConnection)
+	app.emitSnapshot(context.Background(), snapshot, &secondConnection)
+
+	if len(sequences) != 2 || sequences[0] != snapshot.Sequence || sequences[1] != snapshot.Sequence {
+		t.Fatalf("emitted sequences = %v, want the first revision from both connections", sequences)
+	}
+}
+
+// TestRunRejectsNilFactoryResult keeps a broken composition from becoming a silent reconnect loop.
+func TestRunRejectsNilFactoryResult(t *testing.T) {
+	t.Parallel()
+
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) { return nil, nil },
+		func(context.Context, string, ...interface{}) {},
+		func(context.Context, string) {},
+		func(context.Context, time.Duration) bool { return false },
+	)
+	app.ctx = context.Background()
+	done := make(chan struct{})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("run() panic = nil, want nil client failure")
+		}
+		select {
+		case <-done:
+		default:
+			t.Fatal("run() did not close its completion channel")
+		}
+	}()
+	app.run(context.Background(), done)
+}
+
+// TestInstallAndRemoveClientHonorLifecycleOwnership covers cancellation and replacement-safe cleanup.
+func TestInstallAndRemoveClientHonorLifecycleOwnership(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	client := newFakeControlClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = context.Background()
+	if app.installClient(ctx, client) {
+		t.Fatal("installClient() = true for cancelled lifecycle")
+	}
+	if !app.installClient(context.Background(), client) {
+		t.Fatal("installClient() = false for active lifecycle")
+	}
+	other := newFakeControlClient()
+	app.removeClient(other)
+	if app.client != client {
+		t.Fatal("removeClient() cleared a different connection")
+	}
+	app.removeClient(client)
+	if app.client != nil {
+		t.Fatal("removeClient() retained the owned connection")
+	}
+}
+
+// TestWaitForContextCoversTimerAndCancellation proves production waits cannot delay shutdown.
+func TestWaitForContextCoversTimerAndCancellation(t *testing.T) {
+	t.Parallel()
+
+	if !waitForContext(context.Background(), time.Millisecond) {
+		t.Fatal("waitForContext() = false after timer")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitForContext(ctx, time.Hour) {
+		t.Fatal("waitForContext() = true after cancellation")
+	}
+}
+
+// testApp creates an adapter whose side effects are inert until a test installs a fake connection.
+func testApp() *App {
+	return newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) { return newFakeControlClient(), nil },
+		func(context.Context, string, ...interface{}) {},
+		func(context.Context, string) {},
+		func(context.Context, time.Duration) bool { return false },
+	)
+}
+
+// testSnapshot returns the smallest valid snapshot with one project-scoped HTTP resource.
+func testSnapshot() domain.Snapshot {
+	return domain.Snapshot{
+		SchemaVersion: domain.SnapshotSchemaVersion,
+		Sequence:      8,
+		CapturedAt:    time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC),
+		Projects: []domain.ProjectSnapshot{
+			{
+				ID:        "orders",
+				Name:      "Orders",
+				Path:      "/workspace/orders",
+				Slug:      "orders",
+				State:     domain.ProjectReady,
+				UpdatedAt: time.Date(2026, time.July, 18, 11, 0, 0, 0, time.UTC),
+				Apps: []domain.AppSnapshot{
+					{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true},
+				},
+				Services: []domain.ServiceSnapshot{},
+				Resources: []domain.ResourceSnapshot{
+					{
+						ID:    "web",
+						Name:  "Web",
+						Kind:  "application",
+						Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
+						URL:   "https://orders.example.test",
+					},
+				},
+			},
+		},
+		Operations:        []domain.Operation{},
+		RecentResourceIDs: []domain.ResourceRef{{ProjectID: "orders", ResourceID: "web"}},
+	}
+}
+
+// cloneSnapshot copies the nested collections a test may mutate after a fake response.
+func cloneSnapshot(snapshot domain.Snapshot) domain.Snapshot {
+	copySnapshot := snapshot
+	copySnapshot.Projects = make([]domain.ProjectSnapshot, len(snapshot.Projects))
+	copy(copySnapshot.Projects, snapshot.Projects)
+	for index := range copySnapshot.Projects {
+		copySnapshot.Projects[index].Apps = make([]domain.AppSnapshot, len(snapshot.Projects[index].Apps))
+		copy(copySnapshot.Projects[index].Apps, snapshot.Projects[index].Apps)
+		copySnapshot.Projects[index].Services = make([]domain.ServiceSnapshot, len(snapshot.Projects[index].Services))
+		copy(copySnapshot.Projects[index].Services, snapshot.Projects[index].Services)
+		copySnapshot.Projects[index].Resources = make([]domain.ResourceSnapshot, len(snapshot.Projects[index].Resources))
+		copy(copySnapshot.Projects[index].Resources, snapshot.Projects[index].Resources)
+	}
+	copySnapshot.Operations = make([]domain.Operation, len(snapshot.Operations))
+	copy(copySnapshot.Operations, snapshot.Operations)
+	copySnapshot.RecentResourceIDs = make([]domain.ResourceRef, len(snapshot.RecentResourceIDs))
+	copy(copySnapshot.RecentResourceIDs, snapshot.RecentResourceIDs)
+	return copySnapshot
+}

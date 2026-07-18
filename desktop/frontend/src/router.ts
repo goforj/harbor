@@ -11,7 +11,7 @@ const router = createRouter({
     { path: '/', redirect: '/overview' },
     { path: '/overview', name: 'overview', component: OverviewView, meta: { title: 'Overview' } },
     { path: '/projects/:projectId?', name: 'project', component: ProjectView, meta: { title: 'Projects' } },
-    { path: '/services/:serviceId?', name: 'service', component: ServiceView, meta: { title: 'Services' } },
+    { path: '/services/:projectId?/:serviceId?', name: 'service', component: ServiceView, meta: { title: 'Services' } },
     { path: '/system/:section?', name: 'system', component: SystemView, meta: { title: 'System' } },
     { path: '/:pathMatch(.*)*', redirect: '/overview' },
   ],

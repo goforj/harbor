@@ -23,8 +23,9 @@ const router = useRouter()
 const store = useHarborStore()
 
 const activeDestination = computed(() => destinationFromPath(route.path))
-const daemonStatus = computed(() => store.system.find((check) => check.id === 'daemon')?.status ?? 'unavailable')
-const daemonReady = computed(() => daemonStatus.value === 'ready' || daemonStatus.value === 'working')
+const daemonReady = computed(() => store.connectionState === 'connected'
+  && !store.snapshotStale
+  && store.daemonStatus?.state === 'ready')
 
 function navigate(path: string) {
   void router.push(path)

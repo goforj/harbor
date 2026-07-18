@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  Check,
-  ExternalLink,
-  Folder,
-  Server,
-} from '@lucide/vue'
+import { Check, ExternalLink, Folder, Server } from '@lucide/vue'
 import {
   CommandDialog,
   CommandEmpty,
@@ -21,21 +16,12 @@ import { useHarborStore } from '@/stores/harbor'
 import StatusBadge from './StatusBadge.vue'
 import { harborNavigation } from './navigation'
 
-const props = withDefaults(defineProps<{
-  open?: boolean
-}>(), {
-  open: false,
-})
-
-const emit = defineEmits<{
-  'update:open': [value: boolean]
-}>()
-
+const props = withDefaults(defineProps<{ open?: boolean }>(), { open: false })
+const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const route = useRoute()
 const router = useRouter()
 const store = useHarborStore()
-
-const recentResources = computed(() => store.snapshot?.recentResources ?? [])
+const recentResources = computed(() => store.recentResources)
 
 function setOpen(value: boolean) {
   emit('update:open', value)
@@ -46,9 +32,9 @@ function navigate(path: string) {
   void router.push(path)
 }
 
-async function openResource(resourceId: string) {
+async function openResource(projectId: string, resourceId: string) {
   setOpen(false)
-  await store.openResource(resourceId)
+  await store.openResource(projectId, resourceId)
 }
 </script>
 
@@ -82,12 +68,12 @@ async function openResource(resourceId: string) {
         <CommandItem
           v-for="project in store.projects"
           :key="project.id"
-          :value="`${project.name} ${project.path} ${project.domain}`"
-          @select="navigate(`/projects/${project.id}`)"
+          :value="`${project.name} ${project.path} ${project.slug}`"
+          @select="navigate(`/projects/${encodeURIComponent(project.id)}`)"
         >
           <Folder aria-hidden="true" />
           <span class="min-w-0 flex-1 truncate">{{ project.name }}</span>
-          <StatusBadge :status="project.status" compact />
+          <StatusBadge :status="project.state" compact />
         </CommandItem>
       </CommandGroup>
 
@@ -95,16 +81,16 @@ async function openResource(resourceId: string) {
       <CommandGroup v-if="store.services.length" heading="Services">
         <CommandItem
           v-for="service in store.services"
-          :key="service.id"
-          :value="`${service.name} ${service.projectName} ${service.kind} ${service.endpoint}`"
-          @select="navigate(`/services/${service.id}`)"
+          :key="`${service.project_id}:${service.id}`"
+          :value="`${service.name} ${service.project_name} ${service.kind}`"
+          @select="navigate(`/services/${encodeURIComponent(service.project_id)}/${encodeURIComponent(service.id)}`)"
         >
           <Server aria-hidden="true" />
           <span class="min-w-0 flex-1 truncate">
             {{ service.name }}
-            <span class="ml-1 text-muted-foreground">{{ service.projectName }}</span>
+            <span class="ml-1 text-muted-foreground">{{ service.project_name }}</span>
           </span>
-          <StatusBadge :status="service.status" compact />
+          <StatusBadge :status="service.state" compact />
         </CommandItem>
       </CommandGroup>
 
@@ -112,14 +98,14 @@ async function openResource(resourceId: string) {
       <CommandGroup v-if="recentResources.length" heading="Resources">
         <CommandItem
           v-for="resource in recentResources"
-          :key="resource.id"
-          :value="`${resource.name} ${resource.projectName} ${resource.url}`"
-          @select="openResource(resource.id)"
+          :key="`${resource.project_id}:${resource.id}`"
+          :value="`${resource.name} ${resource.project_name} ${resource.kind}`"
+          @select="openResource(resource.project_id, resource.id)"
         >
           <ExternalLink aria-hidden="true" />
           <span class="min-w-0 flex-1 truncate">
             {{ resource.name }}
-            <span class="ml-1 text-muted-foreground">{{ resource.projectName }}</span>
+            <span class="ml-1 text-muted-foreground">{{ resource.project_name }}</span>
           </span>
         </CommandItem>
       </CommandGroup>
