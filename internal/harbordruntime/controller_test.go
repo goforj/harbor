@@ -486,10 +486,50 @@ func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 	}
 }
 
-// TestControllerRejectsProjectsBeforeMaterialMutation keeps empty startup honest until leases and bindings exist.
-func TestControllerRejectsProjectsBeforeMaterialMutation(t *testing.T) {
+// TestControllerRestartsPendingProjectWithoutNetworkClaims verifies registration does not prevent daemon recovery before host setup.
+func TestControllerRestartsPendingProjectWithoutNetworkClaims(t *testing.T) {
 	snapshot := validControllerSnapshot()
 	snapshot.Projects = []domain.ProjectSnapshot{validControllerProject()}
+	source := &testRuntimeStateSource{snapshot: snapshot}
+	material := &testMaterialStore{}
+	runtime := newTestDataPlane(nil)
+	var opens atomic.Int64
+	dependencies := testControllerDependencies(material, &testCertificateAuthority{root: validTestRoot()}, runtime)
+	dependencies.newDesiredState = desiredStateFromRuntimeState
+	dependencies.openMaterial = func() (certificateMaterialStore, error) {
+		opens.Add(1)
+		return material, nil
+	}
+	var captured dataplane.Config
+	dependencies.newDataPlane = func(config dataplane.Config) (dataPlane, error) {
+		captured = config
+		return runtime, nil
+	}
+	controller := newFakeController(t, source, dependencies)
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if opens.Load() != 1 || material.closes.Load() != 0 {
+		t.Fatalf("pending restart material lifecycle = opens %d, closes %d, want one open and no early close", opens.Load(), material.closes.Load())
+	}
+	if !captured.Desired.Empty() || captured.Desired.ListenerPlan() != (dataplane.ListenerPlan{}) {
+		t.Fatalf("pending restart desired state = %#v, want truly empty", captured.Desired.ListenerPlan())
+	}
+	if len(captured.Desired.HTTPRoutes()) != 0 || len(captured.Desired.NativeRoutes()) != 0 || len(captured.Desired.DNSRecords()) != 0 {
+		t.Fatalf("pending restart routes = HTTP %v, native %v, DNS %v", captured.Desired.HTTPRoutes(), captured.Desired.NativeRoutes(), captured.Desired.DNSRecords())
+	}
+	if err := controller.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestControllerRejectsUnprojectedRuntimeClaimsBeforeMaterialMutation keeps active state behind durable network authority.
+func TestControllerRejectsUnprojectedRuntimeClaimsBeforeMaterialMutation(t *testing.T) {
+	snapshot := validControllerSnapshot()
+	project := validControllerProject()
+	project.State = domain.ProjectReady
+	snapshot.Projects = []domain.ProjectSnapshot{project}
 	source := &testRuntimeStateSource{snapshot: snapshot}
 	material := &testMaterialStore{}
 	var opens atomic.Int64
@@ -501,13 +541,13 @@ func TestControllerRejectsProjectsBeforeMaterialMutation(t *testing.T) {
 	controller := newFakeController(t, source, dependencies)
 
 	err := controller.Start(context.Background())
-	if !errors.Is(err, ErrProjectsRequireNetworkProjection) {
-		t.Fatalf("Start() error = %v, want %v", err, ErrProjectsRequireNetworkProjection)
+	if err == nil || !strings.Contains(err.Error(), "validate durable state") || !strings.Contains(err.Error(), "not pending") {
+		t.Fatalf("Start() error = %v, want pending-project aggregate rejection", err)
 	}
 	if opens.Load() != 0 || material.closes.Load() != 0 {
-		t.Fatalf("project rejection touched material: opens %d, closes %d", opens.Load(), material.closes.Load())
+		t.Fatalf("runtime claim rejection touched material: opens %d, closes %d", opens.Load(), material.closes.Load())
 	}
-	waitControllerSignal(t, controller.Done(), "project rejection")
+	waitControllerSignal(t, controller.Done(), "runtime claim rejection")
 }
 
 // TestControllerRejectsInvalidRuntimeStateBeforeMaterialMutation proves network corruption cannot reach protected certificate storage.

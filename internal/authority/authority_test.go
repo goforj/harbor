@@ -22,13 +22,18 @@ import (
 
 // recordingStore provides immutable durable results with race-safe call accounting.
 type recordingStore struct {
-	sequence      domain.Sequence
-	snapshot      domain.Snapshot
-	sequenceErr   error
-	snapshotErr   error
-	sequenceCalls atomic.Int64
-	snapshotCalls atomic.Int64
-	nilContexts   atomic.Int64
+	sequence             domain.Sequence
+	snapshot             domain.Snapshot
+	sequenceErr          error
+	snapshotErr          error
+	sequenceCalls        atomic.Int64
+	snapshotCalls        atomic.Int64
+	nilContexts          atomic.Int64
+	registration         state.ProjectRegistration
+	registrationErr      error
+	registrationCalls    atomic.Int64
+	registrationMu       sync.Mutex
+	registrationProjects []domain.ProjectSnapshot
 }
 
 // CurrentSequence returns the configured global sequence while preserving caller cancellation.
@@ -63,6 +68,25 @@ func (store *recordingStore) Snapshot(ctx context.Context) (domain.Snapshot, err
 	}
 
 	return store.snapshot, nil
+}
+
+// RegisterProject returns the configured atomic registration while preserving caller cancellation.
+func (store *recordingStore) RegisterProject(ctx context.Context, project domain.ProjectSnapshot) (state.ProjectRegistration, error) {
+	store.registrationCalls.Add(1)
+	if ctx == nil {
+		store.nilContexts.Add(1)
+		return state.ProjectRegistration{}, errors.New("registration received a nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return state.ProjectRegistration{}, err
+	}
+	if store.registrationErr != nil {
+		return state.ProjectRegistration{}, store.registrationErr
+	}
+	store.registrationMu.Lock()
+	store.registrationProjects = append(store.registrationProjects, project)
+	store.registrationMu.Unlock()
+	return store.registration, nil
 }
 
 // emptySnapshot returns a valid complete replacement with canonical initialized collections.

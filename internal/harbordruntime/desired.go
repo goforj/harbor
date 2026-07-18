@@ -12,13 +12,6 @@ func desiredStateFromRuntimeState(runtimeState state.RuntimeState) (dataplane.De
 	if err := runtimeState.Validate(); err != nil {
 		return dataplane.DesiredState{}, fmt.Errorf("derive data plane from runtime state: %w", err)
 	}
-	if !runtimeState.NetworkInitialized && len(runtimeState.Snapshot.Projects) != 0 {
-		return dataplane.DesiredState{}, fmt.Errorf(
-			"derive data plane from runtime state: %w: found %d registered projects",
-			ErrProjectsRequireNetworkProjection,
-			len(runtimeState.Snapshot.Projects),
-		)
-	}
 
 	listeners := dataplane.ListenerPlan{}
 	if runtimeState.NetworkInitialized {

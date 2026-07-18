@@ -26,8 +26,6 @@ var (
 	ErrClosed = errors.New("harbord runtime controller is closed")
 	// ErrNotReady reports that runtime or certificate observations were requested before startup published them.
 	ErrNotReady = errors.New("harbord runtime controller is not ready")
-	// ErrProjectsRequireNetworkProjection prevents registered projects from being presented through an empty network generation.
-	ErrProjectsRequireNetworkProjection = errors.New("registered projects require durable network leases and bindings")
 	// ErrRuntimeStoppedUnexpectedly reports a child generation that relinquished authority without cancellation or an error.
 	ErrRuntimeStoppedUnexpectedly = errors.New("Harbor data plane stopped unexpectedly")
 	// ErrRuntimeShutdownIncomplete reports a child that did not publish terminal ownership within the cleanup bound.
@@ -178,13 +176,6 @@ func (controller *Controller) Start(ctx context.Context) error {
 	}
 	if err := runtimeState.Validate(); err != nil {
 		return controller.failStart(fmt.Errorf("start harbord runtime: validate durable state: %w", err), nil, nil)
-	}
-	if !runtimeState.NetworkInitialized && len(runtimeState.Snapshot.Projects) != 0 {
-		return controller.failStart(
-			fmt.Errorf("start harbord runtime: %w: found %d registered projects", ErrProjectsRequireNetworkProjection, len(runtimeState.Snapshot.Projects)),
-			nil,
-			nil,
-		)
 	}
 	desired, err := controller.dependencies.newDesiredState(runtimeState)
 	if err != nil {

@@ -141,11 +141,13 @@ func TestRuntimeStateValidateRequiresAnUnambiguousNetworkLifecycle(t *testing.T)
 		}
 	})
 
-	t.Run("every project needs network lifecycle", func(t *testing.T) {
+	t.Run("runtime-bearing project needs network lifecycle", func(t *testing.T) {
 		candidate := validInitialized
-		candidate.Snapshot.Projects = append(candidate.Snapshot.Projects, validRuntimeStateProject("project-beta"))
-		if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), `project "project-beta" has neither`) {
-			t.Fatalf("validation error = %v, want missing project network lifecycle", err)
+		project := validRuntimeStateProject("project-beta")
+		project.State = domain.ProjectReady
+		candidate.Snapshot.Projects = append(candidate.Snapshot.Projects, project)
+		if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), `project "project-beta" has neither`) || !strings.Contains(err.Error(), "not pending") {
+			t.Fatalf("validation error = %v, want missing project network lifecycle for runtime claim", err)
 		}
 	})
 
@@ -159,6 +161,104 @@ func TestRuntimeStateValidateRequiresAnUnambiguousNetworkLifecycle(t *testing.T)
 			t.Fatalf("validate completed release tombstone after project deletion: %v", err)
 		}
 	})
+}
+
+// TestRuntimeStateValidatePermitsPendingProjectsAcrossNetworkLifecycle verifies registration and stopped topology need no fabricated lease.
+func TestRuntimeStateValidatePermitsPendingProjectsAcrossNetworkLifecycle(t *testing.T) {
+	pendingWithTopology := validRuntimeStateProject("project-alpha")
+	pendingWithTopology.Apps = []domain.AppSnapshot{{
+		ID: "app", Name: "App", State: domain.EntityStopped, Active: false, Required: true,
+	}}
+	pendingWithTopology.Services = []domain.ServiceSnapshot{{
+		ID: "mysql", Name: "MySQL", Kind: "database", State: domain.EntityStopped,
+		Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true,
+	}}
+	uninitialized := RuntimeState{
+		Snapshot: func() domain.Snapshot {
+			snapshot := validRuntimeStateSnapshot(0)
+			snapshot.Projects = []domain.ProjectSnapshot{pendingWithTopology}
+			return snapshot
+		}(),
+		Network: uninitializedRuntimeNetwork(),
+	}
+	if err := uninitialized.Validate(); err != nil {
+		t.Fatalf("validate pending project before network initialization: %v", err)
+	}
+
+	initialized := RuntimeState{
+		Snapshot:           validRuntimeStateSnapshot(21),
+		Network:            recordTestNetworkRecord(),
+		NetworkInitialized: true,
+	}
+	initialized.Snapshot.Projects = append(initialized.Snapshot.Projects, validRuntimeStateProject("project-beta"))
+	if err := initialized.Validate(); err != nil {
+		t.Fatalf("validate pending project alongside leased project: %v", err)
+	}
+}
+
+// TestRuntimeStateValidateRejectsPendingProjectRuntimeClaims verifies every route-bearing fact requires initialized ownership.
+func TestRuntimeStateValidateRejectsPendingProjectRuntimeClaims(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*domain.ProjectSnapshot)
+		want   string
+	}{
+		{
+			name: "project state",
+			mutate: func(project *domain.ProjectSnapshot) {
+				project.State = domain.ProjectReady
+			},
+			want: "project state \"ready\" must be stopped",
+		},
+		{
+			name: "active App",
+			mutate: func(project *domain.ProjectSnapshot) {
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityStopped, Active: true, Required: true}}
+			},
+			want: `App "app" must be inactive`,
+		},
+		{
+			name: "App state",
+			mutate: func(project *domain.ProjectSnapshot) {
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: false, Required: true}}
+			},
+			want: `App "app" state "ready" must be stopped`,
+		},
+		{
+			name: "service state",
+			mutate: func(project *domain.ProjectSnapshot) {
+				project.Services = []domain.ServiceSnapshot{{
+					ID: "mysql", Name: "MySQL", Kind: "database", State: domain.EntityReady,
+					Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true,
+				}}
+			},
+			want: `service "mysql" state "ready" must be stopped`,
+		},
+		{
+			name: "published resource",
+			mutate: func(project *domain.ProjectSnapshot) {
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityStopped, Active: false, Required: true}}
+				project.Resources = []domain.ResourceSnapshot{{
+					ID: "home", Name: "Home", Kind: "site",
+					Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "https://project-alpha.test",
+				}}
+			},
+			want: "publishes 1 resources",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := RuntimeState{
+				Snapshot: validRuntimeStateSnapshot(0),
+				Network:  uninitializedRuntimeNetwork(),
+			}
+			test.mutate(&candidate.Snapshot.Projects[0])
+			if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
 }
 
 // TestStoreRuntimeStateDistinguishesNetworkSchemaLifecycle verifies old, migrated, and initialized databases remain explicit.

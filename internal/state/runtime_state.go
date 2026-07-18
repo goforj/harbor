@@ -22,7 +22,10 @@ func (state RuntimeState) Validate() error {
 		return fmt.Errorf("runtime snapshot: %w", err)
 	}
 	if !state.NetworkInitialized {
-		return validateUninitializedRuntimeNetwork(state.Network)
+		if err := validateUninitializedRuntimeNetwork(state.Network); err != nil {
+			return err
+		}
+		return validatePendingRuntimeProjects(state.Snapshot.Projects)
 	}
 	if err := state.Network.Validate(); err != nil {
 		return fmt.Errorf("runtime network: %w", err)
@@ -31,6 +34,40 @@ func (state RuntimeState) Validate() error {
 		return fmt.Errorf("runtime network revision %d exceeds snapshot sequence %d", state.Network.Revision, state.Snapshot.Sequence)
 	}
 	return validateRuntimeNetworkProjects(state.Snapshot.Projects, state.Network)
+}
+
+// validatePendingRuntimeProjects keeps registration durable before host networking without accepting claims that require routing authority.
+func validatePendingRuntimeProjects(projects []domain.ProjectSnapshot) error {
+	for _, project := range projects {
+		if err := validatePendingRuntimeProject(project); err != nil {
+			return fmt.Errorf("runtime project %q is not pending: %w", project.ID, err)
+		}
+	}
+	return nil
+}
+
+// validatePendingRuntimeProject defines the route-free stopped shape that may exist without a primary lease or staged release.
+func validatePendingRuntimeProject(project domain.ProjectSnapshot) error {
+	if project.State != domain.ProjectStopped {
+		return fmt.Errorf("project state %q must be stopped", project.State)
+	}
+	for _, app := range project.Apps {
+		if app.Active {
+			return fmt.Errorf("App %q must be inactive", app.ID)
+		}
+		if app.State != domain.EntityStopped {
+			return fmt.Errorf("App %q state %q must be stopped", app.ID, app.State)
+		}
+	}
+	for _, service := range project.Services {
+		if service.State != domain.EntityStopped {
+			return fmt.Errorf("service %q state %q must be stopped", service.ID, service.State)
+		}
+	}
+	if len(project.Resources) != 0 {
+		return fmt.Errorf("project publishes %d resources", len(project.Resources))
+	}
+	return nil
 }
 
 // RuntimeState returns the client projection and complete optional network aggregate from one database instant.
@@ -141,7 +178,7 @@ func validateUninitializedRuntimeNetwork(record NetworkRecord) error {
 	return nil
 }
 
-// validateRuntimeNetworkProjects proves every current project has durable routing or teardown state.
+// validateRuntimeNetworkProjects permits newly registered pending projects while requiring authority for every runtime-bearing project.
 func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record NetworkRecord) error {
 	known := make(map[domain.ProjectID]struct{}, len(projects))
 	for _, project := range projects {
@@ -164,8 +201,15 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 		if _, exists := primary[project.ID]; exists {
 			continue
 		}
-		if _, exists := suppressed[project.ID]; !exists {
-			return fmt.Errorf("runtime project %q has neither a primary network lease nor a staged release", project.ID)
+		if _, exists := suppressed[project.ID]; exists {
+			continue
+		}
+		if err := validatePendingRuntimeProject(project); err != nil {
+			return fmt.Errorf(
+				"runtime project %q has neither a primary network lease nor a staged release and is not pending: %w",
+				project.ID,
+				err,
+			)
 		}
 	}
 	return nil

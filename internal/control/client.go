@@ -135,6 +135,28 @@ func (client *Client) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 	return response.Snapshot, nil
 }
 
+// RegisterProject creates or replays one daemon-authoritative project registration.
+func (client *Client) RegisterProject(ctx context.Context, request RegisterProjectRequest) (ProjectRegistration, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectRegistration{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectRegistrationV1) {
+		return ProjectRegistration{}, errors.New("Harbor daemon does not support project registration; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectRegister, request)
+	if err != nil {
+		return ProjectRegistration{}, err
+	}
+	var response projectRegistrationResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectRegistration{}, fmt.Errorf("decode project registration response: %w", err)
+	}
+	if err := response.Registration.Validate(); err != nil {
+		return ProjectRegistration{}, fmt.Errorf("validate project registration response: %w", err)
+	}
+	return response.Registration, nil
+}
+
 // Done closes when the daemon connection becomes terminal.
 func (client *Client) Done() <-chan struct{} {
 	return client.session.Done()

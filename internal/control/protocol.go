@@ -16,10 +16,13 @@ import (
 const (
 	// CapabilityV1 identifies the first typed CLI and desktop control surface.
 	CapabilityV1 rpc.Capability = "control.v1"
+	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
+	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
 
-	methodDaemonStatus = "control.v1.daemon.status"
-	methodSnapshot     = "control.v1.snapshot"
-	maximumBuildToken  = 128
+	methodDaemonStatus    = "control.v1.daemon.status"
+	methodSnapshot        = "control.v1.snapshot"
+	methodProjectRegister = "control.v1.project.register"
+	maximumBuildToken     = 128
 )
 
 var protocolV1 = rpc.Version{Major: 1, Minor: 0}
@@ -162,7 +165,7 @@ func protocolRanges() []rpc.VersionRange {
 
 // capabilities returns a fresh copy so connection configuration cannot mutate package policy.
 func capabilities() []rpc.Capability {
-	return []rpc.Capability{CapabilityV1}
+	return []rpc.Capability{CapabilityProjectRegistrationV1, CapabilityV1}
 }
 
 // buildFromInfo projects process metadata into the reviewed status JSON shape.

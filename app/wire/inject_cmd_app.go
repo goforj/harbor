@@ -13,6 +13,7 @@ var appCommandSet = wire.NewSet(
 	cmd.NewHelloWorldCmd,
 	cmd.NewResourcesCmd,
 	cmd.NewDaemonClient,
+	cmd.NewAddCmd,
 	cmd.NewDaemonStatusCmd,
 	cmd.NewDaemonSnapshotCmd,
 	cmd.NewDaemonCmd,

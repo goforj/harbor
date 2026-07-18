@@ -146,7 +146,7 @@ func readNetworkModelRows(tx *gorm.DB) (networkModelRows, error) {
 	if len(rows.States) == 0 {
 		return rows, nil
 	}
-	if err := tx.Select("id", "project_id").Order("project_id ASC").Order("id ASC").Find(&rows.Projects).Error; err != nil {
+	if err := tx.Select("id", "project_id", "state").Order("project_id ASC").Order("id ASC").Find(&rows.Projects).Error; err != nil {
 		return networkModelRows{}, fmt.Errorf("read network projects: %w", err)
 	}
 

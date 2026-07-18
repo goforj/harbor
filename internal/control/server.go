@@ -20,6 +20,9 @@ import (
 
 const maximumEmptyRequestBytes = 64
 
+// maximumProjectRegistrationRequestBytes allows encoding/json's six-byte escaping of each accepted path byte.
+const maximumProjectRegistrationRequestBytes = maximumRegistrationPathBytes*6 + 16
+
 // ErrorObserver receives daemon-local method diagnostics together with the authenticated caller.
 type ErrorObserver func(Caller, string, error)
 
@@ -86,8 +89,9 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		Capabilities:   capabilities(),
 		Authorize:      authorizeControlHello,
 		Handlers: map[string]session.Handler{
-			methodDaemonStatus: server.statusHandler(transportPeer),
-			methodSnapshot:     server.snapshotHandler(transportPeer),
+			methodDaemonStatus:    server.statusHandler(transportPeer),
+			methodSnapshot:        server.snapshotHandler(transportPeer),
+			methodProjectRegister: server.projectRegisterHandler(transportPeer),
 		},
 		ObserveError: server.sessionErrorObserver(transportPeer),
 	})
@@ -97,6 +101,34 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	}
 
 	return controlSession.Serve(ctx, connection)
+}
+
+// projectRegisterHandler admits only a validated canonical-path request before invoking daemon authority.
+func (server *Server) projectRegisterHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectRegistrationV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project registration capability was not negotiated"),
+			)
+		}
+		registrationRequest, err := decodeProjectRegistrationRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		registration, err := server.config.Authority.RegisterProject(ctx, caller, registrationRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := registration.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project registration: %w", err))
+		}
+		return projectRegistrationResponse{Registration: registration}, nil
+	}
 }
 
 // statusHandler captures the immutable transport identity before session dispatch begins.
@@ -236,6 +268,60 @@ func decodeEmptyRequest(payload []byte) error {
 	}
 
 	return nil
+}
+
+// decodeProjectRegistrationRequest rejects ignored fields, concatenated values, and oversized path documents.
+func decodeProjectRegistrationRequest(payload []byte) (RegisterProjectRequest, error) {
+	if len(payload) == 0 || len(payload) > maximumProjectRegistrationRequestBytes {
+		return RegisterProjectRequest{}, errors.New("project registration request exceeds its bounded object shape")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	var registrationRequest RegisterProjectRequest
+	opening, err := decoder.Token()
+	if err != nil {
+		return RegisterProjectRequest{}, fmt.Errorf("decode project registration request: %w", err)
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return RegisterProjectRequest{}, errors.New("project registration request must be an object")
+	}
+	pathSeen := false
+	for decoder.More() {
+		fieldToken, err := decoder.Token()
+		if err != nil {
+			return RegisterProjectRequest{}, fmt.Errorf("decode project registration field: %w", err)
+		}
+		field, ok := fieldToken.(string)
+		if !ok {
+			return RegisterProjectRequest{}, errors.New("project registration field name must be a string")
+		}
+		if field != "path" {
+			return RegisterProjectRequest{}, fmt.Errorf("project registration request contains unknown field %q", field)
+		}
+		if pathSeen {
+			return RegisterProjectRequest{}, errors.New("project registration request contains duplicate field \"path\"")
+		}
+		if err := decoder.Decode(&registrationRequest.Path); err != nil {
+			return RegisterProjectRequest{}, fmt.Errorf("decode project registration path: %w", err)
+		}
+		pathSeen = true
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return RegisterProjectRequest{}, fmt.Errorf("decode project registration request end: %w", err)
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return RegisterProjectRequest{}, errors.New("project registration request object is not terminated")
+	}
+	if !pathSeen {
+		return RegisterProjectRequest{}, errors.New("project registration request path is required")
+	}
+	if err := requireJSONEnd(decoder); err != nil {
+		return RegisterProjectRequest{}, err
+	}
+	if err := registrationRequest.Validate(); err != nil {
+		return RegisterProjectRequest{}, err
+	}
+	return registrationRequest, nil
 }
 
 // requireJSONEnd rejects concatenated JSON values that could be interpreted differently by another client.

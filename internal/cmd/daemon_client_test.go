@@ -12,14 +12,28 @@ import (
 
 // fakeDaemonControlClient records one-shot control calls and their cleanup.
 type fakeDaemonControlClient struct {
-	status        control.DaemonStatus
-	snapshot      domain.Snapshot
-	statusErr     error
-	snapshotErr   error
-	closeErr      error
-	statusCalls   int
-	snapshotCalls int
-	closeCalls    int
+	status               control.DaemonStatus
+	snapshot             domain.Snapshot
+	registration         control.ProjectRegistration
+	statusErr            error
+	snapshotErr          error
+	registrationErr      error
+	closeErr             error
+	statusCalls          int
+	snapshotCalls        int
+	registrationCalls    int
+	registrationRequests []control.RegisterProjectRequest
+	closeCalls           int
+}
+
+// RegisterProject returns the configured registration and records the request.
+func (client *fakeDaemonControlClient) RegisterProject(
+	_ context.Context,
+	request control.RegisterProjectRequest,
+) (control.ProjectRegistration, error) {
+	client.registrationCalls++
+	client.registrationRequests = append(client.registrationRequests, request)
+	return client.registration, client.registrationErr
 }
 
 // Status returns the configured daemon status and records the request.
@@ -109,6 +123,25 @@ func TestDaemonClientSnapshotUsesASeparateOneShotConnection(t *testing.T) {
 	}
 	if first.closeCalls != 1 || second.closeCalls != 1 || second.snapshotCalls != 1 {
 		t.Fatalf("calls = first close:%d second snapshot:%d close:%d, want 1 each", first.closeCalls, second.snapshotCalls, second.closeCalls)
+	}
+}
+
+// TestDaemonClientRegistrationUsesASeparateOneShotConnection verifies project mutations share the CLI cleanup contract.
+func TestDaemonClientRegistrationUsesASeparateOneShotConnection(t *testing.T) {
+	registration := addTestRegistration(t.TempDir(), true)
+	connection := &fakeDaemonControlClient{registration: registration}
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+	request := control.RegisterProjectRequest{Path: registration.Project.Path}
+
+	got, err := client.RegisterProject(t.Context(), request)
+	if err != nil {
+		t.Fatalf("register project: %v", err)
+	}
+	if !reflect.DeepEqual(got, registration) {
+		t.Fatalf("registration = %#v, want %#v", got, registration)
+	}
+	if connection.registrationCalls != 1 || connection.closeCalls != 1 || len(connection.registrationRequests) != 1 || connection.registrationRequests[0] != request {
+		t.Fatalf("calls = registration:%d close:%d requests:%#v", connection.registrationCalls, connection.closeCalls, connection.registrationRequests)
 	}
 }
 

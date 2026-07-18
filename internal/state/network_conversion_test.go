@@ -542,8 +542,8 @@ func TestNetworkProjectPrimaryLeaseInvariantCoversProjectsWithoutEndpoints(t *te
 		name   string
 		mutate func(*networkModelRows)
 	}{
-		{name: "ordinary project", mutate: func(rows *networkModelRows) {
-			rows.Projects = append(rows.Projects, models.Project{Id: 63, ProjectId: "project-gamma"})
+		{name: "active project", mutate: func(rows *networkModelRows) {
+			rows.Projects = append(rows.Projects, models.Project{Id: 63, ProjectId: "project-gamma", State: string(domain.ProjectReady)})
 		}},
 		{name: "releasing project", mutate: addReleaseMutation(func(rows *networkModelRows) {
 			rows.Leases = rows.Leases[:1]
@@ -557,6 +557,27 @@ func TestNetworkProjectPrimaryLeaseInvariantCoversProjectsWithoutEndpoints(t *te
 			_, _, err := networkRecordFromModels(rows)
 			assertNetworkConversionCorruption(t, err, "requires a primary network lease")
 		})
+	}
+}
+
+// TestNetworkProjectPrimaryLeaseInvariantAllowsStoppedPendingProject verifies network reads tolerate registration before reconciliation.
+func TestNetworkProjectPrimaryLeaseInvariantAllowsStoppedPendingProject(t *testing.T) {
+	rows := validNetworkModelRows()
+	rows.Projects = append(rows.Projects, models.Project{
+		Id:        63,
+		ProjectId: "project-gamma",
+		State:     string(domain.ProjectStopped),
+	})
+
+	record, initialized, err := networkRecordFromModels(rows)
+	if err != nil || !initialized {
+		t.Fatalf("pending project conversion = initialized %t, error %v", initialized, err)
+	}
+	if got := networkLeaseKeys(record.Leases); !reflect.DeepEqual(got, []string{"project-alpha/primary", "project-alpha/secondary/metrics", "project-beta/primary"}) {
+		t.Fatalf("pending project conversion leases = %v", got)
+	}
+	if got := endpointHosts(record.Reservations.Endpoints); !reflect.DeepEqual(got, []string{"alpha.test", "mysql.alpha.test", "mysql.beta.test"}) {
+		t.Fatalf("pending project conversion endpoints = %v", got)
 	}
 }
 

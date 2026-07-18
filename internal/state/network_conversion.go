@@ -115,7 +115,7 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	if err := validateCompletedNetworkReleases(releases, knownProjects, activeByProject, quarantineByProject, allEndpoints); err != nil {
 		return NetworkRecord{}, false, err
 	}
-	if err := validateNetworkProjectPrimaryLeases(knownProjects, releases, leases); err != nil {
+	if err := validateNetworkProjectPrimaryLeases(knownProjects, rows.Projects, releases, leases); err != nil {
 		return NetworkRecord{}, false, err
 	}
 
@@ -152,12 +152,17 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	return record, true, nil
 }
 
-// validateNetworkProjectPrimaryLeases prevents registered projects from losing their stable default identity between restarts.
+// validateNetworkProjectPrimaryLeases distinguishes newly registered stopped projects from projects that already claim runtime lifecycle.
 func validateNetworkProjectPrimaryLeases(
 	projects map[domain.ProjectID]struct{},
+	projectRows []models.Project,
 	releases map[domain.ProjectID]networkReleaseState,
 	leases []identity.Lease,
 ) error {
+	states := make(map[domain.ProjectID]domain.ProjectState, len(projectRows))
+	for _, row := range projectRows {
+		states[domain.ProjectID(row.ProjectId)] = domain.ProjectState(row.State)
+	}
 	primaries := make(map[domain.ProjectID]struct{}, len(leases))
 	for _, lease := range leases {
 		if lease.Key.Kind() == identity.LeaseKindPrimary {
@@ -173,9 +178,13 @@ func validateNetworkProjectPrimaryLeases(
 		if release, exists := releases[projectID]; exists && release.Completed {
 			continue
 		}
-		if _, exists := primaries[projectID]; !exists {
-			return corruptStateError("project", string(projectID), fmt.Errorf("registered project requires a primary network lease"))
+		if _, exists := primaries[projectID]; exists {
+			continue
 		}
+		if states[projectID] == domain.ProjectStopped {
+			continue
+		}
+		return corruptStateError("project", string(projectID), fmt.Errorf("registered project requires a primary network lease"))
 	}
 	return nil
 }

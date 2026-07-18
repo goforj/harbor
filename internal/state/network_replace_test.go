@@ -86,6 +86,31 @@ func TestStoreReplaceProjectNetworkReallocatesReferencedLeaseAtomically(t *testi
 	}
 }
 
+// TestStoreReplaceProjectNetworkCoexistsWithPendingRegistration verifies unrelated reconciliation does not require a fabricated lease.
+func TestStoreReplaceProjectNetworkCoexistsWithPendingRegistration(t *testing.T) {
+	store, _, request, _ := newNetworkReplaceTestHarness(t, 1)
+	pending := validRuntimeStateProject("project-pending")
+	registration, err := store.RegisterProject(context.Background(), pending)
+	if err != nil || !registration.Created || registration.Record.Revision != 8 {
+		t.Fatalf("RegisterProject() = %#v, %v", registration, err)
+	}
+
+	result, err := store.ReplaceProjectNetwork(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ReplaceProjectNetwork() with pending peer error = %v", err)
+	}
+	if result.Replayed || result.Record.Revision != 9 {
+		t.Fatalf("ReplaceProjectNetwork() with pending peer = %#v", result)
+	}
+	runtimeState, err := store.RuntimeState(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeState() with pending peer error = %v", err)
+	}
+	if !runtimeState.NetworkInitialized || len(runtimeState.Snapshot.Projects) != 3 {
+		t.Fatalf("RuntimeState() with pending peer = initialized %t, projects %d", runtimeState.NetworkInitialized, len(runtimeState.Snapshot.Projects))
+	}
+}
+
 // TestStoreReplaceProjectNetworkReplaysOnlySatisfiedDurableSemantics verifies replay direction and hidden fact matching.
 func TestStoreReplaceProjectNetworkReplaysOnlySatisfiedDurableSemantics(t *testing.T) {
 	t.Run("exact applied retry", func(t *testing.T) {

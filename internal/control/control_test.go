@@ -37,12 +37,31 @@ func (connection *testLocalConn) Peer() local.PeerIdentity {
 
 // recordingAuthority records application-boundary caller identities and returns configured results.
 type recordingAuthority struct {
-	mu          sync.Mutex
-	status      DaemonStatus
-	snapshot    domain.Snapshot
-	statusErr   error
-	snapshotErr error
-	callers     []Caller
+	mu                   sync.Mutex
+	status               DaemonStatus
+	snapshot             domain.Snapshot
+	registration         ProjectRegistration
+	statusErr            error
+	snapshotErr          error
+	registrationErr      error
+	callers              []Caller
+	registrationRequests []RegisterProjectRequest
+}
+
+// RegisterProject records the authenticated caller and request before returning the configured registration.
+func (authority *recordingAuthority) RegisterProject(
+	ctx context.Context,
+	caller Caller,
+	request RegisterProjectRequest,
+) (ProjectRegistration, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectRegistration{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.registrationRequests = append(authority.registrationRequests, request)
+	authority.mu.Unlock()
+	return authority.registration, authority.registrationErr
 }
 
 // Status records the authenticated caller before returning the configured diagnostic.
@@ -217,7 +236,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.project-registration.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}

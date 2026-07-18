@@ -32,9 +32,66 @@ func TestDesiredStateFromRuntimeStateKeepsUninitializedHostsEmpty(t *testing.T) 
 	}
 }
 
+// TestDesiredStateFromRuntimeStateKeepsPendingProjectsEmpty verifies registration survives restart without claiming host networking.
+func TestDesiredStateFromRuntimeStateKeepsPendingProjectsEmpty(t *testing.T) {
+	tests := []struct {
+		name    string
+		project domain.ProjectSnapshot
+	}{
+		{
+			name:    "new route-free registration",
+			project: validControllerProject(),
+		},
+		{
+			name: "stopped discovered topology",
+			project: func() domain.ProjectSnapshot {
+				project := validControllerProject()
+				project.Apps = []domain.AppSnapshot{{
+					ID: "app", Name: "App", State: domain.EntityStopped, Active: false, Required: true,
+				}}
+				project.Services = []domain.ServiceSnapshot{{
+					ID: "mysql", Name: "MySQL", Kind: "database", State: domain.EntityStopped,
+					Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true,
+				}}
+				return project
+			}(),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtimeState := state.RuntimeState{
+				Snapshot: func() domain.Snapshot {
+					snapshot := validControllerSnapshot()
+					snapshot.Projects = []domain.ProjectSnapshot{test.project}
+					return snapshot
+				}(),
+				Network: validControllerUninitializedNetwork(),
+			}
+
+			desired, err := desiredStateFromRuntimeState(runtimeState)
+			if err != nil {
+				t.Fatalf("desiredStateFromRuntimeState() error = %v", err)
+			}
+			if !desired.Empty() || desired.ListenerPlan() != (dataplane.ListenerPlan{}) {
+				t.Fatalf("pending project desired state = %#v, want truly empty", desired.ListenerPlan())
+			}
+			if len(desired.HTTPRoutes()) != 0 || len(desired.NativeRoutes()) != 0 || len(desired.DNSRecords()) != 0 {
+				t.Fatalf("pending project routes = HTTP %v, native %v, DNS %v", desired.HTTPRoutes(), desired.NativeRoutes(), desired.DNSRecords())
+			}
+		})
+	}
+}
+
 // TestDesiredStateFromRuntimeStateProjectsOnlyVerifiedSharedBindings verifies reservations do not become live routes without session evidence.
 func TestDesiredStateFromRuntimeStateProjectsOnlyVerifiedSharedBindings(t *testing.T) {
 	runtimeState := initializedControllerRuntimeState()
+	pending := validControllerProject()
+	pending.ID = "billing"
+	pending.Name = "Billing"
+	pending.Path = "/workspace/billing"
+	pending.Slug = "billing"
+	runtimeState.Snapshot.Projects = append(runtimeState.Snapshot.Projects, pending)
 	if len(runtimeState.Network.Reservations.Endpoints) == 0 {
 		t.Fatal("initialized fixture must include a pending endpoint reservation")
 	}
@@ -83,16 +140,44 @@ func TestDesiredStateFromRuntimeStateRejectsInvalidAndUnprojectableAggregates(t 
 			want: errors.New("leases must be initialized"),
 		},
 		{
-			name: "project without initialized network",
-			runtimeState: state.RuntimeState{
-				Snapshot: func() domain.Snapshot {
-					snapshot := validControllerSnapshot()
-					snapshot.Projects = []domain.ProjectSnapshot{validControllerProject()}
-					return snapshot
-				}(),
-				Network: validControllerUninitializedNetwork(),
-			},
-			want: ErrProjectsRequireNetworkProjection,
+			name:         "running project without initialized network",
+			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) { project.State = domain.ProjectReady }),
+			want:         errors.New("not pending"),
+		},
+		{
+			name: "active App without initialized network",
+			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) {
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityStopped, Active: true, Required: true}}
+			}),
+			want: errors.New("not pending"),
+		},
+		{
+			name: "ready App without initialized network",
+			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) {
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: false, Required: true}}
+			}),
+			want: errors.New("not pending"),
+		},
+		{
+			name: "ready service without initialized network",
+			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) {
+				project.Services = []domain.ServiceSnapshot{{
+					ID: "mysql", Name: "MySQL", Kind: "database", State: domain.EntityReady,
+					Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true,
+				}}
+			}),
+			want: errors.New("not pending"),
+		},
+		{
+			name: "published resource without initialized network",
+			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) {
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityStopped, Active: false, Required: true}}
+				project.Resources = []domain.ResourceSnapshot{{
+					ID: "home", Name: "Home", Kind: "site",
+					Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "https://orders.test",
+				}}
+			}),
+			want: errors.New("not pending"),
 		},
 	}
 
@@ -106,6 +191,18 @@ func TestDesiredStateFromRuntimeStateRejectsInvalidAndUnprojectableAggregates(t 
 				t.Fatalf("desiredStateFromRuntimeState() desired = %#v, want zero on failure", desired)
 			}
 		})
+	}
+}
+
+// uninitializedControllerProjectState builds one valid aggregate whose project is altered to exercise projection authorization.
+func uninitializedControllerProjectState(mutate func(*domain.ProjectSnapshot)) state.RuntimeState {
+	project := validControllerProject()
+	mutate(&project)
+	snapshot := validControllerSnapshot()
+	snapshot.Projects = []domain.ProjectSnapshot{project}
+	return state.RuntimeState{
+		Snapshot: snapshot,
+		Network:  validControllerUninitializedNetwork(),
 	}
 }
 

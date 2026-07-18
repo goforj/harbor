@@ -24,6 +24,8 @@ type Authority interface {
 	Status(context.Context, Caller) (DaemonStatus, error)
 	// Snapshot returns a complete authoritative replacement of client-visible state.
 	Snapshot(context.Context, Caller) (domain.Snapshot, error)
+	// RegisterProject discovers and durably registers one canonical GoForj checkout.
+	RegisterProject(context.Context, Caller, RegisterProjectRequest) (ProjectRegistration, error)
 }
 
 // normalizeContext lets public control calls accept a nil context without weakening dependency wiring.
@@ -40,6 +42,20 @@ func authorityError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
+	var classified *session.HandlerError
+	if errors.As(err, &classified) {
+		return classified
+	}
 
 	return session.NewHandlerError(rpc.ErrorCodeInternal, err)
+}
+
+// NewProjectRegistrationConflictError classifies a safe daemon-side registration conflict for control clients.
+func NewProjectRegistrationConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewProjectRegistrationInvalidError classifies a selected checkout that cannot form a valid registration.
+func NewProjectRegistrationInvalidError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
 }

@@ -19,14 +19,15 @@ import (
 // InitializeApplication initializes the application by providing all the dependencies.
 func InitializeApplication() (App, error) {
 	appLogger := logger.ProvideAppLogger()
+	daemonClient := cmd.NewDaemonClient()
+	addCmd := cmd.NewAddCmd(daemonClient)
 	resourcesCmd := cmd.NewResourcesCmd()
 	aboutCmd := cmd.NewAboutCmd()
 	helloWorldCmd := cmd.NewHelloWorldCmd(appLogger)
-	daemonClient := cmd.NewDaemonClient()
 	daemonStatusCmd := cmd.NewDaemonStatusCmd(daemonClient)
 	daemonSnapshotCmd := cmd.NewDaemonSnapshotCmd(daemonClient)
 	daemonCmd := cmd.NewDaemonCmd(daemonStatusCmd, daemonSnapshotCmd)
-	commands := app.NewCommands(resourcesCmd, aboutCmd, helloWorldCmd, daemonCmd)
+	commands := app.NewCommands(addCmd, resourcesCmd, aboutCmd, helloWorldCmd, daemonCmd)
 	commandCmd := makecmd.NewCommandCmd()
 	migrationCmd := makecmd.NewMigrationCmd()
 	rootCmd := app.NewRootCmd(commands, commandCmd, migrationCmd)

@@ -13,6 +13,7 @@ import (
 type daemonControlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
+	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
 	Close() error
 }
 
@@ -47,6 +48,16 @@ func (client *DaemonClient) Status(ctx context.Context) (control.DaemonStatus, e
 func (client *DaemonClient) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (domain.Snapshot, error) {
 		return connection.Snapshot(ctx)
+	})
+}
+
+// RegisterProject creates or replays one project through the daemon and closes the one-shot connection.
+func (client *DaemonClient) RegisterProject(
+	ctx context.Context,
+	request control.RegisterProjectRequest,
+) (control.ProjectRegistration, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectRegistration, error) {
+		return connection.RegisterProject(ctx, request)
 	})
 }
 
