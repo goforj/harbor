@@ -358,8 +358,8 @@ func TestNetworkSequenceTargetMutationsRejectReuseWithoutConsumption(t *testing.
 	})
 }
 
-// TestNetworkSequenceUnregisterRejectsLiveAndReplayCollisions verifies project removal cannot erase network ordering corruption.
-func TestNetworkSequenceUnregisterRejectsLiveAndReplayCollisions(t *testing.T) {
+// TestNetworkSequenceUnregisterRejectsPartialSchemaBeforeLiveAndReplay verifies optional persistence fails closed once migration starts.
+func TestNetworkSequenceUnregisterRejectsPartialSchemaBeforeLiveAndReplay(t *testing.T) {
 	t.Run("live history", func(t *testing.T) {
 		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
 		project := projectStoreMutationTestProject("project-network-unregister-live")
@@ -370,7 +370,7 @@ func TestNetworkSequenceUnregisterRejectsLiveAndReplayCollisions(t *testing.T) {
 		_, err := store.CompleteProjectUnregister(
 			context.Background(), project.ID, running.Operation.ID, running.Revision, "project removed", completedAt,
 		)
-		assertHarborSequenceCollision(t, err, "network state")
+		assertNetworkSequencePartialSchema(t, err)
 		if highWater := networkSequenceTestHighWater(t, connection); highWater != 3 {
 			t.Fatalf("live unregister collision high-water = %d, want 3", highWater)
 		}
@@ -395,7 +395,7 @@ func TestNetworkSequenceUnregisterRejectsLiveAndReplayCollisions(t *testing.T) {
 		_, err = store.CompleteProjectUnregister(
 			context.Background(), project.ID, running.Operation.ID, running.Revision, "project removed", completedAt,
 		)
-		assertHarborSequenceCollision(t, err, "network state")
+		assertNetworkSequencePartialSchema(t, err)
 		if highWater := networkSequenceTestHighWater(t, connection); highWater != 4 {
 			t.Fatalf("replay collision high-water = %d, want 4", highWater)
 		}
@@ -419,13 +419,21 @@ func TestNetworkSequenceUnregisterRejectsLiveAndReplayCollisions(t *testing.T) {
 		_, err := store.CompleteProjectUnregister(
 			context.Background(), project.ID, running.Operation.ID, running.Revision, "project removed", completedAt,
 		)
-		if err == nil || !strings.Contains(err.Error(), "exceeds captured sequence 4") {
-			t.Fatalf("future replay root error = %v", err)
-		}
+		assertNetworkSequencePartialSchema(t, err)
 		if highWater := networkSequenceTestHighWater(t, connection); highWater != 4 {
 			t.Fatalf("future replay high-water = %d, want 4", highWater)
 		}
 	})
+}
+
+// assertNetworkSequencePartialSchema requires the stable corruption boundary for a partially installed optional schema.
+func assertNetworkSequencePartialSchema(t *testing.T, err error) {
+	t.Helper()
+	var corrupt *CorruptStateError
+	if !errors.As(err, &corrupt) || corrupt.Entity != "network state" || corrupt.Key != "schema" ||
+		!strings.Contains(err.Error(), "network persistence schema is incomplete") {
+		t.Fatalf("partial network schema error = %v", err)
+	}
 }
 
 // createNetworkSequenceTestTable creates the intentionally permissive optional root used by corruption tests.

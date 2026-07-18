@@ -102,6 +102,14 @@ func (store *Store) CompleteProjectUnregister(
 
 	var result OperationRecord
 	err = store.mutations.mutate(ctx, "project unregister", func(tx *gorm.DB) error {
+		network, err := readProjectUnregisterNetworkState(tx, projectID)
+		if err != nil {
+			return err
+		}
+		if err := requireCompletedProjectNetworkRelease(network, projectID, operationID); err != nil {
+			return err
+		}
+
 		row, found, err := findOperationForMutation(tx, operationID)
 		if err != nil {
 			return err
@@ -125,6 +133,13 @@ func (store *Store) CompleteProjectUnregister(
 		}
 		if current.Operation.ProjectID != projectID {
 			return fmt.Errorf("operation %q belongs to project %q, not %q", operationID, current.Operation.ProjectID, projectID)
+		}
+		if network.initialized && !reflect.DeepEqual(network.boundary.owner.operation, current) {
+			return corruptStateError(
+				"network project release",
+				string(operationID),
+				fmt.Errorf("release owner differs from unregister operation"),
+			)
 		}
 
 		project, found, err := findProjectForMutation(tx, projectID)
@@ -188,10 +203,20 @@ func (store *Store) CompleteProjectUnregister(
 			return err
 		}
 		lastTransition := history[len(history)-1]
+		previousState := current.Operation.State
+		expectedTransition := OperationTransition{
+			OperationID:   operationID,
+			Ordinal:       lastTransition.Ordinal + 1,
+			PreviousState: &previousState,
+			State:         domain.OperationSucceeded,
+			Phase:         phase,
+			OccurredAt:    at,
+		}
 		sequence, err := allocateHarborSequence(tx)
 		if err != nil {
 			return err
 		}
+		expectedTransition.Sequence = sequence
 		deleted := tx.Where("id = ? AND project_id = ?", project.Id, project.ProjectId).Delete(&models.Project{})
 		if deleted.Error != nil {
 			return fmt.Errorf("delete project: %w", deleted.Error)
@@ -213,16 +238,7 @@ func (store *Store) CompleteProjectUnregister(
 		if updated.RowsAffected != 1 {
 			return &StaleRevisionError{OperationID: operationID, Expected: expectedRevision, Actual: current.Revision}
 		}
-		previousState := current.Operation.State
-		transitionRow, err := operationTransitionModelFromDomain(OperationTransition{
-			OperationID:   operationID,
-			Ordinal:       lastTransition.Ordinal + 1,
-			PreviousState: &previousState,
-			State:         domain.OperationSucceeded,
-			Phase:         phase,
-			OccurredAt:    at,
-			Sequence:      sequence,
-		})
+		transitionRow, err := operationTransitionModelFromDomain(expectedTransition)
 		if err != nil {
 			return err
 		}
@@ -230,12 +246,178 @@ func (store *Store) CompleteProjectUnregister(
 			return err
 		}
 		result = OperationRecord{Operation: nextOperation, Revision: sequence}
+		if network.initialized {
+			persisted, err := readProjectUnregisterNetworkState(tx, projectID)
+			if err != nil {
+				return err
+			}
+			if err := validateProjectUnregisterNetworkReadback(
+				network,
+				persisted,
+				projectID,
+				operationID,
+				result,
+				expectedTransition,
+			); err != nil {
+				return err
+			}
+			result = persisted.boundary.owner.operation
+		}
 		return nil
 	})
 	if err != nil {
 		return OperationRecord{}, fmt.Errorf("complete project unregister %q: %w", projectID, err)
 	}
 	return result, nil
+}
+
+// projectUnregisterNetworkState retains the complete optional network proof needed around final deletion.
+type projectUnregisterNetworkState struct {
+	initialized bool
+	highWater   domain.Sequence
+	rows        networkModelRows
+	boundary    projectNetworkReleaseBoundary
+}
+
+// readProjectUnregisterNetworkState distinguishes legacy and uninitialized databases from an authoritative network root.
+func readProjectUnregisterNetworkState(
+	tx *gorm.DB,
+	projectID domain.ProjectID,
+) (projectUnregisterNetworkState, error) {
+	present, err := inspectNetworkSchema(tx)
+	if err != nil || !present {
+		return projectUnregisterNetworkState{}, err
+	}
+	rows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return projectUnregisterNetworkState{}, err
+	}
+	_, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		return projectUnregisterNetworkState{}, err
+	}
+	if !initialized {
+		return projectUnregisterNetworkState{rows: rows}, nil
+	}
+	highWater, err := validateRetainedSequenceBounds(tx)
+	if err != nil {
+		return projectUnregisterNetworkState{}, err
+	}
+	owners, err := validateProjectNetworkReleaseOwners(tx, highWater, rows.Releases)
+	if err != nil {
+		return projectUnregisterNetworkState{}, err
+	}
+	state := projectUnregisterNetworkState{
+		initialized: true,
+		highWater:   highWater,
+		rows:        rows,
+	}
+	for _, row := range rows.Releases {
+		if row.SourceProjectId != string(projectID) {
+			continue
+		}
+		state.boundary = projectNetworkReleaseBoundary{
+			found: true,
+			row:   row,
+			owner: owners[domain.OperationID(row.OperationId)],
+		}
+		break
+	}
+	return state, nil
+}
+
+// requireCompletedProjectNetworkRelease makes durable host teardown a precondition only after network initialization.
+func requireCompletedProjectNetworkRelease(
+	state projectUnregisterNetworkState,
+	projectID domain.ProjectID,
+	operationID domain.OperationID,
+) error {
+	if !state.initialized {
+		return nil
+	}
+	if !state.boundary.found {
+		return &ProjectNetworkReleaseNotFoundError{ProjectID: projectID, OperationID: operationID}
+	}
+	durableOperationID := domain.OperationID(state.boundary.row.OperationId)
+	if durableOperationID != operationID {
+		return projectNetworkReleaseConflict(projectID, operationID, "operation owner")
+	}
+	releaseState := ProjectNetworkReleaseState(state.boundary.row.State)
+	if releaseState != ProjectNetworkReleaseCompleted {
+		return &ProjectNetworkReleaseIncompleteError{
+			ProjectID:   projectID,
+			OperationID: operationID,
+			State:       releaseState,
+		}
+	}
+	return nil
+}
+
+// validateProjectUnregisterNetworkReadback proves final deletion retained every network fact and only removed its project owner.
+func validateProjectUnregisterNetworkReadback(
+	before projectUnregisterNetworkState,
+	after projectUnregisterNetworkState,
+	projectID domain.ProjectID,
+	operationID domain.OperationID,
+	operation OperationRecord,
+	transition OperationTransition,
+) error {
+	if !after.initialized || !after.boundary.found {
+		return corruptStateError(
+			"network project release",
+			string(operationID),
+			fmt.Errorf("completed boundary disappeared during project deletion"),
+		)
+	}
+	if after.highWater != operation.Revision {
+		return corruptStateError(
+			"Harbor sequence",
+			fmt.Sprint(after.highWater),
+			fmt.Errorf("project unregister allocated revision %d", operation.Revision),
+		)
+	}
+	if after.boundary.owner.projectExists {
+		return corruptStateError(
+			"project",
+			string(projectID),
+			fmt.Errorf("project remains visible after deletion"),
+		)
+	}
+	if !reflect.DeepEqual(after.boundary.owner.operation, operation) {
+		return corruptStateError(
+			"operation",
+			string(operationID),
+			fmt.Errorf("unregister readback differs from the committed transition"),
+		)
+	}
+	if len(after.boundary.owner.history) != len(before.boundary.owner.history)+1 ||
+		!reflect.DeepEqual(
+			after.boundary.owner.history[:len(before.boundary.owner.history)],
+			before.boundary.owner.history,
+		) ||
+		!reflect.DeepEqual(after.boundary.owner.history[len(after.boundary.owner.history)-1], transition) {
+		return corruptStateError(
+			"operation",
+			string(operationID),
+			fmt.Errorf("unregister history readback differs from the committed transition"),
+		)
+	}
+
+	expectedRows := before.rows
+	expectedRows.Projects = make([]models.Project, 0, len(before.rows.Projects))
+	for _, row := range before.rows.Projects {
+		if row.ProjectId != string(projectID) {
+			expectedRows.Projects = append(expectedRows.Projects, row)
+		}
+	}
+	if !reflect.DeepEqual(after.rows, expectedRows) {
+		return corruptStateError(
+			"network state",
+			"1",
+			fmt.Errorf("project unregister changed durable network facts"),
+		)
+	}
+	return nil
 }
 
 // findOperationForMutation distinguishes absence from duplicated operation ownership inside a write transaction.

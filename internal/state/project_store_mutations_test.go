@@ -402,6 +402,428 @@ func TestStoreCompleteProjectUnregisterCommitsAndReplaysAtomically(t *testing.T)
 	}
 }
 
+// TestStoreCompleteProjectUnregisterCommitsInitializedNetworkBoundary verifies final deletion retains exact release evidence.
+func TestStoreCompleteProjectUnregisterCommitsInitializedNetworkBoundary(t *testing.T) {
+	fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+	beforeRows := networkReplaceTestRows(t, fixture.connection)
+	beforeMarker := networkReleaseTestMarker(t, beforeRows.Releases, fixture.running.Operation.ID)
+	beforeNetwork, initialized, err := fixture.store.Network(context.Background())
+	if err != nil || !initialized || beforeNetwork.Revision != 12 {
+		t.Fatalf("network before final unregister = %#v, %t, %v", beforeNetwork, initialized, err)
+	}
+
+	completed, err := fixture.store.CompleteProjectUnregister(
+		context.Background(),
+		fixture.begin.ProjectID,
+		fixture.running.Operation.ID,
+		fixture.running.Revision,
+		"project removed",
+		fixture.completedAt,
+	)
+	if err != nil {
+		t.Fatalf("complete initialized project unregister: %v", err)
+	}
+	if completed.Revision != 13 || completed.Operation.State != domain.OperationSucceeded ||
+		completed.Operation.Phase != "project removed" {
+		t.Fatalf("completed initialized unregister = %#v", completed)
+	}
+	afterRows := networkReplaceTestRows(t, fixture.connection)
+	if len(afterRows.Projects) != len(beforeRows.Projects)-1 {
+		t.Fatalf("network project rows after unregister = %#v", afterRows.Projects)
+	}
+	for _, row := range afterRows.Projects {
+		if row.ProjectId == string(fixture.begin.ProjectID) {
+			t.Fatalf("deleted project remains in network owner rows: %#v", row)
+		}
+	}
+	afterMarker := networkReleaseTestMarker(t, afterRows.Releases, fixture.running.Operation.ID)
+	if !reflect.DeepEqual(afterMarker, beforeMarker) || !afterMarker.ReleaseSetDigest.Valid {
+		t.Fatalf("release marker changed during final unregister: got %#v want %#v", afterMarker, beforeMarker)
+	}
+	if !reflect.DeepEqual(afterRows.States, beforeRows.States) {
+		t.Fatalf("network root advanced during project unregister: got %#v want %#v", afterRows.States, beforeRows.States)
+	}
+	afterNetwork, initialized, err := fixture.store.Network(context.Background())
+	if err != nil || !initialized || !reflect.DeepEqual(afterNetwork, beforeNetwork) {
+		t.Fatalf("network after final unregister = %#v, %t, %v; want %#v", afterNetwork, initialized, err, beforeNetwork)
+	}
+	release, found, err := fixture.store.ProjectNetworkRelease(context.Background(), fixture.running.Operation.ID)
+	if err != nil || !found || !reflect.DeepEqual(release, fixture.release.Release) {
+		t.Fatalf("release after final unregister = %#v, %t, %v", release, found, err)
+	}
+	if _, err := fixture.store.Project(context.Background(), fixture.begin.ProjectID); err == nil {
+		t.Fatal("deleted project remained readable")
+	} else {
+		var missing *ProjectNotFoundError
+		if !errors.As(err, &missing) {
+			t.Fatalf("deleted project read error = %v", err)
+		}
+	}
+	history, err := fixture.journal.Transitions(context.Background(), fixture.running.Operation.ID)
+	if err != nil || len(history) != 3 || history[2].Sequence != completed.Revision ||
+		history[2].State != domain.OperationSucceeded {
+		t.Fatalf("initialized unregister history = %#v, %v", history, err)
+	}
+	if sequence := projectStoreMutationSequence(t, fixture.store); sequence != completed.Revision {
+		t.Fatalf("Harbor sequence after initialized unregister = %d, want %d", sequence, completed.Revision)
+	}
+
+	beforeReplay := networkReplaceTestRows(t, fixture.connection)
+	replayed, err := fixture.store.CompleteProjectUnregister(
+		context.Background(),
+		fixture.begin.ProjectID,
+		fixture.running.Operation.ID,
+		fixture.running.Revision,
+		"project removed",
+		fixture.completedAt.Add(time.Hour),
+	)
+	if err != nil || !reflect.DeepEqual(replayed, completed) {
+		t.Fatalf("initialized unregister replay = %#v, %v; want %#v", replayed, err, completed)
+	}
+	if afterReplay := networkReplaceTestRows(t, fixture.connection); !reflect.DeepEqual(afterReplay, beforeReplay) {
+		t.Fatal("initialized unregister replay changed durable network rows")
+	}
+	if sequence := projectStoreMutationSequence(t, fixture.store); sequence != completed.Revision {
+		t.Fatalf("Harbor sequence after initialized replay = %d, want %d", sequence, completed.Revision)
+	}
+}
+
+// TestStoreCompleteProjectUnregisterRequiresCompletedNetworkRelease verifies every initialized teardown gate.
+func TestStoreCompleteProjectUnregisterRequiresCompletedNetworkRelease(t *testing.T) {
+	t.Run("missing marker", func(t *testing.T) {
+		store, connection, _, running, begin, _ := newNetworkReleaseTestHarness(t, 1)
+		before := networkReplaceTestRows(t, connection)
+		_, err := store.CompleteProjectUnregister(
+			context.Background(), begin.ProjectID, running.Operation.ID, running.Revision, "project removed", begin.At.Add(time.Minute),
+		)
+		var missing *ProjectNetworkReleaseNotFoundError
+		if !errors.As(err, &missing) || missing.ProjectID != begin.ProjectID || missing.OperationID != running.Operation.ID {
+			t.Fatalf("missing network release error = %v", err)
+		}
+		assertProjectStoreMutationNetworkUnregisterUnchanged(t, store, connection, before, running, 10)
+	})
+
+	t.Run("releasing marker", func(t *testing.T) {
+		store, connection, _, running, begin, _ := newNetworkReleaseTestHarness(t, 1)
+		if _, err := store.BeginProjectNetworkRelease(context.Background(), begin); err != nil {
+			t.Fatalf("begin project network release: %v", err)
+		}
+		before := networkReplaceTestRows(t, connection)
+		_, err := store.CompleteProjectUnregister(
+			context.Background(), begin.ProjectID, running.Operation.ID, running.Revision, "project removed", begin.At.Add(time.Minute),
+		)
+		var incomplete *ProjectNetworkReleaseIncompleteError
+		if !errors.As(err, &incomplete) || incomplete.State != ProjectNetworkReleaseReleasing {
+			t.Fatalf("incomplete network release error = %v", err)
+		}
+		assertProjectStoreMutationNetworkUnregisterUnchanged(t, store, connection, before, running, 11)
+	})
+
+	t.Run("wrong operation", func(t *testing.T) {
+		fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+		before := networkReplaceTestRows(t, fixture.connection)
+		_, err := fixture.store.CompleteProjectUnregister(
+			context.Background(), fixture.begin.ProjectID, "operation-other", fixture.running.Revision, "project removed", fixture.completedAt,
+		)
+		var conflict *ProjectNetworkReleaseConflictError
+		if !errors.As(err, &conflict) || conflict.Difference != "operation owner" {
+			t.Fatalf("wrong release operation error = %v", err)
+		}
+		assertProjectStoreMutationNetworkUnregisterUnchanged(
+			t, fixture.store, fixture.connection, before, fixture.running, 12,
+		)
+	})
+
+	t.Run("owner requires approval", func(t *testing.T) {
+		fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+		approval, err := fixture.journal.Transition(
+			context.Background(),
+			fixture.running.Operation.ID,
+			fixture.running.Revision,
+			domain.OperationRequiresApproval,
+			"waiting for final approval",
+			fixture.completedAt,
+			nil,
+		)
+		if err != nil || approval.Revision != 13 {
+			t.Fatalf("approval transition = %#v, %v", approval, err)
+		}
+		before := networkReplaceTestRows(t, fixture.connection)
+		_, err = fixture.store.CompleteProjectUnregister(
+			context.Background(), fixture.begin.ProjectID, approval.Operation.ID, approval.Revision, "project removed", fixture.completedAt.Add(time.Second),
+		)
+		if err == nil || !strings.Contains(err.Error(), "must be running") {
+			t.Fatalf("approval-owned unregister error = %v", err)
+		}
+		assertProjectStoreMutationNetworkUnregisterUnchanged(
+			t, fixture.store, fixture.connection, before, approval, 13,
+		)
+	})
+
+	t.Run("stale owner", func(t *testing.T) {
+		fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+		before := networkReplaceTestRows(t, fixture.connection)
+		_, err := fixture.store.CompleteProjectUnregister(
+			context.Background(), fixture.begin.ProjectID, fixture.running.Operation.ID, fixture.running.Revision-1, "project removed", fixture.completedAt,
+		)
+		var stale *StaleRevisionError
+		if !errors.As(err, &stale) || stale.Actual != fixture.running.Revision {
+			t.Fatalf("stale initialized unregister error = %v", err)
+		}
+		assertProjectStoreMutationNetworkUnregisterUnchanged(
+			t, fixture.store, fixture.connection, before, fixture.running, 12,
+		)
+	})
+}
+
+// TestStoreCompleteProjectUnregisterPreservesUninitializedNetworkCompatibility verifies migrations alone do not require teardown.
+func TestStoreCompleteProjectUnregisterPreservesUninitializedNetworkCompatibility(t *testing.T) {
+	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project := projectStoreMutationTestProject("project-uninitialized-network")
+	_, running, completedAt := projectStoreMutationRunningUnregister(t, store, project, "operation-uninitialized-network")
+	installNetworkReleaseGuardSchema(t, connection)
+
+	completed, err := store.CompleteProjectUnregister(
+		context.Background(), project.ID, running.Operation.ID, running.Revision, "project removed", completedAt,
+	)
+	if err != nil || completed.Revision != 4 || completed.Operation.State != domain.OperationSucceeded {
+		t.Fatalf("uninitialized-network unregister = %#v, %v", completed, err)
+	}
+	if network, initialized, err := store.Network(context.Background()); err != nil || initialized ||
+		!reflect.DeepEqual(network, NetworkRecord{}) {
+		t.Fatalf("uninitialized network after unregister = %#v, %t, %v", network, initialized, err)
+	}
+}
+
+// TestStoreCompleteProjectUnregisterRollsBackInitializedNetworkFailures verifies finalization cannot partially consume its release proof.
+func TestStoreCompleteProjectUnregisterRollsBackInitializedNetworkFailures(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		triggerSQL string
+		want       string
+	}{
+		{
+			name:       "project delete",
+			triggerSQL: `CREATE TRIGGER fail_initialized_unregister_delete BEFORE DELETE ON projects BEGIN SELECT RAISE(ABORT, 'initialized delete failure'); END`,
+			want:       "initialized delete failure",
+		},
+		{
+			name:       "operation update",
+			triggerSQL: `CREATE TRIGGER fail_initialized_unregister_operation BEFORE UPDATE OF state ON operations BEGIN SELECT RAISE(ABORT, 'initialized operation failure'); END`,
+			want:       "initialized operation failure",
+		},
+		{
+			name:       "transition append",
+			triggerSQL: `CREATE TRIGGER fail_initialized_unregister_transition BEFORE INSERT ON operation_transitions WHEN NEW.state = 'succeeded' BEGIN SELECT RAISE(ABORT, 'initialized transition failure'); END`,
+			want:       "initialized transition failure",
+		},
+		{
+			name: "release marker readback",
+			triggerSQL: `CREATE TRIGGER corrupt_initialized_unregister_marker AFTER DELETE ON projects
+				BEGIN
+					UPDATE network_project_releases
+					SET release_set_digest = '0000000000000000000000000000000000000000000000000000000000000000'
+					WHERE source_project_id = OLD.project_id;
+				END`,
+			want: "changed durable network facts",
+		},
+		{
+			name: "release boundary disappearance",
+			triggerSQL: `CREATE TRIGGER remove_initialized_unregister_marker AFTER DELETE ON projects
+				BEGIN DELETE FROM network_project_releases WHERE source_project_id = OLD.project_id; END`,
+			want: "completed boundary disappeared",
+		},
+		{
+			name: "network root readback",
+			triggerSQL: `CREATE TRIGGER corrupt_initialized_unregister_root AFTER DELETE ON projects
+				BEGIN UPDATE network_state SET revision = revision + 1 WHERE id = 1; END`,
+			want: "network state",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+			before := networkReplaceTestRows(t, fixture.connection)
+			beforeHistory, err := fixture.journal.Transitions(context.Background(), fixture.running.Operation.ID)
+			if err != nil {
+				t.Fatalf("read history before rollback test: %v", err)
+			}
+			mustProjectStoreReadExec(t, fixture.connection, test.triggerSQL)
+			_, err = fixture.store.CompleteProjectUnregister(
+				context.Background(),
+				fixture.begin.ProjectID,
+				fixture.running.Operation.ID,
+				fixture.running.Revision,
+				"project removed",
+				fixture.completedAt,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("%s error = %v, want %q", test.name, err, test.want)
+			}
+			assertProjectStoreMutationNetworkUnregisterUnchanged(
+				t, fixture.store, fixture.connection, before, fixture.running, 12,
+			)
+			afterHistory, readErr := fixture.journal.Transitions(context.Background(), fixture.running.Operation.ID)
+			if readErr != nil || !reflect.DeepEqual(afterHistory, beforeHistory) {
+				t.Fatalf("history after %s rollback = %#v, %v; want %#v", test.name, afterHistory, readErr, beforeHistory)
+			}
+		})
+	}
+}
+
+// TestStoreCompleteProjectUnregisterRejectsInitializedNetworkCorruption verifies every durable authority fails closed.
+func TestStoreCompleteProjectUnregisterRejectsInitializedNetworkCorruption(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *gorm.DB, OperationRecord)
+	}{
+		{
+			name: "network root",
+			mutate: func(t *testing.T, connection *gorm.DB, _ OperationRecord) {
+				t.Helper()
+				mustProjectStoreReadExec(t, connection, "PRAGMA ignore_check_constraints = ON")
+				mustProjectStoreReadExec(t, connection, "UPDATE network_state SET dns_suffix = '.invalid' WHERE id = 1")
+				mustProjectStoreReadExec(t, connection, "PRAGMA ignore_check_constraints = OFF")
+			},
+		},
+		{
+			name: "release marker",
+			mutate: func(t *testing.T, connection *gorm.DB, operation OperationRecord) {
+				t.Helper()
+				mustProjectStoreReadExec(t, connection, "PRAGMA ignore_check_constraints = ON")
+				mustProjectStoreReadExec(t, connection, "UPDATE network_project_releases SET release_set_digest = 'invalid' WHERE operation_id = ?", operation.Operation.ID)
+				mustProjectStoreReadExec(t, connection, "PRAGMA ignore_check_constraints = OFF")
+			},
+		},
+		{
+			name: "release owner",
+			mutate: func(t *testing.T, connection *gorm.DB, operation OperationRecord) {
+				t.Helper()
+				mustProjectStoreReadExec(t, connection, "UPDATE operations SET kind = 'maintenance.run' WHERE id = ?", operation.Operation.ID)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+			test.mutate(t, fixture.connection, fixture.running)
+			before := networkReplaceTestRows(t, fixture.connection)
+			_, err := fixture.store.CompleteProjectUnregister(
+				context.Background(),
+				fixture.begin.ProjectID,
+				fixture.running.Operation.ID,
+				fixture.running.Revision,
+				"project removed",
+				fixture.completedAt,
+			)
+			var corrupt *CorruptStateError
+			if !errors.As(err, &corrupt) {
+				t.Fatalf("%s corruption error = %v", test.name, err)
+			}
+			if after := networkReplaceTestRows(t, fixture.connection); !reflect.DeepEqual(after, before) {
+				t.Fatalf("%s rejection changed network rows", test.name)
+			}
+			if _, readErr := fixture.store.Project(context.Background(), fixture.begin.ProjectID); readErr != nil {
+				t.Fatalf("project disappeared after %s rejection: %v", test.name, readErr)
+			}
+			if sequence := projectStoreMutationSequence(t, fixture.store); sequence != 12 {
+				t.Fatalf("sequence after %s rejection = %d, want 12", test.name, sequence)
+			}
+		})
+	}
+
+	t.Run("replay marker", func(t *testing.T) {
+		fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 1)
+		completed, err := fixture.store.CompleteProjectUnregister(
+			context.Background(),
+			fixture.begin.ProjectID,
+			fixture.running.Operation.ID,
+			fixture.running.Revision,
+			"project removed",
+			fixture.completedAt,
+		)
+		if err != nil || completed.Revision != 13 {
+			t.Fatalf("seed initialized unregister replay = %#v, %v", completed, err)
+		}
+		mustProjectStoreReadExec(
+			t,
+			fixture.connection,
+			"PRAGMA ignore_check_constraints = ON",
+		)
+		mustProjectStoreReadExec(
+			t,
+			fixture.connection,
+			"UPDATE network_project_releases SET release_set_digest = 'invalid' WHERE operation_id = ?",
+			fixture.running.Operation.ID,
+		)
+		mustProjectStoreReadExec(t, fixture.connection, "PRAGMA ignore_check_constraints = OFF")
+		_, err = fixture.store.CompleteProjectUnregister(
+			context.Background(),
+			fixture.begin.ProjectID,
+			fixture.running.Operation.ID,
+			fixture.running.Revision,
+			"project removed",
+			fixture.completedAt.Add(time.Hour),
+		)
+		var corrupt *CorruptStateError
+		if !errors.As(err, &corrupt) {
+			t.Fatalf("corrupt initialized replay error = %v", err)
+		}
+		if sequence := projectStoreMutationSequence(t, fixture.store); sequence != 13 {
+			t.Fatalf("sequence after corrupt initialized replay = %d, want 13", sequence)
+		}
+	})
+}
+
+// TestStoreCompleteProjectUnregisterInitializedConcurrentRetryAllocatesOnce verifies one final transition under contention.
+func TestStoreCompleteProjectUnregisterInitializedConcurrentRetryAllocatesOnce(t *testing.T) {
+	fixture := newProjectStoreMutationNetworkUnregisterFixture(t, 4)
+	before := networkReplaceTestRows(t, fixture.connection)
+	start := make(chan struct{})
+	results := make(chan struct {
+		record OperationRecord
+		err    error
+	}, 2)
+	for range 2 {
+		go func() {
+			<-start
+			record, err := fixture.store.CompleteProjectUnregister(
+				context.Background(),
+				fixture.begin.ProjectID,
+				fixture.running.Operation.ID,
+				fixture.running.Revision,
+				"project removed",
+				fixture.completedAt,
+			)
+			results <- struct {
+				record OperationRecord
+				err    error
+			}{record: record, err: err}
+		}()
+	}
+	close(start)
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent initialized unregister errors = %v and %v", first.err, second.err)
+	}
+	if !reflect.DeepEqual(first.record, second.record) || first.record.Revision != 13 {
+		t.Fatalf("concurrent initialized unregister records = %#v and %#v", first.record, second.record)
+	}
+	after := networkReplaceTestRows(t, fixture.connection)
+	if !reflect.DeepEqual(after.States, before.States) || !reflect.DeepEqual(after.Releases, before.Releases) {
+		t.Fatalf("concurrent initialized unregister changed root or release: before %#v after %#v", before, after)
+	}
+	if sequence := projectStoreMutationSequence(t, fixture.store); sequence != 13 {
+		t.Fatalf("sequence after concurrent initialized unregister = %d, want 13", sequence)
+	}
+	history, err := fixture.journal.Transitions(context.Background(), fixture.running.Operation.ID)
+	if err != nil || len(history) != 3 || history[2].Sequence != 13 {
+		t.Fatalf("history after concurrent initialized unregister = %#v, %v", history, err)
+	}
+	if _, err := fixture.store.Project(context.Background(), fixture.begin.ProjectID); err == nil {
+		t.Fatal("project survived concurrent initialized unregister")
+	}
+}
+
 // TestStoreCompleteProjectUnregisterRejectsCompetingWork verifies the owning operation is excluded while every other active operation blocks removal.
 func TestStoreCompleteProjectUnregisterRejectsCompetingWork(t *testing.T) {
 	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
@@ -2254,6 +2676,68 @@ func TestStoreRecordRecentResourceRejectsOrphanedAggregate(t *testing.T) {
 				t.Fatalf("orphan %s sequence = %d, want 1", test.name, sequence)
 			}
 		})
+	}
+}
+
+// projectStoreMutationNetworkUnregisterFixture retains one completed network release ready for final project deletion.
+type projectStoreMutationNetworkUnregisterFixture struct {
+	store       *Store
+	connection  *gorm.DB
+	journal     *OperationJournal
+	running     OperationRecord
+	begin       BeginProjectNetworkReleaseRequest
+	release     ProjectNetworkReleaseMutationResult
+	completedAt time.Time
+}
+
+// newProjectStoreMutationNetworkUnregisterFixture builds the exact initialized boundary required by finalization tests.
+func newProjectStoreMutationNetworkUnregisterFixture(
+	t *testing.T,
+	maximumConnections int,
+) projectStoreMutationNetworkUnregisterFixture {
+	t.Helper()
+	store, connection, journal, running, begin, _ := newNetworkReleaseTestHarness(t, maximumConnections)
+	staged, err := store.BeginProjectNetworkRelease(context.Background(), begin)
+	if err != nil {
+		t.Fatalf("begin fixture network release: %v", err)
+	}
+	request := networkReleaseTestCompleteRequest(begin, staged.Release)
+	release, err := store.CompleteProjectNetworkRelease(context.Background(), request)
+	if err != nil {
+		t.Fatalf("complete fixture network release: %v", err)
+	}
+	return projectStoreMutationNetworkUnregisterFixture{
+		store:       store,
+		connection:  connection,
+		journal:     journal,
+		running:     running,
+		begin:       begin,
+		release:     release,
+		completedAt: request.At.Add(time.Minute),
+	}
+}
+
+// assertProjectStoreMutationNetworkUnregisterUnchanged proves a rejected finalization wrote no authority.
+func assertProjectStoreMutationNetworkUnregisterUnchanged(
+	t *testing.T,
+	store *Store,
+	connection *gorm.DB,
+	before networkModelRows,
+	operation OperationRecord,
+	wantSequence domain.Sequence,
+) {
+	t.Helper()
+	if after := networkReplaceTestRows(t, connection); !reflect.DeepEqual(after, before) {
+		t.Fatal("rejected project unregister changed durable network rows")
+	}
+	if _, err := store.Project(context.Background(), operation.Operation.ProjectID); err != nil {
+		t.Fatalf("rejected project unregister removed project: %v", err)
+	}
+	if persisted := networkReleaseTestOperation(t, store, operation.Operation.ID); !reflect.DeepEqual(persisted, operation) {
+		t.Fatalf("operation after rejected project unregister = %#v, want %#v", persisted, operation)
+	}
+	if sequence := projectStoreMutationSequence(t, store); sequence != wantSequence {
+		t.Fatalf("sequence after rejected project unregister = %d, want %d", sequence, wantSequence)
 	}
 }
 
