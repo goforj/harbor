@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	databaseFilename     = "harbor.db"
-	certificateDirectory = "certificates"
+	databaseFilename         = "harbor.db"
+	certificateDirectory     = "certificates"
+	helperTicketKeyDirectory = "helper-ticket-key"
 )
 
 // environmentLookup keeps path policy testable without mutating process-wide environment state.
@@ -41,6 +42,16 @@ func CertificateDirectory() (string, error) {
 	}
 
 	return filepath.Join(directory, certificateDirectory), nil
+}
+
+// HelperTicketKeyDirectory returns the dedicated per-user directory for the helper-ticket signing identity.
+func HelperTicketKeyDirectory() (string, error) {
+	directory, err := DataDirectory()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(directory, helperTicketKeyDirectory), nil
 }
 
 // resolveHomeDirectory rejects ambiguous relative paths because daemon state must not depend on its working directory.

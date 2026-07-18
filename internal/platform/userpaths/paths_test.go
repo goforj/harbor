@@ -83,3 +83,19 @@ func TestCertificateDirectoryLivesUnderDataDirectory(t *testing.T) {
 		t.Fatalf("certificate directory = %q, want %q", path, want)
 	}
 }
+
+// TestHelperTicketKeyDirectoryLivesUnderDataDirectory verifies the signing identity cannot drift from Harbor's durable state root.
+func TestHelperTicketKeyDirectoryLivesUnderDataDirectory(t *testing.T) {
+	directory, err := DataDirectory()
+	if err != nil {
+		t.Fatalf("resolve data directory: %v", err)
+	}
+
+	path, err := HelperTicketKeyDirectory()
+	if err != nil {
+		t.Fatalf("resolve helper ticket key directory: %v", err)
+	}
+	if want := filepath.Join(directory, helperTicketKeyDirectory); path != want {
+		t.Fatalf("helper ticket key directory = %q, want %q", path, want)
+	}
+}
