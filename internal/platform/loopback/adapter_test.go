@@ -299,6 +299,102 @@ func TestEnsureCreatesOnlyAbsentExactAssignments(t *testing.T) {
 	}
 }
 
+// TestConditionalMutationsRequireFreshObservation proves signed helper preconditions cannot survive host-state drift.
+func TestConditionalMutationsRequireFreshObservation(t *testing.T) {
+	t.Run("ensure", func(t *testing.T) {
+		platform := newFakeBackend()
+		adapter := newAdapter(platform)
+		before, err := adapter.Observe(context.Background(), testAddress)
+		if err != nil {
+			t.Fatalf("Observe(absent) error = %v", err)
+		}
+		fingerprint, err := before.Fingerprint()
+		if err != nil {
+			t.Fatalf("Fingerprint(absent) error = %v", err)
+		}
+
+		platform.assignmentFacts = []AssignmentFact{testExactFact}
+		change, err := adapter.EnsureIfObserved(context.Background(), testAddress, fingerprint)
+		assertErrorKind(t, err, ErrorKindObservationChanged)
+		if change.Before.State != StateExact || change.After.State != StateExact || platform.ensureCalls != 0 {
+			t.Fatalf("EnsureIfObserved(drift) change = %+v, calls = %d", change, platform.ensureCalls)
+		}
+	})
+
+	t.Run("release", func(t *testing.T) {
+		platform := newFakeBackend(testExactFact)
+		adapter := newAdapter(platform)
+		before, err := adapter.Observe(context.Background(), testAddress)
+		if err != nil {
+			t.Fatalf("Observe(exact) error = %v", err)
+		}
+		fingerprint, err := before.Fingerprint()
+		if err != nil {
+			t.Fatalf("Fingerprint(exact) error = %v", err)
+		}
+
+		platform.assignmentFacts = nil
+		change, err := adapter.ReleaseIfObserved(context.Background(), testAddress, fingerprint)
+		assertErrorKind(t, err, ErrorKindObservationChanged)
+		if change.Before.State != StateAbsent || change.After.State != StateAbsent || platform.releaseCalls != 0 {
+			t.Fatalf("ReleaseIfObserved(drift) change = %+v, calls = %d", change, platform.releaseCalls)
+		}
+	})
+}
+
+// TestConditionalMutationsApplyExactMatchingObservations covers both admitted state transitions and fingerprint grammar.
+func TestConditionalMutationsApplyExactMatchingObservations(t *testing.T) {
+	platform := newFakeBackend()
+	adapter := newAdapter(platform)
+	for _, fingerprint := range []string{"bad", strings.Repeat("A", 64), strings.Repeat("g", 64)} {
+		if _, err := adapter.EnsureIfObserved(context.Background(), testAddress, fingerprint); err == nil {
+			t.Fatalf("EnsureIfObserved(%q) error = nil", fingerprint)
+		} else {
+			assertErrorKind(t, err, ErrorKindInvalidFacts)
+		}
+		if _, err := adapter.ReleaseIfObserved(context.Background(), testAddress, fingerprint); err == nil {
+			t.Fatalf("ReleaseIfObserved(%q) error = nil", fingerprint)
+		} else {
+			assertErrorKind(t, err, ErrorKindInvalidFacts)
+		}
+	}
+	if platform.assignmentCalls != 0 || platform.ensureCalls != 0 {
+		t.Fatalf("invalid fingerprint touched host: observations %d, mutations %d", platform.assignmentCalls, platform.ensureCalls)
+	}
+
+	absent, err := adapter.Observe(context.Background(), testAddress)
+	if err != nil {
+		t.Fatalf("Observe(absent) error = %v", err)
+	}
+	absentFingerprint, err := absent.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint(absent) error = %v", err)
+	}
+	ensured, err := adapter.EnsureIfObserved(nil, testAddress, absentFingerprint)
+	if err != nil {
+		t.Fatalf("EnsureIfObserved() error = %v", err)
+	}
+	if !ensured.Attempted || ensured.After.State != StateExact || platform.ensureCalls != 1 {
+		t.Fatalf("EnsureIfObserved() change = %+v, calls = %d", ensured, platform.ensureCalls)
+	}
+
+	exact, err := adapter.Observe(context.Background(), testAddress)
+	if err != nil {
+		t.Fatalf("Observe(exact) error = %v", err)
+	}
+	exactFingerprint, err := exact.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint(exact) error = %v", err)
+	}
+	released, err := adapter.ReleaseIfObserved(nil, testAddress, exactFingerprint)
+	if err != nil {
+		t.Fatalf("ReleaseIfObserved() error = %v", err)
+	}
+	if !released.Attempted || released.After.State != StateAbsent || platform.releaseCalls != 1 {
+		t.Fatalf("ReleaseIfObserved() change = %+v, calls = %d", released, platform.releaseCalls)
+	}
+}
+
 // TestEnsureRejectsConflictingAssignments proves ensure never repairs foreign or malformed state destructively.
 func TestEnsureRejectsConflictingAssignments(t *testing.T) {
 	assignments := [][]AssignmentFact{

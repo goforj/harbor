@@ -17,6 +17,8 @@ const (
 	ErrorKindLoopbackAmbiguous ErrorKind = "loopback-ambiguous"
 	// ErrorKindInvalidFacts means platform facts violated the adapter's bounded contract.
 	ErrorKindInvalidFacts ErrorKind = "invalid-facts"
+	// ErrorKindObservationChanged means host facts no longer match the caller's admitted precondition.
+	ErrorKindObservationChanged ErrorKind = "observation-changed"
 	// ErrorKindConflict means an assignment is foreign, ambiguous, not a /32, or has incompatible attributes.
 	ErrorKindConflict ErrorKind = "assignment-conflict"
 	// ErrorKindObserveFailed means the operating system could not be observed safely.

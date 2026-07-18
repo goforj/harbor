@@ -76,10 +76,26 @@ func (a *Adapter) Observe(ctx context.Context, address netip.Addr) (Observation,
 
 // Ensure creates one exact /32 assignment when the requested address is absent.
 func (a *Adapter) Ensure(ctx context.Context, address netip.Addr) (Change, error) {
+	return a.ensure(ctx, address, "")
+}
+
+// EnsureIfObserved creates one exact /32 assignment only while the pre-mutation observation fingerprint still matches.
+func (a *Adapter) EnsureIfObserved(ctx context.Context, address netip.Addr, expectedFingerprint string) (Change, error) {
+	if err := validateExpectedFingerprint(expectedFingerprint); err != nil {
+		return Change{}, operationError(ErrorKindInvalidFacts, "ensure", address, "", Observation{}, err)
+	}
+	return a.ensure(ctx, address, expectedFingerprint)
+}
+
+// ensure applies the ensure policy after optionally binding it to one caller-observed host snapshot.
+func (a *Adapter) ensure(ctx context.Context, address netip.Addr, expectedFingerprint string) (Change, error) {
 	const operation = "ensure"
 	before, err := a.Observe(ctx, address)
 	if err != nil {
 		return Change{}, err
+	}
+	if err := matchExpectedFingerprint(before, expectedFingerprint); err != nil {
+		return Change{Before: before, After: before}, operationError(ErrorKindObservationChanged, operation, before.Address, before.State, before, err)
 	}
 	switch before.State {
 	case StateExact:
@@ -112,10 +128,26 @@ func (a *Adapter) Ensure(ctx context.Context, address netip.Addr) (Change, error
 
 // Release removes only an exact /32 assignment observed on the selected native loopback.
 func (a *Adapter) Release(ctx context.Context, address netip.Addr) (Change, error) {
+	return a.release(ctx, address, "")
+}
+
+// ReleaseIfObserved removes an exact /32 assignment only while the pre-mutation observation fingerprint still matches.
+func (a *Adapter) ReleaseIfObserved(ctx context.Context, address netip.Addr, expectedFingerprint string) (Change, error) {
+	if err := validateExpectedFingerprint(expectedFingerprint); err != nil {
+		return Change{}, operationError(ErrorKindInvalidFacts, "release", address, "", Observation{}, err)
+	}
+	return a.release(ctx, address, expectedFingerprint)
+}
+
+// release applies the release policy after optionally binding it to one caller-observed host snapshot.
+func (a *Adapter) release(ctx context.Context, address netip.Addr, expectedFingerprint string) (Change, error) {
 	const operation = "release"
 	before, err := a.Observe(ctx, address)
 	if err != nil {
 		return Change{}, err
+	}
+	if err := matchExpectedFingerprint(before, expectedFingerprint); err != nil {
+		return Change{Before: before, After: before}, operationError(ErrorKindObservationChanged, operation, before.Address, before.State, before, err)
 	}
 	switch before.State {
 	case StateAbsent:
@@ -144,6 +176,35 @@ func (a *Adapter) Release(ctx context.Context, address netip.Addr) (Change, erro
 		return change, operationError(ErrorKindVerificationFailed, operation, before.Address, change.After.State, change.After, nil)
 	}
 	return change, nil
+}
+
+// validateExpectedFingerprint keeps conditional mutations in the observation fingerprint's exact lowercase SHA-256 namespace.
+func validateExpectedFingerprint(fingerprint string) error {
+	if len(fingerprint) != 64 {
+		return fmt.Errorf("expected observation fingerprint must contain 64 lowercase hexadecimal characters")
+	}
+	for _, character := range fingerprint {
+		if character >= '0' && character <= '9' || character >= 'a' && character <= 'f' {
+			continue
+		}
+		return fmt.Errorf("expected observation fingerprint must contain 64 lowercase hexadecimal characters")
+	}
+	return nil
+}
+
+// matchExpectedFingerprint rejects drift immediately before the platform mutation while preserving unconditional adapter callers.
+func matchExpectedFingerprint(observation Observation, expectedFingerprint string) error {
+	if expectedFingerprint == "" {
+		return nil
+	}
+	actual, err := observation.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if actual != expectedFingerprint {
+		return fmt.Errorf("loopback observation changed before mutation")
+	}
+	return nil
 }
 
 // reconcileMutation uses a fresh bounded context because cancellation cannot prove whether an operating-system effect landed.
