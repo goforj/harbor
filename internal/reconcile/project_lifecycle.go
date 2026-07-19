@@ -864,6 +864,13 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 	for _, project := range snapshot.Projects {
 		session, sessionErr := coordinator.state.ActiveProjectSession(ctx, project.ID)
 		if sessionErr == nil {
+			recovered, recoveryErr := coordinator.recoverTerminalProjectSession(ctx, project, session)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
+			if recovered {
+				continue
+			}
 			return priorSessionOwnershipError(project, session)
 		}
 		var missing *state.ProjectSessionNotFoundError
@@ -878,6 +885,58 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 		coordinator.dispatch(record)
 	}
 	return nil
+}
+
+// recoverTerminalProjectSession retires exact prior-process authority only after the host proves that birth is gone.
+func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
+	ctx context.Context,
+	project domain.ProjectSnapshot,
+	session domain.ProjectSession,
+) (bool, error) {
+	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded) || session.Process == nil {
+		return false, nil
+	}
+	observation, err := coordinator.supervisor.ObservePriorProcess(ctx, *session.Process)
+	if err != nil {
+		return false, fmt.Errorf("observe prior process for project %q terminal session %q: %w", project.ID, session.ID, err)
+	}
+	switch observation.State {
+	case projectprocess.PriorProcessPresent:
+		return false, nil
+	case projectprocess.PriorProcessAbsent, projectprocess.PriorProcessReplaced:
+	default:
+		return false, fmt.Errorf(
+			"observe prior process for project %q terminal session %q: unsupported state %q",
+			project.ID,
+			session.ID,
+			observation.State,
+		)
+	}
+
+	at := lifecycleTime(coordinator.now())
+	if at.Before(project.UpdatedAt) {
+		at = project.UpdatedAt
+	}
+	if at.Before(session.UpdatedAt) {
+		at = session.UpdatedAt
+	}
+	evidence := *session.Process
+	request := state.RecordUnexpectedProjectExitRequest{
+		ProjectID: project.ID,
+		Exit: state.ConfirmedProjectProcessExit{
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Process:                   &evidence,
+			ExitedAt:                  at,
+		},
+	}
+	if _, err := retryLifecycleResult(func() (state.ProjectRecord, error) {
+		return coordinator.state.RecordUnexpectedProjectExit(ctx, request)
+	}); err != nil {
+		return false, fmt.Errorf("recover project %q terminal session %q after prior process absence: %w", project.ID, session.ID, err)
+	}
+	// Runtime startup reconciles routes from the settled durable state after recovery returns.
+	return true, nil
 }
 
 // recoverRunningProjectStart retires only a process-backed start whose exact persisted birth is no longer present.

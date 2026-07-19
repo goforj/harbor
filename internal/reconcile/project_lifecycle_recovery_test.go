@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -99,6 +100,84 @@ func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T)
 			if operation.Operation.State != domain.OperationFailed || operation.Operation.Problem == nil ||
 				operation.Operation.Problem.Code != "project.recovery.process_absent" || !operation.Operation.Problem.Retryable {
 				t.Fatalf("recovered operation = %#v", operation.Operation)
+			}
+			project, err := store.Project(t.Context(), seed.project.ID)
+			if err != nil || project.Project.State != domain.ProjectFailed {
+				t.Fatalf("recovered project = %#v, %v", project.Project, err)
+			}
+			if _, err := store.ActiveProjectSession(t.Context(), seed.project.ID); err == nil {
+				t.Fatal("recovered project retained an active session")
+			} else {
+				var missing *state.ProjectSessionNotFoundError
+				if !errors.As(err, &missing) {
+					t.Fatalf("active session error = %v", err)
+				}
+			}
+			if len(supervisor.observed) != 1 || supervisor.observed[0] != seed.evidence {
+				t.Fatalf("observed evidence = %#v, want %#v", supervisor.observed, seed.evidence)
+			}
+			if routeCalls != 0 {
+				t.Fatalf("daemon recovery reconciled routes before runtime startup %d times", routeCalls)
+			}
+		})
+	}
+}
+
+// TestProjectLifecycleRecoverRetiresAbsentTerminalSession proves a completed start cannot brick the next daemon launch.
+func TestProjectLifecycleRecoverRetiresAbsentTerminalSession(t *testing.T) {
+	for _, priorState := range []projectprocess.PriorProcessState{
+		projectprocess.PriorProcessAbsent,
+		projectprocess.PriorProcessReplaced,
+	} {
+		t.Run(string(priorState), func(t *testing.T) {
+			store, journal := newProjectLifecycleIntegrationState(t)
+			seed := seedProjectLifecycleRecoveryStart(t, store, journal, true)
+			target, err := projectdiscovery.NewRuntimeTarget(
+				"app",
+				"App",
+				netip.MustParseAddr("127.77.0.11"),
+				3000,
+			)
+			if err != nil {
+				t.Fatalf("create recovery runtime target: %v", err)
+			}
+			readyAt := seed.session.UpdatedAt.Add(time.Second)
+			completed, err := store.CompleteProjectStart(t.Context(), state.CompleteProjectStartRequest{
+				ProjectID:                 seed.project.ID,
+				OperationID:               seed.operation.Operation.ID,
+				ExpectedOperationRevision: seed.operation.Revision,
+				SessionID:                 seed.session.ID,
+				ExpectedSessionGeneration: seed.session.Generation,
+				Runtime:                   defaultRuntime(target),
+				Phase:                     "ready",
+				At:                        readyAt,
+			})
+			if err != nil {
+				t.Fatalf("complete recovery start: %v", err)
+			}
+			supervisor := &projectLifecycleRecoverySupervisor{
+				observation: projectprocess.PriorProcessObservation{State: priorState},
+			}
+			routeCalls := 0
+			coordinator := newProjectLifecycleAdmissionTestCoordinator(
+				store,
+				journal,
+				store,
+				supervisor,
+				netip.MustParseAddr("127.0.0.1"),
+			)
+			coordinator.routes = projectLifecycleRouteReconcilerFunc(func(context.Context) error {
+				routeCalls++
+				return errors.New("route controller is not started during daemon recovery")
+			})
+			coordinator.now = func() time.Time { return readyAt.Add(time.Second) }
+
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("Recover() error = %v", err)
+			}
+			operation, err := journal.OperationByIntent(t.Context(), completed.Operation.Operation.IntentID)
+			if err != nil || operation.Operation.State != domain.OperationSucceeded {
+				t.Fatalf("terminal operation after recovery = %#v, %v", operation.Operation, err)
 			}
 			project, err := store.Project(t.Context(), seed.project.ID)
 			if err != nil || project.Project.State != domain.ProjectFailed {
