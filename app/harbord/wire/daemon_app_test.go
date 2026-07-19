@@ -17,6 +17,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/inspects"
+	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -116,7 +117,7 @@ func TestInitializeApplicationWiresForegroundServices(t *testing.T) {
 	t.Setenv("DB_HARBORD_DRIVER", "sqlite")
 	t.Setenv("DB_HARBORD_DSN", databasePath)
 
-	application, err := InitializeApplication()
+	application, err := InitializeApplication(projectprocess.CaptureEnvironment())
 	if err != nil {
 		t.Fatalf("InitializeApplication() error = %v", err)
 	}

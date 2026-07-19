@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/makecmd"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/runtime"
 	"github.com/goforj/harbor/internal/state"
@@ -25,7 +26,7 @@ import (
 // Injectors from wire.go:
 
 // InitializeApplication initializes the application by providing all the dependencies.
-func InitializeApplication() (App, error) {
+func InitializeApplication(environment projectprocess.Environment) (App, error) {
 	manager := provideInspectManager()
 	connections := database.NewConnections(manager)
 	appLogger := logger.ProvideAppLogger()
@@ -51,7 +52,7 @@ func InitializeApplication() (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	supervisor := provideProjectProcessSupervisor()
+	supervisor := provideProjectProcessSupervisor(environment)
 	projectLifecycleCoordinator := reconcile.NewProjectLifecycleCoordinator(store, operationJournal, supervisor)
 	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator)
 	shutdown := daemon.NewShutdown()

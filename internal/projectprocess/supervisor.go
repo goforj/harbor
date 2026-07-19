@@ -42,6 +42,16 @@ var (
 type Options struct {
 	GracePeriod       time.Duration
 	OutputBufferLines int
+	// Environment isolates child projects from Harbor's subsequently loaded application configuration.
+	Environment Environment
+}
+
+// Environment is the ambient user process environment inherited by managed development commands.
+type Environment []string
+
+// CaptureEnvironment snapshots the current process environment before Harbor loads its own application configuration.
+func CaptureEnvironment() Environment {
+	return append(Environment(nil), os.Environ()...)
 }
 
 // StartRequest identifies the registered checkout and best-effort line destinations for its development output.
@@ -139,6 +149,7 @@ type Supervisor struct {
 	closed      bool
 	gracePeriod time.Duration
 	outputLines int
+	environment Environment
 	projects    map[domain.ProjectID]*managedProcess
 	sessions    map[domain.SessionID]*managedProcess
 }
@@ -153,9 +164,16 @@ func New(options Options) *Supervisor {
 	if outputLines <= 0 {
 		outputLines = defaultOutputBufferLines
 	}
+	environment := options.Environment
+	if environment == nil {
+		environment = CaptureEnvironment()
+	} else {
+		environment = append(Environment(nil), environment...)
+	}
 	return &Supervisor{
 		gracePeriod: gracePeriod,
 		outputLines: outputLines,
+		environment: environment,
 		projects:    make(map[domain.ProjectID]*managedProcess),
 		sessions:    make(map[domain.SessionID]*managedProcess),
 	}
@@ -204,7 +222,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
-	command.Env = withDevelopmentEnvironment(os.Environ())
+	command.Env = withDevelopmentEnvironment(supervisor.environment)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)

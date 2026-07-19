@@ -8,11 +8,12 @@ package wire
 
 import (
 	"github.com/goforj/harbor/internal/logger"
+	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/wire"
 )
 
 // InitializeApplication initializes the application by providing all the dependencies.
-func InitializeApplication() (App, error) {
+func InitializeApplication(environment projectprocess.Environment) (App, error) {
 	wire.Build(
 		appSet,
 		cmdSet,

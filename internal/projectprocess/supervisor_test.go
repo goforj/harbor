@@ -49,6 +49,8 @@ func init() {
 	}
 	fmt.Fprintf(os.Stdout, "argument=%s\n", os.Args[1])
 	fmt.Fprintf(os.Stdout, "plain=%s\n", os.Getenv("FORJ_DEV_PLAIN"))
+	fmt.Fprintf(os.Stdout, "app-name=%s\n", os.Getenv("APP_NAME"))
+	fmt.Fprintf(os.Stdout, "forj-app=%s\n", os.Getenv("FORJ_APP"))
 	fmt.Fprintf(os.Stdout, "working-directory=%s\n", workingDirectory)
 	fmt.Fprintln(os.Stderr, "ready")
 	switch mode {
@@ -200,6 +202,47 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	info.Arguments[1] = "changed"
 	if handle.Info().Arguments[1] != "dev" {
 		t.Fatal("Info() returned mutable arguments")
+	}
+}
+
+// TestStartUsesCapturedEnvironment prevents Harbor's loaded app identity from selecting an App inside managed projects.
+func TestStartUsesCapturedEnvironment(t *testing.T) {
+	checkout := t.TempDir()
+	stdout := &synchronizedBuffer{}
+	installForjHelper(t, "exit")
+
+	captured := CaptureEnvironment()
+	filtered := captured[:0]
+	for _, entry := range captured {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && (environmentNameEqual(name, "APP_NAME") || environmentNameEqual(name, "FORJ_APP")) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	supervisor := New(Options{Environment: filtered})
+	t.Cleanup(func() {
+		_ = supervisor.Close(context.Background())
+	})
+	t.Setenv("APP_NAME", "harbor")
+	t.Setenv("FORJ_APP", "harbord")
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:    "project-environment",
+		SessionID:    "session-environment",
+		CheckoutRoot: checkout,
+		Stdout:       stdout,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	waitForOutput(t, stdout, "app-name=\n")
+	waitForOutput(t, stdout, "forj-app=\n")
+	if output := stdout.String(); strings.Contains(output, "harbor") {
+		t.Fatalf("managed project inherited Harbor app identity: %q", output)
 	}
 }
 

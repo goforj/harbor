@@ -150,8 +150,8 @@ func provideProjectUnregisterCoordinator(
 }
 
 // provideProjectProcessSupervisor creates the one process-tree owner shared by all managed projects.
-func provideProjectProcessSupervisor() *projectprocess.Supervisor {
-	return projectprocess.New(projectprocess.Options{})
+func provideProjectProcessSupervisor(environment projectprocess.Environment) *projectprocess.Supervisor {
+	return projectprocess.New(projectprocess.Options{Environment: environment})
 }
 
 // provideProjectUnregisterCoordinatorWithIssuerOpener keeps the machine-global boundary injectable without making it process-global.
