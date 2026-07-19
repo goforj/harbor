@@ -35,6 +35,22 @@ var projectStoreReadTestSchema = []string{
 		updated_at DATETIME NOT NULL,
 		revision INTEGER NOT NULL UNIQUE
 	)`,
+	`CREATE TABLE project_sessions (
+		id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL UNIQUE,
+		project_id TEXT NOT NULL UNIQUE REFERENCES projects(project_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+		owner TEXT NOT NULL,
+		state TEXT NOT NULL,
+		descriptor_digest TEXT NOT NULL,
+		credential_digest TEXT NOT NULL,
+		generation INTEGER NOT NULL,
+		pid INTEGER,
+		birth_token TEXT,
+		executable_identity TEXT,
+		argument_digest TEXT,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`,
 	`CREATE TABLE project_apps (
 		id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 		project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,

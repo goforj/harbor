@@ -102,6 +102,9 @@ func (store *Store) CompleteProjectUnregister(
 
 	var result OperationRecord
 	err = store.mutations.mutate(ctx, "project unregister", func(tx *gorm.DB) error {
+		if err := requireNoActiveProjectSession(tx, projectID); err != nil {
+			return err
+		}
 		network, err := readProjectUnregisterNetworkState(tx, projectID)
 		if err != nil {
 			return err

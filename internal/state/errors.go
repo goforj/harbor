@@ -95,6 +95,36 @@ type ProjectSessionNotFoundError struct {
 	SessionID domain.SessionID
 }
 
+// ProjectSessionActiveError reports process authority that must be stopped before another project mutation.
+type ProjectSessionActiveError struct {
+	ProjectID domain.ProjectID
+	SessionID domain.SessionID
+}
+
+// Error describes the active project/session correlation without exposing credential material.
+func (err *ProjectSessionActiveError) Error() string {
+	return fmt.Sprintf("project %q has active session %q", err.ProjectID, err.SessionID)
+}
+
+// StaleSessionGenerationError reports a lifecycle mutation attempted against obsolete process authority.
+type StaleSessionGenerationError struct {
+	ProjectID domain.ProjectID
+	SessionID domain.SessionID
+	Expected  uint64
+	Actual    uint64
+}
+
+// Error describes the requested and durable session generations.
+func (err *StaleSessionGenerationError) Error() string {
+	return fmt.Sprintf(
+		"project %q session %q generation is %d, not expected generation %d",
+		err.ProjectID,
+		err.SessionID,
+		err.Actual,
+		err.Expected,
+	)
+}
+
 // Error describes the missing project/session correlation without exposing credential material.
 func (err *ProjectSessionNotFoundError) Error() string {
 	if err.SessionID == "" {
