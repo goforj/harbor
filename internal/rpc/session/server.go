@@ -369,6 +369,7 @@ func (s *serverConnection) serveRequest(ctx context.Context, envelope rpc.Envelo
 		s.writeRequestError(envelope.RequestID, ctx.Err())
 		return
 	}
+	payload, afterWrite := unwrapResponseCompletion(payload)
 
 	response, err := rpc.NewResponseEnvelope(s.peer.Protocol, envelope.RequestID, payload)
 	if err != nil {
@@ -378,7 +379,24 @@ func (s *serverConnection) serveRequest(ctx context.Context, envelope rpc.Envelo
 	}
 	if err := s.writeResponse(response); err != nil {
 		s.terminate(fmt.Errorf("write response: %w", err))
+		return
 	}
+	s.invokeAfterWrite(request, afterWrite)
+}
+
+// invokeAfterWrite runs successful response completion work without letting a
+// callback defect terminate an already accepted response.
+func (s *serverConnection) invokeAfterWrite(request Request, afterWrite func()) {
+	if afterWrite == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.observeError(request, &AfterWritePanicError{value: recovered, stack: debug.Stack()})
+		}
+	}()
+
+	afterWrite()
 }
 
 // hasRequest prevents capacity errors from masquerading as a duplicate request's response.
@@ -554,6 +572,16 @@ func invokeHandler(handler Handler, ctx context.Context, request Request) (paylo
 	}()
 
 	return handler(ctx, request)
+}
+
+// unwrapResponseCompletion separates transport lifecycle work before payload encoding.
+func unwrapResponseCompletion(payload any) (any, func()) {
+	completion, ok := payload.(responseCompletion)
+	if !ok {
+		return payload, nil
+	}
+
+	return completion.payload, completion.afterWrite
 }
 
 // handlerErrorCode classifies cancellation first, then intentional handler categories.

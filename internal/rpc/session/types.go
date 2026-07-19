@@ -61,6 +61,23 @@ type Request struct {
 // Handler processes one request and must stop promptly when its context is cancelled.
 type Handler func(context.Context, Request) (any, error)
 
+// responseCompletion keeps post-write work out of the encoded response payload.
+type responseCompletion struct {
+	payload    any
+	afterWrite func()
+}
+
+// RespondAfterWrite returns a handler result whose callback runs synchronously
+// after the complete successful response frame is written. The callback must
+// not block and must not be nil.
+func RespondAfterWrite(payload any, afterWrite func()) any {
+	if afterWrite == nil {
+		panic("RPC response after-write callback is required")
+	}
+
+	return responseCompletion{payload: payload, afterWrite: afterWrite}
+}
+
 // ErrorObserver receives daemon-local handler diagnostics before the peer sees
 // only their redaction-safe wire category.
 type ErrorObserver func(Request, error)
@@ -176,6 +193,31 @@ func (e *HandlerPanicError) Error() string {
 
 // Stack returns a copy of the stack captured at the handler boundary.
 func (e *HandlerPanicError) Stack() []byte {
+	if e == nil {
+		return nil
+	}
+
+	return append([]byte(nil), e.stack...)
+}
+
+// AfterWritePanicError preserves a recovered RespondAfterWrite callback panic
+// and stack for daemon-local observation only.
+type AfterWritePanicError struct {
+	value any
+	stack []byte
+}
+
+// Error returns a local diagnostic without participating in wire serialization.
+func (e *AfterWritePanicError) Error() string {
+	if e == nil {
+		return "RPC response after-write callback panicked"
+	}
+
+	return fmt.Sprintf("RPC response after-write callback panicked: %v", e.value)
+}
+
+// Stack returns a copy of the stack captured at the response completion boundary.
+func (e *AfterWritePanicError) Stack() []byte {
 	if e == nil {
 		return nil
 	}
