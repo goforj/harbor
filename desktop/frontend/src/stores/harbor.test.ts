@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
-import type { ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectUnregistration } from '@/domain/harbor'
+import type { ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
 function deferred<T>() {
@@ -332,6 +332,75 @@ describe('Harbor store', () => {
     await expect(store.addProject()).resolves.toBeNull()
     expect(store.projectRegistrationError).toBe('Harbor returned an incomplete project registration.')
     expect(store.addingProject).toBe(false)
+  })
+
+  it('starts a project with a client-owned intent and adopts the authoritative lifecycle snapshot', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const result: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    const confirmed = mockSnapshot()
+    confirmed.sequence = result.revision
+    const project = confirmed.projects.find((entry) => entry.id === 'reports')
+    if (!project) throw new Error('reports fixture is missing')
+    project.state = 'starting'
+    confirmed.operations.push(result.operation)
+    const startProject = vi.spyOn(harborBridge, 'startProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(confirmed)
+
+    await expect(store.startProject('reports')).resolves.toMatchObject({ operation: { kind: 'project.start' } })
+
+    expect(startProject.mock.calls[0][1]).toMatch(/^desktop-project-start-[0-9a-f]{32}$/)
+    expect(store.projectById('reports')?.state).toBe('starting')
+    expect(store.activeProjectLifecycle('reports')?.kind).toBe('project.start')
+    expect(store.projectLifecycleProjectId).toBeNull()
+    expect(store.projectLifecycleErrors.reports).toBeUndefined()
+  })
+
+  it('reuses an uncertain lifecycle intent so a lost response cannot enqueue a second start', async () => {
+    const store = useHarborStore()
+    const result: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    const startProject = vi.spyOn(harborBridge, 'startProject')
+      .mockRejectedValueOnce(new Error('connection closed before the operation response'))
+      .mockImplementationOnce(async (projectId, intentId) => {
+        result.operation.project_id = projectId
+        result.operation.intent_id = intentId
+        return result
+      })
+    vi.spyOn(harborBridge, 'getSnapshot').mockRejectedValue(new Error('snapshot unavailable'))
+
+    await expect(store.startProject('reports')).resolves.toBeNull()
+    await expect(store.startProject('reports')).resolves.toMatchObject({ operation: { kind: 'project.start' } })
+
+    expect(startProject).toHaveBeenCalledTimes(2)
+    expect(startProject.mock.calls[0][1]).toMatch(/^desktop-project-start-[0-9a-f]{32}$/)
+    expect(startProject.mock.calls[1][1]).toBe(startProject.mock.calls[0][1])
+  })
+
+  it('resumes a daemon-reported stop intent instead of inventing another operation identity', async () => {
+    const hydrated = mockSnapshot()
+    const stop = structuredClone(harborWireFixture.stop_project)
+    stop.operation.intent_id = 'desktop-existing-stop'
+    hydrated.sequence = stop.revision
+    hydrated.operations.push(stop.operation)
+    const orders = hydrated.projects.find((project) => project.id === 'orders-api')
+    if (!orders) throw new Error('orders fixture is missing')
+    orders.state = 'stopping'
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(hydrated)
+    const store = useHarborStore()
+    await store.initialize()
+    const stopProject = vi.spyOn(harborBridge, 'stopProject').mockImplementationOnce(async (projectId, intentId) => {
+      stop.operation.project_id = projectId
+      stop.operation.intent_id = intentId
+      return stop
+    })
+
+    await store.stopProject('orders-api')
+
+    expect(stopProject).toHaveBeenCalledWith('orders-api', 'desktop-existing-stop')
   })
 
   it('refreshes authoritative state after an immediate project removal', async () => {

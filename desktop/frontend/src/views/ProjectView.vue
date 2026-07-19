@@ -7,7 +7,10 @@ import {
   Check,
   Clipboard,
   ExternalLink,
+  LoaderCircle,
+  Play,
   Server,
+  Square,
   SquareTerminal,
   Trash2,
   TriangleAlert,
@@ -42,11 +45,35 @@ const project = computed(() => store.projectById(projectId.value))
 const projectOperations = computed(() => store.operations.filter((operation) => operation.project_id === projectId.value))
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
+const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
+const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
+const lifecycleInFlight = computed(() => store.projectLifecycleProjectId === projectId.value)
+const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
+const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
+const lifecycleAction = computed(() => project.value?.state === 'stopped'
+  || project.value?.state === 'failed'
+  || project.value?.state === 'unavailable'
+  ? 'start'
+  : 'stop')
+const lifecycleLabel = computed(() => {
+  if (starting.value) return 'Starting…'
+  if (stopping.value) return 'Stopping…'
+  return lifecycleAction.value === 'start' ? 'Start project' : 'Stop project'
+})
+const lifecycleDisabled = computed(() => store.snapshotStale
+  || store.projectLifecycleProjectId !== null
+  || activeLifecycle.value != null
+  || starting.value
+  || stopping.value
+  || removalPending.value)
 const removing = computed(() => store.removingProjectId === projectId.value)
 const removalPending = computed(() => removalNotice.value?.state === 'queued'
   || removalNotice.value?.state === 'running'
   || removalNotice.value?.state === 'requires_approval')
-const removalDisabled = computed(() => store.removingProjectId !== null || removalPending.value)
+const removalDisabled = computed(() => store.removingProjectId !== null
+  || store.projectLifecycleProjectId !== null
+  || activeLifecycle.value != null
+  || removalPending.value)
 const removalLabel = computed(() => {
   if (removing.value) return 'Removing…'
   if (store.removingProjectId) return 'Another removal is in progress'
@@ -84,6 +111,15 @@ async function removeProject() {
     await router.replace('/projects')
   }
 }
+
+async function changeProjectLifecycle() {
+  if (!project.value) return
+  if (lifecycleAction.value === 'start') {
+    await store.startProject(project.value.id)
+    return
+  }
+  await store.stopProject(project.value.id)
+}
 </script>
 
 <template>
@@ -101,6 +137,17 @@ async function removeProject() {
             </div>
           </div>
           <div class="flex items-center gap-2">
+            <Button
+              :variant="lifecycleAction === 'start' ? 'default' : 'outline'"
+              size="sm"
+              :disabled="lifecycleDisabled"
+              @click="changeProjectLifecycle"
+            >
+              <LoaderCircle v-if="lifecycleInFlight || starting || stopping" class="size-3.5 animate-spin" />
+              <Play v-else-if="lifecycleAction === 'start'" class="size-3.5 fill-current" />
+              <Square v-else class="size-3.5 fill-current" />
+              {{ lifecycleLabel }}
+            </Button>
             <AlertDialog v-model:open="removeOpen">
               <AlertDialogTrigger as-child>
                 <Button variant="outline" size="sm" :disabled="removalDisabled">
@@ -136,6 +183,12 @@ async function removeProject() {
       </header>
 
       <div class="space-y-5 p-5 lg:p-7">
+        <Alert v-if="lifecycleError" variant="destructive">
+          <TriangleAlert aria-hidden="true" />
+          <AlertTitle>Project action failed</AlertTitle>
+          <AlertDescription>{{ lifecycleError }}</AlertDescription>
+        </Alert>
+
         <Alert
           v-if="removalNotice"
           :variant="removalNotice.state === 'failed' || removalNotice.state === 'incomplete' || removalNotice.state === 'request_failed' ? 'destructive' : 'default'"

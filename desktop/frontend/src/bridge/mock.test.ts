@@ -30,7 +30,9 @@ describe('Harbor mock bridge', () => {
       open_resource: 'OpenResource',
       remove_project: 'RemoveProject',
       snapshot: 'Snapshot',
+      start_project: 'StartProject',
       status: 'Status',
+      stop_project: 'StopProject',
     })
     expect(harborWireFixture.events).toEqual({
       connection: 'harbor:connection',
@@ -104,6 +106,45 @@ describe('Harbor mock bridge', () => {
       },
     })
     expect(snapshot.projects.some((project) => project.id === 'orders-api')).toBe(true)
+  })
+
+  it('starts and stops projects through authoritative mock snapshots with replayable intents', async () => {
+    const startBridge = createMockBridge()
+
+    const started = await startBridge.startProject('reports', 'desktop-start-reports')
+    const replayedStart = await startBridge.startProject('reports', 'desktop-start-reports')
+    const startedSnapshot = await startBridge.getSnapshot()
+
+    expect(started).toMatchObject({
+      operation: {
+        kind: 'project.start',
+        project_id: 'reports',
+        intent_id: 'desktop-start-reports',
+        state: 'queued',
+      },
+    })
+    expect(replayedStart).toEqual(started)
+    expect(startedSnapshot.projects.find((project) => project.id === 'reports')?.state).toBe('starting')
+
+    const stopBridge = createMockBridge()
+    const stopped = await stopBridge.stopProject('orders-api', 'desktop-stop-orders')
+    const stoppedSnapshot = await stopBridge.getSnapshot()
+
+    expect(stopped.operation).toMatchObject({
+      kind: 'project.stop',
+      project_id: 'orders-api',
+      intent_id: 'desktop-stop-orders',
+      state: 'queued',
+    })
+    expect(stoppedSnapshot.projects.find((project) => project.id === 'orders-api')?.state).toBe('stopping')
+  })
+
+  it('does not let one lifecycle intent cross project or action boundaries', async () => {
+    const bridge = createMockBridge()
+    await bridge.startProject('reports', 'desktop-lifecycle-replay')
+
+    await expect(bridge.startProject('billing', 'desktop-lifecycle-replay')).rejects.toThrow('another project action')
+    await expect(bridge.stopProject('reports', 'desktop-lifecycle-replay')).rejects.toThrow('another project action')
   })
 
   it('opens a known project-scoped resource without giving the new page an opener', async () => {

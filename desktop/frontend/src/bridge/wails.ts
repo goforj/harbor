@@ -31,6 +31,8 @@ export function hasWailsBridge(): boolean {
     && typeof app.Snapshot === 'function'
     && typeof app.OpenResource === 'function'
     && typeof app.RemoveProject === 'function'
+    && typeof app.StartProject === 'function'
+    && typeof app.StopProject === 'function'
     && hasWailsEventRuntime(window.runtime)
 }
 
@@ -46,11 +48,15 @@ export function createWailsBridge(): HarborBridge {
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
   const removeProject = app?.RemoveProject
+  const startProject = app?.StartProject
+  const stopProject = app?.StopProject
   if (typeof addProject !== 'function'
     || typeof status !== 'function'
     || typeof snapshot !== 'function'
     || typeof openResource !== 'function'
     || typeof removeProject !== 'function'
+    || typeof startProject !== 'function'
+    || typeof stopProject !== 'function'
     || !hasWailsEventRuntime(runtime)) {
     throw new Error('Harbor desktop bindings are unavailable.')
   }
@@ -61,6 +67,8 @@ export function createWailsBridge(): HarborBridge {
     getSnapshot: () => snapshot(),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),
+    startProject: (projectId, intentId) => startProject(projectId, intentId),
+    stopProject: (projectId, intentId) => stopProject(projectId, intentId),
     subscribe(listener) {
       return subscribeWailsEvent(runtime, harborWireFixture.events.snapshot, listener)
     },

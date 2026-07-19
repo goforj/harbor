@@ -29,6 +29,8 @@ type controlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
+	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
+	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
 	Done() <-chan struct{}
 	Close() error
@@ -136,6 +138,66 @@ func (a *App) AddProject() (desktopwire.AddProjectResult, error) {
 	if err := result.Validate(); err != nil {
 		return desktopwire.AddProjectResult{}, fmt.Errorf("validate project registration: %w", err)
 	}
+	return result, nil
+}
+
+// StartProject starts or resumes exactly one client-owned project start intent through the connected daemon.
+func (a *App) StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error) {
+	request := control.StartProjectRequest{
+		ProjectID: domain.ProjectID(projectID),
+		IntentID:  domain.IntentID(intentID),
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("project start request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, err
+	}
+	result, err := client.StartProject(ctx, request)
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("start GoForj project: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project start: %w", err)
+	}
+	if result.Operation.Kind != domain.OperationKindProjectStart ||
+		result.Operation.ProjectID != request.ProjectID ||
+		result.Operation.IntentID != request.IntentID {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project start: daemon result does not match the requested action, project, and intent")
+	}
+
+	return result, nil
+}
+
+// StopProject starts or resumes exactly one client-owned project stop intent through the connected daemon.
+func (a *App) StopProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error) {
+	request := control.StopProjectRequest{
+		ProjectID: domain.ProjectID(projectID),
+		IntentID:  domain.IntentID(intentID),
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("project stop request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, err
+	}
+	result, err := client.StopProject(ctx, request)
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("stop GoForj project: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project stop: %w", err)
+	}
+	if result.Operation.Kind != domain.OperationKindProjectStop ||
+		result.Operation.ProjectID != request.ProjectID ||
+		result.Operation.IntentID != request.IntentID {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project stop: daemon result does not match the requested action, project, and intent")
+	}
+
 	return result, nil
 }
 

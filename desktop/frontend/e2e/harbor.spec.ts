@@ -28,6 +28,17 @@ test('adds the selected project and opens its detail immediately', async ({ page
   await expect(page.getByText('Stopped; routing is not configured yet.', { exact: true })).toBeVisible()
 })
 
+test('starts and stops projects from their selected detail view', async ({ page }) => {
+  await page.goto('/#/projects/reports')
+
+  await page.getByRole('button', { name: 'Start project', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toBeDisabled()
+
+  await page.goto('/#/projects/orders-api')
+  await page.getByRole('button', { name: 'Stop project', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled()
+})
+
 test('confirms project removal and explains when desktop approval is unavailable', async ({ page }) => {
   await page.goto('/#/projects/orders-api')
 
@@ -94,6 +105,18 @@ test('leaves project detail when an active removal completes through a snapshot 
             }, 50)
             return result
           },
+          async StartProject(projectId, intentId) {
+            const result = structuredClone(initialStart)
+            result.operation.project_id = projectId
+            result.operation.intent_id = intentId
+            return result
+          },
+          async StopProject(projectId, intentId) {
+            const result = structuredClone(initialStop)
+            result.operation.project_id = projectId
+            result.operation.intent_id = intentId
+            return result
+          },
           async Snapshot() {
             return structuredClone(snapshot)
           },
@@ -115,6 +138,8 @@ test('leaves project detail when an active removal completes through a snapshot 
   }, {
     initialSnapshot: harborWireFixture.snapshot,
     initialStatus: harborWireFixture.status,
+    initialStart: harborWireFixture.start_project,
+    initialStop: harborWireFixture.stop_project,
     initialUnregistration: harborWireFixture.remove_project,
   })
   await page.goto('/#/projects/reports')
@@ -281,6 +306,12 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },
+          async StartProject() {
+            throw new Error('Project start is not exercised in this connection test')
+          },
+          async StopProject() {
+            throw new Error('Project stop is not exercised in this connection test')
+          },
           async Status() {
             return {
               state: 'ready',
@@ -347,6 +378,12 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
           async OpenResource() {},
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
+          },
+          async StartProject() {
+            throw new Error('Project start is not exercised in this connection test')
+          },
+          async StopProject() {
+            throw new Error('Project stop is not exercised in this connection test')
           },
           async Status() {
             return {

@@ -109,6 +109,11 @@ export interface ProjectUnregistration {
   revision: number
 }
 
+export interface ProjectLifecycleOperation {
+  operation: Operation
+  revision: number
+}
+
 export interface Problem {
   code: string
   message: string

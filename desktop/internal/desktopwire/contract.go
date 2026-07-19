@@ -17,6 +17,10 @@ const (
 	MethodOpenResource = "OpenResource"
 	// MethodRemoveProject is the generated Wails method that starts or resumes one project removal intent.
 	MethodRemoveProject = "RemoveProject"
+	// MethodStartProject is the generated Wails method that starts one registered project.
+	MethodStartProject = "StartProject"
+	// MethodStopProject is the generated Wails method that stops one registered project.
+	MethodStopProject = "StopProject"
 	// MethodSnapshot is the generated Wails method that returns complete desktop-visible state.
 	MethodSnapshot = "Snapshot"
 	// MethodStatus is the generated Wails method that returns the daemon diagnostic.
@@ -53,7 +57,9 @@ type AppContract interface {
 	OpenResource(projectID string, resourceID string) error
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
 	Snapshot() (domain.Snapshot, error)
+	StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	Status() (control.DaemonStatus, error)
+	StopProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 }
 
 // MethodContract describes one reflected App method and its stable TypeScript parameter labels.
@@ -71,7 +77,9 @@ func MethodContracts() []MethodContract {
 		MethodOpenResource:  []string{"projectId", "resourceId"},
 		MethodRemoveProject: []string{"projectId", "intentId"},
 		MethodSnapshot:      []string{},
+		MethodStartProject:  []string{"projectId", "intentId"},
 		MethodStatus:        []string{},
+		MethodStopProject:   []string{"projectId", "intentId"},
 	}
 	contracts := make([]MethodContract, 0, contractType.NumMethod())
 	for index := range contractType.NumMethod() {

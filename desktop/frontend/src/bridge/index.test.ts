@@ -9,8 +9,10 @@ function installAppBindings() {
   const Snapshot = vi.fn().mockResolvedValue({ schema_version: 1, sequence: 7 })
   const OpenResource = vi.fn().mockResolvedValue(undefined)
   const RemoveProject = vi.fn().mockResolvedValue(harborWireFixture.remove_project)
-  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource, RemoveProject } } }
-  return { AddProject, OpenResource, RemoveProject, Snapshot, Status }
+  const StartProject = vi.fn().mockResolvedValue(harborWireFixture.start_project)
+  const StopProject = vi.fn().mockResolvedValue(harborWireFixture.stop_project)
+  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource, RemoveProject, StartProject, StopProject } } }
+  return { AddProject, OpenResource, RemoveProject, Snapshot, StartProject, Status, StopProject }
 }
 
 function installEventRuntime() {
@@ -70,6 +72,17 @@ describe('Harbor bridge selection', () => {
     await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
+  it.each(['StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
+    installAppBindings()
+    delete window.go?.main?.App?.[method]
+    installEventRuntime()
+
+    const selection = selectHarborBridge(false, false)
+
+    expect(selection.mode).toBe('unavailable')
+    await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
+  })
+
   it.each([
     { name: 'EventsOn', runtime: { EventsOff: vi.fn() } },
     { name: 'EventsOff', runtime: { EventsOn: vi.fn(() => vi.fn()) } },
@@ -114,7 +127,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, OpenResource, RemoveProject } = installAppBindings()
+    const { AddProject, OpenResource, RemoveProject, StartProject, StopProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -125,10 +138,14 @@ describe('Harbor bridge selection', () => {
       await selection.bridge.addProject()
       await selection.bridge.openResource('orders', 'application')
       await selection.bridge.removeProject('orders', 'desktop-remove-orders')
+      await selection.bridge.startProject('reports', 'desktop-start-reports')
+      await selection.bridge.stopProject('orders', 'desktop-stop-orders')
     }
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
     expect(RemoveProject).toHaveBeenCalledWith('orders', 'desktop-remove-orders')
+    expect(StartProject).toHaveBeenCalledWith('reports', 'desktop-start-reports')
+    expect(StopProject).toHaveBeenCalledWith('orders', 'desktop-stop-orders')
     expect(AddProject).toHaveBeenCalledTimes(2)
   })
 

@@ -27,6 +27,12 @@ type fakeControlClient struct {
 	registration      control.ProjectRegistration
 	registerErr       error
 	registerPath      string
+	startLifecycle    control.ProjectLifecycleOperation
+	startErr          error
+	startRequest      control.StartProjectRequest
+	stopLifecycle     control.ProjectLifecycleOperation
+	stopErr           error
+	stopRequest       control.StopProjectRequest
 	unregistration    control.ProjectUnregistration
 	unregisterErr     error
 	unregisterRequest control.UnregisterProjectRequest
@@ -48,6 +54,8 @@ func newFakeControlClient() *fakeControlClient {
 		},
 		snapshot:       testSnapshot(),
 		registration:   testRegistration(),
+		startLifecycle: testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
+		stopLifecycle:  testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
 		unregistration: testUnregistration(),
 		done:           make(chan struct{}),
 	}
@@ -79,6 +87,22 @@ func (client *fakeControlClient) RegisterProject(_ context.Context, request cont
 	defer client.mu.Unlock()
 	client.registerPath = request.Path
 	return client.registration, client.registerErr
+}
+
+// StartProject records the stable lifecycle identity and returns the configured start operation.
+func (client *fakeControlClient) StartProject(_ context.Context, request control.StartProjectRequest) (control.ProjectLifecycleOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.startRequest = request
+	return client.startLifecycle, client.startErr
+}
+
+// StopProject records the stable lifecycle identity and returns the configured stop operation.
+func (client *fakeControlClient) StopProject(_ context.Context, request control.StopProjectRequest) (control.ProjectLifecycleOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.stopRequest = request
+	return client.stopLifecycle, client.stopErr
 }
 
 // UnregisterProject records the stable removal identity and returns the configured authoritative operation.
@@ -681,6 +705,94 @@ func TestRemoveProjectPreservesStableIdentityAndOperationState(t *testing.T) {
 	})
 }
 
+// TestProjectLifecyclePreservesActionIdentityAndOperationState covers both native lifecycle boundaries.
+func TestProjectLifecyclePreservesActionIdentityAndOperationState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid start request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.StartProject("", "desktop-start-orders"); err == nil || !strings.Contains(err.Error(), "project ID") {
+			t.Fatalf("StartProject() error = %v, want invalid project", err)
+		}
+		if client.startRequest != (control.StartProjectRequest{}) {
+			t.Fatalf("StartProject() request = %+v after local validation", client.startRequest)
+		}
+	})
+
+	t.Run("disconnected stop", func(t *testing.T) {
+		if _, err := testApp().StopProject("orders", "desktop-stop-orders"); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("StopProject() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("daemon failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.startErr = errors.New("project is busy")
+		if _, err := app.StartProject("orders", "desktop-start-orders"); err == nil || !strings.Contains(err.Error(), "project is busy") {
+			t.Fatalf("StartProject() error = %v, want daemon failure", err)
+		}
+	})
+
+	t.Run("invalid daemon result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.stopLifecycle = control.ProjectLifecycleOperation{}
+		if _, err := app.StopProject("orders", "desktop-stop-orders"); err == nil || !strings.Contains(err.Error(), "validate project stop") {
+			t.Fatalf("StopProject() error = %v, want invalid operation", err)
+		}
+	})
+
+	t.Run("mismatched daemon result", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			mutate func(*control.ProjectLifecycleOperation)
+		}{
+			{name: "kind", mutate: func(result *control.ProjectLifecycleOperation) {
+				result.Operation.Kind = domain.OperationKindProjectStop
+			}},
+			{name: "project", mutate: func(result *control.ProjectLifecycleOperation) { result.Operation.ProjectID = "other" }},
+			{name: "intent", mutate: func(result *control.ProjectLifecycleOperation) { result.Operation.IntentID = "desktop-start-other" }},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				app, client := connectedTestApp()
+				test.mutate(&client.startLifecycle)
+				if _, err := app.StartProject("orders", "desktop-start-orders"); err == nil || !strings.Contains(err.Error(), "does not match") {
+					t.Fatalf("StartProject() error = %v, want correlation failure", err)
+				}
+			})
+		}
+	})
+
+	t.Run("started", func(t *testing.T) {
+		app, client := connectedTestApp()
+		result, err := app.StartProject("orders", "desktop-start-orders")
+		if err != nil {
+			t.Fatalf("StartProject() error = %v", err)
+		}
+		wantRequest := control.StartProjectRequest{ProjectID: "orders", IntentID: "desktop-start-orders"}
+		if client.startRequest != wantRequest {
+			t.Fatalf("StartProject() request = %+v, want %+v", client.startRequest, wantRequest)
+		}
+		if result.Operation.Kind != domain.OperationKindProjectStart || result.Revision != 9 {
+			t.Fatalf("StartProject() = %+v, want queued start at revision 9", result)
+		}
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		app, client := connectedTestApp()
+		result, err := app.StopProject("orders", "desktop-stop-orders")
+		if err != nil {
+			t.Fatalf("StopProject() error = %v", err)
+		}
+		wantRequest := control.StopProjectRequest{ProjectID: "orders", IntentID: "desktop-stop-orders"}
+		if client.stopRequest != wantRequest {
+			t.Fatalf("StopProject() request = %+v, want %+v", client.stopRequest, wantRequest)
+		}
+		if result.Operation.Kind != domain.OperationKindProjectStop || result.Revision != 9 {
+			t.Fatalf("StopProject() = %+v, want queued stop at revision 9", result)
+		}
+	})
+}
+
 // TestOpenResourceUsesFreshProjectScopedState proves JavaScript cannot supply a URL or rely on a globally unique resource ID.
 func TestOpenResourceUsesFreshProjectScopedState(t *testing.T) {
 	t.Parallel()
@@ -958,6 +1070,22 @@ func testUnregistration() control.ProjectUnregistration {
 			ID:          "operation-remove-orders",
 			IntentID:    "desktop-remove-orders",
 			Kind:        domain.OperationKindProjectUnregister,
+			ProjectID:   "orders",
+			State:       domain.OperationQueued,
+			Phase:       string(domain.OperationQueued),
+			RequestedAt: time.Date(2026, time.July, 18, 12, 5, 0, 0, time.UTC),
+		},
+		Revision: 9,
+	}
+}
+
+// testProjectLifecycle returns a valid queued operation for one exact desktop lifecycle intent.
+func testProjectLifecycle(kind domain.OperationKind, intentID domain.IntentID) control.ProjectLifecycleOperation {
+	return control.ProjectLifecycleOperation{
+		Operation: domain.Operation{
+			ID:          domain.OperationID("operation-" + string(kind)),
+			IntentID:    intentID,
+			Kind:        kind,
 			ProjectID:   "orders",
 			State:       domain.OperationQueued,
 			Phase:       string(domain.OperationQueued),

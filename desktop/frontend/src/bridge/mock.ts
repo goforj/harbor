@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, Operation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, Operation, ProjectLifecycleOperation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 
@@ -8,6 +8,42 @@ export function createMockBridge(): HarborBridge {
   const snapshot: HarborSnapshot = structuredClone(fixture.snapshot)
   const status: DaemonStatus = structuredClone(fixture.status)
   const removals = new Map<string, ProjectUnregistration>()
+  const lifecycles = new Map<string, ProjectLifecycleOperation>()
+
+  async function changeProjectLifecycle(projectId: string, intentId: string, action: 'start' | 'stop') {
+    const previous = lifecycles.get(intentId)
+    const kind = `project.${action}`
+    if (previous) {
+      if (previous.operation.project_id !== projectId || previous.operation.kind !== kind) {
+        throw new Error('The lifecycle intent already belongs to another project action.')
+      }
+      return structuredClone(previous)
+    }
+
+    const project = snapshot.projects.find((entry) => entry.id === projectId)
+    if (!project) {
+      throw new Error(`Unknown project: ${projectId}`)
+    }
+
+    const revision = snapshot.sequence + 1
+    const operation = structuredClone(action === 'start' ? fixture.start_project.operation : fixture.stop_project.operation)
+    operation.id = `operation-${revision}-${action}-${projectId}`
+    operation.intent_id = intentId
+    operation.project_id = projectId
+    operation.requested_at = new Date().toISOString()
+    project.state = action === 'start' ? 'starting' : 'stopping'
+    project.updated_at = operation.requested_at
+    snapshot.operations = [
+      ...snapshot.operations.filter((entry) => entry.project_id !== projectId
+        || (entry.kind !== 'project.start' && entry.kind !== 'project.stop')),
+      operation,
+    ]
+    snapshot.sequence = revision
+    status.sequence = revision
+    const result = { operation, revision }
+    lifecycles.set(intentId, structuredClone(result))
+    return result
+  }
 
   return {
     async addProject() {
@@ -82,6 +118,12 @@ export function createMockBridge(): HarborBridge {
       const result = { operation, revision }
       removals.set(intentId, structuredClone(result))
       return result
+    },
+    startProject(projectId, intentId) {
+      return changeProjectLifecycle(projectId, intentId, 'start')
+    },
+    stopProject(projectId, intentId) {
+      return changeProjectLifecycle(projectId, intentId, 'stop')
     },
     subscribe() {
       return () => undefined

@@ -18,6 +18,8 @@ function createUnavailableBridge(): HarborBridge {
     getSnapshot: unavailable,
     openResource: unavailable,
     removeProject: unavailable,
+    startProject: unavailable,
+    stopProject: unavailable,
     subscribe: () => () => undefined,
     subscribeConnection: () => () => undefined,
   }

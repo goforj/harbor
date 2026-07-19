@@ -20,7 +20,9 @@ type MethodMetadata struct {
 	OpenResource  string `json:"open_resource"`
 	RemoveProject string `json:"remove_project"`
 	Snapshot      string `json:"snapshot"`
+	StartProject  string `json:"start_project"`
 	Status        string `json:"status"`
+	StopProject   string `json:"stop_project"`
 }
 
 // EventMetadata records the Wails event names consumed by the bridge.
@@ -38,14 +40,16 @@ type ConnectionPayloads struct {
 
 // Document is the complete frontend contract fixture as encoded by production Go wire types.
 type Document struct {
-	Methods            MethodMetadata                `json:"methods"`
-	Events             EventMetadata                 `json:"events"`
-	ConnectionPayloads ConnectionPayloads            `json:"connection_payloads"`
-	Status             control.DaemonStatus          `json:"status"`
-	Snapshot           domain.Snapshot               `json:"snapshot"`
-	AddProject         desktopwire.AddProjectResult  `json:"add_project"`
-	RemoveProject      control.ProjectUnregistration `json:"remove_project"`
-	TerminalOperation  domain.Operation              `json:"terminal_operation"`
+	Methods            MethodMetadata                    `json:"methods"`
+	Events             EventMetadata                     `json:"events"`
+	ConnectionPayloads ConnectionPayloads                `json:"connection_payloads"`
+	Status             control.DaemonStatus              `json:"status"`
+	Snapshot           domain.Snapshot                   `json:"snapshot"`
+	AddProject         desktopwire.AddProjectResult      `json:"add_project"`
+	RemoveProject      control.ProjectUnregistration     `json:"remove_project"`
+	StartProject       control.ProjectLifecycleOperation `json:"start_project"`
+	StopProject        control.ProjectLifecycleOperation `json:"stop_project"`
+	TerminalOperation  domain.Operation                  `json:"terminal_operation"`
 }
 
 // Fixture returns deterministic status and snapshot data rich enough to exercise every current desktop view.
@@ -58,6 +62,7 @@ func Fixture() Document {
 	terminalFinishedAt := time.Date(2026, time.July, 18, 14, 20, 2, 0, time.UTC)
 	removeRequestedAt := time.Date(2026, time.July, 18, 14, 40, 0, 0, time.UTC)
 	removeStartedAt := time.Date(2026, time.July, 18, 14, 40, 1, 0, time.UTC)
+	lifecycleRequestedAt := time.Date(2026, time.July, 18, 14, 41, 0, 0, time.UTC)
 
 	return Document{
 		Methods: MethodMetadata{
@@ -65,7 +70,9 @@ func Fixture() Document {
 			OpenResource:  desktopwire.MethodOpenResource,
 			RemoveProject: desktopwire.MethodRemoveProject,
 			Snapshot:      desktopwire.MethodSnapshot,
+			StartProject:  desktopwire.MethodStartProject,
 			Status:        desktopwire.MethodStatus,
+			StopProject:   desktopwire.MethodStopProject,
 		},
 		Events: EventMetadata{
 			Connection: desktopwire.ConnectionEventName,
@@ -81,6 +88,7 @@ func Fixture() Document {
 			Build:    control.Build{Version: "dev", Revision: "fixture"},
 			Protocol: rpc.Version{Major: 1, Minor: 0},
 			Capabilities: []rpc.Capability{
+				control.CapabilityProjectLifecycleV1,
 				control.CapabilityProjectRegistrationV1,
 				control.CapabilityProjectUnregisterV1,
 				control.CapabilityV1,
@@ -209,6 +217,30 @@ func Fixture() Document {
 			},
 			Revision: 44,
 		},
+		StartProject: control.ProjectLifecycleOperation{
+			Operation: domain.Operation{
+				ID:          "operation-start-reports",
+				IntentID:    "desktop-project-start-reports",
+				Kind:        domain.OperationKindProjectStart,
+				ProjectID:   "reports",
+				State:       domain.OperationQueued,
+				Phase:       string(domain.OperationQueued),
+				RequestedAt: lifecycleRequestedAt,
+			},
+			Revision: 45,
+		},
+		StopProject: control.ProjectLifecycleOperation{
+			Operation: domain.Operation{
+				ID:          "operation-stop-orders",
+				IntentID:    "desktop-project-stop-orders-api",
+				Kind:        domain.OperationKindProjectStop,
+				ProjectID:   "orders-api",
+				State:       domain.OperationQueued,
+				Phase:       string(domain.OperationQueued),
+				RequestedAt: lifecycleRequestedAt,
+			},
+			Revision: 45,
+		},
 		TerminalOperation: domain.Operation{
 			ID:          "operation-terminal",
 			IntentID:    "intent-terminal",
@@ -231,7 +263,9 @@ func (document Document) Validate() error {
 		desktopwire.MethodOpenResource:  document.Methods.OpenResource,
 		desktopwire.MethodRemoveProject: document.Methods.RemoveProject,
 		desktopwire.MethodSnapshot:      document.Methods.Snapshot,
+		desktopwire.MethodStartProject:  document.Methods.StartProject,
 		desktopwire.MethodStatus:        document.Methods.Status,
+		desktopwire.MethodStopProject:   document.Methods.StopProject,
 	}
 	contracts := desktopwire.MethodContracts()
 	if len(methods) != len(contracts) {
@@ -284,6 +318,12 @@ func (document Document) Validate() error {
 	if err := document.RemoveProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project removal: %w", err)
 	}
+	if err := document.StartProject.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project start: %w", err)
+	}
+	if err := document.StopProject.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project stop: %w", err)
+	}
 	if err := document.TerminalOperation.Validate(); err != nil {
 		return fmt.Errorf("validate fixture terminal operation: %w", err)
 	}
@@ -307,7 +347,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectUnregistration } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -413,6 +453,8 @@ func typeScriptType(goType reflect.Type) (string, error) {
 		return "DaemonStatus", nil
 	case reflect.TypeFor[control.ProjectUnregistration]():
 		return "ProjectUnregistration", nil
+	case reflect.TypeFor[control.ProjectLifecycleOperation]():
+		return "ProjectLifecycleOperation", nil
 	case reflect.TypeFor[domain.Snapshot]():
 		return "HarborSnapshot", nil
 	default:
