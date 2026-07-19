@@ -4,13 +4,11 @@ package networkprerequisite
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"syscall"
 )
 
@@ -26,7 +24,7 @@ const darwinDevelopmentBootstrapScript = `on run arguments
 		return "succeeded"
 	on error errorMessage number errorNumber
 		if errorNumber is -128 then return "declined"
-		return "failed"
+		return "failed|" & (errorNumber as text) & "|" & errorMessage
 	end try
 end run`
 
@@ -75,22 +73,16 @@ func elevateDarwinDevelopmentBootstrap(ctx context.Context, request sourceBootst
 		strconv.FormatUint(uint64(request.groupID), 10),
 	)
 	command.Env = []string{"PATH=/usr/bin:/bin"}
-	output, err := command.Output()
+	output := &darwinDevelopmentAuthorizationOutput{}
+	command.Stdout = output
+	command.Stderr = output
+	err := command.Run()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("%w: macOS could not open Harbor development authorization", ErrFailed)
+		return darwinDevelopmentAuthorizationLaunchFailure(err, output.String())
 	}
 
-	switch strings.TrimSpace(string(output)) {
-	case "succeeded":
-		return nil
-	case "declined":
-		return ErrDeclined
-	case "failed":
-		return ErrFailed
-	default:
-		return errors.New("privileged networking installation returned an invalid macOS authorization result")
-	}
+	return parseDarwinDevelopmentAuthorizationResult(output.String())
 }
