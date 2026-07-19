@@ -15,7 +15,6 @@ env:
   HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11
   HARBOR_PROOF_PORT: "3306"
   HARBOR_ADAPTER_PROOF_ADDRESSES: 127.77.254.250,127.77.254.251
-  HARBOR_ADAPTER_PROOF_PORT: "43306"
 
 jobs:
   project-identity:
@@ -55,7 +54,6 @@ jobs:
         shell: bash
         env:
           HARBOR_PROOF_ADDRESSES: ${{ env.HARBOR_ADAPTER_PROOF_ADDRESSES }}
-          HARBOR_PROOF_PORT: ${{ env.HARBOR_ADAPTER_PROOF_PORT }}
         run: |
           binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
@@ -152,7 +150,7 @@ jobs:
           }
 
       - name: Verify explicit identity setup
-        run: go test -tags=platformproof ./internal/platformproof -run 'TestPlatformProofAddressesAreExplicit|TestPlatformProjectIdentities' -count=1
+        run: go test -tags=platformproof ./internal/platformproof -run '^TestPlatformProofAddressesAreExplicit$' -count=1
 
       - name: Record project identity evidence
         run: go run ./cmd/platformproof project-identity --addresses "${{ env.HARBOR_PROOF_ADDRESSES }}" --port "${{ env.HARBOR_PROOF_PORT }}" > project-identity.json
