@@ -61,13 +61,9 @@ type projectLifecycleState interface {
 type projectLifecycleJournal interface {
 	Enqueue(context.Context, domain.Operation) (state.OperationRecord, error)
 	Transition(context.Context, domain.OperationID, domain.Sequence, domain.OperationState, string, time.Time, *domain.Problem) (state.OperationRecord, error)
+	FailQueued(context.Context, domain.OperationID, domain.Sequence, string, string, time.Time, domain.Problem) (state.OperationRecord, error)
 	OperationByIntent(context.Context, domain.IntentID) (state.OperationRecord, error)
 	ActiveOperations(context.Context) ([]state.OperationRecord, error)
-}
-
-// projectRuntimeDiscoverer derives the exact loopback readiness target from a registered checkout.
-type projectRuntimeDiscoverer interface {
-	DiscoverDefaultRuntime(context.Context, string) (projectdiscovery.RuntimeTarget, error)
 }
 
 // projectReadinessProber performs one bounded readiness observation.
@@ -86,7 +82,7 @@ type projectProcessSupervisor interface {
 type ProjectLifecycleCoordinator struct {
 	state             projectLifecycleState
 	operations        projectLifecycleJournal
-	discoverer        projectRuntimeDiscoverer
+	primaryLeases     *projectPrimaryLeaseCoordinator
 	readiness         projectReadinessProber
 	supervisor        projectProcessSupervisor
 	now               func() time.Time
@@ -116,10 +112,11 @@ func NewProjectLifecycleCoordinator(
 	if projectState == nil || operations == nil || supervisor == nil {
 		panic("reconcile.NewProjectLifecycleCoordinator requires non-nil state, journal, and supervisor dependencies")
 	}
+	discoverer := projectdiscovery.NewDiscoverer()
 	return newProjectLifecycleCoordinator(
 		projectState,
 		operations,
-		projectdiscovery.NewDiscoverer(),
+		newSystemProjectPrimaryLeaseCoordinator(projectState, discoverer),
 		projectreadiness.NewProber(&http.Client{Timeout: defaultReadinessHTTPTimeout}),
 		supervisor,
 		time.Now,
@@ -135,7 +132,7 @@ func NewProjectLifecycleCoordinator(
 func newProjectLifecycleCoordinator(
 	projectState projectLifecycleState,
 	operations projectLifecycleJournal,
-	discoverer projectRuntimeDiscoverer,
+	primaryLeases *projectPrimaryLeaseCoordinator,
 	readiness projectReadinessProber,
 	supervisor projectProcessSupervisor,
 	now func() time.Time,
@@ -145,7 +142,7 @@ func newProjectLifecycleCoordinator(
 	startupTimeout time.Duration,
 	readinessInterval time.Duration,
 ) *ProjectLifecycleCoordinator {
-	if nilDependency(projectState) || nilDependency(operations) || nilDependency(discoverer) ||
+	if nilDependency(projectState) || nilDependency(operations) || nilDependency(primaryLeases) ||
 		nilDependency(readiness) || nilDependency(supervisor) || nilDependency(now) ||
 		nilDependency(newOperationID) || nilDependency(newIntentID) || nilDependency(newSession) {
 		panic("reconcile.newProjectLifecycleCoordinator requires every dependency")
@@ -157,7 +154,7 @@ func newProjectLifecycleCoordinator(
 	return &ProjectLifecycleCoordinator{
 		state:             projectState,
 		operations:        operations,
-		discoverer:        discoverer,
+		primaryLeases:     primaryLeases,
 		readiness:         readiness,
 		supervisor:        supervisor,
 		now:               now,
@@ -290,10 +287,52 @@ func (coordinator *ProjectLifecycleCoordinator) finishDispatch(operationID domai
 func (coordinator *ProjectLifecycleCoordinator) cancelQueued(record state.OperationRecord, cause error) {
 	if err := coordinator.transitionQueuedCancellation(record); err != nil {
 		coordinator.recordAsyncError(err)
-		coordinator.recordAsyncError(cause)
+		if !lifecycleContextEnded(cause) {
+			coordinator.recordAsyncError(cause)
+		}
 		return
 	}
-	coordinator.recordAsyncError(cause)
+	if !lifecycleContextEnded(cause) {
+		coordinator.recordAsyncError(cause)
+	}
+}
+
+// failQueuedAdmission records a correctable pre-launch rejection without treating it as daemon health failure.
+func (coordinator *ProjectLifecycleCoordinator) failQueuedAdmission(
+	record state.OperationRecord,
+	problem domain.Problem,
+) {
+	if err := coordinator.transitionQueuedAdmissionFailure(record, problem); err != nil {
+		coordinator.recordAsyncError(err)
+	}
+}
+
+// transitionQueuedAdmissionFailure gives a failed operation its required running edge without creating process authority.
+func (coordinator *ProjectLifecycleCoordinator) transitionQueuedAdmissionFailure(
+	record state.OperationRecord,
+	problem domain.Problem,
+) error {
+	at := lifecycleTime(coordinator.now())
+	if at.Before(record.Operation.RequestedAt) {
+		at = record.Operation.RequestedAt
+	}
+	if _, err := coordinator.operations.FailQueued(
+		context.Background(),
+		record.Operation.ID,
+		record.Revision,
+		"checking project network",
+		"network admission failed",
+		at,
+		problem,
+	); err != nil {
+		return fmt.Errorf("fail rejected lifecycle operation %q: %w", record.Operation.ID, err)
+	}
+	return nil
+}
+
+// lifecycleContextEnded distinguishes intentional caller or daemon cancellation from operational failure.
+func lifecycleContextEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // transitionQueuedCancellation commits the only safe terminal edge before lifecycle effects begin.
@@ -351,14 +390,31 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if record.Operation.State != domain.OperationQueued {
 		return
 	}
-	project, err := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
+	admission, err := coordinator.primaryLeases.Ensure(coordinator.ctx, record.Operation.ProjectID)
 	if err != nil {
+		if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
+			coordinator.cancelQueued(record, ctxErr)
+			return
+		}
+		if lifecycleContextEnded(err) {
+			coordinator.cancelQueued(record, err)
+			return
+		}
+		var rejection *projectPrimaryLeaseRejection
+		if errors.As(err, &rejection) {
+			coordinator.failQueuedAdmission(record, rejection.Problem())
+			return
+		}
 		coordinator.cancelQueued(record, err)
 		return
 	}
+	project := admission.Project
 	at := lifecycleTime(coordinator.now())
 	if at.Before(project.Project.UpdatedAt) {
 		at = project.Project.UpdatedAt
+	}
+	if at.Before(admission.NetworkUpdatedAt) {
+		at = admission.NetworkUpdatedAt
 	}
 	session, err := coordinator.newSession(record.Operation.ProjectID, project.Project.Path, at)
 	if err != nil {
@@ -370,6 +426,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 			ProjectID:                 record.Operation.ProjectID,
 			OperationID:               record.Operation.ID,
 			ExpectedOperationRevision: record.Revision,
+			ExpectedProjectRevision:   project.Revision,
 			Session:                   session,
 			Phase:                     "launching",
 			At:                        at,
@@ -380,17 +437,15 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 
-	target, err := coordinator.discoverer.DiscoverDefaultRuntime(coordinator.ctx, project.Project.Path)
-	if err != nil {
-		coordinator.failStartWithoutProcess(begun, session, "project.runtime.invalid", err)
-		return
-	}
 	handle, err := coordinator.supervisor.Start(coordinator.ctx, projectprocess.StartRequest{
 		ProjectID:    record.Operation.ProjectID,
 		SessionID:    session.ID,
 		CheckoutRoot: project.Project.Path,
-		Stdout:       os.Stdout,
-		Stderr:       os.Stderr,
+		EnvironmentOverrides: projectprocess.EnvironmentOverrides{
+			"IP_ADDRESS": admission.Lease.Address.String(),
+		},
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
 	})
 	if err != nil {
 		coordinator.failStartWithoutProcess(begun, session, "project.launch.failed", err)
@@ -415,7 +470,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		coordinator.stopAndFailUnattached(begun, session, handle, err)
 		return
 	}
-	coordinator.waitForReadiness(begun, attached, handle, target)
+	coordinator.waitForReadiness(begun, attached, handle, admission.Target)
 }
 
 // waitForReadiness owns startup until the exact App proves ready or the supervised process exits.

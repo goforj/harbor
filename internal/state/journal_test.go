@@ -629,6 +629,59 @@ func TestOperationJournalPersistsLifecycleAndHistory(t *testing.T) {
 	}
 }
 
+// TestOperationJournalFailQueuedCommitsOrRollsBackBothEdges proves pre-effect failure cannot strand a running operation.
+func TestOperationJournalFailQueuedCommitsOrRollsBackBothEdges(t *testing.T) {
+	t.Run("commit", func(t *testing.T) {
+		journal, _ := newOperationJournalTestHarness(t)
+		requestedAt := operationJournalTestTime()
+		operation := newOperationJournalTestOperation(t, "operation-fail-queued", "intent-fail-queued", "project-a", domain.OperationKindProjectStart, requestedAt)
+		queued, err := journal.Enqueue(t.Context(), operation)
+		if err != nil {
+			t.Fatalf("Enqueue() error = %v", err)
+		}
+		problem := domain.Problem{Code: "project.network.setup_required", Message: "Complete network setup and try again.", Retryable: true}
+		failedAt := requestedAt.Add(time.Second)
+		failed, err := journal.FailQueued(t.Context(), operation.ID, queued.Revision, "checking project network", "network admission failed", failedAt, problem)
+		if err != nil {
+			t.Fatalf("FailQueued() error = %v", err)
+		}
+		if failed.Revision != queued.Revision+2 || failed.Operation.State != domain.OperationFailed || failed.Operation.Problem == nil || *failed.Operation.Problem != problem ||
+			failed.Operation.StartedAt == nil || *failed.Operation.StartedAt != failedAt || failed.Operation.FinishedAt == nil || *failed.Operation.FinishedAt != failedAt {
+			t.Fatalf("FailQueued() = %#v", failed)
+		}
+		history, err := journal.Transitions(t.Context(), operation.ID)
+		if err != nil || len(history) != 3 || history[1].State != domain.OperationRunning || history[2].State != domain.OperationFailed {
+			t.Fatalf("FailQueued() history = %#v, %v", history, err)
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		journal, _ := newOperationJournalTestHarness(t)
+		requestedAt := operationJournalTestTime()
+		operation := newOperationJournalTestOperation(t, "operation-fail-queued-rollback", "intent-fail-queued-rollback", "project-a", domain.OperationKindProjectStart, requestedAt)
+		queued, err := journal.Enqueue(t.Context(), operation)
+		if err != nil {
+			t.Fatalf("Enqueue() error = %v", err)
+		}
+		problem := domain.Problem{Code: "project.network.setup_required", Message: "Complete network setup and try again.", Retryable: true}
+		_, err = journal.FailQueued(t.Context(), operation.ID, queued.Revision, "checking project network", " ", requestedAt.Add(time.Second), problem)
+		if err == nil {
+			t.Fatal("FailQueued() accepted an invalid terminal phase")
+		}
+		persisted, readErr := journal.Operation(t.Context(), operation.ID)
+		if readErr != nil || persisted.Revision != queued.Revision || persisted.Operation.State != domain.OperationQueued {
+			t.Fatalf("operation after FailQueued() rollback = %#v, %v", persisted, readErr)
+		}
+		if sequence := mustOperationJournalSequence(t, journal); sequence != queued.Revision {
+			t.Fatalf("sequence after FailQueued() rollback = %d, want %d", sequence, queued.Revision)
+		}
+		history, historyErr := journal.Transitions(t.Context(), operation.ID)
+		if historyErr != nil || len(history) != 1 || history[0].State != domain.OperationQueued {
+			t.Fatalf("history after FailQueued() rollback = %#v, %v", history, historyErr)
+		}
+	})
+}
+
 // TestOperationJournalActiveOperationsOrdersByRevision verifies clients receive deterministic work ordering and no terminal rows.
 func TestOperationJournalActiveOperationsOrdersByRevision(t *testing.T) {
 	journal, _ := newOperationJournalTestHarness(t)

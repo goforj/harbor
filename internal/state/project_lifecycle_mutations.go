@@ -48,6 +48,7 @@ type BeginProjectStartRequest struct {
 	ProjectID                 domain.ProjectID
 	OperationID               domain.OperationID
 	ExpectedOperationRevision domain.Sequence
+	ExpectedProjectRevision   domain.Sequence
 	Session                   domain.ProjectSession
 	Phase                     string
 	At                        time.Time
@@ -151,6 +152,13 @@ func (store *Store) BeginProjectStart(ctx context.Context, request BeginProjectS
 		project, err := readLifecycleProject(tx, request.ProjectID)
 		if err != nil {
 			return err
+		}
+		if project.Revision != request.ExpectedProjectRevision {
+			return &ProjectRevisionConflictError{
+				ProjectID: request.ProjectID,
+				Expected:  request.ExpectedProjectRevision,
+				Actual:    project.Revision,
+			}
 		}
 		if !projectCanStart(project.Project.State) {
 			return fmt.Errorf("project %q cannot start from state %q", request.ProjectID, project.Project.State)
@@ -593,6 +601,9 @@ func (store *Store) RecordUnexpectedProjectExit(ctx context.Context, request Rec
 // validateBeginProjectStartRequest rejects uncorrelated session intent before writer admission.
 func validateBeginProjectStartRequest(request BeginProjectStartRequest) error {
 	if err := validateLifecycleOperationRequest(request.ProjectID, request.OperationID, request.ExpectedOperationRevision, request.Phase, request.At); err != nil {
+		return err
+	}
+	if _, err := sequenceToModelInt("expected project revision", request.ExpectedProjectRevision, false); err != nil {
 		return err
 	}
 	if err := request.Session.Validate(); err != nil {

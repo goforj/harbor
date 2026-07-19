@@ -242,6 +242,52 @@ func (journal *OperationJournal) Transition(
 	return result, nil
 }
 
+// FailQueued atomically records the required running edge and actionable terminal failure for pre-effect work.
+func (journal *OperationJournal) FailQueued(
+	ctx context.Context,
+	operationID domain.OperationID,
+	expectedRevision domain.Sequence,
+	runningPhase string,
+	failurePhase string,
+	at time.Time,
+	problem domain.Problem,
+) (OperationRecord, error) {
+	ctx = normalizeContext(ctx)
+	if err := operationID.Validate(); err != nil {
+		return OperationRecord{}, err
+	}
+
+	var result OperationRecord
+	err := journal.mutations.mutate(ctx, "fail queued operation", func(tx *gorm.DB) error {
+		running, err := transitionOperationInTransaction(
+			tx,
+			operationID,
+			expectedRevision,
+			domain.OperationRunning,
+			runningPhase,
+			at,
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+		result, err = transitionOperationInTransaction(
+			tx,
+			operationID,
+			running.Revision,
+			domain.OperationFailed,
+			failurePhase,
+			at,
+			&problem,
+		)
+		return err
+	})
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	return result, nil
+}
+
 // transitionOperationInTransaction applies one fully guarded operation edge without opening a nested writer transaction.
 func transitionOperationInTransaction(
 	tx *gorm.DB,

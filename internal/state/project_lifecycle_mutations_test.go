@@ -30,6 +30,7 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 		ProjectID:                 project.ID,
 		OperationID:               startQueued.Operation.ID,
 		ExpectedOperationRevision: startQueued.Revision,
+		ExpectedProjectRevision:   projectLifecycleTestProjectRevision(t, store, project.ID),
 		Session:                   session,
 		Phase:                     "launching forj dev",
 		At:                        startAt,
@@ -167,7 +168,8 @@ func TestBeginProjectStartPermitsRetryableTerminalStates(t *testing.T) {
 			at := queued.Operation.RequestedAt.Add(time.Second)
 			result, err := store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
 				ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
-				Session: projectLifecycleTestPlannedSession(t, project.ID, at), Phase: "retrying forj dev", At: at,
+				ExpectedProjectRevision: projectLifecycleTestProjectRevision(t, store, project.ID),
+				Session:                 projectLifecycleTestPlannedSession(t, project.ID, at), Phase: "retrying forj dev", At: at,
 			})
 			if err != nil {
 				t.Fatalf("BeginProjectStart() error = %v", err)
@@ -176,6 +178,50 @@ func TestBeginProjectStartPermitsRetryableTerminalStates(t *testing.T) {
 				t.Fatalf("BeginProjectStart() = %#v", result)
 			}
 		})
+	}
+}
+
+// TestBeginProjectStartRejectsProjectRevisionDrift keeps an admitted checkout from launching after its aggregate changes.
+func TestBeginProjectStartRejectsProjectRevisionDrift(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project := emptyProjectStoreMutationProject("project-start-revision-race")
+	admitted, err := store.PutProject(t.Context(), project)
+	if err != nil {
+		t.Fatalf("PutProject() error = %v", err)
+	}
+	queued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectStart, project.ID, "revision-race")
+
+	drifted := admitted.Project
+	drifted.Path = filepath.Join(t.TempDir(), "moved-checkout")
+	drifted.UpdatedAt = queued.Operation.RequestedAt.Add(time.Second)
+	current, err := store.PutProject(t.Context(), drifted)
+	if err != nil {
+		t.Fatalf("PutProject(drifted) error = %v", err)
+	}
+	sequenceBeforeBegin := projectStoreMutationSequence(t, store)
+	startAt := drifted.UpdatedAt.Add(time.Second)
+	_, err = store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
+		ProjectID:                 project.ID,
+		OperationID:               queued.Operation.ID,
+		ExpectedOperationRevision: queued.Revision,
+		ExpectedProjectRevision:   admitted.Revision,
+		Session:                   projectLifecycleTestPlannedSession(t, project.ID, startAt),
+		Phase:                     "launching forj dev",
+		At:                        startAt,
+	})
+	var conflict *ProjectRevisionConflictError
+	if !errors.As(err, &conflict) || conflict.Expected != admitted.Revision || conflict.Actual != current.Revision {
+		t.Fatalf("BeginProjectStart(project drift) error = %#v, want revision %d/%d conflict", err, admitted.Revision, current.Revision)
+	}
+	if projectStoreMutationSequence(t, store) != sequenceBeforeBegin {
+		t.Fatal("rejected project start advanced the global sequence")
+	}
+	operation := networkReleaseTestOperation(t, store, queued.Operation.ID)
+	if operation.Operation.State != domain.OperationQueued || operation.Revision != queued.Revision {
+		t.Fatalf("operation after rejected project start = %#v", operation)
+	}
+	if _, err := store.ActiveProjectSession(t.Context(), project.ID); err == nil {
+		t.Fatal("rejected project start created an active session")
 	}
 }
 
@@ -192,7 +238,8 @@ func TestProjectLifecycleFailureAndUnexpectedExitRetireOnlyConfirmedProcessAutho
 		session := projectLifecycleTestPlannedSession(t, project.ID, at)
 		running, err := store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
 			ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
-			Session: session, Phase: "launching forj dev", At: at,
+			ExpectedProjectRevision: projectLifecycleTestProjectRevision(t, store, project.ID),
+			Session:                 session, Phase: "launching forj dev", At: at,
 		})
 		if err != nil {
 			t.Fatalf("BeginProjectStart() error = %v", err)
@@ -251,7 +298,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 	problem := domain.Problem{Code: "launch_failed", Message: "GoForj development process could not start.", Retryable: true}
 
 	validBegin := BeginProjectStartRequest{
-		ProjectID: projectID, OperationID: "operation-validation", ExpectedOperationRevision: 1,
+		ProjectID: projectID, OperationID: "operation-validation", ExpectedOperationRevision: 1, ExpectedProjectRevision: 2,
 		Session: session, Phase: "launching", At: at,
 	}
 	for _, test := range []struct {
@@ -261,6 +308,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		{name: "project", mutate: func(request *BeginProjectStartRequest) { request.ProjectID = "" }},
 		{name: "operation", mutate: func(request *BeginProjectStartRequest) { request.OperationID = "" }},
 		{name: "revision", mutate: func(request *BeginProjectStartRequest) { request.ExpectedOperationRevision = 0 }},
+		{name: "project revision", mutate: func(request *BeginProjectStartRequest) { request.ExpectedProjectRevision = 0 }},
 		{name: "phase", mutate: func(request *BeginProjectStartRequest) { request.Phase = " " }},
 		{name: "time", mutate: func(request *BeginProjectStartRequest) { request.At = time.Time{} }},
 		{name: "session", mutate: func(request *BeginProjectStartRequest) { request.Session.ID = "" }},
@@ -418,7 +466,8 @@ func TestProjectLifecycleMutationsFenceGenerationAndRollbackLateFailures(t *test
 	session := projectLifecycleTestPlannedSession(t, project.ID, at)
 	running, err := store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
 		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
-		Session: session, Phase: "launching forj dev", At: at,
+		ExpectedProjectRevision: projectLifecycleTestProjectRevision(t, store, project.ID),
+		Session:                 session, Phase: "launching forj dev", At: at,
 	})
 	if err != nil {
 		t.Fatalf("BeginProjectStart() error = %v", err)
@@ -479,7 +528,8 @@ func TestBeginProjectStartConcurrentExactRetryCommitsOnce(t *testing.T) {
 	at := queued.Operation.RequestedAt.Add(time.Second)
 	request := BeginProjectStartRequest{
 		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
-		Session: projectLifecycleTestPlannedSession(t, project.ID, at), Phase: "launching forj dev", At: at,
+		ExpectedProjectRevision: projectLifecycleTestProjectRevision(t, store, project.ID),
+		Session:                 projectLifecycleTestPlannedSession(t, project.ID, at), Phase: "launching forj dev", At: at,
 	}
 
 	const workers = 8
@@ -589,6 +639,20 @@ func projectLifecycleTestProcess(t *testing.T) domain.ProcessEvidence {
 	}
 }
 
+// projectLifecycleTestProjectRevision reads the exact project boundary that a start request must fence.
+func projectLifecycleTestProjectRevision(
+	t *testing.T,
+	store *Store,
+	projectID domain.ProjectID,
+) domain.Sequence {
+	t.Helper()
+	project, err := store.Project(t.Context(), projectID)
+	if err != nil {
+		t.Fatalf("read lifecycle project revision: %v", err)
+	}
+	return project.Revision
+}
+
 // projectLifecycleTestRuntime creates the default App projection produced after a successful local readiness probe.
 func projectLifecycleTestRuntime() DefaultProjectRuntime {
 	return DefaultProjectRuntime{
@@ -616,7 +680,8 @@ func projectLifecycleTestReadyProject(
 	session := projectLifecycleTestPlannedSession(t, project.ID, at)
 	running, err := store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
 		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
-		Session: session, Phase: "launching forj dev", At: at,
+		ExpectedProjectRevision: projectLifecycleTestProjectRevision(t, store, project.ID),
+		Session:                 session, Phase: "launching forj dev", At: at,
 	})
 	if err != nil {
 		t.Fatalf("BeginProjectStart() error = %v", err)
