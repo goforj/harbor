@@ -15,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/session"
 	"github.com/goforj/harbor/internal/state"
@@ -127,7 +128,7 @@ func TestNewAuthorityUsesCurrentBuild(t *testing.T) {
 	)
 	want := buildinfo.Current()
 
-	authority := NewAuthority(store)
+	authority := NewAuthority(store, new(reconcile.ProjectUnregisterCoordinator))
 	if authority == nil {
 		t.Fatal("NewAuthority() returned nil")
 	}
@@ -140,7 +141,7 @@ func TestNewAuthorityUsesCurrentBuild(t *testing.T) {
 func TestAuthorityStatusMapsServingState(t *testing.T) {
 	store := &recordingStore{sequence: 42}
 	build := buildinfo.Info{Version: "v3.2.1", Revision: "abc123", Modified: true}
-	authority := newAuthority(store, build)
+	authority := newAuthority(store, testProjectUnregisterApprovals(), build)
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1, "events.v1"})
 
 	status, err := authority.Status(context.Background(), caller)
@@ -173,7 +174,7 @@ func TestAuthorityStatusMapsServingState(t *testing.T) {
 // TestAuthorityStatusReturnsFreshCanonicalCapabilities verifies caller-owned slices cannot alter status results across calls.
 func TestAuthorityStatusReturnsFreshCanonicalCapabilities(t *testing.T) {
 	store := &recordingStore{sequence: 9}
-	authority := newAuthority(store, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 	capabilities := []rpc.Capability{"events.v1", control.CapabilityV1, "events.v1"}
 	caller := controlCaller(capabilities)
 
@@ -205,7 +206,7 @@ func TestAuthorityStatusReturnsFreshCanonicalCapabilities(t *testing.T) {
 func TestAuthorityNormalizesNilContexts(t *testing.T) {
 	snapshot := emptySnapshot(7)
 	store := &recordingStore{sequence: snapshot.Sequence, snapshot: snapshot}
-	authority := newAuthority(store, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1})
 
 	if _, err := authority.Status(nil, caller); err != nil {
@@ -225,12 +226,12 @@ func TestAuthorityPreservesStoreErrorsAndCancellation(t *testing.T) {
 	snapshotFailure := errors.New("snapshot unavailable")
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1})
 
-	statusAuthority := newAuthority(&recordingStore{sequenceErr: statusFailure}, buildinfo.Info{Version: "dev"})
+	statusAuthority := newAuthority(&recordingStore{sequenceErr: statusFailure}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 	if _, err := statusAuthority.Status(context.Background(), caller); !errors.Is(err, statusFailure) {
 		t.Fatalf("Status() error = %v, want %v", err, statusFailure)
 	}
 
-	snapshotAuthority := newAuthority(&recordingStore{snapshotErr: snapshotFailure}, buildinfo.Info{Version: "dev"})
+	snapshotAuthority := newAuthority(&recordingStore{snapshotErr: snapshotFailure}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 	if _, err := snapshotAuthority.Snapshot(context.Background(), caller); !errors.Is(err, snapshotFailure) {
 		t.Fatalf("Snapshot() error = %v, want %v", err, snapshotFailure)
 	}
@@ -248,7 +249,7 @@ func TestAuthorityPreservesStoreErrorsAndCancellation(t *testing.T) {
 		{name: "deadline", ctx: expired, want: context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			authority := newAuthority(&recordingStore{}, buildinfo.Info{Version: "dev"})
+			authority := newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 			if _, err := authority.Status(test.ctx, caller); !errors.Is(err, test.want) {
 				t.Fatalf("Status() error = %v, want %v", err, test.want)
 			}
@@ -262,7 +263,7 @@ func TestAuthorityPreservesStoreErrorsAndCancellation(t *testing.T) {
 // TestAuthorityRejectsInvalidNegotiatedCapabilities verifies malformed direct calls do not emit invalid status data.
 func TestAuthorityRejectsInvalidNegotiatedCapabilities(t *testing.T) {
 	store := &recordingStore{sequence: 5}
-	authority := newAuthority(store, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 	caller := controlCaller([]rpc.Capability{"bad capability"})
 
 	if _, err := authority.Status(context.Background(), caller); err == nil {
@@ -277,7 +278,7 @@ func TestAuthorityRejectsInvalidNegotiatedCapabilities(t *testing.T) {
 func TestAuthoritySnapshotPassesThroughStoreState(t *testing.T) {
 	snapshot := emptySnapshot(17)
 	store := &recordingStore{snapshot: snapshot}
-	authority := newAuthority(store, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"})
 
 	got, err := authority.Snapshot(context.Background(), control.Caller{})
 	if err != nil {
@@ -296,7 +297,7 @@ func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 	const readers = 64
 	snapshot := emptySnapshot(71)
 	store := &recordingStore{sequence: snapshot.Sequence, snapshot: snapshot}
-	authority := newAuthority(store, buildinfo.Info{Version: "v1.0.0", Revision: "race-safe"})
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "v1.0.0", Revision: "race-safe"})
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1, "events.v1"})
 	errorsFound := make(chan error, readers*2)
 	start := make(chan struct{})

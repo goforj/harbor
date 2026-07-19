@@ -1,13 +1,37 @@
 package control
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/rpc"
+	"github.com/goforj/harbor/internal/rpc/session"
 )
+
+// TestProjectUnregisterApprovalErrorConstructorsKeepWireClassificationInControl verifies authority can classify without depending on session internals.
+func TestProjectUnregisterApprovalErrorConstructorsKeepWireClassificationInControl(t *testing.T) {
+	cause := errors.New("durable approval state changed")
+	for _, test := range []struct {
+		name      string
+		construct func(error) error
+		want      rpc.ErrorCode
+	}{
+		{name: "conflict", construct: NewProjectUnregisterApprovalConflictError, want: rpc.ErrorCodeConflict},
+		{name: "not found", construct: NewProjectUnregisterApprovalNotFoundError, want: rpc.ErrorCodeNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.construct(cause)
+			var handlerError *session.HandlerError
+			if !errors.As(err, &handlerError) || handlerError.Code() != test.want || !errors.Is(err, cause) {
+				t.Fatalf("constructed error = %#v, want %q wrapping cause", err, test.want)
+			}
+		})
+	}
+}
 
 // TestProjectUnregisterApprovalRequestsValidateExactSelections covers both request types and shared revision bounds.
 func TestProjectUnregisterApprovalRequestsValidateExactSelections(t *testing.T) {

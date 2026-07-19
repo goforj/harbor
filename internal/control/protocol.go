@@ -18,11 +18,15 @@ const (
 	CapabilityV1 rpc.Capability = "control.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
+	// CapabilityProjectUnregisterApprovalV1 identifies interactive project-release approval and confirmation.
+	CapabilityProjectUnregisterApprovalV1 rpc.Capability = "control.project-unregister-approval.v1"
 
-	methodDaemonStatus    = "control.v1.daemon.status"
-	methodSnapshot        = "control.v1.snapshot"
-	methodProjectRegister = "control.v1.project.register"
-	maximumBuildToken     = 128
+	methodDaemonStatus                     = "control.v1.daemon.status"
+	methodSnapshot                         = "control.v1.snapshot"
+	methodProjectRegister                  = "control.v1.project.register"
+	methodProjectUnregisterApprovalPrepare = "control.v1.project.unregister.approval.prepare"
+	methodProjectUnregisterApprovalConfirm = "control.v1.project.unregister.approval.confirm"
+	maximumBuildToken                      = 128
 )
 
 var protocolV1 = rpc.Version{Major: 1, Minor: 0}
@@ -158,6 +162,39 @@ type snapshotResponse struct {
 	Snapshot domain.Snapshot `json:"snapshot"`
 }
 
+// projectUnregisterApprovalPreparationResponse keeps preparation extensible around its reviewed result.
+type projectUnregisterApprovalPreparationResponse struct {
+	Preparation ProjectUnregisterApprovalPreparation `json:"preparation"`
+}
+
+// projectUnregisterApprovalConfirmationResponse keeps confirmation extensible around its reviewed result.
+type projectUnregisterApprovalConfirmationResponse struct {
+	Confirmation ProjectUnregisterApprovalConfirmation `json:"confirmation"`
+}
+
+// validateProjectUnregisterApprovalPreparationCorrelation binds valid progress to the exact selected operation revision.
+func validateProjectUnregisterApprovalPreparationCorrelation(
+	request PrepareProjectUnregisterApprovalRequest,
+	preparation ProjectUnregisterApprovalPreparation,
+) error {
+	if preparation.OperationID != request.OperationID ||
+		preparation.OperationRevision != request.ExpectedOperationRevision {
+		return errors.New("project unregister approval preparation does not match the requested operation revision")
+	}
+	return nil
+}
+
+// validateProjectUnregisterApprovalConfirmationCorrelation binds a valid terminal result to the selected operation.
+func validateProjectUnregisterApprovalConfirmationCorrelation(
+	request ConfirmProjectUnregisterApprovalRequest,
+	confirmation ProjectUnregisterApprovalConfirmation,
+) error {
+	if confirmation.Operation.ID != request.OperationID {
+		return errors.New("project unregister approval confirmation does not match the requested operation")
+	}
+	return nil
+}
+
 // protocolRanges returns a fresh copy so connection configuration cannot mutate package policy.
 func protocolRanges() []rpc.VersionRange {
 	return []rpc.VersionRange{{Min: protocolV1, Max: protocolV1}}
@@ -165,7 +202,11 @@ func protocolRanges() []rpc.VersionRange {
 
 // capabilities returns a fresh copy so connection configuration cannot mutate package policy.
 func capabilities() []rpc.Capability {
-	return []rpc.Capability{CapabilityProjectRegistrationV1, CapabilityV1}
+	return []rpc.Capability{
+		CapabilityProjectRegistrationV1,
+		CapabilityProjectUnregisterApprovalV1,
+		CapabilityV1,
+	}
 }
 
 // buildFromInfo projects process metadata into the reviewed status JSON shape.

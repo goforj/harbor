@@ -35,7 +35,20 @@ func InitializeApplication() (App, error) {
 	networkStateRepo := models.NewNetworkStateRepo(connections)
 	mutationCoordinator := state.NewMutationCoordinator(connections)
 	store := state.NewStore(harborStateRepo, projectRepo, networkStateRepo, mutationCoordinator)
-	authorityAuthority := authority.NewAuthority(store)
+	operationRepo := models.NewOperationRepo(connections)
+	operationTransitionRepo := models.NewOperationTransitionRepo(connections)
+	operationJournal := state.NewOperationJournal(connections, operationRepo, operationTransitionRepo, harborStateRepo, mutationCoordinator)
+	helperApprovalPlanRepo := models.NewHelperApprovalPlanRepo(connections)
+	helperApprovalPlanSource := state.NewHelperApprovalPlanSource(helperApprovalPlanRepo)
+	controller, err := harbordruntime.NewController(store)
+	if err != nil {
+		return App{}, err
+	}
+	projectUnregisterCoordinator, err := provideProjectUnregisterCoordinator(store, operationJournal, helperApprovalPlanSource, controller)
+	if err != nil {
+		return App{}, err
+	}
+	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator)
 	server, err := provideControlServer(authorityAuthority)
 	if err != nil {
 		return App{}, err
@@ -44,11 +57,7 @@ func InitializeApplication() (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	controller, err := harbordruntime.NewController(store)
-	if err != nil {
-		return App{}, err
-	}
-	runner, err := provideDaemonRunner(server, readinessCheck, controller)
+	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator)
 	if err != nil {
 		return App{}, err
 	}

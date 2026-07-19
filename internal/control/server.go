@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/buildinfo"
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/rpc/session"
@@ -22,6 +23,9 @@ const maximumEmptyRequestBytes = 64
 
 // maximumProjectRegistrationRequestBytes allows encoding/json's six-byte escaping of each accepted path byte.
 const maximumProjectRegistrationRequestBytes = maximumRegistrationPathBytes*6 + 16
+
+// maximumProjectUnregisterApprovalRequestBytes covers a maximally escaped domain ID and exact integer revision.
+const maximumProjectUnregisterApprovalRequestBytes = 2048
 
 // ErrorObserver receives daemon-local method diagnostics together with the authenticated caller.
 type ErrorObserver func(Caller, string, error)
@@ -89,9 +93,11 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		Capabilities:   capabilities(),
 		Authorize:      authorizeControlHello,
 		Handlers: map[string]session.Handler{
-			methodDaemonStatus:    server.statusHandler(transportPeer),
-			methodSnapshot:        server.snapshotHandler(transportPeer),
-			methodProjectRegister: server.projectRegisterHandler(transportPeer),
+			methodDaemonStatus:                     server.statusHandler(transportPeer),
+			methodSnapshot:                         server.snapshotHandler(transportPeer),
+			methodProjectRegister:                  server.projectRegisterHandler(transportPeer),
+			methodProjectUnregisterApprovalPrepare: server.projectUnregisterApprovalPrepareHandler(transportPeer),
+			methodProjectUnregisterApprovalConfirm: server.projectUnregisterApprovalConfirmHandler(transportPeer),
 		},
 		ObserveError: server.sessionErrorObserver(transportPeer),
 	})
@@ -101,6 +107,68 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	}
 
 	return controlSession.Serve(ctx, connection)
+}
+
+// projectUnregisterApprovalPrepareHandler derives caller identity before admitting one exact approval selection.
+func (server *Server) projectUnregisterApprovalPrepareHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectUnregisterApprovalV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project unregister approval capability was not negotiated"),
+			)
+		}
+		approvalRequest, err := decodePrepareProjectUnregisterApprovalRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		preparation, err := server.config.Authority.PrepareProjectUnregisterApproval(ctx, caller, approvalRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := preparation.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project unregister approval preparation: %w", err))
+		}
+		if err := validateProjectUnregisterApprovalPreparationCorrelation(approvalRequest, preparation); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project unregister approval preparation: %w", err))
+		}
+		return projectUnregisterApprovalPreparationResponse{Preparation: preparation}, nil
+	}
+}
+
+// projectUnregisterApprovalConfirmHandler derives caller identity before admitting one exact confirmation selection.
+func (server *Server) projectUnregisterApprovalConfirmHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectUnregisterApprovalV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project unregister approval capability was not negotiated"),
+			)
+		}
+		approvalRequest, err := decodeConfirmProjectUnregisterApprovalRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		confirmation, err := server.config.Authority.ConfirmProjectUnregisterApproval(ctx, caller, approvalRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := confirmation.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project unregister approval confirmation: %w", err))
+		}
+		if err := validateProjectUnregisterApprovalConfirmationCorrelation(approvalRequest, confirmation); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project unregister approval confirmation: %w", err))
+		}
+		return projectUnregisterApprovalConfirmationResponse{Confirmation: confirmation}, nil
+	}
 }
 
 // projectRegisterHandler admits only a validated canonical-path request before invoking daemon authority.
@@ -322,6 +390,101 @@ func decodeProjectRegistrationRequest(payload []byte) (RegisterProjectRequest, e
 		return RegisterProjectRequest{}, err
 	}
 	return registrationRequest, nil
+}
+
+// decodePrepareProjectUnregisterApprovalRequest rejects any authority beyond one exact operation revision.
+func decodePrepareProjectUnregisterApprovalRequest(payload []byte) (PrepareProjectUnregisterApprovalRequest, error) {
+	operationID, revision, err := decodeProjectUnregisterApprovalSelection(payload)
+	if err != nil {
+		return PrepareProjectUnregisterApprovalRequest{}, err
+	}
+	request := PrepareProjectUnregisterApprovalRequest{
+		OperationID:               operationID,
+		ExpectedOperationRevision: revision,
+	}
+	if err := request.Validate(); err != nil {
+		return PrepareProjectUnregisterApprovalRequest{}, err
+	}
+	return request, nil
+}
+
+// decodeConfirmProjectUnregisterApprovalRequest rejects any authority beyond one exact operation revision.
+func decodeConfirmProjectUnregisterApprovalRequest(payload []byte) (ConfirmProjectUnregisterApprovalRequest, error) {
+	operationID, revision, err := decodeProjectUnregisterApprovalSelection(payload)
+	if err != nil {
+		return ConfirmProjectUnregisterApprovalRequest{}, err
+	}
+	request := ConfirmProjectUnregisterApprovalRequest{
+		OperationID:               operationID,
+		ExpectedOperationRevision: revision,
+	}
+	if err := request.Validate(); err != nil {
+		return ConfirmProjectUnregisterApprovalRequest{}, err
+	}
+	return request, nil
+}
+
+// decodeProjectUnregisterApprovalSelection parses both approval methods through one duplicate-aware object contract.
+func decodeProjectUnregisterApprovalSelection(payload []byte) (domain.OperationID, domain.Sequence, error) {
+	if len(payload) == 0 || len(payload) > maximumProjectUnregisterApprovalRequestBytes {
+		return "", 0, errors.New("project unregister approval request exceeds its bounded object shape")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	opening, err := decoder.Token()
+	if err != nil {
+		return "", 0, fmt.Errorf("decode project unregister approval request: %w", err)
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return "", 0, errors.New("project unregister approval request must be an object")
+	}
+	var operationID domain.OperationID
+	var revision domain.Sequence
+	operationSeen := false
+	revisionSeen := false
+	for decoder.More() {
+		fieldToken, err := decoder.Token()
+		if err != nil {
+			return "", 0, fmt.Errorf("decode project unregister approval field: %w", err)
+		}
+		field, ok := fieldToken.(string)
+		if !ok {
+			return "", 0, errors.New("project unregister approval field name must be a string")
+		}
+		switch field {
+		case "operation_id":
+			if operationSeen {
+				return "", 0, errors.New("project unregister approval request contains duplicate field \"operation_id\"")
+			}
+			if err := decoder.Decode(&operationID); err != nil {
+				return "", 0, fmt.Errorf("decode project unregister approval operation ID: %w", err)
+			}
+			operationSeen = true
+		case "expected_operation_revision":
+			if revisionSeen {
+				return "", 0, errors.New("project unregister approval request contains duplicate field \"expected_operation_revision\"")
+			}
+			if err := decoder.Decode(&revision); err != nil {
+				return "", 0, fmt.Errorf("decode project unregister approval revision: %w", err)
+			}
+			revisionSeen = true
+		default:
+			return "", 0, fmt.Errorf("project unregister approval request contains unknown field %q", field)
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return "", 0, fmt.Errorf("decode project unregister approval request end: %w", err)
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return "", 0, errors.New("project unregister approval request object is not terminated")
+	}
+	if !operationSeen || !revisionSeen {
+		return "", 0, errors.New("project unregister approval request requires operation_id and expected_operation_revision")
+	}
+	if err := requireJSONEnd(decoder); err != nil {
+		return "", 0, err
+	}
+	return operationID, revision, nil
 }
 
 // requireJSONEnd rejects concatenated JSON values that could be interpreted differently by another client.

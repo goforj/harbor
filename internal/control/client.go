@@ -157,6 +157,62 @@ func (client *Client) RegisterProject(ctx context.Context, request RegisterProje
 	return response.Registration, nil
 }
 
+// PrepareProjectUnregisterApproval requests progress and at most one caller-bound helper capability.
+func (client *Client) PrepareProjectUnregisterApproval(
+	ctx context.Context,
+	request PrepareProjectUnregisterApprovalRequest,
+) (ProjectUnregisterApprovalPreparation, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectUnregisterApprovalPreparation{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectUnregisterApprovalV1) {
+		return ProjectUnregisterApprovalPreparation{}, errors.New("Harbor daemon does not support project unregister approval; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectUnregisterApprovalPrepare, request)
+	if err != nil {
+		return ProjectUnregisterApprovalPreparation{}, err
+	}
+	var response projectUnregisterApprovalPreparationResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectUnregisterApprovalPreparation{}, fmt.Errorf("decode project unregister approval preparation response: %w", err)
+	}
+	if err := response.Preparation.Validate(); err != nil {
+		return ProjectUnregisterApprovalPreparation{}, fmt.Errorf("validate project unregister approval preparation response: %w", err)
+	}
+	if err := validateProjectUnregisterApprovalPreparationCorrelation(request, response.Preparation); err != nil {
+		return ProjectUnregisterApprovalPreparation{}, fmt.Errorf("validate project unregister approval preparation response: %w", err)
+	}
+	return response.Preparation, nil
+}
+
+// ConfirmProjectUnregisterApproval verifies completed helper effects and finishes the durable unregister operation.
+func (client *Client) ConfirmProjectUnregisterApproval(
+	ctx context.Context,
+	request ConfirmProjectUnregisterApprovalRequest,
+) (ProjectUnregisterApprovalConfirmation, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectUnregisterApprovalConfirmation{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectUnregisterApprovalV1) {
+		return ProjectUnregisterApprovalConfirmation{}, errors.New("Harbor daemon does not support project unregister approval; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectUnregisterApprovalConfirm, request)
+	if err != nil {
+		return ProjectUnregisterApprovalConfirmation{}, err
+	}
+	var response projectUnregisterApprovalConfirmationResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectUnregisterApprovalConfirmation{}, fmt.Errorf("decode project unregister approval confirmation response: %w", err)
+	}
+	if err := response.Confirmation.Validate(); err != nil {
+		return ProjectUnregisterApprovalConfirmation{}, fmt.Errorf("validate project unregister approval confirmation response: %w", err)
+	}
+	if err := validateProjectUnregisterApprovalConfirmationCorrelation(request, response.Confirmation); err != nil {
+		return ProjectUnregisterApprovalConfirmation{}, fmt.Errorf("validate project unregister approval confirmation response: %w", err)
+	}
+	return response.Confirmation, nil
+}
+
 // Done closes when the daemon connection becomes terminal.
 func (client *Client) Done() <-chan struct{} {
 	return client.session.Done()

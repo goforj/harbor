@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/goforj/harbor/internal/buildinfo"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/projectdiscovery"
+	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -32,9 +35,18 @@ type projectDiscoverer interface {
 	Discover(context.Context, string) (projectdiscovery.Discovery, error)
 }
 
+// projectUnregisterApprovalCoordinator limits authority to interactive approval methods rather than recovery internals.
+type projectUnregisterApprovalCoordinator interface {
+	// Prepare returns release progress and at most one caller-bound helper capability.
+	Prepare(context.Context, reconcile.PrepareRequest) (reconcile.PrepareResult, error)
+	// Confirm independently verifies release effects and completes the unregister operation.
+	Confirm(context.Context, reconcile.ConfirmRequest) (state.OperationRecord, error)
+}
+
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
 	store        controlState
+	approvals    projectUnregisterApprovalCoordinator
 	build        buildinfo.Info
 	discoverer   projectDiscoverer
 	now          func() time.Time
@@ -43,25 +55,68 @@ type Authority struct {
 
 var _ control.Authority = (*Authority)(nil)
 
-// NewAuthority creates the production control authority for the daemon's shared state store.
-func NewAuthority(store *state.Store) *Authority {
-	return newAuthority(store, buildinfo.Current())
+// NewAuthority creates the production control authority from durable state and unregister approval coordination.
+func NewAuthority(store *state.Store, approvals *reconcile.ProjectUnregisterCoordinator) *Authority {
+	if store == nil || approvals == nil {
+		panic("authority.NewAuthority requires non-nil state and approval dependencies")
+	}
+	return newAuthority(store, approvals, buildinfo.Current())
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
-func newAuthority(store controlState, build buildinfo.Info) *Authority {
-	return newAuthorityWithRegistration(store, build, projectdiscovery.NewDiscoverer(), time.Now, newOpaqueProjectID)
+func newAuthority(
+	store controlState,
+	approvals projectUnregisterApprovalCoordinator,
+	build buildinfo.Info,
+) *Authority {
+	return newAuthorityWithRegistration(
+		store,
+		approvals,
+		build,
+		projectdiscovery.NewDiscoverer(),
+		time.Now,
+		newOpaqueProjectID,
+	)
 }
 
 // newAuthorityWithRegistration keeps discovery and clock behavior deterministic in registration tests.
 func newAuthorityWithRegistration(
 	store controlState,
+	approvals projectUnregisterApprovalCoordinator,
 	build buildinfo.Info,
 	discoverer projectDiscoverer,
 	now func() time.Time,
 	newProjectID func() (domain.ProjectID, error),
 ) *Authority {
-	return &Authority{store: store, build: build, discoverer: discoverer, now: now, newProjectID: newProjectID}
+	if nilAuthorityDependency(store) ||
+		nilAuthorityDependency(approvals) ||
+		nilAuthorityDependency(discoverer) ||
+		nilAuthorityDependency(now) ||
+		nilAuthorityDependency(newProjectID) {
+		panic("authority.newAuthorityWithRegistration requires every dependency")
+	}
+	return &Authority{
+		store:        store,
+		approvals:    approvals,
+		build:        build,
+		discoverer:   discoverer,
+		now:          now,
+		newProjectID: newProjectID,
+	}
+}
+
+// nilAuthorityDependency rejects nil and typed-nil collaborators before request dispatch can panic.
+func nilAuthorityDependency(dependency any) bool {
+	if dependency == nil {
+		return true
+	}
+	value := reflect.ValueOf(dependency)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Status joins session negotiation with one durable sequence so diagnostics identify the exact authority serving the caller.
@@ -142,6 +197,123 @@ func (authority *Authority) RegisterProject(
 		return control.ProjectRegistration{}, fmt.Errorf("project registration result: %w", err)
 	}
 	return result, nil
+}
+
+// PrepareProjectUnregisterApproval binds helper authority exclusively to the authenticated transport identity.
+func (authority *Authority) PrepareProjectUnregisterApproval(
+	ctx context.Context,
+	caller control.Caller,
+	request control.PrepareProjectUnregisterApprovalRequest,
+) (control.ProjectUnregisterApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectUnregisterApprovalPreparation{}, err
+	}
+	prepared, err := authority.approvals.Prepare(ctx, reconcile.PrepareRequest{
+		OperationID:               request.OperationID,
+		ExpectedOperationRevision: request.ExpectedOperationRevision,
+		RequesterIdentity:         caller.Transport.UserID,
+	})
+	if err != nil {
+		return control.ProjectUnregisterApprovalPreparation{}, classifyProjectUnregisterApprovalError(err)
+	}
+	if prepared.OperationID != request.OperationID || prepared.OperationRevision != request.ExpectedOperationRevision {
+		return control.ProjectUnregisterApprovalPreparation{}, errors.New("project unregister approval preparation differs from its requested operation revision")
+	}
+	result := control.ProjectUnregisterApprovalPreparation{
+		OperationID:       prepared.OperationID,
+		OperationRevision: prepared.OperationRevision,
+		ProjectID:         prepared.ProjectID,
+		TotalLeases:       prepared.TotalLeases,
+		ReleasedLeases:    prepared.ReleasedLeases,
+		PendingLeases:     prepared.PendingLeases,
+	}
+	if prepared.Ticket != nil {
+		result.Ticket = &control.HelperApprovalTicket{
+			OperationID: prepared.Ticket.OperationID,
+			LeaseKey: control.HelperApprovalLeaseKey{
+				ProjectID:   prepared.Ticket.LeaseKey.ProjectID,
+				SecondaryID: prepared.Ticket.LeaseKey.SecondaryID,
+			},
+			Reference: prepared.Ticket.Reference,
+			Operation: prepared.Ticket.Operation,
+			Address:   prepared.Ticket.Address.String(),
+			ExpiresAt: prepared.Ticket.ExpiresAt,
+		}
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectUnregisterApprovalPreparation{}, fmt.Errorf("project unregister approval preparation result: %w", err)
+	}
+	return result, nil
+}
+
+// ConfirmProjectUnregisterApproval maps the coordinator's succeeded durable operation into the control result.
+func (authority *Authority) ConfirmProjectUnregisterApproval(
+	ctx context.Context,
+	_ control.Caller,
+	request control.ConfirmProjectUnregisterApprovalRequest,
+) (control.ProjectUnregisterApprovalConfirmation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectUnregisterApprovalConfirmation{}, err
+	}
+	confirmed, err := authority.approvals.Confirm(ctx, reconcile.ConfirmRequest{
+		OperationID:               request.OperationID,
+		ExpectedOperationRevision: request.ExpectedOperationRevision,
+	})
+	if err != nil {
+		return control.ProjectUnregisterApprovalConfirmation{}, classifyProjectUnregisterApprovalError(err)
+	}
+	if confirmed.Operation.ID != request.OperationID {
+		return control.ProjectUnregisterApprovalConfirmation{}, errors.New("project unregister approval confirmation differs from its requested operation")
+	}
+	result := control.ProjectUnregisterApprovalConfirmation{
+		Operation: confirmed.Operation,
+		Revision:  confirmed.Revision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectUnregisterApprovalConfirmation{}, fmt.Errorf("project unregister approval confirmation result: %w", err)
+	}
+	return result, nil
+}
+
+// classifyProjectUnregisterApprovalError maps only reviewed lifecycle failures to stable control categories.
+func classifyProjectUnregisterApprovalError(err error) error {
+	var corruptState *state.CorruptStateError
+	if errors.As(err, &corruptState) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var staleRevision *state.StaleRevisionError
+	var projectBusy *state.ProjectBusyError
+	var projectRevisionConflict *state.ProjectRevisionConflictError
+	var networkRevisionConflict *state.NetworkRevisionConflictError
+	var releaseConflict *state.ProjectNetworkReleaseConflictError
+	var durableReleaseIncomplete *state.ProjectNetworkReleaseIncompleteError
+	var releaseActive *state.ProjectNetworkReleaseActiveError
+	var hostConflict *reconcile.HostStateConflictError
+	var releaseIncomplete *reconcile.ReleaseIncompleteError
+	if errors.As(err, &staleRevision) ||
+		errors.As(err, &projectBusy) ||
+		errors.As(err, &projectRevisionConflict) ||
+		errors.As(err, &networkRevisionConflict) ||
+		errors.As(err, &releaseConflict) ||
+		errors.As(err, &durableReleaseIncomplete) ||
+		errors.As(err, &releaseActive) ||
+		errors.As(err, &hostConflict) ||
+		errors.As(err, &releaseIncomplete) ||
+		errors.Is(err, harbordruntime.ErrProjectWithdrawalUnverified) {
+		return control.NewProjectUnregisterApprovalConflictError(err)
+	}
+	var operationMissing *state.OperationNotFoundError
+	var projectMissing *state.ProjectNotFoundError
+	var releaseMissing *state.ProjectNetworkReleaseNotFoundError
+	if errors.As(err, &operationMissing) || errors.As(err, &projectMissing) || errors.As(err, &releaseMissing) {
+		return control.NewProjectUnregisterApprovalNotFoundError(err)
+	}
+	return err
 }
 
 // newOpaqueProjectID generates an identity that remains independent of checkout path, slug, and configuration.

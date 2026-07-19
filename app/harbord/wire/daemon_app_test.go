@@ -2,6 +2,7 @@ package wire
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,9 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/harbordruntime"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/inspects"
+	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -82,23 +85,88 @@ func TestInitializeApplicationWiresForegroundServices(t *testing.T) {
 	}
 }
 
-// TestDaemonProvidersRejectIncompleteAssembly verifies constructor validation remains at the owning production boundaries.
-func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
-	runtimeController, err := harbordruntime.NewController(new(state.Store))
+// TestProvideProjectUnregisterCoordinatorIsLazy proves production assembly retains machine-global stores behind the issuer factory.
+func TestProvideProjectUnregisterCoordinatorIsLazy(t *testing.T) {
+	store := new(state.Store)
+	operations := new(state.OperationJournal)
+	plans := new(state.HelperApprovalPlanSource)
+	runtimeController, err := harbordruntime.NewController(store)
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
+	}
+	issuerOpenCalls := 0
+	coordinator, err := provideProjectUnregisterCoordinatorWithIssuerOpener(
+		store,
+		operations,
+		plans,
+		runtimeController,
+		func(ticketissuer.PlanSource) (reconcile.TicketIssuer, error) {
+			issuerOpenCalls++
+			return nil, errors.New("issuer opener must remain lazy")
+		},
+	)
+	if err != nil {
+		t.Fatalf("provideProjectUnregisterCoordinatorWithIssuerOpener() error = %v", err)
+	}
+	if coordinator == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener() returned nil coordinator")
+	}
+	if issuerOpenCalls != 0 {
+		t.Fatalf("issuer opener calls after coordinator assembly = %d, want 0", issuerOpenCalls)
+	}
+}
+
+// TestDaemonProvidersRejectIncompleteAssembly verifies constructor validation remains at the owning production boundaries.
+func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
+	store := new(state.Store)
+	operations := new(state.OperationJournal)
+	plans := new(state.HelperApprovalPlanSource)
+	runtimeController, err := harbordruntime.NewController(store)
+	if err != nil {
+		t.Fatalf("NewController() error = %v", err)
+	}
+	openIssuer := func(ticketissuer.PlanSource) (reconcile.TicketIssuer, error) {
+		return nil, errors.New("unused test issuer opener")
+	}
+	coordinator, err := provideProjectUnregisterCoordinatorWithIssuerOpener(
+		store,
+		operations,
+		plans,
+		runtimeController,
+		openIssuer,
+	)
+	if err != nil {
+		t.Fatalf("provideProjectUnregisterCoordinatorWithIssuerOpener() error = %v", err)
 	}
 	if _, err := provideControlServer(nil); err == nil {
 		t.Fatal("provideControlServer(nil) error = nil, want required authority error")
 	}
-	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController); err == nil {
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, runtimeController, openIssuer); err == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil store) error = nil")
+	}
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, nil, plans, runtimeController, openIssuer); err == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil journal) error = nil")
+	}
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, nil, runtimeController, openIssuer); err == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil plans) error = nil")
+	}
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, nil, openIssuer); err == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil runtime) error = nil")
+	}
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, runtimeController, nil); err == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
+	}
+	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator); err == nil {
 		t.Fatal("provideDaemonRunner(nil server) error = nil, want required server error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator); err == nil {
 		t.Fatal("provideDaemonRunner(nil readiness) error = nil, want required readiness error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator); err == nil {
 		t.Fatal("provideDaemonRunner(nil runtime) error = nil, want required runtime error")
+	}
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil); err == nil {
+		t.Fatal("provideDaemonRunner(nil coordinator) error = nil, want required coordinator error")
 	}
 }
 

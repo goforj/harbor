@@ -37,15 +37,53 @@ func (connection *testLocalConn) Peer() local.PeerIdentity {
 
 // recordingAuthority records application-boundary caller identities and returns configured results.
 type recordingAuthority struct {
-	mu                   sync.Mutex
-	status               DaemonStatus
-	snapshot             domain.Snapshot
-	registration         ProjectRegistration
-	statusErr            error
-	snapshotErr          error
-	registrationErr      error
-	callers              []Caller
-	registrationRequests []RegisterProjectRequest
+	mu                      sync.Mutex
+	status                  DaemonStatus
+	snapshot                domain.Snapshot
+	registration            ProjectRegistration
+	approvalPreparation     ProjectUnregisterApprovalPreparation
+	approvalConfirmation    ProjectUnregisterApprovalConfirmation
+	statusErr               error
+	snapshotErr             error
+	registrationErr         error
+	approvalPrepareErr      error
+	approvalConfirmErr      error
+	callers                 []Caller
+	registrationRequests    []RegisterProjectRequest
+	approvalPrepareRequests []PrepareProjectUnregisterApprovalRequest
+	approvalConfirmRequests []ConfirmProjectUnregisterApprovalRequest
+}
+
+// PrepareProjectUnregisterApproval records the authenticated caller and exact approval selection.
+func (authority *recordingAuthority) PrepareProjectUnregisterApproval(
+	ctx context.Context,
+	caller Caller,
+	request PrepareProjectUnregisterApprovalRequest,
+) (ProjectUnregisterApprovalPreparation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectUnregisterApprovalPreparation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.approvalPrepareRequests = append(authority.approvalPrepareRequests, request)
+	authority.mu.Unlock()
+	return authority.approvalPreparation, authority.approvalPrepareErr
+}
+
+// ConfirmProjectUnregisterApproval records the authenticated caller and exact confirmation selection.
+func (authority *recordingAuthority) ConfirmProjectUnregisterApproval(
+	ctx context.Context,
+	caller Caller,
+	request ConfirmProjectUnregisterApprovalRequest,
+) (ProjectUnregisterApprovalConfirmation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectUnregisterApprovalConfirmation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.approvalConfirmRequests = append(authority.approvalConfirmRequests, request)
+	authority.mu.Unlock()
+	return authority.approvalConfirmation, authority.approvalConfirmErr
 }
 
 // RegisterProject records the authenticated caller and request before returning the configured registration.
@@ -236,7 +274,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.project-registration.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.project-registration.v1","control.project-unregister-approval.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}
