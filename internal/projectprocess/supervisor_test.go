@@ -63,6 +63,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "dev-service-ip-address=%s\n", os.Getenv("DEV_SERVICE_IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "ip-address=%s\n", os.Getenv("IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "api-http-host=%s\n", os.Getenv("API_HTTP_HOST"))
+	fmt.Fprintf(os.Stdout, "db-host=%s\n", os.Getenv("DB_HOST"))
 	fmt.Fprintf(os.Stdout, "managed-keys=%s\n", os.Getenv(managedEnvKeysName))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
@@ -289,6 +290,9 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 // TestStartAppliesExplicitEnvironmentOverrides proves managed values win while unrelated captured values remain intact.
 func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, ".env.host"), []byte("DB_HOST=127.0.0.1\n"), 0o600); err != nil {
+		t.Fatalf("write project host environment: %v", err)
+	}
 	stdout := &synchronizedBuffer{}
 	installForjHelper(t, "exit")
 
@@ -325,10 +329,11 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	waitForOutput(t, stdout, "dev-service-ip-address=127.0.0.42")
 	waitForOutput(t, stdout, "ip-address=127.0.0.42")
 	waitForOutput(t, stdout, "api-http-host=127.0.0.42")
+	waitForOutput(t, stdout, "db-host=127.0.0.42")
 	waitForOutput(t, stdout, "override=managed")
 	waitForOutput(t, stdout, "empty=true:")
 	waitForOutput(t, stdout, "unrelated=preserved")
-	waitForOutput(t, stdout, "managed-keys=API_HTTP_HOST,DEV_SERVICE_IP_ADDRESS,HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
+	waitForOutput(t, stdout, "managed-keys=API_HTTP_HOST,DB_HOST,DEV_SERVICE_IP_ADDRESS,HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
 	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
 		t.Fatalf("managed project retained captured override values: %q", output)
 	}
