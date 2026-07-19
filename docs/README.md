@@ -38,6 +38,7 @@ No repository port files need to change, and stopping or unregistering a project
 
 ## Documents
 
+- [Source development](./development.md) explains how to build and bootstrap the privileged helper from source on macOS and Linux.
 - [Product design](./product-design.md) defines the user model, workflows, UI, lifecycle, and product boundary.
 - [Frontend](./frontend.md) defines the inherited GoForj starter foundation, Harbor component boundary, Lerd styling adaptation, state bridge, and UI test strategy.
 - [Architecture](./architecture.md) defines processes, ownership, IPC, state, reconciliation, privilege, packaging, and recovery.
