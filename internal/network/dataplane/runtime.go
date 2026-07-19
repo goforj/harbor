@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -27,11 +28,13 @@ var (
 	ErrAlreadyStarted = errors.New("data plane runtime lifecycle has already started")
 	// ErrClosed reports that shutdown interrupted startup or preceded it.
 	ErrClosed = errors.New("data plane runtime is closed")
+	// ErrNotReady reports that a route replacement reached a runtime outside its ready lifecycle.
+	ErrNotReady = errors.New("data plane runtime is not ready")
 )
 
-// Config defines one immutable generation and its bounded lifecycle policy.
+// Config defines one initial generation and its bounded lifecycle policy.
 type Config struct {
-	// Desired is the complete validated route and listener generation.
+	// Desired is the initial complete validated route and listener generation.
 	Desired DesiredState
 	// CertificateProvider supplies certificates only for already-authorized exact HTTP hosts.
 	// It is required whenever Desired owns the paired HTTP and HTTPS listeners.
@@ -51,12 +54,15 @@ type Runtime struct {
 	beforeReadyPublication func()
 	afterStopPublication   func()
 
-	dns     *dnsserver.Server
-	ingress *httpingress.Server
-	relays  []managedRelay
+	dns            *dnsserver.Server
+	ingress        *httpingress.Server
+	replaceDNS     func(dnsserver.Snapshot) error
+	replaceIngress func(*httpingress.Snapshot) error
+	relays         []managedRelay
 
 	mutex       sync.RWMutex
 	state       State
+	desired     DesiredState
 	run         *runtimeRun
 	terminalErr error
 	stop        chan struct{}
@@ -120,6 +126,7 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 		beforeReadyPublication: dependencies.beforeReadyPublication,
 		afterStopPublication:   dependencies.afterStopPublication,
 		state:                  StateNew,
+		desired:                config.Desired,
 		stop:                   make(chan struct{}),
 		done:                   make(chan struct{}),
 		relays:                 make([]managedRelay, 0, len(config.Desired.nativeRoutes)),
@@ -132,6 +139,7 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 			return nil, fmt.Errorf("create data plane DNS server: %w", err)
 		}
 		runtime.dns = server
+		runtime.replaceDNS = server.Replace
 	}
 	if config.Desired.listeners.HTTP != (netip.AddrPort{}) {
 		router, err := httpingress.NewRouter(httpingress.Config{}, config.Desired.ingressSnapshot)
@@ -147,6 +155,7 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 			return nil, fmt.Errorf("create data plane HTTP ingress: %w", err)
 		}
 		runtime.ingress = server
+		runtime.replaceIngress = router.Replace
 	}
 	for _, route := range config.Desired.nativeRoutes {
 		relay, err := tcprelay.New(tcprelay.Config{Upstream: route.Upstream, ShutdownTimeout: config.ShutdownTimeout})
@@ -214,10 +223,131 @@ func (runtime *Runtime) Start(ctx context.Context) error {
 	return nil
 }
 
+// ReplaceHTTPRoutes publishes one validated HTTP route generation without changing owned listeners or native relays.
+func (runtime *Runtime) ReplaceHTTPRoutes(next DesiredState) error {
+	if runtime == nil {
+		return ErrNotReady
+	}
+
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	if runtime.state != StateReady {
+		return fmt.Errorf("%w: lifecycle state is %q", ErrNotReady, runtime.state)
+	}
+	if err := next.validate(); err != nil {
+		return fmt.Errorf("replace data plane HTTP routes: %w", err)
+	}
+	current := runtime.desired
+	if current.listeners != next.listeners {
+		return fmt.Errorf("replace data plane HTTP routes: listener topology must remain unchanged")
+	}
+	if !slices.Equal(current.nativeRoutes, next.nativeRoutes) {
+		return fmt.Errorf("replace data plane HTTP routes: native route topology must remain unchanged")
+	}
+	if current.ttl != next.ttl {
+		return fmt.Errorf("replace data plane HTTP routes: DNS TTL must remain unchanged")
+	}
+	if slices.Equal(current.httpRoutes, next.httpRoutes) {
+		return nil
+	}
+	if runtime.ingress == nil || runtime.replaceIngress == nil || !runtime.ingress.Snapshot().Running {
+		return fmt.Errorf("%w: HTTP ingress is not running", ErrNotReady)
+	}
+	if runtime.dns == nil || runtime.replaceDNS == nil {
+		return fmt.Errorf("%w: DNS is not configured", ErrNotReady)
+	}
+	if _, running := runtime.dns.Address(); !running {
+		return fmt.Errorf("%w: DNS is not running", ErrNotReady)
+	}
+
+	intermediate, err := retainedHTTPDesiredState(current, next)
+	if err != nil {
+		return fmt.Errorf("replace data plane HTTP routes: construct withdrawal generation: %w", err)
+	}
+	currentRecords := current.dnsSnapshot.Records()
+	intermediateRecords := intermediate.dnsSnapshot.Records()
+	nextRecords := next.dnsSnapshot.Records()
+	hasRemovals := !sameDNSRecords(currentRecords, intermediateRecords)
+	hasAdditions := !sameDNSRecords(intermediateRecords, nextRecords)
+
+	if hasRemovals {
+		if err := runtime.replaceDNS(intermediate.dnsSnapshot); err != nil {
+			return fmt.Errorf("replace data plane HTTP routes: withdraw DNS records: %w", err)
+		}
+	}
+	if err := runtime.replaceIngress(next.ingressSnapshot); err != nil {
+		publicationErr := fmt.Errorf("replace data plane HTTP routes: publish ingress routes: %w", err)
+		if !hasRemovals {
+			return publicationErr
+		}
+		if rollbackErr := runtime.replaceDNS(current.dnsSnapshot); rollbackErr != nil {
+			return runtime.failHTTPRouteReplacementLocked(errors.Join(
+				publicationErr,
+				fmt.Errorf("restore DNS after ingress publication failure: %w", rollbackErr),
+			))
+		}
+		return publicationErr
+	}
+	if hasAdditions {
+		if err := runtime.replaceDNS(next.dnsSnapshot); err != nil {
+			publicationErr := fmt.Errorf("replace data plane HTTP routes: publish DNS additions: %w", err)
+			ingressRollbackErr := runtime.replaceIngress(current.ingressSnapshot)
+			if ingressRollbackErr != nil {
+				return runtime.failHTTPRouteReplacementLocked(errors.Join(
+					publicationErr,
+					fmt.Errorf("restore ingress after DNS publication failure: %w", ingressRollbackErr),
+				))
+			}
+			if hasRemovals {
+				if dnsRollbackErr := runtime.replaceDNS(current.dnsSnapshot); dnsRollbackErr != nil {
+					return runtime.failHTTPRouteReplacementLocked(errors.Join(
+						publicationErr,
+						fmt.Errorf("restore DNS after DNS publication failure: %w", dnsRollbackErr),
+					))
+				}
+			}
+			return publicationErr
+		}
+	}
+
+	runtime.desired = next
+	return nil
+}
+
+// retainedHTTPDesiredState keeps only existing HTTP hosts that remain authorized by the next generation.
+func retainedHTTPDesiredState(current DesiredState, next DesiredState) (DesiredState, error) {
+	nextHosts := make(map[string]struct{}, len(next.httpRoutes))
+	for _, route := range next.httpRoutes {
+		nextHosts[route.Host] = struct{}{}
+	}
+	retained := make([]HTTPRoute, 0, len(current.httpRoutes))
+	for _, route := range current.httpRoutes {
+		if _, found := nextHosts[route.Host]; found {
+			retained = append(retained, route)
+		}
+	}
+	return NewDesiredState(current.listeners, retained, current.nativeRoutes, current.ttl)
+}
+
+// failHTTPRouteReplacementLocked stops serving when an unexpected rollback failure leaves publication state unprovable.
+func (runtime *Runtime) failHTTPRouteReplacementLocked(cause error) error {
+	if runtime.terminalErr == nil {
+		runtime.terminalErr = cause
+	} else {
+		runtime.terminalErr = errors.Join(runtime.terminalErr, cause)
+	}
+	runtime.state = StateFailed
+	if runtime.run != nil {
+		runtime.run.cancel()
+	}
+	return cause
+}
+
 // Snapshot returns one defensive, payload-free observation without blocking active traffic.
 func (runtime *Runtime) Snapshot() Snapshot {
 	runtime.mutex.RLock()
 	state := runtime.state
+	desired := runtime.desired
 	run := runtime.run
 	runtime.mutex.RUnlock()
 
@@ -226,7 +356,7 @@ func (runtime *Runtime) Snapshot() Snapshot {
 		Relays: make([]RelayStatus, 0, len(runtime.relays)),
 	}
 	if runtime.dns != nil {
-		address := runtime.config.Desired.listeners.DNS
+		address := desired.listeners.DNS
 		runningAddress, running := runtime.dns.Address()
 		if running {
 			address = runningAddress
@@ -235,13 +365,13 @@ func (runtime *Runtime) Snapshot() Snapshot {
 			Configured: true,
 			Address:    address,
 			Running:    running,
-			Records:    len(runtime.config.Desired.dnsSnapshot.Records()),
+			Records:    len(desired.dnsSnapshot.Records()),
 		}
 	}
 	if runtime.ingress != nil {
 		server := runtime.ingress.Snapshot()
-		httpAddress := runtime.config.Desired.listeners.HTTP
-		httpsAddress := runtime.config.Desired.listeners.HTTPS
+		httpAddress := desired.listeners.HTTP
+		httpsAddress := desired.listeners.HTTPS
 		if server.HTTPAddress.IsValid() {
 			httpAddress = server.HTTPAddress
 		}
@@ -253,7 +383,7 @@ func (runtime *Runtime) Snapshot() Snapshot {
 			HTTPAddress:  httpAddress,
 			HTTPSAddress: httpsAddress,
 			Running:      server.Running,
-			Routes:       len(runtime.config.Desired.httpRoutes),
+			Routes:       len(desired.httpRoutes),
 		}
 	}
 	for _, managed := range runtime.relays {
@@ -625,8 +755,12 @@ func (runtime *Runtime) finishExpectedStart() {
 // finish publishes terminal state only after every owned child and listener has been joined.
 func (runtime *Runtime) finish(terminal error, intentional bool) {
 	runtime.mutex.Lock()
-	runtime.terminalErr = terminal
-	if terminal != nil || !intentional {
+	if runtime.terminalErr == nil {
+		runtime.terminalErr = terminal
+	} else if terminal != nil {
+		runtime.terminalErr = errors.Join(runtime.terminalErr, terminal)
+	}
+	if runtime.terminalErr != nil || !intentional {
 		runtime.state = StateFailed
 	} else {
 		runtime.state = StateStopped
