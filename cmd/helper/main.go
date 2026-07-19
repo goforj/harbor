@@ -28,6 +28,7 @@ type closingReplayGuard interface {
 
 // runtimeDependencies keeps fixed production authority replaceable without redirectable path arguments.
 type runtimeDependencies struct {
+	authorizeInvocation        func() error
 	openTicketRedeemer         func() (closingTicketRedeemer, error)
 	openReplayGuard            func() (closingReplayGuard, error)
 	newLoopbackIdentityHandler func() helper.LoopbackIdentityHandler
@@ -45,6 +46,7 @@ func main() {
 // productionDependencies binds the privileged process to Harbor's compiled machine paths and reviewed OS adapter.
 func productionDependencies() runtimeDependencies {
 	return runtimeDependencies{
+		authorizeInvocation: authorizePlatformInvocation,
 		openTicketRedeemer: func() (closingTicketRedeemer, error) {
 			return ticketredeemer.OpenDefault()
 		},
@@ -59,6 +61,10 @@ func productionDependencies() runtimeDependencies {
 
 // run opens every durable authority boundary before accepting one request from the caller.
 func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.Clock, dependencies runtimeDependencies) (runErr error) {
+	if err := dependencies.authorizeInvocation(); err != nil {
+		return fmt.Errorf("authorize helper invocation: %w", err)
+	}
+
 	redeemer, err := dependencies.openTicketRedeemer()
 	if err != nil {
 		return fmt.Errorf("open helper ticket redeemer: %w", err)

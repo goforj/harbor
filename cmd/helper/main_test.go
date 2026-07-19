@@ -17,7 +17,8 @@ import (
 // TestProductionDependenciesExposeFixedComposition proves the entrypoint declares every required authority adapter.
 func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	dependencies := productionDependencies()
-	if dependencies.openTicketRedeemer == nil || dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil {
+	if dependencies.authorizeInvocation == nil || dependencies.openTicketRedeemer == nil ||
+		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil {
 		t.Fatal("production dependencies are incomplete")
 	}
 	if handler := dependencies.newLoopbackIdentityHandler(); handler == nil {
@@ -51,6 +52,7 @@ func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 	wantEvents := []string{
+		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
 		"new loopback handler",
@@ -66,11 +68,65 @@ func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
 	}
 }
 
+// TestRunFailsFastWithoutAdmissionDependency verifies incomplete production assembly cannot fall through to durable authority.
+func TestRunFailsFastWithoutAdmissionDependency(t *testing.T) {
+	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &[]string{}}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("run() did not panic without its wired admission dependency")
+		}
+		if reader.recorded {
+			t.Fatal("request was read without an admission dependency")
+		}
+	}()
+	_ = run(context.Background(), reader, io.Discard, fixedClock{now: time.Now().UTC()}, runtimeDependencies{})
+}
+
+// TestRunStopsBeforeDurableAuthorityWhenInvocationAdmissionFails proves invalid native consent reaches no request authority.
+func TestRunStopsBeforeDurableAuthorityWhenInvocationAdmissionFails(t *testing.T) {
+	authorizationErr := errors.New("authorization denied")
+	events := make([]string, 0, 1)
+	dependencies := runtimeDependencies{
+		authorizeInvocation: func() error {
+			events = append(events, "authorize invocation")
+			return authorizationErr
+		},
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			t.Fatal("ticket redeemer opened after invocation admission failed")
+			return nil, nil
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			t.Fatal("replay guard opened after invocation admission failed")
+			return nil, nil
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			t.Fatal("loopback handler constructed after invocation admission failed")
+			return nil
+		},
+	}
+	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	var output bytes.Buffer
+	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
+	if !errors.Is(err, authorizationErr) {
+		t.Fatalf("run error = %v, want %v", err, authorizationErr)
+	}
+	if !slices.Equal(events, []string{"authorize invocation"}) {
+		t.Fatalf("events = %#v, want admission only", events)
+	}
+	if reader.recorded || output.Len() != 0 {
+		t.Fatalf("request recorded = %t, output = %q, want neither", reader.recorded, output.String())
+	}
+}
+
 // TestRunStopsBeforeReadingWhenRedeemerOpenFails verifies absent authentication authority reaches no other boundary.
 func TestRunStopsBeforeReadingWhenRedeemerOpenFails(t *testing.T) {
 	openErr := errors.New("ticket redeemer open failed")
 	events := make([]string, 0, 1)
 	dependencies := runtimeDependencies{
+		authorizeInvocation: func() error {
+			events = append(events, "authorize invocation")
+			return nil
+		},
 		openTicketRedeemer: func() (closingTicketRedeemer, error) {
 			events = append(events, "open ticket redeemer")
 			return nil, openErr
@@ -90,7 +146,7 @@ func TestRunStopsBeforeReadingWhenRedeemerOpenFails(t *testing.T) {
 	if !errors.Is(err, openErr) {
 		t.Fatalf("run error = %v, want redeemer open failure", err)
 	}
-	wantEvents := []string{"open ticket redeemer"}
+	wantEvents := []string{"authorize invocation", "open ticket redeemer"}
 	if !slices.Equal(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
 	}
@@ -105,6 +161,10 @@ func TestRunClosesRedeemerWhenReplayOpenFails(t *testing.T) {
 	closeErr := errors.New("redeemer close failed")
 	events := make([]string, 0, 3)
 	dependencies := runtimeDependencies{
+		authorizeInvocation: func() error {
+			events = append(events, "authorize invocation")
+			return nil
+		},
 		openTicketRedeemer: func() (closingTicketRedeemer, error) {
 			events = append(events, "open ticket redeemer")
 			return &testTicketRedeemer{events: &events, closeErr: closeErr}, nil
@@ -124,7 +184,7 @@ func TestRunClosesRedeemerWhenReplayOpenFails(t *testing.T) {
 	if !errors.Is(err, openErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("run error = %v, want open and close failures", err)
 	}
-	wantEvents := []string{"open ticket redeemer", "open replay guard", "close ticket redeemer"}
+	wantEvents := []string{"authorize invocation", "open ticket redeemer", "open replay guard", "close ticket redeemer"}
 	if !slices.Equal(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
 	}
@@ -139,6 +199,10 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 	replayCloseErr := errors.New("replay close failed")
 	events := make([]string, 0, 6)
 	dependencies := runtimeDependencies{
+		authorizeInvocation: func() error {
+			events = append(events, "authorize invocation")
+			return nil
+		},
 		openTicketRedeemer: func() (closingTicketRedeemer, error) {
 			events = append(events, "open ticket redeemer")
 			return &testTicketRedeemer{events: &events, closeErr: redeemerCloseErr}, nil
@@ -159,6 +223,7 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 		t.Fatalf("run error = %v, want request and both close failures", err)
 	}
 	wantEvents := []string{
+		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
 		"new loopback handler",
@@ -295,6 +360,10 @@ func (handler *testLoopbackHandler) ReleaseLoopbackIdentity(_ context.Context, t
 // successfulTestDependencies creates the complete in-memory authority graph used by the entrypoint test.
 func successfulTestDependencies(events *[]string, redemption helper.TicketRedemption) runtimeDependencies {
 	return runtimeDependencies{
+		authorizeInvocation: func() error {
+			*events = append(*events, "authorize invocation")
+			return nil
+		},
 		openTicketRedeemer: func() (closingTicketRedeemer, error) {
 			*events = append(*events, "open ticket redeemer")
 			return &testTicketRedeemer{redemption: redemption, events: events}, nil
