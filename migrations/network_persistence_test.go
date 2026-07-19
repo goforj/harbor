@@ -372,7 +372,7 @@ func TestNetworkReleaseSetDigestMigrationUpgradesAndRollsBack(t *testing.T) {
 		SourcePath: migration.SourcePath(),
 		AppliedAt:  time.Date(2026, time.July, 18, 12, 3, 0, 0, time.UTC),
 	}
-	if err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
+	if _, err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
 		t.Fatalf("apply network release digest migration: %v", err)
 	}
 	if !migrationTableHasColumn(t, databaseConnection, "network_project_releases", "release_set_digest") {
@@ -407,7 +407,7 @@ func TestNetworkReleaseSetDigestMigrationUpgradesAndRollsBack(t *testing.T) {
 		t.Fatal("rolled-back release digest migration retained its ledger record")
 	}
 
-	if err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
+	if _, err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
 		t.Fatalf("reapply network release digest migration: %v", err)
 	}
 	mustExecNetworkMigration(t, databaseConnection, `UPDATE network_project_releases SET
@@ -452,7 +452,7 @@ func TestNetworkReleaseSetDigestMigrationRejectsUnverifiableCompletion(t *testin
 		t.Fatalf("create migration ledger: %v", err)
 	}
 	migration := networkReleaseDigestMigration(t)
-	err := applySQLiteMigration(databaseConnection, migration, migrationRecord{
+	_, err := applySQLiteMigration(databaseConnection, migration, migrationRecord{
 		Name:       migration.Name(),
 		App:        migration.App(),
 		Connection: migration.Connection(),
@@ -486,7 +486,7 @@ func TestNetworkPersistenceMigrationRollbackTracksLedger(t *testing.T) {
 		SourcePath: migration.SourcePath(),
 		AppliedAt:  time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC),
 	}
-	if err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
+	if _, err := applySQLiteMigration(databaseConnection, migration, record); err != nil {
 		t.Fatalf("apply network persistence migration: %v", err)
 	}
 	insertNetworkMigrationState(t, databaseConnection, 1)
@@ -537,7 +537,7 @@ func TestNetworkPersistenceMigrationApplyIsAtomic(t *testing.T) {
 		SourcePath: migration.SourcePath(),
 		AppliedAt:  time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC),
 	}
-	if err := applySQLiteMigration(databaseConnection, migration, record); err == nil {
+	if _, err := applySQLiteMigration(databaseConnection, migration, record); err == nil {
 		t.Fatal("network persistence migration accepted a late DDL conflict")
 	}
 	for _, table := range []string{"network_state", "network_pool_candidates", "network_setup_evidence"} {

@@ -5,6 +5,7 @@ package migrations
 import (
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,7 +76,7 @@ func TestSQLiteApplyMigrationIsAtomic(t *testing.T) {
 			down: func(*gorm.DB) error { return nil },
 		}
 
-		err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration))
+		_, err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration))
 		if !errors.Is(err, failure) {
 			t.Fatalf("applySQLiteMigration() error = %v, want %v", err, failure)
 		}
@@ -99,7 +100,7 @@ func TestSQLiteApplyMigrationIsAtomic(t *testing.T) {
 			down: func(*gorm.DB) error { return nil },
 		}
 
-		if err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration)); err == nil {
+		if _, err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration)); err == nil {
 			t.Fatal("applySQLiteMigration() accepted a rejected ledger insert")
 		}
 		assertAtomicityMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_ledger_failure")
@@ -168,7 +169,7 @@ func TestSQLiteMigrationTransactionCommitsSchemaAndLedger(t *testing.T) {
 		},
 	}
 
-	if err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration)); err != nil {
+	if _, err := applySQLiteMigration(databaseConnection, migration, migrationAtomicityRecord(migration)); err != nil {
 		t.Fatalf("applySQLiteMigration() error = %v", err)
 	}
 	assertAtomicityMigrationPresent(t, databaseConnection, migration.Name(), "atomic_success")
@@ -179,15 +180,111 @@ func TestSQLiteMigrationTransactionCommitsSchemaAndLedger(t *testing.T) {
 	assertAtomicityMigrationAbsent(t, databaseConnection, migration.Name(), "atomic_success")
 }
 
+// TestSQLiteApplyMigrationRechecksLedgerAfterLock proves a stale pre-lock plan cannot execute schema already committed by another runner.
+func TestSQLiteApplyMigrationRechecksLedgerAfterLock(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "migrations.db")
+	dsn := databasePath + "?_pragma=busy_timeout(5000)&_txlock=immediate"
+	firstDatabase := openMigrationAtomicityDatabase(t, dsn)
+	secondDatabase := openMigrationAtomicityDatabase(t, dsn)
+	if err := ensureMigrationsTable(firstDatabase); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+
+	firstLocked := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var schemaCalls atomic.Int32
+	migration := &atomicityTestMigration{
+		name: "concurrent_apply",
+		up: func(tx *gorm.DB) error {
+			if schemaCalls.Add(1) != 1 {
+				return errors.New("schema callback ran more than once")
+			}
+			if err := tx.Exec("CREATE TABLE concurrent_apply (id INTEGER PRIMARY KEY)").Error; err != nil {
+				return err
+			}
+			close(firstLocked)
+			<-releaseFirst
+			return nil
+		},
+		down: func(*gorm.DB) error { return nil },
+	}
+	record := migrationAtomicityRecord(migration)
+
+	type result struct {
+		applied bool
+		err     error
+	}
+	firstResult := make(chan result, 1)
+	go func() {
+		applied, err := applySQLiteMigration(firstDatabase, migration, record)
+		firstResult <- result{applied: applied, err: err}
+	}()
+	<-firstLocked
+
+	secondStarted := make(chan struct{})
+	secondResult := make(chan result, 1)
+	go func() {
+		close(secondStarted)
+		applied, err := applySQLiteMigration(secondDatabase, migration, record)
+		secondResult <- result{applied: applied, err: err}
+	}()
+	<-secondStarted
+	close(releaseFirst)
+
+	first := <-firstResult
+	if first.err != nil || !first.applied {
+		t.Fatalf("first apply = (%t, %v), want (true, nil)", first.applied, first.err)
+	}
+	second := <-secondResult
+	if second.err != nil || second.applied {
+		t.Fatalf("second apply = (%t, %v), want (false, nil)", second.applied, second.err)
+	}
+	if schemaCalls.Load() != 1 {
+		t.Fatalf("schema callback calls = %d, want 1", schemaCalls.Load())
+	}
+	assertAtomicityMigrationPresent(t, firstDatabase, migration.Name(), "concurrent_apply")
+}
+
+// TestSQLiteApplyMigrationRejectsLedgerIdentityCollision proves a matching name cannot authorize a different migration stream.
+func TestSQLiteApplyMigrationRejectsLedgerIdentityCollision(t *testing.T) {
+	databaseConnection := newMigrationAtomicityDatabase(t)
+	migration := &atomicityTestMigration{
+		name: "identity_collision",
+		up: func(*gorm.DB) error {
+			return errors.New("schema callback must not run")
+		},
+		down: func(*gorm.DB) error { return nil },
+	}
+	record := migrationAtomicityRecord(migration)
+	collision := record
+	collision.App = "foreign"
+	if err := databaseConnection.Table("migrations").Create(&collision).Error; err != nil {
+		t.Fatalf("seed colliding ledger row: %v", err)
+	}
+
+	applied, err := applySQLiteMigration(databaseConnection, migration, record)
+	if err == nil || applied {
+		t.Fatalf("applySQLiteMigration() = (%t, %v), want identity error", applied, err)
+	}
+}
+
 // newMigrationAtomicityDatabase opens an isolated file-backed database so transaction tests use one durable SQLite schema.
 func newMigrationAtomicityDatabase(t *testing.T) *gorm.DB {
 	t.Helper()
-	databaseConnection, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open SQLite migration database: %v", err)
-	}
+	databaseConnection := openMigrationAtomicityDatabase(t, filepath.Join(t.TempDir(), "migrations.db"))
 	if err := ensureMigrationsTable(databaseConnection); err != nil {
 		t.Fatalf("create migration ledger: %v", err)
+	}
+
+	return databaseConnection
+}
+
+// openMigrationAtomicityDatabase opens one independently pooled handle for migration concurrency tests.
+func openMigrationAtomicityDatabase(t *testing.T, dsn string) *gorm.DB {
+	t.Helper()
+	databaseConnection, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open SQLite migration database: %v", err)
 	}
 	sqlDatabase, err := databaseConnection.DB()
 	if err != nil {

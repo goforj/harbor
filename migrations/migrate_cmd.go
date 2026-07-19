@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,7 +73,9 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 	}
 
 	var existing []string
-	dbConn.Raw("SELECT name FROM migrations").Scan(&existing)
+	if err := dbConn.Raw("SELECT name FROM migrations").Scan(&existing).Error; err != nil {
+		return 0, fmt.Errorf("read migration ledger: %w", err)
+	}
 	existingMap := map[string]bool{}
 	for _, name := range existing {
 		existingMap[name] = true
@@ -104,8 +107,13 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 				SourcePath: m.SourcePath(),
 				AppliedAt:  time.Now(),
 			}
-			if err := applySQLiteMigration(dbConn, m, record); err != nil {
+			wasApplied, err := applySQLiteMigration(dbConn, m, record)
+			if err != nil {
 				return applied, fmt.Errorf("migration %s failed: %w", m.Name(), err)
+			}
+			if !wasApplied {
+				existingMap[m.Name()] = true
+				continue
 			}
 		} else {
 			if err := m.Up(dbConn); err != nil {
@@ -131,9 +139,21 @@ func (c *MigrateCmd) runStream(stream migrationStream) (int, error) {
 	return applied, nil
 }
 
-// applySQLiteMigration keeps transactional SQLite DDL and its ledger identity from diverging on failure.
-func applySQLiteMigration(dbConn *gorm.DB, migration Migration, record migrationRecord) error {
-	return dbConn.Transaction(func(tx *gorm.DB) error {
+// applySQLiteMigration rechecks the ledger after SQLite acquires its immediate write lock so concurrent runners cannot apply the same schema twice.
+func applySQLiteMigration(dbConn *gorm.DB, migration Migration, record migrationRecord) (bool, error) {
+	applied := false
+	err := dbConn.Transaction(func(tx *gorm.DB) error {
+		existing, exists, err := findMigrationRecord(tx, record.Name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if err := requireMatchingMigrationRecord(existing, record); err != nil {
+				return err
+			}
+			return nil
+		}
+
 		if err := migration.Up(tx); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
@@ -141,8 +161,43 @@ func applySQLiteMigration(dbConn *gorm.DB, migration Migration, record migration
 			return fmt.Errorf("record migration: %w", err)
 		}
 
+		applied = true
 		return nil
 	})
+	return applied, err
+}
+
+// findMigrationRecord distinguishes an absent migration from a ledger read failure while the SQLite write lock is held.
+func findMigrationRecord(databaseConnection *gorm.DB, name string) (migrationRecord, bool, error) {
+	var record migrationRecord
+	err := databaseConnection.Table("migrations").Where("name = ?", name).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return migrationRecord{}, false, nil
+	}
+	if err != nil {
+		return migrationRecord{}, false, fmt.Errorf("recheck migration ledger: %w", err)
+	}
+	return record, true, nil
+}
+
+// requireMatchingMigrationRecord prevents a concurrent or pre-existing name collision from disguising a different migration identity.
+func requireMatchingMigrationRecord(existing migrationRecord, expected migrationRecord) error {
+	if existing.Name == expected.Name &&
+		existing.App == expected.App &&
+		existing.Connection == expected.Connection &&
+		existing.SourcePath == expected.SourcePath {
+		return nil
+	}
+	return fmt.Errorf(
+		"migration %q ledger identity is %s/%s at %q, expected %s/%s at %q",
+		expected.Name,
+		existing.App,
+		existing.Connection,
+		existing.SourcePath,
+		expected.App,
+		expected.Connection,
+		expected.SourcePath,
+	)
 }
 
 // migrationRecord stores the migration identity fields that make app-scoped runs auditable.

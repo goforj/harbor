@@ -20,7 +20,7 @@ func TestStateUpgradePreservesOperationJournal(t *testing.T) {
 
 	appliedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 	journalMigration := operationJournalMigration(t)
-	if err := applySQLiteMigration(databaseConnection, journalMigration, migrationRecord{
+	if _, err := applySQLiteMigration(databaseConnection, journalMigration, migrationRecord{
 		Name:       journalMigration.Name(),
 		App:        journalMigration.App(),
 		Connection: journalMigration.Connection(),
@@ -61,7 +61,7 @@ func TestStateUpgradePreservesOperationJournal(t *testing.T) {
 	}
 
 	projectionMigration := projectProjectionMigration(t)
-	if err := applySQLiteMigration(databaseConnection, projectionMigration, migrationRecord{
+	if _, err := applySQLiteMigration(databaseConnection, projectionMigration, migrationRecord{
 		Name:       projectionMigration.Name(),
 		App:        projectionMigration.App(),
 		Connection: projectionMigration.Connection(),
