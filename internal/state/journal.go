@@ -22,11 +22,11 @@ type OperationRecord struct {
 	Revision  domain.Sequence
 }
 
-// JournalSnapshot couples the current durable sequence with the active operations visible at that same database instant.
+// JournalSnapshot couples the current durable sequence with client-visible operations from that same database instant.
 type JournalSnapshot struct {
 	// Sequence is the latest globally committed journal sequence.
 	Sequence domain.Sequence
-	// Operations contains non-terminal operations in durable revision order.
+	// Operations contains every active operation and a bounded recent terminal history in durable revision order.
 	Operations []domain.Operation
 }
 
@@ -445,7 +445,7 @@ func (journal *OperationJournal) ActiveOperations(ctx context.Context) ([]Operat
 	return records, nil
 }
 
-// Snapshot returns the journal sequence and active operations from one consistent read transaction.
+// Snapshot returns the journal sequence and client-visible operations from one consistent read transaction.
 func (journal *OperationJournal) Snapshot(ctx context.Context) (JournalSnapshot, error) {
 	ctx = normalizeContext(ctx)
 	if err := ctx.Err(); err != nil {
@@ -512,7 +512,7 @@ func (journal *OperationJournal) CurrentSequence(ctx context.Context) (domain.Se
 	return harborStateSequenceFromModel(*row)
 }
 
-// readJournalSnapshot validates the singleton sequence and every active operation before returning transaction-local state.
+// readJournalSnapshot validates the singleton sequence and every client-visible operation before returning transaction-local state.
 func readJournalSnapshot(tx *gorm.DB) (JournalSnapshot, error) {
 	sequence, err := readSnapshotSequence(tx)
 	if err != nil {
@@ -547,18 +547,29 @@ func readSnapshotSequence(tx *gorm.DB) (domain.Sequence, error) {
 	return harborStateSequenceFromModel(rows[0])
 }
 
-// readSnapshotOperations validates and deterministically orders every non-terminal operation visible in the transaction.
+// readSnapshotOperations retains all active work plus recent outcomes without letting durable history make replacement snapshots unbounded.
 func readSnapshotOperations(tx *gorm.DB, sequence domain.Sequence) ([]OperationRecord, error) {
-	var rows []models.Operation
+	terminalStates := []string{
+		string(domain.OperationSucceeded),
+		string(domain.OperationFailed),
+		string(domain.OperationCancelled),
+	}
+	var activeRows []models.Operation
 	if err := tx.
-		Where("state NOT IN ? OR state IS NULL", []string{
-			string(domain.OperationSucceeded),
-			string(domain.OperationFailed),
-			string(domain.OperationCancelled),
-		}).
-		Find(&rows).Error; err != nil {
+		Where("state NOT IN ? OR state IS NULL", terminalStates).
+		Find(&activeRows).Error; err != nil {
 		return nil, fmt.Errorf("read active operation snapshot: %w", err)
 	}
+	var terminalRows []models.Operation
+	if err := tx.
+		Where("state IN ?", terminalStates).
+		Order("revision DESC").
+		Order("id DESC").
+		Limit(domain.SnapshotRecentTerminalOperationLimit).
+		Find(&terminalRows).Error; err != nil {
+		return nil, fmt.Errorf("read terminal operation snapshot: %w", err)
+	}
+	rows := append(activeRows, terminalRows...)
 
 	records := make([]OperationRecord, 0, len(rows))
 	for _, row := range rows {

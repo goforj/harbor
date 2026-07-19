@@ -362,7 +362,8 @@ func TestStoreCompleteProjectUnregisterCommitsAndReplaysAtomically(t *testing.T)
 	if err != nil {
 		t.Fatalf("read snapshot after unregister: %v", err)
 	}
-	if snapshot.Sequence != 4 || len(snapshot.Projects) != 0 || len(snapshot.Operations) != 0 {
+	if snapshot.Sequence != 4 || len(snapshot.Projects) != 0 || len(snapshot.Operations) != 1 ||
+		!reflect.DeepEqual(snapshot.Operations[0], completed.Operation) {
 		t.Fatalf("snapshot after unregister = %#v", snapshot)
 	}
 

@@ -123,7 +123,7 @@ func (store *Store) Project(ctx context.Context, projectID domain.ProjectID) (Pr
 	return record, nil
 }
 
-// Snapshot returns every client-visible project, active operation, and recent resource from one database instant.
+// Snapshot returns every client-visible project, active and recent terminal operation, and recent resource from one database instant.
 func (store *Store) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 	ctx = normalizeContext(ctx)
 	if err := ctx.Err(); err != nil {

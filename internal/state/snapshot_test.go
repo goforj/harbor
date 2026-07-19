@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestOperationJournalSnapshotBuildsDomainState verifies sequence and active operations can directly populate a valid domain snapshot.
+// TestOperationJournalSnapshotBuildsDomainState verifies sequence and client-visible operations can directly populate a valid domain snapshot.
 func TestOperationJournalSnapshotBuildsDomainState(t *testing.T) {
 	journal, _ := newOperationJournalTestHarness(t)
 	requestedAt := operationJournalTestTime()
@@ -43,13 +44,13 @@ func TestOperationJournalSnapshotBuildsDomainState(t *testing.T) {
 	if snapshot.Sequence != 6 {
 		t.Fatalf("snapshot sequence = %d, want 6", snapshot.Sequence)
 	}
-	wantIDs := []domain.OperationID{first.ID, third.ID}
+	wantIDs := []domain.OperationID{first.ID, second.ID, third.ID}
 	gotIDs := make([]domain.OperationID, 0, len(snapshot.Operations))
 	for _, operation := range snapshot.Operations {
 		gotIDs = append(gotIDs, operation.ID)
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("active operation order = %v, want %v", gotIDs, wantIDs)
+		t.Fatalf("operation order = %v, want %v", gotIDs, wantIDs)
 	}
 
 	domainSnapshot := domain.Snapshot{
@@ -62,6 +63,105 @@ func TestOperationJournalSnapshotBuildsDomainState(t *testing.T) {
 	}
 	if err := domainSnapshot.Validate(); err != nil {
 		t.Fatalf("validate constructed domain snapshot: %v", err)
+	}
+}
+
+// TestOperationJournalSnapshotBoundsRecentTerminalHistoryAndRetainsActive verifies outcomes are capped independently from unbounded live work.
+func TestOperationJournalSnapshotBoundsRecentTerminalHistoryAndRetainsActive(t *testing.T) {
+	journal, _ := newOperationJournalTestHarness(t)
+	requestedAt := operationJournalTestTime()
+	terminalCount := domain.SnapshotRecentTerminalOperationLimit + 2
+	activeCount := domain.SnapshotRecentTerminalOperationLimit + 3
+	for index := 0; index < terminalCount; index++ {
+		operation := newOperationJournalTestOperation(
+			t,
+			domain.OperationID(fmt.Sprintf("operation-terminal-%02d", index)),
+			domain.IntentID(fmt.Sprintf("intent-terminal-%02d", index)),
+			"",
+			"maintenance.run",
+			requestedAt.Add(time.Duration(index)*time.Minute),
+		)
+		record, err := journal.Enqueue(context.Background(), operation)
+		if err != nil {
+			t.Fatalf("enqueue terminal operation %d: %v", index, err)
+		}
+		record = mustOperationJournalTransition(
+			t,
+			journal,
+			record,
+			domain.OperationRunning,
+			"running",
+			operation.RequestedAt.Add(time.Second),
+			nil,
+		)
+		if index == terminalCount-1 {
+			problem := &domain.Problem{
+				Code:      "project.network.setup_required",
+				Message:   "Complete network setup and try again.",
+				Retryable: true,
+			}
+			mustOperationJournalTransition(
+				t,
+				journal,
+				record,
+				domain.OperationFailed,
+				"network admission failed",
+				operation.RequestedAt.Add(2*time.Second),
+				problem,
+			)
+			continue
+		}
+		mustOperationJournalTransition(
+			t,
+			journal,
+			record,
+			domain.OperationSucceeded,
+			"complete",
+			operation.RequestedAt.Add(2*time.Second),
+			nil,
+		)
+	}
+	for index := 0; index < activeCount; index++ {
+		operation := newOperationJournalTestOperation(
+			t,
+			domain.OperationID(fmt.Sprintf("operation-active-%02d", index)),
+			domain.IntentID(fmt.Sprintf("intent-active-%02d", index)),
+			"",
+			"maintenance.run",
+			requestedAt.Add(time.Duration(terminalCount+index)*time.Minute),
+		)
+		if _, err := journal.Enqueue(context.Background(), operation); err != nil {
+			t.Fatalf("enqueue active operation %d: %v", index, err)
+		}
+	}
+
+	snapshot, err := journal.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("read bounded operation snapshot: %v", err)
+	}
+	if got, want := len(snapshot.Operations), domain.SnapshotRecentTerminalOperationLimit+activeCount; got != want {
+		t.Fatalf("operation count = %d, want %d", got, want)
+	}
+	wantIDs := make([]domain.OperationID, 0, len(snapshot.Operations))
+	for index := terminalCount - domain.SnapshotRecentTerminalOperationLimit; index < terminalCount; index++ {
+		wantIDs = append(wantIDs, domain.OperationID(fmt.Sprintf("operation-terminal-%02d", index)))
+	}
+	for index := 0; index < activeCount; index++ {
+		wantIDs = append(wantIDs, domain.OperationID(fmt.Sprintf("operation-active-%02d", index)))
+	}
+	gotIDs := make([]domain.OperationID, 0, len(snapshot.Operations))
+	for _, operation := range snapshot.Operations {
+		gotIDs = append(gotIDs, operation.ID)
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("bounded operation order = %v, want %v", gotIDs, wantIDs)
+	}
+	failed := snapshot.Operations[domain.SnapshotRecentTerminalOperationLimit-1]
+	if failed.State != domain.OperationFailed || failed.Problem == nil ||
+		failed.Problem.Code != "project.network.setup_required" ||
+		failed.Problem.Message != "Complete network setup and try again." ||
+		!failed.Problem.Retryable {
+		t.Fatalf("recent failed operation = %#v", failed)
 	}
 }
 
@@ -208,6 +308,28 @@ func TestOperationJournalSnapshotRollsBackFailedRead(t *testing.T) {
 	}
 	if _, err := journal.Snapshot(context.Background()); err != nil {
 		t.Fatalf("snapshot after table restore: %v", err)
+	}
+}
+
+// TestOperationJournalSnapshotPreservesTerminalQueryFailure keeps the bounded-history read failure observable through the journal boundary.
+func TestOperationJournalSnapshotPreservesTerminalQueryFailure(t *testing.T) {
+	journal, connection := newOperationJournalTestHarness(t)
+	terminalErr := errors.New("terminal operation query failure")
+	const callback = "harbor:test_terminal_operation_snapshot_query"
+	if err := connection.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "operations" && strings.Contains(tx.Statement.SQL.String(), "state IN") {
+			tx.AddError(terminalErr)
+		}
+	}); err != nil {
+		t.Fatalf("register terminal operation query failure: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = connection.Callback().Query().Remove(callback)
+	})
+
+	_, err := journal.Snapshot(context.Background())
+	if !errors.Is(err, terminalErr) || !strings.Contains(err.Error(), "read terminal operation snapshot") {
+		t.Fatalf("terminal operation snapshot error = %v", err)
 	}
 }
 

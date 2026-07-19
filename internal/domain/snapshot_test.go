@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -370,6 +371,78 @@ func TestSnapshotValidateRejectsNilCollections(t *testing.T) {
 	}
 }
 
+// TestSnapshotValidateBoundsOnlyTerminalHistory keeps replacement payloads finite without imposing a ceiling on live daemon work.
+func TestSnapshotValidateBoundsOnlyTerminalHistory(t *testing.T) {
+	t.Parallel()
+
+	snapshot := validSnapshot(t)
+	for index := 0; index < SnapshotRecentTerminalOperationLimit; index++ {
+		snapshot.Operations = append(snapshot.Operations, terminalSnapshotOperation(t, index))
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("Validate() at terminal operation limit error = %v", err)
+	}
+	snapshot.Operations = append(snapshot.Operations, terminalSnapshotOperation(t, SnapshotRecentTerminalOperationLimit))
+	if err := snapshot.Validate(); err == nil || !strings.Contains(err.Error(), "terminal operations") {
+		t.Fatalf("Validate() above terminal operation limit error = %v", err)
+	}
+
+	snapshot = validSnapshot(t)
+	for index := 0; index <= SnapshotRecentTerminalOperationLimit; index++ {
+		requestedAt := snapshot.CapturedAt.Add(time.Duration(index+1) * time.Minute)
+		operation, err := NewOperation(
+			OperationID(fmt.Sprintf("operation-active-%02d", index)),
+			IntentID(fmt.Sprintf("intent-active-%02d", index)),
+			"maintenance.run",
+			"",
+			requestedAt,
+		)
+		if err != nil {
+			t.Fatalf("NewOperation() active %d error = %v", index, err)
+		}
+		snapshot.Operations = append(snapshot.Operations, operation)
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("Validate() with active operations above terminal limit error = %v", err)
+	}
+}
+
+// TestSnapshotValidateAllowsTerminalOperationForRemovedProject preserves unregister outcomes after their project projection is retired.
+func TestSnapshotValidateAllowsTerminalOperationForRemovedProject(t *testing.T) {
+	t.Parallel()
+
+	requestedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	operation, err := NewOperation(
+		"operation-unregister",
+		"intent-unregister",
+		OperationKindProjectUnregister,
+		"project-removed",
+		requestedAt,
+	)
+	if err != nil {
+		t.Fatalf("NewOperation() error = %v", err)
+	}
+	operation, err = operation.Transition(OperationRunning, "removing project", requestedAt.Add(time.Second), nil)
+	if err != nil {
+		t.Fatalf("Transition() running error = %v", err)
+	}
+	operation, err = operation.Transition(OperationSucceeded, "project removed", requestedAt.Add(2*time.Second), nil)
+	if err != nil {
+		t.Fatalf("Transition() succeeded error = %v", err)
+	}
+	snapshot := Snapshot{
+		SchemaVersion:     SnapshotSchemaVersion,
+		Sequence:          3,
+		CapturedAt:        requestedAt.Add(3 * time.Second),
+		Projects:          []ProjectSnapshot{},
+		Operations:        []Operation{operation},
+		RecentResourceIDs: []ResourceRef{},
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("Validate() terminal unregister error = %v", err)
+	}
+}
+
 // TestResourceRefValidateRequiresBothScopedIDs prevents ambiguous cross-project lookup.
 func TestResourceRefValidateRequiresBothScopedIDs(t *testing.T) {
 	t.Parallel()
@@ -425,6 +498,32 @@ func validSnapshot(t *testing.T) Snapshot {
 			{ProjectID: "project-01", ResourceID: "api-reference"},
 		},
 	}
+}
+
+// terminalSnapshotOperation creates one valid completed operation with distinct durable identities.
+func terminalSnapshotOperation(t *testing.T, index int) Operation {
+	t.Helper()
+
+	requestedAt := time.Date(2026, time.July, 18, 13, 0, 0, 0, time.UTC).Add(time.Duration(index) * time.Minute)
+	operation, err := NewOperation(
+		OperationID(fmt.Sprintf("operation-terminal-%02d", index)),
+		IntentID(fmt.Sprintf("intent-terminal-%02d", index)),
+		"maintenance.run",
+		"",
+		requestedAt,
+	)
+	if err != nil {
+		t.Fatalf("NewOperation() terminal %d error = %v", index, err)
+	}
+	operation, err = operation.Transition(OperationRunning, "running", requestedAt.Add(time.Second), nil)
+	if err != nil {
+		t.Fatalf("Transition() terminal %d running error = %v", index, err)
+	}
+	operation, err = operation.Transition(OperationSucceeded, "complete", requestedAt.Add(2*time.Second), nil)
+	if err != nil {
+		t.Fatalf("Transition() terminal %d succeeded error = %v", index, err)
+	}
+	return operation
 }
 
 // validResource creates an App-owned browser resource used across validation cases.

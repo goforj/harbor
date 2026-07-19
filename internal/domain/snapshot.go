@@ -8,8 +8,12 @@ import (
 	"unicode/utf8"
 )
 
-// SnapshotSchemaVersion is the initial platform-neutral Harbor snapshot schema.
-const SnapshotSchemaVersion uint16 = 1
+const (
+	// SnapshotSchemaVersion is the initial platform-neutral Harbor snapshot schema.
+	SnapshotSchemaVersion uint16 = 1
+	// SnapshotRecentTerminalOperationLimit retains enough outcomes for immediate client feedback without allowing durable history to grow replacement snapshots without bound.
+	SnapshotRecentTerminalOperationLimit = 20
+)
 
 // ServiceOwner identifies which system owns a service's lifecycle.
 type ServiceOwner string
@@ -336,13 +340,20 @@ func (snapshot Snapshot) Validate() error {
 
 	operations := make(map[OperationID]struct{}, len(snapshot.Operations))
 	intents := make(map[IntentID]struct{}, len(snapshot.Operations))
+	terminalOperations := 0
 	for _, operation := range snapshot.Operations {
 		if err := operation.Validate(); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
-		if operation.ProjectID != "" {
+		if operation.ProjectID != "" && !operation.State.IsTerminal() {
 			if _, exists := projects[operation.ProjectID]; !exists {
 				return fmt.Errorf("operation %q references unknown project %q", operation.ID, operation.ProjectID)
+			}
+		}
+		if operation.State.IsTerminal() {
+			terminalOperations++
+			if terminalOperations > SnapshotRecentTerminalOperationLimit {
+				return fmt.Errorf("snapshot must not contain more than %d terminal operations", SnapshotRecentTerminalOperationLimit)
 			}
 		}
 		if _, exists := operations[operation.ID]; exists {
