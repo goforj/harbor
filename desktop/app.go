@@ -102,6 +102,8 @@ type App struct {
 	cancel            context.CancelFunc
 	done              chan struct{}
 	client            controlClient
+	clientLeases      int
+	clientDrain       chan struct{}
 	clientFactory     clientFactory
 	events            desktopwire.Emitter
 	open              resourceOpener
@@ -147,10 +149,11 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 
 // SetupNetwork starts or resumes Harbor's singleton network setup and opens native consent only when approval is required.
 func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
-	ctx, client, err := a.currentConnection()
+	ctx, client, release, err := a.leaseCurrentConnection()
 	if err != nil {
 		return control.NetworkSetupOperation{}, err
 	}
+	defer release()
 
 	intentID := networkSetupIntentID
 	setup, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID})
@@ -557,8 +560,7 @@ func (a *App) run(ctx context.Context, done chan struct{}) {
 		}
 		a.emitConnection(ctx, ConnectionConnected)
 		a.poll(ctx, client)
-		a.removeClient(client)
-		_ = client.Close()
+		a.retireClient(ctx, client)
 
 		if ctx.Err() != nil {
 			return
@@ -633,6 +635,49 @@ func (a *App) currentConnection() (context.Context, controlClient, error) {
 	return ctx, client, nil
 }
 
+// leaseCurrentConnection keeps an interactive approval on its selected session until its exact confirmation returns.
+func (a *App) leaseCurrentConnection() (context.Context, controlClient, func(), error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.ctx == nil || a.client == nil {
+		return nil, nil, nil, errDaemonDisconnected
+	}
+	if a.clientDrain != nil {
+		panic("desktop connection is published while retirement is pending")
+	}
+
+	ctx := a.ctx
+	client := a.client
+	a.clientLeases++
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			a.releaseClientLease(client)
+		})
+	}
+	return ctx, client, release, nil
+}
+
+// releaseClientLease lets a retired connection close only after every selected approval has left its confirmation boundary.
+func (a *App) releaseClientLease(client controlClient) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.clientLeases == 0 {
+		panic("desktop connection lease released without ownership")
+	}
+	if a.client != nil && a.client != client {
+		panic("desktop connection lease crossed a replacement session")
+	}
+
+	a.clientLeases--
+	if a.clientLeases == 0 && a.clientDrain != nil {
+		close(a.clientDrain)
+		a.clientDrain = nil
+	}
+}
+
 // installClient publishes a negotiated session only while the desktop lifecycle remains active.
 func (a *App) installClient(ctx context.Context, client controlClient) bool {
 	a.mu.Lock()
@@ -641,18 +686,42 @@ func (a *App) installClient(ctx context.Context, client controlClient) bool {
 	if ctx.Err() != nil || a.ctx == nil {
 		return false
 	}
+	if a.clientLeases != 0 || a.clientDrain != nil {
+		panic("desktop connection installed before the retired session drained")
+	}
 	a.client = client
 	return true
 }
 
-// removeClient clears only the connection owned by the exiting poll loop.
-func (a *App) removeClient(client controlClient) {
+// removeClient clears only the connection owned by the exiting poll loop and reports when its approvals have drained.
+func (a *App) removeClient(client controlClient) <-chan struct{} {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.client == client {
-		a.client = nil
+	if a.client != client {
+		return nil
 	}
+	a.client = nil
+	if a.clientLeases == 0 {
+		return nil
+	}
+	if a.clientDrain != nil {
+		panic("desktop connection retirement started more than once")
+	}
+	a.clientDrain = make(chan struct{})
+	return a.clientDrain
+}
+
+// retireClient prevents polling from closing a session between privileged helper success and durable confirmation.
+func (a *App) retireClient(ctx context.Context, client controlClient) {
+	drained := a.removeClient(client)
+	if drained != nil {
+		select {
+		case <-drained:
+		case <-ctx.Done():
+		}
+	}
+	_ = client.Close()
 }
 
 // findResource requires both identities because resource IDs are unique only inside a project snapshot.

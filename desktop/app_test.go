@@ -60,14 +60,14 @@ type fakeNetworkSetupApprovalRunner struct {
 	requests []networksetupapproval.Request
 	outcome  networksetupapproval.Outcome
 	err      error
-	execute  func(int, networksetupapproval.Request) (networksetupapproval.Outcome, error)
+	execute  func(context.Context, int, networksetupapproval.Request) (networksetupapproval.Outcome, error)
 }
 
 // Execute records the selected setup revision without opening native consent.
-func (runner *fakeNetworkSetupApprovalRunner) Execute(_ context.Context, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+func (runner *fakeNetworkSetupApprovalRunner) Execute(ctx context.Context, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
 	runner.requests = append(runner.requests, request)
 	if runner.execute != nil {
-		return runner.execute(len(runner.requests), request)
+		return runner.execute(ctx, len(runner.requests), request)
 	}
 	return runner.outcome, runner.err
 }
@@ -128,6 +128,11 @@ func (client *fakeControlClient) PrepareNetworkSetupApproval(_ context.Context, 
 func (client *fakeControlClient) ConfirmNetworkSetupApproval(_ context.Context, request control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
+	select {
+	case <-client.done:
+		return control.NetworkSetupApprovalConfirmation{}, errors.New("control connection is closed")
+	default:
+	}
 	client.setupConfirmReq = request
 	return client.setupConfirmation, client.setupConfirmErr
 }
@@ -737,6 +742,128 @@ func TestSetupNetworkApprovesOnlyTheSelectedRevision(t *testing.T) {
 	}
 }
 
+// TestSetupNetworkRetainsSelectedConnectionThroughConfirmation prevents polling retirement from closing a session during native consent.
+func TestSetupNetworkRetainsSelectedConnectionThroughConfirmation(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeControlClient()
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	client.setupConfirmation = testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+	pollWaiting := make(chan struct{})
+	pollAgain := make(chan struct{})
+	approvalWaiting := make(chan struct{})
+	confirmApproval := make(chan struct{})
+	var connectionAttempts atomic.Int32
+	var waits atomic.Int32
+	app := newApp(
+		func(ctx context.Context, _ control.ClientConfig) (controlClient, error) {
+			if connectionAttempts.Add(1) == 1 {
+				return client, nil
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		func(context.Context, string, ...interface{}) {},
+		func(context.Context, string) {},
+		func(ctx context.Context, _ time.Duration) bool {
+			if waits.Add(1) == 1 {
+				close(pollWaiting)
+				select {
+				case <-pollAgain:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			<-ctx.Done()
+			return false
+		},
+	)
+	app.setupApproval = func(approvalClient networksetupapproval.Client) networkSetupApprovalRunner {
+		return &fakeNetworkSetupApprovalRunner{
+			execute: func(ctx context.Context, _ int, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+				close(approvalWaiting)
+				select {
+				case <-confirmApproval:
+				case <-ctx.Done():
+					return networksetupapproval.Outcome{}, ctx.Err()
+				}
+				confirmation, err := approvalClient.ConfirmNetworkSetupApproval(ctx, control.ConfirmNetworkSetupApprovalRequest{
+					OperationID:               request.OperationID,
+					ExpectedOperationRevision: request.ExpectedOperationRevision,
+				})
+				if err != nil {
+					return networksetupapproval.Outcome{}, err
+				}
+				return networksetupapproval.Outcome{
+					State:        networksetupapproval.Succeeded,
+					Confirmation: &confirmation,
+				}, nil
+			},
+		}
+	}
+
+	runContext, cancel := context.WithCancel(context.Background())
+	app.ctx = runContext
+	done := make(chan struct{})
+	go app.run(runContext, done)
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	select {
+	case <-pollWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("poll did not reach its first snapshot boundary")
+	}
+
+	result := make(chan control.NetworkSetupOperation, 1)
+	setupErr := make(chan error, 1)
+	go func() {
+		operation, err := app.SetupNetwork()
+		result <- operation
+		setupErr <- err
+	}()
+	select {
+	case <-approvalWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("network setup did not reach native approval")
+	}
+
+	client.mu.Lock()
+	client.snapshotErr = errors.New("snapshot authority failed")
+	client.mu.Unlock()
+	close(pollAgain)
+	waitForClientRemoval(t, app)
+	if got := client.closeCount.Load(); got != 0 {
+		t.Fatalf("connection close count during approval = %d, want 0", got)
+	}
+
+	close(confirmApproval)
+	select {
+	case err := <-setupErr:
+		if err != nil {
+			t.Fatalf("SetupNetwork() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("network setup did not return after confirmation")
+	}
+	operation := <-result
+	if operation.Operation.ID != client.setupConfirmation.Operation.ID || operation.Revision != client.setupConfirmation.Revision {
+		t.Fatalf("SetupNetwork() = %#v, want exact confirmation %#v", operation, client.setupConfirmation)
+	}
+	if client.setupConfirmReq.OperationID != client.networkSetup.Operation.ID ||
+		client.setupConfirmReq.ExpectedOperationRevision != client.networkSetup.Revision {
+		t.Fatalf("confirmation request = %#v, want selected setup revision", client.setupConfirmReq)
+	}
+	select {
+	case <-client.done:
+	case <-time.After(time.Second):
+		t.Fatal("retired connection did not close after approval released its lease")
+	}
+}
+
 // TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence retries one exact approval after native source setup.
 func TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence(t *testing.T) {
 	t.Parallel()
@@ -763,7 +890,7 @@ func TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence(t *testing.T) {
 			client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
 			confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
 			runner := &fakeNetworkSetupApprovalRunner{
-				execute: func(call int, _ networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+				execute: func(_ context.Context, call int, _ networksetupapproval.Request) (networksetupapproval.Outcome, error) {
 					if call == 1 {
 						return test.firstOutcome, test.firstErr
 					}
@@ -1435,6 +1562,109 @@ func TestInstallAndRemoveClientHonorLifecycleOwnership(t *testing.T) {
 	}
 }
 
+// TestConnectionLeasesDrainAfterEveryApproval verifies one retired session remains usable until its last owner releases it.
+func TestConnectionLeasesDrainAfterEveryApproval(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	_, firstClient, releaseFirst, err := app.leaseCurrentConnection()
+	if err != nil || firstClient != client {
+		t.Fatalf("leaseCurrentConnection() first = (%T, %v), want installed client", firstClient, err)
+	}
+	_, secondClient, releaseSecond, err := app.leaseCurrentConnection()
+	if err != nil || secondClient != client {
+		t.Fatalf("leaseCurrentConnection() second = (%T, %v), want installed client", secondClient, err)
+	}
+
+	drained := app.removeClient(client)
+	if drained == nil {
+		t.Fatal("removeClient() drain = nil with active leases")
+	}
+	releaseFirst()
+	select {
+	case <-drained:
+		t.Fatal("connection drained before its final lease was released")
+	default:
+	}
+	releaseSecond()
+	releaseSecond()
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("connection did not drain after its final lease was released")
+	}
+}
+
+// TestConnectionLeaseRejectsDisconnectedAndImpossibleOwnership covers fail-fast lifecycle invariants around session retirement.
+func TestConnectionLeaseRejectsDisconnectedAndImpossibleOwnership(t *testing.T) {
+	t.Parallel()
+
+	if _, err := testApp().SetupNetwork(); !errors.Is(err, errDaemonDisconnected) {
+		t.Fatalf("SetupNetwork() error = %v, want disconnected", err)
+	}
+
+	tests := []struct {
+		name string
+		run  func()
+		want string
+	}{
+		{
+			name: "published while draining",
+			run: func() {
+				app, _ := connectedTestApp()
+				app.clientDrain = make(chan struct{})
+				_, _, _, _ = app.leaseCurrentConnection()
+			},
+			want: "published while retirement is pending",
+		},
+		{
+			name: "release without lease",
+			run: func() {
+				app, client := connectedTestApp()
+				app.releaseClientLease(client)
+			},
+			want: "released without ownership",
+		},
+		{
+			name: "release across replacement",
+			run: func() {
+				app, client := connectedTestApp()
+				app.clientLeases = 1
+				app.client = newFakeControlClient()
+				app.releaseClientLease(client)
+			},
+			want: "crossed a replacement session",
+		},
+		{
+			name: "install before drain",
+			run: func() {
+				app := testApp()
+				app.ctx = context.Background()
+				app.clientLeases = 1
+				app.installClient(context.Background(), newFakeControlClient())
+			},
+			want: "installed before the retired session drained",
+		},
+		{
+			name: "retire twice",
+			run: func() {
+				app, client := connectedTestApp()
+				app.clientLeases = 1
+				app.clientDrain = make(chan struct{})
+				app.removeClient(client)
+			},
+			want: "retirement started more than once",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assertPanicContains(t, test.want, test.run)
+		})
+	}
+}
+
 // TestWaitForContextCoversTimerAndCancellation proves production waits cannot delay shutdown.
 func TestWaitForContextCoversTimerAndCancellation(t *testing.T) {
 	t.Parallel()
@@ -1466,6 +1696,41 @@ func connectedTestApp() (*App, *fakeControlClient) {
 	app.ctx = context.Background()
 	app.client = client
 	return app, client
+}
+
+// waitForClientRemoval waits until the poll owner has unpublished its failing session without relying on connection close as the signal.
+func waitForClientRemoval(t *testing.T, app *App) {
+	t.Helper()
+
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		app.mu.RLock()
+		client := app.client
+		app.mu.RUnlock()
+		if client == nil {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("poll did not retire its failed connection")
+		case <-tick.C:
+		}
+	}
+}
+
+// assertPanicContains requires a fail-fast invariant to retain its diagnostic boundary.
+func assertPanicContains(t *testing.T, want string, run func()) {
+	t.Helper()
+	defer func() {
+		value := recover()
+		if value == nil || !strings.Contains(fmt.Sprint(value), want) {
+			t.Fatalf("panic = %v, want containing %q", value, want)
+		}
+	}()
+	run()
 }
 
 // testSnapshot returns the smallest valid snapshot with one project-scoped HTTP resource.
