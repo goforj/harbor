@@ -295,6 +295,12 @@ func TestNetworkSetupReviewedFailuresReachAuthenticatedClientsWithoutLocalCauses
 			wantCode:     rpc.ErrorCodePrivilegedHelperRequired,
 			wantMessage:  rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired).Message,
 		},
+		{
+			name:         "privileged helper unsafe",
+			authorityErr: NewNetworkSetupPrivilegedHelperUnsafeError(errors.New(secret)),
+			wantCode:     rpc.ErrorCodePrivilegedHelperUnsafe,
+			wantMessage:  rpc.NewWireError(rpc.ErrorCodePrivilegedHelperUnsafe).Message,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			authority := &recordingAuthority{networkSetupErr: test.authorityErr}

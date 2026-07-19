@@ -36,6 +36,8 @@ const (
 	ErrorCodeNetworkObservationFailed ErrorCode = "network_observation_failed"
 	// ErrorCodePrivilegedHelperRequired reports absent installer-owned privileged networking support.
 	ErrorCodePrivilegedHelperRequired ErrorCode = "privileged_helper_required"
+	// ErrorCodePrivilegedHelperUnsafe reports installed privileged networking support that failed its security policy.
+	ErrorCodePrivilegedHelperUnsafe ErrorCode = "privileged_helper_unsafe"
 	// ErrorCodeInternal reports an unexpected daemon failure without exposing its cause.
 	ErrorCodeInternal ErrorCode = "internal"
 )
@@ -198,6 +200,9 @@ var wireErrorSpecifications = map[ErrorCode]wireErrorSpecification{
 	},
 	ErrorCodePrivilegedHelperRequired: {
 		message: "Harbor's privileged networking support is missing. Harbor must install or repair it before setup can finish.",
+	},
+	ErrorCodePrivilegedHelperUnsafe: {
+		message: "Harbor's privileged networking support is installed, but its ticket directory has unsafe ownership, permissions, type, or ACLs.",
 	},
 	ErrorCodeInternal: {message: "Harbor could not complete the request."},
 }

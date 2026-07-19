@@ -864,8 +864,8 @@ func TestSetupNetworkRetainsSelectedConnectionThroughConfirmation(t *testing.T) 
 	}
 }
 
-// TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence retries one exact approval after native source setup.
-func TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence(t *testing.T) {
+// TestSetupNetworkRepairsOnlyReviewedHelperPrerequisiteEvidence retries one exact approval after native source setup.
+func TestSetupNetworkRepairsOnlyReviewedHelperPrerequisiteEvidence(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -876,6 +876,10 @@ func TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence(t *testing.T) {
 		{
 			name:     "daemon prerequisite",
 			firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired),
+		},
+		{
+			name:     "daemon unsafe prerequisite",
+			firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperUnsafe),
 		},
 		{
 			name:         "launcher unavailable",
@@ -923,17 +927,22 @@ func TestSetupNetworkBoundsPrerequisiteRepairAndPreservesNativeFailures(t *testi
 	t.Parallel()
 
 	privilegedRequired := rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired)
+	privilegedUnsafe := rpc.NewWireError(rpc.ErrorCodePrivilegedHelperUnsafe)
 	tests := []struct {
 		name          string
 		repairErr     error
+		retryOutcome  networksetupapproval.Outcome
+		retryErr      error
 		wantCalls     int
 		wantApprovals int
 		want          string
 	}{
 		{name: "repair failure", repairErr: networkprerequisite.ErrDeclined, wantCalls: 1, wantApprovals: 1, want: "declined"},
 		{name: "repair diagnostics", repairErr: fmt.Errorf("%w: macOS authorization 1: unsafe existing directory", networkprerequisite.ErrFailed), wantCalls: 1, wantApprovals: 1, want: "macOS authorization 1: unsafe existing directory"},
-		{name: "packaged build", repairErr: networkprerequisite.ErrUnavailable, wantCalls: 1, wantApprovals: 1, want: privilegedRequired.Message},
-		{name: "retry remains missing", wantCalls: 1, wantApprovals: 2, want: privilegedRequired.Message},
+		{name: "packaged build", repairErr: networkprerequisite.ErrUnavailable, wantCalls: 1, wantApprovals: 1, want: networkprerequisite.ErrUnavailable.Error()},
+		{name: "retry remains missing", retryErr: privilegedRequired, wantCalls: 1, wantApprovals: 2, want: "harbord still cannot find the ticket directory"},
+		{name: "retry finds unsafe installation", retryErr: privilegedUnsafe, wantCalls: 1, wantApprovals: 2, want: "harbord rejected the ticket directory's ownership, permissions, type, or ACLs"},
+		{name: "retry cannot launch helper", retryOutcome: networksetupapproval.Outcome{State: networksetupapproval.Unavailable}, wantCalls: 1, wantApprovals: 2, want: "native helper is unavailable"},
 	}
 
 	for _, test := range tests {
@@ -941,7 +950,14 @@ func TestSetupNetworkBoundsPrerequisiteRepairAndPreservesNativeFailures(t *testi
 			t.Parallel()
 			app, client := connectedTestApp()
 			client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
-			runner := &fakeNetworkSetupApprovalRunner{err: privilegedRequired}
+			runner := &fakeNetworkSetupApprovalRunner{
+				execute: func(_ context.Context, call int, _ networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+					if call == 1 {
+						return networksetupapproval.Outcome{}, privilegedRequired
+					}
+					return test.retryOutcome, test.retryErr
+				},
+			}
 			ensurer := &fakeNetworkPrerequisiteEnsurer{err: test.repairErr}
 			app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner { return runner }
 			app.setupPrerequisite = ensurer
@@ -954,6 +970,21 @@ func TestSetupNetworkBoundsPrerequisiteRepairAndPreservesNativeFailures(t *testi
 				t.Fatalf("repair/approval calls = %d/%d, want %d/%d", ensurer.calls, len(runner.requests), test.wantCalls, test.wantApprovals)
 			}
 		})
+	}
+}
+
+// TestNetworkSetupPrerequisiteVerificationErrorRebuildsFixedWireText prevents a forged peer message from reaching Wails.
+func TestNetworkSetupPrerequisiteVerificationErrorRebuildsFixedWireText(t *testing.T) {
+	t.Parallel()
+
+	const secret = "APP_KEY=secret /Users/person/private"
+	forged := rpc.WireError{
+		Code:    rpc.ErrorCodePrivilegedHelperUnsafe,
+		Message: secret,
+	}
+	err := networkSetupPrerequisiteVerificationError(networksetupapproval.Outcome{}, forged)
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "harbord rejected the ticket directory's ownership, permissions, type, or ACLs") {
+		t.Fatalf("verification error = %q, want fixed unsafe-installation guidance", err)
 	}
 }
 

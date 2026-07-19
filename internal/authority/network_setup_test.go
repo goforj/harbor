@@ -17,6 +17,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/helper/ticketspool"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
@@ -673,7 +674,8 @@ func TestClassifyNetworkSetupErrorCoversReviewedFailures(t *testing.T) {
 				errors.New("observe Darwin host conflicts: route lookup failed"),
 			),
 		},
-		{name: "privileged helper", cause: &ticketissuer.PoolPrerequisiteMissingError{}, wantCode: rpc.ErrorCodePrivilegedHelperRequired},
+		{name: "privileged helper missing", cause: &ticketissuer.PoolPrerequisiteMissingError{}, wantCode: rpc.ErrorCodePrivilegedHelperRequired},
+		{name: "privileged helper unsafe", cause: fmt.Errorf("validate installer boundary: %w", ticketspool.ErrUnsafePath), wantCode: rpc.ErrorCodePrivilegedHelperUnsafe},
 		{name: "daemon operation collision", cause: &state.OperationIDConflictError{OperationID: operationID, ExistingIntentID: "intent-other", RequestedIntentID: intentID}},
 		{name: "intent lookup missing", cause: &state.OperationIntentNotFoundError{IntentID: intentID}},
 		{name: "cancelled", cause: context.Canceled},

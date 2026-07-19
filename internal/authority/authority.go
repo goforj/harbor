@@ -17,6 +17,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/helper/ticketspool"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -806,6 +807,9 @@ func classifyNetworkSetupError(err error) error {
 	var prerequisiteMissing *ticketissuer.PoolPrerequisiteMissingError
 	if errors.As(err, &prerequisiteMissing) {
 		return control.NewNetworkSetupPrivilegedHelperRequiredError(err)
+	}
+	if errors.Is(err, ticketspool.ErrUnsafePath) {
+		return control.NewNetworkSetupPrivilegedHelperUnsafeError(err)
 	}
 	var intentConflict *state.IntentConflictError
 	var staleRevision *state.StaleRevisionError

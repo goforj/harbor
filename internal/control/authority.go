@@ -134,6 +134,11 @@ func NewNetworkSetupPrivilegedHelperRequiredError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)
 }
 
+// NewNetworkSetupPrivilegedHelperUnsafeError reports an installed helper boundary that failed its fixed filesystem policy.
+func NewNetworkSetupPrivilegedHelperUnsafeError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperUnsafe, cause)
+}
+
 // networkSetupObservationMessage renders dynamic detail only when every semantic and text boundary is canonical.
 func networkSetupObservationMessage(stage NetworkSetupObservationStage, address netip.Addr, detail string) string {
 	fallback := rpc.NewWireError(rpc.ErrorCodeNetworkObservationFailed).Message

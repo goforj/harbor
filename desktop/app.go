@@ -230,13 +230,12 @@ func (a *App) approveNetworkSetup(
 	outcome, err := runner.Execute(ctx, request)
 	if networkSetupNeedsPrerequisiteRepair(outcome, err) {
 		repairErr := a.setupPrerequisite.Ensure(ctx)
-		switch {
-		case repairErr == nil:
-			outcome, err = runner.Execute(ctx, request)
-		case errors.Is(repairErr, networkprerequisite.ErrUnavailable):
-			// Packaged and unsupported builds leave installation repair to their native installer.
-		default:
+		if repairErr != nil {
 			return control.NetworkSetupOperation{}, fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
+		}
+		outcome, err = runner.Execute(ctx, request)
+		if networkSetupNeedsPrerequisiteRepair(outcome, err) {
+			return control.NetworkSetupOperation{}, networkSetupPrerequisiteVerificationError(outcome, err)
 		}
 	}
 	if err != nil {
@@ -267,13 +266,33 @@ func (a *App) approveNetworkSetup(
 	return result, nil
 }
 
-// networkSetupNeedsPrerequisiteRepair recognizes only reviewed daemon and launcher evidence that the fixed helper boundary is absent.
+// networkSetupNeedsPrerequisiteRepair recognizes only reviewed daemon and launcher evidence that the fixed helper boundary needs installation or repair.
 func networkSetupNeedsPrerequisiteRepair(outcome networksetupapproval.Outcome, err error) bool {
 	if err != nil {
 		var wireError rpc.WireError
-		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodePrivilegedHelperRequired
+		return errors.As(err, &wireError) &&
+			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
 	}
 	return outcome.State == networksetupapproval.Unavailable
+}
+
+// networkSetupPrerequisiteVerificationError reports only fixed peer-safe categories after native installation claimed success.
+func networkSetupPrerequisiteVerificationError(outcome networksetupapproval.Outcome, err error) error {
+	if err != nil {
+		var wireError rpc.WireError
+		if errors.As(err, &wireError) {
+			switch wireError.Code {
+			case rpc.ErrorCodePrivilegedHelperRequired:
+				return errors.New("verify Harbor privileged networking support after installation: harbord still cannot find the ticket directory")
+			case rpc.ErrorCodePrivilegedHelperUnsafe:
+				return errors.New("verify Harbor privileged networking support after installation: harbord rejected the ticket directory's ownership, permissions, type, or ACLs")
+			}
+		}
+	}
+	if outcome.State == networksetupapproval.Unavailable {
+		return errors.New("verify Harbor privileged networking support after installation: the native helper is unavailable")
+	}
+	return errors.New("verify Harbor privileged networking support after installation: the result was inconsistent")
 }
 
 // networkSetupApprovalError preserves retry guidance without exposing helper tickets or privileged command details.

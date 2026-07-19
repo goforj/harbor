@@ -21,6 +21,27 @@ func TestNewWireErrorFromCauseNeverSerializesCause(t *testing.T) {
 	}
 }
 
+// TestPrivilegedHelperWireErrorsDistinguishMissingFromUnsafeInstallation keeps desktop repair guidance specific without serializing local paths.
+func TestPrivilegedHelperWireErrorsDistinguishMissingFromUnsafeInstallation(t *testing.T) {
+	t.Parallel()
+
+	const secret = "APP_KEY=secret /Users/person/private"
+	missing := NewWireErrorFromCause(ErrorCodePrivilegedHelperRequired, errors.New(secret))
+	unsafe := NewWireErrorFromCause(ErrorCodePrivilegedHelperUnsafe, errors.New(secret))
+	if missing.Code == unsafe.Code || missing.Message == unsafe.Message {
+		t.Fatalf("privileged helper errors are not distinct: missing %#v, unsafe %#v", missing, unsafe)
+	}
+	for _, wireError := range []WireError{missing, unsafe} {
+		encoded, err := json.Marshal(wireError)
+		if err != nil {
+			t.Fatalf("marshal privileged helper error: %v", err)
+		}
+		if strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), "/Users/person/private") {
+			t.Fatalf("privileged helper error exposed local cause: %s", encoded)
+		}
+	}
+}
+
 // TestWireErrorRejectsMultilineAndInvisibleMessages verifies a peer-facing error
 // cannot forge adjacent log or UI lines with Unicode separators and controls.
 func TestWireErrorRejectsMultilineAndInvisibleMessages(t *testing.T) {
