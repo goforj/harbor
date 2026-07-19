@@ -44,9 +44,9 @@ jobs:
         run: |
           root_home=/root
           if [ "${{ runner.os }}" = "macOS" ]; then
-            root_home=/var/root
+            root_home=/private/var/root
           fi
-          sudo env HOME="$root_home" "${{ runner.temp }}/harbor-devbootstrap.test" -test.run '^TestApplyPlatformPlanIsIdempotentAndPreservesRuntimeData$' -test.v
+          sudo env HOME="$root_home" "${{ runner.temp }}/harbor-devbootstrap.test" -test.run '^TestApplyPlatformPlan(IsIdempotentAndPreservesRuntimeData|TraversesDarwinLibraryAncestors)$' -test.v
 
       - name: Vet
         run: go vet ./...
