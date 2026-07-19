@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,68 @@ import (
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 )
+
+// quarantinePlannedProjectStart isolates one unresolved launch without claiming that no child process exists.
+func (coordinator *ProjectLifecycleCoordinator) quarantinePlannedProjectStart(
+	ctx context.Context,
+	record state.OperationRecord,
+	session domain.ProjectSession,
+) error {
+	if session.State != domain.SessionPlanned || session.Process != nil {
+		return priorProcessOwnershipError(record, session)
+	}
+	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
+	if err != nil {
+		return err
+	}
+	at := recoveredProjectLifecycleTime(coordinator.now(), record, project.Project, session)
+	problem := domain.Problem{
+		Code: projectRecoveryAmbiguousLaunchCode,
+		Message: "Harbor restarted before it could record the managed process identity. " +
+			"This project was isolated so Harbor cannot accidentally start a second process.",
+		Retryable: false,
+	}
+	if _, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return coordinator.state.QuarantinePlannedProjectStart(ctx, state.QuarantinePlannedProjectStartRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			OperationID:               record.Operation.ID,
+			ExpectedOperationRevision: record.Revision,
+			ExpectedProjectRevision:   project.Revision,
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Phase:                     projectRecoveryQuarantinePhase,
+			Problem:                   problem,
+			At:                        at,
+		})
+	}); err != nil {
+		return fmt.Errorf("quarantine ambiguous project start operation %q: %w", record.Operation.ID, err)
+	}
+	return nil
+}
+
+// isPlannedProjectStartQuarantined recognizes only the exact terminal marker written by recovery.
+func (coordinator *ProjectLifecycleCoordinator) isPlannedProjectStartQuarantined(
+	ctx context.Context,
+	project domain.ProjectSnapshot,
+	session domain.ProjectSession,
+) (bool, error) {
+	if project.State != domain.ProjectUnavailable || session.State != domain.SessionPlanned || session.Process != nil {
+		return false, nil
+	}
+	record, err := coordinator.operations.LatestProjectLifecycleOperation(ctx, project.ID)
+	if err != nil {
+		var missing *state.ProjectLifecycleOperationNotFoundError
+		if errors.As(err, &missing) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read project %q recovery quarantine marker: %w", project.ID, err)
+	}
+	operation := record.Operation
+	return operation.Kind == domain.OperationKindProjectStart &&
+		operation.State == domain.OperationFailed &&
+		operation.Problem != nil &&
+		operation.Problem.Code == projectRecoveryAmbiguousLaunchCode, nil
+}
 
 // settleRecoveredProjectProcess proves one persisted process birth is terminal before durable authority is retired.
 func (coordinator *ProjectLifecycleCoordinator) settleRecoveredProjectProcess(

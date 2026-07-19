@@ -108,6 +108,63 @@ test('starts and stops projects from their selected detail view', async ({ page 
   await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled()
 })
 
+test('shows an ambiguous recovered launch without leaving the project spinning', async ({ page }) => {
+  await page.addInitScript(({ initialSnapshot, initialStatus }) => {
+    const snapshot = structuredClone(initialSnapshot)
+    const project = snapshot.projects.find((entry) => entry.id === 'reports')
+    if (!project) throw new Error('reports fixture is missing')
+    project.state = 'unavailable'
+    project.updated_at = '2026-07-19T23:45:00Z'
+    snapshot.sequence += 1
+    snapshot.operations.push({
+      id: 'operation-recovered-ambiguous-launch',
+      intent_id: 'intent-recovered-ambiguous-launch',
+      kind: 'project.start',
+      project_id: 'reports',
+      state: 'failed',
+      phase: 'recovery required',
+      problem: {
+        code: 'project.recovery.ambiguous_launch',
+        message: 'Harbor restarted before it could record the managed process identity.',
+        retryable: false,
+      },
+      requested_at: '2026-07-19T23:44:58Z',
+      started_at: '2026-07-19T23:44:59Z',
+      finished_at: '2026-07-19T23:45:00Z',
+    })
+    const status = structuredClone(initialStatus)
+    status.sequence = snapshot.sequence
+    window.go = {
+      main: {
+        App: {
+          async AddProject() { return { canceled: true } },
+          async OpenResource() {},
+          async RemoveProject() { throw new Error('Quarantined project removal is disabled') },
+          async SetupNetwork() { throw new Error('Network setup is not exercised in this recovery test') },
+          async StartProject() { throw new Error('Quarantined project start is disabled') },
+          async StopProject() { throw new Error('Quarantined project stop is disabled') },
+          async Status() { return structuredClone(status) },
+          async Snapshot() { return structuredClone(snapshot) },
+        },
+      },
+    }
+    window.runtime = {
+      EventsOn: () => () => undefined,
+      EventsOff: () => undefined,
+    }
+  }, { initialSnapshot: harborWireFixture.snapshot, initialStatus: harborWireFixture.status })
+
+  await page.goto('/#/projects/reports')
+
+  const recoveryAlert = page.getByRole('alert')
+  await expect(recoveryAlert.getByText('Project recovery required', { exact: true })).toBeVisible()
+  await expect(recoveryAlert.getByText('Harbor restarted before it could record the managed process identity.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Recovery required', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Current activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Project summary' }).getByText('recovery required', { exact: true })).toBeVisible()
+})
+
 test('confirms project removal and explains when desktop approval is unavailable', async ({ page }) => {
   await page.goto('/#/projects/orders-api')
 

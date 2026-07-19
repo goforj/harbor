@@ -413,6 +413,47 @@ func (journal *OperationJournal) OperationByIntent(ctx context.Context, intentID
 	return operationRecordFromModel(*row)
 }
 
+// LatestProjectLifecycleOperation returns the newest start, stop, or unregister operation retained for one project.
+func (journal *OperationJournal) LatestProjectLifecycleOperation(
+	ctx context.Context,
+	projectID domain.ProjectID,
+) (OperationRecord, error) {
+	ctx = normalizeContext(ctx)
+	if err := projectID.Validate(); err != nil {
+		return OperationRecord{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return OperationRecord{}, err
+	}
+	builder, err := journal.operations.WithContext(ctx).Builder()
+	if err != nil {
+		return OperationRecord{}, fmt.Errorf("build latest project lifecycle operation query: %w", err)
+	}
+	var rows []models.Operation
+	err = builder.
+		Where("project_id = ?", string(projectID)).
+		Where("kind IN ?", []string{
+			string(domain.OperationKindProjectStart),
+			string(domain.OperationKindProjectStop),
+			string(domain.OperationKindProjectUnregister),
+		}).
+		Order("revision DESC").
+		Order("id DESC").
+		Limit(1).
+		Find(&rows).Error
+	if err != nil {
+		return OperationRecord{}, fmt.Errorf("read latest project lifecycle operation: %w", err)
+	}
+	if len(rows) == 0 {
+		return OperationRecord{}, &ProjectLifecycleOperationNotFoundError{ProjectID: projectID}
+	}
+	record, err := operationRecordFromModel(rows[0])
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	return record, nil
+}
+
 // ActiveOperations returns queued and in-progress operations in durable revision order.
 func (journal *OperationJournal) ActiveOperations(ctx context.Context) ([]OperationRecord, error) {
 	ctx = normalizeContext(ctx)

@@ -27,6 +27,16 @@ func (err *OperationIntentNotFoundError) Error() string {
 	return fmt.Sprintf("operation intent %q was not found", err.IntentID)
 }
 
+// ProjectLifecycleOperationNotFoundError reports that a project has no durable lifecycle operation.
+type ProjectLifecycleOperationNotFoundError struct {
+	ProjectID domain.ProjectID
+}
+
+// Error describes the project whose lifecycle history is empty.
+func (err *ProjectLifecycleOperationNotFoundError) Error() string {
+	return fmt.Sprintf("project %q has no lifecycle operation", err.ProjectID)
+}
+
 // IntentConflictError reports an idempotency key reused for a different logical mutation.
 type IntentConflictError struct {
 	IntentID            domain.IntentID

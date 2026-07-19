@@ -29,6 +29,13 @@ const (
 	lifecyclePersistenceDelay    = 20 * time.Millisecond
 )
 
+const (
+	// projectRecoveryAmbiguousLaunchCode identifies a launch whose process identity was not durable before daemon replacement.
+	projectRecoveryAmbiguousLaunchCode domain.ProblemCode = "project.recovery.ambiguous_launch"
+	// projectRecoveryQuarantinePhase keeps the terminal operation distinct from an ordinary launch failure.
+	projectRecoveryQuarantinePhase = "recovery required"
+)
+
 // ProjectStartRequest identifies one daemon-owned start operation and its client-stable intent.
 type ProjectStartRequest struct {
 	ProjectID   domain.ProjectID
@@ -52,6 +59,7 @@ type projectLifecycleState interface {
 	AttachProjectProcess(context.Context, state.AttachProjectProcessRequest) (domain.ProjectSession, error)
 	CompleteProjectStart(context.Context, state.CompleteProjectStartRequest) (state.ProjectLifecycleMutation, error)
 	FailProjectStart(context.Context, state.FailProjectStartRequest) (state.ProjectLifecycleMutation, error)
+	QuarantinePlannedProjectStart(context.Context, state.QuarantinePlannedProjectStartRequest) (state.ProjectLifecycleMutation, error)
 	BeginProjectStop(context.Context, state.BeginProjectStopRequest) (state.ProjectLifecycleMutation, error)
 	CompleteProjectStop(context.Context, state.CompleteProjectStopRequest) (state.ProjectLifecycleMutation, error)
 	RecordUnexpectedProjectExit(context.Context, state.RecordUnexpectedProjectExitRequest) (state.ProjectRecord, error)
@@ -63,6 +71,7 @@ type projectLifecycleJournal interface {
 	Transition(context.Context, domain.OperationID, domain.Sequence, domain.OperationState, string, time.Time, *domain.Problem) (state.OperationRecord, error)
 	FailQueued(context.Context, domain.OperationID, domain.Sequence, string, string, time.Time, domain.Problem) (state.OperationRecord, error)
 	OperationByIntent(context.Context, domain.IntentID) (state.OperationRecord, error)
+	LatestProjectLifecycleOperation(context.Context, domain.ProjectID) (state.OperationRecord, error)
 	ActiveOperations(context.Context) ([]state.OperationRecord, error)
 }
 
@@ -851,7 +860,10 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 			switch record.Operation.Kind {
 			case domain.OperationKindProjectStart:
 				if session.Process == nil {
-					return priorProcessOwnershipError(record, session)
+					if err := coordinator.quarantinePlannedProjectStart(ctx, record, session); err != nil {
+						return err
+					}
+					continue
 				}
 				recovered, recoveryErr := coordinator.recoverRunningProjectStart(ctx, record, session)
 				if recoveryErr != nil {
@@ -883,6 +895,13 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 				return recoveryErr
 			}
 			if recovered {
+				continue
+			}
+			quarantined, quarantineErr := coordinator.isPlannedProjectStartQuarantined(ctx, project, session)
+			if quarantineErr != nil {
+				return quarantineErr
+			}
+			if quarantined {
 				continue
 			}
 			return priorSessionOwnershipError(project, session)

@@ -56,6 +56,7 @@ const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.va
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
 const lifecycleProblemCode = computed(() => store.projectLifecycleProblemCodes[projectId.value])
 const needsNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.setup_required')
+const recoveryRequired = computed(() => lifecycleProblemCode.value === 'project.recovery.ambiguous_launch')
 const lifecycleInFlight = computed(() => store.projectLifecycleProjectId === projectId.value)
 const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
 const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
@@ -65,6 +66,7 @@ const lifecycleAction = computed(() => project.value?.state === 'stopped'
   ? 'start'
   : 'stop')
 const lifecycleLabel = computed(() => {
+  if (recoveryRequired.value) return 'Recovery required'
   if (starting.value) return 'Starting…'
   if (stopping.value) return 'Stopping…'
   return lifecycleAction.value === 'start' ? 'Start project' : 'Stop project'
@@ -74,6 +76,7 @@ const lifecycleDisabled = computed(() => store.snapshotStale
   || store.projectLifecycleBusy
   || starting.value
   || stopping.value
+  || recoveryRequired.value
   || removalPending.value)
 const networkSetupDisabled = computed(() => !needsNetworkSetup.value
   || project.value?.id !== projectId.value
@@ -88,6 +91,7 @@ const removalPending = computed(() => removalNotice.value?.state === 'queued'
 const removalDisabled = computed(() => store.removingProjectId !== null
   || store.projectLifecycleProjectId !== null
   || activeLifecycle.value != null
+  || recoveryRequired.value
   || removalPending.value)
 const removalLabel = computed(() => {
   if (removing.value) return 'Removing…'
@@ -213,7 +217,7 @@ async function setupNetworkAndStartProject() {
       <div class="space-y-5 p-5 lg:p-7">
         <Alert v-if="lifecycleError" variant="destructive">
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>Project action failed</AlertTitle>
+          <AlertTitle>{{ recoveryRequired ? 'Project recovery required' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
             <p>{{ lifecycleError }}</p>
             <p v-if="needsNetworkSetup && store.networkSetupError" class="text-destructive">{{ store.networkSetupError }}</p>

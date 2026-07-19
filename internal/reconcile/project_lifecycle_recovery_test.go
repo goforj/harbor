@@ -3,7 +3,9 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -416,31 +418,101 @@ func TestProjectLifecycleRecoverKeepsUnsettledRunningStartsFailClosed(t *testing
 	}
 }
 
-// TestProjectLifecycleRecoverLeavesPlannedStartFailClosed proves recovery never guesses across the pre-evidence launch window.
-func TestProjectLifecycleRecoverLeavesPlannedStartFailClosed(t *testing.T) {
+// TestProjectLifecycleRecoverQuarantinesPlannedStart proves one pre-evidence launch cannot prevent daemon recovery.
+func TestProjectLifecycleRecoverQuarantinesPlannedStart(t *testing.T) {
 	store, journal := newProjectLifecycleIntegrationState(t)
 	seed := seedProjectLifecycleRecoveryStart(t, store, journal, false)
+	queuedRoot, queuedPort := newProjectLifecycleIntegrationCheckout(t)
+	if err := os.WriteFile(filepath.Join(queuedRoot, ".goforj.yml"), []byte("project_name: Reports\n"), 0o600); err != nil {
+		t.Fatalf("write queued recovery marker: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(queuedRoot, ".env"),
+		[]byte(fmt.Sprintf("APP_NAME=Reports\nAPI_HTTP_PORT=%d\n", queuedPort)),
+		0o600,
+	); err != nil {
+		t.Fatalf("write queued recovery environment: %v", err)
+	}
+	queuedDiscovery, err := projectdiscovery.NewDiscoverer().Discover(t.Context(), queuedRoot)
+	if err != nil {
+		t.Fatalf("discover queued recovery project: %v", err)
+	}
+	queuedProject, err := queuedDiscovery.ProjectSnapshot("project-recovery-queued", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create queued recovery project: %v", err)
+	}
+	if _, err := store.RegisterProject(t.Context(), queuedProject); err != nil {
+		t.Fatalf("register queued recovery project: %v", err)
+	}
+	queuedProjectRecord, err := store.Project(t.Context(), queuedProject.ID)
+	if err != nil {
+		t.Fatalf("read queued recovery project: %v", err)
+	}
+	queuedOperation, err := domain.NewOperation(
+		"operation-recovery-queued-start",
+		"intent-recovery-queued-start",
+		domain.OperationKindProjectStart,
+		queuedProject.ID,
+		lifecycleTime(queuedProjectRecord.Project.UpdatedAt.Add(time.Second)),
+	)
+	if err != nil {
+		t.Fatalf("create queued recovery operation: %v", err)
+	}
+	if _, err := journal.Enqueue(t.Context(), queuedOperation); err != nil {
+		t.Fatalf("enqueue queued recovery operation: %v", err)
+	}
+	admissionEntered := make(chan struct{})
 	supervisor := &projectLifecycleRecoverySupervisor{
 		observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessAbsent},
 	}
 	coordinator := newProjectLifecycleAdmissionTestCoordinator(
 		store,
 		journal,
-		store,
+		&projectLifecycleBlockingLeaseState{entered: admissionEntered},
 		supervisor,
 		netip.MustParseAddr("127.0.0.1"),
 	)
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close lifecycle coordinator: %v", err)
+		}
+	})
 
-	err := coordinator.Recover(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "state \"planned\"") {
-		t.Fatalf("Recover() error = %v, want planned-session ownership failure", err)
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
 	}
-	if len(supervisor.observed) != 0 {
-		t.Fatalf("planned recovery observed process evidence = %#v", supervisor.observed)
+	if len(supervisor.observed) != 0 || len(supervisor.settled) != 0 {
+		t.Fatalf("planned recovery touched process evidence: observed %#v settled %#v", supervisor.observed, supervisor.settled)
 	}
 	operation, readErr := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
-	if readErr != nil || operation.Operation.State != domain.OperationRunning {
+	if readErr != nil || operation.Operation.State != domain.OperationFailed ||
+		operation.Operation.Problem == nil || operation.Operation.Problem.Code != projectRecoveryAmbiguousLaunchCode ||
+		operation.Operation.Problem.Retryable {
 		t.Fatalf("planned operation after recovery = %#v, %v", operation.Operation, readErr)
+	}
+	project, readErr := store.Project(t.Context(), seed.project.ID)
+	if readErr != nil || project.Project.State != domain.ProjectUnavailable {
+		t.Fatalf("planned project after recovery = %#v, %v", project.Project, readErr)
+	}
+	session, readErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
+	if readErr != nil || !reflect.DeepEqual(session, seed.session) {
+		t.Fatalf("planned session after recovery = %#v, %v, want %#v", session, readErr, seed.session)
+	}
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("repeated Recover() error = %v", err)
+	}
+	queued, readErr := journal.OperationByIntent(t.Context(), queuedOperation.IntentID)
+	if readErr != nil || queued.Operation.State != domain.OperationQueued {
+		t.Fatalf("unrelated queued operation after recovery = %#v, %v", queued.Operation, readErr)
+	}
+	if err := coordinator.Resume(t.Context()); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	select {
+	case <-admissionEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Resume() did not dispatch the unrelated queued start")
 	}
 }
 
