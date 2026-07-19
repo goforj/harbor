@@ -18,9 +18,12 @@ import (
 )
 
 const (
-	helperEnabledEnvironment = "HARBOR_PROJECT_PROCESS_HELPER"
-	helperModeEnvironment    = "HARBOR_PROJECT_PROCESS_HELPER_MODE"
-	helperPIDFileEnvironment = "HARBOR_PROJECT_PROCESS_HELPER_PID_FILE"
+	helperEnabledEnvironment   = "HARBOR_PROJECT_PROCESS_HELPER"
+	helperModeEnvironment      = "HARBOR_PROJECT_PROCESS_HELPER_MODE"
+	helperPIDFileEnvironment   = "HARBOR_PROJECT_PROCESS_HELPER_PID_FILE"
+	helperOverrideEnvironment  = "HARBOR_PROJECT_PROCESS_OVERRIDE"
+	helperEmptyEnvironment     = "HARBOR_PROJECT_PROCESS_EMPTY"
+	helperUnrelatedEnvironment = "HARBOR_PROJECT_PROCESS_UNRELATED"
 )
 
 // init turns a copied test executable into the exact forj-dev subprocess exercised by integration-style unit tests.
@@ -51,6 +54,13 @@ func init() {
 	fmt.Fprintf(os.Stdout, "plain=%s\n", os.Getenv("FORJ_DEV_PLAIN"))
 	fmt.Fprintf(os.Stdout, "app-name=%s\n", os.Getenv("APP_NAME"))
 	fmt.Fprintf(os.Stdout, "forj-app=%s\n", os.Getenv("FORJ_APP"))
+	fmt.Fprintf(os.Stdout, "ip-address=%s\n", os.Getenv("IP_ADDRESS"))
+	fmt.Fprintf(os.Stdout, "api-http-host=%s\n", os.Getenv("API_HTTP_HOST"))
+	fmt.Fprintf(os.Stdout, "managed-keys=%s\n", os.Getenv(managedEnvKeysName))
+	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
+	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
+	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
+	fmt.Fprintf(os.Stdout, "unrelated=%s\n", os.Getenv(helperUnrelatedEnvironment))
 	fmt.Fprintf(os.Stdout, "working-directory=%s\n", workingDirectory)
 	fmt.Fprintln(os.Stderr, "ready")
 	switch mode {
@@ -147,9 +157,25 @@ func replaceEnvironment(environment []string, name, value string) []string {
 	return append(result, prefix+value)
 }
 
+// projectProcessTestEnvironment supplies one explicit managed value used by valid launch tests.
+func projectProcessTestEnvironment() EnvironmentOverrides {
+	return EnvironmentOverrides{helperOverrideEnvironment: "managed"}
+}
+
+// canonicalTestPath resolves platform aliases so process expectations use the supervisor's working-directory identity.
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve canonical test path: %v", err)
+	}
+	return filepath.Clean(canonical)
+}
+
 // TestStartLaunchesExactForjDevelopmentCommand verifies real executable lookup, working directory, environment, output, and evidence.
 func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	checkout := t.TempDir()
+	canonicalCheckout := canonicalTestPath(t, checkout)
 	stdout := &synchronizedBuffer{}
 	stderr := &synchronizedBuffer{}
 	installForjHelper(t, "exit")
@@ -159,11 +185,12 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	})
 
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-one",
-		SessionID:    "session-one",
-		CheckoutRoot: checkout,
-		Stdout:       stdout,
-		Stderr:       stderr,
+		ProjectID:            "project-one",
+		SessionID:            "session-one",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		Stdout:               stdout,
+		Stderr:               stderr,
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -177,15 +204,15 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	}
 	waitForOutput(t, stdout, "argument=dev")
 	waitForOutput(t, stdout, "plain=1")
-	waitForOutput(t, stdout, "working-directory="+checkout)
+	waitForOutput(t, stdout, "working-directory="+canonicalCheckout)
 	waitForOutput(t, stderr, "ready")
 
 	info := handle.Info()
 	if info.ProjectID != "project-one" || info.SessionID != "session-one" {
 		t.Fatalf("Info() identities = %#v", info)
 	}
-	if info.CheckoutRoot != checkout {
-		t.Fatalf("Info().CheckoutRoot = %q, want %q", info.CheckoutRoot, checkout)
+	if info.CheckoutRoot != canonicalCheckout {
+		t.Fatalf("Info().CheckoutRoot = %q, want %q", info.CheckoutRoot, canonicalCheckout)
 	}
 	if len(info.Arguments) != 2 || info.Arguments[1] != "dev" {
 		t.Fatalf("Info().Arguments = %#v", info.Arguments)
@@ -228,10 +255,11 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 	t.Setenv("FORJ_APP", "harbord")
 
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-environment",
-		SessionID:    "session-environment",
-		CheckoutRoot: checkout,
-		Stdout:       stdout,
+		ProjectID:            "project-environment",
+		SessionID:            "session-environment",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		Stdout:               stdout,
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -246,17 +274,63 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 	}
 }
 
+// TestStartAppliesExplicitEnvironmentOverrides proves managed values win while unrelated captured values remain intact.
+func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
+	checkout := t.TempDir()
+	stdout := &synchronizedBuffer{}
+	installForjHelper(t, "exit")
+
+	captured := CaptureEnvironment()
+	captured = replaceEnvironment(captured, "IP_ADDRESS", "127.0.0.8")
+	captured = replaceEnvironment(captured, "API_HTTP_HOST", "127.0.0.9")
+	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
+	captured = replaceEnvironment(captured, helperUnrelatedEnvironment, "preserved")
+	captured = replaceEnvironment(captured, managedEnvKeysName, "STALE")
+	supervisor := New(Options{Environment: captured})
+	t.Cleanup(func() {
+		_ = supervisor.Close(context.Background())
+	})
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:    "project-overrides",
+		SessionID:    "session-overrides",
+		CheckoutRoot: checkout,
+		EnvironmentOverrides: EnvironmentOverrides{
+			"IP_ADDRESS":              "127.0.0.42",
+			helperOverrideEnvironment: "managed",
+			helperEmptyEnvironment:    "",
+		},
+		Stdout: stdout,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	waitForOutput(t, stdout, "ip-address=127.0.0.42")
+	waitForOutput(t, stdout, "api-http-host=127.0.0.9")
+	waitForOutput(t, stdout, "override=managed")
+	waitForOutput(t, stdout, "empty=true:")
+	waitForOutput(t, stdout, "unrelated=preserved")
+	waitForOutput(t, stdout, "managed-keys=HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
+	if output := stdout.String(); strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
+		t.Fatalf("managed project retained captured override values: %q", output)
+	}
+}
+
 // TestStopGracefullyStopsRealProcess verifies an explicit stop is distinguished from an unexpected exit.
 func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	installForjHelper(t, "wait")
 	output := &synchronizedBuffer{}
 	supervisor := New(Options{GracePeriod: 500 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-stop",
-		SessionID:    "session-stop",
-		CheckoutRoot: t.TempDir(),
-		Stdout:       output,
-		Stderr:       output,
+		ProjectID:            "project-stop",
+		SessionID:            "session-stop",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		Stdout:               output,
+		Stderr:               output,
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -280,11 +354,12 @@ func TestStopCancellationForcesProcess(t *testing.T) {
 	output := &synchronizedBuffer{}
 	supervisor := New(Options{GracePeriod: time.Minute})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-force",
-		SessionID:    "session-force",
-		CheckoutRoot: t.TempDir(),
-		Stdout:       output,
-		Stderr:       output,
+		ProjectID:            "project-force",
+		SessionID:            "session-force",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		Stdout:               output,
+		Stderr:               output,
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -320,9 +395,10 @@ func TestConcurrentDuplicateStartAllowsOneOwner(t *testing.T) {
 			defer contendersDone.Done()
 			<-start
 			handle, err := supervisor.Start(t.Context(), StartRequest{
-				ProjectID:    "project-duplicate",
-				SessionID:    "session-duplicate",
-				CheckoutRoot: t.TempDir(),
+				ProjectID:            "project-duplicate",
+				SessionID:            "session-duplicate",
+				CheckoutRoot:         t.TempDir(),
+				EnvironmentOverrides: projectProcessTestEnvironment(),
 			})
 			results <- startResult{handle: handle, err: err}
 		}()
@@ -357,25 +433,28 @@ func TestProjectAndSessionReservationsAreIndependent(t *testing.T) {
 	installForjHelper(t, "wait")
 	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
 	_, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-reserved",
-		SessionID:    "session-reserved",
-		CheckoutRoot: t.TempDir(),
+		ProjectID:            "project-reserved",
+		SessionID:            "session-reserved",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	_, err = supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-reserved",
-		SessionID:    "session-other",
-		CheckoutRoot: t.TempDir(),
+		ProjectID:            "project-reserved",
+		SessionID:            "session-other",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
 	})
 	if !errors.Is(err, ErrProjectRunning) {
 		t.Fatalf("same-project Start() error = %v, want ErrProjectRunning", err)
 	}
 	_, err = supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-other",
-		SessionID:    "session-reserved",
-		CheckoutRoot: t.TempDir(),
+		ProjectID:            "project-other",
+		SessionID:            "session-reserved",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
 	})
 	if !errors.Is(err, ErrSessionRunning) {
 		t.Fatalf("same-session Start() error = %v, want ErrSessionRunning", err)
@@ -392,11 +471,12 @@ func TestBlockedWriterCannotBackpressureChild(t *testing.T) {
 	defer close(writer.release)
 	supervisor := New(Options{OutputBufferLines: 2, GracePeriod: 100 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-output",
-		SessionID:    "session-output",
-		CheckoutRoot: t.TempDir(),
-		Stdout:       writer,
-		Stderr:       writer,
+		ProjectID:            "project-output",
+		SessionID:            "session-output",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		Stdout:               writer,
+		Stderr:               writer,
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -424,11 +504,21 @@ func TestBlockedWriterCannotBackpressureChild(t *testing.T) {
 func TestCloseStopsAllProcessesAndRejectsNewStarts(t *testing.T) {
 	installForjHelper(t, "wait")
 	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
-	first, err := supervisor.Start(t.Context(), StartRequest{ProjectID: "project-a", SessionID: "session-a", CheckoutRoot: t.TempDir()})
+	first, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-a",
+		SessionID:            "session-a",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
 	if err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
-	second, err := supervisor.Start(t.Context(), StartRequest{ProjectID: "project-b", SessionID: "session-b", CheckoutRoot: t.TempDir()})
+	second, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-b",
+		SessionID:            "session-b",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
 	if err != nil {
 		t.Fatalf("second Start() error = %v", err)
 	}
@@ -444,7 +534,12 @@ func TestCloseStopsAllProcessesAndRejectsNewStarts(t *testing.T) {
 	if err := supervisor.Close(t.Context()); err != nil {
 		t.Fatalf("second Close() error = %v", err)
 	}
-	_, err = supervisor.Start(t.Context(), StartRequest{ProjectID: "project-c", SessionID: "session-c", CheckoutRoot: t.TempDir()})
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-c",
+		SessionID:            "session-c",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("Start() after Close() error = %v, want ErrClosed", err)
 	}
@@ -456,11 +551,21 @@ func TestStartRejectsCanceledContextAndInvalidCheckout(t *testing.T) {
 	supervisor := New(Options{})
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := supervisor.Start(canceled, StartRequest{ProjectID: "project", SessionID: "session", CheckoutRoot: t.TempDir()})
+	_, err := supervisor.Start(canceled, StartRequest{
+		ProjectID:            "project",
+		SessionID:            "session",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Start() canceled error = %v", err)
 	}
-	_, err = supervisor.Start(t.Context(), StartRequest{ProjectID: "", SessionID: "session", CheckoutRoot: t.TempDir()})
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "",
+		SessionID:            "session",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("Start() invalid identity error = %v", err)
 	}
@@ -468,17 +573,98 @@ func TestStartRejectsCanceledContextAndInvalidCheckout(t *testing.T) {
 	if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	_, err = supervisor.Start(t.Context(), StartRequest{ProjectID: "project", SessionID: "session", CheckoutRoot: file})
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project",
+		SessionID:            "session",
+		CheckoutRoot:         file,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
 	if err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("Start() file checkout error = %v", err)
 	}
 }
 
-// TestEnvironmentReplacementPreservesUnrelatedValues verifies plain mode appears exactly once.
+// TestStartRejectsInvalidEnvironmentOverrides keeps malformed, ambiguous, and private launcher controls out of child processes.
+func TestStartRejectsInvalidEnvironmentOverrides(t *testing.T) {
+	tests := []struct {
+		name      string
+		overrides EnvironmentOverrides
+	}{
+		{name: "missing overrides", overrides: nil},
+		{name: "empty name", overrides: EnvironmentOverrides{"": "value"}},
+		{name: "digit prefix", overrides: EnvironmentOverrides{"1_VALUE": "value"}},
+		{name: "punctuation", overrides: EnvironmentOverrides{"BAD-NAME": "value"}},
+		{name: "non ASCII", overrides: EnvironmentOverrides{"CAFÉ": "value"}},
+		{name: "NUL name", overrides: EnvironmentOverrides{"BAD\x00NAME": "value"}},
+		{name: "NUL value", overrides: EnvironmentOverrides{"GOOD_NAME": "bad\x00value"}},
+		{name: "managed marker", overrides: EnvironmentOverrides{managedEnvKeysName: "value"}},
+		{name: "private GoForj name", overrides: EnvironmentOverrides{"FORJ_INTERNAL_OTHER": "value"}},
+		{name: "dotenv selector", overrides: EnvironmentOverrides{"APP_ENV": "testing"}},
+		{name: "GoForj app selector", overrides: EnvironmentOverrides{"FORJ_APP": "value"}},
+		{name: "plain launcher mode", overrides: EnvironmentOverrides{developmentPlainEnvName: "0"}},
+		{name: "portable case collision", overrides: EnvironmentOverrides{"PROJECT_VALUE": "one", "project_value": "two"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateStartRequest(StartRequest{
+				ProjectID:            "project-overrides-invalid",
+				SessionID:            "session-overrides-invalid",
+				CheckoutRoot:         t.TempDir(),
+				EnvironmentOverrides: test.overrides,
+			})
+			if !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("validateStartRequest() error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
+// TestStartAcceptsPresentEmptyEnvironmentOverride proves values retain ordinary environment semantics.
+func TestStartAcceptsPresentEmptyEnvironmentOverride(t *testing.T) {
+	err := validateStartRequest(StartRequest{
+		ProjectID:    "project-empty-override",
+		SessionID:    "session-empty-override",
+		CheckoutRoot: t.TempDir(),
+		EnvironmentOverrides: EnvironmentOverrides{
+			"EMPTY_VALUE": "",
+			"lower_value": "",
+		},
+	})
+	if err != nil {
+		t.Fatalf("validateStartRequest() error = %v", err)
+	}
+}
+
+// TestEnvironmentReplacementPreservesUnrelatedValues verifies deterministic explicit values are appended once without mutating the captured base.
 func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
-	result := withDevelopmentEnvironment([]string{"HOME=/tmp/home", "FORJ_DEV_PLAIN=0", "PATH=/bin", "FORJ_DEV_PLAIN=2"})
-	if strings.Join(result, "|") != "HOME=/tmp/home|FORJ_DEV_PLAIN=1|PATH=/bin" {
-		t.Fatalf("withDevelopmentEnvironment() = %#v", result)
+	base := []string{
+		"HOME=/tmp/home",
+		"FORJ_DEV_PLAIN=0",
+		"PATH=/bin",
+		"FORJ_DEV_PLAIN=2",
+		"IP_ADDRESS=127.0.0.8",
+		"API_HTTP_HOST=127.0.0.9",
+		"ip_address=127.0.0.10",
+		"FORJ_INTERNAL_MANAGED_ENV_KEYS=STALE",
+		"UNRELATED=preserved",
+	}
+	before := append([]string(nil), base...)
+	result := withDevelopmentEnvironment(base, EnvironmentOverrides{
+		"Z_VALUE":    "last",
+		"IP_ADDRESS": "127.0.0.42",
+		"b_value":    "middle",
+		"A_VALUE":    "",
+	})
+	want := "HOME=/tmp/home|PATH=/bin|API_HTTP_HOST=127.0.0.9"
+	if runtime.GOOS != "windows" {
+		want += "|ip_address=127.0.0.10"
+	}
+	want += "|UNRELATED=preserved|A_VALUE=|b_value=middle|IP_ADDRESS=127.0.0.42|Z_VALUE=last|FORJ_DEV_PLAIN=1|FORJ_INTERNAL_MANAGED_ENV_KEYS=A_VALUE,b_value,IP_ADDRESS,Z_VALUE"
+	if strings.Join(result, "|") != want {
+		t.Fatalf("withDevelopmentEnvironment() = %q, want %q", strings.Join(result, "|"), want)
+	}
+	if strings.Join(base, "|") != strings.Join(before, "|") {
+		t.Fatalf("withDevelopmentEnvironment() mutated base = %#v, want %#v", base, before)
 	}
 }
 

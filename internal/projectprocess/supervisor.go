@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,8 @@ const (
 	defaultOutputBufferLines = 256
 	forceSettlementPeriod    = time.Second
 	forceSettlementPoll      = 10 * time.Millisecond
+	developmentPlainEnvName  = "FORJ_DEV_PLAIN"
+	managedEnvKeysName       = "FORJ_INTERNAL_MANAGED_ENV_KEYS"
 )
 
 var (
@@ -49,18 +52,22 @@ type Options struct {
 // Environment is the ambient user process environment inherited by managed development commands.
 type Environment []string
 
+// EnvironmentOverrides contains the explicit inherited values Harbor owns for one managed project launch.
+type EnvironmentOverrides map[string]string
+
 // CaptureEnvironment snapshots the current process environment before Harbor loads its own application configuration.
 func CaptureEnvironment() Environment {
 	return append(Environment(nil), os.Environ()...)
 }
 
-// StartRequest identifies the registered checkout and best-effort line destinations for its development output.
+// StartRequest identifies the registered checkout, managed environment, and best-effort line destinations for its development output.
 type StartRequest struct {
-	ProjectID    domain.ProjectID
-	SessionID    domain.SessionID
-	CheckoutRoot string
-	Stdout       io.Writer
-	Stderr       io.Writer
+	ProjectID            domain.ProjectID
+	SessionID            domain.SessionID
+	CheckoutRoot         string
+	EnvironmentOverrides EnvironmentOverrides
+	Stdout               io.Writer
+	Stderr               io.Writer
 }
 
 // Evidence binds later process actions to one exact executable birth instead of a reusable PID.
@@ -187,6 +194,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	request.EnvironmentOverrides = cloneEnvironmentOverrides(request.EnvironmentOverrides)
 	if err := validateStartRequest(request); err != nil {
 		return nil, err
 	}
@@ -222,7 +230,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
-	command.Env = withDevelopmentEnvironment(supervisor.environment)
+	command.Env = withDevelopmentEnvironment(supervisor.environment, request.EnvironmentOverrides)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -590,7 +598,71 @@ func validateStartRequest(request StartRequest) error {
 	if strings.TrimSpace(request.CheckoutRoot) == "" {
 		return fmt.Errorf("%w: checkout root must not be empty", ErrInvalidRequest)
 	}
+	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
 	return nil
+}
+
+// validateEnvironmentOverrides keeps managed values portable and unambiguous across supported operating systems.
+func validateEnvironmentOverrides(overrides EnvironmentOverrides) error {
+	if len(overrides) == 0 {
+		return errors.New("at least one environment override is required")
+	}
+	names := sortedEnvironmentOverrideNames(overrides)
+	seenNames := make(map[string]string, len(names))
+	for _, name := range names {
+		if err := validateEnvironmentOverrideName(name); err != nil {
+			return err
+		}
+		folded := strings.ToUpper(name)
+		if previous, duplicate := seenNames[folded]; duplicate {
+			return fmt.Errorf("environment override names %q and %q differ only by case", previous, name)
+		}
+		seenNames[folded] = name
+		if strings.IndexByte(overrides[name], 0) >= 0 {
+			return fmt.Errorf("environment override %q contains NUL in its value", name)
+		}
+	}
+	return nil
+}
+
+// validateEnvironmentOverrideName matches GoForj's portable managed-key grammar and excludes its private control surface.
+func validateEnvironmentOverrideName(name string) error {
+	if name == "" {
+		return errors.New("environment override name is required")
+	}
+	first := name[0]
+	firstIsLetter := first >= 'A' && first <= 'Z' || first >= 'a' && first <= 'z'
+	if !firstIsLetter && first != '_' {
+		return fmt.Errorf("environment override name %q must match [A-Za-z_][A-Za-z0-9_]*", name)
+	}
+	for index := 1; index < len(name); index++ {
+		character := name[index]
+		letter := character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z'
+		digit := character >= '0' && character <= '9'
+		if !letter && !digit && character != '_' {
+			return fmt.Errorf("environment override name %q must match [A-Za-z_][A-Za-z0-9_]*", name)
+		}
+	}
+	upperName := strings.ToUpper(name)
+	if upperName == managedEnvKeysName || strings.HasPrefix(upperName, "FORJ_INTERNAL_") {
+		return fmt.Errorf("environment override name %q is reserved by the managed project launcher", name)
+	}
+	switch upperName {
+	case developmentPlainEnvName, "APP_ENV", "FORJ_APP", "FORJ_COMMAND_PREFIX", "FORJ_BUILD_PROGRESS":
+		return fmt.Errorf("environment override name %q is reserved by the managed project launcher", name)
+	}
+	return nil
+}
+
+// cloneEnvironmentOverrides prevents caller mutation from changing an accepted launch while executable identity is resolved.
+func cloneEnvironmentOverrides(overrides EnvironmentOverrides) EnvironmentOverrides {
+	result := make(EnvironmentOverrides, len(overrides))
+	for name, value := range overrides {
+		result[name] = value
+	}
+	return result
 }
 
 // canonicalDirectory resolves aliases before the path becomes a process working-directory identity.
@@ -643,23 +715,66 @@ func digestArguments(arguments []string) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// withDevelopmentEnvironment replaces Harbor's plain-mode switch while preserving the user's inherited environment.
-func withDevelopmentEnvironment(environment []string) []string {
-	result := make([]string, 0, len(environment)+1)
-	found := false
+// environmentAssignment keeps managed values ordered while building the operating-system environment slice.
+type environmentAssignment struct {
+	name  string
+	value string
+}
+
+// withDevelopmentEnvironment gives explicit durable values final authority over the captured launch environment.
+func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverrides) []string {
+	names := sortedEnvironmentOverrideNames(overrides)
+	replacedNames := append(append([]string(nil), names...), developmentPlainEnvName, managedEnvKeysName)
+	assignments := make([]environmentAssignment, 0, len(names)+2)
+	for _, name := range names {
+		assignments = append(assignments, environmentAssignment{name: name, value: overrides[name]})
+	}
+	assignments = append(assignments,
+		environmentAssignment{name: developmentPlainEnvName, value: "1"},
+		environmentAssignment{name: managedEnvKeysName, value: strings.Join(names, ",")},
+	)
+	return mergeEnvironmentAssignments(environment, replacedNames, assignments)
+}
+
+// sortedEnvironmentOverrideNames makes marker encoding and appended child values independent of map iteration order.
+func sortedEnvironmentOverrideNames(overrides EnvironmentOverrides) []string {
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(left int, right int) bool {
+		leftFolded := strings.ToUpper(names[left])
+		rightFolded := strings.ToUpper(names[right])
+		if leftFolded != rightFolded {
+			return leftFolded < rightFolded
+		}
+		return names[left] < names[right]
+	})
+	return names
+}
+
+// mergeEnvironmentAssignments removes every platform-equivalent base key before appending one deterministic final value.
+func mergeEnvironmentAssignments(environment []string, replacedNames []string, assignments []environmentAssignment) []string {
+	result := make([]string, 0, len(environment)+len(assignments))
 	for _, entry := range environment {
 		name, _, ok := strings.Cut(entry, "=")
-		if ok && environmentNameEqual(name, "FORJ_DEV_PLAIN") {
-			if !found {
-				result = append(result, "FORJ_DEV_PLAIN=1")
-				found = true
-			}
+		if ok && environmentNameReplaced(name, replacedNames) {
 			continue
 		}
 		result = append(result, entry)
 	}
-	if !found {
-		result = append(result, "FORJ_DEV_PLAIN=1")
+	for _, assignment := range assignments {
+		result = append(result, assignment.name+"="+assignment.value)
 	}
 	return result
+}
+
+// environmentNameReplaced applies the operating system's environment-key equality rules.
+func environmentNameReplaced(name string, replacedNames []string) bool {
+	for _, replacedName := range replacedNames {
+		if environmentNameEqual(name, replacedName) {
+			return true
+		}
+	}
+	return false
 }

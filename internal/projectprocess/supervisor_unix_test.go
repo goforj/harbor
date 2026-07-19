@@ -20,9 +20,10 @@ func TestStopEscalatesAcrossUnixProcessGroup(t *testing.T) {
 	installForjHelper(t, "tree")
 	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-tree",
-		SessionID:    "session-tree",
-		CheckoutRoot: t.TempDir(),
+		ProjectID:            "project-tree",
+		SessionID:            "session-tree",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -50,9 +51,10 @@ func TestUnexpectedRootExitKillsUnixDescendants(t *testing.T) {
 	installForjHelper(t, "orphan")
 	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:    "project-orphan",
-		SessionID:    "session-orphan",
-		CheckoutRoot: t.TempDir(),
+		ProjectID:            "project-orphan",
+		SessionID:            "session-orphan",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
