@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
 // TestApplicationOptionsPinNativeLifecycle verifies close-to-hide, single-instance, assets, bindings, and native menu ownership together.
@@ -34,6 +35,12 @@ func TestApplicationOptionsPinNativeLifecycle(t *testing.T) {
 	}
 	if applicationOptions.BackgroundColour == nil || *applicationOptions.BackgroundColour != (options.RGBA{R: 13, G: 13, B: 13, A: 255}) {
 		t.Fatalf("background = %+v, want Harbor dark background", applicationOptions.BackgroundColour)
+	}
+	if applicationOptions.Linux == nil || !reflect.DeepEqual(applicationOptions.Linux.Icon, applicationIcon) || len(applicationOptions.Linux.Icon) == 0 {
+		t.Fatalf("Linux icon options = %+v, want embedded Harbor icon", applicationOptions.Linux)
+	}
+	if applicationOptions.Linux.WebviewGpuPolicy != linux.WebviewGpuPolicyNever {
+		t.Fatalf("Linux GPU policy = %v, want preserved software rendering policy", applicationOptions.Linux.WebviewGpuPolicy)
 	}
 	if applicationOptions.AssetServer == nil {
 		t.Fatal("asset server options = nil")

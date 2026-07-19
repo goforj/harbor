@@ -60,7 +60,7 @@ wails build
 
 Ubuntu 24.04 requires GTK3, WebKit2GTK 4.1, and the `webkit2_41` Wails build tag. Native packaging also depends on the platform prerequisites documented by Wails.
 
-The native tray remains later milestone work. The scaffolded Wails icons are development placeholders; Harbor branding, signed installers, dependency notices, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
+The Harbor application mark is wired into native Wails application and window surfaces. The native tray, signed installers, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
 
 ## Continuous integration
 
