@@ -35,8 +35,10 @@ type projectDiscoverer interface {
 	Discover(context.Context, string) (projectdiscovery.Discovery, error)
 }
 
-// projectUnregisterApprovalCoordinator limits authority to interactive approval methods rather than recovery internals.
-type projectUnregisterApprovalCoordinator interface {
+// projectUnregisterCoordinator limits authority to user-initiated methods rather than restart recovery internals.
+type projectUnregisterCoordinator interface {
+	// Start initiates or replays one daemon-identified unregister operation for a client-owned intent.
+	Start(context.Context, reconcile.StartRequest) (state.OperationRecord, error)
 	// Prepare returns release progress and at most one caller-bound helper capability.
 	Prepare(context.Context, reconcile.PrepareRequest) (reconcile.PrepareResult, error)
 	// Confirm independently verifies release effects and completes the unregister operation.
@@ -45,33 +47,34 @@ type projectUnregisterApprovalCoordinator interface {
 
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
-	store        controlState
-	approvals    projectUnregisterApprovalCoordinator
-	build        buildinfo.Info
-	discoverer   projectDiscoverer
-	now          func() time.Time
-	newProjectID func() (domain.ProjectID, error)
+	store          controlState
+	unregister     projectUnregisterCoordinator
+	build          buildinfo.Info
+	discoverer     projectDiscoverer
+	now            func() time.Time
+	newProjectID   func() (domain.ProjectID, error)
+	newOperationID func() (domain.OperationID, error)
 }
 
 var _ control.Authority = (*Authority)(nil)
 
-// NewAuthority creates the production control authority from durable state and unregister approval coordination.
-func NewAuthority(store *state.Store, approvals *reconcile.ProjectUnregisterCoordinator) *Authority {
-	if store == nil || approvals == nil {
-		panic("authority.NewAuthority requires non-nil state and approval dependencies")
+// NewAuthority creates the production control authority from durable state and unregister coordination.
+func NewAuthority(store *state.Store, unregister *reconcile.ProjectUnregisterCoordinator) *Authority {
+	if store == nil || unregister == nil {
+		panic("authority.NewAuthority requires non-nil state and unregister dependencies")
 	}
-	return newAuthority(store, approvals, buildinfo.Current())
+	return newAuthority(store, unregister, buildinfo.Current())
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
 func newAuthority(
 	store controlState,
-	approvals projectUnregisterApprovalCoordinator,
+	unregister projectUnregisterCoordinator,
 	build buildinfo.Info,
 ) *Authority {
 	return newAuthorityWithRegistration(
 		store,
-		approvals,
+		unregister,
 		build,
 		projectdiscovery.NewDiscoverer(),
 		time.Now,
@@ -82,26 +85,49 @@ func newAuthority(
 // newAuthorityWithRegistration keeps discovery and clock behavior deterministic in registration tests.
 func newAuthorityWithRegistration(
 	store controlState,
-	approvals projectUnregisterApprovalCoordinator,
+	unregister projectUnregisterCoordinator,
 	build buildinfo.Info,
 	discoverer projectDiscoverer,
 	now func() time.Time,
 	newProjectID func() (domain.ProjectID, error),
 ) *Authority {
+	return newAuthorityWithIdentityFactories(
+		store,
+		unregister,
+		build,
+		discoverer,
+		now,
+		newProjectID,
+		newOpaqueOperationID,
+	)
+}
+
+// newAuthorityWithIdentityFactories keeps both daemon-owned identity sources deterministic in boundary tests.
+func newAuthorityWithIdentityFactories(
+	store controlState,
+	unregister projectUnregisterCoordinator,
+	build buildinfo.Info,
+	discoverer projectDiscoverer,
+	now func() time.Time,
+	newProjectID func() (domain.ProjectID, error),
+	newOperationID func() (domain.OperationID, error),
+) *Authority {
 	if nilAuthorityDependency(store) ||
-		nilAuthorityDependency(approvals) ||
+		nilAuthorityDependency(unregister) ||
 		nilAuthorityDependency(discoverer) ||
 		nilAuthorityDependency(now) ||
-		nilAuthorityDependency(newProjectID) {
-		panic("authority.newAuthorityWithRegistration requires every dependency")
+		nilAuthorityDependency(newProjectID) ||
+		nilAuthorityDependency(newOperationID) {
+		panic("authority.newAuthorityWithIdentityFactories requires every dependency")
 	}
 	return &Authority{
-		store:        store,
-		approvals:    approvals,
-		build:        build,
-		discoverer:   discoverer,
-		now:          now,
-		newProjectID: newProjectID,
+		store:          store,
+		unregister:     unregister,
+		build:          build,
+		discoverer:     discoverer,
+		now:            now,
+		newProjectID:   newProjectID,
+		newOperationID: newOperationID,
 	}
 }
 
@@ -199,6 +225,41 @@ func (authority *Authority) RegisterProject(
 	return result, nil
 }
 
+// UnregisterProject assigns daemon operation identity before starting or replaying one client-owned intent.
+func (authority *Authority) UnregisterProject(
+	ctx context.Context,
+	_ control.Caller,
+	request control.UnregisterProjectRequest,
+) (control.ProjectUnregistration, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectUnregistration{}, err
+	}
+	operationID, err := authority.newOperationID()
+	if err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("generate project unregister operation identity: %w", err)
+	}
+	started, err := authority.unregister.Start(ctx, reconcile.StartRequest{
+		ProjectID:   request.ProjectID,
+		OperationID: operationID,
+		IntentID:    request.IntentID,
+	})
+	if err != nil {
+		return control.ProjectUnregistration{}, classifyProjectUnregisterError(err)
+	}
+	result := control.ProjectUnregistration{
+		Operation: started.Operation,
+		Revision:  started.Revision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("project unregistration result: %w", err)
+	}
+	if result.Operation.ProjectID != request.ProjectID || result.Operation.IntentID != request.IntentID {
+		return control.ProjectUnregistration{}, errors.New("project unregistration result differs from its requested project and intent")
+	}
+	return result, nil
+}
+
 // PrepareProjectUnregisterApproval binds helper authority exclusively to the authenticated transport identity.
 func (authority *Authority) PrepareProjectUnregisterApproval(
 	ctx context.Context,
@@ -209,7 +270,7 @@ func (authority *Authority) PrepareProjectUnregisterApproval(
 	if err := request.Validate(); err != nil {
 		return control.ProjectUnregisterApprovalPreparation{}, err
 	}
-	prepared, err := authority.approvals.Prepare(ctx, reconcile.PrepareRequest{
+	prepared, err := authority.unregister.Prepare(ctx, reconcile.PrepareRequest{
 		OperationID:               request.OperationID,
 		ExpectedOperationRevision: request.ExpectedOperationRevision,
 		RequesterIdentity:         caller.Transport.UserID,
@@ -257,7 +318,7 @@ func (authority *Authority) ConfirmProjectUnregisterApproval(
 	if err := request.Validate(); err != nil {
 		return control.ProjectUnregisterApprovalConfirmation{}, err
 	}
-	confirmed, err := authority.approvals.Confirm(ctx, reconcile.ConfirmRequest{
+	confirmed, err := authority.unregister.Confirm(ctx, reconcile.ConfirmRequest{
 		OperationID:               request.OperationID,
 		ExpectedOperationRevision: request.ExpectedOperationRevision,
 	})
@@ -275,6 +336,50 @@ func (authority *Authority) ConfirmProjectUnregisterApproval(
 		return control.ProjectUnregisterApprovalConfirmation{}, fmt.Errorf("project unregister approval confirmation result: %w", err)
 	}
 	return result, nil
+}
+
+// classifyProjectUnregisterError maps only failures caused by the requested project or intent to stable control categories.
+func classifyProjectUnregisterError(err error) error {
+	var corruptState *state.CorruptStateError
+	if errors.As(err, &corruptState) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var projectMissing *state.ProjectNotFoundError
+	if errors.As(err, &projectMissing) {
+		return control.NewProjectUnregisterNotFoundError(err)
+	}
+
+	var intentConflict *state.IntentConflictError
+	var staleRevision *state.StaleRevisionError
+	var projectBusy *state.ProjectBusyError
+	var projectRevisionConflict *state.ProjectRevisionConflictError
+	var networkRevisionConflict *state.NetworkRevisionConflictError
+	var networkProjectSetConflict *state.NetworkProjectSetConflictError
+	var networkProjectReplacementConflict *state.NetworkProjectReplacementConflictError
+	var releaseConflict *state.ProjectNetworkReleaseConflictError
+	var durableReleaseIncomplete *state.ProjectNetworkReleaseIncompleteError
+	var releaseActive *state.ProjectNetworkReleaseActiveError
+	var hostConflict *reconcile.HostStateConflictError
+	var releaseIncomplete *reconcile.ReleaseIncompleteError
+	if errors.As(err, &intentConflict) ||
+		errors.As(err, &staleRevision) ||
+		errors.As(err, &projectBusy) ||
+		errors.As(err, &projectRevisionConflict) ||
+		errors.As(err, &networkRevisionConflict) ||
+		errors.As(err, &networkProjectSetConflict) ||
+		errors.As(err, &networkProjectReplacementConflict) ||
+		errors.As(err, &releaseConflict) ||
+		errors.As(err, &durableReleaseIncomplete) ||
+		errors.As(err, &releaseActive) ||
+		errors.As(err, &hostConflict) ||
+		errors.As(err, &releaseIncomplete) ||
+		errors.Is(err, harbordruntime.ErrProjectWithdrawalUnverified) {
+		return control.NewProjectUnregisterConflictError(err)
+	}
+	return err
 }
 
 // classifyProjectUnregisterApprovalError maps only reviewed lifecycle failures to stable control categories.
@@ -327,6 +432,19 @@ func newOpaqueProjectID() (domain.ProjectID, error) {
 		return "", err
 	}
 	return projectID, nil
+}
+
+// newOpaqueOperationID generates daemon-owned journal identity independently of client idempotency keys.
+func newOpaqueOperationID() (domain.OperationID, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	operationID := domain.OperationID("operation-" + hex.EncodeToString(random))
+	if err := operationID.Validate(); err != nil {
+		return "", err
+	}
+	return operationID, nil
 }
 
 // normalizeContext keeps nil control calls usable while preserving explicit cancellation.

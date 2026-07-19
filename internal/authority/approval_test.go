@@ -29,13 +29,30 @@ import (
 // recordingProjectUnregisterApprovals captures authority requests while returning deterministic coordinator results.
 type recordingProjectUnregisterApprovals struct {
 	mutex           sync.Mutex
+	startResult     state.OperationRecord
+	startErr        error
 	prepareResult   reconcile.PrepareResult
 	prepareErr      error
 	confirmResult   state.OperationRecord
 	confirmErr      error
+	startRequests   []reconcile.StartRequest
 	prepareRequests []reconcile.PrepareRequest
 	confirmRequests []reconcile.ConfirmRequest
 	nilContexts     int
+}
+
+// Start records the daemon and client identities joined at the coordinator boundary.
+func (approvals *recordingProjectUnregisterApprovals) Start(
+	ctx context.Context,
+	request reconcile.StartRequest,
+) (state.OperationRecord, error) {
+	approvals.mutex.Lock()
+	defer approvals.mutex.Unlock()
+	if ctx == nil {
+		approvals.nilContexts++
+	}
+	approvals.startRequests = append(approvals.startRequests, request)
+	return approvals.startResult, approvals.startErr
 }
 
 // Prepare records the authenticated coordinator request without retaining control-layer caller data.
@@ -77,6 +94,13 @@ func (approvals *recordingProjectUnregisterApprovals) calls() (
 	return append([]reconcile.PrepareRequest(nil), approvals.prepareRequests...),
 		append([]reconcile.ConfirmRequest(nil), approvals.confirmRequests...),
 		approvals.nilContexts
+}
+
+// starts returns isolated initiation requests for daemon identity and idempotency assertions.
+func (approvals *recordingProjectUnregisterApprovals) starts() ([]reconcile.StartRequest, int) {
+	approvals.mutex.Lock()
+	defer approvals.mutex.Unlock()
+	return append([]reconcile.StartRequest(nil), approvals.startRequests...), approvals.nilContexts
 }
 
 // testProjectUnregisterApprovals supplies an inert required collaborator to authority tests outside this file.

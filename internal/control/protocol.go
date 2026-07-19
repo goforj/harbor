@@ -18,12 +18,15 @@ const (
 	CapabilityV1 rpc.Capability = "control.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
+	// CapabilityProjectUnregisterV1 identifies idempotent local-project unregister initiation.
+	CapabilityProjectUnregisterV1 rpc.Capability = "control.project-unregister.v1"
 	// CapabilityProjectUnregisterApprovalV1 identifies interactive project-release approval and confirmation.
 	CapabilityProjectUnregisterApprovalV1 rpc.Capability = "control.project-unregister-approval.v1"
 
 	methodDaemonStatus                     = "control.v1.daemon.status"
 	methodSnapshot                         = "control.v1.snapshot"
 	methodProjectRegister                  = "control.v1.project.register"
+	methodProjectUnregister                = "control.v1.project.unregister"
 	methodProjectUnregisterApprovalPrepare = "control.v1.project.unregister.approval.prepare"
 	methodProjectUnregisterApprovalConfirm = "control.v1.project.unregister.approval.confirm"
 	maximumBuildToken                      = 128
@@ -162,6 +165,18 @@ type snapshotResponse struct {
 	Snapshot domain.Snapshot `json:"snapshot"`
 }
 
+// validateProjectUnregistrationCorrelation binds daemon-generated operation progress to the client-owned intent.
+func validateProjectUnregistrationCorrelation(
+	request UnregisterProjectRequest,
+	unregistration ProjectUnregistration,
+) error {
+	if unregistration.Operation.ProjectID != request.ProjectID ||
+		unregistration.Operation.IntentID != request.IntentID {
+		return errors.New("project unregistration does not match the requested project and intent")
+	}
+	return nil
+}
+
 // projectUnregisterApprovalPreparationResponse keeps preparation extensible around its reviewed result.
 type projectUnregisterApprovalPreparationResponse struct {
 	Preparation ProjectUnregisterApprovalPreparation `json:"preparation"`
@@ -205,6 +220,7 @@ func capabilities() []rpc.Capability {
 	return []rpc.Capability{
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectUnregisterApprovalV1,
+		CapabilityProjectUnregisterV1,
 		CapabilityV1,
 	}
 }

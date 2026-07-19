@@ -157,6 +157,34 @@ func (client *Client) RegisterProject(ctx context.Context, request RegisterProje
 	return response.Registration, nil
 }
 
+// UnregisterProject starts or resumes one client-stable project removal intent.
+func (client *Client) UnregisterProject(
+	ctx context.Context,
+	request UnregisterProjectRequest,
+) (ProjectUnregistration, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectUnregistration{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectUnregisterV1) {
+		return ProjectUnregistration{}, errors.New("Harbor daemon does not support project unregister; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectUnregister, request)
+	if err != nil {
+		return ProjectUnregistration{}, err
+	}
+	var response projectUnregistrationResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectUnregistration{}, fmt.Errorf("decode project unregistration response: %w", err)
+	}
+	if err := response.Unregistration.Validate(); err != nil {
+		return ProjectUnregistration{}, fmt.Errorf("validate project unregistration response: %w", err)
+	}
+	if err := validateProjectUnregistrationCorrelation(request, response.Unregistration); err != nil {
+		return ProjectUnregistration{}, fmt.Errorf("validate project unregistration response: %w", err)
+	}
+	return response.Unregistration, nil
+}
+
 // PrepareProjectUnregisterApproval requests progress and at most one caller-bound helper capability.
 func (client *Client) PrepareProjectUnregisterApproval(
 	ctx context.Context,

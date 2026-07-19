@@ -26,6 +26,8 @@ type Authority interface {
 	Snapshot(context.Context, Caller) (domain.Snapshot, error)
 	// RegisterProject discovers and durably registers one canonical GoForj checkout.
 	RegisterProject(context.Context, Caller, RegisterProjectRequest) (ProjectRegistration, error)
+	// UnregisterProject starts or resumes one idempotent project removal intent.
+	UnregisterProject(context.Context, Caller, UnregisterProjectRequest) (ProjectUnregistration, error)
 	// PrepareProjectUnregisterApproval returns release progress and at most one caller-bound helper capability.
 	PrepareProjectUnregisterApproval(context.Context, Caller, PrepareProjectUnregisterApprovalRequest) (ProjectUnregisterApprovalPreparation, error)
 	// ConfirmProjectUnregisterApproval verifies host release before completing the durable unregister operation.
@@ -62,6 +64,16 @@ func NewProjectRegistrationConflictError(cause error) error {
 // NewProjectRegistrationInvalidError classifies a selected checkout that cannot form a valid registration.
 func NewProjectRegistrationInvalidError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewProjectUnregisterConflictError classifies current state that prevents unregister initiation or progress.
+func NewProjectUnregisterConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewProjectUnregisterNotFoundError classifies a requested project that is not durably registered.
+func NewProjectUnregisterNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 
 // NewProjectUnregisterApprovalConflictError classifies a reviewed unregister lifecycle conflict for control clients.

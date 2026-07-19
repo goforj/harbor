@@ -24,6 +24,9 @@ const maximumEmptyRequestBytes = 64
 // maximumProjectRegistrationRequestBytes allows encoding/json's six-byte escaping of each accepted path byte.
 const maximumProjectRegistrationRequestBytes = maximumRegistrationPathBytes*6 + 16
 
+// maximumProjectUnregisterRequestBytes covers two maximally escaped domain identifiers in one object.
+const maximumProjectUnregisterRequestBytes = 4096
+
 // maximumProjectUnregisterApprovalRequestBytes covers a maximally escaped domain ID and exact integer revision.
 const maximumProjectUnregisterApprovalRequestBytes = 2048
 
@@ -96,6 +99,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 			methodDaemonStatus:                     server.statusHandler(transportPeer),
 			methodSnapshot:                         server.snapshotHandler(transportPeer),
 			methodProjectRegister:                  server.projectRegisterHandler(transportPeer),
+			methodProjectUnregister:                server.projectUnregisterHandler(transportPeer),
 			methodProjectUnregisterApprovalPrepare: server.projectUnregisterApprovalPrepareHandler(transportPeer),
 			methodProjectUnregisterApprovalConfirm: server.projectUnregisterApprovalConfirmHandler(transportPeer),
 		},
@@ -107,6 +111,37 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	}
 
 	return controlSession.Serve(ctx, connection)
+}
+
+// projectUnregisterHandler admits only one client-owned intent while retaining operation identity inside daemon authority.
+func (server *Server) projectUnregisterHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectUnregisterV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project unregister capability was not negotiated"),
+			)
+		}
+		unregisterRequest, err := decodeProjectUnregisterRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		unregistration, err := server.config.Authority.UnregisterProject(ctx, caller, unregisterRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := unregistration.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project unregistration: %w", err))
+		}
+		if err := validateProjectUnregistrationCorrelation(unregisterRequest, unregistration); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project unregistration: %w", err))
+		}
+		return projectUnregistrationResponse{Unregistration: unregistration}, nil
+	}
 }
 
 // projectUnregisterApprovalPrepareHandler derives caller identity before admitting one exact approval selection.
@@ -390,6 +425,72 @@ func decodeProjectRegistrationRequest(payload []byte) (RegisterProjectRequest, e
 		return RegisterProjectRequest{}, err
 	}
 	return registrationRequest, nil
+}
+
+// decodeProjectUnregisterRequest rejects hidden authority beyond one project and its client-stable intent.
+func decodeProjectUnregisterRequest(payload []byte) (UnregisterProjectRequest, error) {
+	if len(payload) == 0 || len(payload) > maximumProjectUnregisterRequestBytes {
+		return UnregisterProjectRequest{}, errors.New("project unregister request exceeds its bounded object shape")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	opening, err := decoder.Token()
+	if err != nil {
+		return UnregisterProjectRequest{}, fmt.Errorf("decode project unregister request: %w", err)
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return UnregisterProjectRequest{}, errors.New("project unregister request must be an object")
+	}
+
+	var unregisterRequest UnregisterProjectRequest
+	projectSeen := false
+	intentSeen := false
+	for decoder.More() {
+		fieldToken, err := decoder.Token()
+		if err != nil {
+			return UnregisterProjectRequest{}, fmt.Errorf("decode project unregister field: %w", err)
+		}
+		field, ok := fieldToken.(string)
+		if !ok {
+			return UnregisterProjectRequest{}, errors.New("project unregister field name must be a string")
+		}
+		switch field {
+		case "project_id":
+			if projectSeen {
+				return UnregisterProjectRequest{}, errors.New("project unregister request contains duplicate field \"project_id\"")
+			}
+			if err := decoder.Decode(&unregisterRequest.ProjectID); err != nil {
+				return UnregisterProjectRequest{}, fmt.Errorf("decode project unregister project ID: %w", err)
+			}
+			projectSeen = true
+		case "intent_id":
+			if intentSeen {
+				return UnregisterProjectRequest{}, errors.New("project unregister request contains duplicate field \"intent_id\"")
+			}
+			if err := decoder.Decode(&unregisterRequest.IntentID); err != nil {
+				return UnregisterProjectRequest{}, fmt.Errorf("decode project unregister intent ID: %w", err)
+			}
+			intentSeen = true
+		default:
+			return UnregisterProjectRequest{}, fmt.Errorf("project unregister request contains unknown field %q", field)
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return UnregisterProjectRequest{}, fmt.Errorf("decode project unregister request end: %w", err)
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return UnregisterProjectRequest{}, errors.New("project unregister request object is not terminated")
+	}
+	if !projectSeen || !intentSeen {
+		return UnregisterProjectRequest{}, errors.New("project unregister request requires project_id and intent_id")
+	}
+	if err := requireJSONEnd(decoder); err != nil {
+		return UnregisterProjectRequest{}, err
+	}
+	if err := unregisterRequest.Validate(); err != nil {
+		return UnregisterProjectRequest{}, err
+	}
+	return unregisterRequest, nil
 }
 
 // decodePrepareProjectUnregisterApprovalRequest rejects any authority beyond one exact operation revision.
