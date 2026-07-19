@@ -289,15 +289,15 @@ For the default App, a materialized overlay may include values corresponding to:
 
 ```text
 APP_URL=https://orders.test
-API_HTTP_HOST=127.0.0.1
-API_HTTP_PORT=43101
+API_HTTP_HOST=127.77.0.10
+API_HTTP_PORT=3000
 DB_HOST=mysql.orders.test
 DB_PORT=3306
 REDIS_HOST=redis.orders.test
 REDIS_PORT=6379
 MAIL_SMTP_HOST=smtp.orders.test
 MAIL_SMTP_PORT=1025
-LIGHTHOUSE_URL=ws://127.0.0.1:<private-app-port>/lighthouse/ws/agent
+LIGHTHOUSE_URL=ws://127.77.0.10:3000/lighthouse/ws/agent
 ```
 
 `LIGHTHOUSE_URL` is the private WebSocket transport used by generated agents and devwatch. The public, user-facing Lighthouse URL is a separate resolved HTTPS resource. It is not written into this transport key.

@@ -438,14 +438,12 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	}
 
 	handle, err := coordinator.supervisor.Start(coordinator.ctx, projectprocess.StartRequest{
-		ProjectID:    record.Operation.ProjectID,
-		SessionID:    session.ID,
-		CheckoutRoot: project.Project.Path,
-		EnvironmentOverrides: projectprocess.EnvironmentOverrides{
-			"IP_ADDRESS": admission.Lease.Address.String(),
-		},
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
+		ProjectID:            record.Operation.ProjectID,
+		SessionID:            session.ID,
+		CheckoutRoot:         project.Project.Path,
+		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
+		Stdout:               os.Stdout,
+		Stderr:               os.Stderr,
 	})
 	if err != nil {
 		coordinator.failStartWithoutProcess(begun, session, "project.launch.failed", err)
@@ -471,6 +469,18 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	coordinator.waitForReadiness(begun, attached, handle, admission.Target)
+}
+
+// projectRuntimeEnvironmentOverrides keeps internal clients on the same assigned identity as the App listener.
+func projectRuntimeEnvironmentOverrides(target projectdiscovery.RuntimeTarget) projectprocess.EnvironmentOverrides {
+	return projectprocess.EnvironmentOverrides{
+		"IP_ADDRESS": target.Address.String(),
+		"LIGHTHOUSE_URL": fmt.Sprintf(
+			"ws://%s:%d/lighthouse/ws/agent",
+			target.Address,
+			target.Port,
+		),
+	}
 }
 
 // waitForReadiness owns startup until the exact App proves ready or the supervised process exits.

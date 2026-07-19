@@ -174,6 +174,11 @@ func TestMain(m *testing.M) {
 func runProjectLifecycleHelper() {
 	address := os.Getenv("IP_ADDRESS")
 	port := os.Getenv("HARBOR_PROJECT_LIFECYCLE_PORT")
+	wantLighthouseURL := fmt.Sprintf("ws://%s:%s/lighthouse/ws/agent", address, port)
+	if got := os.Getenv("LIGHTHOUSE_URL"); got != wantLighthouseURL {
+		_, _ = fmt.Fprintf(os.Stderr, "LIGHTHOUSE_URL=%q, want %q\n", got, wantLighthouseURL)
+		os.Exit(2)
+	}
 	listener, err := net.Listen("tcp", net.JoinHostPort(address, port))
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -194,6 +199,25 @@ func runProjectLifecycleHelper() {
 	}()
 	<-stopped
 	_ = server.Close()
+}
+
+// TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdentity prevents split bind and dial targets.
+func TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdentity(t *testing.T) {
+	target, err := projectdiscovery.NewRuntimeTarget(
+		"app",
+		"App",
+		netip.MustParseAddr("127.77.0.11"),
+		3000,
+	)
+	if err != nil {
+		t.Fatalf("create runtime target: %v", err)
+	}
+
+	overrides := projectRuntimeEnvironmentOverrides(target)
+	if len(overrides) != 2 || overrides["IP_ADDRESS"] != "127.77.0.11" ||
+		overrides["LIGHTHOUSE_URL"] != "ws://127.77.0.11:3000/lighthouse/ws/agent" {
+		t.Fatalf("runtime environment overrides = %#v", overrides)
+	}
 }
 
 // TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt proves the complete durable process and readiness vertical.
