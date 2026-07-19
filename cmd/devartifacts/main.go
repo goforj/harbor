@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
 const artifactMode = os.FileMode(0o755)
@@ -85,7 +86,18 @@ func developmentPaths(workingDirectory string) (string, string, error) {
 	}
 
 	repositoryRoot := filepath.Dir(desktopDirectory)
-	return repositoryRoot, filepath.Join(desktopDirectory, "build", "bin", "devtools"), nil
+	return repositoryRoot, filepath.Join(
+		desktopDirectory,
+		"build",
+		"bin",
+		"devtools",
+		developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH),
+	), nil
+}
+
+// developmentArtifactRuntimeDirectory prevents hosts sharing a workspace from replacing each other's executables.
+func developmentArtifactRuntimeDirectory(goos string, goarch string) string {
+	return goos + "-" + goarch
 }
 
 // runCommand preserves Go's diagnostics while fixing the command's working directory to the root module.

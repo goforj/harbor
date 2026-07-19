@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"runtime"
 )
 
 var (
@@ -32,11 +33,12 @@ type Ensurer interface {
 
 // sourceEnsurerDependencies keeps source discovery, artifact admission, and native elevation independently testable.
 type sourceEnsurerDependencies struct {
-	executable   func() (string, error)
-	effectiveUID func() int
-	effectiveGID func() int
-	inspect      func(string, uint32, uint32) error
-	elevate      func(context.Context, sourceBootstrapRequest) error
+	executable              func() (string, error)
+	effectiveUID            func() int
+	effectiveGID            func() int
+	platformDirectoryExists func(string) (bool, error)
+	inspect                 func(string, uint32, uint32) error
+	elevate                 func(context.Context, sourceBootstrapRequest) error
 }
 
 // sourceEnsurer owns the development-only handoff from an unelevated desktop to the bespoke bootstrap binary.
@@ -63,7 +65,7 @@ func New() Ensurer {
 // newSourceEnsurer creates a development repair boundary from complete native dependencies.
 func newSourceEnsurer(dependencies sourceEnsurerDependencies) Ensurer {
 	if dependencies.executable == nil || dependencies.effectiveUID == nil || dependencies.effectiveGID == nil ||
-		dependencies.inspect == nil || dependencies.elevate == nil {
+		dependencies.platformDirectoryExists == nil || dependencies.inspect == nil || dependencies.elevate == nil {
 		panic("networkprerequisite source ensurer requires every dependency")
 	}
 
@@ -101,7 +103,15 @@ func (ensurer *sourceEnsurer) Ensure(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	artifactDirectory := filepath.Join(artifactParent, developmentArtifactDirectory)
+	artifactRoot := filepath.Join(artifactParent, developmentArtifactDirectory)
+	artifactDirectory := filepath.Join(artifactRoot, developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH))
+	platformDirectoryExists, err := ensurer.dependencies.platformDirectoryExists(artifactDirectory)
+	if err != nil {
+		return fmt.Errorf("inspect Harbor development artifact directory: %w", err)
+	}
+	if !platformDirectoryExists {
+		artifactDirectory = artifactRoot
+	}
 	request := sourceBootstrapRequest{
 		bootstrapPath: filepath.Join(artifactDirectory, developmentBootstrapName),
 		helperPath:    filepath.Join(artifactDirectory, developmentHelperName),
@@ -118,6 +128,11 @@ func (ensurer *sourceEnsurer) Ensure(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// developmentArtifactRuntimeDirectory keeps desktop discovery aligned with the cross-platform Wails build hook.
+func developmentArtifactRuntimeDirectory(goos string, goarch string) string {
+	return goos + "-" + goarch
 }
 
 // developmentArtifactParent recognizes Wails' exact macOS application bundle and raw development binary layouts.

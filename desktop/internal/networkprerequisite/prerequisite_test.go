@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,9 +16,10 @@ func TestSourceEnsurerDerivesExactSiblingArtifacts(t *testing.T) {
 	var inspected []string
 	var elevated sourceBootstrapRequest
 	ensurer := newSourceEnsurer(sourceEnsurerDependencies{
-		executable:   func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
-		effectiveUID: func() int { return 501 },
-		effectiveGID: func() int { return 20 },
+		executable:              func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
+		effectiveUID:            func() int { return 501 },
+		effectiveGID:            func() int { return 20 },
+		platformDirectoryExists: func(string) (bool, error) { return true, nil },
 		inspect: func(path string, userID uint32, groupID uint32) error {
 			if userID != 501 || groupID != 20 {
 				t.Fatalf("artifact identity = %d:%d, want 501:20", userID, groupID)
@@ -34,9 +36,10 @@ func TestSourceEnsurerDerivesExactSiblingArtifacts(t *testing.T) {
 	if err := ensurer.Ensure(t.Context()); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
+	runtimeDirectory := developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH)
 	wantPaths := []string{
-		"/workspace/harbor/desktop/build/bin/devtools/devbootstrap",
-		"/workspace/harbor/desktop/build/bin/devtools/helper",
+		"/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/devbootstrap",
+		"/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/helper",
 	}
 	if !reflect.DeepEqual(inspected, wantPaths) {
 		t.Fatalf("inspected paths = %#v, want %#v", inspected, wantPaths)
@@ -74,10 +77,11 @@ func TestSourceEnsurerRejectsUnsafeDiscoveryBeforeElevation(t *testing.T) {
 			t.Parallel()
 			elevated := false
 			ensurer := newSourceEnsurer(sourceEnsurerDependencies{
-				executable:   func() (string, error) { return test.executable, nil },
-				effectiveUID: func() int { return test.uid },
-				effectiveGID: func() int { return test.gid },
-				inspect:      func(string, uint32, uint32) error { return test.inspectErr },
+				executable:              func() (string, error) { return test.executable, nil },
+				effectiveUID:            func() int { return test.uid },
+				effectiveGID:            func() int { return test.gid },
+				platformDirectoryExists: func(string) (bool, error) { return true, nil },
+				inspect:                 func(string, uint32, uint32) error { return test.inspectErr },
 				elevate: func(context.Context, sourceBootstrapRequest) error {
 					elevated = true
 					return nil
@@ -90,6 +94,85 @@ func TestSourceEnsurerRejectsUnsafeDiscoveryBeforeElevation(t *testing.T) {
 				t.Fatal("Ensure() elevated an unsafe development artifact")
 			}
 		})
+	}
+}
+
+// TestSourceEnsurerFallsBackOnlyWhenThePlatformDirectoryIsAbsent keeps one bounded transition for existing Wails builds.
+func TestSourceEnsurerFallsBackOnlyWhenThePlatformDirectoryIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	var inspected []string
+	var elevated sourceBootstrapRequest
+	ensurer := newSourceEnsurer(sourceEnsurerDependencies{
+		executable:              func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
+		effectiveUID:            func() int { return 501 },
+		effectiveGID:            func() int { return 20 },
+		platformDirectoryExists: func(string) (bool, error) { return false, nil },
+		inspect: func(path string, _ uint32, _ uint32) error {
+			inspected = append(inspected, path)
+			return nil
+		},
+		elevate: func(_ context.Context, request sourceBootstrapRequest) error {
+			elevated = request
+			return nil
+		},
+	})
+
+	if err := ensurer.Ensure(t.Context()); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	wantPaths := []string{
+		"/workspace/harbor/desktop/build/bin/devtools/devbootstrap",
+		"/workspace/harbor/desktop/build/bin/devtools/helper",
+	}
+	if !reflect.DeepEqual(inspected, wantPaths) {
+		t.Fatalf("inspected paths = %#v, want %#v", inspected, wantPaths)
+	}
+	if elevated.bootstrapPath != wantPaths[0] || elevated.helperPath != wantPaths[1] {
+		t.Fatalf("elevated request = %#v", elevated)
+	}
+}
+
+// TestSourceEnsurerNeverFallsBackFromAnInvalidPlatformArtifact prevents stale legacy binaries from bypassing scoped admission.
+func TestSourceEnsurerNeverFallsBackFromAnInvalidPlatformArtifact(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("wrong executable format")
+	var inspected []string
+	elevated := false
+	ensurer := newSourceEnsurer(sourceEnsurerDependencies{
+		executable:              func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
+		effectiveUID:            func() int { return 501 },
+		effectiveGID:            func() int { return 20 },
+		platformDirectoryExists: func(string) (bool, error) { return true, nil },
+		inspect: func(path string, _ uint32, _ uint32) error {
+			inspected = append(inspected, path)
+			return sentinel
+		},
+		elevate: func(context.Context, sourceBootstrapRequest) error {
+			elevated = true
+			return nil
+		},
+	})
+
+	err := ensurer.Ensure(t.Context())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Ensure() error = %v, want wrong executable format", err)
+	}
+	if len(inspected) != 1 || strings.HasSuffix(inspected[0], "/devtools/devbootstrap") {
+		t.Fatalf("inspected paths = %#v, want only the scoped bootstrap", inspected)
+	}
+	if elevated {
+		t.Fatal("Ensure() elevated after scoped artifact admission failed")
+	}
+}
+
+// TestDevelopmentArtifactRuntimeDirectoryMatchesTheBuilderConvention prevents silent loader and hook divergence.
+func TestDevelopmentArtifactRuntimeDirectoryMatchesTheBuilderConvention(t *testing.T) {
+	t.Parallel()
+
+	if got := developmentArtifactRuntimeDirectory("darwin", "arm64"); got != "darwin-arm64" {
+		t.Fatalf("developmentArtifactRuntimeDirectory() = %q, want darwin-arm64", got)
 	}
 }
 
@@ -179,10 +262,11 @@ func TestUnavailableEnsurerKeepsPackagedBuildsOnTheInstallerBoundary(t *testing.
 // newTestSourceEnsurer creates one fully admitted source fixture around a selected native result.
 func newTestSourceEnsurer(elevate func(context.Context, sourceBootstrapRequest) error) Ensurer {
 	return newSourceEnsurer(sourceEnsurerDependencies{
-		executable:   func() (string, error) { return "/workspace/harbor-desktop", nil },
-		effectiveUID: func() int { return 501 },
-		effectiveGID: func() int { return 20 },
-		inspect:      func(string, uint32, uint32) error { return nil },
-		elevate:      elevate,
+		executable:              func() (string, error) { return "/workspace/harbor-desktop", nil },
+		effectiveUID:            func() int { return 501 },
+		effectiveGID:            func() int { return 20 },
+		platformDirectoryExists: func(string) (bool, error) { return true, nil },
+		inspect:                 func(string, uint32, uint32) error { return nil },
+		elevate:                 elevate,
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -32,15 +33,16 @@ func TestRunBuildsOnlyFixedRootArtifacts(t *testing.T) {
 	if err := run(t.Context(), workingDirectory, nil, runner); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
+	artifactDirectory := filepath.Join(workingDirectory, "devtools", developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH))
 	wantCalls := [][]string{
-		{repositoryRoot, "go", "build", "-o", filepath.Join(workingDirectory, "devtools", "helper"), "./cmd/helper"},
-		{repositoryRoot, "go", "build", "-o", filepath.Join(workingDirectory, "devtools", "devbootstrap"), "./cmd/devbootstrap"},
+		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "helper"), "./cmd/helper"},
+		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "devbootstrap"), "./cmd/devbootstrap"},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
 	}
 	for _, name := range []string{"helper", "devbootstrap"} {
-		information, err := os.Stat(filepath.Join(workingDirectory, "devtools", name))
+		information, err := os.Stat(filepath.Join(artifactDirectory, name))
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
@@ -57,13 +59,33 @@ func TestDevelopmentPathsAcceptsWailsWorkingDirectories(t *testing.T) {
 	repositoryRoot := t.TempDir()
 	desktopDirectory := filepath.Join(repositoryRoot, "desktop")
 	binDirectory := filepath.Join(desktopDirectory, "build", "bin")
+	wantOutput := filepath.Join(binDirectory, "devtools", developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH))
 	for _, directory := range []string{desktopDirectory, binDirectory} {
 		gotRoot, gotOutput, err := developmentPaths(directory)
 		if err != nil {
 			t.Fatalf("developmentPaths(%q) error = %v", directory, err)
 		}
-		if gotRoot != repositoryRoot || gotOutput != filepath.Join(binDirectory, "devtools") {
-			t.Fatalf("developmentPaths(%q) = (%q, %q), want (%q, %q)", directory, gotRoot, gotOutput, repositoryRoot, filepath.Join(binDirectory, "devtools"))
+		if gotRoot != repositoryRoot || gotOutput != wantOutput {
+			t.Fatalf("developmentPaths(%q) = (%q, %q), want (%q, %q)", directory, gotRoot, gotOutput, repositoryRoot, wantOutput)
+		}
+	}
+}
+
+// TestDevelopmentArtifactRuntimeDirectorySeparatesHostBinaries pins the shared convention used by the desktop loader.
+func TestDevelopmentArtifactRuntimeDirectorySeparatesHostBinaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{goos: "darwin", goarch: "arm64", want: "darwin-arm64"},
+		{goos: "linux", goarch: "amd64", want: "linux-amd64"},
+	}
+	for _, test := range tests {
+		if got := developmentArtifactRuntimeDirectory(test.goos, test.goarch); got != test.want {
+			t.Fatalf("developmentArtifactRuntimeDirectory(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
 		}
 	}
 }

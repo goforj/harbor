@@ -4,10 +4,12 @@ package networkprerequisite
 
 import (
 	"context"
+	"debug/macho"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"syscall"
 )
@@ -33,15 +35,31 @@ const darwinDevelopmentArtifactMode = fs.FileMode(0o755)
 // newPlatformEnsurer enables adjacent artifacts only in Wails' explicit macOS development build mode.
 func newPlatformEnsurer() Ensurer {
 	return newSourceEnsurer(sourceEnsurerDependencies{
-		executable:   os.Executable,
-		effectiveUID: os.Geteuid,
-		effectiveGID: os.Getegid,
-		inspect:      inspectDarwinDevelopmentArtifact,
-		elevate:      elevateDarwinDevelopmentBootstrap,
+		executable:              os.Executable,
+		effectiveUID:            os.Geteuid,
+		effectiveGID:            os.Getegid,
+		platformDirectoryExists: darwinDevelopmentArtifactDirectoryExists,
+		inspect:                 inspectDarwinDevelopmentArtifact,
+		elevate:                 elevateDarwinDevelopmentBootstrap,
 	})
 }
 
-// inspectDarwinDevelopmentArtifact rejects links, foreign ownership, and mutable permission shapes before native consent.
+// darwinDevelopmentArtifactDirectoryExists distinguishes an absent transition directory from an unsafe replacement.
+func darwinDevelopmentArtifactDirectoryExists(path string) (bool, error) {
+	information, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect %q: %w", path, err)
+	}
+	if !information.IsDir() {
+		return false, fmt.Errorf("development artifact directory %q is not a directory", path)
+	}
+	return true, nil
+}
+
+// inspectDarwinDevelopmentArtifact admits only native thin executables before macOS displays privileged consent.
 func inspectDarwinDevelopmentArtifact(path string, userID uint32, groupID uint32) error {
 	information, err := os.Lstat(path)
 	if err != nil {
@@ -57,7 +75,37 @@ func inspectDarwinDevelopmentArtifact(path string, userID uint32, groupID uint32
 	if status.Uid != userID || status.Gid != groupID || status.Nlink != 1 {
 		return fmt.Errorf("development artifact %q has unexpected ownership or link count", path)
 	}
+
+	executable, err := macho.Open(path)
+	if err != nil {
+		return fmt.Errorf("development artifact %q is not a thin Mach-O executable: %w", path, err)
+	}
+	defer func() {
+		_ = executable.Close()
+	}()
+	if executable.Type != macho.TypeExec {
+		return fmt.Errorf("development artifact %q is not a Mach-O executable", path)
+	}
+	expectedCPU, err := darwinDevelopmentArtifactCPU(runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	if executable.Cpu != expectedCPU {
+		return fmt.Errorf("development artifact %q targets CPU %s, want %s", path, executable.Cpu, expectedCPU)
+	}
 	return nil
+}
+
+// darwinDevelopmentArtifactCPU maps Go's build architecture to Mach-O's reviewed native CPU values.
+func darwinDevelopmentArtifactCPU(goarch string) (macho.Cpu, error) {
+	switch goarch {
+	case "amd64":
+		return macho.CpuAmd64, nil
+	case "arm64":
+		return macho.CpuArm64, nil
+	default:
+		return 0, fmt.Errorf("Harbor development artifacts do not support Darwin architecture %q", goarch)
+	}
 }
 
 // elevateDarwinDevelopmentBootstrap uses macOS native consent around one fixed, shell-quoted bootstrap command.
