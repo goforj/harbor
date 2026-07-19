@@ -9,16 +9,17 @@ import (
 
 // MachineOwnershipProjection is the daemon-owned confirmation of authority enforced by the elevated helper.
 type MachineOwnershipProjection struct {
-	Id                     int       `gorm:"column:id" json:"id"`
-	NetworkStateId         int       `gorm:"column:network_state_id" json:"network_state_id"`
-	OwnershipSchemaVersion int       `gorm:"column:ownership_schema_version" json:"ownership_schema_version"`
-	InstallationId         string    `gorm:"column:installation_id" json:"installation_id"`
-	OwnerIdentity          string    `gorm:"column:owner_identity" json:"owner_identity"`
-	OwnershipGeneration    int       `gorm:"column:ownership_generation" json:"ownership_generation"`
-	LoopbackPoolPrefix     string    `gorm:"column:loopback_pool_prefix" json:"loopback_pool_prefix"`
-	TicketVerifierKey      string    `gorm:"column:ticket_verifier_key" json:"ticket_verifier_key"`
-	RecordFingerprint      string    `gorm:"column:record_fingerprint" json:"record_fingerprint"`
-	ConfirmedAt            time.Time `gorm:"column:confirmed_at" json:"confirmed_at"`
+	Id                       int       `gorm:"column:id" json:"id"`
+	NetworkStateId           int       `gorm:"column:network_state_id" json:"network_state_id"`
+	OwnershipSchemaVersion   int       `gorm:"column:ownership_schema_version" json:"ownership_schema_version"`
+	InstallationId           string    `gorm:"column:installation_id" json:"installation_id"`
+	OwnerIdentity            string    `gorm:"column:owner_identity" json:"owner_identity"`
+	OwnershipGeneration      int       `gorm:"column:ownership_generation" json:"ownership_generation"`
+	LoopbackPoolPrefix       string    `gorm:"column:loopback_pool_prefix" json:"loopback_pool_prefix"`
+	NetworkPolicyFingerprint *string   `gorm:"column:network_policy_fingerprint" json:"network_policy_fingerprint"`
+	TicketVerifierKey        string    `gorm:"column:ticket_verifier_key" json:"ticket_verifier_key"`
+	RecordFingerprint        string    `gorm:"column:record_fingerprint" json:"record_fingerprint"`
+	ConfirmedAt              time.Time `gorm:"column:confirmed_at" json:"confirmed_at"`
 }
 
 // TableName returns the database table name.
