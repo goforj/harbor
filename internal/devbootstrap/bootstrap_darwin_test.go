@@ -30,6 +30,26 @@ type darwinTestParentState struct {
 	created  bool
 }
 
+// TestSecurePlatformCreatedAccessAcceptsAnAbsentACL prevents protected xattr removal from rejecting a clean new directory.
+func TestSecurePlatformCreatedAccessAcceptsAnAbsentACL(t *testing.T) {
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open clean Darwin test directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := directory.Close(); err != nil {
+			t.Errorf("close clean Darwin test directory: %v", err)
+		}
+	})
+
+	if err := validatePlatformExtendedAccess(directory); err != nil {
+		t.Fatalf("validate clean Darwin test directory extended access: %v", err)
+	}
+	if err := securePlatformCreatedAccess(directory); err != nil {
+		t.Fatalf("secure clean Darwin test directory extended access: %v", err)
+	}
+}
+
 // TestApplyPlatformPlanTraversesDarwinLibraryAncestors proves the native transaction admits the real standard macOS ancestors.
 func TestApplyPlatformPlanTraversesDarwinLibraryAncestors(t *testing.T) {
 	if os.Geteuid() != 0 {
