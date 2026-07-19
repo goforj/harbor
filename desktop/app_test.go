@@ -108,7 +108,7 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.restore == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.presentation == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
 }
@@ -215,9 +215,13 @@ func TestSecondInstanceRestoresTheOwnedWindow(t *testing.T) {
 	t.Parallel()
 
 	app := testApp()
-	app.ctx = context.Background()
 	restored := false
-	app.restore = func(context.Context) { restored = true }
+	app.presentation = newPresentationController(
+		func(context.Context) {},
+		func(context.Context) { restored = true },
+		func(context.Context) {},
+	)
+	app.presentation.startup(context.Background())
 	app.onSecondInstanceLaunch(options.SecondInstanceData{})
 	if !restored {
 		t.Fatal("onSecondInstanceLaunch() did not restore the Wails window")

@@ -46,9 +46,6 @@ type resourceOpener func(context.Context, string)
 // directoryChooser keeps the native folder picker deterministic in adapter tests.
 type directoryChooser func(context.Context, runtime.OpenDialogOptions) (string, error)
 
-// windowRestorer raises the existing Wails window after the single-instance lock rejects a second process.
-type windowRestorer func(context.Context)
-
 // waitFunc makes reconnect and polling boundaries cancellation-aware and deterministic in tests.
 type waitFunc func(context.Context, time.Duration) bool
 
@@ -84,7 +81,7 @@ type App struct {
 	events         desktopwire.Emitter
 	open           resourceOpener
 	choose         directoryChooser
-	restore        windowRestorer
+	presentation   *presentationController
 	wait           waitFunc
 	reconnectDelay time.Duration
 	pollInterval   time.Duration
@@ -105,7 +102,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		events:         desktopwire.NewEmitter(emit),
 		open:           open,
 		choose:         runtime.OpenDirectoryDialog,
-		restore:        runtime.Show,
+		presentation:   newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
 		wait:           wait,
 		reconnectDelay: desktopReconnectDelay,
 		pollInterval:   desktopPollInterval,
@@ -187,6 +184,7 @@ func (a *App) startup(ctx context.Context) {
 	a.cancel = cancel
 	a.done = make(chan struct{})
 	done := a.done
+	a.presentation.startup(ctx)
 	a.mu.Unlock()
 
 	go a.run(runContext, done)
@@ -194,6 +192,8 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown cancels background calls, closes the live transport, and waits until the owner goroutine exits.
 func (a *App) shutdown(_ context.Context) {
+	a.presentation.shutdown()
+
 	a.mu.Lock()
 	cancel := a.cancel
 	client := a.client
@@ -215,13 +215,7 @@ func (a *App) shutdown(_ context.Context) {
 
 // onSecondInstanceLaunch restores the existing client because a second desktop must not become another runtime authority.
 func (a *App) onSecondInstanceLaunch(_ options.SecondInstanceData) {
-	a.mu.RLock()
-	ctx := a.ctx
-	a.mu.RUnlock()
-	if ctx == nil {
-		return
-	}
-	a.restore(ctx)
+	a.presentation.activate()
 }
 
 // Status returns the diagnostic reported by the currently authenticated daemon connection.
