@@ -16,7 +16,10 @@ import (
 	"github.com/goforj/harbor/migrations"
 )
 
-const networkSetupCompletionOwnershipProjectionMigration = "2026_07_19_140000_create_machine_ownership_projections"
+var networkSetupCompletionOwnershipProjectionMigrations = []string{
+	"2026_07_19_140000_create_machine_ownership_projections",
+	"2026_07_19_150000_add_machine_ownership_network_policy_fingerprint",
+}
 
 // TestStoreCompletesNetworkSetupAtomically proves plan retirement, identity initialization, and terminal history share one ordering boundary.
 func TestStoreCompletesNetworkSetupAtomically(t *testing.T) {
@@ -438,18 +441,23 @@ func stagedNetworkSetupCompletionFixture(
 func newNetworkSetupCompletionFixture(t *testing.T) *networkSetupStageFixture {
 	t.Helper()
 	fixture := newNetworkSetupStageFixture(t)
-	for _, migration := range migrations.GetMigrations() {
-		if migration.App() != "harbord" || migration.Connection() != "default" ||
-			migration.Name() != networkSetupCompletionOwnershipProjectionMigration {
-			continue
+	for _, name := range networkSetupCompletionOwnershipProjectionMigrations {
+		found := false
+		for _, migration := range migrations.GetMigrations() {
+			if migration.App() != "harbord" || migration.Connection() != "default" || migration.Name() != name {
+				continue
+			}
+			if err := migration.Up(fixture.database); err != nil {
+				t.Fatalf("apply network setup completion migration %s: %v", migration.Name(), err)
+			}
+			found = true
+			break
 		}
-		if err := migration.Up(fixture.database); err != nil {
-			t.Fatalf("apply network setup completion migration %s: %v", migration.Name(), err)
+		if !found {
+			t.Fatalf("network setup completion migration %q is not registered", name)
 		}
-		return fixture
 	}
-	t.Fatalf("network setup completion migration %q is not registered", networkSetupCompletionOwnershipProjectionMigration)
-	return nil
+	return fixture
 }
 
 // networkSetupCompletionStore constructs the aggregate store with the journal's exact mutation coordinator.

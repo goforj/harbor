@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/models"
 	"gorm.io/gorm"
 )
@@ -68,10 +69,27 @@ func (store *Store) ActivateNetworkDataPlane(
 
 		switch current.Stage {
 		case NetworkStageFull:
+			projectedOwnership, err := readMachineOwnershipProjectionStateInTransaction(tx)
+			if err != nil {
+				return err
+			}
+			if projectedOwnership.observation.Record.SchemaVersion != ownership.NetworkPolicySchemaVersion {
+				return corruptStateError(
+					"machine ownership projection",
+					fmt.Sprint(projectedOwnership.row.Id),
+					fmt.Errorf("full-stage network retains schema-%d ownership", projectedOwnership.observation.Record.SchemaVersion),
+				)
+			}
 			if difference := networkDataPlaneActivationDifference(before, request); difference != "" {
 				return &NetworkDataPlaneActivationConflictError{
 					ActualRevision: current.Revision,
 					Difference:     difference,
+				}
+			}
+			if projectedOwnership.observation != request.ConfirmedOwnership {
+				return &NetworkDataPlaneActivationConflictError{
+					ActualRevision: current.Revision,
+					Difference:     "machine ownership projection",
 				}
 			}
 			if current.Revision < request.ExpectedNetworkRevision {
@@ -105,6 +123,33 @@ func (store *Store) ActivateNetworkDataPlane(
 				Difference:     "activation time",
 			}
 		}
+		expectedOwnership, err := networkDataPlaneActivationIdentityOwnership(request.ConfirmedOwnership)
+		if err != nil {
+			return err
+		}
+		projectedOwnership, err := readMachineOwnershipProjectionStateInTransaction(tx)
+		if err != nil {
+			return err
+		}
+		if projectedOwnership.observation.Record.SchemaVersion != ownership.IdentitySchemaVersion {
+			return corruptStateError(
+				"machine ownership projection",
+				fmt.Sprint(projectedOwnership.row.Id),
+				fmt.Errorf("identity-stage network retains schema-%d ownership", projectedOwnership.observation.Record.SchemaVersion),
+			)
+		}
+		if projectedOwnership.observation != expectedOwnership {
+			return &NetworkDataPlaneActivationConflictError{
+				ActualRevision: current.Revision,
+				Difference:     "machine ownership projection",
+			}
+		}
+		if request.At.Before(projectedOwnership.confirmedAt) {
+			return &NetworkDataPlaneActivationConflictError{
+				ActualRevision: current.Revision,
+				Difference:     "activation time",
+			}
+		}
 
 		if err := insertNetworkDataPlaneActivation(tx, request); err != nil {
 			return err
@@ -126,6 +171,14 @@ func (store *Store) ActivateNetworkDataPlane(
 				"revision":   int(sequence),
 			})
 		if err := requireOneMutation(updated, "activate network data plane", "1"); err != nil {
+			return err
+		}
+		if err := upgradeMachineOwnershipProjectionInTransaction(
+			tx,
+			projectedOwnership,
+			request.ConfirmedOwnership,
+			request.At,
+		); err != nil {
 			return err
 		}
 
@@ -192,6 +245,108 @@ func (store *Store) ActivateNetworkDataPlane(
 		return NetworkMutationResult{}, fmt.Errorf("activate network data plane: %w", err)
 	}
 	return result, nil
+}
+
+// validateConfirmedNetworkDataPlaneOwnership accepts only an exact helper-confirmed schema-two policy binding.
+func validateConfirmedNetworkDataPlaneOwnership(observation ownership.Observation) error {
+	if err := validateConfirmedMachineOwnershipObservation(observation); err != nil {
+		return fmt.Errorf("confirmed network data-plane ownership: %w", err)
+	}
+	if observation.Record.SchemaVersion != ownership.NetworkPolicySchemaVersion {
+		return fmt.Errorf(
+			"confirmed network data-plane ownership schema version is %d, want %d",
+			observation.Record.SchemaVersion,
+			ownership.NetworkPolicySchemaVersion,
+		)
+	}
+	return nil
+}
+
+// networkDataPlaneActivationIdentityOwnership derives the one schema-one record that the confirmed target may replace.
+func networkDataPlaneActivationIdentityOwnership(
+	target ownership.Observation,
+) (ownership.Observation, error) {
+	if err := validateConfirmedNetworkDataPlaneOwnership(target); err != nil {
+		return ownership.Observation{}, err
+	}
+	record := target.Record
+	record.SchemaVersion = ownership.IdentitySchemaVersion
+	record.NetworkPolicyFingerprint = ""
+	fingerprint, err := record.Fingerprint()
+	if err != nil {
+		return ownership.Observation{}, fmt.Errorf("derive identity ownership projection: %w", err)
+	}
+	return ownership.Observation{Exists: true, Record: record, Fingerprint: fingerprint}, nil
+}
+
+// upgradeMachineOwnershipProjectionInTransaction binds the exact identity projection to helper-confirmed policy authority.
+func upgradeMachineOwnershipProjectionInTransaction(
+	tx *gorm.DB,
+	current machineOwnershipProjectionState,
+	target ownership.Observation,
+	confirmedAt time.Time,
+) error {
+	expectedSource, err := networkDataPlaneActivationIdentityOwnership(target)
+	if err != nil {
+		return err
+	}
+	if current.observation != expectedSource {
+		return fmt.Errorf("machine ownership projection differs from the exact schema-one activation source")
+	}
+	if err := validateStoredTime("machine ownership activation confirmation time", confirmedAt); err != nil {
+		return err
+	}
+	updated := tx.Model(&models.MachineOwnershipProjection{}).
+		Where(
+			`id = ? AND network_state_id = ? AND ownership_schema_version = ?
+				AND installation_id = ? AND owner_identity = ? AND ownership_generation = ?
+				AND loopback_pool_prefix = ? AND network_policy_fingerprint IS NULL
+				AND ticket_verifier_key = ? AND record_fingerprint = ? AND confirmed_at = ?`,
+			current.row.Id,
+			current.row.NetworkStateId,
+			int(ownership.IdentitySchemaVersion),
+			current.row.InstallationId,
+			current.row.OwnerIdentity,
+			current.row.OwnershipGeneration,
+			current.row.LoopbackPoolPrefix,
+			current.row.TicketVerifierKey,
+			current.row.RecordFingerprint,
+			current.row.ConfirmedAt,
+		).
+		Updates(map[string]any{
+			"ownership_schema_version":   int(ownership.NetworkPolicySchemaVersion),
+			"network_policy_fingerprint": target.Record.NetworkPolicyFingerprint,
+			"record_fingerprint":         target.Fingerprint,
+			"confirmed_at":               canonicalNetworkMutationTime(confirmedAt),
+		})
+	if err := requireOneMutation(updated, "upgrade machine ownership projection", fmt.Sprint(current.row.Id)); err != nil {
+		return err
+	}
+
+	persisted, err := readMachineOwnershipProjectionStateInTransaction(tx)
+	if err != nil {
+		return fmt.Errorf("read upgraded machine ownership projection: %w", err)
+	}
+	if persisted.observation != target || !persisted.confirmedAt.Equal(confirmedAt) {
+		return corruptStateError(
+			"machine ownership projection",
+			fmt.Sprint(current.row.Id),
+			fmt.Errorf("activation upgrade readback differs from the exact confirmed target"),
+		)
+	}
+	expectedRow := current.row
+	expectedRow.OwnershipSchemaVersion = int(ownership.NetworkPolicySchemaVersion)
+	expectedRow.NetworkPolicyFingerprint = machineOwnershipNetworkPolicyModelValue(target.Record)
+	expectedRow.RecordFingerprint = target.Fingerprint
+	expectedRow.ConfirmedAt = canonicalNetworkMutationTime(confirmedAt)
+	if !reflect.DeepEqual(persisted.row, expectedRow) {
+		return corruptStateError(
+			"machine ownership projection",
+			fmt.Sprint(current.row.Id),
+			fmt.Errorf("activation upgrade changed immutable projection facts"),
+		)
+	}
+	return nil
 }
 
 // cloneActivateNetworkDataPlaneRequest isolates queued persistence from caller-owned setup proof storage.

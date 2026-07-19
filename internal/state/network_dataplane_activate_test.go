@@ -2,14 +2,18 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/models"
 	"gorm.io/gorm"
 )
@@ -23,6 +27,25 @@ func TestActivateNetworkDataPlaneRequestRejectsIncompleteAuthority(t *testing.T)
 	}{
 		{name: "zero revision", want: "network revision must be positive", mutate: func(request *ActivateNetworkDataPlaneRequest) {
 			request.ExpectedNetworkRevision = 0
+		}},
+		{name: "missing confirmed ownership", want: "requires confirmed authority", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.ConfirmedOwnership = ownership.Observation{}
+		}},
+		{name: "identity ownership", want: "schema version is 1, want 2", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			source, err := networkDataPlaneActivationIdentityOwnership(request.ConfirmedOwnership)
+			if err != nil {
+				t.Fatalf("derive request validation source: %v", err)
+			}
+			request.ConfirmedOwnership = source
+		}},
+		{name: "ownership fingerprint", want: "fingerprint does not match", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.ConfirmedOwnership.Fingerprint = strings.Repeat("0", 64)
+		}},
+		{name: "invalid policy", want: "network data-plane policy", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.Policy.Suffix = ".invalid"
+		}},
+		{name: "policy fingerprint", want: "policy fingerprint does not match", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.Policy.AuthorityFingerprint = strings.Repeat("d", 64)
 		}},
 		{name: "nil proofs", want: "setup proofs must be initialized", mutate: func(request *ActivateNetworkDataPlaneRequest) {
 			request.Setup = nil
@@ -45,6 +68,16 @@ func TestActivateNetworkDataPlaneRequestRejectsIncompleteAuthority(t *testing.T)
 		{name: "invalid listener", want: "generation must be positive", mutate: func(request *ActivateNetworkDataPlaneRequest) {
 			request.Listeners.DNS.Generation = 0
 		}},
+		{name: "DNS policy listener", want: "DNS listener does not match", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.Listeners.DNS.Advertised = networkDataPlaneActivationTestSocket("127.0.0.2:1053")
+			request.Listeners.DNS.Bind = request.Listeners.DNS.Advertised
+		}},
+		{name: "HTTP policy listener", want: "HTTP listener does not match", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.Listeners.HTTP.Bind = networkDataPlaneActivationTestSocket("127.0.0.1:18081")
+		}},
+		{name: "HTTPS policy listener", want: "HTTPS listener does not match", mutate: func(request *ActivateNetworkDataPlaneRequest) {
+			request.Listeners.HTTPS.Bind = networkDataPlaneActivationTestSocket("127.0.0.1:18444")
+		}},
 		{name: "future listener", want: "must not be after the network mutation time", mutate: func(request *ActivateNetworkDataPlaneRequest) {
 			request.Listeners.HTTPS.VerifiedAt = request.At.Add(time.Second)
 		}},
@@ -54,7 +87,7 @@ func TestActivateNetworkDataPlaneRequestRejectsIncompleteAuthority(t *testing.T)
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			request := networkDataPlaneActivationTestRequest(1)
+			request := networkDataPlaneActivationTestRequest(t, 1)
 			test.mutate(&request)
 			if err := request.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("ActivateNetworkDataPlaneRequest.Validate() error = %v, want containing %q", err, test.want)
@@ -63,16 +96,41 @@ func TestActivateNetworkDataPlaneRequestRejectsIncompleteAuthority(t *testing.T)
 	}
 }
 
+// TestValidateNetworkDataPlanePolicyListenersRejectsModeMismatch pins the mode derived from each policy socket pair.
+func TestValidateNetworkDataPlanePolicyListenersRejectsModeMismatch(t *testing.T) {
+	request := networkDataPlaneActivationTestRequest(t, 1)
+	for _, test := range []struct {
+		name   string
+		mutate func(*SharedListenerReservations)
+	}{
+		{name: "DNS", mutate: func(listeners *SharedListenerReservations) {
+			listeners.DNS.Mode = ListenerModeRedirect
+		}},
+		{name: "HTTP", mutate: func(listeners *SharedListenerReservations) {
+			listeners.HTTP.Mode = ListenerModeDirect
+		}},
+		{name: "HTTPS", mutate: func(listeners *SharedListenerReservations) {
+			listeners.HTTPS.Mode = ListenerModeDirect
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listeners := request.Listeners
+			test.mutate(&listeners)
+			if err := validateNetworkDataPlanePolicyListeners(request.Policy, listeners); err == nil ||
+				!strings.Contains(err.Error(), test.name+" listener does not match") {
+				t.Fatalf("mode mismatch error = %v", err)
+			}
+		})
+	}
+}
+
 // TestStoreActivateNetworkDataPlaneCommitsOnlyAdditionalAuthority verifies identity becomes full in one global revision.
 func TestStoreActivateNetworkDataPlaneCommitsOnlyAdditionalAuthority(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
-	identityRequest := networkIdentityInitializeTestRequest()
-	identityResult, err := store.InitializeNetworkIdentity(context.Background(), identityRequest)
-	if err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
+	identityRequest, identityResult := initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 	before := networkDataPlaneActivationTestRows(t, connection)
-	request := networkDataPlaneActivationTestRequest(identityResult.Record.Revision)
+	beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
+	request := networkDataPlaneActivationTestRequest(t, identityResult.Record.Revision)
 
 	result, err := store.ActivateNetworkDataPlane(context.Background(), request)
 	if err != nil {
@@ -111,6 +169,24 @@ func TestStoreActivateNetworkDataPlaneCommitsOnlyAdditionalAuthority(t *testing.
 		}
 	}
 	after := networkDataPlaneActivationTestRows(t, connection)
+	afterProjection := networkDataPlaneActivationTestProjection(t, connection)
+	if afterProjection.observation != request.ConfirmedOwnership || !afterProjection.confirmedAt.Equal(request.At) {
+		t.Fatalf(
+			"activated ownership projection = %#v at %s, want %#v at %s",
+			afterProjection.observation,
+			afterProjection.confirmedAt,
+			request.ConfirmedOwnership,
+			request.At,
+		)
+	}
+	expectedProjection := beforeProjection.row
+	expectedProjection.OwnershipSchemaVersion = int(ownership.NetworkPolicySchemaVersion)
+	expectedProjection.NetworkPolicyFingerprint = machineOwnershipNetworkPolicyModelValue(request.ConfirmedOwnership.Record)
+	expectedProjection.RecordFingerprint = request.ConfirmedOwnership.Fingerprint
+	expectedProjection.ConfirmedAt = request.At
+	if !reflect.DeepEqual(afterProjection.row, expectedProjection) {
+		t.Fatalf("activated ownership row = %#v, want %#v", afterProjection.row, expectedProjection)
+	}
 	if !reflect.DeepEqual(after.Candidates, before.Candidates) {
 		t.Fatal("activation changed pool candidate rows")
 	}
@@ -135,7 +211,7 @@ func TestStoreActivateNetworkDataPlaneCommitsOnlyAdditionalAuthority(t *testing.
 func TestStoreActivateNetworkDataPlaneRejectsUninitializedState(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
 
-	_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(1))
+	_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(t, 1))
 	var missing *NetworkNotInitializedError
 	if !errors.As(err, &missing) {
 		t.Fatalf("uninitialized activation error = %v, want NetworkNotInitializedError", err)
@@ -152,7 +228,41 @@ func TestStoreActivateNetworkDataPlaneRejectsUninitializedState(t *testing.T) {
 
 // TestStoreActivateNetworkDataPlanePreservesLifecycleState verifies activation retains leases, quarantine, releases, and suppression.
 func TestStoreActivateNetworkDataPlanePreservesLifecycleState(t *testing.T) {
-	store, connection, _, _, begin, initialization := newNetworkReleaseTestHarness(t, 1)
+	store, connection := newNetworkInitializeTestHarness(t, true)
+	initialization := networkMutationTestInitializeRequest()
+	initialization.Pool = recordTestPool(
+		"127.77.0.8/29",
+		"127.77.0.10",
+		"127.77.0.11",
+		"127.77.0.12",
+	)
+	initializedNetwork, err := store.InitializeNetwork(context.Background(), initialization)
+	if err != nil || initializedNetwork.Record.Revision != 7 {
+		t.Fatalf("InitializeNetwork() = %#v, %v, want revision 7", initializedNetwork, err)
+	}
+	project, err := store.Project(context.Background(), "project-alpha")
+	if err != nil {
+		t.Fatalf("read lifecycle project: %v", err)
+	}
+	_, running, beginAt := projectStoreMutationRunningUnregister(
+		t,
+		store,
+		project.Project,
+		"operation-activation-preservation",
+	)
+	updatedProject, err := store.Project(context.Background(), project.Project.ID)
+	if err != nil {
+		t.Fatalf("read lifecycle project revision: %v", err)
+	}
+	begin := BeginProjectNetworkReleaseRequest{
+		ProjectID:                 project.Project.ID,
+		OperationID:               running.Operation.ID,
+		ExpectedNetworkRevision:   initializedNetwork.Record.Revision,
+		ExpectedProjectRevision:   updatedProject.Revision,
+		ExpectedOperationRevision: running.Revision,
+		BeginGeneration:           100,
+		At:                        beginAt,
+	}
 	staged, err := store.BeginProjectNetworkRelease(context.Background(), begin)
 	if err != nil {
 		t.Fatalf("BeginProjectNetworkRelease() error = %v", err)
@@ -172,6 +282,16 @@ func TestStoreActivateNetworkDataPlanePreservesLifecycleState(t *testing.T) {
 		"DELETE FROM network_setup_evidence WHERE component IN ('resolver', 'low_ports')",
 	)
 	mustProjectStoreReadExec(t, connection, "UPDATE network_state SET stage = 'identity' WHERE id = 1")
+	target := networkDataPlaneActivationTestRequest(t, completed.Record.Revision).ConfirmedOwnership
+	source, err := networkDataPlaneActivationIdentityOwnership(target)
+	if err != nil {
+		t.Fatalf("derive lifecycle ownership source: %v", err)
+	}
+	if err := connection.Transaction(func(tx *gorm.DB) error {
+		return insertMachineOwnershipProjectionInTransaction(tx, source, completion.At)
+	}); err != nil {
+		t.Fatalf("seed lifecycle ownership projection: %v", err)
+	}
 	identityRecord, initialized, err := store.Network(context.Background())
 	if err != nil || !initialized || identityRecord.Stage != NetworkStageIdentity {
 		t.Fatalf("identity lifecycle fixture = %#v, %t, %v", identityRecord, initialized, err)
@@ -181,15 +301,9 @@ func TestStoreActivateNetworkDataPlanePreservesLifecycleState(t *testing.T) {
 		t.Fatalf("identity lifecycle fixture lacks preservation facts: %#v", identityRecord)
 	}
 	before := networkDataPlaneActivationTestRows(t, connection)
-	request := ActivateNetworkDataPlaneRequest{
-		ExpectedNetworkRevision: completed.Record.Revision,
-		Setup: []NetworkSetupProof{
-			initialization.Setup[2],
-			initialization.Setup[3],
-		},
-		Listeners: initialization.Listeners,
-		At:        completion.At.Add(time.Minute),
-	}
+	beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
+	request := networkDataPlaneActivationTestRequest(t, completed.Record.Revision)
+	request.At = completion.At.Add(time.Minute)
 
 	result, err := store.ActivateNetworkDataPlane(context.Background(), request)
 	if err != nil {
@@ -207,6 +321,15 @@ func TestStoreActivateNetworkDataPlanePreservesLifecycleState(t *testing.T) {
 		t.Fatalf("activation changed lifecycle projection: before %#v after %#v", identityRecord, result.Record)
 	}
 	after := networkDataPlaneActivationTestRows(t, connection)
+	afterProjection := networkDataPlaneActivationTestProjection(t, connection)
+	expectedProjection := beforeProjection.row
+	expectedProjection.OwnershipSchemaVersion = int(ownership.NetworkPolicySchemaVersion)
+	expectedProjection.NetworkPolicyFingerprint = machineOwnershipNetworkPolicyModelValue(request.ConfirmedOwnership.Record)
+	expectedProjection.RecordFingerprint = request.ConfirmedOwnership.Fingerprint
+	expectedProjection.ConfirmedAt = request.At
+	if !reflect.DeepEqual(afterProjection.row, expectedProjection) {
+		t.Fatalf("lifecycle activation changed immutable ownership projection facts: %#v", afterProjection.row)
+	}
 	for _, rows := range []struct {
 		name   string
 		before any
@@ -227,15 +350,14 @@ func TestStoreActivateNetworkDataPlanePreservesLifecycleState(t *testing.T) {
 // TestStoreActivateNetworkDataPlaneReplaysExactDurableFacts verifies replay ignores non-durable call time and consumes no sequence.
 func TestStoreActivateNetworkDataPlaneReplaysExactDurableFacts(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
-	if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
-	request := networkDataPlaneActivationTestRequest(1)
+	initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+	request := networkDataPlaneActivationTestRequest(t, 1)
 	first, err := store.ActivateNetworkDataPlane(context.Background(), request)
 	if err != nil {
 		t.Fatalf("first ActivateNetworkDataPlane() error = %v", err)
 	}
 	before := networkDataPlaneActivationTestRows(t, connection)
+	beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
 	request.At = request.At.Add(time.Hour)
 
 	replayed, err := store.ActivateNetworkDataPlane(context.Background(), request)
@@ -247,6 +369,12 @@ func TestStoreActivateNetworkDataPlaneReplaysExactDurableFacts(t *testing.T) {
 	}
 	if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, before) {
 		t.Fatal("exact activation replay changed durable rows")
+	}
+	if after := networkDataPlaneActivationTestProjection(t, connection); !reflect.DeepEqual(after, beforeProjection) {
+		t.Fatalf("exact activation replay changed ownership projection: before %#v after %#v", beforeProjection, after)
+	}
+	if !beforeProjection.confirmedAt.Equal(first.Record.UpdatedAt) {
+		t.Fatalf("replayed ownership confirmation time = %s, want first activation %s", beforeProjection.confirmedAt, first.Record.UpdatedAt)
 	}
 	if highWater := projectStoreMutationSequence(t, store); highWater != 2 {
 		t.Fatalf("Harbor high-water after replay = %d, want 2", highWater)
@@ -263,11 +391,9 @@ func TestStoreActivateNetworkDataPlaneReplaysExactDurableFacts(t *testing.T) {
 // TestStoreActivateNetworkDataPlaneReturnsTypedConflicts verifies stale identity and divergent full-stage facts are distinguishable.
 func TestStoreActivateNetworkDataPlaneReturnsTypedConflicts(t *testing.T) {
 	t.Run("stale identity revision", func(t *testing.T) {
-		store, _ := newNetworkInitializeTestHarness(t, false)
-		if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-			t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-		}
-		_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(2))
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(t, 2))
 		var conflict *NetworkRevisionConflictError
 		if !errors.As(err, &conflict) || conflict.Expected != 2 || conflict.Actual != 1 {
 			t.Fatalf("stale identity error = %v, want typed revision 2/1 conflict", err)
@@ -275,12 +401,9 @@ func TestStoreActivateNetworkDataPlaneReturnsTypedConflicts(t *testing.T) {
 	})
 
 	t.Run("activation time", func(t *testing.T) {
-		store, _ := newNetworkInitializeTestHarness(t, false)
-		identityRequest := networkIdentityInitializeTestRequest()
-		if _, err := store.InitializeNetworkIdentity(context.Background(), identityRequest); err != nil {
-			t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-		}
-		request := networkDataPlaneActivationTestRequest(1)
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		identityRequest, _ := initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		request := networkDataPlaneActivationTestRequest(t, 1)
 		request.At = identityRequest.At.Add(-time.Second)
 		for index := range request.Setup {
 			request.Setup[index].VerifiedAt = request.At.Add(-time.Second)
@@ -308,11 +431,9 @@ func TestStoreActivateNetworkDataPlaneReturnsTypedConflicts(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			store, _ := newNetworkInitializeTestHarness(t, false)
-			if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-				t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-			}
-			request := networkDataPlaneActivationTestRequest(1)
+			store, connection := newNetworkInitializeTestHarness(t, false)
+			initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+			request := networkDataPlaneActivationTestRequest(t, 1)
 			if _, err := store.ActivateNetworkDataPlane(context.Background(), request); err != nil {
 				t.Fatalf("seed ActivateNetworkDataPlane() error = %v", err)
 			}
@@ -326,13 +447,181 @@ func TestStoreActivateNetworkDataPlaneReturnsTypedConflicts(t *testing.T) {
 	}
 }
 
+// TestStoreActivateNetworkDataPlaneClassifiesOwnershipDivergence distinguishes stale authority from impossible lifecycle state.
+func TestStoreActivateNetworkDataPlaneClassifiesOwnershipDivergence(t *testing.T) {
+	t.Run("missing identity projection", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		if err := connection.Delete(&models.MachineOwnershipProjection{}, machineOwnershipProjectionSingletonID).Error; err != nil {
+			t.Fatalf("delete identity ownership projection: %v", err)
+		}
+
+		_, err := store.ActivateNetworkDataPlane(
+			context.Background(),
+			networkDataPlaneActivationTestRequest(t, 1),
+		)
+		var corrupt *CorruptStateError
+		if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "found 0 rows, expected 1") {
+			t.Fatalf("missing identity projection error = %v, want corrupt state", err)
+		}
+	})
+
+	t.Run("different identity source", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		beforeRows := networkDataPlaneActivationTestRows(t, connection)
+		beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
+		different := beforeProjection.observation.Record
+		different.OwnerIdentity = "502"
+		differentObservation := networkDataPlaneActivationTestObservation(t, different)
+		if err := connection.Model(&models.MachineOwnershipProjection{}).
+			Where("id = ?", machineOwnershipProjectionSingletonID).
+			Updates(map[string]any{
+				"owner_identity":     different.OwnerIdentity,
+				"record_fingerprint": differentObservation.Fingerprint,
+			}).Error; err != nil {
+			t.Fatalf("seed different identity projection: %v", err)
+		}
+		seededProjection := networkDataPlaneActivationTestProjection(t, connection)
+
+		_, err := store.ActivateNetworkDataPlane(
+			context.Background(),
+			networkDataPlaneActivationTestRequest(t, 1),
+		)
+		var conflict *NetworkDataPlaneActivationConflictError
+		if !errors.As(err, &conflict) || conflict.ActualRevision != 1 ||
+			conflict.Difference != "machine ownership projection" {
+			t.Fatalf("different identity projection error = %v, want typed ownership conflict", err)
+		}
+		if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, beforeRows) {
+			t.Fatal("different identity projection conflict changed network rows")
+		}
+		if after := networkDataPlaneActivationTestProjection(t, connection); !reflect.DeepEqual(after, seededProjection) {
+			t.Fatal("different identity projection conflict changed ownership")
+		}
+	})
+
+	t.Run("identity with schema two", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		request := networkDataPlaneActivationTestRequest(t, 1)
+		if err := connection.Model(&models.MachineOwnershipProjection{}).
+			Where("id = ?", machineOwnershipProjectionSingletonID).
+			Updates(map[string]any{
+				"ownership_schema_version":   int(ownership.NetworkPolicySchemaVersion),
+				"network_policy_fingerprint": request.ConfirmedOwnership.Record.NetworkPolicyFingerprint,
+				"record_fingerprint":         request.ConfirmedOwnership.Fingerprint,
+				"confirmed_at":               request.At,
+			}).Error; err != nil {
+			t.Fatalf("seed premature schema-two projection: %v", err)
+		}
+
+		_, err := store.ActivateNetworkDataPlane(context.Background(), request)
+		var corrupt *CorruptStateError
+		if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "identity-stage network retains schema-2 ownership") {
+			t.Fatalf("identity schema-two error = %v, want corrupt lifecycle state", err)
+		}
+	})
+
+	t.Run("different full target", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		request := networkDataPlaneActivationTestRequest(t, 1)
+		if _, err := store.ActivateNetworkDataPlane(context.Background(), request); err != nil {
+			t.Fatalf("seed full activation: %v", err)
+		}
+		beforeRows := networkDataPlaneActivationTestRows(t, connection)
+		beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
+		different := request.ConfirmedOwnership.Record
+		different.OwnerIdentity = "502"
+		request.ConfirmedOwnership = networkDataPlaneActivationTestObservation(t, different)
+
+		_, err := store.ActivateNetworkDataPlane(context.Background(), request)
+		var conflict *NetworkDataPlaneActivationConflictError
+		if !errors.As(err, &conflict) || conflict.ActualRevision != 2 ||
+			conflict.Difference != "machine ownership projection" {
+			t.Fatalf("different full target error = %v, want typed ownership conflict", err)
+		}
+		if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, beforeRows) {
+			t.Fatal("different full target changed network rows")
+		}
+		if after := networkDataPlaneActivationTestProjection(t, connection); !reflect.DeepEqual(after, beforeProjection) {
+			t.Fatal("different full target changed ownership projection")
+		}
+	})
+
+	t.Run("missing full projection precedes retry difference", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		request := networkDataPlaneActivationTestRequest(t, 1)
+		if _, err := store.ActivateNetworkDataPlane(context.Background(), request); err != nil {
+			t.Fatalf("seed full activation: %v", err)
+		}
+		if err := connection.Where("id = ?", machineOwnershipProjectionSingletonID).
+			Delete(&models.MachineOwnershipProjection{}).Error; err != nil {
+			t.Fatalf("delete full ownership projection: %v", err)
+		}
+		request.Setup[0].Evidence = "different resolver proof"
+
+		_, err := store.ActivateNetworkDataPlane(context.Background(), request)
+		var corrupt *CorruptStateError
+		if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "found 0 rows, expected 1") {
+			t.Fatalf("missing full projection error = %v, want corruption before retry conflict", err)
+		}
+	})
+
+	t.Run("full with schema one", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		request := networkDataPlaneActivationTestRequest(t, 1)
+		if _, err := store.ActivateNetworkDataPlane(context.Background(), request); err != nil {
+			t.Fatalf("seed full activation: %v", err)
+		}
+		source, err := networkDataPlaneActivationIdentityOwnership(request.ConfirmedOwnership)
+		if err != nil {
+			t.Fatalf("derive schema-one corruption: %v", err)
+		}
+		if err := connection.Model(&models.MachineOwnershipProjection{}).
+			Where("id = ?", machineOwnershipProjectionSingletonID).
+			Updates(map[string]any{
+				"ownership_schema_version":   int(ownership.IdentitySchemaVersion),
+				"network_policy_fingerprint": nil,
+				"record_fingerprint":         source.Fingerprint,
+			}).Error; err != nil {
+			t.Fatalf("seed full schema-one projection: %v", err)
+		}
+
+		_, err = store.ActivateNetworkDataPlane(context.Background(), request)
+		var corrupt *CorruptStateError
+		if !errors.As(err, &corrupt) || !strings.Contains(err.Error(), "full-stage network retains schema-1 ownership") {
+			t.Fatalf("full schema-one error = %v, want corrupt lifecycle state", err)
+		}
+	})
+
+	t.Run("projection confirmation time", func(t *testing.T) {
+		store, connection := newNetworkInitializeTestHarness(t, false)
+		identityRequest, _ := initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+		confirmedAt := identityRequest.At.Add(30 * time.Second)
+		if err := connection.Model(&models.MachineOwnershipProjection{}).
+			Where("id = ?", machineOwnershipProjectionSingletonID).
+			Update("confirmed_at", confirmedAt).Error; err != nil {
+			t.Fatalf("seed later identity confirmation: %v", err)
+		}
+		request := networkDataPlaneActivationTestRequest(t, 1)
+		request.At = identityRequest.At.Add(15 * time.Second)
+
+		_, err := store.ActivateNetworkDataPlane(context.Background(), request)
+		var conflict *NetworkDataPlaneActivationConflictError
+		if !errors.As(err, &conflict) || conflict.Difference != "activation time" {
+			t.Fatalf("projection confirmation time error = %v, want activation-time conflict", err)
+		}
+	})
+}
+
 // TestStoreActivateNetworkDataPlaneRejectsIdentityEndpoints verifies no endpoint can cross the lifecycle boundary implicitly.
 func TestStoreActivateNetworkDataPlaneRejectsIdentityEndpoints(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
-	identityRequest := networkIdentityInitializeTestRequest()
-	if _, err := store.InitializeNetworkIdentity(context.Background(), identityRequest); err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
+	identityRequest, _ := initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 	project := emptyProjectStoreMutationProject("project-alpha")
 	if _, err := store.PutProject(context.Background(), project); err != nil {
 		t.Fatalf("PutProject() error = %v", err)
@@ -353,7 +642,7 @@ func TestStoreActivateNetworkDataPlaneRejectsIdentityEndpoints(t *testing.T) {
 		t.Fatalf("seed forbidden identity endpoint: %v", err)
 	}
 
-	_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(1))
+	_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(t, 1))
 	if err == nil || !strings.Contains(err.Error(), "identity-stage network must not contain endpoint reservations") {
 		t.Fatalf("identity endpoint error = %v", err)
 	}
@@ -366,10 +655,8 @@ func TestStoreActivateNetworkDataPlaneRejectsIdentityEndpoints(t *testing.T) {
 // TestStoreActivateNetworkDataPlaneClonesQueuedProofs verifies caller mutation cannot alter validated hidden facts.
 func TestStoreActivateNetworkDataPlaneClonesQueuedProofs(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
-	if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
-	request := networkDataPlaneActivationTestRequest(1)
+	initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+	request := networkDataPlaneActivationTestRequest(t, 1)
 	wantEvidence := request.Setup[0].Evidence
 
 	<-store.mutations.permit
@@ -405,12 +692,10 @@ func TestStoreActivateNetworkDataPlaneClonesQueuedProofs(t *testing.T) {
 func TestStoreActivateNetworkDataPlaneHonorsCancellation(t *testing.T) {
 	t.Run("before mutation", func(t *testing.T) {
 		store, connection := newNetworkInitializeTestHarness(t, false)
-		if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-			t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-		}
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, err := store.ActivateNetworkDataPlane(ctx, networkDataPlaneActivationTestRequest(1))
+		_, err := store.ActivateNetworkDataPlane(ctx, networkDataPlaneActivationTestRequest(t, 1))
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("pre-canceled activation error = %v", err)
 		}
@@ -421,9 +706,7 @@ func TestStoreActivateNetworkDataPlaneHonorsCancellation(t *testing.T) {
 
 	t.Run("while queued", func(t *testing.T) {
 		store, connection := newNetworkInitializeTestHarness(t, false)
-		if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-			t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-		}
+		initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 		before := networkDataPlaneActivationTestRows(t, connection)
 		<-store.mutations.permit
 		released := false
@@ -436,7 +719,7 @@ func TestStoreActivateNetworkDataPlaneHonorsCancellation(t *testing.T) {
 		ctx := &networkInitializeSignalContext{Context: base, reached: make(chan struct{})}
 		result := make(chan error, 1)
 		go func() {
-			_, err := store.ActivateNetworkDataPlane(ctx, networkDataPlaneActivationTestRequest(1))
+			_, err := store.ActivateNetworkDataPlane(ctx, networkDataPlaneActivationTestRequest(t, 1))
 			result <- err
 		}()
 		<-ctx.reached
@@ -470,21 +753,27 @@ func TestStoreActivateNetworkDataPlaneRollsBackWriteFaults(t *testing.T) {
 			name:    "root update",
 			trigger: "CREATE TRIGGER fail_network_activation BEFORE UPDATE ON network_state WHEN NEW.stage = 'full' BEGIN SELECT RAISE(ABORT, 'activation root failure'); END",
 		},
+		{
+			name:    "ownership projection",
+			trigger: "CREATE TRIGGER fail_network_activation BEFORE UPDATE ON machine_ownership_projections BEGIN SELECT RAISE(ABORT, 'activation ownership failure'); END",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, connection := newNetworkInitializeTestHarness(t, false)
-			if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-				t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-			}
+			initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 			before := networkDataPlaneActivationTestRows(t, connection)
+			beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
 			mustProjectStoreReadExec(t, connection, test.trigger)
 
-			_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(1))
+			_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(t, 1))
 			if err == nil || !strings.Contains(err.Error(), "activation ") {
 				t.Fatalf("%s fault error = %v", test.name, err)
 			}
 			if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, before) {
 				t.Fatalf("%s fault left partial network rows", test.name)
+			}
+			if after := networkDataPlaneActivationTestProjection(t, connection); !reflect.DeepEqual(after, beforeProjection) {
+				t.Fatalf("%s fault changed ownership projection", test.name)
 			}
 			if highWater := projectStoreMutationSequence(t, store); highWater != 1 {
 				t.Fatalf("Harbor high-water after %s fault = %d, want 1", test.name, highWater)
@@ -496,10 +785,9 @@ func TestStoreActivateNetworkDataPlaneRollsBackWriteFaults(t *testing.T) {
 // TestStoreActivateNetworkDataPlaneRollsBackReadbackCorruption verifies late verification failures restore identity state.
 func TestStoreActivateNetworkDataPlaneRollsBackReadbackCorruption(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
-	if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
+	initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 	before := networkDataPlaneActivationTestRows(t, connection)
+	beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
 	active := false
 	updateCallback := "harbor:test_network_activation_readback_active"
 	queryCallback := "harbor:test_network_activation_readback_corruption"
@@ -521,14 +809,17 @@ func TestStoreActivateNetworkDataPlaneRollsBackReadbackCorruption(t *testing.T) 
 		t.Fatalf("register activation query callback: %v", err)
 	}
 
-	_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(1))
+	_, err := store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(t, 1))
 	_ = connection.Callback().Update().Remove(updateCallback)
 	_ = connection.Callback().Query().Remove(queryCallback)
-	if err == nil || !strings.Contains(err.Error(), "component \"low_ports\" is unsupported") {
+	if err == nil || !strings.Contains(err.Error(), "identity-stage network retains schema-2 ownership") {
 		t.Fatalf("readback corruption error = %v", err)
 	}
 	if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, before) {
 		t.Fatal("readback corruption left partial activation rows")
+	}
+	if after := networkDataPlaneActivationTestProjection(t, connection); !reflect.DeepEqual(after, beforeProjection) {
+		t.Fatal("readback corruption left upgraded ownership projection")
 	}
 	if highWater := projectStoreMutationSequence(t, store); highWater != 1 {
 		t.Fatalf("Harbor high-water after readback corruption = %d, want 1", highWater)
@@ -538,15 +829,14 @@ func TestStoreActivateNetworkDataPlaneRollsBackReadbackCorruption(t *testing.T) 
 // TestStoreActivateNetworkDataPlaneRejectsAllocatedSequenceCollision verifies the new revision remains globally exclusive.
 func TestStoreActivateNetworkDataPlaneRejectsAllocatedSequenceCollision(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
-	if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
+	initializeNetworkDataPlaneActivationIdentity(t, store, connection)
 	project := emptyProjectStoreMutationProject("project-alpha")
 	projectResult, err := store.PutProject(context.Background(), project)
 	if err != nil || projectResult.Revision != 2 {
 		t.Fatalf("PutProject() = %#v, %v; want revision 2", projectResult, err)
 	}
 	before := networkDataPlaneActivationTestRows(t, connection)
+	beforeProjection := networkDataPlaneActivationTestProjection(t, connection)
 	callback := "harbor:test_network_activation_sequence_collision"
 	if err := connection.Callback().Update().After("gorm:update").Register(callback, func(tx *gorm.DB) {
 		if tx.Statement.Table != "network_state" {
@@ -559,13 +849,16 @@ func TestStoreActivateNetworkDataPlaneRejectsAllocatedSequenceCollision(t *testi
 		t.Fatalf("register sequence collision callback: %v", err)
 	}
 
-	_, err = store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(1))
+	_, err = store.ActivateNetworkDataPlane(context.Background(), networkDataPlaneActivationTestRequest(t, 1))
 	_ = connection.Callback().Update().Remove(callback)
 	if err == nil || !strings.Contains(err.Error(), "sequence") || !strings.Contains(err.Error(), "network state") {
 		t.Fatalf("sequence collision error = %v", err)
 	}
 	if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, before) {
 		t.Fatal("sequence collision left partial activation rows")
+	}
+	if after := networkDataPlaneActivationTestProjection(t, connection); !reflect.DeepEqual(after, beforeProjection) {
+		t.Fatal("sequence collision left upgraded ownership projection")
 	}
 	readProject, err := store.Project(context.Background(), "project-alpha")
 	if err != nil || readProject.Revision != 2 {
@@ -578,11 +871,9 @@ func TestStoreActivateNetworkDataPlaneRejectsAllocatedSequenceCollision(t *testi
 
 // TestStoreActivateNetworkDataPlaneConcurrentRetriesAllocateOnce verifies serialized equal callers converge on one activation.
 func TestStoreActivateNetworkDataPlaneConcurrentRetriesAllocateOnce(t *testing.T) {
-	store, _ := newNetworkInitializeTestHarnessWithConnections(t, false, 4)
-	if _, err := store.InitializeNetworkIdentity(context.Background(), networkIdentityInitializeTestRequest()); err != nil {
-		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
-	}
-	request := networkDataPlaneActivationTestRequest(1)
+	store, connection := newNetworkInitializeTestHarnessWithConnections(t, false, 4)
+	initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+	request := networkDataPlaneActivationTestRequest(t, 1)
 	start := make(chan struct{})
 	results := make(chan struct {
 		result NetworkMutationResult
@@ -621,17 +912,153 @@ func TestNetworkDataPlaneActivationConflictErrorDescribesScope(t *testing.T) {
 }
 
 // networkDataPlaneActivationTestRequest returns the exact resolver, low-port, and listener facts used by activation tests.
-func networkDataPlaneActivationTestRequest(expected domain.Sequence) ActivateNetworkDataPlaneRequest {
+func networkDataPlaneActivationTestRequest(t *testing.T, expected domain.Sequence) ActivateNetworkDataPlaneRequest {
+	t.Helper()
 	full := networkMutationTestInitializeRequest()
+	policy := networkDataPlaneActivationTestPolicy(t)
 	return ActivateNetworkDataPlaneRequest{
 		ExpectedNetworkRevision: expected,
+		ConfirmedOwnership:      networkDataPlaneActivationTestOwnership(t, policy),
+		Policy:                  policy,
 		Setup: []NetworkSetupProof{
 			full.Setup[2],
 			full.Setup[3],
 		},
-		Listeners: full.Listeners,
+		Listeners: networkDataPlaneActivationTestListeners(policy, full),
 		At:        full.At.Add(time.Minute),
 	}
+}
+
+// networkDataPlaneActivationTestPolicy returns one canonical redirected host policy.
+func networkDataPlaneActivationTestPolicy(t *testing.T) networkpolicy.Policy {
+	t.Helper()
+	policy, err := networkpolicy.New(
+		strings.Repeat("c", 64),
+		networkpolicy.UbuntuMechanisms(),
+		networkpolicy.Listener{
+			Advertised: networkDataPlaneActivationTestSocket("127.0.0.1:1053"),
+			Bind:       networkDataPlaneActivationTestSocket("127.0.0.1:1053"),
+		},
+		networkpolicy.Listener{
+			Advertised: networkDataPlaneActivationTestSocket("127.0.0.1:80"),
+			Bind:       networkDataPlaneActivationTestSocket("127.0.0.1:18080"),
+		},
+		networkpolicy.Listener{
+			Advertised: networkDataPlaneActivationTestSocket("127.0.0.1:443"),
+			Bind:       networkDataPlaneActivationTestSocket("127.0.0.1:18443"),
+		},
+	)
+	if err != nil {
+		t.Fatalf("construct activation policy: %v", err)
+	}
+	return policy
+}
+
+// networkDataPlaneActivationTestSocket parses one stable listener socket.
+func networkDataPlaneActivationTestSocket(value string) netip.AddrPort {
+	return netip.MustParseAddrPort(value)
+}
+
+// networkDataPlaneActivationTestListeners adds durable evidence to the policy's exact socket topology.
+func networkDataPlaneActivationTestListeners(
+	policy networkpolicy.Policy,
+	full InitializeNetworkRequest,
+) SharedListenerReservations {
+	return SharedListenerReservations{
+		DNS:   networkDataPlaneActivationTestListener(policy.DNS, full.Listeners.DNS),
+		HTTP:  networkDataPlaneActivationTestListener(policy.HTTP, full.Listeners.HTTP),
+		HTTPS: networkDataPlaneActivationTestListener(policy.HTTPS, full.Listeners.HTTPS),
+	}
+}
+
+// networkDataPlaneActivationTestListener retains evidence while deriving policy-bound sockets and mode.
+func networkDataPlaneActivationTestListener(
+	policy networkpolicy.Listener,
+	evidence ListenerReservation,
+) ListenerReservation {
+	mode := ListenerModeRedirect
+	if policy.Advertised == policy.Bind {
+		mode = ListenerModeDirect
+	}
+	return ListenerReservation{
+		Mode:       mode,
+		Advertised: policy.Advertised,
+		Bind:       policy.Bind,
+		Generation: evidence.Generation,
+		VerifiedAt: evidence.VerifiedAt,
+	}
+}
+
+// networkDataPlaneActivationTestOwnership binds the network root to one policy fingerprint.
+func networkDataPlaneActivationTestOwnership(
+	t *testing.T,
+	policy networkpolicy.Policy,
+) ownership.Observation {
+	t.Helper()
+	policyFingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint activation policy: %v", err)
+	}
+	record := ownership.Record{
+		SchemaVersion:            ownership.NetworkPolicySchemaVersion,
+		InstallationID:           "harbor-installation",
+		OwnerIdentity:            "501",
+		Generation:               9,
+		LoopbackPoolPrefix:       "127.77.0.8/29",
+		NetworkPolicyFingerprint: policyFingerprint,
+		TicketVerifierKey:        machineOwnershipProjectionTestVerifierKey,
+	}
+	return networkDataPlaneActivationTestObservation(t, record)
+}
+
+// networkDataPlaneActivationTestObservation attaches the exact fingerprint to one valid record.
+func networkDataPlaneActivationTestObservation(
+	t *testing.T,
+	record ownership.Record,
+) ownership.Observation {
+	t.Helper()
+	fingerprint, err := record.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint activation ownership: %v", err)
+	}
+	return ownership.Observation{Exists: true, Record: record, Fingerprint: fingerprint}
+}
+
+// networkDataPlaneActivationIdentityTestRequest returns a projection-compatible identity foundation.
+func networkDataPlaneActivationIdentityTestRequest() InitializeNetworkIdentityRequest {
+	request := networkIdentityInitializeTestRequest()
+	request.Pool = recordTestPool(
+		"127.77.0.8/29",
+		"127.77.0.10",
+		"127.77.0.11",
+		"127.77.0.12",
+	)
+	return request
+}
+
+// initializeNetworkDataPlaneActivationIdentity seeds the exact schema-one predecessor after creating its network root.
+func initializeNetworkDataPlaneActivationIdentity(
+	t *testing.T,
+	store *Store,
+	connection *gorm.DB,
+) (InitializeNetworkIdentityRequest, NetworkMutationResult) {
+	t.Helper()
+	request := networkDataPlaneActivationIdentityTestRequest()
+	result, err := store.InitializeNetworkIdentity(context.Background(), request)
+	if err != nil {
+		t.Fatalf("InitializeNetworkIdentity() error = %v", err)
+	}
+	target := networkDataPlaneActivationTestRequest(t, result.Record.Revision).ConfirmedOwnership
+	source, err := networkDataPlaneActivationIdentityOwnership(target)
+	if err != nil {
+		t.Fatalf("derive activation ownership source: %v", err)
+	}
+	if err := connection.Transaction(func(tx *gorm.DB) error {
+		return insertMachineOwnershipProjectionInTransaction(tx, source, request.At)
+	}); err != nil {
+		t.Fatalf("seed activation ownership projection: %v", err)
+	}
+	return request, result
 }
 
 // networkDataPlaneActivationTestRows reads the complete hidden state used for preservation and rollback assertions.
@@ -642,6 +1069,23 @@ func networkDataPlaneActivationTestRows(t *testing.T, connection *gorm.DB) netwo
 		t.Fatalf("read activation network rows: %v", err)
 	}
 	return rows
+}
+
+// networkDataPlaneActivationTestProjection reads one validated projection and its exact persisted row.
+func networkDataPlaneActivationTestProjection(
+	t *testing.T,
+	connection *gorm.DB,
+) machineOwnershipProjectionState {
+	t.Helper()
+	var projection machineOwnershipProjectionState
+	if err := connection.Transaction(func(tx *gorm.DB) error {
+		var err error
+		projection, err = readMachineOwnershipProjectionStateInTransaction(tx)
+		return err
+	}, &sql.TxOptions{ReadOnly: true}); err != nil {
+		t.Fatalf("read activation ownership projection: %v", err)
+	}
+	return projection
 }
 
 // networkDataPlaneActivationTestProof finds one unique setup proof for preservation assertions.

@@ -23,6 +23,10 @@ const (
 	networkInitializeTestDigestMigrationName = "2026_07_18_175743_add_network_release_set_digest"
 	// networkInitializeTestStageMigrationName identifies the identity-stage compatibility upgrade.
 	networkInitializeTestStageMigrationName = "2026_07_19_120000_add_network_stage"
+	// networkInitializeTestOwnershipMigrationName identifies the daemon ownership projection schema.
+	networkInitializeTestOwnershipMigrationName = "2026_07_19_140000_create_machine_ownership_projections"
+	// networkInitializeTestOwnershipPolicyMigrationName identifies the policy-bound ownership projection upgrade.
+	networkInitializeTestOwnershipPolicyMigrationName = "2026_07_19_150000_add_machine_ownership_network_policy_fingerprint"
 )
 
 // TestStoreInitializeNetworkCommitsCompleteAggregate verifies the first write owns one global revision and every hidden host fact.
@@ -854,6 +858,8 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 		networkInitializeTestMigrationName,
 		networkInitializeTestDigestMigrationName,
 		networkInitializeTestStageMigrationName,
+		networkInitializeTestOwnershipMigrationName,
+		networkInitializeTestOwnershipPolicyMigrationName,
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {
@@ -878,6 +884,9 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 	}
 	if !connection.Migrator().HasColumn("network_state", "stage") {
 		t.Fatal("embedded network migrations did not install network stage")
+	}
+	if !connection.Migrator().HasColumn("machine_ownership_projections", "network_policy_fingerprint") {
+		t.Fatal("embedded network migrations did not install policy-bound ownership projections")
 	}
 }
 

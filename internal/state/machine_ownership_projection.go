@@ -15,6 +15,13 @@ import (
 
 const machineOwnershipProjectionSingletonID = 1
 
+// machineOwnershipProjectionState retains the validated model alongside its canonical domain projection.
+type machineOwnershipProjectionState struct {
+	row         models.MachineOwnershipProjection
+	observation ownership.Observation
+	confirmedAt time.Time
+}
+
 // MachineOwnershipProjectionSource reads the daemon-owned confirmation used to prepare helper capabilities.
 type MachineOwnershipProjectionSource struct {
 	projections *models.MachineOwnershipProjectionRepo
@@ -74,16 +81,17 @@ func insertMachineOwnershipProjectionInTransaction(
 		return err
 	}
 	row := models.MachineOwnershipProjection{
-		Id:                     machineOwnershipProjectionSingletonID,
-		NetworkStateId:         networkStateSingletonID,
-		OwnershipSchemaVersion: int(observation.Record.SchemaVersion),
-		InstallationId:         observation.Record.InstallationID,
-		OwnerIdentity:          observation.Record.OwnerIdentity,
-		OwnershipGeneration:    generation,
-		LoopbackPoolPrefix:     observation.Record.LoopbackPoolPrefix,
-		TicketVerifierKey:      observation.Record.TicketVerifierKey,
-		RecordFingerprint:      observation.Fingerprint,
-		ConfirmedAt:            canonicalNetworkMutationTime(confirmedAt),
+		Id:                       machineOwnershipProjectionSingletonID,
+		NetworkStateId:           networkStateSingletonID,
+		OwnershipSchemaVersion:   int(observation.Record.SchemaVersion),
+		InstallationId:           observation.Record.InstallationID,
+		OwnerIdentity:            observation.Record.OwnerIdentity,
+		OwnershipGeneration:      generation,
+		LoopbackPoolPrefix:       observation.Record.LoopbackPoolPrefix,
+		NetworkPolicyFingerprint: machineOwnershipNetworkPolicyModelValue(observation.Record),
+		TicketVerifierKey:        observation.Record.TicketVerifierKey,
+		RecordFingerprint:        observation.Fingerprint,
+		ConfirmedAt:              canonicalNetworkMutationTime(confirmedAt),
 	}
 	if err := requireOneCreate(tx.Create(&row), "create machine ownership projection", "1"); err != nil {
 		return err
@@ -95,12 +103,23 @@ func insertMachineOwnershipProjectionInTransaction(
 func readMachineOwnershipProjectionInTransaction(
 	tx *gorm.DB,
 ) (ownership.Observation, time.Time, error) {
+	state, err := readMachineOwnershipProjectionStateInTransaction(tx)
+	if err != nil {
+		return ownership.Observation{}, time.Time{}, err
+	}
+	return state.observation, state.confirmedAt, nil
+}
+
+// readMachineOwnershipProjectionStateInTransaction retains the exact row for atomic preservation checks.
+func readMachineOwnershipProjectionStateInTransaction(
+	tx *gorm.DB,
+) (machineOwnershipProjectionState, error) {
 	var projectionRows []models.MachineOwnershipProjection
 	if err := tx.Order("id ASC").Limit(2).Find(&projectionRows).Error; err != nil {
-		return ownership.Observation{}, time.Time{}, fmt.Errorf("read machine ownership projection: %w", err)
+		return machineOwnershipProjectionState{}, fmt.Errorf("read machine ownership projection: %w", err)
 	}
 	if len(projectionRows) != 1 {
-		return ownership.Observation{}, time.Time{}, corruptStateError(
+		return machineOwnershipProjectionState{}, corruptStateError(
 			"machine ownership projection",
 			"1",
 			fmt.Errorf("found %d rows, expected 1", len(projectionRows)),
@@ -109,10 +128,10 @@ func readMachineOwnershipProjectionInTransaction(
 
 	var networkRows []models.NetworkState
 	if err := tx.Order("id ASC").Limit(2).Find(&networkRows).Error; err != nil {
-		return ownership.Observation{}, time.Time{}, fmt.Errorf("read network root for machine ownership projection: %w", err)
+		return machineOwnershipProjectionState{}, fmt.Errorf("read network root for machine ownership projection: %w", err)
 	}
 	if len(networkRows) != 1 {
-		return ownership.Observation{}, time.Time{}, corruptStateError(
+		return machineOwnershipProjectionState{}, corruptStateError(
 			"machine ownership projection",
 			"1",
 			fmt.Errorf("network root has %d rows, expected 1", len(networkRows)),
@@ -121,12 +140,16 @@ func readMachineOwnershipProjectionInTransaction(
 
 	observation, confirmedAt, err := machineOwnershipProjectionFromModel(projectionRows[0])
 	if err != nil {
-		return ownership.Observation{}, time.Time{}, err
+		return machineOwnershipProjectionState{}, err
 	}
 	if err := requireMachineOwnershipProjectionNetworkRoot(projectionRows[0], networkRows[0], observation.Record); err != nil {
-		return ownership.Observation{}, time.Time{}, err
+		return machineOwnershipProjectionState{}, err
 	}
-	return observation, confirmedAt, nil
+	return machineOwnershipProjectionState{
+		row:         projectionRows[0],
+		observation: observation,
+		confirmedAt: confirmedAt,
+	}, nil
 }
 
 // machineOwnershipProjectionFromModel validates every field before exposing projected helper authority.
@@ -148,11 +171,35 @@ func machineOwnershipProjectionFromModel(
 			fmt.Errorf("network state ID is %d, expected 1", row.NetworkStateId),
 		)
 	}
-	if row.OwnershipSchemaVersion != int(ownership.CurrentSchemaVersion) {
+	var networkPolicyFingerprint string
+	switch row.OwnershipSchemaVersion {
+	case int(ownership.IdentitySchemaVersion):
+		if row.NetworkPolicyFingerprint != nil {
+			return ownership.Observation{}, time.Time{}, corruptStateError(
+				"machine ownership projection",
+				key,
+				fmt.Errorf("schema-%d network policy fingerprint is not NULL", ownership.IdentitySchemaVersion),
+			)
+		}
+	case int(ownership.NetworkPolicySchemaVersion):
+		if row.NetworkPolicyFingerprint == nil {
+			return ownership.Observation{}, time.Time{}, corruptStateError(
+				"machine ownership projection",
+				key,
+				fmt.Errorf("schema-%d network policy fingerprint is NULL", ownership.NetworkPolicySchemaVersion),
+			)
+		}
+		networkPolicyFingerprint = *row.NetworkPolicyFingerprint
+	default:
 		return ownership.Observation{}, time.Time{}, corruptStateError(
 			"machine ownership projection",
 			key,
-			fmt.Errorf("ownership schema version is %d, expected %d", row.OwnershipSchemaVersion, ownership.CurrentSchemaVersion),
+			fmt.Errorf(
+				"ownership schema version is %d, expected %d or %d",
+				row.OwnershipSchemaVersion,
+				ownership.IdentitySchemaVersion,
+				ownership.NetworkPolicySchemaVersion,
+			),
 		)
 	}
 	generation, err := positiveNetworkGeneration("machine ownership projection generation", row.OwnershipGeneration)
@@ -160,12 +207,13 @@ func machineOwnershipProjectionFromModel(
 		return ownership.Observation{}, time.Time{}, corruptStateError("machine ownership projection", key, err)
 	}
 	record := ownership.Record{
-		SchemaVersion:      ownership.CurrentSchemaVersion,
-		InstallationID:     row.InstallationId,
-		OwnerIdentity:      row.OwnerIdentity,
-		Generation:         generation,
-		LoopbackPoolPrefix: row.LoopbackPoolPrefix,
-		TicketVerifierKey:  row.TicketVerifierKey,
+		SchemaVersion:            uint32(row.OwnershipSchemaVersion),
+		InstallationID:           row.InstallationId,
+		OwnerIdentity:            row.OwnerIdentity,
+		Generation:               generation,
+		LoopbackPoolPrefix:       row.LoopbackPoolPrefix,
+		NetworkPolicyFingerprint: networkPolicyFingerprint,
+		TicketVerifierKey:        row.TicketVerifierKey,
 	}
 	if err := record.Validate(); err != nil {
 		return ownership.Observation{}, time.Time{}, corruptStateError("machine ownership projection", key, err)
@@ -187,15 +235,58 @@ func machineOwnershipProjectionFromModel(
 	return ownership.Observation{Exists: true, Record: record, Fingerprint: fingerprint}, row.ConfirmedAt, nil
 }
 
+// machineOwnershipNetworkPolicyModelValue preserves SQL NULL as the only schema-one policy representation.
+func machineOwnershipNetworkPolicyModelValue(record ownership.Record) *string {
+	if record.SchemaVersion == ownership.IdentitySchemaVersion {
+		return nil
+	}
+	value := record.NetworkPolicyFingerprint
+	return &value
+}
+
+// validateConfirmedMachineOwnershipObservation accepts only an exact helper-confirmed record fingerprint pair.
+func validateConfirmedMachineOwnershipObservation(observation ownership.Observation) error {
+	if !observation.Exists {
+		return fmt.Errorf("machine ownership projection requires confirmed authority")
+	}
+	if err := observation.Record.Validate(); err != nil {
+		return fmt.Errorf("machine ownership projection record: %w", err)
+	}
+	fingerprint, err := observation.Record.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if observation.Fingerprint != fingerprint {
+		return fmt.Errorf("machine ownership projection fingerprint does not match its record")
+	}
+	return nil
+}
+
 // requireMachineOwnershipProjectionNetworkRoot prevents the daemon projection from drifting from its durable network owner.
 func requireMachineOwnershipProjectionNetworkRoot(
 	projection models.MachineOwnershipProjection,
 	root models.NetworkState,
 	record ownership.Record,
 ) error {
-	_, _, networkOwnership, pool, err := networkRootFromModel(root)
+	validatedRoot, _, networkOwnership, pool, err := networkRootFromModel(root)
 	if err != nil {
 		return err
+	}
+	expectedSchemaVersion := ownership.IdentitySchemaVersion
+	if NetworkStage(validatedRoot.Stage) == NetworkStageFull {
+		expectedSchemaVersion = ownership.NetworkPolicySchemaVersion
+	}
+	if record.SchemaVersion != expectedSchemaVersion {
+		return corruptStateError(
+			"machine ownership projection",
+			fmt.Sprint(projection.Id),
+			fmt.Errorf(
+				"%s-stage network retains schema-%d ownership, expected schema %d",
+				validatedRoot.Stage,
+				record.SchemaVersion,
+				expectedSchemaVersion,
+			),
+		)
 	}
 	prefix, err := netip.ParsePrefix(record.LoopbackPoolPrefix)
 	if err != nil {
@@ -219,18 +310,8 @@ func validateConfirmedMachineOwnershipProjection(
 	observation ownership.Observation,
 	confirmedAt time.Time,
 ) error {
-	if !observation.Exists {
-		return fmt.Errorf("machine ownership projection requires confirmed authority")
-	}
-	if err := observation.Record.Validate(); err != nil {
-		return fmt.Errorf("machine ownership projection record: %w", err)
-	}
-	fingerprint, err := observation.Record.Fingerprint()
-	if err != nil {
+	if err := validateConfirmedMachineOwnershipObservation(observation); err != nil {
 		return err
-	}
-	if observation.Fingerprint != fingerprint {
-		return fmt.Errorf("machine ownership projection fingerprint does not match its record")
 	}
 	if err := validateStoredTime("machine ownership confirmation time", confirmedAt); err != nil {
 		return err

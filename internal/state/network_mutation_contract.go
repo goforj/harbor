@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/network/identity"
 )
 
@@ -208,9 +210,13 @@ func (request InitializeNetworkIdentityRequest) Validate() error {
 // ActivateNetworkDataPlaneRequest grants resolver and shared-listener authority to an existing identity-stage network.
 type ActivateNetworkDataPlaneRequest struct {
 	ExpectedNetworkRevision domain.Sequence
-	Setup                   []NetworkSetupProof
-	Listeners               SharedListenerReservations
-	At                      time.Time
+	// ConfirmedOwnership is the exact policy-bound ownership result confirmed by the correlated helper exchange.
+	ConfirmedOwnership ownership.Observation
+	// Policy is the complete host-network policy authorized by ConfirmedOwnership.
+	Policy    networkpolicy.Policy
+	Setup     []NetworkSetupProof
+	Listeners SharedListenerReservations
+	At        time.Time
 }
 
 // Validate rejects stale-shaped or incomplete data-plane activation facts before storage authority is entered.
@@ -221,15 +227,58 @@ func (request ActivateNetworkDataPlaneRequest) Validate() error {
 	if err := validateStoredTime("network data-plane activation time", request.At); err != nil {
 		return err
 	}
+	if err := validateConfirmedNetworkDataPlaneOwnership(request.ConfirmedOwnership); err != nil {
+		return err
+	}
+	if err := request.Policy.Validate(); err != nil {
+		return fmt.Errorf("network data-plane policy: %w", err)
+	}
+	policyFingerprint, err := request.Policy.Fingerprint()
+	if err != nil {
+		return fmt.Errorf("fingerprint network data-plane policy: %w", err)
+	}
+	if policyFingerprint != request.ConfirmedOwnership.Record.NetworkPolicyFingerprint {
+		return fmt.Errorf("network data-plane policy fingerprint does not match confirmed ownership")
+	}
 	if err := validateNetworkDataPlaneSetupProofs(request.Setup, request.At); err != nil {
 		return err
 	}
 	if err := request.Listeners.Validate(); err != nil {
 		return err
 	}
+	if err := validateNetworkDataPlanePolicyListeners(request.Policy, request.Listeners); err != nil {
+		return err
+	}
 	for _, listener := range []ListenerReservation{request.Listeners.DNS, request.Listeners.HTTP, request.Listeners.HTTPS} {
 		if err := validateNetworkMutationFactTime("network listener verification time", listener.VerifiedAt, request.At); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateNetworkDataPlanePolicyListeners binds durable socket modes to the exact authorized policy topology.
+func validateNetworkDataPlanePolicyListeners(
+	policy networkpolicy.Policy,
+	reservations SharedListenerReservations,
+) error {
+	for _, candidate := range []struct {
+		name        string
+		policy      networkpolicy.Listener
+		reservation ListenerReservation
+	}{
+		{name: "DNS", policy: policy.DNS, reservation: reservations.DNS},
+		{name: "HTTP", policy: policy.HTTP, reservation: reservations.HTTP},
+		{name: "HTTPS", policy: policy.HTTPS, reservation: reservations.HTTPS},
+	} {
+		expectedMode := ListenerModeRedirect
+		if candidate.policy.Advertised == candidate.policy.Bind {
+			expectedMode = ListenerModeDirect
+		}
+		if candidate.reservation.Advertised != candidate.policy.Advertised ||
+			candidate.reservation.Bind != candidate.policy.Bind ||
+			candidate.reservation.Mode != expectedMode {
+			return fmt.Errorf("%s listener does not match the authorized network data-plane policy", candidate.name)
 		}
 	}
 	return nil

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -18,7 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const machineOwnershipProjectionTestMigrationName = "2026_07_19_140000_create_machine_ownership_projections"
+const machineOwnershipProjectionTestMigrationName = "2026_07_19_150000_add_machine_ownership_network_policy_fingerprint"
 
 const machineOwnershipProjectionTestVerifierKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
@@ -74,6 +76,45 @@ func TestMachineOwnershipProjectionRoundTripsThroughNamedRestart(t *testing.T) {
 	}
 }
 
+// TestMachineOwnershipProjectionRoundTripsBothSchemas proves SQL NULL and policy-bound values survive insertion and observation.
+func TestMachineOwnershipProjectionRoundTripsBothSchemas(t *testing.T) {
+	for _, schemaVersion := range []uint32{
+		ownership.IdentitySchemaVersion,
+		ownership.NetworkPolicySchemaVersion,
+	} {
+		t.Run(fmt.Sprintf("schema-%d", schemaVersion), func(t *testing.T) {
+			fixture := newMachineOwnershipProjectionFixture(t, false)
+			observation := machineOwnershipProjectionTestObservationForSchema(t, schemaVersion)
+			if schemaVersion == ownership.NetworkPolicySchemaVersion {
+				machineOwnershipProjectionTestExec(
+					t,
+					fixture.database,
+					"UPDATE network_state SET stage = ? WHERE id = ?",
+					NetworkStageFull,
+					networkStateSingletonID,
+				)
+			}
+			if err := fixture.database.Transaction(func(tx *gorm.DB) error {
+				return insertMachineOwnershipProjectionInTransaction(tx, observation, fixture.confirmedAt)
+			}); err != nil {
+				t.Fatalf("insert schema-%d projection: %v", schemaVersion, err)
+			}
+
+			row, err := fixture.repository.ByID(machineOwnershipProjectionSingletonID)
+			if err != nil {
+				t.Fatalf("read schema-%d projection row: %v", schemaVersion, err)
+			}
+			if !reflect.DeepEqual(*row, machineOwnershipProjectionTestModel(observation, fixture.confirmedAt)) {
+				t.Fatalf("schema-%d projection row = %#v", schemaVersion, *row)
+			}
+			observed, err := fixture.source.Observe(context.Background())
+			if err != nil || observed != observation {
+				t.Fatalf("Observe() schema-%d = %#v, %v, want %#v", schemaVersion, observed, err, observation)
+			}
+		})
+	}
+}
+
 // TestNewMachineOwnershipProjectionSourceRequiresRepository proves construction fails before retaining missing persistence authority.
 func TestNewMachineOwnershipProjectionSourceRequiresRepository(t *testing.T) {
 	defer func() {
@@ -109,6 +150,21 @@ func TestMachineOwnershipProjectionSourceFailsClosedOnDurableMismatch(t *testing
 		{name: "mismatched network root", seedProjection: true, mutate: func(t *testing.T, fixture *machineOwnershipProjectionFixture) {
 			machineOwnershipProjectionTestExec(t, fixture.database, "UPDATE network_state SET installation_id = 'installation-b'")
 		}, want: "projected ownership differs from the durable network root"},
+		{name: "schema one with full root", seedProjection: true, mutate: func(t *testing.T, fixture *machineOwnershipProjectionFixture) {
+			machineOwnershipProjectionTestExec(t, fixture.database, "UPDATE network_state SET stage = 'full'")
+		}, want: "full-stage network retains schema-1 ownership"},
+		{name: "schema two with identity root", seedProjection: true, mutate: func(t *testing.T, fixture *machineOwnershipProjectionFixture) {
+			target := machineOwnershipProjectionTestObservationForSchema(t, ownership.NetworkPolicySchemaVersion)
+			if err := fixture.database.Model(&models.MachineOwnershipProjection{}).
+				Where("id = ?", machineOwnershipProjectionSingletonID).
+				Updates(map[string]any{
+					"ownership_schema_version":   int(ownership.NetworkPolicySchemaVersion),
+					"network_policy_fingerprint": target.Record.NetworkPolicyFingerprint,
+					"record_fingerprint":         target.Fingerprint,
+				}).Error; err != nil {
+				t.Fatalf("seed schema-two identity projection: %v", err)
+			}
+		}, want: "identity-stage network retains schema-2 ownership"},
 	}
 
 	for _, test := range tests {
@@ -140,6 +196,13 @@ func TestMachineOwnershipProjectionFromModelValidatesEveryAuthorityDimension(t *
 	if converted != observation || convertedAt != confirmedAt {
 		t.Fatalf("machineOwnershipProjectionFromModel() = %#v at %s, want %#v at %s", converted, convertedAt, observation, confirmedAt)
 	}
+	schemaTwo := machineOwnershipProjectionTestObservationForSchema(t, ownership.NetworkPolicySchemaVersion)
+	converted, convertedAt, err = machineOwnershipProjectionFromModel(
+		machineOwnershipProjectionTestModel(schemaTwo, confirmedAt),
+	)
+	if err != nil || converted != schemaTwo || convertedAt != confirmedAt {
+		t.Fatalf("schema-two conversion = %#v at %s, %v, want %#v", converted, convertedAt, err, schemaTwo)
+	}
 
 	tests := []struct {
 		name   string
@@ -147,7 +210,9 @@ func TestMachineOwnershipProjectionFromModelValidatesEveryAuthorityDimension(t *
 	}{
 		{name: "projection singleton", mutate: func(row *models.MachineOwnershipProjection) { row.Id = 2 }},
 		{name: "network singleton", mutate: func(row *models.MachineOwnershipProjection) { row.NetworkStateId = 2 }},
-		{name: "ownership schema", mutate: func(row *models.MachineOwnershipProjection) { row.OwnershipSchemaVersion = 2 }},
+		{name: "ownership schema", mutate: func(row *models.MachineOwnershipProjection) {
+			row.OwnershipSchemaVersion = int(ownership.NetworkPolicySchemaVersion + 1)
+		}},
 		{name: "ownership generation", mutate: func(row *models.MachineOwnershipProjection) { row.OwnershipGeneration = 0 }},
 		{name: "ownership record", mutate: func(row *models.MachineOwnershipProjection) { row.InstallationId = "-unsafe" }},
 		{name: "record fingerprint", mutate: func(row *models.MachineOwnershipProjection) { row.RecordFingerprint = strings.Repeat("0", 64) }},
@@ -165,6 +230,29 @@ func TestMachineOwnershipProjectionFromModelValidatesEveryAuthorityDimension(t *
 				t.Fatalf("machineOwnershipProjectionFromModel() = %#v at %s, %v", converted, convertedAt, err)
 			}
 		})
+	}
+}
+
+// TestMachineOwnershipProjectionFromModelEnforcesPolicyNullability rejects ambiguous schema encodings before fingerprint comparison.
+func TestMachineOwnershipProjectionFromModelEnforcesPolicyNullability(t *testing.T) {
+	confirmedAt := machineOwnershipProjectionTestTime()
+	empty := ""
+	schemaOne := machineOwnershipProjectionTestModel(
+		machineOwnershipProjectionTestObservationForSchema(t, ownership.IdentitySchemaVersion),
+		confirmedAt,
+	)
+	schemaOne.NetworkPolicyFingerprint = &empty
+	if _, _, err := machineOwnershipProjectionFromModel(schemaOne); err == nil || !strings.Contains(err.Error(), "is not NULL") {
+		t.Fatalf("schema-one non-NULL policy error = %v", err)
+	}
+
+	schemaTwo := machineOwnershipProjectionTestModel(
+		machineOwnershipProjectionTestObservationForSchema(t, ownership.NetworkPolicySchemaVersion),
+		confirmedAt,
+	)
+	schemaTwo.NetworkPolicyFingerprint = nil
+	if _, _, err := machineOwnershipProjectionFromModel(schemaTwo); err == nil || !strings.Contains(err.Error(), "is NULL") {
+		t.Fatalf("schema-two NULL policy error = %v", err)
 	}
 }
 
@@ -292,13 +380,25 @@ func applyMachineOwnershipProjectionTestMigrations(t *testing.T, databaseConnect
 // machineOwnershipProjectionTestObservation returns one exact helper-confirmed ownership record and fingerprint.
 func machineOwnershipProjectionTestObservation(t *testing.T) ownership.Observation {
 	t.Helper()
+	return machineOwnershipProjectionTestObservationForSchema(t, ownership.IdentitySchemaVersion)
+}
+
+// machineOwnershipProjectionTestObservationForSchema returns exact helper confirmation for either supported schema.
+func machineOwnershipProjectionTestObservationForSchema(
+	t *testing.T,
+	schemaVersion uint32,
+) ownership.Observation {
+	t.Helper()
 	record := ownership.Record{
-		SchemaVersion:      ownership.CurrentSchemaVersion,
+		SchemaVersion:      schemaVersion,
 		InstallationID:     "installation-a",
 		OwnerIdentity:      "501",
 		Generation:         1,
 		LoopbackPoolPrefix: "127.77.0.8/29",
 		TicketVerifierKey:  machineOwnershipProjectionTestVerifierKey,
+	}
+	if schemaVersion == ownership.NetworkPolicySchemaVersion {
+		record.NetworkPolicyFingerprint = strings.Repeat("a", 64)
 	}
 	fingerprint, err := record.Fingerprint()
 	if err != nil {
@@ -326,16 +426,17 @@ func machineOwnershipProjectionTestNetworkRoot(record ownership.Record, at time.
 // machineOwnershipProjectionTestModel returns the exact generated row implied by one valid confirmation.
 func machineOwnershipProjectionTestModel(observation ownership.Observation, confirmedAt time.Time) models.MachineOwnershipProjection {
 	return models.MachineOwnershipProjection{
-		Id:                     machineOwnershipProjectionSingletonID,
-		NetworkStateId:         networkStateSingletonID,
-		OwnershipSchemaVersion: int(observation.Record.SchemaVersion),
-		InstallationId:         observation.Record.InstallationID,
-		OwnerIdentity:          observation.Record.OwnerIdentity,
-		OwnershipGeneration:    int(observation.Record.Generation),
-		LoopbackPoolPrefix:     observation.Record.LoopbackPoolPrefix,
-		TicketVerifierKey:      observation.Record.TicketVerifierKey,
-		RecordFingerprint:      observation.Fingerprint,
-		ConfirmedAt:            canonicalNetworkMutationTime(confirmedAt),
+		Id:                       machineOwnershipProjectionSingletonID,
+		NetworkStateId:           networkStateSingletonID,
+		OwnershipSchemaVersion:   int(observation.Record.SchemaVersion),
+		InstallationId:           observation.Record.InstallationID,
+		OwnerIdentity:            observation.Record.OwnerIdentity,
+		OwnershipGeneration:      int(observation.Record.Generation),
+		LoopbackPoolPrefix:       observation.Record.LoopbackPoolPrefix,
+		NetworkPolicyFingerprint: machineOwnershipNetworkPolicyModelValue(observation.Record),
+		TicketVerifierKey:        observation.Record.TicketVerifierKey,
+		RecordFingerprint:        observation.Fingerprint,
+		ConfirmedAt:              canonicalNetworkMutationTime(confirmedAt),
 	}
 }
 
@@ -353,6 +454,7 @@ func weakenMachineOwnershipProjectionSchema(t *testing.T, databaseConnection *go
 			owner_identity TEXT,
 			ownership_generation INTEGER,
 			loopback_pool_prefix TEXT,
+			network_policy_fingerprint TEXT,
 			ticket_verifier_key TEXT,
 			record_fingerprint TEXT,
 			confirmed_at DATETIME
