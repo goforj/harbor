@@ -56,6 +56,7 @@ type certificateAuthority interface {
 // dataPlane is the one-shot listener generation owned beneath the control endpoint.
 type dataPlane interface {
 	Start(context.Context) error
+	ReplaceHTTPRoutes(dataplane.DesiredState) error
 	Snapshot() dataplane.Snapshot
 	Done() <-chan struct{}
 	Err() error
@@ -99,6 +100,7 @@ const (
 // Controller owns certificate material and one immutable data-plane generation beneath daemon authority.
 type Controller struct {
 	mutex                 sync.RWMutex
+	reconcileMutex        sync.Mutex
 	initialized           bool
 	source                runtimeStateSource
 	dependencies          dependencies
@@ -113,6 +115,8 @@ type Controller struct {
 	material              certificateMaterialStore
 	certificates          certificateAuthority
 	root                  certificates.Root
+	httpFoundation        dataplane.DesiredState
+	publishedHTTPRoutes   []dataplane.HTTPRoute
 	terminalErr           error
 	stop                  chan struct{}
 	done                  chan struct{}
@@ -244,6 +248,10 @@ func (controller *Controller) Start(ctx context.Context) error {
 	}
 	if err := controller.startupInterruption(runContext); err != nil {
 		return controller.failStartWithDone(err, material, runtime, runtimeDone)
+	}
+	controller.initializeHTTPReconciliation(desired)
+	if err := controller.reconcileHTTPRoutes(runContext, controllerStateStarting, runtime, authority); err != nil {
+		return controller.failStartWithDone(fmt.Errorf("start harbord runtime: reconcile HTTP routes: %w", err), material, runtime, runtimeDone)
 	}
 	if err := controller.publishReady(material, authority, root, runtime, runtimeDone); err != nil {
 		return controller.failStartWithDone(err, material, runtime, runtimeDone)

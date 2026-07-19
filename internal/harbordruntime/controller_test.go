@@ -142,11 +142,21 @@ type testCertificateAuthority struct {
 	root             certificates.Root
 	rootErr          error
 	afterRoot        func()
+	ensureLeaf       func(context.Context, string) (certificates.LeafResult, error)
+	ensureLeafHosts  []string
+	mutex            sync.Mutex
 	certificateCalls atomic.Int64
 }
 
-// EnsureLeaf rejects issuance because listener-only generations have no authorized host.
-func (authority *testCertificateAuthority) EnsureLeaf(context.Context, string) (certificates.LeafResult, error) {
+// EnsureLeaf records issuance and delegates configured route-test behavior.
+func (authority *testCertificateAuthority) EnsureLeaf(ctx context.Context, host string) (certificates.LeafResult, error) {
+	authority.mutex.Lock()
+	authority.ensureLeafHosts = append(authority.ensureLeafHosts, host)
+	ensureLeaf := authority.ensureLeaf
+	authority.mutex.Unlock()
+	if ensureLeaf != nil {
+		return ensureLeaf(ctx, host)
+	}
 	return certificates.LeafResult{}, errors.New("listener-only generation must not ensure leaves")
 }
 
@@ -185,6 +195,8 @@ type testDataPlane struct {
 	starts       atomic.Int64
 	closes       atomic.Int64
 	doneCalls    atomic.Int64
+	replacements []dataplane.DesiredState
+	replace      func(dataplane.DesiredState) error
 	events       *testEventLog
 }
 
@@ -219,6 +231,18 @@ func (runtime *testDataPlane) Start(ctx context.Context) error {
 	runtime.mutex.Unlock()
 	if runtime.afterStart != nil {
 		runtime.afterStart()
+	}
+	return nil
+}
+
+// ReplaceHTTPRoutes records each exact generation published by the controller.
+func (runtime *testDataPlane) ReplaceHTTPRoutes(desired dataplane.DesiredState) error {
+	runtime.mutex.Lock()
+	runtime.replacements = append(runtime.replacements, desired)
+	replace := runtime.replace
+	runtime.mutex.Unlock()
+	if replace != nil {
+		return replace(desired)
 	}
 	return nil
 }
