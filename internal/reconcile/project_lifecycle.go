@@ -512,10 +512,11 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	coordinator.waitForReadiness(begun, attached, handle, admission.Target)
 }
 
-// projectRuntimeEnvironmentOverrides keeps internal clients on the same assigned identity as the App listener.
+// projectRuntimeEnvironmentOverrides keeps App and project-owned service publications on one assigned identity.
 func projectRuntimeEnvironmentOverrides(target projectdiscovery.RuntimeTarget) projectprocess.EnvironmentOverrides {
 	return projectprocess.EnvironmentOverrides{
-		"IP_ADDRESS": target.Address.String(),
+		"DEV_SERVICE_IP_ADDRESS": target.Address.String(),
+		"IP_ADDRESS":             target.Address.String(),
 		"LIGHTHOUSE_URL": fmt.Sprintf(
 			"ws://%s:%d/lighthouse/ws/agent",
 			target.Address,

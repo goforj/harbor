@@ -218,6 +218,10 @@ func TestMain(m *testing.M) {
 func runProjectLifecycleHelper() {
 	address := os.Getenv("IP_ADDRESS")
 	port := os.Getenv("HARBOR_PROJECT_LIFECYCLE_PORT")
+	if got := os.Getenv("DEV_SERVICE_IP_ADDRESS"); got != address {
+		_, _ = fmt.Fprintf(os.Stderr, "DEV_SERVICE_IP_ADDRESS=%q, want %q\n", got, address)
+		os.Exit(2)
+	}
 	wantLighthouseURL := fmt.Sprintf("ws://%s:%s/lighthouse/ws/agent", address, port)
 	if got := os.Getenv("LIGHTHOUSE_URL"); got != wantLighthouseURL {
 		_, _ = fmt.Fprintf(os.Stderr, "LIGHTHOUSE_URL=%q, want %q\n", got, wantLighthouseURL)
@@ -258,7 +262,8 @@ func TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdenti
 	}
 
 	overrides := projectRuntimeEnvironmentOverrides(target)
-	if len(overrides) != 2 || overrides["IP_ADDRESS"] != "127.77.0.11" ||
+	if len(overrides) != 3 || overrides["DEV_SERVICE_IP_ADDRESS"] != "127.77.0.11" ||
+		overrides["IP_ADDRESS"] != "127.77.0.11" ||
 		overrides["LIGHTHOUSE_URL"] != "ws://127.77.0.11:3000/lighthouse/ws/agent" {
 		t.Fatalf("runtime environment overrides = %#v", overrides)
 	}

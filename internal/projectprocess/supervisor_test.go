@@ -60,6 +60,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "plain=%s\n", os.Getenv("FORJ_DEV_PLAIN"))
 	fmt.Fprintf(os.Stdout, "app-name=%s\n", os.Getenv("APP_NAME"))
 	fmt.Fprintf(os.Stdout, "forj-app=%s\n", os.Getenv("FORJ_APP"))
+	fmt.Fprintf(os.Stdout, "dev-service-ip-address=%s\n", os.Getenv("DEV_SERVICE_IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "ip-address=%s\n", os.Getenv("IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "api-http-host=%s\n", os.Getenv("API_HTTP_HOST"))
 	fmt.Fprintf(os.Stdout, "managed-keys=%s\n", os.Getenv(managedEnvKeysName))
@@ -292,6 +293,7 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	installForjHelper(t, "exit")
 
 	captured := CaptureEnvironment()
+	captured = replaceEnvironment(captured, "DEV_SERVICE_IP_ADDRESS", "127.0.0.7")
 	captured = replaceEnvironment(captured, "IP_ADDRESS", "127.0.0.8")
 	captured = replaceEnvironment(captured, "API_HTTP_HOST", "127.0.0.9")
 	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
@@ -307,6 +309,7 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 		SessionID:    "session-overrides",
 		CheckoutRoot: checkout,
 		EnvironmentOverrides: EnvironmentOverrides{
+			"DEV_SERVICE_IP_ADDRESS":  "127.0.0.42",
 			"IP_ADDRESS":              "127.0.0.42",
 			helperOverrideEnvironment: "managed",
 			helperEmptyEnvironment:    "",
@@ -319,13 +322,14 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	if _, err := handle.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait() error = %v", err)
 	}
+	waitForOutput(t, stdout, "dev-service-ip-address=127.0.0.42")
 	waitForOutput(t, stdout, "ip-address=127.0.0.42")
 	waitForOutput(t, stdout, "api-http-host=127.0.0.9")
 	waitForOutput(t, stdout, "override=managed")
 	waitForOutput(t, stdout, "empty=true:")
 	waitForOutput(t, stdout, "unrelated=preserved")
-	waitForOutput(t, stdout, "managed-keys=HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
-	if output := stdout.String(); strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
+	waitForOutput(t, stdout, "managed-keys=DEV_SERVICE_IP_ADDRESS,HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
+	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
 		t.Fatalf("managed project retained captured override values: %q", output)
 	}
 }
@@ -653,6 +657,7 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 		"FORJ_DEV_PLAIN=0",
 		"PATH=/bin",
 		"FORJ_DEV_PLAIN=2",
+		"DEV_SERVICE_IP_ADDRESS=127.0.0.7",
 		"IP_ADDRESS=127.0.0.8",
 		"API_HTTP_HOST=127.0.0.9",
 		"ip_address=127.0.0.10",
@@ -661,16 +666,17 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	}
 	before := append([]string(nil), base...)
 	result := withDevelopmentEnvironment(base, EnvironmentOverrides{
-		"Z_VALUE":    "last",
-		"IP_ADDRESS": "127.0.0.42",
-		"b_value":    "middle",
-		"A_VALUE":    "",
+		"Z_VALUE":                "last",
+		"DEV_SERVICE_IP_ADDRESS": "127.0.0.42",
+		"IP_ADDRESS":             "127.0.0.42",
+		"b_value":                "middle",
+		"A_VALUE":                "",
 	})
 	want := "HOME=/tmp/home|PATH=/bin|API_HTTP_HOST=127.0.0.9"
 	if runtime.GOOS != "windows" {
 		want += "|ip_address=127.0.0.10"
 	}
-	want += "|UNRELATED=preserved|A_VALUE=|b_value=middle|IP_ADDRESS=127.0.0.42|Z_VALUE=last|FORJ_DEV_PLAIN=1|FORJ_INTERNAL_MANAGED_ENV_KEYS=A_VALUE,b_value,IP_ADDRESS,Z_VALUE"
+	want += "|UNRELATED=preserved|A_VALUE=|b_value=middle|DEV_SERVICE_IP_ADDRESS=127.0.0.42|IP_ADDRESS=127.0.0.42|Z_VALUE=last|FORJ_DEV_PLAIN=1|FORJ_INTERNAL_MANAGED_ENV_KEYS=A_VALUE,b_value,DEV_SERVICE_IP_ADDRESS,IP_ADDRESS,Z_VALUE"
 	if strings.Join(result, "|") != want {
 		t.Fatalf("withDevelopmentEnvironment() = %q, want %q", strings.Join(result, "|"), want)
 	}
