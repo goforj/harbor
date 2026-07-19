@@ -48,6 +48,22 @@ These jobs provide fast pull-request feedback and protect portable domain behavi
 
 Standard hosted images update in place and are not immutable pins. A capability that requires an immutable environment uses a custom-image larger runner or the dedicated product fleet; release evidence never invents a hosted image digest that GitHub did not provide.
 
+### Current Phase 1 control harness
+
+The implemented `phase1-control` job runs on `ubuntu-24.04`, `macos-14`, and `windows-2022`. It race-builds the production `harbor` and `harbord` entrypoints, then exercises them as separate processes against isolated standard per-user data and runtime paths.
+
+The harness currently proves:
+
+- the embedded migration command, unclaimed endpoint preflight, one foreground daemon, readiness, and negotiated control capabilities;
+- concurrent CLI status, snapshot, and natural-identity registration replay while an authenticated desktop-role control connection remains open;
+- a deliberate hard daemon termination, restart from durable state, matching CLI and desktop-role snapshots, and continuity of the persisted public CA fingerprint;
+- graceful `harbor daemon stop` acknowledgement, foreground-process exit, retained-client disconnect, and joined runtime cleanup;
+- restart recovery of a queued unregister operation before readiness, concurrent intent-keyed removal replay, ordered durable operation transitions, and an empty project registry at completion;
+- cleanup of the IPC endpoint, reusable process lock, SQLite sidecars, and terminal CLI removal intents;
+- a fixed allowlist of bounded, path- and secret-redacted summary and daemon-log artifacts.
+
+This is a headless control-plane acceptance test. The desktop-role observer is a real authenticated control client, not a Wails window, and the project fixtures provide only `.goforj.yml` plus non-secret display metadata. The harness does not synthesize a GoForj managed worker, start Apps or containers, initialize project networking, mutate the system resolver or trust store, exercise interactive approval, or establish native desktop behavior. Those remain covered only when the later dedicated workflows described below are implemented.
+
 Trusted pull requests also run the real production helper/platform API on GitHub-hosted workers to install and remove resolver, loopback, trust, and low-port state. Hosted Linux and macOS workers provide passwordless `sudo`; hosted Windows runs as Administrator with UAC disabled. This is valuable API and cleanup coverage, but it is not evidence for the shipping consent boundary, Windows filtered-token/UAC behavior, Docker Desktop, reboot, or an interactive desktop.
 
 ### Dedicated ephemeral integration workers

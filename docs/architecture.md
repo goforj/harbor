@@ -168,11 +168,11 @@ A pinned stable Wails v2 release owns the native window, menus, WebView, single-
 
 The embedded frontend is a plain Vue 3, TypeScript, Vite, and Tailwind CSS 4 SPA based on a pinned import of GoForj's source-owned shadcn-vue starter. Harbor preserves that primitive layer, uses Pinia for daemon snapshot/event presentation, and speaks through a typed bridge with a matching browser-test mock. Hash history keeps packaged navigation independent of a web-server fallback. [Frontend](./frontend.md) defines the source ownership and visual adaptation boundary.
 
-The desktop Go backend is an ordinary daemon client. Frontend code never receives a raw daemon socket, bearer token, Docker socket, project command runner, or unrestricted filesystem API. Wails services expose narrow operations such as `Status`, `Snapshot`, `AddProject`, and `OpenResource` and validate every argument again at the daemon boundary. `AddProject` opens the operating system's directory picker in the Go backend and submits only the selected path to the daemon; a new registration is stopped and has no routes or resources until later lifecycle work configures them.
+The desktop Go backend is an ordinary daemon client. Frontend code never receives a raw daemon socket, bearer token, Docker socket, project command runner, or unrestricted filesystem API. The implemented Wails surface is `Status`, `Snapshot`, `AddProject`, `RemoveProject`, and `OpenResource`, with arguments validated again at the daemon boundary. `AddProject` opens the operating system's directory picker in the Go backend and submits only the selected path to the daemon; a new registration is stopped and has no routes or resources until later lifecycle work configures them. `RemoveProject` submits a client-owned idempotency intent, reconciles the returned operation against snapshots, and never deletes the checkout. Interactive approval for releasing initialized host networking remains outside the desktop surface.
 
 `OpenResource` validates an `http` or `https` URL against the daemon's current resource snapshot and opens it in the system browser. Harbor never navigates its bridge-enabled WebView to a project App, API Index, Lighthouse, service dashboard, or any other project-controlled content. Unexpected main-frame navigation and raw-message origins are rejected.
 
-Desktop single-instance behavior only focuses an existing window. It is not the daemon lock. By default, closing the last window hides it and leaves the desktop process alive for tray and best-effort notifications. `Quit Harbor UI` in the native application menu (`Cmd+Q` on macOS, `Ctrl+Q` elsewhere) explicitly exits only the client; `Stop Harbor daemon` is a separate operation and neither action implicitly stops projects. On a Linux desktop without a usable tray, relaunch focuses the hidden single instance, the native Quit path remains available, and the CLI remains the runtime recovery path.
+Desktop single-instance behavior only focuses an existing window. It is not the daemon lock. By default, closing the last window hides it and leaves the desktop process alive for tray and best-effort notifications. `Quit Harbor UI` in the native application menu (`Cmd+Q` on macOS, `Ctrl+Q` elsewhere) explicitly exits only the client. Daemon shutdown is a separate control operation; the CLI implements it today, while a desktop stop action remains future work. On a Linux desktop without a usable tray, relaunch focuses the hidden single instance, the native Quit path remains available, and the CLI remains the runtime recovery path.
 
 Bundled frontend assets are local. Harbor does not load remote application code into its bridge-enabled WebView.
 
@@ -187,6 +187,8 @@ Bundled frontend assets are local. Harbor does not load remote application code 
 | Windows | Per-user logon agent/task. A Session 0 Windows service is not the default because it cannot share the interactive user's environment or UI. |
 
 The daemon uses a per-user lock and verifies the existing endpoint before replacing stale runtime state. It publishes readiness only after state migration and host-state observation complete.
+
+`harbor daemon stop` requests graceful shutdown through the authenticated control connection. The daemon writes the acknowledgement before publishing its shared shutdown request, and the foreground runner joins runtime cleanup before exiting. Stopping the daemon makes Harbor endpoints unavailable; it is not a project lifecycle command.
 
 The first release supports one active Harbor profile per machine. Ports 80/443, `.test` resolver ownership, and some loopback configuration are machine-global, so multiple simultaneously logged-in Harbor users would otherwise compete silently.
 
@@ -204,6 +206,8 @@ Harbor control traffic does not use a TCP admin server.
 - Connections have bounded queues, concurrency, and idle timeouts. A client cannot create unbounded goroutines or hold a mutation forever.
 - Mutations return an operation ID. Clients follow the operation event stream or fetch its final result.
 - A snapshot plus monotonic sequence permits reconnect without deriving state from missed events.
+
+The implemented V1 methods cover daemon status and shutdown, authoritative snapshots, natural-identity project registration, and intent-keyed project unregistration. Approval preparation and confirmation exist at the control protocol boundary, but neither the CLI nor desktop currently drives the interactive helper handoff. Project start and stop are not part of the current control surface.
 
 The envelope is stable and golden-tested. Additive fields are tolerated inside a protocol major; semantic removals require a new major. Generated fixtures keep the daemon, CLI, desktop backend, and GoForj session adapter aligned.
 

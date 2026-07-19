@@ -2,7 +2,7 @@
 
 Status: foundation implemented
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 Harbor does not need a new frontend foundation. The canonical GoForj Vue starter provides the Vue, TypeScript, Vite, Tailwind, shadcn-vue, routing, theming, command-menu, and application-shell conventions Harbor needs. Harbor inherits that foundation and spends its design effort on the operational product.
 
@@ -30,10 +30,11 @@ The first desktop foundation is present under `desktop/`:
 - Harbor owns the rail, contextual browser, detail views, compact navigation, status presentation, and command search under its product component and view directories;
 - hash routing, Pinia connection epochs and snapshot ordering, light/dark/system themes, typed bridge adapters, a Go-generated deterministic browser fixture, Vitest, and Playwright are wired and exercised;
 - the Overview can open the operating system's directory picker through the narrow `AddProject` binding, register the selected checkout with the daemon, refresh the snapshot, and open the resulting project detail;
+- project detail can confirm removal through the narrow `RemoveProject` binding, keep one client-owned intent across an uncertain retry, reconcile it against daemon snapshots, and leave the checkout on disk;
 - Vite restores the tracked empty embed marker after production builds so the nested Go module also compiles before frontend assets are generated;
 - the CI workflow requests root Go validation and nested Wails compilation on Ubuntu, macOS, and Windows, with browser behavior exercised once on Ubuntu before its production assets are reused by the native build matrix.
 
-Frontend-only browser development uses the fixture adapter, with an explicit `Development fixture` marker in the UI. `wails dev` and packaged builds use the native `Status`, `Snapshot`, `AddProject`, and `OpenResource` bindings plus typed `harbor:connection` and `harbor:snapshot` events. `AddProject` returns a stopped registration; container startup and network configuration are separate lifecycle work. Production fails visibly when those bindings or the event runtime are incomplete. A browser production build can request fixture data with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is browser-only and cannot override a detected Wails runtime with incomplete bindings. Tray integration and native packaging evidence remain implementation work rather than capabilities implied by the shell.
+Frontend-only browser development uses the fixture adapter, with an explicit `Development fixture` marker in the UI. `wails dev` and packaged builds use the native `Status`, `Snapshot`, `AddProject`, `RemoveProject`, and `OpenResource` bindings plus typed `harbor:connection` and `harbor:snapshot` events. `AddProject` returns a stopped registration. `RemoveProject` can complete an inert registration immediately or display durable queued, running, failed, cancelled, and approval-required operation state; the desktop does not implement the interactive approval handoff yet. Container startup and network configuration are separate lifecycle work. Production fails visibly when those bindings or the event runtime are incomplete. A browser production build can request fixture data with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is browser-only and cannot override a detected Wails runtime with incomplete bindings. Tray integration and native packaging evidence remain implementation work rather than capabilities implied by the shell.
 
 ## Preserved starter foundation
 
