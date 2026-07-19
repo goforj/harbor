@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -122,6 +123,7 @@ func readinessTestTarget() projectdiscovery.RuntimeTarget {
 	return projectdiscovery.RuntimeTarget{
 		AppID:       "app",
 		Name:        "App",
+		Address:     netip.MustParseAddr("127.0.0.1"),
 		Port:        3000,
 		ResourceURL: "http://127.0.0.1:3000",
 		ReadyURL:    "http://127.0.0.1:3000/-/ready",

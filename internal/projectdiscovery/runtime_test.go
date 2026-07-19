@@ -3,6 +3,7 @@ package projectdiscovery
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,11 +21,28 @@ func TestDiscoverDefaultRuntimeUsesOnlyTheLocalListener(t *testing.T) {
 	if target.AppID != "app" || target.Name != "App" || target.Port != 4317 {
 		t.Fatalf("DiscoverDefaultRuntime() identity = %#v", target)
 	}
+	if target.Address != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("DiscoverDefaultRuntime() address = %s", target.Address)
+	}
 	if target.ResourceURL != "http://127.0.0.1:4317" || target.ReadyURL != "http://127.0.0.1:4317/-/ready" {
 		t.Fatalf("DiscoverDefaultRuntime() URLs = %#v", target)
 	}
 	if strings.Contains(target.ResourceURL+target.ReadyURL, "public.example.test") || strings.Contains(target.ResourceURL+target.ReadyURL, "do-not-retain") {
 		t.Fatalf("DiscoverDefaultRuntime() retained unrelated project values: %#v", target)
+	}
+}
+
+// TestDiscoverDefaultRuntimeAtAddressUsesAssignedLoopback proves project configuration cannot replace Harbor's selected identity.
+func TestDiscoverDefaultRuntimeAtAddressUsesAssignedLoopback(t *testing.T) {
+	root := runtimeTargetTestProject(t, "API_HTTP_HOST=127.0.0.1\nAPI_HTTP_PORT=4317\n", "")
+	assigned := netip.MustParseAddr("127.0.0.42")
+
+	target, err := NewDiscoverer().DiscoverDefaultRuntimeAtAddress(t.Context(), root, assigned)
+	if err != nil {
+		t.Fatalf("DiscoverDefaultRuntimeAtAddress() error = %v", err)
+	}
+	if target.Address != assigned || target.ResourceURL != "http://127.0.0.42:4317" || target.ReadyURL != "http://127.0.0.42:4317/-/ready" {
+		t.Fatalf("DiscoverDefaultRuntimeAtAddress() = %#v", target)
 	}
 }
 
@@ -89,7 +107,7 @@ func TestDiscoverDefaultRuntimeHonorsCancellationAndProjectValidation(t *testing
 
 // TestRuntimeTargetValidateRejectsDriftedURLs prevents callers from substituting public or differently ported targets.
 func TestRuntimeTargetValidateRejectsDriftedURLs(t *testing.T) {
-	valid := RuntimeTarget{AppID: "app", Name: "App", Port: 3000, ResourceURL: "http://127.0.0.1:3000", ReadyURL: "http://127.0.0.1:3000/-/ready"}
+	valid := RuntimeTarget{AppID: "app", Name: "App", Address: netip.MustParseAddr("127.0.0.1"), Port: 3000, ResourceURL: "http://127.0.0.1:3000", ReadyURL: "http://127.0.0.1:3000/-/ready"}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("RuntimeTarget.Validate() error = %v", err)
 	}
@@ -97,6 +115,7 @@ func TestRuntimeTargetValidateRejectsDriftedURLs(t *testing.T) {
 		func(target *RuntimeTarget) { target.AppID = " bad " },
 		func(target *RuntimeTarget) { target.Name = "" },
 		func(target *RuntimeTarget) { target.Port = 0 },
+		func(target *RuntimeTarget) { target.Address = netip.MustParseAddr("192.0.2.10") },
 		func(target *RuntimeTarget) { target.ResourceURL = "https://public.example.test" },
 		func(target *RuntimeTarget) { target.ReadyURL = "http://127.0.0.1:3000/-/health" },
 	} {
@@ -104,6 +123,35 @@ func TestRuntimeTargetValidateRejectsDriftedURLs(t *testing.T) {
 		mutate(&target)
 		if err := target.Validate(); err == nil {
 			t.Fatalf("RuntimeTarget.Validate(%#v) error = nil", target)
+		}
+	}
+}
+
+// TestNewRuntimeTargetConstructsAssignedIPv4URL covers typed target construction without hostname inference.
+func TestNewRuntimeTargetConstructsAssignedIPv4URL(t *testing.T) {
+	address := netip.MustParseAddr("127.0.0.43")
+	target, err := NewRuntimeTarget("app", "App", address, 8080)
+	if err != nil {
+		t.Fatalf("NewRuntimeTarget() error = %v", err)
+	}
+	if target.Address != address || target.ResourceURL != "http://127.0.0.43:8080" || target.ReadyURL != "http://127.0.0.43:8080/-/ready" {
+		t.Fatalf("NewRuntimeTarget() = %#v", target)
+	}
+}
+
+// TestAssignedRuntimeAddressRejectsNonLocalAuthority prevents readiness from following invalid or externally routable assignments.
+func TestAssignedRuntimeAddressRejectsNonLocalAuthority(t *testing.T) {
+	root := runtimeTargetTestProject(t, "API_HTTP_PORT=4317\n", "")
+	for _, address := range []netip.Addr{
+		{},
+		netip.MustParseAddr("192.0.2.10"),
+		netip.MustParseAddr("::ffff:127.0.0.42"),
+		netip.MustParseAddr("::1"),
+		netip.MustParseAddr("::1%lo0"),
+	} {
+		_, err := NewDiscoverer().DiscoverDefaultRuntimeAtAddress(t.Context(), root, address)
+		if err == nil || !strings.Contains(err.Error(), "runtime target address") {
+			t.Fatalf("DiscoverDefaultRuntimeAtAddress(%s) error = %v", address, err)
 		}
 	}
 }

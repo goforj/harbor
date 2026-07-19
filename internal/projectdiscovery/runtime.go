@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -20,9 +21,30 @@ const defaultAppHTTPPort uint16 = 3000
 type RuntimeTarget struct {
 	AppID       domain.AppID
 	Name        string
+	Address     netip.Addr
 	Port        uint16
 	ResourceURL string
 	ReadyURL    string
+}
+
+// NewRuntimeTarget constructs one internally consistent loopback App target at an assigned address.
+func NewRuntimeTarget(appID domain.AppID, name string, address netip.Addr, port uint16) (RuntimeTarget, error) {
+	address, err := normalizeRuntimeAddress(address)
+	if err != nil {
+		return RuntimeTarget{}, err
+	}
+	target := RuntimeTarget{
+		AppID:       appID,
+		Name:        name,
+		Address:     address,
+		Port:        port,
+		ResourceURL: runtimeLocalURL(address, port, ""),
+		ReadyURL:    runtimeLocalURL(address, port, "/-/ready"),
+	}
+	if err := target.Validate(); err != nil {
+		return RuntimeTarget{}, err
+	}
+	return target, nil
 }
 
 // Validate reports whether the target is one internally consistent local HTTP runtime.
@@ -36,8 +58,12 @@ func (target RuntimeTarget) Validate() error {
 	if target.Port == 0 {
 		return fmt.Errorf("runtime target port must be positive")
 	}
-	resourceURL := runtimeLocalURL(target.Port, "")
-	readyURL := runtimeLocalURL(target.Port, "/-/ready")
+	address, err := normalizeRuntimeAddress(target.Address)
+	if err != nil {
+		return err
+	}
+	resourceURL := runtimeLocalURL(address, target.Port, "")
+	readyURL := runtimeLocalURL(address, target.Port, "/-/ready")
 	if target.ResourceURL != resourceURL {
 		return fmt.Errorf("runtime target resource URL must be %q", resourceURL)
 	}
@@ -52,9 +78,25 @@ func (discoverer *Discoverer) DiscoverDefaultRuntime(ctx context.Context, select
 	if discoverer == nil {
 		panic("projectdiscovery.Discoverer.DiscoverDefaultRuntime requires a non-nil receiver")
 	}
+	return discoverer.DiscoverDefaultRuntimeAtAddress(ctx, selectedPath, defaultRuntimeAddress())
+}
+
+// DiscoverDefaultRuntimeAtAddress derives the default App's readiness target at one Harbor-assigned loopback address.
+func (discoverer *Discoverer) DiscoverDefaultRuntimeAtAddress(
+	ctx context.Context,
+	selectedPath string,
+	address netip.Addr,
+) (RuntimeTarget, error) {
+	if discoverer == nil {
+		panic("projectdiscovery.Discoverer.DiscoverDefaultRuntimeAtAddress requires a non-nil receiver")
+	}
 	ctx = normalizeContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return RuntimeTarget{}, err
+	}
+	address, err := normalizeRuntimeAddress(address)
+	if err != nil {
+		return RuntimeTarget{}, fmt.Errorf("default App runtime target: %w", err)
 	}
 	root, err := canonicalProjectRoot(selectedPath)
 	if err != nil {
@@ -68,14 +110,8 @@ func (discoverer *Discoverer) DiscoverDefaultRuntime(ctx context.Context, select
 	if err != nil {
 		return RuntimeTarget{}, err
 	}
-	target := RuntimeTarget{
-		AppID:       "app",
-		Name:        "App",
-		Port:        port,
-		ResourceURL: runtimeLocalURL(port, ""),
-		ReadyURL:    runtimeLocalURL(port, "/-/ready"),
-	}
-	if err := target.Validate(); err != nil {
+	target, err := NewRuntimeTarget("app", "App", address, port)
+	if err != nil {
 		return RuntimeTarget{}, fmt.Errorf("default App runtime target: %w", err)
 	}
 	return target, nil
@@ -133,11 +169,24 @@ func parseRuntimePort(filename string, key string, value string) (uint16, error)
 	return uint16(port), nil
 }
 
-// runtimeLocalURL uses an IP literal so public domains, proxies, and host DNS cannot produce a false readiness result.
-func runtimeLocalURL(port uint16, path string) string {
+// defaultRuntimeAddress preserves direct localhost development for callers that do not yet assign project identities.
+func defaultRuntimeAddress() netip.Addr {
+	return netip.AddrFrom4([4]byte{127, 0, 0, 1})
+}
+
+// normalizeRuntimeAddress keeps readiness probes on a canonical IPv4 identity that Harbor can allocate.
+func normalizeRuntimeAddress(address netip.Addr) (netip.Addr, error) {
+	if !address.IsValid() || !address.Is4() || !address.IsLoopback() || address != address.Unmap() {
+		return netip.Addr{}, fmt.Errorf("runtime target address must be canonical IPv4 loopback")
+	}
+	return address, nil
+}
+
+// runtimeLocalURL uses an assigned IP literal so public domains, proxies, and host DNS cannot produce a false readiness result.
+func runtimeLocalURL(address netip.Addr, port uint16, path string) string {
 	return (&url.URL{
 		Scheme: "http",
-		Host:   net.JoinHostPort("127.0.0.1", strconv.FormatUint(uint64(port), 10)),
+		Host:   net.JoinHostPort(address.String(), strconv.FormatUint(uint64(port), 10)),
 		Path:   path,
 	}).String()
 }
