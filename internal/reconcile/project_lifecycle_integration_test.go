@@ -170,6 +170,14 @@ func (*projectLifecycleRevisionRaceSupervisor) ObservePriorProcess(
 	return projectprocess.PriorProcessObservation{}, errors.New("unexpected prior process observation after project revision drift")
 }
 
+// SettlePriorProcess is unreachable because the revision-race fixture never persists process evidence.
+func (*projectLifecycleRevisionRaceSupervisor) SettlePriorProcess(
+	context.Context,
+	domain.ProcessEvidence,
+) (projectprocess.PriorProcessSettlement, error) {
+	return projectprocess.PriorProcessSettlement{}, errors.New("unexpected prior process settlement after project revision drift")
+}
+
 // Close is inert because the revision-race fixture never accepts a process.
 func (*projectLifecycleRevisionRaceSupervisor) Close(context.Context) error {
 	return nil

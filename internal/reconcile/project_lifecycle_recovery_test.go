@@ -21,6 +21,9 @@ type projectLifecycleRecoverySupervisor struct {
 	observation    projectprocess.PriorProcessObservation
 	observationErr error
 	observed       []domain.ProcessEvidence
+	settlement     projectprocess.PriorProcessSettlement
+	settlementErr  error
+	settled        []domain.ProcessEvidence
 }
 
 // Start rejects launches because recovery must never replay a process-backed running start.
@@ -43,6 +46,15 @@ func (supervisor *projectLifecycleRecoverySupervisor) ObservePriorProcess(
 ) (projectprocess.PriorProcessObservation, error) {
 	supervisor.observed = append(supervisor.observed, evidence)
 	return supervisor.observation, supervisor.observationErr
+}
+
+// SettlePriorProcess returns the configured terminal settlement and records the exact evidence retired.
+func (supervisor *projectLifecycleRecoverySupervisor) SettlePriorProcess(
+	_ context.Context,
+	evidence domain.ProcessEvidence,
+) (projectprocess.PriorProcessSettlement, error) {
+	supervisor.settled = append(supervisor.settled, evidence)
+	return supervisor.settlement, supervisor.settlementErr
 }
 
 // Close is inert because the recovery fixture never owns a process.
@@ -123,40 +135,19 @@ func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T)
 	}
 }
 
-// TestProjectLifecycleRecoverRetiresAbsentTerminalSession proves a completed start cannot brick the next daemon launch.
-func TestProjectLifecycleRecoverRetiresAbsentTerminalSession(t *testing.T) {
-	for _, priorState := range []projectprocess.PriorProcessState{
-		projectprocess.PriorProcessAbsent,
-		projectprocess.PriorProcessReplaced,
+// TestProjectLifecycleRecoverRetiresSettledTerminalSession proves a completed start cannot brick the next daemon launch.
+func TestProjectLifecycleRecoverRetiresSettledTerminalSession(t *testing.T) {
+	for _, outcome := range []projectprocess.PriorProcessSettlementOutcome{
+		projectprocess.PriorProcessSettlementAbsent,
+		projectprocess.PriorProcessSettlementReplaced,
+		projectprocess.PriorProcessSettlementTerminated,
 	} {
-		t.Run(string(priorState), func(t *testing.T) {
+		t.Run(string(outcome), func(t *testing.T) {
 			store, journal := newProjectLifecycleIntegrationState(t)
 			seed := seedProjectLifecycleRecoveryStart(t, store, journal, true)
-			target, err := projectdiscovery.NewRuntimeTarget(
-				"app",
-				"App",
-				netip.MustParseAddr("127.77.0.11"),
-				3000,
-			)
-			if err != nil {
-				t.Fatalf("create recovery runtime target: %v", err)
-			}
-			readyAt := seed.session.UpdatedAt.Add(time.Second)
-			completed, err := store.CompleteProjectStart(t.Context(), state.CompleteProjectStartRequest{
-				ProjectID:                 seed.project.ID,
-				OperationID:               seed.operation.Operation.ID,
-				ExpectedOperationRevision: seed.operation.Revision,
-				SessionID:                 seed.session.ID,
-				ExpectedSessionGeneration: seed.session.Generation,
-				Runtime:                   defaultRuntime(target),
-				Phase:                     "ready",
-				At:                        readyAt,
-			})
-			if err != nil {
-				t.Fatalf("complete recovery start: %v", err)
-			}
+			seed = completeProjectLifecycleRecoveryStart(t, store, seed)
 			supervisor := &projectLifecycleRecoverySupervisor{
-				observation: projectprocess.PriorProcessObservation{State: priorState},
+				settlement: projectprocess.PriorProcessSettlement{Outcome: outcome},
 			}
 			routeCalls := 0
 			coordinator := newProjectLifecycleAdmissionTestCoordinator(
@@ -170,12 +161,12 @@ func TestProjectLifecycleRecoverRetiresAbsentTerminalSession(t *testing.T) {
 				routeCalls++
 				return errors.New("route controller is not started during daemon recovery")
 			})
-			coordinator.now = func() time.Time { return readyAt.Add(time.Second) }
+			coordinator.now = func() time.Time { return seed.recoverAt }
 
 			if err := coordinator.Recover(t.Context()); err != nil {
 				t.Fatalf("Recover() error = %v", err)
 			}
-			operation, err := journal.OperationByIntent(t.Context(), completed.Operation.Operation.IntentID)
+			operation, err := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
 			if err != nil || operation.Operation.State != domain.OperationSucceeded {
 				t.Fatalf("terminal operation after recovery = %#v, %v", operation.Operation, err)
 			}
@@ -191,11 +182,75 @@ func TestProjectLifecycleRecoverRetiresAbsentTerminalSession(t *testing.T) {
 					t.Fatalf("active session error = %v", err)
 				}
 			}
-			if len(supervisor.observed) != 1 || supervisor.observed[0] != seed.evidence {
-				t.Fatalf("observed evidence = %#v, want %#v", supervisor.observed, seed.evidence)
+			if len(supervisor.settled) != 1 || supervisor.settled[0] != seed.evidence {
+				t.Fatalf("settled evidence = %#v, want %#v", supervisor.settled, seed.evidence)
+			}
+			if len(supervisor.observed) != 0 {
+				t.Fatalf("terminal recovery separately observed evidence = %#v", supervisor.observed)
 			}
 			if routeCalls != 0 {
 				t.Fatalf("daemon recovery reconciled routes before runtime startup %d times", routeCalls)
+			}
+		})
+	}
+}
+
+// TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed verifies failed settlement never retires durable authority.
+func TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed(t *testing.T) {
+	sentinel := errors.New("host observation unavailable")
+	tests := []struct {
+		name          string
+		settlement    projectprocess.PriorProcessSettlement
+		settlementErr error
+		want          string
+	}{
+		{name: "unknown", settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")}, want: "unsupported outcome"},
+		{name: "settlement failure", settlementErr: sentinel, want: sentinel.Error()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, journal := newProjectLifecycleIntegrationState(t)
+			seed := seedProjectLifecycleRecoveryStart(t, store, journal, true)
+			seed = completeProjectLifecycleRecoveryStart(t, store, seed)
+			supervisor := &projectLifecycleRecoverySupervisor{
+				settlement:    test.settlement,
+				settlementErr: test.settlementErr,
+			}
+			routeCalls := 0
+			coordinator := newProjectLifecycleAdmissionTestCoordinator(
+				store,
+				journal,
+				store,
+				supervisor,
+				netip.MustParseAddr("127.0.0.1"),
+			)
+			coordinator.routes = projectLifecycleRouteReconcilerFunc(func(context.Context) error {
+				routeCalls++
+				return nil
+			})
+			coordinator.now = func() time.Time { return seed.recoverAt }
+
+			err := coordinator.Recover(t.Context())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Recover() error = %v, want %q", err, test.want)
+			}
+			operation, readErr := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
+			if readErr != nil || !reflect.DeepEqual(operation, seed.operation) {
+				t.Fatalf("operation after failed recovery = %#v, %v", operation, readErr)
+			}
+			project, readErr := store.Project(t.Context(), seed.project.ID)
+			if readErr != nil || !reflect.DeepEqual(project.Project, seed.project) {
+				t.Fatalf("project after failed recovery = %#v, %v", project.Project, readErr)
+			}
+			session, readErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
+			if readErr != nil || !reflect.DeepEqual(session, seed.session) {
+				t.Fatalf("session after failed recovery = %#v, %v", session, readErr)
+			}
+			if len(supervisor.settled) != 1 || supervisor.settled[0] != seed.evidence {
+				t.Fatalf("settled evidence = %#v, want %#v", supervisor.settled, seed.evidence)
+			}
+			if routeCalls != 0 {
+				t.Fatalf("failed recovery reconciled routes %d times", routeCalls)
 			}
 		})
 	}
@@ -359,5 +414,45 @@ func seedProjectLifecycleRecoveryStart(
 	}
 	seed.session = attached
 	seed.evidence = evidence
+	return seed
+}
+
+// completeProjectLifecycleRecoveryStart advances a process-backed seed through the terminal readiness boundary.
+func completeProjectLifecycleRecoveryStart(
+	t *testing.T,
+	store *state.Store,
+	seed projectLifecycleRecoverySeed,
+) projectLifecycleRecoverySeed {
+	t.Helper()
+	if seed.session.State != domain.SessionAwaitingAttach {
+		t.Fatalf("recovery session state = %q, want %q", seed.session.State, domain.SessionAwaitingAttach)
+	}
+	target, err := projectdiscovery.NewRuntimeTarget(
+		"app",
+		"App",
+		netip.MustParseAddr("127.77.0.11"),
+		3000,
+	)
+	if err != nil {
+		t.Fatalf("create recovery runtime target: %v", err)
+	}
+	readyAt := seed.session.UpdatedAt.Add(time.Second)
+	completed, err := store.CompleteProjectStart(t.Context(), state.CompleteProjectStartRequest{
+		ProjectID:                 seed.project.ID,
+		OperationID:               seed.operation.Operation.ID,
+		ExpectedOperationRevision: seed.operation.Revision,
+		SessionID:                 seed.session.ID,
+		ExpectedSessionGeneration: seed.session.Generation,
+		Runtime:                   defaultRuntime(target),
+		Phase:                     "ready",
+		At:                        readyAt,
+	})
+	if err != nil || completed.Session == nil {
+		t.Fatalf("complete recovery start = %#v, %v", completed, err)
+	}
+	seed.project = completed.Project.Project
+	seed.operation = completed.Operation
+	seed.session = *completed.Session
+	seed.recoverAt = readyAt.Add(time.Second)
 	return seed
 }

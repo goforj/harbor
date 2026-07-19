@@ -76,6 +76,7 @@ type projectProcessSupervisor interface {
 	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
 	Stop(context.Context, domain.ProjectID, domain.SessionID) error
 	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
+	SettlePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessSettlement, error)
 	Close(context.Context) error
 }
 
@@ -896,20 +897,20 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded) || session.Process == nil {
 		return false, nil
 	}
-	observation, err := coordinator.supervisor.ObservePriorProcess(ctx, *session.Process)
+	settlement, err := coordinator.supervisor.SettlePriorProcess(ctx, *session.Process)
 	if err != nil {
-		return false, fmt.Errorf("observe prior process for project %q terminal session %q: %w", project.ID, session.ID, err)
+		return false, fmt.Errorf("settle prior process for project %q terminal session %q: %w", project.ID, session.ID, err)
 	}
-	switch observation.State {
-	case projectprocess.PriorProcessPresent:
-		return false, nil
-	case projectprocess.PriorProcessAbsent, projectprocess.PriorProcessReplaced:
+	switch settlement.Outcome {
+	case projectprocess.PriorProcessSettlementAbsent,
+		projectprocess.PriorProcessSettlementReplaced,
+		projectprocess.PriorProcessSettlementTerminated:
 	default:
 		return false, fmt.Errorf(
-			"observe prior process for project %q terminal session %q: unsupported state %q",
+			"settle prior process for project %q terminal session %q: unsupported outcome %q",
 			project.ID,
 			session.ID,
-			observation.State,
+			settlement.Outcome,
 		)
 	}
 
