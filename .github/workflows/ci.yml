@@ -56,9 +56,9 @@ jobs:
             os: windows-2022
             suffix: .exe
     env:
-      HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor${{ matrix.suffix }}
-      HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbord${{ matrix.suffix }}
-      HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-phase1-evidence
+      HARBOR_PHASE1_CLI_BINARY: ${{ github.workspace }}/harbor-phase1${{ matrix.suffix }}
+      HARBOR_PHASE1_DAEMON_BINARY: ${{ github.workspace }}/harbord-phase1${{ matrix.suffix }}
+      HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-phase1-evidence
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
