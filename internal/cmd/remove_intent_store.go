@@ -259,14 +259,6 @@ func (journal *filesystemProjectRemovalIntentJournal) openFilesystem() (*project
 		directory:        directory,
 		beforeDirectOpen: journal.beforeDirectOpen,
 	}
-	if created {
-		if err := directory.Chmod(projectRemovalIntentDirectoryMode); err != nil {
-			return nil, errors.Join(fmt.Errorf("secure project removal intent directory: %w", err), filesystem.Close())
-		}
-	}
-	if err := validateProjectRemovalIntentObject(directory, true); err != nil {
-		return nil, errors.Join(fmt.Errorf("validate project removal intent directory: %w", err), filesystem.Close())
-	}
 	opened, err := directory.Stat()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("inspect retained project removal intent directory: %w", err), filesystem.Close())
@@ -283,6 +275,12 @@ func (journal *filesystemProjectRemovalIntentJournal) openFilesystem() (*project
 			errors.New("project removal intent directory changed while its handle opened"),
 			filesystem.Close(),
 		)
+	}
+	if err := prepareProjectRemovalIntentObject(directory, true, created); err != nil {
+		return nil, errors.Join(fmt.Errorf("secure project removal intent directory: %w", err), filesystem.Close())
+	}
+	if err := validateProjectRemovalIntentObject(directory, true); err != nil {
+		return nil, errors.Join(fmt.Errorf("validate project removal intent directory: %w", err), filesystem.Close())
 	}
 	return filesystem, nil
 }
@@ -303,7 +301,7 @@ func (filesystem *projectRemovalIntentFilesystem) openOrCreateDirectFile(name st
 		projectRemovalIntentFileMode,
 	)
 	if err == nil {
-		if err := file.Chmod(projectRemovalIntentFileMode); err != nil {
+		if err := prepareProjectRemovalIntentObject(file, false, true); err != nil {
 			return nil, errors.Join(err, file.Close(), filesystem.root.Remove(name))
 		}
 		if err := filesystem.validateCurrent(name, file, false); err != nil {
@@ -358,6 +356,9 @@ func (filesystem *projectRemovalIntentFilesystem) validateCurrent(name string, f
 	}
 	if observed.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, observed) {
 		return fmt.Errorf("project removal intent child %q changed after its handle opened", name)
+	}
+	if err := prepareProjectRemovalIntentObject(file, directory, false); err != nil {
+		return err
 	}
 	return validateProjectRemovalIntentObject(file, directory)
 }
@@ -479,7 +480,7 @@ func (filesystem *projectRemovalIntentFilesystem) createTemporaryFile() (*os.Fil
 		if err != nil {
 			return nil, "", fmt.Errorf("create temporary project removal intent: %w", err)
 		}
-		if err := file.Chmod(projectRemovalIntentFileMode); err != nil {
+		if err := prepareProjectRemovalIntentObject(file, false, true); err != nil {
 			return nil, "", errors.Join(err, file.Close(), filesystem.root.Remove(name))
 		}
 		if err := filesystem.validateCurrent(name, file, false); err != nil {

@@ -8,6 +8,11 @@ import (
 	"os"
 )
 
+// prepareProjectRemovalIntentObject defers rejection to the unsupported platform validator.
+func prepareProjectRemovalIntentObject(*os.File, bool, bool) error {
+	return nil
+}
+
 // acquireProjectRemovalIntentLock rejects targets without a reviewed durable interprocess lock implementation.
 func acquireProjectRemovalIntentLock(context.Context, *os.File) error {
 	return errors.New("project removal intent locking is unsupported on this platform")

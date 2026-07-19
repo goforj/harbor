@@ -13,6 +13,18 @@ import (
 
 const projectRemovalIntentLockRetryInterval = 10 * time.Millisecond
 
+// prepareProjectRemovalIntentObject applies restrictive modes only to objects this journal just created.
+func prepareProjectRemovalIntentObject(file *os.File, directory bool, created bool) error {
+	if !created {
+		return nil
+	}
+	mode := os.FileMode(projectRemovalIntentFileMode)
+	if directory {
+		mode = projectRemovalIntentDirectoryMode
+	}
+	return file.Chmod(mode)
+}
+
 // acquireProjectRemovalIntentLock waits on a nonblocking file lock so context cancellation stays responsive.
 func acquireProjectRemovalIntentLock(ctx context.Context, file *os.File) error {
 	ticker := time.NewTicker(projectRemovalIntentLockRetryInterval)
