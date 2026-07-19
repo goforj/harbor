@@ -104,6 +104,11 @@ export interface AddProjectResult {
   registration?: ProjectRegistration
 }
 
+export interface ProjectUnregistration {
+  operation: Operation
+  revision: number
+}
+
 export interface Problem {
   code: string
   message: string

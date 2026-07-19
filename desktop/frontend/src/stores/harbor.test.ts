@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
-import type { ConnectionEvent, DaemonStatus, HarborSnapshot } from '@/domain/harbor'
+import type { ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
 function deferred<T>() {
@@ -332,6 +332,333 @@ describe('Harbor store', () => {
     await expect(store.addProject()).resolves.toBeNull()
     expect(store.projectRegistrationError).toBe('Harbor returned an incomplete project registration.')
     expect(store.addingProject).toBe(false)
+  })
+
+  it('refreshes authoritative state after an immediate project removal', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    result.operation.project_id = 'reports'
+    result.operation.intent_id = 'placeholder'
+    result.operation.state = 'succeeded'
+    result.operation.phase = 'completed'
+    result.operation.finished_at = '2026-07-18T14:40:02Z'
+    result.revision = 43
+    const confirmed = mockSnapshot()
+    confirmed.sequence = 43
+    confirmed.projects = confirmed.projects.filter((project) => project.id !== 'reports')
+    const removeProject = vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(confirmed)
+
+    await expect(store.removeProject('reports')).resolves.toMatchObject({ operation: { state: 'succeeded' } })
+
+    expect(removeProject).toHaveBeenCalledOnce()
+    expect(removeProject.mock.calls[0][1]).toMatch(/^desktop-project-remove-[0-9a-f]{32}$/)
+    expect(getSnapshot).toHaveBeenCalledOnce()
+    expect(store.projectById('reports')).toBeUndefined()
+    expect(store.projectRemovalNotice('reports')).toBeUndefined()
+    expect(store.removingProjectId).toBeNull()
+  })
+
+  it('uses a fresh intent after a post-failure snapshot confirms no active removal', async () => {
+    const store = useHarborStore()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject')
+      .mockRejectedValueOnce(new Error('Harbor is temporarily unavailable.'))
+      .mockImplementationOnce(async (projectId, intentId) => {
+        result.operation.project_id = projectId
+        result.operation.intent_id = intentId
+        return result
+      })
+
+    await expect(store.removeProject('orders-api')).resolves.toBeNull()
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'request_failed',
+      title: 'Harbor could not start project removal',
+      message: 'Harbor is temporarily unavailable.',
+    })
+
+    await expect(store.removeProject('orders-api')).resolves.toMatchObject({ operation: { state: 'requires_approval' } })
+
+    expect(removeProject).toHaveBeenCalledTimes(2)
+    expect(removeProject.mock.calls[1][1]).not.toBe(removeProject.mock.calls[0][1])
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'requires_approval',
+      title: 'Administrator approval required',
+      message: 'Harbor paused removal until it can release this project’s local networking. Approval is not available from the desktop app yet.',
+    })
+  })
+
+  it('reuses an uncertain intent when no post-failure snapshot can confirm its outcome', async () => {
+    vi.spyOn(harborBridge, 'getSnapshot').mockRejectedValueOnce(new Error('snapshot unavailable'))
+    const store = useHarborStore()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject')
+      .mockRejectedValueOnce(new Error('connection closed before the operation response'))
+      .mockImplementationOnce(async (projectId, intentId) => {
+        result.operation.project_id = projectId
+        result.operation.intent_id = intentId
+        return result
+      })
+
+    await expect(store.removeProject('orders-api')).resolves.toBeNull()
+    await expect(store.removeProject('orders-api')).resolves.toMatchObject({ operation: { state: 'requires_approval' } })
+
+    expect(removeProject).toHaveBeenCalledTimes(2)
+    expect(removeProject.mock.calls[1][1]).toBe(removeProject.mock.calls[0][1])
+  })
+
+  it('retires an uncertain intent when a later manual refresh confirms no active removal', async () => {
+    vi.spyOn(harborBridge, 'getSnapshot').mockRejectedValueOnce(new Error('snapshot unavailable'))
+    const store = useHarborStore()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject')
+      .mockRejectedValueOnce(new Error('connection closed before the operation response'))
+      .mockImplementationOnce(async (projectId, intentId) => {
+        result.operation.project_id = projectId
+        result.operation.intent_id = intentId
+        return result
+      })
+
+    await store.removeProject('orders-api')
+    const uncertainIntent = removeProject.mock.calls[0][1]
+    await store.refresh()
+    await store.removeProject('orders-api')
+
+    expect(removeProject.mock.calls[1][1]).not.toBe(uncertainIntent)
+  })
+
+  it('does not retire an uncertain intent from a delayed snapshot captured before enqueue', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const beforeEnqueue = deferred<HarborSnapshot>()
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+      .mockReturnValueOnce(beforeEnqueue.promise)
+      .mockRejectedValueOnce(new Error('post-call snapshot unavailable'))
+    const earlierRefresh = store.refresh()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject')
+      .mockRejectedValueOnce(new Error('connection closed before the operation response'))
+      .mockImplementationOnce(async (projectId, intentId) => {
+        result.operation.project_id = projectId
+        result.operation.intent_id = intentId
+        return result
+      })
+
+    await store.removeProject('orders-api')
+    const uncertainIntent = removeProject.mock.calls[0][1]
+    beforeEnqueue.resolve(mockSnapshot())
+    await earlierRefresh
+
+    await store.removeProject('orders-api')
+
+    expect(removeProject.mock.calls[1][1]).toBe(uncertainIntent)
+    expect(getSnapshot).toHaveBeenCalledTimes(3)
+  })
+
+  it('resumes the active unregister intent from a restart snapshot', async () => {
+    const hydrated = mockSnapshot()
+    hydrated.sequence = 44
+    const active = structuredClone(harborWireFixture.remove_project.operation)
+    active.project_id = 'orders-api'
+    active.intent_id = 'desktop-existing-remove'
+    hydrated.operations.push(active)
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(hydrated)
+    const store = useHarborStore()
+    await store.initialize()
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'requires_approval',
+      title: 'Administrator approval required',
+      message: 'Harbor paused removal until it can release this project’s local networking. Approval is not available from the desktop app yet.',
+    })
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+
+    await store.removeProject('orders-api')
+
+    expect(removeProject).toHaveBeenCalledWith('orders-api', 'desktop-existing-remove')
+  })
+
+  it('retires an absent active intent from a lower-sequence reconnect baseline', async () => {
+    let snapshotListener: ((snapshot: HarborSnapshot) => void) | undefined
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribe').mockImplementation((listener) => {
+      snapshotListener = listener
+      return () => undefined
+    })
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    const hydrated = mockSnapshot()
+    hydrated.sequence = 44
+    const active = structuredClone(harborWireFixture.remove_project.operation)
+    active.project_id = 'orders-api'
+    active.intent_id = 'desktop-before-restart'
+    hydrated.operations.push(active)
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(hydrated)
+    const store = useHarborStore()
+    await store.initialize()
+
+    connectionListener?.({ state: 'disconnected' })
+    connectionListener?.({ state: 'connected' })
+    const restarted = mockSnapshot()
+    restarted.sequence = 3
+    snapshotListener?.(restarted)
+
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'incomplete',
+      title: 'Project removal is no longer active',
+      message: 'The project remains registered. You can try again.',
+    })
+  })
+
+  it('retires an active intent when a newer active-only snapshot keeps the project registered', async () => {
+    let snapshotListener: ((snapshot: HarborSnapshot) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribe').mockImplementation((listener) => {
+      snapshotListener = listener
+      return () => undefined
+    })
+    const hydrated = mockSnapshot()
+    hydrated.sequence = 43
+    const active = structuredClone(harborWireFixture.remove_project.operation)
+    active.project_id = 'orders-api'
+    active.intent_id = 'desktop-ended-remove'
+    hydrated.operations.push(active)
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(hydrated)
+    const store = useHarborStore()
+    await store.initialize()
+
+    const ended = mockSnapshot()
+    ended.sequence = 44
+    snapshotListener?.(ended)
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'incomplete',
+      title: 'Project removal is no longer active',
+      message: 'The project remains registered. You can try again.',
+    })
+
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const confirmed = structuredClone(ended)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      result.revision = 45
+      confirmed.sequence = 45
+      confirmed.operations.push(structuredClone(result.operation))
+      return result
+    })
+    getSnapshot.mockResolvedValueOnce(confirmed)
+    await store.removeProject('orders-api')
+
+    expect(removeProject.mock.calls[0][1]).toMatch(/^desktop-project-remove-[0-9a-f]{32}$/)
+    expect(removeProject.mock.calls[0][1]).not.toBe('desktop-ended-remove')
+    expect(store.projectRemovalNotice('orders-api')?.state).toBe('requires_approval')
+  })
+
+  it('clears completed intent state before the same project identity is registered again', async () => {
+    let snapshotListener: ((snapshot: HarborSnapshot) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribe').mockImplementation((listener) => {
+      snapshotListener = listener
+      return () => undefined
+    })
+    const hydrated = mockSnapshot()
+    hydrated.sequence = 43
+    const active = structuredClone(harborWireFixture.remove_project.operation)
+    active.project_id = 'orders-api'
+    active.intent_id = 'desktop-completed-remove'
+    hydrated.operations.push(active)
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(hydrated)
+    const store = useHarborStore()
+    await store.initialize()
+
+    const removed = mockSnapshot()
+    removed.sequence = 44
+    removed.projects = removed.projects.filter((project) => project.id !== 'orders-api')
+    removed.operations = removed.operations.filter((operation) => operation.project_id !== 'orders-api')
+    removed.recent_resource_ids = removed.recent_resource_ids.filter((reference) => reference.project_id !== 'orders-api')
+    snapshotListener?.(removed)
+    expect(store.projectById('orders-api')).toBeUndefined()
+    expect(store.projectRemovalNotice('orders-api')).toBeUndefined()
+
+    const registeredAgain = structuredClone(removed)
+    registeredAgain.sequence = 45
+    const orders = mockSnapshot().projects.find((project) => project.id === 'orders-api')
+    if (!orders) throw new Error('orders fixture is missing')
+    registeredAgain.projects.push(orders)
+    snapshotListener?.(registeredAgain)
+
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const confirmed = structuredClone(registeredAgain)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      result.revision = 46
+      confirmed.sequence = 46
+      confirmed.operations.push(structuredClone(result.operation))
+      return result
+    })
+    getSnapshot.mockResolvedValueOnce(confirmed)
+
+    await store.removeProject('orders-api')
+
+    expect(removeProject.mock.calls[0][1]).not.toBe('desktop-completed-remove')
+  })
+
+  it('reports global request serialization instead of silently dropping another removal', async () => {
+    const pending = deferred<ProjectUnregistration>()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    const removeProject = vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return pending.promise
+    })
+    const store = useHarborStore()
+
+    const removing = store.removeProject('orders-api')
+    await vi.waitFor(() => expect(store.removingProjectId).toBe('orders-api'))
+
+    await expect(store.removeProject('billing')).resolves.toBeNull()
+    expect(removeProject).toHaveBeenCalledOnce()
+    expect(store.projectRemovalNotice('billing')).toEqual({
+      state: 'busy',
+      title: 'Another project removal is in progress',
+      message: 'Wait for the current removal request to finish, then try again.',
+    })
+
+    pending.resolve(result)
+    await removing
+    expect(store.removingProjectId).toBeNull()
+  })
+
+  it('shows the daemon-reviewed problem for a terminal removal failure', async () => {
+    const store = useHarborStore()
+    const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
+    result.operation.state = 'failed'
+    result.operation.phase = 'failed'
+    result.operation.finished_at = '2026-07-18T14:40:02Z'
+    result.operation.problem = {
+      code: 'network_release_failed',
+      message: 'Harbor could not verify that project networking was released.',
+      retryable: true,
+    }
+    vi.spyOn(harborBridge, 'removeProject').mockResolvedValueOnce(result)
+
+    await store.removeProject('orders-api')
+
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'failed',
+      title: 'Project removal failed',
+      message: 'Harbor could not verify that project networking was released.',
+    })
   })
 
   it('delegates resource opening with both scoped identities', async () => {

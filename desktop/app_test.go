@@ -18,18 +18,21 @@ import (
 
 // fakeControlClient keeps lifecycle and response behavior explicit in desktop adapter tests.
 type fakeControlClient struct {
-	mu           sync.Mutex
-	status       control.DaemonStatus
-	statusErr    error
-	snapshot     domain.Snapshot
-	snapshotErr  error
-	snapshotHook func()
-	registration control.ProjectRegistration
-	registerErr  error
-	registerPath string
-	done         chan struct{}
-	closeOnce    sync.Once
-	closeCount   atomic.Int32
+	mu                sync.Mutex
+	status            control.DaemonStatus
+	statusErr         error
+	snapshot          domain.Snapshot
+	snapshotErr       error
+	snapshotHook      func()
+	registration      control.ProjectRegistration
+	registerErr       error
+	registerPath      string
+	unregistration    control.ProjectUnregistration
+	unregisterErr     error
+	unregisterRequest control.UnregisterProjectRequest
+	done              chan struct{}
+	closeOnce         sync.Once
+	closeCount        atomic.Int32
 }
 
 // newFakeControlClient creates a connected test client with a valid replacement snapshot.
@@ -43,9 +46,10 @@ func newFakeControlClient() *fakeControlClient {
 			SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
 			Sequence:              8,
 		},
-		snapshot:     testSnapshot(),
-		registration: testRegistration(),
-		done:         make(chan struct{}),
+		snapshot:       testSnapshot(),
+		registration:   testRegistration(),
+		unregistration: testUnregistration(),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -75,6 +79,14 @@ func (client *fakeControlClient) RegisterProject(_ context.Context, request cont
 	defer client.mu.Unlock()
 	client.registerPath = request.Path
 	return client.registration, client.registerErr
+}
+
+// UnregisterProject records the stable removal identity and returns the configured authoritative operation.
+func (client *fakeControlClient) UnregisterProject(_ context.Context, request control.UnregisterProjectRequest) (control.ProjectUnregistration, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.unregisterRequest = request
+	return client.unregistration, client.unregisterErr
 }
 
 // Done exposes terminal connection state to the desktop owner loop.
@@ -595,6 +607,76 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 	})
 }
 
+// TestRemoveProjectPreservesStableIdentityAndOperationState covers the complete native removal boundary.
+func TestRemoveProjectPreservesStableIdentityAndOperationState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.RemoveProject("", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "project ID") {
+			t.Fatalf("RemoveProject() error = %v, want invalid project", err)
+		}
+		if client.unregisterRequest != (control.UnregisterProjectRequest{}) {
+			t.Fatalf("UnregisterProject() request = %+v after local validation", client.unregisterRequest)
+		}
+	})
+
+	t.Run("disconnected", func(t *testing.T) {
+		if _, err := testApp().RemoveProject("orders", "desktop-remove-orders"); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("RemoveProject() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("daemon failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregisterErr = errors.New("project is busy")
+		if _, err := app.RemoveProject("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "project is busy") {
+			t.Fatalf("RemoveProject() error = %v, want daemon failure", err)
+		}
+	})
+
+	t.Run("invalid daemon result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregistration = control.ProjectUnregistration{}
+		if _, err := app.RemoveProject("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "validate project removal") {
+			t.Fatalf("RemoveProject() error = %v, want invalid operation", err)
+		}
+	})
+
+	t.Run("mismatched daemon result", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			mutate func(*control.ProjectUnregistration)
+		}{
+			{name: "project", mutate: func(result *control.ProjectUnregistration) { result.Operation.ProjectID = "other" }},
+			{name: "intent", mutate: func(result *control.ProjectUnregistration) { result.Operation.IntentID = "desktop-remove-other" }},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				app, client := connectedTestApp()
+				test.mutate(&client.unregistration)
+				if _, err := app.RemoveProject("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "does not match") {
+					t.Fatalf("RemoveProject() error = %v, want correlation failure", err)
+				}
+			})
+		}
+	})
+
+	t.Run("started", func(t *testing.T) {
+		app, client := connectedTestApp()
+		result, err := app.RemoveProject("orders", "desktop-remove-orders")
+		if err != nil {
+			t.Fatalf("RemoveProject() error = %v", err)
+		}
+		wantRequest := control.UnregisterProjectRequest{ProjectID: "orders", IntentID: "desktop-remove-orders"}
+		if client.unregisterRequest != wantRequest {
+			t.Fatalf("UnregisterProject() request = %+v, want %+v", client.unregisterRequest, wantRequest)
+		}
+		if result.Operation.State != domain.OperationQueued || result.Revision != 9 {
+			t.Fatalf("RemoveProject() = %+v, want queued operation at revision 9", result)
+		}
+	})
+}
+
 // TestOpenResourceUsesFreshProjectScopedState proves JavaScript cannot supply a URL or rely on a globally unique resource ID.
 func TestOpenResourceUsesFreshProjectScopedState(t *testing.T) {
 	t.Parallel()
@@ -862,6 +944,22 @@ func testRegistration() control.ProjectRegistration {
 		Project:  project,
 		Revision: 9,
 		Created:  true,
+	}
+}
+
+// testUnregistration returns a valid queued operation before project-specific cleanup has been observed.
+func testUnregistration() control.ProjectUnregistration {
+	return control.ProjectUnregistration{
+		Operation: domain.Operation{
+			ID:          "operation-remove-orders",
+			IntentID:    "desktop-remove-orders",
+			Kind:        domain.OperationKindProjectUnregister,
+			ProjectID:   "orders",
+			State:       domain.OperationQueued,
+			Phase:       string(domain.OperationQueued),
+			RequestedAt: time.Date(2026, time.July, 18, 12, 5, 0, 0, time.UTC),
+		},
+		Revision: 9,
 	}
 }
 

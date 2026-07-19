@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { harborWireFixture } from '../src/bridge/harbor.fixture'
 
 test('navigates from the Harbor overview to the project list', async ({ page }) => {
   await page.goto('/#/overview')
@@ -25,6 +26,124 @@ test('adds the selected project and opens its detail immediately', async ({ page
   await expect(page.getByRole('heading', { name: 'Inventory' })).toBeVisible()
   await expect(page.getByText('Inventory added', { exact: true })).toBeVisible()
   await expect(page.getByText('Stopped; routing is not configured yet.', { exact: true })).toBeVisible()
+})
+
+test('confirms project removal and explains when desktop approval is unavailable', async ({ page }) => {
+  await page.goto('/#/projects/orders-api')
+
+  const remove = page.getByRole('button', { name: 'Remove project', exact: true })
+  await remove.click()
+
+  const dialog = page.getByRole('alertdialog')
+  await expect(dialog.getByRole('heading', { name: 'Remove Orders API?' })).toBeVisible()
+  await expect(dialog.getByText('The project files at /workspace/apps/orders-api will stay on disk.', { exact: false })).toBeVisible()
+  await dialog.getByRole('button', { name: 'Remove project', exact: true }).click()
+
+  await expect(page.getByText('Administrator approval required', { exact: true })).toBeVisible()
+  await expect(page.getByText('Approval is not available from the desktop app yet.', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Awaiting approval', exact: true })).toBeDisabled()
+  await expect(page.getByRole('heading', { name: 'Orders API' })).toBeVisible()
+})
+
+test('refreshes and leaves project detail after an immediate removal', async ({ page }) => {
+  await page.goto('/#/projects/reports')
+
+  await page.getByRole('button', { name: 'Remove project', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove project', exact: true }).click()
+
+  await expect(page).toHaveURL(/#\/projects$/)
+  await expect(page.getByText('Reports', { exact: true })).toHaveCount(0)
+})
+
+test('leaves project detail when an active removal completes through a snapshot event', async ({ page }) => {
+  await page.addInitScript(({ initialSnapshot, initialStatus, initialUnregistration }) => {
+    const listeners = new Map<string, (payload: unknown) => void>()
+    let snapshot = structuredClone(initialSnapshot)
+    const status = structuredClone(initialStatus)
+
+    window.go = {
+      main: {
+        App: {
+          async AddProject() {
+            return { canceled: true }
+          },
+          async OpenResource() {},
+          async RemoveProject(projectId, intentId) {
+            const result = structuredClone(initialUnregistration)
+            result.revision = snapshot.sequence + 1
+            result.operation.id = `operation-${result.revision}-${projectId}`
+            result.operation.project_id = projectId
+            result.operation.intent_id = intentId
+            snapshot = {
+              ...snapshot,
+              sequence: result.revision,
+              operations: [...snapshot.operations, result.operation],
+            }
+            status.sequence = snapshot.sequence
+
+            window.setTimeout(() => {
+              snapshot = {
+                ...snapshot,
+                sequence: snapshot.sequence + 1,
+                projects: snapshot.projects.filter((project) => project.id !== projectId),
+                operations: snapshot.operations.filter((operation) => operation.project_id !== projectId),
+                recent_resource_ids: snapshot.recent_resource_ids.filter((reference) => reference.project_id !== projectId),
+              }
+              status.sequence = snapshot.sequence
+              listeners.get('harbor:snapshot')?.(structuredClone(snapshot))
+            }, 50)
+            return result
+          },
+          async Snapshot() {
+            return structuredClone(snapshot)
+          },
+          async Status() {
+            return structuredClone(status)
+          },
+        },
+      },
+    }
+    window.runtime = {
+      EventsOn(eventName, callback) {
+        listeners.set(eventName, callback as (payload: unknown) => void)
+        return () => listeners.delete(eventName)
+      },
+      EventsOff(eventName) {
+        listeners.delete(eventName)
+      },
+    }
+  }, {
+    initialSnapshot: harborWireFixture.snapshot,
+    initialStatus: harborWireFixture.status,
+    initialUnregistration: harborWireFixture.remove_project,
+  })
+  await page.goto('/#/projects/reports')
+
+  await page.getByRole('button', { name: 'Remove project', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove project', exact: true }).click()
+
+  await expect(page).toHaveURL(/#\/projects$/)
+  await expect(page.getByText('Reports', { exact: true })).toHaveCount(0)
+})
+
+test('disables removal honestly across projects while another request is in flight', async ({ page }) => {
+  await page.goto('/#/projects/orders-api')
+  await page.evaluate(async () => {
+    const bridgeModulePath = '/src/bridge/index.ts'
+    const bridgeModule = await import(/* @vite-ignore */ bridgeModulePath) as {
+      harborBridge: {
+        removeProject(projectId: string, intentId: string): Promise<unknown>
+      }
+    }
+    bridgeModule.harborBridge.removeProject = () => new Promise(() => undefined)
+  })
+
+  await page.getByRole('button', { name: 'Remove project', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove project', exact: true }).click()
+  await page.locator('a[href="#/projects/reports"]').click()
+
+  await expect(page).toHaveURL(/#\/projects\/reports$/)
+  await expect(page.getByRole('button', { name: 'Another removal is in progress', exact: true })).toBeDisabled()
 })
 
 test('uses a single detail surface and a back path at narrow widths', async ({ page }) => {
@@ -159,6 +278,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
             return { canceled: true }
           },
           async OpenResource() {},
+          async RemoveProject() {
+            throw new Error('Project removal is not exercised in this connection test')
+          },
           async Status() {
             return {
               state: 'ready',
@@ -223,6 +345,9 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
             return { canceled: true }
           },
           async OpenResource() {},
+          async RemoveProject() {
+            throw new Error('Project removal is not exercised in this connection test')
+          },
           async Status() {
             return {
               state: 'ready',

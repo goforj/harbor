@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { harborWireFixture } from './harbor.fixture'
 import { createHarborBridge, selectHarborBridge } from './index'
 import { createWailsBridge } from './wails'
 
@@ -7,8 +8,9 @@ function installAppBindings() {
   const Status = vi.fn().mockResolvedValue({ state: 'ready' })
   const Snapshot = vi.fn().mockResolvedValue({ schema_version: 1, sequence: 7 })
   const OpenResource = vi.fn().mockResolvedValue(undefined)
-  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource } } }
-  return { AddProject, OpenResource, Snapshot, Status }
+  const RemoveProject = vi.fn().mockResolvedValue(harborWireFixture.remove_project)
+  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource, RemoveProject } } }
+  return { AddProject, OpenResource, RemoveProject, Snapshot, Status }
 }
 
 function installEventRuntime() {
@@ -51,6 +53,17 @@ describe('Harbor bridge selection', () => {
 
   it('does not select native mode when App bindings have no event runtime', async () => {
     installAppBindings()
+    const selection = selectHarborBridge(false, false)
+
+    expect(selection.mode).toBe('unavailable')
+    await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
+  })
+
+  it('does not select native mode without the project removal binding', async () => {
+    installAppBindings()
+    delete window.go?.main?.App?.RemoveProject
+    installEventRuntime()
+
     const selection = selectHarborBridge(false, false)
 
     expect(selection.mode).toBe('unavailable')
@@ -101,7 +114,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, OpenResource } = installAppBindings()
+    const { AddProject, OpenResource, RemoveProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -111,9 +124,11 @@ describe('Harbor bridge selection', () => {
       await selection.bridge.getSnapshot()
       await selection.bridge.addProject()
       await selection.bridge.openResource('orders', 'application')
+      await selection.bridge.removeProject('orders', 'desktop-remove-orders')
     }
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
+    expect(RemoveProject).toHaveBeenCalledWith('orders', 'desktop-remove-orders')
     expect(AddProject).toHaveBeenCalledTimes(2)
   })
 

@@ -29,6 +29,7 @@ type controlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
+	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
 	Done() <-chan struct{}
 	Close() error
 }
@@ -138,6 +139,34 @@ func (a *App) AddProject() (desktopwire.AddProjectResult, error) {
 	if err := result.Validate(); err != nil {
 		return desktopwire.AddProjectResult{}, fmt.Errorf("validate project registration: %w", err)
 	}
+	return result, nil
+}
+
+// RemoveProject starts or resumes exactly one client-owned project removal intent through the connected daemon.
+func (a *App) RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error) {
+	request := control.UnregisterProjectRequest{
+		ProjectID: domain.ProjectID(projectID),
+		IntentID:  domain.IntentID(intentID),
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("project removal request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectUnregistration{}, err
+	}
+	result, err := client.UnregisterProject(ctx, request)
+	if err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("remove GoForj project: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("validate project removal: %w", err)
+	}
+	if result.Operation.ProjectID != request.ProjectID || result.Operation.IntentID != request.IntentID {
+		return control.ProjectUnregistration{}, fmt.Errorf("validate project removal: daemon result does not match the requested project and intent")
+	}
+
 	return result, nil
 }
 

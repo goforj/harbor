@@ -15,6 +15,8 @@ const (
 	MethodAddProject = "AddProject"
 	// MethodOpenResource is the generated Wails method that opens one reviewed project resource.
 	MethodOpenResource = "OpenResource"
+	// MethodRemoveProject is the generated Wails method that starts or resumes one project removal intent.
+	MethodRemoveProject = "RemoveProject"
 	// MethodSnapshot is the generated Wails method that returns complete desktop-visible state.
 	MethodSnapshot = "Snapshot"
 	// MethodStatus is the generated Wails method that returns the daemon diagnostic.
@@ -49,6 +51,7 @@ func (result AddProjectResult) Validate() error {
 type AppContract interface {
 	AddProject() (AddProjectResult, error)
 	OpenResource(projectID string, resourceID string) error
+	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
 	Snapshot() (domain.Snapshot, error)
 	Status() (control.DaemonStatus, error)
 }
@@ -64,10 +67,11 @@ type MethodContract struct {
 func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
-		MethodAddProject:   {},
-		MethodOpenResource: []string{"projectId", "resourceId"},
-		MethodSnapshot:     []string{},
-		MethodStatus:       []string{},
+		MethodAddProject:    {},
+		MethodOpenResource:  []string{"projectId", "resourceId"},
+		MethodRemoveProject: []string{"projectId", "intentId"},
+		MethodSnapshot:      []string{},
+		MethodStatus:        []string{},
 	}
 	contracts := make([]MethodContract, 0, contractType.NumMethod())
 	for index := range contractType.NumMethod() {

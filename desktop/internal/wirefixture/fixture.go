@@ -16,10 +16,11 @@ import (
 
 // MethodMetadata records the generated Wails method names consumed by the bridge.
 type MethodMetadata struct {
-	AddProject   string `json:"add_project"`
-	OpenResource string `json:"open_resource"`
-	Snapshot     string `json:"snapshot"`
-	Status       string `json:"status"`
+	AddProject    string `json:"add_project"`
+	OpenResource  string `json:"open_resource"`
+	RemoveProject string `json:"remove_project"`
+	Snapshot      string `json:"snapshot"`
+	Status        string `json:"status"`
 }
 
 // EventMetadata records the Wails event names consumed by the bridge.
@@ -37,13 +38,14 @@ type ConnectionPayloads struct {
 
 // Document is the complete frontend contract fixture as encoded by production Go wire types.
 type Document struct {
-	Methods            MethodMetadata               `json:"methods"`
-	Events             EventMetadata                `json:"events"`
-	ConnectionPayloads ConnectionPayloads           `json:"connection_payloads"`
-	Status             control.DaemonStatus         `json:"status"`
-	Snapshot           domain.Snapshot              `json:"snapshot"`
-	AddProject         desktopwire.AddProjectResult `json:"add_project"`
-	TerminalOperation  domain.Operation             `json:"terminal_operation"`
+	Methods            MethodMetadata                `json:"methods"`
+	Events             EventMetadata                 `json:"events"`
+	ConnectionPayloads ConnectionPayloads            `json:"connection_payloads"`
+	Status             control.DaemonStatus          `json:"status"`
+	Snapshot           domain.Snapshot               `json:"snapshot"`
+	AddProject         desktopwire.AddProjectResult  `json:"add_project"`
+	RemoveProject      control.ProjectUnregistration `json:"remove_project"`
+	TerminalOperation  domain.Operation              `json:"terminal_operation"`
 }
 
 // Fixture returns deterministic status and snapshot data rich enough to exercise every current desktop view.
@@ -54,13 +56,16 @@ func Fixture() Document {
 	terminalRequestedAt := time.Date(2026, time.July, 18, 14, 20, 0, 0, time.UTC)
 	terminalStartedAt := time.Date(2026, time.July, 18, 14, 20, 1, 0, time.UTC)
 	terminalFinishedAt := time.Date(2026, time.July, 18, 14, 20, 2, 0, time.UTC)
+	removeRequestedAt := time.Date(2026, time.July, 18, 14, 40, 0, 0, time.UTC)
+	removeStartedAt := time.Date(2026, time.July, 18, 14, 40, 1, 0, time.UTC)
 
 	return Document{
 		Methods: MethodMetadata{
-			AddProject:   desktopwire.MethodAddProject,
-			OpenResource: desktopwire.MethodOpenResource,
-			Snapshot:     desktopwire.MethodSnapshot,
-			Status:       desktopwire.MethodStatus,
+			AddProject:    desktopwire.MethodAddProject,
+			OpenResource:  desktopwire.MethodOpenResource,
+			RemoveProject: desktopwire.MethodRemoveProject,
+			Snapshot:      desktopwire.MethodSnapshot,
+			Status:        desktopwire.MethodStatus,
 		},
 		Events: EventMetadata{
 			Connection: desktopwire.ConnectionEventName,
@@ -72,10 +77,14 @@ func Fixture() Document {
 			Disconnected: desktopwire.ConnectionEvent{State: desktopwire.ConnectionDisconnected},
 		},
 		Status: control.DaemonStatus{
-			State:                 control.DaemonStateReady,
-			Build:                 control.Build{Version: "dev", Revision: "fixture"},
-			Protocol:              rpc.Version{Major: 1, Minor: 0},
-			Capabilities:          []rpc.Capability{control.CapabilityProjectRegistrationV1, control.CapabilityV1},
+			State:    control.DaemonStateReady,
+			Build:    control.Build{Version: "dev", Revision: "fixture"},
+			Protocol: rpc.Version{Major: 1, Minor: 0},
+			Capabilities: []rpc.Capability{
+				control.CapabilityProjectRegistrationV1,
+				control.CapabilityProjectUnregisterV1,
+				control.CapabilityV1,
+			},
 			SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
 			Sequence:              42,
 		},
@@ -187,6 +196,19 @@ func Fixture() Document {
 				Created:  true,
 			},
 		},
+		RemoveProject: control.ProjectUnregistration{
+			Operation: domain.Operation{
+				ID:          "operation-remove-orders",
+				IntentID:    "desktop-remove-orders",
+				Kind:        domain.OperationKindProjectUnregister,
+				ProjectID:   "orders-api",
+				State:       domain.OperationRequiresApproval,
+				Phase:       "awaiting_host_approval",
+				RequestedAt: removeRequestedAt,
+				StartedAt:   &removeStartedAt,
+			},
+			Revision: 44,
+		},
 		TerminalOperation: domain.Operation{
 			ID:          "operation-terminal",
 			IntentID:    "intent-terminal",
@@ -205,10 +227,11 @@ func Fixture() Document {
 // Validate proves every generated example is legal before TypeScript sees the artifact.
 func (document Document) Validate() error {
 	methods := map[string]string{
-		desktopwire.MethodAddProject:   document.Methods.AddProject,
-		desktopwire.MethodOpenResource: document.Methods.OpenResource,
-		desktopwire.MethodSnapshot:     document.Methods.Snapshot,
-		desktopwire.MethodStatus:       document.Methods.Status,
+		desktopwire.MethodAddProject:    document.Methods.AddProject,
+		desktopwire.MethodOpenResource:  document.Methods.OpenResource,
+		desktopwire.MethodRemoveProject: document.Methods.RemoveProject,
+		desktopwire.MethodSnapshot:      document.Methods.Snapshot,
+		desktopwire.MethodStatus:        document.Methods.Status,
 	}
 	contracts := desktopwire.MethodContracts()
 	if len(methods) != len(contracts) {
@@ -258,6 +281,9 @@ func (document Document) Validate() error {
 	if err := document.AddProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project registration: %w", err)
 	}
+	if err := document.RemoveProject.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project removal: %w", err)
+	}
 	if err := document.TerminalOperation.Validate(); err != nil {
 		return fmt.Errorf("validate fixture terminal operation: %w", err)
 	}
@@ -281,7 +307,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectUnregistration } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -385,6 +411,8 @@ func typeScriptType(goType reflect.Type) (string, error) {
 		return "ConnectionEvent", nil
 	case reflect.TypeFor[control.DaemonStatus]():
 		return "DaemonStatus", nil
+	case reflect.TypeFor[control.ProjectUnregistration]():
+		return "ProjectUnregistration", nil
 	case reflect.TypeFor[domain.Snapshot]():
 		return "HarborSnapshot", nil
 	default:

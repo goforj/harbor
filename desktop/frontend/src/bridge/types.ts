@@ -1,9 +1,10 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, Operation, Problem } from '@/domain/harbor'
+import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, Operation, Problem, ProjectUnregistration } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
     add_project: 'AddProject'
     open_resource: 'OpenResource'
+    remove_project: 'RemoveProject'
     snapshot: 'Snapshot'
     status: 'Status'
   }
@@ -19,6 +20,7 @@ export interface HarborWireFixture {
   status: DaemonStatus
   snapshot: HarborSnapshot
   add_project: AddProjectResult & { canceled: false; registration: NonNullable<AddProjectResult['registration']> }
+  remove_project: ProjectUnregistration & { operation: Operation & { state: 'requires_approval' } }
   terminal_operation: Operation & {
     state: 'failed'
     problem: Problem
@@ -32,6 +34,7 @@ export interface HarborBridge {
   getStatus(): Promise<DaemonStatus>
   getSnapshot(): Promise<HarborSnapshot>
   openResource(projectId: string, resourceId: string): Promise<void>
+  removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
   subscribe(listener: (snapshot: HarborSnapshot) => void): () => void
   subscribeConnection(listener: (event: ConnectionEvent) => void): () => void
 }

@@ -1,12 +1,13 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, ProjectRegistration } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, Operation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 
 export function createMockBridge(): HarborBridge {
   const snapshot: HarborSnapshot = structuredClone(fixture.snapshot)
   const status: DaemonStatus = structuredClone(fixture.status)
+  const removals = new Map<string, ProjectUnregistration>()
 
   return {
     async addProject() {
@@ -36,6 +37,51 @@ export function createMockBridge(): HarborBridge {
         throw new Error(`Unknown resource: ${projectId}/${resourceId}`)
       }
       window.open(resource.url, '_blank', 'noopener,noreferrer')
+    },
+    async removeProject(projectId, intentId) {
+      const previous = removals.get(intentId)
+      if (previous) {
+        if (previous.operation.project_id !== projectId) {
+          throw new Error('The removal intent already belongs to another project.')
+        }
+        return structuredClone(previous)
+      }
+
+      const projectIndex = snapshot.projects.findIndex((project) => project.id === projectId)
+      if (projectIndex < 0) {
+        throw new Error(`Unknown project: ${projectId}`)
+      }
+
+      const project = snapshot.projects[projectIndex]
+      const revision = snapshot.sequence + 1
+      const requestedAt = new Date().toISOString()
+      const operation: Operation = structuredClone(fixture.remove_project.operation)
+      operation.id = `operation-${revision}-${projectId}`
+      operation.intent_id = intentId
+      operation.project_id = projectId
+      operation.requested_at = requestedAt
+      operation.started_at = requestedAt
+
+      if (project.state === 'stopped') {
+        operation.state = 'succeeded'
+        operation.phase = 'completed'
+        operation.finished_at = requestedAt
+        snapshot.projects.splice(projectIndex, 1)
+        snapshot.operations = snapshot.operations.filter((entry) => entry.project_id !== projectId)
+        snapshot.recent_resource_ids = snapshot.recent_resource_ids.filter((reference) => reference.project_id !== projectId)
+      }
+      else {
+        operation.state = 'requires_approval'
+        operation.phase = 'awaiting_host_approval'
+        delete operation.finished_at
+        snapshot.operations = [...snapshot.operations.filter((entry) => entry.id !== operation.id), operation]
+      }
+
+      snapshot.sequence = revision
+      status.sequence = revision
+      const result = { operation, revision }
+      removals.set(intentId, structuredClone(result))
+      return result
     },
     subscribe() {
       return () => undefined

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -9,9 +9,23 @@ import {
   ExternalLink,
   Server,
   SquareTerminal,
+  Trash2,
+  TriangleAlert,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import { copyText } from '@/bridge/clipboard'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,15 +33,36 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '
 import { useHarborStore } from '@/stores/harbor'
 
 const route = useRoute()
+const router = useRouter()
 const store = useHarborStore()
 const copiedPath = ref(false)
+const removeOpen = ref(false)
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const projectOperations = computed(() => store.operations.filter((operation) => operation.project_id === projectId.value))
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
+const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
+const removing = computed(() => store.removingProjectId === projectId.value)
+const removalPending = computed(() => removalNotice.value?.state === 'queued'
+  || removalNotice.value?.state === 'running'
+  || removalNotice.value?.state === 'requires_approval')
+const removalDisabled = computed(() => store.removingProjectId !== null || removalPending.value)
+const removalLabel = computed(() => {
+  if (removing.value) return 'Removing…'
+  if (store.removingProjectId) return 'Another removal is in progress'
+  if (removalNotice.value?.state === 'requires_approval') return 'Awaiting approval'
+  if (removalPending.value) return 'Removal in progress'
+  return 'Remove project'
+})
 const updatedAt = computed(() => project.value
   ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(project.value.updated_at))
   : '')
+
+watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, previousProject]) => {
+  if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
+    void router.replace('/projects')
+  }
+})
 
 async function copyPath() {
   if (!project.value) return
@@ -39,6 +74,14 @@ async function copyPath() {
 async function openResource(resourceId: string) {
   if (project.value) {
     await store.openResource(project.value.id, resourceId)
+  }
+}
+
+async function removeProject() {
+  if (!project.value) return
+  const result = await store.removeProject(project.value.id)
+  if (result?.operation.state === 'succeeded') {
+    await router.replace('/projects')
   }
 }
 </script>
@@ -57,7 +100,30 @@ async function openResource(resourceId: string) {
               <p class="mt-1 truncate text-xs text-muted-foreground">{{ project.path }}</p>
             </div>
           </div>
-          <Button size="sm" :disabled="!primaryResource" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
+          <div class="flex items-center gap-2">
+            <AlertDialog v-model:open="removeOpen">
+              <AlertDialogTrigger as-child>
+                <Button variant="outline" size="sm" :disabled="removalDisabled">
+                  <Trash2 class="size-3.5" />{{ removalLabel }}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Remove {{ project.name }}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Harbor will remove this project from its local registry and release any Harbor-owned networking. The project files at {{ project.path }} will stay on disk.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Keep project</AlertDialogCancel>
+                  <AlertDialogAction class="bg-destructive text-white hover:bg-destructive/90" :disabled="removalDisabled" @click="removeProject">
+                    Remove project
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <Button size="sm" :disabled="!primaryResource" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
+          </div>
         </div>
 
         <div class="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -70,6 +136,16 @@ async function openResource(resourceId: string) {
       </header>
 
       <div class="space-y-5 p-5 lg:p-7">
+        <Alert
+          v-if="removalNotice"
+          :variant="removalNotice.state === 'failed' || removalNotice.state === 'incomplete' || removalNotice.state === 'request_failed' ? 'destructive' : 'default'"
+          :class="removalNotice.state === 'requires_approval' ? 'border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200' : ''"
+        >
+          <TriangleAlert aria-hidden="true" />
+          <AlertTitle>{{ removalNotice.title }}</AlertTitle>
+          <AlertDescription>{{ removalNotice.message }}</AlertDescription>
+        </Alert>
+
         <section aria-label="Project summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
           <div class="p-4 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Apps</p><p class="mt-1 text-xl font-semibold">{{ project.apps.length }}</p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ project.services.length }}</p></div>

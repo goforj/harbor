@@ -28,6 +28,7 @@ describe('Harbor mock bridge', () => {
     expect(harborWireFixture.methods).toEqual({
       add_project: 'AddProject',
       open_resource: 'OpenResource',
+      remove_project: 'RemoveProject',
       snapshot: 'Snapshot',
       status: 'Status',
     })
@@ -65,6 +66,44 @@ describe('Harbor mock bridge', () => {
     expect(replayed.registration?.created).toBe(false)
     expect(snapshot.sequence).toBe(43)
     expect(snapshot.projects.filter((project) => project.id === 'inventory')).toHaveLength(1)
+  })
+
+  it('removes an inert project once and replays the client intent without another mutation', async () => {
+    const bridge = createMockBridge()
+
+    const removed = await bridge.removeProject('reports', 'desktop-remove-reports')
+    const replayed = await bridge.removeProject('reports', 'desktop-remove-reports')
+    const snapshot = await bridge.getSnapshot()
+
+    expect(removed).toMatchObject({
+      revision: 43,
+      operation: {
+        intent_id: 'desktop-remove-reports',
+        project_id: 'reports',
+        state: 'succeeded',
+      },
+    })
+    expect(replayed).toEqual(removed)
+    expect(snapshot.projects.some((project) => project.id === 'reports')).toBe(false)
+    expect(snapshot.operations.some((operation) => operation.project_id === 'reports')).toBe(false)
+    expect(snapshot.operations.every((operation) => ['queued', 'running', 'requires_approval'].includes(operation.state))).toBe(true)
+    expect(snapshot.sequence).toBe(43)
+  })
+
+  it('reports required approval without removing an active project or claiming desktop approval support', async () => {
+    const bridge = createMockBridge()
+
+    const removal = await bridge.removeProject('orders-api', 'desktop-remove-orders')
+    const snapshot = await bridge.getSnapshot()
+
+    expect(removal).toMatchObject({
+      operation: {
+        project_id: 'orders-api',
+        state: 'requires_approval',
+        phase: 'awaiting_host_approval',
+      },
+    })
+    expect(snapshot.projects.some((project) => project.id === 'orders-api')).toBe(true)
   })
 
   it('opens a known project-scoped resource without giving the new page an opener', async () => {
