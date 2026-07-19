@@ -117,11 +117,7 @@ func resolveHelperApprovalPlanSet(
 	tx *gorm.DB,
 	operationID domain.OperationID,
 ) ([]resolvedHelperApprovalPlan, error) {
-	rows, err := readHelperApprovalPlanRows(tx, operationID)
-	if err != nil {
-		return nil, err
-	}
-	operation, err := readHelperApprovalOperation(tx, rows[0])
+	operation, err := readHelperApprovalOperation(tx, operationID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +127,10 @@ func resolveHelperApprovalPlanSet(
 			string(operationID),
 			fmt.Errorf("operation state is %q, expected %q", operation.Operation.State, domain.OperationRequiresApproval),
 		)
+	}
+	rows, err := readHelperApprovalPlanRows(tx, operationID)
+	if err != nil {
+		return nil, err
 	}
 	intents, err := projectNetworkReleaseApprovalIntentsInTransaction(tx, operation)
 	if err != nil {
@@ -200,7 +200,11 @@ func readHelperApprovalPlanRows(tx *gorm.DB, operationID domain.OperationID) ([]
 		return nil, fmt.Errorf("read helper approval plan: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil, fmt.Errorf("helper approval plans for operation %q were not found", operationID)
+		return nil, corruptStateError(
+			"helper approval plan",
+			string(operationID),
+			fmt.Errorf("approval-state operation has no durable plans"),
+		)
 	}
 	if len(rows) > maximumNetworkPoolCandidateCount {
 		return nil, corruptStateError(
@@ -238,16 +242,23 @@ func validateHelperApprovalPlanCollisions(tx *gorm.DB, plan models.HelperApprova
 	return nil
 }
 
-// readHelperApprovalOperation validates the unique operation row bound to the plan's exact revision.
-func readHelperApprovalOperation(tx *gorm.DB, plan models.HelperApprovalPlan) (OperationRecord, error) {
+// readHelperApprovalOperation validates the unique operation owner before any approval plan can grant authority.
+func readHelperApprovalOperation(tx *gorm.DB, operationID domain.OperationID) (OperationRecord, error) {
 	var rows []models.Operation
-	if err := tx.Where("id = ?", plan.OperationId).Order("revision ASC").Limit(2).Find(&rows).Error; err != nil {
+	if err := tx.
+		Where("id = ?", string(operationID)).
+		Order("revision ASC").
+		Limit(2).
+		Find(&rows).Error; err != nil {
 		return OperationRecord{}, fmt.Errorf("read helper approval operation: %w", err)
 	}
-	if len(rows) != 1 {
+	if len(rows) == 0 {
+		return OperationRecord{}, &OperationNotFoundError{OperationID: operationID}
+	}
+	if len(rows) > 1 {
 		return OperationRecord{}, corruptStateError(
 			"helper approval plan",
-			helperApprovalPlanKey(plan),
+			string(operationID),
 			fmt.Errorf("operation has %d rows, expected 1", len(rows)),
 		)
 	}

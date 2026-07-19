@@ -33,12 +33,14 @@ func TestHelperApprovalPlanSourceResolvesProductionReleaseAfterRestart(t *testin
 	fixture := newHelperApprovalSourceProductionFixture(t)
 	outsideTransaction := make(map[string]bool)
 	observed := make(map[string]int)
+	readOrder := []string{}
 	callback := "harbor:test_helper_approval_source_production_transaction"
 	if err := fixture.connection.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
 		if !helperApprovalSourceAuthorityTable(tx.Statement.Table) {
 			return
 		}
 		observed[tx.Statement.Table]++
+		readOrder = append(readOrder, tx.Statement.Table)
 		if _, ok := tx.Statement.ConnPool.(*sql.Tx); !ok {
 			outsideTransaction[tx.Statement.Table] = true
 		}
@@ -60,6 +62,9 @@ func TestHelperApprovalPlanSourceResolvesProductionReleaseAfterRestart(t *testin
 	}
 	if !slices.Equal(requests, want) {
 		t.Fatalf("RequestsForOperation() = %#v, want %#v", requests, want)
+	}
+	if len(readOrder) < 2 || readOrder[0] != "operations" || readOrder[1] != "helper_approval_plans" {
+		t.Fatalf("RequestsForOperation() authority read order = %#v, want operation before approval plans", readOrder)
 	}
 	for index, request := range requests {
 		plan, resolveErr := fixture.source.Resolve(context.Background(), request)
@@ -108,9 +113,13 @@ func TestHelperApprovalPlanSourceRejectsInvalidMissingAndCancelledRequests(t *te
 	if _, err := fixture.source.RequestsForOperation(context.Background(), ""); err == nil {
 		t.Fatal("RequestsForOperation() accepted an empty operation ID")
 	}
-	if _, err := fixture.source.RequestsForOperation(context.Background(), "operation-missing"); err == nil ||
-		!strings.Contains(err.Error(), "were not found") {
-		t.Fatalf("missing RequestsForOperation() error = %v", err)
+	if _, err := fixture.source.RequestsForOperation(context.Background(), "operation-missing"); err == nil {
+		t.Fatal("missing RequestsForOperation() returned no error")
+	} else {
+		var missing *OperationNotFoundError
+		if !errors.As(err, &missing) || missing.OperationID != "operation-missing" {
+			t.Fatalf("missing RequestsForOperation() error = %v, want OperationNotFoundError", err)
+		}
 	}
 	if _, err := fixture.source.Resolve(context.Background(), ticketissuer.Request{}); err == nil {
 		t.Fatal("Resolve() accepted an empty request")
@@ -136,6 +145,75 @@ func TestHelperApprovalPlanSourceRejectsInvalidMissingAndCancelledRequests(t *te
 	}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled Resolve() error = %v", err)
 	}
+}
+
+// TestHelperApprovalPlanSourceClassifiesOperationAuthorityFailures distinguishes absent selection from corrupt approval authority.
+func TestHelperApprovalPlanSourceClassifiesOperationAuthorityFailures(t *testing.T) {
+	type sourceCall struct {
+		name string
+		err  error
+	}
+	exercise := func(fixture helperApprovalSourceProductionFixture, operationID domain.OperationID) []sourceCall {
+		_, requestsErr := fixture.source.RequestsForOperation(context.Background(), operationID)
+		_, resolveErr := fixture.source.Resolve(context.Background(), ticketissuer.Request{
+			OperationID: operationID,
+			LeaseKey:    fixture.staged.Plans[0].Intent.Lease.Key,
+		})
+		return []sourceCall{
+			{name: "RequestsForOperation", err: requestsErr},
+			{name: "Resolve", err: resolveErr},
+		}
+	}
+
+	t.Run("unknown operation", func(t *testing.T) {
+		fixture := newHelperApprovalSourceProductionFixture(t)
+		operationID := domain.OperationID("operation-missing")
+		for _, call := range exercise(fixture, operationID) {
+			var missing *OperationNotFoundError
+			if !errors.As(call.err, &missing) || missing.OperationID != operationID {
+				t.Fatalf("%s() error = %v, want OperationNotFoundError for %q", call.name, call.err, operationID)
+			}
+			var corrupt *CorruptStateError
+			if errors.As(call.err, &corrupt) {
+				t.Fatalf("%s() error = %v, did not want CorruptStateError", call.name, call.err)
+			}
+		}
+	})
+
+	t.Run("approval operation without plans", func(t *testing.T) {
+		fixture := newHelperApprovalSourceProductionFixture(t)
+		helperApprovalSourceExec(t, fixture.release.database, "DELETE FROM helper_approval_plan_socket_requirements")
+		helperApprovalSourceExec(t, fixture.release.database, "DELETE FROM helper_approval_plans")
+		operationID := fixture.staged.Operation.Operation.ID
+		for _, call := range exercise(fixture, operationID) {
+			var corrupt *CorruptStateError
+			if !errors.As(call.err, &corrupt) || !strings.Contains(call.err.Error(), "approval-state operation has no durable plans") {
+				t.Fatalf("%s() error = %v, want CorruptStateError for missing durable plans", call.name, call.err)
+			}
+			var missing *OperationNotFoundError
+			if errors.As(call.err, &missing) {
+				t.Fatalf("%s() error = %v, did not want OperationNotFoundError", call.name, call.err)
+			}
+		}
+	})
+
+	t.Run("wrong-state operation without plans", func(t *testing.T) {
+		fixture := newHelperApprovalSourceProductionFixture(t)
+		helperApprovalSourceExec(t, fixture.release.database, "UPDATE operations SET state = 'running' WHERE id = ?", fixture.staged.Operation.Operation.ID)
+		helperApprovalSourceExec(t, fixture.release.database, "DELETE FROM helper_approval_plan_socket_requirements")
+		helperApprovalSourceExec(t, fixture.release.database, "DELETE FROM helper_approval_plans")
+		operationID := fixture.staged.Operation.Operation.ID
+		for _, call := range exercise(fixture, operationID) {
+			var corrupt *CorruptStateError
+			if !errors.As(call.err, &corrupt) || !strings.Contains(call.err.Error(), "operation state is \"running\"") {
+				t.Fatalf("%s() error = %v, want CorruptStateError for wrong operation state", call.name, call.err)
+			}
+			var missing *OperationNotFoundError
+			if errors.As(call.err, &missing) {
+				t.Fatalf("%s() error = %v, did not want OperationNotFoundError", call.name, call.err)
+			}
+		}
+	})
 }
 
 // TestHelperApprovalPlanSourceFailsClosedOnIncompleteOrAlteredReleaseAuthority covers complete-set and owner invariants.
@@ -228,7 +306,7 @@ func TestHelperApprovalPlanSourceFailsClosedOnIncompleteOrAlteredReleaseAuthorit
 				helperApprovalSourceExec(t, fixture.release.database, "DELETE FROM operations WHERE id = 'operation-release-alpha'")
 				helperApprovalSourceExec(t, fixture.release.database, "PRAGMA foreign_keys = ON")
 			},
-			want: "operation has 0 rows",
+			want: "operation \"operation-release-alpha\" was not found",
 		},
 		{
 			name: "missing requirement storage",
