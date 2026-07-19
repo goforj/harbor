@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -39,6 +41,9 @@ func init() {
 	}
 	if len(os.Args) != 2 || os.Args[1] != "dev" {
 		os.Exit(90)
+	}
+	if err := godotenv.Overload(".env.host"); err != nil {
+		os.Exit(101)
 	}
 	mode := os.Getenv(helperModeEnvironment)
 	if mode == "grandchild" {
@@ -167,7 +172,7 @@ func replaceEnvironment(environment []string, name, value string) []string {
 
 // projectProcessTestEnvironment supplies one explicit managed value used by valid launch tests.
 func projectProcessTestEnvironment() EnvironmentOverrides {
-	return EnvironmentOverrides{helperOverrideEnvironment: "managed"}
+	return EnvironmentOverrides{"IP_ADDRESS": "127.77.0.42"}
 }
 
 // newTestSupervisor keeps helper-process tests focused on lifecycle behavior behind an explicit compatible executable seam.
@@ -287,8 +292,8 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 	}
 }
 
-// TestStartAppliesExplicitEnvironmentOverrides proves managed values win while unrelated captured values remain intact.
-func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
+// TestStartLoadsManagedValuesFromHostEnvironment proves the child reads Harbor values from the final dotenv layer.
+func TestStartLoadsManagedValuesFromHostEnvironment(t *testing.T) {
 	checkout := t.TempDir()
 	if err := os.WriteFile(filepath.Join(checkout, ".env.host"), []byte("DB_HOST=127.0.0.1\n"), 0o600); err != nil {
 		t.Fatalf("write project host environment: %v", err)
@@ -313,10 +318,8 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 		SessionID:    "session-overrides",
 		CheckoutRoot: checkout,
 		EnvironmentOverrides: EnvironmentOverrides{
-			"DEV_SERVICE_IP_ADDRESS":  "127.0.0.42",
-			"IP_ADDRESS":              "127.0.0.42",
-			helperOverrideEnvironment: "managed",
-			helperEmptyEnvironment:    "",
+			"DEV_SERVICE_IP_ADDRESS": "127.77.0.42",
+			"IP_ADDRESS":             "127.77.0.42",
 		},
 		Stdout: stdout,
 	})
@@ -326,16 +329,16 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	if _, err := handle.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait() error = %v", err)
 	}
-	waitForOutput(t, stdout, "dev-service-ip-address=127.0.0.42")
-	waitForOutput(t, stdout, "ip-address=127.0.0.42")
-	waitForOutput(t, stdout, "api-http-host=127.0.0.42")
-	waitForOutput(t, stdout, "db-host=127.0.0.42")
-	waitForOutput(t, stdout, "override=managed")
-	waitForOutput(t, stdout, "empty=true:")
+	waitForOutput(t, stdout, "dev-service-ip-address=127.77.0.42")
+	waitForOutput(t, stdout, "ip-address=127.77.0.42")
+	waitForOutput(t, stdout, "api-http-host=127.77.0.42")
+	waitForOutput(t, stdout, "db-host=127.77.0.42")
+	waitForOutput(t, stdout, "override=captured")
+	waitForOutput(t, stdout, "empty=false:")
 	waitForOutput(t, stdout, "unrelated=preserved")
-	waitForOutput(t, stdout, "managed-keys=API_HTTP_HOST,DB_HOST,DEV_SERVICE_IP_ADDRESS,HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
+	waitForOutput(t, stdout, "managed-keys=\n")
 	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
-		t.Fatalf("managed project retained captured override values: %q", output)
+		t.Fatalf("managed project retained ambient network values: %q", output)
 	}
 }
 
@@ -622,7 +625,8 @@ func TestStartRejectsInvalidEnvironmentOverrides(t *testing.T) {
 		{name: "dotenv selector", overrides: EnvironmentOverrides{"APP_ENV": "testing"}},
 		{name: "GoForj app selector", overrides: EnvironmentOverrides{"FORJ_APP": "value"}},
 		{name: "plain launcher mode", overrides: EnvironmentOverrides{developmentPlainEnvName: "0"}},
-		{name: "portable case collision", overrides: EnvironmentOverrides{"PROJECT_VALUE": "one", "project_value": "two"}},
+		{name: "unsupported setting", overrides: EnvironmentOverrides{"PROJECT_VALUE": "value"}},
+		{name: "portable case collision", overrides: EnvironmentOverrides{"IP_ADDRESS": "127.77.0.8", "ip_address": "127.77.0.9"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -639,15 +643,14 @@ func TestStartRejectsInvalidEnvironmentOverrides(t *testing.T) {
 	}
 }
 
-// TestStartAcceptsPresentEmptyEnvironmentOverride proves values retain ordinary environment semantics.
-func TestStartAcceptsPresentEmptyEnvironmentOverride(t *testing.T) {
+// TestStartAcceptsPresentEmptyNetworkOverride proves host-layer values retain ordinary dotenv semantics.
+func TestStartAcceptsPresentEmptyNetworkOverride(t *testing.T) {
 	err := validateStartRequest(StartRequest{
 		ProjectID:    "project-empty-override",
 		SessionID:    "session-empty-override",
 		CheckoutRoot: t.TempDir(),
 		EnvironmentOverrides: EnvironmentOverrides{
-			"EMPTY_VALUE": "",
-			"lower_value": "",
+			"LIGHTHOUSE_URL": "",
 		},
 	})
 	if err != nil {
@@ -671,17 +674,15 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	}
 	before := append([]string(nil), base...)
 	result := withDevelopmentEnvironment(base, EnvironmentOverrides{
-		"Z_VALUE":                "last",
+		"API_HTTP_HOST":          "127.77.0.42",
 		"DEV_SERVICE_IP_ADDRESS": "127.0.0.42",
 		"IP_ADDRESS":             "127.0.0.42",
-		"b_value":                "middle",
-		"A_VALUE":                "",
 	})
-	want := "HOME=/tmp/home|PATH=/bin|API_HTTP_HOST=127.0.0.9"
+	want := "HOME=/tmp/home|PATH=/bin"
 	if runtime.GOOS != "windows" {
 		want += "|ip_address=127.0.0.10"
 	}
-	want += "|UNRELATED=preserved|A_VALUE=|b_value=middle|DEV_SERVICE_IP_ADDRESS=127.0.0.42|IP_ADDRESS=127.0.0.42|Z_VALUE=last|FORJ_DEV_PLAIN=1|FORJ_INTERNAL_MANAGED_ENV_KEYS=A_VALUE,b_value,DEV_SERVICE_IP_ADDRESS,IP_ADDRESS,Z_VALUE"
+	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1"
 	if strings.Join(result, "|") != want {
 		t.Fatalf("withDevelopmentEnvironment() = %q, want %q", strings.Join(result, "|"), want)
 	}

@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/inspects"
@@ -224,6 +226,10 @@ func TestMain(m *testing.M) {
 
 // runProjectLifecycleHelper exposes the generated readiness shape until Harbor stops the owned process.
 func runProjectLifecycleHelper() {
+	if err := godotenv.Overload(".env.host"); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	address := os.Getenv("IP_ADDRESS")
 	port := os.Getenv("HARBOR_PROJECT_LIFECYCLE_PORT")
 	if got := os.Getenv("DEV_SERVICE_IP_ADDRESS"); got != address {

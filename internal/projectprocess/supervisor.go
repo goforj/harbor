@@ -52,7 +52,7 @@ type Options struct {
 // Environment is the ambient user process environment inherited by managed development commands.
 type Environment []string
 
-// EnvironmentOverrides contains the explicit inherited values Harbor owns for one managed project launch.
+// EnvironmentOverrides contains the explicit network values Harbor owns in one project's host dotenv layer.
 type EnvironmentOverrides map[string]string
 
 // CaptureEnvironment snapshots the current process environment before Harbor loads its own application configuration.
@@ -241,16 +241,13 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("apply Harbor managed host environment: %w", err)
 	}
-	for name, value := range managedOverrides {
-		request.EnvironmentOverrides[name] = value
-	}
 	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
-	command.Env = withDevelopmentEnvironment(supervisor.environment, request.EnvironmentOverrides)
+	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -650,6 +647,9 @@ func validateEnvironmentOverrides(overrides EnvironmentOverrides) error {
 			return fmt.Errorf("environment override names %q and %q differ only by case", previous, name)
 		}
 		seenNames[folded] = name
+		if _, supported := managedHostEnvironmentKeys[name]; !supported {
+			return fmt.Errorf("environment override name %q is not a managed project network setting", name)
+		}
 		if strings.IndexByte(overrides[name], 0) >= 0 {
 			return fmt.Errorf("environment override %q contains NUL in its value", name)
 		}
@@ -751,22 +751,15 @@ type environmentAssignment struct {
 	value string
 }
 
-// withDevelopmentEnvironment gives explicit durable values final authority over the captured launch environment.
-func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverrides) []string {
-	names := sortedEnvironmentOverrideNames(overrides)
+// withDevelopmentEnvironment removes file-owned values from the ambient launch and selects non-interactive output.
+func withDevelopmentEnvironment(environment []string, fileValues EnvironmentOverrides) []string {
+	names := sortedEnvironmentOverrideNames(fileValues)
 	replacedNames := append(append([]string(nil), names...), developmentPlainEnvName, managedEnvKeysName)
-	assignments := make([]environmentAssignment, 0, len(names)+2)
-	for _, name := range names {
-		assignments = append(assignments, environmentAssignment{name: name, value: overrides[name]})
-	}
-	assignments = append(assignments,
-		environmentAssignment{name: developmentPlainEnvName, value: "1"},
-		environmentAssignment{name: managedEnvKeysName, value: strings.Join(names, ",")},
-	)
+	assignments := []environmentAssignment{{name: developmentPlainEnvName, value: "1"}}
 	return mergeEnvironmentAssignments(environment, replacedNames, assignments)
 }
 
-// sortedEnvironmentOverrideNames makes marker encoding and appended child values independent of map iteration order.
+// sortedEnvironmentOverrideNames makes file-owned environment removal independent of map iteration order.
 func sortedEnvironmentOverrideNames(overrides EnvironmentOverrides) []string {
 	names := make([]string, 0, len(overrides))
 	for name := range overrides {
