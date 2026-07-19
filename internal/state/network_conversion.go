@@ -83,10 +83,11 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	if err != nil {
 		return NetworkRecord{}, false, corruptStateError("network state", "1", err)
 	}
-	if err := validateNetworkSetupEvidence(rows.SetupEvidence, root.Id, root.UpdatedAt); err != nil {
+	stage := NetworkStage(root.Stage)
+	if err := validateNetworkSetupEvidence(rows.SetupEvidence, stage, root.Id, root.UpdatedAt); err != nil {
 		return NetworkRecord{}, false, err
 	}
-	listeners, err := networkListenersFromModels(rows.Listeners, root.Id, root.UpdatedAt)
+	listeners, err := networkListenersForStage(rows.Listeners, stage, root.Id, root.UpdatedAt)
 	if err != nil {
 		return NetworkRecord{}, false, err
 	}
@@ -104,6 +105,9 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	releases, err := networkReleasesFromModels(rows.Releases, root.Id, knownProjects, releaseOwners, root.UpdatedAt)
 	if err != nil {
 		return NetworkRecord{}, false, err
+	}
+	if stage == NetworkStageIdentity && len(rows.Endpoints) != 0 {
+		return NetworkRecord{}, false, corruptStateError("public endpoint lease", "identity-stage", fmt.Errorf("identity-stage network must not contain endpoint reservations"))
 	}
 	allEndpoints, err := networkEndpointsFromModels(rows.Endpoints, root.Id, knownProjects, activeByID, listeners, root.UpdatedAt)
 	if err != nil {
@@ -133,6 +137,7 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	}
 
 	record := NetworkRecord{
+		Stage:       stage,
 		Revision:    revision,
 		CreatedAt:   root.CreatedAt,
 		UpdatedAt:   root.UpdatedAt,
@@ -222,6 +227,10 @@ func networkRootFromModel(row models.NetworkState) (models.NetworkState, domain.
 	key := strconv.Itoa(row.Id)
 	if row.Id != networkStateSingletonID {
 		return models.NetworkState{}, 0, identity.Ownership{}, netip.Prefix{}, corruptStateError("network state", key, fmt.Errorf("singleton ID must be 1"))
+	}
+	stage := NetworkStage(row.Stage)
+	if err := stage.Validate(); err != nil {
+		return models.NetworkState{}, 0, identity.Ownership{}, netip.Prefix{}, corruptStateError("network state", key, err)
 	}
 	if row.Revision <= 0 || domain.Sequence(row.Revision) > domain.MaximumSequence {
 		return models.NetworkState{}, 0, identity.Ownership{}, netip.Prefix{}, corruptStateError("network state", key, fmt.Errorf("revision must be positive and within the cross-client ordering range"))
@@ -322,9 +331,12 @@ func networkCandidatesFromModels(rows []models.NetworkPoolCandidate, stateID int
 	return result, nil
 }
 
-// validateNetworkSetupEvidence requires one proof for each elevated network component.
-func validateNetworkSetupEvidence(rows []models.NetworkSetupEvidence, stateID int, updatedAt time.Time) error {
-	requiredOrder := []string{"machine_ownership", "loopback_pool", "resolver", "low_ports"}
+// validateNetworkSetupEvidence requires exactly the authority proofs granted by the durable lifecycle stage.
+func validateNetworkSetupEvidence(rows []models.NetworkSetupEvidence, stage NetworkStage, stateID int, updatedAt time.Time) error {
+	requiredOrder := []string{"machine_ownership", "loopback_pool"}
+	if stage == NetworkStageFull {
+		requiredOrder = append(requiredOrder, "resolver", "low_ports")
+	}
 	required := make(map[string]struct{}, len(requiredOrder))
 	for _, component := range requiredOrder {
 		required[component] = struct{}{}
@@ -366,6 +378,26 @@ func validateNetworkSetupEvidence(rows []models.NetworkSetupEvidence, stateID in
 		}
 	}
 	return nil
+}
+
+// networkListenersForStage prevents identity-only state from being interpreted as shared listener authority.
+func networkListenersForStage(
+	rows []models.NetworkSharedListener,
+	stage NetworkStage,
+	stateID int,
+	updatedAt time.Time,
+) (SharedListenerReservations, error) {
+	if stage == NetworkStageIdentity {
+		if len(rows) != 0 {
+			return SharedListenerReservations{}, corruptStateError(
+				"network shared listener",
+				"identity-stage",
+				fmt.Errorf("identity-stage network must not contain listener reservations"),
+			)
+		}
+		return SharedListenerReservations{}, nil
+	}
+	return networkListenersFromModels(rows, stateID, updatedAt)
 }
 
 // networkListenersFromModels converts exactly one DNS, HTTP, and HTTPS reservation.

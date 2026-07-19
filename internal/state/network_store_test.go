@@ -19,6 +19,7 @@ import (
 var networkStoreReadTestSchema = []string{
 	`CREATE TABLE network_state (
 		id INTEGER PRIMARY KEY,
+		stage TEXT,
 		installation_id TEXT,
 		ownership_generation INTEGER,
 		pool_network TEXT,
@@ -145,6 +146,19 @@ func TestStoreNetworkDistinguishesSchemaLifecycle(t *testing.T) {
 		if !strings.Contains(err.Error(), "network persistence schema is incomplete") {
 			t.Fatalf("partial schema error = %v, want incomplete schema detail", err)
 		}
+	})
+
+	t.Run("pre-stage migration", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+		for index, statement := range networkStoreReadTestSchema {
+			if index == 0 {
+				statement = strings.Replace(statement, "\n\t\tstage TEXT,", "", 1)
+			}
+			mustProjectStoreReadExec(t, connection, statement)
+		}
+
+		_, _, err := store.Network(context.Background())
+		assertNetworkStoreReadCorruption(t, err, "network_state is missing stage column")
 	})
 
 	t.Run("wrong schema object", func(t *testing.T) {

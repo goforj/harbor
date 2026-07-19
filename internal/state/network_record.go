@@ -14,6 +14,26 @@ import (
 
 const maximumNetworkEndpointIDLength = 128
 
+// NetworkStage identifies how much host networking authority the durable aggregate has proved.
+type NetworkStage string
+
+const (
+	// NetworkStageIdentity proves only machine ownership and the reserved loopback identity pool.
+	NetworkStageIdentity NetworkStage = "identity"
+	// NetworkStageFull proves identity, resolver, and shared listener authority.
+	NetworkStageFull NetworkStage = "full"
+)
+
+// Validate rejects lifecycle stages that cannot define a safe network projection.
+func (stage NetworkStage) Validate() error {
+	switch stage {
+	case NetworkStageIdentity, NetworkStageFull:
+		return nil
+	default:
+		return fmt.Errorf("network stage %q is unsupported", stage)
+	}
+}
+
 // ListenerMode identifies whether the daemon binds an advertised socket directly or behind an owned redirect.
 type ListenerMode string
 
@@ -235,15 +255,9 @@ func (reservations DataPlaneReservations) Validate() error {
 		return err
 	}
 
-	suppressed := make(map[domain.ProjectID]struct{}, len(reservations.SuppressedProjectIDs))
-	for index, projectID := range reservations.SuppressedProjectIDs {
-		if err := projectID.Validate(); err != nil {
-			return err
-		}
-		if index > 0 && reservations.SuppressedProjectIDs[index-1] >= projectID {
-			return fmt.Errorf("suppressed network projects must be unique and ordered")
-		}
-		suppressed[projectID] = struct{}{}
+	suppressed, err := validateSuppressedNetworkProjects(reservations.SuppressedProjectIDs)
+	if err != nil {
+		return err
 	}
 
 	keys := make(map[EndpointReservationKey]struct{}, len(reservations.Endpoints))
@@ -285,8 +299,42 @@ func (reservations DataPlaneReservations) Validate() error {
 	return nil
 }
 
+// validateIdentityDataPlaneReservations prevents an identity-only aggregate from claiming resolver or ingress authority.
+func validateIdentityDataPlaneReservations(reservations DataPlaneReservations) error {
+	if reservations.Endpoints == nil {
+		return fmt.Errorf("network endpoint reservations must be initialized")
+	}
+	if reservations.SuppressedProjectIDs == nil {
+		return fmt.Errorf("suppressed network projects must be initialized")
+	}
+	if reservations.Listeners != (SharedListenerReservations{}) {
+		return fmt.Errorf("identity-stage network must not contain listener reservations")
+	}
+	if len(reservations.Endpoints) != 0 {
+		return fmt.Errorf("identity-stage network must not contain endpoint reservations")
+	}
+	_, err := validateSuppressedNetworkProjects(reservations.SuppressedProjectIDs)
+	return err
+}
+
+// validateSuppressedNetworkProjects requires canonical teardown suppressions without granting them routing authority.
+func validateSuppressedNetworkProjects(projectIDs []domain.ProjectID) (map[domain.ProjectID]struct{}, error) {
+	suppressed := make(map[domain.ProjectID]struct{}, len(projectIDs))
+	for index, projectID := range projectIDs {
+		if err := projectID.Validate(); err != nil {
+			return nil, err
+		}
+		if index > 0 && projectIDs[index-1] >= projectID {
+			return nil, fmt.Errorf("suppressed network projects must be unique and ordered")
+		}
+		suppressed[projectID] = struct{}{}
+	}
+	return suppressed, nil
+}
+
 // NetworkRecord is one initialized durable network aggregate at its sole global revision.
 type NetworkRecord struct {
+	Stage        NetworkStage
 	Revision     domain.Sequence
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -299,6 +347,9 @@ type NetworkRecord struct {
 
 // Validate rejects aggregates that cannot be passed safely to identity planning and runtime reconciliation.
 func (record NetworkRecord) Validate() error {
+	if err := record.Stage.Validate(); err != nil {
+		return err
+	}
 	if _, err := sequenceToModelInt("network revision", record.Revision, false); err != nil {
 		return err
 	}
@@ -326,18 +377,27 @@ func (record NetworkRecord) Validate() error {
 	if record.Quarantines == nil {
 		return fmt.Errorf("network quarantines must be initialized")
 	}
-	if err := record.Reservations.Validate(); err != nil {
-		return err
+	switch record.Stage {
+	case NetworkStageIdentity:
+		if err := validateIdentityDataPlaneReservations(record.Reservations); err != nil {
+			return err
+		}
+	case NetworkStageFull:
+		if err := record.Reservations.Validate(); err != nil {
+			return err
+		}
 	}
 
-	for _, listener := range []ListenerReservation{
-		record.Reservations.Listeners.DNS,
-		record.Reservations.Listeners.HTTP,
-		record.Reservations.Listeners.HTTPS,
-	} {
-		for _, address := range []netip.Addr{listener.Advertised.Addr(), listener.Bind.Addr()} {
-			if record.Pool.Contains(address) {
-				return fmt.Errorf("shared listener address %s is also a project pool candidate", address)
+	if record.Stage == NetworkStageFull {
+		for _, listener := range []ListenerReservation{
+			record.Reservations.Listeners.DNS,
+			record.Reservations.Listeners.HTTP,
+			record.Reservations.Listeners.HTTPS,
+		} {
+			for _, address := range []netip.Addr{listener.Advertised.Addr(), listener.Bind.Addr()} {
+				if record.Pool.Contains(address) {
+					return fmt.Errorf("shared listener address %s is also a project pool candidate", address)
+				}
 			}
 		}
 	}

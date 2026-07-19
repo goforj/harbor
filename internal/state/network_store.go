@@ -101,6 +101,19 @@ func inspectNetworkSchema(tx *gorm.DB) (bool, error) {
 			fmt.Errorf("network persistence schema is incomplete; missing tables %v", missing),
 		)
 	}
+	var stageColumns int64
+	if err := tx.Raw(
+		"SELECT COUNT(*) FROM pragma_table_info('network_state') WHERE name = 'stage'",
+	).Scan(&stageColumns).Error; err != nil {
+		return false, fmt.Errorf("inspect network lifecycle stage: %w", err)
+	}
+	if stageColumns != 1 {
+		return false, corruptStateError(
+			"network state",
+			"schema",
+			fmt.Errorf("network persistence schema is incomplete; network_state is missing stage column"),
+		)
+	}
 	return true, nil
 }
 

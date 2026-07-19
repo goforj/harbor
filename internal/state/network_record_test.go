@@ -11,6 +11,59 @@ import (
 	"github.com/goforj/harbor/internal/network/identity"
 )
 
+// TestNetworkStageValidate covers the complete durable lifecycle vocabulary.
+func TestNetworkStageValidate(t *testing.T) {
+	for _, test := range []struct {
+		stage   NetworkStage
+		wantErr bool
+	}{
+		{stage: NetworkStageIdentity},
+		{stage: NetworkStageFull},
+		{stage: "", wantErr: true},
+		{stage: "partial", wantErr: true},
+	} {
+		err := test.stage.Validate()
+		if (err != nil) != test.wantErr {
+			t.Fatalf("NetworkStage(%q).Validate() error = %v, wantErr %t", test.stage, err, test.wantErr)
+		}
+	}
+}
+
+// TestNetworkRecordValidateSeparatesIdentityFromDataPlaneAuthority verifies the lifecycle stage gates listeners and public endpoints.
+func TestNetworkRecordValidateSeparatesIdentityFromDataPlaneAuthority(t *testing.T) {
+	identityRecord := recordTestNetworkRecord()
+	identityRecord.Stage = NetworkStageIdentity
+	identityRecord.Reservations.Listeners = SharedListenerReservations{}
+	identityRecord.Reservations.Endpoints = []EndpointReservation{}
+	if err := identityRecord.Validate(); err != nil {
+		t.Fatalf("identity NetworkRecord.Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*NetworkRecord)
+		want   string
+	}{
+		{name: "listener", mutate: func(record *NetworkRecord) {
+			record.Reservations.Listeners.DNS = recordTestListeners().DNS
+		}, want: "must not contain listener reservations"},
+		{name: "endpoint", mutate: func(record *NetworkRecord) {
+			record.Reservations.Endpoints = []EndpointReservation{recordTestHTTPEndpoint("alpha.test", "project-alpha", "web")}
+		}, want: "must not contain endpoint reservations"},
+		{name: "unknown stage", mutate: func(record *NetworkRecord) {
+			record.Stage = "partial"
+		}, want: "unsupported"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := identityRecord
+			candidate.Reservations.Endpoints = []EndpointReservation{}
+			test.mutate(&candidate)
+			assertRecordValidationError(t, candidate.Validate(), test.want)
+		})
+	}
+}
+
 // TestListenerModeValidate covers the complete durable listener-mode vocabulary.
 func TestListenerModeValidate(t *testing.T) {
 	tests := []struct {
@@ -682,6 +735,7 @@ func recordTestLease(projectID domain.ProjectID, secondaryID string, address str
 // recordTestNetworkRecord returns a complete canonical aggregate.
 func recordTestNetworkRecord() NetworkRecord {
 	return NetworkRecord{
+		Stage:     NetworkStageFull,
 		Revision:  21,
 		CreatedAt: recordTestTime(),
 		UpdatedAt: recordTestTime().Add(time.Minute),

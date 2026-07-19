@@ -306,6 +306,40 @@ func TestRuntimeStateValidatePermitsDirectLoopbackLifecycle(t *testing.T) {
 	}
 }
 
+// TestRuntimeStateValidateConfinesIdentityStageResourcesToAssignedAddress verifies a durable lease is not mistaken for DNS or ingress authority.
+func TestRuntimeStateValidateConfinesIdentityStageResourcesToAssignedAddress(t *testing.T) {
+	network := recordTestNetworkRecord()
+	network.Stage = NetworkStageIdentity
+	network.Reservations.Listeners = SharedListenerReservations{}
+	network.Reservations.Endpoints = []EndpointReservation{}
+	candidate := RuntimeState{
+		Snapshot:           validRuntimeStateSnapshot(21),
+		Network:            network,
+		NetworkInitialized: true,
+	}
+	candidate.Snapshot.Projects[0] = directRuntimeStateProject("project-alpha", domain.ProjectReady, "http://127.77.0.10:3000")
+	if err := candidate.Validate(); err != nil {
+		t.Fatalf("validate assigned identity-stage URL: %v", err)
+	}
+
+	for _, test := range []struct {
+		resourceURL string
+		want        string
+	}{
+		{resourceURL: "http://127.0.0.1:3000", want: "not assigned identity 127.77.0.10"},
+		{resourceURL: "https://project-alpha.test", want: "not a literal loopback address"},
+	} {
+		t.Run(test.resourceURL, func(t *testing.T) {
+			invalid := candidate
+			invalid.Snapshot.Projects = append([]domain.ProjectSnapshot(nil), candidate.Snapshot.Projects...)
+			invalid.Snapshot.Projects[0] = directRuntimeStateProject("project-alpha", domain.ProjectReady, test.resourceURL)
+			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("identity-stage URL %q error = %v, want containing %q", test.resourceURL, err, test.want)
+			}
+		})
+	}
+}
+
 // TestRuntimeStateValidateRejectsIncoherentDirectLifecycle prevents loopback URLs from masking corrupt active or transitional projections.
 func TestRuntimeStateValidateRejectsIncoherentDirectLifecycle(t *testing.T) {
 	tests := []struct {

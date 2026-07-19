@@ -460,6 +460,7 @@ func planNetworkProjectReplacement(
 	}
 	publishable = append(publishable, request.Endpoints...)
 	candidate := NetworkRecord{
+		Stage:       current.Stage,
 		Revision:    current.Revision,
 		CreatedAt:   current.CreatedAt,
 		UpdatedAt:   request.At,

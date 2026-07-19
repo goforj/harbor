@@ -32,6 +32,25 @@ func TestDesiredStateFromRuntimeStateKeepsUninitializedHostsEmpty(t *testing.T) 
 	}
 }
 
+// TestDesiredStateFromRuntimeStateKeepsIdentityFoundationEmpty verifies loopback ownership alone does not start DNS or ingress.
+func TestDesiredStateFromRuntimeStateKeepsIdentityFoundationEmpty(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	runtimeState.Network.Stage = state.NetworkStageIdentity
+	runtimeState.Network.Reservations.Listeners = state.SharedListenerReservations{}
+	runtimeState.Network.Reservations.Endpoints = []state.EndpointReservation{}
+
+	desired, err := desiredStateFromRuntimeState(runtimeState)
+	if err != nil {
+		t.Fatalf("desiredStateFromRuntimeState() identity error = %v", err)
+	}
+	if !desired.Empty() || desired.ListenerPlan() != (dataplane.ListenerPlan{}) {
+		t.Fatalf("identity-stage desired state = %#v, want truly empty", desired.ListenerPlan())
+	}
+	if len(desired.HTTPRoutes()) != 0 || len(desired.NativeRoutes()) != 0 || len(desired.DNSRecords()) != 0 {
+		t.Fatalf("identity-stage routes = HTTP %v, native %v, DNS %v", desired.HTTPRoutes(), desired.NativeRoutes(), desired.DNSRecords())
+	}
+}
+
 // TestDesiredStateFromRuntimeStateKeepsPendingProjectsEmpty verifies registration survives restart without claiming host networking.
 func TestDesiredStateFromRuntimeStateKeepsPendingProjectsEmpty(t *testing.T) {
 	tests := []struct {
@@ -223,6 +242,7 @@ func initializedControllerRuntimeState() state.RuntimeState {
 	return state.RuntimeState{
 		Snapshot: snapshot,
 		Network: state.NetworkRecord{
+			Stage:       state.NetworkStageFull,
 			Revision:    21,
 			CreatedAt:   verificationTime,
 			UpdatedAt:   verificationTime,

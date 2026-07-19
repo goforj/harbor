@@ -267,6 +267,9 @@ func validateUninitializedRuntimeNetwork(record NetworkRecord) error {
 	if record.Revision != 0 || !record.CreatedAt.IsZero() || !record.UpdatedAt.IsZero() {
 		return fmt.Errorf("uninitialized runtime network must not contain durable root facts")
 	}
+	if record.Stage != "" {
+		return fmt.Errorf("uninitialized runtime network must not contain a lifecycle stage")
+	}
 	if record.Ownership != (identity.Ownership{}) || record.Pool.Prefix().IsValid() || record.Pool.Capacity() != 0 {
 		return fmt.Errorf("uninitialized runtime network must not contain identity ownership or pool facts")
 	}
@@ -285,13 +288,13 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 	for _, project := range projects {
 		known[project.ID] = struct{}{}
 	}
-	primary := make(map[domain.ProjectID]struct{}, len(record.Leases))
+	primary := make(map[domain.ProjectID]netip.Addr, len(record.Leases))
 	for _, lease := range record.Leases {
 		if _, exists := known[lease.Key.ProjectID]; !exists {
 			return fmt.Errorf("runtime network lease references unknown project %q", lease.Key.ProjectID)
 		}
 		if lease.Key.Kind() == identity.LeaseKindPrimary {
-			primary[lease.Key.ProjectID] = struct{}{}
+			primary[lease.Key.ProjectID] = lease.Address
 		}
 	}
 	suppressed := make(map[domain.ProjectID]struct{}, len(record.Reservations.SuppressedProjectIDs))
@@ -299,7 +302,12 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 		suppressed[projectID] = struct{}{}
 	}
 	for _, project := range projects {
-		if _, exists := primary[project.ID]; exists {
+		if address, exists := primary[project.ID]; exists {
+			if record.Stage == NetworkStageIdentity {
+				if err := validateIdentityRuntimeProject(project, address); err != nil {
+					return fmt.Errorf("runtime project %q is unsafe for identity-stage networking: %w", project.ID, err)
+				}
+			}
 			continue
 		}
 		if _, exists := suppressed[project.ID]; exists {
@@ -311,6 +319,24 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 				project.ID,
 				err,
 			)
+		}
+	}
+	return nil
+}
+
+// validateIdentityRuntimeProject confines a leased identity-stage project to its exact literal loopback address.
+func validateIdentityRuntimeProject(project domain.ProjectSnapshot, address netip.Addr) error {
+	if err := validateUnleasedRuntimeProject(project); err != nil {
+		return err
+	}
+	for _, resource := range project.Resources {
+		parsed, err := url.Parse(resource.URL)
+		if err != nil {
+			return fmt.Errorf("resource %q URL: %w", resource.ID, err)
+		}
+		resourceAddress, err := netip.ParseAddr(parsed.Hostname())
+		if err != nil || resourceAddress.Unmap() != address {
+			return fmt.Errorf("resource %q URL host %q is not assigned identity %s", resource.ID, parsed.Hostname(), address)
 		}
 	}
 	return nil

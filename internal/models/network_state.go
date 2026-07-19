@@ -10,6 +10,7 @@ import (
 // NetworkState is the singleton durable owner of Harbor's network projection and global revision.
 type NetworkState struct {
 	Id                  int       `gorm:"column:id" json:"id"`
+	Stage               string    `gorm:"column:stage" json:"stage"`
 	InstallationId      string    `gorm:"column:installation_id" json:"installation_id"`
 	OwnershipGeneration int       `gorm:"column:ownership_generation" json:"ownership_generation"`
 	PoolNetwork         string    `gorm:"column:pool_network" json:"pool_network"`

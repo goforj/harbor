@@ -264,52 +264,17 @@ func validateNetworkInitializationProjects(
 
 // insertNetworkInitialization writes the aggregate in parent-before-child and lease-before-endpoint order.
 func insertNetworkInitialization(tx *gorm.DB, request InitializeNetworkRequest, sequence domain.Sequence) error {
-	root := models.NetworkState{
-		Id:                  networkStateSingletonID,
-		InstallationId:      string(request.Ownership.InstallationID),
-		OwnershipGeneration: int(request.Ownership.Generation),
-		PoolNetwork:         request.Pool.Prefix().Addr().String(),
-		PoolPrefixLength:    request.Pool.Prefix().Bits(),
-		DnsSuffix:           ".test",
-		CreatedAt:           request.At,
-		UpdatedAt:           request.At,
-		Revision:            int(sequence),
-	}
-	if err := requireOneCreate(tx.Create(&root), "create network state", "1"); err != nil {
+	if err := insertNetworkInitializationFoundation(
+		tx,
+		NetworkStageFull,
+		request.Ownership,
+		request.Pool,
+		request.PoolGeneration,
+		request.Setup,
+		request.At,
+		sequence,
+	); err != nil {
 		return err
-	}
-
-	for index, address := range request.Pool.Candidates() {
-		row := models.NetworkPoolCandidate{
-			NetworkStateId: networkStateSingletonID,
-			Ordinal:        index + 1,
-			Address:        address.String(),
-			Generation:     int(request.PoolGeneration),
-		}
-		if err := requireOneCreate(
-			tx.Create(&row),
-			"create network pool candidate",
-			address.String(),
-		); err != nil {
-			return err
-		}
-	}
-
-	for _, proof := range request.Setup {
-		row := models.NetworkSetupEvidence{
-			NetworkStateId: networkStateSingletonID,
-			Component:      string(proof.Component),
-			Evidence:       proof.Evidence,
-			Generation:     int(proof.Generation),
-			VerifiedAt:     proof.VerifiedAt,
-		}
-		if err := requireOneCreate(
-			tx.Create(&row),
-			"create network setup evidence",
-			string(proof.Component),
-		); err != nil {
-			return err
-		}
 	}
 
 	for _, listener := range networkInitializationListeners(request.Listeners) {
@@ -390,6 +355,69 @@ func insertNetworkInitialization(tx *gorm.DB, request InitializeNetworkRequest, 
 	return nil
 }
 
+// insertNetworkInitializationFoundation writes the lifecycle root and identity authority shared by both initialization stages.
+func insertNetworkInitializationFoundation(
+	tx *gorm.DB,
+	stage NetworkStage,
+	ownership identity.Ownership,
+	pool identity.Pool,
+	poolGeneration uint64,
+	setup []NetworkSetupProof,
+	at time.Time,
+	sequence domain.Sequence,
+) error {
+	root := models.NetworkState{
+		Id:                  networkStateSingletonID,
+		Stage:               string(stage),
+		InstallationId:      string(ownership.InstallationID),
+		OwnershipGeneration: int(ownership.Generation),
+		PoolNetwork:         pool.Prefix().Addr().String(),
+		PoolPrefixLength:    pool.Prefix().Bits(),
+		DnsSuffix:           ".test",
+		CreatedAt:           at,
+		UpdatedAt:           at,
+		Revision:            int(sequence),
+	}
+	if err := requireOneCreate(tx.Create(&root), "create network state", "1"); err != nil {
+		return err
+	}
+
+	for index, address := range pool.Candidates() {
+		row := models.NetworkPoolCandidate{
+			NetworkStateId: networkStateSingletonID,
+			Ordinal:        index + 1,
+			Address:        address.String(),
+			Generation:     int(poolGeneration),
+		}
+		if err := requireOneCreate(
+			tx.Create(&row),
+			"create network pool candidate",
+			address.String(),
+		); err != nil {
+			return err
+		}
+	}
+
+	for _, proof := range setup {
+		row := models.NetworkSetupEvidence{
+			NetworkStateId: networkStateSingletonID,
+			Component:      string(proof.Component),
+			Evidence:       proof.Evidence,
+			Generation:     int(proof.Generation),
+			VerifiedAt:     proof.VerifiedAt,
+		}
+		if err := requireOneCreate(
+			tx.Create(&row),
+			"create network setup evidence",
+			string(proof.Component),
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // networkInitializationListener pairs the fixed durable kind with its validated reservation.
 type networkInitializationListener struct {
 	kind        string
@@ -411,6 +439,9 @@ func networkInitializationDifference(rows networkModelRows, request InitializeNe
 		return "network root"
 	}
 	root := rows.States[0]
+	if root.Stage != string(NetworkStageFull) {
+		return "network stage"
+	}
 	if root.Id != networkStateSingletonID ||
 		root.InstallationId != string(request.Ownership.InstallationID) ||
 		root.OwnershipGeneration != int(request.Ownership.Generation) {
@@ -427,10 +458,10 @@ func networkInitializationDifference(rows networkModelRows, request InitializeNe
 	if len(rows.Releases) != 0 {
 		return "project release state"
 	}
-	if difference := networkInitializationCandidateDifference(rows.Candidates, request); difference != "" {
+	if difference := networkInitializationCandidateDifference(rows.Candidates, request.Pool, request.PoolGeneration); difference != "" {
 		return difference
 	}
-	if difference := networkInitializationSetupDifference(rows.SetupEvidence, request); difference != "" {
+	if difference := networkInitializationSetupDifference(rows.SetupEvidence, request.Setup); difference != "" {
 		return difference
 	}
 	if difference := networkInitializationListenerDifference(rows.Listeners, request); difference != "" {
@@ -444,8 +475,8 @@ func networkInitializationDifference(rows networkModelRows, request InitializeNe
 }
 
 // networkInitializationCandidateDifference compares the hidden pool generation and deterministic ordinals.
-func networkInitializationCandidateDifference(rows []models.NetworkPoolCandidate, request InitializeNetworkRequest) string {
-	candidates := request.Pool.Candidates()
+func networkInitializationCandidateDifference(rows []models.NetworkPoolCandidate, pool identity.Pool, generation uint64) string {
+	candidates := pool.Candidates()
 	if len(rows) != len(candidates) {
 		return "network pool candidates"
 	}
@@ -453,7 +484,7 @@ func networkInitializationCandidateDifference(rows []models.NetworkPoolCandidate
 		if row.NetworkStateId != networkStateSingletonID ||
 			row.Ordinal != index+1 ||
 			row.Address != candidates[index].String() ||
-			row.Generation != int(request.PoolGeneration) {
+			row.Generation != int(generation) {
 			return "network pool candidates"
 		}
 	}
@@ -461,15 +492,15 @@ func networkInitializationCandidateDifference(rows []models.NetworkPoolCandidate
 }
 
 // networkInitializationSetupDifference compares every sanitized setup proof without exposing evidence in diagnostics.
-func networkInitializationSetupDifference(rows []models.NetworkSetupEvidence, request InitializeNetworkRequest) string {
-	if len(rows) != len(request.Setup) {
+func networkInitializationSetupDifference(rows []models.NetworkSetupEvidence, setup []NetworkSetupProof) string {
+	if len(rows) != len(setup) {
 		return "network setup proofs"
 	}
 	byComponent := make(map[string]models.NetworkSetupEvidence, len(rows))
 	for _, row := range rows {
 		byComponent[row.Component] = row
 	}
-	for _, proof := range request.Setup {
+	for _, proof := range setup {
 		row, exists := byComponent[string(proof.Component)]
 		if !exists ||
 			row.NetworkStateId != networkStateSingletonID ||
@@ -599,6 +630,7 @@ func networkInitializationProjection(request InitializeNetworkRequest, sequence 
 		leases = append(leases, ensure.Lease)
 	}
 	return NetworkRecord{
+		Stage:       NetworkStageFull,
 		Revision:    sequence,
 		CreatedAt:   request.At,
 		UpdatedAt:   request.At,

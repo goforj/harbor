@@ -27,7 +27,7 @@ func TestNetworkRecordFromModelsBuildsCanonicalPayloadFreeProjection(t *testing.
 	if err := record.Validate(); err != nil {
 		t.Fatalf("NetworkRecord.Validate() error = %v", err)
 	}
-	if record.Revision != 7 || record.Ownership.Generation != 3 {
+	if record.Stage != NetworkStageFull || record.Revision != 7 || record.Ownership.Generation != 3 {
 		t.Fatalf("record authority = revision %d, ownership %#v", record.Revision, record.Ownership)
 	}
 	if candidates := addressStrings(record.Pool.Candidates()); !reflect.DeepEqual(candidates, []string{"127.77.0.10", "127.77.0.11", "127.77.0.12"}) {
@@ -53,6 +53,60 @@ func TestNetworkRecordFromModelsBuildsCanonicalPayloadFreeProjection(t *testing.
 	}
 	if record.Reservations.SuppressedProjectIDs == nil || len(record.Reservations.SuppressedProjectIDs) != 0 {
 		t.Fatalf("suppressed projects = %#v, want initialized empty", record.Reservations.SuppressedProjectIDs)
+	}
+}
+
+// TestNetworkRecordFromModelsAcceptsIdentityFoundation verifies partial authority converts without inventing data-plane facts.
+func TestNetworkRecordFromModelsAcceptsIdentityFoundation(t *testing.T) {
+	rows := identityNetworkModelRows()
+	record, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		t.Fatalf("networkRecordFromModels() identity error = %v", err)
+	}
+	if !initialized || record.Stage != NetworkStageIdentity {
+		t.Fatalf("identity conversion = initialized %t, stage %q", initialized, record.Stage)
+	}
+	if record.Reservations.Listeners != (SharedListenerReservations{}) ||
+		len(record.Reservations.Endpoints) != 0 || len(record.Leases) != 0 {
+		t.Fatalf("identity conversion projected unproved authority: %#v", record)
+	}
+	if err := record.Validate(); err != nil {
+		t.Fatalf("identity NetworkRecord.Validate() error = %v", err)
+	}
+}
+
+// TestNetworkRecordFromModelsRejectsIdentityDataPlaneCorruption verifies persisted stage and child rows cannot disagree.
+func TestNetworkRecordFromModelsRejectsIdentityDataPlaneCorruption(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*networkModelRows)
+		want   string
+	}{
+		{name: "resolver proof", mutate: func(rows *networkModelRows) {
+			rows.SetupEvidence = append(rows.SetupEvidence, models.NetworkSetupEvidence{
+				Id: 23, NetworkStateId: 1, Component: "resolver", Evidence: "verified resolver", Generation: 50, VerifiedAt: networkTestTime(),
+			})
+		}, want: "unsupported"},
+		{name: "missing pool proof", mutate: func(rows *networkModelRows) {
+			rows.SetupEvidence = rows.SetupEvidence[:1]
+		}, want: "required component is missing"},
+		{name: "listener", mutate: func(rows *networkModelRows) {
+			rows.Listeners = []models.NetworkSharedListener{validNetworkModelRows().Listeners[0]}
+		}, want: "must not contain listener reservations"},
+		{name: "endpoint", mutate: func(rows *networkModelRows) {
+			rows.Endpoints = []models.PublicEndpointLease{validNetworkModelRows().Endpoints[0]}
+		}, want: "must not contain endpoint reservations"},
+		{name: "unknown stage", mutate: func(rows *networkModelRows) {
+			rows.States[0].Stage = "partial"
+		}, want: "unsupported"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rows := identityNetworkModelRows()
+			test.mutate(&rows)
+			_, _, err := networkRecordFromModels(rows)
+			assertNetworkConversionCorruption(t, err, test.want)
+		})
 	}
 }
 
@@ -838,12 +892,35 @@ func TestNetworkEndpointConversionRejectsSharedSocketCollision(t *testing.T) {
 	assertNetworkConversionCorruption(t, err, "collides with HTTPS listener")
 }
 
+// identityNetworkModelRows returns one identity-only aggregate with stopped projects and no data-plane children.
+func identityNetworkModelRows() networkModelRows {
+	rows := validNetworkModelRows()
+	rows.States[0].Stage = string(NetworkStageIdentity)
+	proofs := make([]models.NetworkSetupEvidence, 0, 2)
+	for _, proof := range rows.SetupEvidence {
+		if proof.Component == string(NetworkSetupComponentMachineOwnership) ||
+			proof.Component == string(NetworkSetupComponentLoopbackPool) {
+			proofs = append(proofs, proof)
+		}
+	}
+	rows.SetupEvidence = proofs
+	rows.Listeners = []models.NetworkSharedListener{}
+	rows.Leases = []models.LoopbackAddressLease{}
+	rows.Endpoints = []models.PublicEndpointLease{}
+	rows.Releases = []models.NetworkProjectRelease{}
+	for index := range rows.Projects {
+		rows.Projects[index].State = string(domain.ProjectStopped)
+	}
+	return rows
+}
+
 // validNetworkModelRows returns one complete aggregate with deliberately noncanonical input slice order.
 func validNetworkModelRows() networkModelRows {
 	at := networkTestTime()
 	return networkModelRows{
 		States: []models.NetworkState{{
 			Id:                  1,
+			Stage:               string(NetworkStageFull),
 			InstallationId:      "installation-a",
 			OwnershipGeneration: 3,
 			PoolNetwork:         "127.77.0.0",

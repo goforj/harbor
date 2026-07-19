@@ -33,7 +33,7 @@ type NetworkSetupComponent string
 const (
 	// NetworkSetupComponentMachineOwnership proves Harbor owns the selected machine-level integration namespace.
 	NetworkSetupComponentMachineOwnership NetworkSetupComponent = "machine_ownership"
-	// NetworkSetupComponentLoopbackPool proves the selected loopback candidate pool is installed and owned.
+	// NetworkSetupComponentLoopbackPool proves the selected loopback pool boundary and candidates are reserved for Harbor.
 	NetworkSetupComponentLoopbackPool NetworkSetupComponent = "loopback_pool"
 	// NetworkSetupComponentResolver proves the .test resolver path reaches Harbor.
 	NetworkSetupComponentResolver NetworkSetupComponent = "resolver"
@@ -145,7 +145,67 @@ func (release NetworkLeaseRelease) Validate() error {
 	)
 }
 
-// InitializeNetworkRequest commits the first durable network aggregate after every supplied host fact is observed.
+// InitializeNetworkIdentityRequest commits the machine ownership and loopback pool foundation without claiming data-plane authority.
+type InitializeNetworkIdentityRequest struct {
+	ExpectedNetworkRevision domain.Sequence
+	Ownership               identity.Ownership
+	Pool                    identity.Pool
+	PoolGeneration          uint64
+	Setup                   []NetworkSetupProof
+	At                      time.Time
+}
+
+// Validate rejects stale-shaped or overprivileged identity initialization plans before storage authority is entered.
+func (request InitializeNetworkIdentityRequest) Validate() error {
+	if _, err := sequenceToModelInt("expected network revision", request.ExpectedNetworkRevision, true); err != nil {
+		return err
+	}
+	if request.ExpectedNetworkRevision != 0 {
+		return fmt.Errorf("initial network revision must be zero")
+	}
+	if err := validateStoredTime("network identity initialization time", request.At); err != nil {
+		return err
+	}
+	if err := request.Ownership.Validate(); err != nil {
+		return err
+	}
+	if _, err := unsignedToModelInt("network ownership generation", request.Ownership.Generation, false); err != nil {
+		return err
+	}
+	if err := request.Pool.Validate(); err != nil {
+		return err
+	}
+	if request.Pool.Capacity() > maximumNetworkPoolCandidateCount {
+		return fmt.Errorf("network pool contains %d candidates, maximum is %d", request.Pool.Capacity(), maximumNetworkPoolCandidateCount)
+	}
+	if _, err := unsignedToModelInt("network pool generation", request.PoolGeneration, false); err != nil {
+		return err
+	}
+	if err := validateNetworkIdentitySetupProofs(request.Setup, request.At); err != nil {
+		return err
+	}
+
+	candidate := NetworkRecord{
+		Stage:       NetworkStageIdentity,
+		Revision:    1,
+		CreatedAt:   request.At,
+		UpdatedAt:   request.At,
+		Ownership:   request.Ownership,
+		Pool:        request.Pool,
+		Leases:      []identity.Lease{},
+		Quarantines: []identity.Quarantine{},
+		Reservations: DataPlaneReservations{
+			Endpoints:            []EndpointReservation{},
+			SuppressedProjectIDs: []domain.ProjectID{},
+		},
+	}
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("initial network identity aggregate: %w", err)
+	}
+	return nil
+}
+
+// InitializeNetworkRequest commits the first full durable network aggregate after every supplied host fact is observed.
 type InitializeNetworkRequest struct {
 	ExpectedNetworkRevision domain.Sequence
 	ExpectedProjects        []NetworkProjectRevision
@@ -227,6 +287,7 @@ func (request InitializeNetworkRequest) Validate() error {
 		leases = append(leases, ensure.Lease)
 	}
 	candidate := NetworkRecord{
+		Stage:       NetworkStageFull,
 		Revision:    1,
 		CreatedAt:   request.At,
 		UpdatedAt:   request.At,
@@ -354,16 +415,28 @@ func validateNetworkProjectRevisions(expectations []NetworkProjectRevision) (map
 	return result, nil
 }
 
-// validateNetworkSetupProofs requires the fixed host setup vocabulary in its canonical dependency order.
+// validateNetworkIdentitySetupProofs requires only the ownership facts that identity allocation can safely consume.
+func validateNetworkIdentitySetupProofs(proofs []NetworkSetupProof, at time.Time) error {
+	return validateNetworkSetupProofSet(proofs, []NetworkSetupComponent{
+		NetworkSetupComponentMachineOwnership,
+		NetworkSetupComponentLoopbackPool,
+	}, at)
+}
+
+// validateNetworkSetupProofs requires the full host setup vocabulary in its canonical dependency order.
 func validateNetworkSetupProofs(proofs []NetworkSetupProof, at time.Time) error {
-	if proofs == nil {
-		return fmt.Errorf("network setup proofs must be initialized")
-	}
-	expected := [...]NetworkSetupComponent{
+	return validateNetworkSetupProofSet(proofs, []NetworkSetupComponent{
 		NetworkSetupComponentMachineOwnership,
 		NetworkSetupComponentLoopbackPool,
 		NetworkSetupComponentResolver,
 		NetworkSetupComponentLowPorts,
+	}, at)
+}
+
+// validateNetworkSetupProofSet requires one exact, ordered proof for every authority granted by a lifecycle stage.
+func validateNetworkSetupProofSet(proofs []NetworkSetupProof, expected []NetworkSetupComponent, at time.Time) error {
+	if proofs == nil {
+		return fmt.Errorf("network setup proofs must be initialized")
 	}
 	if len(proofs) != len(expected) {
 		return fmt.Errorf("network setup proofs contain %d components, expected %d", len(proofs), len(expected))

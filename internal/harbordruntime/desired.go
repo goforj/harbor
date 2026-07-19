@@ -14,7 +14,7 @@ func desiredStateFromRuntimeState(runtimeState state.RuntimeState) (dataplane.De
 	}
 
 	listeners := dataplane.ListenerPlan{}
-	if runtimeState.NetworkInitialized {
+	if runtimeState.NetworkInitialized && runtimeState.Network.Stage == state.NetworkStageFull {
 		reservations := runtimeState.Network.Reservations.Listeners
 		listeners = dataplane.ListenerPlan{
 			DNS:   reservations.DNS.Bind,

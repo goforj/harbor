@@ -21,6 +21,8 @@ const (
 	networkInitializeTestMigrationName = "2026_07_18_152632_create_network_persistence"
 	// networkInitializeTestDigestMigrationName identifies the replay-proof upgrade applied after the base schema.
 	networkInitializeTestDigestMigrationName = "2026_07_18_175743_add_network_release_set_digest"
+	// networkInitializeTestStageMigrationName identifies the identity-stage compatibility upgrade.
+	networkInitializeTestStageMigrationName = "2026_07_19_120000_add_network_stage"
 )
 
 // TestStoreInitializeNetworkCommitsCompleteAggregate verifies the first write owns one global revision and every hidden host fact.
@@ -32,7 +34,7 @@ func TestStoreInitializeNetworkCommitsCompleteAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitializeNetwork() error = %v", err)
 	}
-	if result.Replayed || result.Record.Revision != 7 {
+	if result.Replayed || result.Record.Revision != 7 || result.Record.Stage != NetworkStageFull {
 		t.Fatalf("InitializeNetwork() result = %#v, want applied revision 7", result)
 	}
 	if err := result.Validate(); err != nil {
@@ -848,7 +850,11 @@ func newNetworkInitializeTestHarnessWithConnections(t *testing.T, projects bool,
 // applyNetworkInitializeTestMigration applies Harbor's embedded production network migrations in durable schema order.
 func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 	t.Helper()
-	for _, name := range []string{networkInitializeTestMigrationName, networkInitializeTestDigestMigrationName} {
+	for _, name := range []string{
+		networkInitializeTestMigrationName,
+		networkInitializeTestDigestMigrationName,
+		networkInitializeTestStageMigrationName,
+	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {
 			if migration.Name() != name ||
@@ -869,6 +875,9 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 	}
 	if !connection.Migrator().HasColumn("network_project_releases", "release_set_digest") {
 		t.Fatal("embedded network migrations did not install release_set_digest")
+	}
+	if !connection.Migrator().HasColumn("network_state", "stage") {
+		t.Fatal("embedded network migrations did not install network stage")
 	}
 }
 
