@@ -237,6 +237,16 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if _, exists := supervisor.sessions[request.SessionID]; exists {
 		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
 	}
+	managedOverrides, err := writeManagedHostEnvironment(checkoutRoot, request.EnvironmentOverrides)
+	if err != nil {
+		return nil, fmt.Errorf("apply Harbor managed host environment: %w", err)
+	}
+	for name, value := range managedOverrides {
+		request.EnvironmentOverrides[name] = value
+	}
+	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
 
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot

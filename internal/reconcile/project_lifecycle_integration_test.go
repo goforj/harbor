@@ -270,7 +270,8 @@ func TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdenti
 	}
 
 	overrides := projectRuntimeEnvironmentOverrides(target)
-	if len(overrides) != 3 || overrides["DEV_SERVICE_IP_ADDRESS"] != "127.77.0.11" ||
+	if len(overrides) != 4 || overrides["API_HTTP_HOST"] != "127.77.0.11" ||
+		overrides["DEV_SERVICE_IP_ADDRESS"] != "127.77.0.11" ||
 		overrides["IP_ADDRESS"] != "127.77.0.11" ||
 		overrides["LIGHTHOUSE_URL"] != "ws://127.77.0.11:3000/lighthouse/ws/agent" {
 		t.Fatalf("runtime environment overrides = %#v", overrides)

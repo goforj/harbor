@@ -324,11 +324,11 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	}
 	waitForOutput(t, stdout, "dev-service-ip-address=127.0.0.42")
 	waitForOutput(t, stdout, "ip-address=127.0.0.42")
-	waitForOutput(t, stdout, "api-http-host=127.0.0.9")
+	waitForOutput(t, stdout, "api-http-host=127.0.0.42")
 	waitForOutput(t, stdout, "override=managed")
 	waitForOutput(t, stdout, "empty=true:")
 	waitForOutput(t, stdout, "unrelated=preserved")
-	waitForOutput(t, stdout, "managed-keys=DEV_SERVICE_IP_ADDRESS,HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
+	waitForOutput(t, stdout, "managed-keys=API_HTTP_HOST,DEV_SERVICE_IP_ADDRESS,HARBOR_PROJECT_PROCESS_EMPTY,HARBOR_PROJECT_PROCESS_OVERRIDE,IP_ADDRESS")
 	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
 		t.Fatalf("managed project retained captured override values: %q", output)
 	}
