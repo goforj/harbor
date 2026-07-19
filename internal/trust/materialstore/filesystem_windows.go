@@ -48,7 +48,7 @@ func preparePlatformRoot(path string) error {
 
 // platformSecureCreatedFile protects the already opened child from later ancestor-policy changes.
 func platformSecureCreatedFile(file *os.File, directory bool) error {
-	descriptor, owner, err := windowsPrivateDescriptor(directory)
+	descriptor, _, err := windowsPrivateDescriptor(directory)
 	if err != nil {
 		return err
 	}
@@ -60,11 +60,13 @@ func platformSecureCreatedFile(file *os.File, directory bool) error {
 	if err != nil {
 		return err
 	}
+	// Creation through Harbor's retained root already assigns the current user;
+	// retaining that owner avoids WRITE_OWNER, and the readback rejects drift.
 	err = windows.SetSecurityInfo(
 		securityHandle,
 		windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		owner,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
 		nil,
 		dacl,
 		nil,
@@ -86,7 +88,7 @@ func reopenWindowsSecurityHandle(file *os.File, directory bool) (windows.Handle,
 	}
 	handle, _, callErr := reOpenFileProcedure.Call(
 		file.Fd(),
-		uintptr(windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER),
+		uintptr(windows.WRITE_DAC),
 		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
 		flags,
 	)

@@ -133,7 +133,7 @@ jobs:
         shell: pwsh
         run: |
           $env:HARBOR_PRIVILEGED_LOOPBACK_TEST = "1"
-          & "${{ runner.temp }}\${{ matrix.binary }}" -test.run '^TestPrivilegedAdapterLifecycle$' -test.v
+          & "${{ runner.temp }}\${{ matrix.binary }}" "-test.run=^TestPrivilegedAdapterLifecycle$" "-test.v"
 
   frontend:
     name: Frontend

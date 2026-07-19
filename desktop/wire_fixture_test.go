@@ -22,6 +22,9 @@ func TestFrontendWireFixtureMatchesGoGenerator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated fixture: %v", err)
 	}
+	// Windows may materialize tracked text with CRLF even though the generator
+	// deliberately emits the repository's canonical LF form.
+	got = bytes.ReplaceAll(got, []byte("\r\n"), []byte("\n"))
 	if !bytes.Equal(got, want) {
 		t.Fatal("frontend fixture differs from the authoritative Go generator; run go generate ./...")
 	}
