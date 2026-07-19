@@ -24,7 +24,7 @@ const (
 	// networkInitializeTestStageMigrationName identifies the identity-stage compatibility upgrade.
 	networkInitializeTestStageMigrationName = "2026_07_19_120000_add_network_stage"
 	// networkInitializeTestOwnershipMigrationName identifies the daemon ownership projection schema.
-	networkInitializeTestOwnershipMigrationName = "2026_07_19_140000_create_machine_ownership_projections"
+	networkInitializeTestOwnershipMigrationName = "2026_07_19_115139_create_machine_ownership_projections"
 	// networkInitializeTestOwnershipPolicyMigrationName identifies the policy-bound ownership projection upgrade.
 	networkInitializeTestOwnershipPolicyMigrationName = "2026_07_19_150000_add_machine_ownership_network_policy_fingerprint"
 )

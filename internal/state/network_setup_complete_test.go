@@ -17,7 +17,6 @@ import (
 )
 
 var networkSetupCompletionOwnershipProjectionMigrations = []string{
-	"2026_07_19_140000_create_machine_ownership_projections",
 	"2026_07_19_150000_add_machine_ownership_network_policy_fingerprint",
 }
 

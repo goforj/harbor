@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const machineOwnershipProjectionMigrationName = "2026_07_19_140000_create_machine_ownership_projections"
+const machineOwnershipProjectionMigrationName = "2026_07_19_115139_create_machine_ownership_projections"
 
 const machineOwnershipPolicyMigrationName = "2026_07_19_150000_add_machine_ownership_network_policy_fingerprint"
 
@@ -44,6 +44,22 @@ type machineOwnershipProjectionStorageSnapshot struct {
 	TicketVerifierKey      string
 	RecordFingerprint      string
 	ConfirmedAt            string
+}
+
+// TestMachineOwnershipProjectionMigrationKeepsHistoricalIdentity pins the ledger key already present in development databases.
+func TestMachineOwnershipProjectionMigrationKeepsHistoricalIdentity(t *testing.T) {
+	migration := machineOwnershipProjectionMigration(t)
+	const historicalName = "2026_07_19_115139_create_machine_ownership_projections"
+	const historicalPath = "harbord/default/2026_07_19_115139_create_machine_ownership_projections"
+	if migration.Name() != historicalName || migration.SourcePath() != historicalPath {
+		t.Fatalf(
+			"machine ownership migration identity = (%q, %q), want historical (%q, %q)",
+			migration.Name(),
+			migration.SourcePath(),
+			historicalName,
+			historicalPath,
+		)
+	}
 }
 
 // TestMachineOwnershipProjectionMigrationCreatesBoundedSchema verifies the daemon projection cannot outlive its network root.
@@ -399,6 +415,54 @@ func TestMachineOwnershipPolicyMigrationRunsInEmbeddedStream(t *testing.T) {
 	record.NetworkPolicyFingerprint = &policyFingerprint
 	insertMachineOwnershipProjection(t, databaseConnection, record)
 	assertMachineOwnershipProjectionForeignKeysClean(t, databaseConnection)
+}
+
+// TestMachineOwnershipPolicyMigrationUpgradesHistoricalLedgerIdentity reproduces the durable database created before the later policy migration existed.
+func TestMachineOwnershipPolicyMigrationUpgradesHistoricalLedgerIdentity(t *testing.T) {
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	defer closeOperationMigrationDatabase(t, connections)
+	if err := ensureMigrationsTable(databaseConnection); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+	for _, migration := range selectMigrations("harbord", "default", "sqlite") {
+		if migration.Name() > machineOwnershipProjectionMigrationName {
+			break
+		}
+		applied, err := applySQLiteMigration(databaseConnection, migration, migrationRecord{
+			Name:       migration.Name(),
+			App:        migration.App(),
+			Connection: migration.Connection(),
+			SourcePath: migration.SourcePath(),
+			AppliedAt:  time.Date(2026, time.July, 19, 11, 51, 39, 0, time.UTC),
+		})
+		if err != nil || !applied {
+			t.Fatalf("apply historical migration %s = (%t, %v), want (true, nil)", migration.Name(), applied, err)
+		}
+	}
+	if databaseConnection.Migrator().HasColumn("machine_ownership_projections", "network_policy_fingerprint") {
+		t.Fatal("historical database unexpectedly contains the later policy column")
+	}
+
+	t.Setenv("FORJ_APP", "harbord")
+	if err := NewMigrateCmd(logger.NewSilentLogger(), connections).Run(); err != nil {
+		t.Fatalf("upgrade historical migration ledger: %v", err)
+	}
+	if !databaseConnection.Migrator().HasColumn("machine_ownership_projections", "network_policy_fingerprint") {
+		t.Fatal("historical database did not reach the policy-bound schema")
+	}
+	for name, want := range map[string]int64{
+		machineOwnershipProjectionMigrationName: 1,
+		machineOwnershipPolicyMigrationName:     1,
+		"2026_07_19_140000_create_machine_ownership_projections": 0,
+	} {
+		var count int64
+		if err := databaseConnection.Table("migrations").Where("name = ?", name).Count(&count).Error; err != nil {
+			t.Fatalf("count migration record %s: %v", name, err)
+		}
+		if count != want {
+			t.Fatalf("migration record %s count = %d, want %d", name, count, want)
+		}
+	}
 }
 
 // newMachineOwnershipProjectionMigrationHarness applies the production network root and its daemon-owned confirmation projection.
