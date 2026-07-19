@@ -38,7 +38,12 @@ type runtimeDependencies struct {
 func main() {
 	// The privileged helper must not let inherited ambient configuration influence its authority.
 	os.Clearenv()
-	if err := run(context.Background(), os.Stdin, os.Stdout, helper.SystemClock{}, productionDependencies()); err != nil {
+	invocation, err := openPlatformInvocation(os.Args, os.Stdin, os.Stdout)
+	if err != nil {
+		os.Exit(1)
+	}
+	runErr := run(context.Background(), invocation.reader, invocation.writer, helper.SystemClock{}, productionDependencies())
+	if err := errors.Join(runErr, invocation.close()); err != nil {
 		os.Exit(1)
 	}
 }
