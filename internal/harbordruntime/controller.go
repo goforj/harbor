@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/trust/certificates"
@@ -30,6 +31,8 @@ var (
 	ErrRuntimeStoppedUnexpectedly = errors.New("Harbor data plane stopped unexpectedly")
 	// ErrRuntimeShutdownIncomplete reports a child that did not publish terminal ownership within the cleanup bound.
 	ErrRuntimeShutdownIncomplete = errors.New("Harbor data plane shutdown did not complete")
+	// ErrProjectWithdrawalUnverified reports that the live data plane cannot prove a project has no published routes.
+	ErrProjectWithdrawalUnverified = errors.New("project route withdrawal is not verified")
 )
 
 // runtimeStateSource supplies one consistent durable runtime aggregate before startup performs any filesystem mutation.
@@ -329,6 +332,69 @@ func (controller *Controller) NetworkSnapshot() (dataplane.Snapshot, error) {
 		return dataplane.Snapshot{}, ErrNotReady
 	}
 	return runtime.Snapshot(), nil
+}
+
+// VerifyProjectWithdrawn proves the current process generation cannot route traffic for a project before host identity release.
+func (controller *Controller) VerifyProjectWithdrawn(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	networkRevision domain.Sequence,
+) error {
+	if controller == nil || !controller.initialized {
+		return ErrNotInitialized
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := projectID.Validate(); err != nil {
+		return fmt.Errorf("verify project withdrawal: %w", err)
+	}
+	if networkRevision == 0 || networkRevision > domain.MaximumSequence {
+		return fmt.Errorf(
+			"verify project withdrawal: network revision must be between 1 and %d",
+			domain.MaximumSequence,
+		)
+	}
+
+	controller.mutex.RLock()
+	lifecycle := controller.state
+	runtime := controller.dataPlane
+	controller.mutex.RUnlock()
+	if lifecycle == controllerStateNew && runtime == nil {
+		return nil
+	}
+	if lifecycle != controllerStateReady || runtime == nil {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: data plane is not ready",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+		)
+	}
+
+	snapshot := runtime.Snapshot()
+	if err := snapshot.Validate(); err != nil {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: invalid data-plane observation: %v",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+			err,
+		)
+	}
+	// The immutable generation does not yet expose project ownership, so any live route makes a targeted withdrawal unprovable.
+	if snapshot.State != dataplane.StateReady || snapshot.DNS.Records != 0 || snapshot.Ingress.Routes != 0 || len(snapshot.Relays) != 0 {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: live routes remain",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+		)
+	}
+	return nil
 }
 
 // PublicRoot returns a defensive public-only copy of the authority retained by the ready generation.

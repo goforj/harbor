@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -712,6 +713,83 @@ func TestControllerStartsEmptyGenerationAndClosesInOrder(t *testing.T) {
 	}
 	if runtime.closes.Load() != 1 || material.closes.Load() != 1 {
 		t.Fatalf("cleanup calls = runtime %d, material %d", runtime.closes.Load(), material.closes.Load())
+	}
+}
+
+// TestControllerVerifiesProjectWithdrawalFailClosed proves host release only proceeds without a live route generation.
+func TestControllerVerifiesProjectWithdrawalFailClosed(t *testing.T) {
+	projectID := domain.ProjectID("orders")
+	const networkRevision domain.Sequence = 17
+
+	var zero *Controller
+	if err := zero.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("zero VerifyProjectWithdrawn() error = %v, want %v", err, ErrNotInitialized)
+	}
+
+	events := &testEventLog{}
+	material := &testMaterialStore{events: events}
+	authority := &testCertificateAuthority{root: validTestRoot()}
+	runtime := newTestDataPlane(events)
+	controller := newFakeController(
+		t,
+		&testRuntimeStateSource{snapshot: validControllerSnapshot()},
+		testControllerDependencies(material, authority, runtime),
+	)
+	if err := controller.VerifyProjectWithdrawn(nil, projectID, networkRevision); err != nil {
+		t.Fatalf("VerifyProjectWithdrawn() before runtime start error = %v", err)
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), "", networkRevision); err == nil {
+		t.Fatal("VerifyProjectWithdrawn() invalid project error = nil")
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, 0); err == nil {
+		t.Fatal("VerifyProjectWithdrawn() zero revision error = nil")
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, domain.MaximumSequence+1); err == nil {
+		t.Fatal("VerifyProjectWithdrawn() overflowing revision error = nil")
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := controller.VerifyProjectWithdrawn(cancelled, projectID, networkRevision); !errors.Is(err, context.Canceled) {
+		t.Fatalf("VerifyProjectWithdrawn() cancelled error = %v, want %v", err, context.Canceled)
+	}
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); err != nil {
+		t.Fatalf("VerifyProjectWithdrawn() empty ready generation error = %v", err)
+	}
+
+	runtime.mutex.Lock()
+	runtime.snapshot.DNS = dataplane.DNSStatus{
+		Configured: true,
+		Address:    netip.MustParseAddrPort("127.0.0.1:53"),
+		Running:    true,
+		Records:    1,
+	}
+	runtime.snapshot.Relays = []dataplane.RelayStatus{{
+		ID:            "orders-database",
+		Host:          "database.orders.test",
+		ListenAddress: netip.MustParseAddrPort("127.0.0.2:3306"),
+		Upstream:      netip.MustParseAddrPort("127.0.0.1:43006"),
+		Running:       true,
+	}}
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) {
+		t.Fatalf("VerifyProjectWithdrawn() routed generation error = %v, want %v", err, ErrProjectWithdrawalUnverified)
+	}
+	runtime.mutex.Lock()
+	runtime.snapshot.DNS.Records = 2
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "invalid data-plane observation") {
+		t.Fatalf("VerifyProjectWithdrawn() invalid observation error = %v, want fail-closed validation", err)
+	}
+
+	if err := controller.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) {
+		t.Fatalf("VerifyProjectWithdrawn() stopped generation error = %v, want %v", err, ErrProjectWithdrawalUnverified)
 	}
 }
 
