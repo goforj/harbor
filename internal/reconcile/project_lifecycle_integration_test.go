@@ -160,6 +160,14 @@ func (*projectLifecycleRevisionRaceSupervisor) Stop(context.Context, domain.Proj
 	return nil
 }
 
+// ObservePriorProcess is unreachable because the revision-race fixture never persists process evidence.
+func (*projectLifecycleRevisionRaceSupervisor) ObservePriorProcess(
+	context.Context,
+	domain.ProcessEvidence,
+) (projectprocess.PriorProcessObservation, error) {
+	return projectprocess.PriorProcessObservation{}, errors.New("unexpected prior process observation after project revision drift")
+}
+
 // Close is inert because the revision-race fixture never accepts a process.
 func (*projectLifecycleRevisionRaceSupervisor) Close(context.Context) error {
 	return nil

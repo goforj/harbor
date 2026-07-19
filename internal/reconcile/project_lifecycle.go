@@ -75,6 +75,7 @@ type projectReadinessProber interface {
 type projectProcessSupervisor interface {
 	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
 	Stop(context.Context, domain.ProjectID, domain.SessionID) error
+	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
 	Close(context.Context) error
 }
 
@@ -841,6 +842,15 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 			if sessionErr != nil {
 				return sessionErr
 			}
+			if record.Operation.Kind == domain.OperationKindProjectStart && session.Process != nil {
+				recovered, recoveryErr := coordinator.recoverRunningProjectStart(ctx, record, session)
+				if recoveryErr != nil {
+					return recoveryErr
+				}
+				if recovered {
+					continue
+				}
+			}
 			return priorProcessOwnershipError(record, session)
 		default:
 			return fmt.Errorf("recover project lifecycle operation %q from unsupported active state %q", record.Operation.ID, record.Operation.State)
@@ -867,6 +877,70 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 		coordinator.dispatch(record)
 	}
 	return nil
+}
+
+// recoverRunningProjectStart retires only a process-backed start whose exact persisted birth is no longer present.
+func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
+	ctx context.Context,
+	record state.OperationRecord,
+	session domain.ProjectSession,
+) (bool, error) {
+	observation, err := coordinator.supervisor.ObservePriorProcess(ctx, *session.Process)
+	if err != nil {
+		return false, fmt.Errorf("observe prior process for project lifecycle operation %q: %w", record.Operation.ID, err)
+	}
+	switch observation.State {
+	case projectprocess.PriorProcessPresent:
+		return false, nil
+	case projectprocess.PriorProcessAbsent, projectprocess.PriorProcessReplaced:
+	default:
+		return false, fmt.Errorf(
+			"observe prior process for project lifecycle operation %q: unsupported state %q",
+			record.Operation.ID,
+			observation.State,
+		)
+	}
+
+	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	at := lifecycleTime(coordinator.now())
+	for _, lowerBound := range []time.Time{record.Operation.RequestedAt, project.Project.UpdatedAt, session.UpdatedAt} {
+		if at.Before(lowerBound) {
+			at = lowerBound
+		}
+	}
+	if record.Operation.StartedAt != nil && at.Before(*record.Operation.StartedAt) {
+		at = *record.Operation.StartedAt
+	}
+	evidence := *session.Process
+	cause := errors.New("previous Harbor-managed process was absent during daemon recovery")
+	if observation.State == projectprocess.PriorProcessReplaced {
+		cause = errors.New("previous Harbor-managed process birth was replaced before daemon recovery")
+	}
+	request := state.FailProjectStartRequest{
+		ProjectID:                 record.Operation.ProjectID,
+		OperationID:               record.Operation.ID,
+		ExpectedOperationRevision: record.Revision,
+		Exit: state.ConfirmedProjectProcessExit{
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Process:                   &evidence,
+			ExitedAt:                  at,
+		},
+		Phase:   "recovered absent process",
+		Problem: lifecycleProblem("project.recovery.process_absent", cause),
+	}
+	if _, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return coordinator.state.FailProjectStart(ctx, request)
+	}); err != nil {
+		return false, fmt.Errorf("recover project lifecycle operation %q after prior process absence: %w", record.Operation.ID, err)
+	}
+	if err := coordinator.reconcileProjectRoutes(ctx, "withdraw routes after prior project process absence"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // priorSessionOwnershipError rejects terminal-operation projections whose prior daemon process is not owned in memory.

@@ -3,11 +3,24 @@
 package projectprocess
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 )
+
+// observeProcessBirthToken distinguishes a missing process from an observation failure.
+func observeProcessBirthToken(pid int) (string, bool, error) {
+	token, err := processBirthToken(pid)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return token, true, nil
+}
 
 // processBirthToken combines the boot identity and kernel start tick so PID reuse cannot match another process.
 func processBirthToken(pid int) (string, error) {
