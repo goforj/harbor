@@ -55,14 +55,14 @@ func (source *scriptedPlanSource) Resolve(context.Context, Request) (Plan, error
 	return clonePlan(source.plans[index]), nil
 }
 
-// scriptedOwnershipObserver returns one result per protected ownership read.
+// scriptedOwnershipObserver returns one result per confirmed ownership projection read.
 type scriptedOwnershipObserver struct {
 	observations []ownership.Observation
 	errors       []error
 	calls        int
 }
 
-// Observe returns the next protected ownership result.
+// Observe returns the next confirmed ownership projection result.
 func (observer *scriptedOwnershipObserver) Observe(context.Context) (ownership.Observation, error) {
 	index := observer.calls
 	observer.calls++
@@ -85,6 +85,18 @@ type staticKeyLoader struct {
 	calls int
 }
 
+// closingKeyLoader adapts a scripted key loader to the default-opening lifecycle contract.
+type closingKeyLoader struct {
+	KeyLoader
+	closeCalls int
+}
+
+// Close records release of one default-opened signing-key store.
+func (loader *closingKeyLoader) Close() error {
+	loader.closeCalls++
+	return nil
+}
+
 // Load returns an isolated key so issuer code cannot mutate the fixture.
 func (loader *staticKeyLoader) Load(context.Context) (ed25519.PrivateKey, error) {
 	loader.calls++
@@ -98,6 +110,18 @@ type capturingPublisher struct {
 	ticket    helper.Ticket
 	key       ed25519.PrivateKey
 	calls     int
+}
+
+// closingPublisher adapts a scripted publisher to the default-opening lifecycle contract.
+type closingPublisher struct {
+	Publisher
+	closeCalls int
+}
+
+// Close records release of one default-opened pending-ticket publisher.
+func (publisher *closingPublisher) Close() error {
+	publisher.closeCalls++
+	return nil
 }
 
 // Publish captures one ticket and returns the scripted durable outcome.
@@ -405,8 +429,8 @@ func TestRequestPlanAndResultValidation(t *testing.T) {
 	}
 }
 
-// TestNewAndOpenDefaultRejectMissingAuthorities proves required collaborators fail before later use.
-func TestNewAndOpenDefaultRejectMissingAuthorities(t *testing.T) {
+// TestNewRejectsMissingAuthorities proves required collaborators fail before later use.
+func TestNewRejectsMissingAuthorities(t *testing.T) {
 	fixture := newIssuerFixture(t, helper.OperationEnsureLoopbackIdentity, LeasePending)
 	defer func() {
 		if recover() == nil {
@@ -416,10 +440,71 @@ func TestNewAndOpenDefaultRejectMissingAuthorities(t *testing.T) {
 	New(nil, fixture.ownership, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
 }
 
-// TestOpenDefaultRejectsNilPlanSource avoids opening fixed machine stores for invalid composition.
-func TestOpenDefaultRejectsNilPlanSource(t *testing.T) {
-	if _, err := OpenDefault(nil); err == nil {
-		t.Fatal("OpenDefault(nil) error = nil")
+// TestOpenDefaultRejectsMissingAuthorities avoids opening fixed stores for invalid composition.
+func TestOpenDefaultRejectsMissingAuthorities(t *testing.T) {
+	fixture := newIssuerFixture(t, helper.OperationEnsureLoopbackIdentity, LeasePending)
+	if _, err := OpenDefault(nil, fixture.ownership); err == nil {
+		t.Fatal("OpenDefault(nil plans) error = nil")
+	}
+	if _, err := OpenDefault(fixture.plans, nil); err == nil {
+		t.Fatal("OpenDefault(nil ownership) error = nil")
+	}
+}
+
+// TestOpenDefaultOpensOnlyIssuerStores proves default issuance cannot open the protected ownership store.
+func TestOpenDefaultOpensOnlyIssuerStores(t *testing.T) {
+	fixture := newIssuerFixture(t, helper.OperationEnsureLoopbackIdentity, LeasePending)
+	if _, err := openDefault(fixture.plans, fixture.ownership, defaultOpeners{}); err == nil || !strings.Contains(err.Error(), "openers are incomplete") {
+		t.Fatalf("openDefault(incomplete) error = %v", err)
+	}
+
+	sentinel := errors.New("default issuer store sentinel")
+	publisherOpens := 0
+	if _, err := openDefault(fixture.plans, fixture.ownership, defaultOpeners{
+		openKeys: func() (defaultKeyStoreCloser, error) { return nil, sentinel },
+		openPublisher: func() (defaultPublisherCloser, error) {
+			publisherOpens++
+			return nil, nil
+		},
+	}); !errors.Is(err, sentinel) || publisherOpens != 0 {
+		t.Fatalf("openDefault(key failure) error/publisher opens = %v / %d", err, publisherOpens)
+	}
+
+	failedKeys := &closingKeyLoader{KeyLoader: fixture.keys}
+	if _, err := openDefault(fixture.plans, fixture.ownership, defaultOpeners{
+		openKeys: func() (defaultKeyStoreCloser, error) { return failedKeys, nil },
+		openPublisher: func() (defaultPublisherCloser, error) {
+			return nil, sentinel
+		},
+	}); !errors.Is(err, sentinel) || failedKeys.closeCalls != 1 {
+		t.Fatalf("openDefault(publisher failure) error/key closes = %v / %d", err, failedKeys.closeCalls)
+	}
+
+	keys := &closingKeyLoader{KeyLoader: fixture.keys}
+	publisher := &closingPublisher{Publisher: fixture.publisher}
+	keyOpens := 0
+	publisherOpens = 0
+	service, err := openDefault(fixture.plans, fixture.ownership, defaultOpeners{
+		openKeys: func() (defaultKeyStoreCloser, error) {
+			keyOpens++
+			return keys, nil
+		},
+		openPublisher: func() (defaultPublisherCloser, error) {
+			publisherOpens++
+			return publisher, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("openDefault() error = %v", err)
+	}
+	if keyOpens != 1 || publisherOpens != 1 || fixture.ownership.calls != 0 {
+		t.Fatalf("openDefault() opens/ownership reads = keys %d publisher %d ownership %d", keyOpens, publisherOpens, fixture.ownership.calls)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := service.Close(); err != nil || keys.closeCalls != 1 || publisher.closeCalls != 1 {
+		t.Fatalf("Close(replay) = %v, key/publisher closes %d/%d", err, keys.closeCalls, publisher.closeCalls)
 	}
 }
 

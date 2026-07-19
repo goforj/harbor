@@ -140,11 +140,12 @@ func TestInitializeApplicationWiresForegroundServices(t *testing.T) {
 	}
 }
 
-// TestProvideProjectUnregisterCoordinatorIsLazy proves production assembly retains machine-global stores behind the issuer factory.
+// TestProvideProjectUnregisterCoordinatorIsLazy proves production assembly retains default issuer stores behind the issuer factory.
 func TestProvideProjectUnregisterCoordinatorIsLazy(t *testing.T) {
 	store := new(state.Store)
 	operations := new(state.OperationJournal)
 	plans := new(state.HelperApprovalPlanSource)
+	ownership := new(state.MachineOwnershipProjectionSource)
 	runtimeController, err := harbordruntime.NewController(store)
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
@@ -154,8 +155,9 @@ func TestProvideProjectUnregisterCoordinatorIsLazy(t *testing.T) {
 		store,
 		operations,
 		plans,
+		ownership,
 		runtimeController,
-		func(ticketissuer.PlanSource) (reconcile.TicketIssuer, error) {
+		func(ticketissuer.PlanSource, *state.MachineOwnershipProjectionSource) (reconcile.TicketIssuer, error) {
 			issuerOpenCalls++
 			return nil, errors.New("issuer opener must remain lazy")
 		},
@@ -176,17 +178,19 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	store := new(state.Store)
 	operations := new(state.OperationJournal)
 	plans := new(state.HelperApprovalPlanSource)
+	ownership := new(state.MachineOwnershipProjectionSource)
 	runtimeController, err := harbordruntime.NewController(store)
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}
-	openIssuer := func(ticketissuer.PlanSource) (reconcile.TicketIssuer, error) {
+	openIssuer := func(ticketissuer.PlanSource, *state.MachineOwnershipProjectionSource) (reconcile.TicketIssuer, error) {
 		return nil, errors.New("unused test issuer opener")
 	}
 	coordinator, err := provideProjectUnregisterCoordinatorWithIssuerOpener(
 		store,
 		operations,
 		plans,
+		ownership,
 		runtimeController,
 		openIssuer,
 	)
@@ -200,19 +204,22 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if _, err := provideControlServer(new(authority.Authority), nil); err == nil {
 		t.Fatal("provideControlServer(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, runtimeController, openIssuer); err == nil {
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, ownership, runtimeController, openIssuer); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil store) error = nil")
 	}
-	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, nil, plans, runtimeController, openIssuer); err == nil {
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, nil, plans, ownership, runtimeController, openIssuer); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil journal) error = nil")
 	}
-	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, nil, runtimeController, openIssuer); err == nil {
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, nil, ownership, runtimeController, openIssuer); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil plans) error = nil")
 	}
-	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, nil, openIssuer); err == nil {
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, nil, runtimeController, openIssuer); err == nil {
+		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil ownership) error = nil")
+	}
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, ownership, nil, openIssuer); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil runtime) error = nil")
 	}
-	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, runtimeController, nil); err == nil {
+	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, ownership, runtimeController, nil); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
 	}
 	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {

@@ -44,11 +44,13 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	operationJournal := state.NewOperationJournal(connections, operationRepo, operationTransitionRepo, harborStateRepo, mutationCoordinator)
 	helperApprovalPlanRepo := models.NewHelperApprovalPlanRepo(connections)
 	helperApprovalPlanSource := state.NewHelperApprovalPlanSource(helperApprovalPlanRepo)
+	machineOwnershipProjectionRepo := models.NewMachineOwnershipProjectionRepo(connections)
+	machineOwnershipProjectionSource := state.NewMachineOwnershipProjectionSource(machineOwnershipProjectionRepo)
 	controller, err := harbordruntime.NewController(store)
 	if err != nil {
 		return App{}, err
 	}
-	projectUnregisterCoordinator, err := provideProjectUnregisterCoordinator(store, operationJournal, helperApprovalPlanSource, controller)
+	projectUnregisterCoordinator, err := provideProjectUnregisterCoordinator(store, operationJournal, helperApprovalPlanSource, machineOwnershipProjectionSource, controller)
 	if err != nil {
 		return App{}, err
 	}

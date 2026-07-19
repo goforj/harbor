@@ -23,7 +23,6 @@ import (
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/hostconflict"
 	"github.com/goforj/harbor/internal/platform/loopback"
-	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
 
 const (
@@ -151,9 +150,9 @@ type PlanSource interface {
 	Resolve(context.Context, Request) (Plan, error)
 }
 
-// OwnershipObserver supplies the protected machine-global authority pinned during installation.
+// OwnershipObserver supplies the daemon-owned confirmed projection of machine authority.
 type OwnershipObserver interface {
-	// Observe returns the current protected ownership record and its canonical fingerprint.
+	// Observe returns the current confirmed ownership record and its canonical fingerprint.
 	Observe(context.Context) (ownership.Observation, error)
 }
 
@@ -167,6 +166,24 @@ type KeyLoader interface {
 type Publisher interface {
 	// Publish signs and durably publishes one validated helper ticket.
 	Publish(context.Context, helper.Ticket, ed25519.PrivateKey) (helper.TicketReference, error)
+}
+
+// defaultKeyStoreCloser releases one default-opened signing-key store after issuance shuts down.
+type defaultKeyStoreCloser interface {
+	KeyLoader
+	Close() error
+}
+
+// defaultPublisherCloser releases one default-opened pending-ticket publisher after issuance shuts down.
+type defaultPublisherCloser interface {
+	Publisher
+	Close() error
+}
+
+// defaultOpeners contains only the per-user signing-key and pending-ticket stores required by default issuance.
+type defaultOpeners struct {
+	openKeys      func() (defaultKeyStoreCloser, error)
+	openPublisher func() (defaultPublisherCloser, error)
 }
 
 // LoopbackObserver supplies the exact assignment facts that bind a loopback mutation.
@@ -224,34 +241,48 @@ func New(
 	}
 }
 
-// OpenDefault opens the fixed production ownership, key, and ticket stores around one durable plan source.
-func OpenDefault(plans PlanSource) (*Service, error) {
+// OpenDefault opens the fixed production key and ticket stores around daemon-owned durable authorities.
+func OpenDefault(plans PlanSource, ownershipObserver OwnershipObserver) (*Service, error) {
+	return openDefault(plans, ownershipObserver, productionDefaultOpeners())
+}
+
+// productionDefaultOpeners binds default issuance only to the per-user signing-key and pending-ticket stores.
+func productionDefaultOpeners() defaultOpeners {
+	return defaultOpeners{
+		openKeys: func() (defaultKeyStoreCloser, error) {
+			return ticketkey.OpenDefault()
+		},
+		openPublisher: func() (defaultPublisherCloser, error) {
+			return ticketspool.OpenDefault()
+		},
+	}
+}
+
+// openDefault opens production stores without crossing the protected ownership boundary.
+func openDefault(plans PlanSource, ownershipObserver OwnershipObserver, openers defaultOpeners) (*Service, error) {
 	if plans == nil {
 		return nil, fmt.Errorf("open helper ticket issuer: durable plan source is required")
 	}
-	paths, err := machinepaths.Resolve()
-	if err != nil {
-		return nil, fmt.Errorf("resolve helper ticket issuer paths: %w", err)
+	if ownershipObserver == nil {
+		return nil, fmt.Errorf("open helper ticket issuer: ownership observer is required")
 	}
-	ownershipStore, err := ownership.NewStore(paths.OwnershipPath)
-	if err != nil {
-		return nil, fmt.Errorf("open helper ticket issuer ownership: %w", err)
+	if openers.openKeys == nil || openers.openPublisher == nil {
+		return nil, fmt.Errorf("open helper ticket issuer: default store openers are incomplete")
 	}
-	keyStore, err := ticketkey.OpenDefault()
+	keyStore, err := openers.openKeys()
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("open helper ticket issuer key: %w", err), ownershipStore.Close())
+		return nil, fmt.Errorf("open helper ticket issuer key: %w", err)
 	}
-	publisher, err := ticketspool.OpenDefault()
+	publisher, err := openers.openPublisher()
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("open helper ticket issuer spool: %w", err),
 			keyStore.Close(),
-			ownershipStore.Close(),
 		)
 	}
 	service := New(
 		plans,
-		ownershipStore,
+		ownershipObserver,
 		keyStore,
 		publisher,
 		loopback.New(),
@@ -260,7 +291,7 @@ func OpenDefault(plans PlanSource) (*Service, error) {
 		rand.Reader,
 	)
 	service.closeStore = func() error {
-		return errors.Join(publisher.Close(), keyStore.Close(), ownershipStore.Close())
+		return errors.Join(publisher.Close(), keyStore.Close())
 	}
 	return service, nil
 }
@@ -364,7 +395,7 @@ func (service *Service) resolvePlan(ctx context.Context, request Request) (Plan,
 	return plan, nil
 }
 
-// observeOwnership proves the protected machine claim and durable lease describe one authority generation.
+// observeOwnership proves the confirmed machine claim and durable lease describe one authority generation.
 func (service *Service) observeOwnership(ctx context.Context, requesterIdentity string, plan Plan) (ownership.Observation, error) {
 	observation, err := service.ownership.Observe(ctx)
 	if err != nil {

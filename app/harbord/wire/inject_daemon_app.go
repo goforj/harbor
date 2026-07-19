@@ -24,8 +24,8 @@ import (
 
 const runtimeCloseCoordinationMargin = 5 * time.Second
 
-// projectUnregisterIssuerOpener isolates the machine-global store boundary so assembly tests can prove it stays lazy.
-type projectUnregisterIssuerOpener func(ticketissuer.PlanSource) (reconcile.TicketIssuer, error)
+// projectUnregisterIssuerOpener isolates default issuer stores while retaining daemon-owned ownership authority.
+type projectUnregisterIssuerOpener func(ticketissuer.PlanSource, *state.MachineOwnershipProjectionSource) (reconcile.TicketIssuer, error)
 
 // projectLifecycleRuntime joins managed project processes before releasing shared network infrastructure.
 type projectLifecycleRuntime struct {
@@ -136,15 +136,17 @@ func provideProjectUnregisterCoordinator(
 	store *state.Store,
 	operations *state.OperationJournal,
 	plans *state.HelperApprovalPlanSource,
+	ownership *state.MachineOwnershipProjectionSource,
 	runtimeController *harbordruntime.Controller,
 ) (*reconcile.ProjectUnregisterCoordinator, error) {
 	return provideProjectUnregisterCoordinatorWithIssuerOpener(
 		store,
 		operations,
 		plans,
+		ownership,
 		runtimeController,
-		func(plans ticketissuer.PlanSource) (reconcile.TicketIssuer, error) {
-			return ticketissuer.OpenDefault(plans)
+		func(plans ticketissuer.PlanSource, ownership *state.MachineOwnershipProjectionSource) (reconcile.TicketIssuer, error) {
+			return ticketissuer.OpenDefault(plans, ownership)
 		},
 	)
 }
@@ -154,11 +156,12 @@ func provideProjectProcessSupervisor(environment projectprocess.Environment) *pr
 	return projectprocess.New(projectprocess.Options{Environment: environment})
 }
 
-// provideProjectUnregisterCoordinatorWithIssuerOpener keeps the machine-global boundary injectable without making it process-global.
+// provideProjectUnregisterCoordinatorWithIssuerOpener keeps default issuer storage injectable without making it process-global.
 func provideProjectUnregisterCoordinatorWithIssuerOpener(
 	store *state.Store,
 	operations *state.OperationJournal,
 	plans *state.HelperApprovalPlanSource,
+	ownership *state.MachineOwnershipProjectionSource,
 	runtimeController *harbordruntime.Controller,
 	openIssuer projectUnregisterIssuerOpener,
 ) (*reconcile.ProjectUnregisterCoordinator, error) {
@@ -171,6 +174,9 @@ func provideProjectUnregisterCoordinatorWithIssuerOpener(
 	if plans == nil {
 		return nil, errors.New("create project unregister coordinator: approval plan source is required")
 	}
+	if ownership == nil {
+		return nil, errors.New("create project unregister coordinator: machine ownership projection source is required")
+	}
 	if runtimeController == nil {
 		return nil, errors.New("create project unregister coordinator: runtime controller is required")
 	}
@@ -178,7 +184,7 @@ func provideProjectUnregisterCoordinatorWithIssuerOpener(
 		return nil, errors.New("create project unregister coordinator: ticket issuer opener is required")
 	}
 	issuers := func() (reconcile.TicketIssuer, error) {
-		return openIssuer(plans)
+		return openIssuer(plans, ownership)
 	}
 	return reconcile.NewProjectUnregisterCoordinator(
 		store,

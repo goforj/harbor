@@ -24,6 +24,7 @@ var appSet = wire.NewSet(
 	state.NewMutationCoordinator,
 	state.NewOperationJournal,
 	state.NewHelperApprovalPlanSource,
+	state.NewMachineOwnershipProjectionSource,
 	state.NewStore,
 	harbordruntime.NewController,
 	provideProjectProcessSupervisor,
