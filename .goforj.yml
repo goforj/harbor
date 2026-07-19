@@ -23,7 +23,6 @@ dev:
       watch: [./.goforj.yml]
       workdir: ./desktop
       exec: wails dev -reloaddirs ../internal
-      exit: true
 render:
   components: [cli]
   starter_kit: none
