@@ -133,6 +133,31 @@ func TestWindowsOwnershipDescriptorExcludesInteractiveSID(t *testing.T) {
 	}
 }
 
+// TestWindowsOwnershipSecurityUpdateRequestsOnlyNecessaryAuthority verifies an existing machine owner never requires WRITE_OWNER.
+func TestWindowsOwnershipSecurityUpdateRequestsOnlyNecessaryAuthority(t *testing.T) {
+	administrators, err := windows.StringToSid(windowsAdministratorsSID)
+	if err != nil {
+		t.Fatalf("windows.StringToSid(Administrators) error = %v", err)
+	}
+	interactive, err := windows.StringToSid("S-1-5-21-100-200-300-1001")
+	if err != nil {
+		t.Fatalf("windows.StringToSid(interactive) error = %v", err)
+	}
+
+	information, ownerAccess := windowsOwnershipSecurityUpdate(administrators, administrators)
+	if information&windows.OWNER_SECURITY_INFORMATION != 0 || ownerAccess != 0 {
+		t.Fatalf("existing owner update = (%#x, %#x), want no owner mutation", information, ownerAccess)
+	}
+	if information&windows.DACL_SECURITY_INFORMATION == 0 || information&windows.PROTECTED_DACL_SECURITY_INFORMATION == 0 {
+		t.Fatalf("existing owner update information = %#x, want protected DACL mutation", information)
+	}
+
+	information, ownerAccess = windowsOwnershipSecurityUpdate(interactive, administrators)
+	if information&windows.OWNER_SECURITY_INFORMATION == 0 || ownerAccess != windows.WRITE_OWNER {
+		t.Fatalf("different owner update = (%#x, %#x), want owner mutation", information, ownerAccess)
+	}
+}
+
 // TestWindowsSecurityDescriptorRequiresExactBoundary covers every descriptor dimension without path setup hiding failures.
 func TestWindowsSecurityDescriptorRequiresExactBoundary(t *testing.T) {
 	interactive := "S-1-5-21-100-200-300-1001"

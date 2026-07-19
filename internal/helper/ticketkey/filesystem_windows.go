@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsfile"
 	"golang.org/x/sys/windows"
 )
 
@@ -18,8 +19,8 @@ const (
 	windowsFileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 )
 
-// reOpenFileProcedure derives security-authoring access from an existing object handle without resolving its path again.
-var reOpenFileProcedure = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
+// windowsCreateFile opens one Win32 path with explicit security-authoring access.
+type windowsCreateFile func(*uint16, uint32, uint32, *windows.SecurityAttributes, uint32, uint32, windows.Handle) (windows.Handle, error)
 
 // preparePlatformRoot creates the private leaf with a protected DACL in the creation syscall itself.
 func preparePlatformRoot(path string) error {
@@ -60,6 +61,8 @@ func platformSecureCreatedFile(file *os.File, directory bool) error {
 	if err != nil {
 		return err
 	}
+	// Children inherit full access for TokenUser, so the checked reopen can
+	// restore that explicit owner even when TokenOwner differs under elevation.
 	err = windows.SetSecurityInfo(
 		securityHandle,
 		windows.SE_FILE_OBJECT,
@@ -78,22 +81,45 @@ func platformSecureCreatedFile(file *os.File, directory bool) error {
 	return nil
 }
 
-// reopenWindowsSecurityHandle derives DACL-authoring access from the exact opened object instead of resolving its mutable name again.
+// reopenWindowsSecurityHandle verifies a path-derived security handle still names the exact retained object.
 func reopenWindowsSecurityHandle(file *os.File, directory bool) (windows.Handle, error) {
-	flags := uintptr(0)
+	return reopenWindowsSecurityHandleWith(file, directory, windows.CreateFile)
+}
+
+// reopenWindowsSecurityHandleWith rejects a path race before returning a security-authoring handle.
+func reopenWindowsSecurityHandleWith(file *os.File, directory bool, open windowsCreateFile) (windows.Handle, error) {
+	path, err := windowsfile.FinalPath(windows.Handle(file.Fd()))
+	if err != nil {
+		return windows.InvalidHandle, fmt.Errorf("resolve private Windows object path: %w", err)
+	}
+	pathPointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return windows.InvalidHandle, fmt.Errorf("encode private Windows object path: %w", err)
+	}
+	flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
 	if directory {
-		flags = windows.FILE_FLAG_BACKUP_SEMANTICS
+		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
 	}
-	handle, _, callErr := reOpenFileProcedure.Call(
-		file.Fd(),
-		uintptr(windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER),
-		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
+	handle, err := open(
+		pathPointer,
+		windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER|windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
 		flags,
+		0,
 	)
-	if windows.Handle(handle) == windows.InvalidHandle {
-		return windows.InvalidHandle, fmt.Errorf("reopen private Windows object for DACL protection: %w", callErr)
+	if err != nil {
+		return windows.InvalidHandle, fmt.Errorf("reopen private Windows object for DACL protection: %w", err)
 	}
-	return windows.Handle(handle), nil
+	same, err := windowsfile.SameObject(windows.Handle(file.Fd()), handle)
+	if err != nil {
+		return windows.InvalidHandle, errors.Join(err, windows.CloseHandle(handle))
+	}
+	if !same {
+		return windows.InvalidHandle, errors.Join(fmt.Errorf("private Windows object changed before DACL protection"), windows.CloseHandle(handle))
+	}
+	return handle, nil
 }
 
 // validatePlatformPath rejects reparse points and requires exactly the owner and LocalSystem protected-DACL grants.
@@ -207,7 +233,7 @@ func windowsPrivateDescriptor(directory bool) (*windows.SECURITY_DESCRIPTOR, *wi
 	return descriptor, owner, nil
 }
 
-// currentWindowsUserSID resolves the interactive process token identity used for owner-only storage.
+// currentWindowsUserSID resolves the interactive process identity retained across elevation contexts.
 func currentWindowsUserSID() (*windows.SID, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

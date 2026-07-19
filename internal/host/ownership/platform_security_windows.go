@@ -48,15 +48,32 @@ func securePlatformFile(file *os.File, directory bool) error {
 	if err != nil {
 		return fmt.Errorf("read machine ownership Windows DACL: %w", err)
 	}
-	securityHandle, err := reopenOwnershipSecurityHandle(file, directory)
+	currentDescriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return fmt.Errorf("read existing machine ownership Windows owner: %w", err)
+	}
+	currentOwner, _, err := currentDescriptor.Owner()
+	if err != nil {
+		return fmt.Errorf("decode existing machine ownership Windows owner: %w", err)
+	}
+	securityInformation, ownerAccess := windowsOwnershipSecurityUpdate(currentOwner, owner)
+	securityHandle, err := reopenOwnershipSecurityHandle(file, directory, ownerAccess)
 	if err != nil {
 		return err
+	}
+	ownerToApply := owner
+	if ownerAccess == 0 {
+		ownerToApply = nil
 	}
 	err = windows.SetSecurityInfo(
 		securityHandle,
 		windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		owner,
+		securityInformation,
+		ownerToApply,
 		nil,
 		dacl,
 		nil,
@@ -68,6 +85,15 @@ func securePlatformFile(file *os.File, directory bool) error {
 		return fmt.Errorf("apply machine ownership Windows DACL: %w", err)
 	}
 	return nil
+}
+
+// windowsOwnershipSecurityUpdate avoids privileged owner mutation when the object already has the machine owner.
+func windowsOwnershipSecurityUpdate(currentOwner, desiredOwner *windows.SID) (windows.SECURITY_INFORMATION, uint32) {
+	information := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	if currentOwner != nil && currentOwner.Equals(desiredOwner) {
+		return information, 0
+	}
+	return information | windows.OWNER_SECURITY_INFORMATION, windows.WRITE_OWNER
 }
 
 // validatePlatformFile rejects reparse points, hard links, and grants beyond Administrators and LocalSystem.
@@ -155,15 +181,15 @@ func windowsOwnershipDescriptor(directory bool) (*windows.SECURITY_DESCRIPTOR, *
 	return descriptor, owner, nil
 }
 
-// reopenOwnershipSecurityHandle derives DACL-authoring access from the exact created object.
-func reopenOwnershipSecurityHandle(file *os.File, directory bool) (windows.Handle, error) {
+// reopenOwnershipSecurityHandle derives only the security-authoring access required by the pending update.
+func reopenOwnershipSecurityHandle(file *os.File, directory bool, ownerAccess uint32) (windows.Handle, error) {
 	flags := uintptr(0)
 	if directory {
 		flags = windows.FILE_FLAG_BACKUP_SEMANTICS
 	}
 	handle, _, callErr := reopenOwnershipFileProcedure.Call(
 		file.Fd(),
-		uintptr(windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER),
+		uintptr(windows.READ_CONTROL|windows.WRITE_DAC|ownerAccess),
 		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
 		flags,
 	)

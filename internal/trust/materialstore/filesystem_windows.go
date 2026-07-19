@@ -10,14 +10,13 @@ import (
 	"runtime"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsfile"
 	"golang.org/x/sys/windows"
 )
 
 const (
-	windowsSystemSID          = "S-1-5-18"
-	windowsFileAllAccess      = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
-	windowsFinalPathStartSize = 256
-	windowsFinalPathLimit     = 32768
+	windowsSystemSID     = "S-1-5-18"
+	windowsFileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 )
 
 // windowsCreateFile opens one Win32 path with explicit security-authoring access.
@@ -50,7 +49,7 @@ func preparePlatformRoot(path string) error {
 
 // platformSecureCreatedFile protects the already opened child from later ancestor-policy changes.
 func platformSecureCreatedFile(file *os.File, directory bool) error {
-	descriptor, _, err := windowsPrivateDescriptor(directory)
+	descriptor, owner, err := windowsPrivateDescriptor(directory)
 	if err != nil {
 		return err
 	}
@@ -62,13 +61,13 @@ func platformSecureCreatedFile(file *os.File, directory bool) error {
 	if err != nil {
 		return err
 	}
-	// Creation through Harbor's retained root already assigns the current user;
-	// retaining that owner avoids WRITE_OWNER, and the readback rejects drift.
+	// Children inherit full access for TokenUser, so the checked reopen can
+	// restore that explicit owner even when TokenOwner differs under elevation.
 	err = windows.SetSecurityInfo(
 		securityHandle,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		owner,
 		nil,
 		dacl,
 		nil,
@@ -89,9 +88,9 @@ func reopenWindowsSecurityHandle(file *os.File, directory bool) (windows.Handle,
 
 // reopenWindowsSecurityHandleWith rejects a path race before returning a security-authoring handle.
 func reopenWindowsSecurityHandleWith(file *os.File, directory bool, open windowsCreateFile) (windows.Handle, error) {
-	path, err := finalWindowsPath(file)
+	path, err := windowsfile.FinalPath(windows.Handle(file.Fd()))
 	if err != nil {
-		return windows.InvalidHandle, err
+		return windows.InvalidHandle, fmt.Errorf("resolve private Windows object path: %w", err)
 	}
 	pathPointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -103,7 +102,7 @@ func reopenWindowsSecurityHandleWith(file *os.File, directory bool, open windows
 	}
 	handle, err := open(
 		pathPointer,
-		windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES,
+		windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER|windows.FILE_READ_ATTRIBUTES,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
@@ -113,7 +112,7 @@ func reopenWindowsSecurityHandleWith(file *os.File, directory bool, open windows
 	if err != nil {
 		return windows.InvalidHandle, fmt.Errorf("reopen private Windows object for DACL protection: %w", err)
 	}
-	same, err := sameWindowsFileObject(windows.Handle(file.Fd()), handle)
+	same, err := windowsfile.SameObject(windows.Handle(file.Fd()), handle)
 	if err != nil {
 		return windows.InvalidHandle, errors.Join(err, windows.CloseHandle(handle))
 	}
@@ -121,39 +120,6 @@ func reopenWindowsSecurityHandleWith(file *os.File, directory bool, open windows
 		return windows.InvalidHandle, errors.Join(fmt.Errorf("private Windows object changed before DACL protection"), windows.CloseHandle(handle))
 	}
 	return handle, nil
-}
-
-// finalWindowsPath resolves a handle path only as a candidate for an identity-checked reopen.
-func finalWindowsPath(file *os.File) (string, error) {
-	buffer := make([]uint16, windowsFinalPathStartSize)
-	for {
-		length, err := windows.GetFinalPathNameByHandle(windows.Handle(file.Fd()), &buffer[0], uint32(len(buffer)), 0)
-		if err != nil {
-			return "", fmt.Errorf("resolve private Windows object path: %w", err)
-		}
-		if length < uint32(len(buffer)) {
-			return windows.UTF16ToString(buffer[:length]), nil
-		}
-		if length >= windowsFinalPathLimit {
-			return "", fmt.Errorf("private Windows object path exceeds %d UTF-16 code units", windowsFinalPathLimit-1)
-		}
-		buffer = make([]uint16, length+1)
-	}
-}
-
-// sameWindowsFileObject compares stable volume and file indexes while both objects remain open.
-func sameWindowsFileObject(first, second windows.Handle) (bool, error) {
-	var firstInformation windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(first, &firstInformation); err != nil {
-		return false, fmt.Errorf("identify original private Windows object: %w", err)
-	}
-	var secondInformation windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(second, &secondInformation); err != nil {
-		return false, fmt.Errorf("identify reopened private Windows object: %w", err)
-	}
-	return firstInformation.VolumeSerialNumber == secondInformation.VolumeSerialNumber &&
-		firstInformation.FileIndexHigh == secondInformation.FileIndexHigh &&
-		firstInformation.FileIndexLow == secondInformation.FileIndexLow, nil
 }
 
 // validatePlatformPath rejects reparse points and requires exactly the owner and LocalSystem protected-DACL grants.
@@ -267,7 +233,7 @@ func windowsPrivateDescriptor(directory bool) (*windows.SECURITY_DESCRIPTOR, *wi
 	return descriptor, owner, nil
 }
 
-// currentWindowsUserSID resolves the interactive process token identity used for owner-only storage.
+// currentWindowsUserSID resolves the interactive process identity retained across elevation contexts.
 func currentWindowsUserSID() (*windows.SID, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

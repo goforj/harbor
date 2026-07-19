@@ -13,6 +13,64 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// TestWindowsSecureCreatedObjectAppliesTokenUserOwner verifies default ownership cannot vary across elevation contexts.
+func TestWindowsSecureCreatedObjectAppliesTokenUserOwner(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "materials")
+	if err := preparePlatformRoot(root); err != nil {
+		t.Fatalf("preparePlatformRoot() error = %v", err)
+	}
+	path := filepath.Join(root, "material")
+	if err := os.WriteFile(path, nil, privateFileMode); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("os.Open() error = %v", err)
+	}
+	defer file.Close()
+	beforeDescriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		t.Fatalf("windows.GetSecurityInfo() error = %v", err)
+	}
+	beforeOwner, _, err := beforeDescriptor.Owner()
+	if err != nil {
+		t.Fatalf("SecurityDescriptor.Owner() error = %v", err)
+	}
+	want, err := currentWindowsUserSID()
+	if err != nil {
+		t.Fatalf("currentWindowsUserSID() error = %v", err)
+	}
+	if beforeOwner != nil && !beforeOwner.Equals(want) {
+		t.Logf("default owner %q differs from TokenUser %q", beforeOwner.String(), want.String())
+	}
+	if err := platformSecureCreatedFile(file, false); err != nil {
+		t.Fatalf("platformSecureCreatedFile() error = %v", err)
+	}
+	afterDescriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		t.Fatalf("windows.GetSecurityInfo(after) error = %v", err)
+	}
+	afterOwner, _, err := afterDescriptor.Owner()
+	if err != nil {
+		t.Fatalf("SecurityDescriptor.Owner(after) error = %v", err)
+	}
+	if afterOwner == nil || !afterOwner.Equals(want) {
+		got := ""
+		if afterOwner != nil {
+			got = afterOwner.String()
+		}
+		t.Fatalf("secured object owner = %q, want TokenUser %q", got, want.String())
+	}
+}
+
 // TestWindowsSecureCreatedPathUsesObjectSpecificACEFlags verifies directories inherit private grants while files carry effective grants only.
 func TestWindowsSecureCreatedPathUsesObjectSpecificACEFlags(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "certificates")
