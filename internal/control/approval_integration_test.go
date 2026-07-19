@@ -166,7 +166,7 @@ func TestProjectUnregisterApprovalRequiresNegotiatedCapability(t *testing.T) {
 		approvalPreparation:  validControlApprovalPreparation(),
 		approvalConfirmation: validControlApprovalConfirmation(t),
 	}
-	controlServer, err := newServer(ServerConfig{Authority: authority}, testBuild)
+	controlServer, err := newServer(ServerConfig{Authority: authority, RequestShutdown: func() {}}, testBuild)
 	if err != nil {
 		t.Fatalf("newServer() error = %v", err)
 	}

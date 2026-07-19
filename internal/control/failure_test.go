@@ -257,10 +257,10 @@ func TestServerRejectsAuthorityStatusContradictingItsBuild(t *testing.T) {
 
 // TestServerConstructionAndNilConnectionFailuresAreImmediate verifies startup errors precede application reads.
 func TestServerConstructionAndNilConnectionFailuresAreImmediate(t *testing.T) {
-	if _, err := newServer(ServerConfig{Authority: &recordingAuthority{}}, testBuildWithVersion("bad version")); err == nil {
+	if _, err := newServer(ServerConfig{Authority: &recordingAuthority{}, RequestShutdown: func() {}}, testBuildWithVersion("bad version")); err == nil {
 		t.Fatal("newServer accepted an invalid build")
 	}
-	server, err := newServer(ServerConfig{Authority: &recordingAuthority{}}, testBuild)
+	server, err := newServer(ServerConfig{Authority: &recordingAuthority{}, RequestShutdown: func() {}}, testBuild)
 	if err != nil {
 		t.Fatalf("construct control server: %v", err)
 	}

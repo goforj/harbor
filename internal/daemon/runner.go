@@ -70,6 +70,8 @@ type RunnerConfig struct {
 	Recovery StartupRecovery
 	// Runtime owns network infrastructure for the complete authenticated endpoint lifetime.
 	Runtime Runtime
+	// ShutdownRequested lets an authenticated control request initiate the same joined shutdown as process cancellation.
+	ShutdownRequested <-chan struct{}
 	// RuntimeCloseTimeout is the outer cleanup budget after IPC fully joins.
 	// Zero uses a default that exceeds Harbor's nested controller and data-plane cleanup budgets.
 	RuntimeCloseTimeout time.Duration
@@ -228,6 +230,9 @@ func newRunner(config RunnerConfig, dependencies runnerDependencies) (*Runner, e
 	}
 	if requiredInterfaceIsNil(config.Runtime) {
 		return nil, errors.New("create daemon runner: runtime is required")
+	}
+	if config.ShutdownRequested == nil {
+		return nil, errors.New("create daemon runner: shutdown request signal is required")
 	}
 	if config.RuntimeCloseTimeout < 0 {
 		return nil, errors.New("create daemon runner: runtime close timeout cannot be negative")
@@ -608,6 +613,8 @@ func (runner *Runner) serve(ctx context.Context, listener local.Listener, runtim
 		defer close(watcherDone)
 		select {
 		case <-ctx.Done():
+			shutdown()
+		case <-runner.config.ShutdownRequested:
 			shutdown()
 		case <-runtimeDone:
 			runtimeStopped = true

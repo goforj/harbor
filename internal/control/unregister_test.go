@@ -263,7 +263,7 @@ func TestProjectUnregisterRequiresNegotiatedCapability(t *testing.T) {
 	clientConnection := &testLocalConn{Conn: clientStream, peer: testDaemonPeer}
 	serverConnection := &testLocalConn{Conn: serverStream, peer: testClientPeer}
 	authority := &recordingAuthority{unregistration: controlTestUnregistration(t)}
-	controlServer, err := newServer(ServerConfig{Authority: authority}, testBuild)
+	controlServer, err := newServer(ServerConfig{Authority: authority, RequestShutdown: func() {}}, testBuild)
 	if err != nil {
 		t.Fatalf("newServer() error = %v", err)
 	}

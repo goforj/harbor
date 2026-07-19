@@ -10,7 +10,9 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/control"
+	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
@@ -138,8 +140,12 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provideProjectUnregisterCoordinatorWithIssuerOpener() error = %v", err)
 	}
-	if _, err := provideControlServer(nil); err == nil {
+	shutdown := daemon.NewShutdown()
+	if _, err := provideControlServer(nil, shutdown); err == nil {
 		t.Fatal("provideControlServer(nil) error = nil, want required authority error")
+	}
+	if _, err := provideControlServer(new(authority.Authority), nil); err == nil {
+		t.Fatal("provideControlServer(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, runtimeController, openIssuer); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil store) error = nil")
@@ -156,17 +162,20 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, runtimeController, nil); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
 	}
-	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator); err == nil {
+	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil server) error = nil, want required server error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil readiness) error = nil, want required readiness error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil runtime) error = nil, want required runtime error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil coordinator) error = nil, want required coordinator error")
+	}
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil); err == nil {
+		t.Fatal("provideDaemonRunner(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
 }
 

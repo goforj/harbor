@@ -17,11 +17,13 @@ type fakeDaemonControlClient struct {
 	registration           control.ProjectRegistration
 	unregistration         control.ProjectUnregistration
 	statusErr              error
+	stopErr                error
 	snapshotErr            error
 	registrationErr        error
 	unregistrationErr      error
 	closeErr               error
 	statusCalls            int
+	stopCalls              int
 	snapshotCalls          int
 	registrationCalls      int
 	unregistrationCalls    int
@@ -54,6 +56,12 @@ func (client *fakeDaemonControlClient) UnregisterProject(
 func (client *fakeDaemonControlClient) Status(context.Context) (control.DaemonStatus, error) {
 	client.statusCalls++
 	return client.status, client.statusErr
+}
+
+// Stop returns the configured daemon-control result and records the request.
+func (client *fakeDaemonControlClient) Stop(context.Context) error {
+	client.stopCalls++
+	return client.stopErr
 }
 
 // Snapshot returns the configured daemon snapshot and records the request.
@@ -140,6 +148,19 @@ func TestDaemonClientSnapshotUsesASeparateOneShotConnection(t *testing.T) {
 	}
 }
 
+// TestDaemonClientStopUsesOneAcknowledgedConnection verifies shutdown acknowledgement and cleanup share one transport lifetime.
+func TestDaemonClientStopUsesOneAcknowledgedConnection(t *testing.T) {
+	connection := &fakeDaemonControlClient{}
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+
+	if err := client.Stop(t.Context()); err != nil {
+		t.Fatalf("stop daemon: %v", err)
+	}
+	if connection.stopCalls != 1 || connection.closeCalls != 1 {
+		t.Fatalf("calls = stop:%d close:%d, want 1 each", connection.stopCalls, connection.closeCalls)
+	}
+}
+
 // TestDaemonClientRegistrationUsesASeparateOneShotConnection verifies project mutations share the CLI cleanup contract.
 func TestDaemonClientRegistrationUsesASeparateOneShotConnection(t *testing.T) {
 	registration := addTestRegistration(t.TempDir(), true)
@@ -199,6 +220,15 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 			},
 			makeConnection: func() *fakeDaemonControlClient {
 				return &fakeDaemonControlClient{statusErr: requestErr, closeErr: closeErr}
+			},
+		},
+		{
+			name: "stop",
+			call: func(client *DaemonClient) error {
+				return client.Stop(t.Context())
+			},
+			makeConnection: func() *fakeDaemonControlClient {
+				return &fakeDaemonControlClient{stopErr: requestErr, closeErr: closeErr}
 			},
 		},
 		{

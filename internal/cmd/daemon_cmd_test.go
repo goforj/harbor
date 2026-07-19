@@ -57,6 +57,33 @@ func newDaemonCommandFixture(connection *fakeDaemonControlClient) (*DaemonStatus
 	return status, snapshot, statusOutput, snapshotOutput
 }
 
+// newDaemonStopCommandFixture creates one daemon stop command around an observable connection.
+func newDaemonStopCommandFixture(connection *fakeDaemonControlClient) (*DaemonStopCmd, *bytes.Buffer) {
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+		return connection, nil
+	})
+	output := &bytes.Buffer{}
+	stop := NewDaemonStopCmd(client)
+	stop.output = output
+	return stop, output
+}
+
+// TestDaemonStopCommandPrintsAcknowledgedShutdown verifies success is visible only after one control call completes.
+func TestDaemonStopCommandPrintsAcknowledgedShutdown(t *testing.T) {
+	connection := &fakeDaemonControlClient{}
+	stop, output := newDaemonStopCommandFixture(connection)
+
+	if err := stop.Run(t.Context()); err != nil {
+		t.Fatalf("run daemon stop: %v", err)
+	}
+	if output.String() != "Harbor daemon is stopping. Stable Harbor endpoints will be unavailable until it starts again.\n" {
+		t.Fatalf("output = %q, want acknowledged shutdown", output.String())
+	}
+	if connection.stopCalls != 1 || connection.closeCalls != 1 {
+		t.Fatalf("calls = stop:%d close:%d, want 1 each", connection.stopCalls, connection.closeCalls)
+	}
+}
+
 // TestDaemonStatusCommandPrintsStableHumanOutput verifies the default output remains concise and script-readable by line.
 func TestDaemonStatusCommandPrintsStableHumanOutput(t *testing.T) {
 	connection := &fakeDaemonControlClient{status: daemonTestStatus()}
@@ -181,6 +208,14 @@ func TestDaemonCommandsReturnOutputFailuresAfterClosing(t *testing.T) {
 		run  func(*fakeDaemonControlClient) error
 	}{
 		{
+			name: "stop",
+			run: func(connection *fakeDaemonControlClient) error {
+				stop, _ := newDaemonStopCommandFixture(connection)
+				stop.output = failingDaemonWriter{err: writeErr}
+				return stop.Run(t.Context())
+			},
+		},
+		{
 			name: "human status",
 			run: func(connection *fakeDaemonControlClient) error {
 				status, _, _, _ := newDaemonCommandFixture(connection)
@@ -228,6 +263,14 @@ func TestDaemonCommandsReturnControlFailuresWithoutOutput(t *testing.T) {
 		run  func(*fakeDaemonControlClient) (string, error)
 	}{
 		{
+			name: "stop",
+			run: func(connection *fakeDaemonControlClient) (string, error) {
+				stop, output := newDaemonStopCommandFixture(connection)
+				err := stop.Run(t.Context())
+				return output.String(), err
+			},
+		},
+		{
 			name: "status",
 			run: func(connection *fakeDaemonControlClient) (string, error) {
 				status, _, output, _ := newDaemonCommandFixture(connection)
@@ -245,7 +288,7 @@ func TestDaemonCommandsReturnControlFailuresWithoutOutput(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			connection := &fakeDaemonControlClient{statusErr: requestErr, snapshotErr: requestErr}
+			connection := &fakeDaemonControlClient{statusErr: requestErr, stopErr: requestErr, snapshotErr: requestErr}
 			output, err := test.run(connection)
 			if !errors.Is(err, requestErr) {
 				t.Fatalf("error = %v, want %v", err, requestErr)
@@ -260,22 +303,24 @@ func TestDaemonCommandsReturnControlFailuresWithoutOutput(t *testing.T) {
 	}
 }
 
-// TestDaemonCommandGroupRoutesStatusAndSnapshot verifies Kong exposes the intended two-level CLI surface.
-func TestDaemonCommandGroupRoutesStatusAndSnapshot(t *testing.T) {
+// TestDaemonCommandGroupRoutesLifecycleCommands verifies Kong exposes the intended two-level CLI surface.
+func TestDaemonCommandGroupRoutesLifecycleCommands(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		args []string
 		want string
 	}{
 		{name: "status", args: []string{"daemon", "status", "--json"}, want: `"state": "ready"`},
+		{name: "stop", args: []string{"daemon", "stop"}, want: "Stable Harbor endpoints will be unavailable"},
 		{name: "snapshot", args: []string{"daemon", "snapshot"}, want: `"schema_version": 1`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := &fakeDaemonControlClient{status: daemonTestStatus(), snapshot: daemonTestSnapshot()}
 			status, snapshot, statusOutput, snapshotOutput := newDaemonCommandFixture(connection)
+			stop, stopOutput := newDaemonStopCommandFixture(connection)
 			root := struct {
 				Daemon DaemonCmd `cmd:""`
-			}{Daemon: *NewDaemonCmd(status, snapshot)}
+			}{Daemon: *NewDaemonCmd(status, stop, snapshot)}
 			parser, err := kong.New(&root)
 			if err != nil {
 				t.Fatalf("create parser: %v", err)
@@ -288,7 +333,7 @@ func TestDaemonCommandGroupRoutesStatusAndSnapshot(t *testing.T) {
 			if err := parsed.Run(); err != nil {
 				t.Fatalf("run %v: %v", test.args, err)
 			}
-			output := statusOutput.String() + snapshotOutput.String()
+			output := statusOutput.String() + stopOutput.String() + snapshotOutput.String()
 			if !strings.Contains(output, test.want) {
 				t.Fatalf("output = %q, want substring %q", output, test.want)
 			}

@@ -185,10 +185,27 @@ func newRunningControlClient(
 	observer ErrorObserver,
 ) runningControlClient {
 	t.Helper()
+
+	return newRunningControlClientWithShutdown(t, role, authority, observer, func() {})
+}
+
+// newRunningControlClientWithShutdown keeps daemon lifecycle publication observable in protocol tests.
+func newRunningControlClientWithShutdown(
+	t *testing.T,
+	role rpc.Role,
+	authority Authority,
+	observer ErrorObserver,
+	requestShutdown func(),
+) runningControlClient {
+	t.Helper()
 	clientStream, serverStream := net.Pipe()
 	clientConnection := &testLocalConn{Conn: clientStream, peer: testDaemonPeer}
 	serverConnection := &testLocalConn{Conn: serverStream, peer: testClientPeer}
-	controlServer, err := newServer(ServerConfig{Authority: authority, ObserveError: observer}, testBuild)
+	controlServer, err := newServer(ServerConfig{
+		Authority:       authority,
+		RequestShutdown: requestShutdown,
+		ObserveError:    observer,
+	}, testBuild)
 	if err != nil {
 		t.Fatalf("construct control server: %v", err)
 	}
@@ -293,7 +310,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}
@@ -402,7 +419,10 @@ func TestControlServerRejectsRolesAndMissingCapability(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			clientStream, serverStream := net.Pipe()
 			serverConnection := &testLocalConn{Conn: serverStream, peer: testClientPeer}
-			controlServer, err := newServer(ServerConfig{Authority: &recordingAuthority{}}, testBuild)
+			controlServer, err := newServer(ServerConfig{
+				Authority:       &recordingAuthority{},
+				RequestShutdown: func() {},
+			}, testBuild)
 			if err != nil {
 				t.Fatalf("construct control server: %v", err)
 			}
@@ -455,7 +475,10 @@ func TestControlClientRejectsInvalidConfigurationBeforeDial(t *testing.T) {
 func TestControlServerRejectsInvalidTransportIdentity(t *testing.T) {
 	clientStream, serverStream := net.Pipe()
 	defer clientStream.Close()
-	controlServer, err := newServer(ServerConfig{Authority: &recordingAuthority{}}, testBuild)
+	controlServer, err := newServer(ServerConfig{
+		Authority:       &recordingAuthority{},
+		RequestShutdown: func() {},
+	}, testBuild)
 	if err != nil {
 		t.Fatalf("construct control server: %v", err)
 	}
@@ -498,5 +521,8 @@ func TestNewServerRejectsMissingAuthority(t *testing.T) {
 	var typedNil *recordingAuthority
 	if _, err := NewServer(ServerConfig{Authority: typedNil}); err == nil {
 		t.Fatal("NewServer accepted a typed nil authority")
+	}
+	if _, err := NewServer(ServerConfig{Authority: &recordingAuthority{}}); err == nil {
+		t.Fatal("NewServer accepted a missing shutdown requester")
 	}
 }

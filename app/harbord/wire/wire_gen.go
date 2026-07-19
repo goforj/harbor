@@ -10,6 +10,7 @@ import (
 	"github.com/goforj/harbor/app/harbord"
 	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/cmd"
+	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/logger"
@@ -49,7 +50,8 @@ func InitializeApplication() (App, error) {
 		return App{}, err
 	}
 	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator)
-	server, err := provideControlServer(authorityAuthority)
+	shutdown := daemon.NewShutdown()
+	server, err := provideControlServer(authorityAuthority, shutdown)
 	if err != nil {
 		return App{}, err
 	}
@@ -57,7 +59,7 @@ func InitializeApplication() (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator)
+	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, shutdown)
 	if err != nil {
 		return App{}, err
 	}

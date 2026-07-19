@@ -473,6 +473,133 @@ func TestRunnerCancellationClosesAndJoinsBeforeAuthorityRelease(t *testing.T) {
 	}
 }
 
+// TestRunnerRequestedShutdownClosesAndJoinsBeforeAuthorityRelease proves an authenticated request follows the lock-last lifecycle.
+func TestRunnerRequestedShutdownClosesAndJoinsBeforeAuthorityRelease(t *testing.T) {
+	events := &testEventLog{}
+	lock := &testAuthorityLock{events: events}
+	runtime := newTestRuntime(events)
+	listener := newTestListener(events, 1)
+	connection := newTestConnection(events, 43)
+	listener.results <- acceptResult{connection: connection}
+	started := make(chan struct{})
+	interrupted := make(chan struct{})
+	finish := make(chan struct{})
+	server := connectionServerFunc(func(ctx context.Context, _ local.Conn) error {
+		events.add("server.start")
+		close(started)
+		<-ctx.Done()
+		close(interrupted)
+		<-finish
+		events.add("server.exit")
+		return ctx.Err()
+	})
+	shutdown := NewShutdown()
+	runner := mustTestRunner(t, RunnerConfig{
+		Server:            server,
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: shutdown.Requested(),
+	}, lock, listener)
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(context.Background()) }()
+
+	waitSignal(t, started, "connection server startup")
+	shutdown.Request()
+	waitSignal(t, interrupted, "connection server requested shutdown")
+	waitEvent(t, events, "listener.close")
+	waitEvent(t, events, "connection.close")
+	if lock.releaseCount() != 0 {
+		t.Fatal("daemon authority released before the requested connection shutdown joined")
+	}
+	close(finish)
+	if err := waitResult(t, result, "requested daemon shutdown"); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+
+	assertEventOrder(t, events, "listener.close", "server.exit")
+	assertEventOrder(t, events, "server.exit", "runtime.close")
+	assertEventOrder(t, events, "runtime.close", "lock.release")
+	if listener.closeCalls.Load() != 1 || runtime.closes.Load() != 1 || lock.releaseCount() != 1 {
+		t.Fatalf(
+			"cleanup calls = listener %d runtime %d lock %d, want one each",
+			listener.closeCalls.Load(),
+			runtime.closes.Load(),
+			lock.releaseCount(),
+		)
+	}
+}
+
+// TestRunnerRequestedShutdownRetainsCleanupFailures verifies an intentional request does not hide failed cleanup.
+func TestRunnerRequestedShutdownRetainsCleanupFailures(t *testing.T) {
+	listenerFailure := errors.New("listener cleanup failed")
+	runtimeFailure := errors.New("runtime cleanup failed")
+	events := &testEventLog{}
+	lock := &testAuthorityLock{events: events}
+	runtime := newTestRuntime(events)
+	runtime.closeErr = runtimeFailure
+	listener := newTestListener(events, 0)
+	listener.entered = make(chan struct{})
+	listener.closeErr = listenerFailure
+	shutdown := NewShutdown()
+	runner := mustTestRunner(t, RunnerConfig{
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: shutdown.Requested(),
+	}, lock, listener)
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(context.Background()) }()
+	waitSignal(t, listener.entered, "requested shutdown listener admission")
+
+	shutdown.Request()
+	err := waitResult(t, result, "requested shutdown cleanup failure")
+	if !errors.Is(err, listenerFailure) || !errors.Is(err, runtimeFailure) {
+		t.Fatalf("Run() error = %v, want listener and runtime cleanup failures", err)
+	}
+	if lock.releaseCount() != 1 {
+		t.Fatalf("authority release calls = %d, want 1 after completed cleanup", lock.releaseCount())
+	}
+}
+
+// TestRunnerRequestedShutdownRacingRuntimeLossRetainsRuntimeFailure verifies intent cannot reclassify failed infrastructure as clean.
+func TestRunnerRequestedShutdownRacingRuntimeLossRetainsRuntimeFailure(t *testing.T) {
+	runtimeFailure := errors.New("runtime failed during requested shutdown")
+	events := &testEventLog{}
+	lock := &testAuthorityLock{events: events}
+	runtime := newTestRuntime(events)
+	baseListener := newTestListener(events, 0)
+	baseListener.entered = make(chan struct{})
+	closeEntered := make(chan struct{})
+	releaseClose := make(chan struct{})
+	listener := &gatedCloseListener{
+		testListener: baseListener,
+		closeEntered: closeEntered,
+		releaseClose: releaseClose,
+	}
+	shutdown := NewShutdown()
+	runner := mustTestRunner(t, RunnerConfig{
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: shutdown.Requested(),
+	}, lock, listener)
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(context.Background()) }()
+	waitSignal(t, baseListener.entered, "runtime-loss race listener admission")
+
+	shutdown.Request()
+	waitSignal(t, closeEntered, "requested shutdown listener closure")
+	runtime.fail(runtimeFailure)
+	close(releaseClose)
+	err := waitResult(t, result, "requested shutdown runtime-loss race")
+	if !errors.Is(err, runtimeFailure) {
+		t.Fatalf("Run() error = %v, want runtime failure", err)
+	}
+	if lock.releaseCount() != 1 {
+		t.Fatalf("authority release calls = %d, want 1", lock.releaseCount())
+	}
+}
+
 // TestRunnerHoldsAuthorityAcrossNestedRuntimeCleanup proves the outer budget outlives a healthy inner drain.
 func TestRunnerHoldsAuthorityAcrossNestedRuntimeCleanup(t *testing.T) {
 	events := &testEventLog{}
@@ -562,8 +689,9 @@ func TestRunnerStartupFailuresReleaseOnlyOwnedResources(t *testing.T) {
 			listener := newTestListener(events, 0)
 			listenCalls := 0
 			runner, err := newRunner(RunnerConfig{
-				Server:  connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-				Runtime: runtime,
+				Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+				Runtime:           runtime,
+				ShutdownRequested: make(chan struct{}),
 				Readiness: func(context.Context) error {
 					return test.readinessErr
 				},
@@ -663,9 +791,10 @@ func TestRunnerCancellationInterruptsRuntimeStartup(t *testing.T) {
 	}
 	var listenCalls atomic.Int64
 	runner, err := newRunner(RunnerConfig{
-		Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-		Readiness: func(context.Context) error { return nil },
-		Runtime:   runtime,
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: make(chan struct{}),
 	}, runnerDependencies{
 		acquireLock: func() (authorityLock, error) { return lock, nil },
 		listen: func() (local.Listener, error) {
@@ -719,9 +848,10 @@ func TestRunnerCancellationDuringRuntimeStartupRetainsRollbackFailure(t *testing
 	}
 	var listenCalls atomic.Int64
 	runner, err := newRunner(RunnerConfig{
-		Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-		Readiness: func(context.Context) error { return nil },
-		Runtime:   runtime,
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: make(chan struct{}),
 	}, runnerDependencies{
 		acquireLock: func() (authorityLock, error) { return lock, nil },
 		listen: func() (local.Listener, error) {
@@ -765,7 +895,8 @@ func TestRunnerCancellationDuringReadinessReturnsOnlyLockCleanup(t *testing.T) {
 	runtime := newTestRuntime(events)
 	caller, cancel := context.WithCancel(context.Background())
 	runner, err := newRunner(RunnerConfig{
-		Server: connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		ShutdownRequested: make(chan struct{}),
 		Readiness: func(context.Context) error {
 			cancel()
 			return readinessFailure
@@ -797,9 +928,10 @@ func TestRunnerRejectsMissingRuntimeCompletionSignal(t *testing.T) {
 	runtime.done = nil
 	var listenCalls atomic.Int64
 	runner, err := newRunner(RunnerConfig{
-		Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-		Readiness: func(context.Context) error { return nil },
-		Runtime:   runtime,
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: make(chan struct{}),
 	}, runnerDependencies{
 		acquireLock: func() (authorityLock, error) { return lock, nil },
 		listen: func() (local.Listener, error) {
@@ -836,9 +968,10 @@ func TestRunnerRetainsAuthorityWhenMissingCompletionCloseFails(t *testing.T) {
 	runtime.closeErr = closeFailure
 	var listenCalls atomic.Int64
 	runner, err := newRunner(RunnerConfig{
-		Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-		Readiness: func(context.Context) error { return nil },
-		Runtime:   runtime,
+		Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           runtime,
+		ShutdownRequested: make(chan struct{}),
 	}, runnerDependencies{
 		acquireLock: func() (authorityLock, error) { return lock, nil },
 		listen: func() (local.Listener, error) {
@@ -893,6 +1026,7 @@ func TestRunnerRetainsAuthorityWhenMissingCompletionCannotBeClosed(t *testing.T)
 		Server:              connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
 		Readiness:           func(context.Context) error { return nil },
 		Runtime:             runtime,
+		ShutdownRequested:   make(chan struct{}),
 		RuntimeCloseTimeout: 20 * time.Millisecond,
 	}, runnerDependencies{
 		acquireLock: func() (authorityLock, error) { return lock, nil },
@@ -1321,9 +1455,10 @@ func TestRunnerRejectsMissingFactoryResults(t *testing.T) {
 				}
 			}
 			runner, err := newRunner(RunnerConfig{
-				Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-				Readiness: func(context.Context) error { return nil },
-				Runtime:   newTestRuntime(&testEventLog{}),
+				Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+				Readiness:         func(context.Context) error { return nil },
+				Runtime:           newTestRuntime(&testEventLog{}),
+				ShutdownRequested: make(chan struct{}),
 			}, runnerDependencies{
 				acquireLock: acquire,
 				listen:      test.listen,
@@ -1443,11 +1578,12 @@ func TestRunnerRetriesTransientAcceptsWithoutSpinning(t *testing.T) {
 		return ctx.Err()
 	})
 	runner, err := newRunner(RunnerConfig{
-		Server:         server,
-		Readiness:      func(context.Context) error { return nil },
-		Runtime:        newTestRuntime(events),
-		ObserveError:   func(err error) { observations <- err },
-		MaxConnections: 1,
+		Server:            server,
+		Readiness:         func(context.Context) error { return nil },
+		Runtime:           newTestRuntime(events),
+		ShutdownRequested: make(chan struct{}),
+		ObserveError:      func(err error) { observations <- err },
+		MaxConnections:    1,
 	}, runnerDependencies{
 		acquireLock: func() (authorityLock, error) { return lock, nil },
 		listen:      func() (local.Listener, error) { return listener, nil },
@@ -1490,9 +1626,10 @@ func TestRunnerClassifiesAcceptDelayFailures(t *testing.T) {
 		listener.results <- acceptResult{err: temporaryAcceptError{err: errors.New("temporary")}}
 		lock := &testAuthorityLock{events: events}
 		runner, err := newRunner(RunnerConfig{
-			Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-			Readiness: func(context.Context) error { return nil },
-			Runtime:   newTestRuntime(events),
+			Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+			Readiness:         func(context.Context) error { return nil },
+			Runtime:           newTestRuntime(events),
+			ShutdownRequested: make(chan struct{}),
 		}, runnerDependencies{
 			acquireLock: func() (authorityLock, error) { return lock, nil },
 			listen:      func() (local.Listener, error) { return listener, nil },
@@ -1517,9 +1654,10 @@ func TestRunnerClassifiesAcceptDelayFailures(t *testing.T) {
 		lock := &testAuthorityLock{events: events}
 		ctx, cancel := context.WithCancel(context.Background())
 		runner, err := newRunner(RunnerConfig{
-			Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
-			Readiness: func(context.Context) error { return nil },
-			Runtime:   newTestRuntime(events),
+			Server:            connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+			Readiness:         func(context.Context) error { return nil },
+			Runtime:           newTestRuntime(events),
+			ShutdownRequested: make(chan struct{}),
 		}, runnerDependencies{
 			acquireLock: func() (authorityLock, error) { return lock, nil },
 			listen:      func() (local.Listener, error) { return listener, nil },
@@ -1722,6 +1860,7 @@ func TestNewRunnerRejectsInvalidWiring(t *testing.T) {
 	server := connectionServerFunc(func(context.Context, local.Conn) error { return nil })
 	readiness := ReadinessCheck(func(context.Context) error { return nil })
 	runtime := newTestRuntime(&testEventLog{})
+	shutdownRequested := make(chan struct{})
 	var typedNilServer connectionServerFunc
 	var typedNilRuntime *testRuntime
 	validDependencies := runnerDependencies{
@@ -1735,18 +1874,19 @@ func TestNewRunnerRejectsInvalidWiring(t *testing.T) {
 		config       RunnerConfig
 		dependencies runnerDependencies
 	}{
-		{name: "server", config: RunnerConfig{Readiness: readiness, Runtime: runtime}, dependencies: validDependencies},
-		{name: "typed nil server", config: RunnerConfig{Server: typedNilServer, Readiness: readiness, Runtime: runtime}, dependencies: validDependencies},
-		{name: "readiness", config: RunnerConfig{Server: server, Runtime: runtime}, dependencies: validDependencies},
-		{name: "runtime", config: RunnerConfig{Server: server, Readiness: readiness}, dependencies: validDependencies},
-		{name: "typed nil runtime", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: typedNilRuntime}, dependencies: validDependencies},
-		{name: "negative runtime close timeout", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, RuntimeCloseTimeout: -time.Second}, dependencies: validDependencies},
-		{name: "negative bound", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, MaxConnections: -1}, dependencies: validDependencies},
-		{name: "excessive bound", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, MaxConnections: maximumConnections + 1}, dependencies: validDependencies},
-		{name: "lock factory", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime}, dependencies: runnerDependencies{listen: validDependencies.listen, retryAccept: validDependencies.retryAccept, acceptDelay: validDependencies.acceptDelay}},
-		{name: "listener factory", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, retryAccept: validDependencies.retryAccept, acceptDelay: validDependencies.acceptDelay}},
-		{name: "retry policy", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, listen: validDependencies.listen, acceptDelay: validDependencies.acceptDelay}},
-		{name: "retry delay", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, listen: validDependencies.listen, retryAccept: validDependencies.retryAccept}},
+		{name: "server", config: RunnerConfig{Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: validDependencies},
+		{name: "typed nil server", config: RunnerConfig{Server: typedNilServer, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: validDependencies},
+		{name: "readiness", config: RunnerConfig{Server: server, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: validDependencies},
+		{name: "runtime", config: RunnerConfig{Server: server, Readiness: readiness, ShutdownRequested: shutdownRequested}, dependencies: validDependencies},
+		{name: "typed nil runtime", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: typedNilRuntime, ShutdownRequested: shutdownRequested}, dependencies: validDependencies},
+		{name: "shutdown signal", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime}, dependencies: validDependencies},
+		{name: "negative runtime close timeout", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested, RuntimeCloseTimeout: -time.Second}, dependencies: validDependencies},
+		{name: "negative bound", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested, MaxConnections: -1}, dependencies: validDependencies},
+		{name: "excessive bound", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested, MaxConnections: maximumConnections + 1}, dependencies: validDependencies},
+		{name: "lock factory", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{listen: validDependencies.listen, retryAccept: validDependencies.retryAccept, acceptDelay: validDependencies.acceptDelay}},
+		{name: "listener factory", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, retryAccept: validDependencies.retryAccept, acceptDelay: validDependencies.acceptDelay}},
+		{name: "retry policy", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, listen: validDependencies.listen, acceptDelay: validDependencies.acceptDelay}},
+		{name: "retry delay", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, listen: validDependencies.listen, retryAccept: validDependencies.retryAccept}},
 	}
 
 	for _, test := range tests {
@@ -1757,7 +1897,12 @@ func TestNewRunnerRejectsInvalidWiring(t *testing.T) {
 		})
 	}
 
-	runner, err := newRunner(RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime}, validDependencies)
+	runner, err := newRunner(RunnerConfig{
+		Server:            server,
+		Readiness:         readiness,
+		Runtime:           runtime,
+		ShutdownRequested: shutdownRequested,
+	}, validDependencies)
 	if err != nil {
 		t.Fatalf("newRunner() default bound error = %v", err)
 	}
@@ -1767,7 +1912,12 @@ func TestNewRunnerRejectsInvalidWiring(t *testing.T) {
 	if runner.config.RuntimeCloseTimeout != defaultRuntimeCloseTimeout {
 		t.Fatalf("default runtime close timeout = %s, want %s", runner.config.RuntimeCloseTimeout, defaultRuntimeCloseTimeout)
 	}
-	productionRunner, err := NewRunner(RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime})
+	productionRunner, err := NewRunner(RunnerConfig{
+		Server:            server,
+		Readiness:         readiness,
+		Runtime:           runtime,
+		ShutdownRequested: shutdownRequested,
+	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
@@ -2030,6 +2180,9 @@ func mustTestRunner(
 	}
 	if config.Runtime == nil {
 		config.Runtime = newTestRuntime(events)
+	}
+	if config.ShutdownRequested == nil {
+		config.ShutdownRequested = make(chan struct{})
 	}
 
 	runner, err := newRunner(config, runnerDependencies{

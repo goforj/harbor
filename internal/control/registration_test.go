@@ -171,7 +171,7 @@ func TestControlRegistrationRequiresNegotiatedCapability(t *testing.T) {
 	clientConnection := &testLocalConn{Conn: clientStream, peer: testDaemonPeer}
 	serverConnection := &testLocalConn{Conn: serverStream, peer: testClientPeer}
 	authority := &recordingAuthority{registration: controlTestRegistration(t)}
-	controlServer, err := newServer(ServerConfig{Authority: authority}, testBuild)
+	controlServer, err := newServer(ServerConfig{Authority: authority, RequestShutdown: func() {}}, testBuild)
 	if err != nil {
 		t.Fatalf("construct control server: %v", err)
 	}

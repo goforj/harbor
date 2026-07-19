@@ -16,6 +16,8 @@ import (
 const (
 	// CapabilityV1 identifies the first typed CLI and desktop control surface.
 	CapabilityV1 rpc.Capability = "control.v1"
+	// CapabilityDaemonControlV1 identifies authenticated administrative control of the current user's daemon.
+	CapabilityDaemonControlV1 rpc.Capability = "control.daemon-control.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
 	// CapabilityProjectUnregisterV1 identifies idempotent local-project unregister initiation.
@@ -24,6 +26,7 @@ const (
 	CapabilityProjectUnregisterApprovalV1 rpc.Capability = "control.project-unregister-approval.v1"
 
 	methodDaemonStatus                     = "control.v1.daemon.status"
+	methodDaemonStop                       = "control.v1.daemon.stop"
 	methodSnapshot                         = "control.v1.snapshot"
 	methodProjectRegister                  = "control.v1.project.register"
 	methodProjectUnregister                = "control.v1.project.unregister"
@@ -165,6 +168,20 @@ type snapshotResponse struct {
 	Snapshot domain.Snapshot `json:"snapshot"`
 }
 
+// daemonStopResponse acknowledges that shutdown will begin only after this response is completely written.
+type daemonStopResponse struct {
+	Stopping bool `json:"stopping"`
+}
+
+// validateDaemonStopResponse rejects acknowledgements that do not confirm the requested lifecycle transition.
+func validateDaemonStopResponse(response daemonStopResponse) error {
+	if !response.Stopping {
+		return errors.New("daemon stop response did not confirm shutdown")
+	}
+
+	return nil
+}
+
 // validateProjectUnregistrationCorrelation binds daemon-generated operation progress to the client-owned intent.
 func validateProjectUnregistrationCorrelation(
 	request UnregisterProjectRequest,
@@ -218,6 +235,7 @@ func protocolRanges() []rpc.VersionRange {
 // capabilities returns a fresh copy so connection configuration cannot mutate package policy.
 func capabilities() []rpc.Capability {
 	return []rpc.Capability{
+		CapabilityDaemonControlV1,
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,

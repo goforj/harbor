@@ -18,6 +18,7 @@ import (
 // appSet is a wire set that provides application-level services and dependencies.
 var appSet = wire.NewSet(
 	harbordapp.NewLifecycleRegistry,
+	daemon.NewShutdown,
 	runtime.NewTimeouts,
 	state.NewMutationCoordinator,
 	state.NewOperationJournal,

@@ -12,6 +12,7 @@ import (
 // daemonControlClient is the narrow control connection used for one CLI request.
 type daemonControlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
+	Stop(context.Context) error
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
@@ -43,6 +44,15 @@ func (client *DaemonClient) Status(ctx context.Context) (control.DaemonStatus, e
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.DaemonStatus, error) {
 		return connection.Status(ctx)
 	})
+}
+
+// Stop requests daemon shutdown and closes the one-shot control connection after acknowledgement.
+func (client *DaemonClient) Stop(ctx context.Context) error {
+	_, err := withDaemonConnection(ctx, client, func(connection daemonControlClient) (struct{}, error) {
+		return struct{}{}, connection.Stop(ctx)
+	})
+
+	return err
 }
 
 // Snapshot reads one authoritative snapshot and closes the one-shot control connection.

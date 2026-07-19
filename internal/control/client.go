@@ -118,6 +118,29 @@ func (client *Client) Status(ctx context.Context) (DaemonStatus, error) {
 	return response.Status, nil
 }
 
+// Stop accepts the daemon's shutdown acknowledgement and closes this session so teardown can begin safely.
+func (client *Client) Stop(ctx context.Context) error {
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityDaemonControlV1) {
+		return errors.New("Harbor daemon does not support daemon control; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodDaemonStop, struct{}{})
+	if err != nil {
+		return err
+	}
+	var response daemonStopResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return fmt.Errorf("decode daemon stop response: %w", err)
+	}
+	if err := validateDaemonStopResponse(response); err != nil {
+		return fmt.Errorf("validate daemon stop response: %w", err)
+	}
+	if err := client.session.Close(); err != nil {
+		return fmt.Errorf("close acknowledged daemon stop session: %w", err)
+	}
+
+	return nil
+}
+
 // Snapshot fetches a complete authoritative replacement of client-visible daemon state.
 func (client *Client) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 	payload, err := client.session.Call(ctx, methodSnapshot, struct{}{})

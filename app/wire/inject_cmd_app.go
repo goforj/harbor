@@ -16,6 +16,7 @@ var appCommandSet = wire.NewSet(
 	cmd.NewAddCmd,
 	cmd.NewRemoveCmd,
 	cmd.NewDaemonStatusCmd,
+	cmd.NewDaemonStopCmd,
 	cmd.NewDaemonSnapshotCmd,
 	cmd.NewDaemonCmd,
 )

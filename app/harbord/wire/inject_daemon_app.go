@@ -26,8 +26,14 @@ const runtimeCloseCoordinationMargin = 5 * time.Second
 type projectUnregisterIssuerOpener func(ticketissuer.PlanSource) (reconcile.TicketIssuer, error)
 
 // provideControlServer binds durable Harbor authority to the authenticated product protocol.
-func provideControlServer(controlAuthority *authority.Authority) (*control.Server, error) {
-	return control.NewServer(control.ServerConfig{Authority: controlAuthority})
+func provideControlServer(controlAuthority *authority.Authority, shutdown *daemon.Shutdown) (*control.Server, error) {
+	if shutdown == nil {
+		return nil, errors.New("create control server: daemon shutdown coordinator is required")
+	}
+	return control.NewServer(control.ServerConfig{
+		Authority:       controlAuthority,
+		RequestShutdown: shutdown.Request,
+	})
 }
 
 // provideHarbordReadiness validates assembly while deferring migration inspection until daemon authority is owned.
@@ -101,15 +107,20 @@ func provideDaemonRunner(
 	readiness daemon.ReadinessCheck,
 	runtimeController *harbordruntime.Controller,
 	coordinator *reconcile.ProjectUnregisterCoordinator,
+	shutdown *daemon.Shutdown,
 ) (*daemon.Runner, error) {
 	if coordinator == nil {
 		return nil, errors.New("create daemon runner: project unregister coordinator is required")
+	}
+	if shutdown == nil {
+		return nil, errors.New("create daemon runner: daemon shutdown coordinator is required")
 	}
 	return daemon.NewRunner(daemon.RunnerConfig{
 		Server:              server,
 		Readiness:           readiness,
 		Recovery:            coordinator.Recover,
 		Runtime:             runtimeController,
+		ShutdownRequested:   shutdown.Requested(),
 		RuntimeCloseTimeout: daemonRuntimeCloseTimeout(runtimeController),
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -37,6 +38,8 @@ type ErrorObserver func(Caller, string, error)
 type ServerConfig struct {
 	// Authority owns the bounded daemon methods exposed by this server.
 	Authority Authority
+	// RequestShutdown publishes an idempotent, nonblocking, infallible request to the daemon lifecycle owner.
+	RequestShutdown func()
 	// ObserveError optionally records causes that are redacted from IPC responses.
 	ObserveError ErrorObserver
 }
@@ -56,6 +59,9 @@ func NewServer(config ServerConfig) (*Server, error) {
 func newServer(config ServerConfig, build buildinfo.Info) (*Server, error) {
 	if authorityIsNil(config.Authority) {
 		return nil, errors.New("control server authority is required")
+	}
+	if config.RequestShutdown == nil {
+		return nil, errors.New("control server shutdown requester is required")
 	}
 	if err := validateBuild(buildFromInfo(build)); err != nil {
 		return nil, fmt.Errorf("control server build: %w", err)
@@ -90,13 +96,22 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		return fmt.Errorf("control transport peer: %w", err)
 	}
 
+	shutdownAccepted := make(chan struct{})
+	var acceptShutdown sync.Once
+	var shutdownCaller Caller
 	controlSession, err := session.NewServer(session.ServerConfig{
 		DaemonVersion:  server.build.Version,
 		ProtocolRanges: protocolRanges(),
 		Capabilities:   capabilities(),
 		Authorize:      authorizeControlHello,
 		Handlers: map[string]session.Handler{
-			methodDaemonStatus:                     server.statusHandler(transportPeer),
+			methodDaemonStatus: server.statusHandler(transportPeer),
+			methodDaemonStop: server.stopHandler(transportPeer, func(caller Caller) {
+				acceptShutdown.Do(func() {
+					shutdownCaller = caller
+					close(shutdownAccepted)
+				})
+			}),
 			methodSnapshot:                         server.snapshotHandler(transportPeer),
 			methodProjectRegister:                  server.projectRegisterHandler(transportPeer),
 			methodProjectUnregister:                server.projectUnregisterHandler(transportPeer),
@@ -110,7 +125,64 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		return fmt.Errorf("configure control session: %w", err)
 	}
 
-	return controlSession.Serve(ctx, connection)
+	serveErr := controlSession.Serve(ctx, connection)
+	select {
+	case <-shutdownAccepted:
+		if err := publishShutdown(server.config.RequestShutdown); err != nil {
+			server.observeControlError(shutdownCaller, methodDaemonStop, err)
+			return errors.Join(serveErr, err)
+		}
+		return serveErr
+	default:
+		return serveErr
+	}
+}
+
+// observeControlError contains an optional diagnostic sink outside session dispatch.
+func (server *Server) observeControlError(caller Caller, method string, err error) {
+	if err == nil || server.config.ObserveError == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	server.config.ObserveError(caller, method, err)
+}
+
+// publishShutdown contains a configuration defect after an accepted connection has already ended.
+func publishShutdown(request func()) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("publish daemon shutdown request: callback panicked: %v", recovered)
+		}
+	}()
+
+	request()
+	return nil
+}
+
+// stopHandler marks one authenticated request only after its acknowledgement is written to the serving connection.
+func (server *Server) stopHandler(transportPeer local.PeerIdentity, acceptShutdown func(Caller)) session.Handler {
+	return func(_ context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityDaemonControlV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("daemon control capability was not negotiated"),
+			)
+		}
+		if err := decodeEmptyRequest(request.Payload); err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+
+		return session.RespondAfterWrite(
+			daemonStopResponse{Stopping: true},
+			func() { acceptShutdown(caller) },
+		), nil
+	}
 }
 
 // projectUnregisterHandler admits only one client-owned intent while retaining operation identity inside daemon authority.
