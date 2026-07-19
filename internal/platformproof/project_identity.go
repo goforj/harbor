@@ -16,7 +16,6 @@ import (
 	"net/netip"
 	"runtime"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -374,7 +373,7 @@ func validateDuplicateListenerRejection(endpoint string, err error) error {
 	if err == nil {
 		return fmt.Errorf("duplicate listener unexpectedly acquired %s", endpoint)
 	}
-	if !errors.Is(err, syscall.EADDRINUSE) {
+	if !isAddressInUseError(err) {
 		return fmt.Errorf("duplicate listener on %s failed without an address conflict: %w", endpoint, err)
 	}
 	return nil

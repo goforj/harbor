@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"syscall"
 	"testing"
 )
 
@@ -142,7 +141,7 @@ func TestConfirmIdentityAssignments(t *testing.T) {
 func TestValidateDuplicateListenerRejection(t *testing.T) {
 	t.Parallel()
 
-	addressInUse := syscall.EADDRINUSE
+	addressInUse := platformAddressInUseError()
 	wrappedAddressInUse := &net.OpError{
 		Op:   "listen",
 		Net:  "tcp4",
@@ -159,7 +158,7 @@ func TestValidateDuplicateListenerRejection(t *testing.T) {
 		{name: "syscall address in use", err: &os.SyscallError{Syscall: "bind", Err: addressInUse}},
 		{name: "network operation address in use", err: wrappedAddressInUse},
 		{name: "listener unexpectedly succeeds", wantErr: true},
-		{name: "permission denied", err: &os.SyscallError{Syscall: "bind", Err: syscall.EACCES}, wantErr: true},
+		{name: "permission denied", err: &os.SyscallError{Syscall: "bind", Err: os.ErrPermission}, wantErr: true},
 		{name: "cancelled listen", err: context.Canceled, wantErr: true},
 		{name: "matching text without sentinel", err: errors.New("address already in use"), wantErr: true},
 	}
