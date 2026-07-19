@@ -17,8 +17,8 @@ import (
 func TestOperationJournalSnapshotBuildsDomainState(t *testing.T) {
 	journal, _ := newOperationJournalTestHarness(t)
 	requestedAt := operationJournalTestTime()
-	first := newOperationJournalTestOperation(t, "operation-first", "intent-first", "", "project.start", requestedAt)
-	second := newOperationJournalTestOperation(t, "operation-second", "intent-second", "", "project.stop", requestedAt.Add(time.Second))
+	first := newOperationJournalTestOperation(t, "operation-first", "intent-first", "", "host.setup", requestedAt)
+	second := newOperationJournalTestOperation(t, "operation-second", "intent-second", "", "host.teardown", requestedAt.Add(time.Second))
 	third := newOperationJournalTestOperation(t, "operation-third", "intent-third", "", "project.restart", requestedAt.Add(2*time.Second))
 
 	firstRecord, err := journal.Enqueue(context.Background(), first)
@@ -111,7 +111,7 @@ func TestOperationJournalSnapshotRejectsCrossRecordCorruption(t *testing.T) {
 		{
 			name: "revision beyond sequence",
 			corrupt: func(t *testing.T, journal *OperationJournal) {
-				operation := newOperationJournalTestOperation(t, "operation-future", "intent-future", "", "project.start", operationJournalTestTime())
+				operation := newOperationJournalTestOperation(t, "operation-future", "intent-future", "", "host.setup", operationJournalTestTime())
 				if _, err := journal.Enqueue(context.Background(), operation); err != nil {
 					t.Fatalf("enqueue operation: %v", err)
 				}
@@ -127,8 +127,8 @@ func TestOperationJournalSnapshotRejectsCrossRecordCorruption(t *testing.T) {
 			name: "duplicate revisions",
 			corrupt: func(t *testing.T, journal *OperationJournal) {
 				requestedAt := operationJournalTestTime()
-				first := newOperationJournalTestOperation(t, "operation-a", "intent-a", "", "project.start", requestedAt)
-				second := newOperationJournalTestOperation(t, "operation-b", "intent-b", "", "project.stop", requestedAt)
+				first := newOperationJournalTestOperation(t, "operation-a", "intent-a", "", "host.setup", requestedAt)
+				second := newOperationJournalTestOperation(t, "operation-b", "intent-b", "", "host.teardown", requestedAt)
 				if _, err := journal.Enqueue(context.Background(), first); err != nil {
 					t.Fatalf("enqueue first operation: %v", err)
 				}
@@ -146,7 +146,7 @@ func TestOperationJournalSnapshotRejectsCrossRecordCorruption(t *testing.T) {
 		{
 			name: "unknown active state",
 			corrupt: func(t *testing.T, journal *OperationJournal) {
-				operation := newOperationJournalTestOperation(t, "operation-unknown", "intent-unknown", "", "project.start", operationJournalTestTime())
+				operation := newOperationJournalTestOperation(t, "operation-unknown", "intent-unknown", "", "host.setup", operationJournalTestTime())
 				if _, err := journal.Enqueue(context.Background(), operation); err != nil {
 					t.Fatalf("enqueue operation: %v", err)
 				}
@@ -177,7 +177,7 @@ func TestOperationJournalSnapshotRejectsCrossRecordCorruption(t *testing.T) {
 // TestOperationJournalSnapshotRollsBackFailedRead verifies conversion and storage failures release the single SQLite connection.
 func TestOperationJournalSnapshotRollsBackFailedRead(t *testing.T) {
 	journal, connection := newOperationJournalTestHarness(t)
-	operation := newOperationJournalTestOperation(t, "operation-rollback-read", "intent-rollback-read", "", "project.start", operationJournalTestTime())
+	operation := newOperationJournalTestOperation(t, "operation-rollback-read", "intent-rollback-read", "", "host.setup", operationJournalTestTime())
 	if _, err := journal.Enqueue(context.Background(), operation); err != nil {
 		t.Fatalf("enqueue operation: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestOperationJournalSnapshotHonorsCancellation(t *testing.T) {
 func TestOperationJournalSnapshotRemainsConsistentDuringTransitions(t *testing.T) {
 	journal, _ := newOperationJournalTestHarness(t)
 	requestedAt := operationJournalTestTime()
-	operation := newOperationJournalTestOperation(t, "operation-racing-snapshot", "intent-racing-snapshot", "", "project.start", requestedAt)
+	operation := newOperationJournalTestOperation(t, "operation-racing-snapshot", "intent-racing-snapshot", "", "host.setup", requestedAt)
 	record, err := journal.Enqueue(context.Background(), operation)
 	if err != nil {
 		t.Fatalf("enqueue operation: %v", err)

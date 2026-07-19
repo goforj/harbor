@@ -173,7 +173,7 @@ func insertMigrationOperation(databaseConnection *gorm.DB, id string, intentID s
 	}
 	return databaseConnection.Exec(`INSERT INTO operations
         (id, intent_id, kind, state, phase, problem_code, problem_message, problem_retryable, requested_at, started_at, finished_at, revision)
-        VALUES (?, ?, 'project.start', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, 'host.setup', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
 		intentID,
 		lifecycleState,

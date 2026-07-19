@@ -44,7 +44,7 @@ func TestOperationModelFromDomainRejectsInvalidInput(t *testing.T) {
 		t,
 		"operation-conversion",
 		"intent-conversion",
-		"",
+		"project-conversion",
 		"project.start",
 		operationJournalTestTime(),
 	)
@@ -241,6 +241,7 @@ func validOperationJournalModel() models.Operation {
 		Id:          "operation-valid",
 		IntentId:    "intent-valid",
 		Kind:        "project.start",
+		ProjectId:   null.StringFrom("project-valid"),
 		State:       string(domain.OperationQueued),
 		Phase:       "queued",
 		RequestedAt: operationJournalTestTime(),

@@ -10,6 +10,10 @@ import (
 type OperationKind string
 
 const (
+	// OperationKindProjectStart identifies the creation of one managed project session.
+	OperationKindProjectStart OperationKind = "project.start"
+	// OperationKindProjectStop identifies the graceful shutdown of one managed project session.
+	OperationKindProjectStop OperationKind = "project.stop"
 	// OperationKindProjectUnregister identifies the atomic removal of one registered project.
 	OperationKindProjectUnregister OperationKind = "project.unregister"
 )
@@ -61,8 +65,11 @@ func (operation Operation) Validate() error {
 	if err := validateOperationKind(operation.Kind); err != nil {
 		return err
 	}
-	if operation.Kind == OperationKindProjectUnregister && operation.ProjectID == "" {
-		return fmt.Errorf("project unregister operation must identify a project")
+	switch operation.Kind {
+	case OperationKindProjectStart, OperationKindProjectStop, OperationKindProjectUnregister:
+		if operation.ProjectID == "" {
+			return fmt.Errorf("project lifecycle operation %q must identify a project", operation.Kind)
+		}
 	}
 	if err := operation.State.Validate(); err != nil {
 		return err

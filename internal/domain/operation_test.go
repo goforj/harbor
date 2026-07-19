@@ -6,29 +6,61 @@ import (
 	"time"
 )
 
-// TestOperationKindProjectUnregisterKeepsStableWireValue verifies clients can persist the reserved lifecycle kind.
-func TestOperationKindProjectUnregisterKeepsStableWireValue(t *testing.T) {
+// TestOperationKindsKeepStableWireValues verifies clients can persist the reserved lifecycle kinds.
+func TestOperationKindsKeepStableWireValues(t *testing.T) {
 	t.Parallel()
-	if OperationKindProjectUnregister != "project.unregister" {
-		t.Fatalf("OperationKindProjectUnregister = %q, want project.unregister", OperationKindProjectUnregister)
+	tests := []struct {
+		name string
+		kind OperationKind
+		want OperationKind
+	}{
+		{name: "start", kind: OperationKindProjectStart, want: "project.start"},
+		{name: "stop", kind: OperationKindProjectStop, want: "project.stop"},
+		{name: "unregister", kind: OperationKindProjectUnregister, want: "project.unregister"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if test.kind != test.want {
+				t.Fatalf("operation kind = %q, want %q", test.kind, test.want)
+			}
+		})
 	}
 }
 
-// TestProjectUnregisterOperationRequiresProject keeps reserved operations completable through the atomic store path.
-func TestProjectUnregisterOperationRequiresProject(t *testing.T) {
+// TestProjectLifecycleOperationsRequireProject keeps reserved operations correlated with their owning aggregate.
+func TestProjectLifecycleOperationsRequireProject(t *testing.T) {
 	t.Parallel()
 	requestedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
-	if _, err := NewOperation(
-		"operation-unregister",
-		"intent-unregister",
-		OperationKindProjectUnregister,
-		"",
-		requestedAt,
-	); err == nil || !strings.Contains(err.Error(), "must identify a project") {
-		t.Fatalf("NewOperation(project unregister without project) error = %v", err)
+	tests := []struct {
+		name string
+		kind OperationKind
+	}{
+		{name: "start", kind: OperationKindProjectStart},
+		{name: "stop", kind: OperationKindProjectStop},
+		{name: "unregister", kind: OperationKindProjectUnregister},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewOperation(
+				OperationID("operation-"+test.name),
+				IntentID("intent-"+test.name),
+				test.kind,
+				"",
+				requestedAt,
+			); err == nil || !strings.Contains(err.Error(), "must identify a project") {
+				t.Fatalf("NewOperation(%s without project) error = %v", test.name, err)
+			}
+		})
 	}
 	if _, err := NewOperation("operation-host", "intent-host", "host.setup", "", requestedAt); err != nil {
 		t.Fatalf("NewOperation(unscoped host operation) error = %v", err)
+	}
+	if _, err := NewOperation("operation-additive", "intent-additive", "project.future", "", requestedAt); err != nil {
+		t.Fatalf("NewOperation(unscoped additive project operation) error = %v", err)
 	}
 }
 
