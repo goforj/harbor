@@ -55,6 +55,42 @@ func TestInvokeWritesCanonicalRequestAndSucceeds(t *testing.T) {
 	}
 }
 
+// TestInvokePoolWritesCanonicalRequestAndSucceeds verifies aggregate consent correlates all decoded pool evidence.
+func TestInvokePoolWritesCanonicalRequestAndSucceeds(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	issued := validPoolLaunchTicket(t, now)
+	wantResponse := poolSuccessResponse(issued.pool)
+	calls := 0
+	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
+		calls++
+		decoded, err := helper.DecodeRequest(request)
+		if err != nil {
+			t.Fatalf("decode transport request: %v", err)
+		}
+		if decoded.Version != helper.ProtocolVersion || decoded.TicketReference != issued.reference {
+			t.Fatalf("transport request = %#v", decoded)
+		}
+		if err := helper.WriteResponse(response, wantResponse); err != nil {
+			t.Fatalf("write transport response: %v", err)
+		}
+		return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+	})
+
+	outcome, err := New(transport, fixedClock{now: now}).InvokePool(nil, issued)
+	if err != nil {
+		t.Fatalf("InvokePool() error = %v", err)
+	}
+	if calls != 1 || outcome.State != Succeeded || outcome.Exit == nil || outcome.Exit.Code != ExitCodeSucceeded {
+		t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
+	}
+	if !reflect.DeepEqual(outcome.Response, wantResponse) {
+		t.Fatalf("response = %#v, want %#v", outcome.Response, wantResponse)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", outcome), string(issued.reference)) {
+		t.Fatal("pool outcome exposed the opaque ticket reference")
+	}
+}
+
 // TestInvokeClassifiesValidHelperFailure verifies structured helper rejection remains distinct from launch failure.
 func TestInvokeClassifiesValidHelperFailure(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
@@ -75,6 +111,125 @@ func TestInvokeClassifiesValidHelperFailure(t *testing.T) {
 	}
 	if outcome.Response.Error == nil || outcome.Response.Error.Code != helper.ErrorCodeAuthenticationFailed {
 		t.Fatalf("helper failure = %#v", outcome.Response)
+	}
+}
+
+// TestInvokePoolPreservesExistingOutcomeSemantics verifies aggregate launches change only success correlation.
+func TestInvokePoolPreservesExistingOutcomeSemantics(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		configure func(context.CancelFunc, PoolLaunchTicket, io.Writer) TransportResult
+		want      OutcomeState
+		wantExit  bool
+	}{
+		{
+			name: "helper failed",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, failureResponse()); err != nil {
+					t.Fatalf("write helper failure: %v", err)
+				}
+				return TransportResult{State: TransportCompleted, ExitCode: ExitCodeHelperFailed}
+			},
+			want: HelperFailed, wantExit: true,
+		},
+		{
+			name: "declined",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, _ io.Writer) TransportResult {
+				return TransportResult{State: TransportDeclined}
+			},
+			want: Declined,
+		},
+		{
+			name: "unavailable",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, _ io.Writer) TransportResult {
+				return TransportResult{State: TransportUnavailable}
+			},
+			want: Unavailable,
+		},
+		{
+			name: "transport indeterminate",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, _ io.Writer) TransportResult {
+				return TransportResult{State: TransportIndeterminate}
+			},
+			want: Indeterminate,
+		},
+		{
+			name: "mismatched pool",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, poolSuccessResponse(netip.MustParsePrefix("127.77.0.16/29"))); err != nil {
+					t.Fatalf("write mismatched pool response: %v", err)
+				}
+				return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+			},
+			want: Indeterminate, wantExit: true,
+		},
+		{
+			name: "mismatched operation",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, successResponse(helper.OperationEnsureLoopbackIdentity, netip.MustParseAddr("127.77.0.8"))); err != nil {
+					t.Fatalf("write mismatched operation response: %v", err)
+				}
+				return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+			},
+			want: Indeterminate, wantExit: true,
+		},
+		{
+			name: "success with helper failure exit",
+			configure: func(_ context.CancelFunc, issued PoolLaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, poolSuccessResponse(issued.pool)); err != nil {
+					t.Fatalf("write pool response: %v", err)
+				}
+				return TransportResult{State: TransportCompleted, ExitCode: ExitCodeHelperFailed}
+			},
+			want: Indeterminate, wantExit: true,
+		},
+		{
+			name: "post-start cancellation",
+			configure: func(cancel context.CancelFunc, issued PoolLaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, poolSuccessResponse(issued.pool)); err != nil {
+					t.Fatalf("write pool response: %v", err)
+				}
+				cancel()
+				return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+			},
+			want: Indeterminate, wantExit: true,
+		},
+		{
+			name: "decline with response",
+			configure: func(_ context.CancelFunc, _ PoolLaunchTicket, response io.Writer) TransportResult {
+				_, _ = io.WriteString(response, "unexpected")
+				return TransportResult{State: TransportDeclined}
+			},
+			want: Indeterminate,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issued := validPoolLaunchTicket(t, now)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			transport := transportFunc(func(_ context.Context, _ io.Reader, response io.Writer) TransportResult {
+				calls++
+				return test.configure(cancel, issued, response)
+			})
+			outcome, err := New(transport, fixedClock{now: now}).InvokePool(ctx, issued)
+			if err != nil {
+				t.Fatalf("InvokePool() error = %v", err)
+			}
+			if calls != 1 || outcome.State != test.want || (outcome.Exit != nil) != test.wantExit {
+				t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
+			}
+			if test.want == HelperFailed {
+				if outcome.Response.Error == nil || outcome.Response.Error.Code != helper.ErrorCodeAuthenticationFailed {
+					t.Fatalf("helper failure = %#v", outcome.Response)
+				}
+			} else if outcome.Response.Version != 0 {
+				t.Fatalf("unexpected response = %#v", outcome.Response)
+			}
+		})
 	}
 }
 
@@ -324,6 +479,53 @@ func TestInvokeRejectsInvalidLaunchTicketBeforeTransport(t *testing.T) {
 	}
 }
 
+// TestInvokePoolRejectsInvalidLaunchTicketBeforeTransport verifies forged aggregate metadata never opens native consent.
+func TestInvokePoolRejectsInvalidLaunchTicketBeforeTransport(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*PoolLaunchTicket)
+	}{
+		{name: "operation ID", mutate: func(ticket *PoolLaunchTicket) { ticket.operationID = "" }},
+		{name: "reference", mutate: func(ticket *PoolLaunchTicket) { ticket.reference = "short" }},
+		{name: "helper operation", mutate: func(ticket *PoolLaunchTicket) { ticket.operation = helper.OperationEnsureLoopbackIdentity }},
+		{name: "zero pool", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.Prefix{} }},
+		{name: "non-loopback pool", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("192.0.2.8/29") }},
+		{name: "wrong prefix", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("127.77.0.0/24") }},
+		{name: "host bits", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("127.77.0.9/29") }},
+		{name: "zero expiry", mutate: func(ticket *PoolLaunchTicket) { ticket.expiresAt = time.Time{} }},
+		{name: "non-UTC expiry", mutate: func(ticket *PoolLaunchTicket) {
+			ticket.expiresAt = now.In(time.FixedZone("test", 0)).Add(time.Minute)
+		}},
+		{name: "expired", mutate: func(ticket *PoolLaunchTicket) { ticket.expiresAt = now }},
+		{name: "excessive lifetime", mutate: func(ticket *PoolLaunchTicket) {
+			ticket.expiresAt = now.Add(helper.MaxTicketLifetime + time.Nanosecond)
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issued := validPoolLaunchTicket(t, now)
+			test.mutate(&issued)
+			calls := 0
+			transport := transportFunc(func(context.Context, io.Reader, io.Writer) TransportResult {
+				calls++
+				return TransportResult{State: TransportUnavailable}
+			})
+			outcome, err := New(transport, fixedClock{now: now}).InvokePool(context.Background(), issued)
+			if err == nil {
+				t.Fatal("expected pool metadata validation error")
+			}
+			if calls != 0 || outcome.State != "" {
+				t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
+			}
+			if strings.Contains(err.Error(), string(issued.reference)) {
+				t.Fatal("validation error exposed the opaque ticket reference")
+			}
+		})
+	}
+}
+
 // TestInvokeReturnsPrelaunchCancellationWithoutTransport verifies a cancelled caller cannot open native consent.
 func TestInvokeReturnsPrelaunchCancellationWithoutTransport(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
@@ -338,6 +540,26 @@ func TestInvokeReturnsPrelaunchCancellationWithoutTransport(t *testing.T) {
 	outcome, err := New(transport, fixedClock{now: now}).Invoke(ctx, validLaunchTicket(t, now))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("invoke error = %v, want context canceled", err)
+	}
+	if calls != 0 || outcome.State != "" {
+		t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
+	}
+}
+
+// TestInvokePoolReturnsPrelaunchCancellationWithoutTransport verifies cancellation precedes aggregate metadata and consent.
+func TestInvokePoolReturnsPrelaunchCancellationWithoutTransport(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	transport := transportFunc(func(context.Context, io.Reader, io.Writer) TransportResult {
+		calls++
+		return TransportResult{State: TransportUnavailable}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	outcome, err := New(transport, fixedClock{now: now}).InvokePool(ctx, validPoolLaunchTicket(t, now))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("InvokePool() error = %v, want context canceled", err)
 	}
 	if calls != 0 || outcome.State != "" {
 		t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
@@ -428,6 +650,22 @@ func validLaunchTicket(t *testing.T, now time.Time) LaunchTicket {
 	return ticket
 }
 
+// validPoolLaunchTicket returns one complete short-lived aggregate pool capability for launcher tests.
+func validPoolLaunchTicket(t *testing.T, now time.Time) PoolLaunchTicket {
+	t.Helper()
+	ticket, err := NewPoolLaunchTicket(
+		"operation-pool",
+		helper.TicketReference(strings.Repeat("c", 64)),
+		helper.OperationEnsureLoopbackPool,
+		"127.77.0.8/29",
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("create pool launch ticket: %v", err)
+	}
+	return ticket
+}
+
 // successResponse returns valid postcondition evidence for one allowlisted operation and address.
 func successResponse(operation helper.Operation, address netip.Addr) helper.Response {
 	state := helper.ObservationOwned
@@ -446,6 +684,34 @@ func successResponse(operation helper.Operation, address netip.Addr) helper.Resp
 					State:       state,
 					Fingerprint: strings.Repeat("b", 64),
 				},
+			},
+		},
+	}
+}
+
+// poolSuccessResponse returns valid owned postcondition evidence for every address in one canonical /29.
+func poolSuccessResponse(pool netip.Prefix) helper.Response {
+	identities := make([]helper.MutationEvidence, 0, 8)
+	address := pool.Addr()
+	for range 8 {
+		identities = append(identities, helper.MutationEvidence{
+			Changed: true,
+			Address: address.String(),
+			Observation: helper.ExpectedObservation{
+				State:       helper.ObservationOwned,
+				Fingerprint: strings.Repeat("d", 64),
+			},
+		})
+		address = address.Next()
+	}
+	return helper.Response{
+		Version: helper.ProtocolVersion,
+		OK:      true,
+		Result: &helper.OperationResult{
+			Operation: helper.OperationEnsureLoopbackPool,
+			PoolEvidence: &helper.PoolMutationEvidence{
+				Pool:       pool.String(),
+				Identities: identities,
 			},
 		},
 	}

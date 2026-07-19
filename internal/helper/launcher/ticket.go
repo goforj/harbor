@@ -20,6 +20,15 @@ type LaunchTicket struct {
 	expiresAt   time.Time
 }
 
+// PoolLaunchTicket is the immutable non-secret metadata needed to launch one aggregate pool capability.
+type PoolLaunchTicket struct {
+	operationID domain.OperationID
+	reference   helper.TicketReference
+	operation   helper.Operation
+	pool        netip.Prefix
+	expiresAt   time.Time
+}
+
 // NewLaunchTicket validates and captures metadata from an already authenticated approval response.
 // Launcher.Invoke independently applies the trusted-clock lifetime checks immediately before native consent.
 func NewLaunchTicket(
@@ -45,6 +54,33 @@ func NewLaunchTicket(
 	}
 	if err := ticket.validateStructure(address); err != nil {
 		return LaunchTicket{}, err
+	}
+	return ticket, nil
+}
+
+// NewPoolLaunchTicket validates and captures metadata from an already authenticated pool approval response.
+// Launcher.InvokePool independently applies the trusted-clock lifetime checks immediately before native consent.
+func NewPoolLaunchTicket(
+	operationID domain.OperationID,
+	reference helper.TicketReference,
+	operation helper.Operation,
+	pool string,
+	expiresAt time.Time,
+) (PoolLaunchTicket, error) {
+	parsedPool, err := netip.ParsePrefix(pool)
+	if err != nil {
+		return PoolLaunchTicket{}, fmt.Errorf("pool launch ticket pool is not a canonical IPv4 loopback /29")
+	}
+
+	ticket := PoolLaunchTicket{
+		operationID: operationID,
+		reference:   reference,
+		operation:   operation,
+		pool:        parsedPool,
+		expiresAt:   expiresAt,
+	}
+	if err := ticket.validateStructure(pool); err != nil {
+		return PoolLaunchTicket{}, err
 	}
 	return ticket, nil
 }
@@ -82,6 +118,46 @@ func (ticket LaunchTicket) validateStructure(address string) error {
 	}
 	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
 		return fmt.Errorf("launch ticket expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
+// validateAt rejects stale, excessively long-lived, or internally malformed aggregate launch metadata.
+func (ticket PoolLaunchTicket) validateAt(now time.Time) error {
+	if err := ticket.validateStructure(ticket.pool.String()); err != nil {
+		return err
+	}
+	if !ticket.expiresAt.After(now) {
+		return fmt.Errorf("pool launch ticket expiry is not in the future")
+	}
+	if ticket.expiresAt.After(now.Add(helper.MaxTicketLifetime)) {
+		return fmt.Errorf("pool launch ticket expiry exceeds the protocol bound")
+	}
+	return nil
+}
+
+// validateStructure confines aggregate consent to one exact canonical /29 and the pool helper operation.
+func (ticket PoolLaunchTicket) validateStructure(pool string) error {
+	if err := ticket.operationID.Validate(); err != nil {
+		return fmt.Errorf("pool launch ticket operation ID: %w", err)
+	}
+	if err := ticket.reference.Validate(); err != nil {
+		return fmt.Errorf("pool launch ticket reference: %w", err)
+	}
+	if ticket.operation != helper.OperationEnsureLoopbackPool {
+		return fmt.Errorf("pool launch ticket helper operation %q is unsupported", ticket.operation)
+	}
+	if !ticket.pool.IsValid() ||
+		!ticket.pool.Addr().Is4() ||
+		!ticket.pool.Addr().IsLoopback() ||
+		ticket.pool.Addr() != ticket.pool.Addr().Unmap() ||
+		ticket.pool.Bits() != 29 ||
+		ticket.pool != ticket.pool.Masked() ||
+		pool != ticket.pool.String() {
+		return fmt.Errorf("pool launch ticket pool is not a canonical IPv4 loopback /29")
+	}
+	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
+		return fmt.Errorf("pool launch ticket expiry must be a nonzero UTC time")
 	}
 	return nil
 }

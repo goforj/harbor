@@ -84,6 +84,9 @@ type Launcher struct {
 	clock     helper.Clock
 }
 
+// resultMatcher correlates one decoded helper success with the metadata prepared before native consent.
+type resultMatcher func(*helper.OperationResult) bool
+
 // New constructs a launcher with an explicit native transport and trusted clock.
 func New(transport Transport, clock helper.Clock) *Launcher {
 	if requiredInterfaceIsNil(transport) {
@@ -120,22 +123,44 @@ func (launcher *Launcher) Invoke(ctx context.Context, ticket LaunchTicket) (Outc
 	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
 		return Outcome{}, fmt.Errorf("validate helper launch ticket: %w", err)
 	}
+	return launcher.invoke(ctx, ticket.reference, matchLaunchTicket(ticket))
+}
 
+// InvokePool performs exactly one transport attempt for valid aggregate pool launch metadata.
+func (launcher *Launcher) InvokePool(ctx context.Context, ticket PoolLaunchTicket) (Outcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, err
+	}
+	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
+		return Outcome{}, fmt.Errorf("validate helper pool launch ticket: %w", err)
+	}
+	return launcher.invoke(ctx, ticket.reference, matchPoolLaunchTicket(ticket))
+}
+
+// invoke owns the shared bounded request and response exchange after launch metadata has been validated.
+func (launcher *Launcher) invoke(
+	ctx context.Context,
+	reference helper.TicketReference,
+	match resultMatcher,
+) (Outcome, error) {
 	var request bytes.Buffer
 	if err := helper.WriteRequest(&request, helper.Request{
 		Version:         helper.ProtocolVersion,
-		TicketReference: ticket.reference,
+		TicketReference: reference,
 	}); err != nil {
 		return Outcome{}, fmt.Errorf("encode helper request: %w", err)
 	}
 
 	response := &boundedResponseWriter{}
 	transportResult := launcher.transport.Invoke(ctx, bytes.NewReader(request.Bytes()), response)
-	return classify(ctx, ticket, transportResult, response.Bytes()), nil
+	return classify(ctx, transportResult, response.Bytes(), match), nil
 }
 
 // classify treats native no-child proofs separately from every state where an effect may have started.
-func classify(ctx context.Context, ticket LaunchTicket, transportResult TransportResult, body []byte) Outcome {
+func classify(ctx context.Context, transportResult TransportResult, body []byte, match resultMatcher) Outcome {
 	switch transportResult.State {
 	case TransportDeclined:
 		if len(body) != 0 {
@@ -165,7 +190,7 @@ func classify(ctx context.Context, ticket LaunchTicket, transportResult Transpor
 		if transportResult.ExitCode != ExitCodeSucceeded {
 			return Outcome{State: Indeterminate, Exit: exit}
 		}
-		if response.Result.Operation != ticket.operation || response.Result.Evidence.Address != ticket.address.String() {
+		if !match(response.Result) {
 			return Outcome{State: Indeterminate, Exit: exit}
 		}
 		return Outcome{State: Succeeded, Response: response, Exit: exit}
@@ -173,6 +198,36 @@ func classify(ctx context.Context, ticket LaunchTicket, transportResult Transpor
 		return Outcome{State: Indeterminate}
 	default:
 		return Outcome{State: Indeterminate}
+	}
+}
+
+// matchLaunchTicket binds a scalar success to the prepared operation and exact address.
+func matchLaunchTicket(ticket LaunchTicket) resultMatcher {
+	return func(result *helper.OperationResult) bool {
+		return result != nil &&
+			result.Operation == ticket.operation &&
+			result.Evidence.Address == ticket.address.String()
+	}
+}
+
+// matchPoolLaunchTicket binds aggregate success to the prepared /29 and every canonical address it contains.
+func matchPoolLaunchTicket(ticket PoolLaunchTicket) resultMatcher {
+	return func(result *helper.OperationResult) bool {
+		if result == nil || result.Operation != ticket.operation || result.PoolEvidence == nil || result.PoolEvidence.Pool != ticket.pool.String() {
+			return false
+		}
+		identities := result.PoolEvidence.Identities
+		if len(identities) != 8 {
+			return false
+		}
+		address := ticket.pool.Addr()
+		for _, evidence := range identities {
+			if evidence.Address != address.String() {
+				return false
+			}
+			address = address.Next()
+		}
+		return true
 	}
 }
 
