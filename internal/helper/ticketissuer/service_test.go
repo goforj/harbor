@@ -212,6 +212,21 @@ func TestIssueOwnedOperationsSkipPreAssignment(t *testing.T) {
 	}
 }
 
+// TestIssueActiveHistoricalLeaseUsesCurrentMachineAuthority proves ownership rotation does not strand an older exact assignment.
+func TestIssueActiveHistoricalLeaseUsesCurrentMachineAuthority(t *testing.T) {
+	fixture := newIssuerFixture(t, helper.OperationReleaseLoopbackIdentity, LeaseActive)
+	fixture.plans.plans[0].Lease.Ownership.Generation = fixture.owned.Record.Generation - 1
+
+	result, err := fixture.service.Issue(context.Background(), fixture.owned.Record.OwnerIdentity, fixture.request)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if result.Operation != helper.OperationReleaseLoopbackIdentity ||
+		fixture.publisher.ticket.OwnershipGeneration != fixture.owned.Record.Generation {
+		t.Fatalf("historical release result/ticket = %#v / %#v", result, fixture.publisher.ticket)
+	}
+}
+
 // TestIssueFailsBeforePublication covers every independent authority boundary used by the service.
 func TestIssueFailsBeforePublication(t *testing.T) {
 	sentinel := errors.New("issuer sentinel")

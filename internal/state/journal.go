@@ -221,93 +221,118 @@ func (journal *OperationJournal) Transition(
 
 	var result OperationRecord
 	err := journal.mutations.mutate(ctx, "operation journal", func(tx *gorm.DB) error {
-		row, found, err := findOperationByID(tx, operationID)
+		transitioned, err := transitionOperationInTransaction(
+			tx,
+			operationID,
+			expectedRevision,
+			next,
+			phase,
+			at,
+			problem,
+		)
 		if err != nil {
 			return err
 		}
-		if !found {
-			return &OperationNotFoundError{OperationID: operationID}
-		}
-		current, err := operationRecordFromModel(row)
-		if err != nil {
-			return err
-		}
-		if current.Revision != expectedRevision {
-			return &StaleRevisionError{
-				OperationID: operationID,
-				Expected:    expectedRevision,
-				Actual:      current.Revision,
-			}
-		}
-		if current.Operation.Kind == domain.OperationKindProjectUnregister && next == domain.OperationSucceeded {
-			return fmt.Errorf("project unregister operations must complete through the project Store")
-		}
-
-		nextOperation, err := current.Operation.Transition(next, phase, at, problem)
-		if err != nil {
-			return err
-		}
-		history, err := operationHistoryInTransaction(tx, current)
-		if err != nil {
-			return err
-		}
-		boundary, err := readProjectNetworkReleaseBoundary(tx, current.Operation.ProjectID)
-		if err != nil {
-			return err
-		}
-		if err := validateProjectNetworkReleaseTransition(boundary, current.Operation, next); err != nil {
-			return err
-		}
-		lastTransition := history[len(history)-1]
-
-		sequence, err := allocateHarborSequence(tx)
-		if err != nil {
-			return err
-		}
-		nextRow, err := operationModelFromDomain(nextOperation, sequence)
-		if err != nil {
-			return err
-		}
-		update := operationUpdateColumns(nextRow)
-		updated := tx.Model(&models.Operation{}).
-			Where("id = ? AND revision = ?", string(operationID), int(expectedRevision)).
-			Updates(update)
-		if updated.Error != nil {
-			return fmt.Errorf("update operation: %w", updated.Error)
-		}
-		if updated.RowsAffected != 1 {
-			return &StaleRevisionError{
-				OperationID: operationID,
-				Expected:    expectedRevision,
-				Actual:      current.Revision,
-			}
-		}
-
-		previousState := current.Operation.State
-		transition := OperationTransition{
-			OperationID:   operationID,
-			Ordinal:       lastTransition.Ordinal + 1,
-			PreviousState: &previousState,
-			State:         nextOperation.State,
-			Phase:         nextOperation.Phase,
-			Problem:       nextOperation.Problem,
-			OccurredAt:    at,
-			Sequence:      sequence,
-		}
-		transitionRow, err := operationTransitionModelFromDomain(transition)
-		if err != nil {
-			return err
-		}
-		if err := tx.Create(&transitionRow).Error; err != nil {
-			return fmt.Errorf("append operation transition: %w", err)
-		}
-		result = OperationRecord{Operation: nextOperation, Revision: sequence}
+		result = transitioned
 		return nil
 	})
 	if err != nil {
 		return OperationRecord{}, err
 	}
 	return result, nil
+}
+
+// transitionOperationInTransaction applies one fully guarded operation edge without opening a nested writer transaction.
+func transitionOperationInTransaction(
+	tx *gorm.DB,
+	operationID domain.OperationID,
+	expectedRevision domain.Sequence,
+	next domain.OperationState,
+	phase string,
+	at time.Time,
+	problem *domain.Problem,
+) (OperationRecord, error) {
+	row, found, err := findOperationByID(tx, operationID)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if !found {
+		return OperationRecord{}, &OperationNotFoundError{OperationID: operationID}
+	}
+	current, err := operationRecordFromModel(row)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if current.Revision != expectedRevision {
+		return OperationRecord{}, &StaleRevisionError{
+			OperationID: operationID,
+			Expected:    expectedRevision,
+			Actual:      current.Revision,
+		}
+	}
+	if current.Operation.Kind == domain.OperationKindProjectUnregister && next == domain.OperationSucceeded {
+		return OperationRecord{}, fmt.Errorf("project unregister operations must complete through the project Store")
+	}
+
+	nextOperation, err := current.Operation.Transition(next, phase, at, problem)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	history, err := operationHistoryInTransaction(tx, current)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	boundary, err := readProjectNetworkReleaseBoundary(tx, current.Operation.ProjectID)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if err := validateProjectNetworkReleaseTransition(boundary, current.Operation, next); err != nil {
+		return OperationRecord{}, err
+	}
+	lastTransition := history[len(history)-1]
+
+	sequence, err := allocateHarborSequence(tx)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	nextRow, err := operationModelFromDomain(nextOperation, sequence)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	update := operationUpdateColumns(nextRow)
+	updated := tx.Model(&models.Operation{}).
+		Where("id = ? AND revision = ?", string(operationID), int(expectedRevision)).
+		Updates(update)
+	if updated.Error != nil {
+		return OperationRecord{}, fmt.Errorf("update operation: %w", updated.Error)
+	}
+	if updated.RowsAffected != 1 {
+		return OperationRecord{}, &StaleRevisionError{
+			OperationID: operationID,
+			Expected:    expectedRevision,
+			Actual:      current.Revision,
+		}
+	}
+
+	previousState := current.Operation.State
+	transition := OperationTransition{
+		OperationID:   operationID,
+		Ordinal:       lastTransition.Ordinal + 1,
+		PreviousState: &previousState,
+		State:         nextOperation.State,
+		Phase:         nextOperation.Phase,
+		Problem:       nextOperation.Problem,
+		OccurredAt:    at,
+		Sequence:      sequence,
+	}
+	transitionRow, err := operationTransitionModelFromDomain(transition)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if err := tx.Create(&transitionRow).Error; err != nil {
+		return OperationRecord{}, fmt.Errorf("append operation transition: %w", err)
+	}
+	return OperationRecord{Operation: nextOperation, Revision: sequence}, nil
 }
 
 // Operation returns one durable operation by its daemon-owned ID.

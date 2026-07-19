@@ -390,7 +390,9 @@ func (service *Service) observeOwnership(ctx context.Context, requesterIdentity 
 	if err != nil {
 		return ownership.Observation{}, err
 	}
-	if plan.Lease.Ownership != wantOwnership {
+	if plan.Lease.Ownership.InstallationID != wantOwnership.InstallationID ||
+		(plan.LeaseState == LeasePending && plan.Lease.Ownership.Generation != wantOwnership.Generation) ||
+		(plan.LeaseState == LeaseActive && plan.Lease.Ownership.Generation > wantOwnership.Generation) {
 		return ownership.Observation{}, fmt.Errorf("issue helper ticket: durable lease does not match machine ownership")
 	}
 	pool, err := netip.ParsePrefix(observation.Record.LoopbackPoolPrefix)
