@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goforj/harbor/desktop/internal/networkprerequisite"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
@@ -32,6 +33,7 @@ type fakeControlClient struct {
 	networkSetup      control.NetworkSetupOperation
 	networkSetupErr   error
 	networkSetupReq   control.StartNetworkSetupRequest
+	networkSetupHook  func(control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
 	setupPreparation  control.NetworkSetupApprovalPreparation
 	setupPrepareErr   error
 	setupPrepareReq   control.PrepareNetworkSetupApprovalRequest
@@ -57,12 +59,28 @@ type fakeNetworkSetupApprovalRunner struct {
 	requests []networksetupapproval.Request
 	outcome  networksetupapproval.Outcome
 	err      error
+	execute  func(int, networksetupapproval.Request) (networksetupapproval.Outcome, error)
 }
 
 // Execute records the selected setup revision without opening native consent.
 func (runner *fakeNetworkSetupApprovalRunner) Execute(_ context.Context, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
 	runner.requests = append(runner.requests, request)
+	if runner.execute != nil {
+		return runner.execute(len(runner.requests), request)
+	}
 	return runner.outcome, runner.err
+}
+
+// fakeNetworkPrerequisiteEnsurer records the bounded source-development repair handoff.
+type fakeNetworkPrerequisiteEnsurer struct {
+	calls int
+	err   error
+}
+
+// Ensure records one attempted repair and returns its configured native result.
+func (ensurer *fakeNetworkPrerequisiteEnsurer) Ensure(context.Context) error {
+	ensurer.calls++
+	return ensurer.err
 }
 
 // newFakeControlClient creates a connected test client with a valid replacement snapshot.
@@ -91,6 +109,9 @@ func (client *fakeControlClient) StartNetworkSetup(_ context.Context, request co
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	client.networkSetupReq = request
+	if client.networkSetupHook != nil {
+		return client.networkSetupHook(request)
+	}
 	return client.networkSetup, client.networkSetupErr
 }
 
@@ -181,7 +202,7 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.presentation == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.presentation == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
 }
@@ -611,6 +632,75 @@ func TestSetupNetworkReplaysCompletedOperationWithoutConsent(t *testing.T) {
 	}
 }
 
+// TestSetupNetworkRetriesAnOpaqueFixedIntentFailure lets an older poisoned singleton record stop blocking the app forever.
+func TestSetupNetworkRetriesAnOpaqueFixedIntentFailure(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	const retryIntent domain.IntentID = "intent-network-setup-retry"
+	app.setupIntent = func() (domain.IntentID, error) { return retryIntent, nil }
+	requests := make([]control.StartNetworkSetupRequest, 0, 2)
+	client.networkSetupHook = func(request control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error) {
+		requests = append(requests, request)
+		if len(requests) == 1 {
+			return control.NetworkSetupOperation{}, rpc.NewWireError(rpc.ErrorCodeInternal)
+		}
+		result := testNetworkSetupOperation(domain.OperationSucceeded, 10)
+		result.Operation.IntentID = request.IntentID
+		return result, nil
+	}
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+		t.Fatal("setup approval was constructed for a completed retry")
+		return nil
+	}
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if result.Operation.IntentID != retryIntent || len(requests) != 2 ||
+		requests[0].IntentID != networkSetupIntentID || requests[1].IntentID != retryIntent {
+		t.Fatalf("setup retry result = %#v, requests = %#v", result, requests)
+	}
+}
+
+// TestSetupNetworkRetriesARecoverableTerminalOperation gives each safe retry a new durable idempotency boundary.
+func TestSetupNetworkRetriesARecoverableTerminalOperation(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	const retryIntent domain.IntentID = "intent-network-setup-retry"
+	app.setupIntent = func() (domain.IntentID, error) { return retryIntent, nil }
+	failed := testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	finishedAt := *failed.Operation.StartedAt
+	failed.Operation.State = domain.OperationFailed
+	failed.Operation.Phase = "setup preflight failed"
+	failed.Operation.FinishedAt = &finishedAt
+	failed.Operation.Problem = &domain.Problem{
+		Code:      "network.setup.preflight_failed",
+		Message:   "Harbor could not inspect local networking.",
+		Retryable: true,
+	}
+	requests := make([]control.StartNetworkSetupRequest, 0, 2)
+	client.networkSetupHook = func(request control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error) {
+		requests = append(requests, request)
+		if len(requests) == 1 {
+			return failed, nil
+		}
+		result := testNetworkSetupOperation(domain.OperationSucceeded, 10)
+		result.Operation.IntentID = request.IntentID
+		return result, nil
+	}
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if result.Operation.IntentID != retryIntent || len(requests) != 2 {
+		t.Fatalf("setup retry result = %#v, requests = %#v", result, requests)
+	}
+}
+
 // TestSetupNetworkApprovesOnlyTheSelectedRevision verifies the Wails action delegates the exact daemon operation boundary.
 func TestSetupNetworkApprovesOnlyTheSelectedRevision(t *testing.T) {
 	t.Parallel()
@@ -643,6 +733,118 @@ func TestSetupNetworkApprovesOnlyTheSelectedRevision(t *testing.T) {
 		result.Operation.State != confirmation.Operation.State ||
 		result.Revision != confirmation.Revision {
 		t.Fatalf("SetupNetwork() = %#v, want confirmed operation %#v", result, confirmation)
+	}
+}
+
+// TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence retries one exact approval after native source setup.
+func TestSetupNetworkRepairsOnlyReviewedMissingHelperEvidence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		firstOutcome networksetupapproval.Outcome
+		firstErr     error
+	}{
+		{
+			name:     "daemon prerequisite",
+			firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired),
+		},
+		{
+			name:         "launcher unavailable",
+			firstOutcome: networksetupapproval.Outcome{State: networksetupapproval.Unavailable},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+			confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+			runner := &fakeNetworkSetupApprovalRunner{
+				execute: func(call int, _ networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+					if call == 1 {
+						return test.firstOutcome, test.firstErr
+					}
+					return networksetupapproval.Outcome{
+						State:        networksetupapproval.Succeeded,
+						Confirmation: &confirmation,
+					}, nil
+				},
+			}
+			ensurer := &fakeNetworkPrerequisiteEnsurer{}
+			app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner { return runner }
+			app.setupPrerequisite = ensurer
+
+			result, err := app.SetupNetwork()
+			if err != nil {
+				t.Fatalf("SetupNetwork() error = %v", err)
+			}
+			if result.Operation.State != domain.OperationSucceeded || len(runner.requests) != 2 || ensurer.calls != 1 {
+				t.Fatalf("setup result/calls = %#v/%d/%d, want success/2/1", result, len(runner.requests), ensurer.calls)
+			}
+			if runner.requests[0] != runner.requests[1] {
+				t.Fatalf("approval retry crossed request boundary: %#v", runner.requests)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkBoundsPrerequisiteRepairAndPreservesNativeFailures prevents repair loops and production mutation.
+func TestSetupNetworkBoundsPrerequisiteRepairAndPreservesNativeFailures(t *testing.T) {
+	t.Parallel()
+
+	privilegedRequired := rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired)
+	tests := []struct {
+		name          string
+		repairErr     error
+		wantCalls     int
+		wantApprovals int
+		want          string
+	}{
+		{name: "repair failure", repairErr: networkprerequisite.ErrDeclined, wantCalls: 1, wantApprovals: 1, want: "declined"},
+		{name: "packaged build", repairErr: networkprerequisite.ErrUnavailable, wantCalls: 1, wantApprovals: 1, want: privilegedRequired.Message},
+		{name: "retry remains missing", wantCalls: 1, wantApprovals: 2, want: privilegedRequired.Message},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+			runner := &fakeNetworkSetupApprovalRunner{err: privilegedRequired}
+			ensurer := &fakeNetworkPrerequisiteEnsurer{err: test.repairErr}
+			app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner { return runner }
+			app.setupPrerequisite = ensurer
+
+			_, err := app.SetupNetwork()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+			}
+			if ensurer.calls != test.wantCalls || len(runner.requests) != test.wantApprovals {
+				t.Fatalf("repair/approval calls = %d/%d, want %d/%d", ensurer.calls, len(runner.requests), test.wantCalls, test.wantApprovals)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkDoesNotRepairUnreviewedApprovalFailures keeps arbitrary daemon and client errors away from native elevation.
+func TestSetupNetworkDoesNotRepairUnreviewedApprovalFailures(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	runner := &fakeNetworkSetupApprovalRunner{err: rpc.NewWireError(rpc.ErrorCodeInternal)}
+	ensurer := &fakeNetworkPrerequisiteEnsurer{}
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner { return runner }
+	app.setupPrerequisite = ensurer
+
+	_, err := app.SetupNetwork()
+	if err == nil || !strings.Contains(err.Error(), rpc.NewWireError(rpc.ErrorCodeInternal).Message) {
+		t.Fatalf("SetupNetwork() error = %v, want reviewed internal failure", err)
+	}
+	if ensurer.calls != 0 || len(runner.requests) != 1 {
+		t.Fatalf("repair/approval calls = %d/%d, want 0/1", ensurer.calls, len(runner.requests))
 	}
 }
 
@@ -766,6 +968,26 @@ func TestSetupNetworkRejectsInconsistentDaemonAndApprovalResults(t *testing.T) {
 				t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
 			}
 		})
+	}
+}
+
+// TestNewNetworkSetupIntentUsesBoundedEntropy verifies retry IDs are canonical and entropy failures remain visible.
+func TestNewNetworkSetupIntentUsesBoundedEntropy(t *testing.T) {
+	t.Parallel()
+
+	first, err := newNetworkSetupIntent()
+	if err != nil {
+		t.Fatalf("newNetworkSetupIntent() error = %v", err)
+	}
+	second, err := newNetworkSetupIntent()
+	if err != nil {
+		t.Fatalf("newNetworkSetupIntent() second error = %v", err)
+	}
+	if first == second || !strings.HasPrefix(string(first), "intent-network-setup-") {
+		t.Fatalf("network setup intents = %q and %q", first, second)
+	}
+	if _, err := newNetworkSetupIntentFrom(strings.NewReader("short")); err == nil {
+		t.Fatal("newNetworkSetupIntentFrom(short entropy) error = nil")
 	}
 }
 

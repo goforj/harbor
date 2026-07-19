@@ -6,6 +6,9 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "preBuildHooks": {
+    "darwin/*": "go run github.com/goforj/harbor/cmd/devartifacts"
+  },
   "author": {
     "name": "Chris Miles",
     "email": "chris@milestech.co"

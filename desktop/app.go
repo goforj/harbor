@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
+	"github.com/goforj/harbor/desktop/internal/networkprerequisite"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
@@ -19,11 +23,12 @@ import (
 )
 
 const (
-	desktopReconnectDelay = time.Second
-	desktopPollInterval   = 2 * time.Second
-	connectionEventName   = desktopwire.ConnectionEventName
-	snapshotEventName     = desktopwire.SnapshotEventName
-	networkSetupIntentID  = domain.IntentID("intent-network-setup")
+	desktopReconnectDelay   = time.Second
+	desktopPollInterval     = 2 * time.Second
+	networkSetupIntentBytes = 16
+	connectionEventName     = desktopwire.ConnectionEventName
+	snapshotEventName       = desktopwire.SnapshotEventName
+	networkSetupIntentID    = domain.IntentID("intent-network-setup")
 )
 
 var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
@@ -66,6 +71,9 @@ type networkSetupApprovalRunner interface {
 // networkSetupApprovalFactory binds the current authenticated desktop session only when the user requests setup.
 type networkSetupApprovalFactory func(networksetupapproval.Client) networkSetupApprovalRunner
 
+// networkSetupIntentFactory creates a fresh retry identity without coupling desktop idempotency to process lifetime.
+type networkSetupIntentFactory func() (domain.IntentID, error)
+
 // ConnectionState identifies the desktop backend's current relationship to harbord.
 type ConnectionState = desktopwire.ConnectionState
 
@@ -89,20 +97,22 @@ type snapshotCursor struct {
 
 // App owns the Wails lifecycle and the desktop's single persistent daemon connection.
 type App struct {
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	done           chan struct{}
-	client         controlClient
-	clientFactory  clientFactory
-	events         desktopwire.Emitter
-	open           resourceOpener
-	choose         directoryChooser
-	setupApproval  networkSetupApprovalFactory
-	presentation   *presentationController
-	wait           waitFunc
-	reconnectDelay time.Duration
-	pollInterval   time.Duration
+	mu                sync.RWMutex
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	client            controlClient
+	clientFactory     clientFactory
+	events            desktopwire.Emitter
+	open              resourceOpener
+	choose            directoryChooser
+	setupApproval     networkSetupApprovalFactory
+	setupPrerequisite networkprerequisite.Ensurer
+	setupIntent       networkSetupIntentFactory
+	presentation      *presentationController
+	wait              waitFunc
+	reconnectDelay    time.Duration
+	pollInterval      time.Duration
 }
 
 // App must remain exactly compatible with the Go-owned Wails method contract.
@@ -126,10 +136,12 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
 			)
 		},
-		presentation:   newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
-		wait:           wait,
-		reconnectDelay: desktopReconnectDelay,
-		pollInterval:   desktopPollInterval,
+		setupPrerequisite: networkprerequisite.New(),
+		setupIntent:       newNetworkSetupIntent,
+		presentation:      newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
+		wait:              wait,
+		reconnectDelay:    desktopReconnectDelay,
+		pollInterval:      desktopPollInterval,
 	}
 }
 
@@ -140,14 +152,22 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 		return control.NetworkSetupOperation{}, err
 	}
 
-	setup, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: networkSetupIntentID})
+	intentID := networkSetupIntentID
+	setup, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID})
+	if networkSetupNeedsFreshIntent(setup, err) {
+		intentID, err = a.setupIntent()
+		if err != nil {
+			return control.NetworkSetupOperation{}, fmt.Errorf("create Harbor network setup retry: %w", err)
+		}
+		setup, err = client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID})
+	}
 	if err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("start Harbor network setup: %w", err)
 	}
 	if err := setup.Validate(); err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup: %w", err)
 	}
-	if setup.Operation.IntentID != networkSetupIntentID {
+	if setup.Operation.IntentID != intentID {
 		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup: daemon result belongs to another intent")
 	}
 
@@ -161,16 +181,61 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 	}
 }
 
+// networkSetupNeedsFreshIntent recovers only a poisoned singleton retry or an opaque fixed-intent replay failure.
+func networkSetupNeedsFreshIntent(setup control.NetworkSetupOperation, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodeInternal
+	}
+	if setup.Operation.State == domain.OperationCancelled {
+		return true
+	}
+	return setup.Operation.State == domain.OperationFailed &&
+		setup.Operation.Problem != nil &&
+		setup.Operation.Problem.Retryable
+}
+
+// newNetworkSetupIntent creates an independently retryable setup identity from operating-system entropy.
+func newNetworkSetupIntent() (domain.IntentID, error) {
+	return newNetworkSetupIntentFrom(rand.Reader)
+}
+
+// newNetworkSetupIntentFrom keeps entropy failure testable without weakening production identity generation.
+func newNetworkSetupIntentFrom(reader io.Reader) (domain.IntentID, error) {
+	random := make([]byte, networkSetupIntentBytes)
+	if _, err := io.ReadFull(reader, random); err != nil {
+		return "", fmt.Errorf("read network setup intent entropy: %w", err)
+	}
+	intentID := domain.IntentID("intent-network-setup-" + hex.EncodeToString(random))
+	if err := intentID.Validate(); err != nil {
+		return "", fmt.Errorf("validate network setup intent: %w", err)
+	}
+	return intentID, nil
+}
+
 // approveNetworkSetup delegates only the exact daemon-selected revision to the native approval boundary.
 func (a *App) approveNetworkSetup(
 	ctx context.Context,
 	client controlClient,
 	setup control.NetworkSetupOperation,
 ) (control.NetworkSetupOperation, error) {
-	outcome, err := a.setupApproval(client).Execute(ctx, networksetupapproval.Request{
+	request := networksetupapproval.Request{
 		OperationID:               setup.Operation.ID,
 		ExpectedOperationRevision: setup.Revision,
-	})
+	}
+	runner := a.setupApproval(client)
+	outcome, err := runner.Execute(ctx, request)
+	if networkSetupNeedsPrerequisiteRepair(outcome, err) {
+		repairErr := a.setupPrerequisite.Ensure(ctx)
+		switch {
+		case repairErr == nil:
+			outcome, err = runner.Execute(ctx, request)
+		case errors.Is(repairErr, networkprerequisite.ErrUnavailable):
+			// Packaged and unsupported builds leave installation repair to their native installer.
+		default:
+			return control.NetworkSetupOperation{}, fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
+		}
+	}
 	if err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("approve Harbor network setup: %w", err)
 	}
@@ -197,6 +262,15 @@ func (a *App) approveNetworkSetup(
 		Revision:  confirmation.Revision,
 	}
 	return result, nil
+}
+
+// networkSetupNeedsPrerequisiteRepair recognizes only reviewed daemon and launcher evidence that the fixed helper boundary is absent.
+func networkSetupNeedsPrerequisiteRepair(outcome networksetupapproval.Outcome, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodePrivilegedHelperRequired
+	}
+	return outcome.State == networksetupapproval.Unavailable
 }
 
 // networkSetupApprovalError preserves retry guidance without exposing helper tickets or privileged command details.
