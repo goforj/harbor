@@ -21,10 +21,14 @@ import (
 )
 
 const (
+	projectUnregisterStartPhase    = "releasing project network"
 	projectUnregisterApprovalPhase = "awaiting host network release approval"
 	projectUnregisterResumePhase   = "host network release verified"
 	projectUnregisterCompletePhase = "project unregistered"
 	projectUnregisterQuarantine    = time.Hour
+
+	// SQLite persists network generations as signed 64-bit integers on every supported Harbor host.
+	maximumPersistedNetworkGeneration uint64 = 1<<63 - 1
 )
 
 const projectUnregisterQuarantineReason = "project unregister pending safe reuse"
@@ -45,6 +49,8 @@ type ProjectUnregisterState interface {
 	Project(context.Context, domain.ProjectID) (state.ProjectRecord, error)
 	// ProjectNetworkRelease returns the durable host-release recovery boundary.
 	ProjectNetworkRelease(context.Context, domain.OperationID) (state.ProjectNetworkReleaseRecord, bool, error)
+	// BeginProjectNetworkRelease atomically suppresses routes and retains exact host-release recovery facts.
+	BeginProjectNetworkRelease(context.Context, state.BeginProjectNetworkReleaseRequest) (state.ProjectNetworkReleaseMutationResult, error)
 	// StageProjectNetworkReleaseApproval restores durable approval authority for effects still present after a restart.
 	StageProjectNetworkReleaseApproval(context.Context, state.StageProjectNetworkReleaseApprovalRequest) (state.ProjectNetworkReleaseApprovalResult, error)
 	// ResumeProjectNetworkReleaseApproval retires an exact approval set and resumes its operation atomically.
@@ -59,6 +65,18 @@ type ProjectUnregisterState interface {
 type ActiveOperationSource interface {
 	// ActiveOperations returns queued and in-progress operations in durable revision order.
 	ActiveOperations(context.Context) ([]state.OperationRecord, error)
+}
+
+// ProjectUnregisterOperationJournal owns idempotent initiation and every recoverable operation transition.
+type ProjectUnregisterOperationJournal interface {
+	ActiveOperationSource
+
+	// Enqueue durably records one queued operation or replays its matching intent.
+	Enqueue(context.Context, domain.Operation) (state.OperationRecord, error)
+	// OperationByIntent returns the durable operation already owning one idempotency key.
+	OperationByIntent(context.Context, domain.IntentID) (state.OperationRecord, error)
+	// Transition advances one exact operation revision through its durable lifecycle.
+	Transition(context.Context, domain.OperationID, domain.Sequence, domain.OperationState, string, time.Time, *domain.Problem) (state.OperationRecord, error)
 }
 
 // LoopbackObserver independently classifies one exact loopback address without mutating it.
@@ -83,6 +101,24 @@ type TicketIssuer interface {
 
 // IssuerFactory lazily opens machine-global helper authority only for an interactive Prepare call.
 type IssuerFactory func() (TicketIssuer, error)
+
+// StartRequest identifies one idempotent project unregister intent and its daemon-assigned operation identity.
+type StartRequest struct {
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	IntentID    domain.IntentID
+}
+
+// Validate rejects identities that cannot own one stable unregister operation.
+func (request StartRequest) Validate() error {
+	if err := request.ProjectID.Validate(); err != nil {
+		return err
+	}
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	return request.IntentID.Validate()
+}
 
 // PrepareRequest selects one exact approval revision on behalf of an authenticated local requester.
 type PrepareRequest struct {
@@ -156,7 +192,7 @@ func (err *ReleaseIncompleteError) Error() string {
 // ProjectUnregisterCoordinator serializes approval, confirmation, and restart recovery around durable authority.
 type ProjectUnregisterCoordinator struct {
 	state      ProjectUnregisterState
-	operations ActiveOperationSource
+	operations ProjectUnregisterOperationJournal
 	plans      ApprovalPlanSource
 	loopback   LoopbackObserver
 	withdrawal WithdrawalVerifier
@@ -168,7 +204,7 @@ type ProjectUnregisterCoordinator struct {
 // NewProjectUnregisterCoordinator constructs one fail-closed unregister recovery authority.
 func NewProjectUnregisterCoordinator(
 	projectState ProjectUnregisterState,
-	operations ActiveOperationSource,
+	operations ProjectUnregisterOperationJournal,
 	plans ApprovalPlanSource,
 	loopbackObserver LoopbackObserver,
 	withdrawal WithdrawalVerifier,
@@ -193,6 +229,332 @@ func NewProjectUnregisterCoordinator(
 		issuers:    issuers,
 		clock:      clock,
 	}
+}
+
+// Start durably initiates or resumes one idempotent project unregister intent through its first stable boundary.
+func (coordinator *ProjectUnregisterCoordinator) Start(
+	ctx context.Context,
+	request StartRequest,
+) (state.OperationRecord, error) {
+	if err := request.Validate(); err != nil {
+		return state.OperationRecord{}, fmt.Errorf("start project unregister: %w", err)
+	}
+	ctx = normalizeContext(ctx)
+
+	coordinator.mutex.Lock()
+	defer coordinator.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return state.OperationRecord{}, err
+	}
+	requestedAt := coordinator.operationTime(coordinator.clock.Now(), time.Time{})
+	operation, err := domain.NewOperation(
+		request.OperationID,
+		request.IntentID,
+		domain.OperationKindProjectUnregister,
+		request.ProjectID,
+		requestedAt,
+	)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("start project unregister: create operation: %w", err)
+	}
+
+	existing, err := coordinator.operations.OperationByIntent(ctx, request.IntentID)
+	expectedEnqueuedOperation := operation
+	var expectedEnqueuedRevision *domain.Sequence
+	if err == nil {
+		if existing.Operation.IntentID != request.IntentID {
+			return state.OperationRecord{}, fmt.Errorf("start project unregister: operation intent readback differs from request")
+		}
+		if existing.Operation.Kind != operation.Kind || existing.Operation.ProjectID != operation.ProjectID {
+			return state.OperationRecord{}, &state.IntentConflictError{
+				IntentID:            request.IntentID,
+				ExistingOperationID: existing.Operation.ID,
+				ExistingKind:        existing.Operation.Kind,
+				ExistingProjectID:   existing.Operation.ProjectID,
+				RequestedKind:       operation.Kind,
+				RequestedProjectID:  operation.ProjectID,
+			}
+		}
+		expectedEnqueuedOperation = existing.Operation
+		expectedEnqueuedRevision = &existing.Revision
+	} else {
+		var corruptState *state.CorruptStateError
+		if errors.As(err, &corruptState) {
+			return state.OperationRecord{}, fmt.Errorf("start project unregister: read operation intent: %w", err)
+		}
+		var intentMissing *state.OperationIntentNotFoundError
+		if !errors.As(err, &intentMissing) {
+			return state.OperationRecord{}, fmt.Errorf("start project unregister: read operation intent: %w", err)
+		}
+		project, err := coordinator.state.Project(ctx, request.ProjectID)
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("start project unregister: read project: %w", err)
+		}
+		if project.Project.ID != request.ProjectID {
+			return state.OperationRecord{}, fmt.Errorf("start project unregister: project readback differs from request")
+		}
+		active, err := coordinator.operations.ActiveOperations(ctx)
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("start project unregister: read active operations: %w", err)
+		}
+		operationIDs := make([]domain.OperationID, 0)
+		for _, activeOperation := range active {
+			if activeOperation.Operation.ProjectID == request.ProjectID {
+				operationIDs = append(operationIDs, activeOperation.Operation.ID)
+			}
+		}
+		if len(operationIDs) != 0 {
+			slices.Sort(operationIDs)
+			return state.OperationRecord{}, &state.ProjectBusyError{
+				ProjectID:    request.ProjectID,
+				OperationIDs: operationIDs,
+			}
+		}
+	}
+	enqueued, err := coordinator.operations.Enqueue(ctx, operation)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("start project unregister: enqueue operation: %w", err)
+	}
+	if err := validateProjectUnregisterOperationReadback(
+		enqueued,
+		expectedEnqueuedOperation,
+		expectedEnqueuedRevision,
+	); err != nil {
+		return state.OperationRecord{}, fmt.Errorf("start project unregister: enqueue readback: %w", err)
+	}
+	advanced, err := coordinator.advanceOperation(ctx, enqueued)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("start project unregister: %w", err)
+	}
+	return advanced, nil
+}
+
+// validateProjectUnregisterOperationReadback binds a journal result to the exact new candidate or previously observed replay record.
+func validateProjectUnregisterOperationReadback(
+	record state.OperationRecord,
+	expectedOperation domain.Operation,
+	expectedRevision *domain.Sequence,
+) error {
+	if !reflect.DeepEqual(record.Operation, expectedOperation) {
+		return fmt.Errorf("operation differs from the durable unregister intent")
+	}
+	if expectedRevision != nil && record.Revision != *expectedRevision {
+		return fmt.Errorf("operation revision differs from the durable unregister intent")
+	}
+	if err := record.Operation.Validate(); err != nil {
+		return fmt.Errorf("operation is invalid: %w", err)
+	}
+	if err := validateOperationRevision(record.Revision); err != nil {
+		return fmt.Errorf("operation revision is invalid: %w", err)
+	}
+	return nil
+}
+
+// advanceOperation resumes one unregister record without replaying terminal work or interactive approval.
+func (coordinator *ProjectUnregisterCoordinator) advanceOperation(
+	ctx context.Context,
+	operation state.OperationRecord,
+) (state.OperationRecord, error) {
+	if operation.Operation.Kind != domain.OperationKindProjectUnregister {
+		return state.OperationRecord{}, fmt.Errorf("operation %q kind is %q, not %q", operation.Operation.ID, operation.Operation.Kind, domain.OperationKindProjectUnregister)
+	}
+	switch operation.Operation.State {
+	case domain.OperationQueued:
+		return coordinator.advanceQueued(ctx, operation)
+	case domain.OperationRunning:
+		return coordinator.advanceRunning(ctx, operation)
+	case domain.OperationRequiresApproval,
+		domain.OperationSucceeded,
+		domain.OperationFailed,
+		domain.OperationCancelled:
+		return operation, nil
+	default:
+		return state.OperationRecord{}, fmt.Errorf("operation %q has unsupported state %q", operation.Operation.ID, operation.Operation.State)
+	}
+}
+
+// advanceQueued proves the project still exists before making its unregister operation recoverably running.
+func (coordinator *ProjectUnregisterCoordinator) advanceQueued(
+	ctx context.Context,
+	operation state.OperationRecord,
+) (state.OperationRecord, error) {
+	project, err := coordinator.state.Project(ctx, operation.Operation.ProjectID)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("read project before unregister: %w", err)
+	}
+	if project.Project.ID != operation.Operation.ProjectID {
+		return state.OperationRecord{}, fmt.Errorf("project readback differs from unregister operation")
+	}
+	at := coordinator.operationTime(coordinator.clock.Now(), operation.Operation.RequestedAt)
+	expectedRunning, err := operation.Operation.Transition(
+		domain.OperationRunning,
+		projectUnregisterStartPhase,
+		at,
+		nil,
+	)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("derive queued operation transition: %w", err)
+	}
+	running, err := coordinator.operations.Transition(
+		ctx,
+		operation.Operation.ID,
+		operation.Revision,
+		domain.OperationRunning,
+		projectUnregisterStartPhase,
+		at,
+		nil,
+	)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("start queued operation: %w", err)
+	}
+	if !reflect.DeepEqual(running.Operation, expectedRunning) ||
+		running.Revision <= operation.Revision ||
+		running.Revision > domain.MaximumSequence {
+		return state.OperationRecord{}, fmt.Errorf("started operation readback differs from the requested transition")
+	}
+	return coordinator.advanceRunning(ctx, running)
+}
+
+// advanceRunning creates a missing release boundary or resumes the exact one already committed before a crash.
+func (coordinator *ProjectUnregisterCoordinator) advanceRunning(
+	ctx context.Context,
+	operation state.OperationRecord,
+) (state.OperationRecord, error) {
+	release, found, err := coordinator.state.ProjectNetworkRelease(ctx, operation.Operation.ID)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("read network release: %w", err)
+	}
+	if found {
+		return coordinator.advanceRelease(ctx, operation, release)
+	}
+	return coordinator.beginRunning(ctx, operation)
+}
+
+// beginRunning chooses direct pending deletion or stages the first route-suppression boundary from fresh durable revisions.
+func (coordinator *ProjectUnregisterCoordinator) beginRunning(
+	ctx context.Context,
+	operation state.OperationRecord,
+) (state.OperationRecord, error) {
+	runtimeState, err := coordinator.state.RuntimeState(ctx)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("read runtime state: %w", err)
+	}
+	project, err := coordinator.state.Project(ctx, operation.Operation.ProjectID)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("read project release owner: %w", err)
+	}
+	if project.Project.ID != operation.Operation.ProjectID {
+		return state.OperationRecord{}, fmt.Errorf("project readback differs from unregister operation")
+	}
+	if !runtimeState.NetworkInitialized {
+		return coordinator.completePending(ctx, project, operation, time.Time{})
+	}
+	if !projectHasRuntimeNetworkClaims(runtimeState.Network, operation.Operation.ProjectID) {
+		return coordinator.completePending(ctx, project, operation, runtimeState.Network.UpdatedAt)
+	}
+
+	generation, err := nextProjectUnregisterBeginGeneration(runtimeState.Network)
+	if err != nil {
+		return state.OperationRecord{}, err
+	}
+	lowerBound := runtimeState.Network.UpdatedAt
+	if operation.Operation.StartedAt != nil && operation.Operation.StartedAt.After(lowerBound) {
+		lowerBound = *operation.Operation.StartedAt
+	}
+	began, err := coordinator.state.BeginProjectNetworkRelease(
+		ctx,
+		state.BeginProjectNetworkReleaseRequest{
+			ProjectID:                 operation.Operation.ProjectID,
+			OperationID:               operation.Operation.ID,
+			ExpectedNetworkRevision:   runtimeState.Network.Revision,
+			ExpectedProjectRevision:   project.Revision,
+			ExpectedOperationRevision: operation.Revision,
+			BeginGeneration:           generation,
+			At:                        coordinator.operationTime(coordinator.clock.Now(), lowerBound),
+		},
+	)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("begin project network release: %w", err)
+	}
+	if began.Release.ProjectID != operation.Operation.ProjectID || began.Release.OperationID != operation.Operation.ID {
+		return state.OperationRecord{}, fmt.Errorf("begun network release differs from unregister operation")
+	}
+	return coordinator.advanceRelease(ctx, operation, began.Release)
+}
+
+// completePending atomically removes a project whose durable network state proves no teardown boundary is needed.
+func (coordinator *ProjectUnregisterCoordinator) completePending(
+	ctx context.Context,
+	project state.ProjectRecord,
+	operation state.OperationRecord,
+	lowerBound time.Time,
+) (state.OperationRecord, error) {
+	if project.Project.UpdatedAt.After(lowerBound) {
+		lowerBound = project.Project.UpdatedAt
+	}
+	if operation.Operation.StartedAt != nil && operation.Operation.StartedAt.After(lowerBound) {
+		lowerBound = *operation.Operation.StartedAt
+	}
+	completed, err := coordinator.state.CompleteProjectUnregister(
+		ctx,
+		project.Project.ID,
+		operation.Operation.ID,
+		operation.Revision,
+		projectUnregisterCompletePhase,
+		coordinator.operationTime(coordinator.clock.Now(), lowerBound),
+	)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("complete pending project unregister: %w", err)
+	}
+	return completed, nil
+}
+
+// projectHasRuntimeNetworkClaims reports whether a project owns any identity, route, or suppression boundary.
+func projectHasRuntimeNetworkClaims(record state.NetworkRecord, projectID domain.ProjectID) bool {
+	for _, lease := range record.Leases {
+		if lease.Key.ProjectID == projectID {
+			return true
+		}
+	}
+	for _, endpoint := range record.Reservations.Endpoints {
+		if endpoint.Key.ProjectID == projectID {
+			return true
+		}
+	}
+	for _, suppressedProjectID := range record.Reservations.SuppressedProjectIDs {
+		if suppressedProjectID == projectID {
+			return true
+		}
+	}
+	return false
+}
+
+// nextProjectUnregisterBeginGeneration advances beyond every visible network authority generation.
+func nextProjectUnregisterBeginGeneration(record state.NetworkRecord) (uint64, error) {
+	maximum := record.Ownership.Generation
+	for _, lease := range record.Leases {
+		if lease.Ownership.Generation > maximum {
+			maximum = lease.Ownership.Generation
+		}
+	}
+	for _, listener := range []state.ListenerReservation{
+		record.Reservations.Listeners.DNS,
+		record.Reservations.Listeners.HTTP,
+		record.Reservations.Listeners.HTTPS,
+	} {
+		if listener.Generation > maximum {
+			maximum = listener.Generation
+		}
+	}
+	for _, endpoint := range record.Reservations.Endpoints {
+		if endpoint.Generation > maximum {
+			maximum = endpoint.Generation
+		}
+	}
+	if maximum >= maximumPersistedNetworkGeneration {
+		return 0, fmt.Errorf("project network release generation is exhausted")
+	}
+	return maximum + 1, nil
 }
 
 // Prepare proves the complete release set is safe and publishes at most one helper capability.
@@ -332,10 +694,7 @@ func (coordinator *ProjectUnregisterCoordinator) Recover(ctx context.Context) er
 			}
 			continue
 		}
-		if operation.Operation.State == domain.OperationQueued {
-			continue
-		}
-		if operation.Operation.State != domain.OperationRunning {
+		if operation.Operation.State != domain.OperationQueued && operation.Operation.State != domain.OperationRunning {
 			recoveryErrors = append(recoveryErrors, fmt.Errorf(
 				"operation %q has unsupported active state %q",
 				operation.Operation.ID,
@@ -343,46 +702,41 @@ func (coordinator *ProjectUnregisterCoordinator) Recover(ctx context.Context) er
 			))
 			continue
 		}
-		if err := coordinator.recoverRunning(ctx, operation); err != nil {
+		if _, err := coordinator.advanceOperation(ctx, operation); err != nil {
 			recoveryErrors = append(recoveryErrors, fmt.Errorf("operation %q: %w", operation.Operation.ID, err))
 		}
 	}
 	return errors.Join(recoveryErrors...)
 }
 
-// recoverRunning advances only post-begin unregister boundaries and restores approval when an exact effect remains.
-func (coordinator *ProjectUnregisterCoordinator) recoverRunning(ctx context.Context, operation state.OperationRecord) error {
-	release, found, err := coordinator.state.ProjectNetworkRelease(ctx, operation.Operation.ID)
-	if err != nil {
-		return fmt.Errorf("read network release: %w", err)
-	}
-	if !found {
-		return nil
-	}
+// advanceRelease finishes one exact durable release or restores approval when a host effect remains.
+func (coordinator *ProjectUnregisterCoordinator) advanceRelease(
+	ctx context.Context,
+	operation state.OperationRecord,
+	release state.ProjectNetworkReleaseRecord,
+) (state.OperationRecord, error) {
 	if release.ProjectID != operation.Operation.ProjectID || release.OperationID != operation.Operation.ID {
-		return fmt.Errorf("network release owner differs from its unregister operation")
+		return state.OperationRecord{}, fmt.Errorf("network release owner differs from its unregister operation")
 	}
 	if release.State == state.ProjectNetworkReleaseCompleted {
-		_, err := coordinator.finishRunning(ctx, operation)
-		return err
+		return coordinator.finishRunning(ctx, operation)
 	}
 	if release.State != state.ProjectNetworkReleaseReleasing {
-		return fmt.Errorf("network release state %q is unsupported", release.State)
+		return state.OperationRecord{}, fmt.Errorf("network release state %q is unsupported", release.State)
 	}
 	if _, err := coordinator.verifyWithdrawal(ctx, release.ProjectID); err != nil {
-		return err
+		return state.OperationRecord{}, err
 	}
 	observations, err := coordinator.observeRelease(ctx, release)
 	if err != nil {
-		return err
+		return state.OperationRecord{}, err
 	}
 	if countExactObservations(observations) == 0 {
-		_, err := coordinator.finishRunning(ctx, operation)
-		return err
+		return coordinator.finishRunning(ctx, operation)
 	}
 
 	at := coordinator.operationTime(coordinator.clock.Now(), release.BeganAt)
-	_, err = coordinator.state.StageProjectNetworkReleaseApproval(
+	staged, err := coordinator.state.StageProjectNetworkReleaseApproval(
 		ctx,
 		state.StageProjectNetworkReleaseApprovalRequest{
 			OperationID:               operation.Operation.ID,
@@ -392,9 +746,9 @@ func (coordinator *ProjectUnregisterCoordinator) recoverRunning(ctx context.Cont
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("restore project network release approval: %w", err)
+		return state.OperationRecord{}, fmt.Errorf("restore project network release approval: %w", err)
 	}
-	return nil
+	return staged.Operation, nil
 }
 
 // finishRunning re-observes a running release boundary before committing teardown and deleting its project.
@@ -777,7 +1131,7 @@ func nextReleaseGeneration(
 			maximum = ensure.Generation
 		}
 	}
-	if maximum >= uint64(^uint(0)>>1) {
+	if maximum >= maximumPersistedNetworkGeneration {
 		return 0, fmt.Errorf("project network release generation is exhausted")
 	}
 	return maximum + 1, nil

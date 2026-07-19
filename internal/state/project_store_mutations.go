@@ -110,22 +110,8 @@ func (store *Store) CompleteProjectUnregister(
 			return err
 		}
 
-		row, found, err := findOperationForMutation(tx, operationID)
+		current, history, err := readProjectUnregisterOperationState(tx, operationID)
 		if err != nil {
-			return err
-		}
-		if !found {
-			return &OperationNotFoundError{OperationID: operationID}
-		}
-		current, err := operationRecordFromModel(row)
-		if err != nil {
-			return err
-		}
-		history, err := operationHistoryInTransaction(tx, current)
-		if err != nil {
-			return err
-		}
-		if err := validateOperationHistorySequenceOwners(tx, current, history); err != nil {
 			return err
 		}
 		if current.Operation.Kind != domain.OperationKindProjectUnregister {
@@ -134,7 +120,7 @@ func (store *Store) CompleteProjectUnregister(
 		if current.Operation.ProjectID != projectID {
 			return fmt.Errorf("operation %q belongs to project %q, not %q", operationID, current.Operation.ProjectID, projectID)
 		}
-		if network.initialized && !reflect.DeepEqual(network.boundary.owner.operation, current) {
+		if network.initialized && network.boundary.found && !reflect.DeepEqual(network.boundary.owner.operation, current) {
 			return corruptStateError(
 				"network project release",
 				string(operationID),
@@ -246,6 +232,20 @@ func (store *Store) CompleteProjectUnregister(
 			return err
 		}
 		result = OperationRecord{Operation: nextOperation, Revision: sequence}
+		persistedOperation, persistedHistory, err := readProjectUnregisterOperationState(tx, operationID)
+		if err != nil {
+			return err
+		}
+		if err := validateProjectUnregisterOperationReadback(
+			history,
+			operationID,
+			result,
+			expectedTransition,
+			persistedOperation,
+			persistedHistory,
+		); err != nil {
+			return err
+		}
 		if network.initialized {
 			persisted, err := readProjectUnregisterNetworkState(tx, projectID)
 			if err != nil {
@@ -257,11 +257,13 @@ func (store *Store) CompleteProjectUnregister(
 				projectID,
 				operationID,
 				result,
-				expectedTransition,
+				persistedHistory,
 			); err != nil {
 				return err
 			}
-			result = persisted.boundary.owner.operation
+			if persisted.boundary.found {
+				result = persisted.boundary.owner.operation
+			}
 		}
 		return nil
 	})
@@ -271,10 +273,65 @@ func (store *Store) CompleteProjectUnregister(
 	return result, nil
 }
 
+// validateProjectUnregisterOperationReadback proves finalization retained the exact materialized record and appended only its expected edge.
+func validateProjectUnregisterOperationReadback(
+	beforeHistory []OperationTransition,
+	operationID domain.OperationID,
+	operation OperationRecord,
+	transition OperationTransition,
+	persistedOperation OperationRecord,
+	persistedHistory []OperationTransition,
+) error {
+	if !reflect.DeepEqual(persistedOperation, operation) {
+		return corruptStateError(
+			"operation",
+			string(operationID),
+			fmt.Errorf("unregister readback differs from the committed transition"),
+		)
+	}
+	if len(persistedHistory) != len(beforeHistory)+1 ||
+		!reflect.DeepEqual(persistedHistory[:len(beforeHistory)], beforeHistory) ||
+		!reflect.DeepEqual(persistedHistory[len(persistedHistory)-1], transition) {
+		return corruptStateError(
+			"operation",
+			string(operationID),
+			fmt.Errorf("unregister history readback differs from the committed transition"),
+		)
+	}
+	return nil
+}
+
+// readProjectUnregisterOperationState proves one materialized unregister record and its complete retained history share every sequence owner.
+func readProjectUnregisterOperationState(
+	tx *gorm.DB,
+	operationID domain.OperationID,
+) (OperationRecord, []OperationTransition, error) {
+	row, found, err := findOperationForMutation(tx, operationID)
+	if err != nil {
+		return OperationRecord{}, nil, err
+	}
+	if !found {
+		return OperationRecord{}, nil, &OperationNotFoundError{OperationID: operationID}
+	}
+	record, err := operationRecordFromModel(row)
+	if err != nil {
+		return OperationRecord{}, nil, err
+	}
+	history, err := operationHistoryInTransaction(tx, record)
+	if err != nil {
+		return OperationRecord{}, nil, err
+	}
+	if err := validateOperationHistorySequenceOwners(tx, record, history); err != nil {
+		return OperationRecord{}, nil, err
+	}
+	return record, history, nil
+}
+
 // projectUnregisterNetworkState retains the complete optional network proof needed around final deletion.
 type projectUnregisterNetworkState struct {
 	initialized bool
 	highWater   domain.Sequence
+	record      NetworkRecord
 	rows        networkModelRows
 	boundary    projectNetworkReleaseBoundary
 }
@@ -292,7 +349,7 @@ func readProjectUnregisterNetworkState(
 	if err != nil {
 		return projectUnregisterNetworkState{}, err
 	}
-	_, initialized, err := networkRecordFromModels(rows)
+	record, initialized, err := networkRecordFromModels(rows)
 	if err != nil {
 		return projectUnregisterNetworkState{}, err
 	}
@@ -310,6 +367,7 @@ func readProjectUnregisterNetworkState(
 	state := projectUnregisterNetworkState{
 		initialized: true,
 		highWater:   highWater,
+		record:      record,
 		rows:        rows,
 	}
 	for _, row := range rows.Releases {
@@ -336,6 +394,9 @@ func requireCompletedProjectNetworkRelease(
 		return nil
 	}
 	if !state.boundary.found {
+		if !projectHasActiveNetworkClaims(state.record, projectID) {
+			return nil
+		}
 		return &ProjectNetworkReleaseNotFoundError{ProjectID: projectID, OperationID: operationID}
 	}
 	durableOperationID := domain.OperationID(state.boundary.row.OperationId)
@@ -353,6 +414,26 @@ func requireCompletedProjectNetworkRelease(
 	return nil
 }
 
+// projectHasActiveNetworkClaims reports whether deletion still requires route suppression or host identity release.
+func projectHasActiveNetworkClaims(record NetworkRecord, projectID domain.ProjectID) bool {
+	for _, lease := range record.Leases {
+		if lease.Key.ProjectID == projectID {
+			return true
+		}
+	}
+	for _, endpoint := range record.Reservations.Endpoints {
+		if endpoint.Key.ProjectID == projectID {
+			return true
+		}
+	}
+	for _, suppressedProjectID := range record.Reservations.SuppressedProjectIDs {
+		if suppressedProjectID == projectID {
+			return true
+		}
+	}
+	return false
+}
+
 // validateProjectUnregisterNetworkReadback proves final deletion retained every network fact and only removed its project owner.
 func validateProjectUnregisterNetworkReadback(
 	before projectUnregisterNetworkState,
@@ -360,13 +441,13 @@ func validateProjectUnregisterNetworkReadback(
 	projectID domain.ProjectID,
 	operationID domain.OperationID,
 	operation OperationRecord,
-	transition OperationTransition,
+	persistedHistory []OperationTransition,
 ) error {
-	if !after.initialized || !after.boundary.found {
+	if !after.initialized {
 		return corruptStateError(
-			"network project release",
-			string(operationID),
-			fmt.Errorf("completed boundary disappeared during project deletion"),
+			"network state",
+			"1",
+			fmt.Errorf("initialized network disappeared during project deletion"),
 		)
 	}
 	if after.highWater != operation.Revision {
@@ -376,30 +457,40 @@ func validateProjectUnregisterNetworkReadback(
 			fmt.Errorf("project unregister allocated revision %d", operation.Revision),
 		)
 	}
-	if after.boundary.owner.projectExists {
+	if before.boundary.found {
+		if !after.boundary.found {
+			return corruptStateError(
+				"network project release",
+				string(operationID),
+				fmt.Errorf("completed boundary disappeared during project deletion"),
+			)
+		}
+		if after.boundary.owner.projectExists {
+			return corruptStateError(
+				"project",
+				string(projectID),
+				fmt.Errorf("project remains visible after deletion"),
+			)
+		}
+		if !reflect.DeepEqual(after.boundary.owner.operation, operation) {
+			return corruptStateError(
+				"operation",
+				string(operationID),
+				fmt.Errorf("unregister readback differs from the committed transition"),
+			)
+		}
+		if !reflect.DeepEqual(after.boundary.owner.history, persistedHistory) {
+			return corruptStateError(
+				"operation",
+				string(operationID),
+				fmt.Errorf("unregister history readback differs from the committed transition"),
+			)
+		}
+	} else if after.boundary.found {
 		return corruptStateError(
-			"project",
-			string(projectID),
-			fmt.Errorf("project remains visible after deletion"),
-		)
-	}
-	if !reflect.DeepEqual(after.boundary.owner.operation, operation) {
-		return corruptStateError(
-			"operation",
+			"network project release",
 			string(operationID),
-			fmt.Errorf("unregister readback differs from the committed transition"),
-		)
-	}
-	if len(after.boundary.owner.history) != len(before.boundary.owner.history)+1 ||
-		!reflect.DeepEqual(
-			after.boundary.owner.history[:len(before.boundary.owner.history)],
-			before.boundary.owner.history,
-		) ||
-		!reflect.DeepEqual(after.boundary.owner.history[len(after.boundary.owner.history)-1], transition) {
-		return corruptStateError(
-			"operation",
-			string(operationID),
-			fmt.Errorf("unregister history readback differs from the committed transition"),
+			fmt.Errorf("claimless project deletion created a release boundary"),
 		)
 	}
 

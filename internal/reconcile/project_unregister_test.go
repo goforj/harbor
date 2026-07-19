@@ -252,10 +252,15 @@ type projectUnregisterTestState struct {
 	project                 state.ProjectRecord
 	releases                map[domain.OperationID]state.ProjectNetworkReleaseRecord
 	active                  []state.OperationRecord
+	journalRecords          map[domain.OperationID]state.OperationRecord
 	runtimeCalls            int
 	projectCalls            int
 	releaseCalls            int
 	activeCalls             int
+	intentCalls             []domain.IntentID
+	enqueueCalls            []domain.Operation
+	transitionCalls         []projectUnregisterTransitionCall
+	beginCalls              []state.BeginProjectNetworkReleaseRequest
 	stageCalls              []state.StageProjectNetworkReleaseApprovalRequest
 	resumeCalls             []state.ResumeProjectNetworkReleaseApprovalRequest
 	completeNetworkCalls    []state.CompleteProjectNetworkReleaseRequest
@@ -269,6 +274,25 @@ type projectUnregisterTestState struct {
 	projectError            error
 	releaseError            error
 	activeError             error
+	intentError             error
+	intentReadback          *state.OperationRecord
+	enqueueError            error
+	enqueueReadback         *state.OperationRecord
+	transitionError         error
+	transitionReadback      *state.OperationRecord
+	beginError              error
+	beginReadback           *state.ProjectNetworkReleaseMutationResult
+	projectReadback         *state.ProjectRecord
+}
+
+// projectUnregisterTransitionCall records one operation journal edge requested by initiation or recovery.
+type projectUnregisterTransitionCall struct {
+	operationID      domain.OperationID
+	expectedRevision domain.Sequence
+	next             domain.OperationState
+	phase            string
+	at               time.Time
+	problem          *domain.Problem
 }
 
 // projectUnregisterCompleteProjectCall records the final atomic deletion boundary.
@@ -302,6 +326,9 @@ func (projectState *projectUnregisterTestState) Project(
 	if projectState.projectError != nil {
 		return state.ProjectRecord{}, projectState.projectError
 	}
+	if projectState.projectReadback != nil {
+		return *projectState.projectReadback, nil
+	}
 	if projectState.project.Project.ID != projectID {
 		return state.ProjectRecord{}, errors.New("project not found")
 	}
@@ -323,6 +350,65 @@ func (projectState *projectUnregisterTestState) ProjectNetworkRelease(
 	return cloneProjectUnregisterTestRelease(release), found, nil
 }
 
+// BeginProjectNetworkRelease records route suppression and retains the fixture's active project leases.
+func (projectState *projectUnregisterTestState) BeginProjectNetworkRelease(
+	_ context.Context,
+	request state.BeginProjectNetworkReleaseRequest,
+) (state.ProjectNetworkReleaseMutationResult, error) {
+	projectState.mutex.Lock()
+	defer projectState.mutex.Unlock()
+	projectState.beginCalls = append(projectState.beginCalls, request)
+	if projectState.beginError != nil {
+		return state.ProjectNetworkReleaseMutationResult{}, projectState.beginError
+	}
+	if projectState.beginReadback != nil {
+		return *projectState.beginReadback, nil
+	}
+	if release, found := projectState.releases[request.OperationID]; found {
+		return state.ProjectNetworkReleaseMutationResult{
+			Record:   projectState.runtime.Network,
+			Release:  cloneProjectUnregisterTestRelease(release),
+			Replayed: true,
+		}, nil
+	}
+	release := state.ProjectNetworkReleaseRecord{
+		ProjectID:       request.ProjectID,
+		OperationID:     request.OperationID,
+		State:           state.ProjectNetworkReleaseReleasing,
+		BeginGeneration: request.BeginGeneration,
+		BeganAt:         request.At,
+		ActiveLeases:    []state.NetworkLeaseEnsure{},
+		Endpoints:       []state.EndpointReservation{},
+	}
+	for _, lease := range projectState.runtime.Network.Leases {
+		if lease.Key.ProjectID != request.ProjectID {
+			continue
+		}
+		release.ActiveLeases = append(release.ActiveLeases, state.NetworkLeaseEnsure{
+			Lease:          lease,
+			Generation:     lease.Ownership.Generation,
+			EnsureEvidence: "fixture lease ownership",
+			LeasedAt:       request.At.Add(-time.Minute),
+		})
+	}
+	for _, endpoint := range projectState.runtime.Network.Reservations.Endpoints {
+		if endpoint.Key.ProjectID == request.ProjectID {
+			release.Endpoints = append(release.Endpoints, endpoint)
+		}
+	}
+	projectState.releases[request.OperationID] = release
+	projectState.runtime.Network.Revision = projectState.nextRevision()
+	projectState.runtime.Network.UpdatedAt = request.At
+	projectState.runtime.Network.Reservations.SuppressedProjectIDs = append(
+		projectState.runtime.Network.Reservations.SuppressedProjectIDs,
+		request.ProjectID,
+	)
+	return state.ProjectNetworkReleaseMutationResult{
+		Record:  projectState.runtime.Network,
+		Release: cloneProjectUnregisterTestRelease(release),
+	}, nil
+}
+
 // StageProjectNetworkReleaseApproval records restart recovery and transitions the fixture operation to approval.
 func (projectState *projectUnregisterTestState) StageProjectNetworkReleaseApproval(
 	_ context.Context,
@@ -342,6 +428,8 @@ func (projectState *projectUnregisterTestState) StageProjectNetworkReleaseApprov
 	record.Operation.Phase = request.Phase
 	record.Revision++
 	projectState.active[index] = record
+	projectState.ensureJournalRecords()
+	projectState.journalRecords[request.OperationID] = record
 	return state.ProjectNetworkReleaseApprovalResult{Operation: record}, nil
 }
 
@@ -364,6 +452,8 @@ func (projectState *projectUnregisterTestState) ResumeProjectNetworkReleaseAppro
 	record.Operation.Phase = request.Phase
 	record.Revision++
 	projectState.active[index] = record
+	projectState.ensureJournalRecords()
+	projectState.journalRecords[request.OperationID] = record
 	return record, nil
 }
 
@@ -433,7 +523,117 @@ func (projectState *projectUnregisterTestState) CompleteProjectUnregister(
 	record.Operation.Phase = phase
 	record.Operation.FinishedAt = &finished
 	record.Revision++
+	projectState.ensureJournalRecords()
+	projectState.journalRecords[operationID] = record
 	projectState.active = append(projectState.active[:index], projectState.active[index+1:]...)
+	return record, nil
+}
+
+// Enqueue records one queued operation or replays the fixture's matching durable intent.
+func (projectState *projectUnregisterTestState) Enqueue(
+	_ context.Context,
+	operation domain.Operation,
+) (state.OperationRecord, error) {
+	projectState.mutex.Lock()
+	defer projectState.mutex.Unlock()
+	projectState.enqueueCalls = append(projectState.enqueueCalls, operation)
+	if projectState.enqueueError != nil {
+		return state.OperationRecord{}, projectState.enqueueError
+	}
+	if projectState.enqueueReadback != nil {
+		return *projectState.enqueueReadback, nil
+	}
+	projectState.ensureJournalRecords()
+	for _, existing := range projectState.journalRecords {
+		if existing.Operation.IntentID != operation.IntentID {
+			continue
+		}
+		if existing.Operation.Kind != operation.Kind || existing.Operation.ProjectID != operation.ProjectID {
+			return state.OperationRecord{}, &state.IntentConflictError{
+				IntentID:            operation.IntentID,
+				ExistingOperationID: existing.Operation.ID,
+				ExistingKind:        existing.Operation.Kind,
+				ExistingProjectID:   existing.Operation.ProjectID,
+				RequestedKind:       operation.Kind,
+				RequestedProjectID:  operation.ProjectID,
+			}
+		}
+		return existing, nil
+	}
+	if existing, found := projectState.journalRecords[operation.ID]; found {
+		return state.OperationRecord{}, &state.OperationIDConflictError{
+			OperationID:       operation.ID,
+			ExistingIntentID:  existing.Operation.IntentID,
+			RequestedIntentID: operation.IntentID,
+		}
+	}
+	record := state.OperationRecord{Operation: operation, Revision: projectState.nextRevision()}
+	projectState.journalRecords[operation.ID] = record
+	projectState.active = append(projectState.active, record)
+	return record, nil
+}
+
+// OperationByIntent returns the terminal-aware fixture operation already owning one idempotency key.
+func (projectState *projectUnregisterTestState) OperationByIntent(
+	_ context.Context,
+	intentID domain.IntentID,
+) (state.OperationRecord, error) {
+	projectState.mutex.Lock()
+	defer projectState.mutex.Unlock()
+	projectState.intentCalls = append(projectState.intentCalls, intentID)
+	if projectState.intentError != nil {
+		return state.OperationRecord{}, projectState.intentError
+	}
+	if projectState.intentReadback != nil {
+		return *projectState.intentReadback, nil
+	}
+	projectState.ensureJournalRecords()
+	for _, record := range projectState.journalRecords {
+		if record.Operation.IntentID == intentID {
+			return record, nil
+		}
+	}
+	return state.OperationRecord{}, &state.OperationIntentNotFoundError{IntentID: intentID}
+}
+
+// Transition records one exact journal edge and updates the fixture's active operation.
+func (projectState *projectUnregisterTestState) Transition(
+	_ context.Context,
+	operationID domain.OperationID,
+	expectedRevision domain.Sequence,
+	next domain.OperationState,
+	phase string,
+	at time.Time,
+	problem *domain.Problem,
+) (state.OperationRecord, error) {
+	projectState.mutex.Lock()
+	defer projectState.mutex.Unlock()
+	projectState.transitionCalls = append(projectState.transitionCalls, projectUnregisterTransitionCall{
+		operationID:      operationID,
+		expectedRevision: expectedRevision,
+		next:             next,
+		phase:            phase,
+		at:               at,
+		problem:          problem,
+	})
+	if projectState.transitionError != nil {
+		return state.OperationRecord{}, projectState.transitionError
+	}
+	if projectState.transitionReadback != nil {
+		return *projectState.transitionReadback, nil
+	}
+	record, index, err := projectState.operation(operationID, expectedRevision)
+	if err != nil {
+		return state.OperationRecord{}, err
+	}
+	transitioned, err := record.Operation.Transition(next, phase, at, problem)
+	if err != nil {
+		return state.OperationRecord{}, err
+	}
+	record = state.OperationRecord{Operation: transitioned, Revision: projectState.nextRevision()}
+	projectState.active[index] = record
+	projectState.ensureJournalRecords()
+	projectState.journalRecords[operationID] = record
 	return record, nil
 }
 
@@ -446,6 +646,36 @@ func (projectState *projectUnregisterTestState) ActiveOperations(_ context.Conte
 		return nil, projectState.activeError
 	}
 	return slices.Clone(projectState.active), nil
+}
+
+// ensureJournalRecords seeds terminal-aware journal replay from the fixture's active operations.
+func (projectState *projectUnregisterTestState) ensureJournalRecords() {
+	if projectState.journalRecords != nil {
+		return
+	}
+	projectState.journalRecords = make(map[domain.OperationID]state.OperationRecord, len(projectState.active))
+	for _, record := range projectState.active {
+		projectState.journalRecords[record.Operation.ID] = record
+	}
+}
+
+// nextRevision returns one fixture sequence beyond every currently represented durable owner.
+func (projectState *projectUnregisterTestState) nextRevision() domain.Sequence {
+	maximum := projectState.project.Revision
+	if projectState.runtime.Network.Revision > maximum {
+		maximum = projectState.runtime.Network.Revision
+	}
+	for _, record := range projectState.active {
+		if record.Revision > maximum {
+			maximum = record.Revision
+		}
+	}
+	for _, record := range projectState.journalRecords {
+		if record.Revision > maximum {
+			maximum = record.Revision
+		}
+	}
+	return maximum + 1
 }
 
 // operation selects one exact fixture operation revision while the caller holds the state lock.
@@ -478,6 +708,10 @@ func (projectState *projectUnregisterTestState) snapshot() projectUnregisterStat
 		projectCalls:         projectState.projectCalls,
 		releaseCalls:         projectState.releaseCalls,
 		activeCalls:          projectState.activeCalls,
+		intentCalls:          slices.Clone(projectState.intentCalls),
+		enqueueCalls:         slices.Clone(projectState.enqueueCalls),
+		transitionCalls:      slices.Clone(projectState.transitionCalls),
+		beginCalls:           slices.Clone(projectState.beginCalls),
 		stageCalls:           slices.Clone(projectState.stageCalls),
 		resumeCalls:          slices.Clone(projectState.resumeCalls),
 		completeNetworkCalls: slices.Clone(projectState.completeNetworkCalls),
@@ -492,6 +726,10 @@ type projectUnregisterStateSnapshot struct {
 	projectCalls         int
 	releaseCalls         int
 	activeCalls          int
+	intentCalls          []domain.IntentID
+	enqueueCalls         []domain.Operation
+	transitionCalls      []projectUnregisterTransitionCall
+	beginCalls           []state.BeginProjectNetworkReleaseRequest
 	stageCalls           []state.StageProjectNetworkReleaseApprovalRequest
 	resumeCalls          []state.ResumeProjectNetworkReleaseApprovalRequest
 	completeNetworkCalls []state.CompleteProjectNetworkReleaseRequest
@@ -646,6 +884,10 @@ func projectUnregisterTestOperation(
 	revision domain.Sequence,
 ) state.OperationRecord {
 	started := now.Add(-20 * time.Minute)
+	var startedAt *time.Time
+	if operationState != domain.OperationQueued {
+		startedAt = &started
+	}
 	return state.OperationRecord{
 		Operation: domain.Operation{
 			ID:          operationID,
@@ -655,7 +897,7 @@ func projectUnregisterTestOperation(
 			State:       operationState,
 			Phase:       string(operationState),
 			RequestedAt: now.Add(-30 * time.Minute),
-			StartedAt:   &started,
+			StartedAt:   startedAt,
 		},
 		Revision: revision,
 	}
@@ -984,29 +1226,18 @@ func TestProjectUnregisterConfirmRejectsConflictWithoutRetiringPlans(t *testing.
 	}
 }
 
-// TestProjectUnregisterRecoverLeavesApprovalAndQueuedOperationsInert proves startup never surprises the user with privilege activity.
-func TestProjectUnregisterRecoverLeavesApprovalAndQueuedOperationsInert(t *testing.T) {
-	for _, operationState := range []domain.OperationState{domain.OperationRequiresApproval, domain.OperationQueued} {
-		t.Run(string(operationState), func(t *testing.T) {
-			fixture := newProjectUnregisterFixture(t)
-			fixture.state.active[0] = projectUnregisterTestOperation(
-				fixture.now,
-				fixture.projectID,
-				fixture.operationID,
-				operationState,
-				fixture.revision,
-			)
-			if err := fixture.coordinator.Recover(context.Background()); err != nil {
-				t.Fatalf("Recover() error = %v", err)
-			}
-			snapshot := fixture.state.snapshot()
-			if snapshot.activeCalls != 1 || snapshot.runtimeCalls != 0 || snapshot.releaseCalls != 0 || len(snapshot.stageCalls) != 0 {
-				t.Fatalf("inert Recover() state calls = %#v", snapshot)
-			}
-			if openCalls, _, _ := fixture.issuers.snapshot(); openCalls != 0 {
-				t.Fatalf("inert Recover() opened %d issuers", openCalls)
-			}
-		})
+// TestProjectUnregisterRecoverLeavesApprovalInert proves restart never exercises privilege without a fresh interactive caller.
+func TestProjectUnregisterRecoverLeavesApprovalInert(t *testing.T) {
+	fixture := newProjectUnregisterFixture(t)
+	if err := fixture.coordinator.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	snapshot := fixture.state.snapshot()
+	if snapshot.activeCalls != 1 || snapshot.runtimeCalls != 0 || snapshot.releaseCalls != 0 || len(snapshot.stageCalls) != 0 {
+		t.Fatalf("inert Recover() state calls = %#v", snapshot)
+	}
+	if openCalls, _, _ := fixture.issuers.snapshot(); openCalls != 0 {
+		t.Fatalf("inert Recover() opened %d issuers", openCalls)
 	}
 }
 
@@ -1080,8 +1311,8 @@ func TestProjectUnregisterRecoverCompletesDurableCompletedMarker(t *testing.T) {
 	}
 }
 
-// TestProjectUnregisterRecoverIgnoresPreBeginRunningOperation proves unrelated workflow ownership remains with its normal executor.
-func TestProjectUnregisterRecoverIgnoresPreBeginRunningOperation(t *testing.T) {
+// TestProjectUnregisterRecoverCompletesPreBeginClaimlessOperation closes the crash gap after queued-to-running transition.
+func TestProjectUnregisterRecoverCompletesPreBeginClaimlessOperation(t *testing.T) {
 	fixture := newProjectUnregisterFixture(t)
 	fixture.setRunningOperation()
 	delete(fixture.state.releases, fixture.operationID)
@@ -1090,7 +1321,7 @@ func TestProjectUnregisterRecoverIgnoresPreBeginRunningOperation(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 	snapshot := fixture.state.snapshot()
-	if snapshot.releaseCalls != 1 || snapshot.runtimeCalls != 0 || len(snapshot.stageCalls) != 0 || len(snapshot.completeProjectCalls) != 0 {
+	if snapshot.releaseCalls != 1 || snapshot.runtimeCalls != 1 || snapshot.projectCalls != 1 || len(snapshot.stageCalls) != 0 || len(snapshot.completeProjectCalls) != 1 || len(snapshot.active) != 0 {
 		t.Fatalf("Recover() state calls = %#v", snapshot)
 	}
 }
@@ -1191,7 +1422,7 @@ func TestProjectUnregisterCoordinatorSerializesPublicMethods(t *testing.T) {
 // TestNextReleaseGenerationUsesNativePersistenceBound proves generation arithmetic cannot wrap its generated int model.
 func TestNextReleaseGenerationUsesNativePersistenceBound(t *testing.T) {
 	_, err := nextReleaseGeneration(
-		state.NetworkRecord{Ownership: identity.Ownership{Generation: uint64(^uint(0) >> 1)}},
+		state.NetworkRecord{Ownership: identity.Ownership{Generation: maximumPersistedNetworkGeneration}},
 		state.ProjectNetworkReleaseRecord{BeginGeneration: 1},
 	)
 	if err == nil || !strings.Contains(err.Error(), "exhausted") {

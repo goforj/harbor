@@ -14,6 +14,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/harbor/internal/network/identity"
 	"gorm.io/gorm"
 )
 
@@ -595,6 +596,291 @@ func TestStoreCompleteProjectUnregisterPreservesUninitializedNetworkCompatibilit
 	}
 }
 
+// TestStoreCompleteProjectUnregisterRemovesInitializedClaimlessPendingProject verifies a network singleton does not fabricate teardown work.
+func TestStoreCompleteProjectUnregisterRemovesInitializedClaimlessPendingProject(t *testing.T) {
+	store, connection, _, _ := newNetworkReplaceTestHarness(t, 1)
+	project := validRuntimeStateProject("project-pending-unregister")
+	journal, running, completedAt := projectStoreMutationRunningUnregister(
+		t,
+		store,
+		project,
+		"operation-pending-unregister",
+	)
+	beforeRows := networkReplaceTestRows(t, connection)
+	beforeNetwork, initialized, err := store.Network(context.Background())
+	if err != nil || !initialized {
+		t.Fatalf("network before claimless unregister = %#v, %t, %v", beforeNetwork, initialized, err)
+	}
+
+	completed, err := store.CompleteProjectUnregister(
+		context.Background(),
+		project.ID,
+		running.Operation.ID,
+		running.Revision,
+		"project removed",
+		completedAt,
+	)
+	if err != nil || completed.Operation.State != domain.OperationSucceeded || completed.Revision != running.Revision+1 {
+		t.Fatalf("claimless pending unregister = %#v, %v", completed, err)
+	}
+	afterRows := networkReplaceTestRows(t, connection)
+	expectedRows := beforeRows
+	expectedRows.Projects = make([]models.Project, 0, len(beforeRows.Projects)-1)
+	for _, row := range beforeRows.Projects {
+		if row.ProjectId != string(project.ID) {
+			expectedRows.Projects = append(expectedRows.Projects, row)
+		}
+	}
+	if !reflect.DeepEqual(afterRows, expectedRows) {
+		t.Fatalf("claimless pending unregister network rows = %#v, want %#v", afterRows, expectedRows)
+	}
+	afterNetwork, initialized, err := store.Network(context.Background())
+	if err != nil || !initialized || !reflect.DeepEqual(afterNetwork, beforeNetwork) {
+		t.Fatalf("network after claimless unregister = %#v, %t, %v; want %#v", afterNetwork, initialized, err, beforeNetwork)
+	}
+	if _, found, err := store.ProjectNetworkRelease(context.Background(), running.Operation.ID); err != nil || found {
+		t.Fatalf("claimless unregister release marker = found %t, error %v", found, err)
+	}
+	if _, err := store.Project(context.Background(), project.ID); err == nil {
+		t.Fatal("claimless pending project survived unregister")
+	}
+	history, err := journal.Transitions(context.Background(), running.Operation.ID)
+	if err != nil || len(history) != 3 || history[2].State != domain.OperationSucceeded {
+		t.Fatalf("claimless unregister history = %#v, %v", history, err)
+	}
+
+	replayed, err := store.CompleteProjectUnregister(
+		context.Background(),
+		project.ID,
+		running.Operation.ID,
+		running.Revision,
+		"project removed",
+		completedAt.Add(time.Hour),
+	)
+	if err != nil || !reflect.DeepEqual(replayed, completed) {
+		t.Fatalf("claimless unregister replay = %#v, %v; want %#v", replayed, err, completed)
+	}
+}
+
+// TestStoreCompleteProjectUnregisterRollsBackClaimlessReadbackDrift proves direct pending deletion verifies network, operation, and history storage.
+func TestStoreCompleteProjectUnregisterRollsBackClaimlessReadbackDrift(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		triggerSQL string
+	}{
+		{
+			name: "network",
+			triggerSQL: `CREATE TRIGGER corrupt_claimless_unregister_network
+				AFTER DELETE ON projects WHEN OLD.project_id = 'project-pending-rollback'
+				BEGIN UPDATE network_state SET revision = revision + 1 WHERE id = 1; END`,
+		},
+		{
+			name: "operation",
+			triggerSQL: `CREATE TRIGGER corrupt_claimless_unregister_operation
+				AFTER UPDATE OF state ON operations WHEN NEW.id = 'operation-pending-rollback'
+				BEGIN UPDATE operations SET phase = 'corrupted operation readback' WHERE id = NEW.id; END`,
+		},
+		{
+			name: "history",
+			triggerSQL: `CREATE TRIGGER corrupt_claimless_unregister_history
+				AFTER INSERT ON operation_transitions
+				WHEN NEW.operation_id = 'operation-pending-rollback' AND NEW.state = 'succeeded'
+				BEGIN UPDATE operation_transitions SET phase = 'corrupted retained history' WHERE operation_id = NEW.operation_id AND ordinal = 1; END`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, connection, _, _ := newNetworkReplaceTestHarness(t, 1)
+			project := validRuntimeStateProject("project-pending-rollback")
+			journal, running, completedAt := projectStoreMutationRunningUnregister(
+				t,
+				store,
+				project,
+				"operation-pending-rollback",
+			)
+			before := networkReplaceTestRows(t, connection)
+			beforeHistory, err := journal.Transitions(context.Background(), running.Operation.ID)
+			if err != nil {
+				t.Fatalf("read history before claimless rollback: %v", err)
+			}
+			mustProjectStoreReadExec(t, connection, test.triggerSQL)
+
+			_, err = store.CompleteProjectUnregister(
+				context.Background(),
+				project.ID,
+				running.Operation.ID,
+				running.Revision,
+				"project removed",
+				completedAt,
+			)
+			var corrupt *CorruptStateError
+			if !errors.As(err, &corrupt) {
+				t.Fatalf("claimless %s drift error = %v, want CorruptStateError", test.name, err)
+			}
+			if after := networkReplaceTestRows(t, connection); !reflect.DeepEqual(after, before) {
+				t.Fatalf("claimless %s rollback changed network rows: before %#v after %#v", test.name, before, after)
+			}
+			if _, err := store.Project(context.Background(), project.ID); err != nil {
+				t.Fatalf("claimless %s rollback removed project: %v", test.name, err)
+			}
+			persisted, err := journal.Operation(context.Background(), running.Operation.ID)
+			if err != nil || !reflect.DeepEqual(persisted, running) {
+				t.Fatalf("claimless %s rollback operation = %#v, %v; want %#v", test.name, persisted, err, running)
+			}
+			afterHistory, err := journal.Transitions(context.Background(), running.Operation.ID)
+			if err != nil || !reflect.DeepEqual(afterHistory, beforeHistory) {
+				t.Fatalf("claimless %s rollback history = %#v, %v; want %#v", test.name, afterHistory, err, beforeHistory)
+			}
+		})
+	}
+}
+
+// TestValidateProjectUnregisterOperationReadbackRejectsBothMirrors verifies exact materialized and retained-history comparisons.
+func TestValidateProjectUnregisterOperationReadbackRejectsBothMirrors(t *testing.T) {
+	operationID := domain.OperationID("operation-readback")
+	before := []OperationTransition{{OperationID: operationID, Ordinal: 1, Phase: "queued", Sequence: 1}}
+	transition := OperationTransition{OperationID: operationID, Ordinal: 2, Phase: "completed", Sequence: 2}
+	operation := OperationRecord{Operation: domain.Operation{ID: operationID}, Revision: 2}
+	persistedHistory := append(append([]OperationTransition{}, before...), transition)
+	if err := validateProjectUnregisterOperationReadback(before, operationID, operation, transition, operation, persistedHistory); err != nil {
+		t.Fatalf("exact operation readback error = %v", err)
+	}
+
+	mismatchedOperation := operation
+	mismatchedOperation.Revision++
+	var corrupt *CorruptStateError
+	if err := validateProjectUnregisterOperationReadback(before, operationID, operation, transition, mismatchedOperation, persistedHistory); !errors.As(err, &corrupt) {
+		t.Fatalf("materialized mismatch error = %v, want CorruptStateError", err)
+	}
+	mismatchedHistory := append([]OperationTransition{}, persistedHistory...)
+	mismatchedHistory[0].Phase = "changed"
+	if err := validateProjectUnregisterOperationReadback(before, operationID, operation, transition, operation, mismatchedHistory); !errors.As(err, &corrupt) {
+		t.Fatalf("history mismatch error = %v, want CorruptStateError", err)
+	}
+}
+
+// TestProjectHasActiveNetworkClaimsCoversEveryPublishedOwner verifies direct deletion requires all project authority to be absent.
+func TestProjectHasActiveNetworkClaimsCoversEveryPublishedOwner(t *testing.T) {
+	projectID := domain.ProjectID("project-pending")
+	for _, test := range []struct {
+		name   string
+		record NetworkRecord
+		want   bool
+	}{
+		{name: "empty", record: NetworkRecord{}},
+		{name: "lease", record: NetworkRecord{Leases: []identity.Lease{{Key: identity.LeaseKey{ProjectID: projectID}}}}, want: true},
+		{name: "endpoint", record: NetworkRecord{Reservations: DataPlaneReservations{Endpoints: []EndpointReservation{{Key: EndpointReservationKey{ProjectID: projectID}}}}}, want: true},
+		{name: "suppression", record: NetworkRecord{Reservations: DataPlaneReservations{SuppressedProjectIDs: []domain.ProjectID{projectID}}}, want: true},
+		{name: "other project", record: NetworkRecord{
+			Leases: []identity.Lease{{Key: identity.LeaseKey{ProjectID: "project-other"}}},
+			Reservations: DataPlaneReservations{
+				Endpoints:            []EndpointReservation{{Key: EndpointReservationKey{ProjectID: "project-other"}}},
+				SuppressedProjectIDs: []domain.ProjectID{"project-other"},
+			},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := projectHasActiveNetworkClaims(test.record, projectID); got != test.want {
+				t.Fatalf("projectHasActiveNetworkClaims() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+// TestStoreCompleteProjectUnregisterRejectsEveryDurableNetworkClaim verifies the transactional gate against physically valid lease, endpoint, and suppression shapes.
+func TestStoreCompleteProjectUnregisterRejectsEveryDurableNetworkClaim(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*testing.T, *gorm.DB, networkModelRows, domain.ProjectID)
+	}{
+		{
+			name: "lease without release marker",
+			configure: func(t *testing.T, connection *gorm.DB, rows networkModelRows, projectID domain.ProjectID) {
+				t.Helper()
+				lease := networkReplaceTestLeaseRow(t, rows.Leases, "project-alpha", "")
+				lease.Id = 0
+				lease.ProjectId.String = string(projectID)
+				lease.ProjectId.Valid = true
+				lease.SourceProjectId = string(projectID)
+				lease.Address = "127.77.0.13"
+				if err := connection.Create(&lease).Error; err != nil {
+					t.Fatalf("insert pending primary lease: %v", err)
+				}
+			},
+		},
+		{
+			name: "endpoint with primary lease without release marker",
+			configure: func(t *testing.T, connection *gorm.DB, rows networkModelRows, projectID domain.ProjectID) {
+				t.Helper()
+				lease := networkReplaceTestLeaseRow(t, rows.Leases, "project-alpha", "")
+				lease.Id = 0
+				lease.ProjectId.String = string(projectID)
+				lease.ProjectId.Valid = true
+				lease.SourceProjectId = string(projectID)
+				lease.Address = "127.77.0.13"
+				if err := connection.Create(&lease).Error; err != nil {
+					t.Fatalf("insert pending endpoint primary lease: %v", err)
+				}
+				endpoint := networkReplaceTestEndpointRow(t, rows.Endpoints, "project-alpha", "web")
+				endpoint.Id = 0
+				endpoint.ProjectId = string(projectID)
+				endpoint.Hostname = "pending-claim.test"
+				if err := connection.Create(&endpoint).Error; err != nil {
+					t.Fatalf("insert pending endpoint: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, connection, _, _ := newNetworkReplaceTestHarness(t, 1)
+			project := validRuntimeStateProject("project-pending-claim")
+			_, running, completedAt := projectStoreMutationRunningUnregister(
+				t,
+				store,
+				project,
+				"operation-pending-claim",
+			)
+			test.configure(t, connection, networkReplaceTestRows(t, connection), project.ID)
+			before := networkReplaceTestRows(t, connection)
+
+			_, err := store.CompleteProjectUnregister(
+				context.Background(),
+				project.ID,
+				running.Operation.ID,
+				running.Revision,
+				"project removed",
+				completedAt,
+			)
+			var missing *ProjectNetworkReleaseNotFoundError
+			if !errors.As(err, &missing) || missing.ProjectID != project.ID || missing.OperationID != running.Operation.ID {
+				t.Fatalf("claim rejection error = %v, want ProjectNetworkReleaseNotFoundError", err)
+			}
+			assertProjectStoreMutationNetworkUnregisterUnchanged(t, store, connection, before, running, running.Revision)
+		})
+	}
+
+	// Suppression is stored by the release marker itself, so its no-marker shape cannot exist durably.
+	t.Run("suppression before release completion", func(t *testing.T) {
+		store, connection, _, running, begin, _ := newNetworkReleaseTestHarness(t, 1)
+		if _, err := store.BeginProjectNetworkRelease(context.Background(), begin); err != nil {
+			t.Fatalf("begin suppressed release: %v", err)
+		}
+		before := networkReplaceTestRows(t, connection)
+		_, err := store.CompleteProjectUnregister(
+			context.Background(),
+			begin.ProjectID,
+			running.Operation.ID,
+			running.Revision,
+			"project removed",
+			begin.At.Add(time.Minute),
+		)
+		var incomplete *ProjectNetworkReleaseIncompleteError
+		if !errors.As(err, &incomplete) || incomplete.ProjectID != begin.ProjectID || incomplete.OperationID != running.Operation.ID {
+			t.Fatalf("suppression rejection error = %v, want ProjectNetworkReleaseIncompleteError", err)
+		}
+		assertProjectStoreMutationNetworkUnregisterUnchanged(t, store, connection, before, running, 11)
+	})
+}
+
 // TestStoreCompleteProjectUnregisterRollsBackInitializedNetworkFailures verifies finalization cannot partially consume its release proof.
 func TestStoreCompleteProjectUnregisterRollsBackInitializedNetworkFailures(t *testing.T) {
 	for _, test := range []struct {
@@ -891,6 +1177,16 @@ func TestStoreCompleteProjectUnregisterRollsBackLateFailures(t *testing.T) {
 			name:       "transition append",
 			triggerSQL: `CREATE TRIGGER fail_unregister_transition BEFORE INSERT ON operation_transitions WHEN NEW.ordinal = 3 BEGIN SELECT RAISE(ABORT, 'transition failure'); END`,
 			want:       "transition failure",
+		},
+		{
+			name:       "operation readback",
+			triggerSQL: `CREATE TRIGGER corrupt_unregister_operation AFTER UPDATE OF state ON operations BEGIN UPDATE operations SET phase = 'corrupted operation readback' WHERE id = NEW.id; END`,
+			want:       "phase does not match latest transition",
+		},
+		{
+			name:       "history readback",
+			triggerSQL: `CREATE TRIGGER corrupt_unregister_history AFTER INSERT ON operation_transitions WHEN NEW.ordinal = 3 BEGIN UPDATE operation_transitions SET phase = 'corrupted retained history' WHERE operation_id = NEW.operation_id AND ordinal = 1; END`,
+			want:       "unregister history readback differs",
 		},
 		{
 			name:       "zero-row delete",

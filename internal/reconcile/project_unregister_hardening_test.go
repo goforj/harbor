@@ -527,7 +527,7 @@ func TestProjectUnregisterFinishRunningRejectsMalformedOrIncompleteBoundaries(t 
 		{name: "remaining exact", configure: func(*projectUnregisterFixture) {}, want: "still has 2"},
 		{name: "generation exhausted", configure: func(fixture *projectUnregisterFixture) {
 			fixture.setAllObservations(loopback.StateAbsent)
-			fixture.state.runtime.Network.Ownership.Generation = uint64(^uint(0) >> 1)
+			fixture.state.runtime.Network.Ownership.Generation = maximumPersistedNetworkGeneration
 		}, want: "generation is exhausted"},
 		{name: "complete network", configure: func(fixture *projectUnregisterFixture) {
 			fixture.setAllObservations(loopback.StateAbsent)
@@ -582,7 +582,7 @@ func TestProjectUnregisterCompletionRequestValidatesDerivedEvidence(t *testing.T
 		want      string
 	}{
 		{name: "generation exhausted", configure: func(fixture *projectUnregisterFixture, _ *[]plannedObservation) {
-			fixture.state.runtime.Network.Ownership.Generation = uint64(^uint(0) >> 1)
+			fixture.state.runtime.Network.Ownership.Generation = maximumPersistedNetworkGeneration
 		}, want: "generation is exhausted"},
 		{name: "non absent evidence", configure: func(fixture *projectUnregisterFixture, observations *[]plannedObservation) {
 			observation := projectUnregisterExactObservation(fixture.leases[0].Address)
