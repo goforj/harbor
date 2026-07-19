@@ -1,16 +1,22 @@
+import { readonly, ref } from 'vue'
+
 export type ThemePreference = 'light' | 'dark' | 'system'
+export type AppliedTheme = Exclude<ThemePreference, 'system'>
 
 const storageKey = 'theme'
+const appliedThemeState = ref<AppliedTheme>('light')
+
+export const appliedTheme = readonly(appliedThemeState)
 
 function systemPrefersDark() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-function resolveTheme(preference: ThemePreference) {
+function resolveTheme(preference: ThemePreference): AppliedTheme {
   if (preference === 'system') {
-    return systemPrefersDark()
+    return systemPrefersDark() ? 'dark' : 'light'
   }
-  return preference === 'dark'
+  return preference
 }
 
 export function themePreference(): ThemePreference {
@@ -22,8 +28,10 @@ export function themePreference(): ThemePreference {
 }
 
 export function applyTheme(preference: ThemePreference = themePreference()) {
-  document.documentElement.classList.toggle('dark', resolveTheme(preference))
-  document.documentElement.style.colorScheme = resolveTheme(preference) ? 'dark' : 'light'
+  const theme = resolveTheme(preference)
+  appliedThemeState.value = theme
+  document.documentElement.classList.toggle('dark', theme === 'dark')
+  document.documentElement.style.colorScheme = theme
 }
 
 export function setThemePreference(preference: ThemePreference) {

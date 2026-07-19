@@ -2,6 +2,7 @@
 import type { ToasterProps } from "vue-sonner"
 import { CircleCheckIcon, InfoIcon, Loader2Icon, OctagonXIcon, TriangleAlertIcon, XIcon } from "@lucide/vue"
 import { Toaster as Sonner } from "vue-sonner"
+import { appliedTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
 const props = defineProps<ToasterProps>()
@@ -17,6 +18,7 @@ const props = defineProps<ToasterProps>()
       '--border-radius': 'var(--radius)',
     }"
     v-bind="props"
+    :theme="props.theme ?? appliedTheme"
   >
     <template #success-icon>
       <CircleCheckIcon class="size-4" />
