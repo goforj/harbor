@@ -51,7 +51,7 @@ func TestAuthorityRegisterProjectJoinsDiscoveryAndAtomicState(t *testing.T) {
 		Created: true,
 	}}
 	discoverer := &registrationDiscoverer{discovery: discovery}
-	authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, discoverer, func() time.Time { return at }, func() (domain.ProjectID, error) { return "project-orders", nil }, testProjectLifecycles())
+	authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, discoverer, func() time.Time { return at }, func() (domain.ProjectID, error) { return "project-orders", nil }, testProjectLifecycles(), testNetworkSetups())
 	request := control.RegisterProjectRequest{Path: root}
 
 	registration, err := authority.RegisterProject(nil, control.Caller{}, request)
@@ -97,7 +97,7 @@ func TestAuthorityRegisterProjectStopsAtValidationAndDiscoveryFailures(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &recordingStore{}
-			authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, test.discovery, time.Now, func() (domain.ProjectID, error) { return "project-test", nil }, testProjectLifecycles())
+			authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, test.discovery, time.Now, func() (domain.ProjectID, error) { return "project-test", nil }, testProjectLifecycles(), testNetworkSetups())
 			_, err := authority.RegisterProject(t.Context(), control.Caller{}, test.request)
 			if err == nil {
 				t.Fatal("RegisterProject() error = nil")
@@ -137,6 +137,7 @@ func TestAuthorityRegisterProjectStopsAtIdentityGenerationFailure(t *testing.T) 
 		time.Now,
 		func() (domain.ProjectID, error) { return "", want },
 		testProjectLifecycles(),
+		testNetworkSetups(),
 	)
 
 	_, err := authority.RegisterProject(t.Context(), control.Caller{}, control.RegisterProjectRequest{Path: root})
@@ -177,7 +178,7 @@ func TestAuthorityRegisterProjectClassifiesStateConflict(t *testing.T) {
 	discovery := projectdiscovery.Discovery{Root: root, Name: "Orders", Slug: "orders"}
 	conflict := &state.ProjectRegistrationConflictError{Kind: state.ProjectRegistrationConflictSlug}
 	store := &recordingStore{registrationErr: conflict}
-	authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, &registrationDiscoverer{discovery: discovery}, time.Now, func() (domain.ProjectID, error) { return "project-orders", nil }, testProjectLifecycles())
+	authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, &registrationDiscoverer{discovery: discovery}, time.Now, func() (domain.ProjectID, error) { return "project-orders", nil }, testProjectLifecycles(), testNetworkSetups())
 
 	_, err := authority.RegisterProject(t.Context(), control.Caller{}, control.RegisterProjectRequest{Path: root})
 	var handlerError *session.HandlerError
@@ -197,7 +198,7 @@ func TestAuthorityRegisterProjectClassifiesActiveNetworkRelease(t *testing.T) {
 		Action:      "register project",
 	}
 	store := &recordingStore{registrationErr: active}
-	authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, &registrationDiscoverer{discovery: discovery}, time.Now, func() (domain.ProjectID, error) { return "project-orders", nil }, testProjectLifecycles())
+	authority := newAuthorityWithRegistration(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, &registrationDiscoverer{discovery: discovery}, time.Now, func() (domain.ProjectID, error) { return "project-orders", nil }, testProjectLifecycles(), testNetworkSetups())
 
 	_, err := authority.RegisterProject(t.Context(), control.Caller{}, control.RegisterProjectRequest{Path: root})
 	var handlerError *session.HandlerError

@@ -13,6 +13,8 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
@@ -53,30 +55,43 @@ type projectLifecycleCoordinator interface {
 	Stop(context.Context, reconcile.ProjectStopRequest) (state.OperationRecord, error)
 }
 
+// networkSetupCoordinator limits authority to the interactive machine-network setup lifecycle.
+type networkSetupCoordinator interface {
+	// Start stages or replays one daemon-identified network setup operation.
+	Start(context.Context, reconcile.NetworkSetupStartRequest) (state.OperationRecord, error)
+	// Prepare returns one helper capability bound to an authenticated requester and operation revision.
+	Prepare(context.Context, reconcile.NetworkSetupPrepareRequest) (ticketissuer.PoolResult, error)
+	// Confirm verifies helper evidence and returns the atomically completed operation and network foundation.
+	Confirm(context.Context, reconcile.NetworkSetupConfirmRequest) (state.CompleteNetworkSetupResult, error)
+}
+
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
-	store          controlState
-	unregister     projectUnregisterCoordinator
-	lifecycle      projectLifecycleCoordinator
-	build          buildinfo.Info
-	discoverer     projectDiscoverer
-	now            func() time.Time
-	newProjectID   func() (domain.ProjectID, error)
-	newOperationID func() (domain.OperationID, error)
+	store             controlState
+	unregister        projectUnregisterCoordinator
+	lifecycle         projectLifecycleCoordinator
+	networkSetup      networkSetupCoordinator
+	build             buildinfo.Info
+	discoverer        projectDiscoverer
+	now               func() time.Time
+	newProjectID      func() (domain.ProjectID, error)
+	newOperationID    func() (domain.OperationID, error)
+	newInstallationID func() (identity.InstallationID, error)
 }
 
 var _ control.Authority = (*Authority)(nil)
 
-// NewAuthority creates the production control authority from durable state and unregister coordination.
+// NewAuthority creates the production control authority from durable state and required reconciliation coordinators.
 func NewAuthority(
 	store *state.Store,
 	unregister *reconcile.ProjectUnregisterCoordinator,
 	lifecycle *reconcile.ProjectLifecycleCoordinator,
+	networkSetup *reconcile.NetworkSetupCoordinator,
 ) *Authority {
-	if store == nil || unregister == nil || lifecycle == nil {
-		panic("authority.NewAuthority requires non-nil state, unregister, and lifecycle dependencies")
+	if store == nil || unregister == nil || lifecycle == nil || networkSetup == nil {
+		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, and network setup dependencies")
 	}
-	return newAuthority(store, unregister, buildinfo.Current(), lifecycle)
+	return newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup)
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
@@ -85,6 +100,7 @@ func newAuthority(
 	unregister projectUnregisterCoordinator,
 	build buildinfo.Info,
 	lifecycle projectLifecycleCoordinator,
+	networkSetup networkSetupCoordinator,
 ) *Authority {
 	return newAuthorityWithRegistration(
 		store,
@@ -94,6 +110,7 @@ func newAuthority(
 		time.Now,
 		newOpaqueProjectID,
 		lifecycle,
+		networkSetup,
 	)
 }
 
@@ -106,6 +123,7 @@ func newAuthorityWithRegistration(
 	now func() time.Time,
 	newProjectID func() (domain.ProjectID, error),
 	lifecycle projectLifecycleCoordinator,
+	networkSetup networkSetupCoordinator,
 ) *Authority {
 	return newAuthorityWithIdentityFactories(
 		store,
@@ -115,11 +133,13 @@ func newAuthorityWithRegistration(
 		now,
 		newProjectID,
 		newOpaqueOperationID,
+		newOpaqueInstallationID,
 		lifecycle,
+		networkSetup,
 	)
 }
 
-// newAuthorityWithIdentityFactories keeps both daemon-owned identity sources deterministic in boundary tests.
+// newAuthorityWithIdentityFactories keeps every daemon-owned identity source deterministic in boundary tests.
 func newAuthorityWithIdentityFactories(
 	store controlState,
 	unregister projectUnregisterCoordinator,
@@ -128,26 +148,32 @@ func newAuthorityWithIdentityFactories(
 	now func() time.Time,
 	newProjectID func() (domain.ProjectID, error),
 	newOperationID func() (domain.OperationID, error),
+	newInstallationID func() (identity.InstallationID, error),
 	lifecycle projectLifecycleCoordinator,
+	networkSetup networkSetupCoordinator,
 ) *Authority {
 	if nilAuthorityDependency(store) ||
 		nilAuthorityDependency(unregister) ||
 		nilAuthorityDependency(lifecycle) ||
+		nilAuthorityDependency(networkSetup) ||
 		nilAuthorityDependency(discoverer) ||
 		nilAuthorityDependency(now) ||
 		nilAuthorityDependency(newProjectID) ||
-		nilAuthorityDependency(newOperationID) {
+		nilAuthorityDependency(newOperationID) ||
+		nilAuthorityDependency(newInstallationID) {
 		panic("authority.newAuthorityWithIdentityFactories requires every dependency")
 	}
 	return &Authority{
-		store:          store,
-		unregister:     unregister,
-		lifecycle:      lifecycle,
-		build:          build,
-		discoverer:     discoverer,
-		now:            now,
-		newProjectID:   newProjectID,
-		newOperationID: newOperationID,
+		store:             store,
+		unregister:        unregister,
+		lifecycle:         lifecycle,
+		networkSetup:      networkSetup,
+		build:             build,
+		discoverer:        discoverer,
+		now:               now,
+		newProjectID:      newProjectID,
+		newOperationID:    newOperationID,
+		newInstallationID: newInstallationID,
 	}
 }
 
@@ -194,6 +220,140 @@ func (authority *Authority) Status(ctx context.Context, caller control.Caller) (
 // Snapshot delegates the complete durable replacement so the control layer cannot drift from the Store's transaction boundary.
 func (authority *Authority) Snapshot(ctx context.Context, _ control.Caller) (domain.Snapshot, error) {
 	return authority.store.Snapshot(normalizeContext(ctx))
+}
+
+// StartNetworkSetup assigns daemon-owned operation and installation identities to one authenticated setup intent.
+func (authority *Authority) StartNetworkSetup(
+	ctx context.Context,
+	caller control.Caller,
+	request control.StartNetworkSetupRequest,
+) (control.NetworkSetupOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, err
+	}
+	operationID, err := authority.newOperationID()
+	if err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("generate network setup operation identity: %w", err)
+	}
+	if err := operationID.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("generated network setup operation identity is invalid: %w", err)
+	}
+	installationID, err := authority.newInstallationID()
+	if err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("generate network setup installation identity: %w", err)
+	}
+	if err := installationID.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("generated network setup installation identity is invalid: %w", err)
+	}
+	coordinatorRequest := reconcile.NetworkSetupStartRequest{
+		OperationID:       operationID,
+		IntentID:          request.IntentID,
+		InstallationID:    installationID,
+		RequesterIdentity: caller.Transport.UserID,
+	}
+	if err := coordinatorRequest.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("network setup coordinator request: %w", err)
+	}
+	started, err := authority.networkSetup.Start(ctx, coordinatorRequest)
+	if err != nil {
+		return control.NetworkSetupOperation{}, classifyNetworkSetupError(err)
+	}
+	result := control.NetworkSetupOperation{
+		Operation: started.Operation,
+		Revision:  started.Revision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("network setup result: %w", err)
+	}
+	if result.Operation.IntentID != request.IntentID {
+		return control.NetworkSetupOperation{}, errors.New("network setup result differs from its requested intent")
+	}
+	return result, nil
+}
+
+// PrepareNetworkSetupApproval binds one helper pool capability to the authenticated transport requester.
+func (authority *Authority) PrepareNetworkSetupApproval(
+	ctx context.Context,
+	caller control.Caller,
+	request control.PrepareNetworkSetupApprovalRequest,
+) (control.NetworkSetupApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkSetupApprovalPreparation{}, err
+	}
+	coordinatorRequest := reconcile.NetworkSetupPrepareRequest{
+		OperationID:               request.OperationID,
+		ExpectedOperationRevision: request.ExpectedOperationRevision,
+		RequesterIdentity:         caller.Transport.UserID,
+	}
+	if err := coordinatorRequest.Validate(); err != nil {
+		return control.NetworkSetupApprovalPreparation{}, fmt.Errorf("network setup approval coordinator request: %w", err)
+	}
+	prepared, err := authority.networkSetup.Prepare(ctx, coordinatorRequest)
+	if err != nil {
+		return control.NetworkSetupApprovalPreparation{}, classifyNetworkSetupError(err)
+	}
+	if err := prepared.Validate(authority.now().UTC()); err != nil {
+		return control.NetworkSetupApprovalPreparation{}, fmt.Errorf("network setup approval preparation result: %w", err)
+	}
+	if prepared.OperationID != request.OperationID {
+		return control.NetworkSetupApprovalPreparation{}, errors.New("network setup approval preparation differs from its requested operation")
+	}
+	result := control.NetworkSetupApprovalPreparation{
+		OperationID:       request.OperationID,
+		OperationRevision: request.ExpectedOperationRevision,
+		Ticket: control.NetworkSetupApprovalTicket{
+			OperationID: prepared.OperationID,
+			Reference:   prepared.Reference,
+			Operation:   prepared.Operation,
+			Pool:        prepared.Pool.String(),
+			ExpiresAt:   prepared.ExpiresAt,
+		},
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkSetupApprovalPreparation{}, fmt.Errorf("network setup approval preparation result: %w", err)
+	}
+	return result, nil
+}
+
+// ConfirmNetworkSetupApproval projects one correlated atomic setup completion into the control protocol.
+func (authority *Authority) ConfirmNetworkSetupApproval(
+	ctx context.Context,
+	_ control.Caller,
+	request control.ConfirmNetworkSetupApprovalRequest,
+) (control.NetworkSetupApprovalConfirmation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkSetupApprovalConfirmation{}, err
+	}
+	confirmed, err := authority.networkSetup.Confirm(ctx, reconcile.NetworkSetupConfirmRequest{
+		OperationID:               request.OperationID,
+		ExpectedOperationRevision: request.ExpectedOperationRevision,
+		HelperPoolEvidence:        request.PoolEvidence,
+	})
+	if err != nil {
+		return control.NetworkSetupApprovalConfirmation{}, classifyNetworkSetupError(err)
+	}
+	if err := confirmed.Validate(); err != nil {
+		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("network setup approval confirmation result: %w", err)
+	}
+	result := control.NetworkSetupApprovalConfirmation{
+		Operation:       confirmed.Operation.Operation,
+		Revision:        confirmed.Operation.Revision,
+		NetworkRevision: confirmed.Network.Record.Revision,
+		Pool:            confirmed.Network.Record.Pool.Prefix().String(),
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("network setup approval confirmation result: %w", err)
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.NetworkRevision != request.ExpectedOperationRevision+2 ||
+		result.Revision != request.ExpectedOperationRevision+3 ||
+		result.Pool != request.PoolEvidence.Pool {
+		return control.NetworkSetupApprovalConfirmation{}, errors.New("network setup approval confirmation differs from its requested operation revision and pool")
+	}
+	return result, nil
 }
 
 // RegisterProject discovers one canonical checkout and commits its inert stopped projection.
@@ -532,6 +692,32 @@ func classifyProjectUnregisterApprovalError(err error) error {
 	return err
 }
 
+// classifyNetworkSetupError maps only reviewed setup-state failures to stable control categories.
+func classifyNetworkSetupError(err error) error {
+	var corruptState *state.CorruptStateError
+	if errors.As(err, &corruptState) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var intentConflict *state.IntentConflictError
+	var staleRevision *state.StaleRevisionError
+	var networkConflict *state.NetworkInitializationConflictError
+	var poolExhaustion *identity.PoolSelectionExhaustionError
+	if errors.As(err, &intentConflict) ||
+		errors.As(err, &staleRevision) ||
+		errors.As(err, &networkConflict) ||
+		errors.As(err, &poolExhaustion) {
+		return control.NewNetworkSetupConflictError(err)
+	}
+	var operationMissing *state.OperationNotFoundError
+	if errors.As(err, &operationMissing) {
+		return control.NewNetworkSetupNotFoundError(err)
+	}
+	return err
+}
+
 // newOpaqueProjectID generates an identity that remains independent of checkout path, slug, and configuration.
 func newOpaqueProjectID() (domain.ProjectID, error) {
 	random := make([]byte, 16)
@@ -556,6 +742,19 @@ func newOpaqueOperationID() (domain.OperationID, error) {
 		return "", err
 	}
 	return operationID, nil
+}
+
+// newOpaqueInstallationID generates 128 bits of installation identity without encoding host or user metadata.
+func newOpaqueInstallationID() (identity.InstallationID, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	installationID := identity.InstallationID("installation-" + hex.EncodeToString(random))
+	if err := installationID.Validate(); err != nil {
+		return "", err
+	}
+	return installationID, nil
 }
 
 // normalizeContext keeps nil control calls usable while preserving explicit cancellation.

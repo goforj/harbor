@@ -14,6 +14,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
@@ -43,7 +44,9 @@ func newAuthorityForUnregisterTest(
 		time.Now,
 		func() (domain.ProjectID, error) { return "project-unused", nil },
 		newOperationID,
+		func() (identity.InstallationID, error) { return "installation-unused", nil },
 		testProjectLifecycles(),
+		testNetworkSetups(),
 	)
 }
 
@@ -317,7 +320,9 @@ func TestAuthorityIdentityFactoryConstructionRejectsNilOperationFactory(t *testi
 			time.Now,
 			newOpaqueProjectID,
 			nilOperationIDFactory,
+			newOpaqueInstallationID,
 			testProjectLifecycles(),
+			testNetworkSetups(),
 		)
 	})
 }

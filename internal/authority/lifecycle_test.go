@@ -9,6 +9,7 @@ import (
 	"github.com/goforj/harbor/internal/buildinfo"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/session"
@@ -38,7 +39,9 @@ func TestAuthorityProjectLifecycleDelegatesDaemonIdentityAndClientIntent(t *test
 		func() time.Time { return at },
 		func() (domain.ProjectID, error) { return "project-unused", nil },
 		func() (domain.OperationID, error) { return "operation-fixed", nil },
+		func() (identity.InstallationID, error) { return "installation-unused", nil },
 		lifecycle,
+		testNetworkSetups(),
 	)
 
 	start, err := authority.StartProject(t.Context(), control.Caller{}, control.StartProjectRequest{ProjectID: "project-orders", IntentID: "intent-start"})
@@ -95,7 +98,8 @@ func TestAuthorityProjectLifecycleClassifiesReviewedFailures(t *testing.T) {
 			authority := newAuthorityWithIdentityFactories(
 				&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now,
 				func() (domain.ProjectID, error) { return "project-unused", nil },
-				func() (domain.OperationID, error) { return "operation-fixed", nil }, lifecycle,
+				func() (domain.OperationID, error) { return "operation-fixed", nil },
+				func() (identity.InstallationID, error) { return "installation-unused", nil }, lifecycle, testNetworkSetups(),
 			)
 			err := test.call(authority)
 			var handlerError *session.HandlerError
@@ -112,7 +116,8 @@ func TestAuthorityProjectLifecycleRejectsMalformedRequestsBeforeIdentityGenerati
 	authority := newAuthorityWithIdentityFactories(
 		&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now,
 		func() (domain.ProjectID, error) { return "project-unused", nil },
-		func() (domain.OperationID, error) { return "", errors.New("identity factory must not run") }, lifecycle,
+		func() (domain.OperationID, error) { return "", errors.New("identity factory must not run") },
+		func() (identity.InstallationID, error) { return "installation-unused", nil }, lifecycle, testNetworkSetups(),
 	)
 	_, startErr := authority.StartProject(t.Context(), control.Caller{}, control.StartProjectRequest{})
 	_, stopErr := authority.StopProject(t.Context(), control.Caller{}, control.StopProjectRequest{})
