@@ -10,18 +10,23 @@ import (
 	"testing"
 )
 
-// TestProveProjectIdentitiesRejectsInvalidRequests exercises every request boundary before host mutation.
-func TestProveProjectIdentitiesRejectsInvalidRequests(t *testing.T) {
+// TestValidateProjectIdentityRequestRejectsInvalidRequests exercises every request boundary before host mutation.
+func TestValidateProjectIdentityRequestRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
 
+	nineAddresses := make([]netip.Addr, 9)
+	for index := range nineAddresses {
+		nineAddresses[index] = netip.AddrFrom4([4]byte{127, 77, 0, byte(10 + index)})
+	}
 	tests := []struct {
 		name    string
 		request ProjectIdentityRequest
 	}{
 		{name: "missing addresses", request: ProjectIdentityRequest{Port: 3306}},
 		{name: "one address", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10")}, Port: 3306}},
-		{name: "three addresses", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10"), netip.MustParseAddr("127.77.0.11"), netip.MustParseAddr("127.77.0.12")}, Port: 3306}},
+		{name: "nine addresses", request: ProjectIdentityRequest{Addresses: nineAddresses, Port: 3306}},
 		{name: "duplicate addresses", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10"), netip.MustParseAddr("127.77.0.10")}, Port: 3306}},
+		{name: "nonadjacent duplicate addresses", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10"), netip.MustParseAddr("127.77.0.11"), netip.MustParseAddr("127.77.0.10")}, Port: 3306}},
 		{name: "non-loopback", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("127.77.0.11")}, Port: 3306}},
 		{name: "ipv6 loopback", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.IPv6Loopback(), netip.MustParseAddr("127.77.0.11")}, Port: 3306}},
 		{name: "zero port", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10"), netip.MustParseAddr("127.77.0.11")}}},
@@ -31,8 +36,28 @@ func TestProveProjectIdentitiesRejectsInvalidRequests(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := ProveProjectIdentities(context.Background(), test.request); err == nil {
+			if err := validateProjectIdentityRequest(test.request); err == nil {
 				t.Fatal("expected invalid proof request to fail")
+			}
+		})
+	}
+}
+
+// TestValidateProjectIdentityRequestAcceptsSupportedAddressCounts covers every permitted proof size.
+func TestValidateProjectIdentityRequestAcceptsSupportedAddressCounts(t *testing.T) {
+	t.Parallel()
+
+	addresses := make([]netip.Addr, 8)
+	for index := range addresses {
+		addresses[index] = netip.AddrFrom4([4]byte{127, 77, 0, byte(10 + index)})
+	}
+	for count := 2; count <= len(addresses); count++ {
+		count := count
+		t.Run(fmt.Sprintf("%d_addresses", count), func(t *testing.T) {
+			t.Parallel()
+			request := ProjectIdentityRequest{Addresses: addresses[:count], Port: 3306}
+			if err := validateProjectIdentityRequest(request); err != nil {
+				t.Fatalf("validate %d proof addresses: %v", count, err)
 			}
 		})
 	}

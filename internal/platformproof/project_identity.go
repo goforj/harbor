@@ -104,7 +104,7 @@ type interfaceAssignment struct {
 	prefixLength int
 }
 
-// ProveProjectIdentities proves that two loopback identities can serve distinct authenticated responses on one native port.
+// ProveProjectIdentities proves that distinct loopback identities can serve authenticated responses on one native port.
 func ProveProjectIdentities(ctx context.Context, request ProjectIdentityRequest) (ProjectIdentityEvidence, error) {
 	if err := validateProjectIdentityRequest(request); err != nil {
 		return ProjectIdentityEvidence{}, err
@@ -191,9 +191,9 @@ func ProveProjectIdentities(ctx context.Context, request ProjectIdentityRequest)
 		Port:          request.Port,
 		Identities:    identities,
 		Assertions: []AssertionEvidence{
-			{ID: "network.loopback.explicit_assignment", Passed: true, Detail: "both /32 identities remained on their observed loopback interfaces for the socket proof"},
-			{ID: "network.loopback.distinct_identities", Passed: true, Detail: "two distinct IPv4 loopback identities accepted listeners"},
-			{ID: "network.loopback.same_native_port", Passed: true, Detail: fmt.Sprintf("both identities bound native port %d", request.Port)},
+			{ID: "network.loopback.explicit_assignment", Passed: true, Detail: "every /32 identity remained on its observed loopback interface for the socket proof"},
+			{ID: "network.loopback.distinct_identities", Passed: true, Detail: "every distinct IPv4 loopback identity accepted a listener"},
+			{ID: "network.loopback.same_native_port", Passed: true, Detail: fmt.Sprintf("every identity bound native port %d", request.Port)},
 			{ID: "network.loopback.distinct_payloads", Passed: true, Detail: "each identity returned its own authenticated payload"},
 			{ID: "network.loopback.duplicate_rejected", Passed: true, Detail: "a duplicate listener was rejected without translating the port"},
 		},
@@ -202,7 +202,7 @@ func ProveProjectIdentities(ctx context.Context, request ProjectIdentityRequest)
 
 // ProveIdentitiesAbsent proves that cleanup removed the explicit addresses from every network interface.
 func ProveIdentitiesAbsent(request ProjectIdentityRequest) (CleanupEvidence, error) {
-	if err := validateAddresses(request.Addresses); err != nil {
+	if err := validateProjectIdentityAddresses(request.Addresses); err != nil {
 		return CleanupEvidence{}, err
 	}
 
@@ -316,7 +316,7 @@ func selectExplicitIdentityAssignments(addresses []netip.Addr, observed []interf
 
 // validateProjectIdentityRequest rejects requests that cannot prove the same-port loopback contract.
 func validateProjectIdentityRequest(request ProjectIdentityRequest) error {
-	if err := validateAddresses(request.Addresses); err != nil {
+	if err := validateProjectIdentityAddresses(request.Addresses); err != nil {
 		return err
 	}
 	if request.Port == 0 {
@@ -325,20 +325,30 @@ func validateProjectIdentityRequest(request ProjectIdentityRequest) error {
 	return nil
 }
 
-// validateAddresses enforces two distinct unicast IPv4 loopback identities.
-func validateAddresses(addresses []netip.Addr) error {
-	if len(addresses) != 2 {
-		return fmt.Errorf("project identity proof requires exactly two addresses, got %d", len(addresses))
+// validateProjectIdentityAddresses bounds one socket proof to two through eight distinct IPv4 loopback identities.
+func validateProjectIdentityAddresses(addresses []netip.Addr) error {
+	if len(addresses) < 2 || len(addresses) > 8 {
+		return fmt.Errorf("project identity proof requires between two and eight addresses, got %d", len(addresses))
 	}
-	if addresses[0] == addresses[1] {
-		return errors.New("project identity proof requires distinct addresses")
-	}
+	seen := make(map[netip.Addr]struct{}, len(addresses))
 	for _, address := range addresses {
 		if !address.IsValid() || !address.Is4() || !address.IsLoopback() || address.IsUnspecified() {
 			return fmt.Errorf("proof address %q must be a unicast IPv4 loopback address", address)
 		}
+		if _, exists := seen[address]; exists {
+			return errors.New("project identity proof requires distinct addresses")
+		}
+		seen[address] = struct{}{}
 	}
 	return nil
+}
+
+// validateAddresses preserves the command proof's exact two-identity evidence contract.
+func validateAddresses(addresses []netip.Addr) error {
+	if len(addresses) != 2 {
+		return fmt.Errorf("project identity proof requires exactly two addresses, got %d", len(addresses))
+	}
+	return validateProjectIdentityAddresses(addresses)
 }
 
 // listenOnIdentities opens the same port on every requested identity without a wildcard bind.

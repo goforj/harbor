@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +73,6 @@ func TestPlatformLoopbackAdapterLifecycle(t *testing.T) {
 	if err := cleanupPlatformMutationAddresses(adapter, addresses); err != nil {
 		t.Fatalf("release production loopback identities: %v", err)
 	}
-	cleaned = true
 
 	for _, address := range addresses {
 		observation, err := adapter.Observe(t.Context(), address)
@@ -98,23 +98,47 @@ func TestPlatformLoopbackAdapterLifecycle(t *testing.T) {
 	if _, err := platformproof.ProveIdentitiesAbsent(platformproof.ProjectIdentityRequest{Addresses: addresses}); err != nil {
 		t.Fatalf("prove adapter cleanup: %v", err)
 	}
+	cleaned = true
 }
 
-// platformMutationAddresses reads the exact workflow identities without selecting a convenient fallback outside CI.
+// platformMutationAddresses requires the workflow to supply every canonical address in one exact /29.
 func platformMutationAddresses(t *testing.T) []netip.Addr {
 	t.Helper()
 	value := os.Getenv("HARBOR_PROOF_ADDRESSES")
 	if value == "" {
 		t.Fatal("HARBOR_PROOF_ADDRESSES is required for a platform mutation proof")
 	}
-	addresses, err := platformproof.ParseAddresses(value)
-	if err != nil {
-		t.Fatalf("parse platform mutation addresses: %v", err)
+	parts := strings.Split(value, ",")
+	if len(parts) != 8 {
+		t.Fatalf("platform mutation proof requires exactly eight addresses spanning one /29, got %d", len(parts))
+	}
+	addresses := make([]netip.Addr, 0, len(parts))
+	for _, part := range parts {
+		canonical := strings.TrimSpace(part)
+		address, err := netip.ParseAddr(canonical)
+		if err != nil {
+			t.Fatalf("parse platform mutation address %q: %v", part, err)
+		}
+		if !address.Is4() || !address.IsLoopback() || address.String() != canonical {
+			t.Fatalf("platform mutation address %q is not a canonical IPv4 loopback address", part)
+		}
+		addresses = append(addresses, address)
+	}
+	pool := netip.PrefixFrom(addresses[0], 29)
+	if pool != pool.Masked() {
+		t.Fatalf("platform mutation addresses start at %s instead of a canonical /29 base", addresses[0])
+	}
+	expected := pool.Addr()
+	for index, address := range addresses {
+		if address != expected {
+			t.Fatalf("platform mutation address %d = %s, want contiguous /29 address %s", index, address, expected)
+		}
+		expected = expected.Next()
 	}
 	return addresses
 }
 
-// platformMutationPort reads the unchanged native port shared by both workflow identities.
+// platformMutationPort reads the unchanged native port shared by every workflow identity.
 func platformMutationPort(t *testing.T) uint16 {
 	t.Helper()
 	value := os.Getenv("HARBOR_PROOF_PORT")
