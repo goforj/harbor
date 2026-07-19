@@ -259,6 +259,26 @@ func (handler *testLoopbackHandler) EnsureLoopbackIdentity(_ context.Context, ti
 	}, nil
 }
 
+// EnsureLoopbackPool returns verified owned postconditions for every approved pool identity.
+func (handler *testLoopbackHandler) EnsureLoopbackPool(_ context.Context, ticket helper.Ticket) (helper.PoolMutationEvidence, error) {
+	*handler.events = append(*handler.events, "ensure loopback pool")
+	identities := make([]helper.MutationEvidence, 0, len(ticket.ExpectedLoopbackPool.Identities))
+	for _, identity := range ticket.ExpectedLoopbackPool.Identities {
+		identities = append(identities, helper.MutationEvidence{
+			Changed: true,
+			Address: identity.Address,
+			Observation: helper.ExpectedObservation{
+				State:       helper.ObservationOwned,
+				Fingerprint: strings.Repeat("d", 64),
+			},
+		})
+	}
+	return helper.PoolMutationEvidence{
+		Pool:       ticket.ApprovedPool,
+		Identities: identities,
+	}, nil
+}
+
 // ReleaseLoopbackIdentity returns a verified absent postcondition for the approved address.
 func (handler *testLoopbackHandler) ReleaseLoopbackIdentity(_ context.Context, ticket helper.Ticket) (helper.MutationEvidence, error) {
 	*handler.events = append(*handler.events, "release loopback identity")
@@ -325,3 +345,4 @@ func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedempt
 }
 
 var _ io.Reader = (*recordingReader)(nil)
+var _ helper.LoopbackIdentityHandler = (*testLoopbackHandler)(nil)
