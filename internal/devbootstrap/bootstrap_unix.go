@@ -385,13 +385,18 @@ func validateAncestorDirectory(directory *os.File, path string) error {
 		return fmt.Errorf("%w: ancestor %q is not a direct directory", ErrUnsafeObject, path)
 	}
 	mode := statusModeSecurity(status)
-	if uint32(status.Uid) != 0 || mode&(0o022|0o7000) != 0 {
-		return fmt.Errorf("%w: ancestor %q owner/mode is %d/%04o, want root-owned with no special or non-root write bits", ErrUnsafeObject, path, status.Uid, mode)
+	if !validAncestorDirectoryPolicy(uint32(status.Uid), mode) {
+		return fmt.Errorf("%w: ancestor %q owner/mode is %d/%04o, want root-owned with no set-ID or non-root write bits", ErrUnsafeObject, path, status.Uid, mode)
 	}
 	if err := validatePlatformExtendedAccess(directory); err != nil {
 		return fmt.Errorf("%w: validate ancestor %q extended access: %v", ErrUnsafeObject, path, err)
 	}
 	return nil
+}
+
+// validAncestorDirectoryPolicy allows sticky system directories because sticky cannot grant replacement authority without a write bit.
+func validAncestorDirectoryPolicy(ownerUID uint32, mode uint32) bool {
+	return ownerUID == 0 && mode&(0o6000|0o022) == 0
 }
 
 // requireSameDirectObject detects replacement between no-follow inspection and descriptor retention.

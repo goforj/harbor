@@ -186,6 +186,33 @@ func TestValidateHelperStatusRequiresExactGroup(t *testing.T) {
 	}
 }
 
+// TestValidAncestorDirectoryPolicyAllowsStickySystemDirectories pins the macOS helper-parent shape without admitting replacement authority.
+func TestValidAncestorDirectoryPolicyAllowsStickySystemDirectories(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		owner uint32
+		mode  uint32
+		want  bool
+	}{
+		{name: "ordinary root ancestor", owner: 0, mode: 0o755, want: true},
+		{name: "sticky root ancestor", owner: 0, mode: 0o1755, want: true},
+		{name: "world writable sticky ancestor", owner: 0, mode: 0o1777},
+		{name: "setuid ancestor", owner: 0, mode: 0o4755},
+		{name: "setgid ancestor", owner: 0, mode: 0o2755},
+		{name: "non-root ancestor", owner: 501, mode: 0o755},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := validAncestorDirectoryPolicy(test.owner, test.mode); got != test.want {
+				t.Fatalf("validAncestorDirectoryPolicy(%d, %04o) = %t, want %t", test.owner, test.mode, got, test.want)
+			}
+		})
+	}
+}
+
 // TestOpenHelperSourceRejectsIndirectAndLinkedObjects keeps staging input bound to one direct build artifact.
 func TestOpenHelperSourceRejectsIndirectAndLinkedObjects(t *testing.T) {
 	root := t.TempDir()
