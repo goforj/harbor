@@ -213,16 +213,20 @@ func (redeemer *Redeemer) Redeem(ctx context.Context, reference helper.TicketRef
 	}
 	if ticket.RequesterIdentity != redeemer.topology.requesterIdentity ||
 		ticket.InstallationID != record.InstallationID ||
+		ticket.OwnershipSchemaVersion != record.SchemaVersion ||
+		ticket.NetworkPolicyFingerprint != record.NetworkPolicyFingerprint ||
 		ticket.ApprovedPool != record.LoopbackPoolPrefix {
 		return helper.TicketRedemption{}, consumedFailure("bind ticket to machine ownership", errors.New("signed ticket does not match protected ownership dimensions"))
 	}
 
 	admission := helper.TicketAdmission{
-		TicketReference:     reference,
-		RequesterIdentity:   redeemer.topology.requesterIdentity,
-		InstallationID:      record.InstallationID,
-		OwnershipGeneration: record.Generation,
-		ApprovedPool:        record.LoopbackPoolPrefix,
+		TicketReference:          reference,
+		RequesterIdentity:        redeemer.topology.requesterIdentity,
+		InstallationID:           record.InstallationID,
+		OwnershipGeneration:      record.Generation,
+		OwnershipSchemaVersion:   record.SchemaVersion,
+		NetworkPolicyFingerprint: record.NetworkPolicyFingerprint,
+		ApprovedPool:             record.LoopbackPoolPrefix,
 	}
 	return helper.TicketRedemption{Ticket: ticket, Admission: admission}, nil
 }
@@ -261,7 +265,7 @@ func (redeemer *Redeemer) bootstrapOwnership(
 		return helper.Ticket{}, ownership.Observation{}, consumedFailure("validate ownership bootstrap ticket", err)
 	}
 	record := ownership.Record{
-		SchemaVersion:      ownership.CurrentSchemaVersion,
+		SchemaVersion:      ownership.IdentitySchemaVersion,
 		InstallationID:     ticket.InstallationID,
 		OwnerIdentity:      redeemer.topology.requesterIdentity,
 		Generation:         ticket.OwnershipGeneration,
@@ -291,6 +295,9 @@ func validateBootstrapTicket(ticket helper.Ticket, requesterIdentity string) err
 	}
 	if ticket.OwnershipGeneration != 1 {
 		return errors.New("first machine ownership claim requires generation 1")
+	}
+	if ticket.OwnershipSchemaVersion != ownership.IdentitySchemaVersion || ticket.NetworkPolicyFingerprint != "" {
+		return errors.New("first machine ownership claim requires identity-only ownership schema")
 	}
 	if ticket.ExpectedLoopbackPool == nil {
 		return errors.New("bootstrap ticket is missing loopback pool authority")

@@ -7,7 +7,7 @@ import (
 )
 
 // ProtocolVersion is the only helper ticket and response version this build accepts.
-const ProtocolVersion uint16 = 2
+const ProtocolVersion uint16 = 3
 
 // MaxTicketLifetime bounds how long a captured helper ticket can remain useful.
 const MaxTicketLifetime = 5 * time.Minute
@@ -19,12 +19,14 @@ const MaxTicketRedemptionDuration = 15 * time.Second
 const MaximumRequesterIdentityLength = 256
 
 const (
-	minimumNonceLength     = 32
-	maximumNonceLength     = 128
-	fingerprintLength      = 64
-	ticketReferenceLength  = 64
-	loopbackPoolPrefixBits = 29
-	loopbackPoolIdentities = 1 << (32 - loopbackPoolPrefixBits)
+	minimumNonceLength                         = 32
+	maximumNonceLength                         = 128
+	fingerprintLength                          = 64
+	ticketReferenceLength                      = 64
+	loopbackPoolPrefixBits                     = 29
+	loopbackPoolIdentities                     = 1 << (32 - loopbackPoolPrefixBits)
+	identityOwnershipSchemaVersion      uint32 = 1
+	networkPolicyOwnershipSchemaVersion uint32 = 2
 )
 
 // MaximumSocketRequirements bounds the native port capabilities one pre-assignment observation may authorize.
@@ -197,18 +199,20 @@ func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
 
 // Ticket authorizes exactly one bounded loopback operation.
 type Ticket struct {
-	Version               uint16                 `json:"version"`
-	Operation             Operation              `json:"operation"`
-	InstallationID        string                 `json:"installation_id"`
-	RequesterIdentity     string                 `json:"requester_identity"`
-	OwnershipGeneration   uint64                 `json:"ownership_generation"`
-	ApprovedPool          string                 `json:"approved_pool"`
-	ApprovedAddress       string                 `json:"approved_address,omitempty"`
-	ExpectedObservation   ExpectedObservation    `json:"expected_observation,omitzero"`
-	ExpectedPreAssignment *ExpectedPreAssignment `json:"expected_pre_assignment,omitempty"`
-	ExpectedLoopbackPool  *ExpectedLoopbackPool  `json:"expected_loopback_pool,omitempty"`
-	Nonce                 string                 `json:"nonce"`
-	ExpiresAt             time.Time              `json:"expires_at"`
+	Version                  uint16                 `json:"version"`
+	Operation                Operation              `json:"operation"`
+	InstallationID           string                 `json:"installation_id"`
+	RequesterIdentity        string                 `json:"requester_identity"`
+	OwnershipGeneration      uint64                 `json:"ownership_generation"`
+	OwnershipSchemaVersion   uint32                 `json:"ownership_schema_version"`
+	NetworkPolicyFingerprint string                 `json:"network_policy_fingerprint,omitempty"`
+	ApprovedPool             string                 `json:"approved_pool"`
+	ApprovedAddress          string                 `json:"approved_address,omitempty"`
+	ExpectedObservation      ExpectedObservation    `json:"expected_observation,omitzero"`
+	ExpectedPreAssignment    *ExpectedPreAssignment `json:"expected_pre_assignment,omitempty"`
+	ExpectedLoopbackPool     *ExpectedLoopbackPool  `json:"expected_loopback_pool,omitempty"`
+	Nonce                    string                 `json:"nonce"`
+	ExpiresAt                time.Time              `json:"expires_at"`
 }
 
 // Validate verifies the ticket against the current time without touching host state.
@@ -227,6 +231,18 @@ func (t Ticket) Validate(now time.Time) error {
 	}
 	if t.OwnershipGeneration == 0 {
 		return newRequestError(ErrorCodeInvalidTicket, "ownership generation must be positive")
+	}
+	switch t.OwnershipSchemaVersion {
+	case identityOwnershipSchemaVersion:
+		if t.NetworkPolicyFingerprint != "" {
+			return newRequestError(ErrorCodeInvalidTicket, "identity-only ownership cannot carry a network policy fingerprint")
+		}
+	case networkPolicyOwnershipSchemaVersion:
+		if !validFingerprint(t.NetworkPolicyFingerprint) {
+			return newRequestError(ErrorCodeInvalidTicket, "network-policy ownership requires a canonical policy fingerprint")
+		}
+	default:
+		return newRequestError(ErrorCodeInvalidTicket, "ownership schema version is unsupported")
 	}
 	pool, err := netip.ParsePrefix(t.ApprovedPool)
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {

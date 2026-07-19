@@ -134,6 +134,13 @@ func TestValidateBootstrapTicketRequiresFreshPoolAuthority(t *testing.T) {
 		{name: "operation", mutate: func(ticket *helper.Ticket) { ticket.Operation = helper.OperationEnsureLoopbackIdentity }},
 		{name: "requester", mutate: func(ticket *helper.Ticket) { ticket.RequesterIdentity = "502" }},
 		{name: "generation", mutate: func(ticket *helper.Ticket) { ticket.OwnershipGeneration = 2 }},
+		{name: "ownership schema", mutate: func(ticket *helper.Ticket) {
+			ticket.OwnershipSchemaVersion = ownership.NetworkPolicySchemaVersion
+			ticket.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+		}},
+		{name: "network policy fingerprint", mutate: func(ticket *helper.Ticket) {
+			ticket.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+		}},
 		{name: "pool authority", mutate: func(ticket *helper.Ticket) { ticket.ExpectedLoopbackPool = nil }},
 		{name: "owned identity", mutate: func(ticket *helper.Ticket) {
 			ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation.State = helper.ObservationOwned
@@ -352,13 +359,14 @@ func testRedeemerKey(marker byte) (ed25519.PublicKey, ed25519.PrivateKey) {
 // testRedeemerTicket builds one semantically valid signed authority fixture.
 func testRedeemerTicket(now time.Time, requester string) helper.Ticket {
 	return helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackIdentity,
-		InstallationID:      "harbor-redeemer-test",
-		RequesterIdentity:   requester,
-		OwnershipGeneration: 7,
-		ApprovedPool:        "127.77.0.0/24",
-		ApprovedAddress:     "127.77.0.10",
+		Version:                helper.ProtocolVersion,
+		Operation:              helper.OperationEnsureLoopbackIdentity,
+		InstallationID:         "harbor-redeemer-test",
+		RequesterIdentity:      requester,
+		OwnershipGeneration:    7,
+		OwnershipSchemaVersion: ownership.IdentitySchemaVersion,
+		ApprovedPool:           "127.77.0.0/24",
+		ApprovedAddress:        "127.77.0.10",
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("a", 64),
@@ -391,12 +399,13 @@ func testRedeemerPoolTicket(now time.Time, requester string) helper.Ticket {
 		address = address.Next()
 	}
 	return helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackPool,
-		InstallationID:      "harbor-redeemer-test",
-		RequesterIdentity:   requester,
-		OwnershipGeneration: 1,
-		ApprovedPool:        "127.77.0.8/29",
+		Version:                helper.ProtocolVersion,
+		Operation:              helper.OperationEnsureLoopbackPool,
+		InstallationID:         "harbor-redeemer-test",
+		RequesterIdentity:      requester,
+		OwnershipGeneration:    1,
+		OwnershipSchemaVersion: ownership.IdentitySchemaVersion,
+		ApprovedPool:           "127.77.0.8/29",
 		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{
 			Identities: identities,
 		},

@@ -72,7 +72,7 @@ func TestEnvelopeCodecRoundTrip(t *testing.T) {
 	}
 }
 
-// TestEnvelopePoolCodecRoundTripAndBound proves one exact-eight authority remains canonical, verifiable, and within the v2 envelope limit.
+// TestEnvelopePoolCodecRoundTripAndBound proves one exact-eight authority remains canonical, verifiable, and within the v3 envelope limit.
 func TestEnvelopePoolCodecRoundTripAndBound(t *testing.T) {
 	now := envelopeTestTime()
 	publicKey, privateKey := envelopeTestKey(t, 11)
@@ -81,8 +81,8 @@ func TestEnvelopePoolCodecRoundTripAndBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
-	if EnvelopeVersion != 2 || helper.ProtocolVersion != 2 {
-		t.Fatalf("protocol constants = envelope %d, ticket %d, want v2", EnvelopeVersion, helper.ProtocolVersion)
+	if EnvelopeVersion != 3 || helper.ProtocolVersion != 3 {
+		t.Fatalf("protocol constants = envelope %d, ticket %d, want v3", EnvelopeVersion, helper.ProtocolVersion)
 	}
 	if envelope.Version != EnvelopeVersion || envelope.Ticket.Version != helper.ProtocolVersion {
 		t.Fatalf("pool envelope versions = envelope %d, ticket %d", envelope.Version, envelope.Ticket.Version)
@@ -115,7 +115,7 @@ func TestEnvelopePoolCodecRoundTripAndBound(t *testing.T) {
 	}
 }
 
-// TestEnvelopePoolVerifyRejectsIdentitySubstitution proves every exact-address authority field participates in the v2 signature.
+// TestEnvelopePoolVerifyRejectsIdentitySubstitution proves every exact-address authority field participates in the v3 signature.
 func TestEnvelopePoolVerifyRejectsIdentitySubstitution(t *testing.T) {
 	now := envelopeTestTime()
 	publicKey, privateKey := envelopeTestKey(t, 12)
@@ -199,7 +199,7 @@ func TestEnvelopeCodecPreservesRequirementBounds(t *testing.T) {
 	}
 }
 
-// TestEnvelopeSignatureKnownVector fixes the v2 signed authority shape and domain separator.
+// TestEnvelopeSignatureKnownVector fixes the v3 signed authority shape and domain separator.
 func TestEnvelopeSignatureKnownVector(t *testing.T) {
 	now := envelopeTestTime()
 	_, privateKey := envelopeTestKey(t, 9)
@@ -207,7 +207,7 @@ func TestEnvelopeSignatureKnownVector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
-	const want = "IYCaxRjPz6648sVGvPJM+pWRwdIDQg5AJw96D7whrOM4RYlQuJzC1AkMmojlkxPFWTTRnw04GVS8XwtCLjuXAg=="
+	const want = "sDfJXP3iZO1IoewDjB2tzGMSeUtyd3PnOo9sZUhdxR4OcOViZDPJCVxtMz9w2FbFC9hX8YTL9iy1wRWWSm8RBA=="
 	if envelope.Signature != want {
 		t.Fatalf("signature = %q, want %q", envelope.Signature, want)
 	}
@@ -217,7 +217,10 @@ func TestEnvelopeSignatureKnownVector(t *testing.T) {
 func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 	now := envelopeTestTime()
 	_, privateKey := envelopeTestKey(t, 7)
-	envelope, err := Sign(envelopeTestTicket(now), privateKey, now)
+	signedTicket := envelopeTestTicket(now)
+	signedTicket.OwnershipSchemaVersion = 2
+	signedTicket.NetworkPolicyFingerprint = strings.Repeat("d", 64)
+	envelope, err := Sign(signedTicket, privateKey, now)
 	if err != nil {
 		t.Fatalf("sign fixture: %v", err)
 	}
@@ -235,17 +238,19 @@ func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 		t.Fatalf("decode fixture objects: %v", err)
 	}
 	var ticketObjects struct {
-		Version               json.RawMessage `json:"version"`
-		Operation             json.RawMessage `json:"operation"`
-		InstallationID        json.RawMessage `json:"installation_id"`
-		RequesterIdentity     json.RawMessage `json:"requester_identity"`
-		OwnershipGeneration   json.RawMessage `json:"ownership_generation"`
-		ApprovedPool          json.RawMessage `json:"approved_pool"`
-		ApprovedAddress       json.RawMessage `json:"approved_address"`
-		ExpectedObservation   json.RawMessage `json:"expected_observation"`
-		ExpectedPreAssignment json.RawMessage `json:"expected_pre_assignment"`
-		Nonce                 json.RawMessage `json:"nonce"`
-		ExpiresAt             json.RawMessage `json:"expires_at"`
+		Version                  json.RawMessage `json:"version"`
+		Operation                json.RawMessage `json:"operation"`
+		InstallationID           json.RawMessage `json:"installation_id"`
+		RequesterIdentity        json.RawMessage `json:"requester_identity"`
+		OwnershipGeneration      json.RawMessage `json:"ownership_generation"`
+		OwnershipSchemaVersion   json.RawMessage `json:"ownership_schema_version"`
+		NetworkPolicyFingerprint json.RawMessage `json:"network_policy_fingerprint"`
+		ApprovedPool             json.RawMessage `json:"approved_pool"`
+		ApprovedAddress          json.RawMessage `json:"approved_address"`
+		ExpectedObservation      json.RawMessage `json:"expected_observation"`
+		ExpectedPreAssignment    json.RawMessage `json:"expected_pre_assignment"`
+		Nonce                    json.RawMessage `json:"nonce"`
+		ExpiresAt                json.RawMessage `json:"expires_at"`
 	}
 	if err := json.Unmarshal(objects.Ticket, &ticketObjects); err != nil {
 		t.Fatalf("decode fixture ticket: %v", err)
@@ -286,12 +291,18 @@ func TestEnvelopeDecodeRejectsNoncanonicalShapes(t *testing.T) {
 		{name: "missing envelope field", body: strings.Replace(valid, `,"signature":`+string(objects.Signature), "", 1)},
 		{name: "unknown envelope field", body: strings.TrimSuffix(valid, "}") + `,"unknown":true}`},
 		{name: "case alias envelope field", body: strings.Replace(valid, `"version":`, `"Version":`, 1)},
-		{name: "duplicate envelope field", body: strings.Replace(valid, `"version":`, `"version":2,"version":`, 1)},
+		{name: "duplicate envelope field", body: strings.Replace(valid, `"version":`, `"version":3,"version":`, 1)},
 		{name: "escaped envelope field", body: strings.Replace(valid, `"version":`, `"\u0076ersion":`, 1)},
 		{name: "missing ticket field", body: strings.Replace(valid, ticket, strings.Replace(ticket, `,"nonce":`+string(ticketObjects.Nonce), "", 1), 1)},
 		{name: "unknown ticket field", body: strings.Replace(valid, ticket, strings.TrimSuffix(ticket, "}")+`,"unknown":true}`, 1)},
 		{name: "case alias ticket field", body: strings.Replace(valid, ticket, strings.Replace(ticket, `"approved_pool":`, `"Approved_Pool":`, 1), 1)},
 		{name: "duplicate ticket field", body: strings.Replace(valid, ticket, strings.Replace(ticket, `"nonce":`, `"nonce":"duplicate","nonce":`, 1), 1)},
+		{name: "missing ownership schema", body: strings.Replace(valid, ticket, strings.Replace(ticket, `,"ownership_schema_version":`+string(ticketObjects.OwnershipSchemaVersion), "", 1), 1)},
+		{name: "case alias ownership schema", body: strings.Replace(valid, ticket, strings.Replace(ticket, `"ownership_schema_version":`, `"Ownership_Schema_Version":`, 1), 1)},
+		{name: "duplicate ownership schema", body: strings.Replace(valid, ticket, strings.Replace(ticket, `"ownership_schema_version":`, `"ownership_schema_version":2,"ownership_schema_version":`, 1), 1)},
+		{name: "empty network policy fingerprint", body: strings.Replace(valid, ticket, strings.Replace(ticket, string(ticketObjects.NetworkPolicyFingerprint), `""`, 1), 1)},
+		{name: "case alias network policy fingerprint", body: strings.Replace(valid, ticket, strings.Replace(ticket, `"network_policy_fingerprint":`, `"Network_Policy_Fingerprint":`, 1), 1)},
+		{name: "duplicate network policy fingerprint", body: strings.Replace(valid, ticket, strings.Replace(ticket, `"network_policy_fingerprint":`, `"network_policy_fingerprint":"duplicate","network_policy_fingerprint":`, 1), 1)},
 		{name: "missing observation field", body: strings.Replace(valid, observation, `{"state":"absent"}`, 1)},
 		{name: "unknown observation field", body: strings.Replace(valid, observation, strings.TrimSuffix(observation, "}")+`,"unknown":true}`, 1)},
 		{name: "case alias observation field", body: strings.Replace(valid, observation, strings.Replace(observation, `"state":`, `"State":`, 1), 1)},
@@ -330,7 +341,7 @@ func TestEnvelopeCodecBounds(t *testing.T) {
 	if _, err := Encode(invalidTime); err == nil {
 		t.Fatal("Encode() accepted a time outside JSON's canonical range")
 	}
-	expanding := []byte(`{"version":2,"public_key":"` + strings.Repeat("<", 3000) + `","ticket":{},"signature":""}`)
+	expanding := []byte(`{"version":3,"public_key":"` + strings.Repeat("<", 3000) + `","ticket":{},"signature":""}`)
 	if len(expanding) > MaxEnvelopeBytes {
 		t.Fatal("expanding decode fixture unexpectedly exceeds the input bound")
 	}
@@ -429,6 +440,10 @@ func TestEnvelopeVerifyRejectsSubstitution(t *testing.T) {
 		{name: "ticket installation", key: publicKey, mutate: func(value *Envelope) { value.Ticket.InstallationID = "other-installation" }},
 		{name: "ticket requester", key: publicKey, mutate: func(value *Envelope) { value.Ticket.RequesterIdentity = "2000" }},
 		{name: "ticket generation", key: publicKey, mutate: func(value *Envelope) { value.Ticket.OwnershipGeneration++ }},
+		{name: "ticket ownership schema", key: publicKey, mutate: func(value *Envelope) { value.Ticket.OwnershipSchemaVersion = 2 }},
+		{name: "ticket network policy fingerprint", key: publicKey, mutate: func(value *Envelope) {
+			value.Ticket.NetworkPolicyFingerprint = strings.Repeat("e", 64)
+		}},
 		{name: "ticket pool", key: publicKey, mutate: func(value *Envelope) {
 			value.Ticket.ApprovedPool = "127.78.0.0/24"
 			value.Ticket.ApprovedAddress = "127.78.0.10"
@@ -524,13 +539,14 @@ func envelopeTestKey(t *testing.T, marker byte) (ed25519.PublicKey, ed25519.Priv
 // envelopeTestTicket returns one valid ticket whose every field participates in the signature.
 func envelopeTestTicket(now time.Time) helper.Ticket {
 	return helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackIdentity,
-		InstallationID:      "harbor-test-installation",
-		RequesterIdentity:   "1000",
-		OwnershipGeneration: 1,
-		ApprovedPool:        "127.77.0.0/24",
-		ApprovedAddress:     "127.77.0.10",
+		Version:                helper.ProtocolVersion,
+		Operation:              helper.OperationEnsureLoopbackIdentity,
+		InstallationID:         "harbor-test-installation",
+		RequesterIdentity:      "1000",
+		OwnershipGeneration:    1,
+		OwnershipSchemaVersion: 1,
+		ApprovedPool:           "127.77.0.0/24",
+		ApprovedAddress:        "127.77.0.10",
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("a", 64),
@@ -547,7 +563,7 @@ func envelopeTestTicket(now time.Time) helper.Ticket {
 	}
 }
 
-// envelopeTestPoolTicket returns one complete route-only /29 authority under the existing v2 signing domain.
+// envelopeTestPoolTicket returns one complete route-only /29 authority under the v3 signing domain.
 func envelopeTestPoolTicket(now time.Time) helper.Ticket {
 	pool := netip.MustParsePrefix("127.77.0.8/29")
 	identities := make([]helper.ExpectedLoopbackIdentity, 0, 8)
@@ -567,12 +583,13 @@ func envelopeTestPoolTicket(now time.Time) helper.Ticket {
 		address = address.Next()
 	}
 	return helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackPool,
-		InstallationID:      "harbor-test-installation",
-		RequesterIdentity:   "1000",
-		OwnershipGeneration: 1,
-		ApprovedPool:        pool.String(),
+		Version:                helper.ProtocolVersion,
+		Operation:              helper.OperationEnsureLoopbackPool,
+		InstallationID:         "harbor-test-installation",
+		RequesterIdentity:      "1000",
+		OwnershipGeneration:    1,
+		OwnershipSchemaVersion: 1,
+		ApprovedPool:           pool.String(),
 		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{
 			Identities: identities,
 		},

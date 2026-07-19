@@ -200,7 +200,7 @@ func TestIssuePendingEnsureBindsEveryAuthority(t *testing.T) {
 		t.Fatalf("issue calls = plans %d ownership %d keys %d loopback %d conflicts %d publisher %d", fixture.plans.calls, fixture.ownership.calls, fixture.keys.calls, fixture.loopback.calls, fixture.conflicts.calls, fixture.publisher.calls)
 	}
 	ticket := fixture.publisher.ticket
-	if ticket.InstallationID != fixture.owned.Record.InstallationID || ticket.RequesterIdentity != fixture.owned.Record.OwnerIdentity || ticket.OwnershipGeneration != fixture.owned.Record.Generation || ticket.ApprovedPool != fixture.owned.Record.LoopbackPoolPrefix || ticket.ApprovedAddress != fixture.plan.Lease.Address.String() {
+	if ticket.InstallationID != fixture.owned.Record.InstallationID || ticket.RequesterIdentity != fixture.owned.Record.OwnerIdentity || ticket.OwnershipGeneration != fixture.owned.Record.Generation || ticket.OwnershipSchemaVersion != fixture.owned.Record.SchemaVersion || ticket.NetworkPolicyFingerprint != fixture.owned.Record.NetworkPolicyFingerprint || ticket.ApprovedPool != fixture.owned.Record.LoopbackPoolPrefix || ticket.ApprovedAddress != fixture.plan.Lease.Address.String() {
 		t.Fatalf("published ticket ownership = %#v", ticket)
 	}
 	if ticket.ExpectedObservation.State != helper.ObservationAbsent || ticket.ExpectedPreAssignment == nil || len(ticket.ExpectedPreAssignment.Requirements) != 2 {
@@ -217,6 +217,23 @@ func TestIssuePendingEnsureBindsEveryAuthority(t *testing.T) {
 	}
 	if !bytes.Equal(fixture.publisher.key, fixture.private) {
 		t.Fatal("publisher received a different signing key")
+	}
+}
+
+// TestIssueCopiesNetworkPolicyOwnership proves scalar tickets preserve complete schema-two authority.
+func TestIssueCopiesNetworkPolicyOwnership(t *testing.T) {
+	fixture := newIssuerFixture(t, helper.OperationEnsureLoopbackIdentity, LeasePending)
+	fixture.owned.Record.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	fixture.owned.Record.NetworkPolicyFingerprint = strings.Repeat("c", 64)
+	fixture.owned.Fingerprint = mustOwnershipFingerprint(t, fixture.owned.Record)
+	fixture.ownership.observations = []ownership.Observation{fixture.owned}
+
+	if _, err := fixture.service.Issue(context.Background(), fixture.owned.Record.OwnerIdentity, fixture.request); err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	ticket := fixture.publisher.ticket
+	if ticket.OwnershipSchemaVersion != ownership.NetworkPolicySchemaVersion || ticket.NetworkPolicyFingerprint != fixture.owned.Record.NetworkPolicyFingerprint {
+		t.Fatalf("published policy ownership = %#v", ticket)
 	}
 }
 

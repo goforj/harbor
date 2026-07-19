@@ -383,13 +383,14 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedemption) {
 	reference := helper.TicketReference(strings.Repeat("a", 64))
 	ticket := helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackIdentity,
-		InstallationID:      "harbor-helper-test",
-		RequesterIdentity:   "test-requester",
-		OwnershipGeneration: 7,
-		ApprovedPool:        "127.77.0.0/24",
-		ApprovedAddress:     "127.77.0.10",
+		Version:                helper.ProtocolVersion,
+		Operation:              helper.OperationEnsureLoopbackIdentity,
+		InstallationID:         "harbor-helper-test",
+		RequesterIdentity:      "test-requester",
+		OwnershipGeneration:    7,
+		OwnershipSchemaVersion: 1,
+		ApprovedPool:           "127.77.0.0/24",
+		ApprovedAddress:        "127.77.0.10",
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("b", 64),
@@ -404,11 +405,13 @@ func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedempt
 	return reference, helper.TicketRedemption{
 		Ticket: ticket,
 		Admission: helper.TicketAdmission{
-			TicketReference:     reference,
-			RequesterIdentity:   ticket.RequesterIdentity,
-			InstallationID:      ticket.InstallationID,
-			OwnershipGeneration: ticket.OwnershipGeneration,
-			ApprovedPool:        ticket.ApprovedPool,
+			TicketReference:          reference,
+			RequesterIdentity:        ticket.RequesterIdentity,
+			InstallationID:           ticket.InstallationID,
+			OwnershipGeneration:      ticket.OwnershipGeneration,
+			OwnershipSchemaVersion:   ticket.OwnershipSchemaVersion,
+			NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
+			ApprovedPool:             ticket.ApprovedPool,
 		},
 	}
 }

@@ -193,6 +193,26 @@ func TestTicketValidate(t *testing.T) {
 			ticket.RequesterIdentity = strings.Repeat("a", MaximumRequesterIdentityLength+1)
 		}, code: ErrorCodeInvalidTicket},
 		{name: "zero generation", mutate: func(ticket *Ticket) { ticket.OwnershipGeneration = 0 }, code: ErrorCodeInvalidTicket},
+		{name: "missing ownership schema", mutate: func(ticket *Ticket) { ticket.OwnershipSchemaVersion = 0 }, code: ErrorCodeInvalidTicket},
+		{name: "future ownership schema", mutate: func(ticket *Ticket) { ticket.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion + 1 }, code: ErrorCodeInvalidTicket},
+		{name: "identity schema with policy fingerprint", mutate: func(ticket *Ticket) {
+			ticket.NetworkPolicyFingerprint = testFingerprint()
+		}, code: ErrorCodeInvalidTicket},
+		{name: "network policy schema without fingerprint", mutate: func(ticket *Ticket) {
+			ticket.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion
+		}, code: ErrorCodeInvalidTicket},
+		{name: "network policy schema with short fingerprint", mutate: func(ticket *Ticket) {
+			ticket.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion
+			ticket.NetworkPolicyFingerprint = strings.Repeat("a", fingerprintLength-1)
+		}, code: ErrorCodeInvalidTicket},
+		{name: "network policy schema with uppercase fingerprint", mutate: func(ticket *Ticket) {
+			ticket.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion
+			ticket.NetworkPolicyFingerprint = strings.Repeat("A", fingerprintLength)
+		}, code: ErrorCodeInvalidTicket},
+		{name: "network policy schema with nonhex fingerprint", mutate: func(ticket *Ticket) {
+			ticket.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion
+			ticket.NetworkPolicyFingerprint = strings.Repeat("g", fingerprintLength)
+		}, code: ErrorCodeInvalidTicket},
 		{name: "missing pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "" }, code: ErrorCodeInvalidTicket},
 		{name: "malformed pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "not-a-prefix" }, code: ErrorCodeInvalidTicket},
 		{name: "non-loopback pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "192.0.2.0/24" }, code: ErrorCodeInvalidTicket},
@@ -377,6 +397,14 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 	maximumRequester := validTestTicket(now, OperationEnsureLoopbackIdentity)
 	maximumRequester.RequesterIdentity = strings.Repeat("a", MaximumRequesterIdentityLength)
 	tickets = append(tickets, maximumRequester)
+	policyBound := validTestTicket(now, OperationEnsureLoopbackIdentity)
+	policyBound.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion
+	policyBound.NetworkPolicyFingerprint = strings.Repeat("c", fingerprintLength)
+	tickets = append(tickets, policyBound)
+	policyBoundPool := validTestPoolTicket(now)
+	policyBoundPool.OwnershipSchemaVersion = networkPolicyOwnershipSchemaVersion
+	policyBoundPool.NetworkPolicyFingerprint = strings.Repeat("d", fingerprintLength)
+	tickets = append(tickets, policyBoundPool)
 
 	for _, ticket := range tickets {
 		if err := ticket.Validate(now); err != nil {
@@ -385,14 +413,14 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 	}
 }
 
-// TestTicketJSONPreservesLegacyShapeAndOmitsUnusedPoolFields pins additive v2 encoding behavior.
-func TestTicketJSONPreservesLegacyShapeAndOmitsUnusedPoolFields(t *testing.T) {
+// TestTicketJSONPinsV3IdentityShapeAndOmitsUnusedPoolFields pins the schema-bound v3 encoding.
+func TestTicketJSONPinsV3IdentityShapeAndOmitsUnusedPoolFields(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 	legacy, err := json.Marshal(validTestTicket(now, OperationEnsureLoopbackIdentity))
 	if err != nil {
 		t.Fatalf("json.Marshal(legacy) error = %v", err)
 	}
-	wantLegacy := `{"version":2,"operation":"ensure_loopback_identity","installation_id":"harbor-test-installation","requester_identity":"uid-1000","ownership_generation":7,"approved_pool":"127.77.0.0/24","approved_address":"127.77.0.10","expected_observation":{"state":"absent","fingerprint":"` + strings.Repeat("a", fingerprintLength) + `"},"expected_pre_assignment":{"fingerprint":"` + strings.Repeat("b", fingerprintLength) + `","requirements":[]},"nonce":"` + strings.Repeat("n", minimumNonceLength) + `","expires_at":"2026-07-18T12:01:00Z"}`
+	wantLegacy := `{"version":3,"operation":"ensure_loopback_identity","installation_id":"harbor-test-installation","requester_identity":"uid-1000","ownership_generation":7,"ownership_schema_version":1,"approved_pool":"127.77.0.0/24","approved_address":"127.77.0.10","expected_observation":{"state":"absent","fingerprint":"` + strings.Repeat("a", fingerprintLength) + `"},"expected_pre_assignment":{"fingerprint":"` + strings.Repeat("b", fingerprintLength) + `","requirements":[]},"nonce":"` + strings.Repeat("n", minimumNonceLength) + `","expires_at":"2026-07-18T12:01:00Z"}`
 	if string(legacy) != wantLegacy {
 		t.Fatalf("legacy ticket JSON = %s, want %s", legacy, wantLegacy)
 	}
@@ -422,13 +450,14 @@ func validTestTicket(now time.Time, operation Operation) Ticket {
 		state = ObservationOwned
 	}
 	ticket := Ticket{
-		Version:             ProtocolVersion,
-		Operation:           operation,
-		InstallationID:      "harbor-test-installation",
-		RequesterIdentity:   "uid-1000",
-		OwnershipGeneration: 7,
-		ApprovedPool:        "127.77.0.0/24",
-		ApprovedAddress:     "127.77.0.10",
+		Version:                ProtocolVersion,
+		Operation:              operation,
+		InstallationID:         "harbor-test-installation",
+		RequesterIdentity:      "uid-1000",
+		OwnershipGeneration:    7,
+		OwnershipSchemaVersion: identityOwnershipSchemaVersion,
+		ApprovedPool:           "127.77.0.0/24",
+		ApprovedAddress:        "127.77.0.10",
 		ExpectedObservation: ExpectedObservation{
 			State:       state,
 			Fingerprint: testFingerprint(),
@@ -446,12 +475,13 @@ func validTestTicket(now time.Time, operation Operation) Ticket {
 func validTestPoolTicket(now time.Time) Ticket {
 	pool := netip.MustParsePrefix("127.77.0.8/29")
 	return Ticket{
-		Version:             ProtocolVersion,
-		Operation:           OperationEnsureLoopbackPool,
-		InstallationID:      "harbor-test-installation",
-		RequesterIdentity:   "uid-1000",
-		OwnershipGeneration: 7,
-		ApprovedPool:        pool.String(),
+		Version:                ProtocolVersion,
+		Operation:              OperationEnsureLoopbackPool,
+		InstallationID:         "harbor-test-installation",
+		RequesterIdentity:      "uid-1000",
+		OwnershipGeneration:    7,
+		OwnershipSchemaVersion: identityOwnershipSchemaVersion,
+		ApprovedPool:           pool.String(),
 		ExpectedLoopbackPool: func() *ExpectedLoopbackPool {
 			expected := testExpectedLoopbackPool(pool)
 			return &expected

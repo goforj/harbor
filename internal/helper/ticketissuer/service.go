@@ -472,13 +472,15 @@ func (service *Service) buildTicket(
 	}
 	now := service.clock.Now().UTC()
 	ticket := helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           plan.Mutation,
-		InstallationID:      owned.Record.InstallationID,
-		RequesterIdentity:   requesterIdentity,
-		OwnershipGeneration: owned.Record.Generation,
-		ApprovedPool:        owned.Record.LoopbackPoolPrefix,
-		ApprovedAddress:     plan.Lease.Address.String(),
+		Version:                  helper.ProtocolVersion,
+		Operation:                plan.Mutation,
+		InstallationID:           owned.Record.InstallationID,
+		RequesterIdentity:        requesterIdentity,
+		OwnershipGeneration:      owned.Record.Generation,
+		OwnershipSchemaVersion:   owned.Record.SchemaVersion,
+		NetworkPolicyFingerprint: owned.Record.NetworkPolicyFingerprint,
+		ApprovedPool:             owned.Record.LoopbackPoolPrefix,
+		ApprovedAddress:          plan.Lease.Address.String(),
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       expectedState,
 			Fingerprint: loopbackFingerprint,

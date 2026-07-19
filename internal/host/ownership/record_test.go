@@ -53,13 +53,15 @@ func TestRecordAndHelperTicketAcceptLongestCanonicalWindowsSID(t *testing.T) {
 
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 	ticket := helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationReleaseLoopbackIdentity,
-		InstallationID:      record.InstallationID,
-		RequesterIdentity:   owner,
-		OwnershipGeneration: record.Generation,
-		ApprovedPool:        record.LoopbackPoolPrefix,
-		ApprovedAddress:     "127.44.0.10",
+		Version:                  helper.ProtocolVersion,
+		Operation:                helper.OperationReleaseLoopbackIdentity,
+		InstallationID:           record.InstallationID,
+		RequesterIdentity:        owner,
+		OwnershipGeneration:      record.Generation,
+		OwnershipSchemaVersion:   record.SchemaVersion,
+		NetworkPolicyFingerprint: record.NetworkPolicyFingerprint,
+		ApprovedPool:             record.LoopbackPoolPrefix,
+		ApprovedAddress:          "127.44.0.10",
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       helper.ObservationOwned,
 			Fingerprint: strings.Repeat("a", 64),

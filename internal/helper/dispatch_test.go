@@ -358,6 +358,10 @@ func TestDispatcherDispatchRejectsAdmissionBindingMismatch(t *testing.T) {
 		{name: "wrong requester", mutate: func(admission *TicketAdmission) { admission.RequesterIdentity = "uid-2000" }},
 		{name: "wrong installation", mutate: func(admission *TicketAdmission) { admission.InstallationID = "other-installation" }},
 		{name: "wrong generation", mutate: func(admission *TicketAdmission) { admission.OwnershipGeneration++ }},
+		{name: "wrong ownership schema", mutate: func(admission *TicketAdmission) { admission.OwnershipSchemaVersion++ }},
+		{name: "wrong network policy fingerprint", mutate: func(admission *TicketAdmission) {
+			admission.NetworkPolicyFingerprint = strings.Repeat("b", fingerprintLength)
+		}},
 		{name: "wrong pool", mutate: func(admission *TicketAdmission) { admission.ApprovedPool = "127.78.0.0/24" }},
 	}
 
@@ -608,11 +612,13 @@ func redemptionForTicket(reference TicketReference, ticket Ticket) TicketRedempt
 	return TicketRedemption{
 		Ticket: ticket,
 		Admission: TicketAdmission{
-			TicketReference:     reference,
-			RequesterIdentity:   "uid-1000",
-			InstallationID:      "harbor-test-installation",
-			OwnershipGeneration: 7,
-			ApprovedPool:        ticket.ApprovedPool,
+			TicketReference:          reference,
+			RequesterIdentity:        "uid-1000",
+			InstallationID:           "harbor-test-installation",
+			OwnershipGeneration:      7,
+			OwnershipSchemaVersion:   ticket.OwnershipSchemaVersion,
+			NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
+			ApprovedPool:             ticket.ApprovedPool,
 		},
 	}
 }

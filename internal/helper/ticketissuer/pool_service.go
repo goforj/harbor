@@ -77,6 +77,13 @@ func (plan PoolPlan) Validate() error {
 	if plan.Mode == PoolModeBootstrap && plan.Ownership.Generation != 1 {
 		return fmt.Errorf("helper pool approval bootstrap requires ownership generation 1")
 	}
+	if plan.Mode == PoolModeBootstrap && plan.Ownership.SchemaVersion != ownership.IdentitySchemaVersion {
+		return fmt.Errorf(
+			"helper pool approval bootstrap ownership schema version is %d, want %d",
+			plan.Ownership.SchemaVersion,
+			ownership.IdentitySchemaVersion,
+		)
+	}
 	prefix, _, err := validateExactPool(plan.Pool)
 	if err != nil {
 		return err
@@ -409,12 +416,14 @@ func (service *PoolService) buildTicket(
 	}
 	now := service.clock.Now().UTC()
 	ticket := helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackPool,
-		InstallationID:      plan.Ownership.InstallationID,
-		RequesterIdentity:   plan.Ownership.OwnerIdentity,
-		OwnershipGeneration: plan.Ownership.Generation,
-		ApprovedPool:        plan.Ownership.LoopbackPoolPrefix,
+		Version:                  helper.ProtocolVersion,
+		Operation:                helper.OperationEnsureLoopbackPool,
+		InstallationID:           plan.Ownership.InstallationID,
+		RequesterIdentity:        plan.Ownership.OwnerIdentity,
+		OwnershipGeneration:      plan.Ownership.Generation,
+		OwnershipSchemaVersion:   plan.Ownership.SchemaVersion,
+		NetworkPolicyFingerprint: plan.Ownership.NetworkPolicyFingerprint,
+		ApprovedPool:             plan.Ownership.LoopbackPoolPrefix,
 		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{
 			Identities: identities,
 		},

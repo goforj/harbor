@@ -37,11 +37,13 @@ func TestRedeemerConsumesAndAuthenticatesOneReference(t *testing.T) {
 		t.Fatalf("Redeem() ticket = %#v", redemption.Ticket)
 	}
 	wantAdmission := helper.TicketAdmission{
-		TicketReference:     reference,
-		RequesterIdentity:   fixture.owner,
-		InstallationID:      "harbor-redeemer-test",
-		OwnershipGeneration: 7,
-		ApprovedPool:        "127.77.0.0/24",
+		TicketReference:          reference,
+		RequesterIdentity:        fixture.owner,
+		InstallationID:           "harbor-redeemer-test",
+		OwnershipGeneration:      7,
+		OwnershipSchemaVersion:   ownership.IdentitySchemaVersion,
+		NetworkPolicyFingerprint: "",
+		ApprovedPool:             "127.77.0.0/24",
 	}
 	if redemption.Admission != wantAdmission {
 		t.Fatalf("Redeem() admission = %#v, want %#v", redemption.Admission, wantAdmission)
@@ -65,6 +67,27 @@ func TestRedeemerConsumesAndAuthenticatesOneReference(t *testing.T) {
 	}
 }
 
+// TestRedeemerConsumesNetworkPolicyOwnership proves schema-two tickets remain bound to the protected policy fingerprint.
+func TestRedeemerConsumesNetworkPolicyOwnership(t *testing.T) {
+	fixture := newUnixRedeemerFixture(t, false)
+	record := fixture.record()
+	record.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	record.NetworkPolicyFingerprint = strings.Repeat("c", 64)
+	fixture.claimOwnership(t, record)
+	ticket := testRedeemerTicket(fixture.now, fixture.owner)
+	ticket.OwnershipSchemaVersion = record.SchemaVersion
+	ticket.NetworkPolicyFingerprint = record.NetworkPolicyFingerprint
+	reference := fixture.writeTicket(t, ticket, '9', fixture.privateKey)
+
+	redemption, err := fixture.open(t).Redeem(context.Background(), reference)
+	if err != nil {
+		t.Fatalf("Redeem() error = %v", err)
+	}
+	if redemption.Admission.OwnershipSchemaVersion != record.SchemaVersion || redemption.Admission.NetworkPolicyFingerprint != record.NetworkPolicyFingerprint {
+		t.Fatalf("Redeem() admission = %#v, want schema-two policy binding", redemption.Admission)
+	}
+}
+
 // TestRedeemerBootstrapsExactPoolOwnership proves the first authenticated pool ticket pins authority before dispatch.
 func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 	fixture := newUnixRedeemerFixture(t, false)
@@ -84,7 +107,7 @@ func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	wantRecord := ownership.Record{
-		SchemaVersion:      ownership.CurrentSchemaVersion,
+		SchemaVersion:      ownership.IdentitySchemaVersion,
 		InstallationID:     ticket.InstallationID,
 		OwnerIdentity:      fixture.owner,
 		Generation:         1,
@@ -98,11 +121,13 @@ func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 		t.Fatalf("validateOwnershipObservation() error = %v", err)
 	}
 	wantAdmission := helper.TicketAdmission{
-		TicketReference:     reference,
-		RequesterIdentity:   fixture.owner,
-		InstallationID:      ticket.InstallationID,
-		OwnershipGeneration: 1,
-		ApprovedPool:        ticket.ApprovedPool,
+		TicketReference:          reference,
+		RequesterIdentity:        fixture.owner,
+		InstallationID:           ticket.InstallationID,
+		OwnershipGeneration:      1,
+		OwnershipSchemaVersion:   ownership.IdentitySchemaVersion,
+		NetworkPolicyFingerprint: "",
+		ApprovedPool:             ticket.ApprovedPool,
 	}
 	if redemption.Admission != wantAdmission {
 		t.Fatalf("Redeem() admission = %#v, want %#v", redemption.Admission, wantAdmission)
@@ -212,20 +237,41 @@ func TestRedeemerClassifiesInvalidUnknownExpiredAndMalformedReferences(t *testin
 // TestRedeemerBindsEveryOwnershipDimension prevents a valid signature from authorizing different protected state.
 func TestRedeemerBindsEveryOwnershipDimension(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(*helper.Ticket)
-		stale  bool
+		name         string
+		mutateRecord func(*ownership.Record)
+		mutateTicket func(*helper.Ticket)
+		stale        bool
 	}{
-		{name: "requester", mutate: func(ticket *helper.Ticket) { ticket.RequesterIdentity = "999" }},
-		{name: "installation", mutate: func(ticket *helper.Ticket) { ticket.InstallationID = "different-installation" }},
-		{name: "pool", mutate: func(ticket *helper.Ticket) { ticket.ApprovedPool = "127.77.0.0/25" }},
-		{name: "generation", mutate: func(ticket *helper.Ticket) { ticket.OwnershipGeneration++ }, stale: true},
+		{name: "requester", mutateTicket: func(ticket *helper.Ticket) { ticket.RequesterIdentity = "999" }},
+		{name: "installation", mutateTicket: func(ticket *helper.Ticket) { ticket.InstallationID = "different-installation" }},
+		{name: "pool", mutateTicket: func(ticket *helper.Ticket) { ticket.ApprovedPool = "127.77.0.0/25" }},
+		{name: "generation", mutateTicket: func(ticket *helper.Ticket) { ticket.OwnershipGeneration++ }, stale: true},
+		{name: "ownership schema", mutateTicket: func(ticket *helper.Ticket) {
+			ticket.OwnershipSchemaVersion = ownership.NetworkPolicySchemaVersion
+			ticket.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+		}},
+		{
+			name: "network policy fingerprint",
+			mutateRecord: func(record *ownership.Record) {
+				record.SchemaVersion = ownership.NetworkPolicySchemaVersion
+				record.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+			},
+			mutateTicket: func(ticket *helper.Ticket) {
+				ticket.OwnershipSchemaVersion = ownership.NetworkPolicySchemaVersion
+				ticket.NetworkPolicyFingerprint = strings.Repeat("b", 64)
+			},
+		},
 	}
 	for index, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newUnixRedeemerFixture(t, true)
+			fixture := newUnixRedeemerFixture(t, false)
+			record := fixture.record()
+			if test.mutateRecord != nil {
+				test.mutateRecord(&record)
+			}
+			fixture.claimOwnership(t, record)
 			ticket := testRedeemerTicket(fixture.now, fixture.owner)
-			test.mutate(&ticket)
+			test.mutateTicket(&ticket)
 			reference := fixture.writeTicket(t, ticket, byte('0'+index), fixture.privateKey)
 			redeemer := fixture.open(t)
 			_, err := redeemer.Redeem(context.Background(), reference)
@@ -1139,19 +1185,24 @@ func newUnixRedeemerFixture(t *testing.T, claimed bool) unixRedeemerFixture {
 		paths: paths, now: now, owner: owner, publicKey: publicKey, privateKey: privateKey,
 	}
 	if claimed {
-		store, err := ownership.NewStore(paths.OwnershipPath)
-		if err != nil {
-			t.Fatalf("open ownership fixture: %v", err)
-		}
-		record := fixture.record()
-		if _, err := store.Claim(context.Background(), record); err != nil {
-			t.Fatalf("claim ownership fixture: %v", err)
-		}
-		if err := store.Close(); err != nil {
-			t.Fatalf("close ownership fixture: %v", err)
-		}
+		fixture.claimOwnership(t, fixture.record())
 	}
 	return fixture
+}
+
+// claimOwnership stores one protected record before the redeemer retains its ownership handle.
+func (fixture unixRedeemerFixture) claimOwnership(t *testing.T, record ownership.Record) {
+	t.Helper()
+	store, err := ownership.NewStore(fixture.paths.OwnershipPath)
+	if err != nil {
+		t.Fatalf("open ownership fixture: %v", err)
+	}
+	if _, err := store.Claim(context.Background(), record); err != nil {
+		t.Fatalf("claim ownership fixture: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close ownership fixture: %v", err)
+	}
 }
 
 // open constructs a redeemer with fixed time while retaining native filesystem operations.

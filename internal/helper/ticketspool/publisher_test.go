@@ -966,13 +966,14 @@ func testPrivateKey(marker byte) ed25519.PrivateKey {
 func testTicket(now time.Time, nonceMarker string) helper.Ticket {
 	nonceMarker = strings.ReplaceAll(nonceMarker, " ", "-")
 	return helper.Ticket{
-		Version:             helper.ProtocolVersion,
-		Operation:           helper.OperationEnsureLoopbackIdentity,
-		InstallationID:      "harbor-ticket-spool-test",
-		RequesterIdentity:   "uid-1000",
-		OwnershipGeneration: 1,
-		ApprovedPool:        "127.77.0.0/24",
-		ApprovedAddress:     "127.77.0.10",
+		Version:                helper.ProtocolVersion,
+		Operation:              helper.OperationEnsureLoopbackIdentity,
+		InstallationID:         "harbor-ticket-spool-test",
+		RequesterIdentity:      "uid-1000",
+		OwnershipGeneration:    1,
+		OwnershipSchemaVersion: 1,
+		ApprovedPool:           "127.77.0.0/24",
+		ApprovedAddress:        "127.77.0.10",
 		ExpectedObservation: helper.ExpectedObservation{
 			State:       helper.ObservationAbsent,
 			Fingerprint: strings.Repeat("a", 64),

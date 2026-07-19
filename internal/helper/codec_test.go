@@ -77,7 +77,7 @@ func TestWriteRequestRejectsInvalidAndFailedWrites(t *testing.T) {
 // TestDecodeRequestRejectsAmbiguousJSON covers size, shape, duplicate, and framing failures.
 func TestDecodeRequestRejectsAmbiguousJSON(t *testing.T) {
 	reference := strings.Repeat("a", ticketReferenceLength)
-	validBody := `{"version":2,"ticket_reference":"` + reference + `"}`
+	validBody := `{"version":3,"ticket_reference":"` + reference + `"}`
 	tests := []struct {
 		name string
 		body string
@@ -90,15 +90,15 @@ func TestDecodeRequestRejectsAmbiguousJSON(t *testing.T) {
 		{name: "string", body: `"request"`, code: ErrorCodeInvalidJSON},
 		{name: "number", body: `1`, code: ErrorCodeInvalidJSON},
 		{name: "missing version", body: `{"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "missing reference", body: `{"version":2}`, code: ErrorCodeInvalidJSON},
+		{name: "missing reference", body: `{"version":3}`, code: ErrorCodeInvalidJSON},
 		{name: "null version", body: `{"version":null,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "null reference", body: `{"version":2,"ticket_reference":null}`, code: ErrorCodeInvalidJSON},
-		{name: "case alias version", body: `{"Version":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "case alias reference", body: `{"version":2,"Ticket_Reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "camel alias reference", body: `{"version":2,"ticketReference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "case-fold collision", body: `{"version":2,"Version":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "duplicate version", body: `{"version":2,"version":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
-		{name: "duplicate escaped version", body: `{"version":2,"\u0076ersion":2,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "null reference", body: `{"version":3,"ticket_reference":null}`, code: ErrorCodeInvalidJSON},
+		{name: "case alias version", body: `{"Version":3,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "case alias reference", body: `{"version":3,"Ticket_Reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "camel alias reference", body: `{"version":3,"ticketReference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "case-fold collision", body: `{"version":3,"Version":3,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "duplicate version", body: `{"version":3,"version":3,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
+		{name: "duplicate escaped version", body: `{"version":3,"\u0076ersion":3,"ticket_reference":"` + reference + `"}`, code: ErrorCodeInvalidJSON},
 		{name: "direct ticket", body: strings.TrimSuffix(validBody, "}") + `,"ticket":{}}`, code: ErrorCodeInvalidJSON},
 		{name: "direct operation", body: strings.TrimSuffix(validBody, "}") + `,"operation":"ensure_loopback_identity"}`, code: ErrorCodeInvalidJSON},
 		{name: "direct address", body: strings.TrimSuffix(validBody, "}") + `,"approved_address":"127.0.0.2"}`, code: ErrorCodeInvalidJSON},
@@ -179,7 +179,7 @@ func TestDecodeResponseRejectsAmbiguousPoolEvidenceJSON(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "null pool evidence", body: `{"version":2,"ok":true,"result":{"operation":"ensure_loopback_pool","pool_evidence":null}}`},
+		{name: "null pool evidence", body: `{"version":3,"ok":true,"result":{"operation":"ensure_loopback_pool","pool_evidence":null}}`},
 		{name: "scalar evidence instead", body: strings.Replace(valid, `"pool_evidence"`, `"evidence"`, 1)},
 		{name: "both evidence fields", body: strings.Replace(valid, `"pool_evidence":`, `"evidence":{"changed":true,"address":"127.77.0.8","observation":{"state":"owned","fingerprint":"`+strings.Repeat("a", fingerprintLength)+`"}},"pool_evidence":`, 1)},
 		{name: "pool evidence alias", body: strings.Replace(valid, `"pool_evidence"`, `"Pool_Evidence"`, 1)},
@@ -187,7 +187,7 @@ func TestDecodeResponseRejectsAmbiguousPoolEvidenceJSON(t *testing.T) {
 		{name: "null pool", body: strings.Replace(valid, `"pool":"127.77.0.8/29"`, `"pool":null`, 1)},
 		{name: "pool alias", body: strings.Replace(valid, `"pool"`, `"Pool"`, 1)},
 		{name: "duplicate pool", body: strings.Replace(valid, `"pool":`, `"pool":null,"pool":`, 1)},
-		{name: "null identities", body: `{"version":2,"ok":true,"result":{"operation":"ensure_loopback_pool","pool_evidence":{"pool":"127.77.0.8/29","identities":null}}}`},
+		{name: "null identities", body: `{"version":3,"ok":true,"result":{"operation":"ensure_loopback_pool","pool_evidence":{"pool":"127.77.0.8/29","identities":null}}}`},
 		{name: "identities alias", body: strings.Replace(valid, `"identities"`, `"Identities"`, 1)},
 		{name: "unknown pool field", body: strings.Replace(valid, `"identities":`, `"interface":"lo0","identities":`, 1)},
 		{name: "identity field alias", body: strings.Replace(valid, `"changed"`, `"Changed"`, 1)},
@@ -206,8 +206,8 @@ func TestDecodeResponseRejectsAmbiguousPoolEvidenceJSON(t *testing.T) {
 // TestDecodeResponseRejectsAmbiguousJSON covers aliases, extra fields, duplicates, and framing failures.
 func TestDecodeResponseRejectsAmbiguousJSON(t *testing.T) {
 	fingerprint := strings.Repeat("a", fingerprintLength)
-	success := `{"version":2,"ok":true,"result":{"operation":"release_loopback_identity","evidence":{"changed":true,"address":"127.77.0.10","observation":{"state":"absent","fingerprint":"` + fingerprint + `"}}}}`
-	failure := `{"version":2,"ok":false,"error":{"code":"mutation_failed","message":"helper operation failed"}}`
+	success := `{"version":3,"ok":true,"result":{"operation":"release_loopback_identity","evidence":{"changed":true,"address":"127.77.0.10","observation":{"state":"absent","fingerprint":"` + fingerprint + `"}}}}`
+	failure := `{"version":3,"ok":false,"error":{"code":"mutation_failed","message":"helper operation failed"}}`
 	tests := []struct {
 		name string
 		body string
@@ -216,12 +216,12 @@ func TestDecodeResponseRejectsAmbiguousJSON(t *testing.T) {
 		{name: "malformed", body: `{"version":`},
 		{name: "null", body: `null`},
 		{name: "array", body: `[]`},
-		{name: "missing ok", body: `{"version":2,"result":{}}`},
-		{name: "null ok", body: `{"version":2,"ok":null,"error":{}}`},
-		{name: "case alias ok", body: `{"version":2,"OK":false,"error":{"code":"mutation_failed","message":"failed"}}`},
+		{name: "missing ok", body: `{"version":3,"result":{}}`},
+		{name: "null ok", body: `{"version":3,"ok":null,"error":{}}`},
+		{name: "case alias ok", body: `{"version":3,"OK":false,"error":{"code":"mutation_failed","message":"failed"}}`},
 		{name: "case alias version", body: strings.Replace(failure, `"version"`, `"Version"`, 1)},
-		{name: "duplicate version", body: strings.Replace(failure, `{"version":2`, `{"version":2,"version":2`, 1)},
-		{name: "case fold collision", body: strings.Replace(failure, `{"version":2`, `{"version":2,"Version":2`, 1)},
+		{name: "duplicate version", body: strings.Replace(failure, `{"version":3`, `{"version":3,"version":3`, 1)},
+		{name: "case fold collision", body: strings.Replace(failure, `{"version":3`, `{"version":3,"Version":3`, 1)},
 		{name: "unknown top level", body: strings.TrimSuffix(failure, "}") + `,"pid":42}`},
 		{name: "both result and error", body: strings.TrimSuffix(success, "}") + `,"error":{"code":"mutation_failed","message":"failed"}}`},
 		{name: "result alias", body: strings.Replace(success, `"result"`, `"Result"`, 1)},
@@ -393,7 +393,7 @@ func TestWriteResponseWritesBoundedJSON(t *testing.T) {
 
 // TestWriteResponsePreservesLegacySuccessJSON guards the byte shape consumed by existing single-address clients.
 func TestWriteResponsePreservesLegacySuccessJSON(t *testing.T) {
-	want := `{"version":2,"ok":true,"result":{"operation":"release_loopback_identity","evidence":{"changed":true,"address":"127.77.0.10","observation":{"state":"absent","fingerprint":"` + strings.Repeat("a", fingerprintLength) + `"}}}}` + "\n"
+	want := `{"version":3,"ok":true,"result":{"operation":"release_loopback_identity","evidence":{"changed":true,"address":"127.77.0.10","observation":{"state":"absent","fingerprint":"` + strings.Repeat("a", fingerprintLength) + `"}}}}` + "\n"
 	var output bytes.Buffer
 	if err := WriteResponse(&output, validTestSuccessResponse()); err != nil {
 		t.Fatalf("write response: %v", err)

@@ -4,11 +4,13 @@ import "context"
 
 // TicketAdmission carries bindings established independently from the untrusted wire request.
 type TicketAdmission struct {
-	TicketReference     TicketReference
-	RequesterIdentity   string
-	InstallationID      string
-	OwnershipGeneration uint64
-	ApprovedPool        string
+	TicketReference          TicketReference
+	RequesterIdentity        string
+	InstallationID           string
+	OwnershipGeneration      uint64
+	OwnershipSchemaVersion   uint32
+	NetworkPolicyFingerprint string
+	ApprovedPool             string
 }
 
 // TicketRedemption carries one signature-authenticated ticket and its independently authenticated bindings.
@@ -38,6 +40,8 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 		admission.RequesterIdentity != r.Ticket.RequesterIdentity ||
 		admission.InstallationID != r.Ticket.InstallationID ||
 		admission.OwnershipGeneration != r.Ticket.OwnershipGeneration ||
+		admission.OwnershipSchemaVersion != r.Ticket.OwnershipSchemaVersion ||
+		admission.NetworkPolicyFingerprint != r.Ticket.NetworkPolicyFingerprint ||
 		admission.ApprovedPool != r.Ticket.ApprovedPool {
 		return ErrTicketRedemptionFailed
 	}
