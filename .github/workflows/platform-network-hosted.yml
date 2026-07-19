@@ -40,6 +40,28 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Build production loopback adapter proof
+        shell: bash
+        run: |
+          binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            binary="${binary}.exe"
+          fi
+          go test -c -tags=platformmutation ./internal/platform/loopback -o "$binary"
+
+      - name: Run production loopback adapter lifecycle
+        shell: bash
+        run: |
+          binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            "${binary}.exe" -test.run '^TestPlatformLoopbackAdapterLifecycle$' -test.v
+          else
+            sudo env \
+              HARBOR_PROOF_ADDRESSES="${HARBOR_PROOF_ADDRESSES}" \
+              HARBOR_PROOF_PORT="${HARBOR_PROOF_PORT}" \
+              "$binary" -test.run '^TestPlatformLoopbackAdapterLifecycle$' -test.v
+          fi
+
       - name: Run portable proof tests
         run: go test ./internal/platformproof ./cmd/platformproof
 
