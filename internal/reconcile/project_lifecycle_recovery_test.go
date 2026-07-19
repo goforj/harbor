@@ -71,17 +71,117 @@ type projectLifecycleRecoverySeed struct {
 	recoverAt time.Time
 }
 
-// TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence proves absent and reused PIDs converge without deleting unrelated state.
-func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T) {
-	for _, priorState := range []projectprocess.PriorProcessState{
-		projectprocess.PriorProcessAbsent,
-		projectprocess.PriorProcessReplaced,
+// TestProjectLifecycleRecoverDefersQueuedStartsUntilResume proves recovery cannot publish routes through an unstarted runtime.
+func TestProjectLifecycleRecoverDefersQueuedStartsUntilResume(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, _ := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	projectRecord, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read registered project: %v", err)
+	}
+	operation, err := domain.NewOperation(
+		"operation-recovered-queued-start",
+		"intent-recovered-queued-start",
+		domain.OperationKindProjectStart,
+		project.ID,
+		projectRecord.Project.UpdatedAt.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("create queued start: %v", err)
+	}
+	if _, err := journal.Enqueue(t.Context(), operation); err != nil {
+		t.Fatalf("enqueue queued start: %v", err)
+	}
+
+	admissionEntered := make(chan struct{})
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		&projectLifecycleBlockingLeaseState{entered: admissionEntered},
+		&projectLifecycleRecoverySupervisor{},
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close lifecycle coordinator: %v", err)
+		}
+	})
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	coordinator.mutex.Lock()
+	dispatched := len(coordinator.dispatched)
+	coordinator.mutex.Unlock()
+	if dispatched != 0 {
+		t.Fatalf("Recover() dispatched %d queued starts before runtime startup", dispatched)
+	}
+	recovered, err := journal.OperationByIntent(t.Context(), operation.IntentID)
+	if err != nil || recovered.Operation.State != domain.OperationQueued {
+		t.Fatalf("operation after Recover() = %#v, %v", recovered.Operation, err)
+	}
+
+	if err := coordinator.Resume(t.Context()); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	select {
+	case <-admissionEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Resume() did not dispatch the recovered queued start")
+	}
+}
+
+// TestProjectLifecycleResumeRejectsUnavailableAuthority covers cancellation and shutdown before recovered work dispatch.
+func TestProjectLifecycleResumeRejectsUnavailableAuthority(t *testing.T) {
+	newCoordinator := func(t *testing.T) *ProjectLifecycleCoordinator {
+		t.Helper()
+		store, journal := newProjectLifecycleIntegrationState(t)
+		return newProjectLifecycleAdmissionTestCoordinator(
+			store,
+			journal,
+			store,
+			&projectLifecycleRecoverySupervisor{},
+			netip.MustParseAddr("127.0.0.1"),
+		)
+	}
+
+	t.Run("cancelled", func(t *testing.T) {
+		coordinator := newCoordinator(t)
+		t.Cleanup(func() { _ = coordinator.Close(context.Background()) })
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := coordinator.Resume(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Resume(cancelled) error = %v, want context cancellation", err)
+		}
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		coordinator := newCoordinator(t)
+		if err := coordinator.Close(t.Context()); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		if err := coordinator.Recover(t.Context()); err == nil || !strings.Contains(err.Error(), "coordinator is closed") {
+			t.Fatalf("Recover(closed) error = %v, want closed coordinator", err)
+		}
+		if err := coordinator.Resume(t.Context()); err == nil || !strings.Contains(err.Error(), "coordinator is closed") {
+			t.Fatalf("Resume(closed) error = %v, want closed coordinator", err)
+		}
+	})
+}
+
+// TestProjectLifecycleRecoverFailsStartAfterPriorProcessSettlement proves interrupted starts converge without deleting unrelated state.
+func TestProjectLifecycleRecoverFailsStartAfterPriorProcessSettlement(t *testing.T) {
+	for _, outcome := range []projectprocess.PriorProcessSettlementOutcome{
+		projectprocess.PriorProcessSettlementAbsent,
+		projectprocess.PriorProcessSettlementReplaced,
+		projectprocess.PriorProcessSettlementTerminated,
 	} {
-		t.Run(string(priorState), func(t *testing.T) {
+		t.Run(string(outcome), func(t *testing.T) {
 			store, journal := newProjectLifecycleIntegrationState(t)
 			seed := seedProjectLifecycleRecoveryStart(t, store, journal, true)
 			supervisor := &projectLifecycleRecoverySupervisor{
-				observation: projectprocess.PriorProcessObservation{State: priorState},
+				settlement: projectprocess.PriorProcessSettlement{Outcome: outcome},
 			}
 			routeCalls := 0
 			coordinator := newProjectLifecycleAdmissionTestCoordinator(
@@ -125,8 +225,8 @@ func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T)
 					t.Fatalf("active session error = %v", err)
 				}
 			}
-			if len(supervisor.observed) != 1 || supervisor.observed[0] != seed.evidence {
-				t.Fatalf("observed evidence = %#v, want %#v", supervisor.observed, seed.evidence)
+			if len(supervisor.settled) != 1 || supervisor.settled[0] != seed.evidence {
+				t.Fatalf("settled evidence = %#v, want %#v", supervisor.settled, seed.evidence)
 			}
 			if routeCalls != 0 {
 				t.Fatalf("daemon recovery reconciled routes before runtime startup %d times", routeCalls)
@@ -256,26 +356,25 @@ func TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed(t *test
 	}
 }
 
-// TestProjectLifecycleRecoverKeepsUncertainRunningStartsFailClosed verifies host uncertainty never retires durable authority.
-func TestProjectLifecycleRecoverKeepsUncertainRunningStartsFailClosed(t *testing.T) {
+// TestProjectLifecycleRecoverKeepsUnsettledRunningStartsFailClosed verifies settlement failures never retire durable authority.
+func TestProjectLifecycleRecoverKeepsUnsettledRunningStartsFailClosed(t *testing.T) {
 	sentinel := errors.New("host observation unavailable")
 	tests := []struct {
-		name           string
-		observation    projectprocess.PriorProcessObservation
-		observationErr error
-		want           string
+		name          string
+		settlement    projectprocess.PriorProcessSettlement
+		settlementErr error
+		want          string
 	}{
-		{name: "present", observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessPresent}, want: "prior process ownership"},
-		{name: "unknown", observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessState("unknown")}, want: "unsupported state"},
-		{name: "observation failure", observationErr: sentinel, want: sentinel.Error()},
+		{name: "unknown", settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")}, want: "unsupported outcome"},
+		{name: "settlement failure", settlementErr: sentinel, want: sentinel.Error()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			store, journal := newProjectLifecycleIntegrationState(t)
 			seed := seedProjectLifecycleRecoveryStart(t, store, journal, true)
 			supervisor := &projectLifecycleRecoverySupervisor{
-				observation:    test.observation,
-				observationErr: test.observationErr,
+				settlement:    test.settlement,
+				settlementErr: test.settlementErr,
 			}
 			routeCalls := 0
 			coordinator := newProjectLifecycleAdmissionTestCoordinator(
@@ -306,6 +405,9 @@ func TestProjectLifecycleRecoverKeepsUncertainRunningStartsFailClosed(t *testing
 			session, readErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
 			if readErr != nil || !reflect.DeepEqual(session, seed.session) {
 				t.Fatalf("session after failed recovery = %#v, %v", session, readErr)
+			}
+			if len(supervisor.settled) != 1 || supervisor.settled[0] != seed.evidence {
+				t.Fatalf("settled evidence = %#v, want %#v", supervisor.settled, seed.evidence)
 			}
 			if routeCalls != 0 {
 				t.Fatalf("failed recovery reconciled routes %d times", routeCalls)
@@ -388,7 +490,7 @@ func seedProjectLifecycleRecoveryStart(
 		t.Fatalf("begin recovery start = %#v, %v", begun, err)
 	}
 	seed := projectLifecycleRecoverySeed{
-		project:   project,
+		project:   begun.Project.Project,
 		operation: begun.Operation,
 		session:   *begun.Session,
 		recoverAt: startAt.Add(2 * time.Second),

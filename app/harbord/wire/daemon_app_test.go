@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -26,45 +27,67 @@ import (
 	"github.com/goforj/harbor/internal/state"
 )
 
-// failingLifecycleRuntime is the minimal network runtime needed to prove composite startup cleanup.
-type failingLifecycleRuntime struct {
-	startErr error
-	done     chan struct{}
+// recordingLifecycleNetworkRuntime captures composite startup and cleanup without opening network listeners.
+type recordingLifecycleNetworkRuntime struct {
+	startErr  error
+	closeErr  error
+	started   bool
+	closed    bool
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // Start returns the configured startup failure.
-func (runtime *failingLifecycleRuntime) Start(context.Context) error {
+func (runtime *recordingLifecycleNetworkRuntime) Start(context.Context) error {
+	runtime.started = true
 	return runtime.startErr
 }
 
 // Done returns a stable terminal channel for the daemon runtime contract.
-func (runtime *failingLifecycleRuntime) Done() <-chan struct{} {
+func (runtime *recordingLifecycleNetworkRuntime) Done() <-chan struct{} {
 	return runtime.done
 }
 
 // Err returns no independent terminal failure for this startup fixture.
-func (runtime *failingLifecycleRuntime) Err() error {
+func (runtime *recordingLifecycleNetworkRuntime) Err() error {
 	return nil
 }
 
-// Close is inert because a failed runtime Start owns its own network cleanup.
-func (runtime *failingLifecycleRuntime) Close(context.Context) error {
-	return nil
+// Close records joined network cleanup after a post-start lifecycle failure.
+func (runtime *recordingLifecycleNetworkRuntime) Close(context.Context) error {
+	runtime.closeOnce.Do(func() {
+		runtime.closed = true
+		close(runtime.done)
+	})
+	return runtime.closeErr
 }
 
 // recordingLifecycleCloser proves a recovered process coordinator is joined after network startup rejection.
 type recordingLifecycleCloser struct {
-	closed   bool
-	closeErr error
-	done     chan struct{}
+	resumed   bool
+	resumeErr error
+	onResume  func() error
+	closed    bool
+	closeErr  error
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// Resume records recovered-operation dispatch after network startup and returns its configured result.
+func (closer *recordingLifecycleCloser) Resume(context.Context) error {
+	closer.resumed = true
+	if closer.onResume != nil {
+		return errors.Join(closer.resumeErr, closer.onResume())
+	}
+	return closer.resumeErr
 }
 
 // Close records joined lifecycle cleanup and returns its configured result.
 func (closer *recordingLifecycleCloser) Close(context.Context) error {
-	if !closer.closed {
+	closer.closeOnce.Do(func() {
 		closer.closed = true
 		close(closer.done)
-	}
+	})
 	return closer.closeErr
 }
 
@@ -412,10 +435,66 @@ func TestProjectLifecycleRuntimeClosesRecoveredProcessesWhenNetworkStartFails(t 
 	startErr := errors.New("network runtime rejected startup")
 	closeErr := errors.New("project process cleanup failed")
 	closer := &recordingLifecycleCloser{closeErr: closeErr, done: make(chan struct{})}
-	runtime := newProjectLifecycleRuntime(&failingLifecycleRuntime{startErr: startErr, done: make(chan struct{})}, closer)
+	runtime := newProjectLifecycleRuntime(&recordingLifecycleNetworkRuntime{startErr: startErr, done: make(chan struct{})}, closer)
 
 	err := runtime.Start(t.Context())
 	if !closer.closed || !errors.Is(err, startErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("Start() = %v, closed = %t, want joined startup and cleanup failures", err, closer.closed)
+	}
+	if closer.resumed {
+		t.Fatal("Start() resumed recovered lifecycle work after network startup failed")
+	}
+}
+
+// TestProjectLifecycleRuntimeResumesRecoveredStartsAfterNetworkStartup proves routes exist before queued work can launch.
+func TestProjectLifecycleRuntimeResumesRecoveredStartsAfterNetworkStartup(t *testing.T) {
+	network := &recordingLifecycleNetworkRuntime{done: make(chan struct{})}
+	lifecycle := &recordingLifecycleCloser{
+		done: make(chan struct{}),
+		onResume: func() error {
+			if !network.started {
+				return errors.New("lifecycle resumed before network startup")
+			}
+			return nil
+		},
+	}
+	runtime := newProjectLifecycleRuntime(network, lifecycle)
+
+	if err := runtime.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !network.started || !lifecycle.resumed {
+		t.Fatalf("startup state = network started %t, lifecycle resumed %t", network.started, lifecycle.resumed)
+	}
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails proves partial startup releases both owned authorities.
+func TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails(t *testing.T) {
+	resumeErr := errors.New("resume recovered starts failed")
+	lifecycleCloseErr := errors.New("project process cleanup failed")
+	networkCloseErr := errors.New("network cleanup failed")
+	network := &recordingLifecycleNetworkRuntime{closeErr: networkCloseErr, done: make(chan struct{})}
+	lifecycle := &recordingLifecycleCloser{
+		resumeErr: resumeErr,
+		closeErr:  lifecycleCloseErr,
+		done:      make(chan struct{}),
+	}
+	runtime := newProjectLifecycleRuntime(network, lifecycle)
+
+	err := runtime.Start(t.Context())
+	if !errors.Is(err, resumeErr) || !errors.Is(err, lifecycleCloseErr) || !errors.Is(err, networkCloseErr) {
+		t.Fatalf("Start() error = %v, want joined resume and cleanup failures", err)
+	}
+	if !network.started || !network.closed || !lifecycle.resumed || !lifecycle.closed {
+		t.Fatalf(
+			"startup cleanup = network started %t closed %t, lifecycle resumed %t closed %t",
+			network.started,
+			network.closed,
+			lifecycle.resumed,
+			lifecycle.closed,
+		)
 	}
 }

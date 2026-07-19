@@ -107,6 +107,7 @@ type ProjectLifecycleCoordinator struct {
 	closeErr          error
 	asyncErr          error
 	dispatched        map[domain.OperationID]struct{}
+	recoveredStarts   []state.OperationRecord
 	handles           map[domain.ProjectID]*projectprocess.Handle
 	wait              sync.WaitGroup
 }
@@ -809,7 +810,7 @@ func (coordinator *ProjectLifecycleCoordinator) beginQueuedDaemonStop(
 	})
 }
 
-// Recover resumes effect-free queued starts and rejects every state that could cross the process-launch crash window.
+// Recover validates durable lifecycle state while retaining effect-free queued starts until network authority is ready.
 func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) error {
 	ctx = normalizeLifecycleContext(ctx)
 	records, err := coordinator.operations.ActiveOperations(ctx)
@@ -838,13 +839,20 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 				}
 				return sessionErr
 			}
-			return priorProcessOwnershipError(record, session)
+			if err := coordinator.recoverQueuedProjectStop(ctx, record, session); err != nil {
+				return err
+			}
+			continue
 		case domain.OperationRunning:
 			session, sessionErr := coordinator.state.ActiveProjectSession(ctx, record.Operation.ProjectID)
 			if sessionErr != nil {
 				return sessionErr
 			}
-			if record.Operation.Kind == domain.OperationKindProjectStart && session.Process != nil {
+			switch record.Operation.Kind {
+			case domain.OperationKindProjectStart:
+				if session.Process == nil {
+					return priorProcessOwnershipError(record, session)
+				}
 				recovered, recoveryErr := coordinator.recoverRunningProjectStart(ctx, record, session)
 				if recoveryErr != nil {
 					return recoveryErr
@@ -852,6 +860,11 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 				if recovered {
 					continue
 				}
+			case domain.OperationKindProjectStop:
+				if err := coordinator.recoverRunningProjectStop(ctx, record, session); err != nil {
+					return err
+				}
+				continue
 			}
 			return priorProcessOwnershipError(record, session)
 		default:
@@ -882,7 +895,33 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 			return fmt.Errorf("recover project %q in runtime-bearing state %q without durable session authority", project.ID, project.State)
 		}
 	}
-	for _, record := range queuedStarts {
+	coordinator.mutex.Lock()
+	if coordinator.closed {
+		coordinator.mutex.Unlock()
+		return errors.New("recover project lifecycle coordinator: coordinator is closed")
+	}
+	coordinator.recoveredStarts = append(coordinator.recoveredStarts[:0], queuedStarts...)
+	coordinator.mutex.Unlock()
+	return nil
+}
+
+// Resume dispatches starts proven effect-free during recovery after Harbor's routes can serve their ready edge.
+func (coordinator *ProjectLifecycleCoordinator) Resume(ctx context.Context) error {
+	ctx = normalizeLifecycleContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("resume recovered project lifecycle operations: %w", err)
+	}
+
+	coordinator.mutex.Lock()
+	if coordinator.closed {
+		coordinator.mutex.Unlock()
+		return errors.New("resume recovered project lifecycle operations: coordinator is closed")
+	}
+	records := append([]state.OperationRecord(nil), coordinator.recoveredStarts...)
+	coordinator.recoveredStarts = nil
+	coordinator.mutex.Unlock()
+
+	for _, record := range records {
 		coordinator.dispatch(record)
 	}
 	return nil
@@ -897,21 +936,13 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded) || session.Process == nil {
 		return false, nil
 	}
-	settlement, err := coordinator.supervisor.SettlePriorProcess(ctx, *session.Process)
+	_, err := coordinator.settleRecoveredProjectProcess(
+		ctx,
+		fmt.Sprintf("project %q terminal session %q", project.ID, session.ID),
+		*session.Process,
+	)
 	if err != nil {
-		return false, fmt.Errorf("settle prior process for project %q terminal session %q: %w", project.ID, session.ID, err)
-	}
-	switch settlement.Outcome {
-	case projectprocess.PriorProcessSettlementAbsent,
-		projectprocess.PriorProcessSettlementReplaced,
-		projectprocess.PriorProcessSettlementTerminated:
-	default:
-		return false, fmt.Errorf(
-			"settle prior process for project %q terminal session %q: unsupported outcome %q",
-			project.ID,
-			session.ID,
-			settlement.Outcome,
-		)
+		return false, err
 	}
 
 	at := lifecycleTime(coordinator.now())
@@ -940,26 +971,19 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 	return true, nil
 }
 
-// recoverRunningProjectStart retires only a process-backed start whose exact persisted birth is no longer present.
+// recoverRunningProjectStart settles a process-backed start before retiring its interrupted durable operation.
 func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 	ctx context.Context,
 	record state.OperationRecord,
 	session domain.ProjectSession,
 ) (bool, error) {
-	observation, err := coordinator.supervisor.ObservePriorProcess(ctx, *session.Process)
+	settlement, err := coordinator.settleRecoveredProjectProcess(
+		ctx,
+		fmt.Sprintf("running project start operation %q", record.Operation.ID),
+		*session.Process,
+	)
 	if err != nil {
-		return false, fmt.Errorf("observe prior process for project lifecycle operation %q: %w", record.Operation.ID, err)
-	}
-	switch observation.State {
-	case projectprocess.PriorProcessPresent:
-		return false, nil
-	case projectprocess.PriorProcessAbsent, projectprocess.PriorProcessReplaced:
-	default:
-		return false, fmt.Errorf(
-			"observe prior process for project lifecycle operation %q: unsupported state %q",
-			record.Operation.ID,
-			observation.State,
-		)
+		return false, err
 	}
 
 	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
@@ -977,8 +1001,11 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 	}
 	evidence := *session.Process
 	cause := errors.New("previous Harbor-managed process was absent during daemon recovery")
-	if observation.State == projectprocess.PriorProcessReplaced {
+	switch settlement.Outcome {
+	case projectprocess.PriorProcessSettlementReplaced:
 		cause = errors.New("previous Harbor-managed process birth was replaced before daemon recovery")
+	case projectprocess.PriorProcessSettlementTerminated:
+		cause = errors.New("previous Harbor-managed process was terminated during daemon recovery")
 	}
 	request := state.FailProjectStartRequest{
 		ProjectID:                 record.Operation.ProjectID,

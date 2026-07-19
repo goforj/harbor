@@ -47,6 +47,7 @@ type projectLifecycleRuntime struct {
 
 // projectLifecycleAuthority is the process lifetime composed into daemon runtime ownership.
 type projectLifecycleAuthority interface {
+	Resume(context.Context) error
 	Close(context.Context) error
 	Done() <-chan struct{}
 	Err() error
@@ -57,12 +58,18 @@ func newProjectLifecycleRuntime(runtime daemon.Runtime, lifecycle projectLifecyc
 	return &projectLifecycleRuntime{Runtime: runtime, lifecycle: lifecycle, done: make(chan struct{})}
 }
 
-// Start prevents a failed network startup from abandoning processes dispatched during durable recovery.
+// Start publishes network authority before dispatching process launches retained during durable recovery.
 func (runtime *projectLifecycleRuntime) Start(ctx context.Context) error {
 	if err := runtime.Runtime.Start(ctx); err != nil {
 		closeErr := runtime.lifecycle.Close(context.Background())
 		runtime.finish(errors.Join(err, closeErr))
 		return errors.Join(err, closeErr)
+	}
+	if err := runtime.lifecycle.Resume(ctx); err != nil {
+		closeErr := runtime.closeOwned(context.Background())
+		joined := errors.Join(err, closeErr)
+		runtime.finish(joined)
+		return joined
 	}
 	go runtime.joinUnexpectedNetworkStop()
 	return nil
@@ -83,13 +90,18 @@ func (runtime *projectLifecycleRuntime) Err() error {
 
 // Close releases project process authority before the network runtime it depends on.
 func (runtime *projectLifecycleRuntime) Close(ctx context.Context) error {
-	lifecycleErr := runtime.lifecycle.Close(ctx)
-	networkErr := runtime.Runtime.Close(ctx)
-	err := errors.Join(lifecycleErr, networkErr)
+	err := runtime.closeOwned(ctx)
 	if signalClosed(runtime.lifecycle.Done()) && signalClosed(runtime.Runtime.Done()) {
 		runtime.finish(err)
 	}
 	return err
+}
+
+// closeOwned releases project processes before the network routes on which their readiness depends.
+func (runtime *projectLifecycleRuntime) closeOwned(ctx context.Context) error {
+	lifecycleErr := runtime.lifecycle.Close(ctx)
+	networkErr := runtime.Runtime.Close(ctx)
+	return errors.Join(lifecycleErr, networkErr)
 }
 
 // joinUnexpectedNetworkStop closes process authority before publishing composite runtime termination.
