@@ -64,7 +64,7 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	}
 	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator, networkSetupCoordinator, controller)
 	shutdown := daemon.NewShutdown()
-	server, err := provideControlServer(authorityAuthority, shutdown)
+	server, err := provideControlServer(authorityAuthority, shutdown, appLogger)
 	if err != nil {
 		return App{}, err
 	}

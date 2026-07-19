@@ -17,8 +17,12 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/inspects"
+	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/reconcile"
+	"github.com/goforj/harbor/internal/rpc"
+	"github.com/goforj/harbor/internal/rpc/local"
+	"github.com/goforj/harbor/internal/rpc/session"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -252,6 +256,42 @@ func TestProvideNetworkSetupCoordinatorRejectsIncompleteAssembly(t *testing.T) {
 	}
 }
 
+// TestControlErrorObserverRetainsRedactedCauseContext verifies daemon diagnostics keep the failure omitted from IPC responses.
+func TestControlErrorObserverRetainsRedactedCauseContext(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	appLogger := logger.NewAppLogger()
+	entries := make([]logger.LogEntry, 0, 1)
+	appLogger.AddSink(func(entry logger.LogEntry) {
+		entries = append(entries, entry)
+	})
+	observer := newControlErrorObserver(appLogger)
+	cause := errors.New("select loopback pool: native route inspection failed")
+	observer(control.Caller{
+		Transport: local.PeerIdentity{UserID: "501", ProcessID: 1201},
+		Session:   session.Peer{Role: rpc.RoleDesktop},
+	}, "network.setup.start", cause)
+
+	if len(entries) != 1 {
+		t.Fatalf("control diagnostic entries = %d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.Level != "error" || entry.Message != "Harbor control request failed" {
+		t.Fatalf("control diagnostic = %#v", entry)
+	}
+	wantFields := map[string]any{
+		"error":           cause.Error(),
+		"control_method":  "network.setup.start",
+		"peer_role":       string(rpc.RoleDesktop),
+		"peer_user_id":    "501",
+		"peer_process_id": uint64(1201),
+	}
+	for name, want := range wantFields {
+		if got := entry.Fields[name]; got != want {
+			t.Errorf("control diagnostic field %q = %#v, want %#v", name, got, want)
+		}
+	}
+}
+
 // TestDaemonProvidersRejectIncompleteAssembly verifies constructor validation remains at the owning production boundaries.
 func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	store := new(state.Store)
@@ -277,11 +317,15 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 		t.Fatalf("provideProjectUnregisterCoordinatorWithIssuerOpener() error = %v", err)
 	}
 	shutdown := daemon.NewShutdown()
-	if _, err := provideControlServer(nil, shutdown); err == nil {
+	appLogger := logger.NewSilentLogger()
+	if _, err := provideControlServer(nil, shutdown, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil) error = nil, want required authority error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), nil); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), nil, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil shutdown) error = nil, want required shutdown coordinator error")
+	}
+	if _, err := provideControlServer(new(authority.Authority), shutdown, nil); err == nil {
+		t.Fatal("provideControlServer(nil logger) error = nil, want required application logger error")
 	}
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, ownership, runtimeController, openIssuer); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil store) error = nil")

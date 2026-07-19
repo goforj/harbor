@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/helper/ticketkey"
+	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -118,14 +119,35 @@ func signalClosed(done <-chan struct{}) bool {
 }
 
 // provideControlServer binds durable Harbor authority to the authenticated product protocol.
-func provideControlServer(controlAuthority *authority.Authority, shutdown *daemon.Shutdown) (*control.Server, error) {
+func provideControlServer(
+	controlAuthority *authority.Authority,
+	shutdown *daemon.Shutdown,
+	appLogger *logger.AppLogger,
+) (*control.Server, error) {
 	if shutdown == nil {
 		return nil, errors.New("create control server: daemon shutdown coordinator is required")
+	}
+	if appLogger == nil {
+		return nil, errors.New("create control server: application logger is required")
 	}
 	return control.NewServer(control.ServerConfig{
 		Authority:       controlAuthority,
 		RequestShutdown: shutdown.Request,
+		ObserveError:    newControlErrorObserver(appLogger),
 	})
+}
+
+// newControlErrorObserver retains redacted control causes in daemon-owned diagnostics with their authenticated request identity.
+func newControlErrorObserver(appLogger *logger.AppLogger) control.ErrorObserver {
+	return func(caller control.Caller, method string, err error) {
+		appLogger.Error().
+			Err(err).
+			Str("control_method", method).
+			Str("peer_role", string(caller.Session.Role)).
+			Str("peer_user_id", caller.Transport.UserID).
+			Uint64("peer_process_id", uint64(caller.Transport.ProcessID)).
+			Msg("Harbor control request failed")
+	}
 }
 
 // provideHarbordReadiness validates assembly while deferring migration inspection until daemon authority is owned.
