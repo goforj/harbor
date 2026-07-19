@@ -6,12 +6,15 @@ The nested module uses Go 1.26.1 because it imports Harbor's root control and do
 
 ## Development
 
-Install the [Wails v2 prerequisites](https://wails.io/docs/gettingstarted/installation) for your platform and Wails v2.13, then run:
+Install the [Wails v2 prerequisites](https://wails.io/docs/gettingstarted/installation) for your platform and Wails v2.13. Start Harbor's daemon and desktop development loops together from the repository root:
 
 ```sh
-cd desktop
-wails dev
+forj dev
 ```
+
+GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. Wails' pre-build hook creates the native development helper artifacts for the current operating system and architecture, so they do not need a separate build command. Changes to Harbor's root `internal/` packages also trigger a Wails reload.
+
+To run only the desktop while an existing daemon is already running, use `wails dev` from `desktop/`.
 
 For frontend-only development, run the SPA against its deterministic browser fixture:
 

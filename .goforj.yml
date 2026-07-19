@@ -9,7 +9,21 @@ dev:
   sound_on_watch_error: true
   wire_paths:
     - app/wire
-  apps: {}
+  apps:
+    harbord:
+      build:
+        exec: go build -o ./bin/harbord ./cmd/harbord
+        watch: [.go, .env, .env.*, go.mod, go.sum]
+        ignore: [desktop, bin, .tmp]
+      run:
+        exec: ./bin/harbord migrate && ./bin/harbord --foreground
+  watches:
+    - name: Harbor Desktop
+      root: .
+      watch: [./.goforj.yml]
+      workdir: ./desktop
+      exec: wails dev -reloaddirs ../internal
+      exit: true
 render:
   components: [cli]
   starter_kit: none
