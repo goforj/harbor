@@ -4,10 +4,13 @@ package hostconflict
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/route"
@@ -20,6 +23,7 @@ const (
 	maximumDarwinRouteReads    = 64
 	maximumDarwinRouteSequence = uint32(1<<31 - 1)
 	darwinRouteResponseNoise   = unix.RTF_DONE
+	darwinRouteErrnoOffset     = 24
 )
 
 var darwinRouteLookupSequence atomic.Uint32
@@ -71,6 +75,9 @@ func observeDarwinRoutesWith(
 	}
 	if len(messages) != messageCount {
 		return RouteSnapshot{}, fmt.Errorf("host conflict Darwin route parser omitted %d messages", messageCount-len(messages))
+	}
+	if err := normalizeDarwinRouteStatuses(raw, messages); err != nil {
+		return RouteSnapshot{}, fmt.Errorf("host conflict Darwin normalize route RIB status: %w", err)
 	}
 	return darwinRoutesFromMessages(messages, selectedMessage, request.Candidate(), interfaces)
 }
@@ -411,12 +418,10 @@ func lookupDarwinSelectedRoute(ctx context.Context, candidate netip.Addr) (selec
 		return nil, fmt.Errorf("host conflict Darwin mark route socket close-on-exec: %w", err)
 	}
 	sequence := nextDarwinRouteSequence()
-	query := &route.RouteMessage{
-		Version: unix.RTM_VERSION,
-		Type:    unix.RTM_GET,
-		ID:      uintptr(unix.Getpid()),
-		Seq:     sequence,
-		Addrs:   []route.Addr{&route.Inet4Addr{IP: candidate.As4()}},
+	processID := uintptr(unix.Getpid())
+	query, err := newDarwinSelectedRouteQuery(candidate, processID, sequence)
+	if err != nil {
+		return nil, err
 	}
 	encoded, err := query.Marshal()
 	if err != nil {
@@ -430,7 +435,31 @@ func lookupDarwinSelectedRoute(ctx context.Context, candidate netip.Addr) (selec
 	}
 	lookupContext, cancel := context.WithTimeout(normalizeDarwinObservationContext(ctx), darwinRouteLookupTimeout)
 	defer cancel()
-	return receiveDarwinSelectedRoute(lookupContext, fileDescriptor, query.ID, query.Seq)
+	return receiveDarwinSelectedRoute(lookupContext, fileDescriptor, processID, sequence)
+}
+
+// newDarwinSelectedRouteQuery builds the same host lookup shape as Darwin's native route utility.
+func newDarwinSelectedRouteQuery(candidate netip.Addr, processID uintptr, sequence int) (*route.RouteMessage, error) {
+	if !candidate.Is4() {
+		return nil, fmt.Errorf("host conflict Darwin selected-route candidate %s is not IPv4", candidate)
+	}
+	if processID == 0 || uint64(processID) > math.MaxUint32 {
+		return nil, fmt.Errorf("host conflict Darwin selected-route process ID %d is invalid", processID)
+	}
+	if sequence <= 0 || uint64(sequence) > uint64(maximumDarwinRouteSequence) {
+		return nil, fmt.Errorf("host conflict Darwin selected-route sequence %d is invalid", sequence)
+	}
+	addresses := make([]route.Addr, unix.RTAX_MAX)
+	addresses[unix.RTAX_DST] = &route.Inet4Addr{IP: candidate.As4()}
+	addresses[unix.RTAX_IFP] = &route.LinkAddr{}
+	return &route.RouteMessage{
+		Version: unix.RTM_VERSION,
+		Type:    unix.RTM_GET,
+		Flags:   unix.RTF_UP | unix.RTF_HOST | unix.RTF_GATEWAY,
+		ID:      processID,
+		Seq:     sequence,
+		Addrs:   addresses,
+	}, nil
 }
 
 // nextDarwinRouteSequence allocates a process-global nonzero signed sequence for broadcast AF_ROUTE replies.
@@ -499,6 +528,9 @@ func receiveDarwinSelectedRoute(ctx context.Context, fileDescriptor int, process
 		if len(messages) != messageCount {
 			return nil, fmt.Errorf("host conflict Darwin route socket parser omitted %d messages", messageCount-len(messages))
 		}
+		if err := normalizeDarwinRouteStatuses(buffer[:length], messages); err != nil {
+			return nil, fmt.Errorf("host conflict Darwin normalize route socket status: %w", err)
+		}
 		var selected *route.RouteMessage
 		for _, rawMessage := range messages {
 			message, ok := rawMessage.(*route.RouteMessage)
@@ -518,6 +550,40 @@ func receiveDarwinSelectedRoute(ctx context.Context, fileDescriptor int, process
 		}
 	}
 	return nil, fmt.Errorf("host conflict Darwin selected-route response exceeded %d reads", maximumDarwinRouteReads)
+}
+
+// normalizeDarwinRouteStatuses replaces x/net/route's BSD-generic status with Darwin's native rtm_errno field.
+func normalizeDarwinRouteStatuses(raw []byte, messages []route.Message) error {
+	for index, message := range messages {
+		if len(raw) < 4 {
+			return fmt.Errorf("route message %d has a truncated native header", index)
+		}
+		length := int(binary.NativeEndian.Uint16(raw[:2]))
+		if length < 4 || length > len(raw) {
+			return fmt.Errorf("route message %d has invalid native length %d", index, length)
+		}
+		routeMessage, ok := message.(*route.RouteMessage)
+		if ok && routeMessage != nil && (routeMessage.Type == unix.RTM_GET || routeMessage.Type == unix.RTM_GET2) {
+			if int(raw[3]) != routeMessage.Type {
+				return fmt.Errorf("route message %d native type %d does not match parsed type %d", index, raw[3], routeMessage.Type)
+			}
+			if length < unix.SizeofRtMsghdr {
+				return fmt.Errorf("route message %d native header has length %d, want at least %d", index, length, unix.SizeofRtMsghdr)
+			}
+			routeMessage.Err = nil
+			if routeMessage.Type == unix.RTM_GET {
+				status := syscall.Errno(binary.NativeEndian.Uint32(raw[darwinRouteErrnoOffset : darwinRouteErrnoOffset+4]))
+				if status != 0 {
+					routeMessage.Err = status
+				}
+			}
+		}
+		raw = raw[length:]
+	}
+	if len(raw) != 0 {
+		return fmt.Errorf("native route frames and parsed messages differ by %d bytes", len(raw))
+	}
+	return nil
 }
 
 // waitDarwinRouteReadable bounds a blocking route socket independently from caller deadline choices.

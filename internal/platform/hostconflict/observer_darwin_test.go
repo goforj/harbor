@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"golang.org/x/net/route"
@@ -304,6 +305,100 @@ func TestNextDarwinRouteSequenceIsConcurrentAndNonzero(t *testing.T) {
 	}
 }
 
+// TestNewDarwinSelectedRouteQueryRequestsIPv4InterfaceEvidence binds the outbound RTM_GET contract.
+func TestNewDarwinSelectedRouteQueryRequestsIPv4InterfaceEvidence(t *testing.T) {
+	query, err := newDarwinSelectedRouteQuery(testCandidate, 731, 19)
+	if err != nil {
+		t.Fatalf("newDarwinSelectedRouteQuery() error = %v", err)
+	}
+	wantFlags := unix.RTF_UP | unix.RTF_HOST | unix.RTF_GATEWAY
+	if query.Version != unix.RTM_VERSION || query.Type != unix.RTM_GET || query.Flags != wantFlags || query.ID != 731 || query.Seq != 19 {
+		t.Fatalf("newDarwinSelectedRouteQuery() = %#v", query)
+	}
+	if len(query.Addrs) != unix.RTAX_MAX {
+		t.Fatalf("query addresses = %d, want %d", len(query.Addrs), unix.RTAX_MAX)
+	}
+	destination, ok := query.Addrs[unix.RTAX_DST].(*route.Inet4Addr)
+	if !ok || destination.IP != testCandidate.As4() {
+		t.Fatalf("query destination = %#v", query.Addrs[unix.RTAX_DST])
+	}
+	if interfaceAddress, ok := query.Addrs[unix.RTAX_IFP].(*route.LinkAddr); !ok || interfaceAddress == nil {
+		t.Fatalf("query interface request = %#v", query.Addrs[unix.RTAX_IFP])
+	}
+	encoded, err := query.Marshal()
+	if err != nil {
+		t.Fatalf("RouteMessage.Marshal() error = %v", err)
+	}
+	if len(encoded) > maximumDarwinRouteDatagram || binary.NativeEndian.Uint16(encoded[:2]) != uint16(len(encoded)) {
+		t.Fatalf("encoded query length = %d, header = %d", len(encoded), binary.NativeEndian.Uint16(encoded[:2]))
+	}
+	wantAddresses := uint32(unix.RTA_DST | unix.RTA_IFP)
+	if got := binary.NativeEndian.Uint32(encoded[12:16]); got != wantAddresses {
+		t.Fatalf("encoded query address mask = %#x, want %#x", got, wantAddresses)
+	}
+	destinationOffset := unix.SizeofRtMsghdr
+	if encoded[destinationOffset] != unix.SizeofSockaddrInet4 || encoded[destinationOffset+1] != unix.AF_INET {
+		t.Fatalf("encoded destination sockaddr = %v", encoded[destinationOffset:destinationOffset+unix.SizeofSockaddrInet4])
+	}
+}
+
+// TestNewDarwinSelectedRouteQueryRejectsInvalidIdentity keeps native integer truncation out of route requests.
+func TestNewDarwinSelectedRouteQueryRejectsInvalidIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate netip.Addr
+		processID uintptr
+		sequence  int
+	}{
+		{name: "IPv6", candidate: netip.IPv6Loopback(), processID: 1, sequence: 1},
+		{name: "zero process", candidate: testCandidate, processID: 0, sequence: 1},
+		{name: "wide process", candidate: testCandidate, processID: uintptr(uint64(1) << 32), sequence: 1},
+		{name: "zero sequence", candidate: testCandidate, processID: 1, sequence: 0},
+		{name: "wide sequence", candidate: testCandidate, processID: 1, sequence: int(maximumDarwinRouteSequence) + 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newDarwinSelectedRouteQuery(test.candidate, test.processID, test.sequence); err == nil {
+				t.Fatal("newDarwinSelectedRouteQuery() error = nil")
+			}
+		})
+	}
+}
+
+// TestNormalizeDarwinRouteStatusesReadsRTMErrno proves route-use counters cannot impersonate Darwin errors.
+func TestNormalizeDarwinRouteStatusesReadsRTMErrno(t *testing.T) {
+	tests := []struct {
+		name        string
+		messageType uint8
+		status      syscall.Errno
+		use         uint32
+		want        error
+	}{
+		{name: "successful lookup with errno-shaped use", messageType: unix.RTM_GET, use: uint32(unix.EAFNOSUPPORT)},
+		{name: "failed lookup with zero use", messageType: unix.RTM_GET, status: unix.EPERM, want: unix.EPERM},
+		{name: "RIB record has no operation status", messageType: unix.RTM_GET2, status: unix.EPERM, use: uint32(unix.EAFNOSUPPORT)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := darwinTestRouteStatusFrame(test.messageType, test.status, test.use)
+			messages, err := route.ParseRIB(route.RIBTypeRoute, raw)
+			if err != nil || len(messages) != 1 {
+				t.Fatalf("route.ParseRIB() = %#v, %v", messages, err)
+			}
+			if err := normalizeDarwinRouteStatuses(raw, messages); err != nil {
+				t.Fatalf("normalizeDarwinRouteStatuses() error = %v", err)
+			}
+			message, ok := messages[0].(*route.RouteMessage)
+			if !ok {
+				t.Fatalf("route.ParseRIB() message = %T", messages[0])
+			}
+			if !errors.Is(message.Err, test.want) || (test.want == nil && message.Err != nil) {
+				t.Fatalf("normalized route error = %v, want %v", message.Err, test.want)
+			}
+		})
+	}
+}
+
 // TestWriteDarwinRouteQueryRequiresOneAtomicRecord covers interruption, short writes, and errno fidelity.
 func TestWriteDarwinRouteQueryRequiresOneAtomicRecord(t *testing.T) {
 	encoded := []byte{1, 2, 3, 4}
@@ -393,6 +488,25 @@ func darwinTestRIBFrame(messageType uint8) []byte {
 	binary.NativeEndian.PutUint16(raw[:2], uint16(len(raw)))
 	raw[2] = darwinRoutingMessageVersion
 	raw[3] = messageType
+	return raw
+}
+
+// darwinTestRouteStatusFrame creates one parseable XNU route header with independently controlled errno and use fields.
+func darwinTestRouteStatusFrame(messageType uint8, status syscall.Errno, use uint32) []byte {
+	raw := make([]byte, unix.SizeofRtMsghdr+unix.SizeofSockaddrInet4)
+	binary.NativeEndian.PutUint16(raw[:2], uint16(len(raw)))
+	raw[2] = darwinRoutingMessageVersion
+	raw[3] = messageType
+	binary.NativeEndian.PutUint32(raw[8:12], unix.RTF_UP)
+	binary.NativeEndian.PutUint32(raw[12:16], unix.RTA_DST)
+	binary.NativeEndian.PutUint32(raw[16:20], 731)
+	binary.NativeEndian.PutUint32(raw[20:24], 19)
+	binary.NativeEndian.PutUint32(raw[darwinRouteErrnoOffset:darwinRouteErrnoOffset+4], uint32(status))
+	binary.NativeEndian.PutUint32(raw[28:32], use)
+	destinationOffset := unix.SizeofRtMsghdr
+	raw[destinationOffset] = unix.SizeofSockaddrInet4
+	raw[destinationOffset+1] = unix.AF_INET
+	copy(raw[destinationOffset+4:destinationOffset+8], testCandidate.AsSlice())
 	return raw
 }
 
