@@ -16,6 +16,9 @@ type daemonControlClient interface {
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
+	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
+	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
+	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
 	Close() error
 }
 
@@ -79,6 +82,36 @@ func (client *DaemonClient) UnregisterProject(
 ) (control.ProjectUnregistration, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectUnregistration, error) {
 		return connection.UnregisterProject(ctx, request)
+	})
+}
+
+// StartNetworkSetup starts or replays one machine-global setup intent and closes the one-shot connection.
+func (client *DaemonClient) StartNetworkSetup(
+	ctx context.Context,
+	request control.StartNetworkSetupRequest,
+) (control.NetworkSetupOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkSetupOperation, error) {
+		return connection.StartNetworkSetup(ctx, request)
+	})
+}
+
+// PrepareNetworkSetupApproval requests helper authorization for one setup revision and closes the one-shot connection.
+func (client *DaemonClient) PrepareNetworkSetupApproval(
+	ctx context.Context,
+	request control.PrepareNetworkSetupApprovalRequest,
+) (control.NetworkSetupApprovalPreparation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkSetupApprovalPreparation, error) {
+		return connection.PrepareNetworkSetupApproval(ctx, request)
+	})
+}
+
+// ConfirmNetworkSetupApproval submits setup evidence for one approved revision and closes the one-shot connection.
+func (client *DaemonClient) ConfirmNetworkSetupApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkSetupApprovalRequest,
+) (control.NetworkSetupApprovalConfirmation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkSetupApprovalConfirmation, error) {
+		return connection.ConfirmNetworkSetupApproval(ctx, request)
 	})
 }
 
