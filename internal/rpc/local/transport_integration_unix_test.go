@@ -3,15 +3,31 @@
 package local_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/rpc/local"
 )
 
+// shortUnixRuntimeRoot keeps the discovered socket beneath Darwin's compact sockaddr_un path limit.
+func shortUnixRuntimeRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "h-rpc-integration-")
+	if err != nil {
+		t.Fatalf("create short Unix runtime root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove short Unix runtime root: %v", err)
+		}
+	})
+	return root
+}
+
 // TestDefaultUnixTransportUsesRuntimeDiscovery verifies the public API joins path resolution, locking, and peer admission.
 func TestDefaultUnixTransportUsesRuntimeDiscovery(t *testing.T) {
-	runtimeRoot := t.TempDir()
+	runtimeRoot := shortUnixRuntimeRoot(t)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
 	t.Setenv("TMPDIR", runtimeRoot)
 

@@ -22,6 +22,16 @@ func writeProjectMarker(t *testing.T, root string, content string) {
 	}
 }
 
+// canonicalTestPath resolves platform aliases so expectations match the identity discovery promises callers.
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve canonical test path: %v", err)
+	}
+	return filepath.Clean(canonical)
+}
+
 // TestDiscoverBuildsCanonicalMetadataWithoutInterpretingLifecycle proves commands and malformed unrelated topology remain inert.
 func TestDiscoverBuildsCanonicalMetadataWithoutInterpretingLifecycle(t *testing.T) {
 	parent := t.TempDir()
@@ -43,7 +53,7 @@ func TestDiscoverBuildsCanonicalMetadataWithoutInterpretingLifecycle(t *testing.
 	if first != second {
 		t.Fatalf("discoveries differ: first %#v second %#v", first, second)
 	}
-	if first.Root != filepath.Clean(root) || first.Name != "Orders API" || first.Slug != "orders-api" {
+	if first.Root != canonicalTestPath(t, root) || first.Name != "Orders API" || first.Slug != "orders-api" {
 		t.Fatalf("discovery = %#v, want canonical Orders API metadata", first)
 	}
 

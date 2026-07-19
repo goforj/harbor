@@ -20,6 +20,21 @@ type metadataScanResult struct {
 	err    error
 }
 
+// shortMetadataSocketPath keeps the special-file fixture beneath Darwin's compact sockaddr_un path limit.
+func shortMetadataSocketPath(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "h-metadata-")
+	if err != nil {
+		t.Fatalf("create short metadata socket root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove short metadata socket root: %v", err)
+		}
+	})
+	return filepath.Join(root, ".env.example")
+}
+
 // assertMetadataRejectedWithoutRead proves special metadata paths fail before content scanning can begin.
 func assertMetadataRejectedWithoutRead(t *testing.T, filename string) {
 	t.Helper()
@@ -63,7 +78,7 @@ func TestScanMetadataLinesRejectsFIFOWithoutBlocking(t *testing.T) {
 
 // TestScanMetadataLinesRejectsSocketWithoutReading proves an optional dotenv socket is never treated as project content.
 func TestScanMetadataLinesRejectsSocketWithoutReading(t *testing.T) {
-	filename := filepath.Join(t.TempDir(), ".env.example")
+	filename := shortMetadataSocketPath(t)
 	listener, err := net.Listen("unix", filename)
 	if err != nil {
 		t.Fatalf("create metadata socket: %v", err)

@@ -15,9 +15,24 @@ import (
 	"time"
 )
 
+// shortUnixTestRoot keeps fixture endpoints beneath Darwin's compact sockaddr_un path limit.
+func shortUnixTestRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "h-rpc-")
+	if err != nil {
+		t.Fatalf("create short Unix test root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove short Unix test root: %v", err)
+		}
+	})
+	return root
+}
+
 // TestUnixTransportAuthenticatesBothPeers verifies clients and servers receive kernel-backed identities.
 func TestUnixTransportAuthenticatesBothPeers(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime", "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "runtime", "harbord.sock")
 	userID := strconv.Itoa(os.Geteuid())
 	listener, err := listenUnix(path, uint32(os.Geteuid()), readUnixPeerIdentity)
 	if err != nil {
@@ -66,7 +81,7 @@ func TestUnixTransportAuthenticatesBothPeers(t *testing.T) {
 
 // TestUnixTransportWriteDeadline verifies authenticated sockets expose native timeout semantics to RPC writers.
 func TestUnixTransportWriteDeadline(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := listenUnix(path, uint32(os.Geteuid()), readUnixPeerIdentity)
 	if err != nil {
 		t.Fatalf("listen on Unix endpoint: %v", err)
@@ -115,7 +130,7 @@ func TestUnixTransportWriteDeadline(t *testing.T) {
 
 // TestUnixTransportRejectsDifferentUser verifies admission fails before an RPC handshake can begin.
 func TestUnixTransportRejectsDifferentUser(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := listenUnix(path, uint32(os.Geteuid()), func(*net.UnixConn) (PeerIdentity, error) {
 		return PeerIdentity{UserID: "different-user", ProcessID: 42}, nil
 	})
@@ -143,7 +158,7 @@ func TestUnixTransportRejectsDifferentUser(t *testing.T) {
 
 // TestUnixTransportRejectsInvalidCredentialResults verifies missing and unreadable kernel identity fails closed.
 func TestUnixTransportRejectsInvalidCredentialResults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := openUnixEndpoint(path)
 	if err != nil {
 		t.Fatalf("listen on Unix endpoint: %v", err)
@@ -209,7 +224,7 @@ func TestUnixTransportRejectsInvalidCredentialResults(t *testing.T) {
 
 // TestUnixTransportRemovesRefusedSocket verifies a crash artifact cannot prevent the lock-owning daemon from restarting.
 func TestUnixTransportRemovesRefusedSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	address := &net.UnixAddr{Name: path, Net: "unix"}
 	stale, err := net.ListenUnix("unix", address)
 	if err != nil {
@@ -231,7 +246,7 @@ func TestUnixTransportRemovesRefusedSocket(t *testing.T) {
 
 // TestUnixTransportPreservesLiveSocket verifies startup never unlinks an endpoint that accepts connections.
 func TestUnixTransportPreservesLiveSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	address := &net.UnixAddr{Name: path, Net: "unix"}
 	live, err := net.ListenUnix("unix", address)
 	if err != nil {
@@ -354,7 +369,7 @@ func TestInspectOwnedUnixSocketRejectsWrongTypeAndOwner(t *testing.T) {
 		t.Fatal("regular endpoint unexpectedly passed socket inspection")
 	}
 
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen on inspected endpoint: %v", err)
@@ -367,7 +382,7 @@ func TestInspectOwnedUnixSocketRejectsWrongTypeAndOwner(t *testing.T) {
 
 // TestUnixTransportSecuresOnlyHarborLeaf verifies existing platform parents retain their chosen permissions.
 func TestUnixTransportSecuresOnlyHarborLeaf(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "platform-runtime")
+	parent := filepath.Join(shortUnixTestRoot(t), "platform-runtime")
 	if err := os.Mkdir(parent, 0o751); err != nil {
 		t.Fatalf("create platform runtime parent: %v", err)
 	}
@@ -404,7 +419,7 @@ func TestUnixTransportSecuresOnlyHarborLeaf(t *testing.T) {
 
 // TestUnixTransportDoesNotRemoveReplacementPath verifies shutdown cannot unlink a path substituted after bind.
 func TestUnixTransportDoesNotRemoveReplacementPath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := openUnixEndpoint(path)
 	if err != nil {
 		t.Fatalf("listen on Unix endpoint: %v", err)
@@ -430,7 +445,7 @@ func TestUnixTransportDoesNotRemoveReplacementPath(t *testing.T) {
 
 // TestUnixTransportCloseToleratesMissingEndpoint verifies external cleanup does not turn orderly shutdown into failure.
 func TestUnixTransportCloseToleratesMissingEndpoint(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := openUnixEndpoint(path)
 	if err != nil {
 		t.Fatalf("listen on Unix endpoint: %v", err)
@@ -445,7 +460,7 @@ func TestUnixTransportCloseToleratesMissingEndpoint(t *testing.T) {
 
 // TestCloseAndRemoveUnixEndpointReleasesConstructionArtifact verifies failed setup does not retain a socket path.
 func TestCloseAndRemoveUnixEndpointReleasesConstructionArtifact(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen on construction artifact: %v", err)
@@ -461,7 +476,7 @@ func TestCloseAndRemoveUnixEndpointReleasesConstructionArtifact(t *testing.T) {
 
 // TestCloseAndRemoveUnixEndpointToleratesAutomaticUnlink verifies cleanup accepts a socket already removed by Go.
 func TestCloseAndRemoveUnixEndpointToleratesAutomaticUnlink(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen on automatically unlinked endpoint: %v", err)
@@ -473,7 +488,7 @@ func TestCloseAndRemoveUnixEndpointToleratesAutomaticUnlink(t *testing.T) {
 
 // TestUnixDialRejectsUnexpectedDaemonUser verifies the client closes a connection that fails kernel admission.
 func TestUnixDialRejectsUnexpectedDaemonUser(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen on Unix endpoint: %v", err)
@@ -514,7 +529,7 @@ func TestUnixDialHonorsCanceledContext(t *testing.T) {
 
 // TestRemoveStaleUnixEndpointRejectsUncertainProbe verifies timeouts and permission errors never authorize removal.
 func TestRemoveStaleUnixEndpointRejectsUncertainProbe(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	address := &net.UnixAddr{Name: path, Net: "unix"}
 	stale, err := net.ListenUnix("unix", address)
 	if err != nil {
@@ -539,7 +554,7 @@ func TestRemoveStaleUnixEndpointRejectsUncertainProbe(t *testing.T) {
 
 // TestRemoveStaleUnixEndpointDetectsProbeRace verifies a replaced inode cannot inherit stale-removal authority.
 func TestRemoveStaleUnixEndpointDetectsProbeRace(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "harbord.sock")
+	path := filepath.Join(shortUnixTestRoot(t), "harbord.sock")
 	address := &net.UnixAddr{Name: path, Net: "unix"}
 	stale, err := net.ListenUnix("unix", address)
 	if err != nil {
