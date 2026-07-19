@@ -354,7 +354,7 @@ func enclosingGoModule(location string) (string, bool, error) {
 // renderConfiguration emits a complete non-interactive generator and forj-dev contract.
 func renderConfiguration(specification Spec, version string) []byte {
 	return []byte(fmt.Sprintf(
-		"project_name: %s\nmodule_name: %s\ndev:\n  run:\n    app: run\nrender:\n  components:\n    - cli\n    - web_api\n  help_format: framework\n  goforj_version: %s\n",
+		"project_name: %s\nmodule_name: %s\ndev:\n  apps:\n    app: true\nrender:\n  components:\n    - cli\n    - web_api\n  help_format: framework\n  goforj_version: %s\n",
 		strconv.Quote(specification.Name),
 		strconv.Quote(specification.Module),
 		strconv.Quote(version),

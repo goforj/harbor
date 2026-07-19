@@ -171,6 +171,20 @@ func TestRenderCreatesThreeUniquePort3000Projects(t *testing.T) {
 	}
 }
 
+// TestRenderConfigurationSelectsTheGeneratedAppRuntime prevents a successful render from producing an inert forj dev graph.
+func TestRenderConfigurationSelectsTheGeneratedAppRuntime(t *testing.T) {
+	configuration := string(renderConfiguration(
+		Spec{Name: "Harbor Orders", Module: "example.test/harbor/orders", Port: 3000},
+		"0.19.0",
+	))
+	if !strings.Contains(configuration, "dev:\n  apps:\n    app: true\n") {
+		t.Fatalf("render configuration does not select the generated App runtime:\n%s", configuration)
+	}
+	if strings.Contains(configuration, "dev:\n  run:") {
+		t.Fatalf("render configuration used a watcher allowlist without defining any watchers:\n%s", configuration)
+	}
+}
+
 // TestMatchesProjectEnvironmentAllowsGeneratedSecretsButRejectsShadowing verifies renderer-owned additions cannot change launch inputs.
 func TestMatchesProjectEnvironmentAllowsGeneratedSecretsButRejectsShadowing(t *testing.T) {
 	expected := []byte("APP_NAME=Orders\nAPI_HTTP_PORT=3000\n")
