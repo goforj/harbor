@@ -3,6 +3,8 @@ package helper
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +43,33 @@ func TestDispatcherDispatchAllowlistedOperations(t *testing.T) {
 				t.Fatalf("state = %q, want %q", response.Result.Evidence.Observation.State, test.state)
 			}
 		})
+	}
+}
+
+// TestDispatcherDispatchEnsuresLoopbackPool verifies one replay claim reaches one aggregate handler call and returns only pool evidence.
+func TestDispatcherDispatchEnsuresLoopbackPool(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	reference := testTicketReference()
+	ticket := validTestPoolTicket(now)
+	guard := newTestReplayGuard()
+	handler := newTestLoopbackHandler()
+	dispatcher := NewDispatcher(newTestTicketRedeemer(reference, ticket), newTestClock(now), guard, handler)
+
+	response, err := dispatcher.Dispatch(context.Background(), validTestRequest(reference))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !response.OK || response.Error != nil || response.Result == nil {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.Result.Operation != OperationEnsureLoopbackPool || response.Result.Evidence != (MutationEvidence{}) || response.Result.PoolEvidence == nil {
+		t.Fatalf("unexpected pool result: %#v", response.Result)
+	}
+	if !reflect.DeepEqual(*response.Result.PoolEvidence, handler.poolEvidence) {
+		t.Fatalf("pool evidence = %#v, want %#v", *response.Result.PoolEvidence, handler.poolEvidence)
+	}
+	if guard.consumeCount() != 1 || handler.callCount() != 1 || handler.poolCallCount() != 1 {
+		t.Fatalf("replay/handler/pool calls = %d/%d/%d, want 1/1/1", guard.consumeCount(), handler.callCount(), handler.poolCallCount())
 	}
 }
 
@@ -271,6 +300,9 @@ func TestDispatcherDispatchMapsUnavailableBoundaries(t *testing.T) {
 	if _, err := (UnavailableLoopbackIdentityHandler{}).ReleaseLoopbackIdentity(context.Background(), ticket); !errors.Is(err, ErrMutationUnavailable) {
 		t.Fatalf("release unavailable error = %v, want ErrMutationUnavailable", err)
 	}
+	if _, err := (UnavailableLoopbackIdentityHandler{}).EnsureLoopbackPool(context.Background(), validTestPoolTicket(now)); !errors.Is(err, ErrMutationUnavailable) {
+		t.Fatalf("pool unavailable error = %v, want ErrMutationUnavailable", err)
+	}
 }
 
 // TestDispatcherDispatchRejectsReferenceOutcomes verifies lookup details remain opaque and reach no replay state.
@@ -453,6 +485,41 @@ func TestDispatcherDispatchValidatesMutationEvidence(t *testing.T) {
 	}
 }
 
+// TestDispatcherDispatchValidatesPoolMutationEvidence rejects incomplete, unordered, or unowned aggregate postconditions.
+func TestDispatcherDispatchValidatesPoolMutationEvidence(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*PoolMutationEvidence)
+	}{
+		{name: "wrong pool", mutate: func(evidence *PoolMutationEvidence) { evidence.Pool = "127.77.0.16/29" }},
+		{name: "wrong count", mutate: func(evidence *PoolMutationEvidence) { evidence.Identities = evidence.Identities[:7] }},
+		{name: "wrong address", mutate: func(evidence *PoolMutationEvidence) { evidence.Identities[3].Address = "127.77.0.12" }},
+		{name: "wrong order", mutate: func(evidence *PoolMutationEvidence) {
+			evidence.Identities[2], evidence.Identities[3] = evidence.Identities[3], evidence.Identities[2]
+		}},
+		{name: "wrong state", mutate: func(evidence *PoolMutationEvidence) { evidence.Identities[5].Observation.State = ObservationAbsent }},
+		{name: "invalid fingerprint", mutate: func(evidence *PoolMutationEvidence) { evidence.Identities[6].Observation.Fingerprint = "bad" }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reference := testTicketReference()
+			ticket := validTestPoolTicket(now)
+			handler := newTestLoopbackHandler()
+			test.mutate(&handler.poolEvidence)
+			dispatcher := NewDispatcher(newTestTicketRedeemer(reference, ticket), newTestClock(now), newTestReplayGuard(), handler)
+			response, err := dispatcher.Dispatch(context.Background(), validTestRequest(reference))
+			if err == nil || response.Error == nil || response.Error.Code != ErrorCodeMutationFailed {
+				t.Fatalf("unexpected evidence result: response=%#v error=%v", response, err)
+			}
+			if handler.callCount() != 1 || handler.poolCallCount() != 1 {
+				t.Fatalf("handler/pool calls = %d/%d, want 1/1", handler.callCount(), handler.poolCallCount())
+			}
+		})
+	}
+}
+
 // TestNewDispatcherRequiresDependencies verifies invalid security wiring fails immediately.
 func TestNewDispatcherRequiresDependencies(t *testing.T) {
 	tests := []struct {
@@ -545,7 +612,7 @@ func redemptionForTicket(reference TicketReference, ticket Ticket) TicketRedempt
 			RequesterIdentity:   "uid-1000",
 			InstallationID:      "harbor-test-installation",
 			OwnershipGeneration: 7,
-			ApprovedPool:        "127.77.0.0/24",
+			ApprovedPool:        ticket.ApprovedPool,
 		},
 	}
 }
@@ -618,9 +685,11 @@ func (g *testReplayGuard) consumeCount() int {
 type testLoopbackHandler struct {
 	mutex           sync.Mutex
 	ensureEvidence  MutationEvidence
+	poolEvidence    PoolMutationEvidence
 	releaseEvidence MutationEvidence
 	err             error
 	calls           int
+	poolCalls       int
 }
 
 type blockingLoopbackHandler struct{}
@@ -629,6 +698,12 @@ type blockingLoopbackHandler struct{}
 func (blockingLoopbackHandler) EnsureLoopbackIdentity(ctx context.Context, _ Ticket) (MutationEvidence, error) {
 	<-ctx.Done()
 	return MutationEvidence{}, ctx.Err()
+}
+
+// EnsureLoopbackPool waits for the ticket-derived context deadline without mutating the host.
+func (blockingLoopbackHandler) EnsureLoopbackPool(ctx context.Context, _ Ticket) (PoolMutationEvidence, error) {
+	<-ctx.Done()
+	return PoolMutationEvidence{}, ctx.Err()
 }
 
 // ReleaseLoopbackIdentity waits for the ticket-derived context deadline without mutating the host.
@@ -648,6 +723,7 @@ func newTestLoopbackHandler() *testLoopbackHandler {
 				Fingerprint: strings.Repeat("b", fingerprintLength),
 			},
 		},
+		poolEvidence: testPoolMutationEvidence("127.77.0.8/29"),
 		releaseEvidence: MutationEvidence{
 			Changed: true,
 			Address: "127.77.0.10",
@@ -667,6 +743,15 @@ func (h *testLoopbackHandler) EnsureLoopbackIdentity(context.Context, Ticket) (M
 	return h.ensureEvidence, h.err
 }
 
+// EnsureLoopbackPool returns the configured aggregate evidence without touching the host.
+func (h *testLoopbackHandler) EnsureLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.calls++
+	h.poolCalls++
+	return h.poolEvidence, h.err
+}
+
 // ReleaseLoopbackIdentity returns the configured release evidence without touching the host.
 func (h *testLoopbackHandler) ReleaseLoopbackIdentity(context.Context, Ticket) (MutationEvidence, error) {
 	h.mutex.Lock()
@@ -680,4 +765,30 @@ func (h *testLoopbackHandler) callCount() int {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	return h.calls
+}
+
+// poolCallCount returns the number of aggregate pool calls observed by the test handler.
+func (h *testLoopbackHandler) poolCallCount() int {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	return h.poolCalls
+}
+
+// testPoolMutationEvidence returns eight canonical owned postconditions for one /29.
+func testPoolMutationEvidence(poolText string) PoolMutationEvidence {
+	pool := netip.MustParsePrefix(poolText)
+	identities := make([]MutationEvidence, 0, loopbackPoolIdentities)
+	address := pool.Addr()
+	for range loopbackPoolIdentities {
+		identities = append(identities, MutationEvidence{
+			Changed: true,
+			Address: address.String(),
+			Observation: ExpectedObservation{
+				State:       ObservationOwned,
+				Fingerprint: strings.Repeat("d", fingerprintLength),
+			},
+		})
+		address = address.Next()
+	}
+	return PoolMutationEvidence{Pool: pool.String(), Identities: identities}
 }

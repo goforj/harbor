@@ -136,7 +136,7 @@ func TestDecodeRequestRejectsOversizedAndFailedReads(t *testing.T) {
 
 // TestDecodeResponseAcceptsStrictSuccessAndFailure verifies both protocol envelope shapes round trip.
 func TestDecodeResponseAcceptsStrictSuccessAndFailure(t *testing.T) {
-	responses := []Response{validTestSuccessResponse(), validTestFailureResponse()}
+	responses := []Response{validTestSuccessResponse(), validTestPoolSuccessResponse(), validTestFailureResponse()}
 	for _, want := range responses {
 		body, err := json.Marshal(want)
 		if err != nil {
@@ -149,6 +149,57 @@ func TestDecodeResponseAcceptsStrictSuccessAndFailure(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("decoded response = %#v, want %#v", got, want)
 		}
+	}
+}
+
+// TestDecodeResponseRejectsAmbiguousPoolEvidenceJSON covers the aggregate result's conditional field set and exact nesting.
+func TestDecodeResponseRejectsAmbiguousPoolEvidenceJSON(t *testing.T) {
+	validBody, err := json.Marshal(validTestPoolSuccessResponse())
+	if err != nil {
+		t.Fatalf("marshal pool response: %v", err)
+	}
+	valid := string(validBody)
+	nullIdentity := func() string {
+		var envelope map[string]any
+		if err := json.Unmarshal(validBody, &envelope); err != nil {
+			t.Fatalf("unmarshal pool response: %v", err)
+		}
+		result := envelope["result"].(map[string]any)
+		poolEvidence := result["pool_evidence"].(map[string]any)
+		identities := poolEvidence["identities"].([]any)
+		identities[0] = nil
+		body, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatalf("marshal null identity response: %v", err)
+		}
+		return string(body)
+	}()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "null pool evidence", body: `{"version":2,"ok":true,"result":{"operation":"ensure_loopback_pool","pool_evidence":null}}`},
+		{name: "scalar evidence instead", body: strings.Replace(valid, `"pool_evidence"`, `"evidence"`, 1)},
+		{name: "both evidence fields", body: strings.Replace(valid, `"pool_evidence":`, `"evidence":{"changed":true,"address":"127.77.0.8","observation":{"state":"owned","fingerprint":"`+strings.Repeat("a", fingerprintLength)+`"}},"pool_evidence":`, 1)},
+		{name: "pool evidence alias", body: strings.Replace(valid, `"pool_evidence"`, `"Pool_Evidence"`, 1)},
+		{name: "duplicate pool evidence", body: strings.Replace(valid, `"pool_evidence":`, `"pool_evidence":null,"pool_evidence":`, 1)},
+		{name: "null pool", body: strings.Replace(valid, `"pool":"127.77.0.8/29"`, `"pool":null`, 1)},
+		{name: "pool alias", body: strings.Replace(valid, `"pool"`, `"Pool"`, 1)},
+		{name: "duplicate pool", body: strings.Replace(valid, `"pool":`, `"pool":null,"pool":`, 1)},
+		{name: "null identities", body: `{"version":2,"ok":true,"result":{"operation":"ensure_loopback_pool","pool_evidence":{"pool":"127.77.0.8/29","identities":null}}}`},
+		{name: "identities alias", body: strings.Replace(valid, `"identities"`, `"Identities"`, 1)},
+		{name: "unknown pool field", body: strings.Replace(valid, `"identities":`, `"interface":"lo0","identities":`, 1)},
+		{name: "identity field alias", body: strings.Replace(valid, `"changed"`, `"Changed"`, 1)},
+		{name: "null identity", body: nullIdentity},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := DecodeResponse(strings.NewReader(test.body)); err == nil {
+				t.Fatal("expected decode error")
+			}
+		})
 	}
 }
 
@@ -214,6 +265,10 @@ func TestDecodeResponseRejectsInvalidDomainValues(t *testing.T) {
 		{name: "unknown observation", mutate: func(response *Response) { response.Result.Evidence.Observation.State = "foreign" }},
 		{name: "bad fingerprint", mutate: func(response *Response) { response.Result.Evidence.Observation.Fingerprint = "bad" }},
 		{name: "state mismatch", mutate: func(response *Response) { response.Result.Evidence.Observation.State = ObservationOwned }},
+		{name: "legacy with pool evidence", mutate: func(response *Response) {
+			poolEvidence := testPoolMutationEvidence("127.77.0.8/29")
+			response.Result.PoolEvidence = &poolEvidence
+		}},
 		{name: "failure with result", mutate: func(response *Response) {
 			response.OK = false
 			response.Error = &ResponseError{Code: ErrorCodeMutationFailed, Message: "failed"}
@@ -235,6 +290,59 @@ func TestDecodeResponseRejectsInvalidDomainValues(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := validTestSuccessResponse()
+			test.mutate(&response)
+			body, err := json.Marshal(response)
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+			if _, err := DecodeResponse(bytes.NewReader(body)); err == nil {
+				t.Fatal("expected decode error")
+			}
+		})
+	}
+}
+
+// TestDecodeResponseRejectsInvalidPoolEvidenceValues enforces the exact-eight ordered owned pool postcondition.
+func TestDecodeResponseRejectsInvalidPoolEvidenceValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Response)
+	}{
+		{name: "missing pool evidence", mutate: func(response *Response) { response.Result.PoolEvidence = nil }},
+		{name: "scalar evidence present", mutate: func(response *Response) {
+			response.Result.Evidence = MutationEvidence{
+				Address: "127.77.0.8",
+				Observation: ExpectedObservation{
+					State:       ObservationOwned,
+					Fingerprint: strings.Repeat("a", fingerprintLength),
+				},
+			}
+		}},
+		{name: "noncanonical pool", mutate: func(response *Response) { response.Result.PoolEvidence.Pool = "127.77.0.9/29" }},
+		{name: "non loopback pool", mutate: func(response *Response) { response.Result.PoolEvidence.Pool = "192.0.2.8/29" }},
+		{name: "wrong prefix", mutate: func(response *Response) { response.Result.PoolEvidence.Pool = "127.77.0.0/24" }},
+		{name: "seven identities", mutate: func(response *Response) {
+			response.Result.PoolEvidence.Identities = response.Result.PoolEvidence.Identities[:7]
+		}},
+		{name: "nine identities", mutate: func(response *Response) {
+			response.Result.PoolEvidence.Identities = append(response.Result.PoolEvidence.Identities, response.Result.PoolEvidence.Identities[7])
+		}},
+		{name: "wrong address", mutate: func(response *Response) { response.Result.PoolEvidence.Identities[4].Address = "127.77.0.13" }},
+		{name: "wrong order", mutate: func(response *Response) {
+			identities := response.Result.PoolEvidence.Identities
+			identities[1], identities[2] = identities[2], identities[1]
+		}},
+		{name: "absent postcondition", mutate: func(response *Response) {
+			response.Result.PoolEvidence.Identities[6].Observation.State = ObservationAbsent
+		}},
+		{name: "bad fingerprint", mutate: func(response *Response) {
+			response.Result.PoolEvidence.Identities[7].Observation.Fingerprint = "bad"
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := validTestPoolSuccessResponse()
 			test.mutate(&response)
 			body, err := json.Marshal(response)
 			if err != nil {
@@ -280,6 +388,40 @@ func TestWriteResponseWritesBoundedJSON(t *testing.T) {
 	}
 	if decoded.Error == nil || decoded.Error.Code != ErrorCodeMutationUnavailable {
 		t.Fatalf("unexpected decoded response: %#v", decoded)
+	}
+}
+
+// TestWriteResponsePreservesLegacySuccessJSON guards the byte shape consumed by existing single-address clients.
+func TestWriteResponsePreservesLegacySuccessJSON(t *testing.T) {
+	want := `{"version":2,"ok":true,"result":{"operation":"release_loopback_identity","evidence":{"changed":true,"address":"127.77.0.10","observation":{"state":"absent","fingerprint":"` + strings.Repeat("a", fingerprintLength) + `"}}}}` + "\n"
+	var output bytes.Buffer
+	if err := WriteResponse(&output, validTestSuccessResponse()); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+	if output.String() != want {
+		t.Fatalf("response body = %q, want %q", output.String(), want)
+	}
+}
+
+// TestWriteResponseWritesPoolEvidenceWithinBound verifies the complete eight-address result fits the unchanged response limit.
+func TestWriteResponseWritesPoolEvidenceWithinBound(t *testing.T) {
+	want := validTestPoolSuccessResponse()
+	var output bytes.Buffer
+	if err := WriteResponse(&output, want); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+	if output.Len() > MaxResponseBytes {
+		t.Fatalf("pool response size = %d, want at most %d", output.Len(), MaxResponseBytes)
+	}
+	if bytes.Contains(output.Bytes(), []byte(`"evidence":`)) {
+		t.Fatalf("pool response contains scalar evidence: %s", output.Bytes())
+	}
+	got, err := DecodeResponse(bytes.NewReader(output.Bytes()))
+	if err != nil {
+		t.Fatalf("decode pool response: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded response = %#v, want %#v", got, want)
 	}
 }
 
@@ -435,6 +577,19 @@ func validTestSuccessResponse() Response {
 					Fingerprint: strings.Repeat("a", fingerprintLength),
 				},
 			},
+		},
+	}
+}
+
+// validTestPoolSuccessResponse returns the complete canonical aggregate evidence for codec tests.
+func validTestPoolSuccessResponse() Response {
+	poolEvidence := testPoolMutationEvidence("127.77.0.8/29")
+	return Response{
+		Version: ProtocolVersion,
+		OK:      true,
+		Result: &OperationResult{
+			Operation:    OperationEnsureLoopbackPool,
+			PoolEvidence: &poolEvidence,
 		},
 	}
 }

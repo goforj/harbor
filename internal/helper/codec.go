@@ -156,10 +156,34 @@ func validateCanonicalResultObject(body []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := requireCanonicalJSONFields(fields, "operation", "evidence"); err != nil {
-		return err
+	operationBody, found := fields["operation"]
+	if !found || bytes.Equal(bytes.TrimSpace(operationBody), []byte("null")) {
+		return errors.New("helper response result is missing operation")
 	}
-	evidence, err := decodeJSONObject(fields["evidence"])
+	var operation Operation
+	if err := json.Unmarshal(operationBody, &operation); err != nil {
+		return errors.New("helper response operation is not a string")
+	}
+
+	switch operation {
+	case OperationEnsureLoopbackIdentity, OperationReleaseLoopbackIdentity:
+		if err := requireCanonicalJSONFields(fields, "operation", "evidence"); err != nil {
+			return err
+		}
+		return validateCanonicalMutationEvidenceObject(fields["evidence"])
+	case OperationEnsureLoopbackPool:
+		if err := requireCanonicalJSONFields(fields, "operation", "pool_evidence"); err != nil {
+			return err
+		}
+		return validateCanonicalPoolMutationEvidenceObject(fields["pool_evidence"])
+	default:
+		return errors.New("helper response operation is unsupported")
+	}
+}
+
+// validateCanonicalMutationEvidenceObject verifies one exact mutation postcondition object.
+func validateCanonicalMutationEvidenceObject(body []byte) error {
+	evidence, err := decodeJSONObject(body)
 	if err != nil {
 		return err
 	}
@@ -171,6 +195,30 @@ func validateCanonicalResultObject(body []byte) error {
 		return err
 	}
 	return requireCanonicalJSONFields(observation, "state", "fingerprint")
+}
+
+// validateCanonicalPoolMutationEvidenceObject verifies one exact pool and eight exact identity postconditions.
+func validateCanonicalPoolMutationEvidenceObject(body []byte) error {
+	poolEvidence, err := decodeJSONObject(body)
+	if err != nil {
+		return err
+	}
+	if err := requireCanonicalJSONFields(poolEvidence, "pool", "identities"); err != nil {
+		return err
+	}
+	var identities []json.RawMessage
+	if err := json.Unmarshal(poolEvidence["identities"], &identities); err != nil || identities == nil {
+		return errors.New("helper response pool identities are not an array")
+	}
+	if len(identities) != loopbackPoolIdentities {
+		return errors.New("helper response pool evidence has the wrong identity count")
+	}
+	for _, identity := range identities {
+		if err := validateCanonicalMutationEvidenceObject(identity); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateCanonicalErrorObject verifies every failure object uses exact protocol field names.
@@ -230,8 +278,17 @@ func validateResponse(response Response) error {
 
 // validateOperationResult verifies success evidence identifies the allowlisted operation postcondition.
 func validateOperationResult(result OperationResult) error {
+	if result.Operation == OperationEnsureLoopbackPool {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence == nil {
+			return errors.New("pool response must contain only pool evidence")
+		}
+		return result.PoolEvidence.validateShape()
+	}
 	if result.Operation != OperationEnsureLoopbackIdentity && result.Operation != OperationReleaseLoopbackIdentity {
 		return errors.New("response operation is unsupported")
+	}
+	if result.PoolEvidence != nil {
+		return errors.New("single-address response must contain only scalar evidence")
 	}
 	if !validApprovedAddress(result.Evidence.Address) {
 		return errors.New("response evidence address is not canonical IPv4 loopback")
