@@ -292,6 +292,32 @@ func TestControlErrorObserverRetainsRedactedCauseContext(t *testing.T) {
 	}
 }
 
+// TestControlErrorObserverReportsMissingHelperAsSetupSignal keeps handled first-run onboarding out of daemon error telemetry.
+func TestControlErrorObserverReportsMissingHelperAsSetupSignal(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	appLogger := logger.NewAppLogger()
+	entries := make([]logger.LogEntry, 0, 1)
+	appLogger.AddSink(func(entry logger.LogEntry) {
+		entries = append(entries, entry)
+	})
+	observer := newControlErrorObserver(appLogger)
+	observer(control.Caller{
+		Transport: local.PeerIdentity{UserID: "501", ProcessID: 1201},
+		Session:   session.Peer{Role: rpc.RoleDesktop},
+	}, "control.v1.network.setup.approval.prepare", &ticketissuer.PoolPrerequisiteMissingError{})
+
+	if len(entries) != 1 {
+		t.Fatalf("control diagnostic entries = %d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.Level != "info" || entry.Message != "Harbor control request requires privileged setup" {
+		t.Fatalf("control setup diagnostic = %#v", entry)
+	}
+	if got := entry.Fields["error"]; got != "helper pool prerequisite is missing" {
+		t.Fatalf("control setup diagnostic error = %#v", got)
+	}
+}
+
 // TestDaemonProvidersRejectIncompleteAssembly verifies constructor validation remains at the owning production boundaries.
 func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	store := new(state.Store)

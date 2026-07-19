@@ -140,13 +140,20 @@ func provideControlServer(
 // newControlErrorObserver retains redacted control causes in daemon-owned diagnostics with their authenticated request identity.
 func newControlErrorObserver(appLogger *logger.AppLogger) control.ErrorObserver {
 	return func(caller control.Caller, method string, err error) {
-		appLogger.Error().
+		event := appLogger.Error()
+		message := "Harbor control request failed"
+		var prerequisite *ticketissuer.PoolPrerequisiteMissingError
+		if errors.As(err, &prerequisite) {
+			event = appLogger.Info()
+			message = "Harbor control request requires privileged setup"
+		}
+		event.
 			Err(err).
 			Str("control_method", method).
 			Str("peer_role", string(caller.Session.Role)).
 			Str("peer_user_id", caller.Transport.UserID).
 			Uint64("peer_process_id", uint64(caller.Transport.ProcessID)).
-			Msg("Harbor control request failed")
+			Msg(message)
 	}
 }
 
