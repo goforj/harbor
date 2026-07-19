@@ -14,6 +14,7 @@ type daemonControlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
+	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
 	Close() error
 }
 
@@ -58,6 +59,16 @@ func (client *DaemonClient) RegisterProject(
 ) (control.ProjectRegistration, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectRegistration, error) {
 		return connection.RegisterProject(ctx, request)
+	})
+}
+
+// UnregisterProject starts or resumes one project removal through the daemon and closes the one-shot connection.
+func (client *DaemonClient) UnregisterProject(
+	ctx context.Context,
+	request control.UnregisterProjectRequest,
+) (control.ProjectUnregistration, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectUnregistration, error) {
+		return connection.UnregisterProject(ctx, request)
 	})
 }
 

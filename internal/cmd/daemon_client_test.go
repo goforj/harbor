@@ -12,18 +12,22 @@ import (
 
 // fakeDaemonControlClient records one-shot control calls and their cleanup.
 type fakeDaemonControlClient struct {
-	status               control.DaemonStatus
-	snapshot             domain.Snapshot
-	registration         control.ProjectRegistration
-	statusErr            error
-	snapshotErr          error
-	registrationErr      error
-	closeErr             error
-	statusCalls          int
-	snapshotCalls        int
-	registrationCalls    int
-	registrationRequests []control.RegisterProjectRequest
-	closeCalls           int
+	status                 control.DaemonStatus
+	snapshot               domain.Snapshot
+	registration           control.ProjectRegistration
+	unregistration         control.ProjectUnregistration
+	statusErr              error
+	snapshotErr            error
+	registrationErr        error
+	unregistrationErr      error
+	closeErr               error
+	statusCalls            int
+	snapshotCalls          int
+	registrationCalls      int
+	unregistrationCalls    int
+	registrationRequests   []control.RegisterProjectRequest
+	unregistrationRequests []control.UnregisterProjectRequest
+	closeCalls             int
 }
 
 // RegisterProject returns the configured registration and records the request.
@@ -34,6 +38,16 @@ func (client *fakeDaemonControlClient) RegisterProject(
 	client.registrationCalls++
 	client.registrationRequests = append(client.registrationRequests, request)
 	return client.registration, client.registrationErr
+}
+
+// UnregisterProject returns the configured operation and records the stable client intent.
+func (client *fakeDaemonControlClient) UnregisterProject(
+	_ context.Context,
+	request control.UnregisterProjectRequest,
+) (control.ProjectUnregistration, error) {
+	client.unregistrationCalls++
+	client.unregistrationRequests = append(client.unregistrationRequests, request)
+	return client.unregistration, client.unregistrationErr
 }
 
 // Status returns the configured daemon status and records the request.
@@ -145,6 +159,28 @@ func TestDaemonClientRegistrationUsesASeparateOneShotConnection(t *testing.T) {
 	}
 }
 
+// TestDaemonClientUnregistrationUsesASeparateOneShotConnection verifies removal shares the CLI cleanup contract without opening a second transport.
+func TestDaemonClientUnregistrationUsesASeparateOneShotConnection(t *testing.T) {
+	unregistration := removeTestUnregistration(t, domain.OperationSucceeded)
+	connection := &fakeDaemonControlClient{unregistration: unregistration}
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+	request := control.UnregisterProjectRequest{
+		ProjectID: unregistration.Operation.ProjectID,
+		IntentID:  unregistration.Operation.IntentID,
+	}
+
+	got, err := client.UnregisterProject(t.Context(), request)
+	if err != nil {
+		t.Fatalf("unregister project: %v", err)
+	}
+	if !reflect.DeepEqual(got, unregistration) {
+		t.Fatalf("unregistration = %#v, want %#v", got, unregistration)
+	}
+	if connection.unregistrationCalls != 1 || connection.closeCalls != 1 || len(connection.unregistrationRequests) != 1 || connection.unregistrationRequests[0] != request {
+		t.Fatalf("calls = unregistration:%d close:%d requests:%#v", connection.unregistrationCalls, connection.closeCalls, connection.unregistrationRequests)
+	}
+}
+
 // TestDaemonClientPreservesRequestAndCloseFailures verifies cleanup never hides the actionable request cause.
 func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 	requestErr := errors.New("request failed")
@@ -173,6 +209,19 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 			},
 			makeConnection: func() *fakeDaemonControlClient {
 				return &fakeDaemonControlClient{snapshotErr: requestErr, closeErr: closeErr}
+			},
+		},
+		{
+			name: "unregister project",
+			call: func(client *DaemonClient) error {
+				_, err := client.UnregisterProject(t.Context(), control.UnregisterProjectRequest{
+					ProjectID: "project-orders",
+					IntentID:  "intent-remove",
+				})
+				return err
+			},
+			makeConnection: func() *fakeDaemonControlClient {
+				return &fakeDaemonControlClient{unregistrationErr: requestErr, closeErr: closeErr}
 			},
 		},
 	} {

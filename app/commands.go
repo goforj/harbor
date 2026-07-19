@@ -11,6 +11,7 @@ import (
 // Keep command implementations in the package that owns the workflow.
 type Commands struct {
 	AddCmd        cmd.AddCmd        `cmd:""`
+	RemoveCmd     cmd.RemoveCmd     `cmd:""`
 	ResourcesCmd  cmd.ResourcesCmd  `cmd:""`
 	AboutCmd      cmd.AboutCmd      `cmd:""`
 	HelloWorldCmd cmd.HelloWorldCmd `cmd:""`
@@ -20,6 +21,7 @@ type Commands struct {
 // NewCommands creates a new Commands instance with the given commands.
 func NewCommands(
 	addCmd *cmd.AddCmd,
+	removeCmd *cmd.RemoveCmd,
 	resourcesCmd *cmd.ResourcesCmd,
 	aboutCmd *cmd.AboutCmd,
 	helloWorldCmd *cmd.HelloWorldCmd,
@@ -27,6 +29,7 @@ func NewCommands(
 ) *Commands {
 	return &Commands{
 		AddCmd:        *addCmd,
+		RemoveCmd:     *removeCmd,
 		ResourcesCmd:  *resourcesCmd,
 		AboutCmd:      *aboutCmd,
 		HelloWorldCmd: *helloWorldCmd,
