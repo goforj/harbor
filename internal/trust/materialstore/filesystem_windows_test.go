@@ -55,6 +55,47 @@ func TestWindowsSecureCreatedPathUsesObjectSpecificACEFlags(t *testing.T) {
 	}
 }
 
+// TestWindowsSecurityHandleRejectsReopenIdentityMismatch proves a path swap cannot redirect DACL protection.
+func TestWindowsSecurityHandleRejectsReopenIdentityMismatch(t *testing.T) {
+	directory := t.TempDir()
+	originalPath := filepath.Join(directory, "original")
+	otherPath := filepath.Join(directory, "other")
+	if err := os.WriteFile(originalPath, []byte("original"), privateFileMode); err != nil {
+		t.Fatalf("WriteFile(original) error = %v", err)
+	}
+	if err := os.WriteFile(otherPath, []byte("other"), privateFileMode); err != nil {
+		t.Fatalf("WriteFile(other) error = %v", err)
+	}
+	original, err := os.Open(originalPath)
+	if err != nil {
+		t.Fatalf("Open(original) error = %v", err)
+	}
+	defer original.Close()
+
+	securityHandle, err := reopenWindowsSecurityHandleWith(original, false, func(
+		_ *uint16,
+		access uint32,
+		share uint32,
+		attributes *windows.SecurityAttributes,
+		creation uint32,
+		flags uint32,
+		template windows.Handle,
+	) (windows.Handle, error) {
+		otherPointer, pointerErr := windows.UTF16PtrFromString(otherPath)
+		if pointerErr != nil {
+			return windows.InvalidHandle, pointerErr
+		}
+		return windows.CreateFile(otherPointer, access, share, attributes, creation, flags, template)
+	})
+	if securityHandle != windows.InvalidHandle {
+		windows.CloseHandle(securityHandle)
+		t.Fatalf("reopenWindowsSecurityHandleWith() handle = %d, want invalid", securityHandle)
+	}
+	if err == nil || !strings.Contains(err.Error(), "changed before DACL protection") {
+		t.Fatalf("reopenWindowsSecurityHandleWith() error = %v", err)
+	}
+}
+
 // TestWindowsStoreCreatesProtectedTree verifies every root, manifest, generation, and key has the exact private DACL.
 func TestWindowsStoreCreatesProtectedTree(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "certificates")
