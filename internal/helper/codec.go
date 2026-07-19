@@ -18,6 +18,29 @@ const MaxResponseBytes = 16 * 1024
 
 const maximumJSONDepth = 32
 
+// WriteRequest writes one validated canonical JSON request followed by a newline.
+func WriteRequest(writer io.Writer, request Request) error {
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate helper request: %w", err)
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("marshal helper request: %w", err)
+	}
+	if len(body)+1 > MaxRequestBytes {
+		return errors.New("helper request exceeds protocol bound")
+	}
+	body = append(body, '\n')
+	written, err := writer.Write(body)
+	if err != nil {
+		return fmt.Errorf("write helper request: %w", err)
+	}
+	if written != len(body) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
 // DecodeRequest reads exactly one bounded strict JSON request.
 func DecodeRequest(reader io.Reader) (Request, error) {
 	body, err := readBounded(reader, MaxRequestBytes)
@@ -46,8 +69,42 @@ func DecodeRequest(reader io.Reader) (Request, error) {
 	return request, nil
 }
 
+// DecodeResponse reads exactly one bounded strict JSON response.
+func DecodeResponse(reader io.Reader) (Response, error) {
+	body, err := readBoundedResponse(reader)
+	if err != nil {
+		return Response{}, err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return Response{}, errors.New("helper response is empty")
+	}
+	if err := rejectDuplicateJSONKeys(body); err != nil {
+		return Response{}, errors.New("helper response contains invalid or duplicate JSON fields")
+	}
+	if err := validateCanonicalResponseObject(body); err != nil {
+		return Response{}, fmt.Errorf("helper response JSON does not match the protocol: %w", err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var response Response
+	if err := decoder.Decode(&response); err != nil {
+		return Response{}, errors.New("helper response JSON does not match the protocol")
+	}
+	if err := requireResponseJSONEnd(decoder); err != nil {
+		return Response{}, err
+	}
+	if err := validateResponse(response); err != nil {
+		return Response{}, fmt.Errorf("helper response is invalid: %w", err)
+	}
+	return response, nil
+}
+
 // WriteResponse writes one bounded JSON response followed by a newline.
 func WriteResponse(writer io.Writer, response Response) error {
+	if err := validateResponse(response); err != nil {
+		return fmt.Errorf("validate helper response: %w", err)
+	}
 	body, err := json.Marshal(response)
 	if err != nil {
 		return fmt.Errorf("marshal helper response: %w", err)
@@ -64,6 +121,150 @@ func WriteResponse(writer io.Writer, response Response) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+// validateCanonicalResponseObject rejects aliases at every response object boundary.
+func validateCanonicalResponseObject(body []byte) error {
+	fields, err := decodeJSONObject(body)
+	if err != nil {
+		return err
+	}
+	okBody, found := fields["ok"]
+	if !found || bytes.Equal(bytes.TrimSpace(okBody), []byte("null")) {
+		return errors.New("helper response is missing ok")
+	}
+	var ok bool
+	if err := json.Unmarshal(okBody, &ok); err != nil {
+		return errors.New("helper response ok is not a boolean")
+	}
+
+	if ok {
+		if err := requireCanonicalJSONFields(fields, "version", "ok", "result"); err != nil {
+			return err
+		}
+		return validateCanonicalResultObject(fields["result"])
+	}
+	if err := requireCanonicalJSONFields(fields, "version", "ok", "error"); err != nil {
+		return err
+	}
+	return validateCanonicalErrorObject(fields["error"])
+}
+
+// validateCanonicalResultObject verifies every success object uses exact protocol field names.
+func validateCanonicalResultObject(body []byte) error {
+	fields, err := decodeJSONObject(body)
+	if err != nil {
+		return err
+	}
+	if err := requireCanonicalJSONFields(fields, "operation", "evidence"); err != nil {
+		return err
+	}
+	evidence, err := decodeJSONObject(fields["evidence"])
+	if err != nil {
+		return err
+	}
+	if err := requireCanonicalJSONFields(evidence, "changed", "address", "observation"); err != nil {
+		return err
+	}
+	observation, err := decodeJSONObject(evidence["observation"])
+	if err != nil {
+		return err
+	}
+	return requireCanonicalJSONFields(observation, "state", "fingerprint")
+}
+
+// validateCanonicalErrorObject verifies every failure object uses exact protocol field names.
+func validateCanonicalErrorObject(body []byte) error {
+	fields, err := decodeJSONObject(body)
+	if err != nil {
+		return err
+	}
+	return requireCanonicalJSONFields(fields, "code", "message")
+}
+
+// decodeJSONObject decodes one raw object without accepting null or another JSON kind.
+func decodeJSONObject(body []byte) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return nil, errors.New("helper response value is not an object")
+	}
+	return fields, nil
+}
+
+// requireCanonicalJSONFields requires one exact non-null field set at an object boundary.
+func requireCanonicalJSONFields(fields map[string]json.RawMessage, names ...string) error {
+	if len(fields) != len(names) {
+		return errors.New("helper response object has the wrong field count")
+	}
+	for _, name := range names {
+		value, found := fields[name]
+		if !found || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("helper response object is missing %s", name)
+		}
+	}
+	return nil
+}
+
+// validateResponse rejects response envelopes that cannot be produced by the helper protocol.
+func validateResponse(response Response) error {
+	if response.Version != ProtocolVersion {
+		return errors.New("response version is unsupported")
+	}
+	if response.OK {
+		if response.Result == nil || response.Error != nil {
+			return errors.New("successful response must contain only a result")
+		}
+		return validateOperationResult(*response.Result)
+	}
+	if response.Result != nil || response.Error == nil {
+		return errors.New("failed response must contain only an error")
+	}
+	if !validResponseErrorCode(response.Error.Code) {
+		return errors.New("response error code is unsupported")
+	}
+	if strings.TrimSpace(response.Error.Message) == "" {
+		return errors.New("response error message is empty")
+	}
+	return nil
+}
+
+// validateOperationResult verifies success evidence identifies the allowlisted operation postcondition.
+func validateOperationResult(result OperationResult) error {
+	if result.Operation != OperationEnsureLoopbackIdentity && result.Operation != OperationReleaseLoopbackIdentity {
+		return errors.New("response operation is unsupported")
+	}
+	if !validApprovedAddress(result.Evidence.Address) {
+		return errors.New("response evidence address is not canonical IPv4 loopback")
+	}
+	if err := result.Evidence.Observation.Validate(); err != nil {
+		return errors.New("response evidence observation is invalid")
+	}
+	expectedState := ObservationOwned
+	if result.Operation == OperationReleaseLoopbackIdentity {
+		expectedState = ObservationAbsent
+	}
+	if result.Evidence.Observation.State != expectedState {
+		return errors.New("response evidence state does not match the operation")
+	}
+	return nil
+}
+
+// validResponseErrorCode accepts only stable failure values declared by this protocol version.
+func validResponseErrorCode(code ErrorCode) bool {
+	switch code {
+	case ErrorCodeInvalidJSON,
+		ErrorCodeRequestTooLarge,
+		ErrorCodeInvalidTicket,
+		ErrorCodeAuthenticationUnavailable,
+		ErrorCodeAuthenticationFailed,
+		ErrorCodeReplayedTicket,
+		ErrorCodeReplayProtectionUnavailable,
+		ErrorCodeMutationUnavailable,
+		ErrorCodeMutationFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // ServeOnce reads, dispatches, and responds to one helper request without a long-lived listener.
@@ -116,11 +317,32 @@ func readBounded(reader io.Reader, maximum int64) ([]byte, error) {
 	return body, nil
 }
 
+// readBoundedResponse distinguishes an oversized response before JSON decoding allocates beyond the protocol limit.
+func readBoundedResponse(reader io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, MaxResponseBytes+1))
+	if err != nil {
+		return nil, errors.New("helper response could not be read")
+	}
+	if len(body) > MaxResponseBytes {
+		return nil, errors.New("helper response exceeds the protocol bound")
+	}
+	return body, nil
+}
+
 // requireJSONEnd rejects concatenated values that could be interpreted differently by another decoder.
 func requireJSONEnd(decoder *json.Decoder) error {
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return newRequestError(ErrorCodeInvalidJSON, "helper request must contain exactly one JSON value")
+	}
+	return nil
+}
+
+// requireResponseJSONEnd rejects response data after the one admitted JSON value.
+func requireResponseJSONEnd(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("helper response must contain exactly one JSON value")
 	}
 	return nil
 }

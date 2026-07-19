@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,51 @@ func TestDecodeRequestAcceptsStrictEnvelope(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("decoded request = %#v, want %#v", got, want)
+	}
+}
+
+// TestWriteRequestWritesValidatedCanonicalJSON verifies launcher input uses one stable newline-delimited envelope.
+func TestWriteRequestWritesValidatedCanonicalJSON(t *testing.T) {
+	request := validTestRequest(testTicketReference())
+	want, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	want = append(want, '\n')
+
+	var output bytes.Buffer
+	if err := WriteRequest(&output, request); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	if !bytes.Equal(output.Bytes(), want) {
+		t.Fatalf("request body = %q, want %q", output.Bytes(), want)
+	}
+	decoded, err := DecodeRequest(bytes.NewReader(output.Bytes()))
+	if err != nil {
+		t.Fatalf("decode written request: %v", err)
+	}
+	if decoded != request {
+		t.Fatalf("decoded request = %#v, want %#v", decoded, request)
+	}
+}
+
+// TestWriteRequestRejectsInvalidAndFailedWrites verifies invalid authority never reaches helper input.
+func TestWriteRequestRejectsInvalidAndFailedWrites(t *testing.T) {
+	invalid := Request{Version: ProtocolVersion, TicketReference: "short"}
+	var output bytes.Buffer
+	if err := WriteRequest(&output, invalid); err == nil {
+		t.Fatal("expected invalid request error")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("invalid request wrote %d bytes", output.Len())
+	}
+
+	request := validTestRequest(testTicketReference())
+	if err := WriteRequest(errorWriter{}, request); err == nil {
+		t.Fatal("expected writer error")
+	}
+	if err := WriteRequest(shortWriter{}, request); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write error = %v, want io.ErrShortWrite", err)
 	}
 }
 
@@ -88,6 +134,129 @@ func TestDecodeRequestRejectsOversizedAndFailedReads(t *testing.T) {
 	}
 }
 
+// TestDecodeResponseAcceptsStrictSuccessAndFailure verifies both protocol envelope shapes round trip.
+func TestDecodeResponseAcceptsStrictSuccessAndFailure(t *testing.T) {
+	responses := []Response{validTestSuccessResponse(), validTestFailureResponse()}
+	for _, want := range responses {
+		body, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		got, err := DecodeResponse(bytes.NewReader(append(body, '\n')))
+		if err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("decoded response = %#v, want %#v", got, want)
+		}
+	}
+}
+
+// TestDecodeResponseRejectsAmbiguousJSON covers aliases, extra fields, duplicates, and framing failures.
+func TestDecodeResponseRejectsAmbiguousJSON(t *testing.T) {
+	fingerprint := strings.Repeat("a", fingerprintLength)
+	success := `{"version":2,"ok":true,"result":{"operation":"release_loopback_identity","evidence":{"changed":true,"address":"127.77.0.10","observation":{"state":"absent","fingerprint":"` + fingerprint + `"}}}}`
+	failure := `{"version":2,"ok":false,"error":{"code":"mutation_failed","message":"helper operation failed"}}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty", body: "   "},
+		{name: "malformed", body: `{"version":`},
+		{name: "null", body: `null`},
+		{name: "array", body: `[]`},
+		{name: "missing ok", body: `{"version":2,"result":{}}`},
+		{name: "null ok", body: `{"version":2,"ok":null,"error":{}}`},
+		{name: "case alias ok", body: `{"version":2,"OK":false,"error":{"code":"mutation_failed","message":"failed"}}`},
+		{name: "case alias version", body: strings.Replace(failure, `"version"`, `"Version"`, 1)},
+		{name: "duplicate version", body: strings.Replace(failure, `{"version":2`, `{"version":2,"version":2`, 1)},
+		{name: "case fold collision", body: strings.Replace(failure, `{"version":2`, `{"version":2,"Version":2`, 1)},
+		{name: "unknown top level", body: strings.TrimSuffix(failure, "}") + `,"pid":42}`},
+		{name: "both result and error", body: strings.TrimSuffix(success, "}") + `,"error":{"code":"mutation_failed","message":"failed"}}`},
+		{name: "result alias", body: strings.Replace(success, `"result"`, `"Result"`, 1)},
+		{name: "operation alias", body: strings.Replace(success, `"operation"`, `"Operation"`, 1)},
+		{name: "unknown result field", body: strings.Replace(success, `"evidence":`, `"pid":42,"evidence":`, 1)},
+		{name: "evidence alias", body: strings.Replace(success, `"evidence"`, `"Evidence"`, 1)},
+		{name: "unknown evidence field", body: strings.Replace(success, `"changed":true`, `"changed":true,"interface":"lo0"`, 1)},
+		{name: "observation alias", body: strings.Replace(success, `"observation"`, `"Observation"`, 1)},
+		{name: "unknown observation field", body: strings.Replace(success, `"state":"absent"`, `"state":"absent","owner":"harbor"`, 1)},
+		{name: "error alias", body: strings.Replace(failure, `"error"`, `"Error"`, 1)},
+		{name: "unknown error field", body: strings.Replace(failure, `"message":`, `"host":"local","message":`, 1)},
+		{name: "trailing object", body: failure + `{}`},
+		{name: "excessive nesting", body: strings.Repeat("[", maximumJSONDepth+2) + "0" + strings.Repeat("]", maximumJSONDepth+2)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := DecodeResponse(strings.NewReader(test.body)); err == nil {
+				t.Fatal("expected decode error")
+			}
+		})
+	}
+}
+
+// TestDecodeResponseRejectsInvalidDomainValues verifies decoded values cannot escape protocol semantics.
+func TestDecodeResponseRejectsInvalidDomainValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Response)
+	}{
+		{name: "previous version", mutate: func(response *Response) { response.Version-- }},
+		{name: "unsupported version", mutate: func(response *Response) { response.Version++ }},
+		{name: "success missing result", mutate: func(response *Response) { response.Result = nil }},
+		{name: "success with error", mutate: func(response *Response) {
+			response.Error = &ResponseError{Code: ErrorCodeMutationFailed, Message: "failed"}
+		}},
+		{name: "unknown operation", mutate: func(response *Response) { response.Result.Operation = "run_command" }},
+		{name: "non loopback address", mutate: func(response *Response) { response.Result.Evidence.Address = "192.0.2.10" }},
+		{name: "IPv6 loopback address", mutate: func(response *Response) { response.Result.Evidence.Address = "::1" }},
+		{name: "noncanonical address", mutate: func(response *Response) { response.Result.Evidence.Address = "127.077.0.10" }},
+		{name: "unknown observation", mutate: func(response *Response) { response.Result.Evidence.Observation.State = "foreign" }},
+		{name: "bad fingerprint", mutate: func(response *Response) { response.Result.Evidence.Observation.Fingerprint = "bad" }},
+		{name: "state mismatch", mutate: func(response *Response) { response.Result.Evidence.Observation.State = ObservationOwned }},
+		{name: "failure with result", mutate: func(response *Response) {
+			response.OK = false
+			response.Error = &ResponseError{Code: ErrorCodeMutationFailed, Message: "failed"}
+		}},
+		{name: "failure missing error", mutate: func(response *Response) {
+			response.OK = false
+			response.Result = nil
+		}},
+		{name: "unknown error code", mutate: func(response *Response) {
+			*response = validTestFailureResponse()
+			response.Error.Code = "host_failed"
+		}},
+		{name: "blank error message", mutate: func(response *Response) {
+			*response = validTestFailureResponse()
+			response.Error.Message = " \t "
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := validTestSuccessResponse()
+			test.mutate(&response)
+			body, err := json.Marshal(response)
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+			if _, err := DecodeResponse(bytes.NewReader(body)); err == nil {
+				t.Fatal("expected decode error")
+			}
+		})
+	}
+}
+
+// TestDecodeResponseRejectsOversizedAndFailedReads verifies the response bound applies before decoding.
+func TestDecodeResponseRejectsOversizedAndFailedReads(t *testing.T) {
+	if _, err := DecodeResponse(strings.NewReader(strings.Repeat("x", MaxResponseBytes+1))); err == nil {
+		t.Fatal("expected oversized response error")
+	}
+	if _, err := DecodeResponse(errorReader{}); err == nil {
+		t.Fatal("expected failed read error")
+	}
+}
+
 // TestWriteResponseWritesBoundedJSON verifies the response envelope and newline framing.
 func TestWriteResponseWritesBoundedJSON(t *testing.T) {
 	var output bytes.Buffer
@@ -126,11 +295,25 @@ func TestWriteResponseRejectsOversizedAndFailedWrites(t *testing.T) {
 	if err := WriteResponse(io.Discard, response); err == nil {
 		t.Fatal("expected oversized response error")
 	}
-	if err := WriteResponse(errorWriter{}, Response{Version: ProtocolVersion, OK: true}); err == nil {
+	valid := validTestSuccessResponse()
+	if err := WriteResponse(errorWriter{}, valid); err == nil {
 		t.Fatal("expected writer error")
 	}
-	if err := WriteResponse(shortWriter{}, Response{Version: ProtocolVersion, OK: true}); !errors.Is(err, io.ErrShortWrite) {
+	if err := WriteResponse(shortWriter{}, valid); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("short write error = %v, want io.ErrShortWrite", err)
+	}
+}
+
+// TestWriteResponseRejectsInvalidShape verifies the helper cannot emit contradictory envelopes.
+func TestWriteResponseRejectsInvalidShape(t *testing.T) {
+	response := validTestSuccessResponse()
+	response.Error = &ResponseError{Code: ErrorCodeMutationFailed, Message: "failed"}
+	var output bytes.Buffer
+	if err := WriteResponse(&output, response); err == nil {
+		t.Fatal("expected invalid response error")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("invalid response wrote %d bytes", output.Len())
 	}
 }
 
@@ -230,9 +413,40 @@ func (shortWriter) Write(body []byte) (int, error) {
 // decodeTestResponse parses one helper response emitted by ServeOnce.
 func decodeTestResponse(t *testing.T, body []byte) Response {
 	t.Helper()
-	var response Response
-	if err := json.Unmarshal(body, &response); err != nil {
+	response, err := DecodeResponse(bytes.NewReader(body))
+	if err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	return response
+}
+
+// validTestSuccessResponse returns canonical release evidence for codec tests.
+func validTestSuccessResponse() Response {
+	return Response{
+		Version: ProtocolVersion,
+		OK:      true,
+		Result: &OperationResult{
+			Operation: OperationReleaseLoopbackIdentity,
+			Evidence: MutationEvidence{
+				Changed: true,
+				Address: "127.77.0.10",
+				Observation: ExpectedObservation{
+					State:       ObservationAbsent,
+					Fingerprint: strings.Repeat("a", fingerprintLength),
+				},
+			},
+		},
+	}
+}
+
+// validTestFailureResponse returns a canonical structured helper failure for codec tests.
+func validTestFailureResponse() Response {
+	return Response{
+		Version: ProtocolVersion,
+		OK:      false,
+		Error: &ResponseError{
+			Code:    ErrorCodeMutationFailed,
+			Message: "helper operation failed",
+		},
+	}
 }
