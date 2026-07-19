@@ -289,17 +289,18 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		done: make(chan struct{}),
 	}
 	process := &managedProcess{
-		command:      command,
-		platform:     platform,
-		relay:        relay,
-		stdout:       stdout,
-		stderr:       stderr,
-		pipeReaders:  &pipeReaders,
-		handle:       handle,
-		gracePeriod:  supervisor.gracePeriod,
-		forced:       make(chan struct{}),
-		signalsDone:  make(chan struct{}),
-		stopComplete: make(chan struct{}),
+		command:       command,
+		platform:      platform,
+		relay:         relay,
+		stdout:        stdout,
+		stderr:        stderr,
+		pipeReaders:   &pipeReaders,
+		handle:        handle,
+		gracePeriod:   supervisor.gracePeriod,
+		acceptingStop: true,
+		forced:        make(chan struct{}),
+		signalsDone:   make(chan struct{}),
+		stopComplete:  make(chan struct{}),
 	}
 	supervisor.projects[request.ProjectID] = process
 	supervisor.sessions[request.SessionID] = process
@@ -321,7 +322,7 @@ func (supervisor *Supervisor) Stop(ctx context.Context, projectID domain.Project
 	}
 	supervisor.mu.Lock()
 	process, projectExists := supervisor.projects[projectID]
-	if !projectExists || supervisor.sessions[sessionID] != process {
+	if !projectExists || supervisor.sessions[sessionID] != process || !process.acceptingStop {
 		supervisor.mu.Unlock()
 		return fmt.Errorf("%w: project %q session %q", ErrNotRunning, projectID, sessionID)
 	}
@@ -346,7 +347,9 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 	processes := make([]*managedProcess, 0, len(supervisor.projects))
 	for _, process := range supervisor.projects {
 		processes = append(processes, process)
-		process.requestStop()
+		if process.acceptingStop {
+			process.requestStop()
+		}
 	}
 	supervisor.mu.Unlock()
 
@@ -372,7 +375,10 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 // wait reaps one child, drains its pipes, releases platform handles, and publishes one immutable result.
 func (supervisor *Supervisor) wait(process *managedProcess) {
 	err := process.command.Wait()
+	supervisor.mu.Lock()
+	process.acceptingStop = false
 	stopRequested := process.stopRequested.Load()
+	supervisor.mu.Unlock()
 	cleanupErr := process.settleTree(stopRequested)
 	if cleanupErr != nil {
 		_ = process.stdout.Close()
@@ -421,6 +427,7 @@ type managedProcess struct {
 	pipeReaders   *sync.WaitGroup
 	handle        *Handle
 	gracePeriod   time.Duration
+	acceptingStop bool
 	stopRequested atomic.Bool
 	stopOnce      sync.Once
 	forceOnce     sync.Once
