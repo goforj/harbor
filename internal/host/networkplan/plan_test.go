@@ -52,7 +52,7 @@ func TestBuildConstructsEveryProductProfile(t *testing.T) {
 			dns:         directListener("127.0.0.1:22656"),
 			http:        redirectedListener("127.0.0.1:80", "127.0.0.1:22657"),
 			https:       redirectedListener("127.0.0.1:443", "127.0.0.1:22658"),
-			fingerprint: "6e555b731b7868fab8870e2c437ed454ddf687126cd779b0ad4478b8a14de483",
+			fingerprint: "64c48e8a29796930f5aa0c7cfb5152a84e44c88e1d2b6cc6e038872145f61c93",
 		},
 		{
 			name:        "Ubuntu 24.04",

@@ -212,9 +212,9 @@ The job proves:
 - uninstall removes only Harbor's service, capability, redirect, URL reservation, or socket rule;
 - a non-Harbor listener remains untouched after cleanup.
 
-Foreign-state fixtures cover macOS PF anchors and launchd entries, Linux nftables/iptables rules plus systemd units/capabilities, and Windows firewall/HTTP.sys reservations. Harbor must add and remove only its namespaced rule and preserve rule order/semantics outside that namespace.
+Foreign-state fixtures cover macOS launchd service and socket definitions, Linux nftables/iptables rules plus systemd units/capabilities, and Windows firewall/HTTP.sys reservations. Harbor must add and remove only its namespaced rule or service and preserve state outside that namespace.
 
-The daemon and desktop processes are asserted to run unelevated and outside a system service identity. During ordinary setup/repair on macOS and Linux, only the one-shot helper receives elevation; the installer is exercised separately only for explicit product lifecycle transactions. On Windows the product worker proves a medium-integrity daemon can bind the selected low ports directly. No long-lived networking broker or ambient network capability may appear unless Phase 0 explicitly changes the architecture and its tests.
+The daemon and desktop processes are asserted to run unelevated and outside a system service identity. The macOS relay must also run as the owning Harbor user; launchd may own and pass its fixed low sockets but must not leave Harbor code running as root. During ordinary setup/repair on macOS and Linux, only the one-shot helper receives elevation; the installer is exercised separately only for explicit product lifecycle transactions. On Windows the product worker proves a medium-integrity daemon can bind the selected low ports directly. No long-lived elevated networking broker or ambient network capability may appear.
 
 ## Privileged helper tests
 
@@ -386,7 +386,7 @@ The initial full-mode product profiles are deliberately narrow enough to prove:
 
 | Profile | Initial target family | Required product environment |
 |---|---|---|
-| macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, PF/launchd integration, system WebKit, Safari plus pinned Chrome/Firefox, Docker Desktop, interactive login session. |
+| macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, launchd socket activation and unprivileged relay lifecycle, system WebKit, Safari plus pinned Chrome/Firefox, Docker Desktop, interactive login session. |
 | Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v2's `webkit2_41` build tag, pinned Chrome/Firefox, rootful Docker Engine 28+, systemd user service. |
 | Windows | Windows 11 24H2 on x86-64 | NRPT, `CurrentUser\Root`, WebView2, pinned Edge/Chrome/Firefox, Docker Desktop with WSL2, interactive local-administrator account running Harbor at medium integrity with UAC. |
 

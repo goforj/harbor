@@ -20,7 +20,7 @@ func TestMechanismsValidateAcceptsOnlyCompleteProfiles(t *testing.T) {
 
 	invalid := []Mechanisms{
 		{},
-		{Resolver: DarwinResolverFile, LowPorts: DarwinPFAnchor},
+		{Resolver: DarwinResolverFile, LowPorts: DarwinLaunchdRelay},
 		{Resolver: DarwinResolverFile, LowPorts: UbuntuNFTables, Trust: DarwinCurrentUserTrust},
 		{Resolver: UbuntuSystemdResolved, LowPorts: UbuntuNFTables, Trust: DarwinCurrentUserTrust},
 		{Resolver: WindowsNRPT, LowPorts: WindowsDirectLowPorts, Trust: UbuntuSystemTrust},
@@ -163,7 +163,7 @@ func TestPolicyFingerprintPinsCanonicalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalJSON() error = %v", err)
 	}
-	const wantJSON = `{"suffix":".test","authority_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mechanisms":{"resolver":"darwin-resolver-file-v1","low_ports":"darwin-pf-anchor-v1","trust":"darwin-current-user-trust-v1"},"dns":{"advertised":"127.0.0.1:53535","bind":"127.0.0.1:53535"},"http":{"advertised":"127.0.0.1:80","bind":"127.0.0.1:58080"},"https":{"advertised":"127.0.0.1:443","bind":"127.0.0.1:58443"}}`
+	const wantJSON = `{"suffix":".test","authority_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mechanisms":{"resolver":"darwin-resolver-file-v1","low_ports":"darwin-launchd-relay-v1","trust":"darwin-current-user-trust-v1"},"dns":{"advertised":"127.0.0.1:53535","bind":"127.0.0.1:53535"},"http":{"advertised":"127.0.0.1:80","bind":"127.0.0.1:58080"},"https":{"advertised":"127.0.0.1:443","bind":"127.0.0.1:58443"}}`
 	if string(payload) != wantJSON {
 		t.Fatalf("canonicalJSON() = %s, want %s", payload, wantJSON)
 	}
@@ -172,7 +172,7 @@ func TestPolicyFingerprintPinsCanonicalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Policy.Fingerprint() error = %v", err)
 	}
-	const wantFingerprint = "cae1d7c7bd5c188ac3326e6539643973787cb5491d0b65145c1baed291865a33"
+	const wantFingerprint = "effffb6c7ea5ae82e2b44f78c543ea9053513fa46b9adef4785e1d8ae018edf0"
 	if fingerprint != wantFingerprint {
 		t.Fatalf("Policy.Fingerprint() = %q, want %q", fingerprint, wantFingerprint)
 	}

@@ -42,8 +42,8 @@ const (
 type LowPortMechanism string
 
 const (
-	// DarwinPFAnchor redirects macOS loopback traffic through Harbor's first owned PF-anchor contract.
-	DarwinPFAnchor LowPortMechanism = "darwin-pf-anchor-v1"
+	// DarwinLaunchdRelay uses launchd-owned low sockets to feed Harbor's unprivileged macOS relay.
+	DarwinLaunchdRelay LowPortMechanism = "darwin-launchd-relay-v1"
 	// UbuntuNFTables redirects Linux loopback traffic through Harbor's first owned nftables contract.
 	UbuntuNFTables LowPortMechanism = "ubuntu-nftables-v1"
 	// WindowsDirectLowPorts binds advertised ports through Harbor's first Windows direct-listener contract.
@@ -82,7 +82,7 @@ func (mechanisms Mechanisms) Validate() error {
 
 // MacOSMechanisms returns Harbor's complete supported macOS integration profile.
 func MacOSMechanisms() Mechanisms {
-	return Mechanisms{Resolver: DarwinResolverFile, LowPorts: DarwinPFAnchor, Trust: DarwinCurrentUserTrust}
+	return Mechanisms{Resolver: DarwinResolverFile, LowPorts: DarwinLaunchdRelay, Trust: DarwinCurrentUserTrust}
 }
 
 // UbuntuMechanisms returns Harbor's complete supported Ubuntu integration profile.

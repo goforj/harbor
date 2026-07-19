@@ -255,11 +255,11 @@ The daemon stays unprivileged. The target V1 mechanisms for `80`, `443`, and Win
 
 | Platform | Target mechanism to prove |
 |---|---|
-| macOS | The helper installs an owned PF anchor that redirects loopback 80/443 to `harbord`'s unprivileged high listeners and an owned boot rule that reloads only that anchor. |
+| macOS | The installer registers an owned launchd socket-activation definition for loopback 80/443. launchd owns the privileged sockets, then starts a narrowly scoped relay as the Harbor user; the relay forwards only those inherited sockets to `harbord`'s unprivileged high listeners. |
 | Linux | The helper installs an owned nftables loopback-output redirect from 80/443 to unprivileged high listeners. Each supported firewall/backend profile must preserve foreign rules; unsupported backends block full mode. |
 | Windows | The medium-integrity, unelevated daemon binds 80/443 and dedicated-loopback DNS 53 directly through Winsock. The test must prove no HTTP.sys reservation or elevated broker is required. |
 
-These targets preserve the normal runtime architecture: no long-lived root broker and no network capability on the full daemon. The one-shot product installer is not a listener or networking broker. If a target OS cannot support its mechanism, Phase 0 must revise the process and threat model explicitly—adding a narrow persistent broker only if justified—rather than quietly granting broad authority to `harbord`.
+These targets preserve the normal runtime architecture: no long-lived root broker and no network capability on the full daemon. On macOS, launchd holds the low sockets while the relay runs without root or Administrator authority and accepts no dynamic destinations. The one-shot product installer registers or removes the fixed launchd definition but is not itself a listener or networking broker. Phase 0 must prove this lifecycle and socket handoff before macOS full mode can ship; this document does not claim the launch integration is already implemented.
 
 An occupied low port is a failed capability with owner evidence and repair guidance. Harbor does not terminate the process, move the public endpoint to `:8443`, or report the project ready.
 
