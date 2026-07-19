@@ -57,8 +57,8 @@ func TestDarwinRetainedHandleRejectsNativeACL(t *testing.T) {
 	}
 }
 
-// TestDarwinExtendedAccessProbeRejectsEveryResultExceptENOATTR pins fail-closed native error handling.
-func TestDarwinExtendedAccessProbeRejectsEveryResultExceptENOATTR(t *testing.T) {
+// TestDarwinExtendedAccessProbeRejectsACLsAndFailures pins fail-closed native error handling.
+func TestDarwinExtendedAccessProbeRejectsACLsAndFailures(t *testing.T) {
 	file, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("os.Open() error = %v", err)
@@ -68,14 +68,15 @@ func TestDarwinExtendedAccessProbeRejectsEveryResultExceptENOATTR(t *testing.T) 
 	defer func() { inspectDarwinExtendedAccess = original }()
 
 	for _, test := range []struct {
-		name    string
-		probe   func(int, string, []byte) (int, error)
-		wantErr bool
+		name      string
+		probe     func(int) (bool, error)
+		wantErr   bool
+		wantCause error
 	}{
-		{name: "absent", probe: func(int, string, []byte) (int, error) { return 0, unix.ENOATTR }},
-		{name: "present", probe: func(int, string, []byte) (int, error) { return 1, nil }, wantErr: true},
-		{name: "zero-length present", probe: func(int, string, []byte) (int, error) { return 0, nil }, wantErr: true},
-		{name: "probe failure", probe: func(int, string, []byte) (int, error) { return 0, unix.EIO }, wantErr: true},
+		{name: "absent", probe: func(int) (bool, error) { return false, nil }},
+		{name: "present", probe: func(int) (bool, error) { return true, nil }, wantErr: true},
+		{name: "permission failure", probe: func(int) (bool, error) { return false, unix.EPERM }, wantErr: true, wantCause: unix.EPERM},
+		{name: "I/O failure", probe: func(int) (bool, error) { return false, unix.EIO }, wantErr: true, wantCause: unix.EIO},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			inspectDarwinExtendedAccess = test.probe
@@ -86,8 +87,41 @@ func TestDarwinExtendedAccessProbeRejectsEveryResultExceptENOATTR(t *testing.T) 
 			if !test.wantErr && err != nil {
 				t.Fatalf("validatePlatformExtendedAccess() error = %v", err)
 			}
-			if errors.Is(err, unix.ENOATTR) {
-				t.Fatalf("validatePlatformExtendedAccess() leaked ENOATTR = %v", err)
+			if test.wantCause != nil && !errors.Is(err, test.wantCause) {
+				t.Fatalf("validatePlatformExtendedAccess() error = %v, want cause %v", err, test.wantCause)
+			}
+		})
+	}
+}
+
+// TestDarwinFileSecurityHeaderClassification covers every native no-ACL representation and malformed metadata.
+func TestDarwinFileSecurityHeaderClassification(t *testing.T) {
+	if darwinFileSecurityHeaderSize != 44 {
+		t.Fatalf("darwinFileSecurityHeader size = %d, want native kauth_filesec header size 44", darwinFileSecurityHeaderSize)
+	}
+	noACL := darwinFileSecurityHeader{entryCount: darwinFileSecurityNoACL}
+	var emptyACL darwinFileSecurityHeader
+
+	for _, test := range []struct {
+		name        string
+		header      darwinFileSecurityHeader
+		size        uintptr
+		wantPresent bool
+		wantErr     bool
+	}{
+		{name: "no security metadata", header: noACL, size: 0},
+		{name: "explicit no ACL", header: noACL, size: darwinFileSecurityHeaderSize},
+		{name: "empty ACL", header: emptyACL, size: darwinFileSecurityHeaderSize, wantPresent: true},
+		{name: "ACL entries exceed header", header: emptyACL, size: darwinFileSecurityHeaderSize + 1, wantPresent: true},
+		{name: "truncated security metadata", header: emptyACL, size: darwinFileSecurityHeaderSize - 1, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			present, err := darwinFileSecurityHasACL(test.header, test.size)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("darwinFileSecurityHasACL() error = %v, wantErr %t", err, test.wantErr)
+			}
+			if present != test.wantPresent {
+				t.Fatalf("darwinFileSecurityHasACL() present = %t, want %t", present, test.wantPresent)
 			}
 		})
 	}
