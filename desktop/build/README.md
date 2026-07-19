@@ -2,6 +2,11 @@
 
 The build directory is used to house all the build files and assets for your application.
 
+`appicon.svg` is Harbor's editable application-mark source. `appicon.png` is its
+1024×1024 transparent raster render consumed by Wails. Keep the checked-in
+Windows icon generated from that same PNG so native application and installer
+surfaces use the same mark.
+
 The structure is:
 
 * bin - Output directory

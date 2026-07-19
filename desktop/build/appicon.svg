@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">GoForj Harbor</title>
+  <rect x="96" y="96" width="832" height="832" rx="192" fill="#ff2d20" />
+  <g
+    fill="none"
+    stroke="#0d0d0d"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="2"
+    transform="translate(304 304) scale(17.3333333333)"
+  >
+    <path d="M12 6v16" />
+    <path d="m19 13 2-1a9 9 0 0 1-18 0l2 1" />
+    <path d="M9 11h6" />
+    <circle cx="12" cy="4" r="2" />
+  </g>
+</svg>
