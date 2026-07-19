@@ -28,14 +28,15 @@ var (
 	ErrClaimDurabilityUncertain = errors.New("helper ticket claim durability is uncertain")
 )
 
-// ownershipObserver is the narrow protected-state view needed after a reference has been consumed.
-type ownershipObserver interface {
+// ownershipStore is the narrow protected-state authority needed after a reference has been consumed.
+type ownershipStore interface {
 	Observe(context.Context) (ownership.Observation, error)
+	Claim(context.Context, ownership.Record) (ownership.Observation, error)
 	Close() error
 }
 
 // ownershipOpen keeps fixed production path resolution separate from fault-focused tests.
-type ownershipOpen func(string) (ownershipObserver, error)
+type ownershipOpen func(string) (ownershipStore, error)
 
 // fileOperations groups post-open mutation seams without allowing production callers to select filesystem paths.
 type fileOperations struct {
@@ -72,7 +73,7 @@ type topology struct {
 // Redeemer consumes references through retained handles rooted at Harbor's compiled machine layout.
 type Redeemer struct {
 	topology     *topology
-	ownership    ownershipObserver
+	ownership    ownershipStore
 	dependencies dependencies
 	stateMu      sync.RWMutex
 	closed       bool
@@ -178,12 +179,23 @@ func (redeemer *Redeemer) Redeem(ctx context.Context, reference helper.TicketRef
 		return helper.TicketRedemption{}, consumedFailure("authenticate claimed ticket", err)
 	}
 
+	now := redeemer.dependencies.clock.Now().UTC()
 	observation, err := redeemer.ownership.Observe(ctx)
 	if err != nil {
 		return helper.TicketRedemption{}, consumedFailure("observe machine ownership", err)
 	}
-	if !observation.Exists {
-		return helper.TicketRedemption{}, consumedFailure("observe machine ownership", errors.New("machine ownership is not claimed"))
+
+	var ticket helper.Ticket
+	if observation.Exists {
+		ticket, err = authenticateOwnedEnvelope(envelope, observation, now)
+		if err != nil {
+			return helper.TicketRedemption{}, err
+		}
+	} else {
+		ticket, observation, err = redeemer.bootstrapOwnership(ctx, envelope, now)
+		if err != nil {
+			return helper.TicketRedemption{}, err
+		}
 	}
 	record := observation.Record
 	if record.OwnerIdentity != redeemer.topology.requesterIdentity {
@@ -191,16 +203,6 @@ func (redeemer *Redeemer) Redeem(ctx context.Context, reference helper.TicketRef
 			"bind ticket requester",
 			fmt.Errorf("pending owner %q does not match machine owner %q", redeemer.topology.requesterIdentity, record.OwnerIdentity),
 		)
-	}
-	verifierKey, err := decodeVerifierKey(record.TicketVerifierKey)
-	if err != nil {
-		return helper.TicketRedemption{}, consumedFailure("decode machine ticket verifier", err)
-	}
-
-	now := redeemer.dependencies.clock.Now().UTC()
-	ticket, err := verifyEnvelope(envelope, verifierKey, now)
-	if err != nil {
-		return helper.TicketRedemption{}, errors.Join(ErrReferenceConsumed, err)
 	}
 	if ticket.OwnershipGeneration != record.Generation {
 		return helper.TicketRedemption{}, errors.Join(
@@ -223,6 +225,100 @@ func (redeemer *Redeemer) Redeem(ctx context.Context, reference helper.TicketRef
 		ApprovedPool:        record.LoopbackPoolPrefix,
 	}
 	return helper.TicketRedemption{Ticket: ticket, Admission: admission}, nil
+}
+
+// authenticateOwnedEnvelope verifies one claimed installation's pinned key before comparing signed ownership dimensions.
+func authenticateOwnedEnvelope(
+	envelope ticketauth.Envelope,
+	observation ownership.Observation,
+	now time.Time,
+) (helper.Ticket, error) {
+	if err := validateOwnershipObservation(observation); err != nil {
+		return helper.Ticket{}, consumedFailure("validate machine ownership", err)
+	}
+	verifierKey, err := decodeVerifierKey(observation.Record.TicketVerifierKey)
+	if err != nil {
+		return helper.Ticket{}, consumedFailure("decode machine ticket verifier", err)
+	}
+	ticket, err := verifyEnvelope(envelope, verifierKey, now)
+	if err != nil {
+		return helper.Ticket{}, errors.Join(ErrReferenceConsumed, err)
+	}
+	return ticket, nil
+}
+
+// bootstrapOwnership admits only an authenticated exact pool setup before atomically pinning its installation authority.
+func (redeemer *Redeemer) bootstrapOwnership(
+	ctx context.Context,
+	envelope ticketauth.Envelope,
+	now time.Time,
+) (helper.Ticket, ownership.Observation, error) {
+	ticket, verifierKey, err := verifyBootstrapEnvelope(envelope, now)
+	if err != nil {
+		return helper.Ticket{}, ownership.Observation{}, errors.Join(ErrReferenceConsumed, err)
+	}
+	if err := validateBootstrapTicket(ticket, redeemer.topology.requesterIdentity); err != nil {
+		return helper.Ticket{}, ownership.Observation{}, consumedFailure("validate ownership bootstrap ticket", err)
+	}
+	record := ownership.Record{
+		SchemaVersion:      ownership.CurrentSchemaVersion,
+		InstallationID:     ticket.InstallationID,
+		OwnerIdentity:      redeemer.topology.requesterIdentity,
+		Generation:         ticket.OwnershipGeneration,
+		LoopbackPoolPrefix: ticket.ApprovedPool,
+		TicketVerifierKey:  base64.StdEncoding.EncodeToString(verifierKey),
+	}
+	observation, err := redeemer.ownership.Claim(ctx, record)
+	if err != nil {
+		return helper.Ticket{}, ownership.Observation{}, consumedFailure("claim machine ownership", err)
+	}
+	if err := validateOwnershipObservation(observation); err != nil {
+		return helper.Ticket{}, ownership.Observation{}, consumedFailure("validate claimed machine ownership", err)
+	}
+	if observation.Record != record {
+		return helper.Ticket{}, ownership.Observation{}, consumedFailure("claim machine ownership", errors.New("machine ownership claim differs from the authenticated bootstrap ticket"))
+	}
+	return ticket, observation, nil
+}
+
+// validateBootstrapTicket confines first ownership to one generation-one pool whose eight addresses were all observed absent.
+func validateBootstrapTicket(ticket helper.Ticket, requesterIdentity string) error {
+	if ticket.Operation != helper.OperationEnsureLoopbackPool {
+		return errors.New("first machine ownership claim requires loopback pool setup")
+	}
+	if ticket.RequesterIdentity != requesterIdentity {
+		return errors.New("bootstrap ticket requester does not match the pending ticket owner")
+	}
+	if ticket.OwnershipGeneration != 1 {
+		return errors.New("first machine ownership claim requires generation 1")
+	}
+	if ticket.ExpectedLoopbackPool == nil {
+		return errors.New("bootstrap ticket is missing loopback pool authority")
+	}
+	for _, identity := range ticket.ExpectedLoopbackPool.Identities {
+		if identity.ExpectedObservation.State != helper.ObservationAbsent {
+			return errors.New("first machine ownership claim requires every loopback identity to be absent")
+		}
+	}
+	return nil
+}
+
+// validateOwnershipObservation independently proves the protected record and fingerprint returned by the injected store.
+func validateOwnershipObservation(observation ownership.Observation) error {
+	if !observation.Exists {
+		return errors.New("machine ownership is not claimed")
+	}
+	if err := observation.Record.Validate(); err != nil {
+		return err
+	}
+	fingerprint, err := observation.Record.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if observation.Fingerprint != fingerprint {
+		return errors.New("machine ownership fingerprint is invalid")
+	}
+	return nil
 }
 
 // claim moves one pending direct file into the protected permanent namespace before any ticket bytes are trusted.
@@ -398,6 +494,24 @@ func verifyEnvelope(envelope ticketauth.Envelope, verifierKey ed25519.PublicKey,
 	return helper.Ticket{}, redemptionFailed("verify claimed ticket", err)
 }
 
+// verifyBootstrapEnvelope authenticates first-claim material while preserving stale classification for an expired genuine ticket.
+func verifyBootstrapEnvelope(
+	envelope ticketauth.Envelope,
+	now time.Time,
+) (helper.Ticket, ed25519.PublicKey, error) {
+	ticket, verifierKey, err := envelope.VerifyBootstrap(now)
+	if err == nil {
+		return ticket, verifierKey, nil
+	}
+	expiry := envelope.Ticket.ExpiresAt
+	if !expiry.IsZero() && !expiry.After(now) {
+		if _, _, historicalErr := envelope.VerifyBootstrap(expiry.Add(-time.Nanosecond)); historicalErr == nil {
+			return helper.Ticket{}, nil, errors.Join(helper.ErrTicketReferenceStale, err)
+		}
+	}
+	return helper.Ticket{}, nil, redemptionFailed("verify bootstrap ticket", err)
+}
+
 // decodeVerifierKey independently reconstructs the exact Ed25519 key pinned in protected ownership state.
 func decodeVerifierKey(encoded string) (ed25519.PublicKey, error) {
 	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
@@ -466,7 +580,7 @@ func defaultDependencies() dependencies {
 	return dependencies{
 		clock:         helper.SystemClock{},
 		admitProcess:  validatePlatformProcessAdmission,
-		openOwnership: func(path string) (ownershipObserver, error) { return ownership.NewStore(path) },
+		openOwnership: func(path string) (ownershipStore, error) { return ownership.NewStore(path) },
 		files: fileOperations{
 			openPending: openPlatformFile,
 			openClaim:   openPlatformFile,

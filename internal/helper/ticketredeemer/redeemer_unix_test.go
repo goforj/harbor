@@ -65,6 +65,89 @@ func TestRedeemerConsumesAndAuthenticatesOneReference(t *testing.T) {
 	}
 }
 
+// TestRedeemerBootstrapsExactPoolOwnership proves the first authenticated pool ticket pins authority before dispatch.
+func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
+	fixture := newUnixRedeemerFixture(t, false)
+	ticket := testRedeemerPoolTicket(fixture.now, fixture.owner)
+	reference := fixture.writeTicket(t, ticket, '2', fixture.privateKey)
+	redeemer := fixture.open(t)
+
+	redemption, err := redeemer.Redeem(t.Context(), reference)
+	if err != nil {
+		t.Fatalf("Redeem() error = %v", err)
+	}
+	if redemption.Ticket.Operation != helper.OperationEnsureLoopbackPool || redemption.Ticket.ApprovedPool != "127.77.0.8/29" {
+		t.Fatalf("Redeem() ticket = %#v", redemption.Ticket)
+	}
+	observation, err := redeemer.ownership.Observe(t.Context())
+	if err != nil {
+		t.Fatalf("Observe() error = %v", err)
+	}
+	wantRecord := ownership.Record{
+		SchemaVersion:      ownership.CurrentSchemaVersion,
+		InstallationID:     ticket.InstallationID,
+		OwnerIdentity:      fixture.owner,
+		Generation:         1,
+		LoopbackPoolPrefix: ticket.ApprovedPool,
+		TicketVerifierKey:  base64.StdEncoding.EncodeToString(fixture.publicKey),
+	}
+	if !observation.Exists || observation.Record != wantRecord {
+		t.Fatalf("bootstrapped ownership = %#v, want %#v", observation, wantRecord)
+	}
+	if err := validateOwnershipObservation(observation); err != nil {
+		t.Fatalf("validateOwnershipObservation() error = %v", err)
+	}
+	wantAdmission := helper.TicketAdmission{
+		TicketReference:     reference,
+		RequesterIdentity:   fixture.owner,
+		InstallationID:      ticket.InstallationID,
+		OwnershipGeneration: 1,
+		ApprovedPool:        ticket.ApprovedPool,
+	}
+	if redemption.Admission != wantAdmission {
+		t.Fatalf("Redeem() admission = %#v, want %#v", redemption.Admission, wantAdmission)
+	}
+}
+
+// TestRedeemerRejectsUnsafeOwnershipBootstrapShapes proves first claim cannot adopt existing identities or another generation.
+func TestRedeemerRejectsUnsafeOwnershipBootstrapShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*helper.Ticket, unixRedeemerFixture)
+	}{
+		{name: "existing identity", mutate: func(ticket *helper.Ticket, _ unixRedeemerFixture) {
+			ticket.ExpectedLoopbackPool.Identities[3].ExpectedObservation.State = helper.ObservationOwned
+			ticket.ExpectedLoopbackPool.Identities[3].ExpectedPreAssignment = nil
+		}},
+		{name: "later generation", mutate: func(ticket *helper.Ticket, _ unixRedeemerFixture) {
+			ticket.OwnershipGeneration = 2
+		}},
+		{name: "different requester", mutate: func(ticket *helper.Ticket, fixture unixRedeemerFixture) {
+			ticket.RequesterIdentity = fixture.owner + "9"
+		}},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newUnixRedeemerFixture(t, false)
+			ticket := testRedeemerPoolTicket(fixture.now, fixture.owner)
+			test.mutate(&ticket, fixture)
+			reference := fixture.writeTicket(t, ticket, byte("345"[index]), fixture.privateKey)
+			redeemer := fixture.open(t)
+			if _, err := redeemer.Redeem(t.Context(), reference); !errors.Is(err, helper.ErrTicketRedemptionFailed) || !errors.Is(err, ErrReferenceConsumed) {
+				t.Fatalf("Redeem() error = %v, want consumed bootstrap rejection", err)
+			}
+			observation, err := redeemer.ownership.Observe(t.Context())
+			if err != nil {
+				t.Fatalf("Observe() error = %v", err)
+			}
+			if observation.Exists {
+				t.Fatalf("rejected bootstrap published ownership %#v", observation)
+			}
+		})
+	}
+}
+
 // TestRedeemerClassifiesInvalidUnknownExpiredAndMalformedReferences verifies stable outcomes without reusing claims.
 func TestRedeemerClassifiesInvalidUnknownExpiredAndMalformedReferences(t *testing.T) {
 	t.Run("invalid", func(t *testing.T) {
@@ -712,7 +795,7 @@ func TestOpenFailuresReleasePartialTopology(t *testing.T) {
 		dependencies := defaultDependencies()
 		dependencies.admitProcess = func() error { return nil }
 		cause := errors.New("ownership unavailable")
-		dependencies.openOwnership = func(string) (ownershipObserver, error) { return nil, cause }
+		dependencies.openOwnership = func(string) (ownershipStore, error) { return nil, cause }
 		if _, err := open(fixture.paths, dependencies); !errors.Is(err, cause) {
 			t.Fatalf("open() error = %v", err)
 		}
@@ -732,7 +815,7 @@ func TestOpenFailuresReleasePartialTopology(t *testing.T) {
 		fixture := newUnixRedeemerFixture(t, false)
 		dependencies := defaultDependencies()
 		dependencies.admitProcess = func() error { return nil }
-		dependencies.openOwnership = func(string) (ownershipObserver, error) {
+		dependencies.openOwnership = func(string) (ownershipStore, error) {
 			if err := os.Rename(fixture.paths.Root, fixture.paths.Root+"-moved"); err != nil {
 				return nil, err
 			}
@@ -1146,7 +1229,7 @@ func (fixture unixRedeemerFixture) writeRaw(t *testing.T, reference helper.Ticke
 }
 
 // replaceOwnershipObserver swaps the retained store only after releasing its native handles.
-func replaceOwnershipObserver(t *testing.T, redeemer *Redeemer, observer ownershipObserver) {
+func replaceOwnershipObserver(t *testing.T, redeemer *Redeemer, observer ownershipStore) {
 	t.Helper()
 	if err := redeemer.ownership.Close(); err != nil {
 		t.Fatalf("close original ownership observer: %v", err)

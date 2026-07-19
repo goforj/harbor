@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,113 @@ func TestDecodeVerifierKeyRequiresCanonicalEd25519Encoding(t *testing.T) {
 	}
 }
 
+// TestValidateBootstrapTicketRequiresFreshPoolAuthority covers every first-claim constraint independently of signature admission.
+func TestValidateBootstrapTicketRequiresFreshPoolAuthority(t *testing.T) {
+	valid := testRedeemerPoolTicket(testRedeemerTime(), "501")
+	if err := validateBootstrapTicket(valid, "501"); err != nil {
+		t.Fatalf("validateBootstrapTicket() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*helper.Ticket)
+	}{
+		{name: "operation", mutate: func(ticket *helper.Ticket) { ticket.Operation = helper.OperationEnsureLoopbackIdentity }},
+		{name: "requester", mutate: func(ticket *helper.Ticket) { ticket.RequesterIdentity = "502" }},
+		{name: "generation", mutate: func(ticket *helper.Ticket) { ticket.OwnershipGeneration = 2 }},
+		{name: "pool authority", mutate: func(ticket *helper.Ticket) { ticket.ExpectedLoopbackPool = nil }},
+		{name: "owned identity", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation.State = helper.ObservationOwned
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment = nil
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ticket := testRedeemerPoolTicket(testRedeemerTime(), "501")
+			test.mutate(&ticket)
+			if err := validateBootstrapTicket(ticket, "501"); err == nil {
+				t.Fatal("validateBootstrapTicket() error = nil")
+			}
+		})
+	}
+}
+
+// TestValidateOwnershipObservationRequiresCanonicalFingerprint proves injected protected state cannot omit validation evidence.
+func TestValidateOwnershipObservationRequiresCanonicalFingerprint(t *testing.T) {
+	publicKey, _ := testRedeemerKey('o')
+	record := ownership.Record{
+		SchemaVersion:      ownership.CurrentSchemaVersion,
+		InstallationID:     "harbor-redeemer-test",
+		OwnerIdentity:      "501",
+		Generation:         1,
+		LoopbackPoolPrefix: "127.77.0.8/29",
+		TicketVerifierKey:  base64.StdEncoding.EncodeToString(publicKey),
+	}
+	valid := testOwnershipObservation(t, record)
+	if err := validateOwnershipObservation(valid); err != nil {
+		t.Fatalf("validateOwnershipObservation() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ownership.Observation)
+	}{
+		{name: "missing", mutate: func(observation *ownership.Observation) { observation.Exists = false }},
+		{name: "record", mutate: func(observation *ownership.Observation) { observation.Record.Generation = 0 }},
+		{name: "fingerprint", mutate: func(observation *ownership.Observation) { observation.Fingerprint = strings.Repeat("0", 64) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := valid
+			test.mutate(&observation)
+			if err := validateOwnershipObservation(observation); err == nil {
+				t.Fatal("validateOwnershipObservation() error = nil")
+			}
+		})
+	}
+}
+
+// TestBootstrapOwnershipRejectsAtomicClaimFailures proves no injected claim result can broaden the authenticated record.
+func TestBootstrapOwnershipRejectsAtomicClaimFailures(t *testing.T) {
+	now := testRedeemerTime()
+	publicKey, privateKey := testRedeemerKey('b')
+	ticket := testRedeemerPoolTicket(now, "501")
+	envelope, err := ticketauth.Sign(ticket, privateKey, now)
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+	wantRecord := ownership.Record{
+		SchemaVersion:      ownership.CurrentSchemaVersion,
+		InstallationID:     ticket.InstallationID,
+		OwnerIdentity:      ticket.RequesterIdentity,
+		Generation:         ticket.OwnershipGeneration,
+		LoopbackPoolPrefix: ticket.ApprovedPool,
+		TicketVerifierKey:  base64.StdEncoding.EncodeToString(publicKey),
+	}
+	conflicting := wantRecord
+	conflicting.InstallationID = "harbor-other-installation"
+	tests := []struct {
+		name     string
+		observer *testOwnershipObserver
+	}{
+		{name: "claim error", observer: &testOwnershipObserver{claimErr: errors.New("claim unavailable")}},
+		{name: "missing result", observer: &testOwnershipObserver{}},
+		{name: "different result", observer: &testOwnershipObserver{claim: testOwnershipObservation(t, conflicting)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			redeemer := &Redeemer{
+				topology:  &topology{requesterIdentity: ticket.RequesterIdentity},
+				ownership: test.observer,
+			}
+			if _, _, err := redeemer.bootstrapOwnership(t.Context(), envelope, now); !errors.Is(err, helper.ErrTicketRedemptionFailed) || !errors.Is(err, ErrReferenceConsumed) {
+				t.Fatalf("bootstrapOwnership() error = %v, want consumed failure", err)
+			}
+			if len(test.observer.claimed) != 1 || test.observer.claimed[0] != wantRecord {
+				t.Fatalf("Claim() records = %#v, want %#v", test.observer.claimed, wantRecord)
+			}
+		})
+	}
+}
+
 // TestReadBoundedRejectsEmptyOversizedAndClosedFiles covers every metadata and stream boundary before decoding.
 func TestReadBoundedRejectsEmptyOversizedAndClosedFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ticket")
@@ -163,7 +271,7 @@ func inertDependencies() dependencies {
 		admitProcess: func() error {
 			return nil
 		},
-		openOwnership: func(string) (ownershipObserver, error) {
+		openOwnership: func(string) (ownershipStore, error) {
 			return &testOwnershipObserver{}, nil
 		},
 		files: fileOperations{
@@ -206,13 +314,22 @@ func (clock testRedeemerClock) Now() time.Time {
 // testOwnershipObserver supplies controlled protected ownership outcomes for pure dependency tests.
 type testOwnershipObserver struct {
 	observation ownership.Observation
+	claim       ownership.Observation
 	err         error
+	claimErr    error
 	closeErr    error
+	claimed     []ownership.Record
 }
 
 // Observe returns the configured protected-state outcome.
 func (observer *testOwnershipObserver) Observe(context.Context) (ownership.Observation, error) {
 	return observer.observation, observer.err
+}
+
+// Claim records the requested protected authority and returns the configured atomic-claim outcome.
+func (observer *testOwnershipObserver) Claim(_ context.Context, record ownership.Record) (ownership.Observation, error) {
+	observer.claimed = append(observer.claimed, record)
+	return observer.claim, observer.claimErr
 }
 
 // Close returns the configured handle-release outcome.
@@ -251,6 +368,49 @@ func testRedeemerTicket(now time.Time, requester string) helper.Ticket {
 		Nonce:     strings.Repeat("n", 32),
 		ExpiresAt: now.Add(time.Minute),
 	}
+}
+
+// testRedeemerPoolTicket builds one generation-one exact-eight bootstrap authority fixture.
+func testRedeemerPoolTicket(now time.Time, requester string) helper.Ticket {
+	identities := make([]helper.ExpectedLoopbackIdentity, 0, 8)
+	address := netip.MustParseAddr("127.77.0.8")
+	for range 8 {
+		identities = append(identities, helper.ExpectedLoopbackIdentity{
+			Address: address.String(),
+			ExpectedObservation: helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: strings.Repeat("a", 64),
+			},
+			ExpectedPreAssignment: &helper.ExpectedPreAssignment{
+				Fingerprint:  strings.Repeat("b", 64),
+				Requirements: []helper.SocketRequirement{},
+			},
+		})
+		address = address.Next()
+	}
+	return helper.Ticket{
+		Version:             helper.ProtocolVersion,
+		Operation:           helper.OperationEnsureLoopbackPool,
+		InstallationID:      "harbor-redeemer-test",
+		RequesterIdentity:   requester,
+		OwnershipGeneration: 1,
+		ApprovedPool:        "127.77.0.8/29",
+		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{
+			Identities: identities,
+		},
+		Nonce:     strings.Repeat("p", 32),
+		ExpiresAt: now.Add(time.Minute),
+	}
+}
+
+// testOwnershipObservation returns one canonical protected observation or stops the test on an invalid fixture.
+func testOwnershipObservation(t *testing.T, record ownership.Record) ownership.Observation {
+	t.Helper()
+	fingerprint, err := record.Fingerprint()
+	if err != nil {
+		t.Fatalf("Record.Fingerprint() error = %v", err)
+	}
+	return ownership.Observation{Exists: true, Record: record, Fingerprint: fingerprint}
 }
 
 // testRedeemerTime returns the shared canonical UTC test instant.
