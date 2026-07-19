@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/platform/hostconflict"
 	"github.com/goforj/harbor/internal/platform/loopback"
 )
 
@@ -16,21 +17,25 @@ type conditionalAdapter interface {
 	ReleaseIfObserved(context.Context, netip.Addr, string) (loopback.Change, error)
 }
 
+// preAssignmentObserver captures the native route, socket, and policy facts immediately before an absent-state ensure.
+type preAssignmentObserver func(context.Context, hostconflict.Request, string) (hostconflict.Observation, error)
+
 // Handler turns one admitted helper ticket into an exact observation-bound loopback effect.
 type Handler struct {
-	adapter conditionalAdapter
+	adapter              conditionalAdapter
+	observePreAssignment preAssignmentObserver
 }
 
 var _ helper.LoopbackIdentityHandler = (*Handler)(nil)
 
 // New creates a handler backed by the current operating system's reviewed loopback adapter.
 func New() *Handler {
-	return newHandler(loopback.New())
+	return newHandler(loopback.New(), observePlatformPreAssignment)
 }
 
 // newHandler keeps host effects replaceable in tests without exposing adapter selection to helper requests.
-func newHandler(adapter conditionalAdapter) *Handler {
-	return &Handler{adapter: adapter}
+func newHandler(adapter conditionalAdapter, observePreAssignment preAssignmentObserver) *Handler {
+	return &Handler{adapter: adapter, observePreAssignment: observePreAssignment}
 }
 
 // EnsureLoopbackIdentity ensures only the approved address whose exact precondition still holds.
@@ -41,6 +46,11 @@ func (handler *Handler) EnsureLoopbackIdentity(ctx context.Context, ticket helpe
 	}
 	if _, err := handler.observeExpected(ctx, address, ticket.ExpectedObservation); err != nil {
 		return helper.MutationEvidence{}, err
+	}
+	if ticket.ExpectedObservation.State == helper.ObservationAbsent {
+		if err := handler.observeExpectedPreAssignment(ctx, address, ticket); err != nil {
+			return helper.MutationEvidence{}, err
+		}
 	}
 
 	change, err := handler.adapter.EnsureIfObserved(ctx, address, ticket.ExpectedObservation.Fingerprint)
@@ -56,9 +66,6 @@ func (handler *Handler) ReleaseLoopbackIdentity(ctx context.Context, ticket help
 	if err != nil {
 		return helper.MutationEvidence{}, err
 	}
-	if ticket.ExpectedObservation.State != helper.ObservationOwned {
-		return helper.MutationEvidence{}, fmt.Errorf("release loopback identity requires an owned precondition")
-	}
 	if _, err := handler.observeExpected(ctx, address, ticket.ExpectedObservation); err != nil {
 		return helper.MutationEvidence{}, err
 	}
@@ -68,6 +75,62 @@ func (handler *Handler) ReleaseLoopbackIdentity(ctx context.Context, ticket help
 		return helper.MutationEvidence{}, err
 	}
 	return evidenceFromChange(ticket.Operation, address, change)
+}
+
+// observeExpectedPreAssignment proves the signed native safety snapshot is still safe immediately before assignment.
+func (handler *Handler) observeExpectedPreAssignment(ctx context.Context, address netip.Addr, ticket helper.Ticket) error {
+	expected := ticket.ExpectedPreAssignment
+	if expected == nil {
+		return fmt.Errorf("absent ensure requires an expected pre-assignment observation")
+	}
+	request, err := newPreAssignmentRequest(address, *expected)
+	if err != nil {
+		return err
+	}
+	observation, err := handler.observePreAssignment(ctx, request, ticket.RequesterIdentity)
+	if err != nil {
+		return err
+	}
+	assessment, err := observation.Classify()
+	if err != nil {
+		return fmt.Errorf("classify pre-assignment host conflicts: %w", err)
+	}
+	if assessment.State != hostconflict.StateSafe {
+		return fmt.Errorf("pre-assignment host conflict state is %q", assessment.State)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return fmt.Errorf("fingerprint pre-assignment host conflicts: %w", err)
+	}
+	if fingerprint != expected.Fingerprint {
+		return fmt.Errorf("pre-assignment host conflict fingerprint changed before mutation")
+	}
+	return nil
+}
+
+// newPreAssignmentRequest converts only the signed helper vocabulary into the native observer request.
+func newPreAssignmentRequest(address netip.Addr, expected helper.ExpectedPreAssignment) (hostconflict.Request, error) {
+	if err := expected.Validate(); err != nil {
+		return hostconflict.Request{}, err
+	}
+	requirements := make([]hostconflict.SocketRequirement, len(expected.Requirements))
+	for index, requirement := range expected.Requirements {
+		var transport hostconflict.Transport
+		switch requirement.Transport {
+		case helper.SocketTransportTCP4:
+			transport = hostconflict.TransportTCP4
+		case helper.SocketTransportUDP4:
+			transport = hostconflict.TransportUDP4
+		default:
+			return hostconflict.Request{}, fmt.Errorf("pre-assignment socket transport %q is unsupported", requirement.Transport)
+		}
+		requirements[index] = hostconflict.SocketRequirement{Transport: transport, Port: requirement.Port}
+	}
+	request, err := hostconflict.NewPreAssignmentRequest(address, requirements)
+	if err != nil {
+		return hostconflict.Request{}, fmt.Errorf("construct pre-assignment host conflict request: %w", err)
+	}
+	return request, nil
 }
 
 // observeExpected proves the signed state label and fingerprint describe the same fresh platform observation.
@@ -100,6 +163,19 @@ func validateMutationTicket(ticket helper.Ticket, operation helper.Operation) (n
 	}
 	if err := ticket.ExpectedObservation.Validate(); err != nil {
 		return netip.Addr{}, err
+	}
+	if operation == helper.OperationEnsureLoopbackIdentity && ticket.ExpectedObservation.State == helper.ObservationAbsent {
+		if ticket.ExpectedPreAssignment == nil {
+			return netip.Addr{}, fmt.Errorf("absent ensure requires an expected pre-assignment observation")
+		}
+		if err := ticket.ExpectedPreAssignment.Validate(); err != nil {
+			return netip.Addr{}, err
+		}
+	} else if ticket.ExpectedPreAssignment != nil {
+		return netip.Addr{}, fmt.Errorf("expected pre-assignment observation is not allowed for this operation")
+	}
+	if operation == helper.OperationReleaseLoopbackIdentity && ticket.ExpectedObservation.State != helper.ObservationOwned {
+		return netip.Addr{}, fmt.Errorf("release loopback identity requires an owned precondition")
 	}
 	address, err := netip.ParseAddr(ticket.ApprovedAddress)
 	if err != nil || !address.Is4() || !address.IsLoopback() || address != address.Unmap() || address.String() != ticket.ApprovedAddress {
