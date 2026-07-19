@@ -95,6 +95,9 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	if err != nil || !reflect.DeepEqual(replayedReady, ready) || projectStoreMutationSequence(t, store) != sequenceAfterReady {
 		t.Fatalf("CompleteProjectStart(replay) = %#v, %v", replayedReady, err)
 	}
+	if _, err := store.RecordRecentResource(t.Context(), domain.ResourceRef{ProjectID: project.ID, ResourceID: runtime.Resource.ID}); err != nil {
+		t.Fatalf("RecordRecentResource() error = %v", err)
+	}
 
 	stopQueued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectStop, project.ID, "stop")
 	stopAt := stopQueued.Operation.RequestedAt.Add(time.Second)
@@ -140,13 +143,39 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	if stopped.Operation.Operation.State != domain.OperationSucceeded || stopped.Session != nil || !projectMatchesInactiveState(stopped.Project.Project, domain.ProjectStopped, stoppedAt) {
 		t.Fatalf("CompleteProjectStop() = %#v", stopped)
 	}
-	if snapshot, snapshotErr := store.Snapshot(t.Context()); snapshotErr != nil || len(snapshot.Projects) != 1 || snapshot.Projects[0].State != domain.ProjectStopped {
+	if snapshot, snapshotErr := store.Snapshot(t.Context()); snapshotErr != nil || len(snapshot.Projects) != 1 || snapshot.Projects[0].State != domain.ProjectStopped || len(snapshot.Projects[0].Resources) != 0 || len(snapshot.RecentResourceIDs) != 0 {
 		t.Fatalf("Snapshot() after stop = %#v, %v", snapshot, snapshotErr)
 	}
 	sequenceAfterStopped := projectStoreMutationSequence(t, store)
 	replayedStopped, err := store.CompleteProjectStop(t.Context(), completeStopRequest)
 	if err != nil || !reflect.DeepEqual(replayedStopped, stopped) || projectStoreMutationSequence(t, store) != sequenceAfterStopped {
 		t.Fatalf("CompleteProjectStop(replay) = %#v, %v", replayedStopped, err)
+	}
+}
+
+// TestBeginProjectStartPermitsRetryableTerminalStates ensures the GUI can retry failures without a synthetic stop transition.
+func TestBeginProjectStartPermitsRetryableTerminalStates(t *testing.T) {
+	for _, projectState := range []domain.ProjectState{domain.ProjectFailed, domain.ProjectUnavailable} {
+		t.Run(string(projectState), func(t *testing.T) {
+			store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+			project := emptyProjectStoreMutationProject(domain.ProjectID("project-retry-" + string(projectState)))
+			project.State = projectState
+			if _, err := store.PutProject(t.Context(), project); err != nil {
+				t.Fatalf("PutProject() error = %v", err)
+			}
+			queued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectStart, project.ID, "retry-"+string(projectState))
+			at := queued.Operation.RequestedAt.Add(time.Second)
+			result, err := store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
+				ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
+				Session: projectLifecycleTestPlannedSession(t, project.ID, at), Phase: "retrying forj dev", At: at,
+			})
+			if err != nil {
+				t.Fatalf("BeginProjectStart() error = %v", err)
+			}
+			if result.Project.Project.State != domain.ProjectStarting || result.Session == nil {
+				t.Fatalf("BeginProjectStart() = %#v", result)
+			}
+		})
 	}
 }
 

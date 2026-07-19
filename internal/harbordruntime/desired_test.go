@@ -142,21 +142,21 @@ func TestDesiredStateFromRuntimeStateRejectsInvalidAndUnprojectableAggregates(t 
 		{
 			name:         "running project without initialized network",
 			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) { project.State = domain.ProjectReady }),
-			want:         errors.New("not pending"),
+			want:         errors.New("does not publish a direct loopback resource"),
 		},
 		{
 			name: "active App without initialized network",
 			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) {
 				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityStopped, Active: true, Required: true}}
 			}),
-			want: errors.New("not pending"),
+			want: errors.New("App \"app\" must be inactive"),
 		},
 		{
 			name: "ready App without initialized network",
 			runtimeState: uninitializedControllerProjectState(func(project *domain.ProjectSnapshot) {
 				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: false, Required: true}}
 			}),
-			want: errors.New("not pending"),
+			want: errors.New("App \"app\" state \"ready\" must be stopped"),
 		},
 		{
 			name: "ready service without initialized network",
@@ -166,7 +166,7 @@ func TestDesiredStateFromRuntimeStateRejectsInvalidAndUnprojectableAggregates(t 
 					Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true,
 				}}
 			}),
-			want: errors.New("not pending"),
+			want: errors.New("service \"mysql\" state \"ready\" must be stopped"),
 		},
 		{
 			name: "published resource without initialized network",
@@ -177,7 +177,7 @@ func TestDesiredStateFromRuntimeStateRejectsInvalidAndUnprojectableAggregates(t 
 					Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "https://orders.test",
 				}}
 			}),
-			want: errors.New("not pending"),
+			want: errors.New("project publishes 1 resources"),
 		},
 	}
 

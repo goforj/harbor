@@ -145,8 +145,15 @@ func TestRuntimeStateValidateRequiresAnUnambiguousNetworkLifecycle(t *testing.T)
 		candidate := validInitialized
 		project := validRuntimeStateProject("project-beta")
 		project.State = domain.ProjectReady
+		project.Apps = []domain.AppSnapshot{{
+			ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true,
+		}}
+		project.Resources = []domain.ResourceSnapshot{{
+			ID: "home", Name: "Home", Kind: "application",
+			Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "https://project-beta.test",
+		}}
 		candidate.Snapshot.Projects = append(candidate.Snapshot.Projects, project)
-		if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), `project "project-beta" has neither`) || !strings.Contains(err.Error(), "not pending") {
+		if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), `project "project-beta" has neither`) || !strings.Contains(err.Error(), "not a literal loopback address") {
 			t.Fatalf("validation error = %v, want missing project network lifecycle for runtime claim", err)
 		}
 	})
@@ -196,8 +203,8 @@ func TestRuntimeStateValidatePermitsPendingProjectsAcrossNetworkLifecycle(t *tes
 	}
 }
 
-// TestRuntimeStateValidateRejectsPendingProjectRuntimeClaims verifies every route-bearing fact requires initialized ownership.
-func TestRuntimeStateValidateRejectsPendingProjectRuntimeClaims(t *testing.T) {
+// TestRuntimeStateValidateRejectsUnsafeUnleasedProjectClaims verifies stopped topology and public routes cannot bypass ownership.
+func TestRuntimeStateValidateRejectsUnsafeUnleasedProjectClaims(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*domain.ProjectSnapshot)
@@ -208,7 +215,7 @@ func TestRuntimeStateValidateRejectsPendingProjectRuntimeClaims(t *testing.T) {
 			mutate: func(project *domain.ProjectSnapshot) {
 				project.State = domain.ProjectReady
 			},
-			want: "project state \"ready\" must be stopped",
+			want: "project state \"ready\" does not publish a direct loopback resource",
 		},
 		{
 			name: "active App",
@@ -258,6 +265,148 @@ func TestRuntimeStateValidateRejectsPendingProjectRuntimeClaims(t *testing.T) {
 				t.Fatalf("validation error = %v, want containing %q", err, test.want)
 			}
 		})
+	}
+}
+
+// TestRuntimeStateValidatePermitsDirectLoopbackLifecycle proves current-port development remains local without a Harbor network lease.
+func TestRuntimeStateValidatePermitsDirectLoopbackLifecycle(t *testing.T) {
+	for _, state := range []domain.ProjectState{
+		domain.ProjectStarting,
+		domain.ProjectFailed,
+		domain.ProjectUnavailable,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			candidate := RuntimeState{
+				Snapshot: validRuntimeStateSnapshot(0),
+				Network:  uninitializedRuntimeNetwork(),
+			}
+			candidate.Snapshot.Projects[0].State = state
+			if err := candidate.Validate(); err != nil {
+				t.Fatalf("validate %s direct project: %v", state, err)
+			}
+		})
+	}
+
+	for _, state := range []domain.ProjectState{
+		domain.ProjectReady,
+		domain.ProjectRebuilding,
+		domain.ProjectDegraded,
+		domain.ProjectStopping,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			candidate := RuntimeState{
+				Snapshot: validRuntimeStateSnapshot(0),
+				Network:  uninitializedRuntimeNetwork(),
+			}
+			candidate.Snapshot.Projects[0] = directRuntimeStateProject("project-alpha", state, "http://127.0.0.1:3000")
+			if err := candidate.Validate(); err != nil {
+				t.Fatalf("validate %s loopback project: %v", state, err)
+			}
+		})
+	}
+}
+
+// TestRuntimeStateValidateRejectsIncoherentDirectLifecycle prevents loopback URLs from masking corrupt active or transitional projections.
+func TestRuntimeStateValidateRejectsIncoherentDirectLifecycle(t *testing.T) {
+	tests := []struct {
+		name    string
+		project domain.ProjectSnapshot
+		want    string
+	}{
+		{
+			name: "starting active App",
+			project: func() domain.ProjectSnapshot {
+				project := validRuntimeStateProject("project-alpha")
+				project.State = domain.ProjectStarting
+				project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true}}
+				return project
+			}(),
+			want: `App "app" must be inactive`,
+		},
+		{
+			name: "ready inactive required App",
+			project: func() domain.ProjectSnapshot {
+				project := directRuntimeStateProject("project-alpha", domain.ProjectReady, "http://127.0.0.1:3000")
+				project.Apps[0].Active = false
+				return project
+			}(),
+			want: `required App "app" must be active`,
+		},
+		{
+			name: "ready working required App",
+			project: func() domain.ProjectSnapshot {
+				project := directRuntimeStateProject("project-alpha", domain.ProjectReady, "http://127.0.0.1:3000")
+				project.Apps[0].State = domain.EntityWorking
+				return project
+			}(),
+			want: `active App "app" state "working" is inconsistent`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := RuntimeState{
+				Snapshot: func() domain.Snapshot {
+					snapshot := validRuntimeStateSnapshot(0)
+					snapshot.Projects[0] = test.project
+					return snapshot
+				}(),
+				Network: uninitializedRuntimeNetwork(),
+			}
+			if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestRuntimeStateValidateRequiresOwnershipForNonLoopbackResources distinguishes direct development from public routing claims.
+func TestRuntimeStateValidateRequiresOwnershipForNonLoopbackResources(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "IPv4 loopback", url: "http://127.0.0.1:3000"},
+		{name: "IPv6 loopback", url: "http://[::1]:3000"},
+		{name: "named localhost", url: "http://localhost:3000", wantErr: true},
+		{name: "private network", url: "http://192.168.1.20:3000", wantErr: true},
+		{name: "Harbor hostname", url: "https://project-alpha.test", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := RuntimeState{
+				Snapshot: validRuntimeStateSnapshot(0),
+				Network:  uninitializedRuntimeNetwork(),
+			}
+			candidate.Snapshot.Projects[0] = directRuntimeStateProject("project-alpha", domain.ProjectReady, test.url)
+			err := candidate.Validate()
+			if test.wantErr && (err == nil || !strings.Contains(err.Error(), "not a literal loopback address")) {
+				t.Fatalf("validation error = %v, want unleased route rejection", err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("validate direct loopback URL: %v", err)
+			}
+		})
+	}
+}
+
+// TestStoreRuntimeStateAcceptsPersistedFailedDirectProject covers the restart shape produced by a failed first launch.
+func TestStoreRuntimeStateAcceptsPersistedFailedDirectProject(t *testing.T) {
+	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+	projectID := "project-7f40ccf350106119028ba9394725e0a1"
+	mustProjectStoreReadExec(t, connection,
+		`INSERT INTO projects (project_id, name, path, slug, state, favorite, updated_at, revision)
+		 VALUES (?, 'Failed project', ?, ?, 'failed', 0, ?, 1)`,
+		projectID, "/work/failed-project", projectID, projectStoreReadTestTime(),
+	)
+	mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 1 WHERE id = 1")
+
+	runtimeState, err := store.RuntimeState(t.Context())
+	if err != nil {
+		t.Fatalf("RuntimeState() failed direct project: %v", err)
+	}
+	if len(runtimeState.Snapshot.Projects) != 1 || runtimeState.Snapshot.Projects[0].State != domain.ProjectFailed {
+		t.Fatalf("RuntimeState() project = %#v", runtimeState.Snapshot.Projects)
 	}
 }
 
@@ -623,4 +772,18 @@ func validRuntimeStateProject(projectID domain.ProjectID) domain.ProjectSnapshot
 		Services:  []domain.ServiceSnapshot{},
 		Resources: []domain.ResourceSnapshot{},
 	}
+}
+
+// directRuntimeStateProject returns the ready or stopping projection for one current-port loopback process.
+func directRuntimeStateProject(projectID domain.ProjectID, state domain.ProjectState, resourceURL string) domain.ProjectSnapshot {
+	project := validRuntimeStateProject(projectID)
+	project.State = state
+	project.Apps = []domain.AppSnapshot{{
+		ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true,
+	}}
+	project.Resources = []domain.ResourceSnapshot{{
+		ID: "home", Name: "Home", Kind: "application",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: resourceURL,
+	}}
+	return project
 }

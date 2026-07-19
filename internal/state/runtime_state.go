@@ -3,6 +3,8 @@ package state
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"net/url"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/identity"
@@ -25,7 +27,7 @@ func (state RuntimeState) Validate() error {
 		if err := validateUninitializedRuntimeNetwork(state.Network); err != nil {
 			return err
 		}
-		return validatePendingRuntimeProjects(state.Snapshot.Projects)
+		return validateUnleasedRuntimeProjects(state.Snapshot.Projects)
 	}
 	if err := state.Network.Validate(); err != nil {
 		return fmt.Errorf("runtime network: %w", err)
@@ -36,21 +38,32 @@ func (state RuntimeState) Validate() error {
 	return validateRuntimeNetworkProjects(state.Snapshot.Projects, state.Network)
 }
 
-// validatePendingRuntimeProjects keeps registration durable before host networking without accepting claims that require routing authority.
-func validatePendingRuntimeProjects(projects []domain.ProjectSnapshot) error {
+// validateUnleasedRuntimeProjects permits direct loopback development without granting Harbor-owned routing authority.
+func validateUnleasedRuntimeProjects(projects []domain.ProjectSnapshot) error {
 	for _, project := range projects {
-		if err := validatePendingRuntimeProject(project); err != nil {
-			return fmt.Errorf("runtime project %q is not pending: %w", project.ID, err)
+		if err := validateUnleasedRuntimeProject(project); err != nil {
+			return fmt.Errorf("runtime project %q is not route-safe without network ownership: %w", project.ID, err)
 		}
 	}
 	return nil
 }
 
-// validatePendingRuntimeProject defines the route-free stopped shape that may exist without a primary lease or staged release.
-func validatePendingRuntimeProject(project domain.ProjectSnapshot) error {
-	if project.State != domain.ProjectStopped {
-		return fmt.Errorf("project state %q must be stopped", project.State)
+// validateUnleasedRuntimeProject separates current-port loopback development from routes that require a Harbor lease.
+func validateUnleasedRuntimeProject(project domain.ProjectSnapshot) error {
+	switch project.State {
+	case domain.ProjectStopped:
+		return validateStoppedRuntimeProject(project)
+	case domain.ProjectStarting, domain.ProjectFailed, domain.ProjectUnavailable:
+		return validateRouteFreeRuntimeProject(project)
+	case domain.ProjectReady, domain.ProjectRebuilding, domain.ProjectDegraded, domain.ProjectStopping:
+		return validateActiveDirectRuntimeProject(project)
+	default:
+		return fmt.Errorf("project state %q requires a primary network lease or staged release", project.State)
 	}
+}
+
+// validateStoppedRuntimeProject defines the fully inactive shape retained after a joined process has stopped.
+func validateStoppedRuntimeProject(project domain.ProjectSnapshot) error {
 	for _, app := range project.Apps {
 		if app.Active {
 			return fmt.Errorf("App %q must be inactive", app.ID)
@@ -66,6 +79,94 @@ func validatePendingRuntimeProject(project domain.ProjectSnapshot) error {
 	}
 	if len(project.Resources) != 0 {
 		return fmt.Errorf("project publishes %d resources", len(project.Resources))
+	}
+	return nil
+}
+
+// validateRouteFreeRuntimeProject prevents lifecycle transitions from retaining launchable URLs before or after readiness.
+func validateRouteFreeRuntimeProject(project domain.ProjectSnapshot) error {
+	if len(project.Resources) != 0 {
+		return fmt.Errorf("project publishes %d resources", len(project.Resources))
+	}
+	for _, app := range project.Apps {
+		if app.Active {
+			return fmt.Errorf("App %q must be inactive while project state is %q", app.ID, project.State)
+		}
+		if !routeFreeEntityState(app.State) {
+			return fmt.Errorf("App %q state %q is not route-free while project state is %q", app.ID, app.State, project.State)
+		}
+	}
+	for _, service := range project.Services {
+		if !routeFreeEntityState(service.State) {
+			return fmt.Errorf("service %q state %q is not route-free while project state is %q", service.ID, service.State, project.State)
+		}
+	}
+	return nil
+}
+
+// routeFreeEntityState reports terminal entity states that do not imply a reachable runtime.
+func routeFreeEntityState(state domain.EntityState) bool {
+	switch state {
+	case domain.EntityStopped, domain.EntityFailed, domain.EntityUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateActiveDirectRuntimeProject requires coherent process-backed entities before accepting unleased loopback routes.
+func validateActiveDirectRuntimeProject(project domain.ProjectSnapshot) error {
+	if len(project.Resources) == 0 {
+		return fmt.Errorf("project state %q does not publish a direct loopback resource", project.State)
+	}
+	requiredApp := false
+	for _, app := range project.Apps {
+		if app.Required {
+			requiredApp = true
+			if !app.Active {
+				return fmt.Errorf("required App %q must be active while project state is %q", app.ID, project.State)
+			}
+		}
+		if app.Active && !activeDirectEntityState(project.State, app.State) {
+			return fmt.Errorf("active App %q state %q is inconsistent with project state %q", app.ID, app.State, project.State)
+		}
+	}
+	if !requiredApp {
+		return fmt.Errorf("project state %q does not contain a required App", project.State)
+	}
+	for _, service := range project.Services {
+		if service.Required && !activeDirectEntityState(project.State, service.State) {
+			return fmt.Errorf("required service %q state %q is inconsistent with project state %q", service.ID, service.State, project.State)
+		}
+	}
+	return validateDirectLoopbackResources(project.Resources)
+}
+
+// activeDirectEntityState keeps each active aggregate state aligned with the entity states it may truthfully expose.
+func activeDirectEntityState(projectState domain.ProjectState, entityState domain.EntityState) bool {
+	switch projectState {
+	case domain.ProjectReady, domain.ProjectStopping:
+		return entityState == domain.EntityReady
+	case domain.ProjectRebuilding:
+		return entityState == domain.EntityReady || entityState == domain.EntityWorking || entityState == domain.EntityDegraded
+	case domain.ProjectDegraded:
+		return entityState == domain.EntityReady || entityState == domain.EntityDegraded
+	default:
+		return false
+	}
+}
+
+// validateDirectLoopbackResources confines an unleased runtime to literal local addresses that cannot claim a public route.
+func validateDirectLoopbackResources(resources []domain.ResourceSnapshot) error {
+	for _, resource := range resources {
+		parsed, err := url.Parse(resource.URL)
+		if err != nil {
+			return fmt.Errorf("resource %q URL: %w", resource.ID, err)
+		}
+		address, err := netip.ParseAddr(parsed.Hostname())
+		if err != nil || !address.Unmap().IsLoopback() {
+			return fmt.Errorf("resource %q URL host %q is not a literal loopback address", resource.ID, parsed.Hostname())
+		}
 	}
 	return nil
 }
@@ -204,9 +305,9 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 		if _, exists := suppressed[project.ID]; exists {
 			continue
 		}
-		if err := validatePendingRuntimeProject(project); err != nil {
+		if err := validateUnleasedRuntimeProject(project); err != nil {
 			return fmt.Errorf(
-				"runtime project %q has neither a primary network lease nor a staged release and is not pending: %w",
+				"runtime project %q has neither a primary network lease nor a staged release and is not route-safe without network ownership: %w",
 				project.ID,
 				err,
 			)

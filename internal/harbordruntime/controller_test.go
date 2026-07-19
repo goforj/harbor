@@ -525,8 +525,8 @@ func TestControllerRestartsPendingProjectWithoutNetworkClaims(t *testing.T) {
 	}
 }
 
-// TestControllerRejectsUnprojectedRuntimeClaimsBeforeMaterialMutation keeps active state behind durable network authority.
-func TestControllerRejectsUnprojectedRuntimeClaimsBeforeMaterialMutation(t *testing.T) {
+// TestControllerRejectsUnsafeDirectRuntimeClaimsBeforeMaterialMutation keeps unowned routes away from protected material.
+func TestControllerRejectsUnsafeDirectRuntimeClaimsBeforeMaterialMutation(t *testing.T) {
 	snapshot := validControllerSnapshot()
 	project := validControllerProject()
 	project.State = domain.ProjectReady
@@ -542,8 +542,8 @@ func TestControllerRejectsUnprojectedRuntimeClaimsBeforeMaterialMutation(t *test
 	controller := newFakeController(t, source, dependencies)
 
 	err := controller.Start(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "validate durable state") || !strings.Contains(err.Error(), "not pending") {
-		t.Fatalf("Start() error = %v, want pending-project aggregate rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "validate durable state") || !strings.Contains(err.Error(), "does not publish a direct loopback resource") {
+		t.Fatalf("Start() error = %v, want unsafe direct-runtime rejection", err)
 	}
 	if opens.Load() != 0 || material.closes.Load() != 0 {
 		t.Fatalf("runtime claim rejection touched material: opens %d, closes %d", opens.Load(), material.closes.Load())

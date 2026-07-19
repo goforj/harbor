@@ -152,8 +152,8 @@ func (store *Store) BeginProjectStart(ctx context.Context, request BeginProjectS
 		if err != nil {
 			return err
 		}
-		if project.Project.State != domain.ProjectStopped {
-			return fmt.Errorf("project %q must be stopped before start, got %q", request.ProjectID, project.Project.State)
+		if !projectCanStart(project.Project.State) {
+			return fmt.Errorf("project %q cannot start from state %q", request.ProjectID, project.Project.State)
 		}
 		if err := validateLifecycleProjectionTime(project.Project, request.At); err != nil {
 			return err
@@ -1130,7 +1130,7 @@ func projectMatchesReadyRuntime(project domain.ProjectSnapshot, runtime DefaultP
 
 // projectMatchesInactiveState proves joined process-owned entities are no longer presented as active.
 func projectMatchesInactiveState(project domain.ProjectSnapshot, state domain.ProjectState, at time.Time) bool {
-	if project.State != state || !project.UpdatedAt.Equal(at) {
+	if project.State != state || !project.UpdatedAt.Equal(at) || len(project.Resources) != 0 {
 		return false
 	}
 	for _, app := range project.Apps {
@@ -1144,6 +1144,11 @@ func projectMatchesInactiveState(project domain.ProjectSnapshot, state domain.Pr
 		}
 	}
 	return true
+}
+
+// projectCanStart permits retryable terminal outcomes while excluding states that may retain process authority.
+func projectCanStart(state domain.ProjectState) bool {
+	return state == domain.ProjectStopped || state == domain.ProjectFailed || state == domain.ProjectUnavailable
 }
 
 // sessionCanPublishReadiness accepts supervised and authenticated process-backed launch states without upgrading either one implicitly.
@@ -1190,6 +1195,7 @@ func stoppedProjectProjection(project domain.ProjectSnapshot, at time.Time) doma
 	for index := range project.Services {
 		project.Services[index].State = domain.EntityStopped
 	}
+	project.Resources = []domain.ResourceSnapshot{}
 	return project
 }
 
