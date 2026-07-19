@@ -35,7 +35,7 @@ func (fixture *primaryLeaseTestState) Project(context.Context, domain.ProjectID)
 	return fixture.project, nil
 }
 
-// Network returns the fixture's complete identity-stage authority.
+// Network returns the fixture's complete network authority at its configured stage.
 func (fixture *primaryLeaseTestState) Network(context.Context) (state.NetworkRecord, bool, error) {
 	if fixture.networkErr != nil {
 		return state.NetworkRecord{}, false, fixture.networkErr
@@ -43,7 +43,7 @@ func (fixture *primaryLeaseTestState) Network(context.Context) (state.NetworkRec
 	return fixture.network, fixture.initialized, nil
 }
 
-// ReplaceProjectNetwork applies one ensure delta while enforcing the same optimistic revisions used by production storage.
+// ReplaceProjectNetwork applies one complete project delta while enforcing production's optimistic revisions.
 func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 	_ context.Context,
 	request state.ReplaceProjectNetworkRequest,
@@ -72,6 +72,15 @@ func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 		fixture.network.Leases = append(fixture.network.Leases, ensure.Lease)
 	}
 	slices.SortFunc(fixture.network.Leases, primaryLeaseTestLeaseCompare)
+	endpoints := make([]state.EndpointReservation, 0, len(fixture.network.Reservations.Endpoints)+len(request.Endpoints))
+	for _, endpoint := range fixture.network.Reservations.Endpoints {
+		if endpoint.Key.ProjectID != request.ProjectID {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	endpoints = append(endpoints, request.Endpoints...)
+	slices.SortFunc(endpoints, primaryLeaseEndpointCompare)
+	fixture.network.Reservations.Endpoints = endpoints
 	fixture.network.Revision++
 	fixture.network.UpdatedAt = request.At
 	if err := fixture.network.Validate(); err != nil {
@@ -473,22 +482,151 @@ func TestProjectPrimaryLeaseCoordinatorUsesDurableTimeLowerBounds(t *testing.T) 
 	}
 }
 
-// TestProjectPrimaryLeaseCoordinatorAcceptsFullStagePool proves later ingress authority does not disable project identity allocation.
-func TestProjectPrimaryLeaseCoordinatorAcceptsFullStagePool(t *testing.T) {
+// TestProjectPrimaryLeaseCoordinatorCreatesDefaultHTTPForNewFullStageLease proves lease and route authority are committed together.
+func TestProjectPrimaryLeaseCoordinatorCreatesDefaultHTTPForNewFullStageLease(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
 	fixture := newPrimaryLeaseTestFixture(t, address)
-	fixture.state.network.Stage = state.NetworkStageFull
-	fixture.state.network.Reservations.Listeners = primaryLeaseTestListeners(fixture.state.network.UpdatedAt)
-	if err := fixture.state.network.Validate(); err != nil {
-		t.Fatalf("full-stage fixture Validate() error = %v", err)
-	}
+	primaryLeaseTestEnableFullStage(t, fixture)
 
 	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
 	if err != nil || admission.Lease.Address != address || fixture.state.network.Stage != state.NetworkStageFull {
 		t.Fatalf("Ensure(full stage) = %#v, %v, network %#v", admission, err, fixture.state.network)
 	}
-	if len(fixture.state.replaceCalls) != 1 || fixture.state.replaceCalls[0].Endpoints == nil {
+	if len(fixture.state.replaceCalls) != 1 {
 		t.Fatalf("full-stage replacement = %#v", fixture.state.replaceCalls)
+	}
+	want := primaryLeaseTestDefaultHTTPEndpoint(fixture, primaryLeaseDefaultHTTPEndpointInitialGeneration)
+	request := fixture.state.replaceCalls[0]
+	if len(request.Ensures) != 1 || len(request.Releases) != 0 || !slices.Equal(request.Endpoints, []state.EndpointReservation{want}) {
+		t.Fatalf("full-stage replacement = %#v, want one lease ensure and endpoint %#v", request, want)
+	}
+	if !slices.Equal(fixture.state.network.Reservations.Endpoints, []state.EndpointReservation{want}) {
+		t.Fatalf("persisted endpoints = %#v, want %#v", fixture.state.network.Reservations.Endpoints, want)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorAddsAndRetainsDefaultHTTPForRetainedLease proves activation is endpoint-only and idempotent.
+func TestProjectPrimaryLeaseCoordinatorAddsAndRetainsDefaultHTTPForRetainedLease(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	retained := primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)
+	fixture.state.network.Leases = []identity.Lease{retained}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	custom := state.EndpointReservation{
+		Key: state.EndpointReservationKey{
+			ProjectID:  fixture.state.project.Project.ID,
+			EndpointID: "status",
+		},
+		Protocol:   state.EndpointProtocolHTTP,
+		Host:       "status.orders.test",
+		Public:     fixture.state.network.Reservations.Listeners.HTTPS.Advertised,
+		Generation: 4,
+	}
+	fixture.state.network.Reservations.Endpoints = []state.EndpointReservation{custom}
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("retained full-stage fixture Validate() error = %v", err)
+	}
+
+	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err != nil || admission.Lease != retained || admission.NetworkUpdatedAt != fixture.now {
+		t.Fatalf("Ensure(retained full stage) = %#v, %v", admission, err)
+	}
+	if len(fixture.state.replaceCalls) != 1 {
+		t.Fatalf("ReplaceProjectNetwork() calls = %d, want 1", len(fixture.state.replaceCalls))
+	}
+	wantDefault := primaryLeaseTestDefaultHTTPEndpoint(fixture, primaryLeaseDefaultHTTPEndpointInitialGeneration)
+	wantEndpoints := []state.EndpointReservation{wantDefault, custom}
+	request := fixture.state.replaceCalls[0]
+	if len(request.Ensures) != 0 || len(request.Releases) != 0 || !slices.Equal(request.Endpoints, wantEndpoints) {
+		t.Fatalf("retained replacement = %#v, want endpoint-only write %#v", request, wantEndpoints)
+	}
+	if !slices.Equal(fixture.state.network.Reservations.Endpoints, wantEndpoints) {
+		t.Fatalf("persisted endpoints = %#v, want %#v", fixture.state.network.Reservations.Endpoints, wantEndpoints)
+	}
+
+	restarted := newProjectPrimaryLeaseCoordinator(
+		fixture.state,
+		fixture.discoverer,
+		fixture.loopback,
+		fixture.ports,
+		func() time.Time { return fixture.now.Add(time.Minute) },
+	)
+	if _, err := restarted.Ensure(t.Context(), fixture.state.project.Project.ID); err != nil {
+		t.Fatalf("Ensure(after restart) error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != 1 {
+		t.Fatalf("ReplaceProjectNetwork() calls after restart = %d, want 1", len(fixture.state.replaceCalls))
+	}
+	if !slices.Equal(fixture.state.network.Reservations.Endpoints, wantEndpoints) {
+		t.Fatalf("endpoints after restart = %#v, want stable generations %#v", fixture.state.network.Reservations.Endpoints, wantEndpoints)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorLeavesIdentityStageEndpointFree proves endpoint activation waits for ingress authority.
+func TestProjectPrimaryLeaseCoordinatorLeavesIdentityStageEndpointFree(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	for _, retained := range []bool{false, true} {
+		name := "new lease"
+		if retained {
+			name = "retained lease"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newPrimaryLeaseTestFixture(t, address)
+			if retained {
+				fixture.state.network.Leases = []identity.Lease{
+					primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+				}
+			}
+
+			if _, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID); err != nil {
+				t.Fatalf("Ensure(identity stage) error = %v", err)
+			}
+			if len(fixture.state.network.Reservations.Endpoints) != 0 {
+				t.Fatalf("identity-stage endpoints = %#v, want none", fixture.state.network.Reservations.Endpoints)
+			}
+			if retained {
+				if len(fixture.state.replaceCalls) != 0 {
+					t.Fatalf("retained identity-stage writes = %d, want none", len(fixture.state.replaceCalls))
+				}
+				return
+			}
+			if len(fixture.state.replaceCalls) != 1 || len(fixture.state.replaceCalls[0].Endpoints) != 0 {
+				t.Fatalf("new identity-stage replacement = %#v, want no endpoints", fixture.state.replaceCalls)
+			}
+		})
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorRejectsConflictingDefaultHTTPAuthority proves activation never replaces an established route shape.
+func TestProjectPrimaryLeaseCoordinatorRejectsConflictingDefaultHTTPAuthority(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.network.Reservations.Endpoints = []state.EndpointReservation{{
+		Key: state.EndpointReservationKey{
+			ProjectID:  fixture.state.project.Project.ID,
+			EndpointID: primaryLeaseDefaultHTTPEndpointID,
+		},
+		Protocol:   state.EndpointProtocolHTTP,
+		Host:       "legacy.orders.test",
+		Public:     fixture.state.network.Reservations.Listeners.HTTPS.Advertised,
+		Generation: 7,
+	}}
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("conflicting full-stage fixture Validate() error = %v", err)
+	}
+
+	_, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	var conflict *state.NetworkProjectReplacementConflictError
+	if !errors.As(err, &conflict) || conflict.ProjectID != fixture.state.project.Project.ID ||
+		!strings.Contains(conflict.Difference, "default HTTP endpoint") {
+		t.Fatalf("Ensure(conflicting endpoint) error = %v, want typed project replacement conflict", err)
+	}
+	if len(fixture.state.replaceCalls) != 0 || len(fixture.loopback.calls) != 0 || len(fixture.ports.calls) != 0 {
+		t.Fatalf("conflicting endpoint effects = writes %d, loopback %v, ports %v", len(fixture.state.replaceCalls), fixture.loopback.calls, fixture.ports.calls)
 	}
 }
 
@@ -648,8 +786,10 @@ func TestPrimaryLeasePortAndPlannerValidation(t *testing.T) {
 	}
 	alpha := state.EndpointReservation{Key: state.EndpointReservationKey{ProjectID: "project-orders", EndpointID: "alpha"}}
 	beta := state.EndpointReservation{Key: state.EndpointReservationKey{ProjectID: "project-other", EndpointID: "beta"}}
-	if got := primaryLeaseProjectEndpoints([]state.EndpointReservation{beta, alpha}, "project-orders"); !slices.Equal(got, []state.EndpointReservation{alpha}) {
-		t.Fatalf("primaryLeaseProjectEndpoints() = %#v, want alpha only", got)
+	fixture.state.network.Reservations.Endpoints = []state.EndpointReservation{beta, alpha}
+	got, changed, err := primaryLeaseProjectEndpoints(fixture.state.network, fixture.state.project.Project)
+	if err != nil || changed || !slices.Equal(got, []state.EndpointReservation{alpha}) {
+		t.Fatalf("primaryLeaseProjectEndpoints() = %#v, %t, %v, want alpha only and unchanged", got, changed, err)
 	}
 	lease := primaryLeaseTestLease(t, fixture.state.project.Project.ID, netip.MustParseAddr("127.77.0.11"), fixture.state.network.Ownership)
 	available := primaryLeaseTestProbeResult(lease.Address, 3000, true)
@@ -755,6 +895,30 @@ func primaryLeaseTestProbeResult(address netip.Addr, port uint16, available bool
 			Available: available,
 			Evidence:  "fixture exact-address probe evidence",
 		}},
+	}
+}
+
+// primaryLeaseTestEnableFullStage installs valid durable listeners before endpoint activation is exercised.
+func primaryLeaseTestEnableFullStage(t *testing.T, fixture *primaryLeaseTestFixture) {
+	t.Helper()
+	fixture.state.network.Stage = state.NetworkStageFull
+	fixture.state.network.Reservations.Listeners = primaryLeaseTestListeners(fixture.state.network.UpdatedAt)
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("full-stage fixture Validate() error = %v", err)
+	}
+}
+
+// primaryLeaseTestDefaultHTTPEndpoint returns the exact durable default route expected for the fixture project.
+func primaryLeaseTestDefaultHTTPEndpoint(fixture *primaryLeaseTestFixture, generation uint64) state.EndpointReservation {
+	return state.EndpointReservation{
+		Key: state.EndpointReservationKey{
+			ProjectID:  fixture.state.project.Project.ID,
+			EndpointID: primaryLeaseDefaultHTTPEndpointID,
+		},
+		Protocol:   state.EndpointProtocolHTTP,
+		Host:       fixture.state.project.Project.Slug + ".test",
+		Public:     fixture.state.network.Reservations.Listeners.HTTPS.Advertised,
+		Generation: generation,
 	}
 }
 

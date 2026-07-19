@@ -28,6 +28,10 @@ const (
 	maximumPrimaryLeaseProbeEvidenceBytes = 1024
 	// primaryLeaseInitialGeneration starts per-address lease history independently from installation ownership generations.
 	primaryLeaseInitialGeneration uint64 = 1
+	// primaryLeaseDefaultHTTPEndpointID correlates the durable public route with the default runtime resource.
+	primaryLeaseDefaultHTTPEndpointID = "app-http"
+	// primaryLeaseDefaultHTTPEndpointInitialGeneration starts the endpoint's independent shape history.
+	primaryLeaseDefaultHTTPEndpointInitialGeneration uint64 = 1
 	// primaryLeaseEvidenceDomain prevents a digest from being reused as evidence for another Harbor operation.
 	primaryLeaseEvidenceDomain = "goforj.harbor.project-primary-lease.v1\x00"
 )
@@ -204,6 +208,10 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 	if err != nil {
 		return projectPrimaryLeaseAdmission{}, err
 	}
+	projectEndpoints, endpointsChanged, err := primaryLeaseProjectEndpoints(network, project.Project)
+	if err != nil {
+		return projectPrimaryLeaseAdmission{}, err
+	}
 	if existing, found := primaryLeaseForKey(network.Leases, key); found {
 		observation, observeErr := coordinator.observePrimaryLease(ctx, project.Project.Path, network.Pool, existing)
 		if observeErr != nil {
@@ -236,15 +244,19 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 				Retryable: true,
 			}, cause)
 		}
-		return projectPrimaryLeaseAdmission{
+		admission := projectPrimaryLeaseAdmission{
 			Lease:            existing,
 			Target:           observation.Target,
 			Project:          project,
 			NetworkUpdatedAt: network.UpdatedAt,
-		}, nil
+		}
+		if !endpointsChanged {
+			return admission, nil
+		}
+		return coordinator.persistRetainedPrimaryLeaseEndpoints(ctx, admission, network, projectEndpoints)
 	}
 
-	return coordinator.allocateAtCurrentRevision(ctx, project, network, key)
+	return coordinator.allocateAtCurrentRevision(ctx, project, network, key, projectEndpoints)
 }
 
 // allocateAtCurrentRevision rejects unsafe candidates through the planner until one exact identity and port set is proved.
@@ -253,6 +265,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 	project state.ProjectRecord,
 	network state.NetworkRecord,
 	key identity.LeaseKey,
+	projectEndpoints []state.EndpointReservation,
 ) (projectPrimaryLeaseAdmission, error) {
 	requirements := primaryLeaseRequirements(network.Leases, key)
 	conflicts := make([]identity.Conflict, 0, network.Pool.Capacity())
@@ -306,7 +319,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 			continue
 		}
 
-		return coordinator.persistPrimaryLease(ctx, project, network, lease, observation)
+		return coordinator.persistPrimaryLease(ctx, project, network, lease, observation, projectEndpoints)
 	}
 }
 
@@ -416,6 +429,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) persistPrimaryLease(
 	network state.NetworkRecord,
 	lease identity.Lease,
 	observation projectPrimaryLeaseObservation,
+	projectEndpoints []state.EndpointReservation,
 ) (projectPrimaryLeaseAdmission, error) {
 	at := lifecycleTime(coordinator.now())
 	if at.Before(project.Project.UpdatedAt) {
@@ -435,7 +449,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) persistPrimaryLease(
 			LeasedAt:       at,
 		}},
 		Releases:  []state.NetworkLeaseRelease{},
-		Endpoints: primaryLeaseProjectEndpoints(network.Reservations.Endpoints, project.Project.ID),
+		Endpoints: projectEndpoints,
 		At:        at,
 	}
 	result, err := coordinator.state.ReplaceProjectNetwork(ctx, request)
@@ -449,12 +463,55 @@ func (coordinator *projectPrimaryLeaseCoordinator) persistPrimaryLease(
 	if !found || persisted != lease {
 		return projectPrimaryLeaseAdmission{}, fmt.Errorf("persisted primary lease for project %q differs from its admitted identity", project.Project.ID)
 	}
+	if err := validatePrimaryLeaseProjectEndpoints(result.Record, project.Project, projectEndpoints); err != nil {
+		return projectPrimaryLeaseAdmission{}, fmt.Errorf("validate persisted primary lease for project %q: %w", project.Project.ID, err)
+	}
 	return projectPrimaryLeaseAdmission{
 		Lease:            persisted,
 		Target:           observation.Target,
 		Project:          project,
 		NetworkUpdatedAt: result.Record.UpdatedAt,
 	}, nil
+}
+
+// persistRetainedPrimaryLeaseEndpoints adds a missing full-stage default route without rewriting retained lease evidence.
+func (coordinator *projectPrimaryLeaseCoordinator) persistRetainedPrimaryLeaseEndpoints(
+	ctx context.Context,
+	admission projectPrimaryLeaseAdmission,
+	network state.NetworkRecord,
+	projectEndpoints []state.EndpointReservation,
+) (projectPrimaryLeaseAdmission, error) {
+	at := lifecycleTime(coordinator.now())
+	if at.Before(admission.Project.Project.UpdatedAt) {
+		at = admission.Project.Project.UpdatedAt
+	}
+	if at.Before(network.UpdatedAt) {
+		at = network.UpdatedAt
+	}
+	result, err := coordinator.state.ReplaceProjectNetwork(ctx, state.ReplaceProjectNetworkRequest{
+		ProjectID:               admission.Project.Project.ID,
+		ExpectedNetworkRevision: network.Revision,
+		ExpectedProjectRevision: admission.Project.Revision,
+		Ensures:                 []state.NetworkLeaseEnsure{},
+		Releases:                []state.NetworkLeaseRelease{},
+		Endpoints:               projectEndpoints,
+		At:                      at,
+	})
+	if err != nil {
+		return projectPrimaryLeaseAdmission{}, err
+	}
+	if err := result.Validate(); err != nil {
+		return projectPrimaryLeaseAdmission{}, fmt.Errorf("validate persisted default HTTP endpoint for project %q: %w", admission.Project.Project.ID, err)
+	}
+	persisted, found := primaryLeaseForKey(result.Record.Leases, admission.Lease.Key)
+	if !found || persisted != admission.Lease {
+		return projectPrimaryLeaseAdmission{}, fmt.Errorf("persisted primary lease for project %q differs from its retained identity", admission.Project.Project.ID)
+	}
+	if err := validatePrimaryLeaseProjectEndpoints(result.Record, admission.Project.Project, projectEndpoints); err != nil {
+		return projectPrimaryLeaseAdmission{}, fmt.Errorf("validate persisted default HTTP endpoint for project %q: %w", admission.Project.Project.ID, err)
+	}
+	admission.NetworkUpdatedAt = result.Record.UpdatedAt
+	return admission, nil
 }
 
 // primaryLeaseRequirements preserves every current logical identity while adding the missing project primary.
@@ -485,18 +542,94 @@ func primaryLeaseForKey(leases []identity.Lease, key identity.LeaseKey) (identit
 	return identity.Lease{}, false
 }
 
-// primaryLeaseProjectEndpoints preserves the complete existing reservation delta for one full-stage project.
+// primaryLeaseProjectEndpoints preserves project routes and adds the default HTTP authority only after full setup.
 func primaryLeaseProjectEndpoints(
-	endpoints []state.EndpointReservation,
-	projectID domain.ProjectID,
-) []state.EndpointReservation {
+	network state.NetworkRecord,
+	project domain.ProjectSnapshot,
+) ([]state.EndpointReservation, bool, error) {
 	result := make([]state.EndpointReservation, 0)
-	for _, endpoint := range endpoints {
-		if endpoint.Key.ProjectID == projectID {
+	for _, endpoint := range network.Reservations.Endpoints {
+		if endpoint.Key.ProjectID == project.ID {
 			result = append(result, endpoint)
 		}
 	}
-	return result
+	if network.Stage != state.NetworkStageFull {
+		return result, false, nil
+	}
+
+	key := state.EndpointReservationKey{ProjectID: project.ID, EndpointID: primaryLeaseDefaultHTTPEndpointID}
+	host := project.Slug + ".test"
+	for _, endpoint := range result {
+		if endpoint.Key != key {
+			continue
+		}
+		if endpoint.Protocol != state.EndpointProtocolHTTP || endpoint.Host != host ||
+			endpoint.Public != network.Reservations.Listeners.HTTPS.Advertised || endpoint.Identity != nil {
+			return nil, false, &state.NetworkProjectReplacementConflictError{
+				ProjectID: project.ID,
+				Difference: fmt.Sprintf(
+					"default HTTP endpoint %q conflicts with durable host %q and socket %s",
+					primaryLeaseDefaultHTTPEndpointID,
+					endpoint.Host,
+					endpoint.Public,
+				),
+			}
+		}
+		return result, false, nil
+	}
+	for _, endpoint := range network.Reservations.Endpoints {
+		if endpoint.Host == host {
+			return nil, false, &state.NetworkProjectReplacementConflictError{
+				ProjectID: project.ID,
+				Difference: fmt.Sprintf(
+					"default HTTP host %q is already reserved by endpoint %q for project %q",
+					host,
+					endpoint.Key.EndpointID,
+					endpoint.Key.ProjectID,
+				),
+			}
+		}
+	}
+
+	result = append(result, state.EndpointReservation{
+		Key:        key,
+		Protocol:   state.EndpointProtocolHTTP,
+		Host:       host,
+		Public:     network.Reservations.Listeners.HTTPS.Advertised,
+		Generation: primaryLeaseDefaultHTTPEndpointInitialGeneration,
+	})
+	slices.SortFunc(result, primaryLeaseEndpointCompare)
+	return result, true, nil
+}
+
+// validatePrimaryLeaseProjectEndpoints proves a write retained every requested route and its independent generation.
+func validatePrimaryLeaseProjectEndpoints(
+	network state.NetworkRecord,
+	project domain.ProjectSnapshot,
+	expected []state.EndpointReservation,
+) error {
+	persisted, missing, err := primaryLeaseProjectEndpoints(network, project)
+	if err != nil {
+		return err
+	}
+	if network.Stage == state.NetworkStageFull && missing {
+		return fmt.Errorf("default HTTP endpoint %q is missing", primaryLeaseDefaultHTTPEndpointID)
+	}
+	if !slices.Equal(persisted, expected) {
+		return fmt.Errorf("project endpoint reservations differ from the requested authority")
+	}
+	return nil
+}
+
+// primaryLeaseEndpointCompare mirrors the durable host and composite-key endpoint ordering.
+func primaryLeaseEndpointCompare(left state.EndpointReservation, right state.EndpointReservation) int {
+	if comparison := strings.Compare(left.Host, right.Host); comparison != 0 {
+		return comparison
+	}
+	if comparison := strings.Compare(string(left.Key.ProjectID), string(right.Key.ProjectID)); comparison != 0 {
+		return comparison
+	}
+	return strings.Compare(left.Key.EndpointID, right.Key.EndpointID)
 }
 
 // canonicalPrimaryLeasePorts bounds and orders the exact native ports considered by one admission.
