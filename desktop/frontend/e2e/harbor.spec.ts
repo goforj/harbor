@@ -28,6 +28,75 @@ test('adds the selected project and opens its detail immediately', async ({ page
   await expect(page.getByText('Stopped; routing is not configured yet.', { exact: true })).toBeVisible()
 })
 
+test('offers one repeat-safe network setup action for an empty capable Harbor', async ({ page }) => {
+  await page.addInitScript(({ initialSnapshot, initialStatus }) => {
+    let snapshot = { ...structuredClone(initialSnapshot), projects: [], operations: [], recent_resource_ids: [] }
+    const status = structuredClone(initialStatus)
+    status.capabilities = [...status.capabilities, 'control.network-setup.v1']
+    const testWindow = window as typeof window & { networkSetupCalls: number }
+    testWindow.networkSetupCalls = 0
+    window.go = {
+      main: {
+        App: {
+          async AddProject() {
+            return { canceled: true }
+          },
+          async OpenResource() {},
+          async RemoveProject() {
+            throw new Error('Project removal is not exercised in this setup test')
+          },
+          async SetupNetwork() {
+            testWindow.networkSetupCalls += 1
+            const revision = snapshot.sequence + 1
+            const completedAt = new Date().toISOString()
+            const result = {
+              operation: {
+                id: `operation-${revision}-network-setup`,
+                intent_id: 'intent-network-setup',
+                kind: 'network.setup',
+                state: 'succeeded',
+                phase: 'completed',
+                requested_at: completedAt,
+                started_at: completedAt,
+                finished_at: completedAt,
+              },
+              revision,
+            }
+            snapshot = { ...snapshot, sequence: revision }
+            status.sequence = revision
+            return result
+          },
+          async StartProject() {
+            throw new Error('Project start is not exercised in this setup test')
+          },
+          async StopProject() {
+            throw new Error('Project stop is not exercised in this setup test')
+          },
+          async Status() {
+            return structuredClone(status)
+          },
+          async Snapshot() {
+            return structuredClone(snapshot)
+          },
+        },
+      },
+    }
+    window.runtime = {
+      EventsOn: () => () => undefined,
+      EventsOff: () => undefined,
+    }
+  }, { initialSnapshot: harborWireFixture.snapshot, initialStatus: harborWireFixture.status })
+
+  await page.goto('/#/overview')
+
+  await expect(page.getByText('This action is safe to run again.', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'Set up networking', exact: true }).click()
+
+  await expect(page.getByText('Harbor networking is ready.', { exact: true })).toBeVisible()
+  await expect(page.getByText('The local network foundation was verified or completed.', { exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { networkSetupCalls: number }).networkSetupCalls)).toBe(1)
+})
+
 test('starts and stops projects from their selected detail view', async ({ page }) => {
   await page.goto('/#/projects/reports')
 
@@ -104,6 +173,9 @@ test('leaves project detail when an active removal completes through a snapshot 
               listeners.get('harbor:snapshot')?.(structuredClone(snapshot))
             }, 50)
             return result
+          },
+          async SetupNetwork() {
+            throw new Error('Network setup is not exercised in this removal test')
           },
           async StartProject(projectId, intentId) {
             const result = structuredClone(initialStart)
@@ -306,6 +378,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },
+          async SetupNetwork() {
+            throw new Error('Network setup is not exercised in this connection test')
+          },
           async StartProject() {
             throw new Error('Project start is not exercised in this connection test')
           },
@@ -378,6 +453,9 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
           async OpenResource() {},
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
+          },
+          async SetupNetwork() {
+            throw new Error('Network setup is not exercised in this connection test')
           },
           async StartProject() {
             throw new Error('Project start is not exercised in this connection test')

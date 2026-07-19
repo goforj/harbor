@@ -114,6 +114,11 @@ export interface ProjectLifecycleOperation {
   revision: number
 }
 
+export interface NetworkSetupOperation {
+  operation: Operation
+  revision: number
+}
+
 export interface Problem {
   code: string
   message: string

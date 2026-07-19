@@ -6,6 +6,7 @@ import type {
   ConnectionState,
   DaemonStatus,
   HarborSnapshot,
+  NetworkSetupOperation,
   Operation,
   OperationState,
   ProjectLifecycleOperation,
@@ -41,6 +42,9 @@ export const useHarborStore = defineStore('harbor', () => {
   const snapshotStale = ref(true)
   const refreshing = ref(false)
   const addingProject = ref(false)
+  const settingUpNetwork = ref(false)
+  const networkSetupResult = ref<NetworkSetupOperation | null>(null)
+  const networkSetupError = ref<string | null>(null)
   const removingProjectId = ref<string | null>(null)
   const projectLifecycleProjectId = ref<string | null>(null)
   const projectLifecycleErrors = ref<Record<string, string>>({})
@@ -87,6 +91,9 @@ export const useHarborStore = defineStore('harbor', () => {
     })
   })
   const operations = computed(() => snapshot.value?.operations ?? [])
+  const networkSetupOnboarding = computed(() => snapshot.value !== null
+    && projects.value.length === 0
+    && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true)
   const attentionCount = computed(() => projects.value.filter((project) =>
     project.state === 'failed' || project.state === 'degraded' || project.state === 'unavailable',
   ).length)
@@ -318,6 +325,35 @@ export const useHarborStore = defineStore('harbor', () => {
     }
     finally {
       addingProject.value = false
+    }
+  }
+
+  async function setupNetwork(): Promise<NetworkSetupOperation | null> {
+    if (settingUpNetwork.value) {
+      return null
+    }
+
+    settingUpNetwork.value = true
+    networkSetupError.value = null
+    try {
+      const result = await harborBridge.setupNetwork()
+      if (result.operation.kind !== 'network.setup'
+        || result.operation.project_id
+        || result.operation.state !== 'succeeded') {
+        throw new Error('Harbor returned incomplete network setup progress.')
+      }
+      networkSetupResult.value = result
+      return result
+    }
+    catch (cause) {
+      networkSetupError.value = cause instanceof Error
+        ? cause.message
+        : 'Harbor could not set up local networking.'
+      return null
+    }
+    finally {
+      await refresh()
+      settingUpNetwork.value = false
     }
   }
 
@@ -696,6 +732,9 @@ export const useHarborStore = defineStore('harbor', () => {
     snapshotStale,
     refreshing,
     addingProject,
+    settingUpNetwork,
+    networkSetupResult,
+    networkSetupError,
     removingProjectId,
     projectLifecycleProjectId,
     projectLifecycleErrors,
@@ -709,6 +748,7 @@ export const useHarborStore = defineStore('harbor', () => {
     resources,
     recentResources,
     operations,
+    networkSetupOnboarding,
     attentionCount,
     runningCount,
     refresh,
@@ -717,6 +757,7 @@ export const useHarborStore = defineStore('harbor', () => {
     projectById,
     serviceById,
     addProject,
+    setupNetwork,
     projectRemovalNotice,
     removeProject,
     activeProjectLifecycle,

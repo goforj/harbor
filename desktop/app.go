@@ -10,6 +10,9 @@ import (
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/launcher"
+	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -20,6 +23,7 @@ const (
 	desktopPollInterval   = 2 * time.Second
 	connectionEventName   = desktopwire.ConnectionEventName
 	snapshotEventName     = desktopwire.SnapshotEventName
+	networkSetupIntentID  = domain.IntentID("intent-network-setup")
 )
 
 var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
@@ -29,6 +33,9 @@ type controlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
+	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
+	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
+	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
@@ -50,6 +57,14 @@ type directoryChooser func(context.Context, runtime.OpenDialogOptions) (string, 
 
 // waitFunc makes reconnect and polling boundaries cancellation-aware and deterministic in tests.
 type waitFunc func(context.Context, time.Duration) bool
+
+// networkSetupApprovalRunner performs one exact interactive helper attempt for a daemon-selected setup revision.
+type networkSetupApprovalRunner interface {
+	Execute(context.Context, networksetupapproval.Request) (networksetupapproval.Outcome, error)
+}
+
+// networkSetupApprovalFactory binds the current authenticated desktop session only when the user requests setup.
+type networkSetupApprovalFactory func(networksetupapproval.Client) networkSetupApprovalRunner
 
 // ConnectionState identifies the desktop backend's current relationship to harbord.
 type ConnectionState = desktopwire.ConnectionState
@@ -83,6 +98,7 @@ type App struct {
 	events         desktopwire.Emitter
 	open           resourceOpener
 	choose         directoryChooser
+	setupApproval  networkSetupApprovalFactory
 	presentation   *presentationController
 	wait           waitFunc
 	reconnectDelay time.Duration
@@ -100,14 +116,105 @@ func NewApp() *App {
 // newApp keeps operating-system and timing effects replaceable without making them optional in production.
 func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait waitFunc) *App {
 	return &App{
-		clientFactory:  factory,
-		events:         desktopwire.NewEmitter(emit),
-		open:           open,
-		choose:         runtime.OpenDirectoryDialog,
+		clientFactory: factory,
+		events:        desktopwire.NewEmitter(emit),
+		open:          open,
+		choose:        runtime.OpenDirectoryDialog,
+		setupApproval: func(client networksetupapproval.Client) networkSetupApprovalRunner {
+			return networksetupapproval.New(
+				client,
+				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
+			)
+		},
 		presentation:   newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
 		wait:           wait,
 		reconnectDelay: desktopReconnectDelay,
 		pollInterval:   desktopPollInterval,
+	}
+}
+
+// SetupNetwork starts or resumes Harbor's singleton network setup and opens native consent only when approval is required.
+func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.NetworkSetupOperation{}, err
+	}
+
+	setup, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: networkSetupIntentID})
+	if err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("start Harbor network setup: %w", err)
+	}
+	if err := setup.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup: %w", err)
+	}
+	if setup.Operation.IntentID != networkSetupIntentID {
+		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup: daemon result belongs to another intent")
+	}
+
+	switch setup.Operation.State {
+	case domain.OperationSucceeded:
+		return setup, nil
+	case domain.OperationRequiresApproval:
+		return a.approveNetworkSetup(ctx, client, setup)
+	default:
+		return control.NetworkSetupOperation{}, fmt.Errorf("Harbor network setup is %s", setup.Operation.State)
+	}
+}
+
+// approveNetworkSetup delegates only the exact daemon-selected revision to the native approval boundary.
+func (a *App) approveNetworkSetup(
+	ctx context.Context,
+	client controlClient,
+	setup control.NetworkSetupOperation,
+) (control.NetworkSetupOperation, error) {
+	outcome, err := a.setupApproval(client).Execute(ctx, networksetupapproval.Request{
+		OperationID:               setup.Operation.ID,
+		ExpectedOperationRevision: setup.Revision,
+	})
+	if err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("approve Harbor network setup: %w", err)
+	}
+	if outcome.State != networksetupapproval.Succeeded {
+		return control.NetworkSetupOperation{}, networkSetupApprovalError(outcome)
+	}
+	if outcome.Confirmation == nil || outcome.HelperFailure != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("approve Harbor network setup: successful approval returned inconsistent evidence")
+	}
+
+	confirmation := *outcome.Confirmation
+	if err := confirmation.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup confirmation: %w", err)
+	}
+	if confirmation.Operation.ID != setup.Operation.ID ||
+		confirmation.Operation.IntentID != setup.Operation.IntentID ||
+		confirmation.NetworkRevision != setup.Revision+2 ||
+		confirmation.Revision != setup.Revision+3 {
+		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup confirmation: result crossed the selected operation revision")
+	}
+
+	result := control.NetworkSetupOperation{
+		Operation: confirmation.Operation,
+		Revision:  confirmation.Revision,
+	}
+	return result, nil
+}
+
+// networkSetupApprovalError preserves retry guidance without exposing helper tickets or privileged command details.
+func networkSetupApprovalError(outcome networksetupapproval.Outcome) error {
+	switch outcome.State {
+	case networksetupapproval.Declined:
+		return errors.New("Harbor network setup approval was declined; setup is safe to retry")
+	case networksetupapproval.Unavailable:
+		return errors.New("Harbor network setup approval is unavailable on this installation")
+	case networksetupapproval.HelperFailed:
+		if outcome.HelperFailure == nil {
+			return errors.New("Harbor network setup helper failed without a problem description")
+		}
+		return fmt.Errorf("Harbor network setup helper failed (%s): %s", outcome.HelperFailure.Code, outcome.HelperFailure.Message)
+	case networksetupapproval.Indeterminate:
+		return errors.New("Harbor network setup may have changed the host; refresh before retrying")
+	default:
+		return fmt.Errorf("Harbor network setup approval returned unsupported state %q", outcome.State)
 	}
 }
 

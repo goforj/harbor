@@ -17,6 +17,8 @@ const (
 	MethodOpenResource = "OpenResource"
 	// MethodRemoveProject is the generated Wails method that starts or resumes one project removal intent.
 	MethodRemoveProject = "RemoveProject"
+	// MethodSetupNetwork is the generated Wails method that completes the machine-global network foundation.
+	MethodSetupNetwork = "SetupNetwork"
 	// MethodStartProject is the generated Wails method that starts one registered project.
 	MethodStartProject = "StartProject"
 	// MethodStopProject is the generated Wails method that stops one registered project.
@@ -56,6 +58,7 @@ type AppContract interface {
 	AddProject() (AddProjectResult, error)
 	OpenResource(projectID string, resourceID string) error
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
+	SetupNetwork() (control.NetworkSetupOperation, error)
 	Snapshot() (domain.Snapshot, error)
 	StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	Status() (control.DaemonStatus, error)
@@ -76,6 +79,7 @@ func MethodContracts() []MethodContract {
 		MethodAddProject:    {},
 		MethodOpenResource:  []string{"projectId", "resourceId"},
 		MethodRemoveProject: []string{"projectId", "intentId"},
+		MethodSetupNetwork:  {},
 		MethodSnapshot:      []string{},
 		MethodStartProject:  []string{"projectId", "intentId"},
 		MethodStatus:        []string{},

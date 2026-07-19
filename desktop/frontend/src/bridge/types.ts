@@ -1,4 +1,4 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, Operation, Problem, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
+import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, Problem, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
@@ -6,6 +6,7 @@ export interface HarborWireFixture {
     open_resource: 'OpenResource'
     remove_project: 'RemoveProject'
     snapshot: 'Snapshot'
+    setup_network: 'SetupNetwork'
     start_project: 'StartProject'
     status: 'Status'
     stop_project: 'StopProject'
@@ -23,6 +24,7 @@ export interface HarborWireFixture {
   snapshot: HarborSnapshot
   add_project: AddProjectResult & { canceled: false; registration: NonNullable<AddProjectResult['registration']> }
   remove_project: ProjectUnregistration & { operation: Operation & { state: 'requires_approval' } }
+  setup_network: NetworkSetupOperation & { operation: Operation & { kind: 'network.setup'; state: 'succeeded' } }
   start_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.start'; state: 'queued' } }
   stop_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.stop'; state: 'queued' } }
   terminal_operation: Operation & {
@@ -39,6 +41,7 @@ export interface HarborBridge {
   getSnapshot(): Promise<HarborSnapshot>
   openResource(projectId: string, resourceId: string): Promise<void>
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
+  setupNetwork(): Promise<NetworkSetupOperation>
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   subscribe(listener: (snapshot: HarborSnapshot) => void): () => void

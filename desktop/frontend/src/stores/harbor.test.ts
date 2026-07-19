@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
-import type { ConnectionEvent, DaemonStatus, HarborSnapshot, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
+import type { ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
 function deferred<T>() {
@@ -18,6 +18,22 @@ function statusWithSequence(sequence: number): DaemonStatus {
   const status = mockStatus()
   status.sequence = sequence
   return status
+}
+
+function completedNetworkSetup(): NetworkSetupOperation {
+  return {
+    operation: {
+      id: 'operation-network-setup',
+      intent_id: 'intent-network-setup',
+      kind: 'network.setup',
+      state: 'succeeded',
+      phase: 'completed',
+      requested_at: '2026-07-19T12:00:00Z',
+      started_at: '2026-07-19T12:00:01Z',
+      finished_at: '2026-07-19T12:00:02Z',
+    },
+    revision: 43,
+  }
 }
 
 describe('Harbor store', () => {
@@ -332,6 +348,80 @@ describe('Harbor store', () => {
     await expect(store.addProject()).resolves.toBeNull()
     expect(store.projectRegistrationError).toBe('Harbor returned an incomplete project registration.')
     expect(store.addingProject).toBe(false)
+  })
+
+  it('shows network setup only as an empty-project capability hint', async () => {
+    const supported = mockStatus()
+    supported.capabilities.push('control.network-setup.v1')
+    const empty = mockSnapshot()
+    empty.projects = []
+    const withProject = mockSnapshot()
+    withProject.sequence = 43
+    const unsupported = mockStatus()
+    unsupported.sequence = 44
+    const laterEmpty = mockSnapshot()
+    laterEmpty.sequence = 44
+    laterEmpty.projects = []
+    vi.spyOn(harborBridge, 'getStatus')
+      .mockResolvedValueOnce(supported)
+      .mockResolvedValueOnce({ ...supported, sequence: 43 })
+      .mockResolvedValueOnce(unsupported)
+    vi.spyOn(harborBridge, 'getSnapshot')
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(withProject)
+      .mockResolvedValueOnce(laterEmpty)
+    const store = useHarborStore()
+
+    expect(store.networkSetupOnboarding).toBe(false)
+
+    await store.refresh()
+    expect(store.networkSetupOnboarding).toBe(true)
+
+    await store.refresh()
+    expect(store.networkSetupOnboarding).toBe(false)
+
+    await store.refresh()
+    expect(store.networkSetupOnboarding).toBe(false)
+  })
+
+  it('serializes network setup, retains successful progress, and refreshes authoritative state', async () => {
+    const store = useHarborStore()
+    const pending = deferred<NetworkSetupOperation>()
+    const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork').mockReturnValueOnce(pending.promise)
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    const setup = store.setupNetwork()
+    expect(store.settingUpNetwork).toBe(true)
+    await expect(store.setupNetwork()).resolves.toBeNull()
+    expect(setupNetwork).toHaveBeenCalledOnce()
+
+    const result = completedNetworkSetup()
+    pending.resolve(result)
+    await expect(setup).resolves.toEqual(result)
+
+    expect(store.settingUpNetwork).toBe(false)
+    expect(store.networkSetupResult).toEqual(result)
+    expect(store.networkSetupError).toBeNull()
+    expect(getSnapshot).toHaveBeenCalledOnce()
+  })
+
+  it('reports rejected or incomplete network setup and still refreshes', async () => {
+    const store = useHarborStore()
+    const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork')
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    setupNetwork.mockRejectedValueOnce(new Error('administrator approval was declined'))
+    await expect(store.setupNetwork()).resolves.toBeNull()
+    expect(store.networkSetupError).toBe('administrator approval was declined')
+    expect(getSnapshot).toHaveBeenCalledTimes(1)
+
+    const incomplete = completedNetworkSetup()
+    incomplete.operation.state = 'running'
+    setupNetwork.mockResolvedValueOnce(incomplete)
+    await expect(store.setupNetwork()).resolves.toBeNull()
+    expect(store.networkSetupError).toBe('Harbor returned incomplete network setup progress.')
+    expect(store.settingUpNetwork).toBe(false)
+    expect(getSnapshot).toHaveBeenCalledTimes(2)
   })
 
   it('starts a project with a client-owned intent and adopts the authoritative lifecycle snapshot', async () => {

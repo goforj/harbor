@@ -11,6 +11,8 @@ import (
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -27,6 +29,15 @@ type fakeControlClient struct {
 	registration      control.ProjectRegistration
 	registerErr       error
 	registerPath      string
+	networkSetup      control.NetworkSetupOperation
+	networkSetupErr   error
+	networkSetupReq   control.StartNetworkSetupRequest
+	setupPreparation  control.NetworkSetupApprovalPreparation
+	setupPrepareErr   error
+	setupPrepareReq   control.PrepareNetworkSetupApprovalRequest
+	setupConfirmation control.NetworkSetupApprovalConfirmation
+	setupConfirmErr   error
+	setupConfirmReq   control.ConfirmNetworkSetupApprovalRequest
 	startLifecycle    control.ProjectLifecycleOperation
 	startErr          error
 	startRequest      control.StartProjectRequest
@@ -39,6 +50,19 @@ type fakeControlClient struct {
 	done              chan struct{}
 	closeOnce         sync.Once
 	closeCount        atomic.Int32
+}
+
+// fakeNetworkSetupApprovalRunner records one exact setup selection and returns its configured bounded outcome.
+type fakeNetworkSetupApprovalRunner struct {
+	requests []networksetupapproval.Request
+	outcome  networksetupapproval.Outcome
+	err      error
+}
+
+// Execute records the selected setup revision without opening native consent.
+func (runner *fakeNetworkSetupApprovalRunner) Execute(_ context.Context, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+	runner.requests = append(runner.requests, request)
+	return runner.outcome, runner.err
 }
 
 // newFakeControlClient creates a connected test client with a valid replacement snapshot.
@@ -54,11 +78,36 @@ func newFakeControlClient() *fakeControlClient {
 		},
 		snapshot:       testSnapshot(),
 		registration:   testRegistration(),
+		networkSetup:   testNetworkSetupOperation(domain.OperationSucceeded, 10),
 		startLifecycle: testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
 		stopLifecycle:  testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
 		unregistration: testUnregistration(),
 		done:           make(chan struct{}),
 	}
+}
+
+// StartNetworkSetup records the singleton setup identity and returns the configured durable operation.
+func (client *fakeControlClient) StartNetworkSetup(_ context.Context, request control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.networkSetupReq = request
+	return client.networkSetup, client.networkSetupErr
+}
+
+// PrepareNetworkSetupApproval records the selected operation revision for executor-backed tests.
+func (client *fakeControlClient) PrepareNetworkSetupApproval(_ context.Context, request control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.setupPrepareReq = request
+	return client.setupPreparation, client.setupPrepareErr
+}
+
+// ConfirmNetworkSetupApproval records the helper evidence selected for durable confirmation.
+func (client *fakeControlClient) ConfirmNetworkSetupApproval(_ context.Context, request control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.setupConfirmReq = request
+	return client.setupConfirmation, client.setupConfirmErr
 }
 
 // Status returns the configured daemon status or test failure.
@@ -132,7 +181,7 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.presentation == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.presentation == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
 }
@@ -537,6 +586,186 @@ func TestSnapshotRejectsInvalidDaemonState(t *testing.T) {
 
 	if _, err := app.Snapshot(); err == nil || !strings.Contains(err.Error(), "validate Harbor snapshot") {
 		t.Fatalf("Snapshot() error = %v, want validation failure", err)
+	}
+}
+
+// TestSetupNetworkReplaysCompletedOperationWithoutConsent keeps an idempotent desktop retry entirely unprivileged.
+func TestSetupNetworkReplaysCompletedOperationWithoutConsent(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+		t.Fatal("setup approval was constructed for a completed operation")
+		return nil
+	}
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if result.Operation.State != domain.OperationSucceeded || result.Revision != client.networkSetup.Revision {
+		t.Fatalf("SetupNetwork() = %#v", result)
+	}
+	if client.networkSetupReq.IntentID != networkSetupIntentID {
+		t.Fatalf("setup intent = %q, want %q", client.networkSetupReq.IntentID, networkSetupIntentID)
+	}
+}
+
+// TestSetupNetworkApprovesOnlyTheSelectedRevision verifies the Wails action delegates the exact daemon operation boundary.
+func TestSetupNetworkApprovesOnlyTheSelectedRevision(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+	runner := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{
+		State:        networksetupapproval.Succeeded,
+		Confirmation: &confirmation,
+	}}
+	app.setupApproval = func(got networksetupapproval.Client) networkSetupApprovalRunner {
+		if got != client {
+			t.Fatalf("approval client = %T, want installed client", got)
+		}
+		return runner
+	}
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if len(runner.requests) != 1 ||
+		runner.requests[0].OperationID != client.networkSetup.Operation.ID ||
+		runner.requests[0].ExpectedOperationRevision != client.networkSetup.Revision {
+		t.Fatalf("approval requests = %#v", runner.requests)
+	}
+	if result.Operation.ID != confirmation.Operation.ID ||
+		result.Operation.IntentID != confirmation.Operation.IntentID ||
+		result.Operation.State != confirmation.Operation.State ||
+		result.Revision != confirmation.Revision {
+		t.Fatalf("SetupNetwork() = %#v, want confirmed operation %#v", result, confirmation)
+	}
+}
+
+// TestSetupNetworkPreservesSafeApprovalOutcomes verifies native consent failures remain actionable without claiming completion.
+func TestSetupNetworkPreservesSafeApprovalOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		outcome networksetupapproval.Outcome
+		want    string
+	}{
+		{name: "declined", outcome: networksetupapproval.Outcome{State: networksetupapproval.Declined}, want: "safe to retry"},
+		{name: "unavailable", outcome: networksetupapproval.Outcome{State: networksetupapproval.Unavailable}, want: "unavailable"},
+		{
+			name: "helper failed",
+			outcome: networksetupapproval.Outcome{
+				State: networksetupapproval.HelperFailed,
+				HelperFailure: &networksetupapproval.HelperFailure{
+					Code:    helper.ErrorCodeMutationFailed,
+					Message: "loopback setup failed",
+				},
+			},
+			want: "loopback setup failed",
+		},
+		{name: "helper failed without description", outcome: networksetupapproval.Outcome{State: networksetupapproval.HelperFailed}, want: "without a problem description"},
+		{name: "indeterminate", outcome: networksetupapproval.Outcome{State: networksetupapproval.Indeterminate}, want: "refresh before retrying"},
+		{name: "unsupported", outcome: networksetupapproval.Outcome{}, want: "unsupported state"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+			app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+				return &fakeNetworkSetupApprovalRunner{outcome: test.outcome}
+			}
+			_, err := app.SetupNetwork()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkRejectsInconsistentDaemonAndApprovalResults covers every response boundary before the UI can claim readiness.
+func TestSetupNetworkRejectsInconsistentDaemonAndApprovalResults(t *testing.T) {
+	t.Parallel()
+
+	approvalErr := errors.New("approval failed")
+	tests := []struct {
+		name   string
+		mutate func(*fakeControlClient, *fakeNetworkSetupApprovalRunner)
+		want   string
+	}{
+		{name: "start failure", mutate: func(client *fakeControlClient, _ *fakeNetworkSetupApprovalRunner) {
+			client.networkSetupErr = errors.New("start failed")
+		}, want: "start failed"},
+		{name: "invalid start", mutate: func(client *fakeControlClient, _ *fakeNetworkSetupApprovalRunner) {
+			client.networkSetup = control.NetworkSetupOperation{}
+		}, want: "validate Harbor network setup"},
+		{name: "wrong intent", mutate: func(client *fakeControlClient, _ *fakeNetworkSetupApprovalRunner) {
+			client.networkSetup.Operation.IntentID = "intent-other"
+		}, want: "another intent"},
+		{name: "unsupported operation state", mutate: func(client *fakeControlClient, _ *fakeNetworkSetupApprovalRunner) {
+			client.networkSetup = testNetworkSetupOperation(domain.OperationRunning, 7)
+		}, want: "is running"},
+		{name: "approval failure", mutate: func(_ *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			runner.err = approvalErr
+		}, want: "approval failed"},
+		{name: "missing confirmation", mutate: func(_ *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			runner.outcome = networksetupapproval.Outcome{State: networksetupapproval.Succeeded}
+		}, want: "inconsistent evidence"},
+		{name: "unexpected helper failure", mutate: func(_ *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			confirmation := testNetworkSetupConfirmation(testNetworkSetupOperation(domain.OperationRequiresApproval, 7), 9, 10)
+			runner.outcome = networksetupapproval.Outcome{
+				State:         networksetupapproval.Succeeded,
+				Confirmation:  &confirmation,
+				HelperFailure: &networksetupapproval.HelperFailure{},
+			}
+		}, want: "inconsistent evidence"},
+		{name: "invalid confirmation", mutate: func(_ *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			confirmation := control.NetworkSetupApprovalConfirmation{}
+			runner.outcome = networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "validate Harbor network setup confirmation"},
+		{name: "crossed operation", mutate: func(client *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+			confirmation.Operation.ID = "operation-other"
+			runner.outcome = networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed the selected operation"},
+		{name: "crossed intent", mutate: func(client *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+			confirmation.Operation.IntentID = "intent-other"
+			runner.outcome = networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed the selected operation"},
+		{name: "crossed network revision", mutate: func(client *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			confirmation := testNetworkSetupConfirmation(client.networkSetup, 8, 9)
+			runner.outcome = networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed the selected operation"},
+		{name: "crossed operation revision", mutate: func(client *fakeControlClient, runner *fakeNetworkSetupApprovalRunner) {
+			confirmation := testNetworkSetupConfirmation(client.networkSetup, 10, 11)
+			runner.outcome = networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed the selected operation"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+			confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+			runner := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{
+				State:        networksetupapproval.Succeeded,
+				Confirmation: &confirmation,
+			}}
+			test.mutate(client, runner)
+			app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner { return runner }
+			_, err := app.SetupNetwork()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -1046,6 +1275,48 @@ func testSnapshot() domain.Snapshot {
 		},
 		Operations:        []domain.Operation{},
 		RecentResourceIDs: []domain.ResourceRef{{ProjectID: "orders", ResourceID: "web"}},
+	}
+}
+
+// testNetworkSetupOperation returns one valid singleton setup operation at the requested lifecycle state and revision.
+func testNetworkSetupOperation(state domain.OperationState, revision domain.Sequence) control.NetworkSetupOperation {
+	requestedAt := time.Date(2026, time.July, 18, 12, 10, 0, 0, time.UTC)
+	startedAt := requestedAt.Add(time.Second)
+	finishedAt := requestedAt.Add(2 * time.Second)
+	operation := domain.Operation{
+		ID:          "operation-network-setup",
+		IntentID:    networkSetupIntentID,
+		Kind:        domain.OperationKindNetworkSetup,
+		State:       state,
+		Phase:       string(state),
+		RequestedAt: requestedAt,
+	}
+	switch state {
+	case domain.OperationRunning, domain.OperationRequiresApproval:
+		operation.StartedAt = &startedAt
+	case domain.OperationSucceeded:
+		operation.StartedAt = &startedAt
+		operation.FinishedAt = &finishedAt
+	}
+	return control.NetworkSetupOperation{Operation: operation, Revision: revision}
+}
+
+// testNetworkSetupConfirmation advances one approval operation to a valid completed confirmation.
+func testNetworkSetupConfirmation(
+	setup control.NetworkSetupOperation,
+	networkRevision domain.Sequence,
+	revision domain.Sequence,
+) control.NetworkSetupApprovalConfirmation {
+	operation := setup.Operation
+	finishedAt := operation.RequestedAt.Add(2 * time.Second)
+	operation.State = domain.OperationSucceeded
+	operation.Phase = string(domain.OperationSucceeded)
+	operation.FinishedAt = &finishedAt
+	return control.NetworkSetupApprovalConfirmation{
+		Operation:       operation,
+		Revision:        revision,
+		NetworkRevision: networkRevision,
+		Pool:            "127.42.0.0/29",
 	}
 }
 

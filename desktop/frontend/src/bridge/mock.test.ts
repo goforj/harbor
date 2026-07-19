@@ -30,6 +30,7 @@ describe('Harbor mock bridge', () => {
       open_resource: 'OpenResource',
       remove_project: 'RemoveProject',
       snapshot: 'Snapshot',
+      setup_network: 'SetupNetwork',
       start_project: 'StartProject',
       status: 'Status',
       stop_project: 'StopProject',
@@ -49,6 +50,26 @@ describe('Harbor mock bridge', () => {
     expect(second.projects[0].name).toBe('Orders API')
     expect(mockSnapshot().projects[0].name).toBe('Orders API')
     expect(mockStatus()).toMatchObject({ snapshot_schema_version: 1, protocol: { major: 1, minor: 0 } })
+  })
+
+  it('completes mock network setup once and safely replays the result', async () => {
+    const bridge = createMockBridge()
+
+    const completed = await bridge.setupNetwork()
+    const replayed = await bridge.setupNetwork()
+    const snapshot = await bridge.getSnapshot()
+
+    expect(completed).toMatchObject({
+      revision: 43,
+      operation: {
+        intent_id: 'intent-network-setup',
+        kind: 'network.setup',
+        state: 'succeeded',
+      },
+    })
+    expect(replayed).toEqual(completed)
+    expect(snapshot.sequence).toBe(43)
+    expect(snapshot.operations).not.toContainEqual(expect.objectContaining({ kind: 'network.setup' }))
   })
 
   it('registers the generated pending project once and replays it without duplication', async () => {

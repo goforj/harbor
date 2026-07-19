@@ -6,9 +6,11 @@ import {
   Activity,
   ArrowUpRight,
   Boxes,
+  CircleCheck,
   Clock3,
   FolderKanban,
   FolderPlus,
+  Network,
   RefreshCw,
   Server,
   TriangleAlert,
@@ -47,6 +49,15 @@ async function addProject() {
   })
   await router.push(`/projects/${encodeURIComponent(registration.project.id)}`)
 }
+
+async function setupNetwork() {
+  const result = await store.setupNetwork()
+  if (result) {
+    toast.success('Harbor networking is ready', {
+      description: 'The local network foundation was verified or completed.',
+    })
+  }
+}
 </script>
 
 <template>
@@ -83,6 +94,38 @@ async function addProject() {
           <p class="mt-0.5 text-xs text-muted-foreground">{{ store.error }}</p>
         </div>
       </div>
+
+      <Card v-if="store.networkSetupOnboarding" class="gap-0 rounded-lg py-0 shadow-none">
+        <CardHeader class="border-b px-4 py-3">
+          <div class="flex items-center gap-2">
+            <Network class="size-4 text-muted-foreground" aria-hidden="true" />
+            <CardTitle class="text-sm">Local networking</CardTitle>
+          </div>
+          <p class="text-xs text-muted-foreground">Verify or complete Harbor’s local network foundation. This action is safe to run again.</p>
+        </CardHeader>
+        <CardContent class="flex flex-col items-start gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0 text-sm">
+            <p v-if="store.networkSetupResult" class="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-400">
+              <CircleCheck class="size-4 shrink-0" aria-hidden="true" />
+              Harbor networking is ready.
+            </p>
+            <template v-else>
+              <p class="font-medium">Set up networking before you need project routes.</p>
+              <p v-if="store.networkSetupError" class="mt-1 text-xs text-destructive" role="alert">{{ store.networkSetupError }}</p>
+            </template>
+          </div>
+          <Button
+            v-if="!store.networkSetupResult"
+            class="shrink-0"
+            :disabled="store.settingUpNetwork || store.connectionState !== 'connected'"
+            @click="setupNetwork"
+          >
+            <Spinner v-if="store.settingUpNetwork" aria-hidden="true" />
+            <Network v-else class="size-4" aria-hidden="true" />
+            {{ store.settingUpNetwork ? 'Setting up…' : 'Set up networking' }}
+          </Button>
+        </CardContent>
+      </Card>
 
       <section aria-label="Harbor snapshot summary" class="grid grid-cols-2 overflow-hidden rounded-lg border lg:grid-cols-4">
         <div class="border-b p-4 lg:border-r lg:border-b-0">

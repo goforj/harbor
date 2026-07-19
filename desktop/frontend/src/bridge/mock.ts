@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, Operation, ProjectLifecycleOperation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 
@@ -9,6 +9,7 @@ export function createMockBridge(): HarborBridge {
   const status: DaemonStatus = structuredClone(fixture.status)
   const removals = new Map<string, ProjectUnregistration>()
   const lifecycles = new Map<string, ProjectLifecycleOperation>()
+  let networkSetup: NetworkSetupOperation | null = null
 
   async function changeProjectLifecycle(projectId: string, intentId: string, action: 'start' | 'stop') {
     const previous = lifecycles.get(intentId)
@@ -118,6 +119,30 @@ export function createMockBridge(): HarborBridge {
       const result = { operation, revision }
       removals.set(intentId, structuredClone(result))
       return result
+    },
+    async setupNetwork() {
+      if (networkSetup) {
+        return structuredClone(networkSetup)
+      }
+
+      const revision = snapshot.sequence + 1
+      const completedAt = new Date().toISOString()
+      networkSetup = {
+        operation: {
+          id: `operation-${revision}-network-setup`,
+          intent_id: 'intent-network-setup',
+          kind: 'network.setup',
+          state: 'succeeded',
+          phase: 'completed',
+          requested_at: completedAt,
+          started_at: completedAt,
+          finished_at: completedAt,
+        },
+        revision,
+      }
+      snapshot.sequence = revision
+      status.sequence = revision
+      return structuredClone(networkSetup)
     },
     startProject(projectId, intentId) {
       return changeProjectLifecycle(projectId, intentId, 'start')
