@@ -26,17 +26,25 @@ type outputLine struct {
 	bytes  []byte
 }
 
-// outputRelay isolates child pipes from slow UI or log writers through one bounded line queue.
+// outputRelay isolates child pipes and durable diagnostics from slow caller-owned writers.
 type outputRelay struct {
-	stdout  io.Writer
-	stderr  io.Writer
-	queue   chan outputLine
-	dropped atomic.Uint64
-	once    sync.Once
+	stdout      io.Writer
+	stderr      io.Writer
+	trace       io.WriteCloser
+	queue       chan outputLine
+	callerQueue chan outputLine
+	traceDone   chan struct{}
+	dropped     atomic.Uint64
+	once        sync.Once
 }
 
 // newOutputRelay starts one serializer so stdout and stderr cannot interleave bytes when they share a writer.
 func newOutputRelay(stdout, stderr io.Writer, bufferLines int) *outputRelay {
+	return newOutputRelayWithTrace(stdout, stderr, nil, bufferLines)
+}
+
+// newOutputRelayWithTrace retains an owned launch trace without making project progress depend on a caller-owned writer.
+func newOutputRelayWithTrace(stdout, stderr io.Writer, trace io.WriteCloser, bufferLines int) *outputRelay {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -44,15 +52,19 @@ func newOutputRelay(stdout, stderr io.Writer, bufferLines int) *outputRelay {
 		stderr = io.Discard
 	}
 	relay := &outputRelay{
-		stdout: stdout,
-		stderr: stderr,
-		queue:  make(chan outputLine, bufferLines),
+		stdout:      stdout,
+		stderr:      stderr,
+		trace:       trace,
+		queue:       make(chan outputLine, bufferLines),
+		callerQueue: make(chan outputLine, bufferLines),
+		traceDone:   make(chan struct{}),
 	}
+	go relay.deliverCallerOutput()
 	go relay.deliver()
 	return relay
 }
 
-// offer preserves child progress by dropping complete lines after the caller-owned output queue fills.
+// offer preserves child progress by dropping complete lines after the bounded diagnostic queue fills.
 func (relay *outputRelay) offer(stream outputStream, bytes []byte) {
 	line := outputLine{stream: stream, bytes: append([]byte(nil), bytes...)}
 	select {
@@ -66,14 +78,39 @@ func (relay *outputRelay) offer(stream outputStream, bytes []byte) {
 func (relay *outputRelay) finish() {
 	relay.once.Do(func() {
 		close(relay.queue)
+		<-relay.traceDone
 	})
 }
 
-// deliver writes one complete line at a time and abandons only the stream whose destination fails.
+// deliver owns the durable trace so caller backpressure cannot hide the diagnostics needed to explain startup.
 func (relay *outputRelay) deliver() {
+	traceFailed := false
+	defer func() {
+		if relay.trace != nil {
+			_ = relay.trace.Close()
+		}
+		close(relay.callerQueue)
+		close(relay.traceDone)
+	}()
+	for line := range relay.queue {
+		if relay.trace != nil && !traceFailed {
+			if writeOutputLine(relay.trace, line.bytes) != nil {
+				traceFailed = true
+			}
+		}
+		select {
+		case relay.callerQueue <- line:
+		default:
+			relay.dropped.Add(1)
+		}
+	}
+}
+
+// deliverCallerOutput preserves best-effort terminal output without joining a writer Harbor does not own.
+func (relay *outputRelay) deliverCallerOutput() {
 	stdoutFailed := false
 	stderrFailed := false
-	for line := range relay.queue {
+	for line := range relay.callerQueue {
 		switch line.stream {
 		case outputStreamStdout:
 			if stdoutFailed {

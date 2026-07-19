@@ -271,7 +271,17 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		_ = stderrChild.Close()
 		return nil, fmt.Errorf("prepare forj process ownership: %w", err)
 	}
-	relay := newOutputRelay(request.Stdout, request.Stderr, supervisor.outputLines)
+	startedAt := time.Now().UTC()
+	trace, err := openProjectLaunchTrace(checkoutRoot, request.ProjectID, request.SessionID, startedAt)
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutChild.Close()
+		_ = stderr.Close()
+		_ = stderrChild.Close()
+		platform.close()
+		return nil, err
+	}
+	relay := newOutputRelayWithTrace(request.Stdout, request.Stderr, trace, supervisor.outputLines)
 	if err := command.Start(); err != nil {
 		_ = stdout.Close()
 		_ = stdoutChild.Close()
@@ -330,7 +340,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 				ExecutableIdentity: executableIdentity,
 				ArgumentsSHA256:    digestArguments(arguments),
 			},
-			StartedAt: time.Now().UTC(),
+			StartedAt: startedAt,
 		},
 		done: make(chan struct{}),
 	}
