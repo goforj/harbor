@@ -18,13 +18,14 @@ func TestResolveReturnsTheFixedValidatedGraph(t *testing.T) {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 	want := Paths{
-		Root:             root,
-		StateDirectory:   filepath.Join(root, stateDirectoryName),
-		OwnershipPath:    filepath.Join(root, stateDirectoryName, ownershipFilename),
-		ReplayDirectory:  filepath.Join(root, stateDirectoryName, replayDirectoryName),
-		TicketsDirectory: filepath.Join(root, ticketsDirectoryName),
-		PendingDirectory: filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
-		ClaimsDirectory:  filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		Root:               root,
+		StateDirectory:     filepath.Join(root, stateDirectoryName),
+		OwnershipPath:      filepath.Join(root, stateDirectoryName, ownershipFilename),
+		HostProjectionPath: filepath.Join(root, stateDirectoryName, hostProjectionFilename),
+		ReplayDirectory:    filepath.Join(root, stateDirectoryName, replayDirectoryName),
+		TicketsDirectory:   filepath.Join(root, ticketsDirectoryName),
+		PendingDirectory:   filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
+		ClaimsDirectory:    filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
 	}
 	if paths != want {
 		t.Fatalf("Resolve() = %#v, want %#v", paths, want)
@@ -85,6 +86,7 @@ func TestValidatePathsRejectsRedirectedFields(t *testing.T) {
 		{name: "root", mutate: func(paths *Paths) { paths.Root = filepath.Join(root, "other") }},
 		{name: "state", mutate: func(paths *Paths) { paths.StateDirectory = filepath.Join(root, "other") }},
 		{name: "ownership", mutate: func(paths *Paths) { paths.OwnershipPath = filepath.Join(root, "other.json") }},
+		{name: "host projection", mutate: func(paths *Paths) { paths.HostProjectionPath = filepath.Join(root, "other.json") }},
 		{name: "replay", mutate: func(paths *Paths) { paths.ReplayDirectory = filepath.Join(root, "other") }},
 		{name: "tickets", mutate: func(paths *Paths) { paths.TicketsDirectory = filepath.Join(root, "other") }},
 		{name: "pending", mutate: func(paths *Paths) { paths.PendingDirectory = filepath.Join(root, "other") }},

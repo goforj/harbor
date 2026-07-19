@@ -37,6 +37,7 @@ func TestValidateLayoutRequiresTheFixedShape(t *testing.T) {
 		{name: "state", mutate: func(paths *machinepaths.Paths) { paths.StateDirectory += "-other" }},
 		{name: "replay", mutate: func(paths *machinepaths.Paths) { paths.ReplayDirectory += "-other" }},
 		{name: "ownership", mutate: func(paths *machinepaths.Paths) { paths.OwnershipPath += "-other" }},
+		{name: "host projection", mutate: func(paths *machinepaths.Paths) { paths.HostProjectionPath += "-other" }},
 		{name: "tickets", mutate: func(paths *machinepaths.Paths) { paths.TicketsDirectory += "-other" }},
 		{name: "pending", mutate: func(paths *machinepaths.Paths) { paths.PendingDirectory += "-other" }},
 		{name: "claims", mutate: func(paths *machinepaths.Paths) { paths.ClaimsDirectory += "-other" }},
@@ -291,13 +292,14 @@ func inertDependencies() dependencies {
 // testPaths builds the exact machinepaths graph beneath one test root.
 func testPaths(root string) machinepaths.Paths {
 	return machinepaths.Paths{
-		Root:             root,
-		StateDirectory:   filepath.Join(root, "state"),
-		OwnershipPath:    filepath.Join(root, "state", "ownership.json"),
-		ReplayDirectory:  filepath.Join(root, "state", "replay"),
-		TicketsDirectory: filepath.Join(root, "tickets"),
-		PendingDirectory: filepath.Join(root, "tickets", "pending"),
-		ClaimsDirectory:  filepath.Join(root, "tickets", "claims"),
+		Root:               root,
+		StateDirectory:     filepath.Join(root, "state"),
+		OwnershipPath:      filepath.Join(root, "state", "ownership.json"),
+		HostProjectionPath: filepath.Join(root, "state", "host-projection.json"),
+		ReplayDirectory:    filepath.Join(root, "state", "replay"),
+		TicketsDirectory:   filepath.Join(root, "tickets"),
+		PendingDirectory:   filepath.Join(root, "tickets", "pending"),
+		ClaimsDirectory:    filepath.Join(root, "tickets", "claims"),
 	}
 }
 

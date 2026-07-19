@@ -83,6 +83,7 @@ func TestBuildPlanRejectsRedirectedOrUnsupportedInputs(t *testing.T) {
 		{name: "root user", configuration: Config{HelperSource: valid.HelperSource, UserID: 0, GroupID: 20}, paths: validPaths, destination: destination, platform: "linux"},
 		{name: "reserved user", configuration: Config{HelperSource: valid.HelperSource, UserID: math.MaxUint32, GroupID: 20}, paths: validPaths, destination: destination, platform: "linux"},
 		{name: "reserved group", configuration: Config{HelperSource: valid.HelperSource, UserID: 501, GroupID: math.MaxUint32}, paths: validPaths, destination: destination, platform: "linux"},
+		{name: "redirected host projection", configuration: valid, paths: func() machinepaths.Paths { value := validPaths; value.HostProjectionPath += "-other"; return value }(), destination: destination, platform: "linux"},
 		{name: "redirected replay", configuration: valid, paths: func() machinepaths.Paths { value := validPaths; value.ReplayDirectory += "-other"; return value }(), destination: destination, platform: "linux"},
 		{name: "relative destination", configuration: valid, paths: validPaths, destination: "harbor-helper", platform: "linux"},
 		{name: "unsupported platform", configuration: valid, paths: validPaths, destination: destination, platform: "plan9"},
@@ -151,13 +152,14 @@ func TestBootstrapPassesOnlyPreparedFixedPlan(t *testing.T) {
 // testMachinePaths returns one complete fixed-shape layout for pure planning tests.
 func testMachinePaths(root string) machinepaths.Paths {
 	return machinepaths.Paths{
-		Root:             root,
-		StateDirectory:   filepath.Join(root, "state"),
-		OwnershipPath:    filepath.Join(root, "state", "ownership.json"),
-		ReplayDirectory:  filepath.Join(root, "state", "replay"),
-		TicketsDirectory: filepath.Join(root, "tickets"),
-		PendingDirectory: filepath.Join(root, "tickets", "pending"),
-		ClaimsDirectory:  filepath.Join(root, "tickets", "claims"),
+		Root:               root,
+		StateDirectory:     filepath.Join(root, "state"),
+		OwnershipPath:      filepath.Join(root, "state", "ownership.json"),
+		HostProjectionPath: filepath.Join(root, "state", "host-projection.json"),
+		ReplayDirectory:    filepath.Join(root, "state", "replay"),
+		TicketsDirectory:   filepath.Join(root, "tickets"),
+		PendingDirectory:   filepath.Join(root, "tickets", "pending"),
+		ClaimsDirectory:    filepath.Join(root, "tickets", "claims"),
 	}
 }
 

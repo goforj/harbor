@@ -153,6 +153,7 @@ func validateMachinePaths(paths machinepaths.Paths) error {
 	}{
 		{name: "state directory", got: paths.StateDirectory, want: filepath.Join(paths.Root, "state")},
 		{name: "ownership path", got: paths.OwnershipPath, want: filepath.Join(paths.Root, "state", "ownership.json")},
+		{name: "host projection path", got: paths.HostProjectionPath, want: filepath.Join(paths.Root, "state", "host-projection.json")},
 		{name: "replay directory", got: paths.ReplayDirectory, want: filepath.Join(paths.Root, "state", "replay")},
 		{name: "tickets directory", got: paths.TicketsDirectory, want: filepath.Join(paths.Root, "tickets")},
 		{name: "pending directory", got: paths.PendingDirectory, want: filepath.Join(paths.Root, "tickets", "pending")},

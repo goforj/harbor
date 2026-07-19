@@ -54,6 +54,7 @@ func TestApplyPlatformPlanIsIdempotentAndPreservesRuntimeData(t *testing.T) {
 
 	runtimeData := map[string]string{
 		paths.OwnershipPath:                             "owned machine record",
+		paths.HostProjectionPath:                        "projected host record",
 		filepath.Join(paths.PendingDirectory, "ticket"): "pending ticket",
 		filepath.Join(paths.ClaimsDirectory, "claim"):   "claimed ticket",
 		filepath.Join(paths.ReplayDirectory, "nonce"):   "replay tombstone",
