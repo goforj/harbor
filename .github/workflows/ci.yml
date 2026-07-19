@@ -38,6 +38,61 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  phase1-control:
+    name: Phase 1 control (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            suffix: ""
+          - name: macOS
+            os: macos-14
+            suffix: ""
+          - name: Windows
+            os: windows-2022
+            suffix: .exe
+    env:
+      HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor${{ matrix.suffix }}
+      HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbord${{ matrix.suffix }}
+      HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-phase1-evidence
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Vet Phase 1 harness
+        run: go vet -tags=phase1acceptance ./internal/acceptance
+
+      - name: Build race-enabled production binaries
+        run: |
+          go build -race -o "${{ env.HARBOR_PHASE1_CLI_BINARY }}" ./cmd/app
+          go build -race -o "${{ env.HARBOR_PHASE1_DAEMON_BINARY }}" ./cmd/harbord
+
+      - name: Exercise production Phase 1 lifecycle
+        run: go test -race -tags=phase1acceptance -count=1 -timeout=8m -run '^TestPhase1ProductionLifecycle$' ./internal/acceptance
+
+      - name: Upload bounded redacted evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phase1-control-${{ matrix.name }}
+          path: |
+            ${{ env.HARBOR_PHASE1_EVIDENCE_DIRECTORY }}/summary.json
+            ${{ env.HARBOR_PHASE1_EVIDENCE_DIRECTORY }}/daemon-generation-1-hard-kill.log
+            ${{ env.HARBOR_PHASE1_EVIDENCE_DIRECTORY }}/daemon-generation-2-restart.log
+            ${{ env.HARBOR_PHASE1_EVIDENCE_DIRECTORY }}/daemon-generation-3-startup-recovery.log
+          if-no-files-found: warn
+          retention-days: 7
+
   platform-loopback:
     name: Loopback lifecycle (${{ matrix.name }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
