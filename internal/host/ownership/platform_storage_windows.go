@@ -98,6 +98,16 @@ func windowsCreateError(err error) error {
 
 // platformRenameNoReplace keeps both names relative to the retained directory because ancestor replacement can redirect absolute paths.
 func platformRenameNoReplace(root *os.Root, _ string, source string, destination string) (bool, error) {
+	return platformRenameWindows(root, source, destination, false)
+}
+
+// platformRenameReplace atomically overwrites the active entry through the same retained Windows directory handle.
+func platformRenameReplace(root *os.Root, _ string, source string, destination string) (bool, error) {
+	return platformRenameWindows(root, source, destination, true)
+}
+
+// platformRenameWindows performs a secure handle-relative rename with an explicit destination replacement policy.
+func platformRenameWindows(root *os.Root, source string, destination string, replace bool) (bool, error) {
 	sourceHandle, directory, err := openWindowsRelativeFile(
 		root,
 		source,
@@ -108,7 +118,7 @@ func platformRenameNoReplace(root *os.Root, _ string, source string, destination
 		return false, err
 	}
 
-	renameBuffer, err := windowsRenameBuffer(windows.Handle(directory.Fd()), destination)
+	renameBuffer, err := windowsRenameBuffer(windows.Handle(directory.Fd()), destination, replace)
 	if err != nil {
 		return false, errors.Join(err, windows.CloseHandle(sourceHandle), directory.Close())
 	}
@@ -170,8 +180,8 @@ func openWindowsRelativeFile(root *os.Root, name string, access uint32, options 
 	return handle, directory, nil
 }
 
-// windowsRenameBuffer encodes a no-replace destination relative to the retained directory handle.
-func windowsRenameBuffer(directory windows.Handle, destination string) ([]byte, error) {
+// windowsRenameBuffer encodes a destination and replacement policy relative to the retained directory handle.
+func windowsRenameBuffer(directory windows.Handle, destination string, replace bool) ([]byte, error) {
 	name, err := windows.UTF16FromString(destination)
 	if err != nil {
 		return nil, err
@@ -180,6 +190,9 @@ func windowsRenameBuffer(directory windows.Handle, destination string) ([]byte, 
 	var layout windowsFileRenameInformation
 	buffer := make([]byte, int(unsafe.Offsetof(layout.FileName))+len(name)*2)
 	information := (*windowsFileRenameInformation)(unsafe.Pointer(&buffer[0]))
+	if replace {
+		information.ReplaceIfExists = 1
+	}
 	information.RootDirectory = directory
 	information.FileNameLength = uint32(len(name) * 2)
 	copy(unsafe.Slice(&information.FileName[0], len(name)), name)

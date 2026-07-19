@@ -30,9 +30,9 @@ var (
 	ErrCorruptRecord = errors.New("machine ownership record is corrupt")
 	// ErrDurabilityUncertain identifies a completed name transition whose storage barrier did not confirm persistence.
 	ErrDurabilityUncertain = errors.New("machine ownership durability is uncertain")
-	// ErrNotClaimed identifies a release attempted while no machine ownership record exists.
+	// ErrNotClaimed identifies a mutation attempted while no machine ownership record exists.
 	ErrNotClaimed = errors.New("machine ownership is not claimed")
-	// ErrStaleFingerprint identifies a release whose compare-and-swap observation no longer matches storage.
+	// ErrStaleFingerprint identifies a mutation whose compare-and-swap observation no longer matches storage.
 	ErrStaleFingerprint = errors.New("machine ownership fingerprint is stale")
 	// ErrUnsafePath identifies a symbolic link, special file, or replaced path at the protected storage boundary.
 	ErrUnsafePath = errors.New("unsafe machine ownership path")
@@ -100,7 +100,7 @@ func (conflict *ConflictError) Unwrap() error {
 	return ErrConflict
 }
 
-// FingerprintMismatchError preserves the current observation when a release loses its compare-and-swap race.
+// FingerprintMismatchError preserves the current observation when an ownership mutation loses its compare-and-swap race.
 type FingerprintMismatchError struct {
 	Expected string
 	Actual   Observation
@@ -111,7 +111,7 @@ func (mismatch *FingerprintMismatchError) Error() string {
 	return fmt.Sprintf("%s: expected %s, found %s", ErrStaleFingerprint, mismatch.Expected, mismatch.Actual.Fingerprint)
 }
 
-// Unwrap makes stale releases classifiable while retaining the current ownership observation.
+// Unwrap makes stale mutations classifiable while retaining the current ownership observation.
 func (mismatch *FingerprintMismatchError) Unwrap() error {
 	return ErrStaleFingerprint
 }
@@ -134,6 +134,7 @@ type storeOperations struct {
 	closeLock       func(*os.File) error
 	createFile      func(*os.Root, string, string) (*os.File, error)
 	renameNoReplace func(*os.Root, string, string, string) (bool, error)
+	renameReplace   func(*os.Root, string, string, string) (bool, error)
 	confirmEntry    func(*os.Root, string, string) error
 	confirmCleanup  func(*os.Root) error
 	removeEntry     func(*os.Root, string) error
@@ -151,6 +152,7 @@ func defaultStoreOperations() storeOperations {
 		closeLock:       func(file *os.File) error { return file.Close() },
 		createFile:      createPlatformFile,
 		renameNoReplace: platformRenameNoReplace,
+		renameReplace:   platformRenameReplace,
 		confirmEntry:    platformConfirmEntry,
 		confirmCleanup:  platformConfirmCleanup,
 		removeEntry:     func(root *os.Root, name string) error { return root.Remove(name) },
@@ -336,6 +338,111 @@ func (store *Store) Claim(ctx context.Context, record Record) (Observation, erro
 	return claimed, nil
 }
 
+// Upgrade atomically replaces an exact schema-1 claim with its schema-2 network-policy-bound form.
+// ErrDurabilityUncertain means the active name changed but must be reconciled before authority is granted.
+func (store *Store) Upgrade(ctx context.Context, expectedSchema1Fingerprint string, targetSchema2 Record) (Observation, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return Observation{}, err
+	}
+	if err := validateFingerprint(expectedSchema1Fingerprint); err != nil {
+		return Observation{}, fmt.Errorf("upgrade machine ownership: %w", err)
+	}
+	if err := targetSchema2.Validate(); err != nil {
+		return Observation{}, fmt.Errorf("upgrade machine ownership: %w", err)
+	}
+	if targetSchema2.SchemaVersion != NetworkPolicySchemaVersion {
+		return Observation{}, fmt.Errorf(
+			"upgrade machine ownership: target schema version is %d, want %d",
+			targetSchema2.SchemaVersion,
+			NetworkPolicySchemaVersion,
+		)
+	}
+
+	sourceSchema1 := targetSchema2
+	sourceSchema1.SchemaVersion = IdentitySchemaVersion
+	sourceSchema1.NetworkPolicyFingerprint = ""
+	sourceFingerprint, err := sourceSchema1.Fingerprint()
+	if err != nil {
+		return Observation{}, fmt.Errorf("upgrade machine ownership: derive schema-%d source: %w", IdentitySchemaVersion, err)
+	}
+	if expectedSchema1Fingerprint != sourceFingerprint {
+		return Observation{}, fmt.Errorf(
+			"upgrade machine ownership: expected schema-%d fingerprint %s does not match target-derived source fingerprint %s",
+			IdentitySchemaVersion,
+			expectedSchema1Fingerprint,
+			sourceFingerprint,
+		)
+	}
+	targetFingerprint, err := targetSchema2.Fingerprint()
+	if err != nil {
+		return Observation{}, fmt.Errorf("upgrade machine ownership: fingerprint target: %w", err)
+	}
+	target := Observation{Exists: true, Record: targetSchema2, Fingerprint: targetFingerprint}
+
+	var upgraded Observation
+	mutationApplied := false
+	err = store.withLock(ctx, func() error {
+		existing, err := store.observeLocked()
+		if err != nil {
+			return err
+		}
+		if existing.Exists && existing.Record == targetSchema2 {
+			if err := store.operations.confirmEntry(store.root, filepath.Dir(store.path), store.name); err != nil {
+				return durabilityUncertain("confirm upgraded machine ownership claim", store.path, err)
+			}
+			upgraded = existing
+			return nil
+		}
+		if err := compareUpgradeSource(existing, expectedSchema1Fingerprint, sourceSchema1); err != nil {
+			return err
+		}
+
+		encoded, err := json.Marshal(targetSchema2)
+		if err != nil {
+			return fmt.Errorf("encode upgraded machine ownership claim: %w", err)
+		}
+		mutationApplied, err = store.writeReplaceLocked(encoded)
+		if err != nil {
+			return err
+		}
+		observed, err := store.observeLocked()
+		if err != nil {
+			return fmt.Errorf("verify upgraded machine ownership claim: %w", err)
+		}
+		if observed != target {
+			return fmt.Errorf(
+				"verify upgraded machine ownership claim: found fingerprint %s, want %s",
+				observed.Fingerprint,
+				target.Fingerprint,
+			)
+		}
+		upgraded = observed
+		return nil
+	})
+	if err != nil {
+		if mutationApplied && !errors.Is(err, ErrDurabilityUncertain) {
+			return Observation{}, durabilityUncertain("finish machine ownership upgrade", store.path, err)
+		}
+		return Observation{}, err
+	}
+	return upgraded, nil
+}
+
+// compareUpgradeSource requires both the expected digest and its exact source record before replacement.
+func compareUpgradeSource(existing Observation, expectedFingerprint string, source Record) error {
+	if !existing.Exists {
+		return ErrNotClaimed
+	}
+	if existing.Fingerprint != expectedFingerprint {
+		return &FingerprintMismatchError{Expected: expectedFingerprint, Actual: existing}
+	}
+	if existing.Record != source {
+		return &ConflictError{Requested: source, Existing: existing}
+	}
+	return nil
+}
+
 // Release removes a claim only when the caller presents its exact current observation fingerprint.
 // ErrDurabilityUncertain means the active name changed and startup must reconcile whether that release persisted.
 func (store *Store) Release(ctx context.Context, fingerprint string) error {
@@ -498,35 +605,16 @@ func (store *Store) openRecordLocked() (*os.File, error) {
 
 // writeExclusiveLocked durably publishes a new record without replacing any path that appeared after observation.
 func (store *Store) writeExclusiveLocked(content []byte) (writeErr error) {
-	temporaryName, temporary, err := store.createTemporaryLocked()
+	temporaryName, err := store.stageTemporaryLocked(content)
 	if err != nil {
 		return err
 	}
 	removeTemporary := true
-	closed := false
 	defer func() {
-		writeErr = errors.Join(writeErr, wrapStoreError(
-			"close temporary machine ownership record",
-			store.path,
-			closeOnce(&closed, func() error { return store.operations.closeTemporary(temporary) }),
-		))
 		if removeTemporary {
-			removeErr := store.operations.removeEntry(store.root, temporaryName)
-			if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-				writeErr = errors.Join(writeErr, fmt.Errorf("remove temporary machine ownership record %q: %w", store.path, removeErr))
-			}
+			writeErr = errors.Join(writeErr, store.removeTemporaryLocked(temporaryName))
 		}
 	}()
-
-	if err := store.operations.writeTemporary(temporary, content); err != nil {
-		return fmt.Errorf("write temporary machine ownership record %q: %w", store.path, err)
-	}
-	if err := store.operations.syncTemporary(temporary); err != nil {
-		return fmt.Errorf("sync temporary machine ownership record %q: %w", store.path, err)
-	}
-	if err := closeOnce(&closed, func() error { return store.operations.closeTemporary(temporary) }); err != nil {
-		return fmt.Errorf("close temporary machine ownership record %q: %w", store.path, err)
-	}
 
 	applied, err := store.operations.renameNoReplace(store.root, filepath.Dir(store.path), temporaryName, store.name)
 	if applied {
@@ -546,6 +634,74 @@ func (store *Store) writeExclusiveLocked(content []byte) (writeErr error) {
 		return durabilityUncertain("close validated machine ownership record", store.path, err)
 	}
 	return nil
+}
+
+// writeReplaceLocked atomically overwrites the active name with a fully staged canonical record.
+func (store *Store) writeReplaceLocked(content []byte) (applied bool, replaceErr error) {
+	temporaryName, err := store.stageTemporaryLocked(content)
+	if err != nil {
+		return false, err
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			replaceErr = errors.Join(replaceErr, store.removeTemporaryLocked(temporaryName))
+		}
+	}()
+
+	applied, err = store.operations.renameReplace(store.root, filepath.Dir(store.path), temporaryName, store.name)
+	if applied {
+		removeTemporary = false
+	}
+	if err != nil {
+		if applied {
+			return true, durabilityUncertain("replace machine ownership record", store.path, err)
+		}
+		return false, fmt.Errorf("replace machine ownership record %q: %w", store.path, err)
+	}
+	if !applied {
+		return false, fmt.Errorf("replace machine ownership record %q: platform rename reported no transition", store.path)
+	}
+	return true, nil
+}
+
+// stageTemporaryLocked writes, synchronizes, and closes an owner-private same-directory record before publication.
+func (store *Store) stageTemporaryLocked(content []byte) (temporaryName string, stageErr error) {
+	name, temporary, err := store.createTemporaryLocked()
+	if err != nil {
+		return "", err
+	}
+	closed := false
+	defer func() {
+		stageErr = errors.Join(stageErr, wrapStoreError(
+			"close temporary machine ownership record",
+			store.path,
+			closeOnce(&closed, func() error { return store.operations.closeTemporary(temporary) }),
+		))
+		if stageErr != nil {
+			stageErr = errors.Join(stageErr, store.removeTemporaryLocked(name))
+		}
+	}()
+
+	if err := store.operations.writeTemporary(temporary, content); err != nil {
+		return "", fmt.Errorf("write temporary machine ownership record %q: %w", store.path, err)
+	}
+	if err := store.operations.syncTemporary(temporary); err != nil {
+		return "", fmt.Errorf("sync temporary machine ownership record %q: %w", store.path, err)
+	}
+	if err := closeOnce(&closed, func() error { return store.operations.closeTemporary(temporary) }); err != nil {
+		return "", fmt.Errorf("close temporary machine ownership record %q: %w", store.path, err)
+	}
+	return name, nil
+}
+
+// removeTemporaryLocked removes an unpublished staged record while preserving cleanup evidence.
+func (store *Store) removeTemporaryLocked(name string) error {
+	err := store.operations.removeEntry(store.root, name)
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("remove temporary machine ownership record %q: %w", store.path, err)
 }
 
 // createTemporaryLocked creates an unpredictable same-directory file that cannot replace an existing entry.

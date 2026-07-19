@@ -41,6 +41,21 @@ func platformRenameNoReplace(root *os.Root, _ string, source string, destination
 	return true, syncErr
 }
 
+// platformRenameReplace atomically overwrites one entry beneath the retained directory and confirms the name transition.
+func platformRenameReplace(root *os.Root, _ string, source string, destination string) (bool, error) {
+	directory, err := root.Open(".")
+	if err != nil {
+		return false, err
+	}
+	err = unix.Renameat(int(directory.Fd()), source, int(directory.Fd()), destination)
+	if err != nil {
+		return false, errors.Join(err, directory.Close())
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return true, errors.Join(syncErr, closeErr)
+}
+
 // platformConfirmEntry records an existing entry at the Unix directory durability boundary.
 func platformConfirmEntry(root *os.Root, _ string, _ string) error {
 	directory, err := root.Open(".")

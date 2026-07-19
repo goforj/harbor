@@ -96,6 +96,53 @@ func TestWindowsClaimRetryConfirmsAppliedRename(t *testing.T) {
 	}
 }
 
+// TestWindowsUpgradeRetryConfirmsAppliedReplacement proves overwrite and replay share the reviewed write-through flush boundary.
+func TestWindowsUpgradeRetryConfirmsAppliedReplacement(t *testing.T) {
+	directory := t.TempDir()
+	prepareTestStoreDirectory(t, directory)
+	path := filepath.Join(directory, "owner.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+	target := testNetworkPolicyRecord()
+	source := target
+	source.SchemaVersion = IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	claimed, err := store.Claim(context.Background(), source)
+	if err != nil {
+		t.Fatalf("Store.Claim() error = %v", err)
+	}
+
+	originalFlush := flushOwnershipFile
+	flushCalls := 0
+	flushOwnershipFile = func(handle windows.Handle) error {
+		flushCalls++
+		if flushCalls == 1 {
+			return windows.ERROR_WRITE_FAULT
+		}
+		return originalFlush(handle)
+	}
+	defer func() { flushOwnershipFile = originalFlush }()
+
+	if _, err := store.Upgrade(context.Background(), claimed.Fingerprint, target); !errors.Is(err, ErrDurabilityUncertain) {
+		t.Fatalf("Store.Upgrade() unconfirmed error = %v, want ErrDurabilityUncertain", err)
+	}
+	observed, err := store.Observe(context.Background())
+	if err != nil || observed.Record != target {
+		t.Fatalf("Store.Observe() after applied replacement = %#v, %v, want target", observed, err)
+	}
+	replayed, err := store.Upgrade(context.Background(), claimed.Fingerprint, target)
+	if err != nil || replayed != observed {
+		t.Fatalf("Store.Upgrade() confirmed retry = %#v, %v, want %#v", replayed, err, observed)
+	}
+	if flushCalls != 2 {
+		t.Fatalf("flushOwnershipFile calls = %d, want replacement failure plus retry confirmation", flushCalls)
+	}
+	assertOwnershipEntries(t, path, true)
+}
+
 // TestWindowsNewStoreRejectsUnprotectedParent proves inherited grants cannot authorize machine-global mutation.
 func TestWindowsNewStoreRejectsUnprotectedParent(t *testing.T) {
 	directory := t.TempDir()
