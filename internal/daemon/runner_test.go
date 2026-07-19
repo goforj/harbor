@@ -433,6 +433,10 @@ func TestRunnerCancellationClosesAndJoinsBeforeAuthorityRelease(t *testing.T) {
 			events.add("readiness")
 			return nil
 		},
+		Recovery: func(context.Context) error {
+			events.add("recovery")
+			return nil
+		},
 	}, lock, listener)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -454,6 +458,8 @@ func TestRunnerCancellationClosesAndJoinsBeforeAuthorityRelease(t *testing.T) {
 	}
 
 	assertEventOrder(t, events, "readiness", "runtime.start")
+	assertEventOrder(t, events, "readiness", "recovery")
+	assertEventOrder(t, events, "recovery", "runtime.start")
 	assertEventOrder(t, events, "runtime.start", "listener.open")
 	assertEventOrder(t, events, "listener.open", "listener.close")
 	assertEventOrder(t, events, "listener.close", "server.exit")
@@ -521,6 +527,7 @@ func TestRunnerHoldsAuthorityAcrossNestedRuntimeCleanup(t *testing.T) {
 func TestRunnerStartupFailuresReleaseOnlyOwnedResources(t *testing.T) {
 	acquireFailure := errors.New("lock unavailable")
 	readinessFailure := errors.New("schema pending")
+	recoveryFailure := errors.New("state recovery failed")
 	runtimeFailure := errors.New("runtime unavailable")
 	listenFailure := errors.New("endpoint unavailable")
 	runtimeCleanupFailure := errors.New("runtime cleanup unavailable")
@@ -528,6 +535,7 @@ func TestRunnerStartupFailuresReleaseOnlyOwnedResources(t *testing.T) {
 		name         string
 		acquireErr   error
 		readinessErr error
+		recoveryErr  error
 		runtimeErr   error
 		closeErr     error
 		listenErr    error
@@ -539,6 +547,7 @@ func TestRunnerStartupFailuresReleaseOnlyOwnedResources(t *testing.T) {
 	}{
 		{name: "lock", acquireErr: acquireFailure, want: acquireFailure},
 		{name: "readiness", readinessErr: readinessFailure, want: readinessFailure, wantRelease: 1},
+		{name: "recovery", recoveryErr: recoveryFailure, want: recoveryFailure, wantRelease: 1},
 		{name: "runtime", runtimeErr: runtimeFailure, want: runtimeFailure, wantRelease: 1, wantStart: 1},
 		{name: "listener", listenErr: listenFailure, closeErr: runtimeCleanupFailure, want: listenFailure, wantRelease: 1, wantListen: 1, wantStart: 1, wantClose: 1},
 	}
@@ -557,6 +566,9 @@ func TestRunnerStartupFailuresReleaseOnlyOwnedResources(t *testing.T) {
 				Runtime: runtime,
 				Readiness: func(context.Context) error {
 					return test.readinessErr
+				},
+				Recovery: func(context.Context) error {
+					return test.recoveryErr
 				},
 			}, runnerDependencies{
 				acquireLock: func() (authorityLock, error) {
@@ -603,6 +615,35 @@ func TestRunnerStartupFailuresReleaseOnlyOwnedResources(t *testing.T) {
 				assertEventOrder(t, events, "runtime.close", "lock.release")
 			}
 		})
+	}
+}
+
+// TestRunnerCancellationDuringRecoveryReturnsOnlyLockCleanup keeps interrupted recovery from publishing runtime state.
+func TestRunnerCancellationDuringRecoveryReturnsOnlyLockCleanup(t *testing.T) {
+	events := &testEventLog{}
+	lockFailure := errors.New("lock cleanup failed")
+	lock := &testAuthorityLock{events: events, releaseErr: lockFailure}
+	runtime := newTestRuntime(events)
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := mustTestRunner(t, RunnerConfig{
+		Server:    connectionServerFunc(func(context.Context, local.Conn) error { return nil }),
+		Readiness: func(context.Context) error { return nil },
+		Recovery: func(context.Context) error {
+			cancel()
+			return context.Canceled
+		},
+		Runtime: runtime,
+	}, lock, newTestListener(events, 0))
+
+	err := runner.Run(ctx)
+	if !errors.Is(err, lockFailure) || errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want only %v", err, lockFailure)
+	}
+	if runtime.starts.Load() != 0 || runtime.closes.Load() != 0 {
+		t.Fatalf("runtime calls = start %d close %d, want 0", runtime.starts.Load(), runtime.closes.Load())
+	}
+	if events.index("listener.open") >= 0 {
+		t.Fatalf("listener opened after recovery cancellation: events %v", events.snapshot())
 	}
 }
 

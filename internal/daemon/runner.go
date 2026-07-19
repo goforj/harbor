@@ -52,6 +52,9 @@ type Runtime interface {
 // ReadinessCheck verifies that durable daemon state is safe to open without mutating it.
 type ReadinessCheck func(ctx context.Context) error
 
+// StartupRecovery reconciles durable work while singleton daemon authority is held and before runtime publication.
+type StartupRecovery func(ctx context.Context) error
+
 // ErrorObserver receives operational failures that cannot be returned synchronously by Run.
 //
 // Observers may run concurrently or after Run returns and must return promptly.
@@ -63,6 +66,8 @@ type RunnerConfig struct {
 	Server ConnectionServer
 	// Readiness verifies that the daemon's durable schema is already ready to use.
 	Readiness ReadinessCheck
+	// Recovery optionally reconciles interrupted durable operations before the network runtime reads state.
+	Recovery StartupRecovery
 	// Runtime owns network infrastructure for the complete authenticated endpoint lifetime.
 	Runtime Runtime
 	// RuntimeCloseTimeout is the outer cleanup budget after IPC fully joins.
@@ -293,6 +298,17 @@ func (runner *Runner) Run(ctx context.Context) (runErr error) {
 	}
 	if ctx.Err() != nil {
 		return nil
+	}
+	if runner.config.Recovery != nil {
+		if err := runner.config.Recovery(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("recover daemon state: %w", err)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 
 	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
