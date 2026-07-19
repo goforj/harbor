@@ -14,14 +14,13 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
-	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/network/identity"
 )
 
 // TestInvokeWritesCanonicalRequestAndSucceeds verifies one transport attempt and correlated success evidence.
 func TestInvokeWritesCanonicalRequestAndSucceeds(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-	issued := validIssuedResult(t, now)
+	issued := validLaunchTicket(t, now)
 	calls := 0
 	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
 		calls++
@@ -29,10 +28,10 @@ func TestInvokeWritesCanonicalRequestAndSucceeds(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode transport request: %v", err)
 		}
-		if decoded.Version != helper.ProtocolVersion || decoded.TicketReference != issued.Reference {
+		if decoded.Version != helper.ProtocolVersion || decoded.TicketReference != issued.reference {
 			t.Fatalf("transport request = %#v", decoded)
 		}
-		if err := helper.WriteResponse(response, successResponse(issued.Operation, issued.Address)); err != nil {
+		if err := helper.WriteResponse(response, successResponse(issued.operation, issued.address)); err != nil {
 			t.Fatalf("write transport response: %v", err)
 		}
 		return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
@@ -48,10 +47,10 @@ func TestInvokeWritesCanonicalRequestAndSucceeds(t *testing.T) {
 	if outcome.State != Succeeded || outcome.Exit == nil || outcome.Exit.Code != ExitCodeSucceeded {
 		t.Fatalf("outcome = %#v", outcome)
 	}
-	if !reflect.DeepEqual(outcome.Response, successResponse(issued.Operation, issued.Address)) {
+	if !reflect.DeepEqual(outcome.Response, successResponse(issued.operation, issued.address)) {
 		t.Fatalf("response = %#v", outcome.Response)
 	}
-	if strings.Contains(fmt.Sprintf("%#v", outcome), string(issued.Reference)) {
+	if strings.Contains(fmt.Sprintf("%#v", outcome), string(issued.reference)) {
 		t.Fatal("outcome exposed the opaque ticket reference")
 	}
 }
@@ -59,7 +58,7 @@ func TestInvokeWritesCanonicalRequestAndSucceeds(t *testing.T) {
 // TestInvokeClassifiesValidHelperFailure verifies structured helper rejection remains distinct from launch failure.
 func TestInvokeClassifiesValidHelperFailure(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-	issued := validIssuedResult(t, now)
+	issued := validLaunchTicket(t, now)
 	transport := transportFunc(func(_ context.Context, _ io.Reader, response io.Writer) TransportResult {
 		if err := helper.WriteResponse(response, failureResponse()); err != nil {
 			t.Fatalf("write transport response: %v", err)
@@ -84,38 +83,38 @@ func TestInvokeRejectsResponseExitMismatches(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name     string
-		response func(ticketissuer.Result) helper.Response
+		response func(LaunchTicket) helper.Response
 		exitCode int
 	}{
 		{
 			name: "success with helper failure exit",
-			response: func(issued ticketissuer.Result) helper.Response {
-				return successResponse(issued.Operation, issued.Address)
+			response: func(issued LaunchTicket) helper.Response {
+				return successResponse(issued.operation, issued.address)
 			},
 			exitCode: ExitCodeHelperFailed,
 		},
 		{
 			name: "success with unknown exit",
-			response: func(issued ticketissuer.Result) helper.Response {
-				return successResponse(issued.Operation, issued.Address)
+			response: func(issued LaunchTicket) helper.Response {
+				return successResponse(issued.operation, issued.address)
 			},
 			exitCode: 2,
 		},
 		{
 			name:     "failure with success exit",
-			response: func(ticketissuer.Result) helper.Response { return failureResponse() },
+			response: func(LaunchTicket) helper.Response { return failureResponse() },
 			exitCode: ExitCodeSucceeded,
 		},
 		{
 			name:     "failure with unknown exit",
-			response: func(ticketissuer.Result) helper.Response { return failureResponse() },
+			response: func(LaunchTicket) helper.Response { return failureResponse() },
 			exitCode: 2,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			issued := validIssuedResult(t, now)
+			issued := validLaunchTicket(t, now)
 			transport := transportFunc(func(_ context.Context, _ io.Reader, response io.Writer) TransportResult {
 				if err := helper.WriteResponse(response, test.response(issued)); err != nil {
 					t.Fatalf("write transport response: %v", err)
@@ -155,7 +154,7 @@ func TestInvokePreservesProvenNoChildOutcomes(t *testing.T) {
 				}
 				return TransportResult{State: test.transport}
 			})
-			outcome, err := New(transport, fixedClock{now: now}).Invoke(context.Background(), validIssuedResult(t, now))
+			outcome, err := New(transport, fixedClock{now: now}).Invoke(context.Background(), validLaunchTicket(t, now))
 			if err != nil {
 				t.Fatalf("invoke launcher: %v", err)
 			}
@@ -171,31 +170,31 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
-		configure func(context.CancelFunc, ticketissuer.Result, io.Writer) TransportResult
+		configure func(context.CancelFunc, LaunchTicket, io.Writer) TransportResult
 		wantExit  bool
 	}{
 		{
 			name: "transport indeterminate",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, _ io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, _ io.Writer) TransportResult {
 				return TransportResult{State: TransportIndeterminate}
 			},
 		},
 		{
 			name: "unknown transport state",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, _ io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, _ io.Writer) TransportResult {
 				return TransportResult{}
 			},
 		},
 		{
 			name: "completed without response",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, _ io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, _ io.Writer) TransportResult {
 				return TransportResult{State: TransportCompleted, ExitCode: 1}
 			},
 			wantExit: true,
 		},
 		{
 			name: "malformed response",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, response io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, response io.Writer) TransportResult {
 				_, _ = io.WriteString(response, "not-json")
 				return TransportResult{State: TransportCompleted, ExitCode: 1}
 			},
@@ -203,7 +202,7 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 		},
 		{
 			name: "oversized response",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, response io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, response io.Writer) TransportResult {
 				body := strings.Repeat("x", helper.MaxResponseBytes*2)
 				written, err := io.WriteString(response, body)
 				if err != nil || written != len(body) {
@@ -215,8 +214,8 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 		},
 		{
 			name: "mismatched operation",
-			configure: func(_ context.CancelFunc, issued ticketissuer.Result, response io.Writer) TransportResult {
-				if err := helper.WriteResponse(response, successResponse(helper.OperationEnsureLoopbackIdentity, issued.Address)); err != nil {
+			configure: func(_ context.CancelFunc, issued LaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, successResponse(helper.OperationEnsureLoopbackIdentity, issued.address)); err != nil {
 					t.Fatalf("write transport response: %v", err)
 				}
 				return TransportResult{State: TransportCompleted}
@@ -225,8 +224,8 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 		},
 		{
 			name: "mismatched address",
-			configure: func(_ context.CancelFunc, issued ticketissuer.Result, response io.Writer) TransportResult {
-				if err := helper.WriteResponse(response, successResponse(issued.Operation, netip.MustParseAddr("127.77.0.11"))); err != nil {
+			configure: func(_ context.CancelFunc, issued LaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, successResponse(issued.operation, netip.MustParseAddr("127.77.0.11"))); err != nil {
 					t.Fatalf("write transport response: %v", err)
 				}
 				return TransportResult{State: TransportCompleted}
@@ -235,8 +234,8 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 		},
 		{
 			name: "post-start cancellation",
-			configure: func(cancel context.CancelFunc, issued ticketissuer.Result, response io.Writer) TransportResult {
-				if err := helper.WriteResponse(response, successResponse(issued.Operation, issued.Address)); err != nil {
+			configure: func(cancel context.CancelFunc, issued LaunchTicket, response io.Writer) TransportResult {
+				if err := helper.WriteResponse(response, successResponse(issued.operation, issued.address)); err != nil {
 					t.Fatalf("write transport response: %v", err)
 				}
 				cancel()
@@ -246,14 +245,14 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 		},
 		{
 			name: "decline with response",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, response io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, response io.Writer) TransportResult {
 				_, _ = io.WriteString(response, "unexpected")
 				return TransportResult{State: TransportDeclined}
 			},
 		},
 		{
 			name: "unavailable with response",
-			configure: func(_ context.CancelFunc, _ ticketissuer.Result, response io.Writer) TransportResult {
+			configure: func(_ context.CancelFunc, _ LaunchTicket, response io.Writer) TransportResult {
 				_, _ = io.WriteString(response, "unexpected")
 				return TransportResult{State: TransportUnavailable}
 			},
@@ -262,7 +261,7 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			issued := validIssuedResult(t, now)
+			issued := validLaunchTicket(t, now)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
@@ -284,24 +283,27 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 	}
 }
 
-// TestInvokeRejectsInvalidIssuedMetadataBeforeTransport verifies invalid capabilities never reach native launch.
-func TestInvokeRejectsInvalidIssuedMetadataBeforeTransport(t *testing.T) {
+// TestInvokeRejectsInvalidLaunchTicketBeforeTransport verifies invalid capabilities never reach native launch.
+func TestInvokeRejectsInvalidLaunchTicketBeforeTransport(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
-		mutate func(*ticketissuer.Result)
+		mutate func(*LaunchTicket)
 	}{
-		{name: "operation", mutate: func(result *ticketissuer.Result) { result.OperationID = "" }},
-		{name: "lease", mutate: func(result *ticketissuer.Result) { result.LeaseKey = identity.LeaseKey{} }},
-		{name: "reference", mutate: func(result *ticketissuer.Result) { result.Reference = "short" }},
-		{name: "mutation", mutate: func(result *ticketissuer.Result) { result.Operation = "run_command" }},
-		{name: "address", mutate: func(result *ticketissuer.Result) { result.Address = netip.MustParseAddr("192.0.2.10") }},
-		{name: "expired", mutate: func(result *ticketissuer.Result) { result.ExpiresAt = now }},
+		{name: "operation ID", mutate: func(ticket *LaunchTicket) { ticket.operationID = "" }},
+		{name: "lease key", mutate: func(ticket *LaunchTicket) { ticket.leaseKey = identity.LeaseKey{} }},
+		{name: "reference", mutate: func(ticket *LaunchTicket) { ticket.reference = "short" }},
+		{name: "helper operation", mutate: func(ticket *LaunchTicket) { ticket.operation = "run_command" }},
+		{name: "address", mutate: func(ticket *LaunchTicket) { ticket.address = netip.MustParseAddr("192.0.2.10") }},
+		{name: "zero expiry", mutate: func(ticket *LaunchTicket) { ticket.expiresAt = time.Time{} }},
+		{name: "non-UTC expiry", mutate: func(ticket *LaunchTicket) { ticket.expiresAt = now.In(time.FixedZone("test", 0)).Add(time.Minute) }},
+		{name: "expired", mutate: func(ticket *LaunchTicket) { ticket.expiresAt = now }},
+		{name: "excessive lifetime", mutate: func(ticket *LaunchTicket) { ticket.expiresAt = now.Add(helper.MaxTicketLifetime + time.Nanosecond) }},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			issued := validIssuedResult(t, now)
+			issued := validLaunchTicket(t, now)
 			test.mutate(&issued)
 			calls := 0
 			transport := transportFunc(func(context.Context, io.Reader, io.Writer) TransportResult {
@@ -315,7 +317,7 @@ func TestInvokeRejectsInvalidIssuedMetadataBeforeTransport(t *testing.T) {
 			if calls != 0 || outcome.State != "" {
 				t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
 			}
-			if strings.Contains(err.Error(), string(issued.Reference)) {
+			if strings.Contains(err.Error(), string(issued.reference)) {
 				t.Fatal("validation error exposed the opaque ticket reference")
 			}
 		})
@@ -333,7 +335,7 @@ func TestInvokeReturnsPrelaunchCancellationWithoutTransport(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	outcome, err := New(transport, fixedClock{now: now}).Invoke(ctx, validIssuedResult(t, now))
+	outcome, err := New(transport, fixedClock{now: now}).Invoke(ctx, validLaunchTicket(t, now))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("invoke error = %v, want context canceled", err)
 	}
@@ -405,21 +407,25 @@ func (clock fixedClock) Now() time.Time {
 	return clock.now
 }
 
-// validIssuedResult returns one complete short-lived release capability for launcher tests.
-func validIssuedResult(t *testing.T, now time.Time) ticketissuer.Result {
+// validLaunchTicket returns one complete short-lived release capability for launcher tests.
+func validLaunchTicket(t *testing.T, now time.Time) LaunchTicket {
 	t.Helper()
 	leaseKey, err := identity.NewPrimaryKey(domain.ProjectID("project-1"))
 	if err != nil {
 		t.Fatalf("create lease key: %v", err)
 	}
-	return ticketissuer.Result{
-		OperationID: domain.OperationID("operation-1"),
-		LeaseKey:    leaseKey,
-		Reference:   helper.TicketReference(strings.Repeat("a", 64)),
-		Operation:   helper.OperationReleaseLoopbackIdentity,
-		Address:     netip.MustParseAddr("127.77.0.10"),
-		ExpiresAt:   now.Add(time.Minute),
+	ticket, err := NewLaunchTicket(
+		domain.OperationID("operation-1"),
+		leaseKey,
+		helper.TicketReference(strings.Repeat("a", 64)),
+		helper.OperationReleaseLoopbackIdentity,
+		"127.77.0.10",
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("create launch ticket: %v", err)
 	}
+	return ticket
 }
 
 // successResponse returns valid postcondition evidence for one allowlisted operation and address.

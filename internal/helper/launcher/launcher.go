@@ -8,7 +8,6 @@ import (
 	"reflect"
 
 	"github.com/goforj/harbor/internal/helper"
-	"github.com/goforj/harbor/internal/helper/ticketissuer"
 )
 
 // OutcomeState identifies the only conclusions the interactive launcher can safely report.
@@ -110,33 +109,33 @@ func requiredInterfaceIsNil(value any) bool {
 	}
 }
 
-// Invoke performs exactly one transport attempt for valid issued metadata and classifies its bounded response.
-func (launcher *Launcher) Invoke(ctx context.Context, issued ticketissuer.Result) (Outcome, error) {
+// Invoke performs exactly one transport attempt for valid launch metadata and classifies its bounded response.
+func (launcher *Launcher) Invoke(ctx context.Context, ticket LaunchTicket) (Outcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
 	}
-	if err := issued.Validate(launcher.clock.Now().UTC()); err != nil {
-		return Outcome{}, fmt.Errorf("validate issued helper metadata: %w", err)
+	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
+		return Outcome{}, fmt.Errorf("validate helper launch ticket: %w", err)
 	}
 
 	var request bytes.Buffer
 	if err := helper.WriteRequest(&request, helper.Request{
 		Version:         helper.ProtocolVersion,
-		TicketReference: issued.Reference,
+		TicketReference: ticket.reference,
 	}); err != nil {
 		return Outcome{}, fmt.Errorf("encode helper request: %w", err)
 	}
 
 	response := &boundedResponseWriter{}
 	transportResult := launcher.transport.Invoke(ctx, bytes.NewReader(request.Bytes()), response)
-	return classify(ctx, issued, transportResult, response.Bytes()), nil
+	return classify(ctx, ticket, transportResult, response.Bytes()), nil
 }
 
 // classify treats native no-child proofs separately from every state where an effect may have started.
-func classify(ctx context.Context, issued ticketissuer.Result, transportResult TransportResult, body []byte) Outcome {
+func classify(ctx context.Context, ticket LaunchTicket, transportResult TransportResult, body []byte) Outcome {
 	switch transportResult.State {
 	case TransportDeclined:
 		if len(body) != 0 {
@@ -166,7 +165,7 @@ func classify(ctx context.Context, issued ticketissuer.Result, transportResult T
 		if transportResult.ExitCode != ExitCodeSucceeded {
 			return Outcome{State: Indeterminate, Exit: exit}
 		}
-		if response.Result.Operation != issued.Operation || response.Result.Evidence.Address != issued.Address.String() {
+		if response.Result.Operation != ticket.operation || response.Result.Evidence.Address != ticket.address.String() {
 			return Outcome{State: Indeterminate, Exit: exit}
 		}
 		return Outcome{State: Succeeded, Response: response, Exit: exit}
