@@ -61,6 +61,30 @@ type poolKeyStore struct {
 	createCalls int
 }
 
+// closingPoolKeyStore adapts a scripted key store to the default-opening lifecycle contract.
+type closingPoolKeyStore struct {
+	PoolKeyStore
+	closeCalls int
+}
+
+// Close records release of one default-opened signing-key store.
+func (store *closingPoolKeyStore) Close() error {
+	store.closeCalls++
+	return nil
+}
+
+// closingPoolPublisher adapts a scripted publisher to the default-opening lifecycle contract.
+type closingPoolPublisher struct {
+	Publisher
+	closeCalls int
+}
+
+// Close records release of one default-opened pending-ticket publisher.
+func (publisher *closingPoolPublisher) Close() error {
+	publisher.closeCalls++
+	return nil
+}
+
 // Load returns the scripted established repair key.
 func (store *poolKeyStore) Load(context.Context) (ed25519.PrivateKey, error) {
 	store.loadCalls++
@@ -124,7 +148,6 @@ type poolIssuerFixture struct {
 	plan      PoolPlan
 	private   ed25519.PrivateKey
 	plans     *poolPlanSource
-	ownership *scriptedOwnershipObserver
 	keys      *poolKeyStore
 	publisher *capturingPublisher
 	loopback  *poolLoopbackObserver
@@ -132,9 +155,9 @@ type poolIssuerFixture struct {
 	service   *PoolService
 }
 
-// TestPoolServiceIssueBootstrapBindsExactPoolAuthority proves first claim emits only eight absent route-only identities.
+// TestPoolServiceIssueBootstrapBindsExactPoolAuthority proves a fresh bootstrap emits only eight absent route-only identities.
 func TestPoolServiceIssueBootstrapBindsExactPoolAuthority(t *testing.T) {
-	fixture := newPoolIssuerFixture(t, true)
+	fixture := newPoolIssuerFixture(t, PoolModeBootstrap)
 	result, err := fixture.service.Issue(t.Context(), fixture.plan.Ownership.OwnerIdentity, fixture.request)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
@@ -145,8 +168,8 @@ func TestPoolServiceIssueBootstrapBindsExactPoolAuthority(t *testing.T) {
 	if result.OperationID != fixture.plan.OperationID || result.Operation != helper.OperationEnsureLoopbackPool || result.Pool != fixture.plan.Pool.Prefix() {
 		t.Fatalf("Issue() result = %#v", result)
 	}
-	if len(fixture.plans.requests) != 2 || fixture.ownership.calls != 2 || fixture.keys.createCalls != 1 || fixture.keys.loadCalls != 0 || len(fixture.loopback.calls) != 8 || len(fixture.conflicts.calls) != 8 || fixture.publisher.calls != 1 {
-		t.Fatalf("bootstrap calls = plans %d ownership %d create/load %d/%d loopback %d conflicts %d publisher %d", len(fixture.plans.requests), fixture.ownership.calls, fixture.keys.createCalls, fixture.keys.loadCalls, len(fixture.loopback.calls), len(fixture.conflicts.calls), fixture.publisher.calls)
+	if len(fixture.plans.requests) != 2 || fixture.keys.createCalls != 1 || fixture.keys.loadCalls != 0 || len(fixture.loopback.calls) != 8 || len(fixture.conflicts.calls) != 8 || fixture.publisher.calls != 1 {
+		t.Fatalf("bootstrap calls = plans %d create/load %d/%d loopback %d conflicts %d publisher %d", len(fixture.plans.requests), fixture.keys.createCalls, fixture.keys.loadCalls, len(fixture.loopback.calls), len(fixture.conflicts.calls), fixture.publisher.calls)
 	}
 
 	ticket := fixture.publisher.ticket
@@ -174,9 +197,40 @@ func TestPoolServiceIssueBootstrapBindsExactPoolAuthority(t *testing.T) {
 	}
 }
 
+// TestPoolServiceIssueBootstrapRecoveryBindsMixedPostconditions proves a generation-one retry can describe already repaired identities without inferring protected ownership.
+func TestPoolServiceIssueBootstrapRecoveryBindsMixedPostconditions(t *testing.T) {
+	fixture := newPoolIssuerFixture(t, PoolModeBootstrap)
+	ownedIndexes := map[int]struct{}{1: {}, 4: {}, 7: {}}
+	for index, address := range fixture.plan.Pool.Candidates() {
+		if _, owned := ownedIndexes[index]; owned {
+			fixture.loopback.observations[address] = poolLoopbackObservation(address, loopback.StateExact)
+		}
+	}
+
+	result, err := fixture.service.Issue(t.Context(), fixture.plan.Ownership.OwnerIdentity, fixture.request)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if result.Operation != helper.OperationEnsureLoopbackPool || fixture.keys.createCalls != 1 || fixture.keys.loadCalls != 0 || len(fixture.conflicts.calls) != 5 || fixture.publisher.calls != 1 {
+		t.Fatalf("bootstrap recovery result/calls = %#v create/load %d/%d conflicts %d publisher %d", result, fixture.keys.createCalls, fixture.keys.loadCalls, len(fixture.conflicts.calls), fixture.publisher.calls)
+	}
+	for index, expected := range fixture.publisher.ticket.ExpectedLoopbackPool.Identities {
+		_, owned := ownedIndexes[index]
+		if owned {
+			if expected.ExpectedObservation.State != helper.ObservationOwned || expected.ExpectedPreAssignment != nil {
+				t.Fatalf("owned identity %d = %#v", index, expected)
+			}
+			continue
+		}
+		if expected.ExpectedObservation.State != helper.ObservationAbsent || expected.ExpectedPreAssignment == nil || len(expected.ExpectedPreAssignment.Requirements) != 0 {
+			t.Fatalf("absent identity %d = %#v", index, expected)
+		}
+	}
+}
+
 // TestPoolServiceIssueRepairBindsMixedPostconditions proves repair observes conflicts only for missing identities.
 func TestPoolServiceIssueRepairBindsMixedPostconditions(t *testing.T) {
-	fixture := newPoolIssuerFixture(t, false)
+	fixture := newPoolIssuerFixture(t, PoolModeRepair)
 	ownedIndexes := map[int]struct{}{1: {}, 4: {}, 7: {}}
 	for index, address := range fixture.plan.Pool.Candidates() {
 		if _, owned := ownedIndexes[index]; owned {
@@ -205,77 +259,65 @@ func TestPoolServiceIssueRepairBindsMixedPostconditions(t *testing.T) {
 	}
 }
 
-// TestPoolServiceIssueFailsClosed covers the independently trusted plan, ownership, observation, key, and publication boundaries.
+// TestPoolServiceIssueFailsClosed covers the independently trusted plan, observation, key, and publication boundaries.
 func TestPoolServiceIssueFailsClosed(t *testing.T) {
 	sentinel := errors.New("pool issuer sentinel")
 	tests := []struct {
 		name      string
-		bootstrap bool
+		mode      PoolMode
 		mutate    func(*poolIssuerFixture)
 		contains  string
 		publishes bool
 	}{
-		{name: "plan read", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.plans.errors = []error{sentinel} }, contains: "resolve approval plan"},
-		{name: "changed plan", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "plan read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.plans.errors = []error{sentinel} }, contains: "resolve approval plan"},
+		{name: "changed plan", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			changed := f.plan
 			changed.OperationRevision++
 			f.plans.plans = []PoolPlan{f.plan, changed}
 		}, contains: "plan changed"},
-		{name: "wrong requester", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "wrong requester", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			changed := f.plan
 			changed.Ownership.OwnerIdentity = "2000"
 			f.plans.plans = []PoolPlan{changed}
 		}, contains: "authenticated requester"},
-		{name: "ownership read", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.ownership.errors = []error{sentinel} }, contains: "observe machine ownership"},
-		{name: "bootstrap generation", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "unsupported mode", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
+			f.plan.Mode = "replacement"
+			f.plans.plans = []PoolPlan{f.plan}
+		}, contains: "mode"},
+		{name: "bootstrap generation", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			f.plan.Ownership.Generation = 2
 			f.plans.plans = []PoolPlan{f.plan}
 		}, contains: "generation 1"},
-		{name: "repair record mismatch", mutate: func(f *poolIssuerFixture) {
-			changed := f.ownership.observations[0]
-			changed.Record.Generation++
-			changed.Fingerprint = mustOwnershipFingerprint(t, changed.Record)
-			f.ownership.observations = []ownership.Observation{changed}
-		}, contains: "does not exactly match"},
-		{name: "bootstrap key", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.keys.createErr = sentinel }, contains: "load or create bootstrap signing key"},
-		{name: "repair key", mutate: func(f *poolIssuerFixture) { f.keys.loadErr = sentinel }, contains: "load established signing key"},
-		{name: "key mismatch", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.keys.key = deterministicPrivateKey(9) }, contains: "does not match machine ownership"},
-		{name: "loopback read", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.loopback.errors[f.plan.Pool.Candidates()[2]] = sentinel }, contains: "observe loopback assignment"},
-		{name: "loopback address", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "bootstrap key", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.keys.createErr = sentinel }, contains: "load or create bootstrap signing key"},
+		{name: "repair key", mode: PoolModeRepair, mutate: func(f *poolIssuerFixture) { f.keys.loadErr = sentinel }, contains: "load established signing key"},
+		{name: "key mismatch", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.keys.key = deterministicPrivateKey(9) }, contains: "does not match machine ownership"},
+		{name: "loopback read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.loopback.errors[f.plan.Pool.Candidates()[2]] = sentinel }, contains: "observe loopback assignment"},
+		{name: "loopback address", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			address := f.plan.Pool.Candidates()[2]
 			f.loopback.observations[address] = poolLoopbackObservation(f.plan.Pool.Candidates()[3], loopback.StateAbsent)
 		}, contains: "does not match"},
-		{name: "bootstrap assigned", bootstrap: true, mutate: func(f *poolIssuerFixture) {
-			address := f.plan.Pool.Candidates()[3]
-			f.loopback.observations[address] = poolLoopbackObservation(address, loopback.StateExact)
-		}, contains: "already assigned"},
-		{name: "conflict read", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.conflicts.errors[f.plan.Pool.Candidates()[4]] = sentinel }, contains: "observe pre-assignment conflicts"},
-		{name: "conflict request", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "conflict read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.conflicts.errors[f.plan.Pool.Candidates()[4]] = sentinel }, contains: "observe pre-assignment conflicts"},
+		{name: "conflict request", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			addresses := f.plan.Pool.Candidates()
 			f.conflicts.observations[addresses[4]] = poolSafeHostObservation(t, addresses[5])
 		}, contains: "does not match route-only request"},
-		{name: "conflict indeterminate", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "conflict indeterminate", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			address := f.plan.Pool.Candidates()[4]
 			observation := f.conflicts.observations[address]
 			observation.Routes.Complete = false
 			f.conflicts.observations[address] = observation
 		}, contains: "pre-assignment state"},
-		{name: "entropy", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.service.entropy = errorReader{err: sentinel} }, contains: "generate nonce"},
-		{name: "second ownership read", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.ownership.errors = []error{nil, sentinel} }, contains: "revalidate ownership"},
-		{name: "changed ownership", bootstrap: true, mutate: func(f *poolIssuerFixture) {
-			claimed := testPoolOwnershipObservation(t, f.plan.Ownership)
-			f.ownership.observations = []ownership.Observation{{}, claimed}
-		}, contains: "ownership changed"},
-		{name: "publication", bootstrap: true, mutate: func(f *poolIssuerFixture) {
+		{name: "entropy", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.service.entropy = errorReader{err: sentinel} }, contains: "generate nonce"},
+		{name: "publication", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			f.publisher.reference = helper.TicketReference(strings.Repeat("b", 64))
 			f.publisher.err = sentinel
 		}, contains: "publish capability", publishes: true},
-		{name: "invalid published reference", bootstrap: true, mutate: func(f *poolIssuerFixture) { f.publisher.reference = "bad" }, contains: "invalid result", publishes: true},
+		{name: "invalid published reference", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.publisher.reference = "bad" }, contains: "invalid result", publishes: true},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newPoolIssuerFixture(t, test.bootstrap)
+			fixture := newPoolIssuerFixture(t, test.mode)
 			test.mutate(fixture)
 			result, err := fixture.service.Issue(t.Context(), fixture.plan.Ownership.OwnerIdentity, fixture.request)
 			if err == nil || !strings.Contains(err.Error(), test.contains) {
@@ -290,7 +332,7 @@ func TestPoolServiceIssueFailsClosed(t *testing.T) {
 
 // TestPoolContractsAndPlanComparison covers public validation and every durable comparison dimension without host effects.
 func TestPoolContractsAndPlanComparison(t *testing.T) {
-	fixture := newPoolIssuerFixture(t, true)
+	fixture := newPoolIssuerFixture(t, PoolModeBootstrap)
 	if err := fixture.request.Validate(); err != nil {
 		t.Fatalf("PoolRequest.Validate() error = %v", err)
 	}
@@ -311,6 +353,8 @@ func TestPoolContractsAndPlanComparison(t *testing.T) {
 	invalidPlans := []func(*PoolPlan){
 		func(plan *PoolPlan) { plan.OperationRevision = 0 },
 		func(plan *PoolPlan) { plan.OperationState = domain.OperationRunning },
+		func(plan *PoolPlan) { plan.Mode = "replacement" },
+		func(plan *PoolPlan) { plan.Ownership.Generation = 2 },
 		func(plan *PoolPlan) { plan.Ownership.TicketVerifierKey = "bad" },
 		func(plan *PoolPlan) { plan.Ownership.LoopbackPoolPrefix = "127.77.0.16/29" },
 		func(plan *PoolPlan) {
@@ -333,6 +377,7 @@ func TestPoolContractsAndPlanComparison(t *testing.T) {
 		func(plan *PoolPlan) { plan.OperationID = "operation-other" },
 		func(plan *PoolPlan) { plan.OperationRevision++ },
 		func(plan *PoolPlan) { plan.OperationState = domain.OperationRunning },
+		func(plan *PoolPlan) { plan.Mode = PoolModeRepair },
 		func(plan *PoolPlan) { plan.Ownership.Generation++ },
 		func(plan *PoolPlan) {
 			plan.Pool = mustIdentityPool(t, "127.77.0.16/29", 8)
@@ -350,7 +395,7 @@ func TestPoolContractsAndPlanComparison(t *testing.T) {
 
 // TestPoolServiceLifecycleAndDependencies verifies cancellation, serialized close, and fail-fast construction.
 func TestPoolServiceLifecycleAndDependencies(t *testing.T) {
-	fixture := newPoolIssuerFixture(t, true)
+	fixture := newPoolIssuerFixture(t, PoolModeBootstrap)
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
 	if result, err := fixture.service.Issue(cancelled, fixture.plan.Ownership.OwnerIdentity, fixture.request); !errors.Is(err, context.Canceled) || result != (PoolResult{}) {
@@ -376,28 +421,25 @@ func TestPoolServiceLifecycleAndDependencies(t *testing.T) {
 	}
 	constructors := []func(){
 		func() {
-			NewPoolService(nil, fixture.ownership, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
+			NewPoolService(nil, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
 		},
 		func() {
-			NewPoolService(fixture.plans, nil, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
+			NewPoolService(fixture.plans, nil, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
 		},
 		func() {
-			NewPoolService(fixture.plans, fixture.ownership, nil, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
+			NewPoolService(fixture.plans, fixture.keys, nil, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
 		},
 		func() {
-			NewPoolService(fixture.plans, fixture.ownership, fixture.keys, nil, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
+			NewPoolService(fixture.plans, fixture.keys, fixture.publisher, nil, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
 		},
 		func() {
-			NewPoolService(fixture.plans, fixture.ownership, fixture.keys, fixture.publisher, nil, fixture.conflicts, fixedClock{now: fixture.now}, bytes.NewReader(nil))
+			NewPoolService(fixture.plans, fixture.keys, fixture.publisher, fixture.loopback, nil, fixedClock{now: fixture.now}, bytes.NewReader(nil))
 		},
 		func() {
-			NewPoolService(fixture.plans, fixture.ownership, fixture.keys, fixture.publisher, fixture.loopback, nil, fixedClock{now: fixture.now}, bytes.NewReader(nil))
+			NewPoolService(fixture.plans, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, nil, bytes.NewReader(nil))
 		},
 		func() {
-			NewPoolService(fixture.plans, fixture.ownership, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, nil, bytes.NewReader(nil))
-		},
-		func() {
-			NewPoolService(fixture.plans, fixture.ownership, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, nil)
+			NewPoolService(fixture.plans, fixture.keys, fixture.publisher, fixture.loopback, fixture.conflicts, fixedClock{now: fixture.now}, nil)
 		},
 	}
 	for index, construct := range constructors {
@@ -412,9 +454,66 @@ func TestPoolServiceLifecycleAndDependencies(t *testing.T) {
 	}
 }
 
+// TestOpenDefaultPoolServiceOpensOnlyDaemonStores proves default pool issuance has no protected ownership-store dependency.
+func TestOpenDefaultPoolServiceOpensOnlyDaemonStores(t *testing.T) {
+	fixture := newPoolIssuerFixture(t, PoolModeBootstrap)
+	if _, err := openDefaultPoolService(fixture.plans, poolDefaultOpeners{}); err == nil || !strings.Contains(err.Error(), "openers are incomplete") {
+		t.Fatalf("openDefaultPoolService(incomplete) error = %v", err)
+	}
+
+	sentinel := errors.New("default pool store sentinel")
+	publisherOpens := 0
+	if _, err := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) { return nil, sentinel },
+		openPublisher: func() (poolPublisherCloser, error) {
+			publisherOpens++
+			return nil, nil
+		},
+	}); !errors.Is(err, sentinel) || publisherOpens != 0 {
+		t.Fatalf("openDefaultPoolService(key failure) error/publisher opens = %v / %d", err, publisherOpens)
+	}
+
+	failedKeys := &closingPoolKeyStore{PoolKeyStore: fixture.keys}
+	if _, err := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) { return failedKeys, nil },
+		openPublisher: func() (poolPublisherCloser, error) {
+			return nil, sentinel
+		},
+	}); !errors.Is(err, sentinel) || failedKeys.closeCalls != 1 {
+		t.Fatalf("openDefaultPoolService(publisher failure) error/key closes = %v / %d", err, failedKeys.closeCalls)
+	}
+
+	keys := &closingPoolKeyStore{PoolKeyStore: fixture.keys}
+	publisher := &closingPoolPublisher{Publisher: fixture.publisher}
+	keyOpens := 0
+	publisherOpens = 0
+	service, err := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) {
+			keyOpens++
+			return keys, nil
+		},
+		openPublisher: func() (poolPublisherCloser, error) {
+			publisherOpens++
+			return publisher, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("openDefaultPoolService() error = %v", err)
+	}
+	if keyOpens != 1 || publisherOpens != 1 {
+		t.Fatalf("openDefaultPoolService() opens = keys %d publisher %d", keyOpens, publisherOpens)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := service.Close(); err != nil || keys.closeCalls != 1 || publisher.closeCalls != 1 {
+		t.Fatalf("Close(replay) = %v, key/publisher closes %d/%d", err, keys.closeCalls, publisher.closeCalls)
+	}
+}
+
 // TestPoolServiceCloseWaitsForIssuance verifies stores cannot close inside one serialized publication.
 func TestPoolServiceCloseWaitsForIssuance(t *testing.T) {
-	fixture := newPoolIssuerFixture(t, true)
+	fixture := newPoolIssuerFixture(t, PoolModeBootstrap)
 	fixture.plans.started = make(chan struct{})
 	fixture.plans.release = make(chan struct{})
 	issueDone := make(chan error, 1)
@@ -443,12 +542,12 @@ func TestPoolServiceCloseWaitsForIssuance(t *testing.T) {
 }
 
 // newPoolIssuerFixture builds one valid all-absent bootstrap or repair issuance graph.
-func newPoolIssuerFixture(t *testing.T, bootstrap bool) *poolIssuerFixture {
+func newPoolIssuerFixture(t *testing.T, mode PoolMode) *poolIssuerFixture {
 	t.Helper()
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	privateKey := deterministicPrivateKey(7)
 	generation := uint64(7)
-	if bootstrap {
+	if mode == PoolModeBootstrap {
 		generation = 1
 	}
 	pool := mustIdentityPool(t, "127.77.0.8/29", 8)
@@ -464,15 +563,11 @@ func newPoolIssuerFixture(t *testing.T, bootstrap bool) *poolIssuerFixture {
 		OperationID:       "operation-pool-test",
 		OperationRevision: 11,
 		OperationState:    domain.OperationRequiresApproval,
+		Mode:              mode,
 		Ownership:         record,
 		Pool:              pool,
 	}
 	plans := &poolPlanSource{plans: []PoolPlan{plan}}
-	ownershipObservations := []ownership.Observation{{}}
-	if !bootstrap {
-		ownershipObservations = []ownership.Observation{testPoolOwnershipObservation(t, record)}
-	}
-	ownershipObserver := &scriptedOwnershipObserver{observations: ownershipObservations}
 	keys := &poolKeyStore{key: privateKey}
 	publisher := &capturingPublisher{reference: helper.TicketReference(strings.Repeat("a", 64))}
 	loopbackObserver := &poolLoopbackObserver{
@@ -489,7 +584,6 @@ func newPoolIssuerFixture(t *testing.T, bootstrap bool) *poolIssuerFixture {
 	}
 	service := NewPoolService(
 		plans,
-		ownershipObserver,
 		keys,
 		publisher,
 		loopbackObserver,
@@ -499,7 +593,7 @@ func newPoolIssuerFixture(t *testing.T, bootstrap bool) *poolIssuerFixture {
 	)
 	return &poolIssuerFixture{
 		now: now, request: PoolRequest{OperationID: plan.OperationID}, plan: plan, private: privateKey,
-		plans: plans, ownership: ownershipObserver, keys: keys, publisher: publisher,
+		plans: plans, keys: keys, publisher: publisher,
 		loopback: loopbackObserver, conflicts: conflictObserver, service: service,
 	}
 }
@@ -519,12 +613,6 @@ func mustIdentityPool(t *testing.T, prefixText string, count int) identity.Pool 
 		t.Fatalf("identity.NewPool() error = %v", err)
 	}
 	return pool
-}
-
-// testPoolOwnershipObservation returns the exact protected snapshot for one planned record.
-func testPoolOwnershipObservation(t *testing.T, record ownership.Record) ownership.Observation {
-	t.Helper()
-	return ownership.Observation{Exists: true, Record: record, Fingerprint: mustOwnershipFingerprint(t, record)}
 }
 
 // poolLoopbackObservation returns valid Linux assignment facts for one absent or exact address.

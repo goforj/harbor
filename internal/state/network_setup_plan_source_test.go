@@ -62,8 +62,9 @@ func TestNetworkSetupPlanSourceResolvesExactPoolAfterRestart(t *testing.T) {
 	}
 	wantOwnership := networkSetupPlanSourceOwnership()
 	if plan.OperationID != "operation-setup" || plan.OperationRevision != 1 ||
-		plan.OperationState != domain.OperationRequiresApproval || plan.Ownership != wantOwnership {
-		t.Fatalf("Resolve() = %#v, want exact durable operation and ownership", plan)
+		plan.OperationState != domain.OperationRequiresApproval || plan.Mode != ticketissuer.PoolModeBootstrap ||
+		plan.Ownership != wantOwnership {
+		t.Fatalf("Resolve() = %#v, want exact durable operation, mode, and ownership", plan)
 	}
 	wantAddresses := make([]netip.Addr, 8)
 	address := netip.MustParseAddr("127.77.0.8")

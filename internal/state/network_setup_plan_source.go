@@ -198,6 +198,7 @@ func networkSetupPoolPlanFromModel(
 		OperationID:       operation.Operation.ID,
 		OperationRevision: operation.Revision,
 		OperationState:    operation.Operation.State,
+		Mode:              ticketissuer.PoolModeBootstrap,
 		Ownership:         plannedOwnership,
 		Pool:              pool,
 	}

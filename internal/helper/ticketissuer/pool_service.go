@@ -21,10 +21,19 @@ import (
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/hostconflict"
 	"github.com/goforj/harbor/internal/platform/loopback"
-	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
 
 const poolIdentityCount = 8
+
+// PoolMode identifies whether a durable pool plan creates first-claim authority or repairs established authority.
+type PoolMode string
+
+const (
+	// PoolModeBootstrap provisions generation-one authority whose absence remains enforced by the elevated redeemer.
+	PoolModeBootstrap PoolMode = "bootstrap"
+	// PoolModeRepair uses only an already established signing identity.
+	PoolModeRepair PoolMode = "repair"
+)
 
 // PoolRequest selects one durable machine-level pool approval without carrying its authority.
 type PoolRequest struct {
@@ -41,6 +50,7 @@ type PoolPlan struct {
 	OperationID       domain.OperationID
 	OperationRevision domain.Sequence
 	OperationState    domain.OperationState
+	Mode              PoolMode
 	Ownership         ownership.Record
 	Pool              identity.Pool
 }
@@ -56,8 +66,16 @@ func (plan PoolPlan) Validate() error {
 	if plan.OperationState != domain.OperationRequiresApproval {
 		return fmt.Errorf("helper pool approval operation state is %q, want %q", plan.OperationState, domain.OperationRequiresApproval)
 	}
+	switch plan.Mode {
+	case PoolModeBootstrap, PoolModeRepair:
+	default:
+		return fmt.Errorf("helper pool approval mode %q is unsupported", plan.Mode)
+	}
 	if err := plan.Ownership.Validate(); err != nil {
 		return fmt.Errorf("helper pool approval ownership is invalid: %w", err)
+	}
+	if plan.Mode == PoolModeBootstrap && plan.Ownership.Generation != 1 {
+		return fmt.Errorf("helper pool approval bootstrap requires ownership generation 1")
 	}
 	prefix, _, err := validateExactPool(plan.Pool)
 	if err != nil {
@@ -75,11 +93,29 @@ type PoolPlanSource interface {
 	Resolve(context.Context, PoolRequest) (PoolPlan, error)
 }
 
-// PoolKeyStore loads established repair authority and provisions only first-claim bootstrap authority.
+// PoolKeyStore loads established repair authority and provisions or reloads generation-one bootstrap authority.
 type PoolKeyStore interface {
 	KeyLoader
-	// LoadOrCreate reloads the exact signing identity or atomically publishes one first-run identity.
+	// LoadOrCreate reloads the exact signing identity or atomically publishes one generation-one identity.
 	LoadOrCreate(context.Context) (ed25519.PrivateKey, error)
+}
+
+// poolKeyStoreCloser releases one production signing-key store after issuance shuts down.
+type poolKeyStoreCloser interface {
+	PoolKeyStore
+	Close() error
+}
+
+// poolPublisherCloser releases one production ticket publisher after issuance shuts down.
+type poolPublisherCloser interface {
+	Publisher
+	Close() error
+}
+
+// poolDefaultOpeners contains only the daemon-owned stores required by default pool issuance.
+type poolDefaultOpeners struct {
+	openKeys      func() (poolKeyStoreCloser, error)
+	openPublisher func() (poolPublisherCloser, error)
 }
 
 // PoolResult exposes only the opaque capability and bounded pool metadata needed by an interactive launcher.
@@ -114,10 +150,9 @@ func (result PoolResult) Validate(now time.Time) error {
 	return nil
 }
 
-// PoolService serializes exact pool publication against plan and protected-ownership revalidation.
+// PoolService serializes exact pool publication against durable-plan revalidation and fresh host observations.
 type PoolService struct {
 	plans      PoolPlanSource
-	ownership  OwnershipObserver
 	keys       PoolKeyStore
 	publisher  Publisher
 	loopback   LoopbackObserver
@@ -133,7 +168,6 @@ type PoolService struct {
 // NewPoolService creates an issuer whose durable plan supplies every signed ownership dimension.
 func NewPoolService(
 	plans PoolPlanSource,
-	ownershipObserver OwnershipObserver,
 	keys PoolKeyStore,
 	publisher Publisher,
 	loopbackObserver LoopbackObserver,
@@ -141,12 +175,11 @@ func NewPoolService(
 	clock helper.Clock,
 	entropy io.Reader,
 ) *PoolService {
-	if plans == nil || ownershipObserver == nil || keys == nil || publisher == nil || loopbackObserver == nil || conflicts == nil || clock == nil || entropy == nil {
+	if plans == nil || keys == nil || publisher == nil || loopbackObserver == nil || conflicts == nil || clock == nil || entropy == nil {
 		panic("ticketissuer.NewPoolService requires every authority dependency")
 	}
 	return &PoolService{
 		plans:      plans,
-		ownership:  ownershipObserver,
 		keys:       keys,
 		publisher:  publisher,
 		loopback:   loopbackObserver,
@@ -157,34 +190,44 @@ func NewPoolService(
 	}
 }
 
-// OpenDefaultPoolService opens the fixed production ownership, key, and ticket stores around one durable pool plan source.
+// OpenDefaultPoolService opens the daemon-owned production key and ticket stores around one durable pool plan source.
 func OpenDefaultPoolService(plans PoolPlanSource) (*PoolService, error) {
+	return openDefaultPoolService(plans, defaultPoolOpeners())
+}
+
+// defaultPoolOpeners binds default issuance only to daemon-owned signing-key and pending-ticket stores.
+func defaultPoolOpeners() poolDefaultOpeners {
+	return poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) {
+			return ticketkey.OpenDefault()
+		},
+		openPublisher: func() (poolPublisherCloser, error) {
+			return ticketspool.OpenDefault()
+		},
+	}
+}
+
+// openDefaultPoolService opens daemon-owned production stores without crossing the protected ownership boundary.
+func openDefaultPoolService(plans PoolPlanSource, openers poolDefaultOpeners) (*PoolService, error) {
 	if plans == nil {
 		return nil, fmt.Errorf("open helper pool ticket issuer: durable plan source is required")
 	}
-	paths, err := machinepaths.Resolve()
-	if err != nil {
-		return nil, fmt.Errorf("resolve helper pool ticket issuer paths: %w", err)
+	if openers.openKeys == nil || openers.openPublisher == nil {
+		return nil, fmt.Errorf("open helper pool ticket issuer: default store openers are incomplete")
 	}
-	ownershipStore, err := ownership.NewStore(paths.OwnershipPath)
+	keyStore, err := openers.openKeys()
 	if err != nil {
-		return nil, fmt.Errorf("open helper pool ticket issuer ownership: %w", err)
+		return nil, fmt.Errorf("open helper pool ticket issuer key: %w", err)
 	}
-	keyStore, err := ticketkey.OpenDefault()
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("open helper pool ticket issuer key: %w", err), ownershipStore.Close())
-	}
-	publisher, err := ticketspool.OpenDefault()
+	publisher, err := openers.openPublisher()
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("open helper pool ticket issuer spool: %w", err),
 			keyStore.Close(),
-			ownershipStore.Close(),
 		)
 	}
 	service := NewPoolService(
 		plans,
-		ownershipStore,
 		keyStore,
 		publisher,
 		loopback.New(),
@@ -193,7 +236,7 @@ func OpenDefaultPoolService(plans PoolPlanSource) (*PoolService, error) {
 		rand.Reader,
 	)
 	service.closeStore = func() error {
-		return errors.Join(publisher.Close(), keyStore.Close(), ownershipStore.Close())
+		return errors.Join(publisher.Close(), keyStore.Close())
 	}
 	return service, nil
 }
@@ -235,16 +278,8 @@ func (service *PoolService) Issue(ctx context.Context, requesterIdentity string,
 	if requesterIdentity != plan.Ownership.OwnerIdentity {
 		return PoolResult{}, fmt.Errorf("issue helper pool ticket: authenticated requester does not match the approved machine owner")
 	}
-	observedOwnership, err := service.ownership.Observe(ctx)
-	if err != nil {
-		return PoolResult{}, fmt.Errorf("issue helper pool ticket: observe machine ownership: %w", err)
-	}
-	bootstrap, err := validatePoolOwnership(plan, observedOwnership)
-	if err != nil {
-		return PoolResult{}, fmt.Errorf("issue helper pool ticket: %w", err)
-	}
 
-	privateKey, err := service.loadKey(ctx, bootstrap)
+	privateKey, err := service.loadKey(ctx, plan.Mode)
 	if err != nil {
 		return PoolResult{}, err
 	}
@@ -252,7 +287,7 @@ func (service *PoolService) Issue(ctx context.Context, requesterIdentity string,
 		return PoolResult{}, fmt.Errorf("issue helper pool ticket: %w", err)
 	}
 
-	ticket, err := service.buildTicket(ctx, plan, privateKey, bootstrap)
+	ticket, err := service.buildTicket(ctx, plan, privateKey)
 	if err != nil {
 		return PoolResult{}, err
 	}
@@ -263,14 +298,6 @@ func (service *PoolService) Issue(ctx context.Context, requesterIdentity string,
 	if !samePoolPlan(plan, confirmedPlan) {
 		return PoolResult{}, fmt.Errorf("issue helper pool ticket: durable approval plan changed before publication")
 	}
-	confirmedOwnership, err := service.ownership.Observe(ctx)
-	if err != nil {
-		return PoolResult{}, fmt.Errorf("issue helper pool ticket: revalidate ownership: %w", err)
-	}
-	if confirmedOwnership != observedOwnership {
-		return PoolResult{}, fmt.Errorf("issue helper pool ticket: machine ownership changed before publication")
-	}
-
 	reference, err := service.publisher.Publish(ctx, ticket, privateKey)
 	if err != nil {
 		return PoolResult{}, fmt.Errorf("issue helper pool ticket: publish capability: %w", err)
@@ -307,20 +334,24 @@ func (service *PoolService) resolvePlan(ctx context.Context, request PoolRequest
 	return plan, nil
 }
 
-// loadKey prevents an established ownership repair from silently creating replacement signing authority.
-func (service *PoolService) loadKey(ctx context.Context, bootstrap bool) (ed25519.PrivateKey, error) {
-	if bootstrap {
+// loadKey prevents an established-authority repair from silently creating replacement signing authority.
+func (service *PoolService) loadKey(ctx context.Context, mode PoolMode) (ed25519.PrivateKey, error) {
+	switch mode {
+	case PoolModeBootstrap:
 		privateKey, err := service.keys.LoadOrCreate(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("issue helper pool ticket: load or create bootstrap signing key: %w", err)
 		}
 		return privateKey, nil
+	case PoolModeRepair:
+		privateKey, err := service.keys.Load(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("issue helper pool ticket: load established signing key: %w", err)
+		}
+		return privateKey, nil
+	default:
+		return nil, fmt.Errorf("issue helper pool ticket: pool approval mode %q is unsupported", mode)
 	}
-	privateKey, err := service.keys.Load(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("issue helper pool ticket: load established signing key: %w", err)
-	}
-	return privateKey, nil
 }
 
 // buildTicket binds every canonical pool address to a fresh exact assignment observation.
@@ -328,7 +359,6 @@ func (service *PoolService) buildTicket(
 	ctx context.Context,
 	plan PoolPlan,
 	privateKey ed25519.PrivateKey,
-	bootstrap bool,
 ) (helper.Ticket, error) {
 	_, addresses, err := validateExactPool(plan.Pool)
 	if err != nil {
@@ -348,9 +378,6 @@ func (service *PoolService) buildTicket(
 		switch observation.State {
 		case loopback.StateAbsent:
 		case loopback.StateExact:
-			if bootstrap {
-				return helper.Ticket{}, fmt.Errorf("issue helper pool ticket: bootstrap identity %s is already assigned", address)
-			}
 			expectedState = helper.ObservationOwned
 		default:
 			return helper.Ticket{}, fmt.Errorf("issue helper pool ticket: loopback assignment %s state is %q", address, observation.State)
@@ -437,28 +464,6 @@ func (service *PoolService) observePoolPreAssignment(
 	}, nil
 }
 
-// validatePoolOwnership distinguishes first-claim bootstrap from an exact planned-record repair.
-func validatePoolOwnership(plan PoolPlan, observation ownership.Observation) (bool, error) {
-	if !observation.Exists {
-		if observation != (ownership.Observation{}) {
-			return false, fmt.Errorf("absent machine ownership observation contains unexpected authority")
-		}
-		if plan.Ownership.Generation != 1 {
-			return false, fmt.Errorf("ownership bootstrap requires planned generation 1")
-		}
-		return true, nil
-	}
-	fingerprint, err := plan.Ownership.Fingerprint()
-	if err != nil {
-		return false, fmt.Errorf("fingerprint planned machine ownership: %w", err)
-	}
-	want := ownership.Observation{Exists: true, Record: plan.Ownership, Fingerprint: fingerprint}
-	if observation != want {
-		return false, fmt.Errorf("protected machine ownership does not exactly match the approved record")
-	}
-	return false, nil
-}
-
 // validateExactPool returns the canonical complete /29 address list used by both plans and tickets.
 func validateExactPool(pool identity.Pool) (netip.Prefix, []netip.Addr, error) {
 	if err := pool.Validate(); err != nil {
@@ -506,6 +511,7 @@ func samePoolPlan(left PoolPlan, right PoolPlan) bool {
 	return left.OperationID == right.OperationID &&
 		left.OperationRevision == right.OperationRevision &&
 		left.OperationState == right.OperationState &&
+		left.Mode == right.Mode &&
 		left.Ownership == right.Ownership &&
 		left.Pool.Prefix() == right.Pool.Prefix() &&
 		slices.Equal(left.Pool.Candidates(), right.Pool.Candidates())
