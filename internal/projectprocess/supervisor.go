@@ -28,6 +28,15 @@ const (
 	managedEnvKeysName       = "FORJ_INTERNAL_MANAGED_ENV_KEYS"
 )
 
+var developmentLaunchIsolationNames = []string{
+	"APP_NAME",
+	"FORJ_APP",
+	"FORJ_BUILD_PROGRESS",
+	"FORJ_COMMAND_PREFIX",
+	developmentPlainEnvName,
+	managedEnvKeysName,
+}
+
 var (
 	// ErrClosed means the supervisor no longer accepts new processes.
 	ErrClosed = errors.New("project process supervisor is closed")
@@ -754,7 +763,7 @@ type environmentAssignment struct {
 // withDevelopmentEnvironment removes file-owned values from the ambient launch and selects non-interactive output.
 func withDevelopmentEnvironment(environment []string, fileValues EnvironmentOverrides) []string {
 	names := sortedEnvironmentOverrideNames(fileValues)
-	replacedNames := append(append([]string(nil), names...), developmentPlainEnvName, managedEnvKeysName)
+	replacedNames := append(append([]string(nil), names...), developmentLaunchIsolationNames...)
 	assignments := []environmentAssignment{{name: developmentPlainEnvName, value: "1"}}
 	return mergeEnvironmentAssignments(environment, replacedNames, assignments)
 }

@@ -257,20 +257,14 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 	installForjHelper(t, "exit")
 
 	captured := CaptureEnvironment()
-	filtered := captured[:0]
-	for _, entry := range captured {
-		name, _, ok := strings.Cut(entry, "=")
-		if ok && (environmentNameEqual(name, "APP_NAME") || environmentNameEqual(name, "FORJ_APP")) {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	supervisor := newTestSupervisor(Options{Environment: filtered})
+	captured = replaceEnvironment(captured, "APP_NAME", "harbor")
+	captured = replaceEnvironment(captured, "FORJ_APP", "harbord")
+	captured = replaceEnvironment(captured, "FORJ_BUILD_PROGRESS", "harbor-progress")
+	captured = replaceEnvironment(captured, "FORJ_COMMAND_PREFIX", "harbor harbord")
+	supervisor := newTestSupervisor(Options{Environment: captured})
 	t.Cleanup(func() {
 		_ = supervisor.Close(context.Background())
 	})
-	t.Setenv("APP_NAME", "harbor")
-	t.Setenv("FORJ_APP", "harbord")
 
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-environment",
@@ -661,8 +655,12 @@ func TestStartAcceptsPresentEmptyNetworkOverride(t *testing.T) {
 // TestEnvironmentReplacementPreservesUnrelatedValues verifies deterministic explicit values are appended once without mutating the captured base.
 func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	base := []string{
+		"APP_NAME=harbor",
 		"HOME=/tmp/home",
 		"FORJ_DEV_PLAIN=0",
+		"FORJ_APP=harbord",
+		"FORJ_BUILD_PROGRESS=harbor-progress",
+		"FORJ_COMMAND_PREFIX=harbor harbord",
 		"PATH=/bin",
 		"FORJ_DEV_PLAIN=2",
 		"DEV_SERVICE_IP_ADDRESS=127.0.0.7",
