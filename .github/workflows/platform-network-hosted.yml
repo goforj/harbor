@@ -14,6 +14,8 @@ permissions:
 env:
   HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11
   HARBOR_PROOF_PORT: "3306"
+  HARBOR_ADAPTER_PROOF_ADDRESSES: 127.77.254.250,127.77.254.251
+  HARBOR_ADAPTER_PROOF_PORT: "43306"
 
 jobs:
   project-identity:
@@ -51,6 +53,9 @@ jobs:
 
       - name: Run production loopback adapter lifecycle
         shell: bash
+        env:
+          HARBOR_PROOF_ADDRESSES: ${{ env.HARBOR_ADAPTER_PROOF_ADDRESSES }}
+          HARBOR_PROOF_PORT: ${{ env.HARBOR_ADAPTER_PROOF_PORT }}
         run: |
           binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
