@@ -3,6 +3,7 @@ package authority
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -24,17 +26,25 @@ import (
 // recordingStore provides immutable durable results with race-safe call accounting.
 type recordingStore struct {
 	sequence             domain.Sequence
-	snapshot             domain.Snapshot
+	runtimeState         state.RuntimeState
 	sequenceErr          error
-	snapshotErr          error
+	runtimeStateErr      error
 	sequenceCalls        atomic.Int64
-	snapshotCalls        atomic.Int64
+	runtimeStateCalls    atomic.Int64
 	nilContexts          atomic.Int64
 	registration         state.ProjectRegistration
 	registrationErr      error
 	registrationCalls    atomic.Int64
 	registrationMu       sync.Mutex
 	registrationProjects []domain.ProjectSnapshot
+}
+
+// httpRouteObserverFunc adapts one exact route predicate to the authority's observation boundary.
+type httpRouteObserverFunc func(string, netip.AddrPort) bool
+
+// HTTPRouteLive applies the configured exact route predicate.
+func (observe httpRouteObserverFunc) HTTPRouteLive(host string, upstream netip.AddrPort) bool {
+	return observe(host, upstream)
 }
 
 // recordingProjectLifecycle supplies explicit managed-process coordination to authority boundary tests.
@@ -71,6 +81,11 @@ func testProjectLifecycles() projectLifecycleCoordinator {
 	return new(recordingProjectLifecycle)
 }
 
+// testHTTPRoutes supplies an initialized observer with no live public routes.
+func testHTTPRoutes() httpRouteObserver {
+	return httpRouteObserverFunc(func(string, netip.AddrPort) bool { return false })
+}
+
 // CurrentSequence returns the configured global sequence while preserving caller cancellation.
 func (store *recordingStore) CurrentSequence(ctx context.Context) (domain.Sequence, error) {
 	store.sequenceCalls.Add(1)
@@ -88,21 +103,21 @@ func (store *recordingStore) CurrentSequence(ctx context.Context) (domain.Sequen
 	return store.sequence, nil
 }
 
-// Snapshot returns the configured replacement state while preserving caller cancellation.
-func (store *recordingStore) Snapshot(ctx context.Context) (domain.Snapshot, error) {
-	store.snapshotCalls.Add(1)
+// RuntimeState returns the configured atomic replacement while preserving caller cancellation.
+func (store *recordingStore) RuntimeState(ctx context.Context) (state.RuntimeState, error) {
+	store.runtimeStateCalls.Add(1)
 	if ctx == nil {
 		store.nilContexts.Add(1)
-		return domain.Snapshot{}, errors.New("snapshot received a nil context")
+		return state.RuntimeState{}, errors.New("runtime state received a nil context")
 	}
 	if err := ctx.Err(); err != nil {
-		return domain.Snapshot{}, err
+		return state.RuntimeState{}, err
 	}
-	if store.snapshotErr != nil {
-		return domain.Snapshot{}, store.snapshotErr
+	if store.runtimeStateErr != nil {
+		return state.RuntimeState{}, store.runtimeStateErr
 	}
 
-	return store.snapshot, nil
+	return store.runtimeState, nil
 }
 
 // RegisterProject returns the configured atomic registration while preserving caller cancellation.
@@ -136,6 +151,54 @@ func emptySnapshot(sequence domain.Sequence) domain.Snapshot {
 	}
 }
 
+// authorityRouteRuntimeState constructs the durable private resource and matching full-stage reservation used by projection tests.
+func authorityRouteRuntimeState() state.RuntimeState {
+	snapshot := emptySnapshot(17)
+	snapshot.Projects = []domain.ProjectSnapshot{{
+		ID:        "project-orders",
+		Name:      "Orders",
+		Path:      "/workspace/orders",
+		Slug:      "orders",
+		State:     domain.ProjectReady,
+		UpdatedAt: snapshot.CapturedAt,
+		Apps: []domain.AppSnapshot{{
+			ID:       "app",
+			Name:     "App",
+			State:    domain.EntityReady,
+			Active:   true,
+			Required: true,
+		}},
+		Services: []domain.ServiceSnapshot{},
+		Resources: []domain.ResourceSnapshot{{
+			ID:   "app-http",
+			Name: "App",
+			Kind: "application",
+			Owner: domain.ResourceOwner{
+				Kind:  domain.ResourceOwnedByApp,
+				AppID: "app",
+			},
+			URL: "http://127.77.0.10:3000",
+		}},
+	}}
+	return state.RuntimeState{
+		Snapshot:           snapshot,
+		NetworkInitialized: true,
+		Network: state.NetworkRecord{
+			Stage: state.NetworkStageFull,
+			Reservations: state.DataPlaneReservations{Endpoints: []state.EndpointReservation{{
+				Key: state.EndpointReservationKey{
+					ProjectID:  "project-orders",
+					EndpointID: "app-http",
+				},
+				Protocol:   state.EndpointProtocolHTTP,
+				Host:       "orders.test",
+				Public:     netip.MustParseAddrPort("127.0.0.1:443"),
+				Generation: 1,
+			}}},
+		},
+	}
+}
+
 // controlCaller returns a negotiated control peer suitable for direct authority tests.
 func controlCaller(capabilities []rpc.Capability) control.Caller {
 	return control.Caller{Session: session.Peer{
@@ -163,7 +226,7 @@ func TestNewAuthorityUsesCurrentBuild(t *testing.T) {
 	)
 	want := buildinfo.Current()
 
-	authority := NewAuthority(store, new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator))
+	authority := NewAuthority(store, new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator), new(harbordruntime.Controller))
 	if authority == nil {
 		t.Fatal("NewAuthority() returned nil")
 	}
@@ -176,7 +239,7 @@ func TestNewAuthorityUsesCurrentBuild(t *testing.T) {
 func TestAuthorityStatusMapsServingState(t *testing.T) {
 	store := &recordingStore{sequence: 42}
 	build := buildinfo.Info{Version: "v3.2.1", Revision: "abc123", Modified: true}
-	authority := newAuthority(store, testProjectUnregisterApprovals(), build, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(store, testProjectUnregisterApprovals(), build, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1, "events.v1"})
 
 	status, err := authority.Status(context.Background(), caller)
@@ -201,15 +264,15 @@ func TestAuthorityStatusMapsServingState(t *testing.T) {
 	if got := store.sequenceCalls.Load(); got != 1 {
 		t.Fatalf("CurrentSequence() calls = %d, want 1", got)
 	}
-	if got := store.snapshotCalls.Load(); got != 0 {
-		t.Fatalf("Snapshot() calls = %d, want 0", got)
+	if got := store.runtimeStateCalls.Load(); got != 0 {
+		t.Fatalf("RuntimeState() calls = %d, want 0", got)
 	}
 }
 
 // TestAuthorityStatusReturnsFreshCanonicalCapabilities verifies caller-owned slices cannot alter status results across calls.
 func TestAuthorityStatusReturnsFreshCanonicalCapabilities(t *testing.T) {
 	store := &recordingStore{sequence: 9}
-	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	capabilities := []rpc.Capability{"events.v1", control.CapabilityV1, "events.v1"}
 	caller := controlCaller(capabilities)
 
@@ -240,8 +303,8 @@ func TestAuthorityStatusReturnsFreshCanonicalCapabilities(t *testing.T) {
 // TestAuthorityNormalizesNilContexts verifies both public reads give the Store a usable context.
 func TestAuthorityNormalizesNilContexts(t *testing.T) {
 	snapshot := emptySnapshot(7)
-	store := &recordingStore{sequence: snapshot.Sequence, snapshot: snapshot}
-	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	store := &recordingStore{sequence: snapshot.Sequence, runtimeState: state.RuntimeState{Snapshot: snapshot}}
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1})
 
 	if _, err := authority.Status(nil, caller); err != nil {
@@ -261,12 +324,12 @@ func TestAuthorityPreservesStoreErrorsAndCancellation(t *testing.T) {
 	snapshotFailure := errors.New("snapshot unavailable")
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1})
 
-	statusAuthority := newAuthority(&recordingStore{sequenceErr: statusFailure}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	statusAuthority := newAuthority(&recordingStore{sequenceErr: statusFailure}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	if _, err := statusAuthority.Status(context.Background(), caller); !errors.Is(err, statusFailure) {
 		t.Fatalf("Status() error = %v, want %v", err, statusFailure)
 	}
 
-	snapshotAuthority := newAuthority(&recordingStore{snapshotErr: snapshotFailure}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	snapshotAuthority := newAuthority(&recordingStore{runtimeStateErr: snapshotFailure}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	if _, err := snapshotAuthority.Snapshot(context.Background(), caller); !errors.Is(err, snapshotFailure) {
 		t.Fatalf("Snapshot() error = %v, want %v", err, snapshotFailure)
 	}
@@ -284,7 +347,7 @@ func TestAuthorityPreservesStoreErrorsAndCancellation(t *testing.T) {
 		{name: "deadline", ctx: expired, want: context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			authority := newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+			authority := newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 			if _, err := authority.Status(test.ctx, caller); !errors.Is(err, test.want) {
 				t.Fatalf("Status() error = %v, want %v", err, test.want)
 			}
@@ -298,7 +361,7 @@ func TestAuthorityPreservesStoreErrorsAndCancellation(t *testing.T) {
 // TestAuthorityRejectsInvalidNegotiatedCapabilities verifies malformed direct calls do not emit invalid status data.
 func TestAuthorityRejectsInvalidNegotiatedCapabilities(t *testing.T) {
 	store := &recordingStore{sequence: 5}
-	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	caller := controlCaller([]rpc.Capability{"bad capability"})
 
 	if _, err := authority.Status(context.Background(), caller); err == nil {
@@ -312,8 +375,8 @@ func TestAuthorityRejectsInvalidNegotiatedCapabilities(t *testing.T) {
 // TestAuthoritySnapshotPassesThroughStoreState verifies authority neither invents nor filters durable project state.
 func TestAuthoritySnapshotPassesThroughStoreState(t *testing.T) {
 	snapshot := emptySnapshot(17)
-	store := &recordingStore{snapshot: snapshot}
-	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	store := &recordingStore{runtimeState: state.RuntimeState{Snapshot: snapshot}}
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 
 	got, err := authority.Snapshot(context.Background(), control.Caller{})
 	if err != nil {
@@ -322,8 +385,97 @@ func TestAuthoritySnapshotPassesThroughStoreState(t *testing.T) {
 	if !reflect.DeepEqual(got, snapshot) {
 		t.Fatalf("Snapshot() = %#v, want exact Store snapshot %#v", got, snapshot)
 	}
-	if calls := store.snapshotCalls.Load(); calls != 1 {
-		t.Fatalf("Snapshot() calls = %d, want 1", calls)
+	if calls := store.runtimeStateCalls.Load(); calls != 1 {
+		t.Fatalf("RuntimeState() calls = %d, want 1", calls)
+	}
+}
+
+// TestAuthoritySnapshotProjectsOnlyExactLiveFullStageRoutes verifies public launch URLs fail closed at every durable and live join.
+func TestAuthoritySnapshotProjectsOnlyExactLiveFullStageRoutes(t *testing.T) {
+	privateUpstream := netip.MustParseAddrPort("127.77.0.10:3000")
+	tests := []struct {
+		name      string
+		mutate    func(*state.RuntimeState)
+		observe   httpRouteObserverFunc
+		wantURL   string
+		wantCalls int
+	}{
+		{
+			name: "live projection",
+			observe: func(host string, upstream netip.AddrPort) bool {
+				return host == "orders.test" && upstream == privateUpstream
+			},
+			wantURL:   "https://orders.test",
+			wantCalls: 1,
+		},
+		{
+			name:    "route absent",
+			observe: func(string, netip.AddrPort) bool { return false },
+			wantURL: "http://127.77.0.10:3000", wantCalls: 1,
+		},
+		{
+			name: "route inexact",
+			observe: func(host string, upstream netip.AddrPort) bool {
+				return host == "orders.test" && upstream == netip.MustParseAddrPort("127.77.0.10:3001")
+			},
+			wantURL: "http://127.77.0.10:3000", wantCalls: 1,
+		},
+		{
+			name: "identity stage",
+			mutate: func(runtimeState *state.RuntimeState) {
+				runtimeState.Network.Stage = state.NetworkStageIdentity
+				runtimeState.Network.Reservations.Endpoints = []state.EndpointReservation{}
+			},
+			observe: func(string, netip.AddrPort) bool { return true },
+			wantURL: "http://127.77.0.10:3000",
+		},
+		{
+			name: "malformed reservation join",
+			mutate: func(runtimeState *state.RuntimeState) {
+				runtimeState.Network.Reservations.Endpoints[0].Host = "legacy.orders.test"
+			},
+			observe: func(string, netip.AddrPort) bool { return true },
+			wantURL: "http://127.77.0.10:3000",
+		},
+		{
+			name: "noncanonical private origin",
+			mutate: func(runtimeState *state.RuntimeState) {
+				runtimeState.Snapshot.Projects[0].Resources[0].URL = "http://127.77.0.10:3000/"
+			},
+			observe: func(string, netip.AddrPort) bool { return true },
+			wantURL: "http://127.77.0.10:3000/",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtimeState := authorityRouteRuntimeState()
+			if test.mutate != nil {
+				test.mutate(&runtimeState)
+			}
+			original := cloneControlSnapshot(runtimeState.Snapshot)
+			calls := 0
+			observer := httpRouteObserverFunc(func(host string, upstream netip.AddrPort) bool {
+				calls++
+				return test.observe(host, upstream)
+			})
+			store := &recordingStore{runtimeState: runtimeState}
+			authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), observer)
+
+			got, err := authority.Snapshot(t.Context(), control.Caller{})
+			if err != nil {
+				t.Fatalf("Snapshot() error = %v", err)
+			}
+			if gotURL := got.Projects[0].Resources[0].URL; gotURL != test.wantURL {
+				t.Fatalf("Snapshot() resource URL = %q, want %q", gotURL, test.wantURL)
+			}
+			if calls != test.wantCalls {
+				t.Fatalf("HTTPRouteLive() calls = %d, want %d", calls, test.wantCalls)
+			}
+			if !reflect.DeepEqual(store.runtimeState.Snapshot, original) {
+				t.Fatal("Snapshot() mutated the Store runtime snapshot")
+			}
+		})
 	}
 }
 
@@ -331,8 +483,8 @@ func TestAuthoritySnapshotPassesThroughStoreState(t *testing.T) {
 func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 	const readers = 64
 	snapshot := emptySnapshot(71)
-	store := &recordingStore{sequence: snapshot.Sequence, snapshot: snapshot}
-	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "v1.0.0", Revision: "race-safe"}, testProjectLifecycles(), testNetworkSetups())
+	store := &recordingStore{sequence: snapshot.Sequence, runtimeState: state.RuntimeState{Snapshot: snapshot}}
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "v1.0.0", Revision: "race-safe"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1, "events.v1"})
 	errorsFound := make(chan error, readers*2)
 	start := make(chan struct{})
@@ -373,7 +525,7 @@ func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 	if got := store.sequenceCalls.Load(); got != readers {
 		t.Fatalf("CurrentSequence() calls = %d, want %d", got, readers)
 	}
-	if got := store.snapshotCalls.Load(); got != readers {
-		t.Fatalf("Snapshot() calls = %d, want %d", got, readers)
+	if got := store.runtimeStateCalls.Load(); got != readers {
+		t.Fatalf("RuntimeState() calls = %d, want %d", got, readers)
 	}
 }

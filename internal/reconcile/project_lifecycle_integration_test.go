@@ -33,6 +33,49 @@ import (
 
 const projectLifecycleHelperEnvironment = "HARBOR_PROJECT_LIFECYCLE_HELPER"
 
+// projectLifecycleTestRouteReconciler keeps identity-stage lifecycle tests independent from a live data plane.
+type projectLifecycleTestRouteReconciler struct{}
+
+// Reconcile accepts one state-derived lifecycle edge without external publication.
+func (projectLifecycleTestRouteReconciler) Reconcile(context.Context) error {
+	return nil
+}
+
+// projectLifecycleRouteReconcilerFunc adapts one deterministic test function to route reconciliation.
+type projectLifecycleRouteReconcilerFunc func(context.Context) error
+
+// Reconcile invokes the deterministic route fixture.
+func (reconciler projectLifecycleRouteReconcilerFunc) Reconcile(ctx context.Context) error {
+	return reconciler(ctx)
+}
+
+// projectLifecycleRecordingRouteReconciler captures the durable project state visible at each publication edge.
+type projectLifecycleRecordingRouteReconciler struct {
+	store     *state.Store
+	projectID domain.ProjectID
+	mutex     sync.Mutex
+	states    []domain.ProjectState
+}
+
+// Reconcile records the already-committed state that authorizes one route replacement.
+func (reconciler *projectLifecycleRecordingRouteReconciler) Reconcile(ctx context.Context) error {
+	record, err := reconciler.store.Project(ctx, reconciler.projectID)
+	if err != nil {
+		return err
+	}
+	reconciler.mutex.Lock()
+	reconciler.states = append(reconciler.states, record.Project.State)
+	reconciler.mutex.Unlock()
+	return nil
+}
+
+// States returns a defensive copy of the observed lifecycle edges.
+func (reconciler *projectLifecycleRecordingRouteReconciler) States() []domain.ProjectState {
+	reconciler.mutex.Lock()
+	defer reconciler.mutex.Unlock()
+	return slices.Clone(reconciler.states)
+}
+
 // projectLifecycleRevisionRaceState changes the registered checkout immediately before the fenced start mutation.
 type projectLifecycleRevisionRaceState struct {
 	*state.Store
@@ -152,6 +195,7 @@ func newProjectLifecycleAdmissionTestCoordinator(
 		newProjectPrimaryLeaseCoordinator(leaseState, discoverer, observer, prober, time.Now),
 		projectreadiness.NewProber(&http.Client{Timeout: time.Second}),
 		supervisor,
+		projectLifecycleTestRouteReconciler{},
 		time.Now,
 		newLifecycleOperationID,
 		newLifecycleIntentID,
@@ -220,6 +264,43 @@ func TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdenti
 	}
 }
 
+// TestProjectLifecycleCoordinatorRetriesRouteReconciliation covers transient recovery and bounded failure reporting.
+func TestProjectLifecycleCoordinatorRetriesRouteReconciliation(t *testing.T) {
+	sentinel := errors.New("synthetic route publication failure")
+	for _, test := range []struct {
+		name      string
+		failures  int
+		wantCalls int
+		wantError bool
+	}{
+		{name: "recovers", failures: 2, wantCalls: 3},
+		{name: "exhausts", failures: lifecyclePersistenceAttempts, wantCalls: lifecyclePersistenceAttempts, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			coordinator := &ProjectLifecycleCoordinator{
+				routes: projectLifecycleRouteReconcilerFunc(func(context.Context) error {
+					calls++
+					if calls <= test.failures {
+						return sentinel
+					}
+					return nil
+				}),
+			}
+			err := coordinator.reconcileProjectRoutes(t.Context(), "test route edge")
+			if calls != test.wantCalls {
+				t.Fatalf("Reconcile() calls = %d, want %d", calls, test.wantCalls)
+			}
+			if test.wantError && !errors.Is(err, sentinel) {
+				t.Fatalf("reconcileProjectRoutes() error = %v, want %v", err, sentinel)
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("reconcileProjectRoutes() error = %v", err)
+			}
+		})
+	}
+}
+
 // TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt proves the complete durable process and readiness vertical.
 func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) {
 	store, journal := newProjectLifecycleIntegrationState(t)
@@ -230,6 +311,8 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 
 	supervisor := projectprocess.New(projectprocess.Options{GracePeriod: 500 * time.Millisecond})
 	coordinator, discoverer := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
+	routes := &projectLifecycleRecordingRouteReconciler{store: store, projectID: project.ID}
+	coordinator.routes = routes
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -277,6 +360,11 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	if err != nil || stopOperation.Operation.State != domain.OperationSucceeded {
 		t.Fatalf("stop operation = %#v, %v", stopOperation, err)
 	}
+	waitForProjectLifecycleRouteStates(
+		t,
+		routes,
+		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectStopped},
+	)
 }
 
 // TestProjectLifecycleCoordinatorCloseRetiresReadyProcessAuthority proves a daemon restart does not preserve a phantom online session.
@@ -340,6 +428,7 @@ func TestProjectLifecycleCoordinatorRejectsCheckoutDriftAfterLeaseAdmission(t *t
 		newProjectPrimaryLeaseCoordinator(store, discoverer, observer, prober, time.Now),
 		projectreadiness.NewProber(&http.Client{Timeout: time.Second}),
 		supervisor,
+		projectLifecycleTestRouteReconciler{},
 		time.Now,
 		newLifecycleOperationID,
 		newLifecycleIntentID,
@@ -642,7 +731,7 @@ func newProjectLifecycleIntegrationCoordinator(
 	port uint16,
 ) (*ProjectLifecycleCoordinator, *primaryLeaseTestDiscoverer) {
 	t.Helper()
-	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor)
+	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
 	discoverer := &primaryLeaseTestDiscoverer{port: port}
 	observer := &primaryLeaseTestLoopbackObserver{
 		facts: map[netip.Addr]loopback.Observation{address: primaryLeaseTestExactObservation(address)},
@@ -716,4 +805,21 @@ func waitForProjectLifecycleState(t *testing.T, store *state.Store, projectID do
 	record, err := store.Project(t.Context(), projectID)
 	t.Fatalf("project state = %#v, %v, want %q", record.Project, err, want)
 	return state.ProjectRecord{}
+}
+
+// waitForProjectLifecycleRouteStates waits for asynchronous lifecycle work to finish its final route publication edge.
+func waitForProjectLifecycleRouteStates(
+	t *testing.T,
+	reconciler *projectLifecycleRecordingRouteReconciler,
+	want []domain.ProjectState,
+) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := reconciler.States(); slices.Equal(got, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("route reconciliation states = %v, want %v", reconciler.States(), want)
 }

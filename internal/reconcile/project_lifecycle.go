@@ -78,6 +78,11 @@ type projectProcessSupervisor interface {
 	Close(context.Context) error
 }
 
+// ProjectRouteReconciler projects durable project lifecycle changes into Harbor's live route table.
+type ProjectRouteReconciler interface {
+	Reconcile(context.Context) error
+}
+
 // ProjectLifecycleCoordinator turns durable start and stop intents into supervised GoForj development processes.
 type ProjectLifecycleCoordinator struct {
 	state             projectLifecycleState
@@ -85,6 +90,7 @@ type ProjectLifecycleCoordinator struct {
 	primaryLeases     *projectPrimaryLeaseCoordinator
 	readiness         projectReadinessProber
 	supervisor        projectProcessSupervisor
+	routes            ProjectRouteReconciler
 	now               func() time.Time
 	newOperationID    func() (domain.OperationID, error)
 	newIntentID       func() (domain.IntentID, error)
@@ -108,9 +114,10 @@ func NewProjectLifecycleCoordinator(
 	projectState *state.Store,
 	operations *state.OperationJournal,
 	supervisor *projectprocess.Supervisor,
+	routes ProjectRouteReconciler,
 ) *ProjectLifecycleCoordinator {
-	if projectState == nil || operations == nil || supervisor == nil {
-		panic("reconcile.NewProjectLifecycleCoordinator requires non-nil state, journal, and supervisor dependencies")
+	if projectState == nil || operations == nil || supervisor == nil || nilDependency(routes) {
+		panic("reconcile.NewProjectLifecycleCoordinator requires non-nil state, journal, supervisor, and route dependencies")
 	}
 	discoverer := projectdiscovery.NewDiscoverer()
 	return newProjectLifecycleCoordinator(
@@ -119,6 +126,7 @@ func NewProjectLifecycleCoordinator(
 		newSystemProjectPrimaryLeaseCoordinator(projectState, discoverer),
 		projectreadiness.NewProber(&http.Client{Timeout: defaultReadinessHTTPTimeout}),
 		supervisor,
+		routes,
 		time.Now,
 		newLifecycleOperationID,
 		newLifecycleIntentID,
@@ -135,6 +143,7 @@ func newProjectLifecycleCoordinator(
 	primaryLeases *projectPrimaryLeaseCoordinator,
 	readiness projectReadinessProber,
 	supervisor projectProcessSupervisor,
+	routes ProjectRouteReconciler,
 	now func() time.Time,
 	newOperationID func() (domain.OperationID, error),
 	newIntentID func() (domain.IntentID, error),
@@ -143,7 +152,7 @@ func newProjectLifecycleCoordinator(
 	readinessInterval time.Duration,
 ) *ProjectLifecycleCoordinator {
 	if nilDependency(projectState) || nilDependency(operations) || nilDependency(primaryLeases) ||
-		nilDependency(readiness) || nilDependency(supervisor) || nilDependency(now) ||
+		nilDependency(readiness) || nilDependency(supervisor) || nilDependency(routes) || nilDependency(now) ||
 		nilDependency(newOperationID) || nilDependency(newIntentID) || nilDependency(newSession) {
 		panic("reconcile.newProjectLifecycleCoordinator requires every dependency")
 	}
@@ -157,6 +166,7 @@ func newProjectLifecycleCoordinator(
 		primaryLeases:     primaryLeases,
 		readiness:         readiness,
 		supervisor:        supervisor,
+		routes:            routes,
 		now:               now,
 		newOperationID:    newOperationID,
 		newIntentID:       newIntentID,
@@ -385,6 +395,37 @@ func retryLifecycleResult[T any](call func() (T, error)) (T, error) {
 	return zero, err
 }
 
+// reconcileProjectRoutes retries one state-derived route edge before reporting that lifecycle publication is incomplete.
+func (coordinator *ProjectLifecycleCoordinator) reconcileProjectRoutes(ctx context.Context, phase string) error {
+	ctx = normalizeLifecycleContext(ctx)
+	var err error
+	for attempt := 0; attempt < lifecyclePersistenceAttempts; attempt++ {
+		if callErr := coordinator.routes.Reconcile(ctx); callErr == nil {
+			return nil
+		} else {
+			err = callErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%s: %w", phase, ctxErr)
+		}
+		if attempt+1 < lifecyclePersistenceAttempts {
+			timer := time.NewTimer(lifecyclePersistenceDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return fmt.Errorf("%s: %w", phase, ctx.Err())
+			}
+		}
+	}
+	return fmt.Errorf("%s after %d attempts: %w", phase, lifecyclePersistenceAttempts, err)
+}
+
 // runStart advances one queued operation through launch evidence and proven readiness.
 func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationRecord) {
 	if record.Operation.State != domain.OperationQueued {
@@ -523,6 +564,9 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				coordinator.stopAndFailAttached(mutation, session, handle, "project.state.failed", err)
 				return
 			}
+			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
+				coordinator.recordAsyncError(err)
+			}
 			coordinator.watchReadyProcess(session, handle)
 			return
 		}
@@ -569,6 +613,10 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain
 	coordinator.releaseHandle(session.ProjectID, handle)
 	if persistErr != nil {
 		coordinator.recordAsyncError(persistErr)
+		return
+	}
+	if err := coordinator.reconcileProjectRoutes(context.Background(), "withdraw unexpectedly exited project routes"); err != nil {
+		coordinator.recordAsyncError(err)
 	}
 }
 
@@ -614,6 +662,10 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 		coordinator.cancelQueued(record, err)
 		return
 	}
+	if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "withdraw stopping project routes"); err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
 	if err := coordinator.supervisor.Stop(context.Background(), record.Operation.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		coordinator.recordAsyncError(fmt.Errorf("stop project %q process: %w", record.Operation.ProjectID, err))
 		return
@@ -633,6 +685,10 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 			Phase:                     "stopped",
 		})
 	}); err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
+	if err := coordinator.reconcileProjectRoutes(context.Background(), "confirm stopped project route withdrawal"); err != nil {
 		coordinator.recordAsyncError(err)
 	}
 }
@@ -676,6 +732,10 @@ func (coordinator *ProjectLifecycleCoordinator) completeDaemonStop(session domai
 			Phase:                     "stopped",
 		})
 	}); err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
+	if err := coordinator.reconcileProjectRoutes(context.Background(), "withdraw daemon-stopped project routes"); err != nil {
 		coordinator.recordAsyncError(err)
 	}
 }

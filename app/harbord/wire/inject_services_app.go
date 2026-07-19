@@ -37,4 +37,5 @@ var appSet = wire.NewSet(
 	provideHarbordReadiness,
 	provideDaemonRunner,
 	wire.Bind(new(daemon.ConnectionServer), new(*control.Server)),
+	wire.Bind(new(reconcile.ProjectRouteReconciler), new(*harbordruntime.Controller)),
 )

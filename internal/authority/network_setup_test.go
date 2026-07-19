@@ -121,6 +121,7 @@ func newAuthorityForNetworkSetupTest(
 		newInstallationID,
 		testProjectLifecycles(),
 		coordinator,
+		testHTTPRoutes(),
 	)
 }
 
@@ -718,6 +719,7 @@ func TestAuthorityIdentityFactoryConstructionRejectsNilInstallationFactory(t *te
 			nilInstallationIDFactory,
 			testProjectLifecycles(),
 			testNetworkSetups(),
+			testHTTPRoutes(),
 		)
 	})
 }

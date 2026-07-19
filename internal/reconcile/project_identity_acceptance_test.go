@@ -77,7 +77,7 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		GracePeriod: 3 * time.Second,
 		Environment: projectEnvironment,
 	})
-	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor)
+	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
 	t.Cleanup(func() {
 		closeContext, closeCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer closeCancel()

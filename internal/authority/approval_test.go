@@ -171,7 +171,7 @@ func validAuthoritySucceededOperation(t *testing.T) domain.Operation {
 func TestAuthorityPrepareProjectUnregisterApprovalUsesTransportIdentity(t *testing.T) {
 	prepared := validAuthorityPrepareResult()
 	approvals := &recordingProjectUnregisterApprovals{prepareResult: prepared}
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	request := control.PrepareProjectUnregisterApprovalRequest{
 		OperationID:               prepared.OperationID,
 		ExpectedOperationRevision: prepared.OperationRevision,
@@ -243,7 +243,7 @@ func TestAuthorityPrepareProjectUnregisterApprovalOmitsCompletedTicket(t *testin
 	prepared.PendingLeases = 0
 	prepared.Ticket = nil
 	approvals := &recordingProjectUnregisterApprovals{prepareResult: prepared}
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 
 	result, err := authority.PrepareProjectUnregisterApproval(t.Context(), control.Caller{}, control.PrepareProjectUnregisterApprovalRequest{
 		OperationID:               prepared.OperationID,
@@ -261,7 +261,7 @@ func TestAuthorityPrepareProjectUnregisterApprovalOmitsCompletedTicket(t *testin
 func TestAuthorityConfirmProjectUnregisterApprovalMapsSucceededOperation(t *testing.T) {
 	record := state.OperationRecord{Operation: validAuthoritySucceededOperation(t), Revision: 43}
 	approvals := &recordingProjectUnregisterApprovals{confirmResult: record}
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 	request := control.ConfirmProjectUnregisterApprovalRequest{
 		OperationID:               record.Operation.ID,
 		ExpectedOperationRevision: 41,
@@ -293,7 +293,7 @@ func TestAuthorityConfirmProjectUnregisterApprovalMapsSucceededOperation(t *test
 // TestAuthorityProjectUnregisterApprovalValidatesInputBeforeCoordination verifies malformed selections cannot reach reconciliation.
 func TestAuthorityProjectUnregisterApprovalValidatesInputBeforeCoordination(t *testing.T) {
 	approvals := testProjectUnregisterApprovals()
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups())
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 
 	if _, err := authority.PrepareProjectUnregisterApproval(t.Context(), control.Caller{}, control.PrepareProjectUnregisterApprovalRequest{}); err == nil {
 		t.Fatal("PrepareProjectUnregisterApproval() error = nil, want invalid request")
@@ -321,6 +321,7 @@ func TestAuthorityProjectUnregisterApprovalClassifiesCoordinatorFailures(t *test
 		buildinfo.Info{Version: "dev"},
 		testProjectLifecycles(),
 		testNetworkSetups(),
+		testHTTPRoutes(),
 	)
 	_, prepareErr := prepareAuthority.PrepareProjectUnregisterApproval(
 		t.Context(),
@@ -339,6 +340,7 @@ func TestAuthorityProjectUnregisterApprovalClassifiesCoordinatorFailures(t *test
 		buildinfo.Info{Version: "dev"},
 		testProjectLifecycles(),
 		testNetworkSetups(),
+		testHTTPRoutes(),
 	)
 	_, confirmErr := confirmAuthority.ConfirmProjectUnregisterApproval(
 		t.Context(),
@@ -375,6 +377,7 @@ func TestAuthorityPrepareProjectUnregisterApprovalRejectsMismatchedAndInvalidRes
 				buildinfo.Info{Version: "dev"},
 				testProjectLifecycles(),
 				testNetworkSetups(),
+				testHTTPRoutes(),
 			)
 
 			if _, err := authority.PrepareProjectUnregisterApproval(t.Context(), control.Caller{}, request); err == nil {
@@ -416,6 +419,7 @@ func TestAuthorityConfirmProjectUnregisterApprovalRejectsMismatchedAndInvalidRes
 				buildinfo.Info{Version: "dev"},
 				testProjectLifecycles(),
 				testNetworkSetups(),
+				testHTTPRoutes(),
 			)
 
 			if _, err := authority.ConfirmProjectUnregisterApproval(t.Context(), control.Caller{}, request); err == nil {
@@ -485,6 +489,7 @@ func TestAuthorityConstructionRejectsNilDependencies(t *testing.T) {
 	var typedNilApprovals *recordingProjectUnregisterApprovals
 	var typedNilNetworkSetup *recordingNetworkSetupCoordinator
 	var typedNilDiscoverer *registrationDiscoverer
+	var typedNilRoutes httpRouteObserverFunc
 	var nilClock func() time.Time
 	var nilProjectIDFactory func() (domain.ProjectID, error)
 	for _, test := range []struct {
@@ -492,49 +497,58 @@ func TestAuthorityConstructionRejectsNilDependencies(t *testing.T) {
 		call func()
 	}{
 		{name: "production store", call: func() {
-			NewAuthority(nil, new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator))
+			NewAuthority(nil, new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator), new(harbordruntime.Controller))
 		}},
 		{name: "production approvals", call: func() {
-			NewAuthority(new(state.Store), nil, new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator))
+			NewAuthority(new(state.Store), nil, new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator), new(harbordruntime.Controller))
 		}},
 		{name: "production lifecycle", call: func() {
-			NewAuthority(new(state.Store), new(reconcile.ProjectUnregisterCoordinator), nil, new(reconcile.NetworkSetupCoordinator))
+			NewAuthority(new(state.Store), new(reconcile.ProjectUnregisterCoordinator), nil, new(reconcile.NetworkSetupCoordinator), new(harbordruntime.Controller))
 		}},
 		{name: "production network setup", call: func() {
-			NewAuthority(new(state.Store), new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), nil)
+			NewAuthority(new(state.Store), new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), nil, new(harbordruntime.Controller))
+		}},
+		{name: "production HTTP routes", call: func() {
+			NewAuthority(new(state.Store), new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator), new(reconcile.NetworkSetupCoordinator), nil)
 		}},
 		{name: "private store", call: func() {
-			newAuthority(nil, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups())
+			newAuthority(nil, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "private approvals", call: func() {
-			newAuthority(&recordingStore{}, nil, buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups())
+			newAuthority(&recordingStore{}, nil, buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "private lifecycle", call: func() {
-			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil, testNetworkSetups())
+			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil, testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "private network setup", call: func() {
-			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), nil)
+			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), nil, testHTTPRoutes())
+		}},
+		{name: "private HTTP routes", call: func() {
+			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups(), nil)
 		}},
 		{name: "typed private store", call: func() {
-			newAuthority(typedNilStore, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups())
+			newAuthority(typedNilStore, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "typed private approvals", call: func() {
-			newAuthority(&recordingStore{}, typedNilApprovals, buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups())
+			newAuthority(&recordingStore{}, typedNilApprovals, buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "typed private network setup", call: func() {
-			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), typedNilNetworkSetup)
+			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), typedNilNetworkSetup, testHTTPRoutes())
+		}},
+		{name: "typed private HTTP routes", call: func() {
+			newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles(), testNetworkSetups(), typedNilRoutes)
 		}},
 		{name: "registration discoverer", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil, time.Now, newOpaqueProjectID, testProjectLifecycles(), testNetworkSetups())
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil, time.Now, newOpaqueProjectID, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "typed registration discoverer", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, typedNilDiscoverer, time.Now, newOpaqueProjectID, testProjectLifecycles(), testNetworkSetups())
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, typedNilDiscoverer, time.Now, newOpaqueProjectID, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "registration clock", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, nilClock, newOpaqueProjectID, testProjectLifecycles(), testNetworkSetups())
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, nilClock, newOpaqueProjectID, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 		{name: "registration project ID factory", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now, nilProjectIDFactory, testProjectLifecycles(), testNetworkSetups())
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now, nilProjectIDFactory, testProjectLifecycles(), testNetworkSetups(), testHTTPRoutes())
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

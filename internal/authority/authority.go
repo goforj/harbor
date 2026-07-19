@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/goforj/harbor/internal/buildinfo"
@@ -25,10 +28,16 @@ import (
 type controlState interface {
 	// CurrentSequence establishes the diagnostic revision without loading the larger replacement snapshot.
 	CurrentSequence(context.Context) (domain.Sequence, error)
-	// Snapshot supplies one transactionally consistent replacement for every client projection.
-	Snapshot(context.Context) (domain.Snapshot, error)
+	// RuntimeState supplies one transactionally consistent client and network replacement.
+	RuntimeState(context.Context) (state.RuntimeState, error)
 	// RegisterProject creates or replays one inert project registration atomically.
 	RegisterProject(context.Context, domain.ProjectSnapshot) (state.ProjectRegistration, error)
+}
+
+// httpRouteObserver limits public URL projection to exact routes owned by the ready data plane.
+type httpRouteObserver interface {
+	// HTTPRouteLive reports whether one exact host-to-upstream route is currently published.
+	HTTPRouteLive(string, netip.AddrPort) bool
 }
 
 // projectDiscoverer isolates filesystem discovery from durable registration policy.
@@ -68,6 +77,7 @@ type networkSetupCoordinator interface {
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
 	store             controlState
+	routes            httpRouteObserver
 	unregister        projectUnregisterCoordinator
 	lifecycle         projectLifecycleCoordinator
 	networkSetup      networkSetupCoordinator
@@ -87,11 +97,12 @@ func NewAuthority(
 	unregister *reconcile.ProjectUnregisterCoordinator,
 	lifecycle *reconcile.ProjectLifecycleCoordinator,
 	networkSetup *reconcile.NetworkSetupCoordinator,
+	routes *harbordruntime.Controller,
 ) *Authority {
-	if store == nil || unregister == nil || lifecycle == nil || networkSetup == nil {
-		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, and network setup dependencies")
+	if store == nil || unregister == nil || lifecycle == nil || networkSetup == nil || routes == nil {
+		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, network setup, and HTTP route dependencies")
 	}
-	return newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup)
+	return newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup, routes)
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
@@ -101,6 +112,7 @@ func newAuthority(
 	build buildinfo.Info,
 	lifecycle projectLifecycleCoordinator,
 	networkSetup networkSetupCoordinator,
+	routes httpRouteObserver,
 ) *Authority {
 	return newAuthorityWithRegistration(
 		store,
@@ -111,6 +123,7 @@ func newAuthority(
 		newOpaqueProjectID,
 		lifecycle,
 		networkSetup,
+		routes,
 	)
 }
 
@@ -124,6 +137,7 @@ func newAuthorityWithRegistration(
 	newProjectID func() (domain.ProjectID, error),
 	lifecycle projectLifecycleCoordinator,
 	networkSetup networkSetupCoordinator,
+	routes httpRouteObserver,
 ) *Authority {
 	return newAuthorityWithIdentityFactories(
 		store,
@@ -136,6 +150,7 @@ func newAuthorityWithRegistration(
 		newOpaqueInstallationID,
 		lifecycle,
 		networkSetup,
+		routes,
 	)
 }
 
@@ -151,6 +166,7 @@ func newAuthorityWithIdentityFactories(
 	newInstallationID func() (identity.InstallationID, error),
 	lifecycle projectLifecycleCoordinator,
 	networkSetup networkSetupCoordinator,
+	routes httpRouteObserver,
 ) *Authority {
 	if nilAuthorityDependency(store) ||
 		nilAuthorityDependency(unregister) ||
@@ -160,11 +176,13 @@ func newAuthorityWithIdentityFactories(
 		nilAuthorityDependency(now) ||
 		nilAuthorityDependency(newProjectID) ||
 		nilAuthorityDependency(newOperationID) ||
-		nilAuthorityDependency(newInstallationID) {
+		nilAuthorityDependency(newInstallationID) ||
+		nilAuthorityDependency(routes) {
 		panic("authority.newAuthorityWithIdentityFactories requires every dependency")
 	}
 	return &Authority{
 		store:             store,
+		routes:            routes,
 		unregister:        unregister,
 		lifecycle:         lifecycle,
 		networkSetup:      networkSetup,
@@ -217,9 +235,78 @@ func (authority *Authority) Status(ctx context.Context, caller control.Caller) (
 	}, nil
 }
 
-// Snapshot delegates the complete durable replacement so the control layer cannot drift from the Store's transaction boundary.
+// Snapshot projects live public URLs from one atomic durable aggregate without replacing private runtime targets.
 func (authority *Authority) Snapshot(ctx context.Context, _ control.Caller) (domain.Snapshot, error) {
-	return authority.store.Snapshot(normalizeContext(ctx))
+	runtimeState, err := authority.store.RuntimeState(normalizeContext(ctx))
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	return publicControlSnapshot(runtimeState, authority.routes), nil
+}
+
+// publicControlSnapshot clones durable state before substituting routes proven live by this process generation.
+func publicControlSnapshot(runtimeState state.RuntimeState, routes httpRouteObserver) domain.Snapshot {
+	snapshot := cloneControlSnapshot(runtimeState.Snapshot)
+	if !runtimeState.NetworkInitialized || runtimeState.Network.Stage != state.NetworkStageFull {
+		return snapshot
+	}
+
+	endpoints := make(map[state.EndpointReservationKey]state.EndpointReservation, len(runtimeState.Network.Reservations.Endpoints))
+	for _, endpoint := range runtimeState.Network.Reservations.Endpoints {
+		if endpoint.Protocol == state.EndpointProtocolHTTP {
+			endpoints[endpoint.Key] = endpoint
+		}
+	}
+	for projectIndex := range snapshot.Projects {
+		project := &snapshot.Projects[projectIndex]
+		expectedHost := project.Slug + ".test"
+		for resourceIndex := range project.Resources {
+			resource := &project.Resources[resourceIndex]
+			key := state.EndpointReservationKey{ProjectID: project.ID, EndpointID: string(resource.ID)}
+			endpoint, found := endpoints[key]
+			if !found || endpoint.Host != expectedHost {
+				continue
+			}
+			upstream, ok := canonicalPrivateHTTPOrigin(resource.URL)
+			if !ok || !routes.HTTPRouteLive(endpoint.Host, upstream) {
+				continue
+			}
+			resource.URL = (&url.URL{Scheme: "https", Host: endpoint.Host}).String()
+		}
+	}
+	return snapshot
+}
+
+// cloneControlSnapshot keeps returned and durable collection storage independent across projection and callers.
+func cloneControlSnapshot(snapshot domain.Snapshot) domain.Snapshot {
+	clone := snapshot
+	clone.Projects = slices.Clone(snapshot.Projects)
+	clone.Operations = slices.Clone(snapshot.Operations)
+	clone.RecentResourceIDs = slices.Clone(snapshot.RecentResourceIDs)
+	for index := range clone.Projects {
+		clone.Projects[index].Apps = slices.Clone(snapshot.Projects[index].Apps)
+		clone.Projects[index].Services = slices.Clone(snapshot.Projects[index].Services)
+		clone.Projects[index].Resources = slices.Clone(snapshot.Projects[index].Resources)
+	}
+	return clone
+}
+
+// canonicalPrivateHTTPOrigin accepts only the exact IPv4 loopback origin persisted by project startup.
+func canonicalPrivateHTTPOrigin(rawURL string) (netip.AddrPort, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+	upstream, err := netip.ParseAddrPort(parsed.Host)
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+	upstream = netip.AddrPortFrom(upstream.Addr().Unmap(), upstream.Port())
+	canonical := (&url.URL{Scheme: "http", Host: upstream.String()}).String()
+	if rawURL != canonical || !upstream.Addr().Is4() || !upstream.Addr().IsLoopback() || upstream.Port() == 0 {
+		return netip.AddrPort{}, false
+	}
+	return upstream, true
 }
 
 // StartNetworkSetup assigns daemon-owned operation and installation identities to one authenticated setup intent.
