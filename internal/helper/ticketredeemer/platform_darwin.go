@@ -7,21 +7,20 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/goforj/harbor/internal/platform/darwinacl"
 	"golang.org/x/sys/unix"
 )
 
-const darwinExtendedSecurityAttribute = "com.apple.system.Security"
-
 // validatePlatformExtendedAccess rejects named macOS ACLs that mode bits cannot describe completely.
 func validatePlatformExtendedAccess(file *os.File) error {
-	_, err := unix.Fgetxattr(int(file.Fd()), darwinExtendedSecurityAttribute, nil)
-	if errors.Is(err, unix.ENOATTR) {
-		return nil
-	}
+	present, err := darwinacl.Present(file)
 	if err != nil {
 		return fmt.Errorf("inspect macOS extended ACL: %w", err)
 	}
-	return errors.New("ticket spool object has a macOS extended ACL")
+	if present {
+		return errors.New("ticket spool object has a macOS extended ACL")
+	}
+	return nil
 }
 
 // renamePlatformNoReplace atomically crosses from pending to claims without replacing a consumed reference.

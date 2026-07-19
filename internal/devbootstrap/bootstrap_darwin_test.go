@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/goforj/harbor/internal/platform/darwinacl"
 	"github.com/goforj/harbor/internal/platform/helperpath"
 	"golang.org/x/sys/unix"
 )
@@ -47,6 +49,59 @@ func TestSecurePlatformCreatedAccessAcceptsAnAbsentACL(t *testing.T) {
 	}
 	if err := securePlatformCreatedAccess(directory); err != nil {
 		t.Fatalf("secure clean Darwin test directory extended access: %v", err)
+	}
+}
+
+// TestSecurePlatformCreatedAccessClearsAnACL proves inherited grants are removed through the retained descriptor.
+func TestSecurePlatformCreatedAccessClearsAnACL(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "created")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("create Darwin ACL test directory: %v", err)
+	}
+	command := exec.Command("/bin/chmod", "+a", "everyone allow readsecurity", path)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("install Darwin test ACL: %v: %s", err, output)
+	}
+
+	directory, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open Darwin ACL test directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := directory.Close(); err != nil {
+			t.Errorf("close Darwin ACL test directory: %v", err)
+		}
+	})
+	exists, err := darwinacl.Present(directory)
+	if err != nil {
+		t.Fatalf("inspect installed Darwin test ACL: %v", err)
+	}
+	if !exists {
+		t.Fatal("installed Darwin test ACL is absent")
+	}
+	movedPath := filepath.Join(parent, "moved")
+	if err := os.Rename(path, movedPath); err != nil {
+		t.Fatalf("move opened Darwin ACL test directory: %v", err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("replace opened Darwin ACL test directory path: %v", err)
+	}
+
+	if err := securePlatformCreatedAccess(directory); err != nil {
+		t.Fatalf("secure Darwin ACL test directory: %v", err)
+	}
+	if err := validatePlatformExtendedAccess(directory); err != nil {
+		t.Fatalf("validate secured Darwin ACL test directory: %v", err)
+	}
+	replacement, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open replacement Darwin ACL test directory: %v", err)
+	}
+	replacementAccessErr := validatePlatformExtendedAccess(replacement)
+	replacementCloseErr := replacement.Close()
+	if err := errors.Join(replacementAccessErr, replacementCloseErr); err != nil {
+		t.Fatalf("validate replacement Darwin ACL test directory: %v", err)
 	}
 }
 

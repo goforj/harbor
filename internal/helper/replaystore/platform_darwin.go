@@ -7,19 +7,17 @@ import (
 	"fmt"
 	"os"
 
-	"golang.org/x/sys/unix"
+	"github.com/goforj/harbor/internal/platform/darwinacl"
 )
-
-const darwinReplayExtendedSecurityAttribute = "com.apple.system.Security"
 
 // validatePlatformExtendedAccess rejects named macOS ACLs that private mode bits cannot describe completely.
 func validatePlatformExtendedAccess(file *os.File) error {
-	_, err := unix.Fgetxattr(int(file.Fd()), darwinReplayExtendedSecurityAttribute, nil)
-	if errors.Is(err, unix.ENOATTR) {
-		return nil
-	}
+	present, err := darwinacl.Present(file)
 	if err != nil {
 		return fmt.Errorf("inspect replay object macOS extended ACL: %w", err)
 	}
-	return errors.New("replay object has a macOS extended ACL")
+	if present {
+		return errors.New("replay object has a macOS extended ACL")
+	}
+	return nil
 }

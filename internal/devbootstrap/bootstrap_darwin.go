@@ -7,14 +7,13 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/goforj/harbor/internal/platform/darwinacl"
 	"golang.org/x/sys/unix"
 )
 
-const darwinExtendedSecurityAttribute = "com.apple.system.Security"
-
 // validatePlatformExtendedAccess rejects named macOS ACLs that exact mode bits cannot describe.
 func validatePlatformExtendedAccess(file *os.File) error {
-	exists, err := darwinExtendedAccessExists(file)
+	exists, err := darwinacl.Present(file)
 	if err != nil {
 		return fmt.Errorf("inspect macOS extended ACL: %w", err)
 	}
@@ -24,9 +23,9 @@ func validatePlatformExtendedAccess(file *os.File) error {
 	return errors.New("object has a macOS extended ACL")
 }
 
-// securePlatformCreatedAccess avoids macOS's protected-attribute removal error when a new object inherited no ACL.
+// securePlatformCreatedAccess clears inherited ACLs through the retained descriptor before enforcing the exact policy.
 func securePlatformCreatedAccess(file *os.File) error {
-	exists, err := darwinExtendedAccessExists(file)
+	exists, err := darwinacl.Present(file)
 	if err != nil {
 		return fmt.Errorf("inspect created object macOS extended ACL: %w", err)
 	}
@@ -34,26 +33,10 @@ func securePlatformCreatedAccess(file *os.File) error {
 		return nil
 	}
 
-	err = unix.Fremovexattr(int(file.Fd()), darwinExtendedSecurityAttribute)
-	if errors.Is(err, unix.ENOATTR) {
-		return nil
-	}
-	if err != nil {
-		return err
+	if err := darwinacl.Remove(file); err != nil {
+		return fmt.Errorf("clear created object macOS extended ACL: %w", err)
 	}
 	return validatePlatformExtendedAccess(file)
-}
-
-// darwinExtendedAccessExists distinguishes an absent ACL from a protected mutation without changing the object.
-func darwinExtendedAccessExists(file *os.File) (bool, error) {
-	_, err := unix.Fgetxattr(int(file.Fd()), darwinExtendedSecurityAttribute, nil)
-	if errors.Is(err, unix.ENOATTR) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // publishPlatformNoReplace atomically installs a first helper without overwriting an unexpected destination.
