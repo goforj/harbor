@@ -418,6 +418,15 @@ func TestSetupCommandRejectsMalformedSuccessfulOutcomes(t *testing.T) {
 			}(),
 			want: "crossed the selected operation revision",
 		},
+		{
+			name: "wrong confirmation intent",
+			outcome: func() networksetupapproval.Outcome {
+				confirmation := valid
+				confirmation.Operation.IntentID = "intent-other"
+				return networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}
+			}(),
+			want: "crossed the selected operation revision",
+		},
 	}
 
 	for _, test := range tests {

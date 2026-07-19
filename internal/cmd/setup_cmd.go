@@ -96,6 +96,7 @@ func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetup
 		return fmt.Errorf("approve network setup: validate confirmation: %w", err)
 	}
 	if confirmation.Operation.ID != setup.Operation.ID ||
+		confirmation.Operation.IntentID != setup.Operation.IntentID ||
 		confirmation.NetworkRevision != setup.Revision+2 ||
 		confirmation.Revision != setup.Revision+3 {
 		return fmt.Errorf("approve network setup: confirmation crossed the selected operation revision")
