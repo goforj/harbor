@@ -18,6 +18,8 @@ const (
 	CapabilityV1 rpc.Capability = "control.v1"
 	// CapabilityDaemonControlV1 identifies authenticated administrative control of the current user's daemon.
 	CapabilityDaemonControlV1 rpc.Capability = "control.daemon-control.v1"
+	// CapabilityNetworkSetupV1 identifies machine-global network setup initiation and approval.
+	CapabilityNetworkSetupV1 rpc.Capability = "control.network-setup.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
 	// CapabilityProjectLifecycleV1 identifies idempotent project start and stop initiation.
@@ -30,6 +32,9 @@ const (
 	methodDaemonStatus                     = "control.v1.daemon.status"
 	methodDaemonStop                       = "control.v1.daemon.stop"
 	methodSnapshot                         = "control.v1.snapshot"
+	methodNetworkSetupStart                = "control.v1.network.setup.start"
+	methodNetworkSetupApprovalPrepare      = "control.v1.network.setup.approval.prepare"
+	methodNetworkSetupApprovalConfirm      = "control.v1.network.setup.approval.confirm"
 	methodProjectStart                     = "control.v1.project.start"
 	methodProjectStop                      = "control.v1.project.stop"
 	methodProjectRegister                  = "control.v1.project.register"
@@ -240,6 +245,7 @@ func protocolRanges() []rpc.VersionRange {
 func capabilities() []rpc.Capability {
 	return []rpc.Capability{
 		CapabilityDaemonControlV1,
+		CapabilityNetworkSetupV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectUnregisterApprovalV1,

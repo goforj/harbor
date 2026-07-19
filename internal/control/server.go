@@ -115,6 +115,9 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 					close(shutdownAccepted)
 				})
 			}),
+			methodNetworkSetupStart:                server.networkSetupStartHandler(transportPeer),
+			methodNetworkSetupApprovalPrepare:      server.networkSetupApprovalPrepareHandler(transportPeer),
+			methodNetworkSetupApprovalConfirm:      server.networkSetupApprovalConfirmHandler(transportPeer),
 			methodSnapshot:                         server.snapshotHandler(transportPeer),
 			methodProjectStart:                     server.projectStartHandler(transportPeer),
 			methodProjectStop:                      server.projectStopHandler(transportPeer),

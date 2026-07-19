@@ -24,6 +24,12 @@ type Authority interface {
 	Status(context.Context, Caller) (DaemonStatus, error)
 	// Snapshot returns a complete authoritative replacement of client-visible state.
 	Snapshot(context.Context, Caller) (domain.Snapshot, error)
+	// StartNetworkSetup starts or resumes one idempotent machine-global network setup intent.
+	StartNetworkSetup(context.Context, Caller, StartNetworkSetupRequest) (NetworkSetupOperation, error)
+	// PrepareNetworkSetupApproval returns one caller-bound helper capability for an exact setup revision.
+	PrepareNetworkSetupApproval(context.Context, Caller, PrepareNetworkSetupApprovalRequest) (NetworkSetupApprovalPreparation, error)
+	// ConfirmNetworkSetupApproval verifies the complete loopback pool before finishing setup.
+	ConfirmNetworkSetupApproval(context.Context, Caller, ConfirmNetworkSetupApprovalRequest) (NetworkSetupApprovalConfirmation, error)
 	// RegisterProject discovers and durably registers one canonical GoForj checkout.
 	RegisterProject(context.Context, Caller, RegisterProjectRequest) (ProjectRegistration, error)
 	// StartProject starts or resumes one idempotent managed project lifecycle.
@@ -83,6 +89,16 @@ func NewProjectLifecycleNotFoundError(cause error) error {
 // NewProjectLifecycleConflictError classifies durable state that prevents a project start or stop.
 func NewProjectLifecycleConflictError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewNetworkSetupConflictError classifies durable state that prevents network setup initiation or approval.
+func NewNetworkSetupConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewNetworkSetupNotFoundError classifies a setup approval selection whose durable operation is missing.
+func NewNetworkSetupNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 
 // NewProjectUnregisterConflictError classifies current state that prevents unregister initiation or progress.

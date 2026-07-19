@@ -37,30 +37,87 @@ func (connection *testLocalConn) Peer() local.PeerIdentity {
 
 // recordingAuthority records application-boundary caller identities and returns configured results.
 type recordingAuthority struct {
-	mu                      sync.Mutex
-	status                  DaemonStatus
-	snapshot                domain.Snapshot
-	registration            ProjectRegistration
-	startLifecycle          ProjectLifecycleOperation
-	stopLifecycle           ProjectLifecycleOperation
-	unregistration          ProjectUnregistration
-	approvalPreparation     ProjectUnregisterApprovalPreparation
-	approvalConfirmation    ProjectUnregisterApprovalConfirmation
-	statusErr               error
-	snapshotErr             error
-	registrationErr         error
-	startErr                error
-	stopErr                 error
-	unregistrationErr       error
-	approvalPrepareErr      error
-	approvalConfirmErr      error
-	callers                 []Caller
-	registrationRequests    []RegisterProjectRequest
-	startRequests           []StartProjectRequest
-	stopRequests            []StopProjectRequest
-	unregistrationRequests  []UnregisterProjectRequest
-	approvalPrepareRequests []PrepareProjectUnregisterApprovalRequest
-	approvalConfirmRequests []ConfirmProjectUnregisterApprovalRequest
+	mu                          sync.Mutex
+	status                      DaemonStatus
+	snapshot                    domain.Snapshot
+	registration                ProjectRegistration
+	networkSetup                NetworkSetupOperation
+	networkSetupPreparation     NetworkSetupApprovalPreparation
+	networkSetupConfirmation    NetworkSetupApprovalConfirmation
+	startLifecycle              ProjectLifecycleOperation
+	stopLifecycle               ProjectLifecycleOperation
+	unregistration              ProjectUnregistration
+	approvalPreparation         ProjectUnregisterApprovalPreparation
+	approvalConfirmation        ProjectUnregisterApprovalConfirmation
+	statusErr                   error
+	snapshotErr                 error
+	registrationErr             error
+	networkSetupErr             error
+	networkSetupPrepareErr      error
+	networkSetupConfirmErr      error
+	startErr                    error
+	stopErr                     error
+	unregistrationErr           error
+	approvalPrepareErr          error
+	approvalConfirmErr          error
+	callers                     []Caller
+	registrationRequests        []RegisterProjectRequest
+	networkSetupRequests        []StartNetworkSetupRequest
+	networkSetupPrepareRequests []PrepareNetworkSetupApprovalRequest
+	networkSetupConfirmRequests []ConfirmNetworkSetupApprovalRequest
+	startRequests               []StartProjectRequest
+	stopRequests                []StopProjectRequest
+	unregistrationRequests      []UnregisterProjectRequest
+	approvalPrepareRequests     []PrepareProjectUnregisterApprovalRequest
+	approvalConfirmRequests     []ConfirmProjectUnregisterApprovalRequest
+}
+
+// StartNetworkSetup records the authenticated caller and client-owned machine setup intent.
+func (authority *recordingAuthority) StartNetworkSetup(
+	ctx context.Context,
+	caller Caller,
+	request StartNetworkSetupRequest,
+) (NetworkSetupOperation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return NetworkSetupOperation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.networkSetupRequests = append(authority.networkSetupRequests, request)
+	authority.mu.Unlock()
+	return authority.networkSetup, authority.networkSetupErr
+}
+
+// PrepareNetworkSetupApproval records the authenticated caller and exact setup approval selection.
+func (authority *recordingAuthority) PrepareNetworkSetupApproval(
+	ctx context.Context,
+	caller Caller,
+	request PrepareNetworkSetupApprovalRequest,
+) (NetworkSetupApprovalPreparation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return NetworkSetupApprovalPreparation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.networkSetupPrepareRequests = append(authority.networkSetupPrepareRequests, request)
+	authority.mu.Unlock()
+	return authority.networkSetupPreparation, authority.networkSetupPrepareErr
+}
+
+// ConfirmNetworkSetupApproval records the authenticated caller and exact helper pool evidence.
+func (authority *recordingAuthority) ConfirmNetworkSetupApproval(
+	ctx context.Context,
+	caller Caller,
+	request ConfirmNetworkSetupApprovalRequest,
+) (NetworkSetupApprovalConfirmation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return NetworkSetupApprovalConfirmation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.networkSetupConfirmRequests = append(authority.networkSetupConfirmRequests, request)
+	authority.mu.Unlock()
+	return authority.networkSetupConfirmation, authority.networkSetupConfirmErr
 }
 
 // StartProject records the authenticated caller and client-owned start intent before returning durable progress.
@@ -348,7 +405,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-setup.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}
