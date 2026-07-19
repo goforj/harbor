@@ -88,6 +88,9 @@ func (store *Store) InitializeNetwork(
 
 	var result NetworkMutationResult
 	err := store.mutations.mutate(ctx, "network initialization", func(tx *gorm.DB) error {
+		if err := requireNoNetworkSetupPlanForDirectInitialization(tx); err != nil {
+			return err
+		}
 		present, err := inspectNetworkSchema(tx)
 		if err != nil {
 			return err

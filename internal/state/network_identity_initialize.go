@@ -26,86 +26,108 @@ func (store *Store) InitializeNetworkIdentity(
 
 	var result NetworkMutationResult
 	err := store.mutations.mutate(ctx, "network identity initialization", func(tx *gorm.DB) error {
-		present, err := inspectNetworkSchema(tx)
+		if err := requireNoNetworkSetupPlanForDirectInitialization(tx); err != nil {
+			return err
+		}
+		initialized, err := initializeNetworkIdentityInTransaction(tx, request)
 		if err != nil {
 			return err
 		}
-		if !present {
-			return fmt.Errorf("network persistence schema is not installed")
-		}
-
-		rows, err := readNetworkModelRows(tx)
-		if err != nil {
-			return err
-		}
-		current, initialized, err := networkRecordFromModels(rows)
-		if err != nil {
-			return err
-		}
-		if _, err := validateRetainedSequenceBounds(tx); err != nil {
-			return err
-		}
-		if initialized {
-			if difference := networkIdentityInitializationDifference(rows, request); difference != "" {
-				return &NetworkInitializationConflictError{
-					ActualRevision: current.Revision,
-					Difference:     difference,
-				}
-			}
-			result = NetworkMutationResult{Record: current, Replayed: true}
-			return result.Validate()
-		}
-
-		sequence, err := allocateHarborSequence(tx)
-		if err != nil {
-			return err
-		}
-		if err := insertNetworkInitializationFoundation(
-			tx,
-			NetworkStageIdentity,
-			request.Ownership,
-			request.Pool,
-			request.PoolGeneration,
-			request.Setup,
-			request.At,
-			sequence,
-		); err != nil {
-			return err
-		}
-
-		persistedRows, err := readNetworkModelRows(tx)
-		if err != nil {
-			return fmt.Errorf("read initialized network identity state: %w", err)
-		}
-		persisted, exists, err := networkRecordFromModels(persistedRows)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return corruptStateError("network state", "1", fmt.Errorf("initialized identity aggregate is missing after insert"))
-		}
-		if persisted.Revision != sequence {
-			return corruptStateError(
-				"network state",
-				"1",
-				fmt.Errorf("readback revision is %d, expected %d", persisted.Revision, sequence),
-			)
-		}
-		if difference := networkIdentityInitializationDifference(persistedRows, request); difference != "" {
-			return corruptStateError("network state", "1", fmt.Errorf("readback differs in %s", difference))
-		}
-		expected := networkIdentityInitializationProjection(request, sequence)
-		if err := validateNetworkInitializationProjection(persisted, expected); err != nil {
-			return err
-		}
-		if err := validateNetworkSequenceExclusivity(tx, sequence); err != nil {
-			return err
-		}
-		result = NetworkMutationResult{Record: persisted, Replayed: false}
-		return result.Validate()
+		result = initialized
+		return nil
 	})
 	if err != nil {
 		return NetworkMutationResult{}, fmt.Errorf("initialize network identity state: %w", err)
+	}
+	return result, nil
+}
+
+// initializeNetworkIdentityInTransaction applies or replays the existing identity-foundation contract without opening a nested writer transaction.
+func initializeNetworkIdentityInTransaction(
+	tx *gorm.DB,
+	request InitializeNetworkIdentityRequest,
+) (NetworkMutationResult, error) {
+	present, err := inspectNetworkSchema(tx)
+	if err != nil {
+		return NetworkMutationResult{}, err
+	}
+	if !present {
+		return NetworkMutationResult{}, fmt.Errorf("network persistence schema is not installed")
+	}
+
+	rows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return NetworkMutationResult{}, err
+	}
+	current, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		return NetworkMutationResult{}, err
+	}
+	if _, err := validateRetainedSequenceBounds(tx); err != nil {
+		return NetworkMutationResult{}, err
+	}
+	if initialized {
+		if difference := networkIdentityInitializationDifference(rows, request); difference != "" {
+			return NetworkMutationResult{}, &NetworkInitializationConflictError{
+				ActualRevision: current.Revision,
+				Difference:     difference,
+			}
+		}
+		result := NetworkMutationResult{Record: current, Replayed: true}
+		if err := result.Validate(); err != nil {
+			return NetworkMutationResult{}, err
+		}
+		return result, nil
+	}
+
+	sequence, err := allocateHarborSequence(tx)
+	if err != nil {
+		return NetworkMutationResult{}, err
+	}
+	if err := insertNetworkInitializationFoundation(
+		tx,
+		NetworkStageIdentity,
+		request.Ownership,
+		request.Pool,
+		request.PoolGeneration,
+		request.Setup,
+		request.At,
+		sequence,
+	); err != nil {
+		return NetworkMutationResult{}, err
+	}
+
+	persistedRows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return NetworkMutationResult{}, fmt.Errorf("read initialized network identity state: %w", err)
+	}
+	persisted, exists, err := networkRecordFromModels(persistedRows)
+	if err != nil {
+		return NetworkMutationResult{}, err
+	}
+	if !exists {
+		return NetworkMutationResult{}, corruptStateError("network state", "1", fmt.Errorf("initialized identity aggregate is missing after insert"))
+	}
+	if persisted.Revision != sequence {
+		return NetworkMutationResult{}, corruptStateError(
+			"network state",
+			"1",
+			fmt.Errorf("readback revision is %d, expected %d", persisted.Revision, sequence),
+		)
+	}
+	if difference := networkIdentityInitializationDifference(persistedRows, request); difference != "" {
+		return NetworkMutationResult{}, corruptStateError("network state", "1", fmt.Errorf("readback differs in %s", difference))
+	}
+	expected := networkIdentityInitializationProjection(request, sequence)
+	if err := validateNetworkInitializationProjection(persisted, expected); err != nil {
+		return NetworkMutationResult{}, err
+	}
+	if err := validateNetworkSequenceExclusivity(tx, sequence); err != nil {
+		return NetworkMutationResult{}, err
+	}
+	result := NetworkMutationResult{Record: persisted, Replayed: false}
+	if err := result.Validate(); err != nil {
+		return NetworkMutationResult{}, err
 	}
 	return result, nil
 }
