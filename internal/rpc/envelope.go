@@ -228,6 +228,23 @@ func NewErrorResponseEnvelope(
 	return envelope, envelope.Validate()
 }
 
+// NewNetworkObservationErrorResponseEnvelope creates only the dedicated reviewed host-inspection response.
+func NewNetworkObservationErrorResponseEnvelope(
+	protocol Version,
+	requestID string,
+	message string,
+) (Envelope, error) {
+	wireError := NewNetworkObservationWireError(message)
+	envelope := Envelope{
+		Kind:      KindResponse,
+		Protocol:  versionPointer(protocol),
+		RequestID: requestID,
+		Error:     &wireError,
+	}
+
+	return envelope, envelope.Validate()
+}
+
 // NewCancelEnvelope creates a cancellation request for one in-flight request ID.
 func NewCancelEnvelope(protocol Version, requestID string) (Envelope, error) {
 	envelope := Envelope{

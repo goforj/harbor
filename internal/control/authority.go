@@ -3,11 +3,28 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/netip"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/rpc/session"
+)
+
+const maximumNetworkObservationDetailBytes = 160
+
+// NetworkSetupObservationStage identifies the reviewed host fact that blocked setup.
+type NetworkSetupObservationStage string
+
+const (
+	// NetworkSetupObservationAssignment identifies native loopback assignment inspection.
+	NetworkSetupObservationAssignment NetworkSetupObservationStage = "loopback assignment"
+	// NetworkSetupObservationHostConflicts identifies native route, socket, and policy inspection.
+	NetworkSetupObservationHostConflicts NetworkSetupObservationStage = "host conflicts"
 )
 
 // Caller carries both identities established before a product method reaches daemon authority.
@@ -99,6 +116,78 @@ func NewNetworkSetupConflictError(cause error) error {
 // NewNetworkSetupNotFoundError classifies a setup approval selection whose durable operation is missing.
 func NewNetworkSetupNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewNetworkSetupObservationError exposes one strictly validated native observation diagnostic to an authenticated setup caller.
+func NewNetworkSetupObservationError(
+	cause error,
+	stage NetworkSetupObservationStage,
+	address netip.Addr,
+	detail string,
+) error {
+	message := networkSetupObservationMessage(stage, address, detail)
+	return session.NewNetworkObservationHandlerError(cause, message)
+}
+
+// NewNetworkSetupPrivilegedHelperRequiredError reports an absent installer-owned helper boundary without exposing its path.
+func NewNetworkSetupPrivilegedHelperRequiredError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)
+}
+
+// networkSetupObservationMessage renders dynamic detail only when every semantic and text boundary is canonical.
+func networkSetupObservationMessage(stage NetworkSetupObservationStage, address netip.Addr, detail string) string {
+	fallback := rpc.NewWireError(rpc.ErrorCodeNetworkObservationFailed).Message
+	switch stage {
+	case NetworkSetupObservationAssignment, NetworkSetupObservationHostConflicts:
+	default:
+		return fallback
+	}
+	if !address.Is4() || !address.IsLoopback() || address != address.Unmap() {
+		return fallback
+	}
+	octets := address.As4()
+	if octets[0] != 127 || octets[1] != 77 || !validNetworkObservationDetail(detail) {
+		return fallback
+	}
+	switch stage {
+	case NetworkSetupObservationAssignment:
+		if !strings.HasPrefix(detail, "loopback observe "+address.String()+": ") {
+			return fallback
+		}
+	case NetworkSetupObservationHostConflicts:
+		if !strings.HasPrefix(detail, "observe Darwin host conflicts: ") &&
+			!strings.HasPrefix(detail, "observe Linux host conflicts: ") &&
+			!strings.HasPrefix(detail, "observe Windows host conflicts: ") {
+			return fallback
+		}
+	}
+
+	message := fmt.Sprintf("Harbor could not inspect %s for %s: %s", stage, address, detail)
+	if rpc.NewNetworkObservationWireError(message).Message != message {
+		return fallback
+	}
+
+	return message
+}
+
+// validNetworkObservationDetail rejects invisible, multiline, padded, and oversized native diagnostics.
+func validNetworkObservationDetail(detail string) bool {
+	if detail == "" || len(detail) > maximumNetworkObservationDetailBytes || strings.TrimSpace(detail) != detail || !utf8.ValidString(detail) {
+		return false
+	}
+	lowerDetail := strings.ToLower(detail)
+	for _, sensitive := range []string{"app_key", "authorization", "credential", "password", "private key", "secret", "token="} {
+		if strings.Contains(lowerDetail, sensitive) {
+			return false
+		}
+	}
+	for _, character := range detail {
+		if unicode.IsControl(character) || unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // NewProjectUnregisterConflictError classifies current state that prevents unregister initiation or progress.

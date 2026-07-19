@@ -637,6 +637,7 @@ func TestAuthorityNetworkSetupMapsCoordinatorErrors(t *testing.T) {
 func TestClassifyNetworkSetupErrorCoversReviewedFailures(t *testing.T) {
 	operationID := domain.OperationID("operation-network-setup")
 	intentID := domain.IntentID("intent-network-setup")
+	observationAddress := netip.MustParseAddr("127.77.10.8")
 	for _, test := range []struct {
 		name     string
 		cause    error
@@ -647,6 +648,32 @@ func TestClassifyNetworkSetupErrorCoversReviewedFailures(t *testing.T) {
 		{name: "network foundation", cause: &state.NetworkInitializationConflictError{ActualRevision: 5, Difference: "installation ownership"}, wantCode: rpc.ErrorCodeConflict},
 		{name: "pool exhaustion", cause: &identity.PoolSelectionExhaustionError{CandidatePools: 4, AssignmentBlockedPools: 4}, wantCode: rpc.ErrorCodeConflict},
 		{name: "operation missing", cause: &state.OperationNotFoundError{OperationID: operationID}, wantCode: rpc.ErrorCodeNotFound},
+		{
+			name: "host observation",
+			cause: ticketissuer.NewPoolObservationError(
+				ticketissuer.PoolObservationHostConflicts,
+				observationAddress,
+				errors.New("observe Darwin host conflicts: route lookup failed"),
+			),
+			wantCode: rpc.ErrorCodeNetworkObservationFailed,
+		},
+		{
+			name: "invalid observation stage",
+			cause: ticketissuer.NewPoolObservationError(
+				"filesystem",
+				observationAddress,
+				errors.New("observe Darwin host conflicts: route lookup failed"),
+			),
+		},
+		{
+			name: "invalid observation address",
+			cause: ticketissuer.NewPoolObservationError(
+				ticketissuer.PoolObservationHostConflicts,
+				netip.MustParseAddr("127.78.10.8"),
+				errors.New("observe Darwin host conflicts: route lookup failed"),
+			),
+		},
+		{name: "privileged helper", cause: &ticketissuer.PoolPrerequisiteMissingError{}, wantCode: rpc.ErrorCodePrivilegedHelperRequired},
 		{name: "daemon operation collision", cause: &state.OperationIDConflictError{OperationID: operationID, ExistingIntentID: "intent-other", RequestedIntentID: intentID}},
 		{name: "intent lookup missing", cause: &state.OperationIntentNotFoundError{IntentID: intentID}},
 		{name: "cancelled", cause: context.Canceled},

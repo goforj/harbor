@@ -228,8 +228,12 @@ func openDefaultPoolService(plans PoolPlanSource, openers poolDefaultOpeners) (*
 	}
 	publisher, err := openers.openPublisher()
 	if err != nil {
+		publisherError := fmt.Errorf("open helper pool ticket issuer spool: %w", err)
+		if errors.Is(err, ticketspool.ErrNotInstalled) {
+			publisherError = newPoolPrerequisiteMissingError(publisherError)
+		}
 		return nil, errors.Join(
-			fmt.Errorf("open helper pool ticket issuer spool: %w", err),
+			publisherError,
 			keyStore.Close(),
 		)
 	}
@@ -375,7 +379,10 @@ func (service *PoolService) buildTicket(
 	for _, address := range addresses {
 		observation, err := service.loopback.Observe(ctx, address)
 		if err != nil {
-			return helper.Ticket{}, fmt.Errorf("issue helper pool ticket: observe loopback assignment %s: %w", address, err)
+			return helper.Ticket{}, fmt.Errorf(
+				"issue helper pool ticket: %w",
+				NewPoolObservationError(PoolObservationAssignment, address, err),
+			)
 		}
 		if observation.Address != address {
 			return helper.Ticket{}, fmt.Errorf("issue helper pool ticket: loopback observation address %s does not match %s", observation.Address, address)
@@ -451,7 +458,10 @@ func (service *PoolService) observePoolPreAssignment(
 	}
 	observation, err := service.conflicts.Observe(ctx, request, requesterIdentity)
 	if err != nil {
-		return nil, fmt.Errorf("issue helper pool ticket: observe pre-assignment conflicts %s: %w", address, err)
+		return nil, fmt.Errorf(
+			"issue helper pool ticket: %w",
+			NewPoolObservationError(PoolObservationHostConflicts, address, err),
+		)
 	}
 	if observation.Request.Purpose() != request.Purpose() || observation.Request.Candidate() != address || len(observation.Request.Requirements()) != 0 {
 		return nil, fmt.Errorf("issue helper pool ticket: pre-assignment observation does not match route-only request for %s", address)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -260,6 +261,53 @@ func TestNetworkSetupAuthorityErrorsKeepSafeWireCodes(t *testing.T) {
 		if err := test.call(); !errors.As(err, &wireError) || wireError.Code != test.want {
 			t.Fatalf("network setup authority error = %#v, want %q", err, test.want)
 		}
+	}
+}
+
+// TestNetworkSetupReviewedFailuresReachAuthenticatedClientsWithoutLocalCauses verifies both dynamic observation detail and fixed helper guidance.
+func TestNetworkSetupReviewedFailuresReachAuthenticatedClientsWithoutLocalCauses(t *testing.T) {
+	const secret = "/Users/person/private APP_KEY=secret"
+	address := netip.MustParseAddr("127.77.10.8")
+	detail := "observe Darwin host conflicts: host conflict Darwin route contains inconsistent IPv4 gateway evidence"
+	wantObservation := "Harbor could not inspect host conflicts for 127.77.10.8: " + detail
+	request := StartNetworkSetupRequest{IntentID: "intent-network-setup"}
+
+	for _, test := range []struct {
+		name         string
+		authorityErr error
+		wantCode     rpc.ErrorCode
+		wantMessage  string
+	}{
+		{
+			name: "network observation",
+			authorityErr: NewNetworkSetupObservationError(
+				errors.New(secret),
+				NetworkSetupObservationHostConflicts,
+				address,
+				detail,
+			),
+			wantCode:    rpc.ErrorCodeNetworkObservationFailed,
+			wantMessage: wantObservation,
+		},
+		{
+			name:         "privileged helper required",
+			authorityErr: NewNetworkSetupPrivilegedHelperRequiredError(errors.New(secret)),
+			wantCode:     rpc.ErrorCodePrivilegedHelperRequired,
+			wantMessage:  rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired).Message,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := &recordingAuthority{networkSetupErr: test.authorityErr}
+			running := newRunningControlClient(t, rpc.RoleDesktop, authority, nil)
+			_, callErr := running.client.StartNetworkSetup(t.Context(), request)
+			var wireError rpc.WireError
+			if !errors.As(callErr, &wireError) || wireError.Code != test.wantCode || wireError.Message != test.wantMessage {
+				t.Fatalf("StartNetworkSetup() error = %#v, want %q %q", callErr, test.wantCode, test.wantMessage)
+			}
+			if strings.Contains(callErr.Error(), secret) || strings.Contains(callErr.Error(), "APP_KEY") {
+				t.Fatalf("StartNetworkSetup() leaked daemon-local cause: %v", callErr)
+			}
+		})
 	}
 }
 

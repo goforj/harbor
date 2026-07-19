@@ -611,6 +611,87 @@ func TestUnknownMethodAndHandlerFailureUseSafeWireErrors(t *testing.T) {
 	}
 }
 
+// TestNetworkObservationHandlerFailureCarriesOnlyReviewedWireText verifies the narrow dynamic path without weakening ordinary redaction.
+func TestNetworkObservationHandlerFailureCarriesOnlyReviewedWireText(t *testing.T) {
+	const reviewed = "Harbor could not inspect host conflicts for 127.77.10.8: observe Darwin host conflicts: route selection is unavailable."
+	const secret = "APP_KEY=secret-value"
+	serverConfig := testServerConfig(map[string]Handler{
+		"reviewed": func(context.Context, Request) (any, error) {
+			return nil, NewNetworkObservationHandlerError(errors.New(secret), reviewed)
+		},
+		"ordinary": func(context.Context, Request) (any, error) {
+			return nil, NewHandlerError(rpc.ErrorCodeNetworkObservationFailed, errors.New(secret))
+		},
+		"unsafe": func(context.Context, Request) (any, error) {
+			return nil, NewNetworkObservationHandlerError(errors.New(secret), "host inspection failed\n"+secret)
+		},
+		"direct-secret": func(context.Context, Request) (any, error) {
+			return nil, NewNetworkObservationHandlerError(
+				errors.New(secret),
+				"Harbor could not inspect host conflicts for 127.77.10.8: observe Darwin host conflicts: "+secret,
+			)
+		},
+		"direct-oversize": func(context.Context, Request) (any, error) {
+			return nil, NewNetworkObservationHandlerError(
+				errors.New(secret),
+				"Harbor could not inspect host conflicts for 127.77.10.8: observe Darwin host conflicts: "+strings.Repeat("x", 200),
+			)
+		},
+	})
+	pair := newTestPair(t, serverConfig, testClientConfig())
+
+	_, reviewedErr := pair.client.Call(t.Context(), "reviewed", struct{}{})
+	var reviewedWire rpc.WireError
+	if !errors.As(reviewedErr, &reviewedWire) || reviewedWire.Code != rpc.ErrorCodeNetworkObservationFailed || reviewedWire.Message != reviewed {
+		t.Fatalf("reviewed wire error = %#v", reviewedErr)
+	}
+
+	fallback := rpc.NewWireError(rpc.ErrorCodeNetworkObservationFailed)
+	for _, method := range []string{"ordinary", "unsafe", "direct-secret", "direct-oversize"} {
+		_, callErr := pair.client.Call(t.Context(), method, struct{}{})
+		var wireError rpc.WireError
+		if !errors.As(callErr, &wireError) || wireError != fallback {
+			t.Fatalf("%s wire error = %#v, want %#v", method, callErr, fallback)
+		}
+		if strings.Contains(callErr.Error(), secret) {
+			t.Fatalf("%s wire error leaked secret: %v", method, callErr)
+		}
+	}
+}
+
+// TestRequestErrorResponseRejectsTamperedReviewedErrors verifies in-memory corruption returns the fixed category text.
+func TestRequestErrorResponseRejectsTamperedReviewedErrors(t *testing.T) {
+	unsafe := rpc.WireError{
+		Code:      rpc.ErrorCodeNetworkObservationFailed,
+		Message:   "Harbor could not inspect host conflicts for 127.77.10.8: observe Darwin host conflicts: APP_KEY=secret-value",
+		Retryable: true,
+	}
+	handlerError := &HandlerError{
+		code:     rpc.ErrorCodeNetworkObservationFailed,
+		cause:    errors.New("APP_KEY=secret"),
+		reviewed: &unsafe,
+	}
+	response, err := requestErrorResponse(rpc.Version{Major: 1}, "req-reviewed", handlerError.Code(), handlerError)
+	if err != nil {
+		t.Fatalf("requestErrorResponse() error = %v", err)
+	}
+	fallback := rpc.NewWireError(rpc.ErrorCodeNetworkObservationFailed)
+	if response.Error == nil || *response.Error != fallback {
+		t.Fatalf("requestErrorResponse() error = %#v, want %#v", response.Error, fallback)
+	}
+
+	mismatched := rpc.NewNetworkObservationWireError("Harbor could not inspect host networking.")
+	handlerError.code = rpc.ErrorCodeConflict
+	handlerError.reviewed = &mismatched
+	response, err = requestErrorResponse(rpc.Version{Major: 1}, "req-mismatch", handlerError.Code(), handlerError)
+	if err != nil {
+		t.Fatalf("requestErrorResponse(mismatch) error = %v", err)
+	}
+	if response.Error == nil || *response.Error != rpc.NewWireError(rpc.ErrorCodeConflict) {
+		t.Fatalf("requestErrorResponse(mismatch) error = %#v", response.Error)
+	}
+}
+
 // TestInvalidHandlerPayloadIsObservedAndRedacted verifies response encoding
 // failures retain diagnostics without exposing Go type details to the peer.
 func TestInvalidHandlerPayloadIsObservedAndRedacted(t *testing.T) {
@@ -1692,6 +1773,10 @@ func TestExportedErrorsHaveSafeZeroValues(t *testing.T) {
 	withoutCause := NewHandlerError(rpc.ErrorCodeConflict, nil)
 	if withoutCause.Error() == "" || withoutCause.Unwrap() == nil {
 		t.Fatal("HandlerError without a cause is not safe")
+	}
+	reviewedWithoutCause := NewNetworkObservationHandlerError(nil, "Harbor could not inspect host networking.")
+	if reviewedWithoutCause.Error() == "" || reviewedWithoutCause.Unwrap() == nil {
+		t.Fatal("network observation HandlerError without a cause is not safe")
 	}
 	var panicError *HandlerPanicError
 	if panicError.Error() == "" || panicError.Stack() != nil {

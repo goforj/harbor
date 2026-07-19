@@ -423,7 +423,7 @@ func (s *serverConnection) observeError(request Request, err error) {
 // writeRequestError maps local causes to reviewed wire categories before writing.
 func (s *serverConnection) writeRequestError(requestID string, cause error) {
 	code := handlerErrorCode(cause)
-	response, err := rpc.NewErrorResponseEnvelope(s.peer.Protocol, requestID, code, cause)
+	response, err := requestErrorResponse(s.peer.Protocol, requestID, code, cause)
 	if err != nil {
 		s.terminate(fmt.Errorf("create error response: %w", err))
 		return
@@ -431,6 +431,18 @@ func (s *serverConnection) writeRequestError(requestID string, cause error) {
 	if err := s.writeResponse(response); err != nil {
 		s.terminate(fmt.Errorf("write error response: %w", err))
 	}
+}
+
+// requestErrorResponse preserves only the one dynamic message produced by the reviewed network-observation constructor.
+func requestErrorResponse(protocol rpc.Version, requestID string, code rpc.ErrorCode, cause error) (rpc.Envelope, error) {
+	var handlerError *HandlerError
+	if errors.As(cause, &handlerError) && handlerError.Code() == code {
+		if wireError, ok := handlerError.reviewedWireError(); ok {
+			return rpc.NewNetworkObservationErrorResponseEnvelope(protocol, requestID, wireError.Message)
+		}
+	}
+
+	return rpc.NewErrorResponseEnvelope(protocol, requestID, code, cause)
 }
 
 // writeResponse skips writes only after the connection itself is terminal; a

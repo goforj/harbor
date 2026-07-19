@@ -66,7 +66,10 @@ func (selector *PoolSelector) Select(
 			}
 			observed, err := selector.loopback.Observe(ctx, address)
 			if err != nil {
-				return identity.PoolSelection{}, fmt.Errorf("select default helper pool: observe assignment %s: %w", address, err)
+				return identity.PoolSelection{}, fmt.Errorf(
+					"select default helper pool: %w",
+					NewPoolObservationError(PoolObservationAssignment, address, err),
+				)
 			}
 			if observed.Address != address {
 				return identity.PoolSelection{}, fmt.Errorf("select default helper pool: assignment observation address %s does not match %s", observed.Address, address)
@@ -105,7 +108,10 @@ func (selector *PoolSelector) Select(
 			}
 			observed, err := selector.conflicts.Observe(ctx, request, requesterIdentity)
 			if err != nil {
-				return identity.PoolSelection{}, fmt.Errorf("select default helper pool: observe host conflicts %s: %w", address, err)
+				return identity.PoolSelection{}, fmt.Errorf(
+					"select default helper pool: %w",
+					NewPoolObservationError(PoolObservationHostConflicts, address, err),
+				)
 			}
 			if observed.Request.Purpose() != request.Purpose() ||
 				observed.Request.Candidate() != request.Candidate() ||

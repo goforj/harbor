@@ -35,6 +35,8 @@ var (
 	ErrDurabilityUncertain = errors.New("helper ticket publication durability is uncertain")
 	// ErrUnsafePath means the pending-ticket directory or a staging file crossed its private security boundary.
 	ErrUnsafePath = errors.New("unsafe helper ticket spool path")
+	// ErrNotInstalled means the compiled installer-owned pending-ticket directory is absent.
+	ErrNotInstalled = errors.New("helper ticket spool is not installed")
 )
 
 // fileOperations keeps destructive storage boundaries replaceable in focused fault tests.
@@ -74,7 +76,12 @@ func OpenDefault() (*Publisher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve helper ticket spool: %w", err)
 	}
-	return open(paths.PendingDirectory, defaultDependencies())
+	publisher, err := open(paths.PendingDirectory, defaultDependencies())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %v", ErrNotInstalled, err)
+	}
+
+	return publisher, err
 }
 
 // open retains and revalidates one pre-provisioned test or production directory without repairing it.

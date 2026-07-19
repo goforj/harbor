@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +214,47 @@ func TestAuthorityErrorMapsOnlyReviewedCategories(t *testing.T) {
 	var handlerError *session.HandlerError
 	if !errors.As(converted, &handlerError) || handlerError.Code() != rpc.ErrorCodeInternal || !errors.Is(converted, want) {
 		t.Fatalf("authorityError() = %#v, want internal handler error wrapping cause", converted)
+	}
+}
+
+// TestNetworkSetupObservationMessageAllowsOnlyReviewedNativeDiagnostics verifies dynamic setup text fails closed at the control boundary.
+func TestNetworkSetupObservationMessageAllowsOnlyReviewedNativeDiagnostics(t *testing.T) {
+	address := netip.MustParseAddr("127.77.10.8")
+	hostDetail := "observe Darwin host conflicts: host conflict Darwin route contains inconsistent IPv4 gateway evidence"
+	wantHost := "Harbor could not inspect host conflicts for 127.77.10.8: " + hostDetail
+	if got := networkSetupObservationMessage(NetworkSetupObservationHostConflicts, address, hostDetail); got != wantHost {
+		t.Fatalf("host observation message = %q, want %q", got, wantHost)
+	}
+	assignmentDetail := "loopback observe 127.77.10.8: observe-failed"
+	wantAssignment := "Harbor could not inspect loopback assignment for 127.77.10.8: " + assignmentDetail
+	if got := networkSetupObservationMessage(NetworkSetupObservationAssignment, address, assignmentDetail); got != wantAssignment {
+		t.Fatalf("assignment observation message = %q, want %q", got, wantAssignment)
+	}
+
+	fallback := rpc.NewWireError(rpc.ErrorCodeNetworkObservationFailed).Message
+	for _, test := range []struct {
+		name    string
+		stage   NetworkSetupObservationStage
+		address netip.Addr
+		detail  string
+	}{
+		{name: "unsupported stage", stage: "filesystem", address: address, detail: hostDetail},
+		{name: "foreign loopback", stage: NetworkSetupObservationHostConflicts, address: netip.MustParseAddr("127.78.10.8"), detail: hostDetail},
+		{name: "non-loopback", stage: NetworkSetupObservationHostConflicts, address: netip.MustParseAddr("10.0.0.8"), detail: hostDetail},
+		{name: "unreviewed prefix", stage: NetworkSetupObservationHostConflicts, address: address, detail: "database unavailable"},
+		{name: "wrong assignment address", stage: NetworkSetupObservationAssignment, address: address, detail: "loopback observe 127.77.10.9: observe-failed"},
+		{name: "secret", stage: NetworkSetupObservationHostConflicts, address: address, detail: "observe Darwin host conflicts: APP_KEY=secret-value"},
+		{name: "control", stage: NetworkSetupObservationHostConflicts, address: address, detail: "observe Darwin host conflicts: failed\nforged"},
+		{name: "format", stage: NetworkSetupObservationHostConflicts, address: address, detail: "observe Darwin host conflicts: failed\u2060forged"},
+		{name: "padded", stage: NetworkSetupObservationHostConflicts, address: address, detail: " observe Darwin host conflicts: failed"},
+		{name: "oversize", stage: NetworkSetupObservationHostConflicts, address: address, detail: "observe Darwin host conflicts: " + strings.Repeat("x", maximumNetworkObservationDetailBytes)},
+		{name: "invalid UTF-8", stage: NetworkSetupObservationHostConflicts, address: address, detail: string([]byte{0xff})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := networkSetupObservationMessage(test.stage, test.address, test.detail); got != fallback {
+				t.Fatalf("network setup observation message = %q, want fallback %q", got, fallback)
+			}
+		})
 	}
 }
 

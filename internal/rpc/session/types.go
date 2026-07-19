@@ -136,8 +136,9 @@ type ClientConfig struct {
 
 // HandlerError classifies a handler failure without exposing its diagnostic cause on the wire.
 type HandlerError struct {
-	code  rpc.ErrorCode
-	cause error
+	code     rpc.ErrorCode
+	cause    error
+	reviewed *rpc.WireError
 }
 
 // NewHandlerError creates a typed handler failure for a reviewed wire error category.
@@ -147,6 +148,20 @@ func NewHandlerError(code rpc.ErrorCode, cause error) *HandlerError {
 	}
 
 	return &HandlerError{code: code, cause: cause}
+}
+
+// NewNetworkObservationHandlerError creates the only handler failure allowed to carry reviewed dynamic wire text.
+func NewNetworkObservationHandlerError(cause error, message string) *HandlerError {
+	if cause == nil {
+		cause = errors.New("network observation failed without a diagnostic cause")
+	}
+	wireError := rpc.NewNetworkObservationWireError(message)
+
+	return &HandlerError{
+		code:     wireError.Code,
+		cause:    cause,
+		reviewed: &wireError,
+	}
 }
 
 // Error returns the daemon-local diagnostic cause.
@@ -174,6 +189,19 @@ func (e *HandlerError) Code() rpc.ErrorCode {
 	}
 
 	return e.code
+}
+
+// reviewedWireError returns peer text only when its category and shape remain internally consistent.
+func (e *HandlerError) reviewedWireError() (rpc.WireError, bool) {
+	if e == nil || e.reviewed == nil || e.code != rpc.ErrorCodeNetworkObservationFailed || e.reviewed.Code != e.code {
+		return rpc.WireError{}, false
+	}
+	wireError := *e.reviewed
+	if err := wireError.Validate(); err != nil {
+		return rpc.WireError{}, false
+	}
+
+	return wireError, true
 }
 
 // HandlerPanicError preserves a recovered panic and stack for daemon-local observation only.

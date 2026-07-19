@@ -2,9 +2,13 @@ package rpc
 
 import (
 	"fmt"
+	"net/netip"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+const maximumNetworkObservationDetailBytes = 160
 
 // ErrorCode identifies a stable machine-readable failure category.
 type ErrorCode string
@@ -28,6 +32,10 @@ const (
 	ErrorCodePermissionDenied ErrorCode = "permission_denied"
 	// ErrorCodeUnavailable reports a temporary daemon or dependency outage.
 	ErrorCodeUnavailable ErrorCode = "unavailable"
+	// ErrorCodeNetworkObservationFailed reports that Harbor could not inspect one candidate host address.
+	ErrorCodeNetworkObservationFailed ErrorCode = "network_observation_failed"
+	// ErrorCodePrivilegedHelperRequired reports absent installer-owned privileged networking support.
+	ErrorCodePrivilegedHelperRequired ErrorCode = "privileged_helper_required"
 	// ErrorCodeInternal reports an unexpected daemon failure without exposing its cause.
 	ErrorCodeInternal ErrorCode = "internal"
 )
@@ -92,6 +100,82 @@ func NewWireErrorFromCause(code ErrorCode, cause error) WireError {
 	return NewWireError(code)
 }
 
+// NewNetworkObservationWireError uses reviewed dynamic detail only when it satisfies the wire boundary.
+func NewNetworkObservationWireError(message string) WireError {
+	wireError := NewWireError(ErrorCodeNetworkObservationFailed)
+	if !validNetworkObservationMessage(message) {
+		return wireError
+	}
+	wireError.Message = message
+	if err := wireError.Validate(); err != nil {
+		return NewWireError(ErrorCodeNetworkObservationFailed)
+	}
+
+	return wireError
+}
+
+// validNetworkObservationMessage accepts only the two reviewed setup-observer message grammars.
+func validNetworkObservationMessage(message string) bool {
+	fallback := NewWireError(ErrorCodeNetworkObservationFailed).Message
+	if message == fallback {
+		return true
+	}
+	stage := ""
+	remainder := ""
+	for _, candidate := range []string{"loopback assignment", "host conflicts"} {
+		prefix := "Harbor could not inspect " + candidate + " for "
+		if strings.HasPrefix(message, prefix) {
+			stage = candidate
+			remainder = strings.TrimPrefix(message, prefix)
+			break
+		}
+	}
+	separator := strings.Index(remainder, ": ")
+	if stage == "" || separator <= 0 {
+		return false
+	}
+	addressText := remainder[:separator]
+	address, err := netip.ParseAddr(addressText)
+	if err != nil || address.String() != addressText || !address.Is4() || !address.IsLoopback() || address != address.Unmap() {
+		return false
+	}
+	octets := address.As4()
+	if octets[0] != 127 || octets[1] != 77 {
+		return false
+	}
+	detail := remainder[separator+2:]
+	if !validNetworkObservationDetail(detail) {
+		return false
+	}
+	if stage == "loopback assignment" {
+		return strings.HasPrefix(detail, "loopback observe "+addressText+": ")
+	}
+
+	return strings.HasPrefix(detail, "observe Darwin host conflicts: ") ||
+		strings.HasPrefix(detail, "observe Linux host conflicts: ") ||
+		strings.HasPrefix(detail, "observe Windows host conflicts: ")
+}
+
+// validNetworkObservationDetail rejects unsafe text even when a caller directly invokes the reviewed constructor.
+func validNetworkObservationDetail(detail string) bool {
+	if detail == "" || len(detail) > maximumNetworkObservationDetailBytes || strings.TrimSpace(detail) != detail || !utf8.ValidString(detail) {
+		return false
+	}
+	lowerDetail := strings.ToLower(detail)
+	for _, sensitive := range []string{"app_key", "authorization", "credential", "password", "private key", "secret", "token="} {
+		if strings.Contains(lowerDetail, sensitive) {
+			return false
+		}
+	}
+	for _, character := range detail {
+		if unicode.IsControl(character) || unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // wireErrorSpecification records reviewed text and retry behavior for an error code.
 type wireErrorSpecification struct {
 	message   string
@@ -108,5 +192,12 @@ var wireErrorSpecifications = map[ErrorCode]wireErrorSpecification{
 	ErrorCodeConflict:            {message: "The request conflicts with current state."},
 	ErrorCodePermissionDenied:    {message: "The request is not permitted."},
 	ErrorCodeUnavailable:         {message: "Harbor is temporarily unavailable.", retryable: true},
-	ErrorCodeInternal:            {message: "Harbor could not complete the request."},
+	ErrorCodeNetworkObservationFailed: {
+		message:   "Harbor could not inspect host networking. Check the daemon log for details.",
+		retryable: true,
+	},
+	ErrorCodePrivilegedHelperRequired: {
+		message: "Harbor's privileged networking support is missing. Harbor must install or repair it before setup can finish.",
+	},
+	ErrorCodeInternal: {message: "Harbor could not complete the request."},
 }

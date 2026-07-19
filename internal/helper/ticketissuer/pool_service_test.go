@@ -14,6 +14,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketspool"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/hostconflict"
@@ -274,6 +275,7 @@ func TestPoolServiceIssueFailsClosed(t *testing.T) {
 		mutate    func(*poolIssuerFixture)
 		contains  string
 		publishes bool
+		wantStage PoolObservationStage
 	}{
 		{name: "plan read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.plans.errors = []error{sentinel} }, contains: "resolve approval plan"},
 		{name: "changed plan", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
@@ -302,12 +304,12 @@ func TestPoolServiceIssueFailsClosed(t *testing.T) {
 		{name: "bootstrap key", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.keys.createErr = sentinel }, contains: "load or create bootstrap signing key"},
 		{name: "repair key", mode: PoolModeRepair, mutate: func(f *poolIssuerFixture) { f.keys.loadErr = sentinel }, contains: "load established signing key"},
 		{name: "key mismatch", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.keys.key = deterministicPrivateKey(9) }, contains: "does not match machine ownership"},
-		{name: "loopback read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.loopback.errors[f.plan.Pool.Candidates()[2]] = sentinel }, contains: "observe loopback assignment"},
+		{name: "loopback read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.loopback.errors[f.plan.Pool.Candidates()[2]] = sentinel }, contains: "observe loopback assignment", wantStage: PoolObservationAssignment},
 		{name: "loopback address", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			address := f.plan.Pool.Candidates()[2]
 			f.loopback.observations[address] = poolLoopbackObservation(f.plan.Pool.Candidates()[3], loopback.StateAbsent)
 		}, contains: "does not match"},
-		{name: "conflict read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.conflicts.errors[f.plan.Pool.Candidates()[4]] = sentinel }, contains: "observe pre-assignment conflicts"},
+		{name: "conflict read", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) { f.conflicts.errors[f.plan.Pool.Candidates()[4]] = sentinel }, contains: "observe host conflicts", wantStage: PoolObservationHostConflicts},
 		{name: "conflict request", mode: PoolModeBootstrap, mutate: func(f *poolIssuerFixture) {
 			addresses := f.plan.Pool.Candidates()
 			f.conflicts.observations[addresses[4]] = poolSafeHostObservation(t, addresses[5])
@@ -336,6 +338,12 @@ func TestPoolServiceIssueFailsClosed(t *testing.T) {
 			}
 			if result != (PoolResult{}) || fixture.publisher.calls != boolInt(test.publishes) {
 				t.Fatalf("failed Issue() result/publisher = %#v / %d", result, fixture.publisher.calls)
+			}
+			if test.wantStage != "" {
+				var observationError *PoolObservationError
+				if !errors.As(err, &observationError) || observationError.Stage() != test.wantStage {
+					t.Fatalf("Issue() error = %#v, want %q PoolObservationError", err, test.wantStage)
+				}
 			}
 		})
 	}
@@ -483,6 +491,19 @@ func TestOpenDefaultPoolServiceOpensOnlyDaemonStores(t *testing.T) {
 	}); !errors.Is(err, sentinel) || publisherOpens != 0 {
 		t.Fatalf("openDefaultPoolService(key failure) error/publisher opens = %v / %d", err, publisherOpens)
 	}
+	if _, err := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) { return nil, ticketspool.ErrNotInstalled },
+		openPublisher: func() (poolPublisherCloser, error) {
+			return nil, nil
+		},
+	}); err == nil {
+		t.Fatal("openDefaultPoolService(key missing) error = nil")
+	} else {
+		var prerequisite *PoolPrerequisiteMissingError
+		if errors.As(err, &prerequisite) {
+			t.Fatalf("key-store absence classified as pool prerequisite: %v", err)
+		}
+	}
 
 	failedKeys := &closingPoolKeyStore{PoolKeyStore: fixture.keys}
 	if _, err := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
@@ -492,6 +513,34 @@ func TestOpenDefaultPoolServiceOpensOnlyDaemonStores(t *testing.T) {
 		},
 	}); !errors.Is(err, sentinel) || failedKeys.closeCalls != 1 {
 		t.Fatalf("openDefaultPoolService(publisher failure) error/key closes = %v / %d", err, failedKeys.closeCalls)
+	}
+	missingKeys := &closingPoolKeyStore{PoolKeyStore: fixture.keys}
+	_, missingErr := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) { return missingKeys, nil },
+		openPublisher: func() (poolPublisherCloser, error) {
+			return nil, ticketspool.ErrNotInstalled
+		},
+	})
+	var prerequisite *PoolPrerequisiteMissingError
+	if !errors.As(missingErr, &prerequisite) || !errors.Is(missingErr, ticketspool.ErrNotInstalled) || missingKeys.closeCalls != 1 {
+		t.Fatalf("openDefaultPoolService(missing publisher) error/key closes = %#v / %d", missingErr, missingKeys.closeCalls)
+	}
+	if !strings.Contains(prerequisite.Error(), "helper pool prerequisite is missing") {
+		t.Fatalf("PoolPrerequisiteMissingError.Error() = %q", prerequisite.Error())
+	}
+	unsafeKeys := &closingPoolKeyStore{PoolKeyStore: fixture.keys}
+	_, unsafeErr := openDefaultPoolService(fixture.plans, poolDefaultOpeners{
+		openKeys: func() (poolKeyStoreCloser, error) { return unsafeKeys, nil },
+		openPublisher: func() (poolPublisherCloser, error) {
+			return nil, ticketspool.ErrUnsafePath
+		},
+	})
+	if errors.As(unsafeErr, &prerequisite) || !errors.Is(unsafeErr, ticketspool.ErrUnsafePath) || unsafeKeys.closeCalls != 1 {
+		t.Fatalf("openDefaultPoolService(unsafe publisher) error/key closes = %#v / %d", unsafeErr, unsafeKeys.closeCalls)
+	}
+	var nilPrerequisite *PoolPrerequisiteMissingError
+	if nilPrerequisite.Error() == "" || nilPrerequisite.Unwrap() != nil {
+		t.Fatal("nil PoolPrerequisiteMissingError is not safe")
 	}
 
 	keys := &closingPoolKeyStore{PoolKeyStore: fixture.keys}

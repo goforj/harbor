@@ -788,6 +788,25 @@ func classifyNetworkSetupError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
+	var poolObservation *ticketissuer.PoolObservationError
+	if errors.As(err, &poolObservation) {
+		if validationErr := poolObservation.Validate(); validationErr != nil {
+			return err
+		}
+		stage := control.NetworkSetupObservationStage("")
+		switch poolObservation.Stage() {
+		case ticketissuer.PoolObservationAssignment:
+			stage = control.NetworkSetupObservationAssignment
+		case ticketissuer.PoolObservationHostConflicts:
+			stage = control.NetworkSetupObservationHostConflicts
+		}
+		detail, _ := poolObservation.ReviewedDetail()
+		return control.NewNetworkSetupObservationError(err, stage, poolObservation.Address(), detail)
+	}
+	var prerequisiteMissing *ticketissuer.PoolPrerequisiteMissingError
+	if errors.As(err, &prerequisiteMissing) {
+		return control.NewNetworkSetupPrivilegedHelperRequiredError(err)
+	}
 	var intentConflict *state.IntentConflictError
 	var staleRevision *state.StaleRevisionError
 	var networkConflict *state.NetworkInitializationConflictError

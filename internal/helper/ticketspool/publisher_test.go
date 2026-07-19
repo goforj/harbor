@@ -95,6 +95,10 @@ func TestOpenRejectsInvalidConfiguration(t *testing.T) {
 	if _, err := open(path, testDependencies(testTime())); !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("open() regular file error = %v, want ErrUnsafePath", err)
 	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	if _, err := open(missing, testDependencies(testTime())); !errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("open() missing path error = %v, want ordinary filesystem absence", err)
+	}
 }
 
 // TestOpenDefaultNeverProvisions verifies the production entry point remains a read-only opener when installation is absent.
@@ -109,6 +113,9 @@ func TestOpenDefaultNeverProvisions(t *testing.T) {
 		if err := publisher.Close(); err != nil {
 			t.Fatalf("close default publisher: %v", err)
 		}
+	}
+	if errors.Is(beforeErr, fs.ErrNotExist) && (!errors.Is(err, ErrNotInstalled) || errors.Is(err, fs.ErrNotExist)) {
+		t.Fatalf("OpenDefault() missing path error = %v, want only ErrNotInstalled", err)
 	}
 	_, afterErr := os.Lstat(paths.PendingDirectory)
 	if errors.Is(beforeErr, fs.ErrNotExist) && !errors.Is(afterErr, fs.ErrNotExist) {

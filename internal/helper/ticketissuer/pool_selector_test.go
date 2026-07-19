@@ -185,6 +185,7 @@ func TestPoolSelectorSelectRejectsObserverFailures(t *testing.T) {
 		conflicts func(*testing.T) *selectorConflictObserver
 		contains  string
 		wantCause error
+		wantStage PoolObservationStage
 	}{
 		{name: "cancelled", context: func() context.Context {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -193,7 +194,7 @@ func TestPoolSelectorSelectRejectsObserverFailures(t *testing.T) {
 		}, contains: "", wantCause: context.Canceled},
 		{name: "loopback error", loopback: func(*testing.T) *selectorLoopbackObserver {
 			return &selectorLoopbackObserver{observe: func(netip.Addr) (loopback.Observation, error) { return loopback.Observation{}, sentinel }}
-		}, contains: "observe assignment", wantCause: sentinel},
+		}, contains: "observe loopback assignment", wantCause: sentinel, wantStage: PoolObservationAssignment},
 		{name: "wrong loopback address", loopback: func(*testing.T) *selectorLoopbackObserver {
 			return &selectorLoopbackObserver{observe: func(address netip.Addr) (loopback.Observation, error) {
 				return poolLoopbackObservation(address.Next(), loopback.StateAbsent), nil
@@ -210,7 +211,7 @@ func TestPoolSelectorSelectRejectsObserverFailures(t *testing.T) {
 			return &selectorConflictObserver{observe: func(hostconflict.Request, string) (hostconflict.Observation, error) {
 				return hostconflict.Observation{}, sentinel
 			}}
-		}, contains: "observe host conflicts", wantCause: sentinel},
+		}, contains: "observe host conflicts", wantCause: sentinel, wantStage: PoolObservationHostConflicts},
 		{name: "wrong conflict request", conflicts: func(t *testing.T) *selectorConflictObserver {
 			return &selectorConflictObserver{observe: func(request hostconflict.Request, _ string) (hostconflict.Observation, error) {
 				return poolSafeHostObservation(t, request.Candidate().Next()), nil
@@ -242,7 +243,64 @@ func TestPoolSelectorSelectRejectsObserverFailures(t *testing.T) {
 			if test.wantCause != nil && !errors.Is(err, test.wantCause) {
 				t.Fatalf("Select() error = %v, want cause %v", err, test.wantCause)
 			}
+			if test.wantStage != "" {
+				var observationError *PoolObservationError
+				if !errors.As(err, &observationError) || observationError.Stage() != test.wantStage || !observationError.Address().IsValid() {
+					t.Fatalf("Select() error = %#v, want %q PoolObservationError", err, test.wantStage)
+				}
+			}
 		})
+	}
+}
+
+// TestPoolObservationErrorReviewsOnlyProductionObserverShapes verifies arbitrary observer causes cannot become peer detail.
+func TestPoolObservationErrorReviewsOnlyProductionObserverShapes(t *testing.T) {
+	address := netip.MustParseAddr("127.77.10.8")
+	loopbackCause := &loopback.Error{
+		Kind:      loopback.ErrorKindObserveFailed,
+		Operation: "observe",
+		Address:   address,
+	}
+	loopbackError := NewPoolObservationError(PoolObservationAssignment, address, loopbackCause)
+	if detail, ok := loopbackError.ReviewedDetail(); !ok || detail != loopbackCause.Error() {
+		t.Fatalf("loopback ReviewedDetail() = %q, %t", detail, ok)
+	}
+
+	for _, prefix := range []string{
+		"observe Darwin host conflicts: ",
+		"observe Linux host conflicts: ",
+		"observe Windows host conflicts: ",
+	} {
+		cause := errors.New(prefix + "native route lookup failed")
+		observationError := NewPoolObservationError(PoolObservationHostConflicts, address, cause)
+		if detail, ok := observationError.ReviewedDetail(); !ok || detail != cause.Error() {
+			t.Fatalf("host ReviewedDetail(%q) = %q, %t", prefix, detail, ok)
+		}
+	}
+
+	for _, test := range []struct {
+		name  string
+		error *PoolObservationError
+	}{
+		{name: "arbitrary cause", error: NewPoolObservationError(PoolObservationHostConflicts, address, errors.New("APP_KEY=secret"))},
+		{name: "wrong loopback type", error: NewPoolObservationError(PoolObservationAssignment, address, errors.New("observe failed"))},
+		{name: "wrong loopback address", error: NewPoolObservationError(PoolObservationAssignment, address, &loopback.Error{Kind: loopback.ErrorKindObserveFailed, Operation: "observe", Address: address.Next()})},
+		{name: "control", error: NewPoolObservationError(PoolObservationHostConflicts, address, errors.New("observe Darwin host conflicts: failed\nforged"))},
+		{name: "oversize", error: NewPoolObservationError(PoolObservationHostConflicts, address, errors.New("observe Darwin host conflicts: "+strings.Repeat("x", maximumPoolObservationDetailBytes)))},
+		{name: "foreign namespace", error: NewPoolObservationError(PoolObservationHostConflicts, netip.MustParseAddr("127.78.10.8"), errors.New("observe Darwin host conflicts: failed"))},
+		{name: "unsupported stage", error: NewPoolObservationError("filesystem", address, errors.New("observe Darwin host conflicts: failed"))},
+		{name: "missing cause", error: NewPoolObservationError(PoolObservationHostConflicts, address, nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if detail, ok := test.error.ReviewedDetail(); ok || detail != "" {
+				t.Fatalf("ReviewedDetail() = %q, %t, want empty false", detail, ok)
+			}
+		})
+	}
+
+	var nilError *PoolObservationError
+	if nilError.Error() == "" || nilError.Unwrap() != nil || nilError.Stage() != "" || nilError.Address().IsValid() || nilError.Cause() != nil {
+		t.Fatal("nil PoolObservationError is not safe")
 	}
 }
 

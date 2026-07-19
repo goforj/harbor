@@ -99,6 +99,22 @@ func TestEnvelopeToleratesUnknownAdditiveFields(t *testing.T) {
 	}
 }
 
+// TestNetworkObservationErrorResponseEnvelopeFallsBackForInvalidPeerText keeps callers from bypassing the narrow validator.
+func TestNetworkObservationErrorResponseEnvelopeFallsBackForInvalidPeerText(t *testing.T) {
+	envelope, err := NewNetworkObservationErrorResponseEnvelope(
+		Version{Major: 1},
+		"req-reviewed",
+		"Harbor could not inspect host conflicts for 127.77.10.8: observe Darwin host conflicts: APP_KEY=secret-value",
+	)
+	if err != nil {
+		t.Fatalf("NewNetworkObservationErrorResponseEnvelope() error = %v", err)
+	}
+	fallback := NewWireError(ErrorCodeNetworkObservationFailed)
+	if envelope.Error == nil || *envelope.Error != fallback {
+		t.Fatalf("NewNetworkObservationErrorResponseEnvelope() error = %#v, want %#v", envelope.Error, fallback)
+	}
+}
+
 // TestHandshakeEnvelopeToleratesUnknownPayloadFields verifies additive handshake
 // metadata does not prevent an older daemon from negotiating known fields.
 func TestHandshakeEnvelopeToleratesUnknownPayloadFields(t *testing.T) {
