@@ -70,7 +70,7 @@ func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T)
 			supervisor := &projectLifecycleRecoverySupervisor{
 				observation: projectprocess.PriorProcessObservation{State: priorState},
 			}
-			routes := &projectLifecycleRecordingRouteReconciler{store: store, projectID: seed.project.ID}
+			routeCalls := 0
 			coordinator := newProjectLifecycleAdmissionTestCoordinator(
 				store,
 				journal,
@@ -78,7 +78,10 @@ func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T)
 				supervisor,
 				netip.MustParseAddr("127.0.0.1"),
 			)
-			coordinator.routes = routes
+			coordinator.routes = projectLifecycleRouteReconcilerFunc(func(context.Context) error {
+				routeCalls++
+				return errors.New("route controller is not started during daemon recovery")
+			})
 			coordinator.now = func() time.Time { return seed.recoverAt }
 			t.Cleanup(func() {
 				if err := coordinator.Close(context.Background()); err != nil {
@@ -112,8 +115,8 @@ func TestProjectLifecycleRecoverFailsStartAfterPriorProcessAbsence(t *testing.T)
 			if len(supervisor.observed) != 1 || supervisor.observed[0] != seed.evidence {
 				t.Fatalf("observed evidence = %#v, want %#v", supervisor.observed, seed.evidence)
 			}
-			if got := routes.States(); len(got) != 1 || got[0] != domain.ProjectFailed {
-				t.Fatalf("route reconciliation states = %v, want [%s]", got, domain.ProjectFailed)
+			if routeCalls != 0 {
+				t.Fatalf("daemon recovery reconciled routes before runtime startup %d times", routeCalls)
 			}
 		})
 	}
@@ -202,37 +205,6 @@ func TestProjectLifecycleRecoverLeavesPlannedStartFailClosed(t *testing.T) {
 	operation, readErr := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
 	if readErr != nil || operation.Operation.State != domain.OperationRunning {
 		t.Fatalf("planned operation after recovery = %#v, %v", operation.Operation, readErr)
-	}
-}
-
-// TestProjectLifecycleRecoverReportsRouteFailureAfterDurableSettlement proves publication errors cannot restore stale process authority.
-func TestProjectLifecycleRecoverReportsRouteFailureAfterDurableSettlement(t *testing.T) {
-	store, journal := newProjectLifecycleIntegrationState(t)
-	seed := seedProjectLifecycleRecoveryStart(t, store, journal, true)
-	supervisor := &projectLifecycleRecoverySupervisor{
-		observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessAbsent},
-	}
-	sentinel := errors.New("route publication unavailable")
-	coordinator := newProjectLifecycleAdmissionTestCoordinator(
-		store,
-		journal,
-		store,
-		supervisor,
-		netip.MustParseAddr("127.0.0.1"),
-	)
-	coordinator.routes = projectLifecycleRouteReconcilerFunc(func(context.Context) error { return sentinel })
-	coordinator.now = func() time.Time { return seed.recoverAt }
-
-	err := coordinator.Recover(t.Context())
-	if err == nil || !errors.Is(err, sentinel) {
-		t.Fatalf("Recover() error = %v, want %v", err, sentinel)
-	}
-	operation, readErr := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
-	if readErr != nil || operation.Operation.State != domain.OperationFailed {
-		t.Fatalf("settled operation = %#v, %v", operation.Operation, readErr)
-	}
-	if _, readErr := store.ActiveProjectSession(t.Context(), seed.project.ID); readErr == nil {
-		t.Fatal("route failure restored the retired project session")
 	}
 }
 

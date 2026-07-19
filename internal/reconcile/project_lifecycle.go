@@ -937,9 +937,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 	}); err != nil {
 		return false, fmt.Errorf("recover project lifecycle operation %q after prior process absence: %w", record.Operation.ID, err)
 	}
-	if err := coordinator.reconcileProjectRoutes(ctx, "withdraw routes after prior project process absence"); err != nil {
-		return false, err
-	}
+	// Daemon recovery runs before the route controller starts; its first reconciliation reads this settled state.
 	return true, nil
 }
 
