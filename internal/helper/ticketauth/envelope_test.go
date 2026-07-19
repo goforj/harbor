@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -68,6 +69,95 @@ func TestEnvelopeCodecRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, envelope) {
 		t.Fatalf("decoded envelope = %#v, want %#v", decoded, envelope)
+	}
+}
+
+// TestEnvelopePoolCodecRoundTripAndBound proves one exact-eight authority remains canonical, verifiable, and within the v2 envelope limit.
+func TestEnvelopePoolCodecRoundTripAndBound(t *testing.T) {
+	now := envelopeTestTime()
+	publicKey, privateKey := envelopeTestKey(t, 11)
+	ticket := envelopeTestPoolTicket(now)
+	envelope, err := Sign(ticket, privateKey, now)
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+	if EnvelopeVersion != 2 || helper.ProtocolVersion != 2 {
+		t.Fatalf("protocol constants = envelope %d, ticket %d, want v2", EnvelopeVersion, helper.ProtocolVersion)
+	}
+	if envelope.Version != EnvelopeVersion || envelope.Ticket.Version != helper.ProtocolVersion {
+		t.Fatalf("pool envelope versions = envelope %d, ticket %d", envelope.Version, envelope.Ticket.Version)
+	}
+
+	encoded, err := Encode(envelope)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	if len(encoded) == 0 || len(encoded) > MaxEnvelopeBytes {
+		t.Fatalf("encoded pool envelope size = %d, want 1..%d", len(encoded), MaxEnvelopeBytes)
+	}
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	verified, err := decoded.Verify(publicKey, now)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !reflect.DeepEqual(verified, ticket) {
+		t.Fatalf("verified pool ticket = %#v, want %#v", verified, ticket)
+	}
+	bootstrapped, proposedKey, err := decoded.VerifyBootstrap(now)
+	if err != nil {
+		t.Fatalf("VerifyBootstrap() error = %v", err)
+	}
+	if !reflect.DeepEqual(bootstrapped, ticket) || !publicKey.Equal(proposedKey) {
+		t.Fatalf("bootstrap pool ticket = %#v/%x, want %#v/%x", bootstrapped, proposedKey, ticket, publicKey)
+	}
+}
+
+// TestEnvelopePoolVerifyRejectsIdentitySubstitution proves every exact-address authority field participates in the v2 signature.
+func TestEnvelopePoolVerifyRejectsIdentitySubstitution(t *testing.T) {
+	now := envelopeTestTime()
+	publicKey, privateKey := envelopeTestKey(t, 12)
+	valid, err := Sign(envelopeTestPoolTicket(now), privateKey, now)
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*helper.Ticket)
+	}{
+		{name: "pool", mutate: func(ticket *helper.Ticket) { ticket.ApprovedPool = "127.77.0.16/29" }},
+		{name: "address", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].Address = "127.77.0.9"
+		}},
+		{name: "observation state", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation.State = helper.ObservationOwned
+		}},
+		{name: "observation fingerprint", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation.Fingerprint = strings.Repeat("c", 64)
+		}},
+		{name: "pre-assignment fingerprint", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment.Fingerprint = strings.Repeat("d", 64)
+		}},
+		{name: "pre-assignment requirements", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment.Requirements = []helper.SocketRequirement{{
+				Transport: helper.SocketTransportTCP4,
+				Port:      443,
+			}}
+		}},
+		{name: "identity count", mutate: func(ticket *helper.Ticket) {
+			ticket.ExpectedLoopbackPool.Identities = ticket.ExpectedLoopbackPool.Identities[:7]
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := cloneEnvelope(valid)
+			test.mutate(&candidate.Ticket)
+			if _, err := candidate.Verify(publicKey, now); err == nil || !strings.Contains(err.Error(), "signature is invalid") {
+				t.Fatalf("Verify() error = %v, want signature rejection", err)
+			}
+		})
 	}
 }
 
@@ -386,6 +476,20 @@ func cloneEnvelope(envelope Envelope) Envelope {
 		expected.Requirements = append([]helper.SocketRequirement{}, expected.Requirements...)
 		clone.Ticket.ExpectedPreAssignment = &expected
 	}
+	if envelope.Ticket.ExpectedLoopbackPool != nil {
+		expectedPool := *envelope.Ticket.ExpectedLoopbackPool
+		expectedPool.Identities = append([]helper.ExpectedLoopbackIdentity(nil), expectedPool.Identities...)
+		for index := range expectedPool.Identities {
+			preAssignment := expectedPool.Identities[index].ExpectedPreAssignment
+			if preAssignment == nil {
+				continue
+			}
+			clonedPreAssignment := *preAssignment
+			clonedPreAssignment.Requirements = append([]helper.SocketRequirement{}, preAssignment.Requirements...)
+			expectedPool.Identities[index].ExpectedPreAssignment = &clonedPreAssignment
+		}
+		clone.Ticket.ExpectedLoopbackPool = &expectedPool
+	}
 	return clone
 }
 
@@ -437,6 +541,40 @@ func envelopeTestTicket(now time.Time) helper.Ticket {
 				{Transport: helper.SocketTransportTCP4, Port: 443},
 				{Transport: helper.SocketTransportUDP4, Port: 53},
 			},
+		},
+		Nonce:     strings.Repeat("n", 32),
+		ExpiresAt: now.Add(time.Minute),
+	}
+}
+
+// envelopeTestPoolTicket returns one complete route-only /29 authority under the existing v2 signing domain.
+func envelopeTestPoolTicket(now time.Time) helper.Ticket {
+	pool := netip.MustParsePrefix("127.77.0.8/29")
+	identities := make([]helper.ExpectedLoopbackIdentity, 0, 8)
+	address := pool.Addr()
+	for range 8 {
+		identities = append(identities, helper.ExpectedLoopbackIdentity{
+			Address: address.String(),
+			ExpectedObservation: helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: strings.Repeat("a", 64),
+			},
+			ExpectedPreAssignment: &helper.ExpectedPreAssignment{
+				Fingerprint:  strings.Repeat("b", 64),
+				Requirements: []helper.SocketRequirement{},
+			},
+		})
+		address = address.Next()
+	}
+	return helper.Ticket{
+		Version:             helper.ProtocolVersion,
+		Operation:           helper.OperationEnsureLoopbackPool,
+		InstallationID:      "harbor-test-installation",
+		RequesterIdentity:   "1000",
+		OwnershipGeneration: 1,
+		ApprovedPool:        pool.String(),
+		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{
+			Identities: identities,
 		},
 		Nonce:     strings.Repeat("n", 32),
 		ExpiresAt: now.Add(time.Minute),

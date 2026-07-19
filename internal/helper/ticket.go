@@ -19,10 +19,12 @@ const MaxTicketRedemptionDuration = 15 * time.Second
 const MaximumRequesterIdentityLength = 256
 
 const (
-	minimumNonceLength    = 32
-	maximumNonceLength    = 128
-	fingerprintLength     = 64
-	ticketReferenceLength = 64
+	minimumNonceLength     = 32
+	maximumNonceLength     = 128
+	fingerprintLength      = 64
+	ticketReferenceLength  = 64
+	loopbackPoolPrefixBits = 29
+	loopbackPoolIdentities = 1 << (32 - loopbackPoolPrefixBits)
 )
 
 // MaximumSocketRequirements bounds the native port capabilities one pre-assignment observation may authorize.
@@ -34,6 +36,8 @@ type Operation string
 const (
 	// OperationEnsureLoopbackIdentity admits one owned loopback identity ensure operation.
 	OperationEnsureLoopbackIdentity Operation = "ensure_loopback_identity"
+	// OperationEnsureLoopbackPool admits one canonical pool ensure operation containing eight exact identities.
+	OperationEnsureLoopbackPool Operation = "ensure_loopback_pool"
 	// OperationReleaseLoopbackIdentity admits one owned loopback identity release operation.
 	OperationReleaseLoopbackIdentity Operation = "release_loopback_identity"
 )
@@ -137,7 +141,61 @@ func compareSocketRequirements(left SocketRequirement, right SocketRequirement) 
 	return 0
 }
 
-// Ticket authorizes exactly one bounded loopback identity operation.
+// ExpectedLoopbackIdentity binds one exact pool address to its independently observed assignment and pre-assignment facts.
+type ExpectedLoopbackIdentity struct {
+	Address               string                 `json:"address"`
+	ExpectedObservation   ExpectedObservation    `json:"expected_observation"`
+	ExpectedPreAssignment *ExpectedPreAssignment `json:"expected_pre_assignment,omitempty"`
+}
+
+// ExpectedLoopbackPool binds one canonical /29 to all eight exact /32 identity preconditions in address order.
+type ExpectedLoopbackPool struct {
+	Identities []ExpectedLoopbackIdentity `json:"identities"`
+}
+
+// Validate verifies that the authority contains every exact /29 address once in canonical order with route-only absent-state evidence.
+func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
+	if !pool.IsValid() || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() {
+		return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool requires a canonical IPv4 loopback /29")
+	}
+	if len(expected.Identities) != loopbackPoolIdentities {
+		return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool must contain exactly eight identities")
+	}
+
+	address := pool.Addr()
+	for _, identity := range expected.Identities {
+		if !validApprovedAddress(identity.Address) {
+			return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool identity address must be canonical IPv4 loopback")
+		}
+		parsed, _ := netip.ParseAddr(identity.Address)
+		if parsed != address {
+			return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool identities must enumerate the complete pool in canonical order")
+		}
+		if err := identity.ExpectedObservation.Validate(); err != nil {
+			return err
+		}
+		switch identity.ExpectedObservation.State {
+		case ObservationAbsent:
+			if identity.ExpectedPreAssignment == nil {
+				return newRequestError(ErrorCodeInvalidTicket, "absent pool identity requires an expected pre-assignment observation")
+			}
+			if err := identity.ExpectedPreAssignment.Validate(); err != nil {
+				return err
+			}
+			if len(identity.ExpectedPreAssignment.Requirements) != 0 {
+				return newRequestError(ErrorCodeInvalidTicket, "absent pool identity requires route-only pre-assignment observation")
+			}
+		case ObservationOwned:
+			if identity.ExpectedPreAssignment != nil {
+				return newRequestError(ErrorCodeInvalidTicket, "owned pool identity cannot contain an expected pre-assignment observation")
+			}
+		}
+		address = address.Next()
+	}
+	return nil
+}
+
+// Ticket authorizes exactly one bounded loopback operation.
 type Ticket struct {
 	Version               uint16                 `json:"version"`
 	Operation             Operation              `json:"operation"`
@@ -145,9 +203,10 @@ type Ticket struct {
 	RequesterIdentity     string                 `json:"requester_identity"`
 	OwnershipGeneration   uint64                 `json:"ownership_generation"`
 	ApprovedPool          string                 `json:"approved_pool"`
-	ApprovedAddress       string                 `json:"approved_address"`
-	ExpectedObservation   ExpectedObservation    `json:"expected_observation"`
+	ApprovedAddress       string                 `json:"approved_address,omitempty"`
+	ExpectedObservation   ExpectedObservation    `json:"expected_observation,omitzero"`
 	ExpectedPreAssignment *ExpectedPreAssignment `json:"expected_pre_assignment,omitempty"`
+	ExpectedLoopbackPool  *ExpectedLoopbackPool  `json:"expected_loopback_pool,omitempty"`
 	Nonce                 string                 `json:"nonce"`
 	ExpiresAt             time.Time              `json:"expires_at"`
 }
@@ -157,7 +216,7 @@ func (t Ticket) Validate(now time.Time) error {
 	if t.Version != ProtocolVersion {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket version is unsupported")
 	}
-	if t.Operation != OperationEnsureLoopbackIdentity && t.Operation != OperationReleaseLoopbackIdentity {
+	if t.Operation != OperationEnsureLoopbackIdentity && t.Operation != OperationEnsureLoopbackPool && t.Operation != OperationReleaseLoopbackIdentity {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
 	}
 	if err := ValidateInstallationID(t.InstallationID); err != nil {
@@ -173,6 +232,44 @@ func (t Ticket) Validate(now time.Time) error {
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "approved pool must be a canonical IPv4 loopback prefix")
 	}
+	if t.Operation == OperationEnsureLoopbackPool {
+		if pool.Bits() != loopbackPoolPrefixBits || pool.String() != t.ApprovedPool {
+			return newRequestError(ErrorCodeInvalidTicket, "pool ensure requires a canonical IPv4 loopback /29")
+		}
+		if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) || t.ExpectedPreAssignment != nil {
+			return newRequestError(ErrorCodeInvalidTicket, "pool ensure cannot contain legacy single-address authority")
+		}
+		if t.ExpectedLoopbackPool == nil {
+			return newRequestError(ErrorCodeInvalidTicket, "pool ensure requires expected loopback pool authority")
+		}
+		if err := t.ExpectedLoopbackPool.Validate(pool); err != nil {
+			return err
+		}
+	} else {
+		if t.ExpectedLoopbackPool != nil {
+			return newRequestError(ErrorCodeInvalidTicket, "single-address operation cannot contain expected loopback pool authority")
+		}
+		if err := t.validateSingleAddressAuthority(pool); err != nil {
+			return err
+		}
+	}
+	if !validToken(t.Nonce, minimumNonceLength, maximumNonceLength) {
+		return newRequestError(ErrorCodeInvalidTicket, "ticket nonce is invalid")
+	}
+	if t.ExpiresAt.IsZero() || !t.ExpiresAt.After(now) {
+		return newRequestError(ErrorCodeInvalidTicket, "ticket is expired")
+	}
+	if t.ExpiresAt.Location() != time.UTC {
+		return newRequestError(ErrorCodeInvalidTicket, "ticket expiry must use UTC")
+	}
+	if t.ExpiresAt.After(now.Add(MaxTicketLifetime)) {
+		return newRequestError(ErrorCodeInvalidTicket, "ticket expiry exceeds the maximum lifetime")
+	}
+	return nil
+}
+
+// validateSingleAddressAuthority verifies the legacy exact-address authority used by ensure and release operations.
+func (t Ticket) validateSingleAddressAuthority(pool netip.Prefix) error {
 	if !validApprovedAddress(t.ApprovedAddress) {
 		return newRequestError(ErrorCodeInvalidTicket, "approved address must be canonical IPv4 loopback")
 	}
@@ -195,18 +292,6 @@ func (t Ticket) Validate(now time.Time) error {
 	}
 	if t.Operation == OperationReleaseLoopbackIdentity && t.ExpectedObservation.State != ObservationOwned {
 		return newRequestError(ErrorCodeInvalidTicket, "release requires an owned expected observation")
-	}
-	if !validToken(t.Nonce, minimumNonceLength, maximumNonceLength) {
-		return newRequestError(ErrorCodeInvalidTicket, "ticket nonce is invalid")
-	}
-	if t.ExpiresAt.IsZero() || !t.ExpiresAt.After(now) {
-		return newRequestError(ErrorCodeInvalidTicket, "ticket is expired")
-	}
-	if t.ExpiresAt.Location() != time.UTC {
-		return newRequestError(ErrorCodeInvalidTicket, "ticket expiry must use UTC")
-	}
-	if t.ExpiresAt.After(now.Add(MaxTicketLifetime)) {
-		return newRequestError(ErrorCodeInvalidTicket, "ticket expiry exceeds the maximum lifetime")
 	}
 	return nil
 }

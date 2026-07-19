@@ -1,7 +1,9 @@
 package helper
 
 import (
+	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +114,24 @@ func TestExpectedPreAssignmentValidate(t *testing.T) {
 	}
 }
 
+// TestExpectedLoopbackPoolValidate accepts only the complete canonical /29 authority shape.
+func TestExpectedLoopbackPoolValidate(t *testing.T) {
+	pool := netip.MustParsePrefix("127.77.0.8/29")
+	expected := testExpectedLoopbackPool(pool)
+	if err := expected.Validate(pool); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	expected.Identities[3].ExpectedObservation.State = ObservationOwned
+	expected.Identities[3].ExpectedPreAssignment = nil
+	if err := expected.Validate(pool); err != nil {
+		t.Fatalf("Validate() mixed state error = %v", err)
+	}
+	if err := expected.Validate(netip.MustParsePrefix("127.77.0.0/24")); err == nil {
+		t.Fatal("Validate() accepted a non-/29 pool")
+	}
+}
+
 // TestTicketValidateInstallationIDContract verifies helper admission uses the shared installation identity domain.
 func TestTicketValidateInstallationIDContract(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
@@ -195,6 +215,9 @@ func TestTicketValidate(t *testing.T) {
 			ticket.ExpectedObservation.State = ObservationAbsent
 			ticket.ExpectedPreAssignment = nil
 		}, code: ErrorCodeInvalidTicket},
+		{name: "single address with pool authority", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool = &ExpectedLoopbackPool{}
+		}, code: ErrorCodeInvalidTicket},
 		{name: "short nonce", mutate: func(ticket *Ticket) { ticket.Nonce = "short" }, code: ErrorCodeInvalidTicket},
 		{name: "path nonce", mutate: func(ticket *Ticket) { ticket.Nonce = strings.Repeat("a", 31) + "/" }, code: ErrorCodeInvalidTicket},
 		{name: "long nonce", mutate: func(ticket *Ticket) { ticket.Nonce = strings.Repeat("a", maximumNonceLength+1) }, code: ErrorCodeInvalidTicket},
@@ -214,6 +237,75 @@ func TestTicketValidate(t *testing.T) {
 			}
 			if got := requestErrorCode(t, err); got != test.code {
 				t.Fatalf("error code = %q, want %q", got, test.code)
+			}
+		})
+	}
+}
+
+// TestTicketValidateLoopbackPool covers every exact-pool boundary without weakening legacy single-address authority.
+func TestTicketValidateLoopbackPool(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*Ticket)
+	}{
+		{name: "wrong prefix size", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "127.77.0.0/28" }},
+		{name: "noncanonical prefix", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "127.77.0.9/29" }},
+		{name: "missing authority", mutate: func(ticket *Ticket) { ticket.ExpectedLoopbackPool = nil }},
+		{name: "legacy address", mutate: func(ticket *Ticket) { ticket.ApprovedAddress = "127.77.0.8" }},
+		{name: "legacy observation", mutate: func(ticket *Ticket) {
+			ticket.ExpectedObservation = ExpectedObservation{State: ObservationAbsent, Fingerprint: testFingerprint()}
+		}},
+		{name: "legacy pre-assignment", mutate: func(ticket *Ticket) { ticket.ExpectedPreAssignment = testExpectedPreAssignment() }},
+		{name: "seven identities", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities = ticket.ExpectedLoopbackPool.Identities[:7]
+		}},
+		{name: "nine identities", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities = append(
+				ticket.ExpectedLoopbackPool.Identities,
+				ticket.ExpectedLoopbackPool.Identities[7],
+			)
+		}},
+		{name: "out of order", mutate: func(ticket *Ticket) {
+			identities := ticket.ExpectedLoopbackPool.Identities
+			identities[2], identities[3] = identities[3], identities[2]
+		}},
+		{name: "duplicate address", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[3].Address = ticket.ExpectedLoopbackPool.Identities[2].Address
+		}},
+		{name: "outside address", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[7].Address = "127.77.0.16"
+		}},
+		{name: "malformed address", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].Address = "not-an-address"
+		}},
+		{name: "invalid observation", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation.Fingerprint = "bad"
+		}},
+		{name: "absent without pre-assignment", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment = nil
+		}},
+		{name: "absent with implicit requirements", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment.Requirements = nil
+		}},
+		{name: "absent with socket authority", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment.Requirements = []SocketRequirement{{
+				Transport: SocketTransportTCP4,
+				Port:      443,
+			}}
+		}},
+		{name: "owned with pre-assignment", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation.State = ObservationOwned
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ticket := validTestPoolTicket(now)
+			test.mutate(&ticket)
+			err := ticket.Validate(now)
+			if err == nil || requestErrorCode(t, err) != ErrorCodeInvalidTicket {
+				t.Fatalf("Ticket.Validate() error = %v, want invalid ticket", err)
 			}
 		})
 	}
@@ -262,8 +354,13 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 	tickets := []Ticket{
 		validTestTicket(now, OperationEnsureLoopbackIdentity),
+		validTestPoolTicket(now),
 		validTestTicket(now, OperationReleaseLoopbackIdentity),
 	}
+	mixedPool := validTestPoolTicket(now)
+	mixedPool.ExpectedLoopbackPool.Identities[4].ExpectedObservation.State = ObservationOwned
+	mixedPool.ExpectedLoopbackPool.Identities[4].ExpectedPreAssignment = nil
+	tickets = append(tickets, mixedPool)
 	ownedEnsure := validTestTicket(now, OperationEnsureLoopbackIdentity)
 	ownedEnsure.ExpectedObservation.State = ObservationOwned
 	ownedEnsure.ExpectedPreAssignment = nil
@@ -285,6 +382,36 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 		if err := ticket.Validate(now); err != nil {
 			t.Fatalf("validate %q ticket: %v", ticket.Operation, err)
 		}
+	}
+}
+
+// TestTicketJSONPreservesLegacyShapeAndOmitsUnusedPoolFields pins additive v2 encoding behavior.
+func TestTicketJSONPreservesLegacyShapeAndOmitsUnusedPoolFields(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	legacy, err := json.Marshal(validTestTicket(now, OperationEnsureLoopbackIdentity))
+	if err != nil {
+		t.Fatalf("json.Marshal(legacy) error = %v", err)
+	}
+	wantLegacy := `{"version":2,"operation":"ensure_loopback_identity","installation_id":"harbor-test-installation","requester_identity":"uid-1000","ownership_generation":7,"approved_pool":"127.77.0.0/24","approved_address":"127.77.0.10","expected_observation":{"state":"absent","fingerprint":"` + strings.Repeat("a", fingerprintLength) + `"},"expected_pre_assignment":{"fingerprint":"` + strings.Repeat("b", fingerprintLength) + `","requirements":[]},"nonce":"` + strings.Repeat("n", minimumNonceLength) + `","expires_at":"2026-07-18T12:01:00Z"}`
+	if string(legacy) != wantLegacy {
+		t.Fatalf("legacy ticket JSON = %s, want %s", legacy, wantLegacy)
+	}
+
+	pool, err := json.Marshal(validTestPoolTicket(now))
+	if err != nil {
+		t.Fatalf("json.Marshal(pool) error = %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(pool, &fields); err != nil {
+		t.Fatalf("json.Unmarshal(pool) error = %v", err)
+	}
+	for _, field := range []string{"approved_address", "expected_observation", "expected_pre_assignment"} {
+		if _, found := fields[field]; found {
+			t.Fatalf("pool ticket JSON contains legacy field %q: %s", field, pool)
+		}
+	}
+	if _, found := fields["expected_loopback_pool"]; !found {
+		t.Fatalf("pool ticket JSON is missing expected_loopback_pool: %s", pool)
 	}
 }
 
@@ -313,6 +440,43 @@ func validTestTicket(now time.Time, operation Operation) Ticket {
 		ticket.ExpectedPreAssignment = testExpectedPreAssignment()
 	}
 	return ticket
+}
+
+// validTestPoolTicket returns one canonical exact-eight route-only pool authority.
+func validTestPoolTicket(now time.Time) Ticket {
+	pool := netip.MustParsePrefix("127.77.0.8/29")
+	return Ticket{
+		Version:             ProtocolVersion,
+		Operation:           OperationEnsureLoopbackPool,
+		InstallationID:      "harbor-test-installation",
+		RequesterIdentity:   "uid-1000",
+		OwnershipGeneration: 7,
+		ApprovedPool:        pool.String(),
+		ExpectedLoopbackPool: func() *ExpectedLoopbackPool {
+			expected := testExpectedLoopbackPool(pool)
+			return &expected
+		}(),
+		Nonce:     strings.Repeat("n", minimumNonceLength),
+		ExpiresAt: now.Add(time.Minute),
+	}
+}
+
+// testExpectedLoopbackPool returns all addresses from one canonical /29 with explicit route-only absent-state evidence.
+func testExpectedLoopbackPool(pool netip.Prefix) ExpectedLoopbackPool {
+	identities := make([]ExpectedLoopbackIdentity, 0, loopbackPoolIdentities)
+	address := pool.Addr()
+	for range loopbackPoolIdentities {
+		identities = append(identities, ExpectedLoopbackIdentity{
+			Address: address.String(),
+			ExpectedObservation: ExpectedObservation{
+				State:       ObservationAbsent,
+				Fingerprint: testFingerprint(),
+			},
+			ExpectedPreAssignment: testExpectedPreAssignment(),
+		})
+		address = address.Next()
+	}
+	return ExpectedLoopbackPool{Identities: identities}
 }
 
 // testExpectedPreAssignment returns an explicit route-only safety observation.
