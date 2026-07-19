@@ -31,6 +31,7 @@ type outputRelay struct {
 	stdout      io.Writer
 	stderr      io.Writer
 	trace       io.WriteCloser
+	transcript  *outputTranscript
 	queue       chan outputLine
 	callerQueue chan outputLine
 	traceDone   chan struct{}
@@ -55,6 +56,7 @@ func newOutputRelayWithTrace(stdout, stderr io.Writer, trace io.WriteCloser, buf
 		stdout:      stdout,
 		stderr:      stderr,
 		trace:       trace,
+		transcript:  newOutputTranscript(outputTranscriptCapacityBytes),
 		queue:       make(chan outputLine, bufferLines),
 		callerQueue: make(chan outputLine, bufferLines),
 		traceDone:   make(chan struct{}),
@@ -93,6 +95,7 @@ func (relay *outputRelay) deliver() {
 		close(relay.traceDone)
 	}()
 	for line := range relay.queue {
+		relay.transcript.append(line.bytes)
 		if relay.trace != nil && !traceFailed {
 			if writeOutputLine(relay.trace, line.bytes) != nil {
 				traceFailed = true
