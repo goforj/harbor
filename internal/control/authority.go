@@ -26,6 +26,10 @@ type Authority interface {
 	Snapshot(context.Context, Caller) (domain.Snapshot, error)
 	// RegisterProject discovers and durably registers one canonical GoForj checkout.
 	RegisterProject(context.Context, Caller, RegisterProjectRequest) (ProjectRegistration, error)
+	// StartProject starts or resumes one idempotent managed project lifecycle.
+	StartProject(context.Context, Caller, StartProjectRequest) (ProjectLifecycleOperation, error)
+	// StopProject stops or resumes one idempotent managed project lifecycle.
+	StopProject(context.Context, Caller, StopProjectRequest) (ProjectLifecycleOperation, error)
 	// UnregisterProject starts or resumes one idempotent project removal intent.
 	UnregisterProject(context.Context, Caller, UnregisterProjectRequest) (ProjectUnregistration, error)
 	// PrepareProjectUnregisterApproval returns release progress and at most one caller-bound helper capability.
@@ -64,6 +68,21 @@ func NewProjectRegistrationConflictError(cause error) error {
 // NewProjectRegistrationInvalidError classifies a selected checkout that cannot form a valid registration.
 func NewProjectRegistrationInvalidError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewProjectLifecycleInvalidError classifies a start or stop request that cannot form a valid lifecycle intent.
+func NewProjectLifecycleInvalidError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewProjectLifecycleNotFoundError classifies a start or stop request for an unknown durable project.
+func NewProjectLifecycleNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewProjectLifecycleConflictError classifies durable state that prevents a project start or stop.
+func NewProjectLifecycleConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
 }
 
 // NewProjectUnregisterConflictError classifies current state that prevents unregister initiation or progress.

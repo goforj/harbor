@@ -45,10 +45,19 @@ type projectUnregisterCoordinator interface {
 	Confirm(context.Context, reconcile.ConfirmRequest) (state.OperationRecord, error)
 }
 
+// projectLifecycleCoordinator limits authority to durable managed-process intent submission.
+type projectLifecycleCoordinator interface {
+	// Start durably records and schedules one idempotent project start.
+	Start(context.Context, reconcile.ProjectStartRequest) (state.OperationRecord, error)
+	// Stop durably records and schedules one idempotent project stop.
+	Stop(context.Context, reconcile.ProjectStopRequest) (state.OperationRecord, error)
+}
+
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
 	store          controlState
 	unregister     projectUnregisterCoordinator
+	lifecycle      projectLifecycleCoordinator
 	build          buildinfo.Info
 	discoverer     projectDiscoverer
 	now            func() time.Time
@@ -59,11 +68,15 @@ type Authority struct {
 var _ control.Authority = (*Authority)(nil)
 
 // NewAuthority creates the production control authority from durable state and unregister coordination.
-func NewAuthority(store *state.Store, unregister *reconcile.ProjectUnregisterCoordinator) *Authority {
-	if store == nil || unregister == nil {
-		panic("authority.NewAuthority requires non-nil state and unregister dependencies")
+func NewAuthority(
+	store *state.Store,
+	unregister *reconcile.ProjectUnregisterCoordinator,
+	lifecycle *reconcile.ProjectLifecycleCoordinator,
+) *Authority {
+	if store == nil || unregister == nil || lifecycle == nil {
+		panic("authority.NewAuthority requires non-nil state, unregister, and lifecycle dependencies")
 	}
-	return newAuthority(store, unregister, buildinfo.Current())
+	return newAuthority(store, unregister, buildinfo.Current(), lifecycle)
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
@@ -71,6 +84,7 @@ func newAuthority(
 	store controlState,
 	unregister projectUnregisterCoordinator,
 	build buildinfo.Info,
+	lifecycle projectLifecycleCoordinator,
 ) *Authority {
 	return newAuthorityWithRegistration(
 		store,
@@ -79,6 +93,7 @@ func newAuthority(
 		projectdiscovery.NewDiscoverer(),
 		time.Now,
 		newOpaqueProjectID,
+		lifecycle,
 	)
 }
 
@@ -90,6 +105,7 @@ func newAuthorityWithRegistration(
 	discoverer projectDiscoverer,
 	now func() time.Time,
 	newProjectID func() (domain.ProjectID, error),
+	lifecycle projectLifecycleCoordinator,
 ) *Authority {
 	return newAuthorityWithIdentityFactories(
 		store,
@@ -99,6 +115,7 @@ func newAuthorityWithRegistration(
 		now,
 		newProjectID,
 		newOpaqueOperationID,
+		lifecycle,
 	)
 }
 
@@ -111,9 +128,11 @@ func newAuthorityWithIdentityFactories(
 	now func() time.Time,
 	newProjectID func() (domain.ProjectID, error),
 	newOperationID func() (domain.OperationID, error),
+	lifecycle projectLifecycleCoordinator,
 ) *Authority {
 	if nilAuthorityDependency(store) ||
 		nilAuthorityDependency(unregister) ||
+		nilAuthorityDependency(lifecycle) ||
 		nilAuthorityDependency(discoverer) ||
 		nilAuthorityDependency(now) ||
 		nilAuthorityDependency(newProjectID) ||
@@ -123,6 +142,7 @@ func newAuthorityWithIdentityFactories(
 	return &Authority{
 		store:          store,
 		unregister:     unregister,
+		lifecycle:      lifecycle,
 		build:          build,
 		discoverer:     discoverer,
 		now:            now,
@@ -223,6 +243,97 @@ func (authority *Authority) RegisterProject(
 		return control.ProjectRegistration{}, fmt.Errorf("project registration result: %w", err)
 	}
 	return result, nil
+}
+
+// StartProject assigns daemon operation identity before durably scheduling one managed GoForj development process.
+func (authority *Authority) StartProject(
+	ctx context.Context,
+	_ control.Caller,
+	request control.StartProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, control.NewProjectLifecycleInvalidError(err)
+	}
+	operationID, err := authority.newOperationID()
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("generate project start operation identity: %w", err)
+	}
+	started, err := authority.lifecycle.Start(ctx, reconcile.ProjectStartRequest{
+		ProjectID:   request.ProjectID,
+		OperationID: operationID,
+		IntentID:    request.IntentID,
+	})
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, classifyProjectLifecycleError(err)
+	}
+	return projectLifecycleResult(started, request.ProjectID, request.IntentID, domain.OperationKindProjectStart)
+}
+
+// StopProject assigns daemon operation identity before durably scheduling exact-session process shutdown.
+func (authority *Authority) StopProject(
+	ctx context.Context,
+	_ control.Caller,
+	request control.StopProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, control.NewProjectLifecycleInvalidError(err)
+	}
+	operationID, err := authority.newOperationID()
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("generate project stop operation identity: %w", err)
+	}
+	stopped, err := authority.lifecycle.Stop(ctx, reconcile.ProjectStopRequest{
+		ProjectID:   request.ProjectID,
+		OperationID: operationID,
+		IntentID:    request.IntentID,
+	})
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, classifyProjectLifecycleError(err)
+	}
+	return projectLifecycleResult(stopped, request.ProjectID, request.IntentID, domain.OperationKindProjectStop)
+}
+
+// projectLifecycleResult validates that asynchronous progress still belongs to the requested client intent.
+func projectLifecycleResult(
+	record state.OperationRecord,
+	projectID domain.ProjectID,
+	intentID domain.IntentID,
+	kind domain.OperationKind,
+) (control.ProjectLifecycleOperation, error) {
+	result := control.ProjectLifecycleOperation{Operation: record.Operation, Revision: record.Revision}
+	if err := result.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("project lifecycle result: %w", err)
+	}
+	if result.Operation.ProjectID != projectID || result.Operation.IntentID != intentID || result.Operation.Kind != kind {
+		return control.ProjectLifecycleOperation{}, errors.New("project lifecycle result differs from its requested action, project, and intent")
+	}
+	return result, nil
+}
+
+// classifyProjectLifecycleError maps reviewed request-state failures to stable control categories.
+func classifyProjectLifecycleError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var projectMissing *state.ProjectNotFoundError
+	if errors.As(err, &projectMissing) {
+		return control.NewProjectLifecycleNotFoundError(err)
+	}
+	var sessionMissing *state.ProjectSessionNotFoundError
+	var intentConflict *state.IntentConflictError
+	var projectBusy *state.ProjectBusyError
+	var sessionActive *state.ProjectSessionActiveError
+	var staleRevision *state.StaleRevisionError
+	if errors.As(err, &sessionMissing) ||
+		errors.As(err, &intentConflict) ||
+		errors.As(err, &projectBusy) ||
+		errors.As(err, &sessionActive) ||
+		errors.As(err, &staleRevision) {
+		return control.NewProjectLifecycleConflictError(err)
+	}
+	return err
 }
 
 // UnregisterProject assigns daemon operation identity before starting or replaying one client-owned intent.

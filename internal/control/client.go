@@ -180,6 +180,72 @@ func (client *Client) RegisterProject(ctx context.Context, request RegisterProje
 	return response.Registration, nil
 }
 
+// StartProject starts or replays one client-stable project lifecycle intent.
+func (client *Client) StartProject(
+	ctx context.Context,
+	request StartProjectRequest,
+) (ProjectLifecycleOperation, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectLifecycleV1) {
+		return ProjectLifecycleOperation{}, errors.New("Harbor daemon does not support project lifecycle control; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectStart, request)
+	if err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	var response projectLifecycleResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("decode project start response: %w", err)
+	}
+	if err := response.Lifecycle.Validate(); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("validate project start response: %w", err)
+	}
+	if err := validateProjectLifecycleCorrelation(
+		request.ProjectID,
+		request.IntentID,
+		domain.OperationKindProjectStart,
+		response.Lifecycle,
+	); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("validate project start response: %w", err)
+	}
+	return response.Lifecycle, nil
+}
+
+// StopProject stops or replays one client-stable project lifecycle intent.
+func (client *Client) StopProject(
+	ctx context.Context,
+	request StopProjectRequest,
+) (ProjectLifecycleOperation, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectLifecycleV1) {
+		return ProjectLifecycleOperation{}, errors.New("Harbor daemon does not support project lifecycle control; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectStop, request)
+	if err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	var response projectLifecycleResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("decode project stop response: %w", err)
+	}
+	if err := response.Lifecycle.Validate(); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("validate project stop response: %w", err)
+	}
+	if err := validateProjectLifecycleCorrelation(
+		request.ProjectID,
+		request.IntentID,
+		domain.OperationKindProjectStop,
+		response.Lifecycle,
+	); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("validate project stop response: %w", err)
+	}
+	return response.Lifecycle, nil
+}
+
 // UnregisterProject starts or resumes one client-stable project removal intent.
 func (client *Client) UnregisterProject(
 	ctx context.Context,

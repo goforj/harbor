@@ -11,6 +11,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/harbordruntime"
+	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/runtime"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -25,6 +26,8 @@ var appSet = wire.NewSet(
 	state.NewHelperApprovalPlanSource,
 	state.NewStore,
 	harbordruntime.NewController,
+	provideProjectProcessSupervisor,
+	reconcile.NewProjectLifecycleCoordinator,
 	provideProjectUnregisterCoordinator,
 	authority.NewAuthority,
 	provideControlServer,

@@ -20,6 +20,8 @@ const (
 	CapabilityDaemonControlV1 rpc.Capability = "control.daemon-control.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
+	// CapabilityProjectLifecycleV1 identifies idempotent project start and stop initiation.
+	CapabilityProjectLifecycleV1 rpc.Capability = "control.project-lifecycle.v1"
 	// CapabilityProjectUnregisterV1 identifies idempotent local-project unregister initiation.
 	CapabilityProjectUnregisterV1 rpc.Capability = "control.project-unregister.v1"
 	// CapabilityProjectUnregisterApprovalV1 identifies interactive project-release approval and confirmation.
@@ -28,6 +30,8 @@ const (
 	methodDaemonStatus                     = "control.v1.daemon.status"
 	methodDaemonStop                       = "control.v1.daemon.stop"
 	methodSnapshot                         = "control.v1.snapshot"
+	methodProjectStart                     = "control.v1.project.start"
+	methodProjectStop                      = "control.v1.project.stop"
 	methodProjectRegister                  = "control.v1.project.register"
 	methodProjectUnregister                = "control.v1.project.unregister"
 	methodProjectUnregisterApprovalPrepare = "control.v1.project.unregister.approval.prepare"
@@ -236,6 +240,7 @@ func protocolRanges() []rpc.VersionRange {
 func capabilities() []rpc.Capability {
 	return []rpc.Capability{
 		CapabilityDaemonControlV1,
+		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,

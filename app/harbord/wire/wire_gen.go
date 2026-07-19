@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/makecmd"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/runtime"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/migrations"
@@ -50,7 +51,9 @@ func InitializeApplication() (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator)
+	supervisor := provideProjectProcessSupervisor()
+	projectLifecycleCoordinator := reconcile.NewProjectLifecycleCoordinator(store, operationJournal, supervisor)
+	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator)
 	shutdown := daemon.NewShutdown()
 	server, err := provideControlServer(authorityAuthority, shutdown)
 	if err != nil {
@@ -60,7 +63,7 @@ func InitializeApplication() (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, shutdown)
+	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, shutdown)
 	if err != nil {
 		return App{}, err
 	}

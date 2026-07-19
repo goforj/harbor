@@ -171,7 +171,7 @@ func validAuthoritySucceededOperation(t *testing.T) domain.Operation {
 func TestAuthorityPrepareProjectUnregisterApprovalUsesTransportIdentity(t *testing.T) {
 	prepared := validAuthorityPrepareResult()
 	approvals := &recordingProjectUnregisterApprovals{prepareResult: prepared}
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles())
 	request := control.PrepareProjectUnregisterApprovalRequest{
 		OperationID:               prepared.OperationID,
 		ExpectedOperationRevision: prepared.OperationRevision,
@@ -243,7 +243,7 @@ func TestAuthorityPrepareProjectUnregisterApprovalOmitsCompletedTicket(t *testin
 	prepared.PendingLeases = 0
 	prepared.Ticket = nil
 	approvals := &recordingProjectUnregisterApprovals{prepareResult: prepared}
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles())
 
 	result, err := authority.PrepareProjectUnregisterApproval(t.Context(), control.Caller{}, control.PrepareProjectUnregisterApprovalRequest{
 		OperationID:               prepared.OperationID,
@@ -261,7 +261,7 @@ func TestAuthorityPrepareProjectUnregisterApprovalOmitsCompletedTicket(t *testin
 func TestAuthorityConfirmProjectUnregisterApprovalMapsSucceededOperation(t *testing.T) {
 	record := state.OperationRecord{Operation: validAuthoritySucceededOperation(t), Revision: 43}
 	approvals := &recordingProjectUnregisterApprovals{confirmResult: record}
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles())
 	request := control.ConfirmProjectUnregisterApprovalRequest{
 		OperationID:               record.Operation.ID,
 		ExpectedOperationRevision: 41,
@@ -293,7 +293,7 @@ func TestAuthorityConfirmProjectUnregisterApprovalMapsSucceededOperation(t *test
 // TestAuthorityProjectUnregisterApprovalValidatesInputBeforeCoordination verifies malformed selections cannot reach reconciliation.
 func TestAuthorityProjectUnregisterApprovalValidatesInputBeforeCoordination(t *testing.T) {
 	approvals := testProjectUnregisterApprovals()
-	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"})
+	authority := newAuthority(&recordingStore{}, approvals, buildinfo.Info{Version: "dev"}, testProjectLifecycles())
 
 	if _, err := authority.PrepareProjectUnregisterApproval(t.Context(), control.Caller{}, control.PrepareProjectUnregisterApprovalRequest{}); err == nil {
 		t.Fatal("PrepareProjectUnregisterApproval() error = nil, want invalid request")
@@ -319,6 +319,7 @@ func TestAuthorityProjectUnregisterApprovalClassifiesCoordinatorFailures(t *test
 		&recordingStore{},
 		&recordingProjectUnregisterApprovals{prepareErr: prepareCause},
 		buildinfo.Info{Version: "dev"},
+		testProjectLifecycles(),
 	)
 	_, prepareErr := prepareAuthority.PrepareProjectUnregisterApproval(
 		t.Context(),
@@ -335,6 +336,7 @@ func TestAuthorityProjectUnregisterApprovalClassifiesCoordinatorFailures(t *test
 		&recordingStore{},
 		&recordingProjectUnregisterApprovals{confirmErr: confirmCause},
 		buildinfo.Info{Version: "dev"},
+		testProjectLifecycles(),
 	)
 	_, confirmErr := confirmAuthority.ConfirmProjectUnregisterApproval(
 		t.Context(),
@@ -369,6 +371,7 @@ func TestAuthorityPrepareProjectUnregisterApprovalRejectsMismatchedAndInvalidRes
 				&recordingStore{},
 				&recordingProjectUnregisterApprovals{prepareResult: prepared},
 				buildinfo.Info{Version: "dev"},
+				testProjectLifecycles(),
 			)
 
 			if _, err := authority.PrepareProjectUnregisterApproval(t.Context(), control.Caller{}, request); err == nil {
@@ -408,6 +411,7 @@ func TestAuthorityConfirmProjectUnregisterApprovalRejectsMismatchedAndInvalidRes
 				&recordingStore{},
 				&recordingProjectUnregisterApprovals{confirmResult: record},
 				buildinfo.Info{Version: "dev"},
+				testProjectLifecycles(),
 			)
 
 			if _, err := authority.ConfirmProjectUnregisterApproval(t.Context(), control.Caller{}, request); err == nil {
@@ -482,23 +486,29 @@ func TestAuthorityConstructionRejectsNilDependencies(t *testing.T) {
 		name string
 		call func()
 	}{
-		{name: "production store", call: func() { NewAuthority(nil, new(reconcile.ProjectUnregisterCoordinator)) }},
-		{name: "production approvals", call: func() { NewAuthority(new(state.Store), nil) }},
-		{name: "private store", call: func() { newAuthority(nil, testProjectUnregisterApprovals(), buildinfo.Info{}) }},
-		{name: "private approvals", call: func() { newAuthority(&recordingStore{}, nil, buildinfo.Info{}) }},
-		{name: "typed private store", call: func() { newAuthority(typedNilStore, testProjectUnregisterApprovals(), buildinfo.Info{}) }},
-		{name: "typed private approvals", call: func() { newAuthority(&recordingStore{}, typedNilApprovals, buildinfo.Info{}) }},
+		{name: "production store", call: func() {
+			NewAuthority(nil, new(reconcile.ProjectUnregisterCoordinator), new(reconcile.ProjectLifecycleCoordinator))
+		}},
+		{name: "production approvals", call: func() { NewAuthority(new(state.Store), nil, new(reconcile.ProjectLifecycleCoordinator)) }},
+		{name: "production lifecycle", call: func() { NewAuthority(new(state.Store), new(reconcile.ProjectUnregisterCoordinator), nil) }},
+		{name: "private store", call: func() { newAuthority(nil, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles()) }},
+		{name: "private approvals", call: func() { newAuthority(&recordingStore{}, nil, buildinfo.Info{}, testProjectLifecycles()) }},
+		{name: "private lifecycle", call: func() { newAuthority(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil) }},
+		{name: "typed private store", call: func() {
+			newAuthority(typedNilStore, testProjectUnregisterApprovals(), buildinfo.Info{}, testProjectLifecycles())
+		}},
+		{name: "typed private approvals", call: func() { newAuthority(&recordingStore{}, typedNilApprovals, buildinfo.Info{}, testProjectLifecycles()) }},
 		{name: "registration discoverer", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil, time.Now, newOpaqueProjectID)
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, nil, time.Now, newOpaqueProjectID, testProjectLifecycles())
 		}},
 		{name: "typed registration discoverer", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, typedNilDiscoverer, time.Now, newOpaqueProjectID)
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, typedNilDiscoverer, time.Now, newOpaqueProjectID, testProjectLifecycles())
 		}},
 		{name: "registration clock", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, nilClock, newOpaqueProjectID)
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, nilClock, newOpaqueProjectID, testProjectLifecycles())
 		}},
 		{name: "registration project ID factory", call: func() {
-			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now, nilProjectIDFactory)
+			newAuthorityWithRegistration(&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now, nilProjectIDFactory, testProjectLifecycles())
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

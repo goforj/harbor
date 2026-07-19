@@ -21,6 +21,58 @@ import (
 	"github.com/goforj/harbor/internal/state"
 )
 
+// failingLifecycleRuntime is the minimal network runtime needed to prove composite startup cleanup.
+type failingLifecycleRuntime struct {
+	startErr error
+	done     chan struct{}
+}
+
+// Start returns the configured startup failure.
+func (runtime *failingLifecycleRuntime) Start(context.Context) error {
+	return runtime.startErr
+}
+
+// Done returns a stable terminal channel for the daemon runtime contract.
+func (runtime *failingLifecycleRuntime) Done() <-chan struct{} {
+	return runtime.done
+}
+
+// Err returns no independent terminal failure for this startup fixture.
+func (runtime *failingLifecycleRuntime) Err() error {
+	return nil
+}
+
+// Close is inert because a failed runtime Start owns its own network cleanup.
+func (runtime *failingLifecycleRuntime) Close(context.Context) error {
+	return nil
+}
+
+// recordingLifecycleCloser proves a recovered process coordinator is joined after network startup rejection.
+type recordingLifecycleCloser struct {
+	closed   bool
+	closeErr error
+	done     chan struct{}
+}
+
+// Close records joined lifecycle cleanup and returns its configured result.
+func (closer *recordingLifecycleCloser) Close(context.Context) error {
+	if !closer.closed {
+		closer.closed = true
+		close(closer.done)
+	}
+	return closer.closeErr
+}
+
+// Done closes after the recording lifecycle has joined cleanup.
+func (closer *recordingLifecycleCloser) Done() <-chan struct{} {
+	return closer.done
+}
+
+// Err returns the configured lifecycle cleanup failure.
+func (closer *recordingLifecycleCloser) Err() error {
+	return closer.closeErr
+}
+
 // TestProvideHarbordReadinessIsLazy verifies assembly does not touch durable state before daemon authority is requested.
 func TestProvideHarbordReadinessIsLazy(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "harbor.db")
@@ -162,20 +214,23 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, runtimeController, nil); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
 	}
-	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, shutdown); err == nil {
+	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil server) error = nil, want required server error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil readiness) error = nil, want required readiness error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil runtime) error = nil, want required runtime error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil coordinator) error = nil, want required coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil); err == nil {
 		t.Fatal("provideDaemonRunner(nil shutdown) error = nil, want required shutdown coordinator error")
+	}
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil, shutdown); err == nil {
+		t.Fatal("provideDaemonRunner(nil lifecycle) error = nil, want required project lifecycle coordinator error")
 	}
 }
 
@@ -192,5 +247,18 @@ func TestDaemonRuntimeCloseTimeoutExceedsControllerBudget(t *testing.T) {
 	}
 	if timeout <= runtimeController.ShutdownTimeout() {
 		t.Fatalf("daemon runtime close timeout = %s, must exceed controller budget %s", timeout, runtimeController.ShutdownTimeout())
+	}
+}
+
+// TestProjectLifecycleRuntimeClosesRecoveredProcessesWhenNetworkStartFails prevents orphaned forj descendants during daemon startup.
+func TestProjectLifecycleRuntimeClosesRecoveredProcessesWhenNetworkStartFails(t *testing.T) {
+	startErr := errors.New("network runtime rejected startup")
+	closeErr := errors.New("project process cleanup failed")
+	closer := &recordingLifecycleCloser{closeErr: closeErr, done: make(chan struct{})}
+	runtime := newProjectLifecycleRuntime(&failingLifecycleRuntime{startErr: startErr, done: make(chan struct{})}, closer)
+
+	err := runtime.Start(t.Context())
+	if !closer.closed || !errors.Is(err, startErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("Start() = %v, closed = %t, want joined startup and cleanup failures", err, closer.closed)
 	}
 }

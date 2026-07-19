@@ -43,6 +43,7 @@ func newAuthorityForUnregisterTest(
 		time.Now,
 		func() (domain.ProjectID, error) { return "project-unused", nil },
 		newOperationID,
+		testProjectLifecycles(),
 	)
 }
 
@@ -316,6 +317,7 @@ func TestAuthorityIdentityFactoryConstructionRejectsNilOperationFactory(t *testi
 			time.Now,
 			newOpaqueProjectID,
 			nilOperationIDFactory,
+			testProjectLifecycles(),
 		)
 	})
 }

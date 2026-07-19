@@ -28,6 +28,9 @@ const maximumProjectRegistrationRequestBytes = maximumRegistrationPathBytes*6 + 
 // maximumProjectUnregisterRequestBytes covers two maximally escaped domain identifiers in one object.
 const maximumProjectUnregisterRequestBytes = 4096
 
+// maximumProjectLifecycleRequestBytes covers two maximally escaped domain identifiers in one object.
+const maximumProjectLifecycleRequestBytes = 4096
+
 // maximumProjectUnregisterApprovalRequestBytes covers a maximally escaped domain ID and exact integer revision.
 const maximumProjectUnregisterApprovalRequestBytes = 2048
 
@@ -113,6 +116,8 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 				})
 			}),
 			methodSnapshot:                         server.snapshotHandler(transportPeer),
+			methodProjectStart:                     server.projectStartHandler(transportPeer),
+			methodProjectStop:                      server.projectStopHandler(transportPeer),
 			methodProjectRegister:                  server.projectRegisterHandler(transportPeer),
 			methodProjectUnregister:                server.projectUnregisterHandler(transportPeer),
 			methodProjectUnregisterApprovalPrepare: server.projectUnregisterApprovalPrepareHandler(transportPeer),
@@ -135,6 +140,78 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		return serveErr
 	default:
 		return serveErr
+	}
+}
+
+// projectStartHandler admits one bounded start intent and validates daemon-selected operation identity before replying.
+func (server *Server) projectStartHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectLifecycleV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project lifecycle capability was not negotiated"),
+			)
+		}
+		startRequest, err := decodeStartProjectRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		lifecycle, err := server.config.Authority.StartProject(ctx, caller, startRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := lifecycle.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project start: %w", err))
+		}
+		if err := validateProjectLifecycleCorrelation(
+			startRequest.ProjectID,
+			startRequest.IntentID,
+			domain.OperationKindProjectStart,
+			lifecycle,
+		); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project start: %w", err))
+		}
+		return projectLifecycleResponse{Lifecycle: lifecycle}, nil
+	}
+}
+
+// projectStopHandler admits one bounded stop intent and validates daemon-selected operation identity before replying.
+func (server *Server) projectStopHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectLifecycleV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project lifecycle capability was not negotiated"),
+			)
+		}
+		stopRequest, err := decodeStopProjectRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		lifecycle, err := server.config.Authority.StopProject(ctx, caller, stopRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := lifecycle.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project stop: %w", err))
+		}
+		if err := validateProjectLifecycleCorrelation(
+			stopRequest.ProjectID,
+			stopRequest.IntentID,
+			domain.OperationKindProjectStop,
+			lifecycle,
+		); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project stop: %w", err))
+		}
+		return projectLifecycleResponse{Lifecycle: lifecycle}, nil
 	}
 }
 
@@ -563,6 +640,95 @@ func decodeProjectUnregisterRequest(payload []byte) (UnregisterProjectRequest, e
 		return UnregisterProjectRequest{}, err
 	}
 	return unregisterRequest, nil
+}
+
+// decodeStartProjectRequest rejects hidden authority beyond one project and its client-stable start intent.
+func decodeStartProjectRequest(payload []byte) (StartProjectRequest, error) {
+	projectID, intentID, err := decodeProjectLifecycleSelection(payload, "start")
+	if err != nil {
+		return StartProjectRequest{}, err
+	}
+	request := StartProjectRequest{ProjectID: projectID, IntentID: intentID}
+	if err := request.Validate(); err != nil {
+		return StartProjectRequest{}, err
+	}
+	return request, nil
+}
+
+// decodeStopProjectRequest rejects hidden authority beyond one project and its client-stable stop intent.
+func decodeStopProjectRequest(payload []byte) (StopProjectRequest, error) {
+	projectID, intentID, err := decodeProjectLifecycleSelection(payload, "stop")
+	if err != nil {
+		return StopProjectRequest{}, err
+	}
+	request := StopProjectRequest{ProjectID: projectID, IntentID: intentID}
+	if err := request.Validate(); err != nil {
+		return StopProjectRequest{}, err
+	}
+	return request, nil
+}
+
+// decodeProjectLifecycleSelection parses both lifecycle methods through one bounded duplicate-aware object contract.
+func decodeProjectLifecycleSelection(payload []byte, action string) (domain.ProjectID, domain.IntentID, error) {
+	if len(payload) == 0 || len(payload) > maximumProjectLifecycleRequestBytes {
+		return "", "", fmt.Errorf("project %s request exceeds its bounded object shape", action)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	opening, err := decoder.Token()
+	if err != nil {
+		return "", "", fmt.Errorf("decode project %s request: %w", action, err)
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return "", "", fmt.Errorf("project %s request must be an object", action)
+	}
+	var projectID domain.ProjectID
+	var intentID domain.IntentID
+	projectSeen := false
+	intentSeen := false
+	for decoder.More() {
+		fieldToken, err := decoder.Token()
+		if err != nil {
+			return "", "", fmt.Errorf("decode project %s field: %w", action, err)
+		}
+		field, ok := fieldToken.(string)
+		if !ok {
+			return "", "", fmt.Errorf("project %s field name must be a string", action)
+		}
+		switch field {
+		case "project_id":
+			if projectSeen {
+				return "", "", fmt.Errorf("project %s request contains duplicate field %q", action, field)
+			}
+			if err := decoder.Decode(&projectID); err != nil {
+				return "", "", fmt.Errorf("decode project %s project ID: %w", action, err)
+			}
+			projectSeen = true
+		case "intent_id":
+			if intentSeen {
+				return "", "", fmt.Errorf("project %s request contains duplicate field %q", action, field)
+			}
+			if err := decoder.Decode(&intentID); err != nil {
+				return "", "", fmt.Errorf("decode project %s intent ID: %w", action, err)
+			}
+			intentSeen = true
+		default:
+			return "", "", fmt.Errorf("project %s request contains unknown field %q", action, field)
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return "", "", fmt.Errorf("decode project %s request end: %w", action, err)
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return "", "", fmt.Errorf("project %s request object is not terminated", action)
+	}
+	if !projectSeen || !intentSeen {
+		return "", "", fmt.Errorf("project %s request requires project_id and intent_id", action)
+	}
+	if err := requireJSONEnd(decoder); err != nil {
+		return "", "", err
+	}
+	return projectID, intentID, nil
 }
 
 // decodePrepareProjectUnregisterApprovalRequest rejects any authority beyond one exact operation revision.
