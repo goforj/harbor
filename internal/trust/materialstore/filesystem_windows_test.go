@@ -13,6 +13,22 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// TestWindowsEnsureDirectorySecuresBeforeValidation verifies the material store retains the same create-then-harden ordering.
+func TestWindowsEnsureDirectorySecuresBeforeValidation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "materials")
+	filesystem, err := openRootedFilesystem(root)
+	if err != nil {
+		t.Fatalf("openRootedFilesystem() error = %v", err)
+	}
+	defer filesystem.Close()
+	if err := filesystem.ensureDirectory("generation"); err != nil {
+		t.Fatalf("ensureDirectory() error = %v", err)
+	}
+	if err := validatePlatformPath(filepath.Join(root, "generation"), true); err != nil {
+		t.Fatalf("validatePlatformPath() error = %v", err)
+	}
+}
+
 // TestWindowsSecureCreatedObjectAppliesTokenUserOwner verifies default ownership cannot vary across elevation contexts.
 func TestWindowsSecureCreatedObjectAppliesTokenUserOwner(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "materials")
@@ -245,10 +261,6 @@ func TestWindowsStoreRejectsHardLinkedPrivateKey(t *testing.T) {
 
 // TestWindowsStoreRejectsInheritanceOnlyGrants verifies nominal principals still need effective access on the object.
 func TestWindowsStoreRejectsInheritanceOnlyGrants(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "certificates")
-	store := mustStore(t, directory)
-	defer store.Close()
-	path := filepath.Join(directory, filepath.FromSlash(authorityDirectory))
 	owner, err := currentWindowsUserSID()
 	if err != nil {
 		t.Fatalf("currentWindowsUserSID() error = %v", err)
@@ -258,15 +270,8 @@ func TestWindowsStoreRejectsInheritanceOnlyGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SecurityDescriptorFromString() error = %v", err)
 	}
-	dacl, _, err := descriptor.DACL()
-	if err != nil {
-		t.Fatalf("DACL() error = %v", err)
-	}
-	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
-		t.Fatalf("SetNamedSecurityInfo() error = %v", err)
-	}
 	runtime.KeepAlive(descriptor)
-	if err := validatePlatformPath(path, true); err == nil || !strings.Contains(err.Error(), "flags") {
-		t.Fatalf("validatePlatformPath(inherit-only) error = %v", err)
+	if err := validateWindowsDACL(descriptor, owner.String(), true); err == nil || !strings.Contains(err.Error(), "flags") {
+		t.Fatalf("validateWindowsDACL(inherit-only) error = %v", err)
 	}
 }

@@ -22,6 +22,35 @@ const (
 // windowsCreateFile opens one Win32 path with explicit security-authoring access.
 type windowsCreateFile func(*uint16, uint32, uint32, *windows.SecurityAttributes, uint32, uint32, windows.Handle) (windows.Handle, error)
 
+// openPlatformFileNoFollow retains the final Windows directory entry itself so a reparse swap cannot be mistaken for its target.
+func openPlatformFileNoFollow(path string, directory bool) (*os.File, error) {
+	pathPointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, fmt.Errorf("encode private Windows object path: %w", err)
+	}
+	flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	if directory {
+		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
+	}
+	handle, err := windows.CreateFile(
+		pathPointer,
+		windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		flags,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if file == nil {
+		return nil, errors.Join(fmt.Errorf("retain private Windows object handle"), windows.CloseHandle(handle))
+	}
+	return file, nil
+}
+
 // preparePlatformRoot creates the private leaf with a protected DACL in the creation syscall itself.
 func preparePlatformRoot(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), privateDirectoryMode); err != nil {
@@ -194,6 +223,17 @@ func validatePlatformFile(file *os.File, directory bool) error {
 		return fmt.Errorf("private file has %d hard links, want 1", information.NumberOfLinks)
 	}
 	return validateWindowsDACL(descriptor, wantOwner.String(), directory)
+}
+
+// platformSameFile compares retained Windows handles without narrowing modern 128-bit file identities.
+func platformSameFile(first *os.File, second *os.File) (bool, error) {
+	same, err := windowsfile.SameObject(windows.Handle(first.Fd()), windows.Handle(second.Fd()))
+	runtime.KeepAlive(first)
+	runtime.KeepAlive(second)
+	if err != nil {
+		return false, fmt.Errorf("compare private Windows object identity: %w", err)
+	}
+	return same, nil
 }
 
 // platformSyncDirectory requests the strongest directory flush Windows exposes and admits filesystems that reject it.

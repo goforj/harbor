@@ -47,20 +47,35 @@ func openRootedFilesystemWithHooks(
 	if err := preparePlatformRoot(directory); err != nil {
 		return nil, fmt.Errorf("prepare certificate material directory: %w", err)
 	}
-	if err := validatePlatformPath(directory, true); err != nil {
-		return nil, fmt.Errorf("validate certificate material directory: %w", err)
-	}
-	validated, err := os.Lstat(directory)
+	validated, err := openPlatformFileNoFollow(directory, true)
 	if err != nil {
-		return nil, fmt.Errorf("inspect validated certificate material directory: %w", err)
+		return nil, fmt.Errorf("retain validated certificate material directory: %w", err)
+	}
+	if err := validatePlatformFile(validated, true); err != nil {
+		return nil, errors.Join(fmt.Errorf("validate retained certificate material directory: %w", err), validated.Close())
 	}
 	if afterValidation != nil {
 		afterValidation()
 	}
 
+	current, err := openPlatformFileNoFollow(directory, true)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("certificate material directory changed before its rooted handle opened: %w", err), validated.Close())
+	}
+	same, err := platformSameFile(validated, current)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("compare certificate material directory handles: %w", err), current.Close(), validated.Close())
+	}
+	if !same {
+		return nil, errors.Join(fmt.Errorf("certificate material directory changed before its rooted handle opened"), current.Close(), validated.Close())
+	}
+	if err := validatePlatformFile(current, true); err != nil {
+		return nil, errors.Join(fmt.Errorf("validate current certificate material directory: %w", err), current.Close(), validated.Close())
+	}
+
 	root, err := os.OpenRoot(directory)
 	if err != nil {
-		return nil, fmt.Errorf("open certificate material directory: %w", err)
+		return nil, errors.Join(fmt.Errorf("certificate material directory changed before its rooted handle opened: %w", err), current.Close(), validated.Close())
 	}
 	filesystem := &rootedFilesystem{
 		root: root,
@@ -71,17 +86,36 @@ func openRootedFilesystemWithHooks(
 	if syncDirectory != nil {
 		filesystem.syncDirectory = syncDirectory
 	}
-	opened, err := filesystem.openDirect(".", true)
+	opened, err := filesystem.openDirectUnvalidated(".", true)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("inspect opened certificate material directory: %w", err), root.Close())
+		return nil, errors.Join(fmt.Errorf("inspect opened certificate material directory: %w", err), root.Close(), current.Close(), validated.Close())
 	}
-	openedInfo, statErr := opened.Stat()
-	closeErr := opened.Close()
-	if statErr != nil || closeErr != nil {
-		return nil, errors.Join(fmt.Errorf("inspect opened certificate material directory: %w", statErr), closeErr, root.Close())
+	same, err = platformSameFile(current, opened)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("compare certificate material directory handles: %w", err), opened.Close(), root.Close(), current.Close(), validated.Close())
 	}
-	if !os.SameFile(validated, openedInfo) {
-		return nil, errors.Join(fmt.Errorf("certificate material directory changed before its rooted handle opened"), root.Close())
+	if !same {
+		return nil, errors.Join(fmt.Errorf("certificate material directory changed before its rooted handle opened"), opened.Close(), root.Close(), current.Close(), validated.Close())
+	}
+	if err := filesystem.validateOpened(".", opened, true); err != nil {
+		return nil, errors.Join(fmt.Errorf("validate opened certificate material directory: %w", err), opened.Close(), root.Close(), current.Close(), validated.Close())
+	}
+	verified, err := openPlatformFileNoFollow(directory, true)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("certificate material directory changed after its rooted handle opened: %w", err), opened.Close(), root.Close(), current.Close(), validated.Close())
+	}
+	same, err = platformSameFile(current, verified)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("compare verified certificate material directory handles: %w", err), verified.Close(), opened.Close(), root.Close(), current.Close(), validated.Close())
+	}
+	if !same {
+		return nil, errors.Join(fmt.Errorf("certificate material directory changed after its rooted handle opened"), verified.Close(), opened.Close(), root.Close(), current.Close(), validated.Close())
+	}
+	if err := validatePlatformFile(verified, true); err != nil {
+		return nil, errors.Join(fmt.Errorf("validate verified certificate material directory: %w", err), verified.Close(), opened.Close(), root.Close(), current.Close(), validated.Close())
+	}
+	if err := errors.Join(verified.Close(), opened.Close(), current.Close(), validated.Close()); err != nil {
+		return nil, errors.Join(fmt.Errorf("close certificate material directory verification handles: %w", err), root.Close())
 	}
 	return filesystem, nil
 }
@@ -299,15 +333,23 @@ func (filesystem *rootedFilesystem) rename(oldPath, newPath string, replace bool
 		}
 		return err
 	}
-	published, err := filesystem.root.Lstat(newPath)
-	if err != nil {
-		return fmt.Errorf("inspect renamed destination %q: %w", newPath, err)
-	}
 	sourceOpened, err := source.Stat()
 	if err != nil {
 		return fmt.Errorf("inspect renamed source handle %q: %w", oldPath, err)
 	}
-	if !os.SameFile(sourceOpened, published) {
+	published, err := filesystem.openDirectHandle(newPath, sourceOpened.IsDir())
+	if err != nil {
+		return fmt.Errorf("inspect renamed destination %q: %w", newPath, err)
+	}
+	same, err := platformSameFile(source, published)
+	closeErr := published.Close()
+	if err != nil {
+		return errors.Join(fmt.Errorf("compare renamed destination %q: %w", newPath, err), closeErr)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !same {
 		return fmt.Errorf("renamed destination %q does not match its verified source handle", newPath)
 	}
 	return nil
@@ -391,6 +433,11 @@ func (filesystem *rootedFilesystem) openDirect(path string, directory bool) (*os
 
 // openDirectUnvalidated rejects a link before opening and binds the result to the same direct object.
 func (filesystem *rootedFilesystem) openDirectUnvalidated(path string, directory bool) (*os.File, error) {
+	return filesystem.openDirectHandle(path, directory)
+}
+
+// openDirectHandle retains one direct object and confirms its rooted name still selects the same full identity.
+func (filesystem *rootedFilesystem) openDirectHandle(path string, directory bool) (*os.File, error) {
 	if path != "." {
 		if err := validateRelativePath(path); err != nil {
 			return nil, err
@@ -417,8 +464,36 @@ func (filesystem *rootedFilesystem) openDirectUnvalidated(path string, directory
 	if err != nil {
 		return nil, errors.Join(err, file.Close())
 	}
-	if !os.SameFile(observed, opened) {
+	if directory && !opened.IsDir() || !directory && !opened.Mode().IsRegular() {
+		return nil, errors.Join(fmt.Errorf("private path %q changed to the wrong object type", path), file.Close())
+	}
+	reobserved, err := filesystem.root.Lstat(path)
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	if reobserved.Mode()&os.ModeSymlink != 0 || directory && !reobserved.IsDir() || !directory && !reobserved.Mode().IsRegular() {
 		return nil, errors.Join(fmt.Errorf("private path %q changed while its handle opened", path), file.Close())
+	}
+	confirmed, err := filesystem.root.Open(path)
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	same, err := platformSameFile(file, confirmed)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("compare private path %q handles: %w", path, err), confirmed.Close(), file.Close())
+	}
+	if !same {
+		return nil, errors.Join(fmt.Errorf("private path %q changed while its handle opened", path), confirmed.Close(), file.Close())
+	}
+	final, err := filesystem.root.Lstat(path)
+	if err != nil {
+		return nil, errors.Join(err, confirmed.Close(), file.Close())
+	}
+	if final.Mode()&os.ModeSymlink != 0 || directory && !final.IsDir() || !directory && !final.Mode().IsRegular() {
+		return nil, errors.Join(fmt.Errorf("private path %q changed while its handle opened", path), confirmed.Close(), file.Close())
+	}
+	if err := confirmed.Close(); err != nil {
+		return nil, errors.Join(err, file.Close())
 	}
 	return file, nil
 }
@@ -428,15 +503,19 @@ func (filesystem *rootedFilesystem) validateOpened(path string, file *os.File, d
 	if err := validatePlatformFile(file, directory); err != nil {
 		return err
 	}
-	opened, err := file.Stat()
+	current, err := filesystem.openDirectHandle(path, directory)
 	if err != nil {
-		return err
+		return fmt.Errorf("private path %q changed after its handle opened: %w", path, err)
 	}
-	reobserved, err := filesystem.root.Lstat(path)
+	same, err := platformSameFile(file, current)
+	closeErr := current.Close()
 	if err != nil {
-		return err
+		return errors.Join(fmt.Errorf("compare private path %q after its handle opened: %w", path, err), closeErr)
 	}
-	if reobserved.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, reobserved) {
+	if closeErr != nil {
+		return closeErr
+	}
+	if !same {
 		return fmt.Errorf("private path %q changed after its handle opened", path)
 	}
 	return nil

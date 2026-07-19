@@ -4,6 +4,7 @@ package ticketkey
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,55 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+// TestWindowsEnsureDirectorySecuresBeforeValidation verifies a newly retained directory is hardened before strict policy inspection.
+func TestWindowsEnsureDirectorySecuresBeforeValidation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ticket-keys")
+	filesystem, err := openRootedFilesystem(root, nil, nil)
+	if err != nil {
+		t.Fatalf("openRootedFilesystem() error = %v", err)
+	}
+	defer filesystem.Close()
+	if err := filesystem.ensureDirectory(".staging-order"); err != nil {
+		t.Fatalf("ensureDirectory() error = %v", err)
+	}
+	if err := validatePlatformPath(filepath.Join(root, ".staging-order"), true); err != nil {
+		t.Fatalf("validatePlatformPath() error = %v", err)
+	}
+}
+
+// TestWindowsEnsureDirectoryRejectsSwapBeforeSecurity verifies a replaced name is rejected before Harbor changes either object's DACL.
+func TestWindowsEnsureDirectoryRejectsSwapBeforeSecurity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ticket-keys")
+	original := filepath.Join(root, ".staging-original")
+	triggered := false
+	filesystem, err := openRootedFilesystem(root, nil, func(path string) {
+		if triggered || path != ".staging-swap" {
+			return
+		}
+		triggered = true
+		if err := os.Rename(filepath.Join(root, path), original); err != nil {
+			t.Fatalf("os.Rename() error = %v", err)
+		}
+		if err := os.Mkdir(filepath.Join(root, path), privateDirectoryMode); err != nil {
+			t.Fatalf("os.Mkdir(replacement) error = %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("openRootedFilesystem() error = %v", err)
+	}
+	defer filesystem.Close()
+	err = filesystem.ensureDirectory(".staging-swap")
+	if !triggered || err == nil || !strings.Contains(err.Error(), "changed while") {
+		t.Fatalf("ensureDirectory(swapped) error = %v, triggered = %t", err, triggered)
+	}
+	if err := validatePlatformPath(original, true); err == nil || !strings.Contains(err.Error(), "not protected") {
+		t.Fatalf("validatePlatformPath(original) error = %v, want unchanged inherited DACL", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".staging-swap")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Lstat(replacement) error = %v, want cleanup", err)
+	}
+}
 
 // TestWindowsSecureCreatedObjectAppliesTokenUserOwner verifies default ownership cannot vary across elevation contexts.
 func TestWindowsSecureCreatedObjectAppliesTokenUserOwner(t *testing.T) {

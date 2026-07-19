@@ -9,7 +9,29 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
+
+// openPlatformFileNoFollow retains the final Unix directory entry without following a symbolic link.
+func openPlatformFileNoFollow(path string, directory bool) (*os.File, error) {
+	flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+	if directory {
+		flags |= unix.O_DIRECTORY
+	}
+	descriptor, err := unix.Open(path, flags, 0)
+	if err != nil {
+		if info, statErr := os.Lstat(path); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("path is a symbolic link")
+		}
+		return nil, err
+	}
+	file := os.NewFile(uintptr(descriptor), path)
+	if file == nil {
+		return nil, errors.Join(fmt.Errorf("retain private Unix object handle"), unix.Close(descriptor))
+	}
+	return file, nil
+}
 
 // preparePlatformRoot creates the private leaf without broadening any existing ancestor permissions.
 func preparePlatformRoot(path string) error {
@@ -198,6 +220,19 @@ func validatePlatformFile(file *os.File, directory bool) error {
 		return fmt.Errorf("private file has %d hard links, want 1", stat.Nlink)
 	}
 	return nil
+}
+
+// platformSameFile compares identities captured from retained Unix handles.
+func platformSameFile(first *os.File, second *os.File) (bool, error) {
+	firstInfo, err := first.Stat()
+	if err != nil {
+		return false, fmt.Errorf("inspect first private Unix object: %w", err)
+	}
+	secondInfo, err := second.Stat()
+	if err != nil {
+		return false, fmt.Errorf("inspect second private Unix object: %w", err)
+	}
+	return os.SameFile(firstInfo, secondInfo), nil
 }
 
 // platformSyncDirectory commits metadata through the already verified directory handle.
