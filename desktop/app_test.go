@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -803,6 +804,7 @@ func TestSetupNetworkBoundsPrerequisiteRepairAndPreservesNativeFailures(t *testi
 		want          string
 	}{
 		{name: "repair failure", repairErr: networkprerequisite.ErrDeclined, wantCalls: 1, wantApprovals: 1, want: "declined"},
+		{name: "repair diagnostics", repairErr: fmt.Errorf("%w: macOS authorization 1: unsafe existing directory", networkprerequisite.ErrFailed), wantCalls: 1, wantApprovals: 1, want: "macOS authorization 1: unsafe existing directory"},
 		{name: "packaged build", repairErr: networkprerequisite.ErrUnavailable, wantCalls: 1, wantApprovals: 1, want: privilegedRequired.Message},
 		{name: "retry remains missing", wantCalls: 1, wantApprovals: 2, want: privilegedRequired.Message},
 	}
