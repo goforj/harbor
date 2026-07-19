@@ -205,6 +205,36 @@ func (request InitializeNetworkIdentityRequest) Validate() error {
 	return nil
 }
 
+// ActivateNetworkDataPlaneRequest grants resolver and shared-listener authority to an existing identity-stage network.
+type ActivateNetworkDataPlaneRequest struct {
+	ExpectedNetworkRevision domain.Sequence
+	Setup                   []NetworkSetupProof
+	Listeners               SharedListenerReservations
+	At                      time.Time
+}
+
+// Validate rejects stale-shaped or incomplete data-plane activation facts before storage authority is entered.
+func (request ActivateNetworkDataPlaneRequest) Validate() error {
+	if _, err := sequenceToModelInt("expected network revision", request.ExpectedNetworkRevision, false); err != nil {
+		return err
+	}
+	if err := validateStoredTime("network data-plane activation time", request.At); err != nil {
+		return err
+	}
+	if err := validateNetworkDataPlaneSetupProofs(request.Setup, request.At); err != nil {
+		return err
+	}
+	if err := request.Listeners.Validate(); err != nil {
+		return err
+	}
+	for _, listener := range []ListenerReservation{request.Listeners.DNS, request.Listeners.HTTP, request.Listeners.HTTPS} {
+		if err := validateNetworkMutationFactTime("network listener verification time", listener.VerifiedAt, request.At); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // InitializeNetworkRequest commits the first full durable network aggregate after every supplied host fact is observed.
 type InitializeNetworkRequest struct {
 	ExpectedNetworkRevision domain.Sequence
@@ -420,6 +450,14 @@ func validateNetworkIdentitySetupProofs(proofs []NetworkSetupProof, at time.Time
 	return validateNetworkSetupProofSet(proofs, []NetworkSetupComponent{
 		NetworkSetupComponentMachineOwnership,
 		NetworkSetupComponentLoopbackPool,
+	}, at)
+}
+
+// validateNetworkDataPlaneSetupProofs requires exactly the additional authority needed to leave the identity stage.
+func validateNetworkDataPlaneSetupProofs(proofs []NetworkSetupProof, at time.Time) error {
+	return validateNetworkSetupProofSet(proofs, []NetworkSetupComponent{
+		NetworkSetupComponentResolver,
+		NetworkSetupComponentLowPorts,
 	}, at)
 }
 

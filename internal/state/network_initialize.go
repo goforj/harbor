@@ -518,7 +518,12 @@ func networkInitializationSetupDifference(rows []models.NetworkSetupEvidence, se
 
 // networkInitializationListenerDifference compares all shared advertised and bind postconditions.
 func networkInitializationListenerDifference(rows []models.NetworkSharedListener, request InitializeNetworkRequest) string {
-	listeners := networkInitializationListeners(request.Listeners)
+	return networkSharedListenerDifference(rows, request.Listeners)
+}
+
+// networkSharedListenerDifference compares all shared advertised and bind postconditions.
+func networkSharedListenerDifference(rows []models.NetworkSharedListener, reservations SharedListenerReservations) string {
+	listeners := networkInitializationListeners(reservations)
 	if len(rows) != len(listeners) {
 		return "network listeners"
 	}
