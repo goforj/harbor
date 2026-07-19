@@ -35,6 +35,19 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Build focused development bootstrap test
+        if: runner.os != 'Windows'
+        run: go test -c -o "${{ runner.temp }}/harbor-devbootstrap.test" ./internal/devbootstrap
+
+      - name: Exercise development bootstrap transaction as root
+        if: runner.os != 'Windows'
+        run: |
+          root_home=/root
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            root_home=/var/root
+          fi
+          sudo env HOME="$root_home" "${{ runner.temp }}/harbor-devbootstrap.test" -test.run '^TestApplyPlatformPlanIsIdempotentAndPreservesRuntimeData$' -test.v
+
       - name: Vet
         run: go vet ./...
 
