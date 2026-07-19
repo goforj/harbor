@@ -15,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/helper/ticketkey"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -26,6 +27,12 @@ const runtimeCloseCoordinationMargin = 5 * time.Second
 
 // projectUnregisterIssuerOpener isolates default issuer stores while retaining daemon-owned ownership authority.
 type projectUnregisterIssuerOpener func(ticketissuer.PlanSource, *state.MachineOwnershipProjectionSource) (reconcile.TicketIssuer, error)
+
+// networkSetupSigningKeyOpener retains first-run key creation behind an approved setup intent.
+type networkSetupSigningKeyOpener func() (reconcile.SigningKeyStore, error)
+
+// networkSetupPoolIssuerOpener retains capability-store access behind an explicit approval preparation.
+type networkSetupPoolIssuerOpener func(ticketissuer.PoolPlanSource) (reconcile.PoolIssuer, error)
 
 // projectLifecycleRuntime joins managed project processes before releasing shared network infrastructure.
 type projectLifecycleRuntime struct {
@@ -193,6 +200,73 @@ func provideProjectUnregisterCoordinatorWithIssuerOpener(
 		loopback.New(),
 		runtimeController,
 		issuers,
+		helper.SystemClock{},
+	), nil
+}
+
+// provideNetworkSetupCoordinator assembles machine setup without opening user stores or scanning host addresses.
+func provideNetworkSetupCoordinator(
+	store *state.Store,
+	operations *state.OperationJournal,
+	plans *state.NetworkSetupPlanSource,
+	ownership *state.MachineOwnershipProjectionSource,
+) (*reconcile.NetworkSetupCoordinator, error) {
+	return provideNetworkSetupCoordinatorWithOpeners(
+		store,
+		operations,
+		plans,
+		ownership,
+		func() (reconcile.SigningKeyStore, error) {
+			return ticketkey.OpenDefault()
+		},
+		func(plans ticketissuer.PoolPlanSource) (reconcile.PoolIssuer, error) {
+			return ticketissuer.OpenDefaultPoolService(plans)
+		},
+	)
+}
+
+// provideNetworkSetupCoordinatorWithOpeners keeps every filesystem-backed authority lazy and testable.
+func provideNetworkSetupCoordinatorWithOpeners(
+	store *state.Store,
+	operations *state.OperationJournal,
+	plans *state.NetworkSetupPlanSource,
+	ownership *state.MachineOwnershipProjectionSource,
+	openKeys networkSetupSigningKeyOpener,
+	openIssuer networkSetupPoolIssuerOpener,
+) (*reconcile.NetworkSetupCoordinator, error) {
+	if store == nil {
+		return nil, errors.New("create network setup coordinator: state store is required")
+	}
+	if operations == nil {
+		return nil, errors.New("create network setup coordinator: operation journal is required")
+	}
+	if plans == nil {
+		return nil, errors.New("create network setup coordinator: setup plan source is required")
+	}
+	if ownership == nil {
+		return nil, errors.New("create network setup coordinator: confirmed ownership projection source is required")
+	}
+	if openKeys == nil {
+		return nil, errors.New("create network setup coordinator: signing-key opener is required")
+	}
+	if openIssuer == nil {
+		return nil, errors.New("create network setup coordinator: pool issuer opener is required")
+	}
+	keys := func() (reconcile.SigningKeyStore, error) {
+		return openKeys()
+	}
+	issuers := func() (reconcile.PoolIssuer, error) {
+		return openIssuer(plans)
+	}
+	return reconcile.NewNetworkSetupCoordinator(
+		operations,
+		plans,
+		store,
+		keys,
+		ticketissuer.NewDefaultPoolSelector(),
+		issuers,
+		ownership,
+		loopback.New(),
 		helper.SystemClock{},
 	), nil
 }

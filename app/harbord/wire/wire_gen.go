@@ -56,7 +56,13 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	}
 	supervisor := provideProjectProcessSupervisor(environment)
 	projectLifecycleCoordinator := reconcile.NewProjectLifecycleCoordinator(store, operationJournal, supervisor)
-	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator)
+	networkSetupPlanRepo := models.NewNetworkSetupPlanRepo(connections)
+	networkSetupPlanSource := state.NewNetworkSetupPlanSource(networkSetupPlanRepo)
+	networkSetupCoordinator, err := provideNetworkSetupCoordinator(store, operationJournal, networkSetupPlanSource, machineOwnershipProjectionSource)
+	if err != nil {
+		return App{}, err
+	}
+	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator, networkSetupCoordinator)
 	shutdown := daemon.NewShutdown()
 	server, err := provideControlServer(authorityAuthority, shutdown)
 	if err != nil {

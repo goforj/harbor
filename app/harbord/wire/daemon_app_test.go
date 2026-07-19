@@ -173,6 +173,85 @@ func TestProvideProjectUnregisterCoordinatorIsLazy(t *testing.T) {
 	}
 }
 
+// TestProvideNetworkSetupCoordinatorIsLazy proves assembly does not create keys, open the spool, or scan host pools.
+func TestProvideNetworkSetupCoordinatorIsLazy(t *testing.T) {
+	keyOpenCalls := 0
+	issuerOpenCalls := 0
+	coordinator, err := provideNetworkSetupCoordinatorWithOpeners(
+		new(state.Store),
+		new(state.OperationJournal),
+		new(state.NetworkSetupPlanSource),
+		new(state.MachineOwnershipProjectionSource),
+		func() (reconcile.SigningKeyStore, error) {
+			keyOpenCalls++
+			return nil, errors.New("signing-key opener must remain lazy")
+		},
+		func(ticketissuer.PoolPlanSource) (reconcile.PoolIssuer, error) {
+			issuerOpenCalls++
+			return nil, errors.New("pool issuer opener must remain lazy")
+		},
+	)
+	if err != nil {
+		t.Fatalf("provideNetworkSetupCoordinatorWithOpeners() error = %v", err)
+	}
+	if coordinator == nil {
+		t.Fatal("provideNetworkSetupCoordinatorWithOpeners() returned nil coordinator")
+	}
+	if keyOpenCalls != 0 || issuerOpenCalls != 0 {
+		t.Fatalf("network setup opener calls after assembly = keys %d, issuer %d; want zero", keyOpenCalls, issuerOpenCalls)
+	}
+}
+
+// TestProvideNetworkSetupCoordinatorRejectsIncompleteAssembly covers every required production dependency.
+func TestProvideNetworkSetupCoordinatorRejectsIncompleteAssembly(t *testing.T) {
+	store := new(state.Store)
+	operations := new(state.OperationJournal)
+	plans := new(state.NetworkSetupPlanSource)
+	ownership := new(state.MachineOwnershipProjectionSource)
+	openKeys := func() (reconcile.SigningKeyStore, error) {
+		return nil, errors.New("unused signing-key opener")
+	}
+	openIssuer := func(ticketissuer.PoolPlanSource) (reconcile.PoolIssuer, error) {
+		return nil, errors.New("unused pool issuer opener")
+	}
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "store", call: func() error {
+			_, err := provideNetworkSetupCoordinatorWithOpeners(nil, operations, plans, ownership, openKeys, openIssuer)
+			return err
+		}},
+		{name: "operations", call: func() error {
+			_, err := provideNetworkSetupCoordinatorWithOpeners(store, nil, plans, ownership, openKeys, openIssuer)
+			return err
+		}},
+		{name: "plans", call: func() error {
+			_, err := provideNetworkSetupCoordinatorWithOpeners(store, operations, nil, ownership, openKeys, openIssuer)
+			return err
+		}},
+		{name: "ownership", call: func() error {
+			_, err := provideNetworkSetupCoordinatorWithOpeners(store, operations, plans, nil, openKeys, openIssuer)
+			return err
+		}},
+		{name: "keys", call: func() error {
+			_, err := provideNetworkSetupCoordinatorWithOpeners(store, operations, plans, ownership, nil, openIssuer)
+			return err
+		}},
+		{name: "issuer", call: func() error {
+			_, err := provideNetworkSetupCoordinatorWithOpeners(store, operations, plans, ownership, openKeys, nil)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); err == nil {
+				t.Fatal("provideNetworkSetupCoordinatorWithOpeners() error = nil")
+			}
+		})
+	}
+}
+
 // TestDaemonProvidersRejectIncompleteAssembly verifies constructor validation remains at the owning production boundaries.
 func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	store := new(state.Store)
