@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"runtime"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -362,11 +363,21 @@ func proveDuplicateListenerRejected(ctx context.Context, address netip.Addr, por
 	listenConfig := net.ListenConfig{}
 	endpoint := net.JoinHostPort(address.String(), strconv.Itoa(int(port)))
 	duplicate, err := listenConfig.Listen(ctx, "tcp4", endpoint)
-	if err != nil {
-		return nil
+	if err == nil {
+		_ = duplicate.Close()
 	}
-	_ = duplicate.Close()
-	return fmt.Errorf("duplicate listener unexpectedly acquired %s", endpoint)
+	return validateDuplicateListenerRejection(endpoint, err)
+}
+
+// validateDuplicateListenerRejection distinguishes a real address conflict from unrelated socket failures.
+func validateDuplicateListenerRejection(endpoint string, err error) error {
+	if err == nil {
+		return fmt.Errorf("duplicate listener unexpectedly acquired %s", endpoint)
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		return fmt.Errorf("duplicate listener on %s failed without an address conflict: %w", endpoint, err)
+	}
+	return nil
 }
 
 // newSignedPayload creates an unpredictable identity-specific response for one proof run.

@@ -2,7 +2,12 @@ package platformproof
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"net/netip"
+	"os"
+	"syscall"
 	"testing"
 )
 
@@ -130,6 +135,47 @@ func TestConfirmIdentityAssignments(t *testing.T) {
 	changed[1].index = 2
 	if err := confirmIdentityAssignments(addresses, initial, changed); err == nil {
 		t.Fatal("expected changed interface identity to fail")
+	}
+}
+
+// TestValidateDuplicateListenerRejection accepts only portable address-in-use error chains.
+func TestValidateDuplicateListenerRejection(t *testing.T) {
+	t.Parallel()
+
+	addressInUse := syscall.EADDRINUSE
+	wrappedAddressInUse := &net.OpError{
+		Op:   "listen",
+		Net:  "tcp4",
+		Addr: &net.TCPAddr{IP: net.ParseIP("127.77.0.10"), Port: 3306},
+		Err:  &os.SyscallError{Syscall: "bind", Err: addressInUse},
+	}
+	tests := []struct {
+		name    string
+		err     error
+		wantErr bool
+	}{
+		{name: "raw address in use", err: addressInUse},
+		{name: "formatted address in use", err: fmt.Errorf("open listener: %w", addressInUse)},
+		{name: "syscall address in use", err: &os.SyscallError{Syscall: "bind", Err: addressInUse}},
+		{name: "network operation address in use", err: wrappedAddressInUse},
+		{name: "listener unexpectedly succeeds", wantErr: true},
+		{name: "permission denied", err: &os.SyscallError{Syscall: "bind", Err: syscall.EACCES}, wantErr: true},
+		{name: "cancelled listen", err: context.Canceled, wantErr: true},
+		{name: "matching text without sentinel", err: errors.New("address already in use"), wantErr: true},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDuplicateListenerRejection("127.77.0.10:3306", test.err)
+			if test.wantErr && err == nil {
+				t.Fatal("expected duplicate-listener result to fail")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("expected address conflict to pass: %v", err)
+			}
+		})
 	}
 }
 
