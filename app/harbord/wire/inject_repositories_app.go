@@ -26,6 +26,7 @@ var repositorySet = wire.NewSet(
 	models.NewProjectRepo,
 	models.NewProjectResourceRepo,
 	models.NewProjectServiceRepo,
+	models.NewProjectSessionRepo,
 	models.NewPublicEndpointLeaseRepo,
 	models.NewRecentResourceRepo,
 )

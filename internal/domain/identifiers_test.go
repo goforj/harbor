@@ -31,6 +31,7 @@ func TestTypedIdentifiersValidate(t *testing.T) {
 		{name: "resource", validate: func() error { return ResourceID("api-reference").Validate() }},
 		{name: "operation", validate: func() error { return OperationID("operation-01").Validate() }},
 		{name: "intent", validate: func() error { return IntentID("client/intent-01").Validate() }},
+		{name: "session", validate: func() error { return SessionID("session-01").Validate() }},
 	}
 
 	for _, test := range tests {

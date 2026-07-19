@@ -522,6 +522,7 @@ func TestStoreRuntimeStateReportsRepositoryOpenFailures(t *testing.T) {
 	store := NewStore(
 		models.NewHarborStateRepo(connections),
 		models.NewProjectRepo(connections),
+		models.NewProjectSessionRepo(connections),
 		models.NewNetworkStateRepo(connections),
 		NewMutationCoordinator(connections),
 	)

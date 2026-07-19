@@ -192,6 +192,7 @@ func phase1OpenStateAccess() (*phase1StateAccess, error) {
 	store := state.NewStore(
 		harborState,
 		models.NewProjectRepo(connections),
+		models.NewProjectSessionRepo(connections),
 		models.NewNetworkStateRepo(connections),
 		mutations,
 	)

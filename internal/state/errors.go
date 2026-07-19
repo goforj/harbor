@@ -89,6 +89,20 @@ type ProjectNotFoundError struct {
 	ProjectID domain.ProjectID
 }
 
+// ProjectSessionNotFoundError reports that a project does not own the requested active session.
+type ProjectSessionNotFoundError struct {
+	ProjectID domain.ProjectID
+	SessionID domain.SessionID
+}
+
+// Error describes the missing project/session correlation without exposing credential material.
+func (err *ProjectSessionNotFoundError) Error() string {
+	if err.SessionID == "" {
+		return fmt.Sprintf("project %q has no active session", err.ProjectID)
+	}
+	return fmt.Sprintf("session %q was not found for project %q", err.SessionID, err.ProjectID)
+}
+
 // Error describes the missing project identity.
 func (err *ProjectNotFoundError) Error() string {
 	return fmt.Sprintf("project %q was not found", err.ProjectID)

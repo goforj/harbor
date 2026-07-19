@@ -123,6 +123,7 @@ func TestNewAuthorityUsesCurrentBuild(t *testing.T) {
 	store := state.NewStore(
 		models.NewHarborStateRepo(connections),
 		models.NewProjectRepo(connections),
+		models.NewProjectSessionRepo(connections),
 		models.NewNetworkStateRepo(connections),
 		state.NewMutationCoordinator(connections),
 	)

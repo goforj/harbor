@@ -16,6 +16,7 @@ import (
 type Store struct {
 	harborState  *models.HarborStateRepo
 	projects     *models.ProjectRepo
+	sessions     *models.ProjectSessionRepo
 	networkState *models.NetworkStateRepo
 	mutations    *MutationCoordinator
 	now          func() time.Time
@@ -25,12 +26,14 @@ type Store struct {
 func NewStore(
 	harborState *models.HarborStateRepo,
 	projects *models.ProjectRepo,
+	sessions *models.ProjectSessionRepo,
 	networkState *models.NetworkStateRepo,
 	mutations *MutationCoordinator,
 ) *Store {
 	return newStore(
 		harborState,
 		projects,
+		sessions,
 		networkState,
 		mutations,
 		time.Now,
@@ -41,6 +44,7 @@ func NewStore(
 func newStore(
 	harborState *models.HarborStateRepo,
 	projects *models.ProjectRepo,
+	sessions *models.ProjectSessionRepo,
 	networkState *models.NetworkStateRepo,
 	mutations *MutationCoordinator,
 	now func() time.Time,
@@ -48,6 +52,7 @@ func newStore(
 	return &Store{
 		harborState:  harborState,
 		projects:     projects,
+		sessions:     sessions,
 		networkState: networkState,
 		mutations:    mutations,
 		now:          now,
