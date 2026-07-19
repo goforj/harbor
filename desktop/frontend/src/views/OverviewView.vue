@@ -28,6 +28,10 @@ const router = useRouter()
 const recentProjects = computed(() => [...store.projects]
   .sort((left, right) => Number(right.favorite) - Number(left.favorite) || right.updated_at.localeCompare(left.updated_at))
   .slice(0, 4))
+const activeOperations = computed(() => store.operations.filter((operation) =>
+  operation.state === 'queued'
+  || operation.state === 'running'
+  || operation.state === 'requires_approval'))
 const capturedAt = computed(() => store.snapshot?.captured_at
   ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(store.snapshot.captured_at))
   : 'Waiting for a snapshot')
@@ -141,8 +145,8 @@ async function setupNetwork() {
           <div class="mt-2"><span class="text-2xl font-semibold tabular-nums">{{ store.resources.length }}</span></div>
         </div>
         <div class="border-l p-4 lg:border-l-0">
-          <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Activity class="size-3.5" />Operations</div>
-          <div class="mt-2"><span class="text-2xl font-semibold tabular-nums">{{ store.operations.length }}</span></div>
+          <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Activity class="size-3.5" />Current activity</div>
+          <div class="mt-2"><span class="text-2xl font-semibold tabular-nums">{{ activeOperations.length }}</span></div>
         </div>
       </section>
 
@@ -216,10 +220,10 @@ async function setupNetwork() {
         </CardContent>
       </Card>
 
-      <Card v-if="store.operations.length" class="gap-0 rounded-lg py-0 shadow-none">
-        <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Operations</CardTitle><p class="text-xs text-muted-foreground">Durable daemon work in this snapshot</p></CardHeader>
+      <Card v-if="activeOperations.length" class="gap-0 rounded-lg py-0 shadow-none">
+        <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Current activity</CardTitle><p class="text-xs text-muted-foreground">Work Harbor is handling now</p></CardHeader>
         <CardContent class="divide-y p-0">
-          <div v-for="operation in store.operations" :key="operation.id" class="flex items-center gap-3 px-4 py-3">
+          <div v-for="operation in activeOperations" :key="operation.id" class="flex items-center gap-3 px-4 py-3">
             <StatusBadge :status="operation.state" />
             <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ operation.kind }}</p><p class="truncate text-xs text-muted-foreground">{{ operation.phase }}<template v-if="operation.project_id"> · {{ operation.project_id }}</template></p></div>
           </div>

@@ -43,7 +43,13 @@ const copiedPath = ref(false)
 const removeOpen = ref(false)
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
-const projectOperations = computed(() => store.operations.filter((operation) => operation.project_id === projectId.value))
+const currentProjectOperation = computed(() => {
+  for (let index = store.operations.length - 1; index >= 0; index -= 1) {
+    const operation = store.operations[index]
+    if (operation?.project_id === projectId.value) return operation
+  }
+  return undefined
+})
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
@@ -239,7 +245,7 @@ async function setupNetworkAndStartProject() {
           <div class="p-4 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Apps</p><p class="mt-1 text-xl font-semibold">{{ project.apps.length }}</p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ project.services.length }}</p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Resources</p><p class="mt-1 text-xl font-semibold">{{ project.resources.length }}</p></div>
-          <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Operations</p><p class="mt-1 text-xl font-semibold">{{ projectOperations.length }}</p></div>
+          <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Activity</p><p class="mt-1 truncate text-sm font-semibold">{{ currentProjectOperation?.phase ?? 'Idle' }}</p></div>
         </section>
 
         <div class="grid min-w-0 gap-5 xl:grid-cols-2">
@@ -289,10 +295,10 @@ async function setupNetworkAndStartProject() {
           </CardContent>
         </Card>
 
-        <Card v-if="projectOperations.length" class="gap-0 rounded-lg py-0 shadow-none">
-          <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Operations</CardTitle></CardHeader>
-          <CardContent class="divide-y p-0">
-            <div v-for="operation in projectOperations" :key="operation.id" class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="operation.state" /><div><p class="text-sm font-medium">{{ operation.kind }}</p><p class="text-xs text-muted-foreground">{{ operation.phase }}</p></div></div>
+        <Card v-if="currentProjectOperation" class="gap-0 rounded-lg py-0 shadow-none">
+          <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Current activity</CardTitle></CardHeader>
+          <CardContent class="p-0">
+            <div class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="currentProjectOperation.state" /><div><p class="text-sm font-medium">{{ currentProjectOperation.kind }}</p><p class="text-xs text-muted-foreground">{{ currentProjectOperation.phase }}</p></div></div>
           </CardContent>
         </Card>
       </div>
