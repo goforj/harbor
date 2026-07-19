@@ -19,17 +19,17 @@ func securePlatformFile(_ *os.File) error {
 }
 
 // validatePlatformDirectory rejects targets without a reviewed protected-directory contract.
-func validatePlatformDirectory(_ string, _ os.FileInfo) error {
+func validatePlatformDirectory(_ string, _ os.FileInfo, _ uint32) error {
 	return fmt.Errorf("helper replay storage is unsupported on %s", runtime.GOOS)
 }
 
 // validatePlatformRoot rejects targets without a reviewed retained-directory contract.
-func validatePlatformRoot(_ *os.Root) error {
+func validatePlatformRoot(_ *os.Root, _ uint32) error {
 	return fmt.Errorf("helper replay storage is unsupported on %s", runtime.GOOS)
 }
 
 // validatePlatformFile rejects targets without a reviewed protected-file contract.
-func validatePlatformFile(_ *os.File, _ os.FileInfo) error {
+func validatePlatformFile(_ *os.File, _ os.FileInfo, _ uint32) error {
 	return fmt.Errorf("helper replay storage is unsupported on %s", runtime.GOOS)
 }
 

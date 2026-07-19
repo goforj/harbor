@@ -34,3 +34,8 @@ func preparePlatformTestDirectory(t *testing.T, directory string) {
 		t.Fatalf("windows.SetNamedSecurityInfo() error = %v", err)
 	}
 }
+
+// replayTestOwnerID is ignored because Windows validates machine principals instead of Unix owner IDs.
+func replayTestOwnerID() uint32 {
+	return privilegedReplayOwnerID
+}

@@ -255,7 +255,7 @@ func replayTestDirectory(t *testing.T) string {
 // openReplayTestStore opens one fixture and registers best-effort cleanup for failed assertions.
 func openReplayTestStore(t *testing.T, directory string, clock helper.Clock) *Store {
 	t.Helper()
-	store, err := open(directory, clock)
+	store, err := openWithOwner(directory, clock, replayTestOwnerID())
 	if err != nil {
 		t.Fatalf("open replay store: %v", err)
 	}

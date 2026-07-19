@@ -84,7 +84,7 @@ func windowsCreateError(err error) error {
 }
 
 // validatePlatformDirectory requires the machine-wide Administrators and LocalSystem boundary.
-func validatePlatformDirectory(path string, _ os.FileInfo) error {
+func validatePlatformDirectory(path string, _ os.FileInfo, _ uint32) error {
 	attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(path))
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func validatePlatformDirectory(path string, _ os.FileInfo) error {
 }
 
 // validatePlatformRoot proves the retained handle itself has the machine boundary after all path lookups finish.
-func validatePlatformRoot(root *os.Root) error {
+func validatePlatformRoot(root *os.Root, _ uint32) error {
 	directory, err := root.Open(".")
 	if err != nil {
 		return err
@@ -145,7 +145,7 @@ func securePlatformFile(file *os.File) error {
 }
 
 // validatePlatformFile rejects reparse points, hard links, and access outside the machine principals.
-func validatePlatformFile(file *os.File, _ os.FileInfo) error {
+func validatePlatformFile(file *os.File, _ os.FileInfo, _ uint32) error {
 	return validateWindowsObject(file, false)
 }
 

@@ -24,6 +24,7 @@ const (
 	replayRecordMaximumBytes        = 4096
 	replayRecordDomain              = "goforj.harbor/helper-replay:v1\x00"
 	replayRecordSuffix              = ".json"
+	privilegedReplayOwnerID  uint32 = 0
 )
 
 // replayRecord is the canonical tombstone retained for at least the ticket's complete admission window.
@@ -41,6 +42,7 @@ type Store struct {
 	path   string
 	root   *os.Root
 	clock  helper.Clock
+	owner  uint32
 	closed bool
 }
 
@@ -60,6 +62,11 @@ func Open(directory string) (*Store, error) {
 
 // open keeps time deterministic in tests without making the production clock optional.
 func open(directory string, clock helper.Clock) (*Store, error) {
+	return openWithOwner(directory, clock, privilegedReplayOwnerID)
+}
+
+// openWithOwner keeps non-privileged tests on the production validation path without weakening exported admission.
+func openWithOwner(directory string, clock helper.Clock, owner uint32) (*Store, error) {
 	if clock == nil {
 		return nil, fmt.Errorf("open helper replay store: clock is required")
 	}
@@ -73,7 +80,7 @@ func open(directory string, clock helper.Clock) (*Store, error) {
 	if validated.Mode()&os.ModeSymlink != 0 || !validated.IsDir() {
 		return nil, fmt.Errorf("open helper replay store %q: path is not a direct directory", directory)
 	}
-	if err := validatePlatformDirectory(directory, validated); err != nil {
+	if err := validatePlatformDirectory(directory, validated, owner); err != nil {
 		return nil, fmt.Errorf("open helper replay store %q: %w", directory, err)
 	}
 	root, err := os.OpenRoot(directory)
@@ -88,13 +95,13 @@ func open(directory string, clock helper.Clock) (*Store, error) {
 			root.Close(),
 		)
 	}
-	if err := validatePlatformRoot(root); err != nil {
+	if err := validatePlatformRoot(root, owner); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("open helper replay store %q: validate retained directory: %w", directory, err),
 			root.Close(),
 		)
 	}
-	return &Store{path: directory, root: root, clock: clock}, nil
+	return &Store{path: directory, root: root, clock: clock, owner: owner}, nil
 }
 
 // Consume durably reserves one validated nonce before returning mutation authority to the dispatcher.
@@ -203,7 +210,7 @@ func (store *Store) validateOpened(name string, file *os.File) error {
 	if !opened.Mode().IsRegular() || current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
 		return fmt.Errorf("replay tombstone %q is not one direct regular file", name)
 	}
-	if err := validatePlatformFile(file, opened); err != nil {
+	if err := validatePlatformFile(file, opened, store.owner); err != nil {
 		return fmt.Errorf("validate replay tombstone %q: %w", name, err)
 	}
 	return nil
