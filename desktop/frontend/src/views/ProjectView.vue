@@ -8,6 +8,7 @@ import {
   Clipboard,
   ExternalLink,
   LoaderCircle,
+  Network,
   Play,
   Server,
   Square,
@@ -47,6 +48,8 @@ const primaryResource = computed(() => project.value?.resources.find((resource) 
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
+const lifecycleProblemCode = computed(() => store.projectLifecycleProblemCodes[projectId.value])
+const needsNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.setup_required')
 const lifecycleInFlight = computed(() => store.projectLifecycleProjectId === projectId.value)
 const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
 const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
@@ -61,11 +64,17 @@ const lifecycleLabel = computed(() => {
   return lifecycleAction.value === 'start' ? 'Start project' : 'Stop project'
 })
 const lifecycleDisabled = computed(() => store.snapshotStale
-  || store.projectLifecycleProjectId !== null
-  || activeLifecycle.value != null
+  || store.settingUpNetwork
+  || store.projectLifecycleBusy
   || starting.value
   || stopping.value
   || removalPending.value)
+const networkSetupDisabled = computed(() => !needsNetworkSetup.value
+  || project.value?.id !== projectId.value
+  || store.settingUpNetwork
+  || store.projectLifecycleBusy
+  || store.snapshotStale
+  || store.connectionState !== 'connected')
 const removing = computed(() => store.removingProjectId === projectId.value)
 const removalPending = computed(() => removalNotice.value?.state === 'queued'
   || removalNotice.value?.state === 'running'
@@ -119,6 +128,19 @@ async function changeProjectLifecycle() {
     return
   }
   await store.stopProject(project.value.id)
+}
+
+async function setupNetworkAndStartProject() {
+  const requestedProjectId = projectId.value
+  if (networkSetupDisabled.value || project.value?.id !== requestedProjectId) return
+  const result = await store.setupNetwork()
+  if (!result
+    || projectId.value !== requestedProjectId
+    || store.projectById(requestedProjectId)?.id !== requestedProjectId
+    || store.snapshotStale
+    || store.connectionState !== 'connected'
+    || store.projectLifecycleBusy) return
+  await store.startProject(requestedProjectId)
 }
 </script>
 
@@ -186,7 +208,21 @@ async function changeProjectLifecycle() {
         <Alert v-if="lifecycleError" variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>Project action failed</AlertTitle>
-          <AlertDescription>{{ lifecycleError }}</AlertDescription>
+          <AlertDescription class="space-y-3">
+            <p>{{ lifecycleError }}</p>
+            <p v-if="needsNetworkSetup && store.networkSetupError" class="text-destructive">{{ store.networkSetupError }}</p>
+            <Button
+              v-if="needsNetworkSetup"
+              variant="outline"
+              size="sm"
+              :disabled="networkSetupDisabled"
+              @click="setupNetworkAndStartProject"
+            >
+              <LoaderCircle v-if="store.settingUpNetwork" class="size-3.5 animate-spin" aria-hidden="true" />
+              <Network v-else class="size-3.5" aria-hidden="true" />
+              {{ store.settingUpNetwork ? 'Setting up networking…' : 'Set up networking and start' }}
+            </Button>
+          </AlertDescription>
         </Alert>
 
         <Alert

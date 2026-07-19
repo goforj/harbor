@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
-import type { ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
+import type { ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
 function deferred<T>() {
@@ -34,6 +34,29 @@ function completedNetworkSetup(): NetworkSetupOperation {
     },
     revision: 43,
   }
+}
+
+function lifecycleOperation(
+  projectId: string,
+  action: 'start' | 'stop',
+  intentId: string,
+  state: Operation['state'],
+  problem?: Operation['problem'],
+): Operation {
+  const operation: Operation = structuredClone(action === 'start'
+    ? harborWireFixture.start_project.operation
+    : harborWireFixture.stop_project.operation)
+  operation.id = `operation-${intentId}`
+  operation.intent_id = intentId
+  operation.project_id = projectId
+  operation.state = state
+  operation.phase = state
+  operation.problem = problem
+  if (state === 'succeeded' || state === 'failed' || state === 'cancelled') {
+    operation.started_at = '2026-07-19T18:00:01Z'
+    operation.finished_at = '2026-07-19T18:00:02Z'
+  }
+  return operation
 }
 
 describe('Harbor store', () => {
@@ -350,7 +373,7 @@ describe('Harbor store', () => {
     expect(store.addingProject).toBe(false)
   })
 
-  it('shows network setup only as an empty-project capability hint', async () => {
+  it('keeps network setup available whenever the daemon supports it', async () => {
     const supported = mockStatus()
     supported.capabilities.push('control.network-setup.v1')
     const empty = mockSnapshot()
@@ -378,7 +401,7 @@ describe('Harbor store', () => {
     expect(store.networkSetupOnboarding).toBe(true)
 
     await store.refresh()
-    expect(store.networkSetupOnboarding).toBe(false)
+    expect(store.networkSetupOnboarding).toBe(true)
 
     await store.refresh()
     expect(store.networkSetupOnboarding).toBe(false)
@@ -424,6 +447,93 @@ describe('Harbor store', () => {
     expect(getSnapshot).toHaveBeenCalledTimes(2)
   })
 
+  it('does not send a project lifecycle request while network setup is active', async () => {
+    const store = useHarborStore()
+    const pending = deferred<NetworkSetupOperation>()
+    vi.spyOn(harborBridge, 'setupNetwork').mockReturnValueOnce(pending.promise)
+    const startProject = vi.spyOn(harborBridge, 'startProject')
+
+    const setup = store.setupNetwork()
+    await vi.waitFor(() => expect(store.settingUpNetwork).toBe(true))
+
+    await expect(store.startProject('reports')).resolves.toBeNull()
+    expect(startProject).not.toHaveBeenCalled()
+    expect(store.projectLifecycleErrors.reports).toBe('Wait for network setup to finish, then try the project action again.')
+
+    pending.resolve(completedNetworkSetup())
+    await setup
+  })
+
+  it('does not send network setup while a project lifecycle request is active', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const pending = deferred<ProjectLifecycleOperation>()
+    const startResult: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    vi.spyOn(harborBridge, 'startProject').mockImplementationOnce((projectId, intentId) => {
+      startResult.operation.project_id = projectId
+      startResult.operation.intent_id = intentId
+      return pending.promise
+    })
+    const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork')
+
+    const starting = store.startProject('reports')
+    await vi.waitFor(() => expect(store.projectLifecycleBusy).toBe(true))
+
+    await expect(store.setupNetwork()).resolves.toBeNull()
+    expect(setupNetwork).not.toHaveBeenCalled()
+    expect(store.networkSetupError).toBe('Wait for the current project action to finish, then try network setup again.')
+
+    pending.resolve(startResult)
+    await starting
+    expect(store.projectLifecycleBusy).toBe(true)
+    await expect(store.setupNetwork()).resolves.toBeNull()
+    expect(setupNetwork).not.toHaveBeenCalled()
+  })
+
+  it('restores only the latest retained lifecycle outcome and clears it when newer work starts', async () => {
+    const baseline = mockSnapshot()
+    baseline.sequence = 50
+    const reports = baseline.projects.find((project) => project.id === 'reports')
+    if (!reports) throw new Error('reports fixture is missing')
+    reports.state = 'failed'
+    baseline.operations.push(
+      lifecycleOperation('reports', 'start', 'reports-failed', 'failed', {
+        code: 'project.process.exited',
+        message: 'forj dev exited before the project became ready.',
+        retryable: true,
+      }),
+      lifecycleOperation('orders-api', 'start', 'orders-failed', 'failed', {
+        code: 'project.process.exited',
+        message: 'An earlier start failed.',
+        retryable: true,
+      }),
+      lifecycleOperation('orders-api', 'start', 'orders-succeeded', 'succeeded'),
+    )
+    const newer = structuredClone(baseline)
+    newer.sequence = 51
+    newer.operations.push(lifecycleOperation('reports', 'start', 'reports-retry', 'running'))
+    const newerReports = newer.projects.find((project) => project.id === 'reports')
+    if (!newerReports) throw new Error('reports fixture is missing from newer snapshot')
+    newerReports.state = 'starting'
+    vi.spyOn(harborBridge, 'getSnapshot')
+      .mockResolvedValueOnce(baseline)
+      .mockResolvedValueOnce(newer)
+    const store = useHarborStore()
+
+    await store.initialize()
+
+    expect(store.projectLifecycleErrors.reports).toBe('forj dev exited before the project became ready.')
+    expect(store.projectLifecycleProblemCodes.reports).toBe('project.process.exited')
+    expect(store.projectLifecycleErrors['orders-api']).toBeUndefined()
+
+    await store.refresh()
+
+    expect(store.projectLifecycleErrors.reports).toBeUndefined()
+    expect(store.projectLifecycleProblemCodes.reports).toBeUndefined()
+    expect(store.activeProjectLifecycle('reports')?.intent_id).toBe('reports-retry')
+    expect(store.projectLifecycleBusy).toBe(true)
+  })
+
   it('starts a project with a client-owned intent and adopts the authoritative lifecycle snapshot', async () => {
     const store = useHarborStore()
     await store.initialize()
@@ -448,6 +558,135 @@ describe('Harbor store', () => {
     expect(store.activeProjectLifecycle('reports')?.kind).toBe('project.start')
     expect(store.projectLifecycleProjectId).toBeNull()
     expect(store.projectLifecycleErrors.reports).toBeUndefined()
+  })
+
+  it('keeps the daemon-reviewed problem when a project start fails during refresh', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const result: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    const failed = mockSnapshot()
+    failed.sequence = result.revision + 1
+    const project = failed.projects.find((entry) => entry.id === 'reports')
+    if (!project) throw new Error('reports fixture is missing')
+    project.state = 'failed'
+    vi.spyOn(harborBridge, 'startProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      failed.operations.push({
+        ...structuredClone(result.operation),
+        state: 'failed',
+        phase: 'failed',
+        problem: {
+          code: 'project.process.exited',
+          message: 'forj dev exited before the project became ready.',
+          retryable: true,
+        },
+        started_at: '2026-07-19T18:00:01Z',
+        finished_at: '2026-07-19T18:00:02Z',
+      })
+      return result
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(failed)
+
+    await expect(store.startProject('reports')).resolves.toMatchObject({ operation: { kind: 'project.start' } })
+
+    expect(store.projectById('reports')?.state).toBe('failed')
+    expect(store.projectLifecycleProjectId).toBeNull()
+    expect(store.activeProjectLifecycle('reports')).toBeUndefined()
+    expect(store.projectLifecycleErrors.reports).toBe('forj dev exited before the project became ready.')
+    expect(store.projectLifecycleProblemCodes.reports).toBe('project.process.exited')
+  })
+
+  it('uses a bounded fallback when terminal lifecycle failure has no daemon problem', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const result: ProjectLifecycleOperation = structuredClone(harborWireFixture.stop_project)
+    const failed = mockSnapshot()
+    failed.sequence = result.revision + 1
+    const project = failed.projects.find((entry) => entry.id === 'orders-api')
+    if (!project) throw new Error('orders fixture is missing')
+    project.state = 'failed'
+    vi.spyOn(harborBridge, 'stopProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      failed.operations.push({
+        ...structuredClone(result.operation),
+        state: 'failed',
+        phase: 'failed',
+        started_at: '2026-07-19T18:00:01Z',
+        finished_at: '2026-07-19T18:00:02Z',
+      })
+      return result
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(failed)
+
+    await store.stopProject('orders-api')
+
+    expect(store.projectLifecycleErrors['orders-api']).toBe('Harbor could not stop the project.')
+    expect(store.projectLifecycleProblemCodes['orders-api']).toBe('project.stop_failed')
+  })
+
+  it('drops a terminal lifecycle intent so an app retry creates a new operation', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const failed: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    failed.operation.state = 'failed'
+    failed.operation.phase = 'network admission failed'
+    failed.operation.problem = {
+      code: 'project.network.setup_required',
+      message: 'Complete network setup and try again.',
+      retryable: true,
+    }
+    failed.operation.started_at = '2026-07-19T18:00:01Z'
+    failed.operation.finished_at = '2026-07-19T18:00:02Z'
+    const queued: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    const intents: string[] = []
+    vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => {
+      intents.push(intentId)
+      const result = intents.length === 1 ? failed : queued
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+
+    await expect(store.startProject('reports')).resolves.toEqual(failed)
+    expect(store.projectLifecycleErrors.reports).toBe('Complete network setup and try again.')
+    expect(store.projectLifecycleProblemCodes.reports).toBe('project.network.setup_required')
+
+    await expect(store.startProject('reports')).resolves.toEqual(queued)
+    expect(intents).toHaveLength(2)
+    expect(intents[1]).not.toBe(intents[0])
+    expect(store.projectLifecycleErrors.reports).toBeUndefined()
+    expect(store.projectLifecycleProblemCodes.reports).toBeUndefined()
+  })
+
+  it('does not preserve an immediate terminal error over a newer successful snapshot', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const failed: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    failed.operation.state = 'failed'
+    failed.operation.phase = 'failed'
+    failed.operation.problem = {
+      code: 'project.process.exited',
+      message: 'The first process exited.',
+      retryable: true,
+    }
+    failed.operation.started_at = '2026-07-19T18:00:01Z'
+    failed.operation.finished_at = '2026-07-19T18:00:02Z'
+    const succeeded = mockSnapshot()
+    succeeded.sequence = failed.revision + 1
+    succeeded.operations.push(lifecycleOperation('reports', 'start', 'reports-succeeded', 'succeeded'))
+    vi.spyOn(harborBridge, 'startProject').mockImplementationOnce(async (projectId, intentId) => {
+      failed.operation.project_id = projectId
+      failed.operation.intent_id = intentId
+      return failed
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(succeeded)
+
+    await store.startProject('reports')
+
+    expect(store.projectLifecycleErrors.reports).toBeUndefined()
+    expect(store.projectLifecycleProblemCodes.reports).toBeUndefined()
   })
 
   it('reuses an uncertain lifecycle intent so a lost response cannot enqueue a second start', async () => {
