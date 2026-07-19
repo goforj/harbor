@@ -118,7 +118,7 @@ func TestTicketValidateInstallationIDContract(t *testing.T) {
 	valid := []string{
 		"a",
 		"A0._-z",
-		strings.Repeat("a", maximumIDLength),
+		strings.Repeat("a", MaximumInstallationIDLength),
 	}
 	for _, installationID := range valid {
 		ticket := validTestTicket(now, OperationEnsureLoopbackIdentity)
@@ -130,7 +130,7 @@ func TestTicketValidateInstallationIDContract(t *testing.T) {
 
 	invalid := []string{
 		"",
-		strings.Repeat("a", maximumIDLength+1),
+		strings.Repeat("a", MaximumInstallationIDLength+1),
 		".harbor",
 		"_harbor",
 		"harbor-",
@@ -163,9 +163,15 @@ func TestTicketValidate(t *testing.T) {
 		{name: "dot installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "." }, code: ErrorCodeInvalidTicket},
 		{name: "punctuated installation boundary", mutate: func(ticket *Ticket) { ticket.InstallationID = "-harbor" }, code: ErrorCodeInvalidTicket},
 		{name: "path installation", mutate: func(ticket *Ticket) { ticket.InstallationID = "../other" }, code: ErrorCodeInvalidTicket},
-		{name: "long installation", mutate: func(ticket *Ticket) { ticket.InstallationID = strings.Repeat("a", maximumIDLength+1) }, code: ErrorCodeInvalidTicket},
+		{name: "long installation", mutate: func(ticket *Ticket) { ticket.InstallationID = strings.Repeat("a", MaximumInstallationIDLength+1) }, code: ErrorCodeInvalidTicket},
 		{name: "empty requester", mutate: func(ticket *Ticket) { ticket.RequesterIdentity = "" }, code: ErrorCodeInvalidTicket},
 		{name: "path requester", mutate: func(ticket *Ticket) { ticket.RequesterIdentity = "../peer" }, code: ErrorCodeInvalidTicket},
+		{name: "long path requester", mutate: func(ticket *Ticket) {
+			ticket.RequesterIdentity = strings.Repeat("a", MaximumRequesterIdentityLength-2) + "/a"
+		}, code: ErrorCodeInvalidTicket},
+		{name: "long requester", mutate: func(ticket *Ticket) {
+			ticket.RequesterIdentity = strings.Repeat("a", MaximumRequesterIdentityLength+1)
+		}, code: ErrorCodeInvalidTicket},
 		{name: "zero generation", mutate: func(ticket *Ticket) { ticket.OwnershipGeneration = 0 }, code: ErrorCodeInvalidTicket},
 		{name: "missing pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "" }, code: ErrorCodeInvalidTicket},
 		{name: "malformed pool", mutate: func(ticket *Ticket) { ticket.ApprovedPool = "not-a-prefix" }, code: ErrorCodeInvalidTicket},
@@ -271,6 +277,9 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 	maximumExpiry := validTestTicket(now, OperationEnsureLoopbackIdentity)
 	maximumExpiry.ExpiresAt = now.Add(MaxTicketLifetime)
 	tickets = append(tickets, maximumExpiry)
+	maximumRequester := validTestTicket(now, OperationEnsureLoopbackIdentity)
+	maximumRequester.RequesterIdentity = strings.Repeat("a", MaximumRequesterIdentityLength)
+	tickets = append(tickets, maximumRequester)
 
 	for _, ticket := range tickets {
 		if err := ticket.Validate(now); err != nil {

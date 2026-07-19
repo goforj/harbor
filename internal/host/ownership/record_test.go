@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goforj/harbor/internal/helper"
 )
@@ -18,6 +19,41 @@ func TestRecordValidateAcceptsCanonicalUnixAndWindowsOwners(t *testing.T) {
 		if err := record.Validate(); err != nil {
 			t.Errorf("Record.Validate() owner %q error = %v", owner, err)
 		}
+	}
+}
+
+// TestRecordAndHelperTicketAcceptLongestCanonicalWindowsSID keeps protected ownership and ticket admission aligned.
+func TestRecordAndHelperTicketAcceptLongestCanonicalWindowsSID(t *testing.T) {
+	t.Parallel()
+	owner := "S-1-281474976710655" + strings.Repeat("-4294967295", maximumSIDSubauthorities)
+	if len(owner) <= helper.MaximumInstallationIDLength || len(owner) > helper.MaximumRequesterIdentityLength {
+		t.Fatalf("longest canonical SID length = %d, want within requester-only extended bound", len(owner))
+	}
+
+	record := testRecord()
+	record.OwnerIdentity = owner
+	if err := record.Validate(); err != nil {
+		t.Fatalf("Record.Validate() longest canonical SID error = %v", err)
+	}
+
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	ticket := helper.Ticket{
+		Version:             helper.ProtocolVersion,
+		Operation:           helper.OperationReleaseLoopbackIdentity,
+		InstallationID:      record.InstallationID,
+		RequesterIdentity:   owner,
+		OwnershipGeneration: record.Generation,
+		ApprovedPool:        record.LoopbackPoolPrefix,
+		ApprovedAddress:     "127.44.0.10",
+		ExpectedObservation: helper.ExpectedObservation{
+			State:       helper.ObservationOwned,
+			Fingerprint: strings.Repeat("a", 64),
+		},
+		Nonce:     strings.Repeat("n", 32),
+		ExpiresAt: now.Add(time.Minute),
+	}
+	if err := ticket.Validate(now); err != nil {
+		t.Fatalf("Ticket.Validate() longest canonical SID error = %v", err)
 	}
 }
 

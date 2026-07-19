@@ -18,7 +18,7 @@ const (
 	// CurrentSchemaVersion is the only machine-ownership record schema understood by this package.
 	CurrentSchemaVersion uint32 = 1
 
-	maximumOwnerIdentityLength = 256
+	maximumOwnerIdentityLength = helper.MaximumRequesterIdentityLength
 	maximumSIDSubauthorities   = 15
 	maximumSIDAuthority        = 1<<48 - 1
 )
