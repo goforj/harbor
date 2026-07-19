@@ -18,18 +18,24 @@ import (
 )
 
 const (
-	helperEnabledEnvironment   = "HARBOR_PROJECT_PROCESS_HELPER"
-	helperModeEnvironment      = "HARBOR_PROJECT_PROCESS_HELPER_MODE"
-	helperPIDFileEnvironment   = "HARBOR_PROJECT_PROCESS_HELPER_PID_FILE"
-	helperOverrideEnvironment  = "HARBOR_PROJECT_PROCESS_OVERRIDE"
-	helperEmptyEnvironment     = "HARBOR_PROJECT_PROCESS_EMPTY"
-	helperUnrelatedEnvironment = "HARBOR_PROJECT_PROCESS_UNRELATED"
+	helperEnabledEnvironment     = "HARBOR_PROJECT_PROCESS_HELPER"
+	helperModeEnvironment        = "HARBOR_PROJECT_PROCESS_HELPER_MODE"
+	helperPIDFileEnvironment     = "HARBOR_PROJECT_PROCESS_HELPER_PID_FILE"
+	helperStartedFileEnvironment = "HARBOR_PROJECT_PROCESS_HELPER_STARTED_FILE"
+	helperOverrideEnvironment    = "HARBOR_PROJECT_PROCESS_OVERRIDE"
+	helperEmptyEnvironment       = "HARBOR_PROJECT_PROCESS_EMPTY"
+	helperUnrelatedEnvironment   = "HARBOR_PROJECT_PROCESS_UNRELATED"
 )
 
 // init turns a copied test executable into the exact forj-dev subprocess exercised by integration-style unit tests.
 func init() {
 	if os.Getenv(helperEnabledEnvironment) != "1" {
 		return
+	}
+	if startedFile := os.Getenv(helperStartedFileEnvironment); startedFile != "" {
+		if err := os.WriteFile(startedFile, []byte("started"), 0o600); err != nil {
+			os.Exit(89)
+		}
 	}
 	if len(os.Args) != 2 || os.Args[1] != "dev" {
 		os.Exit(90)
@@ -162,6 +168,11 @@ func projectProcessTestEnvironment() EnvironmentOverrides {
 	return EnvironmentOverrides{helperOverrideEnvironment: "managed"}
 }
 
+// newTestSupervisor keeps helper-process tests focused on lifecycle behavior behind an explicit compatible executable seam.
+func newTestSupervisor(options Options) *Supervisor {
+	return NewWithExecutableVerifier(options, func(string) error { return nil })
+}
+
 // canonicalTestPath resolves platform aliases so process expectations use the supervisor's working-directory identity.
 func canonicalTestPath(t *testing.T, path string) string {
 	t.Helper()
@@ -179,7 +190,7 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	stdout := &synchronizedBuffer{}
 	stderr := &synchronizedBuffer{}
 	installForjHelper(t, "exit")
-	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
 	t.Cleanup(func() {
 		_ = supervisor.Close(context.Background())
 	})
@@ -247,7 +258,7 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 		}
 		filtered = append(filtered, entry)
 	}
-	supervisor := New(Options{Environment: filtered})
+	supervisor := newTestSupervisor(Options{Environment: filtered})
 	t.Cleanup(func() {
 		_ = supervisor.Close(context.Background())
 	})
@@ -286,7 +297,7 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
 	captured = replaceEnvironment(captured, helperUnrelatedEnvironment, "preserved")
 	captured = replaceEnvironment(captured, managedEnvKeysName, "STALE")
-	supervisor := New(Options{Environment: captured})
+	supervisor := newTestSupervisor(Options{Environment: captured})
 	t.Cleanup(func() {
 		_ = supervisor.Close(context.Background())
 	})
@@ -323,7 +334,7 @@ func TestStartAppliesExplicitEnvironmentOverrides(t *testing.T) {
 func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	installForjHelper(t, "wait")
 	output := &synchronizedBuffer{}
-	supervisor := New(Options{GracePeriod: 500 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 500 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-stop",
 		SessionID:            "session-stop",
@@ -352,7 +363,7 @@ func TestStopGracefullyStopsRealProcess(t *testing.T) {
 func TestStopCancellationForcesProcess(t *testing.T) {
 	installForjHelper(t, "ignore")
 	output := &synchronizedBuffer{}
-	supervisor := New(Options{GracePeriod: time.Minute})
+	supervisor := newTestSupervisor(Options{GracePeriod: time.Minute})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-force",
 		SessionID:            "session-force",
@@ -384,7 +395,7 @@ func TestStopCancellationForcesProcess(t *testing.T) {
 // TestConcurrentDuplicateStartAllowsOneOwner verifies project and session reservations are atomic under contention.
 func TestConcurrentDuplicateStartAllowsOneOwner(t *testing.T) {
 	installForjHelper(t, "wait")
-	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
 	const contenders = 8
 	results := make(chan startResult, contenders)
 	start := make(chan struct{})
@@ -431,7 +442,7 @@ func TestConcurrentDuplicateStartAllowsOneOwner(t *testing.T) {
 // TestProjectAndSessionReservationsAreIndependent verifies neither identity can own two simultaneous processes.
 func TestProjectAndSessionReservationsAreIndependent(t *testing.T) {
 	installForjHelper(t, "wait")
-	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
 	_, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-reserved",
 		SessionID:            "session-reserved",
@@ -469,7 +480,7 @@ func TestBlockedWriterCannotBackpressureChild(t *testing.T) {
 	installForjHelper(t, "burst")
 	writer := newBlockingWriter()
 	defer close(writer.release)
-	supervisor := New(Options{OutputBufferLines: 2, GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{OutputBufferLines: 2, GracePeriod: 100 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-output",
 		SessionID:            "session-output",
@@ -503,7 +514,7 @@ func TestBlockedWriterCannotBackpressureChild(t *testing.T) {
 // TestCloseStopsAllProcessesAndRejectsNewStarts verifies shutdown joins every owned child and remains idempotent.
 func TestCloseStopsAllProcessesAndRejectsNewStarts(t *testing.T) {
 	installForjHelper(t, "wait")
-	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
 	first, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-a",
 		SessionID:            "session-a",
@@ -548,7 +559,7 @@ func TestCloseStopsAllProcessesAndRejectsNewStarts(t *testing.T) {
 // TestStartRejectsCanceledContextAndInvalidCheckout verifies no child is launched for invalid preconditions.
 func TestStartRejectsCanceledContextAndInvalidCheckout(t *testing.T) {
 	installForjHelper(t, "wait")
-	supervisor := New(Options{})
+	supervisor := newTestSupervisor(Options{})
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := supervisor.Start(canceled, StartRequest{

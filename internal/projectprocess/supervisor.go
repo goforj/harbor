@@ -152,17 +152,26 @@ func (handle *Handle) complete(result Exit) {
 
 // Supervisor owns every process tree it launches until exit or shutdown.
 type Supervisor struct {
-	mu          sync.Mutex
-	closed      bool
-	gracePeriod time.Duration
-	outputLines int
-	environment Environment
-	projects    map[domain.ProjectID]*managedProcess
-	sessions    map[domain.SessionID]*managedProcess
+	mu               sync.Mutex
+	closed           bool
+	gracePeriod      time.Duration
+	outputLines      int
+	environment      Environment
+	verifyExecutable ExecutableVerifier
+	projects         map[domain.ProjectID]*managedProcess
+	sessions         map[domain.SessionID]*managedProcess
 }
 
 // New constructs an empty project process supervisor.
 func New(options Options) *Supervisor {
+	return NewWithExecutableVerifier(options, productionGoForjExecutableVerifier())
+}
+
+// NewWithExecutableVerifier constructs a supervisor around an explicit side-effect-free executable compatibility boundary.
+func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Supervisor {
+	if verifier == nil {
+		panic("projectprocess.NewWithExecutableVerifier requires a non-nil executable verifier")
+	}
 	gracePeriod := options.GracePeriod
 	if gracePeriod <= 0 {
 		gracePeriod = defaultGracePeriod
@@ -178,11 +187,12 @@ func New(options Options) *Supervisor {
 		environment = append(Environment(nil), environment...)
 	}
 	return &Supervisor{
-		gracePeriod: gracePeriod,
-		outputLines: outputLines,
-		environment: environment,
-		projects:    make(map[domain.ProjectID]*managedProcess),
-		sessions:    make(map[domain.SessionID]*managedProcess),
+		gracePeriod:      gracePeriod,
+		outputLines:      outputLines,
+		environment:      environment,
+		verifyExecutable: verifier,
+		projects:         make(map[domain.ProjectID]*managedProcess),
+		sessions:         make(map[domain.SessionID]*managedProcess),
 	}
 }
 
@@ -205,16 +215,16 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 	executable, err := exec.LookPath("forj")
 	if err != nil {
-		return nil, fmt.Errorf("resolve forj executable: %w", err)
-	}
-	executable, err = filepath.Abs(executable)
-	if err != nil {
-		return nil, fmt.Errorf("make forj executable absolute: %w", err)
+		return nil, incompatibleGoForjError("", fmt.Sprintf("resolve executable from PATH: %v", err))
 	}
 	executableIdentity, err := canonicalExecutable(executable)
 	if err != nil {
-		return nil, fmt.Errorf("canonicalize forj executable: %w", err)
+		return nil, incompatibleGoForjError(executable, fmt.Sprintf("canonicalize executable: %v", err))
 	}
+	if err := supervisor.verifyExecutable(executableIdentity); err != nil {
+		return nil, err
+	}
+	executable = executableIdentity
 
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()

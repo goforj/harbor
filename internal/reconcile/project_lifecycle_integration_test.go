@@ -309,7 +309,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
 	installProjectLifecycleIntegrationForj(t, port)
 
-	supervisor := projectprocess.New(projectprocess.Options{GracePeriod: 500 * time.Millisecond})
+	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond})
 	coordinator, discoverer := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
 	routes := &projectLifecycleRecordingRouteReconciler{store: store, projectID: project.ID}
 	coordinator.routes = routes
@@ -378,7 +378,7 @@ func TestProjectLifecycleCoordinatorCloseRetiresReadyProcessAuthority(t *testing
 		t,
 		store,
 		journal,
-		projectprocess.New(projectprocess.Options{GracePeriod: 500 * time.Millisecond}),
+		newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond}),
 		netip.MustParseAddr("127.0.0.1"),
 		uint16(port),
 	)
@@ -768,6 +768,11 @@ func installProjectLifecycleIntegrationForj(t *testing.T, port int) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(projectLifecycleHelperEnvironment, "1")
 	t.Setenv("HARBOR_PROJECT_LIFECYCLE_PORT", strconv.Itoa(port))
+}
+
+// newProjectLifecycleIntegrationSupervisor admits the portable helper executable while production supervisors retain real metadata verification.
+func newProjectLifecycleIntegrationSupervisor(options projectprocess.Options) *projectprocess.Supervisor {
+	return projectprocess.NewWithExecutableVerifier(options, func(string) error { return nil })
 }
 
 // waitForProjectLifecycleOperationState polls the journal until background lifecycle work reaches the requested edge.

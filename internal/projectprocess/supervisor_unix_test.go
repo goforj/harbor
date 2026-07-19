@@ -18,7 +18,7 @@ func TestStopEscalatesAcrossUnixProcessGroup(t *testing.T) {
 	pidFile := t.TempDir() + "/grandchild.pid"
 	t.Setenv(helperPIDFileEnvironment, pidFile)
 	installForjHelper(t, "tree")
-	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-tree",
 		SessionID:            "session-tree",
@@ -49,7 +49,7 @@ func TestUnexpectedRootExitKillsUnixDescendants(t *testing.T) {
 	pidFile := t.TempDir() + "/orphan.pid"
 	t.Setenv(helperPIDFileEnvironment, pidFile)
 	installForjHelper(t, "orphan")
-	supervisor := New(Options{GracePeriod: 100 * time.Millisecond})
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-orphan",
 		SessionID:            "session-orphan",
