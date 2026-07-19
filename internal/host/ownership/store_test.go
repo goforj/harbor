@@ -87,6 +87,47 @@ func TestStoreObserveClaimReplayAndRelease(t *testing.T) {
 	}
 }
 
+// TestStoreClaimAndObserveNetworkPolicyRecord proves strict storage round-trips the canonical schema-2 field.
+func TestStoreClaimAndObserveNetworkPolicyRecord(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "owner.json")
+	store := openTestStore(t, path)
+	record := testNetworkPolicyRecord()
+
+	claimed, err := store.Claim(context.Background(), record)
+	if err != nil {
+		t.Fatalf("Store.Claim() error = %v", err)
+	}
+	wantFingerprint, err := record.Fingerprint()
+	if err != nil {
+		t.Fatalf("Record.Fingerprint() error = %v", err)
+	}
+	want := Observation{Exists: true, Record: record, Fingerprint: wantFingerprint}
+	if claimed != want {
+		t.Fatalf("Store.Claim() = %#v, want %#v", claimed, want)
+	}
+	replayed, err := store.Claim(context.Background(), record)
+	if err != nil || replayed != want {
+		t.Fatalf("Store.Claim() replay = %#v, %v, want %#v", replayed, err, want)
+	}
+
+	observed, err := store.Observe(context.Background())
+	if err != nil || observed != want {
+		t.Fatalf("Store.Observe() = %#v, %v, want %#v", observed, err, want)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	canonical, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if string(content) != string(canonical) {
+		t.Fatalf("stored content = %q, want %q", content, canonical)
+	}
+}
+
 // TestPlatformRenameNoReplace proves publication is one no-replace rename with no hard-link or temporary-name residue.
 func TestPlatformRenameNoReplace(t *testing.T) {
 	t.Parallel()
@@ -253,6 +294,15 @@ func TestStoreRejectsMalformedAndOversizedStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
+	validNetworkPolicy, err := json.Marshal(testNetworkPolicyRecord())
+	if err != nil {
+		t.Fatalf("json.Marshal() network policy record error = %v", err)
+	}
+	networkPolicyField := `,"network_policy_fingerprint":"` + strings.Repeat("a", 64) + `"`
+	duplicateNetworkPolicy := append([]byte(nil), validNetworkPolicy[:len(validNetworkPolicy)-1]...)
+	duplicateNetworkPolicy = append(duplicateNetworkPolicy, []byte(networkPolicyField+"}")...)
+	withoutNetworkPolicy := strings.Replace(string(validNetworkPolicy), networkPolicyField, "", 1)
+	noncanonicalNetworkPolicy := []byte(strings.TrimSuffix(withoutNetworkPolicy, "}") + networkPolicyField + "}")
 	tests := []struct {
 		name    string
 		content []byte
@@ -264,9 +314,12 @@ func TestStoreRejectsMalformedAndOversizedStorage(t *testing.T) {
 		{name: "unknown", content: append(valid[:len(valid)-1], []byte(`,"extra":true}`)...), want: "unknown field"},
 		{name: "case variant", content: append(valid[:len(valid)-1], []byte(`,"Schema_Version":1}`)...), want: "unknown field"},
 		{name: "duplicate", content: append(valid[:len(valid)-1], []byte(`,"schema_version":1}`)...), want: "duplicate field"},
+		{name: "duplicate network policy fingerprint", content: duplicateNetworkPolicy, want: "duplicate field"},
 		{name: "trailing", content: append(valid, []byte(` {}`)...), want: "trailing JSON"},
 		{name: "trailing newline", content: append(valid, '\n'), want: "not canonically encoded"},
 		{name: "leading whitespace", content: append([]byte(" "), valid...), want: "not canonically encoded"},
+		{name: "explicit empty network policy fingerprint", content: append(append([]byte(nil), valid[:len(valid)-1]...), []byte(`,"network_policy_fingerprint":""}`)...), want: "not canonically encoded"},
+		{name: "noncanonical network policy field order", content: noncanonicalNetworkPolicy, want: "not canonically encoded"},
 		{name: "invalid record", content: []byte(`{"schema_version":1,"installation_id":"harbor-installation","owner_identity":"501","generation":0,"loopback_pool_prefix":"127.44.0.0/24","ticket_verifier_key":"AQID"}`), want: "generation"},
 		{name: "oversized", content: []byte(strings.Repeat("x", int(MaximumRecordBytes)+1)), want: "exceeds"},
 	}

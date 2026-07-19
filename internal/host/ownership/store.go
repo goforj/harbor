@@ -716,12 +716,13 @@ func decodeRecord(content []byte) (Record, error) {
 // validateJSONShape applies exact field naming and duplicate detection before typed decoding can normalize input.
 func validateJSONShape(content []byte) error {
 	allowed := map[string]struct{}{
-		"schema_version":       {},
-		"installation_id":      {},
-		"owner_identity":       {},
-		"generation":           {},
-		"loopback_pool_prefix": {},
-		"ticket_verifier_key":  {},
+		"schema_version":             {},
+		"installation_id":            {},
+		"owner_identity":             {},
+		"generation":                 {},
+		"loopback_pool_prefix":       {},
+		"network_policy_fingerprint": {},
+		"ticket_verifier_key":        {},
 	}
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	start, err := decoder.Token()

@@ -3,12 +3,27 @@ package ownership
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goforj/harbor/internal/helper"
 )
+
+// TestSchemaVersionsKeepIdentityClaimsCurrent pins the staged schema rollout independently from record validation.
+func TestSchemaVersionsKeepIdentityClaimsCurrent(t *testing.T) {
+	t.Parallel()
+	if IdentitySchemaVersion != 1 {
+		t.Fatalf("IdentitySchemaVersion = %d, want 1", IdentitySchemaVersion)
+	}
+	if NetworkPolicySchemaVersion != 2 {
+		t.Fatalf("NetworkPolicySchemaVersion = %d, want 2", NetworkPolicySchemaVersion)
+	}
+	if CurrentSchemaVersion != IdentitySchemaVersion {
+		t.Fatalf("CurrentSchemaVersion = %d, want identity schema %d", CurrentSchemaVersion, IdentitySchemaVersion)
+	}
+}
 
 // TestRecordValidateAcceptsCanonicalUnixAndWindowsOwners proves both local IPC identity spellings persist unchanged.
 func TestRecordValidateAcceptsCanonicalUnixAndWindowsOwners(t *testing.T) {
@@ -66,7 +81,29 @@ func TestRecordValidateRejectsNoncanonicalState(t *testing.T) {
 		want   string
 	}{
 		{name: "old schema", mutate: func(record *Record) { record.SchemaVersion = 0 }, want: "schema version"},
-		{name: "future schema", mutate: func(record *Record) { record.SchemaVersion = CurrentSchemaVersion + 1 }, want: "schema version"},
+		{name: "future schema", mutate: func(record *Record) { record.SchemaVersion = NetworkPolicySchemaVersion + 1 }, want: "schema version"},
+		{name: "identity schema with network policy", mutate: func(record *Record) {
+			record.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+		}, want: "must be empty"},
+		{name: "network policy schema without fingerprint", mutate: func(record *Record) {
+			record.SchemaVersion = NetworkPolicySchemaVersion
+		}, want: "64 lowercase hexadecimal"},
+		{name: "network policy schema with short fingerprint", mutate: func(record *Record) {
+			record.SchemaVersion = NetworkPolicySchemaVersion
+			record.NetworkPolicyFingerprint = strings.Repeat("a", 63)
+		}, want: "64 lowercase hexadecimal"},
+		{name: "network policy schema with long fingerprint", mutate: func(record *Record) {
+			record.SchemaVersion = NetworkPolicySchemaVersion
+			record.NetworkPolicyFingerprint = strings.Repeat("a", 65)
+		}, want: "64 lowercase hexadecimal"},
+		{name: "network policy schema with uppercase fingerprint", mutate: func(record *Record) {
+			record.SchemaVersion = NetworkPolicySchemaVersion
+			record.NetworkPolicyFingerprint = strings.Repeat("A", 64)
+		}, want: "64 lowercase hexadecimal"},
+		{name: "network policy schema with nonhex fingerprint", mutate: func(record *Record) {
+			record.SchemaVersion = NetworkPolicySchemaVersion
+			record.NetworkPolicyFingerprint = strings.Repeat("g", 64)
+		}, want: "64 lowercase hexadecimal"},
 		{name: "missing installation", mutate: func(record *Record) { record.InstallationID = "" }, want: "installation ID is required"},
 		{name: "long installation", mutate: func(record *Record) {
 			record.InstallationID = strings.Repeat("a", helper.MaximumInstallationIDLength+1)
@@ -123,6 +160,14 @@ func TestRecordValidateRejectsNoncanonicalState(t *testing.T) {
 func TestRecordFingerprintIsDeterministicAndComplete(t *testing.T) {
 	t.Parallel()
 	record := testRecord()
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	const wantJSON = `{"schema_version":1,"installation_id":"harbor-installation","owner_identity":"501","generation":7,"loopback_pool_prefix":"127.44.0.0/24","ticket_verifier_key":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="}`
+	if string(encoded) != wantJSON {
+		t.Fatalf("json.Marshal() = %q, want %q", encoded, wantJSON)
+	}
 	fingerprint, err := record.Fingerprint()
 	if err != nil {
 		t.Fatalf("Record.Fingerprint() error = %v", err)
@@ -155,6 +200,41 @@ func TestRecordFingerprintIsDeterministicAndComplete(t *testing.T) {
 	}
 }
 
+// TestRecordNetworkPolicyFingerprintIsCanonicalAndComplete pins schema-2 serialization and its policy binding.
+func TestRecordNetworkPolicyFingerprintIsCanonicalAndComplete(t *testing.T) {
+	t.Parallel()
+	record := testNetworkPolicyRecord()
+	if err := record.Validate(); err != nil {
+		t.Fatalf("Record.Validate() error = %v", err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	const wantJSON = `{"schema_version":2,"installation_id":"harbor-installation","owner_identity":"501","generation":7,"loopback_pool_prefix":"127.44.0.0/24","network_policy_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ticket_verifier_key":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="}`
+	if string(encoded) != wantJSON {
+		t.Fatalf("json.Marshal() = %q, want %q", encoded, wantJSON)
+	}
+	fingerprint, err := record.Fingerprint()
+	if err != nil {
+		t.Fatalf("Record.Fingerprint() error = %v", err)
+	}
+	const wantFingerprint = "f7bef2cc608c8794d3fbab2a246cc3e877f20e1ea7389da8163aaea075b76a0b"
+	if fingerprint != wantFingerprint {
+		t.Fatalf("Record.Fingerprint() = %q, want %q", fingerprint, wantFingerprint)
+	}
+
+	changed := record
+	changed.NetworkPolicyFingerprint = strings.Repeat("b", 64)
+	changedFingerprint, err := changed.Fingerprint()
+	if err != nil {
+		t.Fatalf("changed Record.Fingerprint() error = %v", err)
+	}
+	if changedFingerprint == fingerprint {
+		t.Fatalf("changed Record.Fingerprint() retained %q", fingerprint)
+	}
+}
+
 // testRecord returns one canonical claim shared by record and store behavior tests.
 func testRecord() Record {
 	return Record{
@@ -165,6 +245,14 @@ func testRecord() Record {
 		LoopbackPoolPrefix: "127.44.0.0/24",
 		TicketVerifierKey:  testVerifierKey(1),
 	}
+}
+
+// testNetworkPolicyRecord returns one canonical claim bound to a distinguishable host-network policy.
+func testNetworkPolicyRecord() Record {
+	record := testRecord()
+	record.SchemaVersion = NetworkPolicySchemaVersion
+	record.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+	return record
 }
 
 // testVerifierKey returns distinguishable canonical public-key bytes without coupling tests to key generation entropy.

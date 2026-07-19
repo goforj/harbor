@@ -15,8 +15,12 @@ import (
 )
 
 const (
-	// CurrentSchemaVersion is the only machine-ownership record schema understood by this package.
-	CurrentSchemaVersion uint32 = 1
+	// IdentitySchemaVersion identifies the original machine-ownership record without a host-network policy binding.
+	IdentitySchemaVersion uint32 = 1
+	// NetworkPolicySchemaVersion identifies a machine-ownership record bound to one canonical host-network policy.
+	NetworkPolicySchemaVersion uint32 = 2
+	// CurrentSchemaVersion remains the identity-only schema until every ownership caller supplies a network-policy fingerprint.
+	CurrentSchemaVersion uint32 = IdentitySchemaVersion
 
 	maximumOwnerIdentityLength = helper.MaximumRequesterIdentityLength
 	maximumSIDSubauthorities   = 15
@@ -25,18 +29,33 @@ const (
 
 // Record is the canonical machine-global claim checked before Harbor mutates protected host state.
 type Record struct {
-	SchemaVersion      uint32 `json:"schema_version"`
-	InstallationID     string `json:"installation_id"`
-	OwnerIdentity      string `json:"owner_identity"`
-	Generation         uint64 `json:"generation"`
-	LoopbackPoolPrefix string `json:"loopback_pool_prefix"`
-	TicketVerifierKey  string `json:"ticket_verifier_key"`
+	SchemaVersion            uint32 `json:"schema_version"`
+	InstallationID           string `json:"installation_id"`
+	OwnerIdentity            string `json:"owner_identity"`
+	Generation               uint64 `json:"generation"`
+	LoopbackPoolPrefix       string `json:"loopback_pool_prefix"`
+	NetworkPolicyFingerprint string `json:"network_policy_fingerprint,omitempty"`
+	TicketVerifierKey        string `json:"ticket_verifier_key"`
 }
 
 // Validate rejects records whose identity cannot be compared canonically across daemon and helper processes.
 func (record Record) Validate() error {
-	if record.SchemaVersion != CurrentSchemaVersion {
-		return fmt.Errorf("machine ownership schema version is %d, want %d", record.SchemaVersion, CurrentSchemaVersion)
+	switch record.SchemaVersion {
+	case IdentitySchemaVersion:
+		if record.NetworkPolicyFingerprint != "" {
+			return fmt.Errorf("machine ownership network policy fingerprint must be empty for schema version %d", IdentitySchemaVersion)
+		}
+	case NetworkPolicySchemaVersion:
+		if err := validateNetworkPolicyFingerprint(record.NetworkPolicyFingerprint); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf(
+			"machine ownership schema version is %d, want %d or %d",
+			record.SchemaVersion,
+			IdentitySchemaVersion,
+			NetworkPolicySchemaVersion,
+		)
 	}
 	if err := helper.ValidateInstallationID(record.InstallationID); err != nil {
 		return fmt.Errorf("machine ownership: %w", err)
@@ -52,6 +71,18 @@ func (record Record) Validate() error {
 	}
 	if err := validateTicketVerifierKey(record.TicketVerifierKey); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateNetworkPolicyFingerprint requires the exact lowercase SHA-256 spelling emitted by a canonical host-network policy.
+func validateNetworkPolicyFingerprint(value string) error {
+	if len(value) != sha256.Size*2 {
+		return fmt.Errorf("machine ownership network policy fingerprint must contain %d lowercase hexadecimal characters", sha256.Size*2)
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || hex.EncodeToString(decoded) != value {
+		return fmt.Errorf("machine ownership network policy fingerprint must contain %d lowercase hexadecimal characters", sha256.Size*2)
 	}
 	return nil
 }
