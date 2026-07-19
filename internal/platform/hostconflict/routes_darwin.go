@@ -28,6 +28,9 @@ const (
 
 var darwinRouteLookupSequence atomic.Uint32
 
+// darwinOrdinaryLoopbackPrefix identifies the only broad route XNU may describe with gateway-shaped loopback metadata.
+var darwinOrdinaryLoopbackPrefix = netip.MustParsePrefix("127.0.0.0/8")
+
 // darwinRouteAuthorityKey joins one RTM_GET selection to a unique RIB fact without response-only flags.
 type darwinRouteAuthorityKey struct {
 	destination   netip.Prefix
@@ -136,20 +139,26 @@ func darwinRoutesFromMessages(messages []route.Message, selectedMessage *route.R
 
 // darwinRouteFact converts one route without discarding flags that could change candidate selection.
 func darwinRouteFact(message *route.RouteMessage, candidate netip.Addr, interfaces darwinInterfaceSnapshot, selectedLookup bool) (RouteFact, bool, error) {
-	if message.Err != nil {
-		return RouteFact{}, false, fmt.Errorf("host conflict Darwin route message status: %w", message.Err)
-	}
-	if message.Flags < 0 {
-		return RouteFact{}, false, fmt.Errorf("host conflict Darwin route flags are negative")
-	}
-	flags := uint32(message.Flags)
 	destination, err := darwinRouteDestination(message, selectedLookup)
 	if err != nil {
 		return RouteFact{}, false, err
 	}
+	// An exact RTM_GET proves which route wins for the candidate. Dump routes
+	// broader than IPv4 loopback cannot add candidate-specific conflict evidence,
+	// and foreign VPN routes may carry semantics outside Harbor's route model.
+	if !selectedLookup && destination.Bits() < 8 {
+		return RouteFact{}, false, nil
+	}
 	if !destination.Contains(candidate) {
 		return RouteFact{}, false, nil
 	}
+	if message.Err != nil {
+		return RouteFact{}, true, fmt.Errorf("host conflict Darwin route message status: %w", message.Err)
+	}
+	if message.Flags < 0 {
+		return RouteFact{}, true, fmt.Errorf("host conflict Darwin route flags are negative")
+	}
+	flags := uint32(message.Flags)
 	if flags&^darwinKnownRouteFlags() != 0 {
 		return RouteFact{}, true, fmt.Errorf("host conflict Darwin route contains unknown flags %#x", flags&^darwinKnownRouteFlags())
 	}
@@ -166,11 +175,11 @@ func darwinRouteFact(message *route.RouteMessage, candidate netip.Addr, interfac
 	if err != nil {
 		return RouteFact{}, true, err
 	}
-	gateway, err := darwinRouteGateway(message, flags, identity)
+	native := sameInterfaceAuthority(PlatformMacOS, identity, interfaces.loopback.Interface)
+	gateway, err := darwinRouteGateway(message, flags, identity, destination, native)
 	if err != nil {
 		return RouteFact{}, true, err
 	}
-	native := sameInterfaceAuthority(PlatformMacOS, identity, interfaces.loopback.Interface)
 	normalization := RouteNormalizationDirect
 	if flags&unix.RTF_WASCLONED != 0 {
 		if destination.Bits() == 32 && native && !gateway.IsValid() {
@@ -286,8 +295,8 @@ func darwinRouteInterface(message *route.RouteMessage, interfaces darwinInterfac
 	return identity, nil
 }
 
-// darwinRouteGateway preserves an IPv4 next hop while treating a direct link address as absence.
-func darwinRouteGateway(message *route.RouteMessage, flags uint32, identity InterfaceIdentity) (netip.Addr, error) {
+// darwinRouteGateway preserves true IPv4 next hops while normalizing XNU's native-loopback route marker.
+func darwinRouteGateway(message *route.RouteMessage, flags uint32, identity InterfaceIdentity, destination netip.Prefix, nativeLoopback bool) (netip.Addr, error) {
 	if unix.RTAX_GATEWAY >= len(message.Addrs) || message.Addrs[unix.RTAX_GATEWAY] == nil {
 		if flags&unix.RTF_GATEWAY != 0 {
 			return netip.Addr{}, fmt.Errorf("host conflict Darwin gateway route omits its next hop")
@@ -296,12 +305,18 @@ func darwinRouteGateway(message *route.RouteMessage, flags uint32, identity Inte
 	}
 	switch gateway := message.Addrs[unix.RTAX_GATEWAY].(type) {
 	case *route.Inet4Addr:
-		if gateway == nil || flags&unix.RTF_GATEWAY == 0 {
+		if gateway == nil {
 			return netip.Addr{}, fmt.Errorf("host conflict Darwin route contains inconsistent IPv4 gateway evidence")
 		}
 		address := netip.AddrFrom4(gateway.IP)
 		if address.IsUnspecified() {
 			return netip.Addr{}, fmt.Errorf("host conflict Darwin route gateway is unspecified")
+		}
+		if flags&unix.RTF_GATEWAY == 0 {
+			if nativeLoopback && destination == darwinOrdinaryLoopbackPrefix && destination.Contains(address) {
+				return netip.Addr{}, nil
+			}
+			return netip.Addr{}, fmt.Errorf("host conflict Darwin route contains inconsistent IPv4 gateway evidence")
 		}
 		return address, nil
 	case *route.LinkAddr:
@@ -500,12 +515,26 @@ func writeDarwinRouteQueryWith(fileDescriptor int, encoded []byte, write func(in
 
 // receiveDarwinSelectedRoute filters bounded route events until the exact process and sequence response arrives.
 func receiveDarwinSelectedRoute(ctx context.Context, fileDescriptor int, processID uintptr, sequence int) (*route.RouteMessage, error) {
+	return receiveDarwinSelectedRouteWith(ctx, fileDescriptor, processID, sequence, waitDarwinRouteReadable, unix.Read)
+}
+
+// receiveDarwinSelectedRouteWith keeps raw route-socket reads injectable without requesting an irrelevant sender address.
+func receiveDarwinSelectedRouteWith(
+	ctx context.Context,
+	fileDescriptor int,
+	processID uintptr,
+	sequence int,
+	wait func(context.Context, int) error,
+	read func(int, []byte) (int, error),
+) (*route.RouteMessage, error) {
 	buffer := make([]byte, maximumDarwinRouteDatagram)
 	for reads := 0; reads < maximumDarwinRouteReads; reads++ {
-		if err := waitDarwinRouteReadable(ctx, fileDescriptor); err != nil {
+		if err := wait(ctx, fileDescriptor); err != nil {
 			return nil, err
 		}
-		length, _, flags, _, err := unix.Recvmsg(fileDescriptor, buffer, nil, 0)
+		// AF_ROUTE sender addresses are not application data. unix.Recvmsg asks
+		// x/sys to decode that unsupported family after a successful kernel read.
+		length, err := read(fileDescriptor, buffer)
 		if errors.Is(err, unix.EINTR) {
 			reads--
 			continue
@@ -513,7 +542,7 @@ func receiveDarwinSelectedRoute(ctx context.Context, fileDescriptor int, process
 		if err != nil {
 			return nil, fmt.Errorf("host conflict Darwin read selected-route response: %w", err)
 		}
-		if flags&unix.MSG_TRUNC != 0 || length <= 0 || length > len(buffer) {
+		if length <= 0 || length >= len(buffer) {
 			return nil, fmt.Errorf("host conflict Darwin selected-route response was truncated")
 		}
 		allowedTypes := darwinRouteSocketMessageTypes()

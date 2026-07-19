@@ -199,6 +199,7 @@ func TestDarwinInterfacesFromMessagesRejectsAmbiguousIdentity(t *testing.T) {
 func TestDarwinRoutesFromMessagesNormalizesSelectionAndClones(t *testing.T) {
 	interfaces := darwinTestInterfaces()
 	selected := darwinTestRoute(testCandidate, netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP|unix.RTF_DONE)
+	selected.Addrs[unix.RTAX_GATEWAY] = &route.Inet4Addr{IP: netip.MustParseAddr("127.0.0.1").As4()}
 	baseline := darwinTestRoute(netip.MustParseAddr("127.0.0.0"), netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP|unix.RTF_CLONING)
 	defaultRoute := darwinTestRoute(netip.IPv4Unspecified(), netip.IPv4Unspecified(), 2, unix.RTF_UP|unix.RTF_GATEWAY)
 	defaultRoute.Addrs[unix.RTAX_GATEWAY] = &route.Inet4Addr{IP: netip.MustParseAddr("192.0.2.1").As4()}
@@ -206,7 +207,7 @@ func TestDarwinRoutesFromMessagesNormalizesSelectionAndClones(t *testing.T) {
 	if err != nil {
 		t.Fatalf("darwinRoutesFromMessages() error = %v", err)
 	}
-	if !snapshot.Complete || len(snapshot.Matching) != 2 || snapshot.Selected == nil || snapshot.Selected.Destination.String() != "127.0.0.0/8" {
+	if !snapshot.Complete || len(snapshot.Matching) != 1 || snapshot.Selected == nil || snapshot.Selected.Destination.String() != "127.0.0.0/8" {
 		t.Fatalf("darwinRoutesFromMessages() = %#v", snapshot)
 	}
 	if snapshot.Selected.NativeFlags != unix.RTF_UP|unix.RTF_CLONING {
@@ -220,6 +221,140 @@ func TestDarwinRoutesFromMessagesNormalizesSelectionAndClones(t *testing.T) {
 	}
 	if cloneSnapshot.Selected == nil || cloneSnapshot.Selected.Normalization != RouteNormalizationMacOSCloneUnresolved {
 		t.Fatalf("darwinRoutesFromMessages(clone) = %#v", cloneSnapshot)
+	}
+}
+
+// TestDarwinRoutesFromMessagesIgnoresOnlyLessSpecificDumpNoise keeps foreign default routes outside loopback admission authority.
+func TestDarwinRoutesFromMessagesIgnoresOnlyLessSpecificDumpNoise(t *testing.T) {
+	interfaces := darwinTestInterfaces()
+	selected := darwinTestRoute(testCandidate, netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP|unix.RTF_DONE)
+	baseline := darwinTestRoute(netip.MustParseAddr("127.0.0.0"), netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP)
+	unknownFlag := int(uint32(0x80000000))
+	hostileDefault := darwinTestRoute(netip.IPv4Unspecified(), netip.IPv4Unspecified(), 2, unix.RTF_UP|unknownFlag)
+	hostileDefault.Err = unix.EPERM
+	hostileDefault.Addrs[unix.RTAX_GATEWAY] = &route.Inet6Addr{}
+
+	snapshot, err := darwinRoutesFromMessages([]route.Message{baseline, hostileDefault}, selected, testCandidate, interfaces)
+	if err != nil || len(snapshot.Matching) != 1 || snapshot.Selected == nil || snapshot.Selected.Destination.Bits() != 8 {
+		t.Fatalf("darwinRoutesFromMessages(default dump) = %#v, error %v", snapshot, err)
+	}
+
+	selectedDefault := *hostileDefault
+	selectedDefault.Err = nil
+	selectedDefault.Flags = unix.RTF_UP | unix.RTF_GATEWAY
+	selectedDefault.Addrs = append([]route.Addr(nil), hostileDefault.Addrs...)
+	selectedDefault.Addrs[unix.RTAX_DST] = &route.Inet4Addr{IP: testCandidate.As4()}
+	if _, err := darwinRoutesFromMessages([]route.Message{baseline}, &selectedDefault, testCandidate, interfaces); err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("darwinRoutesFromMessages(selected default) error = %v, want unsupported address type", err)
+	}
+}
+
+// TestDarwinRoutesFromMessagesValidatesEveryLoopbackSpecificDumpRoute keeps candidate conflicts fail-closed.
+func TestDarwinRoutesFromMessagesValidatesEveryLoopbackSpecificDumpRoute(t *testing.T) {
+	interfaces := darwinTestInterfaces()
+	selected := darwinTestRoute(testCandidate, netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP|unix.RTF_DONE)
+	baseline := darwinTestRoute(netip.MustParseAddr("127.0.0.0"), netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP)
+	unknownFlag := int(uint32(0x80000000))
+	tests := []struct {
+		name     string
+		message  *route.RouteMessage
+		contains string
+	}{
+		{
+			name:     "loopback baseline",
+			message:  darwinTestRoute(netip.MustParseAddr("127.0.0.0"), netip.MustParseAddr("255.0.0.0"), 1, unix.RTF_UP|unknownFlag),
+			contains: "unknown flags",
+		},
+		{
+			name: "candidate host conflict",
+			message: func() *route.RouteMessage {
+				message := darwinTestRoute(testCandidate, netip.MustParseAddr("255.255.255.255"), 1, unix.RTF_UP|unix.RTF_HOST)
+				message.Err = unix.EPERM
+				return message
+			}(),
+			contains: "message status",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := darwinRoutesFromMessages([]route.Message{baseline, test.message}, selected, testCandidate, interfaces); err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("darwinRoutesFromMessages() error = %v, want %q", err, test.contains)
+			}
+		})
+	}
+}
+
+// TestDarwinRouteGatewayNormalizesOnlyNativeBaselineMetadata binds XNU's direct-loopback response shape narrowly.
+func TestDarwinRouteGatewayNormalizesOnlyNativeBaselineMetadata(t *testing.T) {
+	interfaces := darwinTestInterfaces()
+	loopback := interfaces.loopback.Interface
+	ordinary := interfaces.byIndex[2]
+	loopbackGateway := netip.MustParseAddr("127.0.0.1")
+	tests := []struct {
+		name           string
+		destination    netip.Prefix
+		identity       InterfaceIdentity
+		nativeLoopback bool
+		flags          uint32
+		gateway        netip.Addr
+		wantGateway    netip.Addr
+		wantErr        string
+	}{
+		{
+			name:           "native baseline metadata",
+			destination:    darwinOrdinaryLoopbackPrefix,
+			identity:       loopback,
+			nativeLoopback: true,
+			gateway:        loopbackGateway,
+		},
+		{
+			name:        "ordinary interface",
+			destination: darwinOrdinaryLoopbackPrefix,
+			identity:    ordinary,
+			gateway:     loopbackGateway,
+			wantErr:     "inconsistent IPv4 gateway evidence",
+		},
+		{
+			name:           "more specific route",
+			destination:    netip.PrefixFrom(testCandidate, 32),
+			identity:       loopback,
+			nativeLoopback: true,
+			gateway:        loopbackGateway,
+			wantErr:        "inconsistent IPv4 gateway evidence",
+		},
+		{
+			name:           "foreign address",
+			destination:    darwinOrdinaryLoopbackPrefix,
+			identity:       loopback,
+			nativeLoopback: true,
+			gateway:        netip.MustParseAddr("192.0.2.1"),
+			wantErr:        "inconsistent IPv4 gateway evidence",
+		},
+		{
+			name:           "actual gateway route",
+			destination:    darwinOrdinaryLoopbackPrefix,
+			identity:       loopback,
+			nativeLoopback: true,
+			flags:          unix.RTF_GATEWAY,
+			gateway:        loopbackGateway,
+			wantGateway:    loopbackGateway,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message := darwinTestRoute(test.destination.Addr(), netip.MustParseAddr("255.0.0.0"), int(test.identity.Index), int(test.flags))
+			message.Addrs[unix.RTAX_GATEWAY] = &route.Inet4Addr{IP: test.gateway.As4()}
+			gateway, err := darwinRouteGateway(message, test.flags, test.identity, test.destination, test.nativeLoopback)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("darwinRouteGateway() error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || gateway != test.wantGateway {
+				t.Fatalf("darwinRouteGateway() = %s, %v, want %s", gateway, err, test.wantGateway)
+			}
+		})
 	}
 }
 
@@ -421,6 +556,54 @@ func TestWriteDarwinRouteQueryRequiresOneAtomicRecord(t *testing.T) {
 	}
 	if err := writeDarwinRouteQueryWith(7, encoded, func(int, []byte) (int, error) { return 0, unix.EPERM }); !errors.Is(err, unix.EPERM) {
 		t.Fatalf("write errno = %v, want EPERM", err)
+	}
+}
+
+// TestReceiveDarwinSelectedRouteReadsRawFramesWithoutSenderAddress proves AF_ROUTE metadata cannot discard a valid kernel reply.
+func TestReceiveDarwinSelectedRouteReadsRawFramesWithoutSenderAddress(t *testing.T) {
+	raw := darwinTestRouteStatusFrame(unix.RTM_GET, 0, uint32(unix.EAFNOSUPPORT))
+	waits := 0
+	reads := 0
+	selected, err := receiveDarwinSelectedRouteWith(
+		context.Background(),
+		7,
+		731,
+		19,
+		func(ctx context.Context, fileDescriptor int) error {
+			waits++
+			if ctx == nil || fileDescriptor != 7 {
+				t.Fatalf("wait arguments = %#v, %d", ctx, fileDescriptor)
+			}
+			return nil
+		},
+		func(fileDescriptor int, buffer []byte) (int, error) {
+			reads++
+			if fileDescriptor != 7 || len(buffer) != maximumDarwinRouteDatagram {
+				t.Fatalf("read arguments = %d, %d bytes", fileDescriptor, len(buffer))
+			}
+			return copy(buffer, raw), nil
+		},
+	)
+	if err != nil || selected == nil || selected.ID != 731 || selected.Seq != 19 || selected.Err != nil {
+		t.Fatalf("receiveDarwinSelectedRouteWith() = %#v, %v", selected, err)
+	}
+	if waits != 1 || reads != 1 {
+		t.Fatalf("receive calls = %d waits, %d reads", waits, reads)
+	}
+}
+
+// TestReceiveDarwinSelectedRouteRejectsBoundSizedReads preserves fail-closed truncation detection without recvmsg flags.
+func TestReceiveDarwinSelectedRouteRejectsBoundSizedReads(t *testing.T) {
+	_, err := receiveDarwinSelectedRouteWith(
+		context.Background(),
+		7,
+		731,
+		19,
+		func(context.Context, int) error { return nil },
+		func(_ int, buffer []byte) (int, error) { return len(buffer), nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("receiveDarwinSelectedRouteWith() error = %v, want truncated", err)
 	}
 }
 
