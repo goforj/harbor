@@ -191,7 +191,7 @@ type ProjectSnapshot struct {
 	Slug      string             `json:"slug"`
 	State     ProjectState       `json:"state"`
 	Favorite  bool               `json:"favorite"`
-	UpdatedAt time.Time          `json:"updated_at"`
+	UpdatedAt time.Time          `json:"updated_at" ts_type:"string"`
 	Apps      []AppSnapshot      `json:"apps"`
 	Services  []ServiceSnapshot  `json:"services"`
 	Resources []ResourceSnapshot `json:"resources"`
@@ -303,7 +303,7 @@ func (reference ResourceRef) Validate() error {
 type Snapshot struct {
 	SchemaVersion     uint16            `json:"schema_version"`
 	Sequence          Sequence          `json:"sequence"`
-	CapturedAt        time.Time         `json:"captured_at"`
+	CapturedAt        time.Time         `json:"captured_at" ts_type:"string"`
 	Projects          []ProjectSnapshot `json:"projects"`
 	Operations        []Operation       `json:"operations"`
 	RecentResourceIDs []ResourceRef     `json:"recent_resource_ids"`

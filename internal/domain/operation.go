@@ -29,9 +29,9 @@ type Operation struct {
 	State       OperationState `json:"state"`
 	Phase       string         `json:"phase"`
 	Problem     *Problem       `json:"problem,omitempty"`
-	RequestedAt time.Time      `json:"requested_at"`
-	StartedAt   *time.Time     `json:"started_at,omitempty"`
-	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
+	RequestedAt time.Time      `json:"requested_at" ts_type:"string"`
+	StartedAt   *time.Time     `json:"started_at,omitempty" ts_type:"string"`
+	FinishedAt  *time.Time     `json:"finished_at,omitempty" ts_type:"string"`
 }
 
 // NewOperation constructs a validated queued operation for one logical intent.
