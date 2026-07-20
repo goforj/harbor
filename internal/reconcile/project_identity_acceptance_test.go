@@ -69,6 +69,7 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 	projects := []projectIdentityAcceptanceProject{
 		{id: "project-orders", intent: "intent-start-orders", project: workspace.Projects[0]},
 		{id: "project-billing", intent: "intent-start-billing", project: workspace.Projects[1]},
+		{id: "project-inventory", intent: "intent-start-inventory", project: workspace.Projects[2]},
 	}
 	store, journal := newProjectLifecycleIntegrationState(t)
 	registerProjectIdentityAcceptanceProjects(t, store, projects)
