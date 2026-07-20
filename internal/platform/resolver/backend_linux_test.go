@@ -256,6 +256,32 @@ func TestSystemdResolvedTransactionScanAdmitsOnlyTheRetainedName(t *testing.T) {
 	}
 }
 
+// TestSystemdResolvedRecoveryRejectsExcessTransactionsBeforeMutation keeps a crowded private namespace fail-closed.
+func TestSystemdResolvedRecoveryRejectsExcessTransactionsBeforeMutation(t *testing.T) {
+	directoryPath := t.TempDir()
+	for index := 0; index < maximumSystemdResolvedTransactions+1; index++ {
+		name := fmt.Sprintf("%s%032x", systemdResolvedStagePrefix, index)
+		if err := os.WriteFile(filepath.Join(directoryPath, name), []byte("unreadable by recovery"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
+	}
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer directory.Close()
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	if restarted, err := recoverSystemdResolvedTransactionsAt(t.Context(), request, directory); err == nil || restarted {
+		t.Fatalf("recoverSystemdResolvedTransactionsAt() = restart %t, error %v, want rejected without restart", restarted, err)
+	}
+	for index := 0; index < maximumSystemdResolvedTransactions+1; index++ {
+		name := fmt.Sprintf("%s%032x", systemdResolvedStagePrefix, index)
+		if _, err := os.Lstat(filepath.Join(directoryPath, name)); err != nil {
+			t.Fatalf("Lstat(%q) after rejection error = %v", name, err)
+		}
+	}
+}
+
 // TestVerifySystemdResolvedReleasePreservesForeignRuntime pins the exact post-removal runtime expectation.
 func TestVerifySystemdResolvedReleasePreservesForeignRuntime(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
@@ -459,6 +485,37 @@ func TestPrivilegedSystemdResolvedAdapterCrashRecovery(t *testing.T) {
 	_, err = adapter.EnsureIfObserved(t.Context(), request, resolverFingerprint(t, observation))
 	if err != nil {
 		t.Fatalf("EnsureIfObserved() error = %v", err)
+	}
+	if err := lockSystemdResolvedDirectory(t.Context(), directory); err != nil {
+		t.Fatalf("lock exchange recovery fixture error = %v", err)
+	}
+	exchangeName, _, err := createSystemdResolvedStaging(directory, marshalSystemdResolvedValidated(request))
+	if err == nil {
+		err = unix.Renameat2(
+			int(directory.Fd()), exchangeName,
+			int(directory.Fd()), fixedSystemdResolvedName,
+			unix.RENAME_EXCHANGE,
+		)
+	}
+	if err == nil {
+		err = directory.Sync()
+	}
+	if unlockErr := unlockSystemdResolvedDirectory(directory); unlockErr != nil && err == nil {
+		err = unlockErr
+	}
+	if err != nil {
+		t.Fatalf("simulate exchanged publication crash error = %v", err)
+	}
+	exchanged, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Observe() after exchanged crash error = %v", err)
+	}
+	exchangedAssessment, err := exchanged.Classify()
+	if err != nil || exchangedAssessment.State != StateExact {
+		t.Fatalf("Classify() after exchanged crash = %#v, %v", exchangedAssessment, err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixedSystemdResolvedDirectory, exchangeName)); !os.IsNotExist(err) {
+		t.Fatalf("exchanged crash artifact remains after recovery: %v", err)
 	}
 	directory, err = openSystemdResolvedDirectory(false)
 	if err != nil {

@@ -30,7 +30,7 @@ Phase 1 acceptance treats retained terminal operations as durable client-visible
 
 The Unix transport integration now waits for authenticated server acceptance before closing its client. This removes a test-only close race with Darwin `LOCAL_PEERCRED`; peer admission itself remains fail-closed.
 
-The privileged Linux resolver test preserves the public `observe-failed` contract but adds a 4 KiB-capped unwrapped native cause to its root-only failure report. Use that evidence before changing the `systemd-resolved` parser, reset fixture, or crash-recovery policy.
+The privileged Linux resolver test preserves the public `observe-failed` contract but adds a 4 KiB-capped unwrapped native cause to its root-only failure report. Linux recovery now distinguishes unpublished canonical staging from an exchanged old owned artifact: only the latter causes one post-cleanup `systemd-resolved` restart. Foreign, malformed, unsafe, excess, and ambiguous transaction states remain preserved and fail closed. Native CI evidence is still required.
 
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
@@ -208,12 +208,11 @@ The direct Docker service/log vertical spans `internal/containerruntime`, projec
 
 The Linux `systemd-resolved` integration is committed and passed its focused unit, vet, helper, wire, race, and compile checks. It is not release-ready.
 
-Blocking findings:
+Current constraints:
 
-1. Every observation rejects a retained transaction artifact, but no recovery routine reconciles those artifacts. A crash after stage, exchange, quarantine, or cleanup can permanently disable Observe, Ensure, and Release until manual root cleanup.
-2. The mutation `flock` is blocking and does not honor context cancellation or deadlines.
-3. The CI reset assumes its early-sorting drop-in produces an empty global resolver even though later drop-ins or imported foreign DNS can repopulate runtime state; the workflow must verify the prerequisite explicitly.
-4. Privileged CI proves the happy lifecycle only, not crash-after-stage, exchange, quarantine, restart, or cleanup recovery.
+1. Recovery has direct portable coverage for its stage decision table and overflow bound, plus opt-in privileged coverage for staged, exchanged, and quarantined crashes and foreign-quarantine preservation. A successful Linux native CI run is still required.
+2. The CI reset assumes its early-sorting drop-in produces an empty global resolver even though later drop-ins or imported foreign DNS can repopulate runtime state; the workflow must verify the prerequisite explicitly.
+3. The implementation is intentionally fail-closed: an unknown transaction name, a foreign or unsafe artifact, an excess transaction set, or an ambiguous stage/fixed pairing blocks observation and mutation rather than cleaning up host state.
 
 The implementation is also much larger than expected for one fixed `systemd-resolved` drop-in. Simplify where possible while retaining descriptor-bound, no-follow, exact-correlation, rollback, and command-allowlist protections.
 
@@ -250,7 +249,7 @@ Prove the committed direct Docker service/log vertical on the macOS development 
 
 After that vertical is stable, add daemon-owned Docker event consumption and live replacement of service topology so container starts, stops, health changes, and recreation appear without restarting the project. Route only explicitly admitted publication facts through Harbor's existing resource/routing policy; observing a port is not itself permission to publish it.
 
-The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. Project-removal approval, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery is now implemented: its cancelable lock and exact owned stage/quarantine recovery have focused tests, and the root-only lifecycle and crash-recovery test is required by Linux CI. That workflow evidence is still required before claiming native resolver support.
+The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. Project-removal approval, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery now has focused stage/exchange/quarantine/foreign-state coverage and a root-only lifecycle command required by Linux CI. That workflow evidence is still required before claiming native resolver support.
 
 ## Next-session start checklist
 

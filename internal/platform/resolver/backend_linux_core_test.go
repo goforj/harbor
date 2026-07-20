@@ -60,6 +60,49 @@ func TestSystemdResolvedObserveRecoversBeforeSnapshot(t *testing.T) {
 	}
 }
 
+// TestRecoverSystemdResolvedStageAdmitsOnlyStablePublicationBoundaries keeps crash cleanup from guessing host state.
+func TestRecoverSystemdResolvedStageAdmitsOnlyStablePublicationBoundaries(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	exact := secureSystemdResolvedTestArtifact(marshalSystemdResolvedValidated(request), 1)
+	drifted := secureSystemdResolvedTestArtifact([]byte("# harbor-resolver-owner version=1 installation=installation-test policy="+request.PolicyFingerprint()+"\n[Resolve]\nDNS=127.0.0.1:25001\nDomains=~test\n"), 2)
+	foreignRequest, err := NewRequest("installation-foreign", request.Policy())
+	if err != nil {
+		t.Fatalf("NewRequest(foreign) error = %v", err)
+	}
+	foreign := secureSystemdResolvedTestArtifact(marshalSystemdResolvedValidated(foreignRequest), 3)
+	unsafe := exact
+	unsafe.Metadata.Mode = 0o666
+
+	tests := []struct {
+		name        string
+		fixed       systemdResolvedArtifact
+		stage       systemdResolvedArtifact
+		wantRestart bool
+		wantErr     bool
+	}{
+		{name: "unpublished absent fixed", stage: exact},
+		{name: "unpublished owned drift", fixed: drifted, stage: exact},
+		{name: "exchanged prior owned artifact", fixed: exact, stage: drifted, wantRestart: true},
+		{name: "exchanged exact prior artifact", fixed: exact, stage: exact, wantRestart: true},
+		{name: "foreign stage", fixed: exact, stage: foreign, wantErr: true},
+		{name: "unsafe stage", fixed: exact, stage: unsafe, wantErr: true},
+		{name: "orphaned drifted stage", stage: drifted, wantErr: true},
+		{name: "foreign fixed", fixed: foreign, stage: exact, wantErr: true},
+		{name: "ambiguous owned drift", fixed: drifted, stage: drifted, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			restart, err := recoverSystemdResolvedStage(test.fixed, test.stage, request)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("recoverSystemdResolvedStage() error = %v, want error = %t", err, test.wantErr)
+			}
+			if restart != test.wantRestart {
+				t.Fatalf("recoverSystemdResolvedStage() restart = %t, want %t", restart, test.wantRestart)
+			}
+		})
+	}
+}
+
 // replace enforces the complete observation twice around an injected race before installing canonical state.
 func (store *fakeSystemdResolvedStore) replace(
 	ctx context.Context,

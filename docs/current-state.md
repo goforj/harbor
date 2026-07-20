@@ -38,7 +38,7 @@ Phase 1 production acceptance now distinguishes active work from the bounded ter
 
 The native Unix IPC integration keeps its client connected until server-side peer admission completes. This preserves Darwin's `LOCAL_PEERCRED` boundary under test rather than converting a deliberately closed socket into a credential retry path.
 
-The opt-in root Linux resolver test now appends a 4 KiB-capped native cause when its initial public observation fails. The production error remains typed and redacted; this diagnostic exists only to identify a native CI setup or parser fault before changing recovery behavior.
+The Linux `systemd-resolved` recovery path reconciles only bounded, root-owned Harbor transaction names before a public observation. It removes an unpublished canonical stage without restart, recognizes an exact public replacement plus retained owned stage as an exchange crash and restarts `systemd-resolved` after cleanup, restores an exact owned removal quarantine only when the fixed artifact is absent, and preserves every foreign, malformed, unsafe, or ambiguous pairing. The opt-in root test appends a 4 KiB-capped native cause when its initial public observation fails; production errors remain typed and redacted. The new source behavior still needs a successful privileged Linux CI run before it is native support evidence.
 
 ## Repository shape
 

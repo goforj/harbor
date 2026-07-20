@@ -1364,6 +1364,9 @@ func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, 
 			transactions = append(transactions, name)
 		}
 	}
+	if len(transactions) > maximumSystemdResolvedTransactions {
+		return false, fmt.Errorf("systemd-resolved transactions exceed limit %d", maximumSystemdResolvedTransactions)
+	}
 	if len(transactions) == 0 {
 		return false, nil
 	}
@@ -1390,10 +1393,14 @@ func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, 
 		}
 		switch {
 		case strings.HasPrefix(name, systemdResolvedStagePrefix):
-			// A stage is never the public name; deleting it cannot change resolver behavior.
-			if err := removeSystemdResolvedTransaction(directory, name); err != nil {
+			stageRestartRequired, err := recoverSystemdResolvedStage(fixed, artifact, request)
+			if err != nil {
 				return false, fmt.Errorf("recover systemd-resolved stage %q: %w", name, err)
 			}
+			if err := removeSystemdResolvedTransaction(directory, name); err != nil {
+				return false, fmt.Errorf("remove recovered systemd-resolved stage %q: %w", name, err)
+			}
+			restartRequired = restartRequired || stageRestartRequired
 		case strings.HasPrefix(name, systemdResolvedQuarantinePrefix):
 			if !systemdResolvedArtifactOwnedByRequest(artifact, request) {
 				return false, fmt.Errorf("systemd-resolved quarantine %q is not owned by this request", name)
@@ -1413,6 +1420,32 @@ func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, 
 		}
 	}
 	return restartRequired, nil
+}
+
+// recoverSystemdResolvedStage distinguishes unpublished canonical staging from an exchanged prior artifact.
+func recoverSystemdResolvedStage(fixed, stage systemdResolvedArtifact, request Request) (bool, error) {
+	if !systemdResolvedArtifactOwnedByRequest(stage, request) {
+		return false, fmt.Errorf("systemd-resolved stage is not owned by this request")
+	}
+	stageExact := bytes.Equal(stage.Content, marshalSystemdResolvedValidated(request))
+	if !fixed.Exists {
+		if !stageExact {
+			return false, fmt.Errorf("systemd-resolved stage has no fixed artifact and is not unpublished canonical content")
+		}
+		return false, nil
+	}
+	if !systemdResolvedArtifactOwnedByRequest(fixed, request) {
+		return false, fmt.Errorf("systemd-resolved stage has a foreign fixed artifact")
+	}
+	fixedExact := bytes.Equal(fixed.Content, marshalSystemdResolvedValidated(request))
+	if stageExact && !fixedExact {
+		return false, nil
+	}
+	if fixedExact {
+		// An exact public artifact with a retained owned stage may have crossed exchange before a restart.
+		return true, nil
+	}
+	return false, fmt.Errorf("systemd-resolved stage and fixed artifact are an ambiguous interrupted mutation")
 }
 
 // systemdResolvedArtifactOwnedByRequest requires the exact marker and immutable root-owned file shape.
