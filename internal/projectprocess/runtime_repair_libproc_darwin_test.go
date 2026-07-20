@@ -23,6 +23,29 @@ func TestDarwinRuntimeRepairCallResultAllowsEmptyDescriptorLists(t *testing.T) {
 	}
 }
 
+// TestSameDarwinRuntimeRepairSessionMembersRejectsBirthOrScopeDrift keeps the final signal gate exact.
+func TestSameDarwinRuntimeRepairSessionMembersRejectsBirthOrScopeDrift(t *testing.T) {
+	expected := []runtimeRepairProcessFact{
+		{PID: 10, BirthToken: "darwin:10:1"},
+		{PID: 11, BirthToken: "darwin:11:1"},
+	}
+	observed := []unixProcessMember{
+		{PID: 10, BirthToken: "darwin:10:1"},
+		{PID: 11, BirthToken: "darwin:11:1"},
+	}
+	if !sameDarwinRuntimeRepairSessionMembers(observed, expected) {
+		t.Fatal("unchanged session members were rejected")
+	}
+	observed[1].BirthToken = "darwin:11:2"
+	if sameDarwinRuntimeRepairSessionMembers(observed, expected) {
+		t.Fatal("birth drift was accepted")
+	}
+	observed = append(observed, unixProcessMember{PID: 12, BirthToken: "darwin:12:1"})
+	if sameDarwinRuntimeRepairSessionMembers(observed, expected) {
+		t.Fatal("new session member was accepted")
+	}
+}
+
 // darwinRuntimeRepairTestSocketRecord builds the exact reviewed listener envelope for parser mutations.
 func darwinRuntimeRepairTestSocketRecord(endpoint netip.AddrPort) []byte {
 	raw := make([]byte, darwinRuntimeRepairSocketFDInfoBytes)

@@ -333,6 +333,14 @@ func gracefullyTerminateDarwinRuntimeRepair(ctx context.Context, receipt runtime
 	if err != nil || currentSocket != receipt.observation.Listener {
 		return false, ErrRuntimeRepairDrift
 	}
+	parentBirth, parentPresent, err := observeProcessBirthToken(receipt.observation.RootParent.PID)
+	if err != nil || !parentPresent || parentBirth != receipt.observation.RootParent.BirthToken {
+		return false, ErrRuntimeRepairDrift
+	}
+	currentMembers, err := unixSessionMembers(root.SessionID)
+	if err != nil || !sameDarwinRuntimeRepairSessionMembers(currentMembers, receipt.observation.Members) {
+		return false, ErrRuntimeRepairDrift
+	}
 	finalBirth, present, err := observeProcessBirthToken(root.PID)
 	if err != nil || !present || finalBirth != root.BirthToken {
 		return false, ErrRuntimeRepairDrift
@@ -347,6 +355,19 @@ func gracefullyTerminateDarwinRuntimeRepair(ctx context.Context, receipt runtime
 		return false, fmt.Errorf("gracefully terminate exact Darwin runtime repair root: %w", err)
 	}
 	return true, nil
+}
+
+// sameDarwinRuntimeRepairSessionMembers proves the exact captured session scope still exists immediately before signaling.
+func sameDarwinRuntimeRepairSessionMembers(observed []unixProcessMember, expected []runtimeRepairProcessFact) bool {
+	if len(observed) != len(expected) {
+		return false
+	}
+	for index, member := range observed {
+		if member.PID != expected[index].PID || member.BirthToken != expected[index].BirthToken {
+			return false
+		}
+	}
+	return true
 }
 
 // observeDarwinRuntimeRepairSocket revalidates the captured listener descriptor and owner birth immediately before signaling.
