@@ -404,7 +404,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </div>
       </header>
 
-      <Tabs v-model="selectedDetailTab" class="min-w-0">
+      <Tabs v-model="selectedDetailTab" class="min-w-0 gap-0">
         <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
           <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
           <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
