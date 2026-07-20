@@ -392,9 +392,15 @@ func windowsNRPTServers(values []string) ([]netip.AddrPort, error) {
 func windowsNRPTRuleNativeExact(rule windowsNRPTRule, request Request) bool {
 	return slices.Equal(rule.Namespaces, []string{request.Suffix()}) &&
 		slices.Equal(rule.NameServers, []string{request.Endpoint().Addr().String()}) &&
+		rule.IPsecCARestriction == "" &&
+		len(rule.DirectAccessDNSServers) == 0 &&
 		!rule.DirectAccessEnabled &&
+		rule.DirectAccessProxyType == "" &&
+		rule.DirectAccessProxyName == "" &&
+		rule.DirectAccessQueryIPsecEncryption == "" &&
 		!rule.DirectAccessQueryIPsecRequired &&
 		!rule.DNSSecEnabled &&
+		rule.DNSSecQueryIPsecEncryption == "" &&
 		!rule.DNSSecQueryIPsecRequired &&
 		!rule.DNSSecValidationRequired &&
 		rule.NameEncoding == "Disable" &&

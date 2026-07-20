@@ -205,7 +205,7 @@ The Windows NRPT core is also a committed foundation. Its portable focused/full 
 
 - it is not wired into helper or daemon providers, so Windows still selects the unsupported implementation;
 - its native runner now derives the fixed Windows PowerShell executable from the native system-directory API rather than a caller-controlled `PATH`;
-- native exactness ignores latent NRPT fields such as IPsec CA restrictions, DirectAccess settings, and DNSSEC encryption, while repair does not clear them;
+- native exactness rejects latent NRPT fields such as IPsec CA restrictions, DirectAccess settings, and DNSSEC encryption, while repair does not yet clear them;
 - helper dependency admission, native add/observe/set/release/CAS/cleanup tests, and Go/PowerShell fingerprint-parity evidence are absent.
 
 Do not claim either platform's resolver as complete merely because its foundation is committed or cross-compiles.

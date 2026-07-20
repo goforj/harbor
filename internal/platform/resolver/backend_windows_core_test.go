@@ -355,6 +355,29 @@ func TestWindowsNRPTNativeFingerprintBindsEveryField(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTNativeExactRejectsLatentSecurityState keeps unrequested DirectAccess and DNSSEC behavior from appearing healthy.
+func TestWindowsNRPTNativeExactRejectsLatentSecurityState(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
+	baseline := windowsNRPTTestExactRule(request)
+	if !windowsNRPTRuleNativeExact(baseline, request) {
+		t.Fatal("windowsNRPTRuleNativeExact() rejected the canonical baseline")
+	}
+	for _, mutate := range []func(*windowsNRPTRule){
+		func(rule *windowsNRPTRule) { rule.IPsecCARestriction = "CA" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessDNSServers = []string{"127.0.0.2"} },
+		func(rule *windowsNRPTRule) { rule.DirectAccessProxyType = "NoProxy" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessProxyName = "proxy" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessQueryIPsecEncryption = "High" },
+		func(rule *windowsNRPTRule) { rule.DNSSecQueryIPsecEncryption = "High" },
+	} {
+		candidate := windowsNRPTTestExactRule(request)
+		mutate(&candidate)
+		if windowsNRPTRuleNativeExact(candidate, request) {
+			t.Fatalf("windowsNRPTRuleNativeExact() accepted latent state %#v", candidate)
+		}
+	}
+}
+
 // TestWindowsNRPTExpectedRulesDeduplicatesMultiNamespaceFacts keeps one complete native CAS identity per rule.
 func TestWindowsNRPTExpectedRulesDeduplicatesMultiNamespaceFacts(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
