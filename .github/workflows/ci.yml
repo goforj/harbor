@@ -207,22 +207,100 @@ jobs:
           & "${{ runner.temp }}\${{ matrix.binary }}" "-test.run=^TestPrivilegedAdapterLifecycle$" "-test.v"
 
   docker-adapter:
-    name: Docker adapter (Linux)
+    name: Docker adapter and generated projects (Linux)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: bf5f5e65ab64ba25cbd2fe53e42014bff1115a81
+          path: .ci/goforj
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Build pinned GoForj CLI
+        run: |
+          binary_directory="${RUNNER_TEMP}/harbor-bin"
+          binary="${binary_directory}/forj"
+          mkdir -p "$binary_directory"
+          (
+            cd .ci/goforj
+            go build -trimpath -o "$binary" ./cmd/forj
+          )
+          printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+
+      - name: Provision generated-project proof identities
+        run: |
+          ownership_file="${RUNNER_TEMP}/harbor-generated-project-identities"
+          interface="lo"
+          interface_index="$(cat "/sys/class/net/${interface}/ifindex")"
+          : > "$ownership_file"
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
+            if ip -o -4 address show | awk '{print $4}' | grep -Fxq "$address/32"; then
+              echo "generated-project identity already exists: $address" >&2
+              exit 1
+            fi
+            sudo ip address add "$address/32" dev "$interface"
+            printf '%s\t%s\t%s\n' "$interface" "$interface_index" "$address" >> "$ownership_file"
+            mapfile -t observations < <(ip -o -4 address show dev "$interface" | awk -v target="$address/32" '$4 == target {print $1, $2, $4}')
+            if [[ ${#observations[@]} -ne 1 ]]; then
+              echo "could not uniquely observe generated-project identity: $address" >&2
+              exit 1
+            fi
+            read -r observed_index observed_interface observed_address <<< "${observations[0]}"
+            observed_index="${observed_index%:}"
+            if [[ "$observed_index" != "$interface_index" || "$observed_interface" != "$interface" || "$observed_address" != "$address/32" ]]; then
+              echo "generated-project identity does not match its intended interface: $address" >&2
+              exit 1
+            fi
+          done
 
       - name: Exercise the read-only Docker adapter against Engine
         run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache HARBOR_NATIVE_DOCKER_TEST=1 go test -count=1 -timeout=3m -run '^TestNativeDockerRuntimeAdmitsOnlyItsCheckoutAndFollowsReplacement$' ./internal/containerruntime
+
+      - name: Exercise generated Compose service observation
+        env:
+          HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
+        run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test -tags='projectidentityacceptance projectdockeracceptance' -count=1 -timeout=10m -run '^TestNativeGeneratedMySQLProjectsExposeComposeServices$' ./internal/reconcile
+
+      - name: Remove generated-project proof identities
+        if: always()
+        run: |
+          ownership_file="${RUNNER_TEMP}/harbor-generated-project-identities"
+          if [[ -f "$ownership_file" ]]; then
+            while IFS=$'\t' read -r interface expected_index address extra; do
+              if [[ -n "$extra" || -z "$interface" || -z "$expected_index" || -z "$address" ]]; then
+                echo "invalid generated-project ownership record" >&2
+                exit 1
+              fi
+              current_index="$(cat "/sys/class/net/${interface}/ifindex" 2>/dev/null || true)"
+              mapfile -t observations < <(ip -o -4 address show dev "$interface" 2>/dev/null | awk -v target="$address/32" '$4 == target {print $1, $2, $4}')
+              if [[ "$current_index" != "$expected_index" || ${#observations[@]} -ne 1 ]]; then
+                echo "generated-project identity ownership changed; refusing to remove $address" >&2
+                exit 1
+              fi
+              read -r observed_index observed_interface observed_address <<< "${observations[0]}"
+              observed_index="${observed_index%:}"
+              if [[ "$observed_index" != "$expected_index" || "$observed_interface" != "$interface" || "$observed_address" != "$address/32" ]]; then
+                echo "generated-project identity observation changed; refusing to remove $address" >&2
+                exit 1
+              fi
+              sudo ip address delete "$address/32" dev "$interface"
+            done < "$ownership_file"
+          fi
 
   frontend:
     name: Frontend
