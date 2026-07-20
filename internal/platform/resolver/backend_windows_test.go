@@ -6,8 +6,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -169,6 +172,32 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if err != nil || assessment.State != StateExact {
 		t.Fatalf("Classify(after ensure) = %#v, %v; want exact", assessment, err)
 	}
+	if len(change.After.Rules) != 1 || change.After.Rules[0].NativeID == "" {
+		t.Fatalf("EnsureIfObserved() rule facts = %#v, want one native rule", change.After.Rules)
+	}
+	if err := driftWindowsNRPTNameServers(t.Context(), change.After.Rules[0].NativeID, "127.0.0.3"); err != nil {
+		t.Fatalf("drift native NRPT name servers: %v", err)
+	}
+	drifted, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Observe(after drift) error = %v", err)
+	}
+	assessment, err = drifted.Classify()
+	if err != nil || assessment.State != StateOwnedDrifted {
+		t.Fatalf("Classify(after drift) = %#v, %v; want owned drifted", assessment, err)
+	}
+	fingerprint, err = drifted.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint(after drift) error = %v", err)
+	}
+	change, err = adapter.EnsureIfObserved(t.Context(), request, fingerprint)
+	if err != nil {
+		t.Fatalf("EnsureIfObserved(after drift) error = %v", err)
+	}
+	assessment, err = change.After.Classify()
+	if err != nil || assessment.State != StateExact {
+		t.Fatalf("Classify(after repair) = %#v, %v; want exact", assessment, err)
+	}
 	fingerprint, err = change.After.Fingerprint()
 	if err != nil {
 		t.Fatalf("Fingerprint(after ensure) error = %v", err)
@@ -182,3 +211,35 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 		t.Fatalf("Classify(after release) = %#v, %v; want absent", assessment, err)
 	}
 }
+
+// driftWindowsNRPTNameServers changes only a freshly admitted test rule so the shipping Set path must restore its exact server list.
+func driftWindowsNRPTNameServers(ctx context.Context, name string, server string) error {
+	if name == "" || server == "" {
+		return errors.New("Windows NRPT drift requires a rule name and server")
+	}
+	executable, err := windowsPowerShellExecutable()
+	if err != nil {
+		return err
+	}
+	input, err := json.Marshal(struct {
+		Name   string `json:"name"`
+		Server string `json:"server"`
+	}{Name: name, Server: server})
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsNRPTTestDriftProgram)
+	command.Stdin = strings.NewReader(string(input))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("execute owned Windows NRPT drift: %w: %s", err, windowsNRPTDisplayDiagnostic(string(output)))
+	}
+	return nil
+}
+
+const windowsNRPTTestDriftProgram = `$ErrorActionPreference = 'Stop'
+$inputText = [Console]::In.ReadToEnd()
+$request = $inputText | ConvertFrom-Json -ErrorAction Stop
+$names = @($request.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+if ($names.Count -ne 2 -or $names[0] -cne 'name' -or $names[1] -cne 'server') { throw 'invalid test drift request' }
+Set-DnsClientNrptRule -Name ([string]$request.name) -NameServers @([string]$request.server) -Confirm:$false -ErrorAction Stop | Out-Null`

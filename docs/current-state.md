@@ -190,7 +190,7 @@ Implemented foundations include:
 
 Important incomplete work:
 
-- Windows NRPT portable tests and cross-compilation pass, and its required elevated CI test exercises a fresh rule's observe, CAS add, exact verification, and release. Production helper/daemon providers still select the unsupported implementation; native workflow evidence, complete latent-field repair policy, and helper dependencies remain absent;
+- Windows NRPT portable tests and cross-compilation pass, and its required elevated CI test exercises a fresh rule's observe, CAS add, bounded name-server Set repair, exact verification, and release. Production helper/daemon providers still select the unsupported implementation; native workflow evidence, complete latent-field repair policy, and helper dependencies remain absent;
 - trust-store installation and complete trusted-HTTPS product proof are absent;
 - low-port mechanisms and native-port service relays are not complete product paths;
 - the required three-real-project, full-stack acceptance test has not been reached.
