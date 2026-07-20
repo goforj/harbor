@@ -7,19 +7,39 @@ const props = defineProps<{
 }>()
 
 const failed = ref(false)
-const faviconURL = computed(() => {
+const candidateIndex = ref(0)
+const faviconURLs = computed(() => {
   try {
-    return new URL('/favicon.ico', new URL(props.url).origin).toString()
+    const origin = new URL(props.url).origin
+    return [
+      '/favicon.ico',
+      '/favicon.png',
+      '/favicon.svg',
+      '/public/img/fav32.png',
+      '/static/favicon.ico',
+      '/img/favicon.ico',
+    ].map((path) => new URL(path, origin).toString())
   }
   catch {
-    return ''
+    return []
   }
 })
+const faviconURL = computed(() => faviconURLs.value[candidateIndex.value] ?? '')
 const fallbackLabel = computed(() => props.name.trim().slice(0, 1).toLocaleUpperCase() || '?')
 
 watch(() => props.url, () => {
   failed.value = false
+  candidateIndex.value = 0
 })
+
+// tryNextCandidate supports common local service icon conventions without adding a remote logo catalog.
+function tryNextCandidate() {
+  if (candidateIndex.value + 1 < faviconURLs.value.length) {
+    candidateIndex.value += 1
+    return
+  }
+  failed.value = true
+}
 </script>
 
 <template>
@@ -29,7 +49,7 @@ watch(() => props.url, () => {
     :alt="''"
     class="size-8 shrink-0 rounded-md object-contain"
     aria-hidden="true"
-    @error="failed = true"
+    @error="tryNextCandidate"
   >
   <span
     v-else
