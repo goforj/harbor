@@ -101,14 +101,8 @@ function clearOutput() {
 
 <template>
   <Card :class="['gap-0 overflow-hidden rounded-lg py-0 shadow-none', { 'flex min-h-0 flex-1 flex-col': fill }]">
-    <CardHeader class="flex-row items-start justify-between gap-3 border-b px-4 py-3">
-      <div class="min-w-0">
-        <div class="flex items-center gap-2">
-          <SquareTerminal class="size-4 text-muted-foreground" />
-          <CardTitle class="text-sm">Logs</CardTitle>
-        </div>
-        <p class="mt-1 text-xs text-muted-foreground">Live output from this Compose service</p>
-      </div>
+    <CardHeader class="!flex !items-center !justify-between gap-3 border-b px-4 py-2">
+      <div class="flex min-w-0 items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Logs</CardTitle></div>
       <div class="flex shrink-0 items-center gap-2">
         <Badge variant="outline" class="gap-1.5 capitalize">
           <span
