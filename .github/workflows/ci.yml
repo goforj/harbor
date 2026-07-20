@@ -212,6 +212,11 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # Harbor refuses remote Engine endpoints because checkout labels are local authority. Keep this proof on the
+      # hosted runner's Unix socket even when the runner image exports a Docker-in-Docker TCP override.
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_CONTEXT: default
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
