@@ -64,6 +64,17 @@ function bodyButton(label: string): HTMLButtonElement {
 }
 
 describe('ProjectView stale runtime recovery', () => {
+  it('keeps project detail content in compact, task-focused tabs', async () => {
+    const { wrapper } = await mountRecoveryProject()
+
+    const tabLabels = wrapper.findAll('[role="tab"]').map((tab) => tab.text().replace(/\s+\d+$/, ''))
+    expect(tabLabels).toEqual(['Overview', 'Development output', 'Services', 'Resources'])
+    expect(wrapper.text()).toContain('Apps')
+    expect(wrapper.text()).not.toContain('Reported services for this project.')
+
+    wrapper.unmount()
+  })
+
   it('adds an explicit inspection action and disables it for disconnected, stale, or busy state', async () => {
     const { store, wrapper } = await mountRecoveryProject()
     const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))

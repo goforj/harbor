@@ -37,6 +37,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useProjectActivity } from '@/composables/useProjectActivity'
 import { countReadyServices } from '@/lib/servicePresentation'
 import { useHarborStore } from '@/stores/harbor'
@@ -51,6 +52,7 @@ const runtimeRepairNow = ref(Date.now())
 let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
+const selectedDetailTab = ref('overview')
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
@@ -186,6 +188,7 @@ const updatedAt = computed(() => project.value
 watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, previousProject]) => {
   if (nextProjectId !== previousProjectId) {
     followDevelopmentOutput.value = true
+    selectedDetailTab.value = 'overview'
     runtimeRepairOpen.value = false
     if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
   }
@@ -392,7 +395,15 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </div>
       </header>
 
-      <div class="space-y-5 p-5 lg:p-7">
+      <Tabs v-model="selectedDetailTab" class="min-w-0">
+        <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
+          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Overview</TabsTrigger>
+          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Development output</TabsTrigger>
+          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
+          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
+        </TabsList>
+
+        <div class="space-y-5 p-5 lg:p-7">
         <Alert v-if="lifecycleError" variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ recoveryRequired ? 'Project recovery required' : 'Project action failed' }}</AlertTitle>
@@ -445,13 +456,36 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           <AlertDescription>{{ removalNotice.message }}</AlertDescription>
         </Alert>
 
-        <section aria-label="Project summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
-          <div class="p-4 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Apps</p><p class="mt-1 text-xl font-semibold">{{ project.apps.length }}</p></div>
-          <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ readyServiceCount }} ready</p><p class="mt-0.5 text-xs text-muted-foreground">{{ project.services.length }} reported</p></div>
-          <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Resources</p><p class="mt-1 text-xl font-semibold">{{ project.resources.length }}</p></div>
-          <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Activity</p><p class="mt-1 truncate text-sm font-semibold">{{ currentProjectOperation?.phase ?? 'Idle' }}</p></div>
-        </section>
+        <TabsContent value="overview" class="m-0 space-y-5">
+          <section aria-label="Project summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
+            <div class="p-4 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Apps</p><p class="mt-1 text-xl font-semibold">{{ project.apps.length }}</p></div>
+            <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ readyServiceCount }} ready</p><p class="mt-0.5 text-xs text-muted-foreground">{{ project.services.length }} reported</p></div>
+            <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Resources</p><p class="mt-1 text-xl font-semibold">{{ project.resources.length }}</p></div>
+            <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Activity</p><p class="mt-1 truncate text-sm font-semibold">{{ currentProjectOperation?.phase ?? 'Idle' }}</p></div>
+          </section>
 
+          <Card class="gap-0 rounded-lg py-0 shadow-none">
+            <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Apps</CardTitle></div></CardHeader>
+            <CardContent class="p-0">
+              <div v-if="project.apps.length" class="divide-y">
+                <div v-for="app in project.apps" :key="app.id" class="flex items-center gap-3 px-4 py-3">
+                  <StatusBadge :status="app.state" />
+                  <div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ app.name }}</p><p class="text-xs text-muted-foreground">{{ app.active ? 'Active' : 'Inactive' }} · {{ app.required ? 'Required' : 'Optional' }}</p></div>
+                </div>
+              </div>
+              <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No Apps are reported.</p>
+            </CardContent>
+          </Card>
+
+          <Card v-if="currentProjectOperation" class="gap-0 rounded-lg py-0 shadow-none">
+            <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Current activity</CardTitle></CardHeader>
+            <CardContent class="p-0">
+              <div class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="currentProjectOperation.state" /><div><p class="text-sm font-medium">{{ currentProjectOperation.kind }}</p><p class="text-xs text-muted-foreground">{{ currentProjectOperation.phase }}</p></div></div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="output" class="m-0">
         <Card v-if="showDevelopmentOutput" class="gap-0 rounded-lg py-0 shadow-none">
           <CardHeader class="flex-row items-start justify-between gap-3 border-b px-4 py-3">
             <div class="min-w-0">
@@ -481,23 +515,14 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
             </div>
           </CardContent>
         </Card>
+        <Empty v-else class="min-h-64 rounded-lg border">
+          <EmptyHeader><EmptyTitle>No development output yet</EmptyTitle><EmptyDescription>Harbor will show the current <code>forj dev</code> session here when the project starts.</EmptyDescription></EmptyHeader>
+        </Empty>
+        </TabsContent>
 
-        <div class="grid min-w-0 gap-5 xl:grid-cols-2">
+        <TabsContent value="services" class="m-0">
           <Card class="gap-0 rounded-lg py-0 shadow-none">
-            <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Apps</CardTitle></div></CardHeader>
-            <CardContent class="p-0">
-              <div v-if="project.apps.length" class="divide-y">
-                <div v-for="app in project.apps" :key="app.id" class="flex items-center gap-3 px-4 py-3">
-                  <StatusBadge :status="app.state" />
-                  <div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ app.name }}</p><p class="text-xs text-muted-foreground">{{ app.active ? 'Active' : 'Inactive' }} · {{ app.required ? 'Required' : 'Optional' }}</p></div>
-                </div>
-              </div>
-              <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No Apps are reported.</p>
-            </CardContent>
-          </Card>
-
-          <Card class="gap-0 rounded-lg py-0 shadow-none">
-            <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Services</CardTitle></div></CardHeader>
+            <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Services</CardTitle></div><p class="text-xs text-muted-foreground">Reported services for this project. Select a service to inspect its status and logs.</p></CardHeader>
             <CardContent class="p-0">
               <div v-if="project.services.length" class="divide-y">
                 <RouterLink
@@ -523,9 +548,10 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No services are reported.</p>
             </CardContent>
           </Card>
-        </div>
+        </TabsContent>
 
-        <Card class="gap-0 rounded-lg py-0 shadow-none">
+        <TabsContent value="resources" class="m-0">
+          <Card class="gap-0 rounded-lg py-0 shadow-none">
           <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Resources</CardTitle><p class="text-xs text-muted-foreground">Launchable HTTP resources reported by the daemon</p></CardHeader>
           <CardContent class="p-0">
             <div v-if="project.resources.length" class="divide-y">
@@ -536,15 +562,10 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
             </div>
             <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No resources are reported.</p>
           </CardContent>
-        </Card>
-
-        <Card v-if="currentProjectOperation" class="gap-0 rounded-lg py-0 shadow-none">
-          <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Current activity</CardTitle></CardHeader>
-          <CardContent class="p-0">
-            <div class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="currentProjectOperation.state" /><div><p class="text-sm font-medium">{{ currentProjectOperation.kind }}</p><p class="text-xs text-muted-foreground">{{ currentProjectOperation.phase }}</p></div></div>
-          </CardContent>
-        </Card>
-      </div>
+          </Card>
+        </TabsContent>
+        </div>
+      </Tabs>
     </template>
 
     <Empty v-else class="min-h-full border-0">
