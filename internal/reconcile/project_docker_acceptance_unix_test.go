@@ -1,4 +1,4 @@
-//go:build linux && projectidentityacceptance && projectdockeracceptance
+//go:build (linux || darwin) && projectidentityacceptance && projectdockeracceptance
 
 package reconcile
 
