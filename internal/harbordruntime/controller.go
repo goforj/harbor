@@ -97,7 +97,14 @@ const (
 	controllerStateFailed
 )
 
-// Controller owns certificate material and one immutable data-plane generation beneath daemon authority.
+// runtimeExit identifies the exact child generation that relinquished listener authority.
+type runtimeExit struct {
+	generation uint64
+	runtime    dataPlane
+	done       <-chan struct{}
+}
+
+// Controller owns certificate material and the exact current data-plane generation beneath daemon authority.
 type Controller struct {
 	mutex                 sync.RWMutex
 	reconcileMutex        sync.Mutex
@@ -110,6 +117,9 @@ type Controller struct {
 	stopParentWatch       func() bool
 	stopCause             error
 	unexpectedRuntimeExit bool
+	runtimeContext        context.Context
+	runtimeGeneration     uint64
+	runtimeExits          chan runtimeExit
 	runtimeDone           <-chan struct{}
 	dataPlane             dataPlane
 	material              certificateMaterialStore
@@ -165,6 +175,7 @@ func newController(source runtimeStateSource, dependencies dependencies) (*Contr
 		source:       source,
 		dependencies: dependencies,
 		state:        controllerStateNew,
+		runtimeExits: make(chan runtimeExit),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 	}, nil
@@ -257,7 +268,8 @@ func (controller *Controller) Start(ctx context.Context) error {
 		return controller.failStartWithDone(err, material, runtime, runtimeDone)
 	}
 
-	go controller.monitor(runtime, runtimeDone, material)
+	controller.watchRuntimeExit(controller.runtimeGeneration, runtime, runtimeDone)
+	go controller.monitor(material)
 	return nil
 }
 
@@ -560,6 +572,7 @@ func (controller *Controller) beginStart(ctx context.Context) (context.Context, 
 	runContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	controller.parentContext = ctx
 	controller.cancel = cancel
+	controller.runtimeContext = runContext
 	controller.state = controllerStateStarting
 	controller.stopParentWatch = context.AfterFunc(ctx, func() {
 		controller.requestLifecycleStop(ctx.Err())
@@ -607,36 +620,78 @@ func (controller *Controller) publishReady(
 	controller.dataPlane = runtime
 	controller.certificates = authority
 	controller.root = cloneRoot(root)
+	controller.runtimeGeneration = 1
 	controller.state = controllerStateReady
 	return nil
 }
 
-// monitor owns ordered terminal cleanup for explicit stop, parent cancellation, and child failure.
-func (controller *Controller) monitor(
-	runtime dataPlane,
-	runtimeDone <-chan struct{},
-	material certificateMaterialStore,
-) {
-	select {
-	case <-controller.stop:
-	case <-runtimeDone:
-	}
-	unexpectedExit := controller.observeRuntimeExit(runtimeDone)
+// watchRuntimeExit forwards one child completion without letting a retired generation stop the controller.
+func (controller *Controller) watchRuntimeExit(generation uint64, runtime dataPlane, runtimeDone <-chan struct{}) {
+	go func() {
+		select {
+		case <-runtimeDone:
+		case <-controller.done:
+			return
+		}
+		select {
+		case controller.runtimeExits <- runtimeExit{generation: generation, runtime: runtime, done: runtimeDone}:
+		case <-controller.done:
+		}
+	}()
+}
 
-	runtimeErr := controller.closeDataPlane(runtime, runtimeDone)
+// monitor owns ordered terminal cleanup for explicit stop, parent cancellation, and the current child failure.
+func (controller *Controller) monitor(material certificateMaterialStore) {
+	var exit runtimeExit
+	for {
+		select {
+		case <-controller.stop:
+			exit = controller.currentRuntimeExit()
+		case observed := <-controller.runtimeExits:
+			if !controller.isCurrentRuntimeExit(observed) {
+				continue
+			}
+			exit = observed
+		}
+		break
+	}
+	unsettledExit := exit.runtime != nil && controller.observeRuntimeExit(exit.generation, exit.done)
+
+	var runtimeErr error
+	if exit.runtime != nil {
+		runtimeErr = controller.closeDataPlane(exit.runtime, exit.done)
+	}
 	materialErr := material.Close()
 	terminal := distinctRuntimeError(runtimeErr, materialErr)
-	if unexpectedExit {
+	if unsettledExit {
 		terminal = distinctRuntimeError(terminal, ErrRuntimeStoppedUnexpectedly)
 	}
 	controller.finish(terminal)
 }
 
-// observeRuntimeExit orders child completion against the stop intent that woke the monitor.
-func (controller *Controller) observeRuntimeExit(runtimeDone <-chan struct{}) bool {
+// currentRuntimeExit snapshots the generation that owns listener authority at shutdown.
+func (controller *Controller) currentRuntimeExit() runtimeExit {
+	controller.mutex.RLock()
+	defer controller.mutex.RUnlock()
+	return runtimeExit{
+		generation: controller.runtimeGeneration,
+		runtime:    controller.dataPlane,
+		done:       controller.runtimeDone,
+	}
+}
+
+// isCurrentRuntimeExit rejects completion notices from generations retired by activation.
+func (controller *Controller) isCurrentRuntimeExit(exit runtimeExit) bool {
+	controller.mutex.RLock()
+	defer controller.mutex.RUnlock()
+	return exit.generation == controller.runtimeGeneration
+}
+
+// observeRuntimeExit orders current child completion against the stop intent that woke the monitor.
+func (controller *Controller) observeRuntimeExit(generation uint64, runtimeDone <-chan struct{}) bool {
 	controller.mutex.Lock()
 	defer controller.mutex.Unlock()
-	if controller.state == controllerStateReady && channelClosed(runtimeDone) {
+	if controller.state == controllerStateReady && generation == controller.runtimeGeneration && channelClosed(runtimeDone) {
 		controller.claimUnexpectedRuntimeExitLocked()
 	}
 	return controller.unexpectedRuntimeExit
@@ -774,6 +829,7 @@ func (controller *Controller) finish(terminal error) {
 	stopParentWatch := controller.stopParentWatch
 	controller.parentContext = nil
 	controller.cancel = nil
+	controller.runtimeContext = nil
 	controller.stopParentWatch = nil
 	controller.terminalErr = terminal
 	if terminal != nil {
