@@ -380,6 +380,110 @@ func TestPrivilegedSystemdResolvedAdapterLifecycle(t *testing.T) {
 	}
 }
 
+// TestPrivilegedSystemdResolvedAdapterCrashRecovery proves Harbor repairs only its own interrupted stage and quarantine states.
+func TestPrivilegedSystemdResolvedAdapterCrashRecovery(t *testing.T) {
+	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {
+		t.Skip("set HARBOR_PRIVILEGED_RESOLVER_TEST=1 on a disposable Ubuntu systemd host")
+	}
+	if os.Geteuid() != 0 {
+		t.Fatal("privileged systemd-resolved recovery requires root")
+	}
+	if output, err := exec.Command(fixedSystemctlPath, "is-active", "--quiet", fixedSystemdResolvedService).CombinedOutput(); err != nil {
+		t.Fatalf("systemd-resolved is not active: %v: %s", err, output)
+	}
+	if _, err := os.Lstat(fixedSystemdResolvedPath); err == nil || !os.IsNotExist(err) {
+		t.Fatalf("fixed Harbor systemd-resolved artifact must be absent before recovery test: %v", err)
+	}
+
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	startSystemdResolvedTestDNSServer(t, request.Endpoint().String())
+	adapter := New()
+	t.Cleanup(func() {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), systemdResolvedCommandTimeout)
+		defer cancel()
+		observation, observeErr := adapter.Observe(cleanupContext, request)
+		if observeErr != nil {
+			t.Errorf("cleanup Observe() error = %v", observeErr)
+			return
+		}
+		if _, releaseErr := adapter.ReleaseIfObserved(cleanupContext, request, resolverFingerprint(t, observation)); releaseErr != nil {
+			t.Errorf("cleanup ReleaseIfObserved() error = %v", releaseErr)
+		}
+	})
+	directory, err := openSystemdResolvedDirectory(true)
+	if err != nil {
+		t.Fatalf("openSystemdResolvedDirectory() error = %v", err)
+	}
+	defer directory.Close()
+	if err := lockSystemdResolvedDirectory(t.Context(), directory); err != nil {
+		t.Fatalf("lockSystemdResolvedDirectory() error = %v", err)
+	}
+	stageName, _, err := createSystemdResolvedStaging(directory, marshalSystemdResolvedValidated(request))
+	if unlockErr := unlockSystemdResolvedDirectory(directory); unlockErr != nil {
+		t.Fatalf("unlockSystemdResolvedDirectory() error = %v", unlockErr)
+	}
+	if err != nil {
+		t.Fatalf("createSystemdResolvedStaging() error = %v", err)
+	}
+
+	observation, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Observe() after staged crash error = %v", err)
+	}
+	assessment, err := observation.Classify()
+	if err != nil || assessment.State != StateAbsent {
+		t.Fatalf("Classify() after staged crash = %#v, %v", assessment, err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixedSystemdResolvedDirectory, stageName)); !os.IsNotExist(err) {
+		t.Fatalf("staged crash artifact remains after recovery: %v", err)
+	}
+
+	_, err = adapter.EnsureIfObserved(t.Context(), request, resolverFingerprint(t, observation))
+	if err != nil {
+		t.Fatalf("EnsureIfObserved() error = %v", err)
+	}
+	directory, err = openSystemdResolvedDirectory(false)
+	if err != nil {
+		t.Fatalf("reopen systemd-resolved directory error = %v", err)
+	}
+	defer directory.Close()
+	if err := lockSystemdResolvedDirectory(t.Context(), directory); err != nil {
+		t.Fatalf("relock systemd-resolved directory error = %v", err)
+	}
+	quarantineName, err := uniqueSystemdResolvedTransactionName(directory, systemdResolvedQuarantinePrefix)
+	if err == nil {
+		err = unix.Renameat2(
+			int(directory.Fd()), fixedSystemdResolvedName,
+			int(directory.Fd()), quarantineName,
+			unix.RENAME_NOREPLACE,
+		)
+	}
+	if err == nil {
+		err = directory.Sync()
+	}
+	if unlockErr := unlockSystemdResolvedDirectory(directory); unlockErr != nil && err == nil {
+		err = unlockErr
+	}
+	if err != nil {
+		t.Fatalf("quarantine exact Harbor artifact error = %v", err)
+	}
+
+	recovered, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Observe() after quarantined crash error = %v", err)
+	}
+	recoveredAssessment, err := recovered.Classify()
+	if err != nil || recoveredAssessment.State != StateExact {
+		t.Fatalf("Classify() after quarantined crash = %#v, %v", recoveredAssessment, err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixedSystemdResolvedDirectory, quarantineName)); !os.IsNotExist(err) {
+		t.Fatalf("quarantine crash artifact remains after recovery: %v", err)
+	}
+	if _, err := adapter.ReleaseIfObserved(t.Context(), request, resolverFingerprint(t, recovered)); err != nil {
+		t.Fatalf("ReleaseIfObserved() cleanup error = %v", err)
+	}
+}
+
 // startSystemdResolvedTestDNSServer serves one deterministic A record through Harbor's nonstandard DNS socket.
 func startSystemdResolvedTestDNSServer(t *testing.T, address string) {
 	t.Helper()

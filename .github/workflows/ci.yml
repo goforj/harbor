@@ -39,7 +39,7 @@ jobs:
         if: runner.os == 'Linux'
         run: go test -c -o "${{ runner.temp }}/harbor-resolver.test" ./internal/platform/resolver
 
-      - name: Exercise Linux systemd-resolved lifecycle as root
+      - name: Exercise Linux systemd-resolved lifecycle and recovery as root
         if: runner.os == 'Linux'
         run: |
           if ! systemctl cat systemd-resolved.service >/dev/null 2>&1; then
@@ -55,7 +55,7 @@ jobs:
           trap cleanup EXIT
           sudo systemctl enable --now systemd-resolved.service
           sudo systemctl restart systemd-resolved.service
-          sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedSystemdResolvedAdapterLifecycle$' -test.v
+          sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedSystemdResolvedAdapter(Lifecycle|CrashRecovery)$' -test.v
 
       - name: Build focused Darwin resolver test
         if: runner.os == 'macOS'
