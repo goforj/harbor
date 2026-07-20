@@ -26,6 +26,8 @@ The hard-restart integration helper now waits in a sleeping loop when it deliber
 
 The Darwin PCB parser accepts the documented AF_INET6 null-bind record whose `INP_IPV4` fact is stored in the canonical padded IPv4 slot. It validates every padding byte and still fails closed on mapped, noncanonical, or contradictory family/address facts. This needs the next real macOS suite result before it is native proof.
 
+Phase 1 acceptance treats retained terminal operations as durable client-visible history, as the snapshot contract specifies. Its completion boundaries now reject only queued, running, or approval-required operations; terminal evidence remains available for the subsequent durable-history assertions.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually

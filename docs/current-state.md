@@ -34,6 +34,8 @@ The hard-restart fixture keeps its deliberately signal-ignoring watcher and list
 
 The Darwin PCB observer recognizes XNU's documented IPv6-family null-bind form that carries a canonical IPv4 fact. It accepts that form only with `INP_IPV4` and zero IPv4-in-IPv6 padding, projects it as IPv4 for conflict classification, and continues to reject mapped, noncanonical, and contradictory address facts.
 
+Phase 1 production acceptance now distinguishes active work from the bounded terminal operation history intentionally retained in every authoritative snapshot. Startup recovery and idempotent removal require no nonterminal operations; they do not erase completed operation evidence.
+
 ## Repository shape
 
 | Path | Role |

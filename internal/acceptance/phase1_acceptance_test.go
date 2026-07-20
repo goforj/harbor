@@ -154,9 +154,8 @@ func TestPhase1ProductionLifecycle(t *testing.T) {
 	thirdObserver := phase1OpenDesktopObserver(t, testContext)
 	startupRecovered := phase1ObserverSnapshot(t, testContext, thirdObserver)
 	phase1AssertProjectAbsent(t, startupRecovered, firstRegistration.Project.ID)
-	if len(startupRecovered.Operations) != 0 {
-		t.Fatalf("D3 readiness exposed active operations after startup recovery: %#v", startupRecovered.Operations)
-	}
+	phase1AssertNoActiveSnapshotOperations(t, startupRecovered, "D3 readiness")
+	phase1RequireTerminalSnapshotOperation(t, startupRecovered, seedOperationID, domain.OperationSucceeded)
 	evidence.check("D3 queued-operation startup recovery before readiness")
 
 	secondProjectPath := phase1WriteProjectFixture(t, sandbox, evidence, "billing", "Phase One Billing")
@@ -182,9 +181,9 @@ func TestPhase1ProductionLifecycle(t *testing.T) {
 	phase1AssertRemovalReplay(t, firstRemoval, replayedRemoval, secondRegistration.Project.ID, removeIntentID)
 	finalSnapshot := phase1ObserverSnapshot(t, testContext, thirdObserver)
 	phase1AssertProjectAbsent(t, finalSnapshot, secondRegistration.Project.ID)
-	if len(finalSnapshot.Operations) != 0 {
-		t.Fatalf("terminal removals remain in the client snapshot: %#v", finalSnapshot.Operations)
-	}
+	phase1AssertNoActiveSnapshotOperations(t, finalSnapshot, "terminal project removal")
+	phase1RequireTerminalSnapshotOperation(t, finalSnapshot, seedOperationID, domain.OperationSucceeded)
+	phase1RequireTerminalSnapshotOperation(t, finalSnapshot, firstRemoval.Operation.ID, domain.OperationSucceeded)
 	evidence.check("concurrent cross-process idempotent project removal")
 
 	phase1RequireGracefulStop(t, testContext, configuration, sandbox, thirdDaemon, thirdObserver)
@@ -239,6 +238,27 @@ func TestPhase1ProductionLifecycle(t *testing.T) {
 	phase1AssertDaemonUnavailable(t, configuration, sandbox)
 	phase1AssertCleanup(t, sandbox)
 	evidence.check("IPC lock runtime WAL and CLI intent cleanup")
+}
+
+// phase1AssertNoActiveSnapshotOperations preserves bounded terminal history while rejecting client-visible work after a completion boundary.
+func phase1AssertNoActiveSnapshotOperations(t *testing.T, snapshot domain.Snapshot, boundary string) {
+	t.Helper()
+	for _, operation := range snapshot.Operations {
+		if !operation.State.IsTerminal() {
+			t.Fatalf("%s exposed active operation %#v in snapshot %#v", boundary, operation, snapshot.Operations)
+		}
+	}
+}
+
+// phase1RequireTerminalSnapshotOperation proves the authoritative client snapshot retains one completed durable outcome.
+func phase1RequireTerminalSnapshotOperation(t *testing.T, snapshot domain.Snapshot, operationID domain.OperationID, state domain.OperationState) {
+	t.Helper()
+	for _, operation := range snapshot.Operations {
+		if operation.ID == operationID && operation.State == state {
+			return
+		}
+	}
+	t.Fatalf("snapshot did not retain terminal operation %q in state %q: %#v", operationID, state, snapshot.Operations)
 }
 
 // phase1ReadAuthorityEvidence invokes the isolated public-root inspector while no daemon owns trust material.
