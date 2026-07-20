@@ -1,8 +1,27 @@
 package migrations
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const unsafeProjectResourcesMigrationName = "2026_07_20_030000_remove_unsafe_project_resources"
+
+// TestUnsafeProjectResourcesMigrationContainsOnlyExecutableSQL keeps prose out of the migration statement boundary.
+func TestUnsafeProjectResourcesMigrationContainsOnlyExecutableSQL(t *testing.T) {
+	sql, err := GetMigrationSQL("harbord/default/" + unsafeProjectResourcesMigrationName + ".up.sql")
+	if err != nil {
+		t.Fatalf("read unsafe resource migration SQL: %v", err)
+	}
+	statements := splitSQLStatements(sql)
+	if len(statements) != 1 {
+		t.Fatalf("unsafe resource migration statements = %#v, want one DELETE statement", statements)
+	}
+	want := "DELETE FROM project_resources\nWHERE resource_id <> 'app-http'"
+	if got := strings.TrimSpace(statements[0]); got != want {
+		t.Fatalf("unsafe resource migration statement = %q, want %q", got, want)
+	}
+}
 
 // TestUnsafeProjectResourcesMigrationRetainsOnlyTheReadinessProof verifies older optional framework links cannot prevent safe daemon snapshots.
 func TestUnsafeProjectResourcesMigrationRetainsOnlyTheReadinessProof(t *testing.T) {
