@@ -28,6 +28,8 @@ The Darwin PCB parser accepts the documented AF_INET6 null-bind record whose `IN
 
 Phase 1 acceptance treats retained terminal operations as durable client-visible history, as the snapshot contract specifies. Its completion boundaries now reject only queued, running, or approval-required operations; terminal evidence remains available for the subsequent durable-history assertions.
 
+The Unix transport integration now waits for authenticated server acceptance before closing its client. This removes a test-only close race with Darwin `LOCAL_PEERCRED`; peer admission itself remains fail-closed.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually

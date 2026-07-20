@@ -55,10 +55,10 @@ func TestDefaultUnixTransportUsesRuntimeDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial discovered Unix endpoint: %v", err)
 	}
-	if err := connection.Close(); err != nil {
-		t.Fatalf("close discovered Unix connection: %v", err)
-	}
 	if err := <-accepted; err != nil {
 		t.Fatalf("accept discovered Unix connection: %v", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatalf("close discovered Unix connection: %v", err)
 	}
 }

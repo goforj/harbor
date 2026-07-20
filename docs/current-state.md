@@ -36,6 +36,8 @@ The Darwin PCB observer recognizes XNU's documented IPv6-family null-bind form t
 
 Phase 1 production acceptance now distinguishes active work from the bounded terminal operation history intentionally retained in every authoritative snapshot. Startup recovery and idempotent removal require no nonterminal operations; they do not erase completed operation evidence.
 
+The native Unix IPC integration keeps its client connected until server-side peer admission completes. This preserves Darwin's `LOCAL_PEERCRED` boundary under test rather than converting a deliberately closed socket into a credential retry path.
+
 ## Repository shape
 
 | Path | Role |
