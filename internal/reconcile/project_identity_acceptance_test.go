@@ -87,7 +87,6 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		}
 	})
 
-	ready := make([]state.ProjectRecord, 0, len(projects))
 	for index, project := range projects {
 		operationID := domain.OperationID(fmt.Sprintf("operation-start-generated-%d", index+1))
 		queued, err := coordinator.Start(ctx, ProjectStartRequest{
@@ -98,6 +97,10 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		if err != nil || queued.Operation.State != domain.OperationQueued {
 			t.Fatalf("start generated project %q = %#v, %v", project.id, queued, err)
 		}
+	}
+
+	ready := make([]state.ProjectRecord, 0, len(projects))
+	for _, project := range projects {
 		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady))
 	}
 
