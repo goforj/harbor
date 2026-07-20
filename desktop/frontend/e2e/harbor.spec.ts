@@ -22,6 +22,8 @@ test('keeps branded artwork behind the application surface in both themes', asyn
 
   const artwork = page.locator('.harbor-illustration')
   await expect(artwork).toHaveAttribute('aria-hidden', 'true')
+  await expect(artwork).toHaveAttribute('data-size', 'wide')
+  await expect(artwork).toHaveAttribute('data-fade', 'soft')
 
   const light = await artwork.evaluate((element) => {
     const styles = getComputedStyle(element)

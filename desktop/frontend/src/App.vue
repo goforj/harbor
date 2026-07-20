@@ -76,7 +76,7 @@ onBeforeUnmount(() => {
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="harbor-workspace" :data-has-detail="hasDetail">
-      <HarborIllustration :image="harborBackground" />
+      <HarborIllustration :image="harborBackground" size="wide" fade="soft" />
 
       <Badge
         v-if="harborBridgeMode === 'fixture'"
