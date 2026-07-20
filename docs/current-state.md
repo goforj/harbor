@@ -190,7 +190,7 @@ Implemented foundations include:
 
 Important incomplete work:
 
-- Windows NRPT portable tests and cross-compilation pass, but production helper/daemon providers still select the unsupported implementation; fixed-path PowerShell execution, complete native-field repair policy, helper dependencies, and native lifecycle/cleanup proof remain absent;
+- Windows NRPT portable tests and cross-compilation pass, but production helper/daemon providers still select the unsupported implementation; complete native-field repair policy, helper dependencies, and native lifecycle/cleanup proof remain absent;
 - trust-store installation and complete trusted-HTTPS product proof are absent;
 - low-port mechanisms and native-port service relays are not complete product paths;
 - the required three-real-project, full-stack acceptance test has not been reached.

@@ -13,9 +13,12 @@ import (
 	"io"
 	"net/netip"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -53,13 +56,15 @@ type windowsNRPTCommandRunner interface {
 }
 
 // windowsNativePowerShellRunner owns the Windows PowerShell process boundary.
-type windowsNativePowerShellRunner struct{}
+type windowsNativePowerShellRunner struct {
+	executable func() (string, error)
+}
 
 var _ windowsNRPTStore = windowsNativeNRPTStore{}
 
 // New creates a resolver adapter backed by Windows 11's local NRPT DnsClient provider.
 func New() *Adapter {
-	return newAdapter(newWindowsNRPTBackend(windowsNativeNRPTStore{runner: windowsNativePowerShellRunner{}}))
+	return newAdapter(newWindowsNRPTBackend(windowsNativeNRPTStore{runner: windowsNativePowerShellRunner{executable: windowsPowerShellExecutable}}))
 }
 
 // snapshot obtains one complete relevant local NRPT snapshot from the static program.
@@ -226,12 +231,19 @@ func validateWindowsNRPTCommandRequest(request windowsNRPTCommandRequest) error 
 }
 
 // run executes only the embedded program and bounds both output streams without command interpolation.
-func (windowsNativePowerShellRunner) run(ctx context.Context, input []byte) ([]byte, error) {
+func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byte) ([]byte, error) {
+	if runner.executable == nil {
+		return nil, errors.New("execute Windows NRPT PowerShell: missing fixed executable lookup")
+	}
+	executable, err := runner.executable()
+	if err != nil {
+		return nil, err
+	}
 	stdout := newWindowsNRPTBoundedBuffer(maximumWindowsNRPTOutputBytes)
 	stderr := newWindowsNRPTBoundedBuffer(maximumWindowsNRPTDiagnosticBytes)
 	command := exec.CommandContext(
 		ctx,
-		"powershell.exe",
+		executable,
 		"-NoLogo",
 		"-NoProfile",
 		"-NonInteractive",
@@ -241,7 +253,7 @@ func (windowsNativePowerShellRunner) run(ctx context.Context, input []byte) ([]b
 	command.Stdin = bytes.NewReader(input)
 	command.Stdout = stdout
 	command.Stderr = stderr
-	err := command.Run()
+	err = command.Run()
 	if stdout.exceeded {
 		return nil, fmt.Errorf("Windows NRPT output exceeds %d bytes", maximumWindowsNRPTOutputBytes)
 	}
@@ -259,6 +271,26 @@ func (windowsNativePowerShellRunner) run(ctx context.Context, input []byte) ([]b
 		return nil, fmt.Errorf("Windows NRPT PowerShell wrote unexpected diagnostics: %s", windowsNRPTDisplayDiagnostic(stderr.String()))
 	}
 	return append([]byte(nil), stdout.Bytes()...), nil
+}
+
+// windowsPowerShellExecutable resolves the fixed Windows PowerShell host without inheriting a caller-controlled PATH.
+func windowsPowerShellExecutable() (string, error) {
+	return windowsPowerShellExecutableFromSystemDirectory(windows.GetSystemDirectory)
+}
+
+// windowsPowerShellExecutableFromSystemDirectory validates the native system location before deriving the allowlisted PowerShell host.
+func windowsPowerShellExecutableFromSystemDirectory(systemDirectory func() (string, error)) (string, error) {
+	if systemDirectory == nil {
+		return "", errors.New("locate Windows PowerShell system directory: nil lookup")
+	}
+	directory, err := systemDirectory()
+	if err != nil {
+		return "", fmt.Errorf("locate Windows PowerShell system directory: %w", err)
+	}
+	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return "", errors.New("locate Windows PowerShell system directory: invalid native path")
+	}
+	return filepath.Join(directory, "WindowsPowerShell", "v1.0", "powershell.exe"), nil
 }
 
 // windowsNRPTBoundedBuffer retains only a fixed prefix while allowing the child process to terminate normally.

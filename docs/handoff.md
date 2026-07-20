@@ -204,7 +204,7 @@ The implementation is also much larger than expected for one fixed `systemd-reso
 The Windows NRPT core is also a committed foundation. Its portable focused/full package tests, vet, and Windows cross-compile pass, but it remains incomplete:
 
 - it is not wired into helper or daemon providers, so Windows still selects the unsupported implementation;
-- it invokes bare `powershell.exe`, which is incompatible with the helper's cleared-environment, fixed-path execution boundary;
+- its native runner now derives the fixed Windows PowerShell executable from the native system-directory API rather than a caller-controlled `PATH`;
 - native exactness ignores latent NRPT fields such as IPsec CA restrictions, DirectAccess settings, and DNSSEC encryption, while repair does not clear them;
 - helper dependency admission, native add/observe/set/release/CAS/cleanup tests, and Go/PowerShell fingerprint-parity evidence are absent.
 
