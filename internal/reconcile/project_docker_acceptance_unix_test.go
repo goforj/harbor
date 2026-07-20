@@ -85,7 +85,15 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	ready := make([]state.ProjectRecord, 0, len(projects))
 	for _, project := range projects {
 		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady))
-		assertGeneratedComposeServices(t, ctx, store, supervisor, project)
+	}
+	before := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
+	for _, project := range projects {
+		observation := assertGeneratedComposeServices(t, ctx, store, supervisor, project)
+		assertGeneratedComposeLogs(t, ctx, store, supervisor, project, observation)
+	}
+	after := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
+	if !sameGeneratedComposeContainerIDs(before, after) {
+		t.Fatalf("generated Compose container IDs changed across Harbor observation: before=%v after=%v", before, after)
 	}
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
 
@@ -123,7 +131,7 @@ func assertGeneratedComposeServices(
 	store *state.Store,
 	supervisor *projectprocess.Supervisor,
 	project projectIdentityAcceptanceProject,
-) {
+) projectprocess.ServiceObservation {
 	t.Helper()
 	session, err := store.ActiveProjectSession(ctx, project.id)
 	if err != nil {
@@ -136,4 +144,76 @@ func assertGeneratedComposeServices(
 	if !observation.Supported || len(observation.Services) == 0 {
 		t.Fatalf("generated Compose services for %q = %#v, want one or more admitted services", project.id, observation)
 	}
+	return observation
+}
+
+// assertGeneratedComposeLogs opens one exact service follower so the generated project cannot satisfy service discovery while its log boundary is unusable.
+func assertGeneratedComposeLogs(
+	t *testing.T,
+	ctx context.Context,
+	store *state.Store,
+	supervisor *projectprocess.Supervisor,
+	project projectIdentityAcceptanceProject,
+	observation projectprocess.ServiceObservation,
+) {
+	t.Helper()
+	session, err := store.ActiveProjectSession(ctx, project.id)
+	if err != nil {
+		t.Fatalf("read generated Compose session %q for logs: %v", project.id, err)
+	}
+	selection, err := supervisor.ReadServiceLogs(ctx, project.id, session.ID, observation.Services[0].ID, 0)
+	if err != nil {
+		t.Fatalf("read generated Compose logs for %q: %v", project.id, err)
+	}
+	if !selection.Supported || !selection.Available || selection.Problem != nil {
+		t.Fatalf("generated Compose logs for %q = %#v, want supported available follower without problem", project.id, selection)
+	}
+}
+
+// observeGeneratedComposeContainerIDs records exact admitted container ownership for every generated checkout and rejects any shared runtime identity.
+func observeGeneratedComposeContainerIDs(
+	t *testing.T,
+	ctx context.Context,
+	runtime *containerruntime.DockerRuntime,
+	projects []projectIdentityAcceptanceProject,
+) map[string]domain.ProjectID {
+	t.Helper()
+	identities := make(map[string]domain.ProjectID)
+	for _, project := range projects {
+		observation, err := runtime.ObserveProject(ctx, project.project.Root)
+		if err != nil {
+			t.Fatalf("observe generated Compose runtime for %q: %v", project.id, err)
+		}
+		for _, service := range observation.Services {
+			if !service.Active {
+				continue
+			}
+			for _, container := range service.Containers {
+				if container.ID == "" {
+					t.Fatalf("generated Compose service %q for %q has an empty container ID", service.ID, project.id)
+				}
+				if owner, exists := identities[container.ID]; exists {
+					t.Fatalf("generated Compose container %q is admitted to both %q and %q", container.ID, owner, project.id)
+				}
+				identities[container.ID] = project.id
+			}
+		}
+	}
+	if len(identities) == 0 {
+		t.Fatal("generated Compose runtime has no admitted container IDs")
+	}
+	return identities
+}
+
+// sameGeneratedComposeContainerIDs compares exact admitted container identity ownership without depending on map iteration order.
+func sameGeneratedComposeContainerIDs(left, right map[string]domain.ProjectID) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for identity, owner := range left {
+		if right[identity] != owner {
+			return false
+		}
+	}
+	return true
 }
