@@ -23,12 +23,16 @@ const (
 	networkInitializeTestDigestMigrationName = "2026_07_18_175743_add_network_release_set_digest"
 	// networkInitializeTestStageMigrationName identifies the identity-stage compatibility upgrade.
 	networkInitializeTestStageMigrationName = "2026_07_19_120000_add_network_stage"
+	// networkInitializeTestSetupPlanMigrationName supplies the composite operation revision key used by approval plans.
+	networkInitializeTestSetupPlanMigrationName = "2026_07_19_130000_create_network_setup_plans"
 	// networkInitializeTestOwnershipMigrationName identifies the daemon ownership projection schema.
 	networkInitializeTestOwnershipMigrationName = "2026_07_19_115139_create_machine_ownership_projections"
 	// networkInitializeTestOwnershipPolicyMigrationName identifies the policy-bound ownership projection upgrade.
 	networkInitializeTestOwnershipPolicyMigrationName = "2026_07_19_150000_add_machine_ownership_network_policy_fingerprint"
 	// networkInitializeTestResolverStageMigrationName identifies the resolver-authority lifecycle upgrade.
 	networkInitializeTestResolverStageMigrationName = "2026_07_20_010000_add_network_resolver_stage"
+	// networkInitializeTestResolverSetupPlanMigrationName identifies resolver approval persistence.
+	networkInitializeTestResolverSetupPlanMigrationName = "2026_07_20_020000_create_network_resolver_setup_plans"
 )
 
 // TestStoreInitializeNetworkCommitsCompleteAggregate verifies the first write owns one global revision and every hidden host fact.
@@ -860,9 +864,11 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 		networkInitializeTestMigrationName,
 		networkInitializeTestDigestMigrationName,
 		networkInitializeTestStageMigrationName,
+		networkInitializeTestSetupPlanMigrationName,
 		networkInitializeTestOwnershipMigrationName,
 		networkInitializeTestOwnershipPolicyMigrationName,
 		networkInitializeTestResolverStageMigrationName,
+		networkInitializeTestResolverSetupPlanMigrationName,
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {
