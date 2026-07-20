@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -25,6 +26,8 @@ const (
 	maximumWindowsNRPTDisplayNameBytes = 512
 	maximumWindowsNRPTCommentBytes     = 1024
 )
+
+var errWindowsNRPTLatentSecurityState = errors.New("Windows NRPT owned rule has latent DirectAccess or DNSSEC state that Harbor cannot repair safely")
 
 // windowsNRPTRule is the complete reviewed property set of one local DnsClientNrptRule instance.
 type windowsNRPTRule struct {
@@ -123,10 +126,50 @@ func (backend *windowsNRPTBackend) ensure(
 		if err != nil {
 			return err
 		}
+		if err := backend.rejectWindowsNRPTLatentSecurityState(ctx, request, before, guard); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("Windows NRPT ensure rejected state %q", assessment.State)
 	}
 	return backend.store.ensure(ctx, request, expected, guard)
+}
+
+// rejectWindowsNRPTLatentSecurityState fails before mutation when an owned drift carries fields Harbor cannot yet normalize safely.
+func (backend *windowsNRPTBackend) rejectWindowsNRPTLatentSecurityState(
+	ctx context.Context,
+	request Request,
+	before Observation,
+	guard windowsNRPTGuard,
+) error {
+	rules, err := backend.store.snapshot(ctx, request)
+	if err != nil {
+		return fmt.Errorf("reobserve Windows NRPT latent security state: %w", err)
+	}
+	current, err := windowsNRPTObservationFromRules(ctx, request, rules)
+	if err != nil {
+		return fmt.Errorf("classify Windows NRPT latent security state: %w", err)
+	}
+	beforeFingerprint, err := before.Fingerprint()
+	if err != nil {
+		return err
+	}
+	currentFingerprint, err := current.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if currentFingerprint != beforeFingerprint {
+		return fmt.Errorf("Windows NRPT state changed before latent security inspection")
+	}
+	for _, rule := range rules {
+		if rule.Name == guard.Name {
+			if windowsNRPTRuleHasLatentSecurityState(rule) {
+				return errWindowsNRPTLatentSecurityState
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("Windows NRPT owned rule disappeared before latent security inspection")
 }
 
 // release removes only the uniquely owned rule represented by an unchanged complete observation.
@@ -406,6 +449,16 @@ func windowsNRPTRuleNativeExact(rule windowsNRPTRule, request Request) bool {
 		rule.NameEncoding == "Disable" &&
 		rule.DisplayName == windowsNRPTDisplayName(request) &&
 		rule.Comment == windowsNRPTOwnerComment(request)
+}
+
+// windowsNRPTRuleHasLatentSecurityState identifies fields whose safe reset still requires a native contract and proof.
+func windowsNRPTRuleHasLatentSecurityState(rule windowsNRPTRule) bool {
+	return rule.IPsecCARestriction != "" ||
+		len(rule.DirectAccessDNSServers) != 0 ||
+		rule.DirectAccessProxyType != "" ||
+		rule.DirectAccessProxyName != "" ||
+		rule.DirectAccessQueryIPsecEncryption != "" ||
+		rule.DNSSecQueryIPsecEncryption != ""
 }
 
 // windowsNRPTDisplayName derives the stable local destination name from Harbor's installation identity.

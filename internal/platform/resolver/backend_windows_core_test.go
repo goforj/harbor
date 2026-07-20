@@ -378,6 +378,75 @@ func TestWindowsNRPTNativeExactRejectsLatentSecurityState(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTBackendRejectsLatentSecurityRepair prevents an incomplete Set-DnsClientNrptRule call from touching latent security fields.
+func TestWindowsNRPTBackendRejectsLatentSecurityRepair(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
+	latent := windowsNRPTTestExactRule(request)
+	latent.IPsecCARestriction = "CA"
+	store := &windowsNRPTFakeStore{rules: []windowsNRPTRule{latent}}
+	adapter := newAdapter(newWindowsNRPTBackend(store))
+
+	observation, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Observe() error = %v", err)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint() error = %v", err)
+	}
+	_, err = adapter.EnsureIfObserved(t.Context(), request, fingerprint)
+	if !errors.Is(err, errWindowsNRPTLatentSecurityState) {
+		t.Fatalf("EnsureIfObserved() error = %v, want latent security repair rejection", err)
+	}
+	if store.ensureCalls != 0 {
+		t.Fatalf("EnsureIfObserved() called native ensure %d times, want zero", store.ensureCalls)
+	}
+}
+
+// TestWindowsNRPTLatentSecurityRecheckRejectsErrorsAndDrift keeps the pre-mutation raw snapshot from becoming an alternate authority.
+func TestWindowsNRPTLatentSecurityRecheckRejectsErrorsAndDrift(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
+	baseline := windowsNRPTTestExactRule(request)
+	before, err := windowsNRPTObservationFromRules(t.Context(), request, []windowsNRPTRule{baseline})
+	if err != nil {
+		t.Fatalf("windowsNRPTObservationFromRules() error = %v", err)
+	}
+	guard := windowsNRPTGuard{
+		Exists:                 true,
+		Name:                   baseline.Name,
+		NativeAttributesSHA256: windowsNRPTRuleFingerprint(baseline),
+	}
+	tests := []struct {
+		name  string
+		store *windowsNRPTFakeStore
+		want  string
+	}{
+		{
+			name:  "snapshot error",
+			store: &windowsNRPTFakeStore{snapshotErr: errors.New("native unavailable")},
+			want:  "reobserve Windows NRPT latent security state",
+		},
+		{
+			name: "snapshot drift",
+			store: &windowsNRPTFakeStore{rules: []windowsNRPTRule{func() windowsNRPTRule {
+				candidate := baseline
+				candidate.NameServers = []string{"127.77.1.99"}
+				return candidate
+			}()}},
+			want: "state changed before latent security inspection",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &windowsNRPTBackend{store: test.store}
+			err := backend.rejectWindowsNRPTLatentSecurityState(t.Context(), request, before, guard)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("rejectWindowsNRPTLatentSecurityState() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 // TestWindowsNRPTExpectedRulesDeduplicatesMultiNamespaceFacts keeps one complete native CAS identity per rule.
 func TestWindowsNRPTExpectedRulesDeduplicatesMultiNamespaceFacts(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
