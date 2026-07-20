@@ -174,6 +174,30 @@ func TestRuntimeRepairArgumentEvidenceRejectsUnsafeBounds(t *testing.T) {
 	}
 }
 
+// TestRuntimeRepairArgumentEvidenceBindsExecutableIdentity rejects a basename-only argv spoof.
+func TestRuntimeRepairArgumentEvidenceBindsExecutableIdentity(t *testing.T) {
+	_, _, exact, err := runtimeRepairArgumentEvidenceForExecutable(
+		"/opt/goforj/bin/forj",
+		[]string{"/tmp/forj", "dev"},
+	)
+	if err != nil {
+		t.Fatalf("runtimeRepairArgumentEvidenceForExecutable() error = %v", err)
+	}
+	if exact {
+		t.Fatal("basename-only argv spoof was accepted as exact forj dev")
+	}
+	_, _, exact, err = runtimeRepairArgumentEvidenceForExecutable(
+		"/opt/goforj/bin/forj",
+		[]string{"/opt/goforj/bin/forj", "dev"},
+	)
+	if err != nil {
+		t.Fatalf("runtimeRepairArgumentEvidenceForExecutable(valid) error = %v", err)
+	}
+	if !exact {
+		t.Fatal("canonical executable argv was not accepted as exact forj dev")
+	}
+}
+
 // TestRuntimeRepairObservationRequiresExactDedicatedRoot covers command, process-group, and checkout authority.
 func TestRuntimeRepairObservationRequiresExactDedicatedRoot(t *testing.T) {
 	observation := runtimeRepairTestObservation(t)

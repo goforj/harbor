@@ -747,6 +747,11 @@ func runtimeRepairDescendsFromRoot(pid, rootPID int, members map[int]runtimeRepa
 
 // runtimeRepairArgumentEvidence immediately reduces exact argv text to bounded receipt evidence.
 func runtimeRepairArgumentEvidence(arguments []string) (string, int, bool, error) {
+	return runtimeRepairArgumentEvidenceForExecutable("", arguments)
+}
+
+// runtimeRepairArgumentEvidenceForExecutable reduces argv while binding the exact root command to its observed executable.
+func runtimeRepairArgumentEvidenceForExecutable(executable string, arguments []string) (string, int, bool, error) {
 	if len(arguments) == 0 || len(arguments) > runtimeRepairMaximumArguments {
 		return "", 0, false, fmt.Errorf("runtime repair argument count must be from 1 through %d", runtimeRepairMaximumArguments)
 	}
@@ -761,7 +766,8 @@ func runtimeRepairArgumentEvidence(arguments []string) (string, int, bool, error
 		_, _ = hash.Write(length)
 		_, _ = hash.Write([]byte(argument))
 	}
-	commandExact := len(arguments) == 2 && filepath.Base(arguments[0]) == "forj" && arguments[1] == "dev"
+	commandExact := len(arguments) == 2 && arguments[1] == "dev" &&
+		((executable != "" && arguments[0] == executable) || (executable == "" && filepath.Base(arguments[0]) == "forj"))
 	return hex.EncodeToString(hash.Sum(nil)), len(arguments), commandExact, nil
 }
 

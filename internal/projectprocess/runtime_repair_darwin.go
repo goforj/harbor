@@ -235,7 +235,7 @@ func observeDarwinRuntimeRepairProcess(process unix.KinfoProc, sessionID int) (r
 	if err != nil {
 		return runtimeRepairProcessFact{}, err
 	}
-	argumentDigest, argumentCount, commandExact, err := runtimeRepairArgumentEvidence(arguments)
+	argumentDigest, argumentCount, commandExact, err := runtimeRepairArgumentEvidenceForExecutable(executable, arguments)
 	arguments = nil
 	if err != nil {
 		return runtimeRepairProcessFact{}, fmt.Errorf("reduce Darwin process argv: %w", errDarwinRuntimeRepairUnreadable)
