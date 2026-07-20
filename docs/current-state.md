@@ -38,6 +38,8 @@ Phase 1 production acceptance now distinguishes active work from the bounded ter
 
 The native Unix IPC integration keeps its client connected until server-side peer admission completes. This preserves Darwin's `LOCAL_PEERCRED` boundary under test rather than converting a deliberately closed socket into a credential retry path.
 
+The opt-in root Linux resolver test now appends a 4 KiB-capped native cause when its initial public observation fails. The production error remains typed and redacted; this diagnostic exists only to identify a native CI setup or parser fault before changing recovery behavior.
+
 ## Repository shape
 
 | Path | Role |

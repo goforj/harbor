@@ -30,6 +30,8 @@ Phase 1 acceptance treats retained terminal operations as durable client-visible
 
 The Unix transport integration now waits for authenticated server acceptance before closing its client. This removes a test-only close race with Darwin `LOCAL_PEERCRED`; peer admission itself remains fail-closed.
 
+The privileged Linux resolver test preserves the public `observe-failed` contract but adds a 4 KiB-capped unwrapped native cause to its root-only failure report. Use that evidence before changing the `systemd-resolved` parser, reset fixture, or crash-recovery policy.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually

@@ -334,7 +334,7 @@ func TestPrivilegedSystemdResolvedAdapterLifecycle(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
 	startSystemdResolvedTestDNSServer(t, request.Endpoint().String())
 	adapter := New()
-	before, err := adapter.Observe(t.Context(), request)
+	before, err := observePrivilegedSystemdResolved(t.Context(), adapter, request)
 	if err != nil {
 		t.Fatalf("Observe() before error = %v", err)
 	}
@@ -378,6 +378,24 @@ func TestPrivilegedSystemdResolvedAdapterLifecycle(t *testing.T) {
 	if err != nil || releasedAssessment.State != StateAbsent {
 		t.Fatalf("Classify() released = %#v, %v", releasedAssessment, err)
 	}
+}
+
+// observePrivilegedSystemdResolved adds a bounded native cause only to the opt-in root-host diagnostic path.
+func observePrivilegedSystemdResolved(ctx context.Context, adapter *Adapter, request Request) (Observation, error) {
+	observation, err := adapter.Observe(ctx, request)
+	if err == nil {
+		return observation, nil
+	}
+	var resolverError *Error
+	if !errors.As(err, &resolverError) || resolverError.Unwrap() == nil {
+		return observation, err
+	}
+	cause := resolverError.Unwrap().Error()
+	const maximumDiagnosticBytes = 4096
+	if len(cause) > maximumDiagnosticBytes {
+		cause = cause[:maximumDiagnosticBytes] + "...[truncated]"
+	}
+	return observation, fmt.Errorf("%w; native cause: %s", err, cause)
 }
 
 // TestPrivilegedSystemdResolvedAdapterCrashRecovery proves Harbor repairs only its own interrupted stage and quarantine states.
