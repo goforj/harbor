@@ -98,6 +98,58 @@ type DockerProjectRequirement struct {
 	ServicePort uint16
 }
 
+// WriteDockerProjectEvidence writes one exclusive lifecycle and cleanup manifest into an empty direct evidence directory.
+func WriteDockerProjectEvidence(directory string, lifecycle DockerProjectEvidence, cleanup DockerCleanupEvidence) error {
+	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return fmt.Errorf("evidence directory %q must be an absolute clean path", directory)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("create evidence directory: %w", err)
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return fmt.Errorf("inspect evidence directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("evidence directory %q is not a direct directory", directory)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read evidence directory: %w", err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("evidence directory %q is not empty", directory)
+	}
+	if err := writeEvidenceFile(directory, "docker-projects.json", lifecycle); err != nil {
+		return err
+	}
+	if err := writeEvidenceFile(directory, "docker-cleanup.json", cleanup); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeEvidenceFile serializes one fixed manifest without following an existing artifact path.
+func writeEvidenceFile(directory, name string, evidence any) (writeErr error) {
+	contents, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode evidence %q: %w", name, err)
+	}
+	contents = append(contents, '\n')
+	path := filepath.Join(directory, name)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create evidence %q: %w", name, err)
+	}
+	defer func() {
+		writeErr = errors.Join(writeErr, file.Close())
+	}()
+	if _, err := file.Write(contents); err != nil {
+		return fmt.Errorf("write evidence %q: %w", name, err)
+	}
+	return nil
+}
+
 // VerifyDockerProjectEvidenceDirectory verifies exactly one lifecycle and cleanup manifest for every required platform.
 func VerifyDockerProjectEvidenceDirectory(root string, requirement DockerProjectRequirement) error {
 	if root == "" {

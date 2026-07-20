@@ -100,6 +100,27 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsUntrustedDocuments(t *testin
 	}
 }
 
+// TestWriteDockerProjectEvidenceCreatesOnlyTheFixedManifests keeps a native worker from uploading arbitrary or replaced artifact paths.
+func TestWriteDockerProjectEvidenceCreatesOnlyTheFixedManifests(t *testing.T) {
+	t.Parallel()
+
+	directory := filepath.Join(t.TempDir(), "evidence")
+	lifecycle := validDockerProjectFixture("linux")
+	cleanup := validDockerCleanupFixture("linux")
+	if err := WriteDockerProjectEvidence(directory, lifecycle, cleanup); err != nil {
+		t.Fatalf("write Docker project evidence: %v", err)
+	}
+	if err := VerifyDockerProjectEvidenceDirectory(filepath.Dir(directory), DockerProjectRequirement{Commit: "abc123", Platforms: []string{"linux"}, AppPort: 3000, ServicePort: 3306}); err != nil {
+		t.Fatalf("verify written Docker project evidence: %v", err)
+	}
+	if err := WriteDockerProjectEvidence(directory, lifecycle, cleanup); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("expected non-empty evidence directory rejection, got %v", err)
+	}
+	if err := WriteDockerProjectEvidence("relative", lifecycle, cleanup); err == nil || !strings.Contains(err.Error(), "absolute clean path") {
+		t.Fatalf("expected relative evidence directory rejection, got %v", err)
+	}
+}
+
 // validDockerProjectFixture builds a complete generated-project lifecycle manifest for verifier tests.
 func validDockerProjectFixture(platform string) DockerProjectEvidence {
 	return DockerProjectEvidence{
