@@ -49,6 +49,10 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			wantErr:     true,
 		},
 		{
+			name:        "exact minimum source pseudo version",
+			information: compatibleGoForjBuildInfo("v0.0.0-20260719152622-bf5f5e65ab64", minimumGoForjRevision, false),
+		},
+		{
 			name:        "development without revision",
 			information: compatibleGoForjBuildInfo("(devel)", "", false),
 			wantErr:     true,

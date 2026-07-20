@@ -65,19 +65,19 @@ func verifyGoForjExecutable(path string, reader buildInformationReader) error {
 		if semver.Compare(version, minimumGoForjVersion) >= 0 {
 			return nil
 		}
+		if cleanMinimumRevisionProvesCompatibility(information) {
+			return nil
+		}
 		return incompatibleGoForjError(path, fmt.Sprintf("version %q is older than required version %q", version, minimumGoForjVersion))
 	}
-	if developmentBuildProvesMinimum(information, version) {
+	if cleanMinimumRevisionProvesCompatibility(information) && developmentVersionMayUseRevision(version) {
 		return nil
 	}
 	return incompatibleGoForjError(path, fmt.Sprintf("version %q cannot prove managed project address support", version))
 }
 
-// developmentBuildProvesMinimum admits the exact clean source revision used by hosted acceptance builds when Go omits module versioning.
-func developmentBuildProvesMinimum(information *debug.BuildInfo, version string) bool {
-	if version != "" && version != "(devel)" && version != "devel" && version != "dev" {
-		return false
-	}
+// cleanMinimumRevisionProvesCompatibility admits the exact clean source revision that defines Harbor's address contract.
+func cleanMinimumRevisionProvesCompatibility(information *debug.BuildInfo) bool {
 	revision := ""
 	modified := ""
 	for _, setting := range information.Settings {
@@ -89,6 +89,11 @@ func developmentBuildProvesMinimum(information *debug.BuildInfo, version string)
 		}
 	}
 	return revision == minimumGoForjRevision && modified == "false"
+}
+
+// developmentVersionMayUseRevision limits revision-based admission to Go's unversioned development metadata.
+func developmentVersionMayUseRevision(version string) bool {
+	return version == "" || version == "(devel)" || version == "devel" || version == "dev"
 }
 
 // incompatibleGoForjError keeps every preflight failure actionable without asking callers to interpret build metadata.
