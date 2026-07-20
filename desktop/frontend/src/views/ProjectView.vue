@@ -523,7 +523,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </TabsContent>
 
         <TabsContent value="services" class="m-0 flex min-h-0 flex-1 flex-col">
-          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="-mx-5 -mt-5 flex min-h-0 flex-1 flex-col gap-0 lg:-mx-7">
+          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="-mx-5 flex min-h-0 flex-1 flex-col gap-0 pt-2 lg:-mx-7">
             <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
               <TabsTrigger
                 v-for="service in project.services"
