@@ -157,6 +157,15 @@ func (fixture *projectLifecycleRevisionRaceSupervisor) Start(
 	return nil, errors.New("unexpected process launch after project revision drift")
 }
 
+// ReadOutput returns no transcript because the revision-race fixture never accepts a process launch.
+func (*projectLifecycleRevisionRaceSupervisor) ReadOutput(
+	domain.ProjectID,
+	domain.SessionID,
+	uint64,
+) projectprocess.OutputChunk {
+	return projectprocess.OutputChunk{}
+}
+
 // Stop is inert because the revision-race fixture never accepts a process.
 func (*projectLifecycleRevisionRaceSupervisor) Stop(context.Context, domain.ProjectID, domain.SessionID) error {
 	return nil
@@ -370,6 +379,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	if err != nil || startOperation.Operation.State != domain.OperationSucceeded {
 		t.Fatalf("start operation = %#v, %v", startOperation, err)
 	}
+	waitForProjectLifecycleRouteStates(t, routes, []domain.ProjectState{domain.ProjectReady})
 
 	stopping, err := coordinator.Stop(t.Context(), ProjectStopRequest{
 		ProjectID: project.ID, OperationID: "operation-stop", IntentID: "intent-stop",
@@ -614,7 +624,16 @@ func TestProjectLifecycleCoordinatorCancelsAdmissionDuringDaemonShutdown(t *test
 // newProjectLifecycleIntegrationState creates one fully migrated named harbord database.
 func newProjectLifecycleIntegrationState(t *testing.T) (*state.Store, *state.OperationJournal) {
 	t.Helper()
-	databasePath := filepath.Join(t.TempDir(), "harbord.db")
+	return openProjectLifecycleIntegrationState(t, filepath.Join(t.TempDir(), "harbord.db"), true)
+}
+
+// openProjectLifecycleIntegrationState opens one database generation and optionally applies the production migrations.
+func openProjectLifecycleIntegrationState(
+	t *testing.T,
+	databasePath string,
+	applyMigrations bool,
+) (*state.Store, *state.OperationJournal) {
+	t.Helper()
 	t.Setenv("DB_HARBORD_DRIVER", "sqlite")
 	t.Setenv("DB_HARBORD_DSN", databasePath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_txlock=immediate")
 	connections := database.NewConnections(inspects.NewManager())
@@ -623,18 +642,20 @@ func newProjectLifecycleIntegrationState(t *testing.T) (*state.Store, *state.Ope
 			t.Errorf("close lifecycle database: %v", err)
 		}
 	})
-	connection, err := connections.GetHarbord()
-	if err != nil {
-		t.Fatalf("open lifecycle database: %v", err)
-	}
-	registered := append([]migrations.Migration(nil), migrations.GetMigrations()...)
-	sort.Slice(registered, func(left int, right int) bool { return registered[left].Name() < registered[right].Name() })
-	for _, migration := range registered {
-		if migration.App() != "harbord" || migration.Connection() != "default" || (migration.Driver() != "" && migration.Driver() != "sqlite") {
-			continue
+	if applyMigrations {
+		connection, err := connections.GetHarbord()
+		if err != nil {
+			t.Fatalf("open lifecycle database: %v", err)
 		}
-		if err := migration.Up(connection); err != nil {
-			t.Fatalf("apply lifecycle migration %s: %v", migration.Name(), err)
+		registered := append([]migrations.Migration(nil), migrations.GetMigrations()...)
+		sort.Slice(registered, func(left int, right int) bool { return registered[left].Name() < registered[right].Name() })
+		for _, migration := range registered {
+			if migration.App() != "harbord" || migration.Connection() != "default" || (migration.Driver() != "" && migration.Driver() != "sqlite") {
+				continue
+			}
+			if err := migration.Up(connection); err != nil {
+				t.Fatalf("apply lifecycle migration %s: %v", migration.Name(), err)
+			}
 		}
 	}
 	mutations := state.NewMutationCoordinator(connections)
