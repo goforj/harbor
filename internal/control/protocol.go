@@ -32,6 +32,8 @@ const (
 	CapabilityProjectLifecycleV1 rpc.Capability = "control.project-lifecycle.v1"
 	// CapabilityProjectUnregisterV1 identifies idempotent local-project unregister initiation.
 	CapabilityProjectUnregisterV1 rpc.Capability = "control.project-unregister.v1"
+	// CapabilityProjectRuntimeRepairV1 identifies explicit inspection and confirmation of one stale project runtime.
+	CapabilityProjectRuntimeRepairV1 rpc.Capability = "control.project-runtime-repair.v1"
 	// CapabilityProjectUnregisterApprovalV1 identifies interactive project-release approval and confirmation.
 	CapabilityProjectUnregisterApprovalV1 rpc.Capability = "control.project-unregister-approval.v1"
 
@@ -48,6 +50,8 @@ const (
 	methodProjectStart                        = "control.v1.project.start"
 	methodProjectStop                         = "control.v1.project.stop"
 	methodProjectRegister                     = "control.v1.project.register"
+	methodProjectRuntimeRepairInspect         = "control.v1.project.runtime-repair.inspect"
+	methodProjectRuntimeRepairConfirm         = "control.v1.project.runtime-repair.confirm"
 	methodProjectUnregister                   = "control.v1.project.unregister"
 	methodProjectUnregisterApprovalPrepare    = "control.v1.project.unregister.approval.prepare"
 	methodProjectUnregisterApprovalConfirm    = "control.v1.project.unregister.approval.confirm"
@@ -261,6 +265,7 @@ func capabilities() []rpc.Capability {
 		CapabilityProjectActivityV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
+		CapabilityProjectRuntimeRepairV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,
 		CapabilityV1,

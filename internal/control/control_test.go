@@ -50,6 +50,8 @@ type recordingAuthority struct {
 	startLifecycle                      ProjectLifecycleOperation
 	stopLifecycle                       ProjectLifecycleOperation
 	projectActivity                     ProjectActivity
+	projectRuntimeRepairInspection      ProjectRuntimeRepairInspection
+	projectRuntimeRepairConfirmation    ProjectRuntimeRepairConfirmation
 	unregistration                      ProjectUnregistration
 	approvalPreparation                 ProjectUnregisterApprovalPreparation
 	approvalConfirmation                ProjectUnregisterApprovalConfirmation
@@ -65,6 +67,8 @@ type recordingAuthority struct {
 	startErr                            error
 	stopErr                             error
 	projectActivityErr                  error
+	projectRuntimeRepairInspectErr      error
+	projectRuntimeRepairConfirmErr      error
 	unregistrationErr                   error
 	approvalPrepareErr                  error
 	approvalConfirmErr                  error
@@ -79,6 +83,8 @@ type recordingAuthority struct {
 	startRequests                       []StartProjectRequest
 	stopRequests                        []StopProjectRequest
 	projectActivityRequests             []ProjectActivityRequest
+	projectRuntimeRepairInspectRequests []InspectProjectRuntimeRepairRequest
+	projectRuntimeRepairConfirmRequests []ConfirmProjectRuntimeRepairRequest
 	unregistrationRequests              []UnregisterProjectRequest
 	approvalPrepareRequests             []PrepareProjectUnregisterApprovalRequest
 	approvalConfirmRequests             []ConfirmProjectUnregisterApprovalRequest
@@ -98,6 +104,38 @@ func (authority *recordingAuthority) ProjectActivity(
 	authority.projectActivityRequests = append(authority.projectActivityRequests, request)
 	authority.mu.Unlock()
 	return authority.projectActivity, authority.projectActivityErr
+}
+
+// InspectProjectRuntimeRepair records the authenticated caller and project selected for daemon-owned inspection.
+func (authority *recordingAuthority) InspectProjectRuntimeRepair(
+	ctx context.Context,
+	caller Caller,
+	request InspectProjectRuntimeRepairRequest,
+) (ProjectRuntimeRepairInspection, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectRuntimeRepairInspection{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.projectRuntimeRepairInspectRequests = append(authority.projectRuntimeRepairInspectRequests, request)
+	authority.mu.Unlock()
+	return authority.projectRuntimeRepairInspection, authority.projectRuntimeRepairInspectErr
+}
+
+// ConfirmProjectRuntimeRepair records the authenticated caller and opaque repair selection.
+func (authority *recordingAuthority) ConfirmProjectRuntimeRepair(
+	ctx context.Context,
+	caller Caller,
+	request ConfirmProjectRuntimeRepairRequest,
+) (ProjectRuntimeRepairConfirmation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectRuntimeRepairConfirmation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.projectRuntimeRepairConfirmRequests = append(authority.projectRuntimeRepairConfirmRequests, request)
+	authority.mu.Unlock()
+	return authority.projectRuntimeRepairConfirmation, authority.projectRuntimeRepairConfirmErr
 }
 
 // StartNetworkSetup records the authenticated caller and client-owned machine setup intent.
@@ -481,7 +519,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-runtime-repair.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}

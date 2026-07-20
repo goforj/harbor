@@ -93,6 +93,7 @@ type Authority struct {
 	routes            httpRouteObserver
 	unregister        projectUnregisterCoordinator
 	lifecycle         projectLifecycleCoordinator
+	runtimeRepair     projectRuntimeRepairCoordinator
 	networkSetup      networkSetupCoordinator
 	resolverSetup     networkResolverSetupCoordinator
 	build             buildinfo.Info
@@ -117,7 +118,9 @@ func NewAuthority(
 	if store == nil || unregister == nil || lifecycle == nil || networkSetup == nil || resolverSetup == nil || routes == nil {
 		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, network setup, resolver setup, and HTTP route dependencies")
 	}
-	return newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup, resolverSetup, routes)
+	authority := newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup, resolverSetup, routes)
+	authority.runtimeRepair = reconcile.NewProjectRuntimeRepairCoordinator(store)
+	return authority
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
@@ -206,6 +209,7 @@ func newAuthorityWithIdentityFactories(
 		routes:            routes,
 		unregister:        unregister,
 		lifecycle:         lifecycle,
+		runtimeRepair:     unsupportedProjectRuntimeRepairCoordinator{},
 		networkSetup:      networkSetup,
 		resolverSetup:     resolverSetup,
 		build:             build,

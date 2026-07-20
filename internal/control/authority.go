@@ -55,6 +55,10 @@ type Authority interface {
 	ConfirmNetworkResolverSetupApproval(context.Context, Caller, ConfirmNetworkResolverSetupApprovalRequest) (NetworkResolverSetupApprovalConfirmation, error)
 	// ProjectActivity returns bounded output for a project's current durable session.
 	ProjectActivity(context.Context, Caller, ProjectActivityRequest) (ProjectActivity, error)
+	// InspectProjectRuntimeRepair derives one bounded repair result without accepting process authority from a client.
+	InspectProjectRuntimeRepair(context.Context, Caller, InspectProjectRuntimeRepairRequest) (ProjectRuntimeRepairInspection, error)
+	// ConfirmProjectRuntimeRepair revalidates and commits one caller-bound opaque repair selection.
+	ConfirmProjectRuntimeRepair(context.Context, Caller, ConfirmProjectRuntimeRepairRequest) (ProjectRuntimeRepairConfirmation, error)
 	// RegisterProject discovers and durably registers one canonical GoForj checkout.
 	RegisterProject(context.Context, Caller, RegisterProjectRequest) (ProjectRegistration, error)
 	// StartProject starts or resumes one idempotent managed project lifecycle.
@@ -124,6 +128,21 @@ func NewProjectActivityInvalidError(cause error) error {
 // NewProjectActivityNotFoundError classifies a current-output request for an unknown durable project.
 func NewProjectActivityNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewProjectRuntimeRepairInvalidError classifies a repair request that cannot select a valid inspection or confirmation.
+func NewProjectRuntimeRepairInvalidError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewProjectRuntimeRepairNotFoundError classifies a repair request whose durable project is missing.
+func NewProjectRuntimeRepairNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewProjectRuntimeRepairConflictError classifies durable or native drift that prevents safe runtime repair.
+func NewProjectRuntimeRepairConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
 }
 
 // NewNetworkSetupConflictError classifies durable state that prevents network setup initiation or approval.
