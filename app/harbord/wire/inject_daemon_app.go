@@ -5,6 +5,7 @@ package wire
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/helper/ticketkey"
+	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/logger"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectprocess"
@@ -34,6 +36,13 @@ type networkSetupSigningKeyOpener func() (reconcile.SigningKeyStore, error)
 
 // networkSetupPoolIssuerOpener retains capability-store access behind an explicit approval preparation.
 type networkSetupPoolIssuerOpener func(ticketissuer.PoolPlanSource) (reconcile.PoolIssuer, error)
+
+// networkResolverSetupIssuerOpener retains resolver capability stores behind an explicit approval preparation.
+type networkResolverSetupIssuerOpener func(
+	*state.NetworkResolverSetupPlanSource,
+	*state.MachineOwnershipProjectionSource,
+	reconcile.NetworkResolverSetupResolverObserver,
+) (reconcile.NetworkResolverSetupIssuer, error)
 
 // projectLifecycleRuntime joins managed project processes before releasing shared network infrastructure.
 type projectLifecycleRuntime struct {
@@ -308,6 +317,65 @@ func provideNetworkSetupCoordinatorWithOpeners(
 		issuers,
 		ownership,
 		loopback.New(),
+		helper.SystemClock{},
+	), nil
+}
+
+// provideNetworkResolverSetupCoordinator assembles policy-bound resolver setup without opening capability stores.
+func provideNetworkResolverSetupCoordinator(
+	store *state.Store,
+	operations *state.OperationJournal,
+	plans *state.NetworkResolverSetupPlanSource,
+	ownership *state.MachineOwnershipProjectionSource,
+	runtimeController *harbordruntime.Controller,
+	resolverObserver reconcile.NetworkResolverSetupResolverObserver,
+) (*reconcile.NetworkResolverSetupCoordinator, error) {
+	platform, err := reconcile.CurrentNetworkResolverSetupPlatform()
+	if err != nil {
+		return nil, fmt.Errorf("create network resolver setup coordinator: %w", err)
+	}
+	return provideNetworkResolverSetupCoordinatorWithIssuerOpener(
+		store,
+		operations,
+		plans,
+		ownership,
+		runtimeController,
+		resolverObserver,
+		platform,
+		func(
+			plans *state.NetworkResolverSetupPlanSource,
+			ownership *state.MachineOwnershipProjectionSource,
+			resolverObserver reconcile.NetworkResolverSetupResolverObserver,
+		) (reconcile.NetworkResolverSetupIssuer, error) {
+			return ticketissuer.OpenDefaultResolverService(plans, ownership, resolverObserver)
+		},
+	)
+}
+
+// provideNetworkResolverSetupCoordinatorWithIssuerOpener keeps capability stores dormant until a reviewed Prepare call.
+func provideNetworkResolverSetupCoordinatorWithIssuerOpener(
+	store *state.Store,
+	operations *state.OperationJournal,
+	plans *state.NetworkResolverSetupPlanSource,
+	ownership *state.MachineOwnershipProjectionSource,
+	runtimeController *harbordruntime.Controller,
+	resolverObserver reconcile.NetworkResolverSetupResolverObserver,
+	platform networkplan.Platform,
+	openIssuer networkResolverSetupIssuerOpener,
+) (*reconcile.NetworkResolverSetupCoordinator, error) {
+	issuers := func() (reconcile.NetworkResolverSetupIssuer, error) {
+		return openIssuer(plans, ownership, resolverObserver)
+	}
+	return reconcile.NewNetworkResolverSetupCoordinator(
+		operations,
+		store,
+		plans,
+		store,
+		runtimeController,
+		issuers,
+		ownership,
+		resolverObserver,
+		platform,
 		helper.SystemClock{},
 	), nil
 }

@@ -62,7 +62,14 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	if err != nil {
 		return App{}, err
 	}
-	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator, networkSetupCoordinator, controller)
+	networkResolverSetupPlanRepo := models.NewNetworkResolverSetupPlanRepo(connections)
+	networkResolverSetupPlanSource := state.NewNetworkResolverSetupPlanSource(networkResolverSetupPlanRepo)
+	networkResolverSetupResolverObserver := provideNetworkResolverObserver()
+	networkResolverSetupCoordinator, err := provideNetworkResolverSetupCoordinator(store, operationJournal, networkResolverSetupPlanSource, machineOwnershipProjectionSource, controller, networkResolverSetupResolverObserver)
+	if err != nil {
+		return App{}, err
+	}
+	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator, networkSetupCoordinator, networkResolverSetupCoordinator, controller)
 	shutdown := daemon.NewShutdown()
 	server, err := provideControlServer(authorityAuthority, shutdown, appLogger)
 	if err != nil {

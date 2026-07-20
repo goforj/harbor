@@ -17,8 +17,10 @@ import (
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/logger"
+	"github.com/goforj/harbor/internal/platform/resolver"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
@@ -71,6 +73,20 @@ type recordingLifecycleCloser struct {
 	closeErr  error
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+// recordingNetworkResolverObserver fails any native read because coordinator assembly must remain side-effect free.
+type recordingNetworkResolverObserver struct {
+	calls int
+}
+
+// Observe records an unexpected native resolver read during dependency assembly.
+func (observer *recordingNetworkResolverObserver) Observe(
+	context.Context,
+	resolver.Request,
+) (resolver.Observation, error) {
+	observer.calls++
+	return resolver.Observation{}, errors.New("resolver observer must remain lazy")
 }
 
 // Resume records recovered-operation dispatch after network startup and returns its configured result.
@@ -226,6 +242,43 @@ func TestProvideNetworkSetupCoordinatorIsLazy(t *testing.T) {
 	}
 	if keyOpenCalls != 0 || issuerOpenCalls != 0 {
 		t.Fatalf("network setup opener calls after assembly = keys %d, issuer %d; want zero", keyOpenCalls, issuerOpenCalls)
+	}
+}
+
+// TestProvideNetworkResolverSetupCoordinatorIsLazy proves assembly does not open capability stores or observe native policy.
+func TestProvideNetworkResolverSetupCoordinatorIsLazy(t *testing.T) {
+	store := new(state.Store)
+	runtimeController, err := harbordruntime.NewController(store)
+	if err != nil {
+		t.Fatalf("NewController() error = %v", err)
+	}
+	observer := new(recordingNetworkResolverObserver)
+	issuerOpenCalls := 0
+	coordinator, err := provideNetworkResolverSetupCoordinatorWithIssuerOpener(
+		store,
+		new(state.OperationJournal),
+		new(state.NetworkResolverSetupPlanSource),
+		new(state.MachineOwnershipProjectionSource),
+		runtimeController,
+		observer,
+		networkplan.PlatformUbuntu2404,
+		func(
+			*state.NetworkResolverSetupPlanSource,
+			*state.MachineOwnershipProjectionSource,
+			reconcile.NetworkResolverSetupResolverObserver,
+		) (reconcile.NetworkResolverSetupIssuer, error) {
+			issuerOpenCalls++
+			return nil, errors.New("resolver issuer opener must remain lazy")
+		},
+	)
+	if err != nil {
+		t.Fatalf("provideNetworkResolverSetupCoordinatorWithIssuerOpener() error = %v", err)
+	}
+	if coordinator == nil {
+		t.Fatal("provideNetworkResolverSetupCoordinatorWithIssuerOpener() returned nil coordinator")
+	}
+	if issuerOpenCalls != 0 || observer.calls != 0 {
+		t.Fatalf("resolver setup effects after assembly = issuer %d, observer %d; want zero", issuerOpenCalls, observer.calls)
 	}
 }
 
