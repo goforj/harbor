@@ -3,6 +3,7 @@ package projectprocess
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"testing"
 
 	"github.com/goforj/harbor/internal/containerruntime"
@@ -14,6 +15,8 @@ type fakeContainerRuntime struct {
 	observation containerruntime.ProjectObservation
 	err         error
 	checkout    string
+	changeErr   error
+	changeRoot  string
 	closed      bool
 }
 
@@ -35,6 +38,34 @@ func (*fakeContainerRuntime) OpenServiceLogs(context.Context, string, string, in
 func (runtime *fakeContainerRuntime) Close() error {
 	runtime.closed = true
 	return nil
+}
+
+// WaitProjectChange records the canonical checkout selected by the supervisor's optional event boundary.
+func (runtime *fakeContainerRuntime) WaitProjectChange(_ context.Context, checkout string) error {
+	runtime.changeRoot = checkout
+	return runtime.changeErr
+}
+
+// TestWaitServiceChangeUsesExactSupervisedCheckout keeps the optional event stream behind process identity fencing.
+func TestWaitServiceChangeUsesExactSupervisedCheckout(t *testing.T) {
+	projectID := domain.ProjectID("project-events")
+	sessionID := domain.SessionID("session-events")
+	runtime := &fakeContainerRuntime{}
+	command := exec.Command("/opt/forj", "dev")
+	command.Dir = "/work/checkouts/events"
+	process := &managedProcess{command: command, acceptingStop: true}
+	supervisor := &Supervisor{
+		projects:         map[domain.ProjectID]*managedProcess{projectID: process},
+		sessions:         map[domain.SessionID]*managedProcess{sessionID: process},
+		containerRuntime: runtime,
+	}
+
+	if err := supervisor.WaitServiceChange(t.Context(), projectID, sessionID); err != nil {
+		t.Fatalf("WaitServiceChange() error = %v", err)
+	}
+	if runtime.changeRoot != command.Dir {
+		t.Fatalf("WaitProjectChange() checkout = %q, want %q", runtime.changeRoot, command.Dir)
+	}
 }
 
 // TestProjectRuntimeServicesProjectsOnlyActiveLogicalServices verifies container identities cannot enter durable state.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	dockercontext "github.com/docker/go-sdk/context"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/client"
 )
 
@@ -31,6 +33,22 @@ type fakeDockerEngine struct {
 	listOptions  client.ContainerListOptions
 	mu           sync.Mutex
 	closed       bool
+}
+
+// fakeDockerEventEngine adds a deterministic global event stream to the observation fixture.
+type fakeDockerEventEngine struct {
+	*fakeDockerEngine
+	eventResult  client.EventsResult
+	eventOptions client.EventsListOptions
+	mu           sync.Mutex
+}
+
+// Events records the narrow container-event filter and returns the configured stream.
+func (engine *fakeDockerEventEngine) Events(_ context.Context, options client.EventsListOptions) client.EventsResult {
+	engine.mu.Lock()
+	engine.eventOptions = options
+	engine.mu.Unlock()
+	return engine.eventResult
 }
 
 // ContainerList records the reviewed label filter and returns configured summaries.
@@ -88,6 +106,57 @@ func (engine *fakeDockerEngine) Close() error {
 	defer engine.mu.Unlock()
 	engine.closed = true
 	return nil
+}
+
+// TestDockerRuntimeWaitProjectChangeUsesEventsOnlyAsAWakeHint verifies the stream is filtered to containers and the
+// caller receives no untrusted project identity from the event payload.
+func TestDockerRuntimeWaitProjectChangeUsesEventsOnlyAsAWakeHint(t *testing.T) {
+	root := t.TempDir()
+	messages := make(chan events.Message, 1)
+	messages <- events.Message{}
+	engine := &fakeDockerEventEngine{
+		fakeDockerEngine: &fakeDockerEngine{logs: make(map[string]client.ContainerLogsResult)},
+		eventResult: client.EventsResult{
+			Messages: messages,
+			Err:      make(chan error),
+		},
+	}
+
+	if err := newDockerRuntime(engine).WaitProjectChange(t.Context(), root); err != nil {
+		t.Fatalf("WaitProjectChange() error = %v", err)
+	}
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if !engine.eventOptions.Filters["type"]["container"] {
+		t.Fatalf("Events() filters = %#v, want container-only wake filter", engine.eventOptions.Filters)
+	}
+}
+
+// TestDockerRuntimeWaitProjectChangePropagatesStreamErrors ensures Engine failures do not look like topology changes.
+func TestDockerRuntimeWaitProjectChangePropagatesStreamErrors(t *testing.T) {
+	root := t.TempDir()
+	errorsCh := make(chan error, 1)
+	errorsCh <- errors.New("event transport failed")
+	engine := &fakeDockerEventEngine{
+		fakeDockerEngine: &fakeDockerEngine{logs: make(map[string]client.ContainerLogsResult)},
+		eventResult: client.EventsResult{
+			Messages: make(chan events.Message),
+			Err:      errorsCh,
+		},
+	}
+
+	if err := newDockerRuntime(engine).WaitProjectChange(t.Context(), root); err == nil || !strings.Contains(err.Error(), "event transport failed") {
+		t.Fatalf("WaitProjectChange() error = %v, want stream failure", err)
+	}
+}
+
+// TestDockerRuntimeWaitProjectChangeRejectsEnginesWithoutEvents keeps the event capability optional for narrow fakes.
+func TestDockerRuntimeWaitProjectChangeRejectsEnginesWithoutEvents(t *testing.T) {
+	root := t.TempDir()
+	engine := &fakeDockerEngine{logs: make(map[string]client.ContainerLogsResult)}
+	if err := newDockerRuntime(engine).WaitProjectChange(t.Context(), root); !errors.Is(err, ErrProjectChangeUnsupported) {
+		t.Fatalf("WaitProjectChange() error = %v, want unsupported capability", err)
+	}
 }
 
 // TestDockerRuntimeAdmitsOnlyTheCanonicalCheckout rejects neighboring projects even when service names collide.

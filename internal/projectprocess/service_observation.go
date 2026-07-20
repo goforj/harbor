@@ -60,6 +60,38 @@ func (supervisor *Supervisor) ObserveServices(
 	return projectRuntimeServices(observed)
 }
 
+// WaitServiceChange waits for one host-runtime event that may affect the supervised checkout's service topology.
+//
+// The event is only a wake hint. Callers must invoke ObserveServices again because the local Engine event stream is
+// shared by neighboring Compose projects and does not establish Harbor ownership by itself.
+func (supervisor *Supervisor) WaitServiceChange(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := projectID.Validate(); err != nil {
+		return fmt.Errorf("wait for project service change: %w", err)
+	}
+	if err := sessionID.Validate(); err != nil {
+		return fmt.Errorf("wait for project service change: %w", err)
+	}
+	checkoutRoot, found := supervisor.serviceObservationCheckout(projectID, sessionID)
+	if !found {
+		return ErrNotRunning
+	}
+	source, ok := supervisor.containerRuntime.(containerruntime.ProjectChangeSource)
+	if !ok {
+		return containerruntime.ErrProjectChangeUnsupported
+	}
+	if err := source.WaitProjectChange(ctx, checkoutRoot); err != nil {
+		return fmt.Errorf("wait for host container runtime change: %w", err)
+	}
+	return nil
+}
+
 // ObserveServicePorts returns only current runtime publication facts for one selected service.
 func (supervisor *Supervisor) ObserveServicePorts(
 	ctx context.Context,

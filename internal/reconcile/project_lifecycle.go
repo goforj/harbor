@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
@@ -99,6 +100,16 @@ type projectProcessSupervisor interface {
 	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
 	SettlePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessSettlement, error)
 	Close(context.Context) error
+}
+
+// projectServiceChangeWaiter is the optional host-event wake boundary used after a project becomes ready.
+type projectServiceChangeWaiter interface {
+	WaitServiceChange(context.Context, domain.ProjectID, domain.SessionID) error
+}
+
+// projectRuntimeRefresher is the optional durable projection boundary for a fresh service observation.
+type projectRuntimeRefresher interface {
+	RefreshProjectServices(context.Context, state.RefreshProjectServicesRequest) (state.ProjectRecord, error)
 }
 
 // ProjectRouteReconciler projects durable project lifecycle changes into Harbor's live route table.
@@ -641,7 +652,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if readyAt.Before(session.UpdatedAt) {
 				readyAt = session.UpdatedAt
 			}
-			_, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 				return coordinator.state.CompleteProjectStart(coordinator.ctx, state.CompleteProjectStartRequest{
 					ProjectID:                 mutation.Operation.Operation.ProjectID,
 					OperationID:               mutation.Operation.Operation.ID,
@@ -660,6 +671,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
 				coordinator.recordAsyncError(err)
 			}
+			coordinator.startReadyServiceWatcher(completed.Project, session, handle)
 			coordinator.watchReadyProcess(session, handle)
 			return
 		}
@@ -715,6 +727,121 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain
 	}
 	if err := coordinator.reconcileProjectRoutes(context.Background(), "withdraw unexpectedly exited project routes"); err != nil {
 		coordinator.recordAsyncError(err)
+	}
+}
+
+// startReadyServiceWatcher launches the optional host-event projection worker after the ready edge is durable.
+func (coordinator *ProjectLifecycleCoordinator) startReadyServiceWatcher(
+	project state.ProjectRecord,
+	session domain.ProjectSession,
+	handle *projectprocess.Handle,
+) {
+	if _, waitOK := coordinator.supervisor.(projectServiceChangeWaiter); !waitOK {
+		return
+	}
+	if _, refreshOK := coordinator.state.(projectRuntimeRefresher); !refreshOK {
+		return
+	}
+	coordinator.wait.Add(1)
+	go func() {
+		defer coordinator.wait.Done()
+		watchContext, cancel := context.WithCancel(coordinator.ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-handle.Done():
+				cancel()
+			case <-watchContext.Done():
+			}
+		}()
+		coordinator.watchReadyServices(watchContext, project, session)
+	}()
+}
+
+// watchReadyServices turns host events into fresh, fenced observations without trusting event payloads as topology.
+func (coordinator *ProjectLifecycleCoordinator) watchReadyServices(
+	ctx context.Context,
+	project state.ProjectRecord,
+	session domain.ProjectSession,
+) {
+	waiter := coordinator.supervisor.(projectServiceChangeWaiter)
+	refresher := coordinator.state.(projectRuntimeRefresher)
+	expectedRevision := project.Revision
+	for {
+		if err := waiter.WaitServiceChange(ctx, session.ProjectID, session.ID); err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return
+			}
+			if errors.Is(err, containerruntime.ErrProjectChangeUnsupported) || errors.Is(err, projectprocess.ErrNotRunning) {
+				return
+			}
+			coordinator.recordAsyncError(fmt.Errorf("watch project %q service topology: %w", session.ProjectID, err))
+			return
+		}
+
+		observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
+		observation, err := coordinator.supervisor.ObserveServices(observationCtx, session.ProjectID, session.ID)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			coordinator.recordAsyncError(fmt.Errorf("observe project %q services after host change: %w", session.ProjectID, err))
+			return
+		}
+		if !observation.Supported {
+			return
+		}
+
+		at := lifecycleTime(coordinator.now())
+		if at.Before(project.Project.UpdatedAt) {
+			at = project.Project.UpdatedAt
+		}
+		refreshed, err := refresher.RefreshProjectServices(ctx, state.RefreshProjectServicesRequest{
+			ProjectID:                 session.ProjectID,
+			ExpectedProjectRevision:   expectedRevision,
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Services:                  observation.Services,
+			At:                        at,
+		})
+		if err == nil {
+			if refreshed.Revision != expectedRevision {
+				expectedRevision = refreshed.Revision
+				project = refreshed
+				if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
+					coordinator.recordAsyncError(routeErr)
+					return
+				}
+			}
+			continue
+		}
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return
+		}
+		var conflict *state.ProjectRevisionConflictError
+		if errors.As(err, &conflict) {
+			current, projectErr := coordinator.state.Project(ctx, session.ProjectID)
+			if projectErr != nil {
+				coordinator.recordAsyncError(fmt.Errorf("refresh project %q services after revision drift: %w", session.ProjectID, projectErr))
+				return
+			}
+			active, sessionErr := coordinator.state.ActiveProjectSession(ctx, session.ProjectID)
+			if sessionErr != nil || active.ID != session.ID || active.Generation != session.Generation {
+				if sessionErr != nil {
+					coordinator.recordAsyncError(fmt.Errorf("refresh project %q services after session drift: %w", session.ProjectID, sessionErr))
+				}
+				return
+			}
+			if current.Project.State != domain.ProjectReady && current.Project.State != domain.ProjectDegraded {
+				return
+			}
+			project = current
+			expectedRevision = current.Revision
+			continue
+		}
+		coordinator.recordAsyncError(fmt.Errorf("refresh project %q services: %w", session.ProjectID, err))
+		return
 	}
 }
 

@@ -7,6 +7,11 @@ import (
 	"io"
 )
 
+var (
+	// ErrProjectChangeUnsupported indicates that the host runtime cannot stream container changes.
+	ErrProjectChangeUnsupported = errors.New("container runtime change stream unsupported")
+)
+
 // Runtime observes Compose-owned containers admitted to one canonical Harbor checkout.
 type Runtime interface {
 	// ObserveProject returns one point-in-time logical-service view without transferring container lifecycle authority.
@@ -15,6 +20,14 @@ type Runtime interface {
 	OpenServiceLogs(context.Context, string, string, int) (LogFollower, error)
 	// Close releases runtime client transport resources after all observations and followers have ended.
 	Close() error
+}
+
+// ProjectChangeSource wakes a caller after a host container event without treating the event as trusted topology.
+//
+// Callers must perform a fresh ObserveProject after every wake. The event stream is only an efficiency hint because
+// neighboring projects share the same local Engine and event payloads do not prove checkout ownership.
+type ProjectChangeSource interface {
+	WaitProjectChange(context.Context, string) error
 }
 
 // ProjectObservation is one ephemeral replacement view of the runtime services for a checkout.
@@ -35,16 +48,16 @@ type Service struct {
 
 // Container carries ephemeral runtime context that Harbor must never persist as project identity.
 type Container struct {
-	ID       string
-	Name     string
-	Image    string
-	State    string
-	Health   string
-	ExitCode int
-	Replica  int
-	TTY      bool
+	ID          string
+	Name        string
+	Image       string
+	State       string
+	Health      string
+	ExitCode    int
+	Replica     int
+	TTY         bool
 	Environment []string
-	Ports    []Port
+	Ports       []Port
 }
 
 // Port describes one published or internal container port reported by the runtime.

@@ -45,6 +45,11 @@ type dockerEngine interface {
 	Close() error
 }
 
+// dockerEventEngine is optional so observation and log fixtures do not need to emulate the Engine event stream.
+type dockerEventEngine interface {
+	Events(context.Context, client.EventsListOptions) client.EventsResult
+}
+
 // DockerRuntime observes the local Docker-compatible Engine without accepting container lifecycle authority.
 type DockerRuntime struct {
 	engine             dockerEngine
@@ -107,6 +112,53 @@ func (runtime *DockerRuntime) ObserveProject(ctx context.Context, checkoutRoot s
 	}
 	services := groupProjectServices(containers)
 	return ProjectObservation{Services: services}, nil
+}
+
+// WaitProjectChange waits for one local Engine container event as a wake hint for a fresh project observation.
+//
+// The event payload is deliberately discarded. Docker events are global to the local daemon, so only a subsequent
+// list-and-inspect pass can prove that the supervised checkout's admitted service topology actually changed.
+func (runtime *DockerRuntime) WaitProjectChange(ctx context.Context, checkoutRoot string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := canonicalRuntimeDirectory(checkoutRoot); err != nil {
+		return fmt.Errorf("canonicalize Harbor checkout for change stream: %w", err)
+	}
+	events, ok := runtime.engine.(dockerEventEngine)
+	if !ok {
+		return ErrProjectChangeUnsupported
+	}
+	result := events.Events(ctx, client.EventsListOptions{
+		Filters: make(client.Filters).Add("type", "container"),
+	})
+	messages := result.Messages
+	errorsCh := result.Err
+	for messages != nil || errorsCh != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case _, open := <-messages:
+			if !open {
+				messages = nil
+				continue
+			}
+			return nil
+		case err, open := <-errorsCh:
+			if !open {
+				errorsCh = nil
+				continue
+			}
+			if err == nil {
+				continue
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("read container runtime change stream: %w", err)
+		}
+	}
+	return errors.New("container runtime change stream closed without an event")
 }
 
 // OpenServiceLogs opens every admitted replica in deterministic order and closes partial results on failure.
@@ -296,16 +348,16 @@ func (runtime *DockerRuntime) admitContainer(
 		projectID: projectID,
 		serviceID: serviceID,
 		container: Container{
-			ID:       inspected.Container.ID,
-			Name:     name,
-			Image:    inspected.Container.Config.Image,
-			State:    string(inspected.Container.State.Status),
-			Health:   health,
-			ExitCode: inspected.Container.State.ExitCode,
-			Replica:  replica,
-			TTY:      inspected.Container.Config.Tty,
+			ID:          inspected.Container.ID,
+			Name:        name,
+			Image:       inspected.Container.Config.Image,
+			State:       string(inspected.Container.State.Status),
+			Health:      health,
+			ExitCode:    inspected.Container.State.ExitCode,
+			Replica:     replica,
+			TTY:         inspected.Container.Config.Tty,
 			Environment: append([]string(nil), inspected.Container.Config.Env...),
-			Ports:    ports,
+			Ports:       ports,
 		},
 	}, true, nil
 }
