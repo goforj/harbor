@@ -12,10 +12,11 @@ const faviconURLs = computed(() => {
   try {
     const origin = new URL(props.url).origin
     return [
+      '/logo.png',
+      '/logo.svg',
       '/favicon.ico',
       '/favicon.png',
       '/favicon.svg',
-      '/logo.png',
       '/public/img/fav32.png',
       '/static/favicon.ico',
       '/img/favicon.ico',
