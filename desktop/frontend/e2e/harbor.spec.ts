@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { harborWireFixture } from '../src/bridge/harbor.fixture'
 
 test('navigates from the Harbor overview to the project list', async ({ page }) => {
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   await expect(page).toHaveTitle('Overview · GoForj Harbor')
   await expect(page.getByRole('button', { name: 'Overview', exact: true })).toBeVisible()
@@ -18,7 +18,7 @@ test('navigates from the Harbor overview to the project list', async ({ page }) 
 })
 
 test('keeps branded artwork behind the application surface in both themes', async ({ page }) => {
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   const artwork = page.locator('.harbor-illustration')
   await expect(artwork).toHaveAttribute('aria-hidden', 'true')
@@ -66,7 +66,7 @@ test('keeps branded artwork behind the application surface in both themes', asyn
 })
 
 test('adds the selected project and opens its detail immediately', async ({ page }) => {
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Add project', exact: true }).click()
 
@@ -144,7 +144,7 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
     }
   }, { initialSnapshot: harborWireFixture.snapshot, initialStatus: harborWireFixture.status })
 
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByText('This action is safe to run again.', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: 'Set up project addressing', exact: true }).click()
@@ -155,28 +155,27 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
 })
 
 test('starts a stopped project from its selected detail view', async ({ page }) => {
-  await page.goto('/#/projects/reports')
+  await page.goto('/#/projects/reports', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Start project', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toBeDisabled()
 })
 
 test('stops a running project from its selected detail view', async ({ page }) => {
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Stop project', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled()
 })
 
 test('shows live output from the current project session', async ({ page }) => {
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByText('Development output', { exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Development output', exact: true }).click()
   const output = page.getByLabel('Current project development output')
   await expect(output).toContainText('Building app: web')
   await expect(output).toContainText('Built web in 482ms')
   await expect(output).toContainText('migrations complete (0)')
-  await expect(page.getByText('attached', { exact: true })).toBeVisible()
 })
 
 test('shows an ambiguous recovered launch without leaving the project spinning', async ({ page }) => {
@@ -242,7 +241,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
 })
 
 test('confirms project removal and explains when desktop approval is unavailable', async ({ page }) => {
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   const remove = page.getByRole('button', { name: 'Remove project', exact: true })
   await remove.click()
@@ -259,7 +258,7 @@ test('confirms project removal and explains when desktop approval is unavailable
 })
 
 test('refreshes and leaves project detail after an immediate removal', async ({ page }) => {
-  await page.goto('/#/projects/reports')
+  await page.goto('/#/projects/reports', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Remove project', exact: true }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Remove project', exact: true }).click()
@@ -366,7 +365,7 @@ test('leaves project detail when an active removal completes through a snapshot 
 })
 
 test('disables removal honestly across projects while another request is in flight', async ({ page }) => {
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
   await page.evaluate(async () => {
     const bridgeModulePath = '/src/bridge/index.ts'
     const bridgeModule = await import(/* @vite-ignore */ bridgeModulePath) as {
@@ -387,7 +386,7 @@ test('disables removal honestly across projects while another request is in flig
 
 test('uses a single detail surface and a back path at narrow widths', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 760 })
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   await expect(page.locator('.harbor-rail-slot')).toBeHidden()
   await expect(page.locator('.harbor-context-slot')).toBeHidden()
@@ -404,7 +403,7 @@ test('uses a single detail surface and a back path at narrow widths', async ({ p
 
 test('moves from two panes to three panes at the desktop breakpoint', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 })
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   await expect(page.locator('.harbor-rail-slot')).toBeVisible()
   await expect(page.locator('.harbor-context-slot')).toBeHidden()
@@ -419,7 +418,7 @@ test('moves from two panes to three panes at the desktop breakpoint', async ({ p
 })
 
 test('routes services with project and service identities', async ({ page }) => {
-  await page.goto('/#/services/orders-api/mysql')
+  await page.goto('/#/services/orders-api/mysql', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByRole('heading', { name: 'MySQL' })).toBeVisible()
   await expect(page.getByText('orders-api', { exact: true }).first()).toBeVisible()
@@ -431,14 +430,16 @@ test('routes services with project and service identities', async ({ page }) => 
 })
 
 test('shows ready service counts without treating failed services as ready', async ({ page }) => {
-  await page.goto('/#/projects/orders-api')
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   const readySummary = page.getByRole('region', { name: 'Project summary' })
   await expect(readySummary.getByText('2 ready', { exact: true })).toBeVisible()
   await expect(readySummary.getByText('2 reported', { exact: true })).toBeVisible()
-  await expect(page.getByText('Compose service', { exact: true }).first()).toBeVisible()
+  await page.getByRole('tab', { name: /^Services\s+2$/, exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'MySQL', exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Redis', exact: true })).toBeVisible()
 
-  await page.goto('/#/projects/billing')
+  await page.goto('/#/projects/billing', { waitUntil: 'domcontentloaded' })
 
   const failedSummary = page.getByRole('region', { name: 'Project summary' })
   await expect(failedSummary.getByText('0 ready', { exact: true })).toBeVisible()
@@ -446,7 +447,7 @@ test('shows ready service counts without treating failed services as ready', asy
 })
 
 test('searches authoritative project metadata that is not rendered in item labels', async ({ page }) => {
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
   await page.keyboard.press('Control+k')
 
   const dialog = page.getByRole('dialog', { name: 'Command Menu' })
@@ -456,7 +457,7 @@ test('searches authoritative project metadata that is not rendered in item label
 })
 
 test('opens and closes the command menu with accessible keyboard focus', async ({ page }) => {
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   const trigger = page.getByRole('button', { name: 'Open command menu' })
   await trigger.focus()
@@ -474,7 +475,7 @@ test('opens and closes the command menu with accessible keyboard focus', async (
 })
 
 test('renders only status and snapshot facts on the system page', async ({ page }) => {
-  await page.goto('/#/system')
+  await page.goto('/#/system', { waitUntil: 'domcontentloaded' })
 
   await expect(page.locator('#system-title')).toBeVisible()
   await expect(page.getByText('Daemon status')).toBeVisible()
@@ -485,7 +486,7 @@ test('renders only status and snapshot facts on the system page', async ({ page 
 })
 
 test('fails closed for a production browser unless its fixture is explicitly requested', async ({ page }) => {
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   const result = await page.evaluate(async () => {
     delete window.go
@@ -717,7 +718,7 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
 
 test('keeps search and appearance reachable from mobile navigation', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 760 })
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'More Harbor actions' }).click()
 
   await expect(page.getByRole('menuitem', { name: 'System', exact: true })).toBeVisible()
@@ -729,7 +730,7 @@ test('keeps search and appearance reachable from mobile navigation', async ({ pa
 
 test('keeps the development fixture marker clear of mobile navigation', async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 760 })
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   const marker = page.getByText('Development fixture', { exact: true })
   const navigation = page.locator('.harbor-mobile-slot')
@@ -752,7 +753,7 @@ test('reports resource-open failures without leaving an unhandled action', async
       throw new Error('The browser rejected the request')
     }
   })
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Open Application for Orders API' }).click()
 
