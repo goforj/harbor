@@ -60,6 +60,7 @@ type projectLifecycleState interface {
 	CompleteProjectStart(context.Context, state.CompleteProjectStartRequest) (state.ProjectLifecycleMutation, error)
 	FailProjectStart(context.Context, state.FailProjectStartRequest) (state.ProjectLifecycleMutation, error)
 	QuarantinePlannedProjectStart(context.Context, state.QuarantinePlannedProjectStartRequest) (state.ProjectLifecycleMutation, error)
+	QuarantineTerminalProjectSession(context.Context, state.QuarantineTerminalProjectSessionRequest) (state.ProjectRecoveryQuarantine, error)
 	BeginProjectStop(context.Context, state.BeginProjectStopRequest) (state.ProjectLifecycleMutation, error)
 	CompleteProjectStop(context.Context, state.CompleteProjectStopRequest) (state.ProjectLifecycleMutation, error)
 	RecordUnexpectedProjectExit(context.Context, state.RecordUnexpectedProjectExitRequest) (state.ProjectRecord, error)
@@ -906,6 +907,20 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 				continue
 			}
 			return priorSessionOwnershipError(project, session)
+		}
+		var missingEvidence *state.ProjectSessionProcessEvidenceMissingError
+		if errors.As(sessionErr, &missingEvidence) {
+			quarantined, quarantineErr := coordinator.isTerminalProjectSessionQuarantined(ctx, project, *missingEvidence)
+			if quarantineErr != nil {
+				return quarantineErr
+			}
+			if quarantined {
+				continue
+			}
+			if err := coordinator.quarantineTerminalProjectSession(ctx, project, *missingEvidence); err != nil {
+				return err
+			}
+			continue
 		}
 		var missing *state.ProjectSessionNotFoundError
 		if !errors.As(sessionErr, &missing) {

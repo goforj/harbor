@@ -67,20 +67,22 @@ func TestProjectSessionConversionRejectsInvalidDomainAndModelFacts(t *testing.T)
 	}
 	valid.Id = 41
 	tests := []struct {
-		name   string
-		mutate func(*models.ProjectSession)
-		want   string
+		name                   string
+		mutate                 func(*models.ProjectSession)
+		want                   string
+		missingProcessEvidence bool
 	}{
 		{name: "database ID", mutate: func(row *models.ProjectSession) { row.Id = 0 }, want: "database ID"},
 		{name: "generation", mutate: func(row *models.ProjectSession) { row.Generation = 0 }, want: "generation"},
 		{name: "partial evidence", mutate: func(row *models.ProjectSession) { row.ArgumentDigest = null.String{} }, want: "all present or all absent"},
 		{name: "planned evidence", mutate: func(row *models.ProjectSession) { row.State = string(domain.SessionPlanned) }, want: "must not contain process"},
 		{name: "missing evidence", mutate: func(row *models.ProjectSession) {
+			row.State = string(domain.SessionAwaitingAttach)
 			row.Pid = null.Int{}
 			row.BirthToken = null.String{}
 			row.ExecutableIdentity = null.String{}
 			row.ArgumentDigest = null.String{}
-		}, want: "must contain process"},
+		}, want: "no durable exact-process evidence", missingProcessEvidence: true},
 		{name: "session correlation", mutate: func(row *models.ProjectSession) { row.ProjectId = "" }, want: "project ID"},
 		{name: "descriptor digest", mutate: func(row *models.ProjectSession) { row.DescriptorDigest = strings.Repeat("A", 64) }, want: "descriptor digest"},
 		{name: "process identity", mutate: func(row *models.ProjectSession) { row.ExecutableIdentity = null.StringFrom("relative/forj") }, want: "canonical absolute"},
@@ -95,6 +97,10 @@ func TestProjectSessionConversionRejectsInvalidDomainAndModelFacts(t *testing.T)
 			var corrupt *CorruptStateError
 			if !errors.As(err, &corrupt) || corrupt.Entity != "project session" || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("projectSessionFromModel() error = %v, want typed corruption containing %q", err, test.want)
+			}
+			var missing *ProjectSessionProcessEvidenceMissingError
+			if errors.As(err, &missing) != test.missingProcessEvidence {
+				t.Fatalf("projectSessionFromModel() missing evidence classification = %#v", missing)
 			}
 		})
 	}

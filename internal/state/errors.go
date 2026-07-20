@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 )
@@ -109,6 +110,26 @@ type ProjectSessionNotFoundError struct {
 type ProjectSessionActiveError struct {
 	ProjectID domain.ProjectID
 	SessionID domain.SessionID
+}
+
+// ProjectSessionProcessEvidenceMissingError reports a legacy active session that crossed its process boundary without durable exact-process evidence.
+type ProjectSessionProcessEvidenceMissingError struct {
+	ProjectID  domain.ProjectID
+	SessionID  domain.SessionID
+	Owner      domain.SessionOwner
+	State      domain.SessionState
+	Generation uint64
+	UpdatedAt  time.Time
+}
+
+// Error describes the unresolved session boundary without implying that its process is absent.
+func (err *ProjectSessionProcessEvidenceMissingError) Error() string {
+	return fmt.Sprintf(
+		"project %q session %q in state %q has no durable exact-process evidence",
+		err.ProjectID,
+		err.SessionID,
+		err.State,
+	)
 }
 
 // Error describes the active project/session correlation without exposing credential material.

@@ -34,6 +34,21 @@ func projectSessionFromModel(row models.ProjectSession) (domain.ProjectSession, 
 		CreatedAt:        row.CreatedAt,
 		UpdatedAt:        row.UpdatedAt,
 	}
+	if session.Process == nil && session.State == domain.SessionAwaitingAttach {
+		planned := session
+		planned.State = domain.SessionPlanned
+		if err := planned.Validate(); err != nil {
+			return domain.ProjectSession{}, corruptStateError("project session", key, err)
+		}
+		return domain.ProjectSession{}, corruptStateError("project session", key, &ProjectSessionProcessEvidenceMissingError{
+			ProjectID:  session.ProjectID,
+			SessionID:  session.ID,
+			Owner:      session.Owner,
+			State:      session.State,
+			Generation: session.Generation,
+			UpdatedAt:  session.UpdatedAt,
+		})
+	}
 	if err := session.Validate(); err != nil {
 		return domain.ProjectSession{}, corruptStateError("project session", key, err)
 	}

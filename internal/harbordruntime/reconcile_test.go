@@ -115,6 +115,33 @@ func TestControllerStartProjectsReadyHTTPRoute(t *testing.T) {
 	}
 }
 
+// TestControllerStartWithholdsUnavailableProjectRoute proves initial reconciliation honors recovery's route-free projection.
+func TestControllerStartWithholdsUnavailableProjectRoute(t *testing.T) {
+	runtimeState := stoppedHTTPRuntimeState(readyHTTPRuntimeState())
+	runtimeState.Snapshot.Projects[0].State = domain.ProjectUnavailable
+	if err := runtimeState.Validate(); err != nil {
+		t.Fatalf("unavailable recovery runtime state is invalid: %v", err)
+	}
+	source := runtimeStateTestSource(runtimeState)
+	authority := &testCertificateAuthority{root: validTestRoot()}
+	runtime := newTestDataPlane(nil)
+	controller := newHTTPTestController(t, source, authority, runtime)
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	replacements := replacementHTTPRoutes(runtime)
+	if len(replacements) == 0 || len(replacements[len(replacements)-1]) != 0 {
+		t.Fatalf("startup replacements = %#v, want no recovered project route", replacements)
+	}
+	if hosts := ensuredLeafHosts(authority); len(hosts) != 0 {
+		t.Fatalf("certificate hosts for unavailable project = %v, want none", hosts)
+	}
+	if err := controller.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 // TestControllerHTTPRouteLiveRequiresReadyExactPublication verifies observation is lifecycle and route exact.
 func TestControllerHTTPRouteLiveRequiresReadyExactPublication(t *testing.T) {
 	runtimeState := readyHTTPRuntimeState()

@@ -525,6 +525,156 @@ func TestProjectLifecycleRecoverQuarantinesPlannedStart(t *testing.T) {
 	}
 }
 
+// TestProjectLifecycleRecoverQuarantinesTerminalSessionWithoutProcessEvidence isolates one legacy project while unrelated recovery continues.
+func TestProjectLifecycleRecoverQuarantinesTerminalSessionWithoutProcessEvidence(t *testing.T) {
+	for _, terminalState := range []domain.ProjectState{domain.ProjectReady, domain.ProjectDegraded} {
+		t.Run(string(terminalState), func(t *testing.T) {
+			databasePath := filepath.Join(t.TempDir(), "harbord.db")
+			store, journal, connection := openProjectLifecycleIntegrationStateWithConnection(t, databasePath, true)
+			seed := completeProjectLifecycleRecoveryStart(t, store, seedProjectLifecycleRecoveryStart(t, store, journal, true))
+			if terminalState == domain.ProjectDegraded {
+				if err := connection.Exec("UPDATE projects SET state = ? WHERE project_id = ?", string(terminalState), string(seed.project.ID)).Error; err != nil {
+					t.Fatalf("set degraded recovery boundary: %v", err)
+				}
+				seed.project.State = terminalState
+			}
+			if err := connection.Exec("PRAGMA ignore_check_constraints = ON").Error; err != nil {
+				t.Fatalf("allow legacy session fixture: %v", err)
+			}
+			if err := connection.Exec(
+				`UPDATE project_sessions
+				 SET pid = NULL, birth_token = NULL, executable_identity = NULL, argument_digest = NULL
+				 WHERE project_id = ? AND session_id = ?`,
+				string(seed.project.ID),
+				string(seed.session.ID),
+			).Error; err != nil {
+				t.Fatalf("remove legacy process evidence: %v", err)
+			}
+			if err := connection.Exec("PRAGMA ignore_check_constraints = OFF").Error; err != nil {
+				t.Fatalf("restore session constraints: %v", err)
+			}
+			_, sessionErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
+			var missingEvidence *state.ProjectSessionProcessEvidenceMissingError
+			if !errors.As(sessionErr, &missingEvidence) || missingEvidence.State != domain.SessionAwaitingAttach {
+				t.Fatalf("legacy session recovery boundary = %#v, %v", missingEvidence, sessionErr)
+			}
+
+			queuedRoot, queuedPort := newProjectLifecycleIntegrationCheckout(t)
+			if err := os.WriteFile(filepath.Join(queuedRoot, ".goforj.yml"), []byte("project_name: Reports\n"), 0o600); err != nil {
+				t.Fatalf("write unrelated recovery marker: %v", err)
+			}
+			if err := os.WriteFile(
+				filepath.Join(queuedRoot, ".env"),
+				[]byte(fmt.Sprintf("APP_NAME=Reports\nAPI_HTTP_PORT=%d\n", queuedPort)),
+				0o600,
+			); err != nil {
+				t.Fatalf("write unrelated recovery environment: %v", err)
+			}
+			queuedDiscovery, err := projectdiscovery.NewDiscoverer().Discover(t.Context(), queuedRoot)
+			if err != nil {
+				t.Fatalf("discover unrelated recovery project: %v", err)
+			}
+			queuedProject, err := queuedDiscovery.ProjectSnapshot("project-recovery-unrelated", time.Now().UTC())
+			if err != nil {
+				t.Fatalf("create unrelated recovery project: %v", err)
+			}
+			if _, err := store.RegisterProject(t.Context(), queuedProject); err != nil {
+				t.Fatalf("register unrelated recovery project: %v", err)
+			}
+			queuedRecord, err := store.Project(t.Context(), queuedProject.ID)
+			if err != nil {
+				t.Fatalf("read unrelated recovery project: %v", err)
+			}
+			queuedOperation, err := domain.NewOperation(
+				"operation-terminal-quarantine-unrelated",
+				"intent-terminal-quarantine-unrelated",
+				domain.OperationKindProjectStart,
+				queuedProject.ID,
+				lifecycleTime(queuedRecord.Project.UpdatedAt.Add(time.Second)),
+			)
+			if err != nil {
+				t.Fatalf("create unrelated recovery operation: %v", err)
+			}
+			if _, err := journal.Enqueue(t.Context(), queuedOperation); err != nil {
+				t.Fatalf("enqueue unrelated recovery operation: %v", err)
+			}
+
+			admissionEntered := make(chan struct{})
+			supervisor := &projectLifecycleRecoverySupervisor{}
+			coordinator := newProjectLifecycleAdmissionTestCoordinator(
+				store,
+				journal,
+				&projectLifecycleBlockingLeaseState{entered: admissionEntered},
+				supervisor,
+				netip.MustParseAddr("127.0.0.1"),
+			)
+			coordinator.now = func() time.Time { return seed.recoverAt }
+			routeCalls := 0
+			coordinator.routes = projectLifecycleRouteReconcilerFunc(func(context.Context) error {
+				routeCalls++
+				return errors.New("route controller is not started during daemon recovery")
+			})
+			t.Cleanup(func() {
+				if err := coordinator.Close(context.Background()); err != nil {
+					t.Errorf("close terminal quarantine coordinator: %v", err)
+				}
+			})
+
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("Recover() error = %v", err)
+			}
+			if len(supervisor.observed) != 0 || len(supervisor.settled) != 0 {
+				t.Fatalf("missing-evidence recovery touched a process: observed %#v settled %#v", supervisor.observed, supervisor.settled)
+			}
+			quarantined, err := store.Project(t.Context(), seed.project.ID)
+			if err != nil || quarantined.Project.State != domain.ProjectUnavailable || len(quarantined.Project.Resources) != 0 {
+				t.Fatalf("quarantined terminal project = %#v, %v", quarantined.Project, err)
+			}
+			latest, err := journal.LatestProjectLifecycleOperation(t.Context(), seed.project.ID)
+			if err != nil || latest.Operation.State != domain.OperationFailed || latest.Operation.Problem == nil ||
+				latest.Operation.Problem.Code != projectRecoveryAmbiguousLaunchCode || latest.Operation.Problem.Retryable {
+				t.Fatalf("terminal recovery problem = %#v, %v", latest.Operation, err)
+			}
+			if !strings.Contains(latest.Operation.Problem.Message, "Stop that process outside Harbor") {
+				t.Fatalf("terminal recovery problem is not actionable: %#v", latest.Operation.Problem)
+			}
+			if runtimeState, err := store.RuntimeState(t.Context()); err != nil || runtimeState.Validate() != nil {
+				t.Fatalf("route-free runtime state after quarantine = %#v, %v", runtimeState, err)
+			}
+			if routeCalls != 0 {
+				t.Fatalf("recovery reconciled routes before runtime startup %d times", routeCalls)
+			}
+
+			if latest.Operation.FinishedAt == nil {
+				t.Fatal("terminal quarantine operation has no completion time")
+			}
+			currentSequence, err := store.CurrentSequence(t.Context())
+			if err != nil {
+				t.Fatalf("read sequence after terminal quarantine: %v", err)
+			}
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("repeated Recover() error = %v", err)
+			}
+			replayedSequence, err := store.CurrentSequence(t.Context())
+			if err != nil || replayedSequence != currentSequence {
+				t.Fatalf("sequence after recovery replay = %d, %v, want %d", replayedSequence, err, currentSequence)
+			}
+			queued, err := journal.OperationByIntent(t.Context(), queuedOperation.IntentID)
+			if err != nil || queued.Operation.State != domain.OperationQueued {
+				t.Fatalf("unrelated queued operation after recovery = %#v, %v", queued.Operation, err)
+			}
+			if err := coordinator.Resume(t.Context()); err != nil {
+				t.Fatalf("Resume() error = %v", err)
+			}
+			select {
+			case <-admissionEntered:
+			case <-time.After(time.Second):
+				t.Fatalf("Resume() did not dispatch unrelated project on port %d", queuedPort)
+			}
+		})
+	}
+}
+
 // seedProjectLifecycleRecoveryStart creates the exact durable crash boundary consumed by Recover.
 func seedProjectLifecycleRecoveryStart(
 	t *testing.T,

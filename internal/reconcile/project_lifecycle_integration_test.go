@@ -31,6 +31,7 @@ import (
 	"github.com/goforj/harbor/internal/projectreadiness"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/migrations"
+	"gorm.io/gorm"
 )
 
 const projectLifecycleHelperEnvironment = "HARBOR_PROJECT_LIFECYCLE_HELPER"
@@ -634,8 +635,21 @@ func openProjectLifecycleIntegrationState(
 	applyMigrations bool,
 ) (*state.Store, *state.OperationJournal) {
 	t.Helper()
+	store, journal, _ := openProjectLifecycleIntegrationStateWithConnection(t, databasePath, applyMigrations)
+	return store, journal
+}
+
+// openProjectLifecycleIntegrationStateWithConnection also exposes the test-only database handle for durable crash-boundary injection.
+func openProjectLifecycleIntegrationStateWithConnection(
+	t *testing.T,
+	databasePath string,
+	applyMigrations bool,
+) (*state.Store, *state.OperationJournal, *gorm.DB) {
+	t.Helper()
 	t.Setenv("DB_HARBORD_DRIVER", "sqlite")
 	t.Setenv("DB_HARBORD_DSN", databasePath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	t.Setenv("DB_HARBORD_MAX_OPEN_CONNECTIONS", "1")
+	t.Setenv("DB_HARBORD_MAX_IDLE_CONNECTIONS", "1")
 	connections := database.NewConnections(inspects.NewManager())
 	t.Cleanup(func() {
 		if err := connections.Close(context.Background()); err != nil {
@@ -673,7 +687,11 @@ func openProjectLifecycleIntegrationState(
 		models.NewHarborStateRepo(connections),
 		mutations,
 	)
-	return store, journal
+	connection, err := connections.GetHarbord()
+	if err != nil {
+		t.Fatalf("open lifecycle database for test injection: %v", err)
+	}
+	return store, journal, connection
 }
 
 // newProjectLifecycleIntegrationCheckout creates the minimum real checkout metadata used by discovery and readiness.

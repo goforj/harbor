@@ -118,90 +118,95 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 
 	var record OperationRecord
 	err := journal.mutations.mutate(ctx, "operation journal", func(tx *gorm.DB) error {
-		existing, found, err := findOperationByIntent(tx, operation.IntentID)
-		if err != nil {
-			return err
-		}
-		if found {
-			existingRecord, err := operationRecordFromModel(existing)
-			if err != nil {
-				return err
-			}
-			if existingRecord.Operation.Kind != operation.Kind || existingRecord.Operation.ProjectID != operation.ProjectID {
-				return &IntentConflictError{
-					IntentID:            operation.IntentID,
-					ExistingOperationID: existingRecord.Operation.ID,
-					ExistingKind:        existingRecord.Operation.Kind,
-					ExistingProjectID:   existingRecord.Operation.ProjectID,
-					RequestedKind:       operation.Kind,
-					RequestedProjectID:  operation.ProjectID,
-				}
-			}
-			if _, err := validateRetainedSequenceBounds(tx); err != nil {
-				return err
-			}
-			if _, err := operationHistoryInTransaction(tx, existingRecord); err != nil {
-				return err
-			}
-			record = existingRecord
-			return nil
-		}
-
-		existing, found, err = findOperationByID(tx, operation.ID)
-		if err != nil {
-			return err
-		}
-		if found {
-			existingRecord, err := operationRecordFromModel(existing)
-			if err != nil {
-				return err
-			}
-			return &OperationIDConflictError{
-				OperationID:       operation.ID,
-				ExistingIntentID:  existingRecord.Operation.IntentID,
-				RequestedIntentID: operation.IntentID,
-			}
-		}
-		boundary, err := readProjectNetworkReleaseBoundary(tx, operation.ProjectID)
-		if err != nil {
-			return err
-		}
-		if err := rejectProjectNetworkReleaseMutation(boundary, operation.ProjectID, "enqueue operation"); err != nil {
-			return err
-		}
-
-		sequence, err := allocateHarborSequence(tx)
-		if err != nil {
-			return err
-		}
-		row, err := operationModelFromDomain(operation, sequence)
-		if err != nil {
-			return err
-		}
-		if err := tx.Create(&row).Error; err != nil {
-			return fmt.Errorf("create operation: %w", err)
-		}
-		transition, err := operationTransitionModelFromDomain(OperationTransition{
-			OperationID: operation.ID,
-			Ordinal:     1,
-			State:       domain.OperationQueued,
-			Phase:       operation.Phase,
-			OccurredAt:  operation.RequestedAt,
-			Sequence:    sequence,
-		})
-		if err != nil {
-			return err
-		}
-		if err := tx.Create(&transition).Error; err != nil {
-			return fmt.Errorf("append queued operation transition: %w", err)
-		}
-		record = OperationRecord{Operation: operation, Revision: sequence}
-		return nil
+		enqueued, err := enqueueOperationInTransaction(tx, operation)
+		record = enqueued
+		return err
 	})
 	if err != nil {
 		return OperationRecord{}, err
 	}
 	return record, nil
+}
+
+// enqueueOperationInTransaction commits or replays one queued intent inside an existing writer transaction.
+func enqueueOperationInTransaction(tx *gorm.DB, operation domain.Operation) (OperationRecord, error) {
+	existing, found, err := findOperationByIntent(tx, operation.IntentID)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if found {
+		existingRecord, err := operationRecordFromModel(existing)
+		if err != nil {
+			return OperationRecord{}, err
+		}
+		if existingRecord.Operation.Kind != operation.Kind || existingRecord.Operation.ProjectID != operation.ProjectID {
+			return OperationRecord{}, &IntentConflictError{
+				IntentID:            operation.IntentID,
+				ExistingOperationID: existingRecord.Operation.ID,
+				ExistingKind:        existingRecord.Operation.Kind,
+				ExistingProjectID:   existingRecord.Operation.ProjectID,
+				RequestedKind:       operation.Kind,
+				RequestedProjectID:  operation.ProjectID,
+			}
+		}
+		if _, err := validateRetainedSequenceBounds(tx); err != nil {
+			return OperationRecord{}, err
+		}
+		if _, err := operationHistoryInTransaction(tx, existingRecord); err != nil {
+			return OperationRecord{}, err
+		}
+		return existingRecord, nil
+	}
+
+	existing, found, err = findOperationByID(tx, operation.ID)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if found {
+		existingRecord, err := operationRecordFromModel(existing)
+		if err != nil {
+			return OperationRecord{}, err
+		}
+		return OperationRecord{}, &OperationIDConflictError{
+			OperationID:       operation.ID,
+			ExistingIntentID:  existingRecord.Operation.IntentID,
+			RequestedIntentID: operation.IntentID,
+		}
+	}
+	boundary, err := readProjectNetworkReleaseBoundary(tx, operation.ProjectID)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if err := rejectProjectNetworkReleaseMutation(boundary, operation.ProjectID, "enqueue operation"); err != nil {
+		return OperationRecord{}, err
+	}
+
+	sequence, err := allocateHarborSequence(tx)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	row, err := operationModelFromDomain(operation, sequence)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if err := tx.Create(&row).Error; err != nil {
+		return OperationRecord{}, fmt.Errorf("create operation: %w", err)
+	}
+	transition, err := operationTransitionModelFromDomain(OperationTransition{
+		OperationID: operation.ID,
+		Ordinal:     1,
+		State:       domain.OperationQueued,
+		Phase:       operation.Phase,
+		OccurredAt:  operation.RequestedAt,
+		Sequence:    sequence,
+	})
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	if err := tx.Create(&transition).Error; err != nil {
+		return OperationRecord{}, fmt.Errorf("append queued operation transition: %w", err)
+	}
+	return OperationRecord{Operation: operation, Revision: sequence}, nil
 }
 
 // Transition advances one operation when its durable revision still matches the caller's expectation.

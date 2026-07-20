@@ -28,6 +28,7 @@ const (
 	projectLifecycleRestartPortEnvironment     = "HARBOR_PROJECT_LIFECYCLE_RESTART_PORT"
 	projectLifecycleRestartLaunchMode          = "launch"
 	projectLifecycleRestartRecoverMode         = "recover"
+	projectLifecycleRestartQuarantineMode      = "quarantine-missing-process-evidence"
 	projectLifecycleRestartCleanupMode         = "cleanup"
 	projectLifecycleRestartProjectID           = domain.ProjectID("project-orders")
 	projectLifecycleRestartOperationID         = domain.OperationID("operation-hard-restart")
@@ -143,6 +144,50 @@ func TestProjectLifecycleHardRestartConvergesManagedProcess(t *testing.T) {
 	recovered = true
 }
 
+// TestProjectLifecycleHardRestartQuarantinesMissingProcessEvidence proves an older incomplete session cannot abort a new daemon generation.
+func TestProjectLifecycleHardRestartQuarantinesMissingProcessEvidence(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve lifecycle test executable: %v", err)
+	}
+	sandbox := t.TempDir()
+	databasePath := filepath.Join(sandbox, "harbord.db")
+	store, journal, connection := openProjectLifecycleIntegrationStateWithConnection(t, databasePath, true)
+	seed := completeProjectLifecycleRecoveryStart(t, store, seedProjectLifecycleRecoveryStart(t, store, journal, true))
+	if err := connection.Exec("PRAGMA ignore_check_constraints = ON").Error; err != nil {
+		t.Fatalf("allow legacy hard-restart boundary: %v", err)
+	}
+	if err := connection.Exec(
+		`UPDATE project_sessions
+		 SET pid = NULL, birth_token = NULL, executable_identity = NULL, argument_digest = NULL
+		 WHERE project_id = ? AND session_id = ?`,
+		string(seed.project.ID),
+		string(seed.session.ID),
+	).Error; err != nil {
+		t.Fatalf("remove hard-restart process evidence: %v", err)
+	}
+	if err := connection.Exec("PRAGMA ignore_check_constraints = OFF").Error; err != nil {
+		t.Fatalf("restore hard-restart session constraints: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), projectLifecycleRestartTimeout)
+	defer cancel()
+	second := exec.CommandContext(ctx, executable, "-test.run=^TestProjectLifecycleHardRestartSubprocess$", "-test.v")
+	second.Env = projectLifecycleRestartSubprocessEnvironment(
+		os.Environ(),
+		projectLifecycleRestartQuarantineMode,
+		databasePath,
+		seed.project.Path,
+		filepath.Join(sandbox, "unused-ready-marker"),
+		3000,
+	)
+	second.Dir = sandbox
+	output, err := second.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restart lifecycle generation with missing process evidence: %v\n%s", err, output)
+	}
+}
+
 // TestProjectLifecycleHardRestartSubprocess runs one isolated daemon generation selected by the parent integration test.
 func TestProjectLifecycleHardRestartSubprocess(t *testing.T) {
 	mode := strings.TrimSpace(os.Getenv(projectLifecycleRestartModeEnvironment))
@@ -162,10 +207,73 @@ func TestProjectLifecycleHardRestartSubprocess(t *testing.T) {
 		runProjectLifecycleRestartLaunch(t, databasePath, projectRoot, readyPath, port)
 	case projectLifecycleRestartRecoverMode:
 		runProjectLifecycleRestartRecovery(t, databasePath, uint16(port))
+	case projectLifecycleRestartQuarantineMode:
+		runProjectLifecycleRestartQuarantine(t, databasePath)
 	case projectLifecycleRestartCleanupMode:
 		runProjectLifecycleRestartCleanup(t, databasePath)
 	default:
 		t.Fatalf("unsupported project lifecycle restart mode %q", mode)
+	}
+}
+
+// runProjectLifecycleRestartQuarantine replays recovery in a fresh process without touching an unidentified prior process.
+func runProjectLifecycleRestartQuarantine(t *testing.T, databasePath string) {
+	store, journal := openProjectLifecycleIntegrationState(t, databasePath, false)
+	supervisor := &projectLifecycleRecoverySupervisor{}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		store,
+		supervisor,
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close quarantine recovery coordinator: %v", err)
+		}
+	})
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("recover missing-evidence hard restart: %v", err)
+	}
+	sequence, err := store.CurrentSequence(t.Context())
+	if err != nil {
+		t.Fatalf("read quarantine recovery sequence: %v", err)
+	}
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("replay missing-evidence hard restart recovery: %v", err)
+	}
+	replayed, err := store.CurrentSequence(t.Context())
+	if err != nil || replayed != sequence {
+		t.Fatalf("hard-restart quarantine replay sequence = %d, %v, want %d", replayed, err, sequence)
+	}
+	if len(supervisor.observed) != 0 || len(supervisor.settled) != 0 {
+		t.Fatalf("hard-restart quarantine touched process authority: observed %#v settled %#v", supervisor.observed, supervisor.settled)
+	}
+	project, err := store.Project(t.Context(), projectLifecycleRestartProjectID)
+	if err != nil || project.Project.State != domain.ProjectUnavailable || len(project.Project.Resources) != 0 {
+		t.Fatalf("hard-restart quarantined project = %#v, %v", project.Project, err)
+	}
+	_, sessionErr := store.ActiveProjectSession(t.Context(), projectLifecycleRestartProjectID)
+	var missing *state.ProjectSessionProcessEvidenceMissingError
+	if !errors.As(sessionErr, &missing) || missing.State != domain.SessionAwaitingAttach {
+		t.Fatalf("hard-restart retained session boundary = %#v, %v", missing, sessionErr)
+	}
+	operation, err := journal.LatestProjectLifecycleOperation(t.Context(), projectLifecycleRestartProjectID)
+	if err != nil || operation.Operation.State != domain.OperationFailed || operation.Operation.Problem == nil ||
+		operation.Operation.Problem.Code != projectRecoveryAmbiguousLaunchCode {
+		t.Fatalf("hard-restart recovery operation = %#v, %v", operation.Operation, err)
+	}
+	runtimeState, err := store.RuntimeState(t.Context())
+	if err != nil {
+		t.Fatalf("read hard-restart route-free runtime state: %v", err)
+	}
+	if err := runtimeState.Validate(); err != nil {
+		t.Fatalf("validate hard-restart route-free runtime state: %v", err)
+	}
+	active, err := journal.ActiveOperations(t.Context())
+	if err != nil || len(active) != 0 {
+		t.Fatalf("hard-restart quarantine active operations = %#v, %v", active, err)
 	}
 }
 

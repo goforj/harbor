@@ -22,6 +22,15 @@ type plannedStartQuarantineFixture struct {
 	request    QuarantinePlannedProjectStartRequest
 }
 
+// terminalSessionQuarantineFixture owns one formerly ready project whose legacy session omitted exact-process evidence.
+type terminalSessionQuarantineFixture struct {
+	store      *Store
+	connection *gorm.DB
+	project    domain.ProjectSnapshot
+	session    domain.ProjectSession
+	request    QuarantineTerminalProjectSessionRequest
+}
+
 // TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays proves quarantine preserves the exact unresolved boundary.
 func TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays(t *testing.T) {
 	fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-replay")
@@ -68,6 +77,152 @@ func TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays(t *testing.T) {
 	}
 	if got := projectStoreMutationSequence(t, fixture.store); got != sequenceAfter {
 		t.Fatalf("sequence after mismatched replay = %d, want %d", got, sequenceAfter)
+	}
+}
+
+// TestQuarantineTerminalProjectSessionWithholdsRoutesAndReplays proves legacy missing evidence becomes one durable actionable project failure.
+func TestQuarantineTerminalProjectSessionWithholdsRoutesAndReplays(t *testing.T) {
+	fixture := newTerminalSessionQuarantineFixture(t, "project-terminal-quarantine-replay")
+	sequenceBefore := projectStoreMutationSequence(t, fixture.store)
+
+	quarantined, err := fixture.store.QuarantineTerminalProjectSession(t.Context(), fixture.request)
+	if err != nil {
+		t.Fatalf("QuarantineTerminalProjectSession() error = %v", err)
+	}
+	if quarantined.Operation.Operation.State != domain.OperationFailed ||
+		quarantined.Operation.Operation.Problem == nil ||
+		*quarantined.Operation.Operation.Problem != fixture.request.Problem {
+		t.Fatalf("quarantine operation = %#v", quarantined.Operation)
+	}
+	if !projectMatchesInactiveState(quarantined.Project.Project, domain.ProjectUnavailable, fixture.request.At) {
+		t.Fatalf("quarantined project is not route-free = %#v", quarantined.Project.Project)
+	}
+	if got := projectStoreMutationSequence(t, fixture.store); got != sequenceBefore+4 {
+		t.Fatalf("sequence after quarantine = %d, want %d", got, sequenceBefore+4)
+	}
+	assertTerminalSessionQuarantineEvidenceRetained(t, fixture)
+	snapshot, err := fixture.store.Snapshot(t.Context())
+	if err != nil || len(snapshot.Projects) != 1 || len(snapshot.Projects[0].Resources) != 0 || len(snapshot.Operations) != 2 {
+		t.Fatalf("snapshot after quarantine = %#v, %v", snapshot, err)
+	}
+	latest := snapshot.Operations[len(snapshot.Operations)-1]
+	if latest.ID != fixture.request.Operation.ID || latest.Problem == nil || latest.Problem.Code != fixture.request.Problem.Code {
+		t.Fatalf("current recovery problem = %#v", latest)
+	}
+
+	sequenceAfter := projectStoreMutationSequence(t, fixture.store)
+	replayed, err := fixture.store.QuarantineTerminalProjectSession(t.Context(), fixture.request)
+	if err != nil || !reflect.DeepEqual(replayed, quarantined) {
+		t.Fatalf("QuarantineTerminalProjectSession(replay) = %#v, %v", replayed, err)
+	}
+	if got := projectStoreMutationSequence(t, fixture.store); got != sequenceAfter {
+		t.Fatalf("sequence after quarantine replay = %d, want %d", got, sequenceAfter)
+	}
+
+	mismatch := fixture.request
+	mismatch.FailurePhase = "different recovery decision"
+	if _, err := fixture.store.QuarantineTerminalProjectSession(t.Context(), mismatch); err == nil ||
+		!strings.Contains(err.Error(), "retry does not match") {
+		t.Fatalf("QuarantineTerminalProjectSession(mismatched replay) error = %v", err)
+	}
+}
+
+// TestQuarantineTerminalProjectSessionRollsBackLateFailure proves route withdrawal and the recovery problem share one transaction.
+func TestQuarantineTerminalProjectSessionRollsBackLateFailure(t *testing.T) {
+	fixture := newTerminalSessionQuarantineFixture(t, "project-terminal-quarantine-atomic")
+	if err := fixture.connection.Exec(`CREATE TRIGGER fail_terminal_quarantine BEFORE UPDATE OF state ON projects
+		WHEN NEW.state = 'unavailable' BEGIN SELECT RAISE(ABORT, 'injected terminal quarantine failure'); END`).Error; err != nil {
+		t.Fatalf("create rollback trigger: %v", err)
+	}
+	sequenceBefore := projectStoreMutationSequence(t, fixture.store)
+
+	_, err := fixture.store.QuarantineTerminalProjectSession(t.Context(), fixture.request)
+	if err == nil || !strings.Contains(err.Error(), "injected terminal quarantine failure") {
+		t.Fatalf("QuarantineTerminalProjectSession(injected failure) error = %v", err)
+	}
+	if got := projectStoreMutationSequence(t, fixture.store); got != sequenceBefore {
+		t.Fatalf("sequence after rollback = %d, want %d", got, sequenceBefore)
+	}
+	project, readErr := fixture.store.Project(t.Context(), fixture.project.ID)
+	if readErr != nil || !reflect.DeepEqual(project.Project, fixture.project) {
+		t.Fatalf("project after rollback = %#v, %v", project.Project, readErr)
+	}
+	var count int64
+	if readErr := fixture.connection.Model(&models.Operation{}).Where("id = ?", fixture.request.Operation.ID).Count(&count).Error; readErr != nil || count != 0 {
+		t.Fatalf("recovery operation after rollback count = %d, %v", count, readErr)
+	}
+	assertTerminalSessionQuarantineEvidenceRetained(t, fixture)
+}
+
+// TestQuarantineTerminalProjectSessionRejectsExactProcessEvidence protects the normal exact-process settlement path.
+func TestQuarantineTerminalProjectSessionRejectsExactProcessEvidence(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project, session, _ := projectLifecycleTestReadyProject(t, store, "project-terminal-quarantine-exact")
+	projectRecord, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read exact-evidence project: %v", err)
+	}
+	at := project.UpdatedAt.Add(time.Second)
+	operation, err := domain.NewOperation("operation-terminal-quarantine-exact", "intent-terminal-quarantine-exact", domain.OperationKindProjectStart, project.ID, at)
+	if err != nil {
+		t.Fatalf("create exact-evidence recovery operation: %v", err)
+	}
+	request := QuarantineTerminalProjectSessionRequest{
+		ProjectID: project.ID, ExpectedProjectRevision: projectRecord.Revision,
+		SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+		Operation: operation, RunningPhase: "isolating unresolved process authority",
+		FailurePhase: "recovery required", Problem: plannedStartQuarantineTestProblem(), At: at,
+	}
+	sequenceBefore := projectStoreMutationSequence(t, store)
+	if _, err := store.QuarantineTerminalProjectSession(t.Context(), request); err == nil || !strings.Contains(err.Error(), "retains exact process evidence") {
+		t.Fatalf("QuarantineTerminalProjectSession(exact evidence) error = %v", err)
+	}
+	if got := projectStoreMutationSequence(t, store); got != sequenceBefore {
+		t.Fatalf("sequence after exact-evidence rejection = %d, want %d", got, sequenceBefore)
+	}
+}
+
+// TestValidateQuarantineTerminalProjectSessionRequestRejectsIncompleteFences covers every caller-owned recovery boundary.
+func TestValidateQuarantineTerminalProjectSessionRequestRejectsIncompleteFences(t *testing.T) {
+	valid := newTerminalSessionQuarantineFixture(t, "project-terminal-quarantine-validation").request
+	tests := []struct {
+		name   string
+		mutate func(*QuarantineTerminalProjectSessionRequest)
+	}{
+		{name: "project", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.ProjectID = "" }},
+		{name: "project revision", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.ExpectedProjectRevision = 0 }},
+		{name: "session", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.SessionID = "" }},
+		{name: "session generation", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.ExpectedSessionGeneration = 0 }},
+		{name: "operation", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.Operation.ID = "" }},
+		{name: "operation kind", mutate: func(request *QuarantineTerminalProjectSessionRequest) {
+			request.Operation.Kind = domain.OperationKindProjectStop
+		}},
+		{name: "operation project", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.Operation.ProjectID = "project-other" }},
+		{name: "operation state", mutate: func(request *QuarantineTerminalProjectSessionRequest) {
+			startedAt := request.At
+			request.Operation.State = domain.OperationRunning
+			request.Operation.Phase = "running"
+			request.Operation.StartedAt = &startedAt
+		}},
+		{name: "operation time", mutate: func(request *QuarantineTerminalProjectSessionRequest) {
+			request.Operation.RequestedAt = request.At.Add(time.Second)
+		}},
+		{name: "running phase", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.RunningPhase = " " }},
+		{name: "failure phase", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.FailurePhase = "" }},
+		{name: "problem", mutate: func(request *QuarantineTerminalProjectSessionRequest) { request.Problem.Code = "" }},
+		{name: "time", mutate: func(request *QuarantineTerminalProjectSessionRequest) {
+			request.At = time.Time{}
+			request.Operation.RequestedAt = time.Time{}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := valid
+			test.mutate(&request)
+			if err := validateQuarantineTerminalProjectSessionRequest(request); err == nil {
+				t.Fatal("validateQuarantineTerminalProjectSessionRequest() error = nil")
+			}
+		})
 	}
 }
 
@@ -280,6 +435,59 @@ func newPlannedStartQuarantineFixture(t *testing.T, projectID domain.ProjectID) 
 			SessionID:                 session.ID, ExpectedSessionGeneration: session.Generation,
 			Phase: "launch authority unresolved", Problem: plannedStartQuarantineTestProblem(), At: startedAt.Add(time.Second),
 		},
+	}
+}
+
+// newTerminalSessionQuarantineFixture creates a legacy awaiting-attach row whose exact-process tuple is wholly absent.
+func newTerminalSessionQuarantineFixture(t *testing.T, projectID domain.ProjectID) terminalSessionQuarantineFixture {
+	t.Helper()
+	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project, session, _ := projectLifecycleTestReadyProject(t, store, projectID)
+	if err := connection.Exec(
+		`UPDATE project_sessions
+		 SET pid = NULL, birth_token = NULL, executable_identity = NULL, argument_digest = NULL
+		 WHERE project_id = ? AND session_id = ?`,
+		string(projectID),
+		string(session.ID),
+	).Error; err != nil {
+		t.Fatalf("remove legacy process evidence: %v", err)
+	}
+	projectRecord, err := store.Project(t.Context(), projectID)
+	if err != nil {
+		t.Fatalf("read terminal quarantine project: %v", err)
+	}
+	at := project.UpdatedAt.Add(time.Second)
+	operation, err := domain.NewOperation(
+		domain.OperationID("operation-"+strings.TrimPrefix(string(projectID), "project-")),
+		domain.IntentID("intent-"+strings.TrimPrefix(string(projectID), "project-")),
+		domain.OperationKindProjectStart,
+		projectID,
+		at,
+	)
+	if err != nil {
+		t.Fatalf("create terminal quarantine operation: %v", err)
+	}
+	return terminalSessionQuarantineFixture{
+		store: store, connection: connection, project: project, session: session,
+		request: QuarantineTerminalProjectSessionRequest{
+			ProjectID: projectID, ExpectedProjectRevision: projectRecord.Revision,
+			SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+			Operation: operation, RunningPhase: "isolating unresolved process authority",
+			FailurePhase: "recovery required", Problem: plannedStartQuarantineTestProblem(), At: at,
+		},
+	}
+}
+
+// assertTerminalSessionQuarantineEvidenceRetained proves recovery did not erase or reinterpret unidentified process authority.
+func assertTerminalSessionQuarantineEvidenceRetained(t *testing.T, fixture terminalSessionQuarantineFixture) {
+	t.Helper()
+	_, err := fixture.store.ActiveProjectSession(t.Context(), fixture.project.ID)
+	var missing *ProjectSessionProcessEvidenceMissingError
+	if !errors.As(err, &missing) ||
+		missing.ProjectID != fixture.project.ID ||
+		missing.SessionID != fixture.session.ID ||
+		missing.Generation != fixture.session.Generation {
+		t.Fatalf("retained terminal session evidence boundary = %#v, %v", missing, err)
 	}
 }
 
