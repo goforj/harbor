@@ -35,6 +35,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { useProjectActivity } from '@/composables/useProjectActivity'
+import { ansiToHtml } from '@/lib/ansi'
 import { useHarborStore } from '@/stores/harbor'
 
 const route = useRoute()
@@ -61,6 +62,7 @@ const {
   read: (selectedProjectId, sessionId, cursor) => store.readProjectActivity(selectedProjectId, sessionId, cursor),
 })
 const projectActivitySession = computed(() => projectActivity.value?.session)
+const developmentOutputHtml = computed(() => ansiToHtml(developmentOutput.value))
 const showDevelopmentOutput = computed(() => projectActivitySupported.value && (
   projectActivitySession.value != null
   || developmentOutput.value !== ''
@@ -309,7 +311,7 @@ async function setupNetworkAndStartProject() {
               aria-label="Current project development output"
             >
               <p v-if="developmentOutputTruncated" class="mb-2 text-amber-300">Earlier output is no longer retained.</p>
-              <pre v-if="developmentOutput" class="whitespace-pre-wrap break-words font-mono">{{ developmentOutput }}</pre>
+              <pre v-if="developmentOutput" class="whitespace-pre-wrap break-words font-mono" v-html="developmentOutputHtml" />
               <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
               <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
             </div>
