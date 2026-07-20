@@ -13,6 +13,7 @@ import (
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/testkit/goforjproject"
 )
 
@@ -81,18 +82,58 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		}
 	}
 
+	ready := make([]state.ProjectRecord, 0, len(projects))
 	for _, project := range projects {
-		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady)
-		session, sessionErr := store.ActiveProjectSession(ctx, project.id)
-		if sessionErr != nil {
-			t.Fatalf("read active generated Compose session %q: %v", project.id, sessionErr)
-		}
-		observation, observeErr := supervisor.ObserveServices(ctx, project.id, session.ID)
-		if observeErr != nil {
-			t.Fatalf("observe generated Compose services for %q: %v", project.id, observeErr)
-		}
-		if !observation.Supported || len(observation.Services) == 0 {
-			t.Fatalf("generated Compose services for %q = %#v, want one or more admitted services", project.id, observation)
-		}
+		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady))
+		assertGeneratedComposeServices(t, ctx, store, supervisor, project)
+	}
+	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
+
+	stopped := projects[0]
+	stopIntent := domain.IntentID("intent-stop-compose-orders")
+	queued, stopErr := coordinator.Stop(ctx, ProjectStopRequest{
+		ProjectID:   stopped.id,
+		OperationID: "operation-stop-compose-orders",
+		IntentID:    stopIntent,
+	})
+	if stopErr != nil || queued.Operation.State != domain.OperationQueued {
+		t.Fatalf("stop generated Compose project %q = %#v, %v", stopped.id, queued, stopErr)
+	}
+	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, stopped.id, stopIntent, domain.ProjectStopped)
+	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], configuration.addresses[1:])
+
+	restartIntent := domain.IntentID("intent-restart-compose-orders")
+	queued, restartErr := coordinator.Start(ctx, ProjectStartRequest{
+		ProjectID:   stopped.id,
+		OperationID: "operation-restart-compose-orders",
+		IntentID:    restartIntent,
+	})
+	if restartErr != nil || queued.Operation.State != domain.OperationQueued {
+		t.Fatalf("restart generated Compose project %q = %#v, %v", stopped.id, queued, restartErr)
+	}
+	ready[0] = waitForProjectIdentityAcceptanceState(t, ctx, store, journal, stopped.id, restartIntent, domain.ProjectReady)
+	assertGeneratedComposeServices(t, ctx, store, supervisor, stopped)
+	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
+}
+
+// assertGeneratedComposeServices confirms one running generated checkout cannot accidentally project an empty or foreign service set.
+func assertGeneratedComposeServices(
+	t *testing.T,
+	ctx context.Context,
+	store *state.Store,
+	supervisor *projectprocess.Supervisor,
+	project projectIdentityAcceptanceProject,
+) {
+	t.Helper()
+	session, err := store.ActiveProjectSession(ctx, project.id)
+	if err != nil {
+		t.Fatalf("read active generated Compose session %q: %v", project.id, err)
+	}
+	observation, err := supervisor.ObserveServices(ctx, project.id, session.ID)
+	if err != nil {
+		t.Fatalf("observe generated Compose services for %q: %v", project.id, err)
+	}
+	if !observation.Supported || len(observation.Services) == 0 {
+		t.Fatalf("generated Compose services for %q = %#v, want one or more admitted services", project.id, observation)
 	}
 }
