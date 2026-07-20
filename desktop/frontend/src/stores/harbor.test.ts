@@ -534,6 +534,27 @@ describe('Harbor store', () => {
     expect(store.projectLifecycleBusy).toBe(true)
   })
 
+  it('does not resurrect completed runtime recovery from retained failure history', async () => {
+    const recovered = mockSnapshot()
+    recovered.sequence = 51
+    const reports = recovered.projects.find((project) => project.id === 'reports')
+    if (!reports) throw new Error('reports fixture is missing')
+    reports.state = 'stopped'
+    recovered.operations.push(lifecycleOperation('reports', 'start', 'reports-recovery', 'failed', {
+      code: 'project.recovery.ambiguous_launch',
+      message: 'Harbor could not prove which process belongs to this project.',
+      retryable: false,
+    }))
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(recovered)
+    const store = useHarborStore()
+
+    await store.initialize()
+
+    expect(store.projectById('reports')?.state).toBe('stopped')
+    expect(store.projectLifecycleErrors.reports).toBeUndefined()
+    expect(store.projectLifecycleProblemCodes.reports).toBeUndefined()
+  })
+
   it('starts a project with a client-owned intent and adopts the authoritative lifecycle snapshot', async () => {
     const store = useHarborStore()
     await store.initialize()

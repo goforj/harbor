@@ -446,7 +446,8 @@ export const useHarborStore = defineStore('harbor', () => {
     }
 
     for (const [projectId, operation] of latestOperations) {
-      if (!projectsById.has(projectId)) {
+      const project = projectsById.get(projectId)
+      if (!project) {
         continue
       }
       if (projectLifecycleIntents.has(projectId)) {
@@ -460,12 +461,15 @@ export const useHarborStore = defineStore('harbor', () => {
         && (trackedProblem.revision === undefined || nextSnapshot.sequence < trackedProblem.revision)) {
         continue
       }
+      const problem = projectLifecycleTerminalProblem(
+        operation,
+        operation.kind === 'project.start' ? 'start' : 'stop',
+      )
       setProjectLifecycleProblem(
         projectId,
-        projectLifecycleTerminalProblem(
-          operation,
-          operation.kind === 'project.start' ? 'start' : 'stop',
-        ),
+        problem?.code === 'project.recovery.ambiguous_launch' && project.state !== 'unavailable'
+          ? null
+          : problem,
         operation.intent_id,
       )
     }
