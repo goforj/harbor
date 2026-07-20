@@ -158,9 +158,12 @@ func provideControlServer(
 	})
 }
 
-// newControlErrorObserver retains redacted control causes in daemon-owned diagnostics with their authenticated request identity.
+// newControlErrorObserver retains substantive redacted causes while ignoring cancellation caused by connection retirement.
 func newControlErrorObserver(appLogger *logger.AppLogger) control.ErrorObserver {
 	return func(caller control.Caller, method string, err error) {
+		if controlErrorIsCancellationOnly(err) {
+			return
+		}
 		event := appLogger.Error()
 		message := "Harbor control request failed"
 		var prerequisite *ticketissuer.PoolPrerequisiteMissingError
@@ -176,6 +179,32 @@ func newControlErrorObserver(appLogger *logger.AppLogger) control.ErrorObserver 
 			Uint64("peer_process_id", uint64(caller.Transport.ProcessID)).
 			Msg(message)
 	}
+}
+
+// controlErrorIsCancellationOnly suppresses teardown fan-out without hiding a real failure joined to cancellation.
+func controlErrorIsCancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	type joinedError interface {
+		Unwrap() []error
+	}
+	if joined, ok := err.(joinedError); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !controlErrorIsCancellationOnly(cause) {
+				return false
+			}
+		}
+		return true
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return controlErrorIsCancellationOnly(cause)
+	}
+	return err == context.Canceled
 }
 
 // provideHarbordReadiness validates assembly while deferring migration inspection until daemon authority is owned.

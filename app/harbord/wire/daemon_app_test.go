@@ -3,6 +3,7 @@ package wire
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,6 +392,40 @@ func TestControlErrorObserverReportsMissingHelperAsSetupSignal(t *testing.T) {
 	}
 	if got := entry.Fields["error"]; got != "helper pool prerequisite is missing" {
 		t.Fatalf("control setup diagnostic error = %#v", got)
+	}
+}
+
+// TestControlErrorObserverSuppressesOnlyCancellationFanOut keeps connection retirement quiet without hiding joined failures.
+func TestControlErrorObserverSuppressesOnlyCancellationFanOut(t *testing.T) {
+	t.Setenv("APP_LOG_FORMAT", "json")
+	appLogger := logger.NewAppLogger()
+	entries := make([]logger.LogEntry, 0, 1)
+	appLogger.AddSink(func(entry logger.LogEntry) {
+		entries = append(entries, entry)
+	})
+	observer := newControlErrorObserver(appLogger)
+	caller := control.Caller{
+		Transport: local.PeerIdentity{UserID: "501", ProcessID: 1201},
+		Session:   session.Peer{Role: rpc.RoleDesktop},
+	}
+
+	observer(caller, "control.v1.daemon.status", fmt.Errorf("read Harbor sequence: %w", context.Canceled))
+	observer(caller, "control.v1.project.activity", errors.Join(
+		fmt.Errorf("read project Apps: %w", context.Canceled),
+		fmt.Errorf("release activity follower: %w", context.Canceled),
+	))
+	if len(entries) != 0 {
+		t.Fatalf("cancellation-only diagnostic entries = %d, want 0", len(entries))
+	}
+
+	cleanupFailure := errors.New("release activity follower failed")
+	observer(caller, "control.v1.project.activity", errors.Join(context.Canceled, cleanupFailure))
+	if len(entries) != 1 {
+		t.Fatalf("joined-failure diagnostic entries = %d, want 1", len(entries))
+	}
+	errorField, ok := entries[0].Fields["error"].(string)
+	if entries[0].Level != "error" || !ok || !strings.Contains(errorField, cleanupFailure.Error()) {
+		t.Fatalf("joined-failure diagnostic = %#v", entries[0])
 	}
 }
 
