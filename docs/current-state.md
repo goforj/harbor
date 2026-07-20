@@ -38,6 +38,8 @@ Phase 1 production acceptance now distinguishes active work from the bounded ter
 
 The native Unix IPC integration keeps its client connected until server-side peer admission completes. This preserves Darwin's `LOCAL_PEERCRED` boundary under test rather than converting a deliberately closed socket into a credential retry path.
 
+The Darwin retained-runtime observer now treats a positive `PROC_PIDLISTFDS` size query as bounded descriptor-count evidence rather than a failed empty-buffer call. Its second read reserves twenty fixed descriptor records to distinguish a complete census from a growing one, then rejects a saturated, malformed, or over-limit result without signaling. This repair preserves exact same-user, session, birth, executable, argv, cwd, and socket revalidation; native CI execution remains the required proof.
+
 The Linux `systemd-resolved` recovery path reconciles only bounded, root-owned Harbor transaction names before a public observation. It removes an unpublished canonical stage without restart, recognizes an exact public replacement plus retained owned stage as an exchange crash and restarts `systemd-resolved` after cleanup, restores an exact owned removal quarantine only when the fixed artifact is absent, and preserves every foreign, malformed, unsafe, or ambiguous pairing. Its strict `DNSEx` reader treats a zero port as the systemd representation of ordinary DNS's default port 53, while retaining exact address-family and server-name validation. The opt-in root test appends a 4 KiB-capped native cause when its initial public observation fails; production errors remain typed and redacted. The new source behavior still needs a successful privileged Linux CI run before it is native support evidence.
 
 ## Repository shape

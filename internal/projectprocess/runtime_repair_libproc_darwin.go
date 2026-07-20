@@ -32,6 +32,8 @@ const (
 	darwinRuntimeRepairIPv4Flag = 1
 	// darwinRuntimeRepairMaximumFDs bounds one process descriptor census.
 	darwinRuntimeRepairMaximumFDs = 4096
+	// darwinRuntimeRepairFDReadSpareRecords lets proc_pidinfo reveal a growing descriptor table without treating a complete read as a race.
+	darwinRuntimeRepairFDReadSpareRecords = 20
 	// darwinRuntimeRepairMaximumArgumentBytes bounds kern.procargs2 before parsing.
 	darwinRuntimeRepairMaximumArgumentBytes = 1 << 20
 	// darwinRuntimeRepairProcessPathBytes matches PROC_PIDPATHINFO_MAXSIZE.
@@ -168,23 +170,44 @@ func observeDarwinRuntimeRepairFDs(pid int) ([]darwinRuntimeRepairFDInfoABI, err
 	if needed == 0 {
 		return []darwinRuntimeRepairFDInfoABI{}, nil
 	}
-	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
-	if needed <= 0 || needed > maximumBytes || needed%darwinRuntimeRepairFDInfoBytes != 0 {
-		return nil, fmt.Errorf("Darwin descriptor query returned invalid size: %w", errDarwinRuntimeRepairUnreadable)
+	readBytes, err := darwinRuntimeRepairFDReadBufferBytes(needed)
+	if err != nil {
+		return nil, err
 	}
-	raw := make([]byte, needed)
+	raw := make([]byte, readBytes)
 	written, err := callDarwinRuntimeRepairPIDInfo(pid, darwinRuntimeRepairPIDListFDs, 0, raw)
 	if err != nil {
 		return nil, classifyDarwinRuntimeRepairLibprocFailure(pid)
 	}
-	if written <= 0 || written > len(raw) || written%darwinRuntimeRepairFDInfoBytes != 0 || written == len(raw) {
-		return nil, errDarwinRuntimeRepairUnstable
+	if err := validateDarwinRuntimeRepairFDReadLength(written, len(raw)); err != nil {
+		return nil, err
 	}
 	fds, err := parseDarwinRuntimeRepairFDs(raw[:written])
 	if err != nil {
 		return nil, err
 	}
 	return fds, nil
+}
+
+// darwinRuntimeRepairFDReadBufferBytes reserves a fixed spare descriptor margin after a bounded size query.
+func darwinRuntimeRepairFDReadBufferBytes(needed int) (int, error) {
+	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
+	if needed <= 0 || needed > maximumBytes || needed%darwinRuntimeRepairFDInfoBytes != 0 {
+		return 0, fmt.Errorf("Darwin descriptor query returned invalid size: %w", errDarwinRuntimeRepairUnreadable)
+	}
+	return needed + darwinRuntimeRepairFDReadSpareRecords*darwinRuntimeRepairFDInfoBytes, nil
+}
+
+// validateDarwinRuntimeRepairFDReadLength rejects truncated, growing, and over-limit descriptor evidence.
+func validateDarwinRuntimeRepairFDReadLength(written, bufferBytes int) error {
+	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
+	if written <= 0 || written > bufferBytes || written%darwinRuntimeRepairFDInfoBytes != 0 || written == bufferBytes {
+		return errDarwinRuntimeRepairUnstable
+	}
+	if written > maximumBytes {
+		return errDarwinRuntimeRepairUnreadable
+	}
+	return nil
 }
 
 // callDarwinRuntimeRepairPIDInfoAllowEmpty preserves a valid zero-descriptor process result.
@@ -200,7 +223,7 @@ func callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, flavor, arg int, buffer []byt
 		0,
 	)
 	runtime.KeepAlive(buffer)
-	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, len(buffer))
+	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, darwinRuntimeRepairPIDInfoResultLimit(buffer))
 }
 
 // parseDarwinRuntimeRepairFDs decodes unique non-negative descriptors from a fixed-stride native result.
@@ -414,12 +437,16 @@ func callDarwinRuntimeRepairPIDInfo(pid, flavor int, argument uint64, buffer []b
 		0,
 	)
 	runtime.KeepAlive(buffer)
-	limit := len(buffer)
-	if len(buffer) == 0 {
-		// XNU deliberately includes twenty spare slots so a growing table need not look complete by accident.
-		limit = (darwinRuntimeRepairMaximumFDs + 20) * darwinRuntimeRepairFDInfoBytes
+	return validateDarwinRuntimeRepairCallResult(result, callErr, darwinRuntimeRepairPIDInfoResultLimit(buffer))
+}
+
+// darwinRuntimeRepairPIDInfoResultLimit retains the bounded size-query ceiling when libproc receives no output buffer.
+func darwinRuntimeRepairPIDInfoResultLimit(buffer []byte) int {
+	if len(buffer) != 0 {
+		return len(buffer)
 	}
-	return validateDarwinRuntimeRepairCallResult(result, callErr, limit)
+	// XNU deliberately includes spare slots so a growing table need not look complete by accident.
+	return (darwinRuntimeRepairMaximumFDs + darwinRuntimeRepairFDReadSpareRecords) * darwinRuntimeRepairFDInfoBytes
 }
 
 // callDarwinRuntimeRepairPIDFDInfo invokes public proc_pidfdinfo through a cgo-free libSystem trampoline.

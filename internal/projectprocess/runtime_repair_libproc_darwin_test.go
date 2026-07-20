@@ -4,6 +4,7 @@ package projectprocess
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/bits"
 	"net/netip"
 	"syscall"
@@ -12,14 +13,59 @@ import (
 
 // TestDarwinRuntimeRepairCallResultAllowsEmptyDescriptorLists keeps zero-FD processes observable without weakening other libproc calls.
 func TestDarwinRuntimeRepairCallResultAllowsEmptyDescriptorLists(t *testing.T) {
-	if got, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, 0, darwinRuntimeRepairMaximumFDs*darwinRuntimeRepairFDInfoBytes); err != nil || got != 0 {
+	limit := darwinRuntimeRepairPIDInfoResultLimit(nil)
+	if got, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, 0, limit); err != nil || got != 0 {
 		t.Fatalf("allow-empty result = %d, %v", got, err)
 	}
-	if _, err := validateDarwinRuntimeRepairCallResult(0, 0, darwinRuntimeRepairMaximumFDs*darwinRuntimeRepairFDInfoBytes); err == nil {
+	if got, err := validateDarwinRuntimeRepairCallResultAllowEmpty(uintptr(limit), 0, limit); err != nil || got != limit {
+		t.Fatalf("bounded size query result = %d, %v", got, err)
+	}
+	if _, err := validateDarwinRuntimeRepairCallResultAllowEmpty(uintptr(limit+1), 0, limit); err == nil {
+		t.Fatal("oversized size query result was accepted")
+	}
+	if darwinRuntimeRepairPIDInfoResultLimit(make([]byte, 7)) != 7 {
+		t.Fatal("buffered proc_pidinfo limit did not retain its exact buffer length")
+	}
+	if _, err := validateDarwinRuntimeRepairCallResult(0, 0, limit); err == nil {
 		t.Fatal("generic zero result was accepted")
 	}
-	if _, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, syscall.EIO, darwinRuntimeRepairMaximumFDs*darwinRuntimeRepairFDInfoBytes); err == nil {
+	if _, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, syscall.EIO, limit); err == nil {
 		t.Fatal("libproc error was swallowed for an empty result")
+	}
+}
+
+// TestDarwinRuntimeRepairFDReadBounds preserves a stable descriptor census without admitting an exhausted buffer.
+func TestDarwinRuntimeRepairFDReadBounds(t *testing.T) {
+	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
+	bufferBytes, err := darwinRuntimeRepairFDReadBufferBytes(darwinRuntimeRepairFDInfoBytes)
+	if err != nil || bufferBytes != (darwinRuntimeRepairFDReadSpareRecords+1)*darwinRuntimeRepairFDInfoBytes {
+		t.Fatalf("darwinRuntimeRepairFDReadBufferBytes() = %d, %v", bufferBytes, err)
+	}
+	if _, err := darwinRuntimeRepairFDReadBufferBytes(0); err == nil {
+		t.Fatal("darwinRuntimeRepairFDReadBufferBytes() accepted an empty census")
+	}
+	if _, err := darwinRuntimeRepairFDReadBufferBytes(maximumBytes + darwinRuntimeRepairFDInfoBytes); err == nil {
+		t.Fatal("darwinRuntimeRepairFDReadBufferBytes() accepted an oversized census")
+	}
+
+	tests := []struct {
+		name        string
+		written     int
+		bufferBytes int
+		want        error
+	}{
+		{name: "stable", written: darwinRuntimeRepairFDInfoBytes, bufferBytes: bufferBytes},
+		{name: "empty", bufferBytes: bufferBytes, want: errDarwinRuntimeRepairUnstable},
+		{name: "partial record", written: darwinRuntimeRepairFDInfoBytes - 1, bufferBytes: bufferBytes, want: errDarwinRuntimeRepairUnstable},
+		{name: "saturated", written: bufferBytes, bufferBytes: bufferBytes, want: errDarwinRuntimeRepairUnstable},
+		{name: "over limit", written: maximumBytes + darwinRuntimeRepairFDInfoBytes, bufferBytes: maximumBytes + 2*darwinRuntimeRepairFDInfoBytes, want: errDarwinRuntimeRepairUnreadable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateDarwinRuntimeRepairFDReadLength(test.written, test.bufferBytes); !errors.Is(err, test.want) {
+				t.Fatalf("validateDarwinRuntimeRepairFDReadLength() error = %v, want %v", err, test.want)
+			}
+		})
 	}
 }
 
