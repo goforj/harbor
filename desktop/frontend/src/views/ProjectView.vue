@@ -16,6 +16,7 @@ import {
   TriangleAlert,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
@@ -565,6 +566,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           <CardContent class="p-0">
             <div v-if="project.resources.length" class="divide-y">
               <button v-for="resource in project.resources" :key="resource.id" type="button" class="group flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)">
+                <ResourceFavicon :name="resource.name" :url="resource.url" />
                 <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.kind }} · {{ resource.owner.kind }} · {{ resource.url }}</p></div>
                 <ExternalLink class="size-3.5 text-muted-foreground" />
               </button>
