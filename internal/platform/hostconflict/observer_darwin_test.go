@@ -36,7 +36,7 @@ func TestObserveStableDarwinRequiresConsecutiveFingerprints(t *testing.T) {
 		{name: "change then stability", sequence: []darwinObservationResult{{observation: first}, {observation: second}, {observation: second}}, wantCalls: 3},
 		{name: "transient reset", sequence: []darwinObservationResult{{err: errDarwinPCBSnapshotChanged}, {observation: first}, {observation: first}}, wantCalls: 3},
 		{name: "route transient reset", sequence: []darwinObservationResult{{err: errDarwinRouteSnapshotChanged}, {observation: first}, {observation: first}}, wantCalls: 3},
-		{name: "never stable", sequence: []darwinObservationResult{{observation: first}, {observation: second}, {observation: first}, {observation: second}}, wantCalls: 4, wantErr: "did not stabilize"},
+		{name: "never stable", sequence: []darwinObservationResult{{observation: first}, {observation: second}, {observation: first}, {observation: second}, {observation: first}, {observation: second}, {observation: first}, {observation: second}}, wantCalls: darwinObservationRetries + 1, wantErr: "did not stabilize"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
