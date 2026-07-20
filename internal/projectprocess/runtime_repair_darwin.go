@@ -274,8 +274,14 @@ func observeDarwinRuntimeRepairNetwork(ctx context.Context, endpoint netip.AddrP
 		return darwinRuntimeRepairNetworkFacts{}, err
 	}
 	observation, err := hostconflict.ObserveDarwin(ctx, request)
-	if err != nil || !observation.Sockets.Complete || observation.Sockets.Truncated {
-		return darwinRuntimeRepairNetworkFacts{}, fmt.Errorf("observe process-global Darwin listeners: %w", errDarwinRuntimeRepairUnreadable)
+	if err != nil {
+		return darwinRuntimeRepairNetworkFacts{}, fmt.Errorf(
+			"observe process-global Darwin listeners: %w",
+			errors.Join(errDarwinRuntimeRepairUnreadable, err),
+		)
+	}
+	if !observation.Sockets.Complete || observation.Sockets.Truncated {
+		return darwinRuntimeRepairNetworkFacts{}, fmt.Errorf("observe process-global Darwin listeners: incomplete socket snapshot: %w", errDarwinRuntimeRepairUnreadable)
 	}
 	facts := darwinRuntimeRepairNetworkFacts{}
 	for _, socket := range observation.Sockets.Endpoints {
