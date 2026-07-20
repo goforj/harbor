@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,10 @@ func projectActivityTestProject() state.ProjectRecord {
 // projectActivityTestSession returns one complete process-backed current session.
 func projectActivityTestSession() domain.ProjectSession {
 	at := time.Date(2026, time.July, 19, 18, 0, 0, 0, time.UTC)
+	executable, err := filepath.Abs(filepath.Join("test", "bin", "forj"))
+	if err != nil {
+		panic(err)
+	}
 	return domain.ProjectSession{
 		ID:               "session-current",
 		ProjectID:        "project-orders",
@@ -294,7 +299,7 @@ func projectActivityTestSession() domain.ProjectSession {
 		Process: &domain.ProcessEvidence{
 			PID:                4102,
 			BirthToken:         "birth-current",
-			ExecutableIdentity: "/usr/bin/forj",
+			ExecutableIdentity: executable,
 			ArgumentDigest:     strings.Repeat("c", 64),
 		},
 		CreatedAt: at,

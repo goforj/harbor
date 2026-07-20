@@ -328,6 +328,7 @@ func TestStoreRejectsMalformedAndOversizedStorage(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "owner.json")
+			prepareTestStoreDirectory(t, filepath.Dir(path))
 			if err := os.WriteFile(path, test.content, privateFileMode); err != nil {
 				t.Fatalf("os.WriteFile() error = %v", err)
 			}

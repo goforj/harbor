@@ -15,9 +15,23 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// prepareTestStoreDirectory recreates an empty temp directory with the reviewed descriptor at creation time.
+// prepareTestStoreDirectory gives a temporary test directory the reviewed descriptor without invalidating retained roots.
 func prepareTestStoreDirectory(t *testing.T, directory string) {
 	t.Helper()
+	if info, err := os.Stat(directory); err == nil {
+		if validatePlatformDirectory(directory, info) == nil {
+			return
+		}
+		entries, readErr := os.ReadDir(directory)
+		if readErr != nil {
+			t.Fatalf("os.ReadDir(%q) error = %v", directory, readErr)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("cannot replace unprotected non-empty test directory %q", directory)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) error = %v", directory, err)
+	}
 	descriptor, _, err := windowsOwnershipDescriptor(true)
 	if err != nil {
 		t.Fatalf("windowsOwnershipDescriptor() error = %v", err)

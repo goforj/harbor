@@ -411,6 +411,7 @@ func TestStoreOperationsFailAfterRetainedRootCloses(t *testing.T) {
 // TestStoreReleaseRejectsCorruptObservedState prevents malformed bytes from reaching destructive comparison.
 func TestStoreReleaseRejectsCorruptObservedState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "owner.json")
+	prepareTestStoreDirectory(t, filepath.Dir(path))
 	if err := os.WriteFile(path, []byte("{"), privateFileMode); err != nil {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
