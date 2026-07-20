@@ -65,7 +65,7 @@ func TestParseDarwinPCBTableFindsRequestedCollisionShapes(t *testing.T) {
 		darwinTCPTestRecord(protocol, netip.IPv4Unspecified(), 53, unix.AF_INET, darwinINPIPv4, 0, darwinTCPListen),
 		darwinTCPTestRecord(protocol, netip.IPv6Unspecified(), 53, unix.AF_INET6, darwinINPIPv6, darwinINPV6Only, darwinTCPListen),
 		darwinTCPTestRecord(protocol, netip.IPv6Unspecified(), 443, unix.AF_INET6, darwinINPIPv4|darwinINPIPv6, 0, darwinTCPListen),
-		darwinTCPTestRecord(protocol, netip.IPv4Unspecified(), 8443, unix.AF_INET6, darwinINPIPv4, 0, darwinTCPListen),
+		darwinTCPTestRecord(protocol, netip.IPv4Unspecified(), 443, unix.AF_INET6, darwinINPIPv4, 0, darwinTCPListen),
 		darwinTCPTestRecord(protocol, testCandidate, 53, unix.AF_INET, darwinINPIPv4, 0, 4),
 		darwinTCPTestRecord(protocol, netip.MustParseAddr("127.77.0.11"), 53, unix.AF_INET, darwinINPIPv4, 0, darwinTCPListen),
 	}
@@ -78,6 +78,9 @@ func TestParseDarwinPCBTableFindsRequestedCollisionShapes(t *testing.T) {
 	}
 	if snapshot.Endpoints[2].IPv6Only != IPv6OnlyEnabled || snapshot.Endpoints[3].IPv6Only != IPv6OnlyDisabled {
 		t.Fatalf("IPv6-only facts = %q, %q", snapshot.Endpoints[2].IPv6Only, snapshot.Endpoints[3].IPv6Only)
+	}
+	if snapshot.Endpoints[4].Address != netip.IPv4Unspecified() || snapshot.Endpoints[4].IPv6Only != IPv6OnlyNotApplicable {
+		t.Fatalf("canonical IPv4 wildcard fact = %#v", snapshot.Endpoints[4])
 	}
 	for _, endpoint := range snapshot.Endpoints {
 		if !endpoint.TCPAccepting {
@@ -204,6 +207,7 @@ func TestParseDarwinPCBTableRejectsMalformedABIAndGeneration(t *testing.T) {
 		{name: "family contradiction", mutate: func(raw []byte) []byte {
 			offset := darwinXinpgenBytes + darwinXinpcbBytes + darwinXsocketOffsetFamily
 			binary.NativeEndian.PutUint32(raw[offset:offset+4], unix.AF_INET6)
+			raw[darwinXinpgenBytes+darwinXinpcbOffsetVFlag] |= darwinINPIPv6
 			return raw
 		}, contains: "contradictory"},
 	}

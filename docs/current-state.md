@@ -32,7 +32,7 @@ The Darwin host-conflict observer now permits a bounded 10 ms, cancellation-awar
 
 The hard-restart fixture keeps its deliberately signal-ignoring watcher and listener alive with a sleeping wait rather than an empty `select`, so Go's deadlock detector cannot terminate the fixture before the durable launch boundary. The restart assertion remains a native macOS proof requirement.
 
-The Darwin PCB observer recognizes XNU's documented IPv6-family null-bind form that carries a canonical IPv4 fact. It accepts that form only with `INP_IPV4` and zero IPv4-in-IPv6 padding, projects it as IPv4 for conflict classification, and continues to reject mapped, noncanonical, and contradictory address facts.
+The Darwin PCB observer recognizes XNU's documented IPv6-family null-bind form that carries a canonical IPv4 fact. It accepts that form only with `INP_IPV4` and zero IPv4-in-IPv6 padding, projects it as IPv4 for conflict classification, and continues to reject mapped, noncanonical, and contradictory address facts. Its Darwin-native fixture now exercises that admission on a requested port and keeps a non-wildcard dual-stack flag combination as a fail-closed contradiction.
 
 Phase 1 production acceptance now distinguishes active work from the bounded terminal operation history intentionally retained in every authoritative snapshot. Startup recovery and idempotent removal require no nonterminal operations; they do not erase completed operation evidence.
 
