@@ -7,10 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -512,8 +512,9 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		SessionID:            session.ID,
 		CheckoutRoot:         project.Project.Path,
 		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
-		Stdout:               os.Stdout,
-		Stderr:               os.Stderr,
+		// The daemon retains this transcript for its authenticated clients; mirroring it would mix project output with daemon diagnostics.
+		Stdout: io.Discard,
+		Stderr: io.Discard,
 	})
 	if err != nil {
 		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
