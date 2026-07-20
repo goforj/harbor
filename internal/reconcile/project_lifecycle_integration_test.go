@@ -21,6 +21,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/inspects"
@@ -45,6 +46,32 @@ const (
 
 // projectLifecycleTestRouteReconciler keeps identity-stage lifecycle tests independent from a live data plane.
 type projectLifecycleTestRouteReconciler struct{}
+
+// projectLifecycleContainerRuntime gives lifecycle tests deterministic direct host-runtime observations.
+type projectLifecycleContainerRuntime struct {
+	observation containerruntime.ProjectObservation
+	err         error
+}
+
+// ObserveProject returns the configured direct container-runtime view.
+func (runtime *projectLifecycleContainerRuntime) ObserveProject(context.Context, string) (containerruntime.ProjectObservation, error) {
+	return runtime.observation, runtime.err
+}
+
+// OpenServiceLogs rejects log access because lifecycle integration tests exercise only startup observation.
+func (*projectLifecycleContainerRuntime) OpenServiceLogs(
+	context.Context,
+	string,
+	string,
+	int,
+) (containerruntime.LogFollower, error) {
+	return nil, errors.New("unexpected service log access in project lifecycle integration test")
+}
+
+// Close is inert because the deterministic runtime owns no host transport.
+func (*projectLifecycleContainerRuntime) Close() error {
+	return nil
+}
 
 // Reconcile accepts one state-derived lifecycle edge without external publication.
 func (projectLifecycleTestRouteReconciler) Reconcile(context.Context) error {
@@ -184,6 +211,28 @@ func (*projectLifecycleRevisionRaceSupervisor) WaitOutput(
 	return projectprocess.OutputChunk{}, nil
 }
 
+// ReadServiceLogs rejects runtime access because the revision-race fixture never accepts a process launch.
+func (*projectLifecycleRevisionRaceSupervisor) ReadServiceLogs(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+	domain.ServiceID,
+	uint64,
+) (projectprocess.ServiceLogSelection, error) {
+	return projectprocess.ServiceLogSelection{}, errors.New("unexpected service log read after project revision drift")
+}
+
+// WaitServiceLogs rejects runtime access because the revision-race fixture never accepts a process launch.
+func (*projectLifecycleRevisionRaceSupervisor) WaitServiceLogs(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+	domain.ServiceID,
+	uint64,
+) (projectprocess.ServiceLogSelection, error) {
+	return projectprocess.ServiceLogSelection{}, errors.New("unexpected service log wait after project revision drift")
+}
+
 // Stop is inert because the revision-race fixture never accepts a process.
 func (*projectLifecycleRevisionRaceSupervisor) Stop(context.Context, domain.ProjectID, domain.SessionID) error {
 	return nil
@@ -196,6 +245,15 @@ func (*projectLifecycleRevisionRaceSupervisor) ObserveServices(
 	domain.SessionID,
 ) (projectprocess.ServiceObservation, error) {
 	return projectprocess.ServiceObservation{}, errors.New("unexpected service observation after project revision drift")
+}
+
+// ObserveFrameworkResources is unreachable because the revision-race fixture never accepts a process.
+func (*projectLifecycleRevisionRaceSupervisor) ObserveFrameworkResources(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+) (projectprocess.FrameworkResourceObservation, error) {
+	return projectprocess.FrameworkResourceObservation{}, errors.New("unexpected framework resource observation after project revision drift")
 }
 
 // ObservePriorProcess is unreachable because the revision-race fixture never persists process evidence.
@@ -348,7 +406,10 @@ func TestProjectLifecycleCoordinatorKeepsReadyAppWhenServiceObservationFails(t *
 		t,
 		store,
 		journal,
-		newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond}),
+		newProjectLifecycleIntegrationSupervisor(projectprocess.Options{
+			GracePeriod:      500 * time.Millisecond,
+			ContainerRuntime: &projectLifecycleContainerRuntime{err: errors.New("container observation unavailable")},
+		}),
 		netip.MustParseAddr("127.0.0.1"),
 		uint16(port),
 	)
@@ -441,7 +502,14 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
 	installProjectLifecycleIntegrationForj(t, port)
 
-	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond})
+	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{
+		GracePeriod: 500 * time.Millisecond,
+		ContainerRuntime: &projectLifecycleContainerRuntime{observation: containerruntime.ProjectObservation{
+			Services: []containerruntime.Service{{
+				ID: "mysql", Name: "mysql", State: "ready", Active: true,
+			}},
+		}},
+	})
 	coordinator, discoverer := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
 	routes := &projectLifecycleRecordingRouteReconciler{store: store, projectID: project.ID}
 	coordinator.routes = routes
@@ -936,6 +1004,11 @@ func installProjectLifecycleIntegrationForj(t *testing.T, port int) {
 
 // newProjectLifecycleIntegrationSupervisor admits the portable helper executable while production supervisors retain real metadata verification.
 func newProjectLifecycleIntegrationSupervisor(options projectprocess.Options) *projectprocess.Supervisor {
+	if options.ContainerRuntime == nil {
+		options.ContainerRuntime = &projectLifecycleContainerRuntime{
+			observation: containerruntime.ProjectObservation{Services: []containerruntime.Service{}},
+		}
+	}
 	return projectprocess.NewWithExecutableVerifier(options, func(string) error { return nil })
 }
 

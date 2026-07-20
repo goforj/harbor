@@ -157,6 +157,13 @@ func TestDocumentValidateRejectsContractMetadataDrift(t *testing.T) {
 			},
 			want: "exact pending operation",
 		},
+		{
+			name: "service logs",
+			mutate: func(document *Document) {
+				document.ServiceLogs.ServiceID = ""
+			},
+			want: "validate fixture service logs",
+		},
 	}
 
 	for _, test := range tests {

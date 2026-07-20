@@ -19,6 +19,7 @@ import type {
   ProjectRuntimeRepairNotActionableReason,
   ProjectService,
   ProjectUnregistration,
+  ServiceLogs,
 } from '@/domain/harbor'
 
 export interface ProjectRemovalNotice {
@@ -1089,6 +1090,25 @@ export const useHarborStore = defineStore('harbor', () => {
     return harborBridge.waitProjectActivity(projectId, sessionId, cursor, waitMilliseconds)
   }
 
+  async function readServiceLogs(
+    projectId: string,
+    sessionId: string,
+    serviceId: string,
+    cursor: number,
+  ): Promise<ServiceLogs> {
+    return harborBridge.getServiceLogs(projectId, sessionId, serviceId, cursor)
+  }
+
+  async function waitServiceLogs(
+    projectId: string,
+    sessionId: string,
+    serviceId: string,
+    cursor: number,
+    waitMilliseconds: number,
+  ): Promise<ServiceLogs> {
+    return harborBridge.waitServiceLogs(projectId, sessionId, serviceId, cursor, waitMilliseconds)
+  }
+
   return {
     snapshot,
     daemonStatus,
@@ -1141,6 +1161,8 @@ export const useHarborStore = defineStore('harbor', () => {
     discardProjectRuntimeRepair,
     readProjectActivity,
     waitProjectActivity,
+    readServiceLogs,
+    waitServiceLogs,
     openResource,
   }
 })

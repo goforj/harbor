@@ -50,6 +50,15 @@ func (*projectLifecycleRecoverySupervisor) ObserveServices(
 	return projectprocess.ServiceObservation{}, errors.New("unexpected service observation during project lifecycle recovery")
 }
 
+// ObserveFrameworkResources rejects live observation because recovery fixtures never own the prior process.
+func (*projectLifecycleRecoverySupervisor) ObserveFrameworkResources(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+) (projectprocess.FrameworkResourceObservation, error) {
+	return projectprocess.FrameworkResourceObservation{}, errors.New("unexpected framework resource observation during project lifecycle recovery")
+}
+
 // ReadOutput returns no transcript because recovery fixtures never own the prior process.
 func (*projectLifecycleRecoverySupervisor) ReadOutput(
 	domain.ProjectID,
@@ -67,6 +76,28 @@ func (*projectLifecycleRecoverySupervisor) WaitOutput(
 	uint64,
 ) (projectprocess.OutputChunk, error) {
 	return projectprocess.OutputChunk{}, nil
+}
+
+// ReadServiceLogs rejects runtime access because recovery fixtures never own the prior process.
+func (*projectLifecycleRecoverySupervisor) ReadServiceLogs(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+	domain.ServiceID,
+	uint64,
+) (projectprocess.ServiceLogSelection, error) {
+	return projectprocess.ServiceLogSelection{}, errors.New("unexpected service log read during project lifecycle recovery")
+}
+
+// WaitServiceLogs rejects runtime access because recovery fixtures never own the prior process.
+func (*projectLifecycleRecoverySupervisor) WaitServiceLogs(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+	domain.ServiceID,
+	uint64,
+) (projectprocess.ServiceLogSelection, error) {
+	return projectprocess.ServiceLogSelection{}, errors.New("unexpected service log wait during project lifecycle recovery")
 }
 
 // ObservePriorProcess returns the configured host classification and records the exact evidence inspected.
@@ -865,9 +896,13 @@ func completeProjectLifecycleRecoveryStart(
 		ExpectedOperationRevision: seed.operation.Revision,
 		SessionID:                 seed.session.ID,
 		ExpectedSessionGeneration: seed.session.Generation,
-		Runtime:                   defaultRuntime(target, []domain.ServiceSnapshot{}),
-		Phase:                     "ready",
-		At:                        readyAt,
+		Runtime: defaultRuntime(
+			target,
+			[]domain.ServiceSnapshot{},
+			projectprocess.FrameworkResourceObservation{Resources: []projectprocess.FrameworkResource{}},
+		),
+		Phase: "ready",
+		At:    readyAt,
 	})
 	if err != nil || completed.Session == nil {
 		t.Fatalf("complete recovery start = %#v, %v", completed, err)

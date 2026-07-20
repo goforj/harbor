@@ -50,6 +50,7 @@ type controlClient interface {
 	InspectProjectRuntimeRepair(context.Context, control.InspectProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairInspection, error)
 	ConfirmProjectRuntimeRepair(context.Context, control.ConfirmProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairConfirmation, error)
 	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	ServiceLogs(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
@@ -127,30 +128,33 @@ type snapshotCursor struct {
 
 // App owns the Wails lifecycle and the desktop's single persistent daemon connection.
 type App struct {
-	mu                 sync.RWMutex
-	activityWaitMu     sync.Mutex
-	activityWaitID     uint64
-	activityWaitCancel context.CancelFunc
-	ctx                context.Context
-	cancel             context.CancelFunc
-	done               chan struct{}
-	client             controlClient
-	clientLeases       int
-	clientDrain        chan struct{}
-	clientFactory      clientFactory
-	events             desktopwire.Emitter
-	open               resourceOpener
-	choose             directoryChooser
-	setupApproval      networkSetupApprovalFactory
-	resolverApproval   networkResolverSetupApprovalFactory
-	projectApproval    projectRemovalApprovalFactory
-	setupPrerequisite  networkprerequisite.Ensurer
-	setupIntent        networkSetupIntentFactory
-	resolverIntent     networkResolverSetupIntentFactory
-	presentation       *presentationController
-	wait               waitFunc
-	reconnectDelay     time.Duration
-	pollInterval       time.Duration
+	mu                    sync.RWMutex
+	activityWaitMu        sync.Mutex
+	activityWaitID        uint64
+	activityWaitCancel    context.CancelFunc
+	serviceLogsWaitMu     sync.Mutex
+	serviceLogsWaitID     uint64
+	serviceLogsWaitCancel context.CancelFunc
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	done                  chan struct{}
+	client                controlClient
+	clientLeases          int
+	clientDrain           chan struct{}
+	clientFactory         clientFactory
+	events                desktopwire.Emitter
+	open                  resourceOpener
+	choose                directoryChooser
+	setupApproval         networkSetupApprovalFactory
+	resolverApproval      networkResolverSetupApprovalFactory
+	projectApproval       projectRemovalApprovalFactory
+	setupPrerequisite     networkprerequisite.Ensurer
+	setupIntent           networkSetupIntentFactory
+	resolverIntent        networkResolverSetupIntentFactory
+	presentation          *presentationController
+	wait                  waitFunc
+	reconnectDelay        time.Duration
+	pollInterval          time.Duration
 }
 
 // App must remain exactly compatible with the Go-owned Wails method contract.
@@ -745,6 +749,106 @@ func (a *App) activityRequestContext(parent context.Context, held bool) (context
 			a.activityWaitCancel = nil
 		}
 		a.activityWaitMu.Unlock()
+	}
+}
+
+// ServiceLogs reads one bounded output chunk from a Compose service in the project's current session.
+func (a *App) ServiceLogs(
+	projectID string,
+	sessionID string,
+	serviceID string,
+	cursor uint64,
+) (control.ServiceLogs, error) {
+	return a.serviceLogs(projectID, sessionID, serviceID, cursor, 0)
+}
+
+// WaitServiceLogs waits briefly for the selected service cursor to advance before returning one bounded output chunk.
+func (a *App) WaitServiceLogs(
+	projectID string,
+	sessionID string,
+	serviceID string,
+	cursor uint64,
+	waitMilliseconds uint64,
+) (control.ServiceLogs, error) {
+	if waitMilliseconds > uint64(control.MaximumServiceLogsWaitMilliseconds) {
+		return control.ServiceLogs{}, fmt.Errorf(
+			"service logs request: wait exceeds %d milliseconds",
+			control.MaximumServiceLogsWaitMilliseconds,
+		)
+	}
+	return a.serviceLogs(projectID, sessionID, serviceID, cursor, uint32(waitMilliseconds))
+}
+
+// serviceLogs validates and delegates one immediate or held current-session service output read.
+func (a *App) serviceLogs(
+	projectID string,
+	sessionID string,
+	serviceID string,
+	cursor uint64,
+	waitMilliseconds uint32,
+) (control.ServiceLogs, error) {
+	request := control.ServiceLogsRequest{
+		ProjectID:        domain.ProjectID(projectID),
+		SessionID:        domain.SessionID(sessionID),
+		ServiceID:        domain.ServiceID(serviceID),
+		Cursor:           cursor,
+		WaitMilliseconds: waitMilliseconds,
+	}
+	if err := request.Validate(); err != nil {
+		return control.ServiceLogs{}, fmt.Errorf("service logs request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ServiceLogs{}, err
+	}
+	requestContext, releaseRequest := a.serviceLogsRequestContext(ctx, waitMilliseconds > 0)
+	defer releaseRequest()
+	logs, err := client.ServiceLogs(requestContext, request)
+	if err != nil {
+		return control.ServiceLogs{}, fmt.Errorf("read Compose service logs: %w", err)
+	}
+	if err := logs.Validate(); err != nil {
+		return control.ServiceLogs{}, fmt.Errorf("validate service logs: %w", err)
+	}
+	if logs.ProjectID != request.ProjectID {
+		return control.ServiceLogs{}, errors.New("validate service logs: daemon result belongs to another project")
+	}
+	if logs.ServiceID != request.ServiceID {
+		return control.ServiceLogs{}, errors.New("validate service logs: daemon result belongs to another service")
+	}
+	if request.SessionID != "" && logs.SessionID != "" && logs.SessionID != request.SessionID && !logs.Output.Reset {
+		return control.ServiceLogs{}, errors.New("validate service logs: daemon changed sessions without resetting output")
+	}
+
+	return logs, nil
+}
+
+// serviceLogsRequestContext cancels only the prior held service-log read before selecting a new service stream.
+func (a *App) serviceLogsRequestContext(parent context.Context, held bool) (context.Context, func()) {
+	requestContext, cancel := context.WithCancel(parent)
+
+	a.serviceLogsWaitMu.Lock()
+	prior := a.serviceLogsWaitCancel
+	a.serviceLogsWaitID++
+	waitID := a.serviceLogsWaitID
+	if held {
+		a.serviceLogsWaitCancel = cancel
+	} else {
+		a.serviceLogsWaitCancel = nil
+	}
+	a.serviceLogsWaitMu.Unlock()
+
+	if prior != nil {
+		prior()
+	}
+	return requestContext, func() {
+		cancel()
+		a.serviceLogsWaitMu.Lock()
+		if a.serviceLogsWaitID == waitID {
+			a.serviceLogsWaitCancel = nil
+		}
+		a.serviceLogsWaitMu.Unlock()
 	}
 }
 

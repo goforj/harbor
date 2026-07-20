@@ -16,16 +16,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
 )
 
 const (
 	defaultGracePeriod       = 3 * time.Second
 	defaultOutputBufferLines = 256
+	defaultServiceLogIdle    = 40 * time.Second
 	forceSettlementPeriod    = time.Second
 	forceSettlementPoll      = 10 * time.Millisecond
 	developmentPlainEnvName  = "FORJ_DEV_PLAIN"
-	managedEnvKeysName       = "FORJ_INTERNAL_MANAGED_ENV_KEYS"
 )
 
 var developmentLaunchIsolationNames = []string{
@@ -34,7 +35,6 @@ var developmentLaunchIsolationNames = []string{
 	"FORJ_BUILD_PROGRESS",
 	"FORJ_COMMAND_PREFIX",
 	developmentPlainEnvName,
-	managedEnvKeysName,
 }
 
 var (
@@ -57,6 +57,10 @@ type Options struct {
 	GracePeriod time.Duration
 	// OutputBufferLines bounds queued output records; its original name remains for API compatibility.
 	OutputBufferLines int
+	// ContainerRuntime observes host Compose services without transferring their lifecycle authority to Harbor.
+	ContainerRuntime containerruntime.Runtime
+	// ServiceLogIdlePeriod bounds how long a log follower remains after the desktop stops renewing reads.
+	ServiceLogIdlePeriod time.Duration
 	// Environment isolates child projects from Harbor's subsequently loaded application configuration.
 	Environment Environment
 }
@@ -174,6 +178,11 @@ type Supervisor struct {
 	verifyExecutable ExecutableVerifier
 	projects         map[domain.ProjectID]*managedProcess
 	sessions         map[domain.SessionID]*managedProcess
+	containerRuntime containerruntime.Runtime
+	runtimeCloseOnce sync.Once
+	runtimeCloseErr  error
+	serviceLogIdle   time.Duration
+	serviceLogs      map[serviceLogKey]*serviceLogStream
 }
 
 // New constructs an empty project process supervisor.
@@ -200,6 +209,19 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 	} else {
 		environment = append(Environment(nil), environment...)
 	}
+	containerRuntime := options.ContainerRuntime
+	if containerRuntime == nil {
+		configured, err := containerruntime.NewDocker()
+		if err != nil {
+			containerRuntime = containerruntime.NewUnavailable(err)
+		} else {
+			containerRuntime = configured
+		}
+	}
+	serviceLogIdle := options.ServiceLogIdlePeriod
+	if serviceLogIdle <= 0 {
+		serviceLogIdle = defaultServiceLogIdle
+	}
 	return &Supervisor{
 		gracePeriod:      gracePeriod,
 		outputLines:      outputLines,
@@ -207,6 +229,9 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 		verifyExecutable: verifier,
 		projects:         make(map[domain.ProjectID]*managedProcess),
 		sessions:         make(map[domain.SessionID]*managedProcess),
+		containerRuntime: containerRuntime,
+		serviceLogIdle:   serviceLogIdle,
+		serviceLogs:      make(map[serviceLogKey]*serviceLogStream),
 	}
 }
 
@@ -464,7 +489,23 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 		closeErr = errors.Join(closeErr, process.stopErr)
 	}
 	close(deadlineReached)
-	return errors.Join(ctx.Err(), closeErr)
+	supervisor.mu.Lock()
+	remainingServiceLogs := make([]*serviceLogStream, 0, len(supervisor.serviceLogs))
+	for _, stream := range supervisor.serviceLogs {
+		remainingServiceLogs = append(remainingServiceLogs, stream)
+	}
+	supervisor.mu.Unlock()
+	for _, stream := range remainingServiceLogs {
+		err := stream.stop()
+		closeErr = errors.Join(closeErr, err)
+		if err == nil {
+			supervisor.removeSettledServiceLogStream(stream.key, stream)
+		}
+	}
+	supervisor.runtimeCloseOnce.Do(func() {
+		supervisor.runtimeCloseErr = supervisor.containerRuntime.Close()
+	})
+	return errors.Join(ctx.Err(), closeErr, supervisor.runtimeCloseErr)
 }
 
 // wait reaps one child, drains its pipes, releases platform handles, and publishes one immutable result.
@@ -493,7 +534,15 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	if supervisor.sessions[info.SessionID] == process {
 		delete(supervisor.sessions, info.SessionID)
 	}
+	serviceLogs := supervisor.detachServiceLogsLocked(info.ProjectID, info.SessionID)
 	supervisor.mu.Unlock()
+	for _, stream := range serviceLogs {
+		streamErr := stream.stop()
+		cleanupErr = errors.Join(cleanupErr, streamErr)
+		if streamErr == nil {
+			supervisor.removeSettledServiceLogStream(stream.key, stream)
+		}
+	}
 
 	exitCode := 0
 	if process.command.ProcessState != nil {
@@ -700,7 +749,7 @@ func validateEnvironmentOverrides(overrides EnvironmentOverrides) error {
 	return nil
 }
 
-// validateEnvironmentOverrideName matches GoForj's portable managed-key grammar and excludes its private control surface.
+// validateEnvironmentOverrideName keeps host dotenv assignments portable and excludes private launcher controls.
 func validateEnvironmentOverrideName(name string) error {
 	if name == "" {
 		return errors.New("environment override name is required")
@@ -719,7 +768,7 @@ func validateEnvironmentOverrideName(name string) error {
 		}
 	}
 	upperName := strings.ToUpper(name)
-	if upperName == managedEnvKeysName || strings.HasPrefix(upperName, "FORJ_INTERNAL_") {
+	if strings.HasPrefix(upperName, "FORJ_INTERNAL_") {
 		return fmt.Errorf("environment override name %q is reserved by the managed project launcher", name)
 	}
 	switch upperName {

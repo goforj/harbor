@@ -27,11 +27,14 @@ describe('Harbor mock bridge', () => {
     })
     expect(harborWireFixture.methods).toEqual({
       add_project: 'AddProject',
+      approve_project_removal: 'ApproveProjectRemoval',
       confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair',
       inspect_project_runtime_repair: 'InspectProjectRuntimeRepair',
       open_resource: 'OpenResource',
       project_activity: 'ProjectActivity',
+      service_logs: 'ServiceLogs',
       wait_project_activity: 'WaitProjectActivity',
+      wait_service_logs: 'WaitServiceLogs',
       remove_project: 'RemoveProject',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',

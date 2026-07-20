@@ -18,8 +18,10 @@ function createUnavailableBridge(): HarborBridge {
     getStatus: unavailable,
     getSnapshot: unavailable,
     getProjectActivity: unavailable,
+    getServiceLogs: unavailable,
     inspectProjectRuntimeRepair: unavailable,
     waitProjectActivity: unavailable,
+    waitServiceLogs: unavailable,
     openResource: unavailable,
     removeProject: unavailable,
     setupNetwork: unavailable,
@@ -36,6 +38,11 @@ export function selectHarborBridge(
 ): HarborBridgeSelection {
   if (hasWailsBridge()) {
     return { bridge: createWailsBridge(), mode: 'native' }
+  }
+
+  // A native desktop must never display plausible fixture state while bindings are rebuilding or unavailable.
+  if (hasWailsRuntime()) {
+    return { bridge: createUnavailableBridge(), mode: 'unavailable' }
   }
 
   if (development) {

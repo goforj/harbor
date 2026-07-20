@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
@@ -46,6 +46,45 @@ export function createMockBridge(): HarborBridge {
       }
     }
     return fixtureActivity
+  }
+
+  // serviceLogs applies the same byte-cursor semantics as the native service stream.
+  function serviceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ServiceLogs {
+    const project = snapshot.projects.find((entry) => entry.id === projectId)
+    const service = project?.services.find((entry) => entry.id === serviceId)
+    if (!project || !service) {
+      throw new Error(`Unknown service: ${projectId}/${serviceId}`)
+    }
+    const currentSessionId = `service-logs-${projectId}-${serviceId}`
+    const text = `\u001b[36m${service.name}\u001b[0m ready on ${project.slug}\n`
+    const encoded = new TextEncoder().encode(text)
+    let reset = sessionId !== '' && sessionId !== currentSessionId
+    let outputText = text
+    if (!reset && cursor > 0) {
+      if (cursor > encoded.length || !isUTF8Boundary(encoded, cursor)) {
+        reset = true
+      }
+      else {
+        outputText = cursor === encoded.length
+          ? ''
+          : new TextDecoder().decode(encoded.slice(cursor))
+      }
+    }
+    return {
+      project_id: projectId,
+      service_id: serviceId,
+      session_id: currentSessionId,
+      supported: true,
+      available: service.state !== 'stopped' && service.state !== 'unavailable',
+      output: {
+        available: service.state !== 'stopped' && service.state !== 'unavailable',
+        reset,
+        truncated: false,
+        has_more: false,
+        next_cursor: encoded.length,
+        text: outputText,
+      },
+    }
   }
 
   async function changeProjectLifecycle(projectId: string, intentId: string, action: 'start' | 'stop') {
@@ -107,6 +146,9 @@ export function createMockBridge(): HarborBridge {
     async getProjectActivity(projectId, sessionId, cursor) {
       return projectActivity(projectId, sessionId, cursor)
     },
+    async getServiceLogs(projectId, sessionId, serviceId, cursor) {
+      return serviceLogs(projectId, sessionId, serviceId, cursor)
+    },
     async inspectProjectRuntimeRepair(projectId) {
       const project = snapshot.projects.find((entry) => entry.id === projectId)
       if (!project) {
@@ -159,6 +201,11 @@ export function createMockBridge(): HarborBridge {
       // A synchronous caught-up fixture response would create a tight loop that native long-polling never produces.
       await new Promise((resolve) => window.setTimeout(resolve, Math.min(Math.max(waitMilliseconds, 1), 1000)))
       return projectActivity(projectId, sessionId, cursor)
+    },
+    async waitServiceLogs(projectId, sessionId, serviceId, cursor, waitMilliseconds) {
+      // A fixture wait remains held briefly so browser development cannot spin on an empty cursor.
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(Math.max(waitMilliseconds, 1), 1000)))
+      return serviceLogs(projectId, sessionId, serviceId, cursor)
     },
     async openResource(projectId, resourceId) {
       const project = fixture.snapshot.projects.find((entry) => entry.id === projectId)

@@ -70,7 +70,6 @@ func init() {
 	fmt.Fprintf(os.Stdout, "ip-address=%s\n", os.Getenv("IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "api-http-host=%s\n", os.Getenv("API_HTTP_HOST"))
 	fmt.Fprintf(os.Stdout, "db-host=%s\n", os.Getenv("DB_HOST"))
-	fmt.Fprintf(os.Stdout, "managed-keys=%s\n", os.Getenv(managedEnvKeysName))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -318,7 +317,6 @@ func TestStartLoadsManagedValuesFromHostEnvironment(t *testing.T) {
 	captured = replaceEnvironment(captured, "API_HTTP_HOST", "127.0.0.9")
 	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
 	captured = replaceEnvironment(captured, helperUnrelatedEnvironment, "preserved")
-	captured = replaceEnvironment(captured, managedEnvKeysName, "STALE")
 	supervisor := newTestSupervisor(Options{Environment: captured})
 	t.Cleanup(func() {
 		_ = supervisor.Close(context.Background())
@@ -347,8 +345,7 @@ func TestStartLoadsManagedValuesFromHostEnvironment(t *testing.T) {
 	waitForOutput(t, stdout, "override=captured")
 	waitForOutput(t, stdout, "empty=false:")
 	waitForOutput(t, stdout, "unrelated=preserved")
-	waitForOutput(t, stdout, "managed-keys=\n")
-	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") || strings.Contains(output, "managed-keys=STALE") {
+	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") {
 		t.Fatalf("managed project retained ambient network values: %q", output)
 	}
 }
@@ -631,7 +628,6 @@ func TestStartRejectsInvalidEnvironmentOverrides(t *testing.T) {
 		{name: "non ASCII", overrides: EnvironmentOverrides{"CAFÉ": "value"}},
 		{name: "NUL name", overrides: EnvironmentOverrides{"BAD\x00NAME": "value"}},
 		{name: "NUL value", overrides: EnvironmentOverrides{"GOOD_NAME": "bad\x00value"}},
-		{name: "managed marker", overrides: EnvironmentOverrides{managedEnvKeysName: "value"}},
 		{name: "private GoForj name", overrides: EnvironmentOverrides{"FORJ_INTERNAL_OTHER": "value"}},
 		{name: "dotenv selector", overrides: EnvironmentOverrides{"APP_ENV": "testing"}},
 		{name: "GoForj app selector", overrides: EnvironmentOverrides{"FORJ_APP": "value"}},
@@ -684,7 +680,6 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 		"IP_ADDRESS=127.0.0.8",
 		"API_HTTP_HOST=127.0.0.9",
 		"ip_address=127.0.0.10",
-		"FORJ_INTERNAL_MANAGED_ENV_KEYS=STALE",
 		"UNRELATED=preserved",
 	}
 	before := append([]string(nil), base...)

@@ -49,16 +49,19 @@ func (observe httpRouteObserverFunc) HTTPRouteLive(host string, upstream netip.A
 
 // recordingProjectLifecycle supplies explicit managed-process coordination to authority boundary tests.
 type recordingProjectLifecycle struct {
-	mutex       sync.Mutex
-	startRecord state.OperationRecord
-	stopRecord  state.OperationRecord
-	startErr    error
-	stopErr     error
-	activity    reconcile.ProjectActivity
-	activityErr error
-	starts      []reconcile.ProjectStartRequest
-	stops       []reconcile.ProjectStopRequest
-	activities  []reconcile.ProjectActivityRequest
+	mutex              sync.Mutex
+	startRecord        state.OperationRecord
+	stopRecord         state.OperationRecord
+	startErr           error
+	stopErr            error
+	activity           reconcile.ProjectActivity
+	activityErr        error
+	serviceLogs        reconcile.ProjectServiceLogs
+	serviceLogsErr     error
+	starts             []reconcile.ProjectStartRequest
+	stops              []reconcile.ProjectStopRequest
+	activities         []reconcile.ProjectActivityRequest
+	serviceLogRequests []reconcile.ProjectServiceLogsRequest
 }
 
 // Start returns the configured durable start progress.
@@ -88,6 +91,17 @@ func (lifecycle *recordingProjectLifecycle) ProjectActivity(
 	lifecycle.activities = append(lifecycle.activities, request)
 	lifecycle.mutex.Unlock()
 	return lifecycle.activity, lifecycle.activityErr
+}
+
+// ServiceLogs returns configured service output while retaining the exact selection.
+func (lifecycle *recordingProjectLifecycle) ServiceLogs(
+	_ context.Context,
+	request reconcile.ProjectServiceLogsRequest,
+) (reconcile.ProjectServiceLogs, error) {
+	lifecycle.mutex.Lock()
+	lifecycle.serviceLogRequests = append(lifecycle.serviceLogRequests, request)
+	lifecycle.mutex.Unlock()
+	return lifecycle.serviceLogs, lifecycle.serviceLogsErr
 }
 
 // testProjectLifecycles provides a non-nil explicit collaborator to tests outside the lifecycle boundary.

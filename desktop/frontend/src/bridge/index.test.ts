@@ -54,12 +54,12 @@ describe('Harbor bridge selection', () => {
     await expect(bridge.getStatus()).resolves.toMatchObject({ state: 'ready', sequence: 42 })
   })
 
-  it('uses visibly identified fixtures when Wails development bindings are not ready', async () => {
+  it('never presents fixtures when Wails development bindings are not ready', async () => {
     window.runtime = {}
     const selection = selectHarborBridge(true)
 
-    expect(selection.mode).toBe('fixture')
-    await expect(selection.bridge.getSnapshot()).resolves.toMatchObject({ sequence: 42 })
+    expect(selection.mode).toBe('unavailable')
+    await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
   it('does not present fixture state in a production Wails build with missing bindings', async () => {
@@ -174,6 +174,17 @@ describe('Harbor bridge selection', () => {
     expect(StartProject).toHaveBeenCalledWith('reports', 'desktop-start-reports')
     expect(StopProject).toHaveBeenCalledWith('orders', 'desktop-stop-orders')
     expect(AddProject).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the authoritative native bridge when additive service-log bindings are absent', async () => {
+    installAppBindings()
+    installEventRuntime()
+
+    const selection = selectHarborBridge(true)
+
+    expect(selection.mode).toBe('native')
+    await expect(selection.bridge.getSnapshot()).resolves.toMatchObject({ sequence: 7 })
+    await expect(selection.bridge.getServiceLogs('orders-api', '', 'mysql', 0)).rejects.toThrow('Service log bindings are not available')
   })
 
   it('subscribes to authoritative snapshot payloads and cancels the exact Wails listener', () => {

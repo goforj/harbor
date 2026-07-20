@@ -23,6 +23,10 @@ const (
 	MethodOpenResource = "OpenResource"
 	// MethodProjectActivity is the generated Wails method that reads current project development output.
 	MethodProjectActivity = "ProjectActivity"
+	// MethodServiceLogs is the generated Wails method that reads current Compose service output.
+	MethodServiceLogs = "ServiceLogs"
+	// MethodWaitServiceLogs is the generated Wails method that holds a service output cursor until it advances or times out.
+	MethodWaitServiceLogs = "WaitServiceLogs"
 	// MethodWaitProjectActivity is the generated Wails method that holds a current output cursor until it advances or times out.
 	MethodWaitProjectActivity = "WaitProjectActivity"
 	// MethodRemoveProject is the generated Wails method that starts or resumes one project removal intent.
@@ -71,6 +75,7 @@ type AppContract interface {
 	InspectProjectRuntimeRepair(projectID string) (control.ProjectRuntimeRepairInspection, error)
 	OpenResource(projectID string, resourceID string) error
 	ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error)
+	ServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64) (control.ServiceLogs, error)
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
 	SetupNetwork() (control.NetworkSetupOperation, error)
 	Snapshot() (domain.Snapshot, error)
@@ -78,6 +83,7 @@ type AppContract interface {
 	Status() (control.DaemonStatus, error)
 	StopProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	WaitProjectActivity(projectID string, sessionID string, cursor uint64, waitMilliseconds uint64) (control.ProjectActivity, error)
+	WaitServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64, waitMilliseconds uint64) (control.ServiceLogs, error)
 }
 
 // MethodContract describes one reflected App method and its stable TypeScript parameter labels.
@@ -97,6 +103,7 @@ func MethodContracts() []MethodContract {
 		MethodInspectProjectRuntimeRepair: []string{"projectId"},
 		MethodOpenResource:                []string{"projectId", "resourceId"},
 		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
+		MethodServiceLogs:                 []string{"projectId", "sessionId", "serviceId", "cursor"},
 		MethodRemoveProject:               []string{"projectId", "intentId"},
 		MethodSetupNetwork:                {},
 		MethodSnapshot:                    []string{},
@@ -104,6 +111,7 @@ func MethodContracts() []MethodContract {
 		MethodStatus:                      []string{},
 		MethodStopProject:                 []string{"projectId", "intentId"},
 		MethodWaitProjectActivity:         []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
+		MethodWaitServiceLogs:             []string{"projectId", "sessionId", "serviceId", "cursor", "waitMilliseconds"},
 	}
 	contracts := make([]MethodContract, 0, contractType.NumMethod())
 	for index := range contractType.NumMethod() {

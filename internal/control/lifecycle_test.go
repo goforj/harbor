@@ -109,6 +109,8 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 		CapabilityProjectRuntimeRepairV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,
+		CapabilityServiceLogsWaitV1,
+		CapabilityServiceLogsV1,
 		CapabilityV1,
 	}) {
 		t.Fatalf("capabilities() = %v, want canonical lifecycle advertisement", capabilities())

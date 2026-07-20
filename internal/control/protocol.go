@@ -26,6 +26,10 @@ const (
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectActivityWaitV1 identifies bounded cursor waits on current-session project output.
 	CapabilityProjectActivityWaitV1 rpc.Capability = "control.project-activity-wait.v1"
+	// CapabilityServiceLogsV1 identifies bounded current-session Compose service log reads.
+	CapabilityServiceLogsV1 rpc.Capability = "control.service-logs.v1"
+	// CapabilityServiceLogsWaitV1 identifies bounded cursor waits on current-session Compose service logs.
+	CapabilityServiceLogsWaitV1 rpc.Capability = "control.service-logs-wait.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
 	// CapabilityProjectLifecycleV1 identifies idempotent project start and stop initiation.
@@ -47,6 +51,7 @@ const (
 	methodNetworkResolverSetupApprovalPrepare = "control.v1.network.resolver.setup.approval.prepare"
 	methodNetworkResolverSetupApprovalConfirm = "control.v1.network.resolver.setup.approval.confirm"
 	methodProjectActivity                     = "control.v1.project.activity"
+	methodServiceLogs                         = "control.v1.project.service.logs"
 	methodProjectStart                        = "control.v1.project.start"
 	methodProjectStop                         = "control.v1.project.stop"
 	methodProjectRegister                     = "control.v1.project.register"
@@ -268,6 +273,8 @@ func capabilities() []rpc.Capability {
 		CapabilityProjectRuntimeRepairV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,
+		CapabilityServiceLogsWaitV1,
+		CapabilityServiceLogsV1,
 		CapabilityV1,
 	}
 }

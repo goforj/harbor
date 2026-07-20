@@ -20,14 +20,14 @@ type ProjectLifecycleMutation struct {
 	Session   *domain.ProjectSession
 }
 
-// DefaultProjectRuntime is the ready default App, observed services, and its launchable HTTP resource.
+// DefaultProjectRuntime is the ready default App, observed services, and their launchable HTTP resources.
 type DefaultProjectRuntime struct {
-	App      domain.AppSnapshot
-	Services []domain.ServiceSnapshot
-	Resource domain.ResourceSnapshot
+	App       domain.AppSnapshot
+	Services  []domain.ServiceSnapshot
+	Resources []domain.ResourceSnapshot
 }
 
-// Validate reports whether the projection proves one ready, active, required default App, canonical services, and its owned resource.
+// Validate reports whether the projection proves one ready, active, required default App and canonical owned topology.
 func (runtime DefaultProjectRuntime) Validate() error {
 	if err := runtime.App.Validate(); err != nil {
 		return err
@@ -38,13 +38,7 @@ func (runtime DefaultProjectRuntime) Validate() error {
 	if err := validateDefaultProjectRuntimeServices(runtime.Services); err != nil {
 		return err
 	}
-	if err := runtime.Resource.Validate(); err != nil {
-		return err
-	}
-	if runtime.Resource.Owner.Kind != domain.ResourceOwnedByApp || runtime.Resource.Owner.AppID != runtime.App.ID {
-		return fmt.Errorf("default resource must belong to default App %q", runtime.App.ID)
-	}
-	return nil
+	return validateDefaultProjectRuntimeResources(runtime.App, runtime.Services, runtime.Resources)
 }
 
 // validateDefaultProjectRuntimeServices requires deterministic service identities before runtime observations become durable.
@@ -66,6 +60,55 @@ func validateDefaultProjectRuntimeServices(services []domain.ServiceSnapshot) er
 		}
 		seen[service.ID] = struct{}{}
 		previous = service.ID
+	}
+	return nil
+}
+
+// validateDefaultProjectRuntimeResources admits only canonical resources owned by the projected App or an observed service.
+func validateDefaultProjectRuntimeResources(
+	app domain.AppSnapshot,
+	services []domain.ServiceSnapshot,
+	resources []domain.ResourceSnapshot,
+) error {
+	if resources == nil {
+		return errors.New("default runtime resources must not be nil")
+	}
+	if len(resources) == 0 {
+		return errors.New("default runtime must contain its launchable App resource")
+	}
+	serviceIDs := make(map[domain.ServiceID]struct{}, len(services))
+	for _, service := range services {
+		serviceIDs[service.ID] = struct{}{}
+	}
+	seen := make(map[domain.ResourceID]struct{}, len(resources))
+	var previous domain.ResourceID
+	appResource := false
+	for index, resource := range resources {
+		if err := resource.Validate(); err != nil {
+			return fmt.Errorf("default runtime resource %q: %w", resource.ID, err)
+		}
+		if _, exists := seen[resource.ID]; exists {
+			return fmt.Errorf("duplicate default runtime resource ID %q", resource.ID)
+		}
+		if index > 0 && previous > resource.ID {
+			return errors.New("default runtime resources must use canonical resource ID order")
+		}
+		switch resource.Owner.Kind {
+		case domain.ResourceOwnedByApp:
+			if resource.Owner.AppID != app.ID {
+				return fmt.Errorf("default runtime resource %q belongs to unknown App %q", resource.ID, resource.Owner.AppID)
+			}
+			appResource = true
+		case domain.ResourceOwnedByService:
+			if _, exists := serviceIDs[resource.Owner.ServiceID]; !exists {
+				return fmt.Errorf("default runtime resource %q belongs to unknown service %q", resource.ID, resource.Owner.ServiceID)
+			}
+		}
+		seen[resource.ID] = struct{}{}
+		previous = resource.ID
+	}
+	if !appResource {
+		return errors.New("default runtime must contain a launchable default App resource")
 	}
 	return nil
 }
@@ -337,6 +380,13 @@ func (store *Store) CompleteProjectStart(ctx context.Context, request CompletePr
 		persistedProject, err := persistLifecycleProject(tx, nextProject)
 		if err != nil {
 			return err
+		}
+		runtimeState, err := store.runtimeStateCandidate(tx)
+		if err != nil {
+			return fmt.Errorf("read ready runtime candidate: %w", err)
+		}
+		if err := runtimeState.Validate(); err != nil {
+			return fmt.Errorf("validate ready runtime candidate: %w", err)
 		}
 		result = lifecycleMutation(succeeded, persistedProject, &session)
 		return nil
@@ -1152,12 +1202,12 @@ func requireExactLifecycleReplay(
 
 // projectMatchesReadyRuntime compares the user-visible readiness facts without depending on surrogate persistence IDs.
 func projectMatchesReadyRuntime(project domain.ProjectSnapshot, runtime DefaultProjectRuntime, at time.Time) bool {
-	if project.State != domain.ProjectReady || !project.UpdatedAt.Equal(at) || len(project.Apps) != 1 || len(project.Resources) != 1 {
+	if project.State != domain.ProjectReady || !project.UpdatedAt.Equal(at) || len(project.Apps) != 1 {
 		return false
 	}
 	return project.Apps[0] == runtime.App &&
 		reflect.DeepEqual(project.Services, runtime.Services) &&
-		project.Resources[0] == runtime.Resource
+		reflect.DeepEqual(project.Resources, runtime.Resources)
 }
 
 // projectMatchesInactiveState proves joined process-owned entities are no longer presented as active.
@@ -1210,7 +1260,7 @@ func readyProjectProjection(project domain.ProjectSnapshot, runtime DefaultProje
 	project.UpdatedAt = at
 	project.Apps = []domain.AppSnapshot{runtime.App}
 	project.Services = append(make([]domain.ServiceSnapshot, 0, len(runtime.Services)), runtime.Services...)
-	project.Resources = []domain.ResourceSnapshot{runtime.Resource}
+	project.Resources = append(make([]domain.ResourceSnapshot, 0, len(runtime.Resources)), runtime.Resources...)
 	return project
 }
 

@@ -184,18 +184,9 @@ func (store *Store) RuntimeState(ctx context.Context) (RuntimeState, error) {
 
 	var result RuntimeState
 	err = builder.Transaction(func(tx *gorm.DB) error {
-		snapshot, err := store.readSnapshot(tx)
+		candidate, err := store.runtimeStateCandidate(tx)
 		if err != nil {
 			return err
-		}
-		network, initialized, err := readRuntimeNetwork(tx, snapshot.Sequence)
-		if err != nil {
-			return err
-		}
-		candidate := RuntimeState{
-			Snapshot:           snapshot,
-			Network:            network,
-			NetworkInitialized: initialized,
 		}
 		if err := candidate.Validate(); err != nil {
 			return corruptStateError("runtime state", "aggregate", err)
@@ -207,6 +198,23 @@ func (store *Store) RuntimeState(ctx context.Context) (RuntimeState, error) {
 		return RuntimeState{}, fmt.Errorf("read Harbor runtime state: %w", err)
 	}
 	return result, nil
+}
+
+// runtimeStateCandidate reads one transaction-local aggregate so mutations can reject invalid cross-projection state before commit.
+func (store *Store) runtimeStateCandidate(tx *gorm.DB) (RuntimeState, error) {
+	snapshot, err := store.readSnapshot(tx)
+	if err != nil {
+		return RuntimeState{}, err
+	}
+	network, initialized, err := readRuntimeNetwork(tx, snapshot.Sequence)
+	if err != nil {
+		return RuntimeState{}, err
+	}
+	return RuntimeState{
+		Snapshot:           snapshot,
+		Network:            network,
+		NetworkInitialized: initialized,
+	}, nil
 }
 
 // readRuntimeNetwork distinguishes legacy and first-run databases while requiring a complete migrated schema.

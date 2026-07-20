@@ -65,6 +65,8 @@ type projectLifecycleCoordinator interface {
 	Stop(context.Context, reconcile.ProjectStopRequest) (state.OperationRecord, error)
 	// ProjectActivity reads bounded output only for the current durable session.
 	ProjectActivity(context.Context, reconcile.ProjectActivityRequest) (reconcile.ProjectActivity, error)
+	// ServiceLogs reads bounded output for one Compose service in the current durable session.
+	ServiceLogs(context.Context, reconcile.ProjectServiceLogsRequest) (reconcile.ProjectServiceLogs, error)
 }
 
 // networkSetupCoordinator limits authority to the interactive machine-network setup lifecycle.
@@ -741,6 +743,66 @@ func (authority *Authority) ProjectActivity(
 	bounded, err := control.BoundProjectActivityResponse(result)
 	if err != nil {
 		return control.ProjectActivity{}, fmt.Errorf("bound project activity result: %w", err)
+	}
+	return bounded, nil
+}
+
+// ServiceLogs projects one selected Compose service without exposing runtime ownership evidence.
+func (authority *Authority) ServiceLogs(
+	ctx context.Context,
+	_ control.Caller,
+	request control.ServiceLogsRequest,
+) (control.ServiceLogs, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ServiceLogs{}, control.NewServiceLogsInvalidError(err)
+	}
+	logs, err := authority.lifecycle.ServiceLogs(ctx, reconcile.ProjectServiceLogsRequest{
+		ProjectID: request.ProjectID,
+		SessionID: request.SessionID,
+		ServiceID: request.ServiceID,
+		Cursor:    request.Cursor,
+		Wait:      time.Duration(request.WaitMilliseconds) * time.Millisecond,
+	})
+	if err != nil {
+		var projectMissing *state.ProjectNotFoundError
+		var serviceMissing *reconcile.ProjectServiceNotFoundError
+		if errors.As(err, &projectMissing) || errors.As(err, &serviceMissing) {
+			return control.ServiceLogs{}, control.NewServiceLogsNotFoundError(err)
+		}
+		return control.ServiceLogs{}, err
+	}
+	result := control.ServiceLogs{
+		ProjectID: logs.ProjectID,
+		ServiceID: logs.ServiceID,
+		SessionID: logs.SessionID,
+		Supported: logs.Supported,
+		Available: logs.Available,
+		Output: control.ServiceLogOutputChunk{
+			Available:  logs.Output.Available,
+			Reset:      logs.Output.Reset,
+			Truncated:  logs.Output.Truncated,
+			HasMore:    logs.Output.HasMore,
+			NextCursor: logs.Output.NextCursor,
+			Text:       logs.Output.Text,
+		},
+	}
+	if logs.Problem != nil {
+		result.Problem = &control.ServiceLogProblem{
+			Code:      logs.Problem.Code,
+			Message:   logs.Problem.Message,
+			Retryable: logs.Problem.Retryable,
+		}
+	}
+	if err := result.Validate(); err != nil {
+		return control.ServiceLogs{}, fmt.Errorf("service logs result: %w", err)
+	}
+	if result.ProjectID != request.ProjectID || result.ServiceID != request.ServiceID {
+		return control.ServiceLogs{}, errors.New("service logs result differs from its requested project or service")
+	}
+	bounded, err := control.BoundServiceLogsResponse(result)
+	if err != nil {
+		return control.ServiceLogs{}, fmt.Errorf("bound service logs result: %w", err)
 	}
 	return bounded, nil
 }

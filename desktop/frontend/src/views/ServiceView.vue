@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ArrowLeft, ArrowUpRight, Database, ExternalLink, Server } from '@lucide/vue'
+import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import { Button } from '@/components/ui/button'
@@ -41,6 +42,14 @@ async function openResource(resourceId: string) {
       </header>
 
       <div class="space-y-5 p-5 lg:p-7">
+        <ServiceLogsPanel
+          v-if="service.owner === 'compose'"
+          :project-id="service.project_id"
+          :service-id="service.id"
+          :service-name="service.name"
+        />
+        <p v-else class="rounded-lg border px-4 py-3 text-xs text-muted-foreground">Logs for this external service are managed outside Harbor.</p>
+
         <section aria-label="Service facts" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
           <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium"><ServiceOwnership :owner="service.owner" /></p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Selection</p><p class="mt-1 text-sm font-medium">{{ service.selection }}</p></div>

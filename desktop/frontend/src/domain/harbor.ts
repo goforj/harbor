@@ -179,6 +179,16 @@ export interface ProjectActivity {
   session?: ProjectSessionActivity
 }
 
+export interface ServiceLogs {
+  project_id: string
+  service_id: string
+  session_id?: string
+  supported: boolean
+  available: boolean
+  problem?: Problem
+  output: ProjectOutputChunk
+}
+
 export interface NetworkSetupOperation {
   operation: Operation
   revision: number

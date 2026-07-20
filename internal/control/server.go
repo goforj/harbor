@@ -123,6 +123,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 			methodNetworkResolverSetupApprovalConfirm: server.networkResolverSetupApprovalConfirmHandler(transportPeer),
 			methodSnapshot:                            server.snapshotHandler(transportPeer),
 			methodProjectActivity:                     server.projectActivityHandler(transportPeer),
+			methodServiceLogs:                         server.serviceLogsHandler(transportPeer),
 			methodProjectRuntimeRepairInspect:         server.projectRuntimeRepairInspectHandler(transportPeer),
 			methodProjectRuntimeRepairConfirm:         server.projectRuntimeRepairConfirmHandler(transportPeer),
 			methodProjectStart:                        server.projectStartHandler(transportPeer),

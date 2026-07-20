@@ -50,6 +50,7 @@ type recordingAuthority struct {
 	startLifecycle                      ProjectLifecycleOperation
 	stopLifecycle                       ProjectLifecycleOperation
 	projectActivity                     ProjectActivity
+	serviceLogs                         ServiceLogs
 	projectRuntimeRepairInspection      ProjectRuntimeRepairInspection
 	projectRuntimeRepairConfirmation    ProjectRuntimeRepairConfirmation
 	unregistration                      ProjectUnregistration
@@ -67,6 +68,7 @@ type recordingAuthority struct {
 	startErr                            error
 	stopErr                             error
 	projectActivityErr                  error
+	serviceLogsErr                      error
 	projectRuntimeRepairInspectErr      error
 	projectRuntimeRepairConfirmErr      error
 	unregistrationErr                   error
@@ -83,6 +85,7 @@ type recordingAuthority struct {
 	startRequests                       []StartProjectRequest
 	stopRequests                        []StopProjectRequest
 	projectActivityRequests             []ProjectActivityRequest
+	serviceLogsRequests                 []ServiceLogsRequest
 	projectRuntimeRepairInspectRequests []InspectProjectRuntimeRepairRequest
 	projectRuntimeRepairConfirmRequests []ConfirmProjectRuntimeRepairRequest
 	unregistrationRequests              []UnregisterProjectRequest
@@ -104,6 +107,22 @@ func (authority *recordingAuthority) ProjectActivity(
 	authority.projectActivityRequests = append(authority.projectActivityRequests, request)
 	authority.mu.Unlock()
 	return authority.projectActivity, authority.projectActivityErr
+}
+
+// ServiceLogs records the authenticated caller and selected Compose service.
+func (authority *recordingAuthority) ServiceLogs(
+	ctx context.Context,
+	caller Caller,
+	request ServiceLogsRequest,
+) (ServiceLogs, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ServiceLogs{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.serviceLogsRequests = append(authority.serviceLogsRequests, request)
+	authority.mu.Unlock()
+	return authority.serviceLogs, authority.serviceLogsErr
 }
 
 // InspectProjectRuntimeRepair records the authenticated caller and project selected for daemon-owned inspection.
@@ -519,7 +538,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-runtime-repair.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-runtime-repair.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.service-logs-wait.v1","control.service-logs.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}

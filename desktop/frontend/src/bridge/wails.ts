@@ -13,11 +13,18 @@ interface WailsRuntime extends WailsRuntimeEvents {
 
 type ReadyWailsRuntime = Partial<WailsRuntime> & WailsRuntimeEvents
 
+interface AdditiveWailsAppBindings {
+  ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
+  WaitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): ReturnType<HarborBridge['waitServiceLogs']>
+}
+
+type AvailableWailsAppBindings = Partial<WailsAppBindings> & Partial<AdditiveWailsAppBindings>
+
 declare global {
   interface Window {
     go?: {
       main?: {
-        App?: Partial<WailsAppBindings>
+        App?: AvailableWailsAppBindings
       }
     }
     runtime?: Partial<WailsRuntime>
@@ -55,6 +62,8 @@ export function createWailsBridge(): HarborBridge {
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
   const projectActivity = app?.ProjectActivity
+  const serviceLogs = app?.ServiceLogs
+  const waitServiceLogs = app?.WaitServiceLogs
   const waitProjectActivity = app?.WaitProjectActivity
   const removeProject = app?.RemoveProject
   const setupNetwork = app?.SetupNetwork
@@ -82,8 +91,14 @@ export function createWailsBridge(): HarborBridge {
     getStatus: () => status(),
     getSnapshot: () => snapshot(),
     getProjectActivity: (projectId, sessionId, cursor) => projectActivity(projectId, sessionId, cursor),
+    getServiceLogs: typeof serviceLogs === 'function'
+      ? (projectId, sessionId, serviceId, cursor) => serviceLogs(projectId, sessionId, serviceId, cursor)
+      : () => Promise.reject(new Error('Service log bindings are not available in this desktop build.')),
     inspectProjectRuntimeRepair: (projectId) => inspectProjectRuntimeRepair(projectId),
     waitProjectActivity: (projectId, sessionId, cursor, waitMilliseconds) => waitProjectActivity(projectId, sessionId, cursor, waitMilliseconds),
+    waitServiceLogs: typeof waitServiceLogs === 'function'
+      ? (projectId, sessionId, serviceId, cursor, waitMilliseconds) => waitServiceLogs(projectId, sessionId, serviceId, cursor, waitMilliseconds)
+      : () => Promise.reject(new Error('Service log bindings are not available in this desktop build.')),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),
     setupNetwork: () => setupNetwork(),

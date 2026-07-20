@@ -55,6 +55,8 @@ type Authority interface {
 	ConfirmNetworkResolverSetupApproval(context.Context, Caller, ConfirmNetworkResolverSetupApprovalRequest) (NetworkResolverSetupApprovalConfirmation, error)
 	// ProjectActivity returns bounded output for a project's current durable session.
 	ProjectActivity(context.Context, Caller, ProjectActivityRequest) (ProjectActivity, error)
+	// ServiceLogs returns bounded output for one Compose service in a project's current durable session.
+	ServiceLogs(context.Context, Caller, ServiceLogsRequest) (ServiceLogs, error)
 	// InspectProjectRuntimeRepair derives one bounded repair result without accepting process authority from a client.
 	InspectProjectRuntimeRepair(context.Context, Caller, InspectProjectRuntimeRepairRequest) (ProjectRuntimeRepairInspection, error)
 	// ConfirmProjectRuntimeRepair revalidates and commits one caller-bound opaque repair selection.
@@ -127,6 +129,16 @@ func NewProjectActivityInvalidError(cause error) error {
 
 // NewProjectActivityNotFoundError classifies a current-output request for an unknown durable project.
 func NewProjectActivityNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewServiceLogsInvalidError classifies a service-log request that cannot identify a valid cursor.
+func NewServiceLogsInvalidError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewServiceLogsNotFoundError classifies a service-log request for an unknown project or service.
+func NewServiceLogsNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 

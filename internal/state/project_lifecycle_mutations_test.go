@@ -85,6 +85,31 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 		Phase:                     "default App ready",
 		At:                        readyAt,
 	}
+	snapshotBeforeUnsafeStart, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatalf("Snapshot() before unsafe readiness error = %v", err)
+	}
+	sessionBeforeUnsafeStart, err := store.ActiveProjectSession(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("ActiveProjectSession() before unsafe readiness error = %v", err)
+	}
+	unsafeStartRequest := completeStartRequest
+	unsafeStartRequest.Runtime.Resources = append([]domain.ResourceSnapshot(nil), completeStartRequest.Runtime.Resources...)
+	unsafeStartRequest.Runtime.Resources[0].URL = "https://dev.diclan.app"
+	if _, err := store.CompleteProjectStart(t.Context(), unsafeStartRequest); err == nil || !strings.Contains(err.Error(), "not a literal loopback address") {
+		t.Fatalf("CompleteProjectStart(unsafe resource) error = %v", err)
+	}
+	snapshotAfterUnsafeStart, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatalf("Snapshot() after unsafe readiness error = %v", err)
+	}
+	sessionAfterUnsafeStart, err := store.ActiveProjectSession(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("ActiveProjectSession() after unsafe readiness error = %v", err)
+	}
+	if !reflect.DeepEqual(snapshotAfterUnsafeStart, snapshotBeforeUnsafeStart) || !reflect.DeepEqual(sessionAfterUnsafeStart, sessionBeforeUnsafeStart) {
+		t.Fatalf("unsafe readiness mutated state: snapshot %#v session %#v", snapshotAfterUnsafeStart, sessionAfterUnsafeStart)
+	}
 	ready, err := store.CompleteProjectStart(t.Context(), completeStartRequest)
 	if err != nil {
 		t.Fatalf("CompleteProjectStart() error = %v", err)
@@ -103,7 +128,16 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	if err != nil || !reflect.DeepEqual(replayedReady, ready) || projectStoreMutationSequence(t, store) != sequenceAfterReady {
 		t.Fatalf("CompleteProjectStart(replay) = %#v, %v", replayedReady, err)
 	}
-	if _, err := store.RecordRecentResource(t.Context(), domain.ResourceRef{ProjectID: project.ID, ResourceID: runtime.Resource.ID}); err != nil {
+	driftedReplay := completeStartRequest
+	driftedReplay.Runtime.Resources = append([]domain.ResourceSnapshot(nil), completeStartRequest.Runtime.Resources...)
+	driftedReplay.Runtime.Resources[1].URL = "http://127.0.0.1:8080/other"
+	if _, err := store.CompleteProjectStart(t.Context(), driftedReplay); err == nil || !strings.Contains(err.Error(), "ready projection") {
+		t.Fatalf("CompleteProjectStart(resource drift replay) error = %v", err)
+	}
+	if projectStoreMutationSequence(t, store) != sequenceAfterReady {
+		t.Fatal("resource drift replay advanced the global sequence")
+	}
+	if _, err := store.RecordRecentResource(t.Context(), domain.ResourceRef{ProjectID: project.ID, ResourceID: runtime.Resources[0].ID}); err != nil {
 		t.Fatalf("RecordRecentResource() error = %v", err)
 	}
 
@@ -379,10 +413,11 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 	for _, mutate := range []func(*DefaultProjectRuntime){
 		func(candidate *DefaultProjectRuntime) { candidate.App.ID = "" },
 		func(candidate *DefaultProjectRuntime) { candidate.App.Active = false },
-		func(candidate *DefaultProjectRuntime) { candidate.Resource.ID = "" },
-		func(candidate *DefaultProjectRuntime) { candidate.Resource.Owner.AppID = "other" },
+		func(candidate *DefaultProjectRuntime) { candidate.Resources[0].ID = "" },
+		func(candidate *DefaultProjectRuntime) { candidate.Resources[0].Owner.AppID = "other" },
 	} {
 		candidate := runtime
+		candidate.Resources = append([]domain.ResourceSnapshot(nil), runtime.Resources...)
 		mutate(&candidate)
 		if err := candidate.Validate(); err == nil {
 			t.Fatal("DefaultProjectRuntime.Validate() error = nil")
@@ -465,6 +500,87 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 	withoutProcess.Process = nil
 	if err := validateRecordUnexpectedProjectExitRequest(RecordUnexpectedProjectExitRequest{ProjectID: projectID, Exit: withoutProcess}); err == nil {
 		t.Fatal("validateRecordUnexpectedProjectExitRequest(missing process) error = nil")
+	}
+}
+
+// TestDefaultProjectRuntimeValidateResources protects deterministic identity and ownership before atomic publication.
+func TestDefaultProjectRuntimeValidateResources(t *testing.T) {
+	runtime := projectLifecycleTestRuntime()
+	serviceResource := domain.ResourceSnapshot{
+		ID: "redis-admin", Name: "Redis Admin", Kind: "cache", URL: "http://127.0.0.1:8081",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: "redis"},
+	}
+	runtime.Resources = append(runtime.Resources, serviceResource)
+	if err := runtime.Validate(); err != nil {
+		t.Fatalf("DefaultProjectRuntime.Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*DefaultProjectRuntime)
+		wantError string
+	}{
+		{
+			name: "nil resources",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources = nil
+			},
+			wantError: "resources must not be nil",
+		},
+		{
+			name: "empty resources",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources = []domain.ResourceSnapshot{}
+			},
+			wantError: "launchable App resource",
+		},
+		{
+			name: "duplicate resource ID",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources = append(candidate.Resources, candidate.Resources[0])
+			},
+			wantError: "duplicate default runtime resource ID",
+		},
+		{
+			name: "noncanonical order",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources[0], candidate.Resources[1] = candidate.Resources[1], candidate.Resources[0]
+			},
+			wantError: "canonical resource ID order",
+		},
+		{
+			name: "unknown App owner",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources[0].Owner.AppID = "other"
+			},
+			wantError: "unknown App",
+		},
+		{
+			name: "unknown service owner",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources[1].Owner.ServiceID = "postgres"
+			},
+			wantError: "unknown service",
+		},
+		{
+			name: "missing App resource",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Resources = candidate.Resources[1:]
+			},
+			wantError: "default App resource",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := runtime
+			candidate.Services = append([]domain.ServiceSnapshot(nil), runtime.Services...)
+			candidate.Resources = append([]domain.ResourceSnapshot(nil), runtime.Resources...)
+			test.mutate(&candidate)
+			err := candidate.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("DefaultProjectRuntime.Validate() error = %v, want containing %q", err, test.wantError)
+			}
+		})
 	}
 }
 
@@ -729,9 +845,15 @@ func projectLifecycleTestRuntime() DefaultProjectRuntime {
 			{ID: "mysql", Name: "MySQL", Kind: "database", State: domain.EntityReady, Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true},
 			{ID: "redis", Name: "Redis", Kind: "cache", State: domain.EntityReady, Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected},
 		},
-		Resource: domain.ResourceSnapshot{
-			ID: "app", Name: "App", Kind: "http", URL: "http://127.0.0.1:3000",
-			Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
+		Resources: []domain.ResourceSnapshot{
+			{
+				ID: "app", Name: "App", Kind: "http", URL: "http://127.0.0.1:3000",
+				Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
+			},
+			{
+				ID: "mysql-admin", Name: "MySQL Admin", Kind: "database", URL: "http://127.0.0.1:8080",
+				Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: "mysql"},
+			},
 		},
 	}
 }

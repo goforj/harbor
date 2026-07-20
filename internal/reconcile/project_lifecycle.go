@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -88,8 +91,11 @@ type projectProcessSupervisor interface {
 	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
 	Stop(context.Context, domain.ProjectID, domain.SessionID) error
 	ObserveServices(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.ServiceObservation, error)
+	ObserveFrameworkResources(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.FrameworkResourceObservation, error)
 	ReadOutput(domain.ProjectID, domain.SessionID, uint64) projectprocess.OutputChunk
 	WaitOutput(context.Context, domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
+	ReadServiceLogs(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID, uint64) (projectprocess.ServiceLogSelection, error)
+	WaitServiceLogs(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID, uint64) (projectprocess.ServiceLogSelection, error)
 	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
 	SettlePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessSettlement, error)
 	Close(context.Context) error
@@ -611,6 +617,25 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				}
 				completionPhase = "ready; service observation unavailable"
 			}
+			resourceCtx, resourceCancel := context.WithTimeout(coordinator.ctx, defaultServiceObserveTimeout)
+			resourceObservation, resourceErr := coordinator.supervisor.ObserveFrameworkResources(
+				resourceCtx,
+				mutation.Operation.Operation.ProjectID,
+				session.ID,
+			)
+			resourceCancel()
+			if resourceErr != nil {
+				resourceObservation = projectprocess.FrameworkResourceObservation{
+					Supported: false,
+					Resources: []projectprocess.FrameworkResource{},
+				}
+			}
+			select {
+			case <-handle.Done():
+				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("forj dev exited while Harbor observed framework resources"))
+				return
+			default:
+			}
 			readyAt := lifecycleTime(coordinator.now())
 			if readyAt.Before(session.UpdatedAt) {
 				readyAt = session.UpdatedAt
@@ -622,7 +647,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 					ExpectedOperationRevision: mutation.Operation.Revision,
 					SessionID:                 session.ID,
 					ExpectedSessionGeneration: session.Generation,
-					Runtime:                   defaultRuntime(target, observation.Services),
+					Runtime:                   defaultRuntime(target, observation.Services, resourceObservation),
 					Phase:                     completionPhase,
 					At:                        readyAt,
 				})
@@ -1429,8 +1454,54 @@ func processEvidence(info projectprocess.Info) domain.ProcessEvidence {
 	}
 }
 
-// defaultRuntime projects the one App and resource proved by the generated readiness endpoint.
-func defaultRuntime(target projectdiscovery.RuntimeTarget, services []domain.ServiceSnapshot) state.DefaultProjectRuntime {
+// defaultRuntime projects the ready App, directly observed services, and admitted framework links.
+func defaultRuntime(
+	target projectdiscovery.RuntimeTarget,
+	services []domain.ServiceSnapshot,
+	observation projectprocess.FrameworkResourceObservation,
+) state.DefaultProjectRuntime {
+	resources := []domain.ResourceSnapshot{{
+		ID:   "app-http",
+		Name: target.Name,
+		Kind: "application",
+		Owner: domain.ResourceOwner{
+			Kind:  domain.ResourceOwnedByApp,
+			AppID: target.AppID,
+		},
+		URL: target.ResourceURL,
+	}}
+	serviceIDs := make(map[domain.ServiceID]struct{}, len(services))
+	for _, service := range services {
+		serviceIDs[service.ID] = struct{}{}
+	}
+	for _, reported := range frameworkResources(observation) {
+		if reported.ID == "app-http" || !frameworkResourceUsesAssignedAddress(reported.URL, target.Address) {
+			continue
+		}
+		resource := domain.ResourceSnapshot{
+			ID:   domain.ResourceID(reported.ID),
+			Name: reported.Name,
+			Kind: reported.Kind,
+			URL:  reported.URL,
+		}
+		switch {
+		case reported.App == string(target.AppID) && reported.Service == "":
+			if equivalentHTTPResourceURL(reported.URL, target.ResourceURL) {
+				continue
+			}
+			resource.Owner = domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: target.AppID}
+		case reported.App == "" && reported.Service != "":
+			serviceID := domain.ServiceID(reported.Service)
+			if _, exists := serviceIDs[serviceID]; !exists {
+				continue
+			}
+			resource.Owner = domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: serviceID}
+		default:
+			continue
+		}
+		resources = append(resources, resource)
+	}
+	sort.Slice(resources, func(left, right int) bool { return resources[left].ID < resources[right].ID })
 	return state.DefaultProjectRuntime{
 		App: domain.AppSnapshot{
 			ID:       target.AppID,
@@ -1439,18 +1510,43 @@ func defaultRuntime(target projectdiscovery.RuntimeTarget, services []domain.Ser
 			Active:   true,
 			Required: true,
 		},
-		Resource: domain.ResourceSnapshot{
-			ID:   "app-http",
-			Name: target.Name,
-			Kind: "application",
-			Owner: domain.ResourceOwner{
-				Kind:  domain.ResourceOwnedByApp,
-				AppID: target.AppID,
-			},
-			URL: target.ResourceURL,
-		},
-		Services: append(make([]domain.ServiceSnapshot, 0, len(services)), services...),
+		Services:  append(make([]domain.ServiceSnapshot, 0, len(services)), services...),
+		Resources: resources,
 	}
+}
+
+// frameworkResources prevents unsupported optional observations from publishing stray payload data.
+func frameworkResources(observation projectprocess.FrameworkResourceObservation) []projectprocess.FrameworkResource {
+	if !observation.Supported {
+		return []projectprocess.FrameworkResource{}
+	}
+	return observation.Resources
+}
+
+// frameworkResourceUsesAssignedAddress keeps optional launch links within the private identity Harbor proved for the session.
+func frameworkResourceUsesAssignedAddress(rawURL string, assignedAddress netip.Addr) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	resourceAddress, err := netip.ParseAddr(parsed.Hostname())
+	return err == nil && resourceAddress.Unmap() == assignedAddress.Unmap()
+}
+
+// equivalentHTTPResourceURL recognizes the framework's optional trailing slash without suppressing distinct paths or queries.
+func equivalentHTTPResourceURL(left string, right string) bool {
+	leftURL, leftErr := url.Parse(left)
+	rightURL, rightErr := url.Parse(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	leftPath := strings.TrimSuffix(leftURL.EscapedPath(), "/")
+	rightPath := strings.TrimSuffix(rightURL.EscapedPath(), "/")
+	return strings.EqualFold(leftURL.Scheme, rightURL.Scheme) &&
+		strings.EqualFold(leftURL.Host, rightURL.Host) &&
+		leftPath == rightPath &&
+		leftURL.RawQuery == rightURL.RawQuery &&
+		leftURL.Fragment == rightURL.Fragment
 }
 
 // validateProjectStartRequest rejects incomplete daemon and client identity before journaling.

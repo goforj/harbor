@@ -57,6 +57,10 @@ type fakeControlClient struct {
 	activityErr          error
 	activityRequest      control.ProjectActivityRequest
 	activityHook         func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	serviceLogs          control.ServiceLogs
+	serviceLogsErr       error
+	serviceLogsRequest   control.ServiceLogsRequest
+	serviceLogsHook      func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
 	repairInspection     control.ProjectRuntimeRepairInspection
 	repairInspectionErr  error
 	repairInspectRequest control.InspectProjectRuntimeRepairRequest
@@ -162,6 +166,7 @@ func newFakeControlClient() *fakeControlClient {
 		networkSetup:       testNetworkSetupOperation(domain.OperationSucceeded, 10),
 		resolverSetup:      testNetworkResolverSetupOperation(domain.OperationSucceeded, 13),
 		activity:           testProjectActivity(),
+		serviceLogs:        testServiceLogs(),
 		repairInspection:   testProjectRuntimeRepairInspection(),
 		repairConfirmation: testProjectRuntimeRepairConfirmation(),
 		startLifecycle:     testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
@@ -279,6 +284,20 @@ func (client *fakeControlClient) ProjectActivity(ctx context.Context, request co
 		return hook(ctx, request)
 	}
 	return activity, err
+}
+
+// ServiceLogs records the current-session service cursor and returns the configured bounded output.
+func (client *fakeControlClient) ServiceLogs(ctx context.Context, request control.ServiceLogsRequest) (control.ServiceLogs, error) {
+	client.mu.Lock()
+	client.serviceLogsRequest = request
+	hook := client.serviceLogsHook
+	logs := client.serviceLogs
+	err := client.serviceLogsErr
+	client.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, request)
+	}
+	return logs, err
 }
 
 // InspectProjectRuntimeRepair records the selected project and returns the configured bounded inspection.
@@ -2514,6 +2533,214 @@ func TestProjectActivityCancelsAStaleHeldRead(t *testing.T) {
 	}
 }
 
+// TestServiceLogsPreservesCurrentSessionCursor covers validation, correlation, and daemon delegation.
+func TestServiceLogsPreservesCurrentSessionCursor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.ServiceLogs("orders", "", "mysql", 1); err == nil || !strings.Contains(err.Error(), "requires a session ID") {
+			t.Fatalf("ServiceLogs() error = %v, want cursor validation", err)
+		}
+		if client.serviceLogsRequest != (control.ServiceLogsRequest{}) {
+			t.Fatalf("ServiceLogs() request = %+v after local validation", client.serviceLogsRequest)
+		}
+	})
+
+	t.Run("disconnected", func(t *testing.T) {
+		if _, err := testApp().ServiceLogs("orders", "", "mysql", 0); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("ServiceLogs() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("daemon failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.serviceLogsErr = errors.New("logs unavailable")
+		if _, err := app.ServiceLogs("orders", "", "mysql", 0); err == nil || !strings.Contains(err.Error(), "logs unavailable") {
+			t.Fatalf("ServiceLogs() error = %v, want daemon failure", err)
+		}
+	})
+
+	t.Run("invalid daemon result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.serviceLogs = control.ServiceLogs{}
+		if _, err := app.ServiceLogs("orders", "", "mysql", 0); err == nil || !strings.Contains(err.Error(), "validate service logs") {
+			t.Fatalf("ServiceLogs() error = %v, want invalid logs", err)
+		}
+	})
+
+	t.Run("mismatched project", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.serviceLogs.ProjectID = "billing"
+		if _, err := app.ServiceLogs("orders", "", "mysql", 0); err == nil || !strings.Contains(err.Error(), "another project") {
+			t.Fatalf("ServiceLogs() error = %v, want project correlation failure", err)
+		}
+	})
+
+	t.Run("mismatched service", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.serviceLogs.ServiceID = "redis"
+		if _, err := app.ServiceLogs("orders", "", "mysql", 0); err == nil || !strings.Contains(err.Error(), "another service") {
+			t.Fatalf("ServiceLogs() error = %v, want service correlation failure", err)
+		}
+	})
+
+	t.Run("mismatched session without reset", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.serviceLogs.SessionID = "session-new"
+		if _, err := app.ServiceLogs("orders", "session-orders", "mysql", 4); err == nil || !strings.Contains(err.Error(), "without resetting") {
+			t.Fatalf("ServiceLogs() error = %v, want session correlation failure", err)
+		}
+	})
+
+	t.Run("current output", func(t *testing.T) {
+		app, client := connectedTestApp()
+		logs, err := app.ServiceLogs("orders", "session-orders", "mysql", 4)
+		if err != nil {
+			t.Fatalf("ServiceLogs() error = %v", err)
+		}
+		wantRequest := control.ServiceLogsRequest{
+			ProjectID: "orders",
+			SessionID: "session-orders",
+			ServiceID: "mysql",
+			Cursor:    4,
+		}
+		if client.serviceLogsRequest != wantRequest {
+			t.Fatalf("ServiceLogs() request = %+v, want %+v", client.serviceLogsRequest, wantRequest)
+		}
+		if logs.Output.Text != "ready for connections\n" {
+			t.Fatalf("ServiceLogs() = %+v", logs)
+		}
+	})
+
+	t.Run("held output", func(t *testing.T) {
+		app, client := connectedTestApp()
+		logs, err := app.WaitServiceLogs("orders", "session-orders", "mysql", 4, 25_000)
+		if err != nil {
+			t.Fatalf("WaitServiceLogs() error = %v", err)
+		}
+		wantRequest := control.ServiceLogsRequest{
+			ProjectID:        "orders",
+			SessionID:        "session-orders",
+			ServiceID:        "mysql",
+			Cursor:           4,
+			WaitMilliseconds: 25_000,
+		}
+		if client.serviceLogsRequest != wantRequest {
+			t.Fatalf("ServiceLogs() request = %+v, want %+v", client.serviceLogsRequest, wantRequest)
+		}
+		if logs.Output.Text != "ready for connections\n" {
+			t.Fatalf("WaitServiceLogs() = %+v", logs)
+		}
+	})
+
+	t.Run("wait too long", func(t *testing.T) {
+		app, client := connectedTestApp()
+		_, err := app.WaitServiceLogs(
+			"orders",
+			"session-orders",
+			"mysql",
+			4,
+			uint64(control.MaximumServiceLogsWaitMilliseconds)+1,
+		)
+		if err == nil || !strings.Contains(err.Error(), "wait exceeds") {
+			t.Fatalf("WaitServiceLogs() error = %v, want wait validation", err)
+		}
+		if client.serviceLogsRequest != (control.ServiceLogsRequest{}) {
+			t.Fatalf("WaitServiceLogs() request = %+v after local validation", client.serviceLogsRequest)
+		}
+	})
+}
+
+// TestServiceLogsCancelsAStaleHeldRead keeps rapid service selection from exhausting daemon request slots.
+func TestServiceLogsCancelsAStaleHeldRead(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	heldStarted := make(chan struct{})
+	client.serviceLogsHook = func(ctx context.Context, request control.ServiceLogsRequest) (control.ServiceLogs, error) {
+		if request.WaitMilliseconds == 0 {
+			logs := testServiceLogs()
+			logs.ProjectID = request.ProjectID
+			logs.ServiceID = request.ServiceID
+			return logs, nil
+		}
+		close(heldStarted)
+		<-ctx.Done()
+		return control.ServiceLogs{}, ctx.Err()
+	}
+
+	heldResult := make(chan error, 1)
+	go func() {
+		_, err := app.WaitServiceLogs("orders", "session-orders", "mysql", 4, 25_000)
+		heldResult <- err
+	}()
+	select {
+	case <-heldStarted:
+	case <-time.After(time.Second):
+		t.Fatal("held service logs did not reach the control client")
+	}
+
+	if _, err := app.ServiceLogs("orders", "", "redis", 0); err != nil {
+		t.Fatalf("replacement ServiceLogs() error = %v", err)
+	}
+	select {
+	case err := <-heldResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("held WaitServiceLogs() error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement service logs did not cancel the stale held read")
+	}
+}
+
+// TestServiceLogsWaitCancellationIsIndependentFromProjectActivity keeps simultaneous log panels from interrupting each other.
+func TestServiceLogsWaitCancellationIsIndependentFromProjectActivity(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	activityContext, releaseActivity := app.activityRequestContext(context.Background(), true)
+	defer releaseActivity()
+	serviceContext, releaseService := app.serviceLogsRequestContext(context.Background(), true)
+	defer releaseService()
+
+	replacementServiceContext, releaseReplacementService := app.serviceLogsRequestContext(context.Background(), false)
+	defer releaseReplacementService()
+	select {
+	case <-serviceContext.Done():
+	default:
+		t.Fatal("replacement service read did not cancel the prior held service read")
+	}
+	select {
+	case <-activityContext.Done():
+		t.Fatal("replacement service read canceled held project activity")
+	default:
+	}
+	select {
+	case <-replacementServiceContext.Done():
+		t.Fatal("replacement service request was canceled unexpectedly")
+	default:
+	}
+
+	replacementActivityContext, releaseReplacementActivity := app.activityRequestContext(context.Background(), false)
+	defer releaseReplacementActivity()
+	select {
+	case <-activityContext.Done():
+	default:
+		t.Fatal("replacement activity read did not cancel the prior held activity read")
+	}
+	select {
+	case <-replacementServiceContext.Done():
+		t.Fatal("replacement activity read canceled the service request")
+	default:
+	}
+	select {
+	case <-replacementActivityContext.Done():
+		t.Fatal("replacement activity request was canceled unexpectedly")
+	default:
+	}
+}
+
 // TestProjectLifecyclePreservesActionIdentityAndOperationState covers both native lifecycle boundaries.
 func TestProjectLifecyclePreservesActionIdentityAndOperationState(t *testing.T) {
 	t.Parallel()
@@ -3339,6 +3566,22 @@ func testProjectActivity() control.ProjectActivity {
 				NextCursor: 13,
 				Text:       "ding app\n",
 			},
+		},
+	}
+}
+
+// testServiceLogs returns one valid current-session Compose output chunk.
+func testServiceLogs() control.ServiceLogs {
+	return control.ServiceLogs{
+		ProjectID: "orders",
+		ServiceID: "mysql",
+		SessionID: "session-orders",
+		Supported: true,
+		Available: true,
+		Output: control.ServiceLogOutputChunk{
+			Available:  true,
+			NextCursor: 22,
+			Text:       "ready for connections\n",
 		},
 	}
 }
