@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 // TestExpectedObservationValidate covers the complete bounded observation schema.
@@ -32,6 +34,75 @@ func TestExpectedObservationValidate(t *testing.T) {
 			}
 			if !test.wantError && err != nil {
 				t.Fatalf("validate observation: %v", err)
+			}
+		})
+	}
+}
+
+// TestExpectedResolverObservationValidate covers the resolver compare-and-swap digest boundary.
+func TestExpectedResolverObservationValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		fingerprint string
+		wantError   bool
+	}{
+		{name: "canonical", fingerprint: testFingerprint()},
+		{name: "short", fingerprint: "abcd", wantError: true},
+		{name: "uppercase", fingerprint: strings.Repeat("A", 64), wantError: true},
+		{name: "non hexadecimal", fingerprint: strings.Repeat("z", 64), wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := (ExpectedResolverObservation{Fingerprint: test.fingerprint}).Validate()
+			if (err != nil) != test.wantError {
+				t.Fatalf("ExpectedResolverObservation.Validate() error = %v, wantError = %t", err, test.wantError)
+			}
+		})
+	}
+}
+
+// TestTicketValidateResolverAuthority covers every signed resolver-specific boundary.
+func TestTicketValidateResolverAuthority(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*Ticket)
+	}{
+		{name: "identity ownership", mutate: func(ticket *Ticket) {
+			ticket.OwnershipSchemaVersion = identityOwnershipSchemaVersion
+			ticket.NetworkPolicyFingerprint = ""
+		}},
+		{name: "missing policy", mutate: func(ticket *Ticket) { ticket.NetworkPolicy = nil }},
+		{name: "invalid policy", mutate: func(ticket *Ticket) { ticket.NetworkPolicy.Suffix = ".invalid" }},
+		{name: "policy fingerprint mismatch", mutate: func(ticket *Ticket) {
+			ticket.NetworkPolicyFingerprint = strings.Repeat("f", fingerprintLength)
+		}},
+		{name: "missing observation", mutate: func(ticket *Ticket) { ticket.ExpectedResolverObservation = nil }},
+		{name: "invalid observation", mutate: func(ticket *Ticket) {
+			ticket.ExpectedResolverObservation.Fingerprint = "bad"
+		}},
+		{name: "address authority", mutate: func(ticket *Ticket) { ticket.ApprovedAddress = "127.77.0.10" }},
+		{name: "assignment authority", mutate: func(ticket *Ticket) {
+			ticket.ExpectedObservation = ExpectedObservation{State: ObservationOwned, Fingerprint: testFingerprint()}
+		}},
+		{name: "pre-assignment authority", mutate: func(ticket *Ticket) { ticket.ExpectedPreAssignment = testExpectedPreAssignment() }},
+		{name: "pool authority", mutate: func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool = &ExpectedLoopbackPool{}
+		}},
+	}
+	for _, operation := range []Operation{OperationEnsureResolver, OperationReleaseResolver} {
+		t.Run(string(operation), func(t *testing.T) {
+			if err := validTestResolverTicket(now, operation).Validate(now); err != nil {
+				t.Fatalf("Ticket.Validate() valid resolver error = %v", err)
+			}
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					ticket := validTestResolverTicket(now, operation)
+					test.mutate(&ticket)
+					if err := ticket.Validate(now); err == nil {
+						t.Fatalf("Ticket.Validate() accepted resolver mutation %#v", ticket)
+					}
+				})
 			}
 		})
 	}
@@ -489,6 +560,54 @@ func validTestPoolTicket(now time.Time) Ticket {
 		Nonce:     strings.Repeat("n", minimumNonceLength),
 		ExpiresAt: now.Add(time.Minute),
 	}
+}
+
+// validTestResolverTicket returns one canonical policy-bound resolver authority.
+func validTestResolverTicket(now time.Time, operation Operation) Ticket {
+	policy := testResolverPolicy()
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		panic(err)
+	}
+	return Ticket{
+		Version:                  ProtocolVersion,
+		Operation:                operation,
+		InstallationID:           "harbor-test-installation",
+		RequesterIdentity:        "uid-1000",
+		OwnershipGeneration:      7,
+		OwnershipSchemaVersion:   networkPolicyOwnershipSchemaVersion,
+		NetworkPolicyFingerprint: fingerprint,
+		NetworkPolicy:            &policy,
+		ApprovedPool:             "127.77.0.0/24",
+		ExpectedResolverObservation: &ExpectedResolverObservation{
+			Fingerprint: testFingerprint(),
+		},
+		Nonce:     strings.Repeat("n", minimumNonceLength),
+		ExpiresAt: now.Add(time.Minute),
+	}
+}
+
+// testResolverPolicy returns one complete macOS policy suitable for signed-ticket tests.
+func testResolverPolicy() networkpolicy.Policy {
+	localhost := netip.MustParseAddr("127.0.0.1")
+	dns := netip.AddrPortFrom(localhost, 25000)
+	policy, err := networkpolicy.New(
+		strings.Repeat("a", fingerprintLength),
+		networkpolicy.MacOSMechanisms(),
+		networkpolicy.Listener{Advertised: dns, Bind: dns},
+		networkpolicy.Listener{
+			Advertised: netip.AddrPortFrom(localhost, 80),
+			Bind:       netip.AddrPortFrom(localhost, 25001),
+		},
+		networkpolicy.Listener{
+			Advertised: netip.AddrPortFrom(localhost, 443),
+			Bind:       netip.AddrPortFrom(localhost, 25002),
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return policy
 }
 
 // testExpectedLoopbackPool returns all addresses from one canonical /29 with explicit route-only absent-state evidence.

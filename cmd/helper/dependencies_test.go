@@ -124,13 +124,20 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 		"github.com/goforj/harbor/internal/helper/replaystore":     {},
 		"github.com/goforj/harbor/internal/helper/ticketauth":      {},
 		"github.com/goforj/harbor/internal/helper/ticketredeemer":  {},
+		"github.com/goforj/harbor/internal/host/networkpolicy":     {},
 		"github.com/goforj/harbor/internal/host/ownership":         {},
 		"github.com/goforj/harbor/internal/platform/hostconflict":  {},
 		"github.com/goforj/harbor/internal/platform/loopback":      {},
 		"github.com/goforj/harbor/internal/platform/machinepaths":  {},
 	}
 	platformDependencies := map[string][]string{
-		"darwin":  {"golang.org/x/net/route", "golang.org/x/sys/unix"},
+		"darwin": {
+			"github.com/goforj/harbor/internal/helper/resolverhandler",
+			"github.com/goforj/harbor/internal/platform/darwinacl",
+			"github.com/goforj/harbor/internal/platform/resolver",
+			"golang.org/x/net/route",
+			"golang.org/x/sys/unix",
+		},
 		"linux":   {"github.com/goforj/harbor/internal/platform/linuxnetlink", "golang.org/x/sys/unix"},
 		"windows": {"golang.org/x/sys/windows"},
 	}

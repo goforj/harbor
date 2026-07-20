@@ -19,6 +19,24 @@ type PoolMutationEvidence struct {
 	Identities []MutationEvidence `json:"identities"`
 }
 
+// ResolverPostcondition identifies the exact policy-owned state proven after a resolver operation.
+type ResolverPostcondition string
+
+const (
+	// ResolverPostconditionExact means the one owned resolver rule exactly matches the signed policy.
+	ResolverPostconditionExact ResolverPostcondition = "exact"
+	// ResolverPostconditionOwnedAbsent means no resolver rule owned by the signed policy remains.
+	ResolverPostconditionOwnedAbsent ResolverPostcondition = "owned_absent"
+)
+
+// ResolverMutationEvidence is the bounded resolver postcondition returned by the privileged handler.
+type ResolverMutationEvidence struct {
+	Changed                bool                  `json:"changed"`
+	PolicyFingerprint      string                `json:"policy_fingerprint"`
+	ObservationFingerprint string                `json:"observation_fingerprint"`
+	Postcondition          ResolverPostcondition `json:"postcondition"`
+}
+
 // LoopbackIdentityHandler applies only the loopback operations admitted by this protocol.
 type LoopbackIdentityHandler interface {
 	// EnsureLoopbackIdentity ensures the ticket's approved address and returns its observed postcondition.
@@ -47,6 +65,27 @@ func (UnavailableLoopbackIdentityHandler) ReleaseLoopbackIdentity(context.Contex
 	return MutationEvidence{}, ErrMutationUnavailable
 }
 
+// ResolverHandler applies only the policy-bound resolver operations admitted by this protocol.
+type ResolverHandler interface {
+	// EnsureResolver ensures the signed resolver policy and returns its verified postcondition.
+	EnsureResolver(context.Context, Ticket) (ResolverMutationEvidence, error)
+	// ReleaseResolver removes only the signed policy's owned resolver rule and returns its verified postcondition.
+	ReleaseResolver(context.Context, Ticket) (ResolverMutationEvidence, error)
+}
+
+// UnavailableResolverHandler fails closed on platforms without an installed resolver adapter.
+type UnavailableResolverHandler struct{}
+
+// EnsureResolver rejects ensure operations because no resolver mutation authority is installed.
+func (UnavailableResolverHandler) EnsureResolver(context.Context, Ticket) (ResolverMutationEvidence, error) {
+	return ResolverMutationEvidence{}, ErrMutationUnavailable
+}
+
+// ReleaseResolver rejects release operations because no resolver mutation authority is installed.
+func (UnavailableResolverHandler) ReleaseResolver(context.Context, Ticket) (ResolverMutationEvidence, error) {
+	return ResolverMutationEvidence{}, ErrMutationUnavailable
+}
+
 // ResponseError is the bounded structured error returned by the helper.
 type ResponseError struct {
 	Code    ErrorCode `json:"code"`
@@ -55,9 +94,10 @@ type ResponseError struct {
 
 // OperationResult records the admitted operation and its validated postcondition evidence.
 type OperationResult struct {
-	Operation    Operation             `json:"operation"`
-	Evidence     MutationEvidence      `json:"evidence,omitzero"`
-	PoolEvidence *PoolMutationEvidence `json:"pool_evidence,omitempty"`
+	Operation        Operation                 `json:"operation"`
+	Evidence         MutationEvidence          `json:"evidence,omitzero"`
+	PoolEvidence     *PoolMutationEvidence     `json:"pool_evidence,omitempty"`
+	ResolverEvidence *ResolverMutationEvidence `json:"resolver_evidence,omitempty"`
 }
 
 // Response is the versioned one-shot helper response envelope.
@@ -73,24 +113,45 @@ type Dispatcher struct {
 	redeemer    TicketRedeemer
 	clock       Clock
 	replayGuard ReplayGuard
-	handler     LoopbackIdentityHandler
+	loopback    LoopbackIdentityHandler
+	resolver    ResolverHandler
 }
 
-// NewDispatcher constructs a dispatcher whose dependencies must fail closed themselves.
+// NewDispatcher constructs a dispatcher with resolver effects intentionally unavailable.
 func NewDispatcher(redeemer TicketRedeemer, clock Clock, replayGuard ReplayGuard, handler LoopbackIdentityHandler) *Dispatcher {
+	return NewDispatcherWithResolver(redeemer, clock, replayGuard, handler, UnavailableResolverHandler{})
+}
+
+// NewDispatcherWithResolver constructs a dispatcher whose platform handlers must fail closed themselves.
+func NewDispatcherWithResolver(
+	redeemer TicketRedeemer,
+	clock Clock,
+	replayGuard ReplayGuard,
+	loopbackHandler LoopbackIdentityHandler,
+	resolverHandler ResolverHandler,
+) *Dispatcher {
 	if redeemer == nil {
-		panic("helper.NewDispatcher requires a non-nil ticket redeemer")
+		panic("helper.NewDispatcherWithResolver requires a non-nil ticket redeemer")
 	}
 	if clock == nil {
-		panic("helper.NewDispatcher requires a non-nil clock")
+		panic("helper.NewDispatcherWithResolver requires a non-nil clock")
 	}
 	if replayGuard == nil {
-		panic("helper.NewDispatcher requires a non-nil replay guard")
+		panic("helper.NewDispatcherWithResolver requires a non-nil replay guard")
 	}
-	if handler == nil {
-		panic("helper.NewDispatcher requires a non-nil loopback identity handler")
+	if loopbackHandler == nil {
+		panic("helper.NewDispatcherWithResolver requires a non-nil loopback identity handler")
 	}
-	return &Dispatcher{redeemer: redeemer, clock: clock, replayGuard: replayGuard, handler: handler}
+	if resolverHandler == nil {
+		panic("helper.NewDispatcherWithResolver requires a non-nil resolver handler")
+	}
+	return &Dispatcher{
+		redeemer:    redeemer,
+		clock:       clock,
+		replayGuard: replayGuard,
+		loopback:    loopbackHandler,
+		resolver:    resolverHandler,
+	}
 }
 
 // Dispatch admits at most one use of a valid ticket before invoking its operation handler.
@@ -137,22 +198,36 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 	var err error
 	switch ticket.Operation {
 	case OperationEnsureLoopbackIdentity:
-		result.Evidence, err = d.handler.EnsureLoopbackIdentity(operationContext, ticket)
+		result.Evidence, err = d.loopback.EnsureLoopbackIdentity(operationContext, ticket)
 		if err == nil {
 			err = result.Evidence.validate(ticket)
 		}
 	case OperationEnsureLoopbackPool:
-		poolEvidence, poolErr := d.handler.EnsureLoopbackPool(operationContext, ticket)
+		poolEvidence, poolErr := d.loopback.EnsureLoopbackPool(operationContext, ticket)
 		err = poolErr
 		if err == nil {
 			err = poolEvidence.validate(ticket)
 		}
 		result.PoolEvidence = &poolEvidence
 	case OperationReleaseLoopbackIdentity:
-		result.Evidence, err = d.handler.ReleaseLoopbackIdentity(operationContext, ticket)
+		result.Evidence, err = d.loopback.ReleaseLoopbackIdentity(operationContext, ticket)
 		if err == nil {
 			err = result.Evidence.validate(ticket)
 		}
+	case OperationEnsureResolver:
+		resolverEvidence, resolverErr := d.resolver.EnsureResolver(operationContext, ticket)
+		err = resolverErr
+		if err == nil {
+			err = resolverEvidence.validate(ticket)
+		}
+		result.ResolverEvidence = &resolverEvidence
+	case OperationReleaseResolver:
+		resolverEvidence, resolverErr := d.resolver.ReleaseResolver(operationContext, ticket)
+		err = resolverErr
+		if err == nil {
+			err = resolverEvidence.validate(ticket)
+		}
+		result.ResolverEvidence = &resolverEvidence
 	default:
 		err = newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
 	}
@@ -165,6 +240,34 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 		OK:      true,
 		Result:  result,
 	}, nil
+}
+
+// validate prevents a resolver adapter from returning evidence for another policy or postcondition.
+func (e ResolverMutationEvidence) validate(ticket Ticket) error {
+	if err := e.validateShape(ticket.Operation); err != nil {
+		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence is invalid")
+	}
+	if e.PolicyFingerprint != ticket.NetworkPolicyFingerprint {
+		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence policy does not match the approved policy")
+	}
+	return nil
+}
+
+// validateShape enforces the standalone resolver response shape before ticket correlation.
+func (e ResolverMutationEvidence) validateShape(operation Operation) error {
+	if !validFingerprint(e.PolicyFingerprint) || !validFingerprint(e.ObservationFingerprint) {
+		return errors.New("resolver mutation evidence fingerprints are invalid")
+	}
+	want := ResolverPostconditionExact
+	if operation == OperationReleaseResolver {
+		want = ResolverPostconditionOwnedAbsent
+	} else if operation != OperationEnsureResolver {
+		return errors.New("resolver mutation evidence operation is unsupported")
+	}
+	if e.Postcondition != want {
+		return errors.New("resolver mutation evidence state does not match the operation")
+	}
+	return nil
 }
 
 // normalizeRedemptionError keeps adapter details opaque while preserving stable reference outcomes for callers.

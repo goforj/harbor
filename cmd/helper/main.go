@@ -32,6 +32,7 @@ type runtimeDependencies struct {
 	openTicketRedeemer         func() (closingTicketRedeemer, error)
 	openReplayGuard            func() (closingReplayGuard, error)
 	newLoopbackIdentityHandler func() helper.LoopbackIdentityHandler
+	newResolverHandler         func() helper.ResolverHandler
 }
 
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
@@ -61,6 +62,7 @@ func productionDependencies() runtimeDependencies {
 		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
 			return loopbackhandler.New()
 		},
+		newResolverHandler: newPlatformResolverHandler,
 	}
 }
 
@@ -90,11 +92,12 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 		}
 	}()
 
-	dispatcher := helper.NewDispatcher(
+	dispatcher := helper.NewDispatcherWithResolver(
 		redeemer,
 		clock,
 		replayGuard,
 		dependencies.newLoopbackIdentityHandler(),
+		dependencies.newResolverHandler(),
 	)
 	return helper.ServeOnce(ctx, reader, writer, dispatcher)
 }

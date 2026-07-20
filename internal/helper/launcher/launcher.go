@@ -140,6 +140,20 @@ func (launcher *Launcher) InvokePool(ctx context.Context, ticket PoolLaunchTicke
 	return launcher.invoke(ctx, ticket.reference, matchPoolLaunchTicket(ticket))
 }
 
+// InvokeResolver performs exactly one transport attempt for valid resolver launch metadata.
+func (launcher *Launcher) InvokeResolver(ctx context.Context, ticket ResolverLaunchTicket) (Outcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, err
+	}
+	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
+		return Outcome{}, fmt.Errorf("validate helper resolver launch ticket: %w", err)
+	}
+	return launcher.invoke(ctx, ticket.reference, matchResolverLaunchTicket(ticket))
+}
+
 // invoke owns the shared bounded request and response exchange after launch metadata has been validated.
 func (launcher *Launcher) invoke(
 	ctx context.Context,
@@ -228,6 +242,16 @@ func matchPoolLaunchTicket(ticket PoolLaunchTicket) resultMatcher {
 			address = address.Next()
 		}
 		return true
+	}
+}
+
+// matchResolverLaunchTicket binds success to the prepared operation and exact policy fingerprint.
+func matchResolverLaunchTicket(ticket ResolverLaunchTicket) resultMatcher {
+	return func(result *helper.OperationResult) bool {
+		return result != nil &&
+			result.Operation == ticket.operation &&
+			result.ResolverEvidence != nil &&
+			result.ResolverEvidence.PolicyFingerprint == ticket.policyFingerprint
 	}
 }
 

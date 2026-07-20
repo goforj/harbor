@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"time"
@@ -27,6 +28,15 @@ type PoolLaunchTicket struct {
 	operation   helper.Operation
 	pool        netip.Prefix
 	expiresAt   time.Time
+}
+
+// ResolverLaunchTicket is the immutable non-secret metadata needed to launch one resolver capability.
+type ResolverLaunchTicket struct {
+	operationID       domain.OperationID
+	reference         helper.TicketReference
+	operation         helper.Operation
+	policyFingerprint string
+	expiresAt         time.Time
 }
 
 // NewLaunchTicket validates and captures metadata from an already authenticated approval response.
@@ -81,6 +91,28 @@ func NewPoolLaunchTicket(
 	}
 	if err := ticket.validateStructure(pool); err != nil {
 		return PoolLaunchTicket{}, err
+	}
+	return ticket, nil
+}
+
+// NewResolverLaunchTicket validates metadata from an authenticated resolver approval response.
+// Launcher.InvokeResolver independently applies trusted-clock lifetime checks before native consent.
+func NewResolverLaunchTicket(
+	operationID domain.OperationID,
+	reference helper.TicketReference,
+	operation helper.Operation,
+	policyFingerprint string,
+	expiresAt time.Time,
+) (ResolverLaunchTicket, error) {
+	ticket := ResolverLaunchTicket{
+		operationID:       operationID,
+		reference:         reference,
+		operation:         operation,
+		policyFingerprint: policyFingerprint,
+		expiresAt:         expiresAt,
+	}
+	if err := ticket.validateStructure(); err != nil {
+		return ResolverLaunchTicket{}, err
 	}
 	return ticket, nil
 }
@@ -158,6 +190,41 @@ func (ticket PoolLaunchTicket) validateStructure(pool string) error {
 	}
 	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
 		return fmt.Errorf("pool launch ticket expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
+// validateAt rejects stale or excessively long-lived resolver launch metadata.
+func (ticket ResolverLaunchTicket) validateAt(now time.Time) error {
+	if err := ticket.validateStructure(); err != nil {
+		return err
+	}
+	if !ticket.expiresAt.After(now) {
+		return fmt.Errorf("resolver launch ticket expiry is not in the future")
+	}
+	if ticket.expiresAt.After(now.Add(helper.MaxTicketLifetime)) {
+		return fmt.Errorf("resolver launch ticket expiry exceeds the protocol bound")
+	}
+	return nil
+}
+
+// validateStructure confines resolver consent to one operation and canonical policy digest.
+func (ticket ResolverLaunchTicket) validateStructure() error {
+	if err := ticket.operationID.Validate(); err != nil {
+		return fmt.Errorf("resolver launch ticket operation ID: %w", err)
+	}
+	if err := ticket.reference.Validate(); err != nil {
+		return fmt.Errorf("resolver launch ticket reference: %w", err)
+	}
+	if ticket.operation != helper.OperationEnsureResolver && ticket.operation != helper.OperationReleaseResolver {
+		return fmt.Errorf("resolver launch ticket helper operation %q is unsupported", ticket.operation)
+	}
+	decoded, err := hex.DecodeString(ticket.policyFingerprint)
+	if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != ticket.policyFingerprint {
+		return fmt.Errorf("resolver launch ticket policy fingerprint is invalid")
+	}
+	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
+		return fmt.Errorf("resolver launch ticket expiry must be a nonzero UTC time")
 	}
 	return nil
 }

@@ -43,6 +43,14 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedDarwinResolverReplacementCrashRecovery$' -test.v
 
+      - name: Build focused Darwin helper resolver test
+        if: runner.os == 'macOS'
+        run: go test -c -o "${{ runner.temp }}/harbor-helper-resolver.test" ./internal/helper/resolverhandler
+
+      - name: Exercise Darwin helper resolver lifecycle as root
+        if: runner.os == 'macOS'
+        run: sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-helper-resolver.test" -test.run '^TestPrivilegedDarwinResolverHandlerLifecycle$' -test.v
+
       - name: Build focused development bootstrap test
         if: runner.os != 'Windows'
         run: go test -c -o "${{ runner.temp }}/harbor-devbootstrap.test" ./internal/devbootstrap

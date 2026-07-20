@@ -176,6 +176,11 @@ func validateCanonicalResultObject(body []byte) error {
 			return err
 		}
 		return validateCanonicalPoolMutationEvidenceObject(fields["pool_evidence"])
+	case OperationEnsureResolver, OperationReleaseResolver:
+		if err := requireCanonicalJSONFields(fields, "operation", "resolver_evidence"); err != nil {
+			return err
+		}
+		return validateCanonicalResolverMutationEvidenceObject(fields["resolver_evidence"])
 	default:
 		return errors.New("helper response operation is unsupported")
 	}
@@ -219,6 +224,21 @@ func validateCanonicalPoolMutationEvidenceObject(body []byte) error {
 		}
 	}
 	return nil
+}
+
+// validateCanonicalResolverMutationEvidenceObject verifies one exact resolver postcondition object.
+func validateCanonicalResolverMutationEvidenceObject(body []byte) error {
+	evidence, err := decodeJSONObject(body)
+	if err != nil {
+		return err
+	}
+	return requireCanonicalJSONFields(
+		evidence,
+		"changed",
+		"policy_fingerprint",
+		"observation_fingerprint",
+		"postcondition",
+	)
 }
 
 // validateCanonicalErrorObject verifies every failure object uses exact protocol field names.
@@ -279,15 +299,21 @@ func validateResponse(response Response) error {
 // validateOperationResult verifies success evidence identifies the allowlisted operation postcondition.
 func validateOperationResult(result OperationResult) error {
 	if result.Operation == OperationEnsureLoopbackPool {
-		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence == nil {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence == nil || result.ResolverEvidence != nil {
 			return errors.New("pool response must contain only pool evidence")
 		}
 		return result.PoolEvidence.validateShape()
 	}
+	if result.Operation == OperationEnsureResolver || result.Operation == OperationReleaseResolver {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence == nil {
+			return errors.New("resolver response must contain only resolver evidence")
+		}
+		return result.ResolverEvidence.validateShape(result.Operation)
+	}
 	if result.Operation != OperationEnsureLoopbackIdentity && result.Operation != OperationReleaseLoopbackIdentity {
 		return errors.New("response operation is unsupported")
 	}
-	if result.PoolEvidence != nil {
+	if result.PoolEvidence != nil || result.ResolverEvidence != nil {
 		return errors.New("single-address response must contain only scalar evidence")
 	}
 	if !validApprovedAddress(result.Evidence.Address) {

@@ -18,11 +18,15 @@ import (
 func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	dependencies := productionDependencies()
 	if dependencies.authorizeInvocation == nil || dependencies.openTicketRedeemer == nil ||
-		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil {
+		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil ||
+		dependencies.newResolverHandler == nil {
 		t.Fatal("production dependencies are incomplete")
 	}
 	if handler := dependencies.newLoopbackIdentityHandler(); handler == nil {
 		t.Fatal("production loopback handler is nil")
+	}
+	if handler := dependencies.newResolverHandler(); handler == nil {
+		t.Fatal("production resolver handler is nil")
 	}
 }
 
@@ -56,6 +60,7 @@ func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
 		"open ticket redeemer",
 		"open replay guard",
 		"new loopback handler",
+		"new resolver handler",
 		"read request",
 		"redeem ticket",
 		"consume replay claim",
@@ -215,6 +220,10 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 			events = append(events, "new loopback handler")
 			return &testLoopbackHandler{events: &events}
 		},
+		newResolverHandler: func() helper.ResolverHandler {
+			events = append(events, "new resolver handler")
+			return helper.UnavailableResolverHandler{}
+		},
 	}
 	reader := &recordingReader{reader: bytes.NewReader(nil), events: &events}
 	var output bytes.Buffer
@@ -227,6 +236,7 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 		"open ticket redeemer",
 		"open replay guard",
 		"new loopback handler",
+		"new resolver handler",
 		"read request",
 		"close replay guard",
 		"close ticket redeemer",
@@ -375,6 +385,10 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
 			*events = append(*events, "new loopback handler")
 			return &testLoopbackHandler{events: events}
+		},
+		newResolverHandler: func() helper.ResolverHandler {
+			*events = append(*events, "new resolver handler")
+			return helper.UnavailableResolverHandler{}
 		},
 	}
 }

@@ -10,8 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
-	"github.com/goforj/harbor/internal/network/identity"
 )
 
 const (
@@ -29,13 +29,13 @@ const (
 // Request is the immutable resolver authority derived from one validated host-network policy.
 type Request struct {
 	policy            networkpolicy.Policy
-	installationID    identity.InstallationID
+	installationID    string
 	policyFingerprint string
 }
 
 // NewRequest validates one installation and policy before deriving its exact resolver authority.
-func NewRequest(installationID identity.InstallationID, policy networkpolicy.Policy) (Request, error) {
-	if err := installationID.Validate(); err != nil {
+func NewRequest(installationID string, policy networkpolicy.Policy) (Request, error) {
+	if err := helper.ValidateInstallationID(installationID); err != nil {
 		return Request{}, fmt.Errorf("resolver request installation ID: %w", err)
 	}
 	if err := policy.Validate(); err != nil {
@@ -58,7 +58,7 @@ func NewRequest(installationID identity.InstallationID, policy networkpolicy.Pol
 
 // Validate rejects zero, corrupt, or internally inconsistent resolver requests.
 func (r Request) Validate() error {
-	if err := r.installationID.Validate(); err != nil {
+	if err := helper.ValidateInstallationID(r.installationID); err != nil {
 		return fmt.Errorf("resolver request installation ID: %w", err)
 	}
 	if err := r.policy.Validate(); err != nil {
@@ -80,7 +80,7 @@ func (r Request) Policy() networkpolicy.Policy {
 }
 
 // InstallationID returns the validated installation identity carried by the ownership marker.
-func (r Request) InstallationID() identity.InstallationID {
+func (r Request) InstallationID() string {
 	return r.installationID
 }
 
@@ -108,7 +108,7 @@ func (r Request) Endpoint() netip.AddrPort {
 func (r Request) OwnerMarker() OwnerMarker {
 	return OwnerMarker{
 		Version:           ownerMarkerVersion,
-		InstallationID:    string(r.installationID),
+		InstallationID:    r.installationID,
 		PolicyFingerprint: r.policyFingerprint,
 	}
 }
@@ -128,7 +128,7 @@ func (m OwnerMarker) Validate() error {
 	if len(m.InstallationID) > maximumMarkerTextLength {
 		return fmt.Errorf("resolver owner marker installation ID exceeds %d bytes", maximumMarkerTextLength)
 	}
-	if err := identity.InstallationID(m.InstallationID).Validate(); err != nil {
+	if err := helper.ValidateInstallationID(m.InstallationID); err != nil {
 		return fmt.Errorf("resolver owner marker installation ID: %w", err)
 	}
 	if err := validateFingerprintText("resolver owner marker policy fingerprint", m.PolicyFingerprint); err != nil {

@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 // ProtocolVersion is the only helper ticket and response version this build accepts.
@@ -42,6 +44,10 @@ const (
 	OperationEnsureLoopbackPool Operation = "ensure_loopback_pool"
 	// OperationReleaseLoopbackIdentity admits one owned loopback identity release operation.
 	OperationReleaseLoopbackIdentity Operation = "release_loopback_identity"
+	// OperationEnsureResolver admits one exact policy-bound resolver ensure operation.
+	OperationEnsureResolver Operation = "ensure_resolver"
+	// OperationReleaseResolver admits one exact policy-bound resolver release operation.
+	OperationReleaseResolver Operation = "release_resolver"
 )
 
 // ObservationState identifies the expected pre-mutation state of an approved address.
@@ -155,6 +161,19 @@ type ExpectedLoopbackPool struct {
 	Identities []ExpectedLoopbackIdentity `json:"identities"`
 }
 
+// ExpectedResolverObservation binds one resolver mutation to a complete native observation.
+type ExpectedResolverObservation struct {
+	Fingerprint string `json:"fingerprint"`
+}
+
+// Validate requires the canonical digest emitted by the resolver adapter.
+func (o ExpectedResolverObservation) Validate() error {
+	if !validFingerprint(o.Fingerprint) {
+		return newRequestError(ErrorCodeInvalidTicket, "expected resolver observation fingerprint is invalid")
+	}
+	return nil
+}
+
 // Validate verifies that the authority contains every exact /29 address once in canonical order with route-only absent-state evidence.
 func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
 	if !pool.IsValid() || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() {
@@ -197,22 +216,24 @@ func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
 	return nil
 }
 
-// Ticket authorizes exactly one bounded loopback operation.
+// Ticket authorizes exactly one bounded privileged operation.
 type Ticket struct {
-	Version                  uint16                 `json:"version"`
-	Operation                Operation              `json:"operation"`
-	InstallationID           string                 `json:"installation_id"`
-	RequesterIdentity        string                 `json:"requester_identity"`
-	OwnershipGeneration      uint64                 `json:"ownership_generation"`
-	OwnershipSchemaVersion   uint32                 `json:"ownership_schema_version"`
-	NetworkPolicyFingerprint string                 `json:"network_policy_fingerprint,omitempty"`
-	ApprovedPool             string                 `json:"approved_pool"`
-	ApprovedAddress          string                 `json:"approved_address,omitempty"`
-	ExpectedObservation      ExpectedObservation    `json:"expected_observation,omitzero"`
-	ExpectedPreAssignment    *ExpectedPreAssignment `json:"expected_pre_assignment,omitempty"`
-	ExpectedLoopbackPool     *ExpectedLoopbackPool  `json:"expected_loopback_pool,omitempty"`
-	Nonce                    string                 `json:"nonce"`
-	ExpiresAt                time.Time              `json:"expires_at"`
+	Version                     uint16                       `json:"version"`
+	Operation                   Operation                    `json:"operation"`
+	InstallationID              string                       `json:"installation_id"`
+	RequesterIdentity           string                       `json:"requester_identity"`
+	OwnershipGeneration         uint64                       `json:"ownership_generation"`
+	OwnershipSchemaVersion      uint32                       `json:"ownership_schema_version"`
+	NetworkPolicyFingerprint    string                       `json:"network_policy_fingerprint,omitempty"`
+	NetworkPolicy               *networkpolicy.Policy        `json:"network_policy,omitempty"`
+	ApprovedPool                string                       `json:"approved_pool"`
+	ApprovedAddress             string                       `json:"approved_address,omitempty"`
+	ExpectedObservation         ExpectedObservation          `json:"expected_observation,omitzero"`
+	ExpectedPreAssignment       *ExpectedPreAssignment       `json:"expected_pre_assignment,omitempty"`
+	ExpectedLoopbackPool        *ExpectedLoopbackPool        `json:"expected_loopback_pool,omitempty"`
+	ExpectedResolverObservation *ExpectedResolverObservation `json:"expected_resolver_observation,omitempty"`
+	Nonce                       string                       `json:"nonce"`
+	ExpiresAt                   time.Time                    `json:"expires_at"`
 }
 
 // Validate verifies the ticket against the current time without touching host state.
@@ -220,7 +241,7 @@ func (t Ticket) Validate(now time.Time) error {
 	if t.Version != ProtocolVersion {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket version is unsupported")
 	}
-	if t.Operation != OperationEnsureLoopbackIdentity && t.Operation != OperationEnsureLoopbackPool && t.Operation != OperationReleaseLoopbackIdentity {
+	if !validOperation(t.Operation) {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
 	}
 	if err := ValidateInstallationID(t.InstallationID); err != nil {
@@ -248,7 +269,14 @@ func (t Ticket) Validate(now time.Time) error {
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "approved pool must be a canonical IPv4 loopback prefix")
 	}
-	if t.Operation == OperationEnsureLoopbackPool {
+	if t.Operation == OperationEnsureResolver || t.Operation == OperationReleaseResolver {
+		if err := t.validateResolverAuthority(); err != nil {
+			return err
+		}
+	} else if t.Operation == OperationEnsureLoopbackPool {
+		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil {
+			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain resolver authority")
+		}
 		if pool.Bits() != loopbackPoolPrefixBits || pool.String() != t.ApprovedPool {
 			return newRequestError(ErrorCodeInvalidTicket, "pool ensure requires a canonical IPv4 loopback /29")
 		}
@@ -262,6 +290,9 @@ func (t Ticket) Validate(now time.Time) error {
 			return err
 		}
 	} else {
+		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil {
+			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain resolver authority")
+		}
 		if t.ExpectedLoopbackPool != nil {
 			return newRequestError(ErrorCodeInvalidTicket, "single-address operation cannot contain expected loopback pool authority")
 		}
@@ -282,6 +313,45 @@ func (t Ticket) Validate(now time.Time) error {
 		return newRequestError(ErrorCodeInvalidTicket, "ticket expiry exceeds the maximum lifetime")
 	}
 	return nil
+}
+
+// validOperation keeps the signed operation vocabulary explicit at one boundary.
+func validOperation(operation Operation) bool {
+	switch operation {
+	case OperationEnsureLoopbackIdentity,
+		OperationEnsureLoopbackPool,
+		OperationReleaseLoopbackIdentity,
+		OperationEnsureResolver,
+		OperationReleaseResolver:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateResolverAuthority binds the resolver effect to one complete canonical host-network policy.
+func (t Ticket) validateResolverAuthority() error {
+	if t.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver operation requires network-policy ownership")
+	}
+	if t.NetworkPolicy == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver operation requires a host-network policy")
+	}
+	if err := t.NetworkPolicy.Validate(); err != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver host-network policy is invalid")
+	}
+	fingerprint, err := t.NetworkPolicy.Fingerprint()
+	if err != nil || fingerprint != t.NetworkPolicyFingerprint {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver host-network policy fingerprint does not match ownership")
+	}
+	if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) ||
+		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver operation cannot contain loopback mutation authority")
+	}
+	if t.ExpectedResolverObservation == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver operation requires an expected observation")
+	}
+	return t.ExpectedResolverObservation.Validate()
 }
 
 // validateSingleAddressAuthority verifies the legacy exact-address authority used by ensure and release operations.
