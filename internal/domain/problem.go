@@ -11,6 +11,15 @@ const (
 	maximumProblemMessageBytes = 4096
 )
 
+const (
+	// ProjectRecoveryAmbiguousLaunchProblemCode identifies a legacy launch whose exact process identity was not persisted.
+	ProjectRecoveryAmbiguousLaunchProblemCode ProblemCode = "project.recovery.ambiguous_launch"
+	// ProjectRecoveryIsolationPhase identifies the transition that withholds a runtime with unresolved process authority.
+	ProjectRecoveryIsolationPhase = "isolating unresolved process authority"
+	// ProjectRecoveryRequiredPhase identifies the terminal marker that retains unresolved runtime authority for repair.
+	ProjectRecoveryRequiredPhase = "recovery required"
+)
+
 // ProblemCode is a stable machine-readable classification for an operation failure.
 type ProblemCode string
 

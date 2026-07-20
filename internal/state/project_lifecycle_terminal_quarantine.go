@@ -47,7 +47,7 @@ func (store *Store) QuarantineTerminalProjectSession(
 
 	var result ProjectRecoveryQuarantine
 	err := store.mutations.mutate(ctx, "quarantine terminal project session", func(tx *gorm.DB) error {
-		operation, err := enqueueOperationInTransaction(tx, request.Operation)
+		operation, err := enqueueOperationInTransaction(tx, request.Operation, false)
 		if err != nil {
 			return err
 		}

@@ -107,7 +107,25 @@ func NewOperationJournal(
 }
 
 // Enqueue durably records one queued operation or replays the matching idempotent intent.
+// Runtime launch callers must use EnqueueProjectStart so session admission shares the journal transaction.
 func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.Operation) (OperationRecord, error) {
+	return journal.enqueue(ctx, operation, false)
+}
+
+// EnqueueProjectStart durably records one queued start only when no active project session can be superseded.
+func (journal *OperationJournal) EnqueueProjectStart(ctx context.Context, operation domain.Operation) (OperationRecord, error) {
+	if operation.Kind != domain.OperationKindProjectStart {
+		return OperationRecord{}, fmt.Errorf("enqueue project start requires a project start operation")
+	}
+	return journal.enqueue(ctx, operation, true)
+}
+
+// enqueue shares validation and idempotent replay while keeping specialized admission inside the writer transaction.
+func (journal *OperationJournal) enqueue(
+	ctx context.Context,
+	operation domain.Operation,
+	enforceStartAdmission bool,
+) (OperationRecord, error) {
 	ctx = normalizeContext(ctx)
 	if err := operation.Validate(); err != nil {
 		return OperationRecord{}, fmt.Errorf("enqueue operation: %w", err)
@@ -118,7 +136,7 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 
 	var record OperationRecord
 	err := journal.mutations.mutate(ctx, "operation journal", func(tx *gorm.DB) error {
-		enqueued, err := enqueueOperationInTransaction(tx, operation)
+		enqueued, err := enqueueOperationInTransaction(tx, operation, enforceStartAdmission)
 		record = enqueued
 		return err
 	})
@@ -128,8 +146,12 @@ func (journal *OperationJournal) Enqueue(ctx context.Context, operation domain.O
 	return record, nil
 }
 
-// enqueueOperationInTransaction commits or replays one queued intent inside an existing writer transaction.
-func enqueueOperationInTransaction(tx *gorm.DB, operation domain.Operation) (OperationRecord, error) {
+// enqueueOperationInTransaction commits or replays one queued intent while optionally enforcing ordinary start admission.
+func enqueueOperationInTransaction(
+	tx *gorm.DB,
+	operation domain.Operation,
+	enforceStartAdmission bool,
+) (OperationRecord, error) {
 	existing, found, err := findOperationByIntent(tx, operation.IntentID)
 	if err != nil {
 		return OperationRecord{}, err
@@ -171,6 +193,11 @@ func enqueueOperationInTransaction(tx *gorm.DB, operation domain.Operation) (Ope
 			OperationID:       operation.ID,
 			ExistingIntentID:  existingRecord.Operation.IntentID,
 			RequestedIntentID: operation.IntentID,
+		}
+	}
+	if enforceStartAdmission && operation.Kind == domain.OperationKindProjectStart {
+		if err := requireNoActiveProjectSession(tx, operation.ProjectID); err != nil {
+			return OperationRecord{}, fmt.Errorf("enqueue project start: %w", err)
 		}
 	}
 	boundary, err := readProjectNetworkReleaseBoundary(tx, operation.ProjectID)

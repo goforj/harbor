@@ -31,9 +31,9 @@ const (
 
 const (
 	// projectRecoveryAmbiguousLaunchCode identifies a launch whose process identity was not durable before daemon replacement.
-	projectRecoveryAmbiguousLaunchCode domain.ProblemCode = "project.recovery.ambiguous_launch"
+	projectRecoveryAmbiguousLaunchCode = domain.ProjectRecoveryAmbiguousLaunchProblemCode
 	// projectRecoveryQuarantinePhase keeps the terminal operation distinct from an ordinary launch failure.
-	projectRecoveryQuarantinePhase = "recovery required"
+	projectRecoveryQuarantinePhase = domain.ProjectRecoveryRequiredPhase
 )
 
 // ProjectStartRequest identifies one daemon-owned start operation and its client-stable intent.
@@ -69,6 +69,7 @@ type projectLifecycleState interface {
 // projectLifecycleJournal is the durable idempotency and recovery surface required by project lifecycle operations.
 type projectLifecycleJournal interface {
 	Enqueue(context.Context, domain.Operation) (state.OperationRecord, error)
+	EnqueueProjectStart(context.Context, domain.Operation) (state.OperationRecord, error)
 	Transition(context.Context, domain.OperationID, domain.Sequence, domain.OperationState, string, time.Time, *domain.Problem) (state.OperationRecord, error)
 	FailQueued(context.Context, domain.OperationID, domain.Sequence, string, string, time.Time, domain.Problem) (state.OperationRecord, error)
 	OperationByIntent(context.Context, domain.IntentID) (state.OperationRecord, error)
@@ -262,7 +263,12 @@ func (coordinator *ProjectLifecycleCoordinator) enqueue(
 	if err != nil {
 		return state.OperationRecord{}, err
 	}
-	record, err := coordinator.operations.Enqueue(ctx, operation)
+	var record state.OperationRecord
+	if kind == domain.OperationKindProjectStart {
+		record, err = coordinator.operations.EnqueueProjectStart(ctx, operation)
+	} else {
+		record, err = coordinator.operations.Enqueue(ctx, operation)
+	}
 	if err != nil {
 		return state.OperationRecord{}, err
 	}

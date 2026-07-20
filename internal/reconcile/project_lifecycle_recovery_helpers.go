@@ -11,7 +11,7 @@ import (
 	"github.com/goforj/harbor/internal/state"
 )
 
-const projectRecoveryQuarantineRunningPhase = "isolating unresolved process authority"
+const projectRecoveryQuarantineRunningPhase = domain.ProjectRecoveryIsolationPhase
 
 // quarantineProjectProcessScope isolates one unresolved lifecycle boundary without claiming its descendants are absent.
 func (coordinator *ProjectLifecycleCoordinator) quarantineProjectProcessScope(
