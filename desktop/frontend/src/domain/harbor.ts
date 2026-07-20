@@ -26,6 +26,8 @@ export type OperationState =
   | 'failed'
   | 'cancelled'
 
+export type SessionState = 'planned' | 'awaiting_attach' | 'attached' | 'stopping' | 'disconnected'
+
 export type HarborStatus = ProjectState | EntityState | OperationState
 
 export interface ProtocolVersion {
@@ -112,6 +114,27 @@ export interface ProjectUnregistration {
 export interface ProjectLifecycleOperation {
   operation: Operation
   revision: number
+}
+
+export interface ProjectOutputChunk {
+  available: boolean
+  reset: boolean
+  truncated: boolean
+  has_more: boolean
+  next_cursor: number
+  text: string
+}
+
+export interface ProjectSessionActivity {
+  id: string
+  state: SessionState
+  generation: number
+  output: ProjectOutputChunk
+}
+
+export interface ProjectActivity {
+  project_id: string
+  session?: ProjectSessionActivity
 }
 
 export interface NetworkSetupOperation {

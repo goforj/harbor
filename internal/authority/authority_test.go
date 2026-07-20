@@ -54,8 +54,11 @@ type recordingProjectLifecycle struct {
 	stopRecord  state.OperationRecord
 	startErr    error
 	stopErr     error
+	activity    reconcile.ProjectActivity
+	activityErr error
 	starts      []reconcile.ProjectStartRequest
 	stops       []reconcile.ProjectStopRequest
+	activities  []reconcile.ProjectActivityRequest
 }
 
 // Start returns the configured durable start progress.
@@ -74,6 +77,17 @@ func (lifecycle *recordingProjectLifecycle) Stop(_ context.Context, request reco
 	lifecycle.stops = append(lifecycle.stops, request)
 	lifecycle.mutex.Unlock()
 	return lifecycle.stopRecord, lifecycle.stopErr
+}
+
+// ProjectActivity returns configured current-session activity while retaining the exact selection.
+func (lifecycle *recordingProjectLifecycle) ProjectActivity(
+	_ context.Context,
+	request reconcile.ProjectActivityRequest,
+) (reconcile.ProjectActivity, error) {
+	lifecycle.mutex.Lock()
+	lifecycle.activities = append(lifecycle.activities, request)
+	lifecycle.mutex.Unlock()
+	return lifecycle.activity, lifecycle.activityErr
 }
 
 // testProjectLifecycles provides a non-nil explicit collaborator to tests outside the lifecycle boundary.

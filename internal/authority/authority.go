@@ -63,6 +63,8 @@ type projectLifecycleCoordinator interface {
 	Start(context.Context, reconcile.ProjectStartRequest) (state.OperationRecord, error)
 	// Stop durably records and schedules one idempotent project stop.
 	Stop(context.Context, reconcile.ProjectStopRequest) (state.OperationRecord, error)
+	// ProjectActivity reads bounded output only for the current durable session.
+	ProjectActivity(context.Context, reconcile.ProjectActivityRequest) (reconcile.ProjectActivity, error)
 }
 
 // networkSetupCoordinator limits authority to the interactive machine-network setup lifecycle.
@@ -541,6 +543,57 @@ func (authority *Authority) StopProject(
 		return control.ProjectLifecycleOperation{}, classifyProjectLifecycleError(err)
 	}
 	return projectLifecycleResult(stopped, request.ProjectID, request.IntentID, domain.OperationKindProjectStop)
+}
+
+// ProjectActivity projects current durable session output without exposing process ownership evidence.
+func (authority *Authority) ProjectActivity(
+	ctx context.Context,
+	_ control.Caller,
+	request control.ProjectActivityRequest,
+) (control.ProjectActivity, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectActivity{}, control.NewProjectActivityInvalidError(err)
+	}
+	activity, err := authority.lifecycle.ProjectActivity(ctx, reconcile.ProjectActivityRequest{
+		ProjectID: request.ProjectID,
+		SessionID: request.SessionID,
+		Cursor:    request.Cursor,
+	})
+	if err != nil {
+		var projectMissing *state.ProjectNotFoundError
+		if errors.As(err, &projectMissing) {
+			return control.ProjectActivity{}, control.NewProjectActivityNotFoundError(err)
+		}
+		return control.ProjectActivity{}, err
+	}
+	result := control.ProjectActivity{ProjectID: activity.ProjectID}
+	if activity.Session != nil {
+		result.Session = &control.ProjectSessionActivity{
+			ID:         activity.Session.ID,
+			State:      activity.Session.State,
+			Generation: activity.Session.Generation,
+			Output: control.ProjectOutputChunk{
+				Available:  activity.Session.Output.Available,
+				Reset:      activity.Session.Output.Reset,
+				Truncated:  activity.Session.Output.Truncated,
+				HasMore:    activity.Session.Output.HasMore,
+				NextCursor: activity.Session.Output.NextCursor,
+				Text:       activity.Session.Output.Text,
+			},
+		}
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectActivity{}, fmt.Errorf("project activity result: %w", err)
+	}
+	if result.ProjectID != request.ProjectID {
+		return control.ProjectActivity{}, errors.New("project activity result differs from its requested project")
+	}
+	bounded, err := control.BoundProjectActivityResponse(result)
+	if err != nil {
+		return control.ProjectActivity{}, fmt.Errorf("bound project activity result: %w", err)
+	}
+	return bounded, nil
 }
 
 // projectLifecycleResult validates that asynchronous progress still belongs to the requested client intent.

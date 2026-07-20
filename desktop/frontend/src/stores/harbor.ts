@@ -10,6 +10,7 @@ import type {
   Operation,
   OperationState,
   Problem,
+  ProjectActivity,
   ProjectLifecycleOperation,
   ProjectRegistration,
   ProjectResource,
@@ -838,6 +839,10 @@ export const useHarborStore = defineStore('harbor', () => {
     }
   }
 
+  async function readProjectActivity(projectId: string, sessionId: string, cursor: number): Promise<ProjectActivity> {
+    return harborBridge.getProjectActivity(projectId, sessionId, cursor)
+  }
+
   return {
     snapshot,
     daemonStatus,
@@ -879,6 +884,7 @@ export const useHarborStore = defineStore('harbor', () => {
     activeProjectLifecycle,
     startProject,
     stopProject,
+    readProjectActivity,
     openResource,
   }
 })

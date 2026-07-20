@@ -20,6 +20,8 @@ const (
 	CapabilityDaemonControlV1 rpc.Capability = "control.daemon-control.v1"
 	// CapabilityNetworkSetupV1 identifies machine-global network setup initiation and approval.
 	CapabilityNetworkSetupV1 rpc.Capability = "control.network-setup.v1"
+	// CapabilityProjectActivityV1 identifies bounded current-session project output reads.
+	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
 	// CapabilityProjectLifecycleV1 identifies idempotent project start and stop initiation.
@@ -35,6 +37,7 @@ const (
 	methodNetworkSetupStart                = "control.v1.network.setup.start"
 	methodNetworkSetupApprovalPrepare      = "control.v1.network.setup.approval.prepare"
 	methodNetworkSetupApprovalConfirm      = "control.v1.network.setup.approval.confirm"
+	methodProjectActivity                  = "control.v1.project.activity"
 	methodProjectStart                     = "control.v1.project.start"
 	methodProjectStop                      = "control.v1.project.stop"
 	methodProjectRegister                  = "control.v1.project.register"
@@ -246,6 +249,7 @@ func capabilities() []rpc.Capability {
 	return []rpc.Capability{
 		CapabilityDaemonControlV1,
 		CapabilityNetworkSetupV1,
+		CapabilityProjectActivityV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectUnregisterApprovalV1,

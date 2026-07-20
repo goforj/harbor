@@ -47,6 +47,8 @@ type Authority interface {
 	PrepareNetworkSetupApproval(context.Context, Caller, PrepareNetworkSetupApprovalRequest) (NetworkSetupApprovalPreparation, error)
 	// ConfirmNetworkSetupApproval verifies the complete loopback pool before finishing setup.
 	ConfirmNetworkSetupApproval(context.Context, Caller, ConfirmNetworkSetupApprovalRequest) (NetworkSetupApprovalConfirmation, error)
+	// ProjectActivity returns bounded output for a project's current durable session.
+	ProjectActivity(context.Context, Caller, ProjectActivityRequest) (ProjectActivity, error)
 	// RegisterProject discovers and durably registers one canonical GoForj checkout.
 	RegisterProject(context.Context, Caller, RegisterProjectRequest) (ProjectRegistration, error)
 	// StartProject starts or resumes one idempotent managed project lifecycle.
@@ -106,6 +108,16 @@ func NewProjectLifecycleNotFoundError(cause error) error {
 // NewProjectLifecycleConflictError classifies durable state that prevents a project start or stop.
 func NewProjectLifecycleConflictError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewProjectActivityInvalidError classifies a current-output request that cannot identify a valid cursor.
+func NewProjectActivityInvalidError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewProjectActivityNotFoundError classifies a current-output request for an unknown durable project.
+func NewProjectActivityNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 
 // NewNetworkSetupConflictError classifies durable state that prevents network setup initiation or approval.

@@ -41,6 +41,15 @@ func (*projectLifecycleRecoverySupervisor) Stop(context.Context, domain.ProjectI
 	return errors.New("unexpected supervised stop during project lifecycle recovery")
 }
 
+// ReadOutput returns no transcript because recovery fixtures never own the prior process.
+func (*projectLifecycleRecoverySupervisor) ReadOutput(
+	domain.ProjectID,
+	domain.SessionID,
+	uint64,
+) projectprocess.OutputChunk {
+	return projectprocess.OutputChunk{}
+}
+
 // ObservePriorProcess returns the configured host classification and records the exact evidence inspected.
 func (supervisor *projectLifecycleRecoverySupervisor) ObservePriorProcess(
 	_ context.Context,

@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 
@@ -66,6 +66,39 @@ export function createMockBridge(): HarborBridge {
     },
     async getSnapshot() {
       return structuredClone(snapshot)
+    },
+    async getProjectActivity(projectId, sessionId, cursor) {
+      const project = snapshot.projects.find((entry) => entry.id === projectId)
+      if (!project) {
+        throw new Error(`Unknown project: ${projectId}`)
+      }
+      if (project.state === 'stopped' || project.state === 'failed' || project.state === 'unavailable') {
+        return { project_id: projectId }
+      }
+
+      const fixtureActivity: ProjectActivity = structuredClone(fixture.project_activity)
+      if (!fixtureActivity.session) {
+        return { project_id: projectId }
+      }
+      fixtureActivity.project_id = projectId
+      fixtureActivity.session.id = `session-${projectId}`
+      const output = fixtureActivity.session.output
+      const nextCursor = output.next_cursor
+      if (sessionId && sessionId !== fixtureActivity.session.id) {
+        output.reset = true
+      }
+      else if (cursor > 0) {
+        const encoded = new TextEncoder().encode(output.text)
+        if (cursor > encoded.length || !isUTF8Boundary(encoded, cursor)) {
+          output.reset = true
+        }
+        else {
+          output.text = cursor === encoded.length
+            ? ''
+            : new TextDecoder().decode(encoded.slice(cursor))
+        }
+      }
+      return fixtureActivity
     },
     async openResource(projectId, resourceId) {
       const project = fixture.snapshot.projects.find((entry) => entry.id === projectId)
@@ -157,6 +190,10 @@ export function createMockBridge(): HarborBridge {
       return () => undefined
     },
   }
+}
+
+function isUTF8Boundary(value: Uint8Array, cursor: number): boolean {
+  return cursor === value.length || (value[cursor]! & 0xc0) !== 0x80
 }
 
 export function mockStatus(): DaemonStatus {

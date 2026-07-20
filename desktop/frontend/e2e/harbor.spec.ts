@@ -42,6 +42,7 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
             return { canceled: true }
           },
           async OpenResource() {},
+          async ProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this setup test')
           },
@@ -97,15 +98,29 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
   await expect.poll(() => page.evaluate(() => (window as typeof window & { networkSetupCalls: number }).networkSetupCalls)).toBe(1)
 })
 
-test('starts and stops projects from their selected detail view', async ({ page }) => {
+test('starts a stopped project from its selected detail view', async ({ page }) => {
   await page.goto('/#/projects/reports')
 
   await page.getByRole('button', { name: 'Start project', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toBeDisabled()
+})
 
+test('stops a running project from its selected detail view', async ({ page }) => {
   await page.goto('/#/projects/orders-api')
+
   await page.getByRole('button', { name: 'Stop project', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled()
+})
+
+test('shows live output from the current project session', async ({ page }) => {
+  await page.goto('/#/projects/orders-api')
+
+  await expect(page.getByText('Development output', { exact: true })).toBeVisible()
+  const output = page.getByLabel('Current project development output')
+  await expect(output).toContainText('Building app: web')
+  await expect(output).toContainText('Built web in 482ms')
+  await expect(output).toContainText('migrations complete (0)')
+  await expect(page.getByText('attached', { exact: true })).toBeVisible()
 })
 
 test('shows an ambiguous recovered launch without leaving the project spinning', async ({ page }) => {
@@ -139,6 +154,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
         App: {
           async AddProject() { return { canceled: true } },
           async OpenResource() {},
+          async ProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() { throw new Error('Quarantined project removal is disabled') },
           async SetupNetwork() { throw new Error('Network setup is not exercised in this recovery test') },
           async StartProject() { throw new Error('Quarantined project start is disabled') },
@@ -205,6 +221,7 @@ test('leaves project detail when an active removal completes through a snapshot 
             return { canceled: true }
           },
           async OpenResource() {},
+          async ProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject(projectId, intentId) {
             const result = structuredClone(initialUnregistration)
             result.revision = snapshot.sequence + 1
@@ -432,6 +449,7 @@ test('uses native bindings and recovers after the first snapshot read fails', as
             return { canceled: true }
           },
           async OpenResource() {},
+          async ProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },
@@ -508,6 +526,7 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
             return { canceled: true }
           },
           async OpenResource() {},
+          async ProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },

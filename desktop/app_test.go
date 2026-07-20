@@ -41,6 +41,9 @@ type fakeControlClient struct {
 	setupConfirmation control.NetworkSetupApprovalConfirmation
 	setupConfirmErr   error
 	setupConfirmReq   control.ConfirmNetworkSetupApprovalRequest
+	activity          control.ProjectActivity
+	activityErr       error
+	activityRequest   control.ProjectActivityRequest
 	startLifecycle    control.ProjectLifecycleOperation
 	startErr          error
 	startRequest      control.StartProjectRequest
@@ -98,6 +101,7 @@ func newFakeControlClient() *fakeControlClient {
 		snapshot:       testSnapshot(),
 		registration:   testRegistration(),
 		networkSetup:   testNetworkSetupOperation(domain.OperationSucceeded, 10),
+		activity:       testProjectActivity(),
 		startLifecycle: testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
 		stopLifecycle:  testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
 		unregistration: testUnregistration(),
@@ -163,6 +167,14 @@ func (client *fakeControlClient) RegisterProject(_ context.Context, request cont
 	defer client.mu.Unlock()
 	client.registerPath = request.Path
 	return client.registration, client.registerErr
+}
+
+// ProjectActivity records the current-session cursor and returns the configured bounded output.
+func (client *fakeControlClient) ProjectActivity(_ context.Context, request control.ProjectActivityRequest) (control.ProjectActivity, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.activityRequest = request
+	return client.activity, client.activityErr
 }
 
 // StartProject records the stable lifecycle identity and returns the configured start operation.
@@ -1316,6 +1328,74 @@ func TestRemoveProjectPreservesStableIdentityAndOperationState(t *testing.T) {
 	})
 }
 
+// TestProjectActivityPreservesCurrentSessionCursor covers validation, correlation, and daemon delegation.
+func TestProjectActivityPreservesCurrentSessionCursor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.ProjectActivity("orders", "", 1); err == nil || !strings.Contains(err.Error(), "requires a session ID") {
+			t.Fatalf("ProjectActivity() error = %v, want cursor validation", err)
+		}
+		if client.activityRequest != (control.ProjectActivityRequest{}) {
+			t.Fatalf("ProjectActivity() request = %+v after local validation", client.activityRequest)
+		}
+	})
+
+	t.Run("disconnected", func(t *testing.T) {
+		if _, err := testApp().ProjectActivity("orders", "", 0); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("ProjectActivity() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("daemon failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.activityErr = errors.New("activity unavailable")
+		if _, err := app.ProjectActivity("orders", "", 0); err == nil || !strings.Contains(err.Error(), "activity unavailable") {
+			t.Fatalf("ProjectActivity() error = %v, want daemon failure", err)
+		}
+	})
+
+	t.Run("invalid daemon result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.activity = control.ProjectActivity{}
+		if _, err := app.ProjectActivity("orders", "", 0); err == nil || !strings.Contains(err.Error(), "validate project activity") {
+			t.Fatalf("ProjectActivity() error = %v, want invalid activity", err)
+		}
+	})
+
+	t.Run("mismatched project", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.activity.ProjectID = "billing"
+		if _, err := app.ProjectActivity("orders", "", 0); err == nil || !strings.Contains(err.Error(), "another project") {
+			t.Fatalf("ProjectActivity() error = %v, want project correlation failure", err)
+		}
+	})
+
+	t.Run("mismatched session without reset", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.activity.Session.ID = "session-new"
+		if _, err := app.ProjectActivity("orders", "session-orders", 4); err == nil || !strings.Contains(err.Error(), "without resetting") {
+			t.Fatalf("ProjectActivity() error = %v, want session correlation failure", err)
+		}
+	})
+
+	t.Run("current output", func(t *testing.T) {
+		app, client := connectedTestApp()
+		activity, err := app.ProjectActivity("orders", "session-orders", 4)
+		if err != nil {
+			t.Fatalf("ProjectActivity() error = %v", err)
+		}
+		wantRequest := control.ProjectActivityRequest{ProjectID: "orders", SessionID: "session-orders", Cursor: 4}
+		if client.activityRequest != wantRequest {
+			t.Fatalf("ProjectActivity() request = %+v, want %+v", client.activityRequest, wantRequest)
+		}
+		if activity.Session == nil || activity.Session.Output.Text != "ding app\n" {
+			t.Fatalf("ProjectActivity() = %+v", activity)
+		}
+	})
+}
+
 // TestProjectLifecyclePreservesActionIdentityAndOperationState covers both native lifecycle boundaries.
 func TestProjectLifecyclePreservesActionIdentityAndOperationState(t *testing.T) {
 	t.Parallel()
@@ -1867,6 +1947,23 @@ func testUnregistration() control.ProjectUnregistration {
 			RequestedAt: time.Date(2026, time.July, 18, 12, 5, 0, 0, time.UTC),
 		},
 		Revision: 9,
+	}
+}
+
+// testProjectActivity returns one valid current-session output chunk.
+func testProjectActivity() control.ProjectActivity {
+	return control.ProjectActivity{
+		ProjectID: "orders",
+		Session: &control.ProjectSessionActivity{
+			ID:         "session-orders",
+			State:      domain.SessionAwaitingAttach,
+			Generation: 1,
+			Output: control.ProjectOutputChunk{
+				Available:  true,
+				NextCursor: 13,
+				Text:       "ding app\n",
+			},
+		},
 	}
 }
 

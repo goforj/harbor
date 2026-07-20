@@ -28,6 +28,7 @@ describe('Harbor mock bridge', () => {
     expect(harborWireFixture.methods).toEqual({
       add_project: 'AddProject',
       open_resource: 'OpenResource',
+      project_activity: 'ProjectActivity',
       remove_project: 'RemoveProject',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',
@@ -50,6 +51,26 @@ describe('Harbor mock bridge', () => {
     expect(second.projects[0].name).toBe('Orders API')
     expect(mockSnapshot().projects[0].name).toBe('Orders API')
     expect(mockStatus()).toMatchObject({ snapshot_schema_version: 1, protocol: { major: 1, minor: 0 } })
+  })
+
+  it('streams only the current mock session with byte-addressed cursors', async () => {
+    const bridge = createMockBridge()
+
+    const first = await bridge.getProjectActivity('orders-api', '', 0)
+    expect(first).toEqual(harborWireFixture.project_activity)
+    const session = first.session
+    expect(session).toBeDefined()
+    if (!session) return
+
+    const complete = await bridge.getProjectActivity('orders-api', session.id, session.output.next_cursor)
+    expect(complete.session?.output).toMatchObject({ text: '', has_more: false, next_cursor: session.output.next_cursor })
+
+    const changed = await bridge.getProjectActivity('orders-api', 'session-prior', 20)
+    expect(changed.session?.output).toMatchObject({ reset: true, text: harborWireFixture.project_activity.session.output.text })
+    const future = await bridge.getProjectActivity('orders-api', session.id, session.output.next_cursor + 1)
+    expect(future.session?.output).toMatchObject({ reset: true, text: harborWireFixture.project_activity.session.output.text })
+    await expect(bridge.getProjectActivity('missing', '', 0)).rejects.toThrow('Unknown project')
+    await expect(bridge.getProjectActivity('reports', '', 0)).resolves.toEqual({ project_id: 'reports' })
   })
 
   it('completes mock network setup once and safely replays the result', async () => {

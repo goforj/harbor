@@ -41,6 +41,7 @@ type controlClient interface {
 	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
 	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
 	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
+	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
@@ -372,6 +373,38 @@ func (a *App) StartProject(projectID string, intentID string) (control.ProjectLi
 	}
 
 	return result, nil
+}
+
+// ProjectActivity reads one bounded output chunk from the project's current durable session.
+func (a *App) ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error) {
+	request := control.ProjectActivityRequest{
+		ProjectID: domain.ProjectID(projectID),
+		SessionID: domain.SessionID(sessionID),
+		Cursor:    cursor,
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectActivity{}, fmt.Errorf("project activity request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectActivity{}, err
+	}
+	activity, err := client.ProjectActivity(ctx, request)
+	if err != nil {
+		return control.ProjectActivity{}, fmt.Errorf("read GoForj project activity: %w", err)
+	}
+	if err := activity.Validate(); err != nil {
+		return control.ProjectActivity{}, fmt.Errorf("validate project activity: %w", err)
+	}
+	if activity.ProjectID != request.ProjectID {
+		return control.ProjectActivity{}, errors.New("validate project activity: daemon result belongs to another project")
+	}
+	if request.SessionID != "" && activity.Session != nil && activity.Session.ID != request.SessionID && !activity.Session.Output.Reset {
+		return control.ProjectActivity{}, errors.New("validate project activity: daemon changed sessions without resetting output")
+	}
+
+	return activity, nil
 }
 
 // StopProject starts or resumes exactly one client-owned project stop intent through the connected daemon.

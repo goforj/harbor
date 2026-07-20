@@ -8,6 +8,7 @@ function installAppBindings() {
   const Status = vi.fn().mockResolvedValue({ state: 'ready' })
   const Snapshot = vi.fn().mockResolvedValue({ schema_version: 1, sequence: 7 })
   const OpenResource = vi.fn().mockResolvedValue(undefined)
+  const ProjectActivity = vi.fn().mockResolvedValue(harborWireFixture.project_activity)
   const RemoveProject = vi.fn().mockResolvedValue(harborWireFixture.remove_project)
   const SetupNetwork = vi.fn().mockResolvedValue({
     operation: {
@@ -24,8 +25,8 @@ function installAppBindings() {
   })
   const StartProject = vi.fn().mockResolvedValue(harborWireFixture.start_project)
   const StopProject = vi.fn().mockResolvedValue(harborWireFixture.stop_project)
-  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource, RemoveProject, SetupNetwork, StartProject, StopProject } } }
-  return { AddProject, OpenResource, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
+  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource, ProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
+  return { AddProject, OpenResource, ProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
 }
 
 function installEventRuntime() {
@@ -85,7 +86,7 @@ describe('Harbor bridge selection', () => {
     await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
-  it.each(['SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
+  it.each(['ProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
     installAppBindings()
     delete window.go?.main?.App?.[method]
     installEventRuntime()
@@ -140,7 +141,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, OpenResource, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
+    const { AddProject, OpenResource, ProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -148,6 +149,7 @@ describe('Harbor bridge selection', () => {
       expect(selection.mode).toBe('native')
       await selection.bridge.getStatus()
       await selection.bridge.getSnapshot()
+      await selection.bridge.getProjectActivity('orders-api', 'session-orders-api', 4)
       await selection.bridge.addProject()
       await selection.bridge.openResource('orders', 'application')
       await selection.bridge.removeProject('orders', 'desktop-remove-orders')
@@ -157,6 +159,7 @@ describe('Harbor bridge selection', () => {
     }
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
+    expect(ProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4)
     expect(RemoveProject).toHaveBeenCalledWith('orders', 'desktop-remove-orders')
     expect(SetupNetwork).toHaveBeenCalledTimes(2)
     expect(StartProject).toHaveBeenCalledWith('reports', 'desktop-start-reports')

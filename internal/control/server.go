@@ -119,6 +119,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 			methodNetworkSetupApprovalPrepare:      server.networkSetupApprovalPrepareHandler(transportPeer),
 			methodNetworkSetupApprovalConfirm:      server.networkSetupApprovalConfirmHandler(transportPeer),
 			methodSnapshot:                         server.snapshotHandler(transportPeer),
+			methodProjectActivity:                  server.projectActivityHandler(transportPeer),
 			methodProjectStart:                     server.projectStartHandler(transportPeer),
 			methodProjectStop:                      server.projectStopHandler(transportPeer),
 			methodProjectRegister:                  server.projectRegisterHandler(transportPeer),

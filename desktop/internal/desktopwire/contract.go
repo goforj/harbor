@@ -15,6 +15,8 @@ const (
 	MethodAddProject = "AddProject"
 	// MethodOpenResource is the generated Wails method that opens one reviewed project resource.
 	MethodOpenResource = "OpenResource"
+	// MethodProjectActivity is the generated Wails method that reads current project development output.
+	MethodProjectActivity = "ProjectActivity"
 	// MethodRemoveProject is the generated Wails method that starts or resumes one project removal intent.
 	MethodRemoveProject = "RemoveProject"
 	// MethodSetupNetwork is the generated Wails method that completes the machine-global network foundation.
@@ -57,6 +59,7 @@ func (result AddProjectResult) Validate() error {
 type AppContract interface {
 	AddProject() (AddProjectResult, error)
 	OpenResource(projectID string, resourceID string) error
+	ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error)
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
 	SetupNetwork() (control.NetworkSetupOperation, error)
 	Snapshot() (domain.Snapshot, error)
@@ -76,14 +79,15 @@ type MethodContract struct {
 func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
-		MethodAddProject:    {},
-		MethodOpenResource:  []string{"projectId", "resourceId"},
-		MethodRemoveProject: []string{"projectId", "intentId"},
-		MethodSetupNetwork:  {},
-		MethodSnapshot:      []string{},
-		MethodStartProject:  []string{"projectId", "intentId"},
-		MethodStatus:        []string{},
-		MethodStopProject:   []string{"projectId", "intentId"},
+		MethodAddProject:      {},
+		MethodOpenResource:    []string{"projectId", "resourceId"},
+		MethodProjectActivity: []string{"projectId", "sessionId", "cursor"},
+		MethodRemoveProject:   []string{"projectId", "intentId"},
+		MethodSetupNetwork:    {},
+		MethodSnapshot:        []string{},
+		MethodStartProject:    []string{"projectId", "intentId"},
+		MethodStatus:          []string{},
+		MethodStopProject:     []string{"projectId", "intentId"},
 	}
 	contracts := make([]MethodContract, 0, contractType.NumMethod())
 	for index := range contractType.NumMethod() {

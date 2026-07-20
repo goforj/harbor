@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -34,6 +34,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { useProjectActivity } from '@/composables/useProjectActivity'
 import { useHarborStore } from '@/stores/harbor'
 
 const route = useRoute()
@@ -41,8 +42,40 @@ const router = useRouter()
 const store = useHarborStore()
 const copiedPath = ref(false)
 const removeOpen = ref(false)
+const developmentOutputViewport = ref<HTMLElement | null>(null)
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
+const projectActivitySupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity.v1') === true)
+const daemonConnected = computed(() => store.connectionState === 'connected')
+const snapshotSequence = computed(() => store.snapshot?.sequence)
+const {
+  activity: projectActivity,
+  output: developmentOutput,
+  error: developmentOutputError,
+  truncated: developmentOutputTruncated,
+} = useProjectActivity({
+  projectId,
+  supported: projectActivitySupported,
+  connected: daemonConnected,
+  snapshotSequence,
+  read: (selectedProjectId, sessionId, cursor) => store.readProjectActivity(selectedProjectId, sessionId, cursor),
+})
+const projectActivitySession = computed(() => projectActivity.value?.session)
+const showDevelopmentOutput = computed(() => projectActivitySupported.value && (
+  projectActivitySession.value != null
+  || developmentOutput.value !== ''
+  || developmentOutputError.value != null
+  || project.value?.state === 'starting'
+  || project.value?.state === 'ready'
+  || project.value?.state === 'rebuilding'
+  || project.value?.state === 'degraded'
+  || project.value?.state === 'stopping'
+))
+const developmentOutputState = computed(() => {
+  if (projectActivitySession.value) return projectActivitySession.value.state.replace('_', ' ')
+  if (developmentOutput.value) return 'session ended'
+  return project.value?.state === 'starting' ? 'waiting for session' : 'no active session'
+})
 const currentProjectOperation = computed(() => {
   for (let index = store.operations.length - 1; index >= 0; index -= 1) {
     const operation = store.operations[index]
@@ -108,6 +141,13 @@ watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, p
   if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
     void router.replace('/projects')
   }
+})
+
+watch(developmentOutput, async (nextOutput, previousOutput) => {
+  if (nextOutput === previousOutput) return
+  await nextTick()
+  const viewport = developmentOutputViewport.value
+  if (viewport) viewport.scrollTop = viewport.scrollHeight
 })
 
 async function copyPath() {
@@ -251,6 +291,30 @@ async function setupNetworkAndStartProject() {
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Resources</p><p class="mt-1 text-xl font-semibold">{{ project.resources.length }}</p></div>
           <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Activity</p><p class="mt-1 truncate text-sm font-semibold">{{ currentProjectOperation?.phase ?? 'Idle' }}</p></div>
         </section>
+
+        <Card v-if="showDevelopmentOutput" class="gap-0 rounded-lg py-0 shadow-none">
+          <CardHeader class="flex-row items-start justify-between gap-3 border-b px-4 py-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Development output</CardTitle></div>
+              <p class="mt-1 text-xs text-muted-foreground">Live output from the current <code>forj dev</code> session</p>
+            </div>
+            <Badge variant="outline" class="shrink-0 capitalize">{{ developmentOutputState }}</Badge>
+          </CardHeader>
+          <CardContent class="p-0">
+            <p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p>
+            <div
+              ref="developmentOutputViewport"
+              class="max-h-80 min-h-36 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"
+              tabindex="0"
+              aria-label="Current project development output"
+            >
+              <p v-if="developmentOutputTruncated" class="mb-2 text-amber-300">Earlier output is no longer retained.</p>
+              <pre v-if="developmentOutput" class="whitespace-pre-wrap break-words font-mono">{{ developmentOutput }}</pre>
+              <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
+              <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
+            </div>
+          </CardContent>
+        </Card>
 
         <div class="grid min-w-0 gap-5 xl:grid-cols-2">
           <Card class="gap-0 rounded-lg py-0 shadow-none">

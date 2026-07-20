@@ -46,6 +46,7 @@ type recordingAuthority struct {
 	networkSetupConfirmation    NetworkSetupApprovalConfirmation
 	startLifecycle              ProjectLifecycleOperation
 	stopLifecycle               ProjectLifecycleOperation
+	projectActivity             ProjectActivity
 	unregistration              ProjectUnregistration
 	approvalPreparation         ProjectUnregisterApprovalPreparation
 	approvalConfirmation        ProjectUnregisterApprovalConfirmation
@@ -57,6 +58,7 @@ type recordingAuthority struct {
 	networkSetupConfirmErr      error
 	startErr                    error
 	stopErr                     error
+	projectActivityErr          error
 	unregistrationErr           error
 	approvalPrepareErr          error
 	approvalConfirmErr          error
@@ -67,9 +69,26 @@ type recordingAuthority struct {
 	networkSetupConfirmRequests []ConfirmNetworkSetupApprovalRequest
 	startRequests               []StartProjectRequest
 	stopRequests                []StopProjectRequest
+	projectActivityRequests     []ProjectActivityRequest
 	unregistrationRequests      []UnregisterProjectRequest
 	approvalPrepareRequests     []PrepareProjectUnregisterApprovalRequest
 	approvalConfirmRequests     []ConfirmProjectUnregisterApprovalRequest
+}
+
+// ProjectActivity records the authenticated caller and current-session output selection.
+func (authority *recordingAuthority) ProjectActivity(
+	ctx context.Context,
+	caller Caller,
+	request ProjectActivityRequest,
+) (ProjectActivity, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectActivity{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.projectActivityRequests = append(authority.projectActivityRequests, request)
+	authority.mu.Unlock()
+	return authority.projectActivity, authority.projectActivityErr
 }
 
 // StartNetworkSetup records the authenticated caller and client-owned machine setup intent.
@@ -405,7 +424,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-setup.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-setup.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}

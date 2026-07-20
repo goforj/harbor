@@ -30,6 +30,7 @@ export function hasWailsBridge(): boolean {
     && typeof app.Status === 'function'
     && typeof app.Snapshot === 'function'
     && typeof app.OpenResource === 'function'
+    && typeof app.ProjectActivity === 'function'
     && typeof app.RemoveProject === 'function'
     && typeof app.SetupNetwork === 'function'
     && typeof app.StartProject === 'function'
@@ -48,6 +49,7 @@ export function createWailsBridge(): HarborBridge {
   const status = app?.Status
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
+  const projectActivity = app?.ProjectActivity
   const removeProject = app?.RemoveProject
   const setupNetwork = app?.SetupNetwork
   const startProject = app?.StartProject
@@ -56,6 +58,7 @@ export function createWailsBridge(): HarborBridge {
     || typeof status !== 'function'
     || typeof snapshot !== 'function'
     || typeof openResource !== 'function'
+    || typeof projectActivity !== 'function'
     || typeof removeProject !== 'function'
     || typeof setupNetwork !== 'function'
     || typeof startProject !== 'function'
@@ -68,6 +71,7 @@ export function createWailsBridge(): HarborBridge {
     addProject: () => addProject(),
     getStatus: () => status(),
     getSnapshot: () => snapshot(),
+    getProjectActivity: (projectId, sessionId, cursor) => projectActivity(projectId, sessionId, cursor),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),
     setupNetwork: () => setupNetwork(),
