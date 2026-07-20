@@ -11,6 +11,7 @@ function installAppBindings() {
   const Snapshot = vi.fn().mockResolvedValue({ schema_version: 1, sequence: 7 })
   const OpenResource = vi.fn().mockResolvedValue(undefined)
   const ProjectActivity = vi.fn().mockResolvedValue(harborWireFixture.project_activity)
+  const ResourceIconURL = vi.fn().mockResolvedValue('https://orders.test/favicon.ico')
   const WaitProjectActivity = vi.fn().mockResolvedValue(harborWireFixture.project_activity)
   const RemoveProject = vi.fn().mockResolvedValue(harborWireFixture.remove_project)
   const SetupNetwork = vi.fn().mockResolvedValue({
@@ -28,8 +29,8 @@ function installAppBindings() {
   })
   const StartProject = vi.fn().mockResolvedValue(harborWireFixture.start_project)
   const StopProject = vi.fn().mockResolvedValue(harborWireFixture.stop_project)
-  window.go = { main: { App: { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
-  return { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
+  window.go = { main: { App: { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
+  return { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
 }
 
 function installEventRuntime() {
@@ -89,7 +90,7 @@ describe('Harbor bridge selection', () => {
     await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
-  it.each(['ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
+  it.each(['ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'ResourceIconURL', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
     installAppBindings()
     delete window.go?.main?.App?.[method]
     installEventRuntime()
@@ -144,7 +145,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
+    const { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -158,6 +159,7 @@ describe('Harbor bridge selection', () => {
       await selection.bridge.waitProjectActivity('orders-api', 'session-orders-api', 4, 20_000)
       await selection.bridge.addProject()
       await selection.bridge.openResource('orders', 'application')
+      await selection.bridge.getResourceIconURL('orders', 'application')
       await selection.bridge.removeProject('orders', 'desktop-remove-orders')
       await selection.bridge.setupNetwork()
       await selection.bridge.startProject('reports', 'desktop-start-reports')
@@ -166,6 +168,7 @@ describe('Harbor bridge selection', () => {
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
     expect(ProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4)
+    expect(ResourceIconURL).toHaveBeenCalledWith('orders', 'application')
     expect(InspectProjectRuntimeRepair).toHaveBeenCalledWith('billing')
     expect(ConfirmProjectRuntimeRepair).toHaveBeenCalledWith('billing', 'inspection-1', 'fingerprint-1')
     expect(WaitProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4, 20_000)
