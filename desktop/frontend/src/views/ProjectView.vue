@@ -406,10 +406,10 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
 
       <Tabs v-model="selectedDetailTab" class="min-w-0">
         <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
-          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
-          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
-          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
-          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
+          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
+          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
+          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
+          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
         <div class="space-y-5 p-5 lg:p-7">
@@ -530,13 +530,13 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </TabsContent>
 
         <TabsContent value="services" class="m-0 space-y-5">
-          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="gap-5">
-            <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-0 py-0">
+          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="-mx-5 -mt-5 gap-5 lg:-mx-7">
+            <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
               <TabsTrigger
                 v-for="service in project.services"
                 :key="service.id"
                 :value="service.id"
-                class="h-11 flex-none gap-2 rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
+                class="h-11 flex-none gap-2 rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
               >
                 <span
                   class="size-1.5 rounded-full"
@@ -556,7 +556,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               v-for="service in project.services"
               :key="service.id"
               :value="service.id"
-              class="m-0 space-y-5"
+              class="m-0 space-y-5 px-5 lg:px-7"
             >
               <section aria-label="Selected service summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
                 <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Status</p><p class="mt-1"><StatusBadge :status="service.state" /></p></div>
