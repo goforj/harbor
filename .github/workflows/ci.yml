@@ -35,6 +35,28 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Build focused Linux resolver test
+        if: runner.os == 'Linux'
+        run: go test -c -o "${{ runner.temp }}/harbor-resolver.test" ./internal/platform/resolver
+
+      - name: Exercise Linux systemd-resolved lifecycle as root
+        if: runner.os == 'Linux'
+        run: |
+          if ! systemctl cat systemd-resolved.service >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes systemd-resolved
+          fi
+          sudo install -d -o root -g root -m 0755 /etc/systemd/resolved.conf.d
+          printf '[Resolve]\nDNS=\nDomains=\nFallbackDNS=\n' | sudo tee /etc/systemd/resolved.conf.d/00-harbor-ci-reset.conf >/dev/null
+          cleanup() {
+            sudo rm -f /etc/systemd/resolved.conf.d/00-harbor-ci-reset.conf
+            sudo systemctl restart systemd-resolved.service || true
+          }
+          trap cleanup EXIT
+          sudo systemctl enable --now systemd-resolved.service
+          sudo systemctl restart systemd-resolved.service
+          sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedSystemdResolvedAdapterLifecycle$' -test.v
+
       - name: Build focused Darwin resolver test
         if: runner.os == 'macOS'
         run: go test -c -o "${{ runner.temp }}/harbor-resolver.test" ./internal/platform/resolver

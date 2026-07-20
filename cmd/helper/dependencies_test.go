@@ -138,7 +138,12 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 			"golang.org/x/net/route",
 			"golang.org/x/sys/unix",
 		},
-		"linux":   {"github.com/goforj/harbor/internal/platform/linuxnetlink", "golang.org/x/sys/unix"},
+		"linux": {
+			"github.com/goforj/harbor/internal/helper/resolverhandler",
+			"github.com/goforj/harbor/internal/platform/linuxnetlink",
+			"github.com/goforj/harbor/internal/platform/resolver",
+			"golang.org/x/sys/unix",
+		},
 		"windows": {"golang.org/x/sys/windows"},
 	}
 	for _, dependency := range platformDependencies[target] {

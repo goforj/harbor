@@ -1,10 +1,10 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package main
 
 import "github.com/goforj/harbor/internal/helper"
 
-// openPlatformResolverHandler keeps resolver effects unavailable outside the implemented Darwin backend.
+// openPlatformResolverHandler keeps resolver effects unavailable outside implemented platform backends.
 func openPlatformResolverHandler() (closingResolverHandler, error) {
 	return helper.UnavailableResolverHandler{}, nil
 }
