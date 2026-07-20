@@ -206,6 +206,24 @@ jobs:
           $env:HARBOR_PRIVILEGED_LOOPBACK_TEST = "1"
           & "${{ runner.temp }}\${{ matrix.binary }}" "-test.run=^TestPrivilegedAdapterLifecycle$" "-test.v"
 
+  docker-adapter:
+    name: Docker adapter (Linux)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Exercise the read-only Docker adapter against Engine
+        run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache HARBOR_NATIVE_DOCKER_TEST=1 go test -count=1 -timeout=3m -run '^TestNativeDockerRuntimeAdmitsOnlyItsCheckoutAndFollowsReplacement$' ./internal/containerruntime
+
   frontend:
     name: Frontend
     runs-on: ubuntu-24.04
