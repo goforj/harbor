@@ -36,6 +36,21 @@ func TestVerifyEvidenceRequiresRoot(t *testing.T) {
 	}
 }
 
+// TestVerifyDockerProjectEvidenceRequiresValidInputs keeps the protected product gate from accepting translated or incomplete requirements.
+func TestVerifyDockerProjectEvidenceRequiresValidInputs(t *testing.T) {
+	t.Parallel()
+
+	for _, arguments := range [][]string{
+		{"--app-port", "3000", "--service-port", "3306"},
+		{"--root", "evidence", "--app-port", "0"},
+		{"--root", "evidence", "--service-port", "65536"},
+	} {
+		if err := verifyDockerProjectEvidence(arguments); err == nil {
+			t.Fatalf("expected arguments %v to fail", arguments)
+		}
+	}
+}
+
 // TestSplitNonEmpty normalizes workflow platform lists without inventing requirements.
 func TestSplitNonEmpty(t *testing.T) {
 	t.Parallel()

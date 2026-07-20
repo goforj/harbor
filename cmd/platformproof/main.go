@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/goforj/harbor/internal/platformproof"
+	"github.com/goforj/harbor/internal/productproof"
 )
 
 const defaultProofAddresses = "127.77.254.10,127.77.254.11,127.77.254.12"
@@ -37,7 +38,7 @@ func main() {
 // run dispatches only the fixed proof commands built into this test binary.
 func run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected project-identity, identity-absent, or verify command")
+		return errors.New("expected project-identity, identity-absent, verify, or verify-docker-projects command")
 	}
 
 	switch arguments[0] {
@@ -63,9 +64,37 @@ func run(ctx context.Context, arguments []string) error {
 		return writeEvidence(evidence)
 	case "verify":
 		return verifyEvidence(arguments[1:])
+	case "verify-docker-projects":
+		return verifyDockerProjectEvidence(arguments[1:])
 	default:
 		return fmt.Errorf("unknown platform proof command %q", arguments[0])
 	}
+}
+
+// verifyDockerProjectEvidence enforces native generated-project lifecycle manifests from the protected product-worker fleet.
+func verifyDockerProjectEvidence(arguments []string) error {
+	flags := flag.NewFlagSet("verify-docker-projects", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	root := flags.String("root", "", "directory containing downloaded Docker project evidence")
+	commit := flags.String("commit", "", "exact commit required in every artifact")
+	platforms := flags.String("platforms", "linux,darwin,windows", "comma-separated GOOS values required by the gate")
+	appPort := flags.Uint("app-port", 3000, "native App port required by the gate")
+	servicePort := flags.Uint("service-port", 3306, "native service port required by the gate")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if *root == "" || *appPort == 0 || *appPort > 65535 || *servicePort == 0 || *servicePort > 65535 {
+		return errors.New("verify-docker-projects requires an evidence root and valid native app and service ports")
+	}
+	return productproof.VerifyDockerProjectEvidenceDirectory(*root, productproof.DockerProjectRequirement{
+		Commit:      *commit,
+		Platforms:   splitNonEmpty(*platforms),
+		AppPort:     uint16(*appPort),
+		ServicePort: uint16(*servicePort),
+	})
 }
 
 // verifyEvidence enforces that all required platform artifacts came from this commit and proved the native port.
