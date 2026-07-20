@@ -60,6 +60,49 @@ func TestWindowsNativePowerShellRunnerRejectsMissingLookup(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTPowerShellFingerprintProgramTracksEveryGoField keeps the static native CAS program aligned with Go's reviewed rule identity.
+func TestWindowsNRPTPowerShellFingerprintProgramTracksEveryGoField(t *testing.T) {
+	orderedLines := []string{
+		"$lines.Add('goforj.harbor.windows-nrpt-rule.v1')",
+		"$lines.Add(([uint32]$Rule.version).ToString([Globalization.CultureInfo]::InvariantCulture))",
+		"Add-ArrayLines $lines @($Rule.namespaces)",
+		"Add-TextLine $lines ([string]$Rule.name)",
+		"Add-TextLine $lines ([string]$Rule.ipsec_ca_restriction)",
+		"Add-ArrayLines $lines @($Rule.direct_access_dns_servers)",
+		"Add-BoolLine $lines ([bool]$Rule.direct_access_enabled)",
+		"Add-TextLine $lines ([string]$Rule.direct_access_proxy_type)",
+		"Add-TextLine $lines ([string]$Rule.direct_access_proxy_name)",
+		"Add-TextLine $lines ([string]$Rule.direct_access_query_ipsec_encryption)",
+		"Add-BoolLine $lines ([bool]$Rule.direct_access_query_ipsec_required)",
+		"Add-ArrayLines $lines @($Rule.name_servers)",
+		"Add-BoolLine $lines ([bool]$Rule.dnssec_enabled)",
+		"Add-TextLine $lines ([string]$Rule.dnssec_query_ipsec_encryption)",
+		"Add-BoolLine $lines ([bool]$Rule.dnssec_query_ipsec_required)",
+		"Add-BoolLine $lines ([bool]$Rule.dnssec_validation_required)",
+		"Add-TextLine $lines ([string]$Rule.name_encoding)",
+		"Add-TextLine $lines ([string]$Rule.display_name)",
+		"Add-TextLine $lines ([string]$Rule.comment)",
+	}
+	previous := 0
+	for _, line := range orderedLines {
+		next := strings.Index(windowsNRPTPowerShellProgram[previous:], line)
+		if next < 0 {
+			t.Fatalf("windows NRPT PowerShell fingerprint omits %q", line)
+		}
+		previous += next + len(line)
+	}
+	for _, line := range []string{
+		"[Text.Encoding]::UTF8.GetBytes($Value)",
+		"[Convert]::ToBase64String($bytes)",
+		"[string]::Join($lineFeed, $lines) + $lineFeed",
+		"[Security.Cryptography.SHA256]::Create()",
+	} {
+		if !strings.Contains(windowsNRPTPowerShellProgram, line) {
+			t.Fatalf("windows NRPT PowerShell fingerprint lacks canonical encoding step %q", line)
+		}
+	}
+}
+
 // TestPrivilegedWindowsNRPTAdapterLifecycle proves the fixed native PowerShell boundary creates, verifies, and removes only one fresh local rule.
 func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {
