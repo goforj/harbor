@@ -19,6 +19,10 @@ import (
 func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T) {
 	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
 	project := emptyProjectStoreMutationProject("project-lifecycle")
+	project.Services = []domain.ServiceSnapshot{{
+		ID: "stale-cache", Name: "Stale Cache", Kind: "cache", State: domain.EntityStopped,
+		Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceAvailable,
+	}}
 	if _, err := store.PutProject(t.Context(), project); err != nil {
 		t.Fatalf("PutProject() error = %v", err)
 	}
@@ -88,6 +92,9 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	if ready.Operation.Operation.State != domain.OperationSucceeded || !projectMatchesReadyRuntime(ready.Project.Project, runtime, readyAt) || ready.Session == nil || ready.Session.State != domain.SessionAwaitingAttach {
 		t.Fatalf("CompleteProjectStart() = %#v", ready)
 	}
+	if !reflect.DeepEqual(ready.Project.Project.Services, runtime.Services) {
+		t.Fatalf("ready services = %#v, want atomic replacement %#v", ready.Project.Project.Services, runtime.Services)
+	}
 	if snapshot, snapshotErr := store.Snapshot(t.Context()); snapshotErr != nil || len(snapshot.Projects) != 1 || snapshot.Projects[0].State != domain.ProjectReady {
 		t.Fatalf("Snapshot() after ready = %#v, %v", snapshot, snapshotErr)
 	}
@@ -143,6 +150,13 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	}
 	if stopped.Operation.Operation.State != domain.OperationSucceeded || stopped.Session != nil || !projectMatchesInactiveState(stopped.Project.Project, domain.ProjectStopped, stoppedAt) {
 		t.Fatalf("CompleteProjectStop() = %#v", stopped)
+	}
+	wantStoppedServices := append([]domain.ServiceSnapshot(nil), runtime.Services...)
+	for index := range wantStoppedServices {
+		wantStoppedServices[index].State = domain.EntityStopped
+	}
+	if !reflect.DeepEqual(stopped.Project.Project.Services, wantStoppedServices) {
+		t.Fatalf("stopped services = %#v, want retained identities %#v", stopped.Project.Project.Services, wantStoppedServices)
 	}
 	if snapshot, snapshotErr := store.Snapshot(t.Context()); snapshotErr != nil || len(snapshot.Projects) != 1 || snapshot.Projects[0].State != domain.ProjectStopped || len(snapshot.Projects[0].Resources) != 0 || len(snapshot.RecentResourceIDs) != 0 {
 		t.Fatalf("Snapshot() after stop = %#v, %v", snapshot, snapshotErr)
@@ -454,6 +468,60 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 	}
 }
 
+// TestDefaultProjectRuntimeValidateServices protects the deterministic service projection boundary.
+func TestDefaultProjectRuntimeValidateServices(t *testing.T) {
+	runtime := projectLifecycleTestRuntime()
+	if err := runtime.Validate(); err != nil {
+		t.Fatalf("DefaultProjectRuntime.Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*DefaultProjectRuntime)
+		wantError string
+	}{
+		{
+			name: "nil services",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Services = nil
+			},
+			wantError: "must not be nil",
+		},
+		{
+			name: "duplicate service ID",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Services = append(candidate.Services, candidate.Services[0])
+			},
+			wantError: "duplicate default runtime service ID",
+		},
+		{
+			name: "noncanonical order",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Services[0], candidate.Services[1] = candidate.Services[1], candidate.Services[0]
+			},
+			wantError: "canonical service ID order",
+		},
+		{
+			name: "invalid service",
+			mutate: func(candidate *DefaultProjectRuntime) {
+				candidate.Services[0].State = domain.EntityState("starting")
+			},
+			wantError: "unknown entity state",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := runtime
+			candidate.Services = append([]domain.ServiceSnapshot(nil), runtime.Services...)
+			test.mutate(&candidate)
+			err := candidate.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("DefaultProjectRuntime.Validate() error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 // TestProjectLifecycleMutationsFenceGenerationAndRollbackLateFailures proves process identity and transaction atomicity.
 func TestProjectLifecycleMutationsFenceGenerationAndRollbackLateFailures(t *testing.T) {
 	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
@@ -653,10 +721,14 @@ func projectLifecycleTestProjectRevision(
 	return project.Revision
 }
 
-// projectLifecycleTestRuntime creates the default App projection produced after a successful local readiness probe.
+// projectLifecycleTestRuntime creates the default App and service projection produced after successful local readiness probes.
 func projectLifecycleTestRuntime() DefaultProjectRuntime {
 	return DefaultProjectRuntime{
 		App: domain.AppSnapshot{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true},
+		Services: []domain.ServiceSnapshot{
+			{ID: "mysql", Name: "MySQL", Kind: "database", State: domain.EntityReady, Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected, Required: true},
+			{ID: "redis", Name: "Redis", Kind: "cache", State: domain.EntityReady, Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected},
+		},
 		Resource: domain.ResourceSnapshot{
 			ID: "app", Name: "App", Kind: "http", URL: "http://127.0.0.1:3000",
 			Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},

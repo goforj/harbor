@@ -26,6 +26,7 @@ Do not expand scope before reading [Current implementation state](./current-stat
 - Wails v2 remains the stable desktop host. Vue 3, TypeScript, Vite, Tailwind 4, Pinia, Reka/shadcn primitives, and Lucide are the frontend foundation.
 - The GoForj Vue starter's component bones were preserved; Harbor's information architecture and visual density are adapted toward Lerd, not constrained to the starter's original page layout.
 - Current activity matters more than a long operation-history wall. Project detail shows live state, the actionable failure, and current bounded `forj dev` output. Output delivery is wake-driven over the authenticated control connection and terminal redraw controls update existing rows instead of becoming noisy history.
+- Harbor never inspects Docker or parses `forj dev` prose. The current service bridge asks the exact supervising GoForj binary for a versioned `dev:status` report after App readiness; the eventual authenticated managed session remains the authority for live topology.
 - Existing generated API Index and example surfaces remain valuable GoForj resources; Harbor should surface them, not replace or remove them.
 - Compatibility and cross-platform support are claims only when macOS, Linux, and Windows native tests prove the crucial behavior.
 
@@ -200,8 +201,8 @@ No delivery phase has met its complete exit gate.
 - Durable SQLite state, authenticated local RPC, operation journals, project registration/removal, network setup approvals, and recovery are substantial.
 - DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, Linux resolver integration foundation, Windows NRPT core foundation, and runtime activation exist.
 - Wails/Vue can add/remove projects, set up networking, start/stop a project, display actionable errors, and stream current ANSI-formatted output through a held cursor request with incremental terminal redraws.
-- The typed GoForj project descriptor and managed-session handshake do not exist.
-- Compose service projection, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
+- The typed GoForj project descriptor and managed-session handshake do not exist. A narrow `forj dev:status --json` startup observation now populates active conventional Compose services without making Harbor a Docker client.
+- Live Compose topology, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
 - Project Start/Stop exists in control and desktop surfaces, not first-class CLI commands.
 - Project-removal approval handoff is not implemented in the desktop.
 

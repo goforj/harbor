@@ -41,6 +41,15 @@ func (*projectLifecycleRecoverySupervisor) Stop(context.Context, domain.ProjectI
 	return errors.New("unexpected supervised stop during project lifecycle recovery")
 }
 
+// ObserveServices rejects live observation because recovery fixtures never own the prior process.
+func (*projectLifecycleRecoverySupervisor) ObserveServices(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+) (projectprocess.ServiceObservation, error) {
+	return projectprocess.ServiceObservation{}, errors.New("unexpected service observation during project lifecycle recovery")
+}
+
 // ReadOutput returns no transcript because recovery fixtures never own the prior process.
 func (*projectLifecycleRecoverySupervisor) ReadOutput(
 	domain.ProjectID,
@@ -856,7 +865,7 @@ func completeProjectLifecycleRecoveryStart(
 		ExpectedOperationRevision: seed.operation.Revision,
 		SessionID:                 seed.session.ID,
 		ExpectedSessionGeneration: seed.session.Generation,
-		Runtime:                   defaultRuntime(target),
+		Runtime:                   defaultRuntime(target, []domain.ServiceSnapshot{}),
 		Phase:                     "ready",
 		At:                        readyAt,
 	})

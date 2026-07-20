@@ -406,7 +406,23 @@ test('routes services with project and service identities', async ({ page }) => 
 
   await expect(page.getByRole('heading', { name: 'MySQL' })).toBeVisible()
   await expect(page.getByText('orders-api', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Compose service', { exact: true }).first()).toBeVisible()
   await expect(page).toHaveURL(/#\/services\/orders-api\/mysql$/)
+})
+
+test('shows ready service counts without treating failed services as ready', async ({ page }) => {
+  await page.goto('/#/projects/orders-api')
+
+  const readySummary = page.getByRole('region', { name: 'Project summary' })
+  await expect(readySummary.getByText('2 ready', { exact: true })).toBeVisible()
+  await expect(readySummary.getByText('2 reported', { exact: true })).toBeVisible()
+  await expect(page.getByText('Compose service', { exact: true }).first()).toBeVisible()
+
+  await page.goto('/#/projects/billing')
+
+  const failedSummary = page.getByRole('region', { name: 'Project summary' })
+  await expect(failedSummary.getByText('0 ready', { exact: true })).toBeVisible()
+  await expect(failedSummary.getByText('1 reported', { exact: true })).toBeVisible()
 })
 
 test('searches authoritative project metadata that is not rendered in item labels', async ({ page }) => {

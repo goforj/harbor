@@ -17,6 +17,7 @@ import {
   TriangleAlert,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -36,6 +37,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { useProjectActivity } from '@/composables/useProjectActivity'
+import { countReadyServices } from '@/lib/servicePresentation'
 import { useHarborStore } from '@/stores/harbor'
 
 const route = useRoute()
@@ -47,6 +49,7 @@ const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
+const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
 const projectActivitySupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity.v1') === true)
 const projectActivityWaitSupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity-wait.v1') === true)
 const daemonConnected = computed(() => store.connectionState === 'connected')
@@ -301,7 +304,7 @@ async function setupNetworkAndStartProject() {
 
         <section aria-label="Project summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
           <div class="p-4 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Apps</p><p class="mt-1 text-xl font-semibold">{{ project.apps.length }}</p></div>
-          <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ project.services.length }}</p></div>
+          <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ readyServiceCount }} ready</p><p class="mt-0.5 text-xs text-muted-foreground">{{ project.services.length }} reported</p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Resources</p><p class="mt-1 text-xl font-semibold">{{ project.resources.length }}</p></div>
           <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Activity</p><p class="mt-1 truncate text-sm font-semibold">{{ currentProjectOperation?.phase ?? 'Idle' }}</p></div>
         </section>
@@ -361,7 +364,16 @@ async function setupNetworkAndStartProject() {
                   class="group flex min-w-0 items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 >
                   <StatusBadge :status="service.state" />
-                  <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ service.name }}</p><p class="truncate text-xs text-muted-foreground">{{ service.kind }} · {{ service.owner }} · {{ service.selection }}</p></div>
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-sm font-medium">{{ service.name }}</p>
+                    <p class="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      <span class="truncate">{{ service.kind }}</span>
+                      <span aria-hidden="true">·</span>
+                      <ServiceOwnership :owner="service.owner" />
+                      <span aria-hidden="true">·</span>
+                      <span class="capitalize">{{ service.selection }}</span>
+                    </p>
+                  </div>
                   <ArrowUpRight class="size-3.5 text-muted-foreground" />
                 </RouterLink>
               </div>

@@ -25,6 +25,7 @@ const (
 	defaultProjectStartupTimeout = 2 * time.Minute
 	defaultReadinessInterval     = 150 * time.Millisecond
 	defaultReadinessHTTPTimeout  = time.Second
+	defaultServiceObserveTimeout = 20 * time.Second
 	lifecyclePersistenceAttempts = 3
 	lifecyclePersistenceDelay    = 20 * time.Millisecond
 )
@@ -86,6 +87,7 @@ type projectReadinessProber interface {
 type projectProcessSupervisor interface {
 	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
 	Stop(context.Context, domain.ProjectID, domain.SessionID) error
+	ObserveServices(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.ServiceObservation, error)
 	ReadOutput(domain.ProjectID, domain.SessionID, uint64) projectprocess.OutputChunk
 	WaitOutput(context.Context, domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
 	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
@@ -584,6 +586,31 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			return
 		}
 		if readinessState == projectreadiness.StateReady {
+			completionPhase := "ready"
+			observationCtx, observationCancel := context.WithTimeout(coordinator.ctx, defaultServiceObserveTimeout)
+			observation, observationErr := coordinator.supervisor.ObserveServices(
+				observationCtx,
+				mutation.Operation.Operation.ProjectID,
+				session.ID,
+			)
+			observationCancel()
+			select {
+			case <-handle.Done():
+				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("forj dev exited while Harbor observed project services"))
+				return
+			default:
+			}
+			if observationErr != nil {
+				if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
+					coordinator.stopAndFailAttached(mutation, session, handle, "project.daemon.stopping", ctxErr)
+					return
+				}
+				observation = projectprocess.ServiceObservation{
+					Supported: false,
+					Services:  []domain.ServiceSnapshot{},
+				}
+				completionPhase = "ready; service observation unavailable"
+			}
 			readyAt := lifecycleTime(coordinator.now())
 			if readyAt.Before(session.UpdatedAt) {
 				readyAt = session.UpdatedAt
@@ -595,8 +622,8 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 					ExpectedOperationRevision: mutation.Operation.Revision,
 					SessionID:                 session.ID,
 					ExpectedSessionGeneration: session.Generation,
-					Runtime:                   defaultRuntime(target),
-					Phase:                     "ready",
+					Runtime:                   defaultRuntime(target, observation.Services),
+					Phase:                     completionPhase,
 					At:                        readyAt,
 				})
 			})
@@ -1403,7 +1430,7 @@ func processEvidence(info projectprocess.Info) domain.ProcessEvidence {
 }
 
 // defaultRuntime projects the one App and resource proved by the generated readiness endpoint.
-func defaultRuntime(target projectdiscovery.RuntimeTarget) state.DefaultProjectRuntime {
+func defaultRuntime(target projectdiscovery.RuntimeTarget, services []domain.ServiceSnapshot) state.DefaultProjectRuntime {
 	return state.DefaultProjectRuntime{
 		App: domain.AppSnapshot{
 			ID:       target.AppID,
@@ -1422,6 +1449,7 @@ func defaultRuntime(target projectdiscovery.RuntimeTarget) state.DefaultProjectR
 			},
 			URL: target.ResourceURL,
 		},
+		Services: append(make([]domain.ServiceSnapshot, 0, len(services)), services...),
 	}
 }
 

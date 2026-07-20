@@ -314,6 +314,14 @@ The managed overlay contains endpoint and session values, not project secrets. H
 
 ## Session snapshot
 
+### Interim startup observation
+
+Before the authenticated managed session exists, Harbor uses one intentionally narrow additive bridge: after the default App proves ready, it invokes `forj dev:status --json` through the exact GoForj executable, checkout, and environment already accepted by the process supervisor. GoForj alone selects and queries Compose, bounds and normalizes machine output, aggregates replicas by Compose service identity, and reports whether the project shape is supported. Harbor validates that versioned report and atomically replaces its service projection with active rows.
+
+The bridge supports only conventional Compose startup identities GoForj can prove. An owner-customized Compose shell task reports `supported: false`; Harbor does not guess its project, files, profiles, or containers. Older accepted GoForj builds keep the historical empty service projection. A valid supported report with no Compose services is a successful empty observation. If a supported observation is malformed or fails, App readiness still wins: Harbor completes startup with an empty service projection and records that service observation was unavailable instead of tearing down a healthy project or publishing invented state.
+
+This report is a point-in-time startup observation. It does not provide live events, publications, container authority, actions, or reconnect semantics and must not grow into a polling reimplementation of the managed session below.
+
 GoForj publishes an initial planned snapshot after negotiation, publication observations at the Compose barrier, and one authoritative runtime snapshot after the watcher graph starts:
 
 - project and descriptor identity;

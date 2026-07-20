@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ArrowLeft, ArrowUpRight, Database, ExternalLink, Server } from '@lucide/vue'
+import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -34,14 +35,14 @@ async function openResource(resourceId: string) {
           </Button>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2"><h1 id="service-title" class="truncate text-base font-semibold tracking-tight">{{ service.name }}</h1><StatusBadge :status="service.state" /></div>
-            <p class="mt-1 text-xs text-muted-foreground">{{ service.project_name }} · {{ service.kind }}</p>
+            <p class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><span>{{ service.project_name }} · {{ service.kind }}</span><span aria-hidden="true">·</span><ServiceOwnership :owner="service.owner" /></p>
           </div>
         </div>
       </header>
 
       <div class="space-y-5 p-5 lg:p-7">
         <section aria-label="Service facts" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
-          <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium">{{ service.owner }}</p></div>
+          <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium"><ServiceOwnership :owner="service.owner" /></p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Selection</p><p class="mt-1 text-sm font-medium">{{ service.selection }}</p></div>
           <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Requirement</p><p class="mt-1 text-sm font-medium">{{ service.required ? 'Required' : 'Optional' }}</p></div>
           <div class="border-t p-4 sm:border-t-0"><p class="text-xs text-muted-foreground">Resources</p><p class="mt-1 text-sm font-medium">{{ resources.length }}</p></div>

@@ -20,7 +20,7 @@ Harbor is a local development control plane for GoForj projects:
 
 The repository is a working vertical slice, not a releasable product. One real GoForj project has been registered, assigned a non-default loopback address, started through the desktop, observed as ready, and shown with live `forj dev` output. Restart recovery, resolver parity, trusted HTTPS installation, and packaging are still active work.
 
-The current slice launches one default App at a direct `http://<assigned-loopback>:<project-port>` URL. Stable `.test` HTTPS, the common ingress path, named Apps, Compose topology projection, private service publications, and native service relays remain approved target design rather than current user-facing behavior.
+The current slice launches one default App at a direct `http://<assigned-loopback>:<project-port>` URL. Once that App is ready, Harbor asks the exact supervising GoForj executable for its bounded `dev:status` report and projects active conventional Compose services into the existing Services UI. This is a startup observation, not the complete managed-session Compose topology contract. Stable `.test` HTTPS, the common ingress path, named Apps, private service publications, and native service relays remain approved target design rather than current user-facing behavior.
 
 ## Repository shape
 
@@ -117,13 +117,14 @@ The implemented path is:
 5. Start discovers the default App's HTTP port and checks the exact assigned address and port;
 6. Harbor writes its bounded network block to `.env.host` and launches `forj dev` without a shell;
 7. the daemon records exact process evidence and waits for the App listener to become ready;
-8. ready state publishes the default App/resource at its direct IP-literal HTTP URL; routing primitives reconcile, but `.test` HTTPS is not yet the complete user path;
-9. current bounded stdout/stderr wakes a held, cursor-addressed desktop request as each pipe chunk arrives; the frontend incrementally applies ANSI styling and terminal redraw controls as safe Vue text;
-10. Stop or daemon shutdown settles the complete Harbor-owned process scope before deleting session evidence.
+8. after App readiness, Harbor invokes `forj dev:status --json` through the exact executable, checkout, and launch environment already owned by the supervisor; supported conventional Compose observations become deterministic active service rows, while older GoForj builds and explicitly unsupported custom Compose tasks preserve an empty service projection;
+9. ready state atomically publishes the default App/resource and observed services at its direct IP-literal HTTP URL; routing primitives reconcile, but `.test` HTTPS is not yet the complete user path;
+10. current bounded stdout/stderr wakes a held, cursor-addressed desktop request as each pipe chunk arrives; the frontend incrementally applies ANSI styling and terminal redraw controls as safe Vue text;
+11. Stop or daemon shutdown settles the complete Harbor-owned process scope before deleting session evidence and retains observed service identities as stopped.
 
 Start and Stop are currently exposed through the control protocol and desktop, but not as first-class user CLI commands.
 
-This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. Do not expand this interim discovery model; replace it with the typed GoForj descriptor and managed-session contracts in [GoForj integration](./goforj-integration.md).
+This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. Compose output is parsed and normalized only inside GoForj; Harbor consumes the versioned report and never opens Docker or Compose itself. Do not expand this interim discovery model; replace it with the typed GoForj descriptor and managed-session contracts in [GoForj integration](./goforj-integration.md).
 
 ## Temporary `.env.host` bridge
 
@@ -201,6 +202,7 @@ The desktop currently provides:
 - project registration and removal;
 - network setup approval and helper installation/repair prompts;
 - project Start/Stop actions and current failure feedback;
+- active conventional Compose services presented with container runtime state reported by GoForj after readiness, with observed service identities retained as stopped after shutdown;
 - wake-driven current project output with ANSI styling, carriage-return updates, and multiline terminal redraws;
 - dark/light/system themes and themed toasts;
 - a reusable, theme-aware Harbor illustration layer with responsive placement, bounded opacity, CSS edge fading, and non-interactive semantics;
@@ -219,7 +221,7 @@ No phase in `delivery-plan.md` has met its full exit gate.
 | Platform proof | Partial: loopbacks, helper, local CA primitives, and Darwin resolver exist; trust, low ports, and resolver parity do not. |
 | Headless control plane | Partial but substantial: SQLite, authenticated IPC, operations, registration/removal, recovery, and acceptance coverage exist. |
 | Network data plane | Partial: servers, planning, setup, activation, and routes exist; full cross-platform host integration is incomplete. |
-| GoForj contract | Early/partial: discovery and `forj dev` supervision work; the typed descriptor/session/Compose contract does not. |
+| GoForj contract | Early/partial: discovery, `forj dev` supervision, and a bounded startup Compose-service report work; the typed descriptor and live managed-session Compose contract do not. |
 | Desktop experience | Partial: the working Wails/Vue client covers the main development slice; tray, packaging, and several approvals remain. |
 | Release | Not started. |
 

@@ -20,13 +20,14 @@ type ProjectLifecycleMutation struct {
 	Session   *domain.ProjectSession
 }
 
-// DefaultProjectRuntime is the ready default App and its launchable HTTP resource.
+// DefaultProjectRuntime is the ready default App, observed services, and its launchable HTTP resource.
 type DefaultProjectRuntime struct {
 	App      domain.AppSnapshot
+	Services []domain.ServiceSnapshot
 	Resource domain.ResourceSnapshot
 }
 
-// Validate reports whether the projection proves one ready, active, required default App and its owned resource.
+// Validate reports whether the projection proves one ready, active, required default App, canonical services, and its owned resource.
 func (runtime DefaultProjectRuntime) Validate() error {
 	if err := runtime.App.Validate(); err != nil {
 		return err
@@ -34,11 +35,37 @@ func (runtime DefaultProjectRuntime) Validate() error {
 	if runtime.App.State != domain.EntityReady || !runtime.App.Active || !runtime.App.Required {
 		return fmt.Errorf("default App must be ready, active, and required")
 	}
+	if err := validateDefaultProjectRuntimeServices(runtime.Services); err != nil {
+		return err
+	}
 	if err := runtime.Resource.Validate(); err != nil {
 		return err
 	}
 	if runtime.Resource.Owner.Kind != domain.ResourceOwnedByApp || runtime.Resource.Owner.AppID != runtime.App.ID {
 		return fmt.Errorf("default resource must belong to default App %q", runtime.App.ID)
+	}
+	return nil
+}
+
+// validateDefaultProjectRuntimeServices requires deterministic service identities before runtime observations become durable.
+func validateDefaultProjectRuntimeServices(services []domain.ServiceSnapshot) error {
+	if services == nil {
+		return errors.New("default runtime services must not be nil")
+	}
+	seen := make(map[domain.ServiceID]struct{}, len(services))
+	var previous domain.ServiceID
+	for index, service := range services {
+		if err := service.Validate(); err != nil {
+			return fmt.Errorf("default runtime service %q: %w", service.ID, err)
+		}
+		if _, exists := seen[service.ID]; exists {
+			return fmt.Errorf("duplicate default runtime service ID %q", service.ID)
+		}
+		if index > 0 && previous > service.ID {
+			return errors.New("default runtime services must use canonical service ID order")
+		}
+		seen[service.ID] = struct{}{}
+		previous = service.ID
 	}
 	return nil
 }
@@ -1128,15 +1155,9 @@ func projectMatchesReadyRuntime(project domain.ProjectSnapshot, runtime DefaultP
 	if project.State != domain.ProjectReady || !project.UpdatedAt.Equal(at) || len(project.Apps) != 1 || len(project.Resources) != 1 {
 		return false
 	}
-	if project.Apps[0] != runtime.App || project.Resources[0] != runtime.Resource {
-		return false
-	}
-	for _, service := range project.Services {
-		if service.State != domain.EntityReady {
-			return false
-		}
-	}
-	return true
+	return project.Apps[0] == runtime.App &&
+		reflect.DeepEqual(project.Services, runtime.Services) &&
+		project.Resources[0] == runtime.Resource
 }
 
 // projectMatchesInactiveState proves joined process-owned entities are no longer presented as active.
@@ -1183,14 +1204,12 @@ func sessionCanStop(session domain.ProjectSession) bool {
 	}
 }
 
-// readyProjectProjection installs the one runtime Harbor actually probed and preserves discovered service identities.
+// readyProjectProjection atomically replaces prior topology with the runtime Harbor actually observed.
 func readyProjectProjection(project domain.ProjectSnapshot, runtime DefaultProjectRuntime, at time.Time) domain.ProjectSnapshot {
 	project.State = domain.ProjectReady
 	project.UpdatedAt = at
 	project.Apps = []domain.AppSnapshot{runtime.App}
-	for index := range project.Services {
-		project.Services[index].State = domain.EntityReady
-	}
+	project.Services = append(make([]domain.ServiceSnapshot, 0, len(runtime.Services)), runtime.Services...)
 	project.Resources = []domain.ResourceSnapshot{runtime.Resource}
 	return project
 }

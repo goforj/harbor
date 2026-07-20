@@ -16,8 +16,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import { serviceOwnerLabel } from '@/lib/servicePresentation'
 import { useHarborStore } from '@/stores/harbor'
 import EntityRow from './EntityRow.vue'
+import ServiceOwnership from './ServiceOwnership.vue'
 import { destinationFromPath, harborNavigation } from './navigation'
 
 const route = useRoute()
@@ -213,12 +215,12 @@ function refresh() {
               v-for="service in services"
               :key="`${service.project_id}:${service.id}`"
               :label="service.name"
-              :description="`${service.project_name} · ${service.kind}`"
+              :description="`${service.project_name} · ${service.kind} · ${serviceOwnerLabel(service.owner)}`"
               :status="service.state"
               :selected="selectedProjectId === service.project_id && selectedServiceId === service.id"
               :to="`/services/${encodeURIComponent(service.project_id)}/${encodeURIComponent(service.id)}`"
             >
-              <template #leading><Server /></template>
+              <template #leading><ServiceOwnership :owner="service.owner" icon-only /></template>
             </EntityRow>
           </div>
         </section>

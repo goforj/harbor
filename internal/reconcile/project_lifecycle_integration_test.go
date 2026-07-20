@@ -38,6 +38,7 @@ import (
 const (
 	projectLifecycleHelperEnvironment          = "HARBOR_PROJECT_LIFECYCLE_HELPER"
 	projectLifecycleHelperModeEnvironment      = "HARBOR_PROJECT_LIFECYCLE_HELPER_MODE"
+	projectLifecycleServiceReportEnvironment   = "HARBOR_PROJECT_LIFECYCLE_SERVICE_REPORT"
 	projectLifecycleHelperWatcherMode          = "watcher"
 	projectLifecycleHelperIgnoringListenerMode = "ignoring-listener"
 )
@@ -188,6 +189,15 @@ func (*projectLifecycleRevisionRaceSupervisor) Stop(context.Context, domain.Proj
 	return nil
 }
 
+// ObserveServices is unreachable because the revision-race fixture never accepts a process.
+func (*projectLifecycleRevisionRaceSupervisor) ObserveServices(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+) (projectprocess.ServiceObservation, error) {
+	return projectprocess.ServiceObservation{}, errors.New("unexpected service observation after project revision drift")
+}
+
 // ObservePriorProcess is unreachable because the revision-race fixture never persists process evidence.
 func (*projectLifecycleRevisionRaceSupervisor) ObservePriorProcess(
 	context.Context,
@@ -260,6 +270,14 @@ func TestMain(m *testing.M) {
 
 // runProjectLifecycleHelper exposes the generated readiness shape until Harbor stops the owned process.
 func runProjectLifecycleHelper() {
+	if len(os.Args) > 1 && os.Args[1] == "dev:status" {
+		if os.Getenv(projectLifecycleServiceReportEnvironment) == "problem" {
+			_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"supported":true,"problem":"Compose status unavailable","services":[]}`)
+			return
+		}
+		_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"supported":true,"services":[{"id":"mysql","name":"MySQL","kind":"compose","state":"ready","active":true,"required":true,"containers":[]},{"id":"old","name":"Old","kind":"compose","state":"stopped","active":false,"required":false,"containers":[]}]}`)
+		return
+	}
 	if err := godotenv.Overload(".env.host"); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -315,6 +333,46 @@ func runProjectLifecycleHelper() {
 	}
 	<-stopped
 	_ = server.Close()
+}
+
+// TestProjectLifecycleCoordinatorKeepsReadyAppWhenServiceObservationFails proves auxiliary container context cannot tear down a healthy project.
+func TestProjectLifecycleCoordinatorKeepsReadyAppWhenServiceObservationFails(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, port := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	installProjectLifecycleIntegrationForj(t, port)
+	t.Setenv(projectLifecycleServiceReportEnvironment, "problem")
+
+	coordinator, _ := newProjectLifecycleIntegrationCoordinator(
+		t,
+		store,
+		journal,
+		newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond}),
+		netip.MustParseAddr("127.0.0.1"),
+		uint16(port),
+	)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := coordinator.Close(ctx); err != nil && ctx.Err() == nil {
+			t.Errorf("close lifecycle coordinator: %v", err)
+		}
+	})
+
+	if _, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID: project.ID, OperationID: "operation-start-observation-problem", IntentID: "intent-start-observation-problem",
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	ready := waitForProjectLifecycleState(t, store, project.ID, domain.ProjectReady)
+	if ready.Project.Services == nil || len(ready.Project.Services) != 0 {
+		t.Fatalf("ready project services = %#v, want non-nil empty observation", ready.Project.Services)
+	}
+	operation := waitForProjectLifecycleOperationState(t, journal, "intent-start-observation-problem", domain.OperationSucceeded)
+	if operation.Operation.Phase != "ready; service observation unavailable" {
+		t.Fatalf("start operation phase = %q", operation.Operation.Phase)
+	}
 }
 
 // TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdentity prevents split bind and dial targets.
@@ -405,6 +463,9 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	if len(ready.Project.Apps) != 1 || ready.Project.Apps[0].ID != "app" || len(ready.Project.Resources) != 1 || ready.Project.Resources[0].Kind != "application" || ready.Project.Resources[0].URL != fmt.Sprintf("http://127.0.0.1:%d", port) {
 		t.Fatalf("ready project = %#v", ready.Project)
 	}
+	if len(ready.Project.Services) != 1 || ready.Project.Services[0].ID != "mysql" || ready.Project.Services[0].State != domain.EntityReady || ready.Project.Services[0].Owner != domain.ServiceOwnerCompose {
+		t.Fatalf("ready project services = %#v", ready.Project.Services)
+	}
 	if !slices.Equal(discoverer.calls, []netip.Addr{netip.MustParseAddr("127.0.0.1")}) {
 		t.Fatalf("admission target discoveries = %v, want one exact assigned target", discoverer.calls)
 	}
@@ -425,7 +486,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 		t.Fatalf("Stop() = %#v, %v", stopping, err)
 	}
 	stopped := waitForProjectLifecycleState(t, store, project.ID, domain.ProjectStopped)
-	if len(stopped.Project.Apps) != 1 || stopped.Project.Apps[0].State != domain.EntityStopped || len(stopped.Project.Resources) != 0 {
+	if len(stopped.Project.Apps) != 1 || stopped.Project.Apps[0].State != domain.EntityStopped || len(stopped.Project.Resources) != 0 || len(stopped.Project.Services) != 1 || stopped.Project.Services[0].State != domain.EntityStopped {
 		t.Fatalf("stopped project = %#v", stopped.Project)
 	}
 	if _, err := store.ActiveProjectSession(t.Context(), project.ID); err == nil {
