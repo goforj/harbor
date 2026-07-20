@@ -484,6 +484,76 @@ func TestPrivilegedSystemdResolvedAdapterCrashRecovery(t *testing.T) {
 	}
 }
 
+// TestPrivilegedSystemdResolvedRecoveryPreservesForeignQuarantine proves a reserved Harbor transaction name alone never authorizes removal.
+func TestPrivilegedSystemdResolvedRecoveryPreservesForeignQuarantine(t *testing.T) {
+	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {
+		t.Skip("set HARBOR_PRIVILEGED_RESOLVER_TEST=1 on a disposable Ubuntu systemd host")
+	}
+	if os.Geteuid() != 0 {
+		t.Fatal("privileged systemd-resolved recovery requires root")
+	}
+	if output, err := exec.Command(fixedSystemctlPath, "is-active", "--quiet", fixedSystemdResolvedService).CombinedOutput(); err != nil {
+		t.Fatalf("systemd-resolved is not active: %v: %s", err, output)
+	}
+	if _, err := os.Lstat(fixedSystemdResolvedPath); err == nil || !os.IsNotExist(err) {
+		t.Fatalf("fixed Harbor systemd-resolved artifact must be absent before foreign recovery test: %v", err)
+	}
+
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	foreignRequest, err := NewRequest("installation-foreign", request.Policy())
+	if err != nil {
+		t.Fatalf("NewRequest(foreign) error = %v", err)
+	}
+	directory, err := openSystemdResolvedDirectory(true)
+	if err != nil {
+		t.Fatalf("openSystemdResolvedDirectory() error = %v", err)
+	}
+	defer directory.Close()
+	if err := lockSystemdResolvedDirectory(t.Context(), directory); err != nil {
+		t.Fatalf("lockSystemdResolvedDirectory() error = %v", err)
+	}
+	quarantineName, nameErr := uniqueSystemdResolvedTransactionName(directory, systemdResolvedQuarantinePrefix)
+	if unlockErr := unlockSystemdResolvedDirectory(directory); unlockErr != nil && nameErr == nil {
+		nameErr = unlockErr
+	}
+	if nameErr != nil {
+		t.Fatalf("allocate foreign quarantine name error = %v", nameErr)
+	}
+	path := filepath.Join(fixedSystemdResolvedDirectory, quarantineName)
+	content := marshalSystemdResolvedValidated(foreignRequest)
+	if err := os.WriteFile(path, content, os.FileMode(systemdResolvedFileMode)); err != nil {
+		t.Fatalf("write foreign quarantine fixture error = %v", err)
+	}
+	t.Cleanup(func() {
+		retained, readErr := os.ReadFile(path)
+		if readErr != nil {
+			if !errors.Is(readErr, os.ErrNotExist) {
+				t.Errorf("read foreign quarantine fixture during cleanup: %v", readErr)
+			}
+			return
+		}
+		if !bytes.Equal(retained, content) {
+			t.Errorf("preserve foreign quarantine fixture because its content changed")
+			return
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			t.Errorf("remove foreign quarantine fixture: %v", removeErr)
+		}
+	})
+
+	_, err = New().Observe(t.Context(), request)
+	if err == nil || !strings.Contains(err.Error(), "not owned by this request") {
+		t.Fatalf("Observe() error = %v, want foreign quarantine rejection", err)
+	}
+	retained, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read foreign quarantine after recovery error = %v", err)
+	}
+	if !bytes.Equal(retained, content) {
+		t.Fatal("foreign quarantine bytes changed during recovery")
+	}
+}
+
 // startSystemdResolvedTestDNSServer serves one deterministic A record through Harbor's nonstandard DNS socket.
 func startSystemdResolvedTestDNSServer(t *testing.T, address string) {
 	t.Helper()

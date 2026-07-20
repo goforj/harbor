@@ -55,7 +55,7 @@ jobs:
           trap cleanup EXIT
           sudo systemctl enable --now systemd-resolved.service
           sudo systemctl restart systemd-resolved.service
-          sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedSystemdResolvedAdapter(Lifecycle|CrashRecovery)$' -test.v
+          sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedSystemdResolved(Adapter(Lifecycle|CrashRecovery)|RecoveryPreservesForeignQuarantine)$' -test.v
 
       - name: Build focused Darwin resolver test
         if: runner.os == 'macOS'
