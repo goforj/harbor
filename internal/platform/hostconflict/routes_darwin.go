@@ -28,7 +28,7 @@ const (
 
 var darwinRouteLookupSequence atomic.Uint32
 
-// darwinOrdinaryLoopbackPrefix identifies the only broad route XNU may describe with gateway-shaped loopback metadata.
+// darwinOrdinaryLoopbackPrefix identifies the native loopback scope whose direct routes may carry gateway-shaped metadata.
 var darwinOrdinaryLoopbackPrefix = netip.MustParsePrefix("127.0.0.0/8")
 
 // darwinRouteAuthorityKey joins one RTM_GET selection to a unique RIB fact without response-only flags.
@@ -313,7 +313,8 @@ func darwinRouteGateway(message *route.RouteMessage, flags uint32, identity Inte
 			return netip.Addr{}, fmt.Errorf("host conflict Darwin route gateway is unspecified")
 		}
 		if flags&unix.RTF_GATEWAY == 0 {
-			if nativeLoopback && destination == darwinOrdinaryLoopbackPrefix && destination.Contains(address) {
+			if nativeLoopback && darwinOrdinaryLoopbackPrefix.Contains(destination.Addr()) &&
+				(destination == darwinOrdinaryLoopbackPrefix || flags&unix.RTF_HOST != 0) && destination.Contains(address) {
 				return netip.Addr{}, nil
 			}
 			return netip.Addr{}, fmt.Errorf("host conflict Darwin route contains inconsistent IPv4 gateway evidence")

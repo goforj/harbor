@@ -329,6 +329,14 @@ func TestDarwinRouteGatewayNormalizesOnlyNativeBaselineMetadata(t *testing.T) {
 			gateway:        loopbackGateway,
 		},
 		{
+			name:           "native host route metadata",
+			destination:    netip.PrefixFrom(loopbackGateway, 32),
+			identity:       loopback,
+			nativeLoopback: true,
+			flags:          unix.RTF_HOST,
+			gateway:        loopbackGateway,
+		},
+		{
 			name:        "ordinary interface",
 			destination: darwinOrdinaryLoopbackPrefix,
 			identity:    ordinary,
