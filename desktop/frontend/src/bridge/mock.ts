@@ -215,6 +215,9 @@ export function createMockBridge(): HarborBridge {
       }
       window.open(resource.url, '_blank', 'noopener,noreferrer')
     },
+    async getResourceIconURL() {
+      return ''
+    },
     async removeProject(projectId, intentId) {
       const previous = removals.get(intentId)
       if (previous) {

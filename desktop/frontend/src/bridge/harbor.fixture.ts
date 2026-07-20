@@ -11,6 +11,7 @@ export interface WailsAppBindings {
   OpenResource(projectId: string, resourceId: string): Promise<void>
   ProjectActivity(projectId: string, sessionId: string, cursor: number): Promise<ProjectActivity>
   RemoveProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
+  ResourceIconURL(projectId: string, resourceId: string): Promise<string>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): Promise<ServiceLogs>
   SetupNetwork(): Promise<NetworkSetupOperation>
   Snapshot(): Promise<HarborSnapshot>
@@ -40,6 +41,7 @@ export const harborWireFixture = {
     "confirm_project_runtime_repair": "ConfirmProjectRuntimeRepair",
     "inspect_project_runtime_repair": "InspectProjectRuntimeRepair",
     "open_resource": "OpenResource",
+    "resource_icon_url": "ResourceIconURL",
     "project_activity": "ProjectActivity",
     "service_logs": "ServiceLogs",
     "wait_project_activity": "WaitProjectActivity",

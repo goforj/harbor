@@ -15,6 +15,7 @@ type ReadyWailsRuntime = Partial<WailsRuntime> & WailsRuntimeEvents
 
 interface AdditiveWailsAppBindings {
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
+  ResourceIconURL(projectId: string, resourceId: string): ReturnType<HarborBridge['getResourceIconURL']>
   WaitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): ReturnType<HarborBridge['waitServiceLogs']>
 }
 
@@ -39,6 +40,7 @@ export function hasWailsBridge(): boolean {
     && typeof app.Status === 'function'
     && typeof app.Snapshot === 'function'
     && typeof app.OpenResource === 'function'
+    && typeof app.ResourceIconURL === 'function'
     && typeof app.ProjectActivity === 'function'
     && typeof app.WaitProjectActivity === 'function'
     && typeof app.RemoveProject === 'function'
@@ -61,6 +63,7 @@ export function createWailsBridge(): HarborBridge {
   const status = app?.Status
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
+  const resourceIconURL = app?.ResourceIconURL
   const projectActivity = app?.ProjectActivity
   const serviceLogs = app?.ServiceLogs
   const waitServiceLogs = app?.WaitServiceLogs
@@ -75,6 +78,7 @@ export function createWailsBridge(): HarborBridge {
     || typeof status !== 'function'
     || typeof snapshot !== 'function'
     || typeof openResource !== 'function'
+    || typeof resourceIconURL !== 'function'
     || typeof projectActivity !== 'function'
     || typeof waitProjectActivity !== 'function'
     || typeof removeProject !== 'function'
@@ -100,6 +104,7 @@ export function createWailsBridge(): HarborBridge {
       ? (projectId, sessionId, serviceId, cursor, waitMilliseconds) => waitServiceLogs(projectId, sessionId, serviceId, cursor, waitMilliseconds)
       : () => Promise.reject(new Error('Service log bindings are not available in this desktop build.')),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),
+    getResourceIconURL: (projectId, resourceId) => resourceIconURL(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),
     setupNetwork: () => setupNetwork(),
     startProject: (projectId, intentId) => startProject(projectId, intentId),

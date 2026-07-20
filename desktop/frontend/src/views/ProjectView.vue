@@ -581,7 +581,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                   <Card v-if="selectedServiceResources.length" class="gap-0 rounded-lg py-0 shadow-none">
                     <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Published endpoints</CardTitle><p class="text-xs text-muted-foreground">HTTP resources reported for this service</p></CardHeader>
                     <CardContent class="divide-y p-0">
-                      <button v-for="resource in selectedServiceResources" :key="resource.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)"><ResourceFavicon :name="resource.name" :url="resource.url" /><div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.url }}</p></div><ExternalLink class="size-3.5 text-muted-foreground" /></button>
+                      <button v-for="resource in selectedServiceResources" :key="resource.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)"><ResourceFavicon :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" /><div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.url }}</p></div><ExternalLink class="size-3.5 text-muted-foreground" /></button>
                     </CardContent>
                   </Card>
                   <Empty v-else class="min-h-0 flex-1 rounded-lg border">
@@ -602,7 +602,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           <CardContent class="p-0">
             <div v-if="project.resources.length" class="divide-y">
               <button v-for="resource in project.resources" :key="resource.id" type="button" class="group flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)">
-                <ResourceFavicon :name="resource.name" :url="resource.url" />
+                <ResourceFavicon :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" />
                 <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.kind }} · {{ resource.owner.kind }} · {{ resource.url }}</p></div>
                 <ExternalLink class="size-3.5 text-muted-foreground" />
               </button>

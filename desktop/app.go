@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -155,6 +156,7 @@ type App struct {
 	wait                  waitFunc
 	reconnectDelay        time.Duration
 	pollInterval          time.Duration
+	resourceIconClient    *http.Client
 }
 
 // App must remain exactly compatible with the Go-owned Wails method contract.
@@ -197,6 +199,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		wait:              wait,
 		reconnectDelay:    desktopReconnectDelay,
 		pollInterval:      desktopPollInterval,
+		resourceIconClient: &http.Client{},
 	}
 }
 

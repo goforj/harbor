@@ -21,6 +21,8 @@ const (
 	MethodInspectProjectRuntimeRepair = "InspectProjectRuntimeRepair"
 	// MethodOpenResource is the generated Wails method that opens one reviewed project resource.
 	MethodOpenResource = "OpenResource"
+	// MethodResourceIconURL is the generated Wails method that reads one resource page's declared icon.
+	MethodResourceIconURL = "ResourceIconURL"
 	// MethodProjectActivity is the generated Wails method that reads current project development output.
 	MethodProjectActivity = "ProjectActivity"
 	// MethodServiceLogs is the generated Wails method that reads current Compose service output.
@@ -74,6 +76,7 @@ type AppContract interface {
 	ConfirmProjectRuntimeRepair(projectID string, inspectionID string, candidateFingerprint string) (control.ProjectRuntimeRepairConfirmation, error)
 	InspectProjectRuntimeRepair(projectID string) (control.ProjectRuntimeRepairInspection, error)
 	OpenResource(projectID string, resourceID string) error
+	ResourceIconURL(projectID string, resourceID string) (string, error)
 	ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error)
 	ServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64) (control.ServiceLogs, error)
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
@@ -102,6 +105,7 @@ func MethodContracts() []MethodContract {
 		MethodConfirmProjectRuntimeRepair: []string{"projectId", "inspectionId", "candidateFingerprint"},
 		MethodInspectProjectRuntimeRepair: []string{"projectId"},
 		MethodOpenResource:                []string{"projectId", "resourceId"},
+		MethodResourceIconURL:             []string{"projectId", "resourceId"},
 		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
 		MethodServiceLogs:                 []string{"projectId", "sessionId", "serviceId", "cursor"},
 		MethodRemoveProject:               []string{"projectId", "intentId"},

@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { harborBridge } from '@/bridge'
 
 const props = defineProps<{
   name: string
   url: string
+  projectId: string
+  resourceId: string
 }>()
 
 const failed = ref(false)
@@ -31,7 +34,7 @@ const faviconURL = computed(() => faviconURLs.value[candidateIndex.value] ?? '')
 const displayedFaviconURL = computed(() => declaredFaviconURL.value || faviconURL.value)
 const fallbackLabel = computed(() => props.name.trim().slice(0, 1).toLocaleUpperCase() || '?')
 
-watch(() => props.url, () => {
+watch(() => [props.url, props.projectId, props.resourceId], () => {
   failed.value = false
   candidateIndex.value = 0
   declaredFaviconURL.value = ''
@@ -51,18 +54,13 @@ function tryNextCandidate() {
   failed.value = true
 }
 
-// discoverDeclaredFavicon honors a resource's own icon metadata before falling back to common conventions.
+// discoverDeclaredFavicon asks the desktop backend so resource-page metadata works without webview CORS access.
 async function discoverDeclaredFavicon() {
   try {
-    const response = await fetch(props.url, { headers: { Accept: 'text/html' } })
-    if (!response.ok) return
-    const document = new DOMParser().parseFromString(await response.text(), 'text/html')
-    const link = document.querySelector('link[rel~="icon" i], link[rel~="apple-touch-icon" i]')
-    const href = link?.getAttribute('href')
-    if (href) declaredFaviconURL.value = new URL(href, props.url).toString()
+    declaredFaviconURL.value = await harborBridge.getResourceIconURL(props.projectId, props.resourceId)
   }
   catch {
-    // The image candidates below keep local services useful when browser CORS blocks metadata inspection.
+    // The image candidates below keep local services useful while the daemon or resource is unavailable.
   }
 }
 </script>
