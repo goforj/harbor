@@ -157,13 +157,13 @@ Hosts-file fallback has its own tests on all platforms: preserve BOM/newlines/mo
 The crucial address test is identical on every OS:
 
 1. record compare-and-swap evidence for the candidate address, route, listener, and Harbor ownership namespaces;
-2. create two project loopback identities through the real helper/platform adapter;
-3. bind `:3306` on both addresses at the same time;
+2. create three project loopback identities through the real helper/platform adapter;
+3. bind `:3306` on all three addresses at the same time;
 4. serve a distinct signed test payload from each listener;
-5. resolve `mysql.alpha.test` and `mysql.beta.test` through the system resolver;
+5. resolve three project MySQL domains through the system resolver;
 6. connect by name and native port and verify the matching payload;
 7. attempt a duplicate listener and verify Harbor reports the owner instead of shifting ports;
-8. restart `harbord` and verify both leases and listeners reconcile;
+8. restart `harbord` and verify all three leases and listeners reconcile;
 9. release the identities;
 10. prove Harbor's owned interface/route projections are gone and every touched foreign value still matches its guarded precondition.
 
@@ -175,13 +175,13 @@ No translated-port result satisfies this check.
 
 ## HTTP and TLS tests
 
-Every OS proves two projects through one live ingress:
+Every OS proves three projects through one live ingress:
 
-1. create a fresh Harbor CA and two App upstreams;
+1. create a fresh Harbor CA and three App upstreams;
 2. register exact domains and issue leaf certificates;
 3. install the CA into the intended user/system trust scope through the real platform adapter;
 4. bind the real public ports 80 and 443 through the selected low-port mechanism;
-5. use the OS resolver and native trust path to request both HTTPS domains;
+5. use the OS resolver and native trust path to request all three HTTPS domains;
 6. verify Host/SNI routes to different upstreams;
 7. verify HTTP redirects to the correct HTTPS domain;
 8. exercise HTTP/2, a streaming response, server-sent events, and a WebSocket upgrade;
@@ -405,7 +405,7 @@ Each exact profile records these mechanisms:
 | Per-user daemon lifecycle | required | required | required |
 | Owner-only IPC | required | required | required |
 | Loopback project identities | required | required | required |
-| Same native port on two projects | required | required | required |
+| Same native port on three projects | required | required | required |
 | System `.test` resolution | required | required | required |
 | Trusted HTTPS and CA removal | required | required | required |
 | Ports 80/443 and conflict behavior | required | required | required |

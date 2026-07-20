@@ -6,7 +6,7 @@ import "testing"
 func TestParseAddresses(t *testing.T) {
 	t.Parallel()
 
-	addresses, err := ParseAddresses(" 127.77.254.10,127.77.254.11 ")
+	addresses, err := ParseAddresses(" 127.77.254.10,127.77.254.11,127.77.254.12 ")
 	if err != nil {
 		t.Fatalf("parse addresses: %v", err)
 	}
@@ -14,7 +14,7 @@ func TestParseAddresses(t *testing.T) {
 		t.Fatalf("expected second address 127.77.254.11, got %s", got)
 	}
 
-	for _, value := range []string{"", "127.0.0.1", "127.0.0.1,not-an-address", "127.0.0.1,127.0.0.1"} {
+	for _, value := range []string{"", "127.0.0.1", "127.0.0.1,127.0.0.2", "127.0.0.1,127.0.0.2,not-an-address", "127.0.0.1,127.0.0.2,127.0.0.1"} {
 		if _, err := ParseAddresses(value); err == nil {
 			t.Fatalf("expected %q to fail", value)
 		}

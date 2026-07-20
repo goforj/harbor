@@ -33,7 +33,7 @@ func proofAddresses(t *testing.T) []netip.Addr {
 	t.Helper()
 	value := os.Getenv("HARBOR_PROOF_ADDRESSES")
 	if value == "" {
-		value = "127.77.254.10,127.77.254.11"
+		value = "127.77.254.10,127.77.254.11,127.77.254.12"
 	}
 	addresses, err := ParseAddresses(value)
 	if err != nil {

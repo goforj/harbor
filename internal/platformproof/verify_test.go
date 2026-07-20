@@ -36,6 +36,7 @@ func TestVerifyEvidenceDirectoryRejectsIncompleteEvidence(t *testing.T) {
 		{name: "translated port", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Port = 13306 }, want: "instead of required port"},
 		{name: "failed assertion", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Assertions[0].Passed = false }, want: "failed assertion"},
 		{name: "missing assertion", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Assertions = proof.Assertions[1:] }, want: "missing assertion"},
+		{name: "missing identity", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Identities = proof.Identities[:2] }, want: "three distinct identities"},
 		{name: "mismatched cleanup", mutate: func(_ *ProjectIdentityEvidence, cleanup *CleanupEvidence) { cleanup.Addresses[1] = "127.77.254.12" }, want: "do not match"},
 		{name: "missing runner identity", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Runtime.RunnerName = "" }, want: "runner image identity"},
 		{name: "unsupported scope", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Scope = "product_end_to_end" }, want: "unsupported"},
@@ -47,7 +48,7 @@ func TestVerifyEvidenceDirectoryRejectsIncompleteEvidence(t *testing.T) {
 		{name: "duplicate address", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) {
 			proof.Identities[1].Address = proof.Identities[0].Address
 			proof.Identities[1].Endpoint = proof.Identities[0].Endpoint
-		}, want: "two distinct identities"},
+		}, want: "three distinct identities"},
 		{name: "wrong endpoint", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) {
 			proof.Identities[0].Endpoint = "127.77.254.10:13306"
 		}, want: "reports endpoint"},
@@ -63,6 +64,7 @@ func TestVerifyEvidenceDirectoryRejectsIncompleteEvidence(t *testing.T) {
 		{name: "unexpected hosted interface", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) {
 			proof.Identities[0].InterfaceName = "loopback0"
 			proof.Identities[1].InterfaceName = "loopback0"
+			proof.Identities[2].InterfaceName = "loopback0"
 		}, want: "unexpected hosted loopback interface"},
 		{name: "broad interface prefix", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Identities[0].PrefixLength = 8 }, want: "instead of 32"},
 		{name: "short payload digest", mutate: func(proof *ProjectIdentityEvidence, _ *CleanupEvidence) { proof.Identities[0].PayloadDigest = "abc" }, want: "non-canonical SHA-256"},
@@ -172,6 +174,7 @@ func validProjectIdentityFixture(platform string) ProjectIdentityEvidence {
 		Identities: []IdentityEvidence{
 			{Address: "127.77.254.10", Endpoint: "127.77.254.10:3306", PayloadDigest: strings.Repeat("a", 64), InterfaceName: interfaceName, InterfaceIndex: 1, InterfaceLoopback: true, PrefixLength: 32},
 			{Address: "127.77.254.11", Endpoint: "127.77.254.11:3306", PayloadDigest: strings.Repeat("b", 64), InterfaceName: interfaceName, InterfaceIndex: 1, InterfaceLoopback: true, PrefixLength: 32},
+			{Address: "127.77.254.12", Endpoint: "127.77.254.12:3306", PayloadDigest: strings.Repeat("c", 64), InterfaceName: interfaceName, InterfaceIndex: 1, InterfaceLoopback: true, PrefixLength: 32},
 		},
 		Assertions: []AssertionEvidence{
 			{ID: "network.loopback.explicit_assignment", Passed: true, Detail: "assigned"},
@@ -211,7 +214,7 @@ func validCleanupFixture(platform string) CleanupEvidence {
 			RunnerImage:        "image",
 			RunnerImageVersion: "version",
 		},
-		Addresses:  []string{"127.77.254.10", "127.77.254.11"},
+		Addresses:  []string{"127.77.254.10", "127.77.254.11", "127.77.254.12"},
 		Assertions: []AssertionEvidence{{ID: "network.loopback.explicit_cleanup", Passed: true, Detail: "absent"}},
 	}
 }

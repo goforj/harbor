@@ -52,6 +52,7 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		Projects: []goforjproject.Spec{
 			{Name: "Harbor Orders", Module: "example.test/harbor/orders", Port: projectIdentityAcceptancePort},
 			{Name: "Harbor Billing", Module: "example.test/harbor/billing", Port: projectIdentityAcceptancePort},
+			{Name: "Harbor Inventory", Module: "example.test/harbor/inventory", Port: projectIdentityAcceptancePort},
 		},
 	})
 	if err != nil {
@@ -139,8 +140,8 @@ func loadProjectIdentityAcceptanceConfiguration(t *testing.T) projectIdentityAcc
 		t.Fatalf("%s basename = %q, want %q for lifecycle PATH resolution", projectIdentityAcceptanceForjEnvironment, filepath.Base(forj), wantExecutableName)
 	}
 	addresses := parseProjectIdentityAcceptanceAddresses(t, os.Getenv(projectIdentityAcceptanceAddressesEnvironment))
-	if len(addresses) != 2 {
-		t.Fatalf("%s contains %d addresses, want exactly two", projectIdentityAcceptanceAddressesEnvironment, len(addresses))
+	if len(addresses) != 3 {
+		t.Fatalf("%s contains %d addresses, want exactly three", projectIdentityAcceptanceAddressesEnvironment, len(addresses))
 	}
 	prefix := netip.PrefixFrom(addresses[0], 29).Masked()
 	for _, address := range addresses {

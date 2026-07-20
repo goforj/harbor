@@ -343,10 +343,10 @@ func validateProjectIdentityAddresses(addresses []netip.Addr) error {
 	return nil
 }
 
-// validateAddresses preserves the command proof's exact two-identity evidence contract.
+// validateAddresses preserves the command proof's exact three-identity evidence contract.
 func validateAddresses(addresses []netip.Addr) error {
-	if len(addresses) != 2 {
-		return fmt.Errorf("project identity proof requires exactly two addresses, got %d", len(addresses))
+	if len(addresses) != 3 {
+		return fmt.Errorf("project identity proof requires exactly three addresses, got %d", len(addresses))
 	}
 	return validateProjectIdentityAddresses(addresses)
 }

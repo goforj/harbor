@@ -15,7 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/platformproof"
 )
 
-const defaultProofAddresses = "127.77.254.10,127.77.254.11"
+const defaultProofAddresses = "127.77.254.10,127.77.254.11,127.77.254.12"
 
 // commandOptions contains the common evidence identity accepted by each proof command.
 type commandOptions struct {
@@ -99,8 +99,8 @@ func verifyEvidence(arguments []string) error {
 func parseOptions(name string, arguments []string, requirePort bool) (commandOptions, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	addressValue := flags.String("addresses", defaultProofAddresses, "two comma-separated IPv4 loopback identities")
-	portValue := flags.Uint("port", 3306, "native TCP port shared by both identities")
+	addressValue := flags.String("addresses", defaultProofAddresses, "three comma-separated IPv4 loopback identities")
+	portValue := flags.Uint("port", 3306, "native TCP port shared by all identities")
 	if err := flags.Parse(arguments); err != nil {
 		return commandOptions{}, err
 	}

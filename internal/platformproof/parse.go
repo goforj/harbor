@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// ParseAddresses parses the two comma-separated loopback identities accepted by the proof CLI.
+// ParseAddresses parses the three comma-separated loopback identities accepted by the proof CLI.
 func ParseAddresses(value string) ([]netip.Addr, error) {
 	parts := strings.Split(value, ",")
 	addresses := make([]netip.Addr, 0, len(parts))

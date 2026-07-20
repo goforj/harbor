@@ -163,8 +163,8 @@ func verifyProjectIdentityEvidence(evidence ProjectIdentityEvidence, requirement
 	if evidence.Port != requirement.Port {
 		return fmt.Errorf("%s proved port %d instead of required port %d", platform, evidence.Port, requirement.Port)
 	}
-	if len(evidence.Identities) != 2 {
-		return fmt.Errorf("%s did not prove two distinct identities", platform)
+	if len(evidence.Identities) != 3 {
+		return fmt.Errorf("%s did not prove three distinct identities", platform)
 	}
 	addresses := make(map[netip.Addr]struct{}, len(evidence.Identities))
 	digests := make(map[string]struct{}, len(evidence.Identities))
@@ -176,7 +176,7 @@ func verifyProjectIdentityEvidence(evidence ProjectIdentityEvidence, requirement
 			return err
 		}
 		if _, exists := addresses[address]; exists {
-			return fmt.Errorf("%s did not prove two distinct identities", platform)
+			return fmt.Errorf("%s did not prove three distinct identities", platform)
 		}
 		addresses[address] = struct{}{}
 		if _, exists := digests[digest]; exists {
@@ -252,7 +252,10 @@ func verifyCleanupEvidence(cleanup CleanupEvidence, proof ProjectIdentityEvidenc
 	if err := verifyRuntimeEvidence(cleanup.Runtime, requirement, platform); err != nil {
 		return err
 	}
-	expectedAddresses := []string{proof.Identities[0].Address, proof.Identities[1].Address}
+	expectedAddresses := make([]string, 0, len(proof.Identities))
+	for _, identity := range proof.Identities {
+		expectedAddresses = append(expectedAddresses, identity.Address)
+	}
 	slices.Sort(expectedAddresses)
 	actualAddresses := slices.Clone(cleanup.Addresses)
 	slices.Sort(actualAddresses)

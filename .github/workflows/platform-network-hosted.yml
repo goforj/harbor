@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11
+  HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
   HARBOR_PROOF_PORT: "3306"
   HARBOR_ADAPTER_PROOF_ADDRESSES: 127.77.254.248,127.77.254.249,127.77.254.250,127.77.254.251,127.77.254.252,127.77.254.253,127.77.254.254,127.77.254.255
   HARBOR_PROJECT_IDENTITY_FORJ_COMMIT: bf5f5e65ab64ba25cbd2fe53e42014bff1115a81
@@ -116,7 +116,7 @@ jobs:
           interface_index="$(cat "/sys/class/net/${interface}/ifindex")"
           rm -f "$ownership_file"
           touch "$ownership_file"
-          for address in 127.77.254.10 127.77.254.11; do
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
             if ip -o -4 address show | awk '{print $4}' | grep -Fxq "$address/32"; then
               echo "proof identity already exists: $address" >&2
               exit 1
@@ -145,7 +145,7 @@ jobs:
           interface_index="$(python3 -c 'import socket; print(socket.if_nametoindex("lo0"))')"
           rm -f "$ownership_file"
           touch "$ownership_file"
-          for address in 127.77.254.10 127.77.254.11; do
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
             if ifconfig -a | awk -v target="$address" '$1 == "inet" && $2 == target {found=1} END {exit !found}'; then
               echo "proof identity already exists: $address" >&2
               exit 1
@@ -171,7 +171,7 @@ jobs:
           if ($loopbackInterface.InterfaceAlias -notmatch 'Loopback') {
             throw "127.0.0.1 is not attached to a verified loopback interface"
           }
-          foreach ($address in @('127.77.254.10', '127.77.254.11')) {
+          foreach ($address in @('127.77.254.10', '127.77.254.11', '127.77.254.12')) {
             if (Get-NetIPAddress -AddressFamily IPv4 -IPAddress $address -PolicyStore ActiveStore -ErrorAction SilentlyContinue) {
               throw "proof identity already exists: $address"
             }
@@ -223,7 +223,7 @@ jobs:
               sudo ip address delete "$address/32" dev "$interface"
             done < "$ownership_file"
           fi
-          for address in 127.77.254.10 127.77.254.11; do
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
             if ip -o -4 address show | awk '{print $4}' | grep -Fxq "$address/32"; then
               echo "proof identity remains after cleanup: $address" >&2
               exit 1
@@ -250,7 +250,7 @@ jobs:
               sudo ifconfig "$interface" inet "$address" -alias
             done < "$ownership_file"
           fi
-          for address in 127.77.254.10 127.77.254.11; do
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
             if ifconfig -a | awk -v target="$address" '$1 == "inet" && $2 == target {found=1} END {exit !found}'; then
               echo "proof identity remains after cleanup: $address" >&2
               exit 1
@@ -276,7 +276,7 @@ jobs:
               $currentAddress[0] | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
             }
           }
-          foreach ($address in @('127.77.254.10', '127.77.254.11')) {
+          foreach ($address in @('127.77.254.10', '127.77.254.11', '127.77.254.12')) {
             if (Get-NetIPAddress -AddressFamily IPv4 -IPAddress $address -PolicyStore ActiveStore -ErrorAction SilentlyContinue) {
               throw "proof identity remains after cleanup: $address"
             }
