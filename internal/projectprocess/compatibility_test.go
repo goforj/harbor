@@ -112,7 +112,7 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			if !errors.Is(err, errIncompatibleGoForj) {
 				t.Fatalf("verifier error = %v, want errIncompatibleGoForj", err)
 			}
-			for _, text := range []string{"bf5f5e65-or-newer", "v0.20.1+", "forj render"} {
+			for _, text := range []string{"v0.20.1+", "d8a462840ca2c92a61a105f06408c464fcf53391", "forj render"} {
 				if !strings.Contains(err.Error(), text) {
 					t.Fatalf("verifier error = %q, want actionable text %q", err, text)
 				}

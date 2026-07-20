@@ -9,7 +9,7 @@ The current checkout requires:
 - Wails v2.13 and its native platform prerequisites;
 - a canonical GoForj CLI at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `d8a462840ca2c92a61a105f06408c464fcf53391`.
 
-The development-build rule is deliberately exact today: an unversioned binary from a newer revision is rejected. The current compatibility error says “bf5f5e65-or-newer,” which overstates that rule. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
+The development-build rule is deliberately exact today: an unversioned binary from a newer revision is rejected. Harbor admits a released GoForj `v0.20.1+` build or the exact clean development revision `d8a462840ca2c92a61a105f06408c464fcf53391`; the compatibility error reports those same choices. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
 
 Run the complete development graph from the repository root:
 
