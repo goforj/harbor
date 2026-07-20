@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	darwinObservationRetries    = 7
+	// macOS may update process-global route and socket tables independently while CI starts helpers; keep the
+	// retry window bounded while allowing those native generations to settle before declaring them unreadable.
+	darwinObservationRetries    = 31
 	darwinObservationRetryDelay = 10 * time.Millisecond
 )
 
