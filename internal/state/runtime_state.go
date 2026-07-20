@@ -303,9 +303,9 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 	}
 	for _, project := range projects {
 		if address, exists := primary[project.ID]; exists {
-			if record.Stage == NetworkStageIdentity {
-				if err := validateIdentityRuntimeProject(project, address); err != nil {
-					return fmt.Errorf("runtime project %q is unsafe for identity-stage networking: %w", project.ID, err)
+			if record.Stage != NetworkStageFull {
+				if err := validateNonPublishableRuntimeProject(project, address); err != nil {
+					return fmt.Errorf("runtime project %q is unsafe for %s-stage networking: %w", project.ID, record.Stage, err)
 				}
 			}
 			continue
@@ -324,8 +324,8 @@ func validateRuntimeNetworkProjects(projects []domain.ProjectSnapshot, record Ne
 	return nil
 }
 
-// validateIdentityRuntimeProject confines a leased identity-stage project to its exact literal loopback address.
-func validateIdentityRuntimeProject(project domain.ProjectSnapshot, address netip.Addr) error {
+// validateNonPublishableRuntimeProject confines a pre-full project to its exact literal loopback address.
+func validateNonPublishableRuntimeProject(project domain.ProjectSnapshot, address netip.Addr) error {
 	if err := validateUnleasedRuntimeProject(project); err != nil {
 		return err
 	}

@@ -106,8 +106,12 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	if err != nil {
 		return NetworkRecord{}, false, err
 	}
-	if stage == NetworkStageIdentity && len(rows.Endpoints) != 0 {
-		return NetworkRecord{}, false, corruptStateError("public endpoint lease", "identity-stage", fmt.Errorf("identity-stage network must not contain endpoint reservations"))
+	if stage != NetworkStageFull && len(rows.Endpoints) != 0 {
+		return NetworkRecord{}, false, corruptStateError(
+			"public endpoint lease",
+			string(stage)+"-stage",
+			fmt.Errorf("%s-stage network must not contain endpoint reservations", stage),
+		)
 	}
 	allEndpoints, err := networkEndpointsFromModels(rows.Endpoints, root.Id, knownProjects, activeByID, listeners, root.UpdatedAt)
 	if err != nil {
@@ -334,8 +338,11 @@ func networkCandidatesFromModels(rows []models.NetworkPoolCandidate, stateID int
 // validateNetworkSetupEvidence requires exactly the authority proofs granted by the durable lifecycle stage.
 func validateNetworkSetupEvidence(rows []models.NetworkSetupEvidence, stage NetworkStage, stateID int, updatedAt time.Time) error {
 	requiredOrder := []string{"machine_ownership", "loopback_pool"}
+	if stage == NetworkStageResolver || stage == NetworkStageFull {
+		requiredOrder = append(requiredOrder, "resolver")
+	}
 	if stage == NetworkStageFull {
-		requiredOrder = append(requiredOrder, "resolver", "low_ports")
+		requiredOrder = append(requiredOrder, "low_ports")
 	}
 	required := make(map[string]struct{}, len(requiredOrder))
 	for _, component := range requiredOrder {
@@ -380,19 +387,19 @@ func validateNetworkSetupEvidence(rows []models.NetworkSetupEvidence, stage Netw
 	return nil
 }
 
-// networkListenersForStage prevents identity-only state from being interpreted as shared listener authority.
+// networkListenersForStage prevents pre-full state from being interpreted as shared listener authority.
 func networkListenersForStage(
 	rows []models.NetworkSharedListener,
 	stage NetworkStage,
 	stateID int,
 	updatedAt time.Time,
 ) (SharedListenerReservations, error) {
-	if stage == NetworkStageIdentity {
+	if stage != NetworkStageFull {
 		if len(rows) != 0 {
 			return SharedListenerReservations{}, corruptStateError(
 				"network shared listener",
-				"identity-stage",
-				fmt.Errorf("identity-stage network must not contain listener reservations"),
+				string(stage)+"-stage",
+				fmt.Errorf("%s-stage network must not contain listener reservations", stage),
 			)
 		}
 		return SharedListenerReservations{}, nil

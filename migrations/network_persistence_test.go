@@ -16,6 +16,8 @@ const (
 	networkReleaseDigestMigrationName = "2026_07_18_175743_add_network_release_set_digest"
 	// networkStageMigrationName identifies the identity-stage compatibility upgrade.
 	networkStageMigrationName = "2026_07_19_120000_add_network_stage"
+	// networkResolverStageMigrationName identifies the resolver-authority lifecycle upgrade.
+	networkResolverStageMigrationName = "2026_07_20_010000_add_network_resolver_stage"
 	// networkMigrationReleaseSetDigest is the canonical digest fixture accepted by the upgraded schema.
 	networkMigrationReleaseSetDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
@@ -166,6 +168,69 @@ func TestNetworkStageMigrationPreservesFullRowsAndRefusesLossyRollback(t *testin
 		t.Fatal("full-only rollback retained the stage column")
 	}
 	assertProjectionCount(t, databaseConnection, "network_state", 1)
+}
+
+// TestNetworkResolverStageMigrationPreservesRowsAndRefusesLossyRollback verifies the intermediate authority value is durable and reversible only when unused.
+func TestNetworkResolverStageMigrationPreservesRowsAndRefusesLossyRollback(t *testing.T) {
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	defer closeOperationMigrationDatabase(t, connections)
+	applyProjectProjectionMigrations(t, databaseConnection)
+	if err := networkPersistenceMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply network persistence migration: %v", err)
+	}
+	if err := networkReleaseDigestMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply network release digest migration: %v", err)
+	}
+	if err := networkStageMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply network stage migration: %v", err)
+	}
+	insertNetworkMigrationState(t, databaseConnection, 1)
+	insertNetworkMigrationCandidate(t, databaseConnection, 1, "127.77.0.10", 1)
+
+	migration := networkResolverStageMigration(t)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply network resolver stage migration: %v", err)
+	}
+	var stage string
+	if err := databaseConnection.Raw("SELECT stage FROM network_state WHERE id = 1").Scan(&stage).Error; err != nil {
+		t.Fatalf("read upgraded resolver stage: %v", err)
+	}
+	if stage != "full" {
+		t.Fatalf("upgraded resolver stage = %q, want full", stage)
+	}
+	mustExecNetworkMigration(t, databaseConnection, "UPDATE network_state SET stage = 'resolver' WHERE id = 1")
+	assertMigrationStatementFails(t, databaseConnection, "UPDATE network_state SET stage = 'partial' WHERE id = 1")
+	assertProjectionCount(t, databaseConnection, "network_pool_candidates", 1)
+
+	if err := databaseConnection.Transaction(func(tx *gorm.DB) error {
+		return migration.Down(tx)
+	}); err == nil {
+		t.Fatal("network resolver stage rollback accepted a resolver-stage row")
+	}
+	stage = ""
+	if err := databaseConnection.Raw("SELECT stage FROM network_state WHERE id = 1").Scan(&stage).Error; err != nil {
+		t.Fatalf("read resolver stage after rejected rollback: %v", err)
+	}
+	if stage != "resolver" {
+		t.Fatalf("network stage after rejected rollback = %q, want resolver", stage)
+	}
+	assertProjectionCount(t, databaseConnection, "network_pool_candidates", 1)
+
+	mustExecNetworkMigration(t, databaseConnection, "UPDATE network_state SET stage = 'identity' WHERE id = 1")
+	if err := databaseConnection.Transaction(func(tx *gorm.DB) error {
+		return migration.Down(tx)
+	}); err != nil {
+		t.Fatalf("rollback unused resolver stage migration: %v", err)
+	}
+	stage = ""
+	if err := databaseConnection.Raw("SELECT stage FROM network_state WHERE id = 1").Scan(&stage).Error; err != nil {
+		t.Fatalf("read network stage after resolver rollback: %v", err)
+	}
+	if stage != "identity" {
+		t.Fatalf("network stage after resolver rollback = %q, want identity", stage)
+	}
+	assertMigrationStatementFails(t, databaseConnection, "UPDATE network_state SET stage = 'resolver' WHERE id = 1")
+	assertProjectionCount(t, databaseConnection, "network_pool_candidates", 1)
 }
 
 // TestNetworkPersistenceMigrationStagesProjectRelease verifies restrictive ownership, verified quarantine, replacement allocation, and replay evidence survive project deletion.
@@ -566,6 +631,9 @@ func applyNetworkPersistenceMigrations(t *testing.T, databaseConnection *gorm.DB
 	if err := networkStageMigration(t).Up(databaseConnection); err != nil {
 		t.Fatalf("apply network stage migration: %v", err)
 	}
+	if err := networkResolverStageMigration(t).Up(databaseConnection); err != nil {
+		t.Fatalf("apply network resolver stage migration: %v", err)
+	}
 }
 
 // networkPersistenceMigration finds the production network migration through Harbor's embedded registry.
@@ -601,6 +669,18 @@ func networkStageMigration(t *testing.T) Migration {
 		}
 	}
 	t.Fatalf("network stage migration %q is not registered", networkStageMigrationName)
+	return nil
+}
+
+// networkResolverStageMigration finds the resolver-stage upgrade through Harbor's embedded registry.
+func networkResolverStageMigration(t *testing.T) Migration {
+	t.Helper()
+	for _, migration := range selectMigrations("harbord", "default", "sqlite") {
+		if migration.Name() == networkResolverStageMigrationName {
+			return migration
+		}
+	}
+	t.Fatalf("network resolver stage migration %q is not registered", networkResolverStageMigrationName)
 	return nil
 }
 

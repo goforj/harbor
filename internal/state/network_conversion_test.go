@@ -75,6 +75,56 @@ func TestNetworkRecordFromModelsAcceptsIdentityFoundation(t *testing.T) {
 	}
 }
 
+// TestNetworkRecordFromModelsAcceptsResolverAuthority verifies policy-bound resolution remains non-publishable.
+func TestNetworkRecordFromModelsAcceptsResolverAuthority(t *testing.T) {
+	rows := resolverNetworkModelRows()
+	record, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		t.Fatalf("networkRecordFromModels() resolver error = %v", err)
+	}
+	if !initialized || record.Stage != NetworkStageResolver {
+		t.Fatalf("resolver conversion = initialized %t, stage %q", initialized, record.Stage)
+	}
+	if record.Reservations.Listeners != (SharedListenerReservations{}) ||
+		len(record.Reservations.Endpoints) != 0 || len(record.Leases) != 0 {
+		t.Fatalf("resolver conversion projected publishable authority: %#v", record)
+	}
+	if err := record.Validate(); err != nil {
+		t.Fatalf("resolver NetworkRecord.Validate() error = %v", err)
+	}
+}
+
+// TestNetworkRecordFromModelsRejectsResolverDataPlaneCorruption verifies the intermediate stage owns exactly three proofs and no routes.
+func TestNetworkRecordFromModelsRejectsResolverDataPlaneCorruption(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*networkModelRows)
+		want   string
+	}{
+		{name: "missing resolver", mutate: func(rows *networkModelRows) {
+			rows.SetupEvidence = rows.SetupEvidence[:2]
+		}, want: "required component is missing"},
+		{name: "low ports", mutate: func(rows *networkModelRows) {
+			rows.SetupEvidence = append(rows.SetupEvidence, models.NetworkSetupEvidence{
+				Id: 24, NetworkStateId: 1, Component: "low_ports", Evidence: "verified low ports", Generation: 50, VerifiedAt: networkTestTime(),
+			})
+		}, want: "unsupported"},
+		{name: "listener", mutate: func(rows *networkModelRows) {
+			rows.Listeners = []models.NetworkSharedListener{validNetworkModelRows().Listeners[0]}
+		}, want: "resolver-stage network must not contain listener reservations"},
+		{name: "endpoint", mutate: func(rows *networkModelRows) {
+			rows.Endpoints = []models.PublicEndpointLease{validNetworkModelRows().Endpoints[0]}
+		}, want: "resolver-stage network must not contain endpoint reservations"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rows := resolverNetworkModelRows()
+			test.mutate(&rows)
+			_, _, err := networkRecordFromModels(rows)
+			assertNetworkConversionCorruption(t, err, test.want)
+		})
+	}
+}
+
 // TestNetworkRecordFromModelsRejectsIdentityDataPlaneCorruption verifies persisted stage and child rows cannot disagree.
 func TestNetworkRecordFromModelsRejectsIdentityDataPlaneCorruption(t *testing.T) {
 	tests := []struct {
@@ -911,6 +961,21 @@ func identityNetworkModelRows() networkModelRows {
 	for index := range rows.Projects {
 		rows.Projects[index].State = string(domain.ProjectStopped)
 	}
+	return rows
+}
+
+// resolverNetworkModelRows returns one resolver-authorized aggregate without publishable listener or endpoint authority.
+func resolverNetworkModelRows() networkModelRows {
+	rows := identityNetworkModelRows()
+	rows.States[0].Stage = string(NetworkStageResolver)
+	rows.SetupEvidence = append(rows.SetupEvidence, models.NetworkSetupEvidence{
+		Id:             23,
+		NetworkStateId: 1,
+		Component:      string(NetworkSetupComponentResolver),
+		Evidence:       "verified resolver",
+		Generation:     50,
+		VerifiedAt:     networkTestTime(),
+	})
 	return rows
 }
 

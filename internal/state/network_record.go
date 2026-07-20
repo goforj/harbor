@@ -20,6 +20,8 @@ type NetworkStage string
 const (
 	// NetworkStageIdentity proves only machine ownership and the reserved loopback identity pool.
 	NetworkStageIdentity NetworkStage = "identity"
+	// NetworkStageResolver proves identity and resolver authority without granting publishable listener authority.
+	NetworkStageResolver NetworkStage = "resolver"
 	// NetworkStageFull proves identity, resolver, and shared listener authority.
 	NetworkStageFull NetworkStage = "full"
 )
@@ -27,7 +29,7 @@ const (
 // Validate rejects lifecycle stages that cannot define a safe network projection.
 func (stage NetworkStage) Validate() error {
 	switch stage {
-	case NetworkStageIdentity, NetworkStageFull:
+	case NetworkStageIdentity, NetworkStageResolver, NetworkStageFull:
 		return nil
 	default:
 		return fmt.Errorf("network stage %q is unsupported", stage)
@@ -299,8 +301,8 @@ func (reservations DataPlaneReservations) Validate() error {
 	return nil
 }
 
-// validateIdentityDataPlaneReservations prevents an identity-only aggregate from claiming resolver or ingress authority.
-func validateIdentityDataPlaneReservations(reservations DataPlaneReservations) error {
+// validateNonPublishableDataPlaneReservations prevents a pre-full aggregate from claiming ingress authority.
+func validateNonPublishableDataPlaneReservations(stage NetworkStage, reservations DataPlaneReservations) error {
 	if reservations.Endpoints == nil {
 		return fmt.Errorf("network endpoint reservations must be initialized")
 	}
@@ -308,10 +310,10 @@ func validateIdentityDataPlaneReservations(reservations DataPlaneReservations) e
 		return fmt.Errorf("suppressed network projects must be initialized")
 	}
 	if reservations.Listeners != (SharedListenerReservations{}) {
-		return fmt.Errorf("identity-stage network must not contain listener reservations")
+		return fmt.Errorf("%s-stage network must not contain listener reservations", stage)
 	}
 	if len(reservations.Endpoints) != 0 {
-		return fmt.Errorf("identity-stage network must not contain endpoint reservations")
+		return fmt.Errorf("%s-stage network must not contain endpoint reservations", stage)
 	}
 	_, err := validateSuppressedNetworkProjects(reservations.SuppressedProjectIDs)
 	return err
@@ -378,8 +380,8 @@ func (record NetworkRecord) Validate() error {
 		return fmt.Errorf("network quarantines must be initialized")
 	}
 	switch record.Stage {
-	case NetworkStageIdentity:
-		if err := validateIdentityDataPlaneReservations(record.Reservations); err != nil {
+	case NetworkStageIdentity, NetworkStageResolver:
+		if err := validateNonPublishableDataPlaneReservations(record.Stage, record.Reservations); err != nil {
 			return err
 		}
 	case NetworkStageFull:

@@ -18,6 +18,7 @@ func TestNetworkStageValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{stage: NetworkStageIdentity},
+		{stage: NetworkStageResolver},
 		{stage: NetworkStageFull},
 		{stage: "", wantErr: true},
 		{stage: "partial", wantErr: true},
@@ -62,6 +63,23 @@ func TestNetworkRecordValidateSeparatesIdentityFromDataPlaneAuthority(t *testing
 			assertRecordValidationError(t, candidate.Validate(), test.want)
 		})
 	}
+}
+
+// TestNetworkRecordValidateKeepsResolverStageNonPublishable verifies resolver proof alone cannot expose listeners or endpoints.
+func TestNetworkRecordValidateKeepsResolverStageNonPublishable(t *testing.T) {
+	record := recordTestNetworkRecord()
+	record.Stage = NetworkStageResolver
+	record.Reservations.Listeners = SharedListenerReservations{}
+	record.Reservations.Endpoints = []EndpointReservation{}
+	if err := record.Validate(); err != nil {
+		t.Fatalf("resolver NetworkRecord.Validate() error = %v", err)
+	}
+
+	record.Reservations.Listeners = recordTestListeners()
+	assertRecordValidationError(t, record.Validate(), "resolver-stage network must not contain listener reservations")
+	record.Reservations.Listeners = SharedListenerReservations{}
+	record.Reservations.Endpoints = []EndpointReservation{recordTestHTTPEndpoint("alpha.test", "project-alpha", "web")}
+	assertRecordValidationError(t, record.Validate(), "resolver-stage network must not contain endpoint reservations")
 }
 
 // TestListenerModeValidate covers the complete durable listener-mode vocabulary.

@@ -207,7 +207,57 @@ func (request InitializeNetworkIdentityRequest) Validate() error {
 	return nil
 }
 
-// ActivateNetworkDataPlaneRequest grants resolver and shared-listener authority to an existing identity-stage network.
+// ActivateNetworkResolverRequest grants resolver authority to an exact identity-stage network revision.
+type ActivateNetworkResolverRequest struct {
+	ExpectedNetworkRevision domain.Sequence
+	// ConfirmedOwnership is the exact policy-bound ownership result confirmed by the correlated helper exchange.
+	ConfirmedOwnership ownership.Observation
+	// Policy is the complete host-network policy authorized by ConfirmedOwnership.
+	Policy networkpolicy.Policy
+	// Resolver is the helper-confirmed resolver postcondition for the authorized policy.
+	Resolver NetworkSetupProof
+	At       time.Time
+}
+
+// Validate rejects stale-shaped or incomplete resolver activation facts before storage authority is entered.
+func (request ActivateNetworkResolverRequest) Validate() error {
+	if _, err := sequenceToModelInt("expected network revision", request.ExpectedNetworkRevision, false); err != nil {
+		return err
+	}
+	if err := validateStoredTime("network resolver activation time", request.At); err != nil {
+		return err
+	}
+	if err := validateConfirmedNetworkDataPlaneOwnership(request.ConfirmedOwnership); err != nil {
+		return err
+	}
+	if err := request.Policy.Validate(); err != nil {
+		return fmt.Errorf("network resolver policy: %w", err)
+	}
+	policyFingerprint, err := request.Policy.Fingerprint()
+	if err != nil {
+		return fmt.Errorf("fingerprint network resolver policy: %w", err)
+	}
+	if policyFingerprint != request.ConfirmedOwnership.Record.NetworkPolicyFingerprint {
+		return fmt.Errorf("network resolver policy fingerprint does not match confirmed ownership")
+	}
+	if request.Resolver.Component != NetworkSetupComponentResolver {
+		return fmt.Errorf(
+			"network resolver setup proof is %q, expected %q",
+			request.Resolver.Component,
+			NetworkSetupComponentResolver,
+		)
+	}
+	if err := request.Resolver.Validate(); err != nil {
+		return fmt.Errorf("network resolver setup proof: %w", err)
+	}
+	return validateNetworkMutationFactTime(
+		"network resolver proof verification time",
+		request.Resolver.VerifiedAt,
+		request.At,
+	)
+}
+
+// ActivateNetworkDataPlaneRequest grants full shared-listener authority to an existing pre-full network.
 type ActivateNetworkDataPlaneRequest struct {
 	ExpectedNetworkRevision domain.Sequence
 	// ConfirmedOwnership is the exact policy-bound ownership result confirmed by the correlated helper exchange.

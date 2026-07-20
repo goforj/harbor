@@ -27,6 +27,8 @@ const (
 	networkInitializeTestOwnershipMigrationName = "2026_07_19_115139_create_machine_ownership_projections"
 	// networkInitializeTestOwnershipPolicyMigrationName identifies the policy-bound ownership projection upgrade.
 	networkInitializeTestOwnershipPolicyMigrationName = "2026_07_19_150000_add_machine_ownership_network_policy_fingerprint"
+	// networkInitializeTestResolverStageMigrationName identifies the resolver-authority lifecycle upgrade.
+	networkInitializeTestResolverStageMigrationName = "2026_07_20_010000_add_network_resolver_stage"
 )
 
 // TestStoreInitializeNetworkCommitsCompleteAggregate verifies the first write owns one global revision and every hidden host fact.
@@ -860,6 +862,7 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 		networkInitializeTestStageMigrationName,
 		networkInitializeTestOwnershipMigrationName,
 		networkInitializeTestOwnershipPolicyMigrationName,
+		networkInitializeTestResolverStageMigrationName,
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {

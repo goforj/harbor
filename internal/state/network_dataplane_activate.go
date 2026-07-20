@@ -28,7 +28,7 @@ func (err *NetworkDataPlaneActivationConflictError) Error() string {
 	)
 }
 
-// ActivateNetworkDataPlane adds resolver and listener authority to an exact identity-stage network revision.
+// ActivateNetworkDataPlane adds the remaining resolver and listener authority to an exact pre-full network revision.
 func (store *Store) ActivateNetworkDataPlane(
 	ctx context.Context,
 	request ActivateNetworkDataPlaneRequest,
@@ -67,6 +67,10 @@ func (store *Store) ActivateNetworkDataPlane(
 			return err
 		}
 
+		sourceStage := current.Stage
+		var projectedOwnership machineOwnershipProjectionState
+		var setupToInsert []NetworkSetupProof
+		upgradeOwnership := false
 		switch current.Stage {
 		case NetworkStageFull:
 			projectedOwnership, err := readMachineOwnershipProjectionStateInTransaction(tx)
@@ -100,6 +104,37 @@ func (store *Store) ActivateNetworkDataPlane(
 			}
 			result = NetworkMutationResult{Record: current, Replayed: true}
 			return result.Validate()
+		case NetworkStageResolver:
+			if current.Revision != request.ExpectedNetworkRevision {
+				return &NetworkRevisionConflictError{
+					Expected: request.ExpectedNetworkRevision,
+					Actual:   current.Revision,
+				}
+			}
+			projectedOwnership, err = readMachineOwnershipProjectionStateInTransaction(tx)
+			if err != nil {
+				return err
+			}
+			if projectedOwnership.observation.Record.SchemaVersion != ownership.NetworkPolicySchemaVersion {
+				return corruptStateError(
+					"machine ownership projection",
+					fmt.Sprint(projectedOwnership.row.Id),
+					fmt.Errorf("resolver-stage network retains schema-%d ownership", projectedOwnership.observation.Record.SchemaVersion),
+				)
+			}
+			if projectedOwnership.observation != request.ConfirmedOwnership {
+				return &NetworkDataPlaneActivationConflictError{
+					ActualRevision: current.Revision,
+					Difference:     "machine ownership projection",
+				}
+			}
+			if networkDataPlaneResolverProofDifference(before.SetupEvidence, request.Setup[0]) != "" {
+				return &NetworkDataPlaneActivationConflictError{
+					ActualRevision: current.Revision,
+					Difference:     "network resolver proof",
+				}
+			}
+			setupToInsert = request.Setup[1:]
 		case NetworkStageIdentity:
 			if current.Revision != request.ExpectedNetworkRevision {
 				return &NetworkRevisionConflictError{
@@ -107,41 +142,43 @@ func (store *Store) ActivateNetworkDataPlane(
 					Actual:   current.Revision,
 				}
 			}
+			expectedOwnership, err := networkDataPlaneActivationIdentityOwnership(request.ConfirmedOwnership)
+			if err != nil {
+				return err
+			}
+			projectedOwnership, err = readMachineOwnershipProjectionStateInTransaction(tx)
+			if err != nil {
+				return err
+			}
+			if projectedOwnership.observation.Record.SchemaVersion != ownership.IdentitySchemaVersion {
+				return corruptStateError(
+					"machine ownership projection",
+					fmt.Sprint(projectedOwnership.row.Id),
+					fmt.Errorf("identity-stage network retains schema-%d ownership", projectedOwnership.observation.Record.SchemaVersion),
+				)
+			}
+			if projectedOwnership.observation != expectedOwnership {
+				return &NetworkDataPlaneActivationConflictError{
+					ActualRevision: current.Revision,
+					Difference:     "machine ownership projection",
+				}
+			}
+			setupToInsert = request.Setup
+			upgradeOwnership = true
 		default:
 			return corruptStateError("network state", "1", fmt.Errorf("stage %q cannot be activated", current.Stage))
 		}
 		if len(before.Endpoints) != 0 {
 			return corruptStateError(
 				"public endpoint lease",
-				"identity-stage",
-				fmt.Errorf("identity-stage network must not contain endpoint reservations"),
+				string(sourceStage)+"-stage",
+				fmt.Errorf("%s-stage network must not contain endpoint reservations", sourceStage),
 			)
 		}
 		if request.At.Before(current.UpdatedAt) {
 			return &NetworkDataPlaneActivationConflictError{
 				ActualRevision: current.Revision,
 				Difference:     "activation time",
-			}
-		}
-		expectedOwnership, err := networkDataPlaneActivationIdentityOwnership(request.ConfirmedOwnership)
-		if err != nil {
-			return err
-		}
-		projectedOwnership, err := readMachineOwnershipProjectionStateInTransaction(tx)
-		if err != nil {
-			return err
-		}
-		if projectedOwnership.observation.Record.SchemaVersion != ownership.IdentitySchemaVersion {
-			return corruptStateError(
-				"machine ownership projection",
-				fmt.Sprint(projectedOwnership.row.Id),
-				fmt.Errorf("identity-stage network retains schema-%d ownership", projectedOwnership.observation.Record.SchemaVersion),
-			)
-		}
-		if projectedOwnership.observation != expectedOwnership {
-			return &NetworkDataPlaneActivationConflictError{
-				ActualRevision: current.Revision,
-				Difference:     "machine ownership projection",
 			}
 		}
 		if request.At.Before(projectedOwnership.confirmedAt) {
@@ -151,7 +188,7 @@ func (store *Store) ActivateNetworkDataPlane(
 			}
 		}
 
-		if err := insertNetworkDataPlaneActivation(tx, request); err != nil {
+		if err := insertNetworkDataPlaneActivation(tx, setupToInsert, request.Listeners); err != nil {
 			return err
 		}
 		sequence, err := allocateHarborSequence(tx)
@@ -162,7 +199,7 @@ func (store *Store) ActivateNetworkDataPlane(
 			Where(
 				"id = ? AND stage = ? AND revision = ?",
 				networkStateSingletonID,
-				string(NetworkStageIdentity),
+				string(sourceStage),
 				int(request.ExpectedNetworkRevision),
 			).
 			Updates(map[string]any{
@@ -173,13 +210,15 @@ func (store *Store) ActivateNetworkDataPlane(
 		if err := requireOneMutation(updated, "activate network data plane", "1"); err != nil {
 			return err
 		}
-		if err := upgradeMachineOwnershipProjectionInTransaction(
-			tx,
-			projectedOwnership,
-			request.ConfirmedOwnership,
-			request.At,
-		); err != nil {
-			return err
+		if upgradeOwnership {
+			if err := upgradeMachineOwnershipProjectionInTransaction(
+				tx,
+				projectedOwnership,
+				request.ConfirmedOwnership,
+				request.At,
+			); err != nil {
+				return err
+			}
 		}
 
 		persistedRows, err := readNetworkModelRows(tx)
@@ -221,7 +260,7 @@ func (store *Store) ActivateNetworkDataPlane(
 		if !reflect.DeepEqual(persisted, expected) {
 			return corruptStateError("network state", "1", fmt.Errorf("activation readback aggregate differs from its preflighted projection"))
 		}
-		if err := validateNetworkDataPlaneActivationRows(before, persistedRows, request, sequence); err != nil {
+		if err := validateNetworkDataPlaneActivationRows(before, persistedRows, request, setupToInsert, sequence); err != nil {
 			return err
 		}
 		finalHighWater, err := validateRetainedSequenceBounds(tx)
@@ -362,25 +401,18 @@ func cloneActivateNetworkDataPlaneRequest(request ActivateNetworkDataPlaneReques
 	return request
 }
 
-// insertNetworkDataPlaneActivation appends only the authority absent from an identity-stage aggregate.
-func insertNetworkDataPlaneActivation(tx *gorm.DB, request ActivateNetworkDataPlaneRequest) error {
-	for _, proof := range request.Setup {
-		row := models.NetworkSetupEvidence{
-			NetworkStateId: networkStateSingletonID,
-			Component:      string(proof.Component),
-			Evidence:       proof.Evidence,
-			Generation:     int(proof.Generation),
-			VerifiedAt:     proof.VerifiedAt,
-		}
-		if err := requireOneCreate(
-			tx.Create(&row),
-			"create network setup evidence",
-			string(proof.Component),
-		); err != nil {
+// insertNetworkDataPlaneActivation appends only the authority absent from the current pre-full aggregate.
+func insertNetworkDataPlaneActivation(
+	tx *gorm.DB,
+	setup []NetworkSetupProof,
+	listeners SharedListenerReservations,
+) error {
+	for _, proof := range setup {
+		if err := insertNetworkSetupProof(tx, proof); err != nil {
 			return err
 		}
 	}
-	for _, listener := range networkInitializationListeners(request.Listeners) {
+	for _, listener := range networkInitializationListeners(listeners) {
 		reservation := listener.reservation
 		row := models.NetworkSharedListener{
 			NetworkStateId:    networkStateSingletonID,
@@ -442,11 +474,32 @@ func networkDataPlaneSetupDifference(rows []models.NetworkSetupEvidence, setup [
 	return ""
 }
 
+// networkDataPlaneResolverProofDifference requires the full transition to reuse the exact persisted resolver postcondition.
+func networkDataPlaneResolverProofDifference(rows []models.NetworkSetupEvidence, expected NetworkSetupProof) string {
+	if len(rows) != 3 {
+		return "network resolver proof"
+	}
+	for _, row := range rows {
+		if row.Component != string(NetworkSetupComponentResolver) {
+			continue
+		}
+		if row.NetworkStateId != networkStateSingletonID ||
+			row.Evidence != expected.Evidence ||
+			row.Generation != int(expected.Generation) ||
+			!row.VerifiedAt.Equal(expected.VerifiedAt) {
+			return "network resolver proof"
+		}
+		return ""
+	}
+	return "network resolver proof"
+}
+
 // validateNetworkDataPlaneActivationRows proves every pre-existing row remained byte-for-byte stable.
 func validateNetworkDataPlaneActivationRows(
 	before networkModelRows,
 	after networkModelRows,
 	request ActivateNetworkDataPlaneRequest,
+	setupToInsert []NetworkSetupProof,
 	sequence domain.Sequence,
 ) error {
 	if len(before.States) != 1 || len(after.States) != 1 {
@@ -476,7 +529,7 @@ func validateNetworkDataPlaneActivationRows(
 			return corruptStateError("network state", "1", fmt.Errorf("activation changed %s", rows.name))
 		}
 	}
-	if err := validateNetworkDataPlaneSetupRows(before.SetupEvidence, after.SetupEvidence, request.Setup); err != nil {
+	if err := validateNetworkDataPlaneSetupRows(before.SetupEvidence, after.SetupEvidence, setupToInsert); err != nil {
 		return err
 	}
 	return validateNetworkDataPlaneListenerRows(before.Listeners, after.Listeners, request.Listeners)
@@ -488,7 +541,7 @@ func validateNetworkDataPlaneSetupRows(
 	after []models.NetworkSetupEvidence,
 	setup []NetworkSetupProof,
 ) error {
-	if len(before) != 2 || len(after) != len(before)+len(setup) {
+	if (len(before) != 2 && len(before) != 3) || len(after) != len(before)+len(setup) {
 		return corruptStateError("network setup evidence", "activation", fmt.Errorf("activation changed proof cardinality unexpectedly"))
 	}
 	afterByComponent := make(map[string]models.NetworkSetupEvidence, len(after))
@@ -497,7 +550,7 @@ func validateNetworkDataPlaneSetupRows(
 	}
 	for _, row := range before {
 		if persisted, exists := afterByComponent[row.Component]; !exists || !reflect.DeepEqual(persisted, row) {
-			return corruptStateError("network setup evidence", row.Component, fmt.Errorf("identity proof changed during activation"))
+			return corruptStateError("network setup evidence", row.Component, fmt.Errorf("existing proof changed during activation"))
 		}
 	}
 	for _, proof := range setup {

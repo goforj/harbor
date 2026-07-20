@@ -273,7 +273,8 @@ func requireMachineOwnershipProjectionNetworkRoot(
 		return err
 	}
 	expectedSchemaVersion := ownership.IdentitySchemaVersion
-	if NetworkStage(validatedRoot.Stage) == NetworkStageFull {
+	if NetworkStage(validatedRoot.Stage) == NetworkStageResolver ||
+		NetworkStage(validatedRoot.Stage) == NetworkStageFull {
 		expectedSchemaVersion = ownership.NetworkPolicySchemaVersion
 	}
 	if record.SchemaVersion != expectedSchemaVersion {
