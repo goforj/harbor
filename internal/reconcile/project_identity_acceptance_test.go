@@ -121,6 +121,29 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 	}
 }
 
+// TestGeneratedMySQLFixturesRender proves the pinned GoForj generator accepts Harbor's Compose-capable fixture shape without starting Docker.
+func TestGeneratedMySQLFixturesRender(t *testing.T) {
+	forj := loadProjectIdentityAcceptanceForj(t)
+	ctx, cancel := context.WithTimeout(t.Context(), projectIdentityAcceptanceTimeout)
+	defer cancel()
+	workspace, err := goforjproject.Render(ctx, goforjproject.Request{
+		ForjExecutable: forj,
+		GoForjVersion:  projectIdentityAcceptanceGoForjVersion,
+		Projects: []goforjproject.Spec{
+			{Name: "Harbor MySQL Orders", Module: "example.test/harbor/mysql-orders", Port: projectIdentityAcceptancePort, MySQL: true},
+			{Name: "Harbor MySQL Billing", Module: "example.test/harbor/mysql-billing", Port: projectIdentityAcceptancePort, MySQL: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render MySQL generated projects: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := workspace.Close(); closeErr != nil {
+			t.Errorf("remove MySQL generated project workspace: %v", closeErr)
+		}
+	})
+}
+
 // projectIdentityAcceptanceConfiguration contains validated native test inputs supplied by the hosted worker.
 type projectIdentityAcceptanceConfiguration struct {
 	forj      string
@@ -131,17 +154,7 @@ type projectIdentityAcceptanceConfiguration struct {
 // loadProjectIdentityAcceptanceConfiguration rejects missing or ambiguous CI authority before rendering projects.
 func loadProjectIdentityAcceptanceConfiguration(t *testing.T) projectIdentityAcceptanceConfiguration {
 	t.Helper()
-	forj := strings.TrimSpace(os.Getenv(projectIdentityAcceptanceForjEnvironment))
-	if forj == "" || !filepath.IsAbs(forj) || filepath.Clean(forj) != forj {
-		t.Fatalf("%s must name an absolute clean forj binary", projectIdentityAcceptanceForjEnvironment)
-	}
-	wantExecutableName := "forj"
-	if runtime.GOOS == "windows" {
-		wantExecutableName += ".exe"
-	}
-	if filepath.Base(forj) != wantExecutableName {
-		t.Fatalf("%s basename = %q, want %q for lifecycle PATH resolution", projectIdentityAcceptanceForjEnvironment, filepath.Base(forj), wantExecutableName)
-	}
+	forj := loadProjectIdentityAcceptanceForj(t)
 	addresses := parseProjectIdentityAcceptanceAddresses(t, os.Getenv(projectIdentityAcceptanceAddressesEnvironment))
 	if len(addresses) != 3 {
 		t.Fatalf("%s contains %d addresses, want exactly three", projectIdentityAcceptanceAddressesEnvironment, len(addresses))
@@ -160,6 +173,23 @@ func loadProjectIdentityAcceptanceConfiguration(t *testing.T) projectIdentityAcc
 		}
 	}
 	return projectIdentityAcceptanceConfiguration{forj: forj, prefix: prefix, addresses: addresses}
+}
+
+// loadProjectIdentityAcceptanceForj validates the pinned direct CLI path shared by generated-project acceptance tests.
+func loadProjectIdentityAcceptanceForj(t *testing.T) string {
+	t.Helper()
+	forj := strings.TrimSpace(os.Getenv(projectIdentityAcceptanceForjEnvironment))
+	if forj == "" || !filepath.IsAbs(forj) || filepath.Clean(forj) != forj {
+		t.Fatalf("%s must name an absolute clean forj binary", projectIdentityAcceptanceForjEnvironment)
+	}
+	wantExecutableName := "forj"
+	if runtime.GOOS == "windows" {
+		wantExecutableName += ".exe"
+	}
+	if filepath.Base(forj) != wantExecutableName {
+		t.Fatalf("%s basename = %q, want %q for lifecycle PATH resolution", projectIdentityAcceptanceForjEnvironment, filepath.Base(forj), wantExecutableName)
+	}
+	return forj
 }
 
 // parseProjectIdentityAcceptanceAddresses requires a canonical ordered set of distinct IPv4 loopback identities.

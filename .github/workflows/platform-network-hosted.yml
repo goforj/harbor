@@ -191,8 +191,8 @@ jobs:
       - name: Verify explicit identity setup
         run: go test -tags=platformproof ./internal/platformproof -run '^TestPlatformProofAddressesAreExplicit$' -count=1
 
-      - name: Prove generated projects share port 3000
-        run: go test -tags=projectidentityacceptance ./internal/reconcile -run '^TestGeneratedProjectsSharePortAcrossDistinctLoopbacks$' -count=1 -timeout=10m
+      - name: Render MySQL-capable generated fixtures and prove shared port 3000
+        run: go test -tags=projectidentityacceptance ./internal/reconcile -run '^(TestGeneratedMySQLFixturesRender|TestGeneratedProjectsSharePortAcrossDistinctLoopbacks)$' -count=1 -timeout=10m
 
       - name: Record project identity evidence
         run: go run ./cmd/platformproof project-identity --addresses "${{ env.HARBOR_PROOF_ADDRESSES }}" --port "${{ env.HARBOR_PROOF_PORT }}" > project-identity.json
