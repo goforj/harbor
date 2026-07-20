@@ -22,6 +22,7 @@ type MethodMetadata struct {
 	ConfirmProjectRuntimeRepair string `json:"confirm_project_runtime_repair"`
 	InspectProjectRuntimeRepair string `json:"inspect_project_runtime_repair"`
 	OpenResource                string `json:"open_resource"`
+	OpenTerminalURL             string `json:"open_terminal_url"`
 	ResourceIconURL             string `json:"resource_icon_url"`
 	ProjectActivity             string `json:"project_activity"`
 	ServiceLogs                 string `json:"service_logs"`
@@ -90,6 +91,7 @@ func Fixture() Document {
 			ConfirmProjectRuntimeRepair: desktopwire.MethodConfirmProjectRuntimeRepair,
 			InspectProjectRuntimeRepair: desktopwire.MethodInspectProjectRuntimeRepair,
 			OpenResource:                desktopwire.MethodOpenResource,
+			OpenTerminalURL:             desktopwire.MethodOpenTerminalURL,
 			ResourceIconURL:             desktopwire.MethodResourceIconURL,
 			ProjectActivity:             desktopwire.MethodProjectActivity,
 			ServiceLogs:                 desktopwire.MethodServiceLogs,
@@ -411,6 +413,7 @@ func (document Document) Validate() error {
 		desktopwire.MethodConfirmProjectRuntimeRepair: document.Methods.ConfirmProjectRuntimeRepair,
 		desktopwire.MethodInspectProjectRuntimeRepair: document.Methods.InspectProjectRuntimeRepair,
 		desktopwire.MethodOpenResource:                document.Methods.OpenResource,
+		desktopwire.MethodOpenTerminalURL:             document.Methods.OpenTerminalURL,
 		desktopwire.MethodResourceIconURL:             document.Methods.ResourceIconURL,
 		desktopwire.MethodProjectActivity:             document.Methods.ProjectActivity,
 		desktopwire.MethodServiceLogs:                 document.Methods.ServiceLogs,

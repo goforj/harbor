@@ -23,6 +23,7 @@ function createUnavailableBridge(): HarborBridge {
     waitProjectActivity: unavailable,
     waitServiceLogs: unavailable,
     openResource: unavailable,
+    openTerminalURL: unavailable,
     getResourceIconURL: unavailable,
     removeProject: unavailable,
     setupNetwork: unavailable,

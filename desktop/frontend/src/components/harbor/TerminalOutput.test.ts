@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
+import { harborBridge } from '@/bridge'
 import TerminalOutput from './TerminalOutput.vue'
 
 describe('TerminalOutput', () => {
@@ -59,5 +60,9 @@ describe('TerminalOutput', () => {
     expect(link.attributes('href')).toBe('https://orders.test/docs')
     expect(link.attributes('rel')).toBe('noopener noreferrer')
     expect(link.text()).toBe('https://orders.test/docs')
+
+    const openTerminalURL = vi.spyOn(harborBridge, 'openTerminalURL').mockResolvedValueOnce()
+    await link.trigger('click')
+    expect(openTerminalURL).toHaveBeenCalledWith('https://orders.test/docs')
   })
 })

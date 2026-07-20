@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -1172,6 +1173,16 @@ func (a *App) OpenResource(projectID string, resourceID string) error {
 	}
 
 	a.open(ctx, resource.URL)
+	return nil
+}
+
+// OpenTerminalURL opens one safe absolute web URL selected from terminal output.
+func (a *App) OpenTerminalURL(rawURL string) error {
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsed == nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return errors.New("terminal URL must be an absolute credential-free HTTP or HTTPS URL")
+	}
+	a.open(context.Background(), parsed.String())
 	return nil
 }
 

@@ -7,6 +7,7 @@ export interface HarborWireFixture {
     confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair'
     inspect_project_runtime_repair: 'InspectProjectRuntimeRepair'
     open_resource: 'OpenResource'
+    open_terminal_url: 'OpenTerminalURL'
     resource_icon_url: 'ResourceIconURL'
     project_activity: 'ProjectActivity'
     service_logs: 'ServiceLogs'
@@ -61,6 +62,7 @@ export interface HarborBridge {
   waitProjectActivity(projectId: string, sessionId: string, cursor: number, waitMilliseconds: number): Promise<ProjectActivity>
   waitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): Promise<ServiceLogs>
   openResource(projectId: string, resourceId: string): Promise<void>
+  openTerminalURL(url: string): Promise<void>
   getResourceIconURL(projectId: string, resourceId: string): Promise<string>
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
   setupNetwork(): Promise<NetworkSetupOperation>

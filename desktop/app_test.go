@@ -3071,6 +3071,30 @@ func TestOpenResourceRejectsInvalidAndMissingIdentities(t *testing.T) {
 	}
 }
 
+// TestOpenTerminalURLRestrictsLogLinksToSafeWebTargets prevents terminal output from selecting arbitrary native actions.
+func TestOpenTerminalURLRestrictsLogLinksToSafeWebTargets(t *testing.T) {
+	t.Parallel()
+
+	var opened string
+	app := newApp(
+		func(context.Context, control.ClientConfig) (controlClient, error) { return newFakeControlClient(), nil },
+		func(context.Context, string, ...interface{}) {},
+		func(_ context.Context, target string) { opened = target },
+		func(context.Context, time.Duration) bool { return false },
+	)
+	if err := app.OpenTerminalURL("https://orders.example.test/docs"); err != nil {
+		t.Fatalf("OpenTerminalURL() error = %v", err)
+	}
+	if opened != "https://orders.example.test/docs" {
+		t.Fatalf("opened URL = %q", opened)
+	}
+	for _, target := range []string{"", "ftp://orders.example.test", "https://user:password@orders.example.test"} {
+		if err := app.OpenTerminalURL(target); err == nil {
+			t.Fatalf("OpenTerminalURL(%q) error = nil", target)
+		}
+	}
+}
+
 // TestEmitSnapshotRejectsInvalidUnchangedAndStaleState prevents polling from repeatedly publishing one durable revision.
 func TestEmitSnapshotRejectsInvalidUnchangedAndStaleState(t *testing.T) {
 	t.Parallel()

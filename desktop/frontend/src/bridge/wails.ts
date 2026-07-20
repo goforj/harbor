@@ -14,6 +14,7 @@ interface WailsRuntime extends WailsRuntimeEvents {
 type ReadyWailsRuntime = Partial<WailsRuntime> & WailsRuntimeEvents
 
 interface AdditiveWailsAppBindings {
+  OpenTerminalURL(url: string): ReturnType<HarborBridge['openTerminalURL']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
   ResourceIconURL(projectId: string, resourceId: string): ReturnType<HarborBridge['getResourceIconURL']>
   WaitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): ReturnType<HarborBridge['waitServiceLogs']>
@@ -63,6 +64,7 @@ export function createWailsBridge(): HarborBridge {
   const status = app?.Status
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
+  const openTerminalURL = app?.OpenTerminalURL
   const resourceIconURL = app?.ResourceIconURL
   const projectActivity = app?.ProjectActivity
   const serviceLogs = app?.ServiceLogs
@@ -104,6 +106,9 @@ export function createWailsBridge(): HarborBridge {
       ? (projectId, sessionId, serviceId, cursor, waitMilliseconds) => waitServiceLogs(projectId, sessionId, serviceId, cursor, waitMilliseconds)
       : () => Promise.reject(new Error('Service log bindings are not available in this desktop build.')),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),
+    openTerminalURL: typeof openTerminalURL === 'function'
+      ? (url) => openTerminalURL(url)
+      : () => Promise.reject(new Error('Terminal link bindings are not available in this desktop build.')),
     getResourceIconURL: (projectId, resourceId) => resourceIconURL(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),
     setupNetwork: () => setupNetwork(),

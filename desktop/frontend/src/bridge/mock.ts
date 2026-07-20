@@ -218,6 +218,9 @@ export function createMockBridge(): HarborBridge {
       }
       window.open(resource.url, '_blank', 'noopener,noreferrer')
     },
+    async openTerminalURL(url) {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    },
     async getResourceIconURL() {
       return ''
     },
