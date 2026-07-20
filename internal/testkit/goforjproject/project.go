@@ -44,6 +44,8 @@ type Spec struct {
 	Module string
 	// Port is the application HTTP port advertised to Harbor project discovery.
 	Port uint16
+	// MySQL requests GoForj's Docker-backed MySQL component for a generated Compose acceptance fixture.
+	MySQL bool
 }
 
 // Project records validated paths and identity for one rendered application.
@@ -353,10 +355,19 @@ func enclosingGoModule(location string) (string, bool, error) {
 
 // renderConfiguration emits a complete non-interactive generator and forj-dev contract.
 func renderConfiguration(specification Spec, version string) []byte {
+	components := []string{"cli", "web_api"}
+	if specification.MySQL {
+		components = append(components, "docker", "database_mysql")
+	}
+	componentLines := make([]string, 0, len(components))
+	for _, component := range components {
+		componentLines = append(componentLines, "    - "+component)
+	}
 	return []byte(fmt.Sprintf(
-		"project_name: %s\nmodule_name: %s\ndev:\n  apps:\n    app: true\nrender:\n  components:\n    - cli\n    - web_api\n  help_format: framework\n  goforj_version: %s\n",
+		"project_name: %s\nmodule_name: %s\ndev:\n  apps:\n    app: true\nrender:\n  components:\n%s\n  help_format: framework\n  goforj_version: %s\n",
 		strconv.Quote(specification.Name),
 		strconv.Quote(specification.Module),
+		strings.Join(componentLines, "\n"),
 		strconv.Quote(version),
 	))
 }

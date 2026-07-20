@@ -185,6 +185,19 @@ func TestRenderConfigurationSelectsTheGeneratedAppRuntime(t *testing.T) {
 	}
 }
 
+// TestRenderConfigurationIncludesGoForjMySQLComposePrerequisites keeps generated Docker acceptance fixtures inside GoForj's component model.
+func TestRenderConfigurationIncludesGoForjMySQLComposePrerequisites(t *testing.T) {
+	configuration := string(renderConfiguration(
+		Spec{Name: "Harbor Orders", Module: "example.test/harbor/orders", Port: 3000, MySQL: true},
+		"0.19.0",
+	))
+	for _, component := range []string{"    - cli", "    - web_api", "    - docker", "    - database_mysql"} {
+		if !strings.Contains(configuration, component+"\n") {
+			t.Fatalf("render configuration omits %q:\n%s", component, configuration)
+		}
+	}
+}
+
 // TestMatchesProjectEnvironmentAllowsGeneratedSecretsButRejectsShadowing verifies renderer-owned additions cannot change launch inputs.
 func TestMatchesProjectEnvironmentAllowsGeneratedSecretsButRejectsShadowing(t *testing.T) {
 	expected := []byte("APP_NAME=Orders\nAPI_HTTP_PORT=3000\n")

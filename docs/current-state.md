@@ -51,7 +51,7 @@ The daemon-owned container adapter currently implements local list, inspect, and
 | `internal/network` | DNS, ingress, TCP relay, address identity, and data-plane primitives. |
 | `internal/platform` | Native loopback, conflict detection, resolver, user-path, and helper adapters. |
 | `internal/trust` | Local CA and certificate material primitives; native trust-store installation is not complete. |
-| `internal/testkit/goforjproject` | Headless generated-project fixtures used by native hosted proofs. |
+| `internal/testkit/goforjproject` | Headless generated-project fixtures used by native hosted proofs, including an explicit GoForj MySQL/Compose render option. |
 | `migrations/harbord/default` | Embedded migrations for the named `harbord` SQLite connection. |
 
 There are two Go modules and both must be validated: the root module and `desktop`.
