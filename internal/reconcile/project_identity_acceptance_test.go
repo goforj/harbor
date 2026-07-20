@@ -319,7 +319,26 @@ func waitForProjectIdentityAcceptanceState(
 		}
 		operation, operationErr := journal.OperationByIntent(ctx, intentID)
 		if operationErr == nil && (operation.Operation.State == domain.OperationFailed || operation.Operation.State == domain.OperationCancelled) {
-			t.Fatalf("project %q reached %q while waiting for %q: %#v", projectID, operation.Operation.State, want, operation.Operation)
+			if operation.Operation.Problem != nil {
+				t.Fatalf(
+					"project %q reached %q while waiting for %q: operation %q phase %q problem %q: %s",
+					projectID,
+					operation.Operation.State,
+					want,
+					operation.Operation.ID,
+					operation.Operation.Phase,
+					operation.Operation.Problem.Code,
+					operation.Operation.Problem.Message,
+				)
+			}
+			t.Fatalf(
+				"project %q reached %q while waiting for %q: operation %q phase %q without a problem",
+				projectID,
+				operation.Operation.State,
+				want,
+				operation.Operation.ID,
+				operation.Operation.Phase,
+			)
 		}
 		select {
 		case <-ctx.Done():
