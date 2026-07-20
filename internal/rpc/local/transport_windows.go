@@ -13,7 +13,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const windowsSystemUserID = "S-1-5-18"
+const (
+	windowsSystemUserID  = "S-1-5-18"
+	windowsPipeAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+)
 
 // windowsPeerReader extracts the client or server process identity attached to a named pipe.
 type windowsPeerReader func(net.Conn) (PeerIdentity, error)
@@ -69,6 +72,11 @@ func windowsSecurityDescriptor(userID string) (string, error) {
 	}
 
 	return fmt.Sprintf("D:P(A;;GA;;;%s)(A;;GA;;;%s)", canonicalUserID, windowsSystemUserID), nil
+}
+
+// windowsPipeAccessIsFull accepts the generic grant and the object-specific mask Windows materializes from it.
+func windowsPipeAccessIsFull(mask uint32) bool {
+	return mask == uint32(windows.GENERIC_ALL) || mask == uint32(windowsPipeAllAccess)
 }
 
 // dial connects to the current user's named pipe and verifies that its server process has the same SID.

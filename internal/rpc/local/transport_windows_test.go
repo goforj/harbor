@@ -172,7 +172,7 @@ func assertWindowsPipeDACL(t *testing.T, connection Conn, userID string) {
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			t.Fatalf("live named-pipe ACE %d type = %d, want allow", index, ace.Header.AceType)
 		}
-		if ace.Mask != windows.GENERIC_ALL {
+		if !windowsPipeAccessIsFull(uint32(ace.Mask)) {
 			t.Fatalf("live named-pipe ACE %d mask = %#x, want generic all", index, ace.Mask)
 		}
 

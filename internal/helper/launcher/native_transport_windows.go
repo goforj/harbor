@@ -254,6 +254,11 @@ func validInstalledWindowsHelperAccess(principal string, mask uint32) bool {
 	return mask == windowsHelperFileAllAccess || mask == windows.GENERIC_ALL
 }
 
+// validWindowsInvocationPipeAccess accepts the generic grant and its object-specific kernel expansion.
+func validWindowsInvocationPipeAccess(mask uint32) bool {
+	return mask == windowsHelperFileAllAccess || mask == uint32(windows.GENERIC_ALL)
+}
+
 // verifyInstalledWindowsHelperSignature validates the retained executable without UI or network retrieval.
 func verifyInstalledWindowsHelperSignature(handle windows.Handle, path *uint16) error {
 	fileInformation := &windows.WinTrustFileInfo{

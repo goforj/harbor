@@ -269,7 +269,7 @@ func assertNativeWindowsInvocationPipeSecurity(t *testing.T, handle windows.Hand
 		if err := windows.GetAce(dacl, index, &ace); err != nil {
 			t.Fatalf("read native Windows invocation pipe ACE %d: %v", index, err)
 		}
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != windows.GENERIC_ALL {
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || !validWindowsInvocationPipeAccess(uint32(ace.Mask)) {
 			t.Fatalf("native Windows invocation pipe ACE %d is not an exact direct full-access grant", index)
 		}
 		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()

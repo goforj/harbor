@@ -12,7 +12,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const windowsInvocationSystemSID = "S-1-5-18"
+const (
+	windowsInvocationSystemSID     = "S-1-5-18"
+	windowsInvocationPipeAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+)
 
 // windowsHelperPipeConnection preserves message continuation while treating the launcher's zero message as EOF.
 type windowsHelperPipeConnection struct {
@@ -158,7 +161,7 @@ func validateWindowsInvocationPipeSecurity(pipe windows.Handle, expectedUserID s
 		if err := windows.GetAce(dacl, index, &ace); err != nil {
 			return fmt.Errorf("read Windows helper invocation pipe DACL entry %d: %w", index, err)
 		}
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != windows.GENERIC_ALL {
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || !windowsInvocationPipeAccessIsFull(uint32(ace.Mask)) {
 			return fmt.Errorf("Windows helper invocation pipe DACL entry %d is not an exact full-access grant", index)
 		}
 		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
@@ -174,6 +177,11 @@ func validateWindowsInvocationPipeSecurity(pipe windows.Handle, expectedUserID s
 		}
 	}
 	return nil
+}
+
+// windowsInvocationPipeAccessIsFull accepts the generic grant and Windows's mapped kernel form.
+func windowsInvocationPipeAccessIsFull(mask uint32) bool {
+	return mask == uint32(windows.GENERIC_ALL) || mask == uint32(windowsInvocationPipeAllAccess)
 }
 
 var _ io.ReadWriteCloser = (*windowsHelperPipeConnection)(nil)
