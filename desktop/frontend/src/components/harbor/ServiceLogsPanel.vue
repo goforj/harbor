@@ -12,6 +12,7 @@ const props = defineProps<{
   projectId: string
   serviceId: string
   serviceName: string
+  fill?: boolean
 }>()
 
 const store = useHarborStore()
@@ -99,7 +100,7 @@ function clearOutput() {
 </script>
 
 <template>
-  <Card class="gap-0 overflow-hidden rounded-lg py-0 shadow-none">
+  <Card :class="['gap-0 overflow-hidden rounded-lg py-0 shadow-none', { 'flex min-h-0 flex-1 flex-col': fill }]">
     <CardHeader class="flex-row items-start justify-between gap-3 border-b px-4 py-3">
       <div class="min-w-0">
         <div class="flex items-center gap-2">
@@ -138,12 +139,12 @@ function clearOutput() {
         </Button>
       </div>
     </CardHeader>
-    <CardContent class="p-0">
+    <CardContent :class="['p-0', { 'flex min-h-0 flex-1 flex-col': fill }]">
       <p v-if="error" class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{{ error }}</p>
       <p v-if="truncated" class="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">Earlier logs are no longer retained. The live stream continues from the newest visible output.</p>
       <div
         ref="viewport"
-        class="max-h-[30rem] min-h-72 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"
+        :class="fill ? 'min-h-0 flex-1 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none' : 'max-h-[30rem] min-h-72 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none'"
         tabindex="0"
         :aria-label="`${serviceName} service logs`"
         @scroll="updateFollow"

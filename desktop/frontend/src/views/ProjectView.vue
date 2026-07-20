@@ -17,7 +17,6 @@ import {
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
-import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -94,9 +93,6 @@ const currentProjectOperation = computed(() => {
   return undefined
 })
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
-const selectedServiceResources = computed(() => project.value?.resources.filter((resource) =>
-  resource.owner.kind === 'service' && resource.owner.service_id === selectedServiceId.value,
-) ?? [])
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
@@ -407,7 +403,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
-        <div :class="selectedDetailTab === 'output' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
+        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <Alert v-if="lifecycleError" variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ recoveryRequired ? 'Project recovery required' : 'Project action failed' }}</AlertTitle>
@@ -517,8 +513,8 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </Empty>
         </TabsContent>
 
-        <TabsContent value="services" class="m-0 space-y-5">
-          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="-mx-5 -mt-5 gap-5 lg:-mx-7">
+        <TabsContent value="services" class="m-0 flex min-h-0 flex-1 flex-col">
+          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="-mx-5 -mt-5 flex min-h-0 flex-1 flex-col gap-5 lg:-mx-7">
             <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
               <TabsTrigger
                 v-for="service in project.services"
@@ -544,22 +540,18 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               v-for="service in project.services"
               :key="service.id"
               :value="service.id"
-              class="m-0 space-y-5 px-5 lg:px-7"
+              class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7"
             >
-              <section aria-label="Selected service summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
-                <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Status</p><p class="mt-1"><StatusBadge :status="service.state" /></p></div>
-                <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium"><ServiceOwnership :owner="service.owner" /></p></div>
-                <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Selection</p><p class="mt-1 text-sm font-medium capitalize">{{ service.selection }}</p></div>
-                <div class="border-t p-4 sm:border-t-0"><p class="text-xs text-muted-foreground">Resources</p><p class="mt-1 text-sm font-medium">{{ selectedServiceResources.length }}</p></div>
-              </section>
-
               <ServiceLogsPanel
                 v-if="service.owner === 'compose'"
                 :project-id="project.id"
                 :service-id="service.id"
                 :service-name="service.name"
+                fill
               />
-              <p v-else class="rounded-lg border px-4 py-3 text-xs text-muted-foreground">Logs for this external service are managed outside Harbor.</p>
+              <Empty v-else class="min-h-0 flex-1 rounded-lg border">
+                <EmptyHeader><EmptyTitle>External service</EmptyTitle><EmptyDescription>Logs for this service are managed outside Harbor.</EmptyDescription></EmptyHeader>
+              </Empty>
             </TabsContent>
           </Tabs>
           <Empty v-else class="min-h-64 rounded-lg border">
