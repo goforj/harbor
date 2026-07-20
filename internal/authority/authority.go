@@ -287,12 +287,14 @@ func publicControlSnapshot(runtimeState state.RuntimeState, routes httpRouteObse
 	}
 	for projectIndex := range snapshot.Projects {
 		project := &snapshot.Projects[projectIndex]
-		expectedHost := project.Slug + ".test"
 		for resourceIndex := range project.Resources {
 			resource := &project.Resources[resourceIndex]
 			key := state.EndpointReservationKey{ProjectID: project.ID, EndpointID: string(resource.ID)}
 			endpoint, found := endpoints[key]
-			if !found || endpoint.Host != expectedHost {
+			if !found {
+				continue
+			}
+			if resource.ID == "app-http" && endpoint.Host != project.Slug+".test" {
 				continue
 			}
 			upstream, ok := canonicalPrivateHTTPOrigin(resource.URL)

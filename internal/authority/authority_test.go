@@ -507,6 +507,44 @@ func TestAuthoritySnapshotProjectsOnlyExactLiveFullStageRoutes(t *testing.T) {
 	}
 }
 
+// TestAuthoritySnapshotProjectsReservedServiceResourceRoute verifies public projection follows durable endpoint identity rather than a project-only host convention.
+func TestAuthoritySnapshotProjectsReservedServiceResourceRoute(t *testing.T) {
+	runtimeState := authorityRouteRuntimeState()
+	project := &runtimeState.Snapshot.Projects[0]
+	project.Services = []domain.ServiceSnapshot{{
+		ID: "mysql", Name: "MySQL", Kind: "compose", State: domain.EntityReady,
+		Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected,
+	}}
+	project.Resources = append(project.Resources, domain.ResourceSnapshot{
+		ID: "mysql-admin", Name: "MySQL Admin", Kind: "dashboard",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: "mysql"},
+		URL:   "http://127.77.0.10:8080",
+	})
+	runtimeState.Network.Reservations.Endpoints = append([]state.EndpointReservation{{
+		Key:      state.EndpointReservationKey{ProjectID: project.ID, EndpointID: "mysql-admin"},
+		Protocol: state.EndpointProtocolHTTP, Host: "mysql.orders.test",
+		Public: runtimeState.Network.Reservations.Listeners.HTTPS.Advertised, Generation: 1,
+	}}, runtimeState.Network.Reservations.Endpoints...)
+	observer := httpRouteObserverFunc(func(host string, upstream netip.AddrPort) bool {
+		return (host == "orders.test" && upstream == netip.MustParseAddrPort("127.77.0.10:3000")) ||
+			(host == "mysql.orders.test" && upstream == netip.MustParseAddrPort("127.77.0.10:8080"))
+	})
+	authority := newAuthority(&recordingStore{runtimeState: runtimeState}, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), observer)
+
+	snapshot, err := authority.Snapshot(t.Context(), control.Caller{})
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	resources := snapshot.Projects[0].Resources
+	urls := make(map[domain.ResourceID]string, len(resources))
+	for _, resource := range resources {
+		urls[resource.ID] = resource.URL
+	}
+	if urls["app-http"] != "https://orders.test" || urls["mysql-admin"] != "https://mysql.orders.test" {
+		t.Fatalf("project resource URLs = %#v, want both reserved live routes", urls)
+	}
+}
+
 // TestAuthoritySupportsConcurrentReads verifies status and snapshot calls share no mutable response state.
 func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 	const readers = 64

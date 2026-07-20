@@ -221,66 +221,27 @@ func desiredHTTPStateFromRuntimeState(runtimeState state.RuntimeState) (dataplan
 			primaryAddresses[lease.Key.ProjectID] = lease.Address.Unmap()
 		}
 	}
-	reservations := make(map[domain.ProjectID]state.EndpointReservation)
+	reservations := make(map[domain.ProjectID][]state.EndpointReservation)
 	for _, reservation := range runtimeState.Network.Reservations.Endpoints {
-		if reservation.Key.EndpointID == string(appHTTPResourceID) {
-			reservations[reservation.Key.ProjectID] = reservation
+		if reservation.Protocol == state.EndpointProtocolHTTP {
+			reservations[reservation.Key.ProjectID] = append(reservations[reservation.Key.ProjectID], reservation)
 		}
 	}
 
-	routes := make([]dataplane.HTTPRoute, 0, len(runtimeState.Snapshot.Projects))
+	routes := make([]dataplane.HTTPRoute, 0, len(runtimeState.Network.Reservations.Endpoints))
 	for _, project := range runtimeState.Snapshot.Projects {
 		if project.State != domain.ProjectReady {
 			continue
-		}
-		resource, app, err := readyAppHTTPResource(project)
-		if err != nil {
-			return dataplane.DesiredState{}, fmt.Errorf("derive HTTP route for project %q: %w", project.ID, err)
-		}
-		if !app.Active || !app.Required || app.State != domain.EntityReady {
-			return dataplane.DesiredState{}, fmt.Errorf(
-				"derive HTTP route for project %q: App %q is not ready, active, and required",
-				project.ID,
-				app.ID,
-			)
-		}
-		reservation, exists := reservations[project.ID]
-		if !exists {
-			return dataplane.DesiredState{}, fmt.Errorf("derive HTTP route for project %q: app-http reservation is missing", project.ID)
-		}
-		if reservation.Protocol != state.EndpointProtocolHTTP {
-			return dataplane.DesiredState{}, fmt.Errorf("derive HTTP route for project %q: app-http reservation is not HTTP", project.ID)
-		}
-		host := project.Slug + ".test"
-		if reservation.Host != host {
-			return dataplane.DesiredState{}, fmt.Errorf(
-				"derive HTTP route for project %q: app-http host %q must equal %q",
-				project.ID,
-				reservation.Host,
-				host,
-			)
-		}
-		upstream, err := canonicalHTTPUpstream(resource.URL)
-		if err != nil {
-			return dataplane.DesiredState{}, fmt.Errorf("derive HTTP route for project %q: resource app-http: %w", project.ID, err)
 		}
 		primary, exists := primaryAddresses[project.ID]
 		if !exists {
 			return dataplane.DesiredState{}, fmt.Errorf("derive HTTP route for project %q: primary lease is missing", project.ID)
 		}
-		if upstream.Addr() != primary {
-			return dataplane.DesiredState{}, fmt.Errorf(
-				"derive HTTP route for project %q: upstream address %s does not match primary lease %s",
-				project.ID,
-				upstream.Addr(),
-				primary,
-			)
+		projectRoutes, err := readyProjectHTTPRoutes(project, reservations[project.ID], primary)
+		if err != nil {
+			return dataplane.DesiredState{}, fmt.Errorf("derive HTTP route for project %q: %w", project.ID, err)
 		}
-		routes = append(routes, dataplane.HTTPRoute{
-			ID:       project.Slug + ":" + string(appHTTPResourceID),
-			Host:     host,
-			Upstream: upstream,
-		})
+		routes = append(routes, projectRoutes...)
 	}
 
 	desired, err := desiredWithHTTPRoutes(foundation, routes)
@@ -290,26 +251,108 @@ func desiredHTTPStateFromRuntimeState(runtimeState state.RuntimeState) (dataplan
 	return desired, nil
 }
 
-// readyAppHTTPResource returns the canonical App resource and its owner for one ready project.
-func readyAppHTTPResource(project domain.ProjectSnapshot) (domain.ResourceSnapshot, domain.AppSnapshot, error) {
+// readyProjectHTTPRoutes joins every durable HTTP reservation to one ready resource without treating observation as publication authority.
+func readyProjectHTTPRoutes(
+	project domain.ProjectSnapshot,
+	reservations []state.EndpointReservation,
+	primary netip.Addr,
+) ([]dataplane.HTTPRoute, error) {
+	resources := make(map[domain.ResourceID]domain.ResourceSnapshot, len(project.Resources))
 	for _, resource := range project.Resources {
-		if resource.ID != appHTTPResourceID {
-			continue
+		resources[resource.ID] = resource
+	}
+	apps := make(map[domain.AppID]domain.AppSnapshot, len(project.Apps))
+	for _, app := range project.Apps {
+		apps[app.ID] = app
+	}
+	services := make(map[domain.ServiceID]domain.ServiceSnapshot, len(project.Services))
+	for _, service := range project.Services {
+		services[service.ID] = service
+	}
+
+	appHTTPFound := false
+	routes := make([]dataplane.HTTPRoute, 0, len(reservations))
+	for _, reservation := range reservations {
+		resource, exists := resources[domain.ResourceID(reservation.Key.EndpointID)]
+		if !exists {
+			return nil, fmt.Errorf("HTTP reservation %q has no matching resource", reservation.Key.EndpointID)
 		}
-		if resource.Kind != "application" {
-			return domain.ResourceSnapshot{}, domain.AppSnapshot{}, fmt.Errorf("resource app-http kind %q must be application", resource.Kind)
-		}
-		if resource.Owner.Kind != domain.ResourceOwnedByApp {
-			return domain.ResourceSnapshot{}, domain.AppSnapshot{}, errors.New("resource app-http must be App-owned")
-		}
-		for _, app := range project.Apps {
-			if app.ID == resource.Owner.AppID {
-				return resource, app, nil
+		if reservation.Key.EndpointID == string(appHTTPResourceID) {
+			appHTTPFound = true
+			if resource.Kind != "application" {
+				return nil, fmt.Errorf("resource app-http kind %q must be application", resource.Kind)
+			}
+			if resource.Owner.Kind != domain.ResourceOwnedByApp {
+				return nil, errors.New("resource app-http must be App-owned")
+			}
+			if reservation.Host != project.Slug+".test" {
+				return nil, fmt.Errorf(
+					"app-http host %q must equal %q",
+					reservation.Host,
+					project.Slug+".test",
+				)
 			}
 		}
-		return domain.ResourceSnapshot{}, domain.AppSnapshot{}, fmt.Errorf("resource app-http owner %q is missing", resource.Owner.AppID)
+		if err := readyHTTPResourceOwner(resource, apps, services); err != nil {
+			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
+		}
+		if reservation.Key.EndpointID == string(appHTTPResourceID) {
+			app := apps[resource.Owner.AppID]
+			if !app.Required {
+				return nil, fmt.Errorf("App %q must be required", app.ID)
+			}
+		}
+		upstream, err := canonicalHTTPUpstream(resource.URL)
+		if err != nil {
+			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
+		}
+		if upstream.Addr() != primary {
+			return nil, fmt.Errorf(
+				"resource %q upstream address %s does not match primary lease %s",
+				resource.ID,
+				upstream.Addr(),
+				primary,
+			)
+		}
+		routes = append(routes, dataplane.HTTPRoute{
+			ID:       project.Slug + ":" + reservation.Key.EndpointID,
+			Host:     reservation.Host,
+			Upstream: upstream,
+		})
 	}
-	return domain.ResourceSnapshot{}, domain.AppSnapshot{}, errors.New("resource app-http is missing")
+	if !appHTTPFound {
+		return nil, errors.New("app-http reservation is missing")
+	}
+	return routes, nil
+}
+
+// readyHTTPResourceOwner requires a live lifecycle owner before a reserved resource can enter public ingress.
+func readyHTTPResourceOwner(
+	resource domain.ResourceSnapshot,
+	apps map[domain.AppID]domain.AppSnapshot,
+	services map[domain.ServiceID]domain.ServiceSnapshot,
+) error {
+	switch resource.Owner.Kind {
+	case domain.ResourceOwnedByApp:
+		app, exists := apps[resource.Owner.AppID]
+		if !exists {
+			return fmt.Errorf("App owner %q is missing", resource.Owner.AppID)
+		}
+		if !app.Active || app.State != domain.EntityReady {
+			return fmt.Errorf("App %q is not ready and active", app.ID)
+		}
+	case domain.ResourceOwnedByService:
+		service, exists := services[resource.Owner.ServiceID]
+		if !exists {
+			return fmt.Errorf("service owner %q is missing", resource.Owner.ServiceID)
+		}
+		if service.Owner != domain.ServiceOwnerCompose || service.Selection != domain.ServiceSelected || service.State != domain.EntityReady {
+			return fmt.Errorf("service %q is not a ready selected Compose service", service.ID)
+		}
+	default:
+		return fmt.Errorf("resource owner kind %q is unsupported", resource.Owner.Kind)
+	}
+	return nil
 }
 
 // canonicalHTTPUpstream accepts only the canonical raw loopback HTTP origin persisted by project startup.
