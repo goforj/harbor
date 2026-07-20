@@ -15,6 +15,7 @@ const faviconURLs = computed(() => {
       '/favicon.ico',
       '/favicon.png',
       '/favicon.svg',
+      '/logo.png',
       '/public/img/fav32.png',
       '/static/favicon.ico',
       '/img/favicon.ico',
