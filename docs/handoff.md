@@ -233,7 +233,7 @@ Prove the committed direct Docker service/log vertical on the macOS development 
 
 After that vertical is stable, add daemon-owned Docker event consumption and live replacement of service topology so container starts, stops, health changes, and recreation appear without restarting the project. Route only explicitly admitted publication facts through Harbor's existing resource/routing policy; observing a port is not itself permission to publish it.
 
-The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. Project-removal approval, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery remains required, but it should not displace finishing the currently exercised macOS workflow.
+The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. Project-removal approval, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery is now implemented: its cancelable lock and exact owned stage/quarantine recovery have focused tests, and the root-only lifecycle and crash-recovery test is required by Linux CI. That workflow evidence is still required before claiming native resolver support.
 
 ## Next-session start checklist
 

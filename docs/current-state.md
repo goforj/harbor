@@ -190,7 +190,6 @@ Implemented foundations include:
 
 Important incomplete work:
 
-- Linux resolver mutation still uses a blocking, non-cancelable `flock`, and retained stage/quarantine artifacts have no crash-recovery routine; the privileged CI happy path does not prove interrupted-transaction recovery;
 - Windows NRPT portable tests and cross-compilation pass, but production helper/daemon providers still select the unsupported implementation; fixed-path PowerShell execution, complete native-field repair policy, helper dependencies, and native lifecycle/cleanup proof remain absent;
 - trust-store installation and complete trusted-HTTPS product proof are absent;
 - low-port mechanisms and native-port service relays are not complete product paths;
@@ -201,7 +200,7 @@ Current platform capability is therefore uneven:
 | Capability | macOS | Linux | Windows |
 |---|---|---|---|
 | Loopback, host-conflict, process-scope, and local IPC foundations | Implemented with native proof for the exercised paths | Implemented with hosted native proof for exercised paths | Implemented with hosted native proof for exercised paths |
-| Resolver backend | Darwin backend integrated and crash-recovery tested | `systemd-resolved` foundation integrated; crash recovery and stronger native proof remain | NRPT core committed but not wired into production |
+| Resolver backend | Darwin backend integrated and crash-recovery tested | `systemd-resolved` foundation includes cancelable locking plus owned stage/quarantine recovery; its root-only lifecycle and crash-recovery test is required in Linux CI, while broader resolver parity remains | NRPT core committed but not wired into production |
 | Source helper installation | Automatic Wails development flow | Manual development bootstrap | Not implemented |
 | Trusted CA/leaf use | Material primitives only; native trust installation absent | Material primitives only; native trust installation absent | Material primitives only; native trust installation absent |
 | Low ports and shared public path | Darwin launchd primitives only | Not complete | Not complete |
