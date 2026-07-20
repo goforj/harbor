@@ -15,6 +15,7 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 		want OperationKind
 	}{
 		{name: "network setup", kind: OperationKindNetworkSetup, want: "network.setup"},
+		{name: "network resolver setup", kind: OperationKindNetworkResolverSetup, want: "network.resolver.setup"},
 		{name: "start", kind: OperationKindProjectStart, want: "project.start"},
 		{name: "stop", kind: OperationKindProjectStop, want: "project.stop"},
 		{name: "unregister", kind: OperationKindProjectUnregister, want: "project.unregister"},
@@ -30,27 +31,29 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 	}
 }
 
-// TestNetworkSetupOperationRequiresGlobalScope keeps machine setup outside every project aggregate.
-func TestNetworkSetupOperationRequiresGlobalScope(t *testing.T) {
+// TestNetworkSetupOperationsRequireGlobalScope keeps every machine setup phase outside project aggregates.
+func TestNetworkSetupOperationsRequireGlobalScope(t *testing.T) {
 	t.Parallel()
 	requestedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
-	if _, err := NewOperation(
-		"operation-network-setup",
-		"intent-network-setup",
-		OperationKindNetworkSetup,
-		"project-01",
-		requestedAt,
-	); err == nil || !strings.Contains(err.Error(), "must not identify a project") {
-		t.Fatalf("NewOperation(network setup with project) error = %v", err)
-	}
-	if _, err := NewOperation(
-		"operation-network-setup",
-		"intent-network-setup",
-		OperationKindNetworkSetup,
-		"",
-		requestedAt,
-	); err != nil {
-		t.Fatalf("NewOperation(global network setup) error = %v", err)
+	for _, kind := range []OperationKind{OperationKindNetworkSetup, OperationKindNetworkResolverSetup} {
+		if _, err := NewOperation(
+			"operation-network-setup",
+			"intent-network-setup",
+			kind,
+			"project-01",
+			requestedAt,
+		); err == nil || !strings.Contains(err.Error(), "must not identify a project") {
+			t.Fatalf("NewOperation(%s with project) error = %v", kind, err)
+		}
+		if _, err := NewOperation(
+			"operation-network-setup",
+			"intent-network-setup",
+			kind,
+			"",
+			requestedAt,
+		); err != nil {
+			t.Fatalf("NewOperation(global %s) error = %v", kind, err)
+		}
 	}
 }
 

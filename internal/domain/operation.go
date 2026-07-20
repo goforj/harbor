@@ -12,6 +12,8 @@ type OperationKind string
 const (
 	// OperationKindNetworkSetup identifies the machine-global network foundation setup.
 	OperationKindNetworkSetup OperationKind = "network.setup"
+	// OperationKindNetworkResolverSetup identifies machine-global resolver policy setup after the address pool exists.
+	OperationKindNetworkResolverSetup OperationKind = "network.resolver.setup"
 	// OperationKindProjectStart identifies the creation of one managed project session.
 	OperationKindProjectStart OperationKind = "project.start"
 	// OperationKindProjectStop identifies the graceful shutdown of one managed project session.
@@ -68,9 +70,9 @@ func (operation Operation) Validate() error {
 		return err
 	}
 	switch operation.Kind {
-	case OperationKindNetworkSetup:
+	case OperationKindNetworkSetup, OperationKindNetworkResolverSetup:
 		if operation.ProjectID != "" {
-			return fmt.Errorf("network setup operation must not identify a project")
+			return fmt.Errorf("network setup operation %q must not identify a project", operation.Kind)
 		}
 	case OperationKindProjectStart, OperationKindProjectStop, OperationKindProjectUnregister:
 		if operation.ProjectID == "" {
