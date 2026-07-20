@@ -206,7 +206,7 @@ The Windows NRPT core is also a committed foundation. Its portable focused/full 
 - it is not wired into helper or daemon providers, so Windows still selects the unsupported implementation;
 - its native runner now derives the fixed Windows PowerShell executable from the native system-directory API rather than a caller-controlled `PATH`;
 - native exactness rejects latent NRPT fields such as IPsec CA restrictions, DirectAccess settings, and DNSSEC encryption. Before any Set operation, a second raw snapshot rejects those fields with zero mutation until a native clearing contract and proof exist;
-- helper dependency admission, native add/observe/set/release/CAS/cleanup tests, and Go/PowerShell fingerprint-parity evidence are absent.
+- helper dependency admission, native Set/latent-field cleanup, and Go/PowerShell fingerprint-parity evidence are absent. A required elevated CI test covers a fresh rule's observe, CAS add, exact verification, and release, but workflow execution remains required evidence.
 
 Do not claim either platform's resolver as complete merely because its foundation is committed or cross-compiles.
 
