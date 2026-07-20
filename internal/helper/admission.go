@@ -2,15 +2,29 @@ package helper
 
 import "context"
 
+// OwnershipAdmissionState identifies how protected ownership relates to the signed ticket target.
+type OwnershipAdmissionState string
+
+const (
+	// OwnershipAdmissionAlreadyCurrent means protected ownership already equals the signed ticket target.
+	OwnershipAdmissionAlreadyCurrent OwnershipAdmissionState = "already_current"
+	// OwnershipAdmissionSchema1To2 means an ensure may transition the exact target-derived schema-1 claim to schema 2.
+	OwnershipAdmissionSchema1To2 OwnershipAdmissionState = "schema_1_to_2"
+)
+
 // TicketAdmission carries bindings established independently from the untrusted wire request.
 type TicketAdmission struct {
-	TicketReference          TicketReference
-	RequesterIdentity        string
-	InstallationID           string
-	OwnershipGeneration      uint64
-	OwnershipSchemaVersion   uint32
-	NetworkPolicyFingerprint string
-	ApprovedPool             string
+	TicketReference            TicketReference
+	RequesterIdentity          string
+	InstallationID             string
+	OwnershipGeneration        uint64
+	OwnershipSchemaVersion     uint32
+	NetworkPolicyFingerprint   string
+	ApprovedPool               string
+	OwnershipState             OwnershipAdmissionState
+	OwnershipFingerprint       string
+	TargetOwnershipFingerprint string
+	TicketVerifierKey          string
 }
 
 // TicketRedemption carries one signature-authenticated ticket and its independently authenticated bindings.
@@ -43,6 +57,21 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 		admission.OwnershipSchemaVersion != r.Ticket.OwnershipSchemaVersion ||
 		admission.NetworkPolicyFingerprint != r.Ticket.NetworkPolicyFingerprint ||
 		admission.ApprovedPool != r.Ticket.ApprovedPool {
+		return ErrTicketRedemptionFailed
+	}
+	if !validFingerprint(admission.OwnershipFingerprint) ||
+		!validFingerprint(admission.TargetOwnershipFingerprint) ||
+		admission.TicketVerifierKey == "" {
+		return ErrTicketRedemptionFailed
+	}
+	switch admission.OwnershipState {
+	case OwnershipAdmissionAlreadyCurrent:
+	case OwnershipAdmissionSchema1To2:
+		if r.Ticket.Operation != OperationEnsureResolver ||
+			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+			return ErrTicketRedemptionFailed
+		}
+	default:
 		return ErrTicketRedemptionFailed
 	}
 	return nil

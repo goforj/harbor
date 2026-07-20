@@ -33,6 +33,7 @@ const (
 type ResolverMutationEvidence struct {
 	Changed                bool                  `json:"changed"`
 	PolicyFingerprint      string                `json:"policy_fingerprint"`
+	OwnershipFingerprint   string                `json:"ownership_fingerprint"`
 	ObservationFingerprint string                `json:"observation_fingerprint"`
 	Postcondition          ResolverPostcondition `json:"postcondition"`
 }
@@ -68,22 +69,27 @@ func (UnavailableLoopbackIdentityHandler) ReleaseLoopbackIdentity(context.Contex
 // ResolverHandler applies only the policy-bound resolver operations admitted by this protocol.
 type ResolverHandler interface {
 	// EnsureResolver ensures the signed resolver policy and returns its verified postcondition.
-	EnsureResolver(context.Context, Ticket) (ResolverMutationEvidence, error)
+	EnsureResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error)
 	// ReleaseResolver removes only the signed policy's owned resolver rule and returns its verified postcondition.
-	ReleaseResolver(context.Context, Ticket) (ResolverMutationEvidence, error)
+	ReleaseResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error)
 }
 
 // UnavailableResolverHandler fails closed on platforms without an installed resolver adapter.
 type UnavailableResolverHandler struct{}
 
 // EnsureResolver rejects ensure operations because no resolver mutation authority is installed.
-func (UnavailableResolverHandler) EnsureResolver(context.Context, Ticket) (ResolverMutationEvidence, error) {
+func (UnavailableResolverHandler) EnsureResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error) {
 	return ResolverMutationEvidence{}, ErrMutationUnavailable
 }
 
 // ReleaseResolver rejects release operations because no resolver mutation authority is installed.
-func (UnavailableResolverHandler) ReleaseResolver(context.Context, Ticket) (ResolverMutationEvidence, error) {
+func (UnavailableResolverHandler) ReleaseResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error) {
 	return ResolverMutationEvidence{}, ErrMutationUnavailable
+}
+
+// Close releases no resources because the unavailable handler opens no authority boundary.
+func (UnavailableResolverHandler) Close() error {
+	return nil
 }
 
 // ResponseError is the bounded structured error returned by the helper.
@@ -215,17 +221,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 			err = result.Evidence.validate(ticket)
 		}
 	case OperationEnsureResolver:
-		resolverEvidence, resolverErr := d.resolver.EnsureResolver(operationContext, ticket)
+		resolverEvidence, resolverErr := d.resolver.EnsureResolver(operationContext, ticket, redemption.Admission)
 		err = resolverErr
 		if err == nil {
-			err = resolverEvidence.validate(ticket)
+			err = resolverEvidence.validate(ticket, redemption.Admission)
 		}
 		result.ResolverEvidence = &resolverEvidence
 	case OperationReleaseResolver:
-		resolverEvidence, resolverErr := d.resolver.ReleaseResolver(operationContext, ticket)
+		resolverEvidence, resolverErr := d.resolver.ReleaseResolver(operationContext, ticket, redemption.Admission)
 		err = resolverErr
 		if err == nil {
-			err = resolverEvidence.validate(ticket)
+			err = resolverEvidence.validate(ticket, redemption.Admission)
 		}
 		result.ResolverEvidence = &resolverEvidence
 	default:
@@ -243,19 +249,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 }
 
 // validate prevents a resolver adapter from returning evidence for another policy or postcondition.
-func (e ResolverMutationEvidence) validate(ticket Ticket) error {
+func (e ResolverMutationEvidence) validate(ticket Ticket, admission TicketAdmission) error {
 	if err := e.validateShape(ticket.Operation); err != nil {
 		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence is invalid")
 	}
 	if e.PolicyFingerprint != ticket.NetworkPolicyFingerprint {
 		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence policy does not match the approved policy")
 	}
+	if e.OwnershipFingerprint != admission.TargetOwnershipFingerprint {
+		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence ownership does not match the approved target")
+	}
 	return nil
 }
 
 // validateShape enforces the standalone resolver response shape before ticket correlation.
 func (e ResolverMutationEvidence) validateShape(operation Operation) error {
-	if !validFingerprint(e.PolicyFingerprint) || !validFingerprint(e.ObservationFingerprint) {
+	if !validFingerprint(e.PolicyFingerprint) ||
+		!validFingerprint(e.OwnershipFingerprint) ||
+		!validFingerprint(e.ObservationFingerprint) {
 		return errors.New("resolver mutation evidence fingerprints are invalid")
 	}
 	want := ResolverPostconditionExact

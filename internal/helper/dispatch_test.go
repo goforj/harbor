@@ -363,6 +363,11 @@ func TestDispatcherDispatchRejectsAdmissionBindingMismatch(t *testing.T) {
 			admission.NetworkPolicyFingerprint = strings.Repeat("b", fingerprintLength)
 		}},
 		{name: "wrong pool", mutate: func(admission *TicketAdmission) { admission.ApprovedPool = "127.78.0.0/24" }},
+		{name: "unknown ownership state", mutate: func(admission *TicketAdmission) { admission.OwnershipState = "unknown" }},
+		{name: "transition for loopback", mutate: func(admission *TicketAdmission) { admission.OwnershipState = OwnershipAdmissionSchema1To2 }},
+		{name: "invalid ownership fingerprint", mutate: func(admission *TicketAdmission) { admission.OwnershipFingerprint = "bad" }},
+		{name: "invalid target ownership fingerprint", mutate: func(admission *TicketAdmission) { admission.TargetOwnershipFingerprint = "bad" }},
+		{name: "missing ticket verifier", mutate: func(admission *TicketAdmission) { admission.TicketVerifierKey = "" }},
 	}
 
 	for _, test := range tests {
@@ -612,13 +617,17 @@ func redemptionForTicket(reference TicketReference, ticket Ticket) TicketRedempt
 	return TicketRedemption{
 		Ticket: ticket,
 		Admission: TicketAdmission{
-			TicketReference:          reference,
-			RequesterIdentity:        "uid-1000",
-			InstallationID:           "harbor-test-installation",
-			OwnershipGeneration:      7,
-			OwnershipSchemaVersion:   ticket.OwnershipSchemaVersion,
-			NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
-			ApprovedPool:             ticket.ApprovedPool,
+			TicketReference:            reference,
+			RequesterIdentity:          "uid-1000",
+			InstallationID:             "harbor-test-installation",
+			OwnershipGeneration:        7,
+			OwnershipSchemaVersion:     ticket.OwnershipSchemaVersion,
+			NetworkPolicyFingerprint:   ticket.NetworkPolicyFingerprint,
+			ApprovedPool:               ticket.ApprovedPool,
+			OwnershipState:             OwnershipAdmissionAlreadyCurrent,
+			OwnershipFingerprint:       strings.Repeat("a", fingerprintLength),
+			TargetOwnershipFingerprint: strings.Repeat("a", fingerprintLength),
+			TicketVerifierKey:          "test-verifier-key",
 		},
 	}
 }

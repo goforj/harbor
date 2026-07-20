@@ -19,14 +19,11 @@ func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	dependencies := productionDependencies()
 	if dependencies.authorizeInvocation == nil || dependencies.openTicketRedeemer == nil ||
 		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil ||
-		dependencies.newResolverHandler == nil {
+		dependencies.openResolverHandler == nil {
 		t.Fatal("production dependencies are incomplete")
 	}
 	if handler := dependencies.newLoopbackIdentityHandler(); handler == nil {
 		t.Fatal("production loopback handler is nil")
-	}
-	if handler := dependencies.newResolverHandler(); handler == nil {
-		t.Fatal("production resolver handler is nil")
 	}
 }
 
@@ -59,12 +56,13 @@ func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
 		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
+		"open resolver handler",
 		"new loopback handler",
-		"new resolver handler",
 		"read request",
 		"redeem ticket",
 		"consume replay claim",
 		"ensure loopback identity",
+		"close resolver handler",
 		"close replay guard",
 		"close ticket redeemer",
 	}
@@ -198,6 +196,56 @@ func TestRunClosesRedeemerWhenReplayOpenFails(t *testing.T) {
 	}
 }
 
+// TestRunClosesPriorAuthoritiesWhenResolverOpenFails keeps caller bytes unread under partial ownership composition.
+func TestRunClosesPriorAuthoritiesWhenResolverOpenFails(t *testing.T) {
+	openErr := errors.New("resolver handler open failed")
+	replayCloseErr := errors.New("replay close failed")
+	redeemerCloseErr := errors.New("redeemer close failed")
+	events := make([]string, 0, 6)
+	dependencies := runtimeDependencies{
+		authorizeInvocation: func() error {
+			events = append(events, "authorize invocation")
+			return nil
+		},
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			events = append(events, "open ticket redeemer")
+			return &testTicketRedeemer{events: &events, closeErr: redeemerCloseErr}, nil
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			events = append(events, "open replay guard")
+			return &testReplayGuard{events: &events, closeErr: replayCloseErr}, nil
+		},
+		openResolverHandler: func() (closingResolverHandler, error) {
+			events = append(events, "open resolver handler")
+			return nil, openErr
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			t.Fatal("loopback handler was constructed after resolver composition failed")
+			return nil
+		},
+	}
+	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	var output bytes.Buffer
+	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
+	if !errors.Is(err, openErr) || !errors.Is(err, replayCloseErr) || !errors.Is(err, redeemerCloseErr) {
+		t.Fatalf("run error = %v, want open and prior close failures", err)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"open resolver handler",
+		"close replay guard",
+		"close ticket redeemer",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+	if reader.recorded || output.Len() != 0 {
+		t.Fatalf("request recorded = %t, output = %q, want neither", reader.recorded, output.String())
+	}
+}
+
 // TestRunClosesEveryAuthorityAfterServeFailure proves response failure cannot strand retained privileged handles.
 func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 	redeemerCloseErr := errors.New("redeemer close failed")
@@ -220,9 +268,9 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 			events = append(events, "new loopback handler")
 			return &testLoopbackHandler{events: &events}
 		},
-		newResolverHandler: func() helper.ResolverHandler {
-			events = append(events, "new resolver handler")
-			return helper.UnavailableResolverHandler{}
+		openResolverHandler: func() (closingResolverHandler, error) {
+			events = append(events, "open resolver handler")
+			return &testResolverHandler{events: &events}, nil
 		},
 	}
 	reader := &recordingReader{reader: bytes.NewReader(nil), events: &events}
@@ -235,9 +283,10 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
+		"open resolver handler",
 		"new loopback handler",
-		"new resolver handler",
 		"read request",
+		"close resolver handler",
 		"close replay guard",
 		"close ticket redeemer",
 	}
@@ -316,6 +365,19 @@ func (guard *testReplayGuard) Close() error {
 	return guard.closeErr
 }
 
+// testResolverHandler keeps resolver mutation unavailable while exposing protected-store lifetime ordering.
+type testResolverHandler struct {
+	helper.UnavailableResolverHandler
+	events   *[]string
+	closeErr error
+}
+
+// Close records release of the retained resolver ownership store.
+func (handler *testResolverHandler) Close() error {
+	*handler.events = append(*handler.events, "close resolver handler")
+	return handler.closeErr
+}
+
 // testLoopbackHandler returns bounded evidence without touching the host network.
 type testLoopbackHandler struct {
 	events *[]string
@@ -386,9 +448,9 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 			*events = append(*events, "new loopback handler")
 			return &testLoopbackHandler{events: events}
 		},
-		newResolverHandler: func() helper.ResolverHandler {
-			*events = append(*events, "new resolver handler")
-			return helper.UnavailableResolverHandler{}
+		openResolverHandler: func() (closingResolverHandler, error) {
+			*events = append(*events, "open resolver handler")
+			return &testResolverHandler{events: events}, nil
 		},
 	}
 }
@@ -419,13 +481,17 @@ func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedempt
 	return reference, helper.TicketRedemption{
 		Ticket: ticket,
 		Admission: helper.TicketAdmission{
-			TicketReference:          reference,
-			RequesterIdentity:        ticket.RequesterIdentity,
-			InstallationID:           ticket.InstallationID,
-			OwnershipGeneration:      ticket.OwnershipGeneration,
-			OwnershipSchemaVersion:   ticket.OwnershipSchemaVersion,
-			NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
-			ApprovedPool:             ticket.ApprovedPool,
+			TicketReference:            reference,
+			RequesterIdentity:          ticket.RequesterIdentity,
+			InstallationID:             ticket.InstallationID,
+			OwnershipGeneration:        ticket.OwnershipGeneration,
+			OwnershipSchemaVersion:     ticket.OwnershipSchemaVersion,
+			NetworkPolicyFingerprint:   ticket.NetworkPolicyFingerprint,
+			ApprovedPool:               ticket.ApprovedPool,
+			OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
+			OwnershipFingerprint:       strings.Repeat("f", 64),
+			TargetOwnershipFingerprint: strings.Repeat("f", 64),
+			TicketVerifierKey:          "test-verifier-key",
 		},
 	}
 }

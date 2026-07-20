@@ -14,6 +14,7 @@ import (
 
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketauth"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
@@ -410,6 +411,48 @@ func testRedeemerPoolTicket(now time.Time, requester string) helper.Ticket {
 			Identities: identities,
 		},
 		Nonce:     strings.Repeat("p", 32),
+		ExpiresAt: now.Add(time.Minute),
+	}
+}
+
+// testRedeemerResolverTicket builds one signed schema-2 resolver target suitable for transition admission.
+func testRedeemerResolverTicket(now time.Time, requester string, operation helper.Operation) helper.Ticket {
+	localhost := netip.MustParseAddr("127.0.0.1")
+	dns := netip.AddrPortFrom(localhost, 25000)
+	policy, err := networkpolicy.New(
+		strings.Repeat("c", 64),
+		networkpolicy.MacOSMechanisms(),
+		networkpolicy.Listener{Advertised: dns, Bind: dns},
+		networkpolicy.Listener{
+			Advertised: netip.AddrPortFrom(localhost, 80),
+			Bind:       netip.AddrPortFrom(localhost, 25001),
+		},
+		networkpolicy.Listener{
+			Advertised: netip.AddrPortFrom(localhost, 443),
+			Bind:       netip.AddrPortFrom(localhost, 25002),
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		panic(err)
+	}
+	return helper.Ticket{
+		Version:                  helper.ProtocolVersion,
+		Operation:                operation,
+		InstallationID:           "harbor-redeemer-test",
+		RequesterIdentity:        requester,
+		OwnershipGeneration:      7,
+		OwnershipSchemaVersion:   ownership.NetworkPolicySchemaVersion,
+		NetworkPolicyFingerprint: fingerprint,
+		NetworkPolicy:            &policy,
+		ApprovedPool:             "127.77.0.0/24",
+		ExpectedResolverObservation: &helper.ExpectedResolverObservation{
+			Fingerprint: strings.Repeat("d", 64),
+		},
+		Nonce:     strings.Repeat("r", 32),
 		ExpiresAt: now.Add(time.Minute),
 	}
 }

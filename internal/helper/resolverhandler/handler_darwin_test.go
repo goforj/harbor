@@ -27,7 +27,7 @@ func TestPrivilegedDarwinResolverHandlerLifecycle(t *testing.T) {
 
 	request, policy := resolverHandlerTestRequest(t)
 	adapter := resolver.New()
-	handler := New(adapter)
+	handler := newHandler(adapter, &testOwnershipUpgrader{})
 	before, err := adapter.Observe(t.Context(), request)
 	if err != nil {
 		t.Fatalf("observe resolver before helper ensure: %v", err)
@@ -76,7 +76,8 @@ func TestPrivilegedDarwinResolverHandlerLifecycle(t *testing.T) {
 			return
 		}
 		ticket := privilegedDarwinResolverTicket(t, request, policy, helper.OperationReleaseResolver, observedFingerprint, 'c')
-		if _, releaseErr := handler.ReleaseResolver(context.Background(), ticket); releaseErr != nil {
+		admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
+		if _, releaseErr := handler.ReleaseResolver(context.Background(), ticket, admission); releaseErr != nil {
 			t.Errorf("cleanup release Darwin resolver: %v", releaseErr)
 		}
 	})
@@ -157,7 +158,15 @@ func dispatchPrivilegedResolverTicket(
 ) helper.Response {
 	t.Helper()
 	dispatcher := helper.NewDispatcherWithResolver(
-		privilegedResolverRedeemer{ticket: ticket, reference: reference},
+		privilegedResolverRedeemer{
+			ticket:    ticket,
+			reference: reference,
+			admission: func() helper.TicketAdmission {
+				admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
+				admission.TicketReference = reference
+				return admission
+			}(),
+		},
 		helper.SystemClock{},
 		privilegedResolverReplayGuard{},
 		helper.UnavailableLoopbackIdentityHandler{},
@@ -180,6 +189,7 @@ func dispatchPrivilegedResolverTicket(
 type privilegedResolverRedeemer struct {
 	ticket    helper.Ticket
 	reference helper.TicketReference
+	admission helper.TicketAdmission
 }
 
 // Redeem returns admission dimensions independently reconstructed from the test's policy-bound ticket.
@@ -189,16 +199,8 @@ func (redeemer privilegedResolverRedeemer) Redeem(_ context.Context, reference h
 	}
 	ticket := redeemer.ticket
 	return helper.TicketRedemption{
-		Ticket: ticket,
-		Admission: helper.TicketAdmission{
-			TicketReference:          reference,
-			RequesterIdentity:        ticket.RequesterIdentity,
-			InstallationID:           ticket.InstallationID,
-			OwnershipGeneration:      ticket.OwnershipGeneration,
-			OwnershipSchemaVersion:   ticket.OwnershipSchemaVersion,
-			NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
-			ApprovedPool:             ticket.ApprovedPool,
-		},
+		Ticket:    ticket,
+		Admission: redeemer.admission,
 	}, nil
 }
 

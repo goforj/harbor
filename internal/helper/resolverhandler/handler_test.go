@@ -2,10 +2,13 @@ package resolverhandler
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
@@ -54,14 +57,15 @@ func TestHandlerAppliesObservationBoundResolverOperations(t *testing.T) {
 				Before:    before,
 				After:     test.after,
 			}}
-			handler := newHandler(adapter)
+			handler := newHandler(adapter, &testOwnershipUpgrader{})
 			ticket := resolverHandlerTestTicket(t, policy, test.operation, beforeFingerprint)
+			admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
 
 			var evidence helper.ResolverMutationEvidence
 			if test.operation == helper.OperationEnsureResolver {
-				evidence, err = handler.EnsureResolver(t.Context(), ticket)
+				evidence, err = handler.EnsureResolver(t.Context(), ticket, admission)
 			} else {
-				evidence, err = handler.ReleaseResolver(t.Context(), ticket)
+				evidence, err = handler.ReleaseResolver(t.Context(), ticket, admission)
 			}
 			if err != nil {
 				t.Fatalf("resolver handler error = %v", err)
@@ -71,6 +75,7 @@ func TestHandlerAppliesObservationBoundResolverOperations(t *testing.T) {
 				t.Fatalf("Observation.Fingerprint() after error = %v", err)
 			}
 			if !evidence.Changed || evidence.PolicyFingerprint != request.PolicyFingerprint() ||
+				evidence.OwnershipFingerprint != admission.TargetOwnershipFingerprint ||
 				evidence.ObservationFingerprint != afterFingerprint || evidence.Postcondition != test.postcondition {
 				t.Fatalf("resolver evidence = %#v", evidence)
 			}
@@ -107,9 +112,10 @@ func TestHandlerRejectsInvalidResolverAuthority(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ticket := resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, fingerprint)
+			admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
 			test.mutate(&ticket)
 			adapter := &testConditionalAdapter{}
-			if _, err := newHandler(adapter).EnsureResolver(t.Context(), ticket); err == nil {
+			if _, err := newHandler(adapter, &testOwnershipUpgrader{}).EnsureResolver(t.Context(), ticket, admission); err == nil {
 				t.Fatal("EnsureResolver() accepted invalid ticket")
 			}
 			if adapter.operation != "" {
@@ -160,13 +166,14 @@ func TestHandlerRejectsUnverifiedResolverPostconditions(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			adapter := &testConditionalAdapter{change: test.change}
-			handler := newHandler(adapter)
+			handler := newHandler(adapter, &testOwnershipUpgrader{})
 			ticket := resolverHandlerTestTicket(t, policy, test.operation, test.expected)
+			admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
 			var err error
 			if test.operation == helper.OperationEnsureResolver {
-				_, err = handler.EnsureResolver(t.Context(), ticket)
+				_, err = handler.EnsureResolver(t.Context(), ticket, admission)
 			} else {
-				_, err = handler.ReleaseResolver(t.Context(), ticket)
+				_, err = handler.ReleaseResolver(t.Context(), ticket, admission)
 			}
 			if err == nil {
 				t.Fatal("resolver handler accepted an unverified postcondition")
@@ -185,29 +192,171 @@ func TestHandlerPropagatesConditionalAdapterFailure(t *testing.T) {
 	}
 	cause := errors.New("resolver mutation failed")
 	adapter := &testConditionalAdapter{err: cause}
-	_, err = newHandler(adapter).EnsureResolver(
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, fingerprint)
+	_, err = newHandler(adapter, &testOwnershipUpgrader{}).EnsureResolver(
 		t.Context(),
-		resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, fingerprint),
+		ticket,
+		resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent),
 	)
 	if !errors.Is(err, cause) {
 		t.Fatalf("EnsureResolver() error = %v, want %v", err, cause)
 	}
 }
 
-// TestNewRequiresResolverAdapter keeps production composition fail-fast.
-func TestNewRequiresResolverAdapter(t *testing.T) {
+// TestHandlerTransitionsOwnershipBeforeResolverEnsure proves replay-admitted schema migration precedes native mutation.
+func TestHandlerTransitionsOwnershipBeforeResolverEnsure(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	absent := resolver.Observation{Request: request, Complete: true}
+	absentFingerprint, err := absent.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make([]string, 0, 2)
+	adapter := &testConditionalAdapter{
+		change: resolver.Change{Before: absent, After: resolverHandlerExactObservation(request)},
+		events: &events,
+	}
+	upgrader := &testOwnershipUpgrader{events: &events}
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, absentFingerprint)
+	admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema1To2)
+	if _, err := newHandler(adapter, upgrader).EnsureResolver(t.Context(), ticket, admission); err != nil {
+		t.Fatalf("EnsureResolver() error = %v", err)
+	}
+	if len(events) != 2 || events[0] != "upgrade ownership" || events[1] != "ensure resolver" {
+		t.Fatalf("events = %#v, want ownership upgrade before resolver ensure", events)
+	}
+	if upgrader.calls != 1 || upgrader.expected != admission.OwnershipFingerprint ||
+		upgrader.target.SchemaVersion != ownership.NetworkPolicySchemaVersion ||
+		upgrader.target.NetworkPolicyFingerprint != ticket.NetworkPolicyFingerprint {
+		t.Fatalf("ownership upgrade = calls %d, expected %q, target %#v", upgrader.calls, upgrader.expected, upgrader.target)
+	}
+}
+
+// TestDispatcherReplayFailurePreventsOwnershipUpgrade proves the real handler receives no mutation authority before consumption.
+func TestDispatcherReplayFailurePreventsOwnershipUpgrade(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 2, 0, 0, 0, time.UTC)
+	request, policy := resolverHandlerTestRequest(t)
+	absent := resolver.Observation{Request: request, Complete: true}
+	absentFingerprint, err := absent.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, absentFingerprint)
+	ticket.Version = helper.ProtocolVersion
+	ticket.Nonce = strings.Repeat("e", 32)
+	ticket.ExpiresAt = now.Add(time.Minute)
+	reference := helper.TicketReference(strings.Repeat("e", 64))
+	admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema1To2)
+	admission.TicketReference = reference
+	upgrader := &testOwnershipUpgrader{}
+	adapter := &testConditionalAdapter{}
+	dispatcher := helper.NewDispatcherWithResolver(
+		resolverHandlerRedemption{reference: reference, ticket: ticket, admission: admission},
+		resolverHandlerClock{now: now},
+		resolverHandlerRejectedReplay{},
+		helper.UnavailableLoopbackIdentityHandler{},
+		newHandler(adapter, upgrader),
+	)
+
+	response, err := dispatcher.Dispatch(t.Context(), helper.Request{
+		Version:         helper.ProtocolVersion,
+		TicketReference: reference,
+	})
+	if !errors.Is(err, helper.ErrReplayProtectionUnavailable) || response.Error == nil ||
+		response.Error.Code != helper.ErrorCodeReplayProtectionUnavailable {
+		t.Fatalf("Dispatch() = %#v, %v, want replay protection failure", response, err)
+	}
+	if upgrader.calls != 0 || adapter.calls != 0 {
+		t.Fatalf("upgrade/resolver calls = %d/%d, want 0/0", upgrader.calls, adapter.calls)
+	}
+}
+
+// TestHandlerRetriesResolverAfterCompletedOwnershipUpgrade proves a fresh schema-2 admission replays the upgrade as a no-op.
+func TestHandlerRetriesResolverAfterCompletedOwnershipUpgrade(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	absent := resolver.Observation{Request: request, Complete: true}
+	absentFingerprint, err := absent.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("first resolver ensure failed")
+	adapter := &testConditionalAdapter{
+		changes: []resolver.Change{
+			{},
+			{Before: absent, After: resolverHandlerExactObservation(request)},
+		},
+		errors: []error{cause, nil},
+	}
+	upgrader := &testOwnershipUpgrader{}
+	handler := newHandler(adapter, upgrader)
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, absentFingerprint)
+	transition := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema1To2)
+	if _, err := handler.EnsureResolver(t.Context(), ticket, transition); !errors.Is(err, cause) {
+		t.Fatalf("first EnsureResolver() error = %v, want %v", err, cause)
+	}
+	current := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
+	if _, err := handler.EnsureResolver(t.Context(), ticket, current); err != nil {
+		t.Fatalf("retry EnsureResolver() error = %v", err)
+	}
+	if upgrader.calls != 2 || adapter.calls != 2 {
+		t.Fatalf("upgrade/resolver calls = %d/%d, want idempotent 2/2", upgrader.calls, adapter.calls)
+	}
+}
+
+// TestHandlerCurrentOwnershipReplaysUpgradeAndReleaseRejectsTransition covers idempotence and the release prohibition.
+func TestHandlerCurrentOwnershipReplaysUpgradeAndReleaseRejectsTransition(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	exact := resolverHandlerExactObservation(request)
+	exactFingerprint, err := exact.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("schema two ensure", func(t *testing.T) {
+		adapter := &testConditionalAdapter{change: resolver.Change{Before: exact, After: exact}}
+		upgrader := &testOwnershipUpgrader{}
+		ticket := resolverHandlerTestTicket(t, policy, helper.OperationEnsureResolver, exactFingerprint)
+		admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyCurrent)
+		if _, err := newHandler(adapter, upgrader).EnsureResolver(t.Context(), ticket, admission); err != nil {
+			t.Fatalf("EnsureResolver() error = %v", err)
+		}
+		if upgrader.calls != 1 || adapter.calls != 1 {
+			t.Fatalf("upgrade/resolver calls = %d/%d, want idempotent 1/1", upgrader.calls, adapter.calls)
+		}
+	})
+
+	t.Run("schema one release", func(t *testing.T) {
+		adapter := &testConditionalAdapter{}
+		upgrader := &testOwnershipUpgrader{}
+		ticket := resolverHandlerTestTicket(t, policy, helper.OperationReleaseResolver, exactFingerprint)
+		admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema1To2)
+		if _, err := newHandler(adapter, upgrader).ReleaseResolver(t.Context(), ticket, admission); err == nil {
+			t.Fatal("ReleaseResolver() accepted schema-1 transition admission")
+		}
+		if upgrader.calls != 0 || adapter.calls != 0 {
+			t.Fatalf("upgrade/resolver calls = %d/%d, want 0/0", upgrader.calls, adapter.calls)
+		}
+	})
+}
+
+// TestOpenDefaultRequiresResolverAdapter keeps production composition fail-fast.
+func TestOpenDefaultRequiresResolverAdapter(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("New() accepted a nil resolver adapter")
+			t.Fatal("OpenDefault() accepted a nil resolver adapter")
 		}
 	}()
-	New(nil)
+	_, _ = OpenDefault(nil)
 }
 
 // testConditionalAdapter records one resolver operation and returns configured evidence.
 type testConditionalAdapter struct {
 	change    resolver.Change
 	err       error
+	changes   []resolver.Change
+	errors    []error
+	events    *[]string
+	calls     int
 	operation helper.Operation
 	request   resolver.Request
 	expected  string
@@ -224,9 +373,25 @@ func (adapter *testConditionalAdapter) EnsureIfObserved(
 	request resolver.Request,
 	expected string,
 ) (resolver.Change, error) {
+	call := adapter.calls
+	adapter.calls++
 	adapter.operation = helper.OperationEnsureResolver
 	adapter.request = request
 	adapter.expected = expected
+	if adapter.events != nil {
+		*adapter.events = append(*adapter.events, "ensure resolver")
+	}
+	if call < len(adapter.changes) || call < len(adapter.errors) {
+		var change resolver.Change
+		var err error
+		if call < len(adapter.changes) {
+			change = adapter.changes[call]
+		}
+		if call < len(adapter.errors) {
+			err = adapter.errors[call]
+		}
+		return change, err
+	}
 	return adapter.change, adapter.err
 }
 
@@ -236,10 +401,85 @@ func (adapter *testConditionalAdapter) ReleaseIfObserved(
 	request resolver.Request,
 	expected string,
 ) (resolver.Change, error) {
+	adapter.calls++
 	adapter.operation = helper.OperationReleaseResolver
 	adapter.request = request
 	adapter.expected = expected
 	return adapter.change, adapter.err
+}
+
+// testOwnershipUpgrader records the protected compare-and-swap without opening a filesystem path.
+type testOwnershipUpgrader struct {
+	events   *[]string
+	err      error
+	calls    int
+	expected string
+	target   ownership.Record
+	closed   int
+}
+
+// resolverHandlerRedemption returns one independently bound transition admission.
+type resolverHandlerRedemption struct {
+	reference helper.TicketReference
+	ticket    helper.Ticket
+	admission helper.TicketAdmission
+}
+
+// Redeem returns the configured target without mutating ownership.
+func (redeemer resolverHandlerRedemption) Redeem(
+	_ context.Context,
+	reference helper.TicketReference,
+) (helper.TicketRedemption, error) {
+	if reference != redeemer.reference {
+		return helper.TicketRedemption{}, helper.ErrTicketRedemptionFailed
+	}
+	return helper.TicketRedemption{Ticket: redeemer.ticket, Admission: redeemer.admission}, nil
+}
+
+// resolverHandlerClock supplies deterministic dispatcher time.
+type resolverHandlerClock struct {
+	now time.Time
+}
+
+// Now returns the fixed admission instant.
+func (clock resolverHandlerClock) Now() time.Time {
+	return clock.now
+}
+
+// resolverHandlerRejectedReplay fails before the resolver handler can receive the ticket.
+type resolverHandlerRejectedReplay struct{}
+
+// Consume rejects the claim to exercise the durable boundary ordering.
+func (resolverHandlerRejectedReplay) Consume(context.Context, helper.ReplayClaim) error {
+	return helper.ErrReplayProtectionUnavailable
+}
+
+// Upgrade records one exact transition and returns the canonical target observation.
+func (upgrader *testOwnershipUpgrader) Upgrade(
+	_ context.Context,
+	expected string,
+	target ownership.Record,
+) (ownership.Observation, error) {
+	upgrader.calls++
+	upgrader.expected = expected
+	upgrader.target = target
+	if upgrader.events != nil {
+		*upgrader.events = append(*upgrader.events, "upgrade ownership")
+	}
+	if upgrader.err != nil {
+		return ownership.Observation{}, upgrader.err
+	}
+	fingerprint, err := target.Fingerprint()
+	if err != nil {
+		return ownership.Observation{}, err
+	}
+	return ownership.Observation{Exists: true, Record: target, Fingerprint: fingerprint}, nil
+}
+
+// Close records release of the injected ownership authority.
+func (upgrader *testOwnershipUpgrader) Close() error {
+	upgrader.closed++
+	return nil
 }
 
 // resolverHandlerTestRequest constructs one exact Darwin resolver authority.
@@ -285,6 +525,8 @@ func resolverHandlerTestTicket(
 	return helper.Ticket{
 		Operation:                operation,
 		InstallationID:           "resolver-handler-test",
+		RequesterIdentity:        "501",
+		OwnershipGeneration:      7,
 		OwnershipSchemaVersion:   ownership.NetworkPolicySchemaVersion,
 		NetworkPolicyFingerprint: fingerprint,
 		NetworkPolicy:            &policy,
@@ -292,6 +534,50 @@ func resolverHandlerTestTicket(
 		ExpectedResolverObservation: &helper.ExpectedResolverObservation{
 			Fingerprint: expected,
 		},
+	}
+}
+
+// resolverHandlerTestAdmission derives one independently authenticated ownership binding for a ticket target.
+func resolverHandlerTestAdmission(
+	t *testing.T,
+	ticket helper.Ticket,
+	state helper.OwnershipAdmissionState,
+) helper.TicketAdmission {
+	t.Helper()
+	verifierKey := base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	target := ownership.Record{
+		SchemaVersion:            ticket.OwnershipSchemaVersion,
+		InstallationID:           ticket.InstallationID,
+		OwnerIdentity:            ticket.RequesterIdentity,
+		Generation:               ticket.OwnershipGeneration,
+		LoopbackPoolPrefix:       ticket.ApprovedPool,
+		NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
+		TicketVerifierKey:        verifierKey,
+	}
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		t.Fatalf("ownership target admission fixture error = %v", err)
+	}
+	protected := target
+	if state == helper.OwnershipAdmissionSchema1To2 {
+		protected.SchemaVersion = ownership.IdentitySchemaVersion
+		protected.NetworkPolicyFingerprint = ""
+	}
+	fingerprint, err := protected.Fingerprint()
+	if err != nil {
+		t.Fatalf("ownership admission fixture error = %v", err)
+	}
+	return helper.TicketAdmission{
+		RequesterIdentity:          ticket.RequesterIdentity,
+		InstallationID:             ticket.InstallationID,
+		OwnershipGeneration:        ticket.OwnershipGeneration,
+		OwnershipSchemaVersion:     ticket.OwnershipSchemaVersion,
+		NetworkPolicyFingerprint:   ticket.NetworkPolicyFingerprint,
+		ApprovedPool:               ticket.ApprovedPool,
+		OwnershipState:             state,
+		OwnershipFingerprint:       fingerprint,
+		TargetOwnershipFingerprint: targetFingerprint,
+		TicketVerifierKey:          verifierKey,
 	}
 }
 
@@ -317,3 +603,7 @@ func resolverHandlerExactObservation(request resolver.Request) resolver.Observat
 }
 
 var _ conditionalAdapter = (*testConditionalAdapter)(nil)
+var _ ownershipUpgrader = (*testOwnershipUpgrader)(nil)
+var _ helper.TicketRedeemer = resolverHandlerRedemption{}
+var _ helper.Clock = resolverHandlerClock{}
+var _ helper.ReplayGuard = resolverHandlerRejectedReplay{}

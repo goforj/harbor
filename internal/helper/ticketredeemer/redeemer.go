@@ -197,38 +197,102 @@ func (redeemer *Redeemer) Redeem(ctx context.Context, reference helper.TicketRef
 			return helper.TicketRedemption{}, err
 		}
 	}
+	admission, err := admitTicket(reference, ticket, observation, redeemer.topology.requesterIdentity)
+	if err != nil {
+		return helper.TicketRedemption{}, err
+	}
+	return helper.TicketRedemption{Ticket: ticket, Admission: admission}, nil
+}
+
+// admitTicket binds a signed target either to exact current ownership or to the one allowed schema transition source.
+func admitTicket(
+	reference helper.TicketReference,
+	ticket helper.Ticket,
+	observation ownership.Observation,
+	requesterIdentity string,
+) (helper.TicketAdmission, error) {
 	record := observation.Record
-	if record.OwnerIdentity != redeemer.topology.requesterIdentity {
-		return helper.TicketRedemption{}, consumedFailure(
+	if record.OwnerIdentity != requesterIdentity {
+		return helper.TicketAdmission{}, consumedFailure(
 			"bind ticket requester",
-			fmt.Errorf("pending owner %q does not match machine owner %q", redeemer.topology.requesterIdentity, record.OwnerIdentity),
+			fmt.Errorf("pending owner %q does not match machine owner %q", requesterIdentity, record.OwnerIdentity),
 		)
 	}
 	if ticket.OwnershipGeneration != record.Generation {
-		return helper.TicketRedemption{}, errors.Join(
+		return helper.TicketAdmission{}, errors.Join(
 			helper.ErrTicketReferenceStale,
 			ErrReferenceConsumed,
 			fmt.Errorf("ticket ownership generation %d does not match current generation %d", ticket.OwnershipGeneration, record.Generation),
 		)
 	}
-	if ticket.RequesterIdentity != redeemer.topology.requesterIdentity ||
+
+	state := helper.OwnershipAdmissionAlreadyCurrent
+	if record.SchemaVersion == ownership.IdentitySchemaVersion &&
+		ticket.OwnershipSchemaVersion == ownership.NetworkPolicySchemaVersion {
+		if ticket.Operation != helper.OperationEnsureResolver {
+			return helper.TicketAdmission{}, consumedFailure(
+				"bind resolver release to machine ownership",
+				errors.New("resolver release requires network-policy ownership to be already current"),
+			)
+		}
+		source := targetDerivedSchema1Record(ticket, record.TicketVerifierKey)
+		if source != record {
+			return helper.TicketAdmission{}, consumedFailure(
+				"bind resolver ownership transition",
+				errors.New("signed resolver target does not derive from the protected schema-1 ownership claim"),
+			)
+		}
+		state = helper.OwnershipAdmissionSchema1To2
+	} else if ticket.RequesterIdentity != requesterIdentity ||
 		ticket.InstallationID != record.InstallationID ||
 		ticket.OwnershipSchemaVersion != record.SchemaVersion ||
 		ticket.NetworkPolicyFingerprint != record.NetworkPolicyFingerprint ||
 		ticket.ApprovedPool != record.LoopbackPoolPrefix {
-		return helper.TicketRedemption{}, consumedFailure("bind ticket to machine ownership", errors.New("signed ticket does not match protected ownership dimensions"))
+		return helper.TicketAdmission{}, consumedFailure(
+			"bind ticket to machine ownership",
+			errors.New("signed ticket does not match protected ownership dimensions"),
+		)
+	}
+	target := ownershipRecordFromTicket(ticket, record.TicketVerifierKey)
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		return helper.TicketAdmission{}, consumedFailure("bind ticket ownership target", err)
 	}
 
-	admission := helper.TicketAdmission{
-		TicketReference:          reference,
-		RequesterIdentity:        redeemer.topology.requesterIdentity,
-		InstallationID:           record.InstallationID,
-		OwnershipGeneration:      record.Generation,
-		OwnershipSchemaVersion:   record.SchemaVersion,
-		NetworkPolicyFingerprint: record.NetworkPolicyFingerprint,
-		ApprovedPool:             record.LoopbackPoolPrefix,
+	return helper.TicketAdmission{
+		TicketReference:            reference,
+		RequesterIdentity:          ticket.RequesterIdentity,
+		InstallationID:             ticket.InstallationID,
+		OwnershipGeneration:        ticket.OwnershipGeneration,
+		OwnershipSchemaVersion:     ticket.OwnershipSchemaVersion,
+		NetworkPolicyFingerprint:   ticket.NetworkPolicyFingerprint,
+		ApprovedPool:               ticket.ApprovedPool,
+		OwnershipState:             state,
+		OwnershipFingerprint:       observation.Fingerprint,
+		TargetOwnershipFingerprint: targetFingerprint,
+		TicketVerifierKey:          record.TicketVerifierKey,
+	}, nil
+}
+
+// targetDerivedSchema1Record removes only the signed policy binding from a schema-2 resolver target.
+func targetDerivedSchema1Record(ticket helper.Ticket, ticketVerifierKey string) ownership.Record {
+	source := ownershipRecordFromTicket(ticket, ticketVerifierKey)
+	source.SchemaVersion = ownership.IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	return source
+}
+
+// ownershipRecordFromTicket reconstructs every protected target dimension without accepting a path or mutable store value.
+func ownershipRecordFromTicket(ticket helper.Ticket, ticketVerifierKey string) ownership.Record {
+	return ownership.Record{
+		SchemaVersion:            ticket.OwnershipSchemaVersion,
+		InstallationID:           ticket.InstallationID,
+		OwnerIdentity:            ticket.RequesterIdentity,
+		Generation:               ticket.OwnershipGeneration,
+		LoopbackPoolPrefix:       ticket.ApprovedPool,
+		NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
+		TicketVerifierKey:        ticketVerifierKey,
 	}
-	return helper.TicketRedemption{Ticket: ticket, Admission: admission}, nil
 }
 
 // authenticateOwnedEnvelope verifies one claimed installation's pinned key before comparing signed ownership dimensions.

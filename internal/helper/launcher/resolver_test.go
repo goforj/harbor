@@ -15,7 +15,7 @@ import (
 func TestInvokeResolverWritesCanonicalRequestAndCorrelatesPolicy(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	issued := validResolverLaunchTicket(t, now, helper.OperationEnsureResolver)
-	wantResponse := resolverSuccessResponse(issued.operation, issued.policyFingerprint)
+	wantResponse := resolverSuccessResponse(issued.operation, issued.policyFingerprint, issued.ownershipFingerprint)
 	calls := 0
 	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
 		calls++
@@ -38,7 +38,8 @@ func TestInvokeResolverWritesCanonicalRequestAndCorrelatesPolicy(t *testing.T) {
 	}
 	if calls != 1 || outcome.State != Succeeded || outcome.Response.Result == nil ||
 		outcome.Response.Result.ResolverEvidence == nil ||
-		outcome.Response.Result.ResolverEvidence.PolicyFingerprint != issued.policyFingerprint {
+		outcome.Response.Result.ResolverEvidence.PolicyFingerprint != issued.policyFingerprint ||
+		outcome.Response.Result.ResolverEvidence.OwnershipFingerprint != issued.ownershipFingerprint {
 		t.Fatalf("InvokeResolver() calls/outcome = %d/%#v", calls, outcome)
 	}
 }
@@ -48,7 +49,30 @@ func TestInvokeResolverRejectsUncorrelatedSuccess(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	issued := validResolverLaunchTicket(t, now, helper.OperationReleaseResolver)
 	transport := transportFunc(func(_ context.Context, _ io.Reader, response io.Writer) TransportResult {
-		if err := helper.WriteResponse(response, resolverSuccessResponse(issued.operation, strings.Repeat("f", 64))); err != nil {
+		if err := helper.WriteResponse(response, resolverSuccessResponse(issued.operation, strings.Repeat("f", 64), issued.ownershipFingerprint)); err != nil {
+			t.Fatalf("WriteResponse() error = %v", err)
+		}
+		return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+	})
+
+	outcome, err := New(transport, fixedClock{now: now}).InvokeResolver(t.Context(), issued)
+	if err != nil {
+		t.Fatalf("InvokeResolver() error = %v", err)
+	}
+	if outcome.State != Indeterminate || outcome.Exit == nil {
+		t.Fatalf("InvokeResolver() outcome = %#v, want indeterminate", outcome)
+	}
+}
+
+// TestInvokeResolverRejectsUncorrelatedOwnership prevents another protected target from satisfying consent.
+func TestInvokeResolverRejectsUncorrelatedOwnership(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	issued := validResolverLaunchTicket(t, now, helper.OperationEnsureResolver)
+	transport := transportFunc(func(_ context.Context, _ io.Reader, response io.Writer) TransportResult {
+		if err := helper.WriteResponse(
+			response,
+			resolverSuccessResponse(issued.operation, issued.policyFingerprint, strings.Repeat("f", 64)),
+		); err != nil {
 			t.Fatalf("WriteResponse() error = %v", err)
 		}
 		return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
@@ -69,23 +93,27 @@ func TestNewResolverLaunchTicketValidatesMetadata(t *testing.T) {
 	operationID := domain.OperationID("operation-resolver")
 	reference := helper.TicketReference(strings.Repeat("e", 64))
 	fingerprint := strings.Repeat("a", 64)
+	ownershipFingerprint := strings.Repeat("b", 64)
 	tests := []struct {
-		name        string
-		operationID domain.OperationID
-		reference   helper.TicketReference
-		operation   helper.Operation
-		fingerprint string
-		expiresAt   time.Time
-		wantError   bool
+		name                 string
+		operationID          domain.OperationID
+		reference            helper.TicketReference
+		operation            helper.Operation
+		fingerprint          string
+		ownershipFingerprint string
+		expiresAt            time.Time
+		wantError            bool
 	}{
-		{name: "ensure", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, expiresAt: now.Add(time.Minute)},
-		{name: "release", operationID: operationID, reference: reference, operation: helper.OperationReleaseResolver, fingerprint: fingerprint, expiresAt: now.Add(time.Minute)},
-		{name: "operation ID", reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, expiresAt: now.Add(time.Minute), wantError: true},
-		{name: "reference", operationID: operationID, reference: "bad", operation: helper.OperationEnsureResolver, fingerprint: fingerprint, expiresAt: now.Add(time.Minute), wantError: true},
-		{name: "operation", operationID: operationID, reference: reference, operation: helper.OperationEnsureLoopbackPool, fingerprint: fingerprint, expiresAt: now.Add(time.Minute), wantError: true},
-		{name: "fingerprint", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: "bad", expiresAt: now.Add(time.Minute), wantError: true},
-		{name: "uppercase fingerprint", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: strings.Repeat("A", 64), expiresAt: now.Add(time.Minute), wantError: true},
-		{name: "expiry", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, wantError: true},
+		{name: "ensure", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute)},
+		{name: "release", operationID: operationID, reference: reference, operation: helper.OperationReleaseResolver, fingerprint: fingerprint, ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute)},
+		{name: "operation ID", reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "reference", operationID: operationID, reference: "bad", operation: helper.OperationEnsureResolver, fingerprint: fingerprint, ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "operation", operationID: operationID, reference: reference, operation: helper.OperationEnsureLoopbackPool, fingerprint: fingerprint, ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "fingerprint", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: "bad", ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "uppercase fingerprint", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: strings.Repeat("A", 64), ownershipFingerprint: ownershipFingerprint, expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "ownership fingerprint", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, ownershipFingerprint: "bad", expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "uppercase ownership fingerprint", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, ownershipFingerprint: strings.Repeat("B", 64), expiresAt: now.Add(time.Minute), wantError: true},
+		{name: "expiry", operationID: operationID, reference: reference, operation: helper.OperationEnsureResolver, fingerprint: fingerprint, ownershipFingerprint: ownershipFingerprint, wantError: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,6 +122,7 @@ func TestNewResolverLaunchTicketValidatesMetadata(t *testing.T) {
 				test.reference,
 				test.operation,
 				test.fingerprint,
+				test.ownershipFingerprint,
 				test.expiresAt,
 			)
 			if (err != nil) != test.wantError {
@@ -111,6 +140,7 @@ func validResolverLaunchTicket(t *testing.T, now time.Time, operation helper.Ope
 		helper.TicketReference(strings.Repeat("e", 64)),
 		operation,
 		strings.Repeat("a", 64),
+		strings.Repeat("c", 64),
 		now.Add(time.Minute),
 	)
 	if err != nil {
@@ -120,7 +150,7 @@ func validResolverLaunchTicket(t *testing.T, now time.Time, operation helper.Ope
 }
 
 // resolverSuccessResponse returns one valid resolver postcondition for launcher correlation.
-func resolverSuccessResponse(operation helper.Operation, policyFingerprint string) helper.Response {
+func resolverSuccessResponse(operation helper.Operation, policyFingerprint string, ownershipFingerprint string) helper.Response {
 	postcondition := helper.ResolverPostconditionExact
 	if operation == helper.OperationReleaseResolver {
 		postcondition = helper.ResolverPostconditionOwnedAbsent
@@ -133,6 +163,7 @@ func resolverSuccessResponse(operation helper.Operation, policyFingerprint strin
 			ResolverEvidence: &helper.ResolverMutationEvidence{
 				Changed:                true,
 				PolicyFingerprint:      policyFingerprint,
+				OwnershipFingerprint:   ownershipFingerprint,
 				ObservationFingerprint: strings.Repeat("b", 64),
 				Postcondition:          postcondition,
 			},

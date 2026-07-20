@@ -36,14 +36,23 @@ func TestRedeemerConsumesAndAuthenticatesOneReference(t *testing.T) {
 	if redemption.Ticket.Nonce != strings.Repeat("n", 32) {
 		t.Fatalf("Redeem() ticket = %#v", redemption.Ticket)
 	}
+	ownedRecord := fixture.record()
+	ownedFingerprint, err := ownedRecord.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint ownership fixture: %v", err)
+	}
 	wantAdmission := helper.TicketAdmission{
-		TicketReference:          reference,
-		RequesterIdentity:        fixture.owner,
-		InstallationID:           "harbor-redeemer-test",
-		OwnershipGeneration:      7,
-		OwnershipSchemaVersion:   ownership.IdentitySchemaVersion,
-		NetworkPolicyFingerprint: "",
-		ApprovedPool:             "127.77.0.0/24",
+		TicketReference:            reference,
+		RequesterIdentity:          fixture.owner,
+		InstallationID:             "harbor-redeemer-test",
+		OwnershipGeneration:        7,
+		OwnershipSchemaVersion:     ownership.IdentitySchemaVersion,
+		NetworkPolicyFingerprint:   "",
+		ApprovedPool:               "127.77.0.0/24",
+		OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
+		OwnershipFingerprint:       ownedFingerprint,
+		TargetOwnershipFingerprint: ownedFingerprint,
+		TicketVerifierKey:          ownedRecord.TicketVerifierKey,
 	}
 	if redemption.Admission != wantAdmission {
 		t.Fatalf("Redeem() admission = %#v, want %#v", redemption.Admission, wantAdmission)
@@ -86,6 +95,122 @@ func TestRedeemerConsumesNetworkPolicyOwnership(t *testing.T) {
 	if redemption.Admission.OwnershipSchemaVersion != record.SchemaVersion || redemption.Admission.NetworkPolicyFingerprint != record.NetworkPolicyFingerprint {
 		t.Fatalf("Redeem() admission = %#v, want schema-two policy binding", redemption.Admission)
 	}
+	if redemption.Admission.OwnershipState != helper.OwnershipAdmissionAlreadyCurrent {
+		t.Fatalf("Redeem() ownership state = %q, want already current", redemption.Admission.OwnershipState)
+	}
+}
+
+// TestRedeemerAdmitsResolverOwnershipTransitionWithoutMutation proves redemption only describes the exact schema upgrade.
+func TestRedeemerAdmitsResolverOwnershipTransitionWithoutMutation(t *testing.T) {
+	fixture := newUnixRedeemerFixture(t, true)
+	ticket := testRedeemerResolverTicket(fixture.now, fixture.owner, helper.OperationEnsureResolver)
+	reference := fixture.writeTicket(t, ticket, '6', fixture.privateKey)
+	redeemer := fixture.open(t)
+
+	redemption, err := redeemer.Redeem(t.Context(), reference)
+	if err != nil {
+		t.Fatalf("Redeem(transition) error = %v", err)
+	}
+	source := fixture.record()
+	sourceFingerprint, err := source.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redemption.Admission.OwnershipState != helper.OwnershipAdmissionSchema1To2 ||
+		redemption.Admission.OwnershipFingerprint != sourceFingerprint ||
+		redemption.Admission.OwnershipSchemaVersion != ownership.NetworkPolicySchemaVersion ||
+		redemption.Admission.NetworkPolicyFingerprint != ticket.NetworkPolicyFingerprint {
+		t.Fatalf("Redeem(transition) admission = %#v", redemption.Admission)
+	}
+	observed, err := redeemer.ownership.Observe(t.Context())
+	if err != nil {
+		t.Fatalf("Observe() after redemption error = %v", err)
+	}
+	if observed.Record != source || observed.Fingerprint != sourceFingerprint {
+		t.Fatalf("redemption mutated ownership = %#v, want schema-1 %#v", observed, source)
+	}
+
+	target := source
+	target.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	target.NetworkPolicyFingerprint = ticket.NetworkPolicyFingerprint
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redemption.Admission.TargetOwnershipFingerprint != targetFingerprint {
+		t.Fatalf("Redeem(transition) target fingerprint = %q, want %q", redemption.Admission.TargetOwnershipFingerprint, targetFingerprint)
+	}
+	store, err := ownership.NewStore(fixture.paths.OwnershipPath)
+	if err != nil {
+		t.Fatalf("open transition ownership store: %v", err)
+	}
+	upgraded, upgradeErr := store.Upgrade(t.Context(), sourceFingerprint, target)
+	closeErr := store.Close()
+	if upgradeErr != nil || closeErr != nil {
+		t.Fatalf("Upgrade()/Close() = %#v, %v / %v", upgraded, upgradeErr, closeErr)
+	}
+
+	fresh := ticket
+	fresh.Nonce = strings.Repeat("s", 32)
+	freshReference := fixture.writeTicket(t, fresh, '7', fixture.privateKey)
+	freshRedemption, err := redeemer.Redeem(t.Context(), freshReference)
+	if err != nil {
+		t.Fatalf("Redeem(current retry) error = %v", err)
+	}
+	if freshRedemption.Admission.OwnershipState != helper.OwnershipAdmissionAlreadyCurrent ||
+		freshRedemption.Admission.OwnershipFingerprint != upgraded.Fingerprint {
+		t.Fatalf("Redeem(current retry) admission = %#v, want target %#v", freshRedemption.Admission, upgraded)
+	}
+}
+
+// TestRedeemerRejectsResolverTransitionWithoutExactSchema1Source covers forged and mismatched target derivations.
+func TestRedeemerRejectsResolverTransitionWithoutExactSchema1Source(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*helper.Ticket, unixRedeemerFixture)
+		signingKey func(unixRedeemerFixture) ed25519.PrivateKey
+		want       error
+	}{
+		{name: "installation", mutate: func(ticket *helper.Ticket, _ unixRedeemerFixture) {
+			ticket.InstallationID = "harbor-other-installation"
+		}, want: helper.ErrTicketRedemptionFailed},
+		{name: "requester", mutate: func(ticket *helper.Ticket, fixture unixRedeemerFixture) {
+			ticket.RequesterIdentity = fixture.owner + "9"
+		}, want: helper.ErrTicketRedemptionFailed},
+		{name: "generation", mutate: func(ticket *helper.Ticket, _ unixRedeemerFixture) { ticket.OwnershipGeneration++ }, want: helper.ErrTicketReferenceStale},
+		{name: "pool", mutate: func(ticket *helper.Ticket, _ unixRedeemerFixture) { ticket.ApprovedPool = "127.78.0.0/24" }, want: helper.ErrTicketRedemptionFailed},
+		{name: "verifier", signingKey: func(unixRedeemerFixture) ed25519.PrivateKey {
+			_, privateKey := testRedeemerKey('x')
+			return privateKey
+		}, want: helper.ErrTicketRedemptionFailed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newUnixRedeemerFixture(t, true)
+			ticket := testRedeemerResolverTicket(fixture.now, fixture.owner, helper.OperationEnsureResolver)
+			if test.mutate != nil {
+				test.mutate(&ticket, fixture)
+			}
+			privateKey := fixture.privateKey
+			if test.signingKey != nil {
+				privateKey = test.signingKey(fixture)
+			}
+			reference := fixture.writeTicket(t, ticket, '8', privateKey)
+			if _, err := fixture.open(t).Redeem(t.Context(), reference); !errors.Is(err, test.want) || !errors.Is(err, ErrReferenceConsumed) {
+				t.Fatalf("Redeem() error = %v, want consumed rejection", err)
+			}
+		})
+	}
+}
+
+// TestRedeemerRejectsResolverReleaseFromSchema1Ownership prevents release from implicitly changing ownership schema.
+func TestRedeemerRejectsResolverReleaseFromSchema1Ownership(t *testing.T) {
+	fixture := newUnixRedeemerFixture(t, true)
+	ticket := testRedeemerResolverTicket(fixture.now, fixture.owner, helper.OperationReleaseResolver)
+	reference := fixture.writeTicket(t, ticket, '9', fixture.privateKey)
+	if _, err := fixture.open(t).Redeem(t.Context(), reference); !errors.Is(err, helper.ErrTicketRedemptionFailed) || !errors.Is(err, ErrReferenceConsumed) {
+		t.Fatalf("Redeem(release) error = %v, want consumed schema-1 rejection", err)
+	}
 }
 
 // TestRedeemerBootstrapsExactPoolOwnership proves the first authenticated pool ticket pins authority before dispatch.
@@ -121,13 +246,17 @@ func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 		t.Fatalf("validateOwnershipObservation() error = %v", err)
 	}
 	wantAdmission := helper.TicketAdmission{
-		TicketReference:          reference,
-		RequesterIdentity:        fixture.owner,
-		InstallationID:           ticket.InstallationID,
-		OwnershipGeneration:      1,
-		OwnershipSchemaVersion:   ownership.IdentitySchemaVersion,
-		NetworkPolicyFingerprint: "",
-		ApprovedPool:             ticket.ApprovedPool,
+		TicketReference:            reference,
+		RequesterIdentity:          fixture.owner,
+		InstallationID:             ticket.InstallationID,
+		OwnershipGeneration:        1,
+		OwnershipSchemaVersion:     ownership.IdentitySchemaVersion,
+		NetworkPolicyFingerprint:   "",
+		ApprovedPool:               ticket.ApprovedPool,
+		OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
+		OwnershipFingerprint:       observation.Fingerprint,
+		TargetOwnershipFingerprint: observation.Fingerprint,
+		TicketVerifierKey:          wantRecord.TicketVerifierKey,
 	}
 	if redemption.Admission != wantAdmission {
 		t.Fatalf("Redeem() admission = %#v, want %#v", redemption.Admission, wantAdmission)

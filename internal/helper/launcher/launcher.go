@@ -245,13 +245,14 @@ func matchPoolLaunchTicket(ticket PoolLaunchTicket) resultMatcher {
 	}
 }
 
-// matchResolverLaunchTicket binds success to the prepared operation and exact policy fingerprint.
+// matchResolverLaunchTicket binds success to the prepared operation, policy, and target protected ownership.
 func matchResolverLaunchTicket(ticket ResolverLaunchTicket) resultMatcher {
 	return func(result *helper.OperationResult) bool {
 		return result != nil &&
 			result.Operation == ticket.operation &&
 			result.ResolverEvidence != nil &&
-			result.ResolverEvidence.PolicyFingerprint == ticket.policyFingerprint
+			result.ResolverEvidence.PolicyFingerprint == ticket.policyFingerprint &&
+			result.ResolverEvidence.OwnershipFingerprint == ticket.ownershipFingerprint
 	}
 }
 

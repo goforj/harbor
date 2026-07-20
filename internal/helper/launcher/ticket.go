@@ -32,11 +32,12 @@ type PoolLaunchTicket struct {
 
 // ResolverLaunchTicket is the immutable non-secret metadata needed to launch one resolver capability.
 type ResolverLaunchTicket struct {
-	operationID       domain.OperationID
-	reference         helper.TicketReference
-	operation         helper.Operation
-	policyFingerprint string
-	expiresAt         time.Time
+	operationID          domain.OperationID
+	reference            helper.TicketReference
+	operation            helper.Operation
+	policyFingerprint    string
+	ownershipFingerprint string
+	expiresAt            time.Time
 }
 
 // NewLaunchTicket validates and captures metadata from an already authenticated approval response.
@@ -102,14 +103,16 @@ func NewResolverLaunchTicket(
 	reference helper.TicketReference,
 	operation helper.Operation,
 	policyFingerprint string,
+	ownershipFingerprint string,
 	expiresAt time.Time,
 ) (ResolverLaunchTicket, error) {
 	ticket := ResolverLaunchTicket{
-		operationID:       operationID,
-		reference:         reference,
-		operation:         operation,
-		policyFingerprint: policyFingerprint,
-		expiresAt:         expiresAt,
+		operationID:          operationID,
+		reference:            reference,
+		operation:            operation,
+		policyFingerprint:    policyFingerprint,
+		ownershipFingerprint: ownershipFingerprint,
+		expiresAt:            expiresAt,
 	}
 	if err := ticket.validateStructure(); err != nil {
 		return ResolverLaunchTicket{}, err
@@ -222,6 +225,10 @@ func (ticket ResolverLaunchTicket) validateStructure() error {
 	decoded, err := hex.DecodeString(ticket.policyFingerprint)
 	if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != ticket.policyFingerprint {
 		return fmt.Errorf("resolver launch ticket policy fingerprint is invalid")
+	}
+	decoded, err = hex.DecodeString(ticket.ownershipFingerprint)
+	if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != ticket.ownershipFingerprint {
+		return fmt.Errorf("resolver launch ticket ownership fingerprint is invalid")
 	}
 	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
 		return fmt.Errorf("resolver launch ticket expiry must be a nonzero UTC time")

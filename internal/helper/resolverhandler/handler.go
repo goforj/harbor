@@ -6,6 +6,7 @@ import (
 
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/ownership"
+	"github.com/goforj/harbor/internal/platform/machinepaths"
 	"github.com/goforj/harbor/internal/platform/resolver"
 )
 
@@ -16,29 +17,63 @@ type conditionalAdapter interface {
 	ReleaseIfObserved(context.Context, resolver.Request, string) (resolver.Change, error)
 }
 
+// ownershipUpgrader is the only protected ownership mutation available to the resolver handler.
+type ownershipUpgrader interface {
+	Upgrade(context.Context, string, ownership.Record) (ownership.Observation, error)
+	Close() error
+}
+
 // Handler turns one admitted policy-bound ticket into an exact resolver effect.
 type Handler struct {
-	adapter conditionalAdapter
+	adapter   conditionalAdapter
+	ownership ownershipUpgrader
 }
 
 var _ helper.ResolverHandler = (*Handler)(nil)
 
-// New creates a handler backed by one reviewed platform resolver adapter.
-func New(adapter *resolver.Adapter) *Handler {
+// OpenDefault opens a handler against Harbor's fixed protected ownership record and reviewed resolver adapter.
+func OpenDefault(adapter *resolver.Adapter) (*Handler, error) {
 	if adapter == nil {
-		panic("resolverhandler.New requires a non-nil resolver adapter")
+		panic("resolverhandler.OpenDefault requires a non-nil resolver adapter")
 	}
-	return newHandler(adapter)
+	paths, err := machinepaths.Resolve()
+	if err != nil {
+		return nil, fmt.Errorf("resolve protected resolver ownership path: %w", err)
+	}
+	store, err := ownership.NewStore(paths.OwnershipPath)
+	if err != nil {
+		return nil, fmt.Errorf("open protected resolver ownership: %w", err)
+	}
+	return newHandler(adapter, store), nil
 }
 
 // newHandler keeps native effects replaceable in tests without expanding the production constructor.
-func newHandler(adapter conditionalAdapter) *Handler {
-	return &Handler{adapter: adapter}
+func newHandler(adapter conditionalAdapter, ownershipStore ownershipUpgrader) *Handler {
+	if adapter == nil {
+		panic("resolverhandler.newHandler requires a non-nil resolver adapter")
+	}
+	if ownershipStore == nil {
+		panic("resolverhandler.newHandler requires a non-nil ownership upgrader")
+	}
+	return &Handler{adapter: adapter, ownership: ownershipStore}
+}
+
+// Close releases the retained protected ownership boundary without changing its record.
+func (handler *Handler) Close() error {
+	return handler.ownership.Close()
 }
 
 // EnsureResolver ensures only the resolver rule described by the ticket's complete signed policy.
-func (handler *Handler) EnsureResolver(ctx context.Context, ticket helper.Ticket) (helper.ResolverMutationEvidence, error) {
+func (handler *Handler) EnsureResolver(
+	ctx context.Context,
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (helper.ResolverMutationEvidence, error) {
 	request, expected, err := resolverRequestFromTicket(ticket, helper.OperationEnsureResolver)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, err
+	}
+	ownershipFingerprint, err := handler.ensureOwnership(ctx, ticket, admission)
 	if err != nil {
 		return helper.ResolverMutationEvidence{}, err
 	}
@@ -46,20 +81,117 @@ func (handler *Handler) EnsureResolver(ctx context.Context, ticket helper.Ticket
 	if err != nil {
 		return helper.ResolverMutationEvidence{}, err
 	}
-	return evidenceFromChange(ticket.Operation, request, change)
+	return evidenceFromChange(ticket.Operation, ownershipFingerprint, request, change)
 }
 
 // ReleaseResolver removes only the uniquely owned rule described by the ticket's complete signed policy.
-func (handler *Handler) ReleaseResolver(ctx context.Context, ticket helper.Ticket) (helper.ResolverMutationEvidence, error) {
+func (handler *Handler) ReleaseResolver(
+	ctx context.Context,
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (helper.ResolverMutationEvidence, error) {
 	request, expected, err := resolverRequestFromTicket(ticket, helper.OperationReleaseResolver)
 	if err != nil {
 		return helper.ResolverMutationEvidence{}, err
+	}
+	_, ownershipFingerprint, err := currentOwnershipTarget(ticket, admission)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, fmt.Errorf("admit resolver release ownership: %w", err)
 	}
 	change, err := handler.adapter.ReleaseIfObserved(ctx, request, expected.Fingerprint)
 	if err != nil {
 		return helper.ResolverMutationEvidence{}, err
 	}
-	return evidenceFromChange(ticket.Operation, request, change)
+	return evidenceFromChange(ticket.Operation, ownershipFingerprint, request, change)
+}
+
+// ensureOwnership performs the one admitted schema transition before any resolver mutation.
+func (handler *Handler) ensureOwnership(
+	ctx context.Context,
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (string, error) {
+	target, targetFingerprint, err := ownershipTarget(ticket, admission)
+	if err != nil {
+		return "", fmt.Errorf("admit resolver ensure ownership: %w", err)
+	}
+	source := target
+	source.SchemaVersion = ownership.IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	sourceFingerprint, err := source.Fingerprint()
+	if err != nil {
+		return "", fmt.Errorf("derive resolver ownership transition source: %w", err)
+	}
+	switch admission.OwnershipState {
+	case helper.OwnershipAdmissionAlreadyCurrent:
+		if admission.OwnershipFingerprint != targetFingerprint {
+			return "", fmt.Errorf("admit resolver ensure ownership: protected ownership is not the signed schema-2 target")
+		}
+	case helper.OwnershipAdmissionSchema1To2:
+		if admission.OwnershipFingerprint != sourceFingerprint {
+			return "", fmt.Errorf("admit resolver ownership transition: protected schema-1 source is not derived from the signed target")
+		}
+	default:
+		return "", fmt.Errorf("admit resolver ensure ownership: ownership admission state %q is unsupported", admission.OwnershipState)
+	}
+	upgraded, err := handler.ownership.Upgrade(ctx, sourceFingerprint, target)
+	if err != nil {
+		return "", fmt.Errorf("upgrade resolver ownership: %w", err)
+	}
+	if !upgraded.Exists || upgraded.Record != target || upgraded.Fingerprint != targetFingerprint {
+		return "", fmt.Errorf("upgrade resolver ownership: protected store returned a different schema-2 target")
+	}
+	return upgraded.Fingerprint, nil
+}
+
+// currentOwnershipTarget rejects release and current-state paths unless protected ownership already equals schema 2.
+func currentOwnershipTarget(ticket helper.Ticket, admission helper.TicketAdmission) (ownership.Record, string, error) {
+	target, targetFingerprint, err := ownershipTarget(ticket, admission)
+	if err != nil {
+		return ownership.Record{}, "", err
+	}
+	if admission.OwnershipState != helper.OwnershipAdmissionAlreadyCurrent {
+		return ownership.Record{}, "", fmt.Errorf("resolver release requires ownership to be already current")
+	}
+	if admission.OwnershipFingerprint != targetFingerprint {
+		return ownership.Record{}, "", fmt.Errorf("protected ownership is not the signed schema-2 target")
+	}
+	return target, targetFingerprint, nil
+}
+
+// ownershipTarget reconstructs the exact schema-2 record from signed dimensions and independently admitted key material.
+func ownershipTarget(
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (ownership.Record, string, error) {
+	if admission.RequesterIdentity != ticket.RequesterIdentity ||
+		admission.InstallationID != ticket.InstallationID ||
+		admission.OwnershipGeneration != ticket.OwnershipGeneration ||
+		admission.OwnershipSchemaVersion != ticket.OwnershipSchemaVersion ||
+		admission.NetworkPolicyFingerprint != ticket.NetworkPolicyFingerprint ||
+		admission.ApprovedPool != ticket.ApprovedPool {
+		return ownership.Record{}, "", fmt.Errorf("ownership admission does not match the signed resolver target")
+	}
+	target := ownership.Record{
+		SchemaVersion:            ticket.OwnershipSchemaVersion,
+		InstallationID:           ticket.InstallationID,
+		OwnerIdentity:            ticket.RequesterIdentity,
+		Generation:               ticket.OwnershipGeneration,
+		LoopbackPoolPrefix:       ticket.ApprovedPool,
+		NetworkPolicyFingerprint: ticket.NetworkPolicyFingerprint,
+		TicketVerifierKey:        admission.TicketVerifierKey,
+	}
+	if target.SchemaVersion != ownership.NetworkPolicySchemaVersion {
+		return ownership.Record{}, "", fmt.Errorf("resolver ownership target is not schema 2")
+	}
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		return ownership.Record{}, "", fmt.Errorf("fingerprint resolver ownership target: %w", err)
+	}
+	if admission.TargetOwnershipFingerprint != targetFingerprint {
+		return ownership.Record{}, "", fmt.Errorf("ownership admission target fingerprint does not match the signed resolver target")
+	}
+	return target, targetFingerprint, nil
 }
 
 // resolverRequestFromTicket reconstructs private resolver authority only from the complete signed policy.
@@ -109,6 +241,7 @@ func resolverRequestFromTicket(
 // evidenceFromChange reduces native resolver facts to the postcondition needed by the unprivileged caller.
 func evidenceFromChange(
 	operation helper.Operation,
+	ownershipFingerprint string,
 	request resolver.Request,
 	change resolver.Change,
 ) (helper.ResolverMutationEvidence, error) {
@@ -148,6 +281,7 @@ func evidenceFromChange(
 	return helper.ResolverMutationEvidence{
 		Changed:                change.Changed,
 		PolicyFingerprint:      request.PolicyFingerprint(),
+		OwnershipFingerprint:   ownershipFingerprint,
 		ObservationFingerprint: fingerprint,
 		Postcondition:          postcondition,
 	}, nil

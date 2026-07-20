@@ -26,13 +26,19 @@ type closingReplayGuard interface {
 	Close() error
 }
 
+// closingResolverHandler retains protected ownership authority for exactly one helper process.
+type closingResolverHandler interface {
+	helper.ResolverHandler
+	Close() error
+}
+
 // runtimeDependencies keeps fixed production authority replaceable without redirectable path arguments.
 type runtimeDependencies struct {
 	authorizeInvocation        func() error
 	openTicketRedeemer         func() (closingTicketRedeemer, error)
 	openReplayGuard            func() (closingReplayGuard, error)
 	newLoopbackIdentityHandler func() helper.LoopbackIdentityHandler
-	newResolverHandler         func() helper.ResolverHandler
+	openResolverHandler        func() (closingResolverHandler, error)
 }
 
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
@@ -62,7 +68,7 @@ func productionDependencies() runtimeDependencies {
 		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
 			return loopbackhandler.New()
 		},
-		newResolverHandler: newPlatformResolverHandler,
+		openResolverHandler: openPlatformResolverHandler,
 	}
 }
 
@@ -92,12 +98,22 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 		}
 	}()
 
+	resolverHandler, err := dependencies.openResolverHandler()
+	if err != nil {
+		return fmt.Errorf("open helper resolver handler: %w", err)
+	}
+	defer func() {
+		if err := resolverHandler.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close helper resolver handler: %w", err))
+		}
+	}()
+
 	dispatcher := helper.NewDispatcherWithResolver(
 		redeemer,
 		clock,
 		replayGuard,
 		dependencies.newLoopbackIdentityHandler(),
-		dependencies.newResolverHandler(),
+		resolverHandler,
 	)
 	return helper.ServeOnce(ctx, reader, writer, dispatcher)
 }

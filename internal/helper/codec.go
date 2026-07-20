@@ -236,6 +236,7 @@ func validateCanonicalResolverMutationEvidenceObject(body []byte) error {
 		evidence,
 		"changed",
 		"policy_fingerprint",
+		"ownership_fingerprint",
 		"observation_fingerprint",
 		"postcondition",
 	)

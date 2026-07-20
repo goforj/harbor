@@ -20,6 +20,11 @@ import (
 	"github.com/goforj/harbor/internal/platform/resolver"
 )
 
+var (
+	// ErrResolverPublicationIndeterminate means the returned resolver result identifies a capability whose final durability is uncertain.
+	ErrResolverPublicationIndeterminate = errors.New("resolver capability publication is indeterminate")
+)
+
 // ResolverRequest selects one durable resolver approval plan without carrying host authority.
 type ResolverRequest struct {
 	OperationID domain.OperationID
@@ -99,11 +104,12 @@ type ResolverObserver interface {
 
 // ResolverResult exposes only opaque launch metadata for one policy-bound capability.
 type ResolverResult struct {
-	OperationID       domain.OperationID
-	Reference         helper.TicketReference
-	Operation         helper.Operation
-	PolicyFingerprint string
-	ExpiresAt         time.Time
+	OperationID          domain.OperationID
+	Reference            helper.TicketReference
+	Operation            helper.Operation
+	PolicyFingerprint    string
+	OwnershipFingerprint string
+	ExpiresAt            time.Time
 }
 
 // Validate rejects results that can cross the selected operation or helper lifetime boundary.
@@ -119,6 +125,9 @@ func (result ResolverResult) Validate(now time.Time) error {
 	}
 	if !canonicalSHA256Fingerprint(result.PolicyFingerprint) {
 		return fmt.Errorf("resolver approval result policy fingerprint is invalid")
+	}
+	if !canonicalSHA256Fingerprint(result.OwnershipFingerprint) {
+		return fmt.Errorf("resolver approval result ownership fingerprint is invalid")
 	}
 	if result.ExpiresAt.IsZero() || result.ExpiresAt.Location() != time.UTC || !result.ExpiresAt.After(now) {
 		return fmt.Errorf("resolver approval result expiry is invalid")
@@ -253,6 +262,7 @@ func (service *ResolverService) Close() error {
 }
 
 // Issue derives one target-schema capability from a stable plan and two equal native observations.
+// A result returned with ErrResolverPublicationIndeterminate is the only reference callers may reconcile and must not be replaced by retrying issuance.
 func (service *ResolverService) Issue(
 	ctx context.Context,
 	requesterIdentity string,
@@ -321,17 +331,33 @@ func (service *ResolverService) Issue(
 	if confirmedResolverFingerprint != observationFingerprint {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: resolver observation changed before publication")
 	}
-
-	reference, err := service.publisher.Publish(ctx, ticket, privateKey)
+	targetOwnershipFingerprint, err := plan.TargetOwnership.Fingerprint()
 	if err != nil {
-		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: publish capability: %w", err)
+		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: fingerprint target ownership: %w", err)
 	}
+
+	reference, publishErr := service.publisher.Publish(ctx, ticket, privateKey)
 	result := ResolverResult{
-		OperationID:       plan.OperationID,
-		Reference:         reference,
-		Operation:         plan.Mutation,
-		PolicyFingerprint: plan.TargetOwnership.NetworkPolicyFingerprint,
-		ExpiresAt:         ticket.ExpiresAt,
+		OperationID:          plan.OperationID,
+		Reference:            reference,
+		Operation:            plan.Mutation,
+		PolicyFingerprint:    plan.TargetOwnership.NetworkPolicyFingerprint,
+		OwnershipFingerprint: targetOwnershipFingerprint,
+		ExpiresAt:            ticket.ExpiresAt,
+	}
+	if publishErr != nil {
+		wrapped := fmt.Errorf("issue helper resolver ticket: publish capability: %w", publishErr)
+		if !errors.Is(publishErr, ticketspool.ErrDurabilityUncertain) {
+			return ResolverResult{}, wrapped
+		}
+		if err := result.Validate(ticket.ExpiresAt.Add(-ticketLifetime)); err != nil {
+			return ResolverResult{}, errors.Join(
+				ErrResolverPublicationIndeterminate,
+				wrapped,
+				fmt.Errorf("issue helper resolver ticket: invalid durability-uncertain publication result: %w", err),
+			)
+		}
+		return result, errors.Join(ErrResolverPublicationIndeterminate, wrapped)
 	}
 	if err := result.Validate(service.clock.Now().UTC()); err != nil {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: invalid result: %w", err)

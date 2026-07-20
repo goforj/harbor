@@ -13,6 +13,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketspool"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/platform/resolver"
@@ -89,9 +90,14 @@ func TestResolverServiceIssueBindsTargetOwnershipAndNativeObservation(t *testing
 	if err := result.Validate(fixture.now); err != nil {
 		t.Fatalf("ResolverResult.Validate() error = %v", err)
 	}
+	targetOwnershipFingerprint, err := fixture.plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.OperationID != fixture.plan.OperationID ||
 		result.Operation != helper.OperationEnsureResolver ||
-		result.PolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint {
+		result.PolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint ||
+		result.OwnershipFingerprint != targetOwnershipFingerprint {
 		t.Fatalf("Issue() result = %#v", result)
 	}
 	if len(fixture.plans.requests) != 2 || fixture.ownership.calls != 2 || fixture.keys.calls != 1 ||
@@ -262,12 +268,17 @@ func TestResolverPlanValidationPinsOneSchemaTransition(t *testing.T) {
 // TestResolverResultValidationRejectsUncorrelatedMetadata covers every client-visible launch boundary.
 func TestResolverResultValidationRejectsUncorrelatedMetadata(t *testing.T) {
 	fixture := newResolverIssuerFixture(t)
+	targetOwnershipFingerprint, err := fixture.plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
 	valid := ResolverResult{
-		OperationID:       fixture.plan.OperationID,
-		Reference:         helper.TicketReference(strings.Repeat("a", 64)),
-		Operation:         helper.OperationEnsureResolver,
-		PolicyFingerprint: fixture.plan.TargetOwnership.NetworkPolicyFingerprint,
-		ExpiresAt:         fixture.now.Add(time.Minute),
+		OperationID:          fixture.plan.OperationID,
+		Reference:            helper.TicketReference(strings.Repeat("a", 64)),
+		Operation:            helper.OperationEnsureResolver,
+		PolicyFingerprint:    fixture.plan.TargetOwnership.NetworkPolicyFingerprint,
+		OwnershipFingerprint: targetOwnershipFingerprint,
+		ExpiresAt:            fixture.now.Add(time.Minute),
 	}
 	if err := valid.Validate(fixture.now); err != nil {
 		t.Fatalf("valid ResolverResult error = %v", err)
@@ -281,6 +292,8 @@ func TestResolverResultValidationRejectsUncorrelatedMetadata(t *testing.T) {
 		{name: "operation", mutate: func(result *ResolverResult) { result.Operation = helper.OperationReleaseResolver }},
 		{name: "fingerprint length", mutate: func(result *ResolverResult) { result.PolicyFingerprint = "bad" }},
 		{name: "fingerprint case", mutate: func(result *ResolverResult) { result.PolicyFingerprint = strings.Repeat("A", 64) }},
+		{name: "ownership fingerprint length", mutate: func(result *ResolverResult) { result.OwnershipFingerprint = "bad" }},
+		{name: "ownership fingerprint case", mutate: func(result *ResolverResult) { result.OwnershipFingerprint = strings.Repeat("A", 64) }},
 		{name: "expiry zero", mutate: func(result *ResolverResult) { result.ExpiresAt = time.Time{} }},
 		{name: "expiry local", mutate: func(result *ResolverResult) {
 			result.ExpiresAt = fixture.now.In(time.FixedZone("test", 60)).Add(time.Minute)
@@ -329,6 +342,43 @@ func TestResolverServicePropagatesAuthorityFailures(t *testing.T) {
 	fixture.service.entropy = bytes.NewReader(nil)
 	if _, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request); err == nil || !strings.Contains(err.Error(), "generate nonce") {
 		t.Fatalf("Issue(short entropy) error = %v", err)
+	}
+}
+
+// TestResolverServicePreservesDurabilityUncertainPublication keeps the committed reference available for reconciliation without permitting a blind retry.
+func TestResolverServicePreservesDurabilityUncertainPublication(t *testing.T) {
+	fixture := newResolverIssuerFixture(t)
+	cause := errors.New("scripted directory sync failure")
+	fixture.publisher.err = errors.Join(ticketspool.ErrDurabilityUncertain, cause)
+
+	result, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+	if !errors.Is(err, ErrResolverPublicationIndeterminate) ||
+		!errors.Is(err, ticketspool.ErrDurabilityUncertain) ||
+		!errors.Is(err, cause) {
+		t.Fatalf("Issue() error = %v, want resolver and spool durability classifications", err)
+	}
+	if result.Reference != fixture.publisher.reference || result.OperationID != fixture.plan.OperationID {
+		t.Fatalf("Issue() result = %#v, want reference %q for operation %q", result, fixture.publisher.reference, fixture.plan.OperationID)
+	}
+	if err := result.Validate(fixture.now); err != nil {
+		t.Fatalf("ResolverResult.Validate() error = %v", err)
+	}
+}
+
+// TestResolverServiceRejectsUncorrelatedDurabilityUncertainty keeps malformed publisher outcomes from becoming launch metadata while retaining the no-retry classification.
+func TestResolverServiceRejectsUncorrelatedDurabilityUncertainty(t *testing.T) {
+	fixture := newResolverIssuerFixture(t)
+	fixture.publisher.reference = ""
+	fixture.publisher.err = ticketspool.ErrDurabilityUncertain
+
+	result, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+	if result != (ResolverResult{}) {
+		t.Fatalf("Issue() result = %#v, want zero result", result)
+	}
+	if !errors.Is(err, ErrResolverPublicationIndeterminate) ||
+		!errors.Is(err, ticketspool.ErrDurabilityUncertain) ||
+		!strings.Contains(err.Error(), "invalid durability-uncertain publication result") {
+		t.Fatalf("Issue() error = %v, want classified malformed durability outcome", err)
 	}
 }
 
