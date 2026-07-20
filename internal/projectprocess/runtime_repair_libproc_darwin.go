@@ -163,14 +163,7 @@ func observeDarwinRuntimeRepairSockets(pid int, endpoint netip.AddrPort) ([]runt
 
 // observeDarwinRuntimeRepairFDs obtains one bounded, structurally complete proc_fdinfo array.
 func observeDarwinRuntimeRepairFDs(pid int) ([]darwinRuntimeRepairFDInfoABI, error) {
-	needed, err := callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, darwinRuntimeRepairPIDListFDs, 0, nil)
-	if err != nil {
-		return nil, classifyDarwinRuntimeRepairLibprocFailure(pid)
-	}
-	if needed == 0 {
-		return []darwinRuntimeRepairFDInfoABI{}, nil
-	}
-	readBytes, err := darwinRuntimeRepairFDReadBufferBytes(needed)
+	readBytes, err := darwinRuntimeRepairFDReadBufferBytes()
 	if err != nil {
 		return nil, err
 	}
@@ -189,41 +182,26 @@ func observeDarwinRuntimeRepairFDs(pid int) ([]darwinRuntimeRepairFDInfoABI, err
 	return fds, nil
 }
 
-// darwinRuntimeRepairFDReadBufferBytes reserves a fixed spare descriptor margin after a bounded size query.
-func darwinRuntimeRepairFDReadBufferBytes(needed int) (int, error) {
+// darwinRuntimeRepairFDReadBufferBytes uses a fixed upper bound because PROC_PIDLISTFDS does not provide a reliable zero-buffer size query.
+func darwinRuntimeRepairFDReadBufferBytes() (int, error) {
 	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
-	if needed <= 0 || needed > maximumBytes || needed%darwinRuntimeRepairFDInfoBytes != 0 {
-		return 0, fmt.Errorf("Darwin descriptor query returned invalid size: %w", errDarwinRuntimeRepairUnreadable)
+	bufferBytes := maximumBytes + darwinRuntimeRepairFDReadSpareRecords*darwinRuntimeRepairFDInfoBytes
+	if bufferBytes <= maximumBytes || bufferBytes%darwinRuntimeRepairFDInfoBytes != 0 {
+		return 0, fmt.Errorf("Darwin descriptor census bound is invalid: %w", errDarwinRuntimeRepairUnreadable)
 	}
-	return needed + darwinRuntimeRepairFDReadSpareRecords*darwinRuntimeRepairFDInfoBytes, nil
+	return bufferBytes, nil
 }
 
 // validateDarwinRuntimeRepairFDReadLength rejects truncated, growing, and over-limit descriptor evidence.
 func validateDarwinRuntimeRepairFDReadLength(written, bufferBytes int) error {
 	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
-	if written <= 0 || written > bufferBytes || written%darwinRuntimeRepairFDInfoBytes != 0 || written == bufferBytes {
+	if written < 0 || written > bufferBytes || written%darwinRuntimeRepairFDInfoBytes != 0 || written == bufferBytes {
 		return errDarwinRuntimeRepairUnstable
 	}
 	if written > maximumBytes {
 		return errDarwinRuntimeRepairUnreadable
 	}
 	return nil
-}
-
-// callDarwinRuntimeRepairPIDInfoAllowEmpty preserves a valid zero-descriptor process result.
-func callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, flavor, arg int, buffer []byte) (int, error) {
-	pointer := runtimeRepairBufferPointer(buffer)
-	result, _, callErr := runtimeRepairDarwinSystemCall6(
-		darwinRuntimeRepairPIDInfoTrampolineAddress,
-		uintptr(pid),
-		uintptr(flavor),
-		uintptr(arg),
-		pointer,
-		uintptr(len(buffer)),
-		0,
-	)
-	runtime.KeepAlive(buffer)
-	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, darwinRuntimeRepairPIDInfoResultLimit(buffer))
 }
 
 // parseDarwinRuntimeRepairFDs decodes unique non-negative descriptors from a fixed-stride native result.
@@ -440,12 +418,12 @@ func callDarwinRuntimeRepairPIDInfo(pid, flavor int, argument uint64, buffer []b
 	return validateDarwinRuntimeRepairCallResult(result, callErr, darwinRuntimeRepairPIDInfoResultLimit(buffer))
 }
 
-// darwinRuntimeRepairPIDInfoResultLimit retains the bounded size-query ceiling when libproc receives no output buffer.
+// darwinRuntimeRepairPIDInfoResultLimit keeps native wrappers from accepting more bytes than their caller-provided buffer.
 func darwinRuntimeRepairPIDInfoResultLimit(buffer []byte) int {
 	if len(buffer) != 0 {
 		return len(buffer)
 	}
-	// XNU deliberately includes spare slots so a growing table need not look complete by accident.
+	// The wrapper is also used for a small number of non-list fd-info calls.
 	return (darwinRuntimeRepairMaximumFDs + darwinRuntimeRepairFDReadSpareRecords) * darwinRuntimeRepairFDInfoBytes
 }
 
@@ -470,11 +448,6 @@ func validateDarwinRuntimeRepairCallResult(result uintptr, callErr syscall.Errno
 	if result == 0 && callErr == 0 {
 		return 0, errDarwinRuntimeRepairUnreadable
 	}
-	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, limit)
-}
-
-// validateDarwinRuntimeRepairCallResultAllowEmpty accepts zero only for the descriptor-list query's valid empty result.
-func validateDarwinRuntimeRepairCallResultAllowEmpty(result uintptr, callErr syscall.Errno, limit int) (int, error) {
 	if callErr != 0 {
 		return 0, callErr
 	}
