@@ -15,7 +15,7 @@ const (
 	goForjCommandPath        = "github.com/goforj/goforj/cmd/forj"
 	goForjModulePath         = "github.com/goforj/goforj"
 	minimumGoForjVersion     = "v0.20.1-0.20260719152622-bf5f5e65ab64"
-	minimumGoForjRevision    = "d8a46284c1bf0615826158974678a16ddf6a8fe2"
+	minimumGoForjRevision    = "d8a462840ca2c92a61a105f06408c464fcf53391"
 	goForjUpgradeInstruction = "upgrade to a bf5f5e65-or-newer build (or v0.20.1+), run \"forj render\" in this project, and try again"
 	maximumErrorPathBytes    = 256
 	maximumErrorReasonBytes  = 512
