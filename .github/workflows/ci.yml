@@ -65,6 +65,14 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedDarwinResolverReplacementCrashRecovery$' -test.v
 
+      - name: Build focused Darwin runtime repair test
+        if: runner.os == 'macOS'
+        run: go test -c -o "${{ runner.temp }}/harbor-runtime-repair.test" ./internal/projectprocess
+
+      - name: Exercise Darwin runtime repair lifecycle
+        if: runner.os == 'macOS'
+        run: env HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 "${{ runner.temp }}/harbor-runtime-repair.test" -test.run '^TestNativeDarwinRuntimeRepairLifecycle$' -test.v
+
       - name: Build focused Darwin helper resolver test
         if: runner.os == 'macOS'
         run: go test -c -o "${{ runner.temp }}/harbor-helper-resolver.test" ./internal/helper/resolverhandler
