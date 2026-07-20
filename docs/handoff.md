@@ -204,7 +204,7 @@ git log --oneline origin/main..HEAD
 
 The resolver source is committed in the two foundation checkpoints above. The unexplained local artifact `desktop/package-lock.json` was deliberately excluded because its ownership or intent was not established; `.tmp/` is also runtime scratch and must remain untracked if it reappears. Live `git status` remains authoritative. Preserve those paths, avoid `git add -A`, stage explicit files, and inspect the cached diff before every commit.
 
-The direct Docker service/log vertical spans `internal/containerruntime`, project supervision and reconciliation, authenticated control, the Wails bridge and generated fixture, and the Vue service-log panel. Continue excluding the unexplained top-level `desktop/package-lock.json` unless its ownership is established.
+The direct Docker service/log vertical spans `internal/containerruntime`, project supervision and reconciliation, authenticated control, the Wails bridge and generated fixture, and the Vue service-log panel. Its two-fixture native adapter proof now builds on both Linux and Darwin; execution still requires the dedicated local Engine/Docker Desktop worker described below. Continue excluding the unexplained top-level `desktop/package-lock.json` unless its ownership is established.
 
 ## Resolver follow-up review
 
