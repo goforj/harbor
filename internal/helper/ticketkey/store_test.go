@@ -222,12 +222,20 @@ func TestLoadOrCreateRejectsMalformedActiveLayout(t *testing.T) {
 			name: "key is a directory",
 			mutate: func(t *testing.T, directory string) {
 				t.Helper()
-				active := filepath.Join(directory, activeDirectory)
-				if err := os.Mkdir(active, privateDirectoryMode); err != nil {
-					t.Fatalf("Mkdir(active) error = %v", err)
+				filesystem, err := openRootedFilesystem(directory, nil, nil)
+				if err != nil {
+					t.Fatalf("openRootedFilesystem() error = %v", err)
 				}
-				if err := os.Mkdir(filepath.Join(active, keyFilename), privateDirectoryMode); err != nil {
-					t.Fatalf("Mkdir(key) error = %v", err)
+				if err := filesystem.ensureDirectory(activeDirectory); err != nil {
+					_ = filesystem.Close()
+					t.Fatalf("ensureDirectory(active) error = %v", err)
+				}
+				if err := filesystem.ensureDirectory(filepath.Join(activeDirectory, keyFilename)); err != nil {
+					_ = filesystem.Close()
+					t.Fatalf("ensureDirectory(key) error = %v", err)
+				}
+				if err := filesystem.Close(); err != nil {
+					t.Fatalf("Close(filesystem) error = %v", err)
 				}
 			},
 			want: "unexpected entry",
