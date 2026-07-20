@@ -159,7 +159,7 @@ func TestAssignedRuntimeAddressRejectsNonLocalAuthority(t *testing.T) {
 // runtimeTargetTestProject writes only the marker and optional metadata needed by one discovery case.
 func runtimeTargetTestProject(t *testing.T, dotEnv string, dotExample string) string {
 	t.Helper()
-	root := t.TempDir()
+	root := managedRuntimeContractTestProject(t, managedRuntimeContractTestSource)
 	if err := os.WriteFile(filepath.Join(root, ".goforj.yml"), []byte("module_name: example.test/runtime\n"), 0o600); err != nil {
 		t.Fatalf("write project marker: %v", err)
 	}

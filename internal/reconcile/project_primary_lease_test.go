@@ -672,6 +672,9 @@ func TestProjectPrimaryLeaseCoordinatorFailsClosedOnIncompleteAuthority(t *testi
 		{name: "network read", configure: func(fixture *primaryLeaseTestFixture) { fixture.state.networkErr = cause }, want: "read network"},
 		{name: "network invalid", configure: func(fixture *primaryLeaseTestFixture) { fixture.state.network.Leases = nil }, want: "invalid network authority"},
 		{name: "discovery", configure: func(fixture *primaryLeaseTestFixture) { fixture.discoverer.err = cause }, want: "discover primary runtime at"},
+		{name: "render update", configure: func(fixture *primaryLeaseTestFixture) {
+			fixture.discoverer.err = &projectdiscovery.RenderUpdateRequiredError{}
+		}, want: "run forj render", wantCode: "project.render.update_required"},
 		{name: "loopback read", configure: func(fixture *primaryLeaseTestFixture) { fixture.loopback.errs[address] = cause }, want: "observe pre-provisioned"},
 		{name: "loopback address", configure: func(fixture *primaryLeaseTestFixture) {
 			fixture.loopback.facts[address] = primaryLeaseTestExactObservation(netip.MustParseAddr("127.77.0.12"))

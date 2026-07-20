@@ -336,6 +336,14 @@ func (coordinator *projectPrimaryLeaseCoordinator) observePrimaryLease(
 	target, err := coordinator.discoverer.DiscoverDefaultRuntimeAtAddress(ctx, checkoutRoot, lease.Address)
 	if err != nil {
 		cause := fmt.Errorf("discover primary runtime at %s: %w", lease.Address, err)
+		var updateRequired *projectdiscovery.RenderUpdateRequiredError
+		if errors.As(err, &updateRequired) {
+			return projectPrimaryLeaseObservation{}, newProjectPrimaryLeaseRejection(domain.Problem{
+				Code:      "project.render.update_required",
+				Message:   "This project was rendered by an older GoForj build. Run forj render with the current GoForj version, then try again.",
+				Retryable: true,
+			}, cause)
+		}
 		var invalid *projectdiscovery.InvalidProjectError
 		if errors.As(err, &invalid) {
 			return projectPrimaryLeaseObservation{}, newProjectPrimaryLeaseRejection(

@@ -105,6 +105,9 @@ func (discoverer *Discoverer) DiscoverDefaultRuntimeAtAddress(
 	if err := validateProjectMarker(root); err != nil {
 		return RuntimeTarget{}, err
 	}
+	if err := validateManagedHTTPRuntimeContract(root); err != nil {
+		return RuntimeTarget{}, err
+	}
 
 	port, err := discoverDefaultAppHTTPPort(root)
 	if err != nil {
