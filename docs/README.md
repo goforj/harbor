@@ -1,8 +1,8 @@
 # GoForj Harbor Design
 
-Status: proposed
+Status: active development
 
-Last updated: 2026-07-18
+Last updated: 2026-07-20
 
 GoForj Harbor is a local development control plane for GoForj projects. It gives each project stable local domains, trusted HTTPS, and native service endpoints without forcing developers to edit project ports. A persistent daemon owns runtime state; the CLI, desktop window, and tray are clients of that daemon; GoForj remains the authority for project composition and the development lifecycle.
 
@@ -32,12 +32,14 @@ No repository port files need to change, and stopping or unregistering a project
 | Containers | Harbor exposes native endpoints through loopback-only TCP relays to private high host ports. It never relies on Docker container IPs. |
 | Service ownership | Data-bearing services remain per-project Compose resources. Harbor shares its control plane, not one global MySQL/Redis/Mailpit stack. |
 | Privilege | The desktop and daemon are always unprivileged. An explicitly elevated, one-shot, allowlisted helper installs or repairs owned loopback, resolver, trust-store, and low-port state, then exits. |
-| State | Harbor stores machine-local registration and leases; it never rewrites project `.env` files to make routing work. |
+| State | Harbor stores machine-local registration and leases. Until GoForj's typed managed-session overlay exists, Start maintains one bounded, marked block in `.env.host`; it does not rewrite `.env`, Compose, or application code. |
 | Scope | Harbor orchestrates GoForj's existing apps, Compose services, resource registry, Lighthouse, and API Index/API Reference instead of replacing them. |
 | Platforms | A capability is supported only after required macOS, Linux, and Windows system tests pass. No platform may silently degrade while claiming parity. |
 
 ## Documents
 
+- [Current implementation state](./current-state.md) is the source of truth for what works now, how to run it, intentional temporary bridges, and known gaps.
+- [Development handoff](./handoff.md) records the current worktree boundary, host reproduction, uncommitted work, and next goal.
 - [Source development](./development.md) explains how to build and bootstrap the privileged helper from source on macOS and Linux.
 - [Product design](./product-design.md) defines the user model, workflows, UI, lifecycle, and product boundary.
 - [Frontend](./frontend.md) defines the inherited GoForj starter foundation, Harbor component boundary, Lerd styling adaptation, state bridge, and UI test strategy.
