@@ -62,6 +62,16 @@ type ServiceLogs struct {
 	Available bool                  `json:"available"`
 	Problem   *ServiceLogProblem    `json:"problem,omitempty"`
 	Output    ServiceLogOutputChunk `json:"output"`
+	Ports     []ServicePort         `json:"ports"`
+}
+
+// ServicePort is one non-secret current Compose port mapping.
+type ServicePort struct {
+	Address  string `json:"address,omitempty"`
+	Private  uint16 `json:"private"`
+	Public   uint16 `json:"public,omitempty"`
+	Protocol string `json:"protocol"`
+	Replica  int    `json:"replica"`
 }
 
 // ServiceLogProblem describes a bounded runtime or stream failure.
@@ -140,6 +150,11 @@ func (logs ServiceLogs) Validate() error {
 		}
 	} else if logs.Output.Available {
 		return errors.New("unavailable service logs must not contain available output")
+	}
+	for _, port := range logs.Ports {
+		if port.Private == 0 || port.Protocol == "" || port.Replica <= 0 {
+			return errors.New("service port must contain a private port, protocol, and replica")
+		}
 	}
 	return logs.Output.Validate()
 }

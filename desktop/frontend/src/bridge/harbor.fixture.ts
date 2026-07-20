@@ -347,7 +347,16 @@ export const harborWireFixture = {
       "has_more": false,
       "next_cursor": 28,
       "text": "mysql ready for connections\n"
-    }
+    },
+    "ports": [
+      {
+        "address": "127.0.0.1",
+        "private": 3306,
+        "public": 3306,
+        "protocol": "tcp",
+        "replica": 1
+      }
+    ]
   },
   "project_runtime_repair_inspection": {
     "project_id": "billing",

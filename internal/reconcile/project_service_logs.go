@@ -31,6 +31,7 @@ type ProjectServiceLogs struct {
 	Available bool
 	Problem   *projectprocess.ServiceLogProblem
 	Output    projectprocess.OutputChunk
+	Ports     []projectprocess.ServicePort
 }
 
 // ProjectServiceNotFoundError reports that a requested service is not present in the current project projection.
@@ -54,6 +55,11 @@ type projectServiceLogState interface {
 type projectServiceLogReader interface {
 	ReadServiceLogs(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID, uint64) (projectprocess.ServiceLogSelection, error)
 	WaitServiceLogs(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID, uint64) (projectprocess.ServiceLogSelection, error)
+}
+
+// projectServicePortReader supplies ephemeral port mappings without adding them to durable supervisor state.
+type projectServicePortReader interface {
+	ObserveServicePorts(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID) (projectprocess.ServicePortObservation, error)
 }
 
 // ServiceLogs reads only one selected Compose service in the current durable project session.
@@ -106,6 +112,16 @@ func readCurrentProjectServiceLogs(
 		return ProjectServiceLogs{}, errors.New("current project session does not match the selected project")
 	}
 	base.SessionID = session.ID
+	portReader, ok := reader.(projectServicePortReader)
+	if ok {
+		ports, err := portReader.ObserveServicePorts(ctx, request.ProjectID, session.ID, request.ServiceID)
+		if err != nil {
+			return ProjectServiceLogs{}, fmt.Errorf("observe current project service ports: %w", err)
+		}
+		base.Supported = ports.Supported
+		base.Available = ports.Available
+		base.Ports = append([]projectprocess.ServicePort(nil), ports.Ports...)
+	}
 
 	cursor := request.Cursor
 	changedSession := request.SessionID != "" && request.SessionID != session.ID

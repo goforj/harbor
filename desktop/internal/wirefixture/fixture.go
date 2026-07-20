@@ -257,6 +257,7 @@ func Fixture() Document {
 			SessionID: "session-orders-api",
 			Supported: true,
 			Available: true,
+			Ports: []control.ServicePort{{Address: "127.0.0.1", Private: 3306, Public: 3306, Protocol: "tcp", Replica: 1}},
 			Output: control.ServiceLogOutputChunk{
 				Available:  true,
 				NextCursor: 28,

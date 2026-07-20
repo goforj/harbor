@@ -778,6 +778,7 @@ func (authority *Authority) ServiceLogs(
 		SessionID: logs.SessionID,
 		Supported: logs.Supported,
 		Available: logs.Available,
+		Ports:     make([]control.ServicePort, 0, len(logs.Ports)),
 		Output: control.ServiceLogOutputChunk{
 			Available:  logs.Output.Available,
 			Reset:      logs.Output.Reset,
@@ -786,6 +787,11 @@ func (authority *Authority) ServiceLogs(
 			NextCursor: logs.Output.NextCursor,
 			Text:       logs.Output.Text,
 		},
+	}
+	for _, port := range logs.Ports {
+		result.Ports = append(result.Ports, control.ServicePort{
+			Address: port.Address, Private: port.Private, Public: port.Public, Protocol: port.Protocol, Replica: port.Replica,
+		})
 	}
 	if logs.Problem != nil {
 		result.Problem = &control.ServiceLogProblem{

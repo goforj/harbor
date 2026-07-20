@@ -84,6 +84,9 @@ export function createMockBridge(): HarborBridge {
         next_cursor: encoded.length,
         text: outputText,
       },
+      ports: serviceId === 'mysql'
+        ? [{ address: '127.0.0.1', private: 3306, public: 3306, protocol: 'tcp', replica: 1 }]
+        : [{ private: 6379, protocol: 'tcp', replica: 1 }],
     }
   }
 

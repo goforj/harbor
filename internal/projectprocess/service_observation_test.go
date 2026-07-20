@@ -76,3 +76,25 @@ func TestProjectRuntimeServicesRejectsInvalidOrDuplicateServices(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectRuntimeServicePortsRetainsEveryObservedPort keeps non-HTTP Docker publications out of the browser-resource contract.
+func TestProjectRuntimeServicePortsRetainsEveryObservedPort(t *testing.T) {
+	observation, err := projectRuntimeServicePorts(containerruntime.ProjectObservation{Services: []containerruntime.Service{{
+		ID: "mysql", Active: true, Containers: []containerruntime.Container{
+			{Replica: 2, Ports: []containerruntime.Port{{Private: 3306, Public: 3306, Address: "127.0.0.1", Protocol: "tcp"}}},
+			{Replica: 1, Ports: []containerruntime.Port{{Private: 33060, Protocol: "tcp"}}},
+		},
+	}}}, "mysql")
+	if err != nil {
+		t.Fatalf("projectRuntimeServicePorts() error = %v", err)
+	}
+	if !observation.Supported || !observation.Available || len(observation.Ports) != 2 {
+		t.Fatalf("projectRuntimeServicePorts() = %#v", observation)
+	}
+	if got := observation.Ports[0]; got.Private != 3306 || got.Public != 3306 || got.Protocol != "tcp" || got.Replica != 2 {
+		t.Fatalf("first port = %#v", got)
+	}
+	if got := observation.Ports[1]; got.Private != 33060 || got.Public != 0 || got.Replica != 1 {
+		t.Fatalf("second port = %#v", got)
+	}
+}

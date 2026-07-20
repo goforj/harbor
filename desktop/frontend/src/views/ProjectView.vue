@@ -40,6 +40,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useProjectActivity } from '@/composables/useProjectActivity'
 import { countReadyServices } from '@/lib/servicePresentation'
 import { useHarborStore } from '@/stores/harbor'
+import { harborBridge } from '@/bridge'
+import type { ServicePort } from '@/domain/harbor'
 
 const route = useRoute()
 const router = useRouter()
@@ -95,9 +97,29 @@ const currentProjectOperation = computed(() => {
   return undefined
 })
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
-const selectedServiceResources = computed(() => project.value?.resources.filter((resource) =>
-  resource.owner.kind === 'service' && resource.owner.service_id === selectedServiceId.value,
-) ?? [])
+const selectedServicePorts = ref<ServicePort[]>([])
+const selectedServicePortsError = ref<string | null>(null)
+
+async function refreshSelectedServicePorts() {
+  const serviceID = selectedServiceId.value
+  if (!project.value || !serviceID) {
+    selectedServicePorts.value = []
+    return
+  }
+  selectedServicePortsError.value = null
+  try {
+    const logs = await harborBridge.getServiceLogs(project.value.id, '', serviceID, 0)
+    selectedServicePorts.value = logs.ports ?? []
+  }
+  catch (error) {
+    selectedServicePorts.value = []
+    selectedServicePortsError.value = error instanceof Error ? error.message : 'Ports are unavailable.'
+  }
+}
+
+watch([selectedServiceId, selectedServiceSurface], ([, surface]) => {
+  if (surface === 'ports') void refreshSelectedServicePorts()
+})
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
@@ -555,7 +577,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                 <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
                   <TabsTrigger value="logs" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Logs</TabsTrigger>
                   <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
-                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServiceResources.length }}</span></TabsTrigger>
+                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServicePorts.length }}</span></TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="logs" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">
@@ -578,14 +600,14 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                 </TabsContent>
 
                 <TabsContent value="ports" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">
-                  <Card v-if="selectedServiceResources.length" class="gap-0 rounded-lg py-0 shadow-none">
-                    <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Published endpoints</CardTitle><p class="text-xs text-muted-foreground">HTTP resources reported for this service</p></CardHeader>
+                  <Card v-if="selectedServicePorts.length" class="gap-0 rounded-lg py-0 shadow-none">
+                    <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Exposed ports</CardTitle><p class="text-xs text-muted-foreground">Current Docker port mappings for this service</p></CardHeader>
                     <CardContent class="divide-y p-0">
-                      <button v-for="resource in selectedServiceResources" :key="resource.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)"><ResourceFavicon :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" /><div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.url }}</p></div><ExternalLink class="size-3.5 text-muted-foreground" /></button>
+                      <div v-for="port in selectedServicePorts" :key="`${port.replica}-${port.address ?? ''}-${port.private}-${port.public ?? 0}-${port.protocol}`" class="flex items-center gap-3 px-4 py-3"><div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ port.protocol.toUpperCase() }} {{ port.private }}<span v-if="port.public"> → {{ port.public }}</span></p><p class="truncate text-xs text-muted-foreground">{{ port.address || 'container network' }} · replica {{ port.replica }}</p></div></div>
                     </CardContent>
                   </Card>
                   <Empty v-else class="min-h-0 flex-1 rounded-lg border">
-                    <EmptyHeader><EmptyTitle>No published ports</EmptyTitle><EmptyDescription>This service does not currently report a launchable HTTP endpoint.</EmptyDescription></EmptyHeader>
+                    <EmptyHeader><EmptyTitle>No exposed ports</EmptyTitle><EmptyDescription>{{ selectedServicePortsError || 'This service does not currently report any Docker port mappings.' }}</EmptyDescription></EmptyHeader>
                   </Empty>
                 </TabsContent>
               </Tabs>

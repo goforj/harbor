@@ -187,6 +187,15 @@ export interface ServiceLogs {
   available: boolean
   problem?: Problem
   output: ProjectOutputChunk
+  ports?: ServicePort[]
+}
+
+export interface ServicePort {
+  address?: string
+  private: number
+  public?: number
+  protocol: string
+  replica: number
 }
 
 export interface NetworkSetupOperation {
