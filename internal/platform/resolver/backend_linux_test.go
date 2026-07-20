@@ -18,7 +18,43 @@ import (
 
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/miekg/dns"
+	"golang.org/x/sys/unix"
 )
+
+// TestSystemdResolvedDirectoryLockHonorsContext verifies a competing mutation cannot block forever.
+func TestSystemdResolvedDirectoryLockHonorsContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock")
+	first, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile(first) error = %v", err)
+	}
+	defer first.Close()
+	second, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile(second) error = %v", err)
+	}
+	defer second.Close()
+	if err := unix.Flock(int(first.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatalf("Flock(first) error = %v", err)
+	}
+	defer unix.Flock(int(first.Fd()), unix.LOCK_UN)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	if err := lockSystemdResolvedDirectory(ctx, second); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lockSystemdResolvedDirectory() error = %v, want deadline exceeded", err)
+	}
+
+	if err := unix.Flock(int(first.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock first error = %v", err)
+	}
+	if err := lockSystemdResolvedDirectory(t.Context(), second); err != nil {
+		t.Fatalf("lockSystemdResolvedDirectory(after release) error = %v", err)
+	}
+	if err := unlockSystemdResolvedDirectory(second); err != nil {
+		t.Fatalf("unlock second error = %v", err)
+	}
+}
 
 // TestSystemdResolvedBusctlParserRetainsCompleteRelevantState covers exact routes, foreign subdomains, and global occupancy.
 func TestSystemdResolvedBusctlParserRetainsCompleteRelevantState(t *testing.T) {

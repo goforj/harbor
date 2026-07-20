@@ -38,6 +38,7 @@ const (
 	systemdResolvedCommandTimeout          = 10 * time.Second
 	systemdResolvedStableReadAttempts      = 3
 	systemdResolvedMutationNameRetries     = 128
+	systemdResolvedLockPoll                = 25 * time.Millisecond
 )
 
 // systemdResolvedNativeStore owns fixed-path Linux filesystem and resolve1 effects.
@@ -148,8 +149,8 @@ func (store systemdResolvedNativeStore) replace(
 	defer func() {
 		err = errors.Join(err, directory.Close())
 	}()
-	if err := unix.Flock(int(directory.Fd()), unix.LOCK_EX); err != nil {
-		return fmt.Errorf("lock systemd-resolved drop-in directory: %w", err)
+	if err := lockSystemdResolvedDirectory(ctx, directory); err != nil {
+		return err
 	}
 	defer func() {
 		err = errors.Join(err, unlockSystemdResolvedDirectory(directory))
@@ -287,8 +288,8 @@ func (store systemdResolvedNativeStore) remove(
 	defer func() {
 		err = errors.Join(err, directory.Close())
 	}()
-	if err := unix.Flock(int(directory.Fd()), unix.LOCK_EX); err != nil {
-		return fmt.Errorf("lock systemd-resolved drop-in directory: %w", err)
+	if err := lockSystemdResolvedDirectory(ctx, directory); err != nil {
+		return err
 	}
 	defer func() {
 		err = errors.Join(err, unlockSystemdResolvedDirectory(directory))
@@ -1157,6 +1158,37 @@ func unlockSystemdResolvedDirectory(directory *os.File) error {
 		return fmt.Errorf("unlock systemd-resolved drop-in directory: %w", err)
 	}
 	return nil
+}
+
+// lockSystemdResolvedDirectory acquires the mutation lock without allowing a stale holder to defeat cancellation.
+func lockSystemdResolvedDirectory(ctx context.Context, directory *os.File) error {
+	if directory == nil {
+		return fmt.Errorf("lock systemd-resolved drop-in directory: nil directory")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("lock systemd-resolved drop-in directory: %w", err)
+		}
+		err := unix.Flock(int(directory.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return fmt.Errorf("lock systemd-resolved drop-in directory: %w", err)
+		}
+		timer := time.NewTimer(systemdResolvedLockPoll)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("lock systemd-resolved drop-in directory: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // createSystemdResolvedStaging writes and syncs canonical bytes before any public-name mutation.
