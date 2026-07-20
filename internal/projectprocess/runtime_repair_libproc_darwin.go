@@ -168,7 +168,7 @@ func observeDarwinRuntimeRepairFDs(pid int) ([]darwinRuntimeRepairFDInfoABI, err
 		return nil, err
 	}
 	raw := make([]byte, readBytes)
-	written, err := callDarwinRuntimeRepairPIDInfo(pid, darwinRuntimeRepairPIDListFDs, 0, raw)
+	written, err := callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, darwinRuntimeRepairPIDListFDs, 0, raw)
 	if err != nil {
 		return nil, classifyDarwinRuntimeRepairLibprocFailure(pid)
 	}
@@ -418,6 +418,22 @@ func callDarwinRuntimeRepairPIDInfo(pid, flavor int, argument uint64, buffer []b
 	return validateDarwinRuntimeRepairCallResult(result, callErr, darwinRuntimeRepairPIDInfoResultLimit(buffer))
 }
 
+// callDarwinRuntimeRepairPIDInfoAllowEmpty preserves a valid empty descriptor inventory while retaining bounded native reads.
+func callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, flavor int, argument uint64, buffer []byte) (int, error) {
+	pointer := runtimeRepairBufferPointer(buffer)
+	result, _, callErr := runtimeRepairDarwinSystemCall6(
+		darwinRuntimeRepairPIDInfoTrampolineAddress,
+		uintptr(pid),
+		uintptr(flavor),
+		uintptr(argument),
+		pointer,
+		uintptr(len(buffer)),
+		0,
+	)
+	runtime.KeepAlive(buffer)
+	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, darwinRuntimeRepairPIDInfoResultLimit(buffer))
+}
+
 // darwinRuntimeRepairPIDInfoResultLimit keeps native wrappers from accepting more bytes than their caller-provided buffer.
 func darwinRuntimeRepairPIDInfoResultLimit(buffer []byte) int {
 	if len(buffer) != 0 {
@@ -448,6 +464,17 @@ func validateDarwinRuntimeRepairCallResult(result uintptr, callErr syscall.Errno
 	if result == 0 && callErr == 0 {
 		return 0, errDarwinRuntimeRepairUnreadable
 	}
+	if callErr != 0 {
+		return 0, callErr
+	}
+	if result > uintptr(limit) {
+		return 0, errDarwinRuntimeRepairUnreadable
+	}
+	return int(result), nil
+}
+
+// validateDarwinRuntimeRepairCallResultAllowEmpty accepts zero only for APIs whose empty result is valid evidence.
+func validateDarwinRuntimeRepairCallResultAllowEmpty(result uintptr, callErr syscall.Errno, limit int) (int, error) {
 	if callErr != 0 {
 		return 0, callErr
 	}

@@ -7,8 +7,25 @@ import (
 	"errors"
 	"math/bits"
 	"net/netip"
+	"syscall"
 	"testing"
 )
+
+// TestValidateDarwinRuntimeRepairCallResultAllowsEmptyFDInventory preserves zero as valid only for descriptor census reads.
+func TestValidateDarwinRuntimeRepairCallResultAllowsEmptyFDInventory(t *testing.T) {
+	if got, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, 0, darwinRuntimeRepairFDInfoBytes); err != nil || got != 0 {
+		t.Fatalf("empty descriptor result = %d, %v", got, err)
+	}
+	if _, err := validateDarwinRuntimeRepairCallResult(0, 0, darwinRuntimeRepairFDInfoBytes); !errors.Is(err, errDarwinRuntimeRepairUnreadable) {
+		t.Fatalf("empty non-descriptor result error = %v", err)
+	}
+	if _, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, syscall.EIO, darwinRuntimeRepairFDInfoBytes); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("empty descriptor syscall failure = %v", err)
+	}
+	if _, err := validateDarwinRuntimeRepairCallResultAllowEmpty(darwinRuntimeRepairFDInfoBytes+1, 0, darwinRuntimeRepairFDInfoBytes); !errors.Is(err, errDarwinRuntimeRepairUnreadable) {
+		t.Fatalf("oversized descriptor result error = %v", err)
+	}
+}
 
 // TestDarwinRuntimeRepairFDReadBounds preserves a stable descriptor census without admitting an exhausted buffer.
 func TestDarwinRuntimeRepairFDReadBounds(t *testing.T) {
