@@ -68,7 +68,7 @@ describe('ProjectView stale runtime recovery', () => {
     const { wrapper } = await mountRecoveryProject()
 
     const tabLabels = wrapper.findAll('[role="tab"]').map((tab) => tab.text().replace(/\s+\d+$/, ''))
-    expect(tabLabels).toEqual(['Overview', 'Development output', 'PostgreSQL', 'Resources'])
+    expect(tabLabels).toEqual(['Overview', 'Development output', 'Services', 'Resources'])
     expect(wrapper.text()).toContain('Apps')
     expect(wrapper.text()).not.toContain('Reported services for this project.')
 

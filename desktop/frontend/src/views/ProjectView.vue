@@ -52,6 +52,7 @@ let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
+const selectedServiceId = ref('')
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
@@ -98,6 +99,9 @@ const currentProjectOperation = computed(() => {
   return undefined
 })
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
+const selectedServiceResources = computed(() => project.value?.resources.filter((resource) =>
+  resource.owner.kind === 'service' && resource.owner.service_id === selectedServiceId.value,
+) ?? [])
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
@@ -195,6 +199,12 @@ watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, p
     void router.replace('/projects')
   }
 })
+
+watch(() => project.value?.services, (services) => {
+  if (!services?.some((service) => service.id === selectedServiceId.value)) {
+    selectedServiceId.value = services?.[0]?.id ?? ''
+  }
+}, { immediate: true })
 
 watch(() => runtimeRepairInspection.value?.confirmable.expires_at, (expiresAt) => {
   if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
@@ -398,24 +408,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
           <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Overview</TabsTrigger>
           <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Development output</TabsTrigger>
-          <TabsTrigger
-            v-for="service in project.services"
-            :key="service.id"
-            :value="`service:${service.id}`"
-            class="h-11 flex-none gap-2 rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-          >
-            <span
-              class="size-1.5 rounded-full"
-              :class="{
-                'bg-emerald-500': service.state === 'ready',
-                'bg-amber-500': service.state === 'working' || service.state === 'degraded',
-                'bg-destructive': service.state === 'failed',
-                'bg-muted-foreground': service.state === 'stopped' || service.state === 'unavailable',
-              }"
-              aria-hidden="true"
-            />
-            {{ service.name }}
-          </TabsTrigger>
+          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
           <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
@@ -536,26 +529,54 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </Empty>
         </TabsContent>
 
-        <TabsContent
-          v-for="service in project.services"
-          :key="service.id"
-          :value="`service:${service.id}`"
-          class="m-0 space-y-5"
-        >
-          <section aria-label="Selected service summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
-            <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Status</p><p class="mt-1"><StatusBadge :status="service.state" /></p></div>
-            <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium"><ServiceOwnership :owner="service.owner" /></p></div>
-            <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Selection</p><p class="mt-1 text-sm font-medium capitalize">{{ service.selection }}</p></div>
-            <div class="border-t p-4 sm:border-t-0"><p class="text-xs text-muted-foreground">Resources</p><p class="mt-1 text-sm font-medium">{{ project.resources.filter((resource) => resource.owner.kind === 'service' && resource.owner.service_id === service.id).length }}</p></div>
-          </section>
+        <TabsContent value="services" class="m-0 space-y-5">
+          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="gap-5">
+            <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-0 py-0">
+              <TabsTrigger
+                v-for="service in project.services"
+                :key="service.id"
+                :value="service.id"
+                class="h-11 flex-none gap-2 rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+              >
+                <span
+                  class="size-1.5 rounded-full"
+                  :class="{
+                    'bg-emerald-500': service.state === 'ready',
+                    'bg-amber-500': service.state === 'working' || service.state === 'degraded',
+                    'bg-destructive': service.state === 'failed',
+                    'bg-muted-foreground': service.state === 'stopped' || service.state === 'unavailable',
+                  }"
+                  aria-hidden="true"
+                />
+                {{ service.name }}
+              </TabsTrigger>
+            </TabsList>
 
-          <ServiceLogsPanel
-            v-if="service.owner === 'compose'"
-            :project-id="project.id"
-            :service-id="service.id"
-            :service-name="service.name"
-          />
-          <p v-else class="rounded-lg border px-4 py-3 text-xs text-muted-foreground">Logs for this external service are managed outside Harbor.</p>
+            <TabsContent
+              v-for="service in project.services"
+              :key="service.id"
+              :value="service.id"
+              class="m-0 space-y-5"
+            >
+              <section aria-label="Selected service summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
+                <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Status</p><p class="mt-1"><StatusBadge :status="service.state" /></p></div>
+                <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium"><ServiceOwnership :owner="service.owner" /></p></div>
+                <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Selection</p><p class="mt-1 text-sm font-medium capitalize">{{ service.selection }}</p></div>
+                <div class="border-t p-4 sm:border-t-0"><p class="text-xs text-muted-foreground">Resources</p><p class="mt-1 text-sm font-medium">{{ selectedServiceResources.length }}</p></div>
+              </section>
+
+              <ServiceLogsPanel
+                v-if="service.owner === 'compose'"
+                :project-id="project.id"
+                :service-id="service.id"
+                :service-name="service.name"
+              />
+              <p v-else class="rounded-lg border px-4 py-3 text-xs text-muted-foreground">Logs for this external service are managed outside Harbor.</p>
+            </TabsContent>
+          </Tabs>
+          <Empty v-else class="min-h-64 rounded-lg border">
+            <EmptyHeader><EmptyTitle>No services are reported</EmptyTitle><EmptyDescription>Harbor will show project services here when the development environment starts.</EmptyDescription></EmptyHeader>
+          </Empty>
         </TabsContent>
 
         <TabsContent value="resources" class="m-0">
