@@ -86,11 +86,6 @@ const showDevelopmentOutput = computed(() => projectActivitySupported.value && (
   || project.value?.state === 'degraded'
   || project.value?.state === 'stopping'
 ))
-const developmentOutputState = computed(() => {
-  if (projectActivitySession.value) return projectActivitySession.value.state.replace('_', ' ')
-  if (developmentOutput.value) return 'session ended'
-  return project.value?.state === 'starting' ? 'waiting for session' : 'no active session'
-})
 const currentProjectOperation = computed(() => {
   for (let index = store.operations.length - 1; index >= 0; index -= 1) {
     const operation = store.operations[index]
@@ -317,7 +312,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
 </script>
 
 <template>
-  <main class="h-full min-w-0 overflow-y-auto" :aria-labelledby="project ? 'project-title' : 'project-empty-title'">
+  <main class="flex h-full min-w-0 flex-col overflow-y-auto" :aria-labelledby="project ? 'project-title' : 'project-empty-title'">
     <template v-if="project">
       <header class="border-b px-5 py-4 lg:px-7">
         <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
@@ -404,7 +399,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </div>
       </header>
 
-      <Tabs v-model="selectedDetailTab" class="min-w-0 gap-0">
+      <Tabs v-model="selectedDetailTab" class="min-h-0 min-w-0 flex-1 gap-0">
         <TabsList class="h-11 w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
           <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
           <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
@@ -412,7 +407,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
-        <div class="space-y-5 p-5 lg:p-7">
+        <div :class="selectedDetailTab === 'output' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <Alert v-if="lifecycleError" variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ recoveryRequired ? 'Project recovery required' : 'Project action failed' }}</AlertTitle>
@@ -494,20 +489,13 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           </Card>
         </TabsContent>
 
-        <TabsContent value="output" class="m-0">
-        <Card v-if="showDevelopmentOutput" class="gap-0 rounded-lg py-0 shadow-none">
-          <CardHeader class="flex-row items-start justify-between gap-3 border-b px-4 py-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Development output</CardTitle></div>
-              <p class="mt-1 text-xs text-muted-foreground">Live output from the current <code>forj dev</code> session</p>
-            </div>
-            <Badge variant="outline" class="shrink-0 capitalize">{{ developmentOutputState }}</Badge>
-          </CardHeader>
-          <CardContent class="p-0">
+        <TabsContent value="output" class="m-0 flex min-h-0 flex-1 flex-col">
+        <Card v-if="showDevelopmentOutput" class="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
+          <CardContent class="flex min-h-0 flex-1 flex-col p-0">
             <p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p>
             <div
               ref="developmentOutputViewport"
-              class="max-h-80 min-h-36 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"
+              class="min-h-0 flex-1 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"
               tabindex="0"
               aria-label="Current project development output"
               @scroll="updateDevelopmentOutputFollow"
@@ -524,7 +512,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
             </div>
           </CardContent>
         </Card>
-        <Empty v-else class="min-h-64 rounded-lg border">
+        <Empty v-else class="min-h-0 flex-1 rounded-lg border">
           <EmptyHeader><EmptyTitle>No development output yet</EmptyTitle><EmptyDescription>Harbor will show the current <code>forj dev</code> session here when the project starts.</EmptyDescription></EmptyHeader>
         </Empty>
         </TabsContent>
