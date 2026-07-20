@@ -20,6 +20,8 @@ const (
 	CapabilityDaemonControlV1 rpc.Capability = "control.daemon-control.v1"
 	// CapabilityNetworkSetupV1 identifies machine-global network setup initiation and approval.
 	CapabilityNetworkSetupV1 rpc.Capability = "control.network-setup.v1"
+	// CapabilityNetworkResolverSetupV1 identifies machine-global resolver setup initiation and approval.
+	CapabilityNetworkResolverSetupV1 rpc.Capability = "control.network-resolver-setup.v1"
 	// CapabilityProjectActivityV1 identifies bounded current-session project output reads.
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
@@ -31,20 +33,23 @@ const (
 	// CapabilityProjectUnregisterApprovalV1 identifies interactive project-release approval and confirmation.
 	CapabilityProjectUnregisterApprovalV1 rpc.Capability = "control.project-unregister-approval.v1"
 
-	methodDaemonStatus                     = "control.v1.daemon.status"
-	methodDaemonStop                       = "control.v1.daemon.stop"
-	methodSnapshot                         = "control.v1.snapshot"
-	methodNetworkSetupStart                = "control.v1.network.setup.start"
-	methodNetworkSetupApprovalPrepare      = "control.v1.network.setup.approval.prepare"
-	methodNetworkSetupApprovalConfirm      = "control.v1.network.setup.approval.confirm"
-	methodProjectActivity                  = "control.v1.project.activity"
-	methodProjectStart                     = "control.v1.project.start"
-	methodProjectStop                      = "control.v1.project.stop"
-	methodProjectRegister                  = "control.v1.project.register"
-	methodProjectUnregister                = "control.v1.project.unregister"
-	methodProjectUnregisterApprovalPrepare = "control.v1.project.unregister.approval.prepare"
-	methodProjectUnregisterApprovalConfirm = "control.v1.project.unregister.approval.confirm"
-	maximumBuildToken                      = 128
+	methodDaemonStatus                        = "control.v1.daemon.status"
+	methodDaemonStop                          = "control.v1.daemon.stop"
+	methodSnapshot                            = "control.v1.snapshot"
+	methodNetworkSetupStart                   = "control.v1.network.setup.start"
+	methodNetworkSetupApprovalPrepare         = "control.v1.network.setup.approval.prepare"
+	methodNetworkSetupApprovalConfirm         = "control.v1.network.setup.approval.confirm"
+	methodNetworkResolverSetupStart           = "control.v1.network.resolver.setup.start"
+	methodNetworkResolverSetupApprovalPrepare = "control.v1.network.resolver.setup.approval.prepare"
+	methodNetworkResolverSetupApprovalConfirm = "control.v1.network.resolver.setup.approval.confirm"
+	methodProjectActivity                     = "control.v1.project.activity"
+	methodProjectStart                        = "control.v1.project.start"
+	methodProjectStop                         = "control.v1.project.stop"
+	methodProjectRegister                     = "control.v1.project.register"
+	methodProjectUnregister                   = "control.v1.project.unregister"
+	methodProjectUnregisterApprovalPrepare    = "control.v1.project.unregister.approval.prepare"
+	methodProjectUnregisterApprovalConfirm    = "control.v1.project.unregister.approval.confirm"
+	maximumBuildToken                         = 128
 )
 
 var protocolV1 = rpc.Version{Major: 1, Minor: 0}
@@ -248,6 +253,7 @@ func protocolRanges() []rpc.VersionRange {
 func capabilities() []rpc.Capability {
 	return []rpc.Capability{
 		CapabilityDaemonControlV1,
+		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityV1,
 		CapabilityProjectLifecycleV1,

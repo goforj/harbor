@@ -47,6 +47,12 @@ type Authority interface {
 	PrepareNetworkSetupApproval(context.Context, Caller, PrepareNetworkSetupApprovalRequest) (NetworkSetupApprovalPreparation, error)
 	// ConfirmNetworkSetupApproval verifies the complete loopback pool before finishing setup.
 	ConfirmNetworkSetupApproval(context.Context, Caller, ConfirmNetworkSetupApprovalRequest) (NetworkSetupApprovalConfirmation, error)
+	// StartNetworkResolverSetup starts or resumes one idempotent machine-global resolver setup intent.
+	StartNetworkResolverSetup(context.Context, Caller, StartNetworkResolverSetupRequest) (NetworkResolverSetupOperation, error)
+	// PrepareNetworkResolverSetupApproval returns one caller-bound helper capability for an exact resolver setup revision.
+	PrepareNetworkResolverSetupApproval(context.Context, Caller, PrepareNetworkResolverSetupApprovalRequest) (NetworkResolverSetupApprovalPreparation, error)
+	// ConfirmNetworkResolverSetupApproval verifies the exact resolver policy before finishing setup.
+	ConfirmNetworkResolverSetupApproval(context.Context, Caller, ConfirmNetworkResolverSetupApprovalRequest) (NetworkResolverSetupApprovalConfirmation, error)
 	// ProjectActivity returns bounded output for a project's current durable session.
 	ProjectActivity(context.Context, Caller, ProjectActivityRequest) (ProjectActivity, error)
 	// RegisterProject discovers and durably registers one canonical GoForj checkout.
@@ -128,6 +134,26 @@ func NewNetworkSetupConflictError(cause error) error {
 // NewNetworkSetupNotFoundError classifies a setup approval selection whose durable operation is missing.
 func NewNetworkSetupNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewNetworkResolverSetupConflictError classifies durable state that prevents resolver setup initiation or approval.
+func NewNetworkResolverSetupConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewNetworkResolverSetupNotFoundError classifies a resolver setup approval selection whose durable operation is missing.
+func NewNetworkResolverSetupNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewNetworkResolverSetupPrivilegedHelperRequiredError reports an absent resolver helper boundary without exposing its path.
+func NewNetworkResolverSetupPrivilegedHelperRequiredError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)
+}
+
+// NewNetworkResolverSetupPrivilegedHelperUnsafeError reports a resolver helper boundary that failed its fixed filesystem policy.
+func NewNetworkResolverSetupPrivilegedHelperUnsafeError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperUnsafe, cause)
 }
 
 // NewNetworkSetupObservationError exposes one strictly validated native observation diagnostic to an authenticated setup caller.

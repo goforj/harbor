@@ -131,6 +131,7 @@ func projectActivityTestAuthority(lifecycle *recordingProjectLifecycle) *Authori
 		func() (identity.InstallationID, error) { return "installation-unused", nil },
 		lifecycle,
 		testNetworkSetups(),
+		testNetworkResolverSetups(),
 		testHTTPRoutes(),
 	)
 }

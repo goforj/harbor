@@ -77,6 +77,16 @@ type networkSetupCoordinator interface {
 	Confirm(context.Context, reconcile.NetworkSetupConfirmRequest) (state.CompleteNetworkSetupResult, error)
 }
 
+// networkResolverSetupCoordinator limits authority to the policy-bound resolver setup lifecycle.
+type networkResolverSetupCoordinator interface {
+	// Start stages or replays one daemon-identified resolver setup operation.
+	Start(context.Context, reconcile.NetworkResolverSetupStartRequest) (state.OperationRecord, error)
+	// Prepare returns one resolver helper capability bound to an authenticated requester and operation revision.
+	Prepare(context.Context, reconcile.NetworkResolverSetupPrepareRequest) (ticketissuer.ResolverResult, error)
+	// Confirm verifies helper and native resolver evidence before returning the atomic durable completion.
+	Confirm(context.Context, reconcile.NetworkResolverSetupConfirmRequest) (state.CompleteNetworkResolverSetupResult, error)
+}
+
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
 	store             controlState
@@ -84,6 +94,7 @@ type Authority struct {
 	unregister        projectUnregisterCoordinator
 	lifecycle         projectLifecycleCoordinator
 	networkSetup      networkSetupCoordinator
+	resolverSetup     networkResolverSetupCoordinator
 	build             buildinfo.Info
 	discoverer        projectDiscoverer
 	now               func() time.Time
@@ -100,12 +111,13 @@ func NewAuthority(
 	unregister *reconcile.ProjectUnregisterCoordinator,
 	lifecycle *reconcile.ProjectLifecycleCoordinator,
 	networkSetup *reconcile.NetworkSetupCoordinator,
+	resolverSetup *reconcile.NetworkResolverSetupCoordinator,
 	routes *harbordruntime.Controller,
 ) *Authority {
-	if store == nil || unregister == nil || lifecycle == nil || networkSetup == nil || routes == nil {
-		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, network setup, and HTTP route dependencies")
+	if store == nil || unregister == nil || lifecycle == nil || networkSetup == nil || resolverSetup == nil || routes == nil {
+		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, network setup, resolver setup, and HTTP route dependencies")
 	}
-	return newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup, routes)
+	return newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup, resolverSetup, routes)
 }
 
 // newAuthority keeps process build metadata deterministic without broadening production injection.
@@ -115,6 +127,7 @@ func newAuthority(
 	build buildinfo.Info,
 	lifecycle projectLifecycleCoordinator,
 	networkSetup networkSetupCoordinator,
+	resolverSetup networkResolverSetupCoordinator,
 	routes httpRouteObserver,
 ) *Authority {
 	return newAuthorityWithRegistration(
@@ -126,6 +139,7 @@ func newAuthority(
 		newOpaqueProjectID,
 		lifecycle,
 		networkSetup,
+		resolverSetup,
 		routes,
 	)
 }
@@ -140,6 +154,7 @@ func newAuthorityWithRegistration(
 	newProjectID func() (domain.ProjectID, error),
 	lifecycle projectLifecycleCoordinator,
 	networkSetup networkSetupCoordinator,
+	resolverSetup networkResolverSetupCoordinator,
 	routes httpRouteObserver,
 ) *Authority {
 	return newAuthorityWithIdentityFactories(
@@ -153,6 +168,7 @@ func newAuthorityWithRegistration(
 		newOpaqueInstallationID,
 		lifecycle,
 		networkSetup,
+		resolverSetup,
 		routes,
 	)
 }
@@ -169,12 +185,14 @@ func newAuthorityWithIdentityFactories(
 	newInstallationID func() (identity.InstallationID, error),
 	lifecycle projectLifecycleCoordinator,
 	networkSetup networkSetupCoordinator,
+	resolverSetup networkResolverSetupCoordinator,
 	routes httpRouteObserver,
 ) *Authority {
 	if nilAuthorityDependency(store) ||
 		nilAuthorityDependency(unregister) ||
 		nilAuthorityDependency(lifecycle) ||
 		nilAuthorityDependency(networkSetup) ||
+		nilAuthorityDependency(resolverSetup) ||
 		nilAuthorityDependency(discoverer) ||
 		nilAuthorityDependency(now) ||
 		nilAuthorityDependency(newProjectID) ||
@@ -189,6 +207,7 @@ func newAuthorityWithIdentityFactories(
 		unregister:        unregister,
 		lifecycle:         lifecycle,
 		networkSetup:      networkSetup,
+		resolverSetup:     resolverSetup,
 		build:             build,
 		discoverer:        discoverer,
 		now:               now,
@@ -442,6 +461,131 @@ func (authority *Authority) ConfirmNetworkSetupApproval(
 		result.Revision != request.ExpectedOperationRevision+3 ||
 		result.Pool != request.PoolEvidence.Pool {
 		return control.NetworkSetupApprovalConfirmation{}, errors.New("network setup approval confirmation differs from its requested operation revision and pool")
+	}
+	return result, nil
+}
+
+// StartNetworkResolverSetup assigns daemon operation identity to one authenticated resolver setup intent.
+func (authority *Authority) StartNetworkResolverSetup(
+	ctx context.Context,
+	caller control.Caller,
+	request control.StartNetworkResolverSetupRequest,
+) (control.NetworkResolverSetupOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkResolverSetupOperation{}, err
+	}
+	operationID, err := authority.newOperationID()
+	if err != nil {
+		return control.NetworkResolverSetupOperation{}, fmt.Errorf("generate network resolver setup operation identity: %w", err)
+	}
+	if err := operationID.Validate(); err != nil {
+		return control.NetworkResolverSetupOperation{}, fmt.Errorf("generated network resolver setup operation identity is invalid: %w", err)
+	}
+	coordinatorRequest := reconcile.NetworkResolverSetupStartRequest{
+		OperationID:       operationID,
+		IntentID:          request.IntentID,
+		RequesterIdentity: caller.Transport.UserID,
+	}
+	if err := coordinatorRequest.Validate(); err != nil {
+		return control.NetworkResolverSetupOperation{}, fmt.Errorf("network resolver setup coordinator request: %w", err)
+	}
+	started, err := authority.resolverSetup.Start(ctx, coordinatorRequest)
+	if err != nil {
+		return control.NetworkResolverSetupOperation{}, classifyNetworkResolverSetupError(err)
+	}
+	result := control.NetworkResolverSetupOperation{
+		Operation: started.Operation,
+		Revision:  started.Revision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkResolverSetupOperation{}, fmt.Errorf("network resolver setup result: %w", err)
+	}
+	if result.Operation.IntentID != request.IntentID {
+		return control.NetworkResolverSetupOperation{}, errors.New("network resolver setup result differs from its requested intent")
+	}
+	return result, nil
+}
+
+// PrepareNetworkResolverSetupApproval binds one resolver helper capability to the authenticated transport requester.
+func (authority *Authority) PrepareNetworkResolverSetupApproval(
+	ctx context.Context,
+	caller control.Caller,
+	request control.PrepareNetworkResolverSetupApprovalRequest,
+) (control.NetworkResolverSetupApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkResolverSetupApprovalPreparation{}, err
+	}
+	coordinatorRequest := reconcile.NetworkResolverSetupPrepareRequest{
+		OperationID:               request.OperationID,
+		ExpectedOperationRevision: request.ExpectedOperationRevision,
+		RequesterIdentity:         caller.Transport.UserID,
+	}
+	if err := coordinatorRequest.Validate(); err != nil {
+		return control.NetworkResolverSetupApprovalPreparation{}, fmt.Errorf("network resolver setup approval coordinator request: %w", err)
+	}
+	prepared, err := authority.resolverSetup.Prepare(ctx, coordinatorRequest)
+	if err != nil {
+		return control.NetworkResolverSetupApprovalPreparation{}, classifyNetworkResolverSetupError(err)
+	}
+	if err := prepared.Validate(authority.now().UTC()); err != nil {
+		return control.NetworkResolverSetupApprovalPreparation{}, fmt.Errorf("network resolver setup approval preparation result: %w", err)
+	}
+	if prepared.OperationID != request.OperationID {
+		return control.NetworkResolverSetupApprovalPreparation{}, errors.New("network resolver setup approval preparation differs from its requested operation")
+	}
+	result := control.NetworkResolverSetupApprovalPreparation{
+		OperationID:       request.OperationID,
+		OperationRevision: request.ExpectedOperationRevision,
+		Ticket: control.NetworkResolverSetupApprovalTicket{
+			OperationID:                prepared.OperationID,
+			Reference:                  prepared.Reference,
+			Operation:                  prepared.Operation,
+			PolicyFingerprint:          prepared.PolicyFingerprint,
+			TargetOwnershipFingerprint: prepared.OwnershipFingerprint,
+			ExpiresAt:                  prepared.ExpiresAt,
+		},
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkResolverSetupApprovalPreparation{}, fmt.Errorf("network resolver setup approval preparation result: %w", err)
+	}
+	return result, nil
+}
+
+// ConfirmNetworkResolverSetupApproval projects one correlated resolver completion into the control protocol.
+func (authority *Authority) ConfirmNetworkResolverSetupApproval(
+	ctx context.Context,
+	_ control.Caller,
+	request control.ConfirmNetworkResolverSetupApprovalRequest,
+) (control.NetworkResolverSetupApprovalConfirmation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkResolverSetupApprovalConfirmation{}, err
+	}
+	confirmed, err := authority.resolverSetup.Confirm(ctx, reconcile.NetworkResolverSetupConfirmRequest{
+		OperationID:               request.OperationID,
+		ExpectedOperationRevision: request.ExpectedOperationRevision,
+		ResolverEvidence:          request.ResolverEvidence,
+	})
+	if err != nil {
+		return control.NetworkResolverSetupApprovalConfirmation{}, classifyNetworkResolverSetupError(err)
+	}
+	if err := confirmed.Validate(); err != nil {
+		return control.NetworkResolverSetupApprovalConfirmation{}, fmt.Errorf("network resolver setup approval confirmation result: %w", err)
+	}
+	result := control.NetworkResolverSetupApprovalConfirmation{
+		Operation:       confirmed.Operation.Operation,
+		Revision:        confirmed.Operation.Revision,
+		NetworkRevision: confirmed.NetworkRevision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkResolverSetupApprovalConfirmation{}, fmt.Errorf("network resolver setup approval confirmation result: %w", err)
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.NetworkRevision != request.ExpectedOperationRevision+2 ||
+		result.Revision != request.ExpectedOperationRevision+3 {
+		return control.NetworkResolverSetupApprovalConfirmation{}, errors.New("network resolver setup approval confirmation differs from its requested operation revision")
 	}
 	return result, nil
 }
@@ -877,6 +1021,43 @@ func classifyNetworkSetupError(err error) error {
 	var operationMissing *state.OperationNotFoundError
 	if errors.As(err, &operationMissing) {
 		return control.NewNetworkSetupNotFoundError(err)
+	}
+	return err
+}
+
+// classifyNetworkResolverSetupError maps only reviewed resolver-state failures to stable control categories.
+func classifyNetworkResolverSetupError(err error) error {
+	var corruptState *state.CorruptStateError
+	if errors.As(err, &corruptState) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, ticketspool.ErrNotInstalled) {
+		return control.NewNetworkResolverSetupPrivilegedHelperRequiredError(err)
+	}
+	if errors.Is(err, ticketspool.ErrUnsafePath) {
+		return control.NewNetworkResolverSetupPrivilegedHelperUnsafeError(err)
+	}
+	var intentConflict *state.IntentConflictError
+	var staleRevision *state.StaleRevisionError
+	var networkMissing *state.NetworkNotInitializedError
+	var networkRevision *state.NetworkRevisionConflictError
+	var resolverActivation *state.NetworkResolverActivationConflictError
+	var completionConflict *state.NetworkResolverSetupCompletionConflictError
+	if errors.As(err, &intentConflict) ||
+		errors.As(err, &staleRevision) ||
+		errors.As(err, &networkMissing) ||
+		errors.As(err, &networkRevision) ||
+		errors.As(err, &resolverActivation) ||
+		errors.As(err, &completionConflict) ||
+		errors.Is(err, ticketissuer.ErrResolverPublicationIndeterminate) {
+		return control.NewNetworkResolverSetupConflictError(err)
+	}
+	var operationMissing *state.OperationNotFoundError
+	if errors.As(err, &operationMissing) {
+		return control.NewNetworkResolverSetupNotFoundError(err)
 	}
 	return err
 }

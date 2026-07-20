@@ -42,6 +42,7 @@ func TestAuthorityProjectLifecycleDelegatesDaemonIdentityAndClientIntent(t *test
 		func() (identity.InstallationID, error) { return "installation-unused", nil },
 		lifecycle,
 		testNetworkSetups(),
+		testNetworkResolverSetups(),
 		testHTTPRoutes(),
 	)
 
@@ -100,7 +101,7 @@ func TestAuthorityProjectLifecycleClassifiesReviewedFailures(t *testing.T) {
 				&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now,
 				func() (domain.ProjectID, error) { return "project-unused", nil },
 				func() (domain.OperationID, error) { return "operation-fixed", nil },
-				func() (identity.InstallationID, error) { return "installation-unused", nil }, lifecycle, testNetworkSetups(), testHTTPRoutes(),
+				func() (identity.InstallationID, error) { return "installation-unused", nil }, lifecycle, testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes(),
 			)
 			err := test.call(authority)
 			var handlerError *session.HandlerError
@@ -118,7 +119,7 @@ func TestAuthorityProjectLifecycleRejectsMalformedRequestsBeforeIdentityGenerati
 		&recordingStore{}, testProjectUnregisterApprovals(), buildinfo.Info{}, &registrationDiscoverer{}, time.Now,
 		func() (domain.ProjectID, error) { return "project-unused", nil },
 		func() (domain.OperationID, error) { return "", errors.New("identity factory must not run") },
-		func() (identity.InstallationID, error) { return "installation-unused", nil }, lifecycle, testNetworkSetups(), testHTTPRoutes(),
+		func() (identity.InstallationID, error) { return "installation-unused", nil }, lifecycle, testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes(),
 	)
 	_, startErr := authority.StartProject(t.Context(), control.Caller{}, control.StartProjectRequest{})
 	_, stopErr := authority.StopProject(t.Context(), control.Caller{}, control.StopProjectRequest{})

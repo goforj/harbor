@@ -47,6 +47,7 @@ func newAuthorityForUnregisterTest(
 		func() (identity.InstallationID, error) { return "installation-unused", nil },
 		testProjectLifecycles(),
 		testNetworkSetups(),
+		testNetworkResolverSetups(),
 		testHTTPRoutes(),
 	)
 }
@@ -324,6 +325,7 @@ func TestAuthorityIdentityFactoryConstructionRejectsNilOperationFactory(t *testi
 			newOpaqueInstallationID,
 			testProjectLifecycles(),
 			testNetworkSetups(),
+			testNetworkResolverSetups(),
 			testHTTPRoutes(),
 		)
 	})

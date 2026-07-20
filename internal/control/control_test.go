@@ -37,42 +37,51 @@ func (connection *testLocalConn) Peer() local.PeerIdentity {
 
 // recordingAuthority records application-boundary caller identities and returns configured results.
 type recordingAuthority struct {
-	mu                          sync.Mutex
-	status                      DaemonStatus
-	snapshot                    domain.Snapshot
-	registration                ProjectRegistration
-	networkSetup                NetworkSetupOperation
-	networkSetupPreparation     NetworkSetupApprovalPreparation
-	networkSetupConfirmation    NetworkSetupApprovalConfirmation
-	startLifecycle              ProjectLifecycleOperation
-	stopLifecycle               ProjectLifecycleOperation
-	projectActivity             ProjectActivity
-	unregistration              ProjectUnregistration
-	approvalPreparation         ProjectUnregisterApprovalPreparation
-	approvalConfirmation        ProjectUnregisterApprovalConfirmation
-	statusErr                   error
-	snapshotErr                 error
-	registrationErr             error
-	networkSetupErr             error
-	networkSetupPrepareErr      error
-	networkSetupConfirmErr      error
-	startErr                    error
-	stopErr                     error
-	projectActivityErr          error
-	unregistrationErr           error
-	approvalPrepareErr          error
-	approvalConfirmErr          error
-	callers                     []Caller
-	registrationRequests        []RegisterProjectRequest
-	networkSetupRequests        []StartNetworkSetupRequest
-	networkSetupPrepareRequests []PrepareNetworkSetupApprovalRequest
-	networkSetupConfirmRequests []ConfirmNetworkSetupApprovalRequest
-	startRequests               []StartProjectRequest
-	stopRequests                []StopProjectRequest
-	projectActivityRequests     []ProjectActivityRequest
-	unregistrationRequests      []UnregisterProjectRequest
-	approvalPrepareRequests     []PrepareProjectUnregisterApprovalRequest
-	approvalConfirmRequests     []ConfirmProjectUnregisterApprovalRequest
+	mu                                  sync.Mutex
+	status                              DaemonStatus
+	snapshot                            domain.Snapshot
+	registration                        ProjectRegistration
+	networkSetup                        NetworkSetupOperation
+	networkSetupPreparation             NetworkSetupApprovalPreparation
+	networkSetupConfirmation            NetworkSetupApprovalConfirmation
+	networkResolverSetup                NetworkResolverSetupOperation
+	networkResolverSetupPreparation     NetworkResolverSetupApprovalPreparation
+	networkResolverSetupConfirmation    NetworkResolverSetupApprovalConfirmation
+	startLifecycle                      ProjectLifecycleOperation
+	stopLifecycle                       ProjectLifecycleOperation
+	projectActivity                     ProjectActivity
+	unregistration                      ProjectUnregistration
+	approvalPreparation                 ProjectUnregisterApprovalPreparation
+	approvalConfirmation                ProjectUnregisterApprovalConfirmation
+	statusErr                           error
+	snapshotErr                         error
+	registrationErr                     error
+	networkSetupErr                     error
+	networkSetupPrepareErr              error
+	networkSetupConfirmErr              error
+	networkResolverSetupErr             error
+	networkResolverSetupPrepareErr      error
+	networkResolverSetupConfirmErr      error
+	startErr                            error
+	stopErr                             error
+	projectActivityErr                  error
+	unregistrationErr                   error
+	approvalPrepareErr                  error
+	approvalConfirmErr                  error
+	callers                             []Caller
+	registrationRequests                []RegisterProjectRequest
+	networkSetupRequests                []StartNetworkSetupRequest
+	networkSetupPrepareRequests         []PrepareNetworkSetupApprovalRequest
+	networkSetupConfirmRequests         []ConfirmNetworkSetupApprovalRequest
+	networkResolverSetupRequests        []StartNetworkResolverSetupRequest
+	networkResolverSetupPrepareRequests []PrepareNetworkResolverSetupApprovalRequest
+	networkResolverSetupConfirmRequests []ConfirmNetworkResolverSetupApprovalRequest
+	startRequests                       []StartProjectRequest
+	stopRequests                        []StopProjectRequest
+	projectActivityRequests             []ProjectActivityRequest
+	unregistrationRequests              []UnregisterProjectRequest
+	approvalPrepareRequests             []PrepareProjectUnregisterApprovalRequest
+	approvalConfirmRequests             []ConfirmProjectUnregisterApprovalRequest
 }
 
 // ProjectActivity records the authenticated caller and current-session output selection.
@@ -137,6 +146,54 @@ func (authority *recordingAuthority) ConfirmNetworkSetupApproval(
 	authority.networkSetupConfirmRequests = append(authority.networkSetupConfirmRequests, request)
 	authority.mu.Unlock()
 	return authority.networkSetupConfirmation, authority.networkSetupConfirmErr
+}
+
+// StartNetworkResolverSetup records the authenticated caller and client-owned resolver setup intent.
+func (authority *recordingAuthority) StartNetworkResolverSetup(
+	ctx context.Context,
+	caller Caller,
+	request StartNetworkResolverSetupRequest,
+) (NetworkResolverSetupOperation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return NetworkResolverSetupOperation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.networkResolverSetupRequests = append(authority.networkResolverSetupRequests, request)
+	authority.mu.Unlock()
+	return authority.networkResolverSetup, authority.networkResolverSetupErr
+}
+
+// PrepareNetworkResolverSetupApproval records the authenticated caller and exact resolver setup approval selection.
+func (authority *recordingAuthority) PrepareNetworkResolverSetupApproval(
+	ctx context.Context,
+	caller Caller,
+	request PrepareNetworkResolverSetupApprovalRequest,
+) (NetworkResolverSetupApprovalPreparation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return NetworkResolverSetupApprovalPreparation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.networkResolverSetupPrepareRequests = append(authority.networkResolverSetupPrepareRequests, request)
+	authority.mu.Unlock()
+	return authority.networkResolverSetupPreparation, authority.networkResolverSetupPrepareErr
+}
+
+// ConfirmNetworkResolverSetupApproval records the authenticated caller and exact resolver helper evidence.
+func (authority *recordingAuthority) ConfirmNetworkResolverSetupApproval(
+	ctx context.Context,
+	caller Caller,
+	request ConfirmNetworkResolverSetupApprovalRequest,
+) (NetworkResolverSetupApprovalConfirmation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return NetworkResolverSetupApprovalConfirmation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.networkResolverSetupConfirmRequests = append(authority.networkResolverSetupConfirmRequests, request)
+	authority.mu.Unlock()
+	return authority.networkResolverSetupConfirmation, authority.networkResolverSetupConfirmErr
 }
 
 // StartProject records the authenticated caller and client-owned start intent before returning durable progress.
@@ -424,7 +481,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-setup.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}
