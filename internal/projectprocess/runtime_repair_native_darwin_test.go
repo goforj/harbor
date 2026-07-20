@@ -167,6 +167,94 @@ func TestNativeDarwinRuntimeRepairRejectsAmbiguousScopeWithoutSignal(t *testing.
 	}
 }
 
+// TestNativeDarwinRuntimeRepairRejectsDriftWithoutSignal proves a replacement listener cannot inherit an inspected repair candidate's signal.
+func TestNativeDarwinRuntimeRepairRejectsDriftWithoutSignal(t *testing.T) {
+	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
+		t.Skip("set HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 on a disposable macOS runner")
+	}
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize checkout error = %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable error = %v", err)
+	}
+	forjPath := filepath.Join(checkout, "forj")
+	if err := copyRuntimeRepairNativeHelper(executable, forjPath); err != nil {
+		t.Fatalf("copy forj helper error = %v", err)
+	}
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("reserve listener error = %v", err)
+	}
+	endpoint := netip.MustParseAddrPort(listener.Addr().String())
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release listener reservation error = %v", err)
+	}
+
+	original := exec.Command(forjPath, "dev")
+	original.Dir = checkout
+	original.Env = append(
+		os.Environ(),
+		runtimeRepairNativeHelperEnvironment+"=1",
+		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
+	)
+	original.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := original.Start(); err != nil {
+		t.Fatalf("start original native forj helper error = %v", err)
+	}
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("wait for original native listener error = %v", err)
+	}
+
+	repairer := NewRuntimeRepairer()
+	inspection, err := repairer.Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if inspection.State != RuntimeRepairInspectionActionable || inspection.Candidate == nil {
+		t.Fatalf("Inspect() = %#v, want actionable candidate", inspection)
+	}
+	if err := original.Process.Kill(); err != nil {
+		t.Fatalf("kill original native helper error = %v", err)
+	}
+	// SIGKILL intentionally produces an ExitError; waiting only reaps the old scope before the replacement binds.
+	_ = original.Wait()
+
+	replacement := exec.Command(forjPath, "dev")
+	replacement.Dir = checkout
+	replacement.Env = append(
+		os.Environ(),
+		runtimeRepairNativeHelperEnvironment+"=1",
+		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
+	)
+	replacement.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := replacement.Start(); err != nil {
+		t.Fatalf("start replacement native forj helper error = %v", err)
+	}
+	t.Cleanup(func() {
+		if replacement.ProcessState == nil {
+			_ = replacement.Process.Kill()
+			_ = replacement.Wait()
+		}
+	})
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("wait for replacement native listener error = %v", err)
+	}
+
+	confirmation, err := repairer.Confirm(t.Context(), *inspection.Candidate)
+	if err != nil {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	if confirmation.State != RuntimeRepairConfirmationDrifted || confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, want zero-signal drift", confirmation)
+	}
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("drifted confirmation stopped the replacement listener: %v", err)
+	}
+}
+
 // copyRuntimeRepairNativeHelper copies the test executable so proc_pidpath and argv[0] share one canonical forj identity.
 func copyRuntimeRepairNativeHelper(source string, destination string) error {
 	input, err := os.Open(source)
