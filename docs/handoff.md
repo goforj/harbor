@@ -215,7 +215,7 @@ Do not claim either platform's resolver as complete merely because its foundatio
 No delivery phase has met its complete exit gate.
 
 - Hosted three-OS CI, Phase 1 evidence, and privileged loopback tests exist.
-- The hosted same-port proof now provisions three exact loopback identities, queues all three generated GoForj starts before awaiting readiness on port 3000, and rejects evidence or cleanup that omits any identity; workflow execution remains required native evidence.
+- The hosted same-port proof now provisions three exact loopback identities, queues and launches all three rendered GoForj projects before awaiting readiness on port 3000, and rejects evidence or cleanup that omits any identity; workflow execution remains required native evidence.
 - Durable SQLite state, authenticated local RPC, operation journals, project registration/removal, network setup approvals, and recovery are substantial.
 - DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, Linux resolver integration foundation, Windows NRPT core foundation, and runtime activation exist.
 - Wails/Vue can add/remove projects, set up networking, start/stop a project, inspect and explicitly confirm one retained macOS runtime candidate, display actionable errors, stream current ANSI-formatted development output, and follow a selected Compose service's current-session logs through independent held cursors with incremental terminal redraws.
