@@ -56,6 +56,41 @@ func TestSystemdResolvedDirectoryLockHonorsContext(t *testing.T) {
 	}
 }
 
+// TestSystemdResolvedArtifactOwnedByRequestRequiresExactMarkerAndSecurity proves recovery cannot adopt foreign bytes.
+func TestSystemdResolvedArtifactOwnedByRequestRequiresExactMarkerAndSecurity(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	metadata := systemdResolvedArtifactMetadata{
+		Regular:   true,
+		Device:    1,
+		Inode:     2,
+		UID:       0,
+		GID:       0,
+		Mode:      systemdResolvedFileMode,
+		LinkCount: 1,
+	}
+	artifact := systemdResolvedArtifact{Exists: true, Content: marshalSystemdResolvedValidated(request), Metadata: metadata}
+	if !systemdResolvedArtifactOwnedByRequest(artifact, request) {
+		t.Fatal("exact owned artifact was rejected")
+	}
+	foreignRequest, err := NewRequest("installation-foreign", request.Policy())
+	if err != nil {
+		t.Fatalf("NewRequest(foreign) error = %v", err)
+	}
+	if systemdResolvedArtifactOwnedByRequest(artifact, foreignRequest) {
+		t.Fatal("foreign owner marker was accepted")
+	}
+	unsafe := artifact
+	unsafe.Metadata.Mode = 0o664
+	if systemdResolvedArtifactOwnedByRequest(unsafe, request) {
+		t.Fatal("unsafe artifact shape was accepted")
+	}
+	malformed := artifact
+	malformed.Content = []byte("[Resolve]\nDNS=127.0.0.1\n")
+	if systemdResolvedArtifactOwnedByRequest(malformed, request) {
+		t.Fatal("artifact without Harbor marker was accepted")
+	}
+}
+
 // TestSystemdResolvedBusctlParserRetainsCompleteRelevantState covers exact routes, foreign subdomains, and global occupancy.
 func TestSystemdResolvedBusctlParserRetainsCompleteRelevantState(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)

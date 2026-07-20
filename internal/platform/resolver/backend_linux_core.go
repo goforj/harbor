@@ -127,6 +127,9 @@ func (backend *systemdResolvedBackend) observe(ctx context.Context, request Requ
 	if err := ctx.Err(); err != nil {
 		return Observation{}, err
 	}
+	if err := recoverSystemdResolvedTransactions(ctx, request); err != nil {
+		return Observation{}, err
+	}
 	snapshot, err := backend.store.snapshot(ctx, request)
 	if err != nil {
 		return Observation{}, err

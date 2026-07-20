@@ -155,8 +155,14 @@ func (store systemdResolvedNativeStore) replace(
 	defer func() {
 		err = errors.Join(err, unlockSystemdResolvedDirectory(directory))
 	}()
-	if err := requireNoSystemdResolvedTransactionsAt(directory); err != nil {
+	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory)
+	if err != nil {
 		return err
+	}
+	if restartRequired {
+		if err := restartSystemdResolved(ctx); err != nil {
+			return fmt.Errorf("restart systemd-resolved after transaction recovery: %w", err)
+		}
 	}
 
 	snapshot, err := store.snapshot(ctx, request)
@@ -294,8 +300,14 @@ func (store systemdResolvedNativeStore) remove(
 	defer func() {
 		err = errors.Join(err, unlockSystemdResolvedDirectory(directory))
 	}()
-	if err := requireNoSystemdResolvedTransactionsAt(directory); err != nil {
+	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory)
+	if err != nil {
 		return err
+	}
+	if restartRequired {
+		if err := restartSystemdResolved(ctx); err != nil {
+			return fmt.Errorf("restart systemd-resolved after transaction recovery: %w", err)
+		}
 	}
 	snapshot, err := store.snapshot(ctx, request)
 	if err != nil {
@@ -1289,6 +1301,122 @@ func requireNoSystemdResolvedTransactions() error {
 	}
 	defer directory.Close()
 	return requireNoSystemdResolvedTransactionsAt(directory)
+}
+
+// recoverSystemdResolvedTransactions reopens the fixed directory and repairs only Harbor-owned crash remnants.
+func recoverSystemdResolvedTransactions(ctx context.Context, request Request) (err error) {
+	if err := validateSystemdResolvedRequest(request); err != nil {
+		return err
+	}
+	directory, err := openSystemdResolvedDirectory(false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open systemd-resolved drop-in directory for transaction recovery: %w", err)
+	}
+	defer func() { err = errors.Join(err, directory.Close()) }()
+	if err := lockSystemdResolvedDirectory(ctx, directory); err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, unlockSystemdResolvedDirectory(directory)) }()
+	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory)
+	if err != nil {
+		return err
+	}
+	if restartRequired {
+		if err := restartSystemdResolved(ctx); err != nil {
+			return fmt.Errorf("restart systemd-resolved after transaction recovery: %w", err)
+		}
+	}
+	return nil
+}
+
+// recoverSystemdResolvedTransactionsAt removes unpublished stages and restores only exact owned quarantines.
+func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, directory *os.File) (bool, error) {
+	if err := validateSystemdResolvedRequest(request); err != nil {
+		return false, err
+	}
+	if directory == nil {
+		return false, fmt.Errorf("systemd-resolved transaction recovery requires a directory")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if _, err := directory.Seek(0, io.SeekStart); err != nil {
+		return false, fmt.Errorf("rewind systemd-resolved directory for recovery: %w", err)
+	}
+	names, err := directory.Readdirnames(maximumSystemdResolvedDirectoryEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("scan systemd-resolved transactions for recovery: %w", err)
+	}
+	if len(names) > maximumSystemdResolvedDirectoryEntries {
+		return false, fmt.Errorf("systemd-resolved transactions exceed limit %d", maximumSystemdResolvedDirectoryEntries)
+	}
+	transactions := make([]string, 0, len(names))
+	for _, name := range names {
+		if isSystemdResolvedTransactionName(name) {
+			transactions = append(transactions, name)
+		}
+	}
+	if len(transactions) == 0 {
+		return false, nil
+	}
+	slices.Sort(transactions)
+	fixed, err := readSystemdResolvedArtifactAt(directory, fixedSystemdResolvedName)
+	if err != nil {
+		return false, fmt.Errorf("inspect fixed systemd-resolved artifact for recovery: %w", err)
+	}
+	fixedOwned := systemdResolvedArtifactOwnedByRequest(fixed, request)
+	if fixed.Exists && !fixedOwned {
+		return false, fmt.Errorf("systemd-resolved transaction recovery found a foreign fixed artifact")
+	}
+	restartRequired := false
+	for _, name := range transactions {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		artifact, err := readSystemdResolvedArtifactAt(directory, name)
+		if err != nil {
+			return false, fmt.Errorf("inspect systemd-resolved transaction %q: %w", name, err)
+		}
+		if !artifact.Exists || !secureSystemdResolvedArtifact(artifact.Metadata) {
+			return false, fmt.Errorf("systemd-resolved transaction %q has unsafe artifact identity", name)
+		}
+		switch {
+		case strings.HasPrefix(name, systemdResolvedStagePrefix):
+			// A stage is never the public name; deleting it cannot change resolver behavior.
+			if err := removeSystemdResolvedTransaction(directory, name); err != nil {
+				return false, fmt.Errorf("recover systemd-resolved stage %q: %w", name, err)
+			}
+		case strings.HasPrefix(name, systemdResolvedQuarantinePrefix):
+			if !systemdResolvedArtifactOwnedByRequest(artifact, request) {
+				return false, fmt.Errorf("systemd-resolved quarantine %q is not owned by this request", name)
+			}
+			if fixed.Exists {
+				if err := removeSystemdResolvedTransaction(directory, name); err != nil {
+					return false, fmt.Errorf("recover completed systemd-resolved quarantine %q: %w", name, err)
+				}
+				continue
+			}
+			if err := restoreSystemdResolvedQuarantine(directory, name); err != nil {
+				return false, fmt.Errorf("restore systemd-resolved quarantine %q: %w", name, err)
+			}
+			restartRequired = true
+		default:
+			return false, fmt.Errorf("systemd-resolved transaction %q is outside recovery policy", name)
+		}
+	}
+	return restartRequired, nil
+}
+
+// systemdResolvedArtifactOwnedByRequest requires the exact marker and immutable root-owned file shape.
+func systemdResolvedArtifactOwnedByRequest(artifact systemdResolvedArtifact, request Request) bool {
+	if !artifact.Exists || !secureSystemdResolvedArtifact(artifact.Metadata) {
+		return false
+	}
+	parsed, err := parseSystemdResolvedArtifact(artifact.Content)
+	return err == nil && parsed.Owner != nil && *parsed.Owner == request.OwnerMarker()
 }
 
 // requireNoSystemdResolvedTransactionsAt scans a bounded direct directory namespace for incomplete mutations.
