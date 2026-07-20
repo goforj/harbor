@@ -149,6 +149,61 @@ func TestControllerHTTPRouteLiveRequiresReadyExactPublication(t *testing.T) {
 	}
 }
 
+// TestControllerVerifyProjectWithdrawnAllowsOtherProjectRoutes verifies teardown authority is scoped to one durable project.
+func TestControllerVerifyProjectWithdrawnAllowsOtherProjectRoutes(t *testing.T) {
+	initial := addReadyHTTPProject(readyHTTPRuntimeState(), "inventory", "inventory", "127.77.0.11", 4000)
+	source := runtimeStateTestSource(initial)
+	authority := &testCertificateAuthority{
+		root: validTestRoot(),
+		ensureLeaf: func(context.Context, string) (certificates.LeafResult, error) {
+			return certificates.LeafResult{}, nil
+		},
+	}
+	runtime := newTestDataPlane(nil)
+	controller := newHTTPTestController(t, source, authority, runtime)
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	setHTTPTestSnapshot(t, runtime, initial)
+	if err := controller.VerifyProjectWithdrawn(context.Background(), "orders", initial.Network.Revision); !errors.Is(err, ErrProjectWithdrawalUnverified) {
+		t.Fatalf("VerifyProjectWithdrawn() before withdrawal error = %v, want %v", err, ErrProjectWithdrawalUnverified)
+	}
+
+	withdrawn := stoppedHTTPRuntimeState(initial)
+	withdrawn.Network.Revision++
+	withdrawn.Snapshot.Sequence = withdrawn.Network.Revision
+	withdrawn.Network.Reservations.Endpoints = []state.EndpointReservation{}
+	for _, endpoint := range initial.Network.Reservations.Endpoints {
+		if endpoint.Key.ProjectID != "orders" {
+			withdrawn.Network.Reservations.Endpoints = append(withdrawn.Network.Reservations.Endpoints, endpoint)
+		}
+	}
+	withdrawn.Network.Reservations.SuppressedProjectIDs = []domain.ProjectID{"orders"}
+	if err := withdrawn.Validate(); err != nil {
+		t.Fatalf("withdrawn runtime state is invalid: %v", err)
+	}
+	source.snapshot = withdrawn.Snapshot
+	source.network = withdrawn.Network
+	if err := controller.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() withdrawal error = %v", err)
+	}
+	setHTTPTestSnapshot(t, runtime, withdrawn)
+
+	if err := controller.VerifyProjectWithdrawn(context.Background(), "orders", withdrawn.Network.Revision); err != nil {
+		t.Fatalf("VerifyProjectWithdrawn() with another project live error = %v", err)
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), "inventory", withdrawn.Network.Revision); !errors.Is(err, ErrProjectWithdrawalUnverified) {
+		t.Fatalf("VerifyProjectWithdrawn() for live project error = %v, want %v", err, ErrProjectWithdrawalUnverified)
+	}
+	if err := controller.VerifyProjectWithdrawn(context.Background(), "orders", initial.Network.Revision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "durable network revision") {
+		t.Fatalf("VerifyProjectWithdrawn() stale revision error = %v, want revision failure", err)
+	}
+
+	if err := controller.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 // TestControllerReconcileAddsReadyHTTPRoute verifies a stopped reservation becomes live only after durable readiness.
 func TestControllerReconcileAddsReadyHTTPRoute(t *testing.T) {
 	ready := readyHTTPRuntimeState()
@@ -280,6 +335,35 @@ func ensuredLeafHosts(authority *testCertificateAuthority) []string {
 	authority.mutex.Lock()
 	defer authority.mutex.Unlock()
 	return append([]string(nil), authority.ensureLeafHosts...)
+}
+
+// setHTTPTestSnapshot mirrors the payload-free counters that production derives from its retained desired generation.
+func setHTTPTestSnapshot(t *testing.T, runtime *testDataPlane, runtimeState state.RuntimeState) {
+	t.Helper()
+	desired, err := desiredHTTPStateFromRuntimeState(runtimeState)
+	if err != nil {
+		t.Fatalf("desiredHTTPStateFromRuntimeState() error = %v", err)
+	}
+	listeners := desired.ListenerPlan()
+	runtime.mutex.Lock()
+	runtime.snapshot = dataplane.Snapshot{
+		State: dataplane.StateReady,
+		DNS: dataplane.DNSStatus{
+			Configured: listeners.DNS.IsValid(),
+			Address:    listeners.DNS,
+			Running:    listeners.DNS.IsValid(),
+			Records:    len(desired.DNSRecords()),
+		},
+		Ingress: dataplane.IngressStatus{
+			Configured:   listeners.HTTP.IsValid(),
+			HTTPAddress:  listeners.HTTP,
+			HTTPSAddress: listeners.HTTPS,
+			Running:      listeners.HTTP.IsValid(),
+			Routes:       len(desired.HTTPRoutes()),
+		},
+		Relays: []dataplane.RelayStatus{},
+	}
+	runtime.mutex.Unlock()
 }
 
 // readyHTTPRuntimeState creates one ready App route joined to a primary lease and reservation.

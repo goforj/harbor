@@ -367,6 +367,9 @@ func (controller *Controller) VerifyProjectWithdrawn(
 		)
 	}
 
+	controller.reconcileMutex.Lock()
+	defer controller.reconcileMutex.Unlock()
+
 	controller.mutex.RLock()
 	lifecycle := controller.state
 	runtime := controller.dataPlane
@@ -383,6 +386,44 @@ func (controller *Controller) VerifyProjectWithdrawn(
 		)
 	}
 
+	runtimeState, err := controller.source.RuntimeState(ctx)
+	if err != nil {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: read durable state: %w",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+			err,
+		)
+	}
+	if err := runtimeState.Validate(); err != nil {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: invalid durable state: %v",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+			err,
+		)
+	}
+	if !runtimeState.NetworkInitialized || runtimeState.Network.Revision != networkRevision {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: durable network revision is %d",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+			runtimeState.Network.Revision,
+		)
+	}
+	project, found := runtimeProject(runtimeState.Snapshot, projectID)
+	if !found {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: durable project is missing",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+		)
+	}
+
 	snapshot := runtime.Snapshot()
 	if err := snapshot.Validate(); err != nil {
 		return fmt.Errorf(
@@ -393,16 +434,92 @@ func (controller *Controller) VerifyProjectWithdrawn(
 			err,
 		)
 	}
-	// The immutable generation does not yet expose project ownership, so any live route makes a targeted withdrawal unprovable.
-	if snapshot.State != dataplane.StateReady || snapshot.DNS.Records != 0 || snapshot.Ingress.Routes != 0 || len(snapshot.Relays) != 0 {
+	if snapshot.State != dataplane.StateReady {
 		return fmt.Errorf(
-			"%w for project %q at network revision %d: live routes remain",
+			"%w for project %q at network revision %d: data plane state is %q",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+			snapshot.State,
+		)
+	}
+	if err := verifyPublishedRouteObservation(snapshot, controller.publishedHTTPRoutes, controller.httpFoundation); err != nil {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: %v",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+			err,
+		)
+	}
+	if projectHasPublishedHTTPRoute(project, controller.publishedHTTPRoutes) {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: project HTTP route remains live",
 			ErrProjectWithdrawalUnverified,
 			projectID,
 			networkRevision,
 		)
 	}
 	return nil
+}
+
+// runtimeProject binds route ownership to the validated durable slug instead of inferring it from an opaque route alone.
+func runtimeProject(snapshot domain.Snapshot, projectID domain.ProjectID) (domain.ProjectSnapshot, bool) {
+	for _, project := range snapshot.Projects {
+		if project.ID == projectID {
+			return project, true
+		}
+	}
+	return domain.ProjectSnapshot{}, false
+}
+
+// verifyPublishedRouteObservation prevents retained route identities from authorizing teardown after the runtime drifts.
+func verifyPublishedRouteObservation(
+	snapshot dataplane.Snapshot,
+	httpRoutes []dataplane.HTTPRoute,
+	foundation dataplane.DesiredState,
+) error {
+	listeners := foundation.ListenerPlan()
+	if snapshot.DNS.Configured != listeners.DNS.IsValid() ||
+		(snapshot.DNS.Configured && snapshot.DNS.Address != listeners.DNS) {
+		return fmt.Errorf("data-plane DNS listener differs from the controller-owned generation")
+	}
+	ingressConfigured := listeners.HTTP.IsValid() && listeners.HTTPS.IsValid()
+	if snapshot.Ingress.Configured != ingressConfigured ||
+		(snapshot.Ingress.Configured &&
+			(snapshot.Ingress.HTTPAddress != listeners.HTTP || snapshot.Ingress.HTTPSAddress != listeners.HTTPS)) {
+		return fmt.Errorf("data-plane ingress listeners differ from the controller-owned generation")
+	}
+	if snapshot.Ingress.Routes != len(httpRoutes) {
+		return fmt.Errorf(
+			"data-plane ingress reports %d routes while the controller owns %d",
+			snapshot.Ingress.Routes,
+			len(httpRoutes),
+		)
+	}
+	if len(snapshot.Relays) != 0 || len(foundation.NativeRoutes()) != 0 {
+		return fmt.Errorf("native route ownership is unavailable")
+	}
+	if snapshot.DNS.Records != len(httpRoutes) {
+		return fmt.Errorf(
+			"data-plane DNS reports %d records while the controller owns %d HTTP routes",
+			snapshot.DNS.Records,
+			len(httpRoutes),
+		)
+	}
+	return nil
+}
+
+// projectHasPublishedHTTPRoute treats either the stable ID or exact host as ownership so cross-wiring cannot authorize release.
+func projectHasPublishedHTTPRoute(project domain.ProjectSnapshot, routes []dataplane.HTTPRoute) bool {
+	routeID := project.Slug + ":" + string(appHTTPResourceID)
+	host := project.Slug + ".test"
+	for _, route := range routes {
+		if route.ID == routeID || route.Host == host {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicRoot returns a defensive public-only copy of the authority retained by the ready generation.

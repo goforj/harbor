@@ -740,10 +740,11 @@ func TestControllerStartsEmptyGenerationAndClosesInOrder(t *testing.T) {
 	}
 }
 
-// TestControllerVerifiesProjectWithdrawalFailClosed proves host release only proceeds without a live route generation.
+// TestControllerVerifiesProjectWithdrawalFailClosed proves ambiguous durable or runtime observations cannot authorize host release.
 func TestControllerVerifiesProjectWithdrawalFailClosed(t *testing.T) {
 	projectID := domain.ProjectID("orders")
-	const networkRevision domain.Sequence = 17
+	runtimeState := initializedControllerRuntimeState()
+	networkRevision := runtimeState.Network.Revision
 
 	var zero *Controller
 	if err := zero.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrNotInitialized) {
@@ -754,10 +755,13 @@ func TestControllerVerifiesProjectWithdrawalFailClosed(t *testing.T) {
 	material := &testMaterialStore{events: events}
 	authority := &testCertificateAuthority{root: validTestRoot()}
 	runtime := newTestDataPlane(events)
+	source := runtimeStateTestSource(runtimeState)
+	dependencies := testControllerDependencies(material, authority, runtime)
+	dependencies.newDesiredState = desiredStateFromRuntimeState
 	controller := newFakeController(
 		t,
-		&testRuntimeStateSource{snapshot: validControllerSnapshot()},
-		testControllerDependencies(material, authority, runtime),
+		source,
+		dependencies,
 	)
 	if err := controller.VerifyProjectWithdrawn(nil, projectID, networkRevision); err != nil {
 		t.Fatalf("VerifyProjectWithdrawn() before runtime start error = %v", err)
@@ -780,17 +784,75 @@ func TestControllerVerifiesProjectWithdrawalFailClosed(t *testing.T) {
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	setHTTPTestSnapshot(t, runtime, runtimeState)
 	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); err != nil {
 		t.Fatalf("VerifyProjectWithdrawn() empty ready generation error = %v", err)
 	}
 
-	runtime.mutex.Lock()
-	runtime.snapshot.DNS = dataplane.DNSStatus{
-		Configured: true,
-		Address:    netip.MustParseAddrPort("127.0.0.1:53"),
-		Running:    true,
-		Records:    1,
+	source.err = errors.New("state unavailable")
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "read durable state") {
+		t.Fatalf("VerifyProjectWithdrawn() state read error = %v, want fail-closed durable read", err)
 	}
+	source.err = nil
+	source.snapshot.Projects = nil
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "invalid durable state") {
+		t.Fatalf("VerifyProjectWithdrawn() invalid state error = %v, want fail-closed validation", err)
+	}
+	source.snapshot = runtimeState.Snapshot
+	withoutProject := runtimeState
+	withoutProject.Snapshot.Projects = []domain.ProjectSnapshot{}
+	withoutProject.Network.Leases = []identity.Lease{}
+	withoutProject.Network.Reservations.Endpoints = []state.EndpointReservation{}
+	if err := withoutProject.Validate(); err != nil {
+		t.Fatalf("project-free runtime state is invalid: %v", err)
+	}
+	source.snapshot = withoutProject.Snapshot
+	source.network = withoutProject.Network
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "durable project is missing") {
+		t.Fatalf("VerifyProjectWithdrawn() missing project error = %v, want fail-closed ownership", err)
+	}
+	source.snapshot = runtimeState.Snapshot
+	source.network = runtimeState.Network
+	runtime.mutex.Lock()
+	runtime.snapshot.State = dataplane.StateStarting
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "data plane state") {
+		t.Fatalf("VerifyProjectWithdrawn() non-ready runtime error = %v, want fail-closed lifecycle", err)
+	}
+	setHTTPTestSnapshot(t, runtime, runtimeState)
+
+	runtime.mutex.Lock()
+	runtime.snapshot.DNS.Address = netip.MustParseAddrPort("127.0.0.2:1053")
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "DNS listener differs") {
+		t.Fatalf("VerifyProjectWithdrawn() DNS drift error = %v, want fail-closed observation", err)
+	}
+	setHTTPTestSnapshot(t, runtime, runtimeState)
+	runtime.mutex.Lock()
+	runtime.snapshot.Ingress.HTTPAddress = netip.MustParseAddrPort("127.0.0.1:18081")
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "ingress listeners differ") {
+		t.Fatalf("VerifyProjectWithdrawn() ingress drift error = %v, want fail-closed observation", err)
+	}
+	setHTTPTestSnapshot(t, runtime, runtimeState)
+	runtime.mutex.Lock()
+	runtime.snapshot.Ingress.Routes = 1
+	runtime.snapshot.DNS.Records = 1
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "controller owns 0") {
+		t.Fatalf("VerifyProjectWithdrawn() route-count drift error = %v, want fail-closed observation", err)
+	}
+	setHTTPTestSnapshot(t, runtime, runtimeState)
+	runtime.mutex.Lock()
+	runtime.snapshot.DNS.Records = 1
+	runtime.mutex.Unlock()
+	if err := controller.VerifyProjectWithdrawn(context.Background(), projectID, networkRevision); !errors.Is(err, ErrProjectWithdrawalUnverified) || !strings.Contains(err.Error(), "invalid data-plane observation") {
+		t.Fatalf("VerifyProjectWithdrawn() DNS-count drift error = %v, want fail-closed observation", err)
+	}
+	setHTTPTestSnapshot(t, runtime, runtimeState)
+
+	runtime.mutex.Lock()
+	runtime.snapshot.DNS.Records = 1
 	runtime.snapshot.Relays = []dataplane.RelayStatus{{
 		ID:            "orders-database",
 		Host:          "database.orders.test",
