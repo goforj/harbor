@@ -583,8 +583,8 @@ func (authority *Authority) ConfirmNetworkResolverSetupApproval(
 		return control.NetworkResolverSetupApprovalConfirmation{}, fmt.Errorf("network resolver setup approval confirmation result: %w", err)
 	}
 	if result.Operation.ID != request.OperationID ||
-		result.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		result.Revision != request.ExpectedOperationRevision+3 {
+		result.NetworkRevision <= request.ExpectedOperationRevision+1 ||
+		result.Revision != result.NetworkRevision+1 {
 		return control.NetworkResolverSetupApprovalConfirmation{}, errors.New("network resolver setup approval confirmation differs from its requested operation revision")
 	}
 	return result, nil

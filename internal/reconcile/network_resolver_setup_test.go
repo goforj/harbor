@@ -1408,7 +1408,7 @@ func (fixture *networkResolverSetupTestFixture) resolverResult(
 	}
 }
 
-// completionResult returns the exact contiguous terminal projection expected after approval.
+// completionResult returns an exact terminal projection after unrelated global journal progress.
 func (fixture *networkResolverSetupTestFixture) completionResult(
 	t *testing.T,
 	approval state.OperationRecord,
@@ -1424,14 +1424,14 @@ func (fixture *networkResolverSetupTestFixture) completionResult(
 	operation.FinishedAt = &finishedAt
 	network := fixture.network
 	network.Stage = state.NetworkStageResolver
-	network.Revision = approval.Revision + 2
+	network.Revision = approval.Revision + 6
 	network.UpdatedAt = finishedAt
 	if err := target.Validate(); err != nil {
 		t.Fatalf("target Validate() error = %v", err)
 	}
 	return state.CompleteNetworkResolverSetupResult{
-		Operation:       state.OperationRecord{Operation: operation, Revision: approval.Revision + 3},
-		NetworkRevision: approval.Revision + 2,
+		Operation:       state.OperationRecord{Operation: operation, Revision: approval.Revision + 7},
+		NetworkRevision: approval.Revision + 6,
 		Network:         state.NetworkMutationResult{Record: network},
 	}
 }

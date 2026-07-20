@@ -452,8 +452,8 @@ func (a *App) approveNetworkResolverSetup(
 	}
 	if confirmation.Operation.ID != setup.Operation.ID ||
 		confirmation.Operation.IntentID != setup.Operation.IntentID ||
-		confirmation.NetworkRevision != setup.Revision+2 ||
-		confirmation.Revision != setup.Revision+3 {
+		confirmation.NetworkRevision <= setup.Revision+1 ||
+		confirmation.Revision != confirmation.NetworkRevision+1 {
 		return errors.New("validate Harbor network resolver setup confirmation: result crossed the selected operation revision")
 	}
 	return nil

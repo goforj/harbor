@@ -769,7 +769,7 @@ func TestSetupNetworkRepairsResolverApprovalThroughTheSharedPrerequisiteBoundary
 
 	app, client := connectedTestApp()
 	client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
-	confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+	confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 17, 18)
 	runner := &fakeNetworkResolverSetupApprovalRunner{
 		execute: func(_ context.Context, call int, _ networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
 			if call == 1 {
@@ -1177,13 +1177,13 @@ func TestSetupNetworkRejectsResolverSetupFailures(t *testing.T) {
 		{
 			name: "crossed historical revisions",
 			mutate: func(client *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
-				confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 14, 15)
+				confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 14, 16)
 				runner.outcome = networkresolverapproval.Outcome{
 					State:        networkresolverapproval.Succeeded,
 					Confirmation: &confirmation,
 				}
 			},
-			want: "crossed the selected operation",
+			want: "immediately follow",
 		},
 	}
 

@@ -367,8 +367,8 @@ func TestExecuteRejectsMismatchedResponses(t *testing.T) {
 		{
 			name: "confirmation lifecycle revision",
 			mutateConfirmation: func(confirmation *control.NetworkResolverSetupApprovalConfirmation) {
-				confirmation.NetworkRevision--
-				confirmation.Revision--
+				confirmation.NetworkRevision = testResolverRevision + 1
+				confirmation.Revision = confirmation.NetworkRevision + 1
 			},
 			wantState:   Indeterminate,
 			wantLaunch:  1,
@@ -637,7 +637,7 @@ func successfulLaunch(evidence helper.ResolverMutationEvidence) launcher.Outcome
 	}
 }
 
-// validConfirmation returns one validated success at the fixed approval lifecycle revision offset.
+// validConfirmation returns one validated success after unrelated global journal progress.
 func validConfirmation(
 	t *testing.T,
 	operationID domain.OperationID,
@@ -659,8 +659,8 @@ func validConfirmation(
 			StartedAt:   &startedAt,
 			FinishedAt:  &finishedAt,
 		},
-		Revision:        approvalRevision + 3,
-		NetworkRevision: approvalRevision + 2,
+		Revision:        approvalRevision + 7,
+		NetworkRevision: approvalRevision + 6,
 	}
 	if err := confirmation.Validate(); err != nil {
 		t.Fatalf("valid confirmation fixture: %v", err)

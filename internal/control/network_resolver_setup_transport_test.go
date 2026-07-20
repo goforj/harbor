@@ -30,8 +30,8 @@ func TestControlClientRoundTripsNetworkResolverSetup(t *testing.T) {
 				Ticket:            validNetworkResolverSetupApprovalTicket(),
 			}
 			confirmation := validNetworkResolverSetupApprovalConfirmation()
-			confirmation.NetworkRevision = setup.Revision + 2
-			confirmation.Revision = setup.Revision + 3
+			confirmation.NetworkRevision = setup.Revision + 7
+			confirmation.Revision = setup.Revision + 8
 			authority := &recordingAuthority{
 				networkResolverSetup:             setup,
 				networkResolverSetupPreparation:  preparation,

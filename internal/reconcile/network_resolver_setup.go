@@ -340,15 +340,14 @@ func (coordinator *NetworkResolverSetupCoordinator) Confirm(
 		authority = networkResolverSetupAuthority{policy: plan.Policy, target: plan.TargetOwnership}
 		at = coordinator.operationTime(coordinator.clock.Now(), operation.Operation.RequestedAt)
 	case domain.OperationSucceeded:
-		if request.ExpectedOperationRevision > domain.MaximumSequence-3 ||
-			operation.Revision != request.ExpectedOperationRevision+3 {
+		if operation.Revision < 2 || operation.Revision <= request.ExpectedOperationRevision+1 {
 			return state.CompleteNetworkResolverSetupResult{}, &state.StaleRevisionError{
 				OperationID: request.OperationID,
-				Expected:    request.ExpectedOperationRevision + 3,
+				Expected:    request.ExpectedOperationRevision,
 				Actual:      operation.Revision,
 			}
 		}
-		authority, err = coordinator.terminalAuthority(ctx, request.ExpectedOperationRevision+2)
+		authority, err = coordinator.terminalAuthority(ctx, operation.Revision-1)
 		if err != nil {
 			return state.CompleteNetworkResolverSetupResult{}, fmt.Errorf("confirm network resolver setup approval: %w", err)
 		}
@@ -402,8 +401,8 @@ func (coordinator *NetworkResolverSetupCoordinator) Confirm(
 		return state.CompleteNetworkResolverSetupResult{}, fmt.Errorf("confirm network resolver setup approval: completion result is invalid: %w", err)
 	}
 	if result.Operation.Operation.ID != request.OperationID ||
-		result.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		result.Operation.Revision != request.ExpectedOperationRevision+3 {
+		result.NetworkRevision <= request.ExpectedOperationRevision+1 ||
+		result.Operation.Revision != result.NetworkRevision+1 {
 		return state.CompleteNetworkResolverSetupResult{}, fmt.Errorf("confirm network resolver setup approval: completion crossed the requested operation revision")
 	}
 	return result, nil

@@ -218,8 +218,8 @@ func (executor *Executor) confirm(
 		return control.NetworkResolverSetupApprovalConfirmation{}, fmt.Errorf("%w: validate confirmation: %w", ErrInconsistentResponse, err)
 	}
 	if confirmation.Operation.ID != request.OperationID ||
-		confirmation.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		confirmation.Revision != request.ExpectedOperationRevision+3 {
+		confirmation.NetworkRevision <= request.ExpectedOperationRevision+1 ||
+		confirmation.Revision != confirmation.NetworkRevision+1 {
 		return control.NetworkResolverSetupApprovalConfirmation{}, fmt.Errorf(
 			"%w: confirmation crossed the requested operation or revision",
 			ErrInconsistentResponse,

@@ -52,9 +52,6 @@ func (request CompleteNetworkResolverSetupRequest) Validate() error {
 	); err != nil {
 		return err
 	}
-	if request.ExpectedOperationRevision > domain.MaximumSequence-3 {
-		return fmt.Errorf("network resolver setup approval revision must leave room for three contiguous completion revisions")
-	}
 	if err := validateStoredTime("network resolver setup completion time", request.At); err != nil {
 		return err
 	}
@@ -320,13 +317,6 @@ func completeNetworkResolverSetupInTransaction(
 	if err != nil {
 		return CompleteNetworkResolverSetupResult{}, err
 	}
-	if running.Revision != request.ExpectedOperationRevision+1 {
-		return CompleteNetworkResolverSetupResult{}, corruptNetworkResolverSetupCompletion(
-			request.OperationID,
-			fmt.Errorf("running revision is not contiguous with approval"),
-		)
-	}
-
 	activation, err := networkResolverSetupActivationRequest(request, plan, networkRevision)
 	if err != nil {
 		return CompleteNetworkResolverSetupResult{}, err
@@ -808,8 +798,7 @@ func requireExactCompletedNetworkResolverSetupHistory(
 	}
 	if history[3].State != domain.OperationRunning ||
 		history[3].Phase != networkResolverSetupCompletionRunningPhase ||
-		!history[3].OccurredAt.Equal(request.At) ||
-		history[3].Sequence != request.ExpectedOperationRevision+1 {
+		!history[3].OccurredAt.Equal(request.At) {
 		return networkResolverSetupCompletionConflict(request.OperationID, "running transition")
 	}
 	if networkRevision != history[3].Sequence+1 {

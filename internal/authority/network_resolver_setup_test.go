@@ -206,8 +206,8 @@ func authorityNetworkResolverSetupCompletion(
 		network.Reservations.Listeners = authorityNetworkResolverSetupListeners(at.Add(time.Minute))
 	}
 	result := state.CompleteNetworkResolverSetupResult{
-		Operation:       state.OperationRecord{Operation: succeeded, Revision: 6},
-		NetworkRevision: 5,
+		Operation:       state.OperationRecord{Operation: succeeded, Revision: 9},
+		NetworkRevision: 8,
 		Network:         state.NetworkMutationResult{Record: network, Replayed: true},
 	}
 	if err := result.Validate(); err != nil {
@@ -416,7 +416,7 @@ func TestAuthorityNetworkResolverSetupRejectsUncorrelatedCoordinatorResults(t *t
 		assertInternalNetworkResolverSetupError(t, err)
 	})
 	t.Run("confirm historical revision", func(t *testing.T) {
-		result := authorityNetworkResolverSetupCompletion(t, "operation-network-resolver-setup", "intent-resolver", state.NetworkStageResolver, 5, now)
+		result := authorityNetworkResolverSetupCompletion(t, "operation-network-resolver-setup", "intent-resolver", state.NetworkStageResolver, 8, now)
 		result.NetworkRevision++
 		authority := newAuthorityForNetworkResolverSetupTest(
 			&recordingNetworkResolverSetupCoordinator{confirmResult: result},

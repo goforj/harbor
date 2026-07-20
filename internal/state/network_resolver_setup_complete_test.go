@@ -33,9 +33,6 @@ func TestCompleteNetworkResolverSetupRequestRejectsIncompleteProof(t *testing.T)
 		{name: "revision", want: "revision must be positive", mutate: func(request *CompleteNetworkResolverSetupRequest) {
 			request.ExpectedOperationRevision = 0
 		}},
-		{name: "revision exhaustion", want: "leave room for three", mutate: func(request *CompleteNetworkResolverSetupRequest) {
-			request.ExpectedOperationRevision = domain.MaximumSequence - 2
-		}},
 		{name: "time", want: "time must not be zero", mutate: func(request *CompleteNetworkResolverSetupRequest) {
 			request.At = time.Time{}
 		}},
@@ -147,6 +144,44 @@ func TestStoreCompletesNetworkResolverSetupAtomically(t *testing.T) {
 		if history[index].State != wantStates[index] || history[index].Sequence != wantSequences[index] {
 			t.Fatalf("completed transition %d = %#v", index+1, history[index])
 		}
+	}
+}
+
+// TestStoreCompletesNetworkResolverSetupAfterUnrelatedJournalProgress preserves global ordering across native approval time.
+func TestStoreCompletesNetworkResolverSetupAfterUnrelatedJournalProgress(t *testing.T) {
+	fixture, approval, request := stagedNetworkResolverSetupCompletionFixture(t)
+	peer, err := domain.NewOperation(
+		"operation-resolver-interleaving-peer",
+		"intent-resolver-interleaving-peer",
+		"harbor.refresh",
+		"",
+		request.At.Add(-time.Second),
+	)
+	if err != nil {
+		t.Fatalf("create interleaving operation: %v", err)
+	}
+	interleaved, err := fixture.journal.Enqueue(context.Background(), peer)
+	if err != nil {
+		t.Fatalf("enqueue interleaving operation: %v", err)
+	}
+	if interleaved.Revision != approval.Revision+1 {
+		t.Fatalf("interleaving revision = %d, want %d", interleaved.Revision, approval.Revision+1)
+	}
+
+	result, err := fixture.store.CompleteNetworkResolverSetup(context.Background(), request)
+	if err != nil {
+		t.Fatalf("CompleteNetworkResolverSetup() error = %v", err)
+	}
+	if result.NetworkRevision != interleaved.Revision+2 || result.Operation.Revision != result.NetworkRevision+1 {
+		t.Fatalf("completion revisions = operation %d, network %d after peer %d", result.Operation.Revision, result.NetworkRevision, interleaved.Revision)
+	}
+	history, err := fixture.journal.Transitions(context.Background(), request.OperationID)
+	if err != nil {
+		t.Fatalf("read resolver setup transitions: %v", err)
+	}
+	if history[2].Sequence != approval.Revision || history[3].Sequence != interleaved.Revision+1 ||
+		history[4].Sequence != result.Operation.Revision {
+		t.Fatalf("completion history = %#v", history)
 	}
 }
 

@@ -243,8 +243,8 @@ func validateNetworkResolverSetupApprovalConfirmationCorrelation(
 	confirmation NetworkResolverSetupApprovalConfirmation,
 ) error {
 	if confirmation.Operation.ID != request.OperationID ||
-		confirmation.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		confirmation.Revision != request.ExpectedOperationRevision+3 {
+		confirmation.NetworkRevision <= request.ExpectedOperationRevision+1 ||
+		confirmation.Revision != confirmation.NetworkRevision+1 {
 		return errors.New("network resolver setup approval confirmation does not match the requested operation revision")
 	}
 	return nil
