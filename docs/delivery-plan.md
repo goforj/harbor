@@ -1,6 +1,6 @@
 # Delivery Plan
 
-Status: proposed
+Status: approved delivery contract; progress tracked in [Current implementation state](./current-state.md)
 
 ## Sequence
 

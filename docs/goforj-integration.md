@@ -1,8 +1,10 @@
 # GoForj Integration
 
-Status: proposed
+Status: approved target design; implementation tracked in [Current implementation state](./current-state.md)
 
-Baseline: `goforj/goforj` commit `6422f32eb3013c44ce3b18d236a90158dc8e7f16`
+Original design-research baseline: `goforj/goforj` commit `6422f32eb3013c44ce3b18d236a90158dc8e7f16`
+
+The current tactical launcher has a newer, temporary compatibility gate: it accepts a canonical released GoForj build at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `bf5f5e65ab64ba25cbd2fe53e42014bff1115a81`. Other unversioned development builds are rejected even when their revision is newer. The current error text says “bf5f5e65-or-newer,” which is broader than the implemented development-build policy and should be corrected with that policy. The `goforj_version: 0.19.0` field in Harbor's `.goforj.yml` is render metadata, not the runtime CLI admission rule.
 
 ## Boundary
 
@@ -15,7 +17,7 @@ Harbor coordinates projects; GoForj understands them.
 | component and resource plans | Public endpoint and private upstream allocation |
 | environment conventions | Session-scoped endpoint intent |
 | build, render, migration, and lifecycle tasks | Multi-project coordination |
-| native watcher graph and child process groups | Outer managed-session ownership |
+| native watcher graph and graceful child lifecycle | Containing managed-process scope and final settlement |
 | App/resource discovery semantics | Desktop, tray, CLI, notifications, and log retention |
 | project Compose intent and existing Compose identity | Machine-local endpoint coordination and observed routing |
 | API Index artifacts, API Reference, Lighthouse, and framework tooling | Presenting and opening those resolved resources |

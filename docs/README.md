@@ -50,6 +50,18 @@ No repository port files need to change, and stopping or unregistering a project
 - [Delivery plan](./delivery-plan.md) defines proof gates, phases, release criteria, and deferred work.
 - [Research](./research.md) records the Herd, Yerd, Lerd, Wails, platform, and current-GoForj findings that informed the design.
 
+## How to read the documentation
+
+The documents intentionally serve different time horizons:
+
+- `current-state.md` describes evidence-backed behavior in the current repository;
+- `handoff.md` is the volatile continuation record for the next development session;
+- product, architecture, networking, frontend, and GoForj integration documents define the approved target, including behavior that is not implemented yet;
+- `delivery-plan.md` orders the work and defines exit gates;
+- `testing.md` defines the native evidence required before Harbor can claim platform support.
+
+When documents appear to conflict, do not treat the more ambitious statement as current behavior. Verify the code and tests, update `current-state.md` when the implementation changes, and preserve the approved target unless an explicit product decision changes it.
+
 ## Design rule
 
 Use Yerd as the control-plane reference, Lerd as the operational edge-case, test, and visual-layout reference, and Herd as the product-experience reference. Harbor's frontend begins with GoForj's own Vue/shadcn starter rather than a new scaffold. Lerd's narrow navigation rail, dense contextual list, persistent detail pane, and selected styling are adapted through those source-owned shadcn components; Lerd branding and product-specific assets are not copied. Harbor's framework contract must follow GoForj as it exists today.

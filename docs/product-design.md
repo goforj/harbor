@@ -1,6 +1,6 @@
 # Product Design
 
-Status: proposed
+Status: approved target design; implementation tracked in [Current implementation state](./current-state.md)
 
 ## Product
 
@@ -58,7 +58,7 @@ Projects and the daemon continue to run if the desktop window or tray client exi
 
 ### Diagnostics before magic
 
-Harbor may repair state it owns, but it does not kill foreign processes, replace unrelated DNS configuration, or guess around an occupied port. It identifies the conflicting owner and explains the next action.
+Harbor may automatically repair state and process scopes it can prove it owns, but it does not kill foreign processes, replace unrelated DNS configuration, or guess around an occupied port. An explicitly user-authorized repair may settle a retained legacy session only after full correlation and postcondition proof. A separate unattributed-listener action may stop one fully revalidated same-user process scope, but it labels the missing ownership receipt and changes no Harbor ownership state. Otherwise Harbor identifies the conflicting owner and explains the next action.
 
 ### Compatibility is explicit
 
@@ -157,7 +157,7 @@ Operations have precise scopes:
 - `Quit Harbor UI` exits only the desktop client; closing its window normally hides it.
 - `Stop Harbor daemon` is a separate administrative action and warns that stable endpoints will be unavailable.
 
-Harbor never finds or kills processes by executable name. It acts only on a session identity containing a nonce, PID, process start evidence, and ownership record.
+Harbor never finds or kills processes by executable name. Automatic lifecycle actions require a session identity containing a nonce, exact process-scope and birth evidence, and an ownership record. A separately confirmed unattributed-listener action is labeled as user-authorized host-process cleanup, not Harbor ownership recovery.
 
 ## Dashboard
 

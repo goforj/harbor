@@ -1,6 +1,6 @@
 # Networking
 
-Status: proposed, with platform proof gates called out below
+Status: approved target design, with platform proof gates called out below; implementation tracked in [Current implementation state](./current-state.md)
 
 ## Contract
 

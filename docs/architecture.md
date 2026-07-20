@@ -1,6 +1,6 @@
 # Architecture
 
-Status: proposed
+Status: approved target design; implementation tracked in [Current implementation state](./current-state.md)
 
 ## Shape
 
@@ -15,7 +15,7 @@ flowchart LR
     D --> DB[(Harbor state)]
     D --> DNS[.test DNS]
     D --> PX[HTTP/TLS and TCP ingress]
-    D --> OUTER[Outer forj dev supervision]
+    D --> OUTER[Harbor-owned forj dev process scope]
 
     D -->|typed request| H[one-shot harbor-helper]
     H --> OS[resolver, loopback, trust, low-port host state]
@@ -33,13 +33,13 @@ Four executable roles participate in normal operation. A fifth one-shot lifecycl
 
 | Role | Responsibility | Must not own |
 |---|---|---|
-| `harbord` | Desired state, reconciliation, DNS, ingress, outer managed-session supervision, events, logs, and diagnostics. | Inner App/watcher supervision, Compose mutation, direct Docker-socket access, project semantics, arbitrary privileged operations. |
+| `harbord` | Desired state, reconciliation, DNS, ingress, managed-session process-scope ownership, events, logs, and diagnostics. | Inner App/watcher lifecycle policy, Compose mutation, direct Docker-socket access, project semantics, arbitrary privileged operations. |
 | `harbor` CLI | Human and automation client for the daemon. | Direct state, Docker/Compose, resolver, or project-file mutation. |
 | Harbor desktop | Wails v2 window, Go tray integration, notifications, and settings client. | Durable runtime state or privileged host work. |
 | `harbor-helper` | Apply one approved host mutation with only the OS authority that operation requires, then exit. | Network access, project execution, Docker access, arbitrary commands, or long-lived state. |
 | `harbor-installer` | Independently verify and atomically apply one signed Harbor component bundle to fixed product locations, then exit. | Project execution, Docker access, arbitrary destinations, unsigned components, update download, or long-lived state. |
 
-`forj dev` is not part of Harbor, but it is a first-class managed worker. GoForj compiles the project watcher graph, runs lifecycle and Compose tasks, builds Apps, supervises App/watcher process trees, and reports typed container observations and logs. Harbor supervises only the outer session it starts.
+`forj dev` is not part of Harbor, but it is a first-class managed worker. GoForj compiles the project watcher graph, runs lifecycle and Compose tasks, builds Apps, performs graceful App/watcher supervision, and reports typed container observations and logs. Harbor places every worker it starts inside one containing operating-system scope. GoForj gets the first opportunity to stop its inner graph; Harbor retains exact scope evidence as the final settlement boundary when that protocol is unavailable or the daemon restarts.
 
 ## Authority
 
@@ -70,7 +70,7 @@ No `harbor.yml` is added to a checkout in the first release. Machine-local prefe
 
 ## Repository shape
 
-Harbor itself should be a GoForj multi-App project. This dogfoods the same App composition, Wire boundaries, generation, watcher graph, API documentation behavior, and cross-platform workflow that Harbor is designed to manage.
+Harbor itself should be a GoForj multi-App project. This dogfoods the same App composition, Wire boundaries, generation, watcher graph, API documentation behavior, and cross-platform workflow that Harbor is designed to manage. The tree and development graph in this section describe the approved end state; [Current implementation state](./current-state.md) inventories the checked-in repository and actual `forj dev` graph.
 
 Current GoForj requires a default App. Harbor uses that traditional boundary for the user-facing CLI and maps its build output to `harbor`; the daemon is a named App. The security-sensitive helper and installer are deliberately bespoke build nodes, not generated Apps:
 
@@ -120,7 +120,7 @@ Named Apps share `internal/domain` and generated protocol packages, but they do 
 | `harbor-installer` | Bespoke build-only custom watcher; not a generated App and never elevated by `forj dev`. |
 | `desktop` | Nested module, not a `dev.apps` entry; a custom `dev.watches` entry runs Wails in `./desktop`. |
 
-The headless portion starts from this valid current-GoForj shape:
+The target headless graph follows this GoForj shape:
 
 ```yaml
 dev:
@@ -146,7 +146,7 @@ dev:
       exec: go build -o ./bin/harbor-installer ./cmd/installer
 ```
 
-The desktop phase adds its custom development entry and verifies the final YAML through GoForj's parser and live watcher tests. One ordinary standalone `forj dev --no-harbor` then develops the complete graph. Developing Harbor must never launch the helper or installer elevated or leave either running as a watcher.
+The desktop phase adds its custom development entry and verifies the final YAML through GoForj's parser and live watcher tests. One ordinary standalone `forj dev --no-harbor` then develops the complete graph. Developing Harbor must never launch the helper or installer elevated or leave either running as a watcher. The current checked-in `.goforj.yml` is intentionally smaller while installer and managed attachment work remain incomplete.
 
 Interfaces are owned by the consumer package and describe semantic operations such as `EnsureResolverRoute` or `InstallTrustAnchor`. Platform implementations do not translate a Linux service file into another operating system's model.
 
@@ -168,7 +168,7 @@ A pinned stable Wails v2 release owns the native window, menus, WebView, single-
 
 The embedded frontend is a plain Vue 3, TypeScript, Vite, and Tailwind CSS 4 SPA based on a pinned import of GoForj's source-owned shadcn-vue starter. Harbor preserves that primitive layer, uses Pinia for daemon snapshot/event presentation, and speaks through a typed bridge with a matching browser-test mock. Hash history keeps packaged navigation independent of a web-server fallback. [Frontend](./frontend.md) defines the source ownership and visual adaptation boundary.
 
-The desktop Go backend is an ordinary daemon client. Frontend code never receives a raw daemon socket, bearer token, Docker socket, project command runner, or unrestricted filesystem API. The implemented Wails surface is `Status`, `Snapshot`, `AddProject`, `RemoveProject`, and `OpenResource`, with arguments validated again at the daemon boundary. `AddProject` opens the operating system's directory picker in the Go backend and submits only the selected path to the daemon; a new registration is stopped and has no routes or resources until later lifecycle work configures them. `RemoveProject` submits a client-owned idempotency intent, reconciles the returned operation against snapshots, and never deletes the checkout. Interactive approval for releasing initialized host networking remains outside the desktop surface.
+The desktop Go backend is an ordinary daemon client. Frontend code never receives a raw daemon socket, bearer token, Docker socket, project command runner, or unrestricted filesystem API. The implemented Wails surface is `Status`, `Snapshot`, `AddProject`, `RemoveProject`, `SetupNetwork`, `StartProject`, `StopProject`, `ProjectActivity`, and `OpenResource`, with arguments validated again at the daemon boundary. `AddProject` opens the operating system's directory picker in the Go backend and submits only the selected path to the daemon; a new registration is stopped and has no routes or resources until later lifecycle work configures them. `RemoveProject` submits a client-owned idempotency intent, reconciles the returned operation against snapshots, and never deletes the checkout. Interactive approval for releasing initialized host networking remains outside the desktop surface.
 
 `OpenResource` validates an `http` or `https` URL against the daemon's current resource snapshot and opens it in the system browser. Harbor never navigates its bridge-enabled WebView to a project App, API Index, Lighthouse, service dashboard, or any other project-controlled content. Unexpected main-frame navigation and raw-message origins are rejected.
 
@@ -320,19 +320,19 @@ GoForj may describe an existing shared or remote service as external. Harbor can
 
 ## Process supervision
 
-Harbor supervises only processes it starts. Each record contains:
+Harbor supervises only process scopes it starts. Each durable receipt contains:
 
 - project and session IDs;
 - an unpredictable nonce;
-- PID;
-- process start time or platform birth identity;
+- the platform scope identity and launch PID;
+- exact process start time or platform birth identity;
 - executable path and expected arguments;
 - owner mode;
 - graceful stop deadline and escalation result.
 
-Recovery verifies all available evidence before signaling a PID. PID reuse or a mismatched executable becomes a stale observation, never permission to kill.
+Unix launches use one dedicated session as the containing scope. Watchers may create their own process groups, but they remain inside that session. Recovery enumerates the complete session and revalidates every member's birth and session immediately before signaling. Windows uses a Job Object while its handle remains authoritative and exact native creation evidence for restart observation; cross-generation scope settlement must be proved by the Windows platform contract before support is claimed.
 
-GoForj remains responsible for child App and watcher process groups. Harbor requests a typed action from the session rather than reaching into those process trees.
+GoForj remains responsible for the graceful inner App and watcher lifecycle. Harbor requests a typed action first. If the session is unavailable, Harbor may settle only the exact containing scope proven by its receipt. PID reuse, a mismatched executable or birth, an unreadable scope member, or incomplete scope settlement makes that project route-free and unavailable while retaining its evidence. It does not authorize a best-effort PID kill, clear the session, or prevent unrelated projects and the daemon from operating.
 
 ## Events and logs
 
@@ -470,14 +470,26 @@ Native release jobs perform macOS hardened-runtime signing and notarization, Win
 | Failure | Behavior |
 |---|---|
 | Desktop exits | Daemon, projects, DNS, and ingress continue; relaunch reconnects from a snapshot. |
-| Daemon restarts | Harbor-owned outer sessions are launched outside the daemon's terminal lifetime: a detached session/process group on Unix and a Job Object policy that does not kill the outer session when the daemon handle closes on Windows. GoForj remains the inner process reaper. After a real daemon crash, a session reconnects only when its nonce and process-birth evidence match; otherwise Harbor marks it stale. |
+| Daemon restarts | Harbor observes each exact durable process receipt. A matching managed session may reconnect; otherwise Harbor settles the complete owned scope before retiring evidence. Uncertainty quarantines only that project as unavailable and route-free while preserving the receipt for repair. |
 | Docker stops | Apps or resources depending on it become degraded/failed with one Docker diagnostic; no repeated destructive retries. |
 | Network/VPN changes | One dirty signal triggers resolver and route observation, then an owned repair if needed. |
 | Sleep/resume | Revalidate loopback aliases, low-port ingress, DNS, certificates, PIDs, and Docker publications. |
 | Project path moves | Mark unavailable and offer an explicit relink to a matching descriptor; never scan and assume. |
-| Port is occupied | Identify the listener when permitted, keep the endpoint failed, and do not shift the public port or kill the owner. |
+| Port is occupied | Identify the listener when permitted, keep the endpoint failed, and do not shift the public port. A busy port alone never authorizes a signal; automatic cleanup requires an exact Harbor receipt, while any unattributed-process action requires explicit user inspection and confirmation. |
 | Config changes | Ask GoForj for a new descriptor, diff desired endpoints, and apply a transactional session refresh. |
 | Partial registration | Resume or roll back ownership-marked staged effects from the operation journal. |
 | Unsupported protocol | Refuse the operation with required version ranges; do not parse human output as fallback. |
 
 Every recovery path must be represented in the cross-platform test matrix, with real host integration where the operating system behavior is material.
+
+### Stale runtime repair
+
+Recovery distinguishes three cases:
+
+1. A current exact receipt authorizes automatic settlement of only its complete revalidated Harbor-owned scope.
+2. A retained legacy session that lacks the new complete-scope receipt remains quarantined. It may offer `Inspect stale runtime`, but confirmation is allowed only through a short-lived daemon-owned plan bound to the caller, project, session, lease, target, and exact native candidate evidence.
+3. A listener whose Harbor session was already retired is explicitly unattributed. `Inspect listener` may describe one uniquely correlated same-user `forj dev` scope, but it must not call that process Harbor-owned or mutate a nonexistent Harbor session.
+
+Clients never supply a PID, address, or scope to stop. Inspection returns bounded display facts and an opaque plan identity. Confirmation re-reads every durable fence and native birth, executable, arguments, working directory, parent/scope, and socket fact immediately before signaling. Expiry, replacement, respawn, ambiguity, cross-user ownership, unreadable evidence, or any drift sends zero signals and requires a fresh inspection.
+
+For a retained legacy session, Harbor retires the durable session and returns the route-free project to stopped only after exact process-birth absence and socket release are proved in one state transition. For an already-retired listener, an explicit user-authorized stop changes no Harbor ownership state; Harbor retries ordinary Start only after proving the exact displayed scope and socket are gone. A lone child listener without a stable root remains diagnostic-only.

@@ -307,7 +307,9 @@ On every OS:
 - build success, process start, runtime probe, public endpoint readiness, and watcher coverage remain separate facts;
 - log backpressure produces an explicit gap event and terminal PTY output remains labeled `pty/combined` while managed pipes retain stdout/stderr;
 - the API Index artifact, generated examples, exposed API Reference/Swagger resource, Lighthouse, resource URLs, and readiness paths remain present and correct;
-- process shutdown uses process groups on Unix and Job Objects on Windows without signaling a recycled PID.
+- process shutdown settles a dedicated Unix session across watcher-created process groups and uses Job Objects on Windows without signaling a recycled PID; uncertainty quarantines only the affected project and retains its evidence.
+
+Legacy and unattributed-runtime tests prove every inspect/confirm safety fence: caller and plan binding, expiry, durable revision drift, PID reuse, birth/executable/arguments/working-directory/socket/parent/scope drift, multiple owners, cross-user candidates, unreadable facts, respawn, and cancellation. Every rejected branch must prove zero signals. A retained legacy session mutates durable ownership only after exact scope and socket absence; an already-retired listener is labeled unattributed and its confirmed cleanup mutates no Harbor session.
 
 The Windows job is required to catch Bash, signal, PTY, and Compose assumptions. A cross-compiled binary without a live managed session is insufficient.
 

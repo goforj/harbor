@@ -29,6 +29,26 @@ Do not expand scope before reading [Current implementation state](./current-stat
 - Existing generated API Index and example surfaces remain valuable GoForj resources; Harbor should surface them, not replace or remove them.
 - Compatibility and cross-platform support are claims only when macOS, Linux, and Windows native tests prove the crucial behavior.
 
+The reference products have deliberate, different roles. Herd is the product-experience reference, Yerd is the closest control-plane reference, and Lerd is the operational edge-case, test, and visual-layout reference. They are research inputs, not Harbor's architecture authority: GoForj remains authoritative for project semantics, and Harbor's per-project loopback identity, native same-port services, ownership model, and cross-platform proof requirements remain distinct. Read [Research](./research.md) for the pinned audits and [Frontend](./frontend.md) before adapting Lerd-influenced UI structure or styling.
+
+## Objective and definition of done
+
+The project goal remains the complete cross-platform Harbor MVP described by [Delivery plan](./delivery-plan.md), not merely the working macOS slice.
+
+Completion requires evidence for the whole product contract:
+
+- `harbord` is a durable per-user daemon and the CLI, desktop, and tray are equivalent clients of its versioned protocol;
+- three real generated GoForj projects run concurrently with the same ordinary App and native service ports;
+- project-owned Compose services and volumes remain isolated and survive stop, unregister, update, and uninstall;
+- stable `.test` DNS, trusted TLS, common HTTP ingress, loopback identity, and native TCP relays work on macOS, Linux, and Windows;
+- helper installation, repair, ownership, rollback, and cleanup mutate only exact Harbor-owned host state;
+- abrupt daemon, desktop, worker, container-engine, network, sleep, login, and reboot transitions converge without inferred ownership or manual database repair;
+- the typed GoForj descriptor and managed-session contract replace the tactical `.env.host` bridge without breaking standalone `forj dev`;
+- native OS CI proves the crucial resolver, loopback, certificate, privilege, process, desktop, and cleanup behavior;
+- documentation, installers, packaging, and release evidence match the implemented support matrix.
+
+No current phase has passed all of its exit gates. Keep this full objective intact while taking the dependency-ordered next step below.
+
 ## Current development workflow
 
 From `/workspace/code/harbor`:
@@ -80,7 +100,7 @@ REDIS_HOST="127.77.59.72"
 # harbor managed: end
 ```
 
-That block is an accepted tactical bridge. Harbor derives additional rewrites from literal local hosts already present in `.env.host`, preserves content outside the markers, and replaces the block atomically.
+That block is an accepted tactical bridge. Harbor derives additional rewrites from literal local hosts already present in `.env.host`, preserves content outside the markers, and replaces the block atomically. The block currently remains after Stop or unregister. Each accepted launch also replaces an owner-private, 4 MiB-bounded `_data/harbor/forj-dev.log`; both checkout mutations are temporary deviations from the target managed-session storage model.
 
 ## Existing stale listener on the macOS host
 
@@ -133,7 +153,14 @@ The logical commit is `06b542f fix: recover complete project process scopes`.
 
 Work is being committed directly to `main` during rapid development. Normal Git operations must remain under `Chris Miles <chris.miles.e@gmail.com>`.
 
-At the process-scope commit, local `main` is one commit ahead of `origin/main`; the documentation commit adds one more. No push is part of this stopping sequence. Confirm the live relationship rather than relying on this count after more work:
+The stopping baseline contains these logical commits:
+
+- `06b542f fix: recover complete project process scopes`
+- `3d6bd7a docs: record Harbor development handoff`
+- `cdc496e feat: add Linux resolver integration foundation`
+- `c84093f feat: add Windows NRPT resolver backend foundation`
+
+No push was part of the stopping sequence. Confirm the live relationship rather than relying on a recorded ahead/behind count after more work:
 
 ```sh
 git status -sb
@@ -141,41 +168,29 @@ git rev-list --left-right --count origin/main...HEAD
 git log --oneline origin/main..HEAD
 ```
 
-The worktree intentionally remains dirty after the stopping commits. Do not use `git add -A`.
+The resolver source is committed in the two foundation checkpoints above. The unexplained local artifact `desktop/package-lock.json` was deliberately excluded because its ownership or intent was not established; `.tmp/` is also runtime scratch and must remain untracked if it reappears. Live `git status` remains authoritative. Preserve those paths, avoid `git add -A`, stage explicit files, and inspect the cached diff before every commit.
 
-Uncommitted resolver work includes:
+## Resolver follow-up review
 
-- `.github/workflows/ci.yml`
-- `cmd/helper/resolver_handler_linux.go` and its tests
-- Linux helper dependency/unsupported-handler changes
-- Linux daemon resolver provider wiring
-- `internal/platform/resolver/backend_linux.go`
-- `internal/platform/resolver/backend_linux_core.go`
-- their Linux tests
-- `internal/platform/resolver/backend_windows.go`
-- `internal/platform/resolver/backend_windows_core.go`
-- their Windows tests
-
-Unrelated untracked local artifacts include `.tmp/` and `desktop/package-lock.json`. Preserve them until their owner or intent is confirmed. Stage explicit paths and inspect the cached diff before every commit.
-
-## Uncommitted resolver review
-
-The Linux `systemd-resolved` implementation is substantial and passed its focused unit/vet/helper/wire checks, but it is not ready to commit.
+The Linux `systemd-resolved` integration is committed and passed its focused unit, vet, helper, wire, race, and compile checks. It is not release-ready.
 
 Blocking findings:
 
 1. Every observation rejects a retained transaction artifact, but no recovery routine reconciles those artifacts. A crash after stage, exchange, quarantine, or cleanup can permanently disable Observe, Ensure, and Release until manual root cleanup.
 2. The mutation `flock` is blocking and does not honor context cancellation or deadlines.
-3. The CI reset assumes its drop-in produces an empty global resolver even though later drop-ins or imported foreign DNS can repopulate runtime state.
+3. The CI reset assumes its early-sorting drop-in produces an empty global resolver even though later drop-ins or imported foreign DNS can repopulate runtime state; the workflow must verify the prerequisite explicitly.
+4. Privileged CI proves the happy lifecycle only, not crash-after-stage, exchange, quarantine, restart, or cleanup recovery.
 
 The implementation is also much larger than expected for one fixed `systemd-resolved` drop-in. Simplify where possible while retaining descriptor-bound, no-follow, exact-correlation, rollback, and command-allowlist protections.
 
-The uncommitted Windows NRPT core is incomplete:
+The Windows NRPT core is also a committed foundation. Its portable focused/full package tests, vet, and Windows cross-compile pass, but it remains incomplete:
 
 - it is not wired into helper or daemon providers, so Windows still selects the unsupported implementation;
-- the combined resolver suite currently fails focused Windows claim-classification, missing-owner, and native-fingerprint tests.
+- it invokes bare `powershell.exe`, which is incompatible with the helper's cleared-environment, fixed-path execution boundary;
+- native exactness ignores latent NRPT fields such as IPsec CA restrictions, DirectAccess settings, and DNSSEC encryption, while repair does not clear them;
+- helper dependency admission, native add/observe/set/release/CAS/cleanup tests, and Go/PowerShell fingerprint-parity evidence are absent.
 
-Do not commit either platform merely because it compiles.
+Do not claim either platform's resolver as complete merely because its foundation is committed or cross-compiles.
 
 ## Current implementation status
 
@@ -183,7 +198,7 @@ No delivery phase has met its complete exit gate.
 
 - Hosted three-OS CI, Phase 1 evidence, and privileged loopback tests exist.
 - Durable SQLite state, authenticated local RPC, operation journals, project registration/removal, network setup approvals, and recovery are substantial.
-- DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, and runtime activation exist.
+- DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, Linux resolver integration foundation, Windows NRPT core foundation, and runtime activation exist.
 - Wails/Vue can add/remove projects, set up networking, start/stop a project, display actionable errors, and stream current ANSI-formatted output.
 - The typed GoForj project descriptor and managed-session handshake do not exist.
 - Compose service projection, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
@@ -208,6 +223,16 @@ Completion means:
 8. the real Ditracker project survives repeated daemon restarts and can be stopped/started without manual SQLite or `lsof` intervention.
 
 After that goal is green, return to Linux resolver crash recovery before expanding product surface.
+
+## Next-session start checklist
+
+1. Read `AGENTS.md`, [Current implementation state](./current-state.md), and this handoff before changing code.
+2. Run `git status -sb`, inspect `origin/main...HEAD`, and preserve unexplained local artifacts rather than sweeping them into a commit.
+3. Re-observe the macOS host and Ditracker runtime; paths, PIDs, listeners, leases, and database rows in this document are historical evidence until confirmed.
+4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, Stop, and second Start before changing recovery policy.
+5. Implement only the next missing recovery capability with zero-signal ambiguity tests and native birth/socket revalidation.
+6. Validate both Go modules and any affected frontend or native OS surface.
+7. Commit explicit paths as `Chris Miles <chris.miles.e@gmail.com>` and update `current-state.md` plus this handoff when the continuation point changes.
 
 ## Legacy stale-runtime repair design
 
@@ -268,7 +293,7 @@ go vet ./internal/projectprocess ./internal/state ./internal/reconcile
 
 Darwin, Windows, and FreeBSD project-process cross-compiles and Darwin/Windows lifecycle cross-compiles also passed. The final zombie and failed-project adjustments have focused tests and must remain covered by the committed suite.
 
-The entire dirty worktree has not been represented as one green validation unit because the uncommitted resolver work is intentionally incomplete.
+The Linux resolver checkpoint also passed isolated root-module tests and vet, focused resolver/helper/wire tests, and source formatting. Its root-only native lifecycle is delegated to CI. The Windows checkpoint passed focused and full resolver package tests, vet, and a Windows AMD64 cross-compile; it has no native lifecycle evidence yet.
 
 ## Things not to do
 
@@ -280,6 +305,6 @@ The entire dirty worktree has not been represented as one green validation unit 
 - Do not replace the accepted `.env.host` bridge until a working GoForj managed-session overlay exists.
 - Do not run `forj dev`, Wails, or `harbord` with elevation.
 - Do not hand-write startup schema creation; use embedded GoForj migrations.
-- Do not stage `.tmp/`, an unexplained lockfile, or resolver work with a lifecycle commit.
+- Do not stage `.tmp/` or an unexplained lockfile with unrelated work.
 - Do not claim Linux/Windows resolver support from cross-compilation alone.
 - Do not start tray, packaging, or updater work before the core restart loop is dependable.
