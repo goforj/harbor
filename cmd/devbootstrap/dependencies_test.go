@@ -51,6 +51,7 @@ func TestDevBootstrapHasOnlyReviewedRuntimeDependencies(t *testing.T) {
 	allowed := map[string]struct{}{
 		"github.com/goforj/harbor/cmd/devbootstrap":               {},
 		"github.com/goforj/harbor/internal/devbootstrap":          {},
+		"github.com/goforj/harbor/internal/platform/darwinacl":     {},
 		"github.com/goforj/harbor/internal/platform/helperpath":   {},
 		"github.com/goforj/harbor/internal/platform/machinepaths": {},
 		"golang.org/x/sys/unix":                                   {},
