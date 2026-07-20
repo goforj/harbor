@@ -11,6 +11,20 @@ import (
 	"testing"
 )
 
+// prepareTestStoreDirectory applies the same owner-only mode boundary used by the Unix installer fixture.
+func prepareTestStoreDirectory(t *testing.T, directory string) {
+	t.Helper()
+	file, err := os.Open(directory)
+	if err != nil {
+		t.Fatalf("os.Open(%q) error = %v", directory, err)
+	}
+	secureErr := securePlatformFile(file, true)
+	closeErr := file.Close()
+	if err := errors.Join(secureErr, closeErr); err != nil {
+		t.Fatalf("secure test store directory %q: %v", directory, err)
+	}
+}
+
 // TestStoreRejectsSpecialRecordAndLockFiles proves FIFOs cannot block or redirect protected state operations.
 func TestStoreRejectsSpecialRecordAndLockFiles(t *testing.T) {
 	t.Parallel()

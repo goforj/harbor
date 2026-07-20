@@ -10,9 +10,34 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// prepareTestStoreDirectory recreates an empty temp directory with the reviewed descriptor at creation time.
+func prepareTestStoreDirectory(t *testing.T, directory string) {
+	t.Helper()
+	descriptor, _, err := windowsOwnershipDescriptor(true)
+	if err != nil {
+		t.Fatalf("windowsOwnershipDescriptor() error = %v", err)
+	}
+	path, err := windows.UTF16PtrFromString(directory)
+	if err != nil {
+		t.Fatalf("windows.UTF16PtrFromString(%q) error = %v", directory, err)
+	}
+	if err := os.Remove(directory); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v", directory, err)
+	}
+	attributes := &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: descriptor,
+	}
+	if err := windows.CreateDirectory(path, attributes); err != nil {
+		t.Fatalf("windows.CreateDirectory(%q) error = %v", directory, err)
+	}
+	runtime.KeepAlive(descriptor)
+}
 
 // TestWindowsStoreCreatesProtectedBoundary verifies the parent, lock, and published record use the exact reviewed DACL.
 func TestWindowsStoreCreatesProtectedBoundary(t *testing.T) {
