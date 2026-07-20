@@ -435,6 +435,13 @@ export class TerminalModel {
   }
 }
 
+// terminalPlainText returns the visible text for clipboard use without terminal control sequences or styling.
+export function terminalPlainText(output: string): string {
+  const terminal = new TerminalModel()
+  terminal.feed(output)
+  return terminal.text()
+}
+
 // readControlSequence returns parameter bytes and the first standards-defined final byte.
 function readControlSequence(input: string, start: number): ParsedSequence {
   const final = findControlSequenceFinal(input, start)

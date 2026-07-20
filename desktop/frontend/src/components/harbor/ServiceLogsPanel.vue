@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { Check, CircleDot, Clipboard, Eraser, Radio, SquareTerminal } from '@lucide/vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
+import { terminalPlainText } from '@/lib/terminal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -101,12 +102,12 @@ function clearOutput() {
   follow.value = true
 }
 
-// copyOutput preserves the original unrendered transcript, including ANSI control sequences when present.
+// copyOutput uses the terminal's visible text so copied logs do not contain ANSI control sequences.
 async function copyOutput() {
   if (!output.value) return
   copyError.value = null
   try {
-    await copyText(output.value)
+    await copyText(terminalPlainText(output.value))
     copied.value = true
     window.setTimeout(() => { copied.value = false }, 1600)
   }

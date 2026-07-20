@@ -79,7 +79,7 @@ describe('ServiceLogsPanel', () => {
     wrapper.unmount()
   })
 
-  it('copies the complete unrendered service transcript', async () => {
+  it('copies the visible service transcript without ANSI control sequences', async () => {
     const response: ServiceLogs = {
       project_id: 'orders', service_id: 'mysql', session_id: 'session-orders', supported: true, available: true,
       output: { available: true, reset: false, truncated: false, has_more: false, next_cursor: 18, text: '\u001b[32mready\u001b[0m\n' },
@@ -93,7 +93,7 @@ describe('ServiceLogsPanel', () => {
     await copy.trigger('click')
     await flushPromises()
 
-    expect(copyText).toHaveBeenCalledWith('\u001b[32mready\u001b[0m\n')
+    expect(copyText).toHaveBeenCalledWith('ready\n')
     expect(wrapper.text()).toContain('Copied')
     wrapper.unmount()
   })

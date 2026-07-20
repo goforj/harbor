@@ -39,6 +39,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useProjectActivity } from '@/composables/useProjectActivity'
 import { countReadyServices } from '@/lib/servicePresentation'
+import { terminalPlainText } from '@/lib/terminal'
 import { useHarborStore } from '@/stores/harbor'
 import { harborBridge } from '@/bridge'
 import type { ServicePort } from '@/domain/harbor'
@@ -270,7 +271,7 @@ async function copyDevelopmentOutput() {
   if (!developmentOutput.value) return
   developmentOutputCopyError.value = null
   try {
-    await copyText(developmentOutput.value)
+    await copyText(terminalPlainText(developmentOutput.value))
     copiedDevelopmentOutput.value = true
     window.setTimeout(() => { copiedDevelopmentOutput.value = false }, 1600)
   }

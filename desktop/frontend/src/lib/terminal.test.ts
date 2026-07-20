@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { TerminalModel } from './terminal'
+import { terminalPlainText, TerminalModel } from './terminal'
 
 describe('TerminalModel', () => {
+  it('returns clipboard text without ANSI styling sequences', () => {
+    expect(terminalPlainText('\u001b[32mready\u001b[0m\n')).toBe('ready\n')
+  })
+
   it('updates carriage-return and backspace loaders in place', () => {
     const terminal = new TerminalModel()
 
