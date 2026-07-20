@@ -365,7 +365,7 @@ func runProjectLifecycleHelper() {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
-		select {}
+		waitForProjectLifecycleHelperTermination()
 	}
 	listener, err := net.Listen("tcp", net.JoinHostPort(address, port))
 	if err != nil {
@@ -387,10 +387,17 @@ func runProjectLifecycleHelper() {
 	}()
 	if os.Getenv(projectLifecycleHelperModeEnvironment) == projectLifecycleHelperIgnoringListenerMode {
 		ignoreProjectLifecycleHelperGracefulStop()
-		select {}
+		waitForProjectLifecycleHelperTermination()
 	}
 	<-stopped
 	_ = server.Close()
+}
+
+// waitForProjectLifecycleHelperTermination keeps an intentionally signal-ignoring test process alive without triggering the Go deadlock detector.
+func waitForProjectLifecycleHelperTermination() {
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 // TestProjectLifecycleCoordinatorKeepsReadyAppWhenServiceObservationFails proves auxiliary container context cannot tear down a healthy project.

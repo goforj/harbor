@@ -30,6 +30,8 @@ The framework-resource process harness canonicalizes both its supplied checkout 
 
 The Darwin host-conflict observer now permits a bounded 10 ms, cancellation-aware settlement delay after an explicitly detected native table-generation race. It still requires two matching complete observations, makes at most eight passes, and returns no admission result if the tables remain ambiguous.
 
+The hard-restart fixture keeps its deliberately signal-ignoring watcher and listener alive with a sleeping wait rather than an empty `select`, so Go's deadlock detector cannot terminate the fixture before the durable launch boundary. The restart assertion remains a native macOS proof requirement.
+
 ## Repository shape
 
 | Path | Role |

@@ -22,6 +22,8 @@ The framework-resource observer test harness now resolves checkout aliases befor
 
 The Darwin host-conflict observer has a bounded, cancellation-aware 10 ms pause between recognized native table-generation races, with at most eight total passes. It continues to require consecutive complete facts and returns an error rather than an admission result on unresolved churn.
 
+The hard-restart integration helper now waits in a sleeping loop when it deliberately ignores graceful shutdown. Its prior empty `select` allowed Go to terminate the helper as deadlocked before the durable boundary; the actual restart/recovery contract is unchanged and still needs native macOS execution.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually
