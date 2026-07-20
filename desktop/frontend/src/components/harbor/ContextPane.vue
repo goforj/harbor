@@ -17,8 +17,10 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { serviceOwnerLabel } from '@/lib/servicePresentation'
+import type { ProjectSnapshot } from '@/domain/harbor'
 import { useHarborStore } from '@/stores/harbor'
 import EntityRow from './EntityRow.vue'
+import ResourceFavicon from './ResourceFavicon.vue'
 import ServiceOwnership from './ServiceOwnership.vue'
 import { destinationFromPath, harborNavigation } from './navigation'
 
@@ -83,6 +85,11 @@ function openResource(projectId: string, resourceId: string) {
 
 function refresh() {
   void store.refresh()
+}
+
+// primaryProjectResource selects the app resource first because it best represents the project in Harbor's project browser.
+function primaryProjectResource(project: ProjectSnapshot) {
+  return project.resources.find((resource) => resource.owner.kind === 'app') ?? project.resources[0]
 }
 </script>
 
@@ -154,7 +161,18 @@ function refresh() {
                 :status="project.state"
                 :to="`/projects/${encodeURIComponent(project.id)}`"
               >
-                <template #leading><Folder /></template>
+                <template #leading>
+                  <ResourceFavicon
+                    v-if="primaryProjectResource(project)"
+                    :name="project.name"
+                    :url="primaryProjectResource(project)!.url"
+                    :project-id="project.id"
+                    :resource-id="primaryProjectResource(project)!.id"
+                    compact
+                    fallback="folder"
+                  />
+                  <Folder v-else />
+                </template>
               </EntityRow>
             </div>
           </section>
@@ -202,7 +220,18 @@ function refresh() {
                 :selected="selectedProjectId === project.id"
                 :to="`/projects/${encodeURIComponent(project.id)}`"
               >
-                <template #leading><Folder /></template>
+                <template #leading>
+                  <ResourceFavicon
+                    v-if="primaryProjectResource(project)"
+                    :name="project.name"
+                    :url="primaryProjectResource(project)!.url"
+                    :project-id="project.id"
+                    :resource-id="primaryProjectResource(project)!.id"
+                    compact
+                    fallback="folder"
+                  />
+                  <Folder v-else />
+                </template>
               </EntityRow>
             </div>
           </section>

@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { Folder } from '@lucide/vue'
 import { harborBridge } from '@/bridge'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   name: string
   url: string
   projectId: string
   resourceId: string
-}>()
+  compact?: boolean
+  fallback?: 'initial' | 'folder'
+}>(), {
+  compact: false,
+  fallback: 'initial',
+})
 
 const failed = ref(false)
 const candidateIndex = ref(0)
@@ -70,13 +76,13 @@ async function discoverDeclaredFavicon() {
     v-if="displayedFaviconURL && !failed"
     :src="displayedFaviconURL"
     :alt="''"
-    class="size-8 shrink-0 rounded-md object-contain"
+    :class="[props.compact ? 'size-6' : 'size-8', 'shrink-0 rounded-md object-contain']"
     aria-hidden="true"
     @error="tryNextCandidate"
   >
   <span
     v-else
-    class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-xs font-semibold text-muted-foreground"
+    :class="[props.compact ? 'size-6' : 'size-8', 'inline-flex shrink-0 items-center justify-center rounded-md border bg-muted/40 text-xs font-semibold text-muted-foreground']"
     aria-hidden="true"
-  >{{ fallbackLabel }}</span>
+  ><Folder v-if="props.fallback === 'folder'" class="size-3.5" /><template v-else>{{ fallbackLabel }}</template></span>
 </template>
