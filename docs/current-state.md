@@ -107,7 +107,7 @@ The default SQLite database locations are:
 
 The named database connection is `harbord`. Startup configures SQLite for one writer, WAL, full synchronization, foreign keys, immediate transactions, and a bounded busy timeout. Migrations are embedded and applied by `harbord migrate`; do not add ad hoc startup schema creation.
 
-The current migration stream also removes legacy derived resource rows whose hosts cannot be safely projected as literal loopback or Harbor `.test` endpoints. A future successful project start rebuilds those runtime-only links; no checkout, volume, secret, or operation data is changed.
+The current migration stream removes legacy optional derived resource rows, retaining only the readiness-proven `app-http` resource. A future successful project start rebuilds those runtime-only links; no checkout, volume, secret, or operation data is changed.
 
 Harbor also owns platform-specific per-user runtime paths and machine-global privileged paths. The desktop and daemon stay unprivileged. The current macOS/Linux source paths install or repair the privileged helper through explicit operating-system consent; Windows source installation remains incomplete.
 

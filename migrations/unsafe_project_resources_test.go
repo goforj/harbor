@@ -4,8 +4,8 @@ import "testing"
 
 const unsafeProjectResourcesMigrationName = "2026_07_20_030000_remove_unsafe_project_resources"
 
-// TestUnsafeProjectResourcesMigrationDropsOnlyLegacyUnroutableProjections verifies old external framework links cannot prevent safe daemon snapshots.
-func TestUnsafeProjectResourcesMigrationDropsOnlyLegacyUnroutableProjections(t *testing.T) {
+// TestUnsafeProjectResourcesMigrationRetainsOnlyTheReadinessProof verifies older optional framework links cannot prevent safe daemon snapshots.
+func TestUnsafeProjectResourcesMigrationRetainsOnlyTheReadinessProof(t *testing.T) {
 	connections, databaseConnection := openOperationMigrationDatabase(t)
 	defer closeOperationMigrationDatabase(t, connections)
 	applyProjectProjectionMigrations(t, databaseConnection)
@@ -14,7 +14,7 @@ func TestUnsafeProjectResourcesMigrationDropsOnlyLegacyUnroutableProjections(t *
 		id  string
 		url string
 	}{
-		{id: "local", url: "http://127.77.4.8:3000"},
+		{id: "app-http", url: "http://127.77.4.8:3000"},
 		{id: "ipv6", url: "http://[::1]:3000"},
 		{id: "routed", url: "https://orders.test/docs"},
 		{id: "legacy-external", url: "https://dev.diclan.app"},
@@ -35,7 +35,7 @@ func TestUnsafeProjectResourcesMigrationDropsOnlyLegacyUnroutableProjections(t *
 	if err := databaseConnection.Table("project_resources").Where("project_id = ?", "project-01").Order("resource_id ASC").Pluck("resource_id", &retained).Error; err != nil {
 		t.Fatalf("read retained resource IDs: %v", err)
 	}
-	want := []string{"ipv6", "local", "routed"}
+	want := []string{"app-http"}
 	if len(retained) != len(want) {
 		t.Fatalf("retained resources = %#v, want %#v", retained, want)
 	}
