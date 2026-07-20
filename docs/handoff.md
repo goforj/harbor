@@ -1,18 +1,20 @@
 # Development Handoff
 
-Status: retained macOS runtime repair implemented; native host proof and broader desktop workflow remain
+Status: direct Docker service observation and logs committed; live topology and native host proof remain
 
 Last updated: 2026-07-20
 
 ## Read this first
 
-Harbor is working far enough to register a real GoForj checkout, initialize macOS networking, assign a project-specific loopback, launch `forj dev`, detect App readiness, observe conventional Compose services, and stream current development output into the Wails desktop. It is not close to release-complete.
+Harbor is working far enough to register a real GoForj checkout, initialize macOS networking, assign a project-specific loopback, launch `forj dev`, detect App readiness, observe conventional Compose services, and stream current development and selected service output into the Wails desktop. It is not close to release-complete.
 
 The work immediately before this handoff hardened the most painful current failure: `harbord` could disappear while a watcher-created child continued listening on the project's address. The old supervisor owned only the outer process group, so the surviving App looked like a foreign port conflict on restart. New Unix launches use a dedicated session, recovery settles all exact members across watcher-created process groups, and unresolved scope quarantines only the affected project instead of preventing daemon startup.
 
 The regression is intentionally end to end: an outer process and daemon generation are killed, a listener in a separate process group ignores graceful shutdown, replacement recovery removes the complete owned scope, and a second Start reaches Ready on the same address and port.
 
 Retained missing-receipt state now has a separate explicit recovery path. A quarantined project can inspect one bounded macOS candidate, show only reviewed display facts, and ask the user to confirm before the daemon revalidates and signals anything. The plan is caller-bound, short-lived, one-use, and consumed before confirmation. Linux and Windows preserve the same contract but currently return unsupported. The native Darwin implementation has portable and cross-build evidence, not a completed real-host proof.
+
+Commit `b531d7f` replaces the GoForj service-state/log dependency with a daemon-owned, read-only Docker Engine vertical. `harbord` lists local containers, re-inspects candidates, and admits them only when the Compose project, service, and working-directory labels resolve to the registered canonical checkout. A selected service's current-session log stream now crosses authenticated control, Wails, and the typed Vue bridge. No GoForj log capability is involved, and neither the generated App nor Vue can access Docker. Docker events, continuously refreshed topology, and publication-derived routing have not been implemented.
 
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
@@ -28,7 +30,7 @@ Do not expand scope before reading [Current implementation state](./current-stat
 - Wails v2 remains the stable desktop host. Vue 3, TypeScript, Vite, Tailwind 4, Pinia, Reka/shadcn primitives, and Lucide are the frontend foundation.
 - The GoForj Vue starter's component bones were preserved; Harbor's information architecture and visual density are adapted toward Lerd, not constrained to the starter's original page layout.
 - Current activity matters more than a long operation-history wall. Project detail shows live state, the actionable failure, and current bounded `forj dev` output. Output delivery is wake-driven over the authenticated control connection and terminal redraw controls update existing rows instead of becoming noisy history.
-- Harbor never parses Compose YAML or `forj dev` prose. GoForj owns Compose intent and every mutation. The approved container boundary gives only `harbord` a read-only Docker Engine adapter for state, publications, events, and logs attributed through Compose labels, accepted project identity, and canonical checkout ownership; generated Apps and frontend clients never inspect Docker.
+- Harbor never parses Compose YAML or `forj dev` prose. GoForj owns Compose intent and every mutation. Only `harbord` receives the read-only local Docker Engine boundary. The current adapter uses list, inspect, and log-stream calls attributed through exact Compose project/service/working-directory labels and canonical checkout ownership; generated Apps and frontend clients never inspect Docker. Engine events, live topology replacement, and publication routing remain the next container-layer capabilities, not current behavior.
 - Existing generated API Index and example surfaces remain valuable GoForj resources; Harbor should surface them, not replace or remove them.
 - Compatibility and cross-platform support are claims only when macOS, Linux, and Windows native tests prove the crucial behavior.
 
@@ -172,6 +174,7 @@ The retained-runtime continuation is split into focused commits:
 - `44dbffe feat: coordinate retained runtime repair`
 - `78a35f6 feat: expose project runtime repair control`
 - `5615316 feat: add desktop runtime repair flow`
+- `b531d7f feat: add direct container service tooling`
 
 No push was part of the stopping sequence. Confirm the live relationship rather than relying on a recorded ahead/behind count after more work:
 
@@ -182,6 +185,8 @@ git log --oneline origin/main..HEAD
 ```
 
 The resolver source is committed in the two foundation checkpoints above. The unexplained local artifact `desktop/package-lock.json` was deliberately excluded because its ownership or intent was not established; `.tmp/` is also runtime scratch and must remain untracked if it reappears. Live `git status` remains authoritative. Preserve those paths, avoid `git add -A`, stage explicit files, and inspect the cached diff before every commit.
+
+The direct Docker service/log vertical spans `internal/containerruntime`, project supervision and reconciliation, authenticated control, the Wails bridge and generated fixture, and the Vue service-log panel. Continue excluding the unexplained top-level `desktop/package-lock.json` unless its ownership is established.
 
 ## Resolver follow-up review
 
@@ -212,9 +217,9 @@ No delivery phase has met its complete exit gate.
 - Hosted three-OS CI, Phase 1 evidence, and privileged loopback tests exist.
 - Durable SQLite state, authenticated local RPC, operation journals, project registration/removal, network setup approvals, and recovery are substantial.
 - DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, Linux resolver integration foundation, Windows NRPT core foundation, and runtime activation exist.
-- Wails/Vue can add/remove projects, set up networking, start/stop a project, inspect and explicitly confirm one retained macOS runtime candidate, display actionable errors, and stream current ANSI-formatted output through a held cursor request with incremental terminal redraws.
-- The typed GoForj project descriptor and managed-session handshake do not exist. The checked-in startup service projection still comes from the narrow `forj dev:status --json` bridge. Replacing container-state and container-log dependence on that bridge with the approved daemon-owned read-only Docker adapter is current work and is not complete until its implementation and ownership tests land.
-- Live Compose topology, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
+- Wails/Vue can add/remove projects, set up networking, start/stop a project, inspect and explicitly confirm one retained macOS runtime candidate, display actionable errors, stream current ANSI-formatted development output, and follow a selected Compose service's current-session logs through independent held cursors with incremental terminal redraws.
+- The typed GoForj project descriptor and managed-session handshake do not exist. Startup service state now comes from `harbord`'s read-only local Docker list/inspect adapter, while the optional GoForj resource-only status query supplies framework links rather than container state or logs. Direct service logs are daemon-owned and do not depend on a GoForj log capability.
+- Docker event consumption, continuously refreshed Compose topology, publication-derived routing, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
 - Project Start/Stop exists in control and desktop surfaces, not first-class CLI commands.
 - Project-removal approval handoff is not implemented in the desktop.
 
@@ -222,13 +227,11 @@ No delivery phase has met its complete exit gate.
 
 ## Immediate next goal
 
-Keep the macOS daily workflow moving in visible vertical slices without weakening the portable control boundaries.
+Prove the committed direct Docker service/log vertical on the macOS development host before opening another product front. Exercise one real multi-container GoForj checkout through service discovery, log output, container recreation, project Stop, and project restart. The proof must show that similarly named neighboring Compose projects are excluded and that Harbor never performs an Engine mutation. Portable tests, both Go modules, frontend typechecking/unit/build, generator parity, and Chromium/Firefox browser suites are green; WebKit still needs an environment with its native runtime dependencies.
 
-The retained-session repair implementation is complete in the repository. Its remaining gate is native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation.
+After that vertical is stable, add daemon-owned Docker event consumption and live replacement of service topology so container starts, stops, health changes, and recreation appear without restarting the project. Route only explicitly admitted publication facts through Harbor's existing resource/routing policy; observing a port is not itself permission to publish it.
 
-The next product slice is the desktop project-removal approval handoff. The daemon approval protocol and native helper executor already exist, and the Wails backend now replays the retained project/intent before selecting an exact approval revision. Finish the explicit desktop action and its declined, unavailable, indeterminate, retry, refresh, and success states; never open native consent automatically from Remove or snapshot reconciliation.
-
-Continue broad macOS-visible work one bounded slice at a time after that—service detail/log experience, first-class lifecycle client parity, trusted routing, and tray presence—while retaining explicit unsupported adapters for unfinished native platforms. Linux resolver crash recovery remains required, but it should not displace the current effort to make the exercised macOS experience coherent.
+The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. Project-removal approval, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery remains required, but it should not displace finishing the currently exercised macOS workflow.
 
 ## Next-session start checklist
 
@@ -236,7 +239,7 @@ Continue broad macOS-visible work one bounded slice at a time after that—servi
 2. Run `git status -sb`, inspect `origin/main...HEAD`, and preserve unexplained local artifacts rather than sweeping them into a commit.
 3. Re-observe the macOS host and Ditracker runtime; paths, PIDs, listeners, leases, and database rows in this document are historical evidence until confirmed.
 4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, explicit retained-session repair, Stop, and second Start before claiming native recovery complete.
-5. Finish the current desktop workflow slice before opening another native-platform implementation front.
+5. Prove and commit the direct Docker service/log slice before adding Engine events, live topology replacement, or publication routing.
 6. Validate both Go modules and any affected frontend or native OS surface.
 7. Commit explicit paths as `Chris Miles <chris.miles.e@gmail.com>` and update `current-state.md` plus this handoff when the continuation point changes.
 

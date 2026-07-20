@@ -18,11 +18,11 @@ Harbor is a local development control plane for GoForj projects:
 - shared DNS and HTTP/TLS ingress translate stable `.test` names to those project-local runtimes;
 - privileged machine changes are delegated to a narrowly scoped, one-shot helper rather than running the daemon or desktop as root.
 
-The repository is a working vertical slice, not a releasable product. One real GoForj project has been registered, assigned a non-default loopback address, started through the desktop, observed as ready, and shown with live `forj dev` output. Restart recovery, resolver parity, trusted HTTPS installation, and packaging are still active work.
+The repository is a working vertical slice, not a releasable product. One real GoForj project has been registered, assigned a non-default loopback address, started through the desktop, observed as ready, and shown with live `forj dev` output. The current source also observes that checkout's Compose services and streams a selected service's container logs through the desktop without asking the generated App or GoForj CLI to access Docker. Restart recovery, live container topology, resolver parity, trusted HTTPS installation, and packaging are still active work.
 
-The current slice launches one default App at a direct `http://<assigned-loopback>:<project-port>` URL. Once that App is ready, Harbor asks the exact supervising GoForj executable for its bounded `dev:status` report and projects active conventional Compose services into the existing Services UI. This is a startup observation, not the complete managed-session Compose topology contract. Stable `.test` HTTPS, the common ingress path, named Apps, private service publications, and native service relays remain approved target design rather than current user-facing behavior.
+The current slice launches one default App at a direct `http://<assigned-loopback>:<project-port>` URL. Once that App is ready, `harbord` uses a local, read-only Docker Engine client to list candidate containers and inspect their immutable facts before projecting active Compose services into the Services UI. Admission requires the exact Compose project, service, and working-directory labels plus the registered canonical checkout; neighboring projects with the same service names are excluded. Harbor separately asks the exact supervising GoForj executable for its bounded resource-only `dev:status` report so framework-owned links can appear beside the directly observed services.
 
-The approved next container boundary is a daemon-owned, read-only Docker Engine adapter for container state, publications, events, and log streaming. It attributes containers from Compose labels, the accepted Compose project identity, and the registered canonical checkout. It does not parse Compose YAML or perform mutations, and no generated App or frontend code receives Docker access. This paragraph records work in progress, not a completed current capability; the `dev:status` startup bridge remains the checked-in behavior until the adapter and its ownership tests land.
+The daemon-owned container adapter currently implements local list, inspect, and log-stream calls. A service-detail request travels through authenticated `harbord` control, the narrow Wails binding, and the typed Vue bridge; the daemon follows admitted current and recreated replicas while preserving a bounded, current-session cursor. This path does not require a GoForj service-log capability, parse Compose YAML, or perform Docker mutations, and neither generated Apps nor frontend code receive Docker access. Docker event consumption, continuously refreshed service topology, and routing from observed publications remain future work.
 
 ## Repository shape
 
@@ -42,6 +42,7 @@ The approved next container boundary is a daemon-owned, read-only Docker Engine 
 | `desktop/frontend` | Vue 3, TypeScript, Vite, Tailwind 4, Pinia, and shadcn/Reka-based SPA. |
 | `internal/authority` | Daemon-side authorization boundary for control operations. |
 | `internal/control` | Versioned local control protocol and client/server transport. |
+| `internal/containerruntime` | Read-only local Docker Engine observation and current-session service-log streams. |
 | `internal/host` | Host capability and state observations used by reconciliation. |
 | `internal/state` | Durable SQLite-backed desired state, journals, and atomic mutations. |
 | `internal/reconcile` | Project, network, approval, and route coordination. |
@@ -119,14 +120,16 @@ The implemented path is:
 5. Start discovers the default App's HTTP port and checks the exact assigned address and port;
 6. Harbor writes its bounded network block to `.env.host` and launches `forj dev` without a shell;
 7. the daemon records exact process evidence and waits for the App listener to become ready;
-8. after App readiness, Harbor invokes `forj dev:status --json` through the exact executable, checkout, and launch environment already owned by the supervisor; supported conventional Compose observations become deterministic active service rows, while older GoForj builds and explicitly unsupported custom Compose tasks preserve an empty service projection;
-9. ready state atomically publishes the default App/resource and observed services at its direct IP-literal HTTP URL; routing primitives reconcile, but `.test` HTTPS is not yet the complete user path;
-10. current bounded stdout/stderr wakes a held, cursor-addressed desktop request as each pipe chunk arrives; the frontend incrementally applies ANSI styling and terminal redraw controls as safe Vue text;
-11. Stop or daemon shutdown settles the complete Harbor-owned process scope before deleting session evidence and retains observed service identities as stopped.
+8. after App readiness, `harbord` lists local Docker containers and inspects exact candidates; only containers whose Compose project, service, and working-directory labels resolve to the registered canonical checkout become deterministic active service rows;
+9. Harbor invokes the exact GoForj executable with `dev:status --json --resources-only` through the checkout and launch environment already owned by the supervisor; supported framework links enrich the project without supplying service state or logs;
+10. ready state atomically publishes the default App/resource, admitted framework links, and directly observed services at its direct IP-literal HTTP URL; routing primitives reconcile, but `.test` HTTPS and publication-derived service routes are not yet the complete user path;
+11. current bounded stdout/stderr wakes a held, cursor-addressed desktop request as each pipe chunk arrives; the frontend incrementally applies ANSI styling and terminal redraw controls as safe Vue text;
+12. selecting a Compose service opens a daemon-owned Docker log follower and streams bounded current-session output through authenticated control, Wails, and Vue; session changes reset the cursor and container recreation is followed without transferring lifecycle authority;
+13. Stop or daemon shutdown settles the complete Harbor-owned process scope and its service-log followers before deleting session evidence, then retains observed service identities as stopped.
 
 Start and Stop are currently exposed through the control protocol and desktop, but not as first-class user CLI commands.
 
-This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. The current startup bridge leaves Compose parsing and normalization inside GoForj. Do not expand that bridge or teach Harbor Compose-file semantics; the approved daemon adapter observes only attributed runtime facts, while the typed GoForj descriptor and managed-session contracts remain the source of project intent described in [GoForj integration](./goforj-integration.md).
+This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. Compose intent and mutations remain inside GoForj; Harbor's daemon adapter observes only exact checkout-attributed runtime facts. The resource-only GoForj query is optional enrichment, not a service-state or log transport. The typed GoForj descriptor and managed-session contracts remain the future source of project intent described in [GoForj integration](./goforj-integration.md).
 
 ## Temporary `.env.host` bridge
 
@@ -141,7 +144,7 @@ LIGHTHOUSE_URL="ws://127.77.0.10:3000/lighthouse/ws/agent"
 # harbor managed: end
 ```
 
-Harbor preserves all content outside the marker pair, rejects malformed or repeated markers, updates the file atomically, and rewrites literal local hosts and URLs onto the assigned address. Before launch it removes the file-owned managed keys plus `APP_NAME`, `FORJ_APP`, `FORJ_BUILD_PROGRESS`, `FORJ_COMMAND_PREFIX`, `FORJ_DEV_PLAIN`, and `FORJ_INTERNAL_MANAGED_ENV_KEYS` from its captured ambient environment, then sets `FORJ_DEV_PLAIN=1`. Other ambient values remain inherited normally.
+Harbor preserves all content outside the marker pair, rejects malformed or repeated markers, updates the file atomically, and rewrites literal local hosts and URLs onto the assigned address. Before launch it removes the file-owned keys plus `APP_NAME`, `FORJ_APP`, `FORJ_BUILD_PROGRESS`, `FORJ_COMMAND_PREFIX`, and `FORJ_DEV_PLAIN` from its captured ambient environment, then sets `FORJ_DEV_PLAIN=1`. Other ambient values remain inherited normally.
 
 This is deliberately temporary. It makes existing GoForj projects work without special `forj dev` flags while the semantic managed-session protocol remains future work. The managed block currently remains after Stop and unregister; there is no cleanup path yet. Any replacement must preserve ordinary OS-environment precedence and environment reload behavior.
 
@@ -209,7 +212,8 @@ The desktop currently provides:
 - network setup approval and helper installation/repair prompts;
 - project Start/Stop actions and current failure feedback;
 - an explicit retained-runtime inspection and destructive confirmation dialog for quarantined macOS projects, with one-use plans discarded on cancellation, reconnect, navigation, expiry, or any confirmation attempt;
-- active conventional Compose services presented with container runtime state reported by GoForj after readiness, with observed service identities retained as stopped after shutdown;
+- active conventional Compose services presented from `harbord`'s exact checkout-attributed Docker list/inspect observation after readiness, with observed service identities retained as stopped after shutdown;
+- current-session Compose service logs streamed from the local Docker Engine through authenticated daemon control and narrow Wails bindings, with bounded cursors, reconnect/session resets, replica recreation handling, and no Docker access in Vue or generated Apps;
 - wake-driven current project output with ANSI styling, carriage-return updates, and multiline terminal redraws;
 - dark/light/system themes and themed toasts;
 - a reusable, theme-aware Harbor illustration layer with responsive placement, bounded opacity, CSS edge fading, and non-interactive semantics;
@@ -228,7 +232,7 @@ No phase in `delivery-plan.md` has met its full exit gate.
 | Platform proof | Partial: loopbacks, helper, local CA primitives, and Darwin resolver exist; trust, low ports, and resolver parity do not. |
 | Headless control plane | Partial but substantial: SQLite, authenticated IPC, operations, registration/removal, recovery, and acceptance coverage exist. |
 | Network data plane | Partial: servers, planning, setup, activation, and routes exist; full cross-platform host integration is incomplete. |
-| GoForj contract | Early/partial: discovery, `forj dev` supervision, and a bounded startup Compose-service report work; the typed descriptor and live managed-session Compose contract do not. Direct daemon-owned read-only Docker observation/logging is approved and in progress, not yet claimed complete. |
+| GoForj contract | Early/partial: discovery, `forj dev` supervision, optional framework resource enrichment, direct read-only Docker service observation, and daemon-owned service-log streaming work; the typed descriptor and live managed-session Compose contract do not. Docker events, continuously refreshed topology, and publication routing remain future work. |
 | Desktop experience | Partial: the working Wails/Vue client covers the main development slice; tray, packaging, and several approvals remain. |
 | Release | Not started. |
 

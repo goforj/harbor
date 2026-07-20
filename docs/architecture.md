@@ -26,20 +26,23 @@ flowchart LR
 
     PX --> APPS[GoForj App upstreams]
     PX --> SVC[loopback-only service publications]
-    F -->|owns lifecycle, Compose mutations,<br/>container observations and logs| SVC
+    F -->|owns lifecycle and<br/>Compose mutations| SVC
+    D -->|read-only Engine<br/>observation and logs| SVC
 ```
 
 Four executable roles participate in normal operation. A fifth one-shot lifecycle role exists only for install, update, rollback, and uninstall:
 
 | Role | Responsibility | Must not own |
 |---|---|---|
-| `harbord` | Desired state, reconciliation, DNS, ingress, managed-session process-scope ownership, events, logs, and diagnostics. | Inner App/watcher lifecycle policy, Compose mutation, direct Docker-socket access, project semantics, arbitrary privileged operations. |
+| `harbord` | Desired state, reconciliation, DNS, ingress, managed-session process-scope ownership, read-only container observation, events, logs, and diagnostics. | Inner App/watcher lifecycle policy, Compose mutation, project semantics, arbitrary privileged operations. |
 | `harbor` CLI | Human and automation client for the daemon. | Direct state, Docker/Compose, resolver, or project-file mutation. |
 | Harbor desktop | Wails v2 window, Go tray integration, notifications, and settings client. | Durable runtime state or privileged host work. |
 | `harbor-helper` | Apply one approved host mutation with only the OS authority that operation requires, then exit. | Network access, project execution, Docker access, arbitrary commands, or long-lived state. |
 | `harbor-installer` | Independently verify and atomically apply one signed Harbor component bundle to fixed product locations, then exit. | Project execution, Docker access, arbitrary destinations, unsigned components, update download, or long-lived state. |
 
-`forj dev` is not part of Harbor, but it is a first-class managed worker. GoForj compiles the project watcher graph, runs lifecycle and Compose tasks, builds Apps, performs graceful App/watcher supervision, and reports typed container observations and logs. Harbor places every worker it starts inside one containing operating-system scope. GoForj gets the first opportunity to stop its inner graph; Harbor retains exact scope evidence as the final settlement boundary when that protocol is unavailable or the daemon restarts.
+`forj dev` is not part of Harbor, but it is a first-class managed worker. GoForj compiles the project watcher graph, runs lifecycle and Compose tasks, builds Apps, performs graceful App/watcher supervision, and reports typed project intent, lifecycle, process, and resource facts. Harbor places every worker it starts inside one containing operating-system scope. GoForj gets the first opportunity to stop its inner graph; Harbor retains exact scope evidence as the final settlement boundary when that protocol is unavailable or the daemon restarts.
+
+Container runtime facts have a different owner. The unprivileged daemon uses a narrow, read-only Docker Engine adapter to observe container state, publications, health, events, and logs. It attributes a container only when its Compose project, service, and working-directory labels agree with the registered canonical checkout. This observation cannot become an alternative Compose controller: Harbor never derives project intent from containers, parses Compose YAML, or calls create, start, stop, restart, remove, exec, build, pull, network-mutation, or volume-mutation APIs. Generated Apps, the helper, the desktop frontend, and CLI clients never receive Docker access.
 
 ## Authority
 
@@ -279,7 +282,7 @@ registered/stopped
     → start managed forj dev session
     → GoForj resolves active Apps and builds them
     → GoForj runs phased pre-Compose tasks, then typed Compose with private publication assignments
-    → GoForj reports actual publications; Harbor activates native routes and acknowledges
+    → GoForj reports publication intent; Harbor corroborates actual publications and activates native routes
     → GoForj runs post-Compose readiness, database setup/migrations, post-migrate tasks, and its watcher graph
     → Harbor verifies upstreams and publishes ready endpoints
     → typed rebuild/restart actions stay inside the session
@@ -287,9 +290,9 @@ registered/stopped
     → endpoints become stopped; durable identity and volumes remain
 ```
 
-GoForj reports containers by an adopted Compose project identity, Compose's built-in project labels, and Harbor session labels injected through an untracked runtime override when needed. Registration preserves the checkout's existing Compose identity when containers or volumes already exist; it cannot switch an existing project to a Harbor-derived name and make its data appear empty. New projects may use a stable Harbor-derived identity. Any later identity migration is explicit, data-aware, and outside ordinary start.
+GoForj supplies the adopted Compose project identity and may inject Harbor session labels through an untracked runtime override when needed. Harbor independently observes Compose's built-in labels and canonical working-directory evidence. Registration preserves the checkout's existing Compose identity when containers or volumes already exist; it cannot switch an existing project to a Harbor-derived name and make its data appear empty. New projects may use a stable Harbor-derived identity. Any later identity migration is explicit, data-aware, and outside ordinary start.
 
-Harbor does not operate on a container based only on a name prefix. Container IDs, Compose labels, and the reported identity are observations; GoForj's resource plan remains the source of service intent and GoForj performs every Compose mutation.
+Harbor does not attribute a container based only on a name prefix. Container IDs, Compose labels, and canonical checkout ownership are observations; GoForj's resource plan remains the source of service intent and GoForj performs every Compose mutation.
 
 External resources are displayed and diagnosed but never started, stopped, proxied, or migrated unless their descriptor explicitly marks a Harbor-manageable local endpoint.
 
@@ -349,7 +352,9 @@ Logs preserve:
 - explicit dropped-count events;
 - bounded retention and backpressure.
 
-Container and process logs enter through the managed GoForj session. Harbor-managed children may use separate pipes, while a terminal-owned PTY remains explicitly combined. The UI can merge streams chronologically but cannot erase their provenance. `harbord` does not open the Docker socket; a rootful Linux Docker socket would make daemon compromise effectively root, and a Go wrapper is not a security boundary.
+Process logs enter through the managed GoForj session. Harbor-managed children may use separate pipes, while a terminal-owned PTY remains explicitly combined. Container stdout/stderr enters through the daemon's read-only Docker adapter and remains tied to the exact observed container and logical Compose service. The UI can merge streams chronologically but cannot erase their provenance.
+
+Access to a rootful Docker socket can make daemon compromise effectively root; calling the adapter read-only describes the methods Harbor permits, not a capability boundary imposed by Docker. The adapter is therefore daemon-local, deliberately small, endpoint-allowlisted in tests, and unavailable to generated Apps, frontend bindings, the helper, or arbitrary extensions. Installations that cannot give the per-user daemon access to the selected local Engine report container observation as unavailable rather than elevating `harbord`.
 
 Harbor support bundles are generated locally, show a preview, redact known secret shapes and project environment values, and require explicit user action before leaving the machine.
 
@@ -415,7 +420,7 @@ The preferred first-run setup performs durable host integration so project start
 - Router updates are candidate-built, collision-checked, and atomically published.
 - Header size, body size, TLS handshake, upstream connect, read, write, idle, and WebSocket lifecycle limits are explicit.
 - Native TCP relays accept only a fixed local listener and fixed observed upstream chosen by the reconciler.
-- `harbord` never opens the Docker socket. GoForj owns Compose and reports only typed service observations and logs over the session protocol.
+- GoForj exclusively owns Compose intent and mutations. `harbord` uses Docker only for attributed read-only observation, events, and logs; no Docker operation reaches a client, generated App, helper, or frontend binding.
 - Project roots are canonicalized and constrained. Registering a project does not grant arbitrary path browsing to the frontend.
 
 LAN exposure, remote control, and public tunnels are outside the first-release security model.

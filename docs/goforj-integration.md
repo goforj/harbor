@@ -19,10 +19,12 @@ Harbor coordinates projects; GoForj understands them.
 | build, render, migration, and lifecycle tasks | Multi-project coordination |
 | native watcher graph and graceful child lifecycle | Containing managed-process scope and final settlement |
 | App/resource discovery semantics | Desktop, tray, CLI, notifications, and log retention |
-| project Compose intent and existing Compose identity | Machine-local endpoint coordination and observed routing |
+| project Compose intent, identity selection, and every Compose mutation | Machine-local endpoint coordination, read-only container observation, and observed routing |
 | API Index artifacts, API Reference, Lighthouse, and framework tooling | Presenting and opening those resolved resources |
 
-Harbor must not import `goforj` internal packages, parse `.goforj.yml` independently, scrape `forj dev` output, infer resources from Compose YAML, or reproduce the watcher graph.
+Harbor must not import `goforj` internal packages, parse `.goforj.yml` independently, scrape `forj dev` output, infer resources from Compose YAML, or reproduce the watcher graph. Generated Apps do not inspect Docker. The frontend receives typed Harbor snapshots and bounded log chunks, never a Docker endpoint or generic operation surface.
+
+`harbord` may independently observe the local Docker Engine through a narrow read-only adapter. That adapter may list, inspect, subscribe to events, and stream logs only after exact Compose project/service/working-directory labels and the registered canonical checkout establish ownership. It cannot infer desired composition or invoke any mutation. GoForj remains the sole owner of Compose configuration, profiles, up/down, start/stop/restart, builds, pulls, and destructive actions.
 
 The integration consists of two versioned contracts:
 
@@ -197,7 +199,7 @@ Startup ordering matters:
 7. build the selected Apps, preserving GoForj's current build-before-setup dependency;
 8. run explicitly phased foreground `pre-compose` tasks;
 9. start the typed Compose phase with command-local publication assignments;
-10. report actual Compose publications and wait for Harbor to verify and activate required native routes;
+10. report successful Compose completion and the accepted project identity, then wait for Harbor to observe the actual publications and activate required native routes;
 11. after Harbor acknowledges that barrier, run `post-compose` readiness tasks, database setup/migrations with the App connection overlay, then `post-migrate` tasks;
 12. start the watcher graph, publish complete snapshots and ordered lifecycle events, and accept only advertised typed actions.
 
@@ -308,7 +310,7 @@ Private Compose publications use values such as `IP_ADDRESS=127.0.0.1` and expli
 
 Named Apps receive their resolved App-specific overlay after GoForj's existing prefix rules. The session protocol uses App IDs rather than making Harbor reproduce prefix normalization.
 
-Dynamic metrics scrape configuration is mounted from session runtime storage through an untracked Compose override. It must not rewrite or rebuild the checked-in `containers/observability/vmagent/metrics-targets.json`. A container-to-host scrape cannot rely on `host.docker.internal` reaching an App bound to `127.0.0.1`. Managed `forj dev`, which owns Compose and can observe its network, hosts a narrow in-process session relay from the platform's container-only host interface to registered loopback metrics targets. Harbor allocates the relay endpoint and validates GoForj's typed observation but does not inspect Docker itself. The relay accepts only the session's fixed target set, never binds a LAN interface, and exits with the session. Phase 0 must identify and prove the exact Docker Engine/Desktop interface path per platform; observability is not full-mode capable where no container-only path exists.
+Dynamic metrics scrape configuration is mounted from session runtime storage through an untracked Compose override. It must not rewrite or rebuild the checked-in `containers/observability/vmagent/metrics-targets.json`. A container-to-host scrape cannot rely on `host.docker.internal` reaching an App bound to `127.0.0.1`. Managed `forj dev`, which owns Compose and its network intent, hosts a narrow in-process session relay from the platform's container-only host interface to registered loopback metrics targets. Harbor allocates the relay endpoint and can corroborate the resulting container/runtime facts through its read-only Engine adapter. The relay accepts only the session's fixed target set, never binds a LAN interface, and exits with the session. Phase 0 must identify and prove the exact Docker Engine/Desktop interface path per platform; observability is not full-mode capable where no container-only path exists.
 
 The managed overlay contains endpoint and session values, not project secrets. Harbor must not read `.env` to construct it. GoForj can combine the overlay with the normal secret-bearing environment in memory without reporting secrets back to Harbor.
 
@@ -316,13 +318,13 @@ The managed overlay contains endpoint and session values, not project secrets. H
 
 ### Interim startup observation
 
-Before the authenticated managed session exists, Harbor uses one intentionally narrow additive bridge: after the default App proves ready, it invokes `forj dev:status --json` through the exact GoForj executable, checkout, and environment already accepted by the process supervisor. GoForj alone selects and queries Compose, bounds and normalizes machine output, aggregates replicas by Compose service identity, and reports whether the project shape is supported. Harbor validates that versioned report and atomically replaces its service projection with active rows.
+Before the authenticated managed session and direct container adapter exist, Harbor uses one intentionally narrow additive bridge: after the default App proves ready, it invokes `forj dev:status --json` through the exact GoForj executable, checkout, and environment already accepted by the process supervisor. GoForj selects and queries Compose, bounds and normalizes machine output, aggregates replicas by Compose service identity, and reports whether the project shape is supported. Harbor validates that versioned report and atomically replaces its service projection with active rows.
 
 The bridge supports only conventional Compose startup identities GoForj can prove. An owner-customized Compose shell task reports `supported: false`; Harbor does not guess its project, files, profiles, or containers. Older accepted GoForj builds keep the historical empty service projection. A valid supported report with no Compose services is a successful empty observation. If a supported observation is malformed or fails, App readiness still wins: Harbor completes startup with an empty service projection and records that service observation was unavailable instead of tearing down a healthy project or publishing invented state.
 
-This report is a point-in-time startup observation. It does not provide live events, publications, container authority, actions, or reconnect semantics and must not grow into a polling reimplementation of the managed session below.
+This report is a point-in-time compatibility observation. It does not provide live events, publications, container authority, actions, or reconnect semantics and must not grow into a polling reimplementation of the managed session below. Container state and logs should not require a new GoForj CLI command: once the direct adapter lands, Harbor observes those runtime facts itself and keeps this bridge only for facts that genuinely belong to GoForj.
 
-GoForj publishes an initial planned snapshot after negotiation, publication observations at the Compose barrier, and one authoritative runtime snapshot after the watcher graph starts:
+GoForj publishes an initial planned snapshot after negotiation, publication intent and phase results at the Compose barrier, and one authoritative project/runtime-plan snapshot after the watcher graph starts:
 
 - project and descriptor identity;
 - session owner (`harbor` or `terminal`);
@@ -330,13 +332,13 @@ GoForj publishes an initial planned snapshot after negotiation, publication obse
 - graph dependencies and criticality;
 - watcher coverage, latest build result, process state, and runtime-probe readiness as distinct facts;
 - resolved public resources;
-- managed Compose service intent and observations available to GoForj;
+- managed Compose service intent, accepted project identity, and lifecycle phase results;
 - supported actions;
 - current operation and readiness state.
 
 Snapshots are complete replacements. Events after a snapshot carry a monotonic sequence so Harbor can recover from reconnect without guessing what it missed.
 
-Harbor joins those GoForj facts with its own DNS, route, relay, TLS, and public-probe facts. A process-start event or GoForj's current `Dev ready` message cannot by itself mark a public endpoint ready.
+Harbor joins those GoForj facts with its own Docker, DNS, route, relay, TLS, and public-probe facts. Docker observations are current runtime evidence, not project intent; a container, process-start event, or GoForj's current `Dev ready` message cannot by itself mark a public endpoint ready.
 
 ## Events
 
@@ -364,11 +366,11 @@ Required event families are:
 - watcher build, start, rebuild, failure, recovery, and stop;
 - process start and exit with PID, exit code, timing, and intentional-stop reason;
 - resource snapshot change and readiness;
-- pre-decoration process log chunks with source identity and honest stream provenance (`stdout`, `stderr`, or `pty/combined`);
+- pre-decoration App/watcher process log chunks with source identity and honest stream provenance (`stdout`, `stderr`, or `pty/combined`);
 - explicit backpressure/drop notification;
 - descriptor/configuration change requiring refresh.
 
-Log IDs cannot be based only on millisecond timestamps. Ordering comes from a session sequence assigned before send. A Harbor-managed process may use separate pipes; a terminal-owned Unix watcher may retain its PTY and must report `pty/combined` rather than invent stdout/stderr separation. GoForj adds the capture hook before TUI or Lighthouse decoration.
+Log IDs cannot be based only on millisecond timestamps. Ordering comes from a session sequence assigned before send. A Harbor-managed process may use separate pipes; a terminal-owned Unix watcher may retain its PTY and must report `pty/combined` rather than invent stdout/stderr separation. GoForj adds the capture hook before TUI or Lighthouse decoration. Container logs are not part of this GoForj stream; `harbord` reads them from the exact attributed containers and preserves their container/service identity and Docker stream metadata.
 
 ## Actions
 
@@ -411,7 +413,7 @@ Managed mode must preserve GoForj's service plan and lifecycle policy while addi
 - use Compose's built-in project labels and, when needed, inject Harbor session labels through an external untracked override rather than tracked generated output;
 - apply private loopback publication assignments through the command-local Compose environment;
 - preserve profiles such as optional Redis;
-- report the actual published host address and port, then wait for Harbor's route-ready acknowledgement before database setup or migration;
+- report Compose completion and the accepted project identity, then wait while Harbor observes the actual published host address and port and returns its route-ready acknowledgement before database setup or migration;
 - retain the same Compose implementation, project identity, profiles, command-local environment, and session override for typed shutdown;
 - distinguish stop from volume/data destruction;
 - keep current sibling/project-relative test behavior unrelated to Harbor intact.
@@ -420,7 +422,9 @@ Registration never changes an adopted Compose identity during ordinary start. Mo
 
 GoForj should own detection and invocation of a supported Compose implementation instead of baking `docker-compose` v1 shell text into the Harbor contract. The cross-platform path must be tested with Docker Engine on Linux and Docker Desktop on macOS and Windows.
 
-Harbor never runs `docker compose down -v` as part of stop or unregister.
+Harbor's Docker adapter is observational only. It discovers containers through standard Compose labels, requires exact project, service, and working-directory labels to agree with the registered canonical checkout, and treats ambiguous, missing, stale, or foreign attribution as unavailable. It may list/inspect containers, read health and publication state, subscribe to lifecycle events, and stream bounded logs. It never creates, starts, stops, restarts, removes, executes in, attaches to, builds, pulls, or mutates containers, images, networks, or volumes. All such actions remain typed GoForj/Compose lifecycle requests.
+
+Harbor never runs `docker compose down -v` as part of stop or unregister, and it does not invoke any equivalent Docker API mutation.
 
 ## Resource projection
 
@@ -512,7 +516,7 @@ The GoForj side is ready when fixtures prove:
 - static description executes no project code, emits no secret values, and hashes normalized non-secret topology rather than raw environment files;
 - standalone `forj dev` is byte-for-byte behaviorally unchanged when Harbor is absent;
 - terminal attach validates peer/root/session binding before lifecycle work, while explicit `--no-harbor` bypasses attachment;
-- managed startup receives its plan before phased lifecycle work, reports actual Compose publications, and waits for Harbor before post-Compose readiness and migration;
+- managed startup receives its plan before phased lifecycle work, reports Compose completion and accepted identity, and waits for Harbor's independently observed publication barrier before post-Compose readiness and migration;
 - project `.env` and `.env.host` cannot overwrite the final managed endpoint overlay;
 - a generated App's project environment cannot replace the trusted overlay reference it captures before load;
 - an environment reload reapplies the overlay;
@@ -526,7 +530,9 @@ The GoForj side is ready when fixtures prove:
 - start, reload, and stop leave the generated checkout clean;
 - App restart does not invoke `down_on_exit` or restart unrelated services;
 - ordered state and log events recover from disconnect through snapshot plus sequence;
-- PTY/combined and separate stdout/stderr streams retain honest provenance before presentation decoration;
+- PTY/combined and separate stdout/stderr process streams retain honest provenance before presentation decoration;
+- direct container observation and log streaming accept only exact Compose project/service/working-directory labels and canonical-checkout attribution, reconnect across container replacement, and expose no mutation path;
+- generated Apps, helper processes, CLI clients, and frontend bindings receive neither a Docker endpoint nor a generic Docker operation;
 - resource URLs, health paths, API Reference/API Index backing, Lighthouse, and named Apps are correct;
 - an older generated project is visibly read-only or upgrade-required until its required hooks are rendered explicitly;
 - `.goforj.yml` changes are detected by a dedicated watcher and never trigger an automatic render;

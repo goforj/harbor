@@ -102,6 +102,8 @@ License: [MIT](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d
 
 Primary sources include [architecture](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/reference/architecture.md), [configuration](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/configuration.md), [DNS](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/features/dns.md), [HTTPS](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/features/https.md), [system tray](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/features/system-tray.md), [web UI](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/features/web-ui.md), and [logs](https://github.com/lerd-env/lerd/blob/57641f87ed6969a578f1dc5328d873284cc270c8/docs/features/logs.md).
 
+A follow-up service-tooling audit used commit [`de36e18c4ec7a48b4f295e6f3e39960422bfe732`](https://github.com/lerd-env/lerd/tree/de36e18c4ec7a48b4f295e6f3e39960422bfe732). Its service dashboard, detail header, dependency/port panels, and log viewer reinforce a service-first hierarchy: status, version, consumers, dependencies, endpoints, and logs belong to the logical service, while runtime container identity remains subordinate diagnostic context. Harbor adopts that hierarchy and the usefulness of daemon-side runtime observation, but not Lerd's container mutation authority. GoForj continues to own Compose intent and actions; Harbor's daemon observes attributed container state and logs through a narrow read-only Engine adapter, then exposes only typed Harbor views to clients.
+
 ### Strong patterns
 
 - Rootless containers keep ordinary service processes out of root authority.
@@ -124,6 +126,7 @@ Lerd's clearest product contribution is its information architecture:
 - clear Overview, Logs, Services, and System contexts;
 - live status in lists without requiring a detail page;
 - project-scoped service cards and a cross-project system view;
+- a Logs-first service detail with follow, reconnect, clear-view, and autoscroll controls;
 - tray state that leads back to the richer dashboard.
 
 Harbor adapts that three-pane discipline and density to Projects, Apps, Services, their resource actions, Network, and Diagnostics. The implementation starts from GoForj's Vue/shadcn starter and translates selected Lerd spacing, pane geometry, surface, border, and initial palette decisions into Harbor's semantic tokens and local components.

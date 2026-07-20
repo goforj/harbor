@@ -154,7 +154,7 @@ Work in `goforj/goforj`:
 - add the trusted final overlay hook to `forj dev` and generated App `LoadEnv`;
 - add the actual-publication/route-ready barrier between typed Compose and post-Compose readiness/database setup/migrations;
 - materialize session Compose overrides and metrics targets outside the checkout, with a Docker-gateway-only callback relay proved per OS;
-- expose typed watcher/process/resource snapshots, events, logs, and actions;
+- expose typed watcher/process/resource snapshots, App/watcher logs, events, and actions;
 - add an explicit `.goforj.yml` watcher and keep build/process/runtime/public readiness as distinct facts;
 - distinguish scoped managed restart from outer process exit/down behavior;
 - discover and adopt existing Compose identity/volumes, use built-in or session-override labels, and define explicit identity migration separately;
@@ -167,7 +167,8 @@ Work in Harbor:
 - GoForj version/capability negotiation;
 - managed and terminal-owned session adapters;
 - private endpoint plan allocation;
-- typed Compose observations and logs received from GoForj, with no Harbor Docker-socket access;
+- a narrow daemon-owned Docker Engine adapter for read-only container state, publications, events, and logs;
+- exact container attribution through Compose project/service/working-directory labels and canonical checkout ownership, with no Docker mutation surface;
 - project/App/service/resource snapshots;
 - ordered log ingestion and bounded storage;
 - start, stop, scoped restart, open, logs, status, remove, and doctor CLI commands.
@@ -261,7 +262,7 @@ Each capability lands as a vertical slice:
 | TLS | CA/leaf/persistence | native trust store and low ports | trusted HTTPS works |
 | Native service | relay state machine | system DNS plus two native listeners | native port remains unchanged |
 | GoForj App | descriptor/runtime plan | live managed session | public URL and private bind separate |
-| Compose | requirement/consumer and publication/App mapping | Engine/Desktop generated fixtures plus seeded identity adoption | no public/LAN binding or apparent data loss |
+| Compose | requirement/consumer and publication/App mapping plus read-only runtime attribution | Engine/Desktop generated fixtures plus seeded identity adoption | no public/LAN binding, foreign-container claim, mutation from observation, or apparent data loss |
 | Recovery | operation journal | daemon/reboot/network fault injection | state heals without foreign mutation |
 | Desktop | snapshot-driven view model | native Wails smoke | UI exit does not own runtime |
 

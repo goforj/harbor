@@ -269,13 +269,15 @@ Required scenario:
 14. seed a fourth project under its existing directory-derived Compose identity, write distinct database data, register it, and prove Harbor adopts the same containers and named volumes without creating an empty replacement stack;
 15. stop and restart the seeded project across the Compose publication/Harbor route barrier and prove its host migration succeeds through the native database domain;
 16. prove Docker Engine/Desktop is at least the supported Engine 28-equivalent floor and a peer on the same L2 network cannot reach loopback-published private ports;
-17. prove `harbord` never opens the Docker socket and receives only typed observations/logs from GoForj;
+17. prove `harbord`'s Docker adapter uses only the allowlisted read-only list/inspect/events/logs surface, attributes containers through exact Compose project/service/working-directory labels and canonical checkout ownership, and rejects foreign or ambiguous containers without mutation;
 18. verify the generated project worktrees remain clean, including externally mounted metrics targets and session Compose overrides;
 19. clean up all test containers, networks, and volumes created by the test installation ID.
 
 The largest supported generated composition is the fixture source. Generator/template changes are regenerated before this workflow and a second generation must be diff-free.
 
 Image versions are pinned by the GoForj fixture. Updating them is a separate reviewed change with data-migration coverage where applicable.
+
+Adapter-focused tests record every Engine request and fail on any create, start, stop, restart, remove, exec, attach, build, pull, network, volume, or generic pass-through route. They cover container replacement, replica aggregation, event reconnect, bounded log cursors, cancellation, unavailable Engine access, label/path mismatch, symlink/case normalization on supported platforms, and a checkout move. Native jobs prove the selected Unix socket or Docker Desktop endpoint behavior without exposing that endpoint to a generated App, helper, frontend binding, or test fixture process.
 
 ## GoForj managed-session tests
 
@@ -288,7 +290,7 @@ On every OS:
 - terminal attach authenticates the peer UID/SID, canonical root, descriptor digest, nonce, and active-session exclusivity before receiving a scoped credential;
 - ordinary daemon absence and an unregistered project preserve standalone behavior, a registered-project rejection fails before lifecycle, and explicit no-Harbor mode never contacts the daemon;
 - handshake and a plan for every listener occur before phased lifecycle tasks;
-- GoForj preserves build-before-setup ordering, runs `pre-compose`, starts typed Compose, reports actual publications, waits for Harbor's route acknowledgement, then runs `post-compose`, host migration, and `post-migrate` in order;
+- GoForj preserves build-before-setup ordering, runs `pre-compose`, starts typed Compose, reports completion and the accepted identity, waits for Harbor to observe the actual publications and acknowledge routes, then runs `post-compose`, host migration, and `post-migrate` in order;
 - framework-owned legacy tasks migrate to stable phased IDs, while ambiguous unphased custom `dev.pre` tasks fail managed admission instead of being guessed from names or shell text;
 - framework-owned raw `dev.down` migrates to typed Compose-down, retains the startup implementation/identity/profiles/override, and rejects ambiguous unphased custom down tasks;
 - managed tasks leave no detached descendants/listeners, and a typed custom endpoint fixture proves assignment, enforcement, observation, and process-group ownership before custom processes can enter full mode;
@@ -305,7 +307,7 @@ On every OS:
 - managed stop targets the seeded adopted Compose identity, runs phased down behavior, leaves no managed container accidentally running, and preserves every named volume;
 - ordered events recover through snapshot plus sequence after a forced disconnect;
 - build success, process start, runtime probe, public endpoint readiness, and watcher coverage remain separate facts;
-- log backpressure produces an explicit gap event and terminal PTY output remains labeled `pty/combined` while managed pipes retain stdout/stderr;
+- App/watcher log backpressure produces an explicit gap event and terminal PTY output remains labeled `pty/combined` while managed pipes retain stdout/stderr; container log ordering, gaps, and replacement are proved by the Docker adapter tests instead of requiring a generated App capability;
 - the API Index artifact, generated examples, exposed API Reference/Swagger resource, Lighthouse, resource URLs, and readiness paths remain present and correct;
 - process shutdown settles a dedicated Unix session across watcher-created process groups and uses Job Objects on Windows without signaling a recycled PID; uncertainty quarantines only the affected project and retains its evidence.
 
