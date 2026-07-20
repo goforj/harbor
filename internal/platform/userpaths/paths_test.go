@@ -9,7 +9,7 @@ import (
 
 // TestResolveHomeDirectoryReturnsAnAbsoluteCleanPath verifies paths cannot inherit working-directory semantics.
 func TestResolveHomeDirectoryReturnsAnAbsoluteCleanPath(t *testing.T) {
-	want := filepath.Clean(filepath.Join(string(filepath.Separator), "users", "harbor"))
+	want := filepath.Clean(filepath.Join(t.TempDir(), "users", "harbor"))
 	got, err := resolveHomeDirectory(func() (string, error) {
 		return filepath.Join(want, "documents", ".."), nil
 	})

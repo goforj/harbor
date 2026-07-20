@@ -46,7 +46,10 @@ func TestRunBuildsOnlyFixedRootArtifacts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
-		if information.Mode() != artifactMode {
+		if !information.Mode().IsRegular() {
+			t.Fatalf("%s mode = %v, want a regular file", name, information.Mode())
+		}
+		if runtime.GOOS != "windows" && information.Mode() != artifactMode {
 			t.Fatalf("%s mode = %v, want %v", name, information.Mode(), artifactMode)
 		}
 	}
