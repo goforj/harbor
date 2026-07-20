@@ -209,7 +209,7 @@ Implemented foundations include:
 
 Important incomplete work:
 
-- Windows NRPT portable tests and cross-compilation pass, and its required elevated CI test exercises a fresh rule's observe, CAS add, bounded name-server Set repair, exact verification, and release. Production helper/daemon providers still select the unsupported implementation; native workflow evidence, complete latent-field repair policy, and helper dependencies remain absent;
+- Windows NRPT portable tests and cross-compilation pass, and the daemon plus privileged helper now select the reviewed fixed-PowerShell backend. Its required elevated CI test exercises a fresh rule's observe, CAS add, bounded name-server Set repair, exact verification, and release; native workflow evidence and complete latent-field repair policy remain absent;
 - trust-store installation and complete trusted-HTTPS product proof are absent;
 - low-port mechanisms and native-port service relays are not complete product paths;
 - the required three-real-project, full-stack acceptance test has not been reached.
@@ -219,7 +219,7 @@ Current platform capability is therefore uneven:
 | Capability | macOS | Linux | Windows |
 |---|---|---|---|
 | Loopback, host-conflict, process-scope, and local IPC foundations | Implemented with native proof for the exercised paths | Implemented with hosted native proof for exercised paths | Implemented with hosted native proof for exercised paths |
-| Resolver backend | Darwin backend integrated and crash-recovery tested | `systemd-resolved` foundation includes cancelable locking plus owned stage/quarantine recovery; its root-only lifecycle and crash-recovery test is required in Linux CI, while broader resolver parity remains | NRPT core committed but not wired into production |
+| Resolver backend | Darwin backend integrated and crash-recovery tested | `systemd-resolved` foundation includes cancelable locking plus owned stage/quarantine recovery; its root-only lifecycle and crash-recovery test is required in Linux CI, while broader resolver parity remains | NRPT backend is wired into daemon confirmation and the privileged helper; elevated workflow evidence and complete latent-field repair remain |
 | Source helper installation | Automatic Wails development flow | Manual development bootstrap | Not implemented |
 | Trusted CA/leaf use | Material primitives only; native trust installation absent | Material primitives only; native trust installation absent | Material primitives only; native trust installation absent |
 | Low ports and shared public path | Darwin launchd primitives only | Not complete | Not complete |

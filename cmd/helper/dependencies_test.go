@@ -33,7 +33,13 @@ func TestHelperDependencyBoundary(t *testing.T) {
 	for _, target := range helperTargets() {
 		dependencies := runGoListForTarget(t, target, "-deps", "-f", "{{.ImportPath}}", ".")
 		for _, dependency := range strings.Fields(dependencies) {
-			if _, forbidden := forbiddenExact[dependency]; forbidden && !unavoidableStandardDependency(target, dependency) {
+			if dependency == "os/exec" {
+				// Windows NRPT mutation invokes one immutable, system-directory PowerShell program.
+				// assertNoUnreviewedProcessImports below keeps that exception package-scoped.
+				if target != "windows" {
+					t.Fatalf("helper %s production dependencies include forbidden package %q", target, dependency)
+				}
+			} else if _, forbidden := forbiddenExact[dependency]; forbidden && !unavoidableStandardDependency(target, dependency) {
 				t.Fatalf("helper %s production dependencies include forbidden package %q", target, dependency)
 			}
 			for _, prefix := range forbiddenPrefixes {
@@ -43,6 +49,7 @@ func TestHelperDependencyBoundary(t *testing.T) {
 			}
 		}
 		assertNoUnreviewedNetworkImports(t, target)
+		assertNoUnreviewedProcessImports(t, target)
 	}
 }
 
@@ -144,7 +151,11 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 			"github.com/goforj/harbor/internal/platform/resolver",
 			"golang.org/x/sys/unix",
 		},
-		"windows": {"golang.org/x/sys/windows"},
+		"windows": {
+			"github.com/goforj/harbor/internal/helper/resolverhandler",
+			"github.com/goforj/harbor/internal/platform/resolver",
+			"golang.org/x/sys/windows",
+		},
 	}
 	for _, dependency := range platformDependencies[target] {
 		allowed[dependency] = struct{}{}
@@ -174,6 +185,26 @@ func assertNoUnreviewedNetworkImports(t *testing.T, target string) {
 				continue
 			}
 			t.Fatalf("helper %s package %q imports forbidden package %q", target, importer, imported)
+		}
+	}
+}
+
+// assertNoUnreviewedProcessImports keeps Windows PowerShell authority inside the fixed resolver adapter.
+func assertNoUnreviewedProcessImports(t *testing.T, target string) {
+	t.Helper()
+	packages := runGoListForTarget(t, target, "-deps", "-f", "{{.ImportPath}}|{{join .Imports \",\"}}", ".")
+	for _, line := range strings.Split(strings.TrimSpace(packages), "\n") {
+		importer, imports, found := strings.Cut(line, "|")
+		if !found {
+			t.Fatalf("helper %s dependency record %q is malformed", target, line)
+		}
+		for _, imported := range strings.Split(imports, ",") {
+			if imported != "os/exec" {
+				continue
+			}
+			if target != "windows" || importer != "github.com/goforj/harbor/internal/platform/resolver" {
+				t.Fatalf("helper %s package %q imports forbidden package %q", target, importer, imported)
+			}
 		}
 	}
 }
