@@ -131,6 +131,8 @@ The implemented path is:
 
 Start and Stop are exposed through the control protocol, desktop, and first-class `harbor start <project>` / `harbor stop <project>` commands. The CLI prints the authoritative operation state, offers `--json` for scripts, and includes an explicit retry intent after an indeterminate daemon call.
 
+`harbor status <project>` selects one project from the same authoritative snapshot used by desktop clients. Its default view is compact and `--json` prints that project object without a command-specific wrapper.
+
 This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. Compose intent and mutations remain inside GoForj; Harbor's daemon adapter observes only exact checkout-attributed runtime facts. The resource-only GoForj query is optional enrichment, not a service-state or log transport. The typed GoForj descriptor and managed-session contracts remain the future source of project intent described in [GoForj integration](./goforj-integration.md).
 
 ## Temporary `.env.host` bridge

@@ -10,15 +10,16 @@ import (
 // Commands wires application-specific commands into the CLI.
 // Keep command implementations in the package that owns the workflow.
 type Commands struct {
-	AddCmd        cmd.AddCmd        `cmd:""`
-	RemoveCmd     cmd.RemoveCmd     `cmd:""`
-	StartCmd      cmd.StartCmd      `cmd:""`
-	StopCmd       cmd.StopCmd       `cmd:""`
-	SetupCmd      cmd.SetupCmd      `cmd:""`
-	ResourcesCmd  cmd.ResourcesCmd  `cmd:""`
-	AboutCmd      cmd.AboutCmd      `cmd:""`
-	HelloWorldCmd cmd.HelloWorldCmd `cmd:""`
-	DaemonCmd     cmd.DaemonCmd     `cmd:""`
+	AddCmd        cmd.AddCmd           `cmd:""`
+	RemoveCmd     cmd.RemoveCmd        `cmd:""`
+	StartCmd      cmd.StartCmd         `cmd:""`
+	StopCmd       cmd.StopCmd          `cmd:""`
+	StatusCmd     cmd.ProjectStatusCmd `cmd:""`
+	SetupCmd      cmd.SetupCmd         `cmd:""`
+	ResourcesCmd  cmd.ResourcesCmd     `cmd:""`
+	AboutCmd      cmd.AboutCmd         `cmd:""`
+	HelloWorldCmd cmd.HelloWorldCmd    `cmd:""`
+	DaemonCmd     cmd.DaemonCmd        `cmd:""`
 }
 
 // NewCommands creates a new Commands instance with the given commands.
@@ -27,6 +28,7 @@ func NewCommands(
 	removeCmd *cmd.RemoveCmd,
 	startCmd *cmd.StartCmd,
 	stopCmd *cmd.StopCmd,
+	statusCmd *cmd.ProjectStatusCmd,
 	setupCmd *cmd.SetupCmd,
 	resourcesCmd *cmd.ResourcesCmd,
 	aboutCmd *cmd.AboutCmd,
@@ -38,6 +40,7 @@ func NewCommands(
 		RemoveCmd:     *removeCmd,
 		StartCmd:      *startCmd,
 		StopCmd:       *stopCmd,
+		StatusCmd:     *statusCmd,
 		SetupCmd:      *setupCmd,
 		ResourcesCmd:  *resourcesCmd,
 		AboutCmd:      *aboutCmd,
