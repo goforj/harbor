@@ -95,6 +95,8 @@ func TestNativeDarwinRuntimeRepairLifecycle(t *testing.T) {
 		t.Fatalf("Inspect() error = %v", err)
 	}
 	if inspection.State != RuntimeRepairInspectionActionable || inspection.Candidate == nil {
+		direct, directErr := inspectDarwinRuntimeRepairPass(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+		t.Logf("direct Darwin runtime repair pass = %#v, err = %v", direct, directErr)
 		t.Fatalf("Inspect() = %#v, want actionable candidate", inspection)
 	}
 	confirmation, err := repairer.Confirm(t.Context(), *inspection.Candidate)
