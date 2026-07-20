@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -53,21 +51,19 @@ func TestProjectLifecycleRecoverSettlesProcessBackedOperations(t *testing.T) {
 	}
 }
 
-// TestProjectLifecycleRecoverKeepsUnsettledProcessBackedOperationsFailClosed preserves every durable boundary when settlement is inconclusive.
-func TestProjectLifecycleRecoverKeepsUnsettledProcessBackedOperationsFailClosed(t *testing.T) {
+// TestProjectLifecycleRecoverQuarantinesUnsettledProcessBackedOperations preserves authority without aborting daemon recovery.
+func TestProjectLifecycleRecoverQuarantinesUnsettledProcessBackedOperations(t *testing.T) {
 	sentinel := errors.New("prior process settlement unavailable")
 	tests := []struct {
 		name          string
 		settlement    projectprocess.PriorProcessSettlement
 		settlementErr error
-		want          string
 	}{
 		{
 			name:       "unknown outcome",
 			settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")},
-			want:       "unsupported outcome",
 		},
-		{name: "settlement error", settlementErr: sentinel, want: sentinel.Error()},
+		{name: "settlement error", settlementErr: sentinel},
 	}
 
 	for _, boundary := range projectLifecycleRecoveryBoundaries() {
@@ -89,11 +85,10 @@ func TestProjectLifecycleRecoverKeepsUnsettledProcessBackedOperationsFailClosed(
 					seed.recoverAt,
 				)
 
-				err := coordinator.Recover(t.Context())
-				if err == nil || !strings.Contains(err.Error(), test.want) {
-					t.Fatalf("Recover() error = %v, want containing %q", err, test.want)
+				if err := coordinator.Recover(t.Context()); err != nil {
+					t.Fatalf("Recover() error = %v", err)
 				}
-				assertProjectLifecycleRecoveryUnchanged(t, store, journal, seed)
+				assertProjectLifecycleRecoveryQuarantined(t, store, journal, seed)
 				assertProjectLifecycleRecoverySettlementCall(t, supervisor, seed.evidence)
 				if *routeCalls != 0 {
 					t.Fatalf("failed recovery reconciled routes %d times", *routeCalls)
@@ -252,8 +247,8 @@ func assertProjectLifecycleRecoverySettled(
 	}
 }
 
-// assertProjectLifecycleRecoveryUnchanged verifies inconclusive settlement cannot discard operation or process authority.
-func assertProjectLifecycleRecoveryUnchanged(
+// assertProjectLifecycleRecoveryQuarantined verifies inconclusive settlement becomes route-free without discarding evidence.
+func assertProjectLifecycleRecoveryQuarantined(
 	t *testing.T,
 	store *state.Store,
 	journal *state.OperationJournal,
@@ -261,16 +256,17 @@ func assertProjectLifecycleRecoveryUnchanged(
 ) {
 	t.Helper()
 	operation, err := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
-	if err != nil || !reflect.DeepEqual(operation, seed.operation) {
-		t.Fatalf("operation after failed recovery = %#v, %v, want %#v", operation, err, seed.operation)
+	if err != nil || operation.Operation.State != domain.OperationFailed || operation.Operation.Problem == nil ||
+		operation.Operation.Problem.Code != projectRecoveryAmbiguousLaunchCode {
+		t.Fatalf("operation after quarantine = %#v, %v", operation, err)
 	}
 	project, err := store.Project(t.Context(), seed.project.ID)
-	if err != nil || !reflect.DeepEqual(project.Project, seed.project) {
-		t.Fatalf("project after failed recovery = %#v, %v, want %#v", project.Project, err, seed.project)
+	if err != nil || project.Project.State != domain.ProjectUnavailable {
+		t.Fatalf("project after quarantine = %#v, %v", project.Project, err)
 	}
 	session, err := store.ActiveProjectSession(t.Context(), seed.project.ID)
-	if err != nil || !reflect.DeepEqual(session, seed.session) {
-		t.Fatalf("session after failed recovery = %#v, %v, want %#v", session, err, seed.session)
+	if err != nil || session.Process == nil || *session.Process != seed.evidence {
+		t.Fatalf("session after quarantine = %#v, %v, want evidence %#v", session, err, seed.evidence)
 	}
 }
 

@@ -10,10 +10,11 @@ import (
 	"gorm.io/gorm"
 )
 
-// QuarantinePlannedProjectStartRequest identifies one ambiguous launch whose process authority cannot yet be resolved.
-type QuarantinePlannedProjectStartRequest struct {
+// QuarantineProjectProcessScopeRequest identifies one lifecycle operation whose complete process scope is unresolved.
+type QuarantineProjectProcessScopeRequest struct {
 	ProjectID                 domain.ProjectID
 	OperationID               domain.OperationID
+	OperationKind             domain.OperationKind
 	ExpectedOperationRevision domain.Sequence
 	ExpectedProjectRevision   domain.Sequence
 	SessionID                 domain.SessionID
@@ -23,13 +24,13 @@ type QuarantinePlannedProjectStartRequest struct {
 	At                        time.Time
 }
 
-// QuarantinePlannedProjectStart atomically fails an ambiguous start while retaining its unresolved planned session.
-func (store *Store) QuarantinePlannedProjectStart(
+// QuarantineProjectProcessScope atomically fails an unresolved lifecycle while retaining its exact session authority.
+func (store *Store) QuarantineProjectProcessScope(
 	ctx context.Context,
-	request QuarantinePlannedProjectStartRequest,
+	request QuarantineProjectProcessScopeRequest,
 ) (ProjectLifecycleMutation, error) {
 	ctx = normalizeContext(ctx)
-	if err := validateQuarantinePlannedProjectStartRequest(request); err != nil {
+	if err := validateQuarantineProjectProcessScopeRequest(request); err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -37,13 +38,14 @@ func (store *Store) QuarantinePlannedProjectStart(
 	}
 
 	var result ProjectLifecycleMutation
-	err := store.mutations.mutate(ctx, "quarantine planned project start", func(tx *gorm.DB) error {
-		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectStart)
+	err := store.mutations.mutate(ctx, "quarantine project process scope", func(tx *gorm.DB) error {
+		operationKind := request.OperationKind
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, operationKind)
 		if err != nil {
 			return err
 		}
 		if current.Operation.State == domain.OperationFailed {
-			replayed, replayErr := replayQuarantinePlannedProjectStart(tx, current, history, request)
+			replayed, replayErr := replayQuarantineProjectProcessScope(tx, current, history, request)
 			if replayErr != nil {
 				return replayErr
 			}
@@ -51,7 +53,7 @@ func (store *Store) QuarantinePlannedProjectStart(
 			return nil
 		}
 		if current.Operation.State != domain.OperationRunning {
-			return fmt.Errorf("project start operation %q must be running, got %q", request.OperationID, current.Operation.State)
+			return fmt.Errorf("project lifecycle operation %q must be running, got %q", request.OperationID, current.Operation.State)
 		}
 		if current.Revision != request.ExpectedOperationRevision {
 			return staleLifecycleRevision(request.OperationID, request.ExpectedOperationRevision, current.Revision)
@@ -68,8 +70,12 @@ func (store *Store) QuarantinePlannedProjectStart(
 				Actual:    project.Revision,
 			}
 		}
-		if project.Project.State != domain.ProjectStarting {
-			return fmt.Errorf("project %q must be starting before planned launch quarantine, got %q", request.ProjectID, project.Project.State)
+		expectedProjectState := domain.ProjectStarting
+		if operationKind == domain.OperationKindProjectStop {
+			expectedProjectState = domain.ProjectStopping
+		}
+		if project.Project.State != expectedProjectState {
+			return fmt.Errorf("project %q must be %q before lifecycle quarantine, got %q", request.ProjectID, expectedProjectState, project.Project.State)
 		}
 
 		session, err := readExactProjectSession(tx, request.ProjectID, request.SessionID)
@@ -79,11 +85,11 @@ func (store *Store) QuarantinePlannedProjectStart(
 		if session.Generation != request.ExpectedSessionGeneration {
 			return staleSessionGeneration(request.ProjectID, request.SessionID, request.ExpectedSessionGeneration, session.Generation)
 		}
-		if session.State != domain.SessionPlanned || session.Process != nil {
-			return fmt.Errorf("session %q must be planned without process evidence before launch quarantine", request.SessionID)
+		if !sessionCanRemainInProcessScopeQuarantine(session) {
+			return fmt.Errorf("session %q is not an unresolved process-scope boundary", request.SessionID)
 		}
 		if request.At.Before(session.UpdatedAt) {
-			return fmt.Errorf("launch quarantine time precedes session generation")
+			return fmt.Errorf("process-scope quarantine time precedes session generation")
 		}
 		if err := validateLifecycleProjectionTime(project.Project, request.At); err != nil {
 			return err
@@ -113,19 +119,22 @@ func (store *Store) QuarantinePlannedProjectStart(
 			return err
 		}
 		if !reflect.DeepEqual(persistedSession, session) {
-			return corruptStateError("project session", string(session.ID), fmt.Errorf("launch quarantine changed unresolved session authority"))
+			return corruptStateError("project session", string(session.ID), fmt.Errorf("process-scope quarantine changed unresolved session authority"))
 		}
 		result = lifecycleMutation(failed, persistedProject, &persistedSession)
 		return nil
 	})
 	if err != nil {
-		return ProjectLifecycleMutation{}, fmt.Errorf("quarantine project %q planned start: %w", request.ProjectID, err)
+		return ProjectLifecycleMutation{}, fmt.Errorf("quarantine project %q process scope: %w", request.ProjectID, err)
 	}
 	return result, nil
 }
 
-// validateQuarantinePlannedProjectStartRequest rejects quarantine intent without exact operation, project, and session fences.
-func validateQuarantinePlannedProjectStartRequest(request QuarantinePlannedProjectStartRequest) error {
+// validateQuarantineProjectProcessScopeRequest rejects quarantine intent without exact operation, project, and session fences.
+func validateQuarantineProjectProcessScopeRequest(request QuarantineProjectProcessScopeRequest) error {
+	if kind := request.OperationKind; kind != domain.OperationKindProjectStart && kind != domain.OperationKindProjectStop {
+		return fmt.Errorf("lifecycle quarantine operation kind %q is unsupported", kind)
+	}
 	if err := validateLifecycleOperationRequest(
 		request.ProjectID,
 		request.OperationID,
@@ -139,7 +148,7 @@ func validateQuarantinePlannedProjectStartRequest(request QuarantinePlannedProje
 		return err
 	}
 	if request.ExpectedOperationRevision == domain.MaximumSequence || request.ExpectedProjectRevision != request.ExpectedOperationRevision+1 {
-		return fmt.Errorf("expected project revision must immediately follow the running start operation revision")
+		return fmt.Errorf("expected project revision must immediately follow the running lifecycle operation revision")
 	}
 	if err := request.SessionID.Validate(); err != nil {
 		return err
@@ -150,12 +159,12 @@ func validateQuarantinePlannedProjectStartRequest(request QuarantinePlannedProje
 	return request.Problem.Validate()
 }
 
-// replayQuarantinePlannedProjectStart accepts only the exact terminal edge and retained unresolved session authority.
-func replayQuarantinePlannedProjectStart(
+// replayQuarantineProjectProcessScope accepts only the exact terminal edge and retained unresolved session authority.
+func replayQuarantineProjectProcessScope(
 	tx *gorm.DB,
 	operation OperationRecord,
 	history []OperationTransition,
-	request QuarantinePlannedProjectStartRequest,
+	request QuarantineProjectProcessScopeRequest,
 ) (ProjectLifecycleMutation, error) {
 	if err := requireExactLifecycleReplay(
 		history,
@@ -172,14 +181,21 @@ func replayQuarantinePlannedProjectStart(
 		return ProjectLifecycleMutation{}, err
 	}
 	if project.Project.State != domain.ProjectUnavailable || !project.Project.UpdatedAt.Equal(request.At) {
-		return ProjectLifecycleMutation{}, fmt.Errorf("planned launch quarantine replay does not match the committed unavailable projection")
+		return ProjectLifecycleMutation{}, fmt.Errorf("process-scope quarantine replay does not match the committed unavailable projection")
 	}
 	session, err := readExactProjectSession(tx, request.ProjectID, request.SessionID)
 	if err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
-	if session.Generation != request.ExpectedSessionGeneration || session.State != domain.SessionPlanned || session.Process != nil {
-		return ProjectLifecycleMutation{}, fmt.Errorf("planned launch quarantine replay does not match the retained unresolved session")
+	if session.Generation != request.ExpectedSessionGeneration || !sessionCanRemainInProcessScopeQuarantine(session) {
+		return ProjectLifecycleMutation{}, fmt.Errorf("process-scope quarantine replay does not match the retained unresolved session")
 	}
 	return lifecycleMutation(operation, project, &session), nil
+}
+
+// sessionCanRemainInProcessScopeQuarantine retains any accepted launch or stop boundary whose scope is unresolved.
+func sessionCanRemainInProcessScopeQuarantine(session domain.ProjectSession) bool {
+	return session.State == domain.SessionPlanned && session.Process == nil ||
+		session.State == domain.SessionAwaitingAttach && session.Process != nil ||
+		session.State == domain.SessionStopping && session.Process != nil
 }

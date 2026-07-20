@@ -13,13 +13,14 @@ import (
 
 const projectRecoveryQuarantineRunningPhase = "isolating unresolved process authority"
 
-// quarantinePlannedProjectStart isolates one unresolved launch without claiming that no child process exists.
-func (coordinator *ProjectLifecycleCoordinator) quarantinePlannedProjectStart(
+// quarantineProjectProcessScope isolates one unresolved lifecycle boundary without claiming its descendants are absent.
+func (coordinator *ProjectLifecycleCoordinator) quarantineProjectProcessScope(
 	ctx context.Context,
 	record state.OperationRecord,
 	session domain.ProjectSession,
+	problem domain.Problem,
 ) error {
-	if session.State != domain.SessionPlanned || session.Process != nil {
+	if !lifecycleSessionCanRemainInProcessScopeQuarantine(session) {
 		return priorProcessOwnershipError(record, session)
 	}
 	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
@@ -27,16 +28,11 @@ func (coordinator *ProjectLifecycleCoordinator) quarantinePlannedProjectStart(
 		return err
 	}
 	at := recoveredProjectLifecycleTime(coordinator.now(), record, project.Project, session)
-	problem := domain.Problem{
-		Code: projectRecoveryAmbiguousLaunchCode,
-		Message: "Harbor restarted before it could record the managed process identity. " +
-			"This project was isolated so Harbor cannot accidentally start a second process.",
-		Retryable: false,
-	}
 	if _, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
-		return coordinator.state.QuarantinePlannedProjectStart(ctx, state.QuarantinePlannedProjectStartRequest{
+		return coordinator.state.QuarantineProjectProcessScope(ctx, state.QuarantineProjectProcessScopeRequest{
 			ProjectID:                 record.Operation.ProjectID,
 			OperationID:               record.Operation.ID,
+			OperationKind:             record.Operation.Kind,
 			ExpectedOperationRevision: record.Revision,
 			ExpectedProjectRevision:   project.Revision,
 			SessionID:                 session.ID,
@@ -46,18 +42,35 @@ func (coordinator *ProjectLifecycleCoordinator) quarantinePlannedProjectStart(
 			At:                        at,
 		})
 	}); err != nil {
-		return fmt.Errorf("quarantine ambiguous project start operation %q: %w", record.Operation.ID, err)
+		return fmt.Errorf("quarantine project process scope for operation %q: %w", record.Operation.ID, err)
 	}
 	return nil
 }
 
-// isPlannedProjectStartQuarantined recognizes only the exact terminal marker written by recovery.
-func (coordinator *ProjectLifecycleCoordinator) isPlannedProjectStartQuarantined(
+// lifecycleSessionCanRemainInProcessScopeQuarantine mirrors the durable unresolved-scope shapes accepted by state.
+func lifecycleSessionCanRemainInProcessScopeQuarantine(session domain.ProjectSession) bool {
+	return session.State == domain.SessionPlanned && session.Process == nil ||
+		session.State == domain.SessionAwaitingAttach && session.Process != nil ||
+		session.State == domain.SessionStopping && session.Process != nil
+}
+
+// plannedProjectRecoveryProblem explains why restart recovery retained an unidentified launch boundary.
+func plannedProjectRecoveryProblem() domain.Problem {
+	return domain.Problem{
+		Code: projectRecoveryAmbiguousLaunchCode,
+		Message: "Harbor restarted before it could record the managed process identity. " +
+			"This project was isolated so Harbor cannot accidentally start a second process.",
+		Retryable: false,
+	}
+}
+
+// isProjectProcessScopeQuarantined recognizes only the exact terminal marker written by recovery.
+func (coordinator *ProjectLifecycleCoordinator) isProjectProcessScopeQuarantined(
 	ctx context.Context,
 	project domain.ProjectSnapshot,
 	session domain.ProjectSession,
 ) (bool, error) {
-	if project.State != domain.ProjectUnavailable || session.State != domain.SessionPlanned || session.Process != nil {
+	if project.State != domain.ProjectUnavailable || !lifecycleSessionCanRemainInProcessScopeQuarantine(session) {
 		return false, nil
 	}
 	record, err := coordinator.operations.LatestProjectLifecycleOperation(ctx, project.ID)
@@ -69,7 +82,7 @@ func (coordinator *ProjectLifecycleCoordinator) isPlannedProjectStartQuarantined
 		return false, fmt.Errorf("read project %q recovery quarantine marker: %w", project.ID, err)
 	}
 	operation := record.Operation
-	return operation.Kind == domain.OperationKindProjectStart &&
+	return (operation.Kind == domain.OperationKindProjectStart || operation.Kind == domain.OperationKindProjectStop) &&
 		operation.State == domain.OperationFailed &&
 		operation.Problem != nil &&
 		operation.Problem.Code == projectRecoveryAmbiguousLaunchCode, nil
@@ -81,7 +94,7 @@ func (coordinator *ProjectLifecycleCoordinator) quarantineTerminalProjectSession
 	project domain.ProjectSnapshot,
 	missing state.ProjectSessionProcessEvidenceMissingError,
 ) error {
-	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded) ||
+	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded && project.State != domain.ProjectFailed) ||
 		missing.ProjectID != project.ID ||
 		missing.Owner != domain.SessionOwnerHarbor ||
 		missing.State != domain.SessionAwaitingAttach {
@@ -93,6 +106,48 @@ func (coordinator *ProjectLifecycleCoordinator) quarantineTerminalProjectSession
 			missing.State,
 		)
 	}
+	return coordinator.quarantineTerminalProjectSessionBoundary(
+		ctx,
+		project,
+		missing.SessionID,
+		missing.Generation,
+		missing.UpdatedAt,
+		terminalProjectRecoveryProblem(),
+	)
+}
+
+// quarantineProcessBackedTerminalProjectSession withholds routes while retaining exact evidence whose complete scope is uncertain.
+func (coordinator *ProjectLifecycleCoordinator) quarantineProcessBackedTerminalProjectSession(
+	ctx context.Context,
+	project domain.ProjectSnapshot,
+	session domain.ProjectSession,
+) error {
+	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded && project.State != domain.ProjectFailed) ||
+		session.ProjectID != project.ID ||
+		session.Owner != domain.SessionOwnerHarbor ||
+		session.State != domain.SessionAwaitingAttach ||
+		session.Process == nil {
+		return priorSessionOwnershipError(project, session)
+	}
+	return coordinator.quarantineTerminalProjectSessionBoundary(
+		ctx,
+		project,
+		session.ID,
+		session.Generation,
+		session.UpdatedAt,
+		processScopeRecoveryProblem(),
+	)
+}
+
+// quarantineTerminalProjectSessionBoundary commits one route-free marker without changing its unresolved session row.
+func (coordinator *ProjectLifecycleCoordinator) quarantineTerminalProjectSessionBoundary(
+	ctx context.Context,
+	project domain.ProjectSnapshot,
+	sessionID domain.SessionID,
+	generation uint64,
+	updatedAt time.Time,
+	problem domain.Problem,
+) error {
 	projectRecord, err := coordinator.state.Project(ctx, project.ID)
 	if err != nil {
 		return err
@@ -101,8 +156,8 @@ func (coordinator *ProjectLifecycleCoordinator) quarantineTerminalProjectSession
 	if at.Before(project.UpdatedAt) {
 		at = project.UpdatedAt
 	}
-	if at.Before(missing.UpdatedAt) {
-		at = missing.UpdatedAt
+	if at.Before(updatedAt) {
+		at = updatedAt
 	}
 	operationID, err := coordinator.newOperationID()
 	if err != nil {
@@ -116,12 +171,11 @@ func (coordinator *ProjectLifecycleCoordinator) quarantineTerminalProjectSession
 	if err != nil {
 		return fmt.Errorf("create terminal session recovery operation: %w", err)
 	}
-	problem := terminalProjectRecoveryProblem()
 	request := state.QuarantineTerminalProjectSessionRequest{
 		ProjectID:                 project.ID,
 		ExpectedProjectRevision:   projectRecord.Revision,
-		SessionID:                 missing.SessionID,
-		ExpectedSessionGeneration: missing.Generation,
+		SessionID:                 sessionID,
+		ExpectedSessionGeneration: generation,
 		Operation:                 operation,
 		RunningPhase:              projectRecoveryQuarantineRunningPhase,
 		FailurePhase:              projectRecoveryQuarantinePhase,
@@ -156,13 +210,40 @@ func (coordinator *ProjectLifecycleCoordinator) isTerminalProjectSessionQuaranti
 		}
 		return false, fmt.Errorf("read project %q terminal recovery quarantine marker: %w", project.ID, err)
 	}
-	operation := record.Operation
-	problem := terminalProjectRecoveryProblem()
+	return terminalSessionQuarantineOperation(record.Operation), nil
+}
+
+// isProcessBackedTerminalSessionQuarantined recognizes a route-free marker that deliberately retained exact evidence.
+func (coordinator *ProjectLifecycleCoordinator) isProcessBackedTerminalSessionQuarantined(
+	ctx context.Context,
+	project domain.ProjectSnapshot,
+	session domain.ProjectSession,
+) (bool, error) {
+	if project.State != domain.ProjectUnavailable ||
+		session.ProjectID != project.ID ||
+		session.Owner != domain.SessionOwnerHarbor ||
+		session.State != domain.SessionAwaitingAttach ||
+		session.Process == nil {
+		return false, nil
+	}
+	record, err := coordinator.operations.LatestProjectLifecycleOperation(ctx, project.ID)
+	if err != nil {
+		var absent *state.ProjectLifecycleOperationNotFoundError
+		if errors.As(err, &absent) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read project %q process-scope quarantine marker: %w", project.ID, err)
+	}
+	return terminalSessionQuarantineOperation(record.Operation), nil
+}
+
+// terminalSessionQuarantineOperation recognizes only Harbor's route-free unresolved-authority marker.
+func terminalSessionQuarantineOperation(operation domain.Operation) bool {
 	return operation.Kind == domain.OperationKindProjectStart &&
 		operation.State == domain.OperationFailed &&
 		operation.Phase == projectRecoveryQuarantinePhase &&
 		operation.Problem != nil &&
-		*operation.Problem == problem, nil
+		operation.Problem.Code == projectRecoveryAmbiguousLaunchCode
 }
 
 // terminalProjectRecoveryProblem tells the user why automatic process reconciliation is intentionally unavailable.
@@ -171,6 +252,16 @@ func terminalProjectRecoveryProblem() domain.Problem {
 		Code: projectRecoveryAmbiguousLaunchCode,
 		Message: "Harbor restarted without enough evidence to identify the previous project process. " +
 			"Stop that process outside Harbor before resetting this project.",
+		Retryable: false,
+	}
+}
+
+// processScopeRecoveryProblem tells the user why Harbor retained exact evidence instead of risking a duplicate runtime.
+func processScopeRecoveryProblem() domain.Problem {
+	return domain.Problem{
+		Code: projectRecoveryAmbiguousLaunchCode,
+		Message: "Harbor could not prove that every process in the previous project scope stopped. " +
+			"This project was isolated so Harbor cannot accidentally start a duplicate runtime.",
 		Retryable: false,
 	}
 }
@@ -213,7 +304,26 @@ func (coordinator *ProjectLifecycleCoordinator) recoverQueuedProjectStop(
 		fmt.Sprintf("queued project stop operation %q", record.Operation.ID),
 		*session.Process,
 	); err != nil {
-		return err
+		project, projectErr := coordinator.state.Project(ctx, record.Operation.ProjectID)
+		if projectErr != nil {
+			return errors.Join(err, projectErr)
+		}
+		at := recoveredProjectLifecycleTime(coordinator.now(), record, project.Project, session)
+		mutation, beginErr := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+			return coordinator.state.BeginProjectStop(ctx, state.BeginProjectStopRequest{
+				ProjectID:                 record.Operation.ProjectID,
+				OperationID:               record.Operation.ID,
+				ExpectedOperationRevision: record.Revision,
+				SessionID:                 session.ID,
+				ExpectedSessionGeneration: session.Generation,
+				Phase:                     "isolating unresolved process scope",
+				At:                        at,
+			})
+		})
+		if beginErr != nil || mutation.Session == nil {
+			return errors.Join(err, beginErr)
+		}
+		return coordinator.quarantineProjectProcessScope(ctx, mutation.Operation, *mutation.Session, processScopeRecoveryProblem())
 	}
 
 	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
@@ -255,7 +365,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStop(
 		fmt.Sprintf("running project stop operation %q", record.Operation.ID),
 		*session.Process,
 	); err != nil {
-		return err
+		return coordinator.quarantineProjectProcessScope(ctx, record, session, processScopeRecoveryProblem())
 	}
 	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
 	if err != nil {

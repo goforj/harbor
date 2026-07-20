@@ -59,7 +59,7 @@ type projectLifecycleState interface {
 	AttachProjectProcess(context.Context, state.AttachProjectProcessRequest) (domain.ProjectSession, error)
 	CompleteProjectStart(context.Context, state.CompleteProjectStartRequest) (state.ProjectLifecycleMutation, error)
 	FailProjectStart(context.Context, state.FailProjectStartRequest) (state.ProjectLifecycleMutation, error)
-	QuarantinePlannedProjectStart(context.Context, state.QuarantinePlannedProjectStartRequest) (state.ProjectLifecycleMutation, error)
+	QuarantineProjectProcessScope(context.Context, state.QuarantineProjectProcessScopeRequest) (state.ProjectLifecycleMutation, error)
 	QuarantineTerminalProjectSession(context.Context, state.QuarantineTerminalProjectSessionRequest) (state.ProjectRecoveryQuarantine, error)
 	BeginProjectStop(context.Context, state.BeginProjectStopRequest) (state.ProjectLifecycleMutation, error)
 	CompleteProjectStop(context.Context, state.CompleteProjectStopRequest) (state.ProjectLifecycleMutation, error)
@@ -501,6 +501,23 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		Stderr:               os.Stderr,
 	})
 	if err != nil {
+		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
+			problem := domain.Problem{
+				Code: projectRecoveryAmbiguousLaunchCode,
+				Message: "Harbor accepted the project process but could not prove that every descendant stopped. " +
+					"Stop any remaining project processes outside Harbor, then restart Harbor.",
+				Retryable: false,
+			}
+			if quarantineErr := coordinator.quarantineProjectProcessScope(
+				context.Background(),
+				begun.Operation,
+				session,
+				problem,
+			); quarantineErr != nil {
+				coordinator.recordAsyncError(fmt.Errorf("quarantine unresolved project %q launch: %w", record.Operation.ProjectID, quarantineErr))
+			}
+			return
+		}
 		coordinator.failStartWithoutProcess(begun, session, "project.launch.failed", err)
 		return
 	}
@@ -620,6 +637,11 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain
 		coordinator.releaseHandle(session.ProjectID, handle)
 		return
 	}
+	if err := requireSettledProjectExit(exit); err != nil {
+		coordinator.releaseHandle(session.ProjectID, handle)
+		coordinator.quarantineExitedProjectScope(session, err)
+		return
+	}
 	_, persistErr := retryLifecycleResult(func() (state.ProjectRecord, error) {
 		return coordinator.state.RecordUnexpectedProjectExit(context.Background(), state.RecordUnexpectedProjectExitRequest{
 			ProjectID: session.ProjectID,
@@ -691,6 +713,22 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 		coordinator.recordAsyncError(fmt.Errorf("join project %q process: %w", record.Operation.ProjectID, err))
 		return
 	}
+	if err := requireSettledProjectExit(exit); err != nil {
+		coordinator.releaseHandle(record.Operation.ProjectID, handle)
+		quarantineErr := coordinator.quarantineProjectProcessScope(
+			context.Background(),
+			begun.Operation,
+			*begun.Session,
+			processScopeRecoveryProblem(),
+		)
+		if quarantineErr != nil {
+			coordinator.recordAsyncError(errors.Join(
+				fmt.Errorf("retain stopped project %q authority: %w", record.Operation.ProjectID, err),
+				quarantineErr,
+			))
+		}
+		return
+	}
 	coordinator.releaseHandle(record.Operation.ProjectID, handle)
 	if _, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 		return coordinator.state.CompleteProjectStop(context.Background(), state.CompleteProjectStopRequest{
@@ -711,6 +749,10 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 
 // completeDaemonStop records clean daemon shutdown as a stopped project instead of stale ready process authority.
 func (coordinator *ProjectLifecycleCoordinator) completeDaemonStop(session domain.ProjectSession, handle *projectprocess.Handle, exit projectprocess.Exit) {
+	if err := requireSettledProjectExit(exit); err != nil {
+		coordinator.quarantineExitedProjectScope(session, err)
+		return
+	}
 	project, err := coordinator.state.Project(context.Background(), session.ProjectID)
 	if err != nil {
 		coordinator.recordAsyncError(err)
@@ -862,7 +904,7 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 			switch record.Operation.Kind {
 			case domain.OperationKindProjectStart:
 				if session.Process == nil {
-					if err := coordinator.quarantinePlannedProjectStart(ctx, record, session); err != nil {
+					if err := coordinator.quarantineProjectProcessScope(ctx, record, session, plannedProjectRecoveryProblem()); err != nil {
 						return err
 					}
 					continue
@@ -899,7 +941,14 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 			if recovered {
 				continue
 			}
-			quarantined, quarantineErr := coordinator.isPlannedProjectStartQuarantined(ctx, project, session)
+			quarantined, quarantineErr := coordinator.isProjectProcessScopeQuarantined(ctx, project, session)
+			if quarantineErr != nil {
+				return quarantineErr
+			}
+			if quarantined {
+				continue
+			}
+			quarantined, quarantineErr = coordinator.isProcessBackedTerminalSessionQuarantined(ctx, project, session)
 			if quarantineErr != nil {
 				return quarantineErr
 			}
@@ -968,7 +1017,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 	project domain.ProjectSnapshot,
 	session domain.ProjectSession,
 ) (bool, error) {
-	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded) || session.Process == nil {
+	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded && project.State != domain.ProjectFailed) || session.Process == nil {
 		return false, nil
 	}
 	_, err := coordinator.settleRecoveredProjectProcess(
@@ -977,7 +1026,10 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 		*session.Process,
 	)
 	if err != nil {
-		return false, err
+		if quarantineErr := coordinator.quarantineProcessBackedTerminalProjectSession(ctx, project, session); quarantineErr != nil {
+			return false, errors.Join(err, quarantineErr)
+		}
+		return true, nil
 	}
 
 	at := lifecycleTime(coordinator.now())
@@ -1018,7 +1070,15 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 		*session.Process,
 	)
 	if err != nil {
-		return false, err
+		if quarantineErr := coordinator.quarantineProjectProcessScope(
+			ctx,
+			record,
+			session,
+			processScopeRecoveryProblem(),
+		); quarantineErr != nil {
+			return false, errors.Join(err, quarantineErr)
+		}
+		return true, nil
 	}
 
 	project, err := coordinator.state.Project(ctx, record.Operation.ProjectID)
@@ -1190,8 +1250,27 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation s
 	if err := coordinator.supervisor.Stop(context.Background(), session.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		coordinator.recordAsyncError(err)
 	}
-	if _, err := handle.Wait(context.Background()); err != nil {
+	exit, err := handle.Wait(context.Background())
+	if err != nil {
 		coordinator.recordAsyncError(err)
+		coordinator.releaseHandle(session.ProjectID, handle)
+		return
+	}
+	if err := requireSettledProjectExit(exit); err != nil {
+		quarantineErr := coordinator.quarantineProjectProcessScope(
+			context.Background(),
+			mutation.Operation,
+			session,
+			processScopeRecoveryProblem(),
+		)
+		if quarantineErr != nil {
+			coordinator.recordAsyncError(errors.Join(
+				fmt.Errorf("retain unattached project %q authority: %w", session.ProjectID, err),
+				quarantineErr,
+			))
+		}
+		coordinator.releaseHandle(session.ProjectID, handle)
+		return
 	}
 	coordinator.releaseHandle(session.ProjectID, handle)
 	coordinator.failStartWithoutProcess(mutation, session, "project.state.failed", cause)
@@ -1213,6 +1292,21 @@ func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.P
 		coordinator.recordAsyncError(err)
 		return
 	}
+	if err := requireSettledProjectExit(exit); err != nil {
+		quarantineErr := coordinator.quarantineProjectProcessScope(
+			context.Background(),
+			mutation.Operation,
+			session,
+			processScopeRecoveryProblem(),
+		)
+		if quarantineErr != nil {
+			coordinator.recordAsyncError(errors.Join(
+				fmt.Errorf("retain failed project %q authority: %w", session.ProjectID, err),
+				quarantineErr,
+			))
+		}
+		return
+	}
 	if _, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 		return coordinator.state.FailProjectStart(context.Background(), state.FailProjectStartRequest{
 			ProjectID:                 session.ProjectID,
@@ -1225,6 +1319,58 @@ func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.P
 	}); err != nil {
 		coordinator.recordAsyncError(err)
 		coordinator.recordAsyncError(cause)
+	}
+}
+
+// requireSettledProjectExit keeps durable process evidence until the complete ownership scope is proven absent.
+func requireSettledProjectExit(exit projectprocess.Exit) error {
+	if exit.ScopeSettlementErr != nil {
+		return fmt.Errorf("process ownership scope did not settle: %w", exit.ScopeSettlementErr)
+	}
+	return nil
+}
+
+// quarantineExitedProjectScope makes unresolved ready authority route-free without deleting its exact evidence.
+func (coordinator *ProjectLifecycleCoordinator) quarantineExitedProjectScope(session domain.ProjectSession, cause error) {
+	project, err := coordinator.state.Project(context.Background(), session.ProjectID)
+	if err == nil && project.Project.State == domain.ProjectStopping {
+		var operation state.OperationRecord
+		var found bool
+		var records []state.OperationRecord
+		records, err = coordinator.operations.ActiveOperations(context.Background())
+		if err == nil {
+			for _, candidate := range records {
+				if candidate.Operation.ProjectID == session.ProjectID &&
+					candidate.Operation.Kind == domain.OperationKindProjectStop &&
+					candidate.Operation.State == domain.OperationRunning {
+					operation = candidate
+					found = true
+					break
+				}
+			}
+			if !found {
+				err = fmt.Errorf("find running stop operation for project %q process-scope quarantine", session.ProjectID)
+			}
+		}
+		if err == nil {
+			err = coordinator.quarantineProjectProcessScope(
+				context.Background(),
+				operation,
+				session,
+				processScopeRecoveryProblem(),
+			)
+		}
+	} else if err == nil {
+		err = coordinator.quarantineProcessBackedTerminalProjectSession(context.Background(), project.Project, session)
+	}
+	if err == nil {
+		err = coordinator.reconcileProjectRoutes(context.Background(), "withdraw quarantined project routes")
+	}
+	if err != nil {
+		coordinator.recordAsyncError(errors.Join(
+			fmt.Errorf("retain project %q unresolved process authority: %w", session.ProjectID, cause),
+			err,
+		))
 	}
 }
 

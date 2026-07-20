@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// QuarantineTerminalProjectSessionRequest identifies one formerly ready session whose exact process identity was never persisted.
+// QuarantineTerminalProjectSessionRequest identifies one formerly ready session whose complete process scope is unresolved.
 type QuarantineTerminalProjectSessionRequest struct {
 	ProjectID                 domain.ProjectID
 	ExpectedProjectRevision   domain.Sequence
@@ -32,7 +32,7 @@ type ProjectRecoveryQuarantine struct {
 	Project   ProjectRecord
 }
 
-// QuarantineTerminalProjectSession atomically withholds a formerly ready project without claiming its unidentified process is absent.
+// QuarantineTerminalProjectSession atomically withholds a formerly ready project without claiming its unresolved process scope is absent.
 func (store *Store) QuarantineTerminalProjectSession(
 	ctx context.Context,
 	request QuarantineTerminalProjectSessionRequest,
@@ -81,25 +81,25 @@ func (store *Store) QuarantineTerminalProjectSession(
 				Actual:    project.Revision,
 			}
 		}
-		if project.Project.State != domain.ProjectReady && project.Project.State != domain.ProjectDegraded {
-			return fmt.Errorf("project %q must be ready or degraded before terminal session quarantine, got %q", request.ProjectID, project.Project.State)
+		if project.Project.State != domain.ProjectReady && project.Project.State != domain.ProjectDegraded && project.Project.State != domain.ProjectFailed {
+			return fmt.Errorf("project %q must be ready, degraded, or failed before terminal session quarantine, got %q", request.ProjectID, project.Project.State)
 		}
-		sessionRow, missing, err := readExactMissingProjectProcessEvidence(tx, request.ProjectID, request.SessionID)
+		sessionRow, owner, sessionState, generation, err := readExactUnresolvedProjectSession(tx, request.ProjectID, request.SessionID)
 		if err != nil {
 			return err
 		}
-		if missing.Generation != request.ExpectedSessionGeneration {
-			return staleSessionGeneration(request.ProjectID, request.SessionID, request.ExpectedSessionGeneration, missing.Generation)
+		if generation != request.ExpectedSessionGeneration {
+			return staleSessionGeneration(request.ProjectID, request.SessionID, request.ExpectedSessionGeneration, generation)
 		}
-		if missing.Owner != domain.SessionOwnerHarbor || missing.State != domain.SessionAwaitingAttach {
+		if owner != domain.SessionOwnerHarbor || sessionState != domain.SessionAwaitingAttach {
 			return fmt.Errorf("session %q is not a Harbor-owned awaiting-attach recovery boundary", request.SessionID)
 		}
-		if request.At.Before(project.Project.UpdatedAt) || request.At.Before(missing.UpdatedAt) {
+		if request.At.Before(project.Project.UpdatedAt) || request.At.Before(sessionRow.UpdatedAt) {
 			return fmt.Errorf(
 				"terminal session quarantine time %s precedes project %s or session %s",
 				request.At.Format(time.RFC3339Nano),
 				project.Project.UpdatedAt.Format(time.RFC3339Nano),
-				missing.UpdatedAt.Format(time.RFC3339Nano),
+				sessionRow.UpdatedAt.Format(time.RFC3339Nano),
 			)
 		}
 		if err := requireNoCompetingProjectOperation(tx, request.ProjectID, request.Operation.ID); err != nil {
@@ -136,7 +136,7 @@ func (store *Store) QuarantineTerminalProjectSession(
 		if err != nil {
 			return err
 		}
-		persistedSession, _, err := readExactMissingProjectProcessEvidence(tx, request.ProjectID, request.SessionID)
+		persistedSession, _, _, _, err := readExactUnresolvedProjectSession(tx, request.ProjectID, request.SessionID)
 		if err != nil {
 			return err
 		}
@@ -204,14 +204,48 @@ func replayQuarantineTerminalProjectSession(
 	if !projectMatchesInactiveState(project.Project, domain.ProjectUnavailable, request.At) {
 		return ProjectRecoveryQuarantine{}, fmt.Errorf("terminal session quarantine replay does not match the committed route-free projection")
 	}
-	_, missing, err := readExactMissingProjectProcessEvidence(tx, request.ProjectID, request.SessionID)
+	_, owner, sessionState, generation, err := readExactUnresolvedProjectSession(tx, request.ProjectID, request.SessionID)
 	if err != nil {
 		return ProjectRecoveryQuarantine{}, err
 	}
-	if missing.Generation != request.ExpectedSessionGeneration || missing.Owner != domain.SessionOwnerHarbor || missing.State != domain.SessionAwaitingAttach {
+	if generation != request.ExpectedSessionGeneration || owner != domain.SessionOwnerHarbor || sessionState != domain.SessionAwaitingAttach {
 		return ProjectRecoveryQuarantine{}, fmt.Errorf("terminal session quarantine replay does not match the retained unresolved session")
 	}
 	return ProjectRecoveryQuarantine{Operation: operation, Project: project}, nil
+}
+
+// readExactUnresolvedProjectSession accepts either complete process evidence or the legacy fully absent tuple without weakening partial-row validation.
+func readExactUnresolvedProjectSession(
+	tx *gorm.DB,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+) (models.ProjectSession, domain.SessionOwner, domain.SessionState, uint64, error) {
+	var rows []models.ProjectSession
+	if err := tx.Where("project_id = ?", string(projectID)).Order("id ASC").Find(&rows).Error; err != nil {
+		return models.ProjectSession{}, "", "", 0, fmt.Errorf("read project session row: %w", err)
+	}
+	if len(rows) == 0 {
+		return models.ProjectSession{}, "", "", 0, &ProjectSessionNotFoundError{ProjectID: projectID, SessionID: sessionID}
+	}
+	if len(rows) != 1 {
+		return models.ProjectSession{}, "", "", 0, corruptStateError("project session", string(projectID), fmt.Errorf("project owns multiple active sessions"))
+	}
+	row := rows[0]
+	session, err := projectSessionFromModel(row)
+	if err == nil {
+		if session.ProjectID != projectID || session.ID != sessionID {
+			return models.ProjectSession{}, "", "", 0, &ProjectSessionNotFoundError{ProjectID: projectID, SessionID: sessionID}
+		}
+		return row, session.Owner, session.State, session.Generation, nil
+	}
+	var missing *ProjectSessionProcessEvidenceMissingError
+	if !errors.As(err, &missing) {
+		return models.ProjectSession{}, "", "", 0, err
+	}
+	if missing.ProjectID != projectID || missing.SessionID != sessionID {
+		return models.ProjectSession{}, "", "", 0, &ProjectSessionNotFoundError{ProjectID: projectID, SessionID: sessionID}
+	}
+	return row, missing.Owner, missing.State, missing.Generation, nil
 }
 
 // readExactMissingProjectProcessEvidence recognizes only one fully absent exact-process tuple on an otherwise valid awaiting-attach session.

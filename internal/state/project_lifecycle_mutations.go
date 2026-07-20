@@ -113,7 +113,7 @@ type CompleteProjectStopRequest struct {
 	Phase                     string
 }
 
-// RecordUnexpectedProjectExitRequest retires one ready session after an independently observed unexpected process exit.
+// RecordUnexpectedProjectExitRequest retires one process-backed terminal session after an independently observed exit.
 type RecordUnexpectedProjectExitRequest struct {
 	ProjectID domain.ProjectID
 	Exit      ConfirmedProjectProcessExit
@@ -543,7 +543,7 @@ func (store *Store) CompleteProjectStop(ctx context.Context, request CompletePro
 	return result, nil
 }
 
-// RecordUnexpectedProjectExit retires a joined ready session and publishes failure without fabricating an operation.
+// RecordUnexpectedProjectExit retires a joined process-backed terminal session and publishes failure without fabricating an operation.
 func (store *Store) RecordUnexpectedProjectExit(ctx context.Context, request RecordUnexpectedProjectExitRequest) (ProjectRecord, error) {
 	ctx = normalizeContext(ctx)
 	if err := validateRecordUnexpectedProjectExitRequest(request); err != nil {
@@ -577,7 +577,7 @@ func (store *Store) RecordUnexpectedProjectExit(ctx context.Context, request Rec
 		if err != nil {
 			return err
 		}
-		if project.Project.State != domain.ProjectReady && project.Project.State != domain.ProjectDegraded {
+		if project.Project.State != domain.ProjectReady && project.Project.State != domain.ProjectDegraded && project.Project.State != domain.ProjectFailed {
 			return fmt.Errorf("project %q cannot record an unexpected exit from state %q", request.ProjectID, project.Project.State)
 		}
 		if err := validateLifecycleProjectionTime(project.Project, request.Exit.ExitedAt); err != nil {

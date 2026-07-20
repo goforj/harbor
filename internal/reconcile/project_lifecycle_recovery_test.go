@@ -306,17 +306,16 @@ func TestProjectLifecycleRecoverRetiresSettledTerminalSession(t *testing.T) {
 	}
 }
 
-// TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed verifies failed settlement never retires durable authority.
-func TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed(t *testing.T) {
+// TestProjectLifecycleRecoverQuarantinesUnsettledTerminalSessions verifies failed settlement stays route-free and durable.
+func TestProjectLifecycleRecoverQuarantinesUnsettledTerminalSessions(t *testing.T) {
 	sentinel := errors.New("host observation unavailable")
 	tests := []struct {
 		name          string
 		settlement    projectprocess.PriorProcessSettlement
 		settlementErr error
-		want          string
 	}{
-		{name: "unknown", settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")}, want: "unsupported outcome"},
-		{name: "settlement failure", settlementErr: sentinel, want: sentinel.Error()},
+		{name: "unknown", settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")}},
+		{name: "settlement failure", settlementErr: sentinel},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -341,17 +340,16 @@ func TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed(t *test
 			})
 			coordinator.now = func() time.Time { return seed.recoverAt }
 
-			err := coordinator.Recover(t.Context())
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Recover() error = %v, want %q", err, test.want)
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("Recover() error = %v", err)
 			}
 			operation, readErr := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
 			if readErr != nil || !reflect.DeepEqual(operation, seed.operation) {
 				t.Fatalf("operation after failed recovery = %#v, %v", operation, readErr)
 			}
 			project, readErr := store.Project(t.Context(), seed.project.ID)
-			if readErr != nil || !reflect.DeepEqual(project.Project, seed.project) {
-				t.Fatalf("project after failed recovery = %#v, %v", project.Project, readErr)
+			if readErr != nil || project.Project.State != domain.ProjectUnavailable {
+				t.Fatalf("project after quarantine = %#v, %v", project.Project, readErr)
 			}
 			session, readErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
 			if readErr != nil || !reflect.DeepEqual(session, seed.session) {
@@ -367,17 +365,89 @@ func TestProjectLifecycleRecoverKeepsUnsettledTerminalSessionsFailClosed(t *test
 	}
 }
 
-// TestProjectLifecycleRecoverKeepsUnsettledRunningStartsFailClosed verifies settlement failures never retire durable authority.
-func TestProjectLifecycleRecoverKeepsUnsettledRunningStartsFailClosed(t *testing.T) {
+// TestProjectLifecycleRecoverReconcilesFailedProcessBackedTerminalSession covers both exact settlement and safe quarantine.
+func TestProjectLifecycleRecoverReconcilesFailedProcessBackedTerminalSession(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		settlement    projectprocess.PriorProcessSettlement
+		settlementErr error
+		wantState     domain.ProjectState
+		wantSession   bool
+	}{
+		{
+			name:        "settled",
+			settlement:  projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementAbsent},
+			wantState:   domain.ProjectFailed,
+			wantSession: false,
+		},
+		{
+			name:          "quarantined",
+			settlementErr: errors.New("host observation unavailable"),
+			wantState:     domain.ProjectUnavailable,
+			wantSession:   true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			databasePath := filepath.Join(t.TempDir(), "harbord.db")
+			store, journal, connection := openProjectLifecycleIntegrationStateWithConnection(t, databasePath, true)
+			seed := completeProjectLifecycleRecoveryStart(t, store, seedProjectLifecycleRecoveryStart(t, store, journal, true))
+			if err := connection.Exec(
+				"UPDATE projects SET state = ? WHERE project_id = ?",
+				string(domain.ProjectFailed),
+				string(seed.project.ID),
+			).Error; err != nil {
+				t.Fatalf("set failed process-backed recovery boundary: %v", err)
+			}
+			supervisor := &projectLifecycleRecoverySupervisor{
+				settlement:    test.settlement,
+				settlementErr: test.settlementErr,
+			}
+			coordinator := newProjectLifecycleAdmissionTestCoordinator(
+				store,
+				journal,
+				store,
+				supervisor,
+				netip.MustParseAddr("127.0.0.1"),
+			)
+			coordinator.now = func() time.Time { return seed.recoverAt }
+			t.Cleanup(func() {
+				if err := coordinator.Close(context.Background()); err != nil {
+					t.Errorf("close failed terminal recovery coordinator: %v", err)
+				}
+			})
+
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("Recover() error = %v", err)
+			}
+			project, err := store.Project(t.Context(), seed.project.ID)
+			if err != nil || project.Project.State != test.wantState {
+				t.Fatalf("failed terminal project after recovery = %#v, %v, want %q", project.Project, err, test.wantState)
+			}
+			session, err := store.ActiveProjectSession(t.Context(), seed.project.ID)
+			if test.wantSession {
+				if err != nil || session.Process == nil || *session.Process != seed.evidence {
+					t.Fatalf("failed terminal session after quarantine = %#v, %v", session, err)
+				}
+				return
+			}
+			var missing *state.ProjectSessionNotFoundError
+			if !errors.As(err, &missing) {
+				t.Fatalf("failed terminal session after settlement = %#v, %v", session, err)
+			}
+		})
+	}
+}
+
+// TestProjectLifecycleRecoverQuarantinesUnsettledRunningStarts verifies settlement failures terminate the operation without deleting evidence.
+func TestProjectLifecycleRecoverQuarantinesUnsettledRunningStarts(t *testing.T) {
 	sentinel := errors.New("host observation unavailable")
 	tests := []struct {
 		name          string
 		settlement    projectprocess.PriorProcessSettlement
 		settlementErr error
-		want          string
 	}{
-		{name: "unknown", settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")}, want: "unsupported outcome"},
-		{name: "settlement failure", settlementErr: sentinel, want: sentinel.Error()},
+		{name: "unknown", settlement: projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementOutcome("unknown")}},
+		{name: "settlement failure", settlementErr: sentinel},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -401,16 +471,16 @@ func TestProjectLifecycleRecoverKeepsUnsettledRunningStartsFailClosed(t *testing
 			})
 			coordinator.now = func() time.Time { return seed.recoverAt }
 
-			err := coordinator.Recover(t.Context())
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Recover() error = %v, want %q", err, test.want)
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("Recover() error = %v", err)
 			}
 			operation, readErr := journal.OperationByIntent(t.Context(), seed.operation.Operation.IntentID)
-			if readErr != nil || operation.Operation.State != domain.OperationRunning {
+			if readErr != nil || operation.Operation.State != domain.OperationFailed || operation.Operation.Problem == nil ||
+				operation.Operation.Problem.Code != projectRecoveryAmbiguousLaunchCode {
 				t.Fatalf("operation after failed recovery = %#v, %v", operation.Operation, readErr)
 			}
 			project, readErr := store.Project(t.Context(), seed.project.ID)
-			if readErr != nil || project.Project.State != domain.ProjectStarting {
+			if readErr != nil || project.Project.State != domain.ProjectUnavailable {
 				t.Fatalf("project after failed recovery = %#v, %v", project.Project, readErr)
 			}
 			session, readErr := store.ActiveProjectSession(t.Context(), seed.project.ID)

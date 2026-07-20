@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -34,7 +35,12 @@ import (
 	"gorm.io/gorm"
 )
 
-const projectLifecycleHelperEnvironment = "HARBOR_PROJECT_LIFECYCLE_HELPER"
+const (
+	projectLifecycleHelperEnvironment          = "HARBOR_PROJECT_LIFECYCLE_HELPER"
+	projectLifecycleHelperModeEnvironment      = "HARBOR_PROJECT_LIFECYCLE_HELPER_MODE"
+	projectLifecycleHelperWatcherMode          = "watcher"
+	projectLifecycleHelperIgnoringListenerMode = "ignoring-listener"
+)
 
 // projectLifecycleTestRouteReconciler keeps identity-stage lifecycle tests independent from a live data plane.
 type projectLifecycleTestRouteReconciler struct{}
@@ -259,6 +265,22 @@ func runProjectLifecycleHelper() {
 		_, _ = fmt.Fprintf(os.Stderr, "LIGHTHOUSE_URL=%q, want %q\n", got, wantLighthouseURL)
 		os.Exit(2)
 	}
+	if os.Getenv(projectLifecycleHelperModeEnvironment) == projectLifecycleHelperWatcherMode {
+		command := exec.Command(os.Args[0], "dev")
+		command.Env = projectLifecycleRestartReplaceEnvironment(
+			os.Environ(),
+			projectLifecycleHelperModeEnvironment,
+			projectLifecycleHelperIgnoringListenerMode,
+		)
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		separateProjectLifecycleHelperProcessGroup(command)
+		if err := command.Start(); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		select {}
+	}
 	listener, err := net.Listen("tcp", net.JoinHostPort(address, port))
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -277,6 +299,10 @@ func runProjectLifecycleHelper() {
 	go func() {
 		_ = server.Serve(listener)
 	}()
+	if os.Getenv(projectLifecycleHelperModeEnvironment) == projectLifecycleHelperIgnoringListenerMode {
+		ignoreProjectLifecycleHelperGracefulStop()
+		select {}
+	}
 	<-stopped
 	_ = server.Close()
 }

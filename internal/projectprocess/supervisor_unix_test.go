@@ -75,6 +75,42 @@ func TestUnexpectedRootExitKillsUnixDescendants(t *testing.T) {
 	}
 }
 
+// TestUnexpectedRootExitKillsUnixDescendantsAcrossProcessGroups protects Harbor's ownership boundary from watcher-created groups.
+func TestUnexpectedRootExitKillsUnixDescendantsAcrossProcessGroups(t *testing.T) {
+	pidFile := t.TempDir() + "/orphan.pid"
+	t.Setenv(helperPIDFileEnvironment, pidFile)
+	installForjHelper(t, "orphan-separate-group")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-orphan-separated",
+		SessionID:            "session-orphan-separated",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	grandchildPID := waitForHelperPID(t, pidFile)
+	t.Cleanup(func() {
+		_ = syscall.Kill(grandchildPID, syscall.SIGKILL)
+	})
+	waitCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	result, err := handle.Wait(waitCtx)
+	if err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if result.ExitCode != 23 || result.StopRequested {
+		t.Fatalf("Wait() result = %#v", result)
+	}
+	if processExists(grandchildPID) {
+		t.Fatalf("grandchild PID %d survived unexpected root exit", grandchildPID)
+	}
+	if err := supervisor.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 // waitForHelperPID waits until the process-tree helper publishes a parseable descendant PID.
 func waitForHelperPID(t *testing.T, path string) int {
 	t.Helper()

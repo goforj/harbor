@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,8 @@ const (
 	projectLifecycleRestartProjectID           = domain.ProjectID("project-orders")
 	projectLifecycleRestartOperationID         = domain.OperationID("operation-hard-restart")
 	projectLifecycleRestartIntentID            = domain.IntentID("intent-hard-restart")
+	projectLifecycleRestartSecondOperationID   = domain.OperationID("operation-hard-restart-second")
+	projectLifecycleRestartSecondIntentID      = domain.IntentID("intent-hard-restart-second")
 	projectLifecycleRestartTimeout             = 20 * time.Second
 )
 
@@ -116,13 +119,22 @@ func TestProjectLifecycleHardRestartConvergesManagedProcess(t *testing.T) {
 		cleanup.Dir = sandbox
 		_ = cleanup.Run()
 	})
-	waitForProjectLifecycleRestartReady(t, firstDone, readyPath, firstOutput)
+	outerPID := waitForProjectLifecycleRestartReady(t, firstDone, readyPath, firstOutput)
 
 	if err := first.Process.Kill(); err != nil {
 		t.Fatalf("hard-kill first lifecycle generation: %v", err)
 	}
 	if err := <-firstDone; err == nil {
 		t.Fatal("hard-killed lifecycle generation exited successfully")
+	}
+	if runtime.GOOS != "windows" {
+		outer, err := os.FindProcess(outerPID)
+		if err != nil {
+			t.Fatalf("find first-generation outer process %d: %v", outerPID, err)
+		}
+		if err := outer.Kill(); err != nil {
+			t.Fatalf("kill first-generation outer process %d: %v", outerPID, err)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), projectLifecycleRestartTimeout)
@@ -206,7 +218,7 @@ func TestProjectLifecycleHardRestartSubprocess(t *testing.T) {
 	case projectLifecycleRestartLaunchMode:
 		runProjectLifecycleRestartLaunch(t, databasePath, projectRoot, readyPath, port)
 	case projectLifecycleRestartRecoverMode:
-		runProjectLifecycleRestartRecovery(t, databasePath, uint16(port))
+		runProjectLifecycleRestartRecovery(t, databasePath, projectRoot, uint16(port))
 	case projectLifecycleRestartQuarantineMode:
 		runProjectLifecycleRestartQuarantine(t, databasePath)
 	case projectLifecycleRestartCleanupMode:
@@ -297,6 +309,13 @@ func runProjectLifecycleRestartLaunch(t *testing.T, databasePath string, project
 	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
 
 	environment := projectLifecycleRestartChildEnvironment(projectprocess.CaptureEnvironment(), port)
+	if runtime.GOOS != "windows" {
+		environment = projectprocess.Environment(projectLifecycleRestartReplaceEnvironment(
+			[]string(environment),
+			projectLifecycleHelperModeEnvironment,
+			projectLifecycleHelperWatcherMode,
+		))
+	}
 	supervisor := projectprocess.NewWithExecutableVerifier(
 		projectprocess.Options{GracePeriod: 500 * time.Millisecond, Environment: environment},
 		func(string) error { return nil },
@@ -329,16 +348,20 @@ func runProjectLifecycleRestartLaunch(t *testing.T, databasePath string, project
 	if err != nil || operation.Operation.State != domain.OperationSucceeded {
 		t.Fatalf("start operation before hard restart = %#v, %v", operation.Operation, err)
 	}
-	if err := os.WriteFile(readyPath, []byte("ready\n"), 0o600); err != nil {
+	if err := os.WriteFile(readyPath, []byte(fmt.Sprintf("ready:%d\n", session.Process.PID)), 0o600); err != nil {
 		t.Fatalf("publish hard-restart boundary: %v", err)
 	}
 	select {}
 }
 
 // runProjectLifecycleRestartRecovery reopens abrupt state and proves startup convergence leaves no active lifecycle work.
-func runProjectLifecycleRestartRecovery(t *testing.T, databasePath string, port uint16) {
+func runProjectLifecycleRestartRecovery(t *testing.T, databasePath string, projectRoot string, port uint16) {
 	store, journal := openProjectLifecycleIntegrationState(t, databasePath, false)
-	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond})
+	environment := projectLifecycleRestartChildEnvironment(projectprocess.CaptureEnvironment(), int(port))
+	supervisor := projectprocess.NewWithExecutableVerifier(
+		projectprocess.Options{GracePeriod: 500 * time.Millisecond, Environment: environment},
+		func(string) error { return nil },
+	)
 	coordinator, _ := newProjectLifecycleIntegrationCoordinator(
 		t,
 		store,
@@ -383,6 +406,18 @@ func runProjectLifecycleRestartRecovery(t *testing.T, databasePath string, port 
 	operation, err := journal.OperationByIntent(t.Context(), projectLifecycleRestartIntentID)
 	if err != nil || operation.Operation.State != domain.OperationSucceeded {
 		t.Fatalf("terminal start operation after hard-restart recovery = %#v, %v", operation.Operation, err)
+	}
+	second, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID:   projectLifecycleRestartProjectID,
+		OperationID: projectLifecycleRestartSecondOperationID,
+		IntentID:    projectLifecycleRestartSecondIntentID,
+	})
+	if err != nil || second.Operation.State != domain.OperationQueued {
+		t.Fatalf("second Start() after hard-restart recovery = %#v, %v", second.Operation, err)
+	}
+	ready := waitForProjectLifecycleState(t, store, projectLifecycleRestartProjectID, domain.ProjectReady)
+	if len(ready.Project.Resources) != 1 || ready.Project.Resources[0].URL != fmt.Sprintf("http://127.0.0.1:%d", port) {
+		t.Fatalf("second ready project after hard restart = %#v, root %q", ready.Project, projectRoot)
 	}
 }
 
@@ -441,13 +476,18 @@ func waitForProjectLifecycleRestartReady(
 	done <-chan error,
 	readyPath string,
 	output *projectLifecycleRestartOutput,
-) {
+) int {
 	t.Helper()
 	deadline := time.Now().Add(projectLifecycleRestartTimeout)
 	for time.Now().Before(deadline) {
 		contents, err := os.ReadFile(readyPath)
-		if err == nil && string(contents) == "ready\n" {
-			return
+		if err == nil {
+			marker := strings.TrimSpace(string(contents))
+			pidText, found := strings.CutPrefix(marker, "ready:")
+			pid, conversionErr := strconv.Atoi(pidText)
+			if found && conversionErr == nil && pid > 0 {
+				return pid
+			}
 		}
 		select {
 		case err := <-done:
@@ -457,4 +497,5 @@ func waitForProjectLifecycleRestartReady(
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("first lifecycle generation did not reach its durable boundary: %s", output.String())
+	return 0
 }

@@ -19,7 +19,7 @@ type plannedStartQuarantineFixture struct {
 	project    domain.ProjectSnapshot
 	running    ProjectLifecycleMutation
 	session    domain.ProjectSession
-	request    QuarantinePlannedProjectStartRequest
+	request    QuarantineProjectProcessScopeRequest
 }
 
 // terminalSessionQuarantineFixture owns one formerly ready project whose legacy session omitted exact-process evidence.
@@ -31,14 +31,14 @@ type terminalSessionQuarantineFixture struct {
 	request    QuarantineTerminalProjectSessionRequest
 }
 
-// TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays proves quarantine preserves the exact unresolved boundary.
-func TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays(t *testing.T) {
+// TestQuarantineProjectProcessScopeRetainsAuthorityAndReplays proves quarantine preserves the exact unresolved boundary.
+func TestQuarantineProjectProcessScopeRetainsAuthorityAndReplays(t *testing.T) {
 	fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-replay")
 	sequenceBefore := projectStoreMutationSequence(t, fixture.store)
 
-	quarantined, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), fixture.request)
+	quarantined, err := fixture.store.QuarantineProjectProcessScope(t.Context(), fixture.request)
 	if err != nil {
-		t.Fatalf("QuarantinePlannedProjectStart() error = %v", err)
+		t.Fatalf("QuarantineProjectProcessScope() error = %v", err)
 	}
 	if quarantined.Operation.Operation.State != domain.OperationFailed ||
 		quarantined.Operation.Operation.Problem == nil ||
@@ -61,9 +61,9 @@ func TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays(t *testing.T) {
 	}
 
 	sequenceAfter := projectStoreMutationSequence(t, fixture.store)
-	replayed, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), fixture.request)
+	replayed, err := fixture.store.QuarantineProjectProcessScope(t.Context(), fixture.request)
 	if err != nil || !reflect.DeepEqual(replayed, quarantined) {
-		t.Fatalf("QuarantinePlannedProjectStart(replay) = %#v, %v", replayed, err)
+		t.Fatalf("QuarantineProjectProcessScope(replay) = %#v, %v", replayed, err)
 	}
 	if got := projectStoreMutationSequence(t, fixture.store); got != sequenceAfter {
 		t.Fatalf("sequence after quarantine replay = %d, want %d", got, sequenceAfter)
@@ -71,9 +71,9 @@ func TestQuarantinePlannedProjectStartRetainsAuthorityAndReplays(t *testing.T) {
 
 	mismatch := fixture.request
 	mismatch.Phase = "different recovery decision"
-	if _, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), mismatch); err == nil ||
+	if _, err := fixture.store.QuarantineProjectProcessScope(t.Context(), mismatch); err == nil ||
 		!strings.Contains(err.Error(), "retry does not match") {
-		t.Fatalf("QuarantinePlannedProjectStart(mismatched replay) error = %v", err)
+		t.Fatalf("QuarantineProjectProcessScope(mismatched replay) error = %v", err)
 	}
 	if got := projectStoreMutationSequence(t, fixture.store); got != sequenceAfter {
 		t.Fatalf("sequence after mismatched replay = %d, want %d", got, sequenceAfter)
@@ -154,8 +154,8 @@ func TestQuarantineTerminalProjectSessionRollsBackLateFailure(t *testing.T) {
 	assertTerminalSessionQuarantineEvidenceRetained(t, fixture)
 }
 
-// TestQuarantineTerminalProjectSessionRejectsExactProcessEvidence protects the normal exact-process settlement path.
-func TestQuarantineTerminalProjectSessionRejectsExactProcessEvidence(t *testing.T) {
+// TestQuarantineTerminalProjectSessionRetainsExactProcessEvidence covers complete evidence whose wider scope remains unresolved.
+func TestQuarantineTerminalProjectSessionRetainsExactProcessEvidence(t *testing.T) {
 	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
 	project, session, _ := projectLifecycleTestReadyProject(t, store, "project-terminal-quarantine-exact")
 	projectRecord, err := store.Project(t.Context(), project.ID)
@@ -173,12 +173,16 @@ func TestQuarantineTerminalProjectSessionRejectsExactProcessEvidence(t *testing.
 		Operation: operation, RunningPhase: "isolating unresolved process authority",
 		FailurePhase: "recovery required", Problem: plannedStartQuarantineTestProblem(), At: at,
 	}
-	sequenceBefore := projectStoreMutationSequence(t, store)
-	if _, err := store.QuarantineTerminalProjectSession(t.Context(), request); err == nil || !strings.Contains(err.Error(), "retains exact process evidence") {
+	result, err := store.QuarantineTerminalProjectSession(t.Context(), request)
+	if err != nil {
 		t.Fatalf("QuarantineTerminalProjectSession(exact evidence) error = %v", err)
 	}
-	if got := projectStoreMutationSequence(t, store); got != sequenceBefore {
-		t.Fatalf("sequence after exact-evidence rejection = %d, want %d", got, sequenceBefore)
+	if result.Project.Project.State != domain.ProjectUnavailable || result.Operation.Operation.State != domain.OperationFailed {
+		t.Fatalf("exact-evidence quarantine = %#v", result)
+	}
+	retained, err := store.ActiveProjectSession(t.Context(), project.ID)
+	if err != nil || retained.Process == nil || session.Process == nil || *retained.Process != *session.Process {
+		t.Fatalf("retained exact evidence = %#v, %v", retained, err)
 	}
 }
 
@@ -226,8 +230,8 @@ func TestValidateQuarantineTerminalProjectSessionRequestRejectsIncompleteFences(
 	}
 }
 
-// TestQuarantinePlannedProjectStartRollsBackLateFailure proves the operation cannot fail without the unavailable projection.
-func TestQuarantinePlannedProjectStartRollsBackLateFailure(t *testing.T) {
+// TestQuarantineProjectProcessScopeRollsBackLateFailure proves the operation cannot fail without the unavailable projection.
+func TestQuarantineProjectProcessScopeRollsBackLateFailure(t *testing.T) {
 	fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-atomic")
 	if err := fixture.connection.Exec(`CREATE TRIGGER fail_unavailable_projection BEFORE UPDATE OF state ON projects
 		WHEN NEW.state = 'unavailable' BEGIN SELECT RAISE(ABORT, 'injected unavailable failure'); END`).Error; err != nil {
@@ -235,9 +239,9 @@ func TestQuarantinePlannedProjectStartRollsBackLateFailure(t *testing.T) {
 	}
 	sequenceBefore := projectStoreMutationSequence(t, fixture.store)
 
-	_, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), fixture.request)
+	_, err := fixture.store.QuarantineProjectProcessScope(t.Context(), fixture.request)
 	if err == nil || !strings.Contains(err.Error(), "injected unavailable failure") {
-		t.Fatalf("QuarantinePlannedProjectStart(injected failure) error = %v", err)
+		t.Fatalf("QuarantineProjectProcessScope(injected failure) error = %v", err)
 	}
 	operation := networkReleaseTestOperation(t, fixture.store, fixture.request.OperationID)
 	if operation.Operation.State != domain.OperationRunning || operation.Revision != fixture.running.Operation.Revision {
@@ -256,14 +260,14 @@ func TestQuarantinePlannedProjectStartRollsBackLateFailure(t *testing.T) {
 	}
 }
 
-// TestQuarantinePlannedProjectStartFencesEveryDurableBoundary covers stale revisions and session generations.
-func TestQuarantinePlannedProjectStartFencesEveryDurableBoundary(t *testing.T) {
+// TestQuarantineProjectProcessScopeFencesEveryDurableBoundary covers stale revisions and session generations.
+func TestQuarantineProjectProcessScopeFencesEveryDurableBoundary(t *testing.T) {
 	t.Run("operation revision", func(t *testing.T) {
 		fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-operation-fence")
 		request := fixture.request
 		request.ExpectedOperationRevision--
 		request.ExpectedProjectRevision--
-		_, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), request)
+		_, err := fixture.store.QuarantineProjectProcessScope(t.Context(), request)
 		var stale *StaleRevisionError
 		if !errors.As(err, &stale) {
 			t.Fatalf("stale operation error = %v", err)
@@ -279,7 +283,7 @@ func TestQuarantinePlannedProjectStartFencesEveryDurableBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutProject(drifted) error = %v", err)
 		}
-		_, err = fixture.store.QuarantinePlannedProjectStart(t.Context(), fixture.request)
+		_, err = fixture.store.QuarantineProjectProcessScope(t.Context(), fixture.request)
 		var conflict *ProjectRevisionConflictError
 		if !errors.As(err, &conflict) || conflict.Actual != current.Revision {
 			t.Fatalf("stale project error = %#v, want actual revision %d", err, current.Revision)
@@ -294,7 +298,7 @@ func TestQuarantinePlannedProjectStartFencesEveryDurableBoundary(t *testing.T) {
 		fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-session-fence")
 		request := fixture.request
 		request.ExpectedSessionGeneration++
-		_, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), request)
+		_, err := fixture.store.QuarantineProjectProcessScope(t.Context(), request)
 		var stale *StaleSessionGenerationError
 		if !errors.As(err, &stale) {
 			t.Fatalf("stale session generation error = %v", err)
@@ -303,8 +307,8 @@ func TestQuarantinePlannedProjectStartFencesEveryDurableBoundary(t *testing.T) {
 	})
 }
 
-// TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches keeps unrelated or process-backed authority untouched.
-func TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches(t *testing.T) {
+// TestQuarantineProjectProcessScopeRejectsStateAndSessionMismatches keeps unrelated or process-backed authority untouched.
+func TestQuarantineProjectProcessScopeRejectsStateAndSessionMismatches(t *testing.T) {
 	t.Run("operation is not running", func(t *testing.T) {
 		store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
 		project := emptyProjectStoreMutationProject("project-quarantine-queued")
@@ -312,13 +316,13 @@ func TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches(t *testin
 			t.Fatalf("PutProject() error = %v", err)
 		}
 		queued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectStart, project.ID, "quarantine-queued")
-		request := QuarantinePlannedProjectStartRequest{
-			ProjectID: project.ID, OperationID: queued.Operation.ID,
+		request := QuarantineProjectProcessScopeRequest{
+			ProjectID: project.ID, OperationID: queued.Operation.ID, OperationKind: domain.OperationKindProjectStart,
 			ExpectedOperationRevision: queued.Revision, ExpectedProjectRevision: queued.Revision + 1,
 			SessionID: "session-quarantine-queued", ExpectedSessionGeneration: 1,
 			Phase: "launch authority unresolved", Problem: plannedStartQuarantineTestProblem(), At: queued.Operation.RequestedAt.Add(time.Second),
 		}
-		if _, err := store.QuarantinePlannedProjectStart(t.Context(), request); err == nil || !strings.Contains(err.Error(), "must be running") {
+		if _, err := store.QuarantineProjectProcessScope(t.Context(), request); err == nil || !strings.Contains(err.Error(), "must be running") {
 			t.Fatalf("queued operation error = %v", err)
 		}
 	})
@@ -330,8 +334,8 @@ func TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches(t *testin
 			Update("state", string(domain.ProjectStopped)).Error; err != nil {
 			t.Fatalf("change project state: %v", err)
 		}
-		if _, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), fixture.request); err == nil ||
-			!strings.Contains(err.Error(), "must be starting") {
+		if _, err := fixture.store.QuarantineProjectProcessScope(t.Context(), fixture.request); err == nil ||
+			!strings.Contains(err.Error(), "before lifecycle quarantine") {
 			t.Fatalf("project state mismatch error = %v", err)
 		}
 	})
@@ -340,7 +344,7 @@ func TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches(t *testin
 		fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-session-id")
 		request := fixture.request
 		request.SessionID = "session-other"
-		_, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), request)
+		_, err := fixture.store.QuarantineProjectProcessScope(t.Context(), request)
 		var missing *ProjectSessionNotFoundError
 		if !errors.As(err, &missing) {
 			t.Fatalf("session mismatch error = %v", err)
@@ -348,7 +352,7 @@ func TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches(t *testin
 		assertPlannedStartQuarantineUnchanged(t, fixture)
 	})
 
-	t.Run("session already has process evidence", func(t *testing.T) {
+	t.Run("session process scope is unresolved", func(t *testing.T) {
 		fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-process")
 		attached, err := fixture.store.AttachProjectProcess(t.Context(), AttachProjectProcessRequest{
 			ProjectID: fixture.project.ID, SessionID: fixture.session.ID,
@@ -361,46 +365,47 @@ func TestQuarantinePlannedProjectStartRejectsStateAndSessionMismatches(t *testin
 		}
 		request := fixture.request
 		request.ExpectedSessionGeneration = attached.Generation
-		if _, err := fixture.store.QuarantinePlannedProjectStart(t.Context(), request); err == nil ||
-			!strings.Contains(err.Error(), "must be planned without process evidence") {
-			t.Fatalf("process-backed session error = %v", err)
+		result, err := fixture.store.QuarantineProjectProcessScope(t.Context(), request)
+		if err != nil {
+			t.Fatalf("process-backed quarantine error = %v", err)
 		}
-		operation := networkReleaseTestOperation(t, fixture.store, fixture.request.OperationID)
-		if operation.Operation.State != domain.OperationRunning {
-			t.Fatalf("operation after process-backed rejection = %#v", operation)
+		if result.Operation.Operation.State != domain.OperationFailed || result.Project.Project.State != domain.ProjectUnavailable ||
+			result.Session == nil || result.Session.Process == nil || *result.Session.Process != *attached.Process {
+			t.Fatalf("process-backed quarantine = %#v", result)
 		}
 	})
 }
 
-// TestValidateQuarantinePlannedProjectStartRequestRejectsUnfencedInput covers every caller-provided identity and outcome.
-func TestValidateQuarantinePlannedProjectStartRequestRejectsUnfencedInput(t *testing.T) {
+// TestValidateQuarantineProjectProcessScopeRequestRejectsUnfencedInput covers every caller-provided identity and outcome.
+func TestValidateQuarantineProjectProcessScopeRequestRejectsUnfencedInput(t *testing.T) {
 	at := time.Date(2026, 7, 19, 20, 0, 0, 0, time.UTC)
-	valid := QuarantinePlannedProjectStartRequest{
-		ProjectID: "project-validation", OperationID: "operation-validation",
+	valid := QuarantineProjectProcessScopeRequest{
+		ProjectID: "project-validation", OperationID: "operation-validation", OperationKind: domain.OperationKindProjectStart,
 		ExpectedOperationRevision: 4, ExpectedProjectRevision: 5,
 		SessionID: "session-validation", ExpectedSessionGeneration: 1,
 		Phase: "launch authority unresolved", Problem: plannedStartQuarantineTestProblem(), At: at,
 	}
 	for _, test := range []struct {
 		name   string
-		mutate func(*QuarantinePlannedProjectStartRequest)
+		mutate func(*QuarantineProjectProcessScopeRequest)
 	}{
-		{name: "project", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.ProjectID = "" }},
-		{name: "operation", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.OperationID = "" }},
-		{name: "operation revision", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.ExpectedOperationRevision = 0 }},
-		{name: "project revision", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.ExpectedProjectRevision = 0 }},
-		{name: "revision boundary", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.ExpectedProjectRevision++ }},
-		{name: "session", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.SessionID = "" }},
-		{name: "generation", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.ExpectedSessionGeneration = 0 }},
-		{name: "phase", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.Phase = " " }},
-		{name: "problem", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.Problem.Code = "" }},
-		{name: "time", mutate: func(request *QuarantinePlannedProjectStartRequest) { request.At = time.Time{} }},
+		{name: "project", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.ProjectID = "" }},
+		{name: "operation", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.OperationID = "" }},
+		{name: "operation kind", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.OperationKind = "" }},
+		{name: "operation revision", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.ExpectedOperationRevision = 0 }},
+		{name: "project revision", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.ExpectedProjectRevision = 0 }},
+		{name: "revision boundary", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.ExpectedProjectRevision++ }},
+		{name: "session", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.SessionID = "" }},
+		{name: "generation", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.ExpectedSessionGeneration = 0 }},
+		{name: "phase", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.Phase = " " }},
+		{name: "problem", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.Problem.Code = "" }},
+		{name: "time", mutate: func(request *QuarantineProjectProcessScopeRequest) { request.At = time.Time{} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := valid
 			test.mutate(&request)
-			if err := validateQuarantinePlannedProjectStartRequest(request); err == nil {
-				t.Fatal("validateQuarantinePlannedProjectStartRequest() error = nil")
+			if err := validateQuarantineProjectProcessScopeRequest(request); err == nil {
+				t.Fatal("validateQuarantineProjectProcessScopeRequest() error = nil")
 			}
 		})
 	}
@@ -428,8 +433,8 @@ func newPlannedStartQuarantineFixture(t *testing.T, projectID domain.ProjectID) 
 	}
 	return plannedStartQuarantineFixture{
 		store: store, connection: connection, project: project, running: running, session: session,
-		request: QuarantinePlannedProjectStartRequest{
-			ProjectID: project.ID, OperationID: running.Operation.Operation.ID,
+		request: QuarantineProjectProcessScopeRequest{
+			ProjectID: project.ID, OperationID: running.Operation.Operation.ID, OperationKind: domain.OperationKindProjectStart,
 			ExpectedOperationRevision: running.Operation.Revision,
 			ExpectedProjectRevision:   running.Project.Revision,
 			SessionID:                 session.ID, ExpectedSessionGeneration: session.Generation,

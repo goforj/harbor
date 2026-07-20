@@ -2,34 +2,30 @@
 
 package projectprocess
 
-import (
-	"errors"
-	"syscall"
-)
+import "syscall"
 
-// newPriorProcessRecoveryControl binds restart settlement to birth-checked Unix process-group signals.
+// newPriorProcessRecoveryControl binds restart settlement to the birth-checked Unix session created at launch.
 func newPriorProcessRecoveryControl() priorProcessRecoveryControl {
 	observe := observeProcessBirthToken
 	return priorProcessRecoveryControl{
 		observe: observe,
+		observeScope: func(pid int, birthToken string) (PriorProcessState, error) {
+			state, _, err := observePersistedOwnedProcessSession(pid, birthToken)
+			return state, err
+		},
 		graceful: func(pid int, birthToken string) (PriorProcessState, error) {
-			return signalPriorProcessIfExact(pid, birthToken, observe, func(pid int) error {
-				return signalPriorProcessGroup(pid, syscall.SIGTERM)
-			})
+			rawBirthToken, err := recoverableOwnedUnixSessionBirth(pid, birthToken)
+			if err != nil {
+				return "", err
+			}
+			return signalOwnedProcessSession(pid, rawBirthToken, syscall.SIGTERM)
 		},
 		force: func(pid int, birthToken string) (PriorProcessState, error) {
-			return signalPriorProcessIfExact(pid, birthToken, observe, func(pid int) error {
-				return signalPriorProcessGroup(pid, syscall.SIGKILL)
-			})
+			rawBirthToken, err := recoverableOwnedUnixSessionBirth(pid, birthToken)
+			if err != nil {
+				return "", err
+			}
+			return forceOwnedProcessSession(pid, rawBirthToken)
 		},
 	}
-}
-
-// signalPriorProcessGroup targets the dedicated process group created for every Harbor-owned development process.
-func signalPriorProcessGroup(pid int, signal syscall.Signal) error {
-	err := syscall.Kill(-pid, signal)
-	if errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	return err
 }

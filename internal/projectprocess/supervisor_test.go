@@ -88,6 +88,8 @@ func init() {
 		runTreeParentHelper()
 	case "orphan":
 		runOrphanParentHelper()
+	case "orphan-separate-group":
+		runSeparateGroupOrphanParentHelper()
 	case "wait", "ignore":
 		waitForTerminationSignal()
 	default:
@@ -115,6 +117,20 @@ func runOrphanParentHelper() {
 	}
 	if !waitForPublishedHelperPID(os.Getenv(helperPIDFileEnvironment)) {
 		os.Exit(100)
+	}
+	os.Exit(23)
+}
+
+// runSeparateGroupOrphanParentHelper models GoForj watchers that move descendants outside their parent's process group.
+func runSeparateGroupOrphanParentHelper() {
+	command := exec.Command(os.Args[0], "dev")
+	command.Env = replaceEnvironment(os.Environ(), helperModeEnvironment, "grandchild-ignore")
+	separateHelperProcessGroup(command)
+	if err := command.Start(); err != nil {
+		os.Exit(102)
+	}
+	if !waitForPublishedHelperPID(os.Getenv(helperPIDFileEnvironment)) {
+		os.Exit(103)
 	}
 	os.Exit(23)
 }

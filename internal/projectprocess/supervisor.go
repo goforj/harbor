@@ -42,6 +42,8 @@ var (
 	ErrClosed = errors.New("project process supervisor is closed")
 	// ErrInvalidRequest means the launch identity or checkout root is incomplete.
 	ErrInvalidRequest = errors.New("invalid project process request")
+	// ErrCleanupUncertain means an accepted process did not prove its complete ownership scope was retired.
+	ErrCleanupUncertain = errors.New("project process cleanup is uncertain")
 	// ErrProjectRunning means Harbor already owns a process for the requested project.
 	ErrProjectRunning = errors.New("project process is already running")
 	// ErrSessionRunning means Harbor already owns a process for the requested session.
@@ -103,6 +105,7 @@ type Exit struct {
 	SessionID          domain.SessionID
 	ExitCode           int
 	Err                error
+	ScopeSettlementErr error
 	StopRequested      bool
 	DroppedOutputLines uint64
 	ExitedAt           time.Time
@@ -304,33 +307,49 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	go readOutputLines(stderr, outputStreamStderr, relay, &pipeReaders)
 	// The parent copies must close immediately so EOF represents the complete child tree, not Harbor itself.
 	if err := errors.Join(stdoutChild.Close(), stderrChild.Close()); err != nil {
-		terminateStartedCommand(command, platform)
+		cleanupErr := terminateStartedCommand(command, platform)
+		if cleanupErr != nil {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		}
 		pipeReaders.Wait()
 		relay.finish()
 		platform.close()
-		return nil, fmt.Errorf("release parent output pipes: %w", err)
+		return nil, acceptedProcessStartError("release parent output pipes", err, cleanupErr)
 	}
 	birthToken, err := platform.attach(command.Process)
 	if err != nil {
-		terminateStartedCommand(command, platform)
+		cleanupErr := terminateStartedCommand(command, platform)
+		if cleanupErr != nil {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		}
 		pipeReaders.Wait()
 		relay.finish()
 		platform.close()
-		return nil, fmt.Errorf("capture forj process ownership: %w", err)
+		return nil, acceptedProcessStartError("capture forj process ownership", err, cleanupErr)
 	}
 	if err := ctx.Err(); err != nil {
-		terminateStartedCommand(command, platform)
+		cleanupErr := terminateStartedCommand(command, platform)
+		if cleanupErr != nil {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		}
 		pipeReaders.Wait()
 		relay.finish()
 		platform.close()
-		return nil, err
+		return nil, acceptedProcessStartError("cancel accepted forj process", err, cleanupErr)
 	}
 	if err := platform.resume(command.Process); err != nil {
-		terminateStartedCommand(command, platform)
+		cleanupErr := terminateStartedCommand(command, platform)
+		if cleanupErr != nil {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		}
 		pipeReaders.Wait()
 		relay.finish()
 		platform.close()
-		return nil, fmt.Errorf("resume forj process: %w", err)
+		return nil, acceptedProcessStartError("resume forj process", err, cleanupErr)
 	}
 
 	arguments := append([]string(nil), command.Args...)
@@ -370,11 +389,23 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	return handle, nil
 }
 
-// terminateStartedCommand kills both the owned tree and its root because Windows attachment can fail before Job ownership exists.
-func terminateStartedCommand(command *exec.Cmd, platform *platformProcess) {
-	_ = platform.force(command.Process.Pid)
-	_ = command.Process.Kill()
+// terminateStartedCommand keeps the unreaped root identity reserved while retiring every accepted descendant.
+func terminateStartedCommand(command *exec.Cmd, platform *platformProcess) error {
+	forceErr := platform.force(command.Process.Pid)
+	rootErr := command.Process.Kill()
+	if errors.Is(rootErr, os.ErrProcessDone) {
+		rootErr = nil
+	}
 	_ = command.Wait()
+	return errors.Join(forceErr, rootErr)
+}
+
+// acceptedProcessStartError distinguishes a safe post-acceptance failure from unresolved process authority.
+func acceptedProcessStartError(operation string, cause, cleanupErr error) error {
+	if cleanupErr == nil {
+		return fmt.Errorf("%s: %w", operation, cause)
+	}
+	return fmt.Errorf("%w: %s: %w", ErrCleanupUncertain, operation, errors.Join(cause, cleanupErr))
 }
 
 // Stop gracefully stops the exact project and session process before escalating after the configured grace period.
@@ -471,6 +502,7 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 		SessionID:          info.SessionID,
 		ExitCode:           exitCode,
 		Err:                errors.Join(err, cleanupErr),
+		ScopeSettlementErr: cleanupErr,
 		StopRequested:      stopRequested,
 		DroppedOutputLines: process.relay.dropped.Load(),
 		ExitedAt:           time.Now().UTC(),

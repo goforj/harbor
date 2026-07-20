@@ -45,9 +45,10 @@ type PriorProcessSettlement struct {
 
 // priorProcessRecoveryControl isolates platform observation and signaling for deterministic recovery tests.
 type priorProcessRecoveryControl struct {
-	observe  func(int) (string, bool, error)
-	graceful func(int, string) (PriorProcessState, error)
-	force    func(int, string) (PriorProcessState, error)
+	observe      func(int) (string, bool, error)
+	observeScope func(int, string) (PriorProcessState, error)
+	graceful     func(int, string) (PriorProcessState, error)
+	force        func(int, string) (PriorProcessState, error)
 }
 
 // ObservePriorProcess determines whether the exact persisted process birth can still be present.
@@ -66,7 +67,7 @@ func (supervisor *Supervisor) ObservePriorProcess(
 		return PriorProcessObservation{}, err
 	}
 
-	state, err := observePriorProcessState(pid, evidence.BirthToken, observeProcessBirthToken)
+	state, err := observePriorProcessState(pid, hostProcessBirthToken(evidence.BirthToken), observeProcessBirthToken)
 	if err != nil {
 		return PriorProcessObservation{}, fmt.Errorf("observe prior process birth: %w", err)
 	}
@@ -104,8 +105,7 @@ func settlePriorProcess(
 	if err := validatePriorProcessRecoveryControl(control); err != nil {
 		return PriorProcessSettlement{}, err
 	}
-
-	state, err := observePriorProcessState(pid, evidence.BirthToken, control.observe)
+	state, err := observePriorProcessRecoveryState(pid, evidence.BirthToken, control)
 	if err != nil {
 		return PriorProcessSettlement{}, fmt.Errorf("observe prior process before settlement: %w", err)
 	}
@@ -118,7 +118,7 @@ func settlePriorProcess(
 		if settlement, settled := priorProcessAlreadySettled(state); settled {
 			return settlement, nil
 		}
-		state, err = waitForPriorProcessBirthChange(ctx, pid, evidence.BirthToken, gracePeriod, control.observe)
+		state, err = waitForPriorProcessSettlement(ctx, pid, evidence.BirthToken, gracePeriod, control)
 		if err == nil && state != PriorProcessPresent {
 			return PriorProcessSettlement{Outcome: PriorProcessSettlementTerminated}, nil
 		}
@@ -153,7 +153,7 @@ func settlePriorProcess(
 		return PriorProcessSettlement{}, err
 	}
 
-	state, err = waitForPriorProcessBirthChange(ctx, pid, evidence.BirthToken, forceSettlementPeriod, control.observe)
+	state, err = waitForPriorProcessSettlement(ctx, pid, evidence.BirthToken, forceSettlementPeriod, control)
 	if err != nil {
 		return PriorProcessSettlement{}, fmt.Errorf("observe prior process after forceful settlement: %w", err)
 	}
@@ -204,6 +204,18 @@ func observePriorProcessState(
 		return PriorProcessReplaced, nil
 	}
 	return PriorProcessPresent, nil
+}
+
+// observePriorProcessRecoveryState extends exact-root observation when the platform owns a durable descendant scope.
+func observePriorProcessRecoveryState(
+	pid int,
+	expectedBirth string,
+	control priorProcessRecoveryControl,
+) (PriorProcessState, error) {
+	if control.observeScope != nil {
+		return control.observeScope(pid, expectedBirth)
+	}
+	return observePriorProcessState(pid, expectedBirth, control.observe)
 }
 
 // priorProcessAlreadySettled maps nonsignal observations onto successful durable recovery outcomes.
@@ -261,6 +273,40 @@ func waitForPriorProcessBirthChange(
 			return PriorProcessPresent, ctx.Err()
 		case <-timer.C:
 			return observePriorProcessState(pid, expectedBirth, observe)
+		case <-ticker.C:
+		}
+	}
+}
+
+// waitForPriorProcessSettlement observes the complete platform ownership scope when one is available.
+func waitForPriorProcessSettlement(
+	ctx context.Context,
+	pid int,
+	expectedBirth string,
+	limit time.Duration,
+	control priorProcessRecoveryControl,
+) (PriorProcessState, error) {
+	if control.observeScope == nil {
+		return waitForPriorProcessBirthChange(ctx, pid, expectedBirth, limit, control.observe)
+	}
+	if limit <= 0 {
+		return observePriorProcessRecoveryState(pid, expectedBirth, control)
+	}
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	ticker := time.NewTicker(priorProcessSettlementPollPeriod(limit))
+	defer ticker.Stop()
+
+	for {
+		state, err := observePriorProcessRecoveryState(pid, expectedBirth, control)
+		if err != nil || state != PriorProcessPresent {
+			return state, err
+		}
+		select {
+		case <-ctx.Done():
+			return PriorProcessPresent, ctx.Err()
+		case <-timer.C:
+			return observePriorProcessRecoveryState(pid, expectedBirth, control)
 		case <-ticker.C:
 		}
 	}
