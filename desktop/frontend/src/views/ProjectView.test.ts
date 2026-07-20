@@ -52,6 +52,29 @@ async function mountRecoveryProject(): Promise<MountedProjectView> {
   return { pinia, router, store, wrapper }
 }
 
+async function mountProject(projectId = 'orders-api'): Promise<MountedProjectView> {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const store = useHarborStore()
+  await store.initialize()
+
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/projects/:projectId', component: ProjectView },
+      { path: '/projects', component: { template: '<div>Projects</div>' } },
+    ],
+  })
+  await router.push(`/projects/${projectId}`)
+  await router.isReady()
+  const wrapper = mount(ProjectView, {
+    attachTo: document.body,
+    global: { plugins: [pinia, router] },
+  })
+  await flushPromises()
+  return { pinia, router, store, wrapper }
+}
+
 function confirmableInspection(): Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }> {
   return structuredClone(harborWireFixture.project_runtime_repair_inspection)
 }
@@ -187,6 +210,45 @@ describe('ProjectView stale runtime recovery', () => {
     expect(bodyButton('Stop this process and reset project').disabled).toBe(true)
     expect(document.body.textContent).toContain('This inspection has expired.')
     expect(confirmRuntime).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+describe('ProjectView project removal approval', () => {
+  it('surfaces a pending approval action and completes removal through the typed bridge', async () => {
+    const { store, router, wrapper } = await mountProject()
+    const approval = structuredClone(harborWireFixture.approve_project_removal)
+    const confirmed = mockSnapshot()
+    confirmed.sequence = approval.revision
+    confirmed.projects = confirmed.projects.filter((project) => project.id !== 'orders-api')
+    confirmed.operations = confirmed.operations.filter((operation) => operation.project_id !== 'orders-api')
+    confirmed.recent_resource_ids = confirmed.recent_resource_ids.filter((reference) => reference.project_id !== 'orders-api')
+    const approveProjectRemoval = vi.spyOn(harborBridge, 'approveProjectRemoval').mockImplementationOnce(async (projectId, intentId) => {
+      approval.operation.project_id = projectId
+      approval.operation.intent_id = intentId
+      return approval
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(confirmed)
+    store.$patch({
+      projectRemovalNotices: {
+        'orders-api': {
+          state: 'requires_approval',
+          title: 'Administrator approval required',
+          message: 'Approve the one-time administrator action to continue.',
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Approve the one-time administrator action to continue.')
+    const approve = bodyButton('Approve and remove')
+    expect(approve.disabled).toBe(false)
+    await approve.click()
+    await flushPromises()
+
+    expect(approveProjectRemoval).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-remove-/))
+    expect(router.currentRoute.value.path).toBe('/projects')
+    expect(store.projectById('orders-api')).toBeUndefined()
     wrapper.unmount()
   })
 })

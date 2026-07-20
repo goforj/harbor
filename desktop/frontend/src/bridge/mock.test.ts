@@ -142,7 +142,7 @@ describe('Harbor mock bridge', () => {
     expect(snapshot.sequence).toBe(43)
   })
 
-  it('reports required approval without removing an active project or claiming desktop approval support', async () => {
+  it('reports required approval without removing an active project before explicit approval', async () => {
     const bridge = createMockBridge()
 
     const removal = await bridge.removeProject('orders-api', 'desktop-remove-orders')
@@ -156,6 +156,30 @@ describe('Harbor mock bridge', () => {
       },
     })
     expect(snapshot.projects.some((project) => project.id === 'orders-api')).toBe(true)
+  })
+
+  it('completes one retained project removal after approval and replays the terminal result', async () => {
+    const bridge = createMockBridge()
+
+    const pending = await bridge.removeProject('orders-api', 'desktop-remove-orders')
+    const approved = await bridge.approveProjectRemoval('orders-api', 'desktop-remove-orders')
+    const replayed = await bridge.approveProjectRemoval('orders-api', 'desktop-remove-orders')
+    const snapshot = await bridge.getSnapshot()
+
+    expect(pending.operation.state).toBe('requires_approval')
+    expect(approved).toMatchObject({
+      revision: 44,
+      operation: {
+        id: pending.operation.id,
+        intent_id: 'desktop-remove-orders',
+        project_id: 'orders-api',
+        state: 'succeeded',
+        phase: 'completed',
+      },
+    })
+    expect(replayed).toEqual(approved)
+    expect(snapshot.projects.some((project) => project.id === 'orders-api')).toBe(false)
+    expect(snapshot.operations.some((operation) => operation.project_id === 'orders-api')).toBe(false)
   })
 
   it('starts and stops projects through authoritative mock snapshots with replayable intents', async () => {

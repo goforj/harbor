@@ -65,6 +65,7 @@ export const useHarborStore = defineStore('harbor', () => {
   const networkSetupResult = ref<NetworkSetupOperation | null>(null)
   const networkSetupError = ref<string | null>(null)
   const removingProjectId = ref<string | null>(null)
+  const projectRemovalApprovalProjectId = ref<string | null>(null)
   const projectLifecycleProjectId = ref<string | null>(null)
   const projectLifecycleErrors = ref<Record<string, string>>({})
   const projectLifecycleProblemCodes = ref<Record<string, string>>({})
@@ -123,6 +124,7 @@ export const useHarborStore = defineStore('harbor', () => {
     || operations.value.some((operation) => (operation.kind === 'project.start' || operation.kind === 'project.stop')
       && isActiveOperation(operation)))
   const projectRuntimeRepairBusy = computed(() => projectRuntimeRepairProjectId.value !== null)
+  const projectRemovalApprovalBusy = computed(() => projectRemovalApprovalProjectId.value !== null)
   const networkSetupOnboarding = computed(() => snapshot.value !== null
     && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true)
   const attentionCount = computed(() => projects.value.filter((project) =>
@@ -1068,6 +1070,81 @@ export const useHarborStore = defineStore('harbor', () => {
     }
   }
 
+  async function approveProjectRemoval(projectId: string): Promise<ProjectUnregistration | null> {
+    if (removingProjectId.value || projectRemovalApprovalProjectId.value) {
+      setProjectRemovalNotice(projectId, {
+        state: 'busy',
+        title: 'Another project removal is in progress',
+        message: 'Wait for the current removal request to finish, then try again.',
+      })
+      return null
+    }
+
+    const pending = projectRemovalNotice(projectId)
+    if (pending?.state !== 'requires_approval') {
+      setProjectRemovalNotice(projectId, {
+        state: 'incomplete',
+        title: 'Fresh removal approval required',
+        message: 'Harbor no longer has a pending administrator approval for this project. Start the removal again.',
+      })
+      await refresh()
+      return null
+    }
+
+    const tracked = projectRemovalIntent(projectId)
+    projectRemovalApprovalProjectId.value = projectId
+    setProjectRemovalNotice(projectId, null)
+
+    try {
+      const result = await harborBridge.approveProjectRemoval(projectId, tracked.id)
+      validateProjectRemovalResult(projectId, tracked.id, result)
+      const operation = result.operation
+      switch (operation.state) {
+        case 'succeeded':
+          projectRemovalIntents.delete(projectId)
+          setProjectRemovalNotice(projectId, null)
+          stageTerminalProjectRemoval(result)
+          break
+        case 'requires_approval':
+        case 'queued':
+        case 'running':
+          projectRemovalIntents.set(projectId, {
+            id: operation.intent_id,
+            revision: result.revision,
+            state: 'active',
+          })
+          setProjectRemovalNotice(projectId, activeProjectRemovalNotice(operation))
+          break
+        case 'failed':
+        case 'cancelled':
+          projectRemovalIntents.delete(projectId)
+          stageTerminalProjectRemoval(result)
+          setProjectRemovalNotice(projectId, {
+            state: operation.state,
+            title: operation.state === 'failed' ? 'Project removal approval failed' : 'Project removal approval cancelled',
+            message: operation.problem?.message ?? 'Harbor did not complete the approved project removal.',
+          })
+          break
+      }
+      return result
+    }
+    catch (cause) {
+      projectRemovalIntents.set(projectId, { ...tracked, state: 'active' })
+      setProjectRemovalNotice(projectId, {
+        state: 'requires_approval',
+        title: 'Administrator approval still required',
+        message: cause instanceof Error
+          ? cause.message
+          : 'Harbor could not complete administrator approval. You can safely try again.',
+      })
+      return null
+    }
+    finally {
+      projectRemovalApprovalProjectId.value = null
+      await refresh()
+    }
+  }
+
   async function openResource(projectId: string, resourceId: string) {
     actionError.value = null
     try {
@@ -1121,6 +1198,8 @@ export const useHarborStore = defineStore('harbor', () => {
     networkSetupResult,
     networkSetupError,
     removingProjectId,
+    projectRemovalApprovalProjectId,
+    projectRemovalApprovalBusy,
     projectLifecycleProjectId,
     projectLifecycleBusy,
     projectLifecycleErrors,
@@ -1152,6 +1231,7 @@ export const useHarborStore = defineStore('harbor', () => {
     setupNetwork,
     projectRemovalNotice,
     removeProject,
+    approveProjectRemoval,
     activeProjectLifecycle,
     startProject,
     stopProject,
@@ -1277,12 +1357,22 @@ function projectRuntimeRepairDiagnostic(reason: ProjectRuntimeRepairNotActionabl
   }
 }
 
+function validateProjectRemovalResult(projectId: string, intentId: string, result: ProjectUnregistration) {
+  if (result.operation.kind !== 'project.unregister'
+    || result.operation.project_id !== projectId
+    || result.operation.intent_id !== intentId
+    || !Number.isSafeInteger(result.revision)
+    || result.revision <= 0) {
+    throw new Error('Harbor returned project removal progress for another project or intent.')
+  }
+}
+
 function activeProjectRemovalNotice(operation: Operation): ProjectRemovalNotice {
   if (operation.state === 'requires_approval') {
     return {
       state: operation.state,
       title: 'Administrator approval required',
-      message: 'Harbor paused removal until it can release this project’s local networking. Approval is not available from the desktop app yet.',
+      message: 'Harbor paused removal until it can release this project’s local networking. Approve the one-time administrator action to continue.',
     }
   }
   return {

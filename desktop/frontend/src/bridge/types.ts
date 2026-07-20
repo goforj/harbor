@@ -53,6 +53,7 @@ export interface HarborWireFixture {
 
 export interface HarborBridge {
   addProject(): Promise<AddProjectResult>
+  approveProjectRemoval(projectId: string, intentId: string): Promise<ProjectUnregistration>
   confirmProjectRuntimeRepair(projectId: string, inspectionId: string, candidateFingerprint: string): Promise<ProjectRuntimeRepairConfirmation>
   getStatus(): Promise<DaemonStatus>
   getSnapshot(): Promise<HarborSnapshot>

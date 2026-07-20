@@ -36,6 +36,7 @@ declare global {
 export function hasWailsBridge(): boolean {
   const app = window.go?.main?.App
   return typeof app?.AddProject === 'function'
+    && typeof app?.ApproveProjectRemoval === 'function'
     && typeof app.ConfirmProjectRuntimeRepair === 'function'
     && typeof app.InspectProjectRuntimeRepair === 'function'
     && typeof app.Status === 'function'
@@ -59,6 +60,7 @@ export function createWailsBridge(): HarborBridge {
   const app = window.go?.main?.App
   const runtime = window.runtime
   const addProject = app?.AddProject
+  const approveProjectRemoval = app?.ApproveProjectRemoval
   const confirmProjectRuntimeRepair = app?.ConfirmProjectRuntimeRepair
   const inspectProjectRuntimeRepair = app?.InspectProjectRuntimeRepair
   const status = app?.Status
@@ -75,6 +77,7 @@ export function createWailsBridge(): HarborBridge {
   const startProject = app?.StartProject
   const stopProject = app?.StopProject
   if (typeof addProject !== 'function'
+    || typeof approveProjectRemoval !== 'function'
     || typeof confirmProjectRuntimeRepair !== 'function'
     || typeof inspectProjectRuntimeRepair !== 'function'
     || typeof status !== 'function'
@@ -93,6 +96,7 @@ export function createWailsBridge(): HarborBridge {
 
   return {
     addProject: () => addProject(),
+    approveProjectRemoval: (projectId, intentId) => approveProjectRemoval(projectId, intentId),
     confirmProjectRuntimeRepair: (projectId, inspectionId, candidateFingerprint) => confirmProjectRuntimeRepair(projectId, inspectionId, candidateFingerprint),
     getStatus: () => status(),
     getSnapshot: () => snapshot(),

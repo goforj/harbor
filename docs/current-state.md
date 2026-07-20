@@ -231,6 +231,7 @@ The desktop currently provides:
 - the Harbor rail/context/detail layout derived from the GoForj Vue starter and adapted toward Lerd's density;
 - daemon connection and snapshot updates through typed Wails bindings;
 - project registration and removal;
+- the typed project-removal approval handoff, including a retryable administrator-approval action for an active removal;
 - network setup approval and helper installation/repair prompts;
 - project Start/Stop actions and current failure feedback;
 - an explicit retained-runtime inspection and destructive confirmation dialog for quarantined macOS projects, with one-use plans discarded on cancellation, reconnect, navigation, expiry, or any confirmation attempt;
@@ -242,7 +243,7 @@ The desktop currently provides:
 - close-to-hide, single-instance relaunch focus, and native `Open Harbor`/`Quit Harbor UI` menu actions;
 - frontend unit tests, browser fixture tests, Playwright smoke, and native module builds.
 
-Those desktop lifecycle behaviors have unit coverage, but not release-grade native smoke. Tray integration, notifications, project-removal approval handoff, native accessibility proof, signed installers, and release-grade platform smoke remain incomplete.
+Those desktop lifecycle behaviors have unit coverage, but not release-grade native smoke. Tray integration, notifications, native approval/accessibility proof, signed installers, and release-grade platform smoke remain incomplete.
 
 ## Delivery status
 

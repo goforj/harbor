@@ -1025,6 +1025,66 @@ describe('Harbor store', () => {
     expect(store.removingProjectId).toBeNull()
   })
 
+  it('completes a pending project removal through the approval bridge and consumes the intent', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const pending = structuredClone(harborWireFixture.remove_project)
+    const approved = structuredClone(harborWireFixture.approve_project_removal)
+    const confirmed = mockSnapshot()
+    confirmed.sequence = approved.revision
+    confirmed.projects = confirmed.projects.filter((project) => project.id !== 'orders-api')
+    confirmed.operations = confirmed.operations.filter((operation) => operation.project_id !== 'orders-api')
+    confirmed.recent_resource_ids = confirmed.recent_resource_ids.filter((reference) => reference.project_id !== 'orders-api')
+    vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      pending.operation.project_id = projectId
+      pending.operation.intent_id = intentId
+      return pending
+    })
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(mockSnapshot()).mockResolvedValueOnce(confirmed)
+    const approveProjectRemoval = vi.spyOn(harborBridge, 'approveProjectRemoval').mockImplementationOnce(async (projectId, intentId) => {
+      approved.operation.project_id = projectId
+      approved.operation.intent_id = intentId
+      return approved
+    })
+
+    await store.removeProject('orders-api')
+    expect(store.projectRemovalNotice('orders-api')?.state).toBe('requires_approval')
+    await expect(store.approveProjectRemoval('orders-api')).resolves.toMatchObject({
+      operation: { state: 'succeeded', project_id: 'orders-api' },
+    })
+
+    expect(approveProjectRemoval).toHaveBeenCalledWith('orders-api', pending.operation.intent_id)
+    expect(store.projectById('orders-api')).toBeUndefined()
+    expect(store.projectRemovalNotice('orders-api')).toBeUndefined()
+    expect(store.projectRemovalApprovalBusy).toBe(false)
+    expect(getSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the approval intent retryable when the native approval bridge fails', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const pending = structuredClone(harborWireFixture.remove_project)
+    vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {
+      pending.operation.project_id = projectId
+      pending.operation.intent_id = intentId
+      return pending
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(mockSnapshot())
+    const approveProjectRemoval = vi.spyOn(harborBridge, 'approveProjectRemoval').mockRejectedValueOnce(new Error('administrator approval was declined'))
+
+    await store.removeProject('orders-api')
+    const result = await store.approveProjectRemoval('orders-api')
+
+    expect(result).toBeNull()
+    expect(approveProjectRemoval).toHaveBeenCalledWith('orders-api', pending.operation.intent_id)
+    expect(store.projectRemovalNotice('orders-api')).toEqual({
+      state: 'requires_approval',
+      title: 'Administrator approval still required',
+      message: 'administrator approval was declined',
+    })
+    expect(store.projectRemovalApprovalBusy).toBe(false)
+  })
+
   it('uses a fresh intent after a post-failure snapshot confirms no active removal', async () => {
     const store = useHarborStore()
     const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
@@ -1050,7 +1110,7 @@ describe('Harbor store', () => {
     expect(store.projectRemovalNotice('orders-api')).toEqual({
       state: 'requires_approval',
       title: 'Administrator approval required',
-      message: 'Harbor paused removal until it can release this project’s local networking. Approval is not available from the desktop app yet.',
+      message: 'Harbor paused removal until it can release this project’s local networking. Approve the one-time administrator action to continue.',
     })
   })
 
@@ -1134,7 +1194,7 @@ describe('Harbor store', () => {
     expect(store.projectRemovalNotice('orders-api')).toEqual({
       state: 'requires_approval',
       title: 'Administrator approval required',
-      message: 'Harbor paused removal until it can release this project’s local networking. Approval is not available from the desktop app yet.',
+      message: 'Harbor paused removal until it can release this project’s local networking. Approve the one-time administrator action to continue.',
     })
     const result: ProjectUnregistration = structuredClone(harborWireFixture.remove_project)
     const removeProject = vi.spyOn(harborBridge, 'removeProject').mockImplementationOnce(async (projectId, intentId) => {

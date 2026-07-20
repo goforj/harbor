@@ -160,6 +160,7 @@ const lifecycleDisabled = computed(() => store.snapshotStale
   || store.settingUpNetwork
   || store.projectLifecycleBusy
   || store.projectRuntimeRepairBusy
+  || store.projectRemovalApprovalBusy
   || starting.value
   || stopping.value
   || recoveryRequired.value
@@ -169,25 +170,36 @@ const networkSetupDisabled = computed(() => !needsNetworkSetup.value
   || store.settingUpNetwork
   || store.projectLifecycleBusy
   || store.projectRuntimeRepairBusy
+  || store.projectRemovalApprovalBusy
   || store.snapshotStale
   || store.connectionState !== 'connected')
 const removing = computed(() => store.removingProjectId === projectId.value)
+const approvingRemoval = computed(() => store.projectRemovalApprovalProjectId === projectId.value)
 const removalPending = computed(() => removalNotice.value?.state === 'queued'
   || removalNotice.value?.state === 'running'
   || removalNotice.value?.state === 'requires_approval')
 const removalDisabled = computed(() => store.removingProjectId !== null
   || store.projectLifecycleProjectId !== null
   || store.projectRuntimeRepairBusy
+  || store.projectRemovalApprovalBusy
   || activeLifecycle.value != null
   || recoveryRequired.value
   || removalPending.value)
 const removalLabel = computed(() => {
   if (removing.value) return 'Removing…'
-  if (store.removingProjectId) return 'Another removal is in progress'
+  if (approvingRemoval.value) return 'Approving…'
+  if (store.removingProjectId || store.projectRemovalApprovalProjectId) return 'Another removal is in progress'
   if (removalNotice.value?.state === 'requires_approval') return 'Awaiting approval'
   if (removalPending.value) return 'Removal in progress'
   return 'Remove project'
 })
+const removalApprovalDisabled = computed(() => removalNotice.value?.state !== 'requires_approval'
+  || store.connectionState !== 'connected'
+  || store.snapshotStale
+  || store.projectRemovalApprovalBusy
+  || store.removingProjectId !== null
+  || store.projectLifecycleBusy
+  || store.projectRuntimeRepairBusy)
 const runtimeRepairInspecting = computed(() => store.projectRuntimeRepairProjectId === projectId.value
   && store.projectRuntimeRepairAction === 'inspect')
 const runtimeRepairInspectionDisabled = computed(() => !recoveryRequired.value
@@ -289,6 +301,14 @@ async function openResource(resourceId: string) {
 async function removeProject() {
   if (!project.value) return
   const result = await store.removeProject(project.value.id)
+  if (result?.operation.state === 'succeeded') {
+    await router.replace('/projects')
+  }
+}
+
+async function approveProjectRemoval() {
+  if (removalApprovalDisabled.value) return
+  const result = await store.approveProjectRemoval(projectId.value)
   if (result?.operation.state === 'succeeded') {
     await router.replace('/projects')
   }
@@ -500,7 +520,20 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         >
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ removalNotice.title }}</AlertTitle>
-          <AlertDescription>{{ removalNotice.message }}</AlertDescription>
+          <AlertDescription class="space-y-3">
+            <p>{{ removalNotice.message }}</p>
+            <Button
+              v-if="removalNotice.state === 'requires_approval'"
+              variant="outline"
+              size="sm"
+              :disabled="removalApprovalDisabled"
+              @click="approveProjectRemoval"
+            >
+              <LoaderCircle v-if="approvingRemoval" class="size-3.5 animate-spin" aria-hidden="true" />
+              <Check v-else class="size-3.5" aria-hidden="true" />
+              {{ approvingRemoval ? 'Approving…' : 'Approve and remove' }}
+            </Button>
+          </AlertDescription>
         </Alert>
 
         <TabsContent value="overview" class="m-0 space-y-5">

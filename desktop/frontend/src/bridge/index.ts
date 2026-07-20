@@ -14,6 +14,7 @@ function createUnavailableBridge(): HarborBridge {
 
   return {
     addProject: unavailable,
+    approveProjectRemoval: unavailable,
     confirmProjectRuntimeRepair: unavailable,
     getStatus: unavailable,
     getSnapshot: unavailable,

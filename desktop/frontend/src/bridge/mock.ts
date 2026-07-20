@@ -269,6 +269,43 @@ export function createMockBridge(): HarborBridge {
       removals.set(intentId, structuredClone(result))
       return result
     },
+    async approveProjectRemoval(projectId, intentId) {
+      const pending = removals.get(intentId)
+      if (!pending) {
+        throw new Error('The project removal approval is no longer available.')
+      }
+      if (pending.operation.project_id !== projectId) {
+        throw new Error('The removal approval intent already belongs to another project.')
+      }
+      if (pending.operation.state !== 'requires_approval') {
+        return structuredClone(pending)
+      }
+
+      const projectIndex = snapshot.projects.findIndex((project) => project.id === projectId)
+      if (projectIndex < 0) {
+        throw new Error(`Unknown project: ${projectId}`)
+      }
+
+      const revision = snapshot.sequence + 1
+      const completedAt = new Date().toISOString()
+      const operation: Operation = structuredClone(fixture.approve_project_removal.operation)
+      operation.id = pending.operation.id
+      operation.intent_id = intentId
+      operation.project_id = projectId
+      operation.requested_at = pending.operation.requested_at
+      operation.started_at = pending.operation.started_at ?? completedAt
+      operation.finished_at = completedAt
+      operation.state = 'succeeded'
+      operation.phase = 'completed'
+      snapshot.projects.splice(projectIndex, 1)
+      snapshot.operations = snapshot.operations.filter((entry) => entry.project_id !== projectId)
+      snapshot.recent_resource_ids = snapshot.recent_resource_ids.filter((reference) => reference.project_id !== projectId)
+      snapshot.sequence = revision
+      status.sequence = revision
+      const result = { operation, revision }
+      removals.set(intentId, structuredClone(result))
+      return result
+    },
     async setupNetwork() {
       if (networkSetup) {
         return structuredClone(networkSetup)

@@ -5,6 +5,7 @@ import { createWailsBridge } from './wails'
 
 function installAppBindings() {
   const AddProject = vi.fn().mockResolvedValue({ canceled: true })
+  const ApproveProjectRemoval = vi.fn().mockResolvedValue(harborWireFixture.approve_project_removal)
   const ConfirmProjectRuntimeRepair = vi.fn().mockResolvedValue(harborWireFixture.project_runtime_repair_confirmation)
   const InspectProjectRuntimeRepair = vi.fn().mockResolvedValue(harborWireFixture.project_runtime_repair_inspection)
   const Status = vi.fn().mockResolvedValue({ state: 'ready' })
@@ -29,8 +30,8 @@ function installAppBindings() {
   })
   const StartProject = vi.fn().mockResolvedValue(harborWireFixture.start_project)
   const StopProject = vi.fn().mockResolvedValue(harborWireFixture.stop_project)
-  window.go = { main: { App: { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
-  return { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
+  window.go = { main: { App: { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
+  return { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
 }
 
 function installEventRuntime() {
@@ -90,7 +91,7 @@ describe('Harbor bridge selection', () => {
     await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
-  it.each(['ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'ResourceIconURL', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
+  it.each(['ApproveProjectRemoval', 'ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'ResourceIconURL', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
     installAppBindings()
     delete window.go?.main?.App?.[method]
     installEventRuntime()
@@ -145,7 +146,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
+    const { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -153,6 +154,7 @@ describe('Harbor bridge selection', () => {
       expect(selection.mode).toBe('native')
       await selection.bridge.getStatus()
       await selection.bridge.getSnapshot()
+      await selection.bridge.approveProjectRemoval('orders-api', 'desktop-remove-orders')
       await selection.bridge.getProjectActivity('orders-api', 'session-orders-api', 4)
       await selection.bridge.inspectProjectRuntimeRepair('billing')
       await selection.bridge.confirmProjectRuntimeRepair('billing', 'inspection-1', 'fingerprint-1')
@@ -167,6 +169,7 @@ describe('Harbor bridge selection', () => {
     }
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
+    expect(ApproveProjectRemoval).toHaveBeenCalledWith('orders-api', 'desktop-remove-orders')
     expect(ProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4)
     expect(ResourceIconURL).toHaveBeenCalledWith('orders', 'application')
     expect(InspectProjectRuntimeRepair).toHaveBeenCalledWith('billing')

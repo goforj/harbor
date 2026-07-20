@@ -1,6 +1,6 @@
 # Development Handoff
 
-Status: direct Docker service observation/logs and fenced event-driven topology refresh committed; native host proof remains
+Status: direct Docker service observation/logs, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
 
 Last updated: 2026-07-20
 
@@ -242,7 +242,7 @@ No delivery phase has met its complete exit gate.
 - Project Start/Stop exists in control, desktop, and first-class CLI surfaces; the CLI exposes `harbor start <project>` and `harbor stop <project>` with `--json` and an explicit retry intent.
 - `harbor status <project>` provides the CLI's read-only view of one project from the authoritative daemon snapshot, with compact human output or the exact typed project object through `--json`.
 - The pending resource-projection repair migration retains only the readiness-proven `app-http` resource and removes older optional runtime links that could make the daemon reject its complete snapshot. It is intentionally one-way: the links are derived and are rebuilt on a successful Start; it does not affect project source, volumes, secrets, or operations.
-- Project-removal approval handoff is not implemented in the desktop.
+- The desktop now exposes the typed project-removal approval handoff: an active `requires_approval` removal retains its intent, offers one explicit administrator-approval action, consumes the terminal result, and remains retryable after a declined or unavailable native approval. Native consent execution and release-grade macOS proof remain outstanding.
 
 [Current implementation state](./current-state.md) contains the fuller matrix and commands.
 
@@ -252,7 +252,7 @@ Prove the committed direct Docker service/log vertical and its event-driven serv
 
 The route reconciler now implements the first publication-derived join through Harbor's existing resource/routing policy: an explicit HTTP endpoint reservation, a matching resource, a ready owner, and an exact assigned loopback upstream are all required. The next publication step is to populate those endpoint reservations from the versioned GoForj descriptor/session contract; observing a port is not permission to publish it. Keep the event payload as a wake hint only and preserve the existing exact admission boundary.
 
-The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. Project-removal approval, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery now has focused stage/exchange/quarantine/foreign-state coverage and a root-only lifecycle command required by Linux CI. That workflow evidence is still required before claiming native resolver support.
+The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. The desktop project-removal approval handoff is now wired; native consent execution/proof, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery now has focused stage/exchange/quarantine/foreign-state coverage and a root-only lifecycle command required by Linux CI. That workflow evidence is still required before claiming native resolver support.
 
 ## Next-session start checklist
 
