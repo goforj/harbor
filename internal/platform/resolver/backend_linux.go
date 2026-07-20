@@ -248,8 +248,17 @@ func (store systemdResolvedNativeStore) replace(
 	if verifyErr == nil {
 		var verifiedObservation Observation
 		verifiedObservation, verifyErr = systemdResolvedObservationFromSnapshot(request, verified)
-		if verifyErr == nil && classifyValidated(verifiedObservation).State != StateExact {
-			verifyErr = fmt.Errorf("systemd-resolved publication did not produce one exact owned route")
+		if verifyErr == nil {
+			assessment := classifyValidated(verifiedObservation)
+			if assessment.State != StateExact {
+				verifyErr = fmt.Errorf(
+					"systemd-resolved publication did not produce one exact owned route: state=%q owned=%q foreign=%d rules=%#v",
+					assessment.State,
+					assessment.Owned,
+					assessment.ForeignCount,
+					verifiedObservation.Rules,
+				)
+			}
 		}
 	}
 	if verifyErr != nil {
