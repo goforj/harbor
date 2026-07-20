@@ -185,7 +185,7 @@ func TestStartRejectsIncompatibleExecutableBeforeProcessCreation(t *testing.T) {
 	if handle != nil || !errors.Is(err, errIncompatibleGoForj) {
 		t.Fatalf("Start() = %#v, %v, want nil incompatible result", handle, err)
 	}
-	if verifiedPath == "" || !strings.Contains(err.Error(), verifiedPath) {
+	if verifiedPath == "" || !strings.Contains(err.Error(), boundedVisibleASCII(verifiedPath, maximumErrorPathBytes)) {
 		t.Fatalf("verified path/error = %q/%q", verifiedPath, err)
 	}
 	if output.String() != "" || len(supervisor.projects) != 0 || len(supervisor.sessions) != 0 {

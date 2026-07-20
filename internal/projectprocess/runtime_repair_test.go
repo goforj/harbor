@@ -61,11 +61,13 @@ func runtimeRepairTestObservation(t *testing.T) runtimeRepairNativeObservation {
 	if err != nil {
 		t.Fatalf("EvalSymlinks() error = %v", err)
 	}
-	rootDigest, rootCount, rootExact, err := runtimeRepairArgumentEvidence([]string{"/usr/local/bin/forj", "dev"})
+	rootExecutable := filepath.Join(checkout, "forj")
+	childExecutable := filepath.Join(checkout, "node")
+	rootDigest, rootCount, rootExact, err := runtimeRepairArgumentEvidence([]string{rootExecutable, "dev"})
 	if err != nil {
 		t.Fatalf("runtimeRepairArgumentEvidence(root) error = %v", err)
 	}
-	childDigest, childCount, childExact, err := runtimeRepairArgumentEvidence([]string{"/usr/bin/node", "server.js"})
+	childDigest, childCount, childExact, err := runtimeRepairArgumentEvidence([]string{childExecutable, "server.js"})
 	if err != nil {
 		t.Fatalf("runtimeRepairArgumentEvidence(child) error = %v", err)
 	}
@@ -77,7 +79,7 @@ func runtimeRepairTestObservation(t *testing.T) runtimeRepairNativeObservation {
 		SessionID:          100,
 		EffectiveUID:       501,
 		RealUID:            501,
-		ExecutableIdentity: "/opt/goforj/bin/forj",
+		ExecutableIdentity: rootExecutable,
 		ArgumentDigest:     rootDigest,
 		ArgumentCount:      rootCount,
 		CommandExact:       rootExact,
@@ -91,7 +93,7 @@ func runtimeRepairTestObservation(t *testing.T) runtimeRepairNativeObservation {
 		SessionID:          100,
 		EffectiveUID:       501,
 		RealUID:            501,
-		ExecutableIdentity: "/usr/bin/node",
+		ExecutableIdentity: childExecutable,
 		ArgumentDigest:     childDigest,
 		ArgumentCount:      childCount,
 		CommandExact:       childExact,
@@ -264,7 +266,7 @@ func TestRuntimeRepairObservationFingerprintCoversAuthorityFacts(t *testing.T) {
 			value.Members[0].BirthToken = value.Root.BirthToken
 		}},
 		{name: "root executable", mutate: func(value *runtimeRepairNativeObservation) {
-			value.Root.ExecutableIdentity = "/different/path/forj"
+			value.Root.ExecutableIdentity = filepath.Join(value.Target.CheckoutRoot, "alternate", "forj")
 			value.Members[0].ExecutableIdentity = value.Root.ExecutableIdentity
 		}},
 		{name: "root argv", mutate: func(value *runtimeRepairNativeObservation) {
@@ -294,7 +296,7 @@ func TestRuntimeRepairObservationFingerprintCoversAuthorityFacts(t *testing.T) {
 		}},
 		{name: "member executable argv and group", mutate: func(value *runtimeRepairNativeObservation) {
 			value.Members[1].ProcessGroupID = 102
-			value.Members[1].ExecutableIdentity = "/opt/runtime/node"
+			value.Members[1].ExecutableIdentity = filepath.Join(value.Target.CheckoutRoot, "runtime-node")
 			value.Members[1].ArgumentDigest = alternateChildDigest
 			value.Members[1].ArgumentCount = alternateChildCount
 			value.Members[1].CommandExact = alternateChildExact

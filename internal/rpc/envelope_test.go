@@ -63,6 +63,7 @@ func TestEnvelopeGoldenFixtures(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
+		golden = []byte(strings.ReplaceAll(string(golden), "\r\n", "\n"))
 		if string(encoded) != string(golden) {
 			t.Fatalf("%s mismatch\n got: %s\nwant: %s", name, encoded, golden)
 		}

@@ -21,7 +21,7 @@ import (
 
 // TestValidateLayoutRequiresTheFixedShape rejects every path dimension that could redirect elevated I/O.
 func TestValidateLayoutRequiresTheFixedShape(t *testing.T) {
-	valid := testPaths(filepath.Join(string(filepath.Separator), "tmp", "harbor-redeemer-layout"))
+	valid := testPaths(t.TempDir())
 	if err := validateLayout(valid); err != nil {
 		t.Fatalf("validateLayout(valid) error = %v", err)
 	}
