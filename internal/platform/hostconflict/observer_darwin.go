@@ -6,9 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
-const darwinObservationRetries = 3
+const (
+	darwinObservationRetries    = 7
+	darwinObservationRetryDelay = 10 * time.Millisecond
+)
 
 var (
 	// errDarwinPCBSnapshotChanged identifies a kernel generation race that may be retried from a fresh table.
@@ -52,6 +56,11 @@ func observeStableDarwin(ctx context.Context, request Request, observe darwinObs
 			if errors.Is(err, errDarwinPCBSnapshotChanged) || errors.Is(err, errDarwinRouteSnapshotChanged) {
 				transientRaces++
 				previousFingerprint = ""
+				if attempt < darwinObservationRetries {
+					if err := waitDarwinObservationRetry(ctx); err != nil {
+						return Observation{}, fmt.Errorf("observe Darwin host conflicts: %w", err)
+					}
+				}
 				continue
 			}
 			return Observation{}, fmt.Errorf("observe Darwin host conflicts: %w", err)
@@ -69,6 +78,18 @@ func observeStableDarwin(ctx context.Context, request Request, observe darwinObs
 		return Observation{}, fmt.Errorf("observe Darwin host conflicts: native tables could not complete after %d transient races", transientRaces)
 	}
 	return Observation{}, fmt.Errorf("observe Darwin host conflicts: kernel facts did not stabilize after %d passes", darwinObservationRetries+1)
+}
+
+// waitDarwinObservationRetry lets a changing kernel generation settle without extending cancellation semantics.
+func waitDarwinObservationRetry(ctx context.Context) error {
+	timer := time.NewTimer(darwinObservationRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // observeDarwinPass gathers interfaces before route and socket facts so every native identity can be cross-checked.

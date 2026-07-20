@@ -20,6 +20,8 @@ The native desktop bridge fixture now includes the required `ResourceIconURL` bi
 
 The framework-resource observer test harness now resolves checkout aliases before its exact process-context comparison. This unblocks its intended macOS process-context coverage when temporary directories are spelled through `/var` by the parent and `/private/var` by the child, without admitting another checkout.
 
+The Darwin host-conflict observer has a bounded, cancellation-aware 10 ms pause between recognized native table-generation races, with at most eight total passes. It continues to require consecutive complete facts and returns an error rather than an admission result on unresolved churn.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually

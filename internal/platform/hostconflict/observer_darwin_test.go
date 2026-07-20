@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
@@ -84,6 +85,26 @@ func TestObserveStableDarwinPreservesErrorsAndCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("observeStableDarwin() error = %v, want canceled", err)
+	}
+}
+
+// TestWaitDarwinObservationRetryHonorsCancellation verifies a transient-race pause cannot keep a canceled caller alive.
+func TestWaitDarwinObservationRetryHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitDarwinObservationRetry(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitDarwinObservationRetry() error = %v, want canceled", err)
+	}
+}
+
+// TestWaitDarwinObservationRetryIsBounded verifies transient-race settlement does not become an unbounded retry policy.
+func TestWaitDarwinObservationRetryIsBounded(t *testing.T) {
+	started := time.Now()
+	if err := waitDarwinObservationRetry(context.Background()); err != nil {
+		t.Fatalf("waitDarwinObservationRetry() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < darwinObservationRetryDelay || elapsed > time.Second {
+		t.Fatalf("waitDarwinObservationRetry() elapsed = %s, want bounded delay", elapsed)
 	}
 }
 
