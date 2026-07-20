@@ -213,7 +213,7 @@ The Linux `systemd-resolved` integration is committed and passed its focused uni
 Current constraints:
 
 1. Recovery has direct portable coverage for its stage decision table and overflow bound, plus opt-in privileged coverage for staged, exchanged, and quarantined crashes and foreign-quarantine preservation. A successful Linux native CI run is still required.
-2. The CI reset assumes its early-sorting drop-in produces an empty global resolver even though later drop-ins or imported foreign DNS can repopulate runtime state; the workflow must verify the prerequisite explicitly.
+2. The CI reset now uses a late-sorting drop-in to override earlier global resolver settings. The native test's initial observation remains the prerequisite check, and imported foreign DNS must still fail closed with a diagnostic.
 3. The implementation is intentionally fail-closed: an unknown transaction name, a foreign or unsafe artifact, an excess transaction set, or an ambiguous stage/fixed pairing blocks observation and mutation rather than cleaning up host state.
 
 The implementation is also much larger than expected for one fixed `systemd-resolved` drop-in. Simplify where possible while retaining descriptor-bound, no-follow, exact-correlation, rollback, and command-allowlist protections.

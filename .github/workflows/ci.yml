@@ -60,6 +60,7 @@ jobs:
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes systemd-resolved
           fi
           sudo install -d -o root -g root -m 0755 /etc/systemd/resolved.conf.d
+          # Drop-ins are applied lexically; keep the CI-only empty baseline after any image-provided resolver settings.
           printf '[Resolve]\nDNS=\nDomains=\nFallbackDNS=\n' | sudo tee /etc/systemd/resolved.conf.d/99-harbor-ci-reset.conf >/dev/null
           cleanup() {
             sudo rm -f /etc/systemd/resolved.conf.d/99-harbor-ci-reset.conf
