@@ -53,6 +53,7 @@ const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
 const selectedServiceId = ref('')
+const selectedServiceSurface = ref('logs')
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
@@ -94,6 +95,9 @@ const currentProjectOperation = computed(() => {
   return undefined
 })
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
+const selectedServiceResources = computed(() => project.value?.resources.filter((resource) =>
+  resource.owner.kind === 'service' && resource.owner.service_id === selectedServiceId.value,
+) ?? [])
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
@@ -197,6 +201,10 @@ watch(() => project.value?.services, (services) => {
     selectedServiceId.value = services?.[0]?.id ?? ''
   }
 }, { immediate: true })
+
+watch(selectedServiceId, () => {
+  selectedServiceSurface.value = 'logs'
+})
 
 watch(() => runtimeRepairInspection.value?.confirmable.expires_at, (expiresAt) => {
   if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
@@ -541,18 +549,46 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               v-for="service in project.services"
               :key="service.id"
               :value="service.id"
-              class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7"
+              class="m-0 flex min-h-0 flex-1 flex-col"
             >
-              <ServiceLogsPanel
-                v-if="service.owner === 'compose'"
-                :project-id="project.id"
-                :service-id="service.id"
-                :service-name="service.name"
-                fill
-              />
-              <Empty v-else class="min-h-0 flex-1 rounded-lg border">
-                <EmptyHeader><EmptyTitle>External service</EmptyTitle><EmptyDescription>Logs for this service are managed outside Harbor.</EmptyDescription></EmptyHeader>
-              </Empty>
+              <Tabs v-model="selectedServiceSurface" class="flex min-h-0 flex-1 flex-col gap-5">
+                <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
+                  <TabsTrigger value="logs" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Logs</TabsTrigger>
+                  <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
+                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServiceResources.length }}</span></TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="logs" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">
+                  <ServiceLogsPanel
+                    v-if="service.owner === 'compose'"
+                    :project-id="project.id"
+                    :service-id="service.id"
+                    :service-name="service.name"
+                    fill
+                  />
+                  <Empty v-else class="min-h-0 flex-1 rounded-lg border">
+                    <EmptyHeader><EmptyTitle>External service</EmptyTitle><EmptyDescription>Logs for this service are managed outside Harbor.</EmptyDescription></EmptyHeader>
+                  </Empty>
+                </TabsContent>
+
+                <TabsContent value="environment" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">
+                  <Empty class="min-h-0 flex-1 rounded-lg border">
+                    <EmptyHeader><EmptyTitle>Environment is not reported</EmptyTitle><EmptyDescription>Harbor will only show a redacted environment after it has a reviewed container-inspection contract.</EmptyDescription></EmptyHeader>
+                  </Empty>
+                </TabsContent>
+
+                <TabsContent value="ports" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">
+                  <Card v-if="selectedServiceResources.length" class="gap-0 rounded-lg py-0 shadow-none">
+                    <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Published endpoints</CardTitle><p class="text-xs text-muted-foreground">HTTP resources reported for this service</p></CardHeader>
+                    <CardContent class="divide-y p-0">
+                      <button v-for="resource in selectedServiceResources" :key="resource.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)"><div class="min-w-0 flex-1"><p class="text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.url }}</p></div><ExternalLink class="size-3.5 text-muted-foreground" /></button>
+                    </CardContent>
+                  </Card>
+                  <Empty v-else class="min-h-0 flex-1 rounded-lg border">
+                    <EmptyHeader><EmptyTitle>No published ports</EmptyTitle><EmptyDescription>This service does not currently report a launchable HTTP endpoint.</EmptyDescription></EmptyHeader>
+                  </Empty>
+                </TabsContent>
+              </Tabs>
             </TabsContent>
           </Tabs>
           <Empty v-else class="min-h-64 rounded-lg border">
