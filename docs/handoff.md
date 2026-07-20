@@ -105,7 +105,7 @@ REDIS_HOST="127.77.59.72"
 # harbor managed: end
 ```
 
-That block is an accepted tactical bridge. Harbor derives additional rewrites from literal local hosts already present in `.env.host`, preserves content outside the markers, and replaces the block atomically. The block currently remains after Stop or unregister. Each accepted launch also replaces an owner-private, 4 MiB-bounded `_data/harbor/forj-dev.log`; both checkout mutations are temporary deviations from the target managed-session storage model.
+That block is an accepted tactical bridge. Harbor derives additional rewrites from literal local hosts already present in `.env.host`, preserves content outside the markers, and replaces the block atomically. A fully settled Harbor-requested shutdown removes only the exact managed block; malformed marker ownership remains untouched and makes cleanup fail. Each accepted launch also replaces an owner-private, 4 MiB-bounded `_data/harbor/forj-dev.log`; both checkout mutations are temporary deviations from the target managed-session storage model.
 
 ## Existing stale listener on the macOS host
 

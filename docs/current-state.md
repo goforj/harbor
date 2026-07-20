@@ -150,7 +150,7 @@ LIGHTHOUSE_URL="ws://127.77.0.10:3000/lighthouse/ws/agent"
 
 Harbor preserves all content outside the marker pair, rejects malformed or repeated markers, updates the file atomically, and rewrites literal local hosts and URLs onto the assigned address. Before launch it removes the file-owned keys plus `APP_NAME`, `FORJ_APP`, `FORJ_BUILD_PROGRESS`, `FORJ_COMMAND_PREFIX`, and `FORJ_DEV_PLAIN` from its captured ambient environment, then sets `FORJ_DEV_PLAIN=1`. Other ambient values remain inherited normally.
 
-This is deliberately temporary. It makes existing GoForj projects work without special `forj dev` flags while the semantic managed-session protocol remains future work. The managed block currently remains after Stop and unregister; there is no cleanup path yet. Any replacement must preserve ordinary OS-environment precedence and environment reload behavior.
+This is deliberately temporary. It makes existing GoForj projects work without special `forj dev` flags while the semantic managed-session protocol remains future work. After a fully settled Harbor-requested shutdown, the supervisor removes only its exact managed block; malformed or foreign marker ownership is left untouched and prevents a false clean stop. Any replacement must preserve ordinary OS-environment precedence and environment reload behavior.
 
 Each accepted launch also replaces `<checkout>/_data/harbor/forj-dev.log`. The file is owner-private (`0600`), bounded to 4 MiB, and ends with a visible truncation marker when output exceeds that bound. Both this trace and the `.env.host` block are interim checkout mutations that depart from the target outside-checkout managed-session storage model.
 

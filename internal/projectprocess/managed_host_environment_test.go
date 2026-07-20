@@ -1,6 +1,7 @@
 package projectprocess
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -187,6 +188,60 @@ func TestWriteManagedHostEnvironmentCreatesPrivateFile(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("created .env.host mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+// TestRemoveManagedHostEnvironmentPreservesProjectContent verifies a settled shutdown removes only Harbor's owned final block.
+func TestRemoveManagedHostEnvironmentPreservesProjectContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env.host")
+	original := "USER_SETTING=preserved\n"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatalf("write project environment: %v", err)
+	}
+	if _, err := writeManagedHostEnvironment(root, EnvironmentOverrides{"IP_ADDRESS": "127.77.0.32"}); err != nil {
+		t.Fatalf("write managed environment: %v", err)
+	}
+	if err := removeManagedHostEnvironment(root); err != nil {
+		t.Fatalf("remove managed environment: %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read project environment: %v", err)
+	}
+	if string(contents) != original+"\n" {
+		t.Fatalf("contents = %q, want preserved project assignment plus separator", contents)
+	}
+}
+
+// TestRemoveManagedHostEnvironmentDeletesHarborOnlyFile verifies Harbor removes an otherwise empty tactical bridge.
+func TestRemoveManagedHostEnvironmentDeletesHarborOnlyFile(t *testing.T) {
+	root := t.TempDir()
+	if _, err := writeManagedHostEnvironment(root, EnvironmentOverrides{"IP_ADDRESS": "127.77.0.32"}); err != nil {
+		t.Fatalf("write managed environment: %v", err)
+	}
+	if err := removeManagedHostEnvironment(root); err != nil {
+		t.Fatalf("remove managed environment: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".env.host")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed-only file stat error = %v, want not exist", err)
+	}
+}
+
+// TestRemoveManagedHostEnvironmentPreservesMalformedFiles verifies uncertain marker ownership never alters project content.
+func TestRemoveManagedHostEnvironmentPreservesMalformedFiles(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env.host")
+	contents := managedHostEnvironmentBegin + "\nIP_ADDRESS=127.77.0.32\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write malformed environment: %v", err)
+	}
+	if err := removeManagedHostEnvironment(root); err == nil || !strings.Contains(err.Error(), "one ordered begin/end pair") {
+		t.Fatalf("remove malformed environment error = %v", err)
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil || string(unchanged) != contents {
+		t.Fatalf("malformed environment changed: %q, %v", unchanged, err)
 	}
 }
 

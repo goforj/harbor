@@ -543,6 +543,9 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 			supervisor.removeSettledServiceLogStream(stream.key, stream)
 		}
 	}
+	if stopRequested && cleanupErr == nil {
+		cleanupErr = removeManagedHostEnvironment(info.CheckoutRoot)
+	}
 
 	exitCode := 0
 	if process.command.ProcessState != nil {

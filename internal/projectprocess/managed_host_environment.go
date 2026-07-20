@@ -64,6 +64,39 @@ func writeManagedHostEnvironment(checkoutRoot string, overrides EnvironmentOverr
 	return values, nil
 }
 
+// removeManagedHostEnvironment removes only Harbor's exact final dotenv block after a settled owned shutdown.
+func removeManagedHostEnvironment(checkoutRoot string) error {
+	path := filepath.Join(checkoutRoot, ".env.host")
+	contents, mode, err := readManagedHostEnvironment(path)
+	if err != nil {
+		return err
+	}
+	base, err := removeManagedHostEnvironmentBlock(string(contents))
+	if err != nil {
+		return fmt.Errorf("inspect %q: %w", path, err)
+	}
+	if base == string(contents) {
+		return nil
+	}
+	if base != "" {
+		if err := replaceManagedHostEnvironment(path, []byte(base), mode); err != nil {
+			return fmt.Errorf("write %q: %w", path, err)
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %q: %w", path, err)
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(directory.Sync(), directory.Close())
+}
+
 // readManagedHostEnvironment reads only direct regular files so Harbor cannot overwrite a linked project path.
 func readManagedHostEnvironment(path string) ([]byte, fs.FileMode, error) {
 	info, err := os.Lstat(path)
