@@ -3,7 +3,6 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
-  ArrowUpRight,
   Check,
   Clipboard,
   ExternalLink,
@@ -11,13 +10,13 @@ import {
   Network,
   Play,
   Search,
-  Server,
   Square,
   SquareTerminal,
   Trash2,
   TriangleAlert,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
@@ -53,6 +52,7 @@ let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
+const selectedServiceId = ref('')
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
@@ -99,6 +99,9 @@ const currentProjectOperation = computed(() => {
   return undefined
 })
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
+const selectedServiceResources = computed(() => project.value?.resources.filter((resource) =>
+  resource.owner.kind === 'service' && resource.owner.service_id === selectedServiceId.value,
+) ?? [])
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
@@ -196,6 +199,12 @@ watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, p
     void router.replace('/projects')
   }
 })
+
+watch(() => project.value?.services, (services) => {
+  if (!services?.some((service) => service.id === selectedServiceId.value)) {
+    selectedServiceId.value = services?.[0]?.id ?? ''
+  }
+}, { immediate: true })
 
 watch(() => runtimeRepairInspection.value?.confirmable.expires_at, (expiresAt) => {
   if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
@@ -521,33 +530,53 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </TabsContent>
 
         <TabsContent value="services" class="m-0">
-          <Card class="gap-0 rounded-lg py-0 shadow-none">
-            <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Services</CardTitle></div><p class="text-xs text-muted-foreground">Reported services for this project. Select a service to inspect its status and logs.</p></CardHeader>
-            <CardContent class="p-0">
-              <div v-if="project.services.length" class="divide-y">
-                <RouterLink
-                  v-for="service in project.services"
-                  :key="service.id"
-                  :to="`/services/${encodeURIComponent(project.id)}/${encodeURIComponent(service.id)}`"
-                  class="group flex min-w-0 items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                >
-                  <StatusBadge :status="service.state" />
-                  <div class="min-w-0 flex-1">
-                    <p class="truncate text-sm font-medium">{{ service.name }}</p>
-                    <p class="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                      <span class="truncate">{{ service.kind }}</span>
-                      <span aria-hidden="true">·</span>
-                      <ServiceOwnership :owner="service.owner" />
-                      <span aria-hidden="true">·</span>
-                      <span class="capitalize">{{ service.selection }}</span>
-                    </p>
-                  </div>
-                  <ArrowUpRight class="size-3.5 text-muted-foreground" />
-                </RouterLink>
-              </div>
-              <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No services are reported.</p>
-            </CardContent>
-          </Card>
+          <Tabs v-if="project.services.length" v-model="selectedServiceId" class="gap-5">
+            <TabsList class="h-10 w-full justify-start gap-1 overflow-x-auto rounded-lg border bg-muted/30 p-1">
+              <TabsTrigger
+                v-for="service in project.services"
+                :key="service.id"
+                :value="service.id"
+                class="h-8 flex-none gap-2 px-3 data-[state=active]:bg-background"
+              >
+                <span
+                  class="size-1.5 rounded-full"
+                  :class="{
+                    'bg-emerald-500': service.state === 'ready',
+                    'bg-amber-500': service.state === 'working' || service.state === 'degraded',
+                    'bg-destructive': service.state === 'failed',
+                    'bg-muted-foreground': service.state === 'stopped' || service.state === 'unavailable',
+                  }"
+                  aria-hidden="true"
+                />
+                {{ service.name }}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent
+              v-for="service in project.services"
+              :key="service.id"
+              :value="service.id"
+              class="m-0 space-y-5"
+            >
+              <section aria-label="Selected service summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
+                <div class="p-4 sm:border-r"><p class="text-xs text-muted-foreground">Status</p><p class="mt-1"><StatusBadge :status="service.state" /></p></div>
+                <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Owner</p><p class="mt-1 text-sm font-medium"><ServiceOwnership :owner="service.owner" /></p></div>
+                <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs text-muted-foreground">Selection</p><p class="mt-1 text-sm font-medium capitalize">{{ service.selection }}</p></div>
+                <div class="border-t p-4 sm:border-t-0"><p class="text-xs text-muted-foreground">Resources</p><p class="mt-1 text-sm font-medium">{{ selectedServiceResources.length }}</p></div>
+              </section>
+
+              <ServiceLogsPanel
+                v-if="service.owner === 'compose'"
+                :project-id="project.id"
+                :service-id="service.id"
+                :service-name="service.name"
+              />
+              <p v-else class="rounded-lg border px-4 py-3 text-xs text-muted-foreground">Logs for this external service are managed outside Harbor.</p>
+            </TabsContent>
+          </Tabs>
+          <Empty v-else class="min-h-64 rounded-lg border">
+            <EmptyHeader><EmptyTitle>No services are reported</EmptyTitle><EmptyDescription>Harbor will show project services here when the development environment starts.</EmptyDescription></EmptyHeader>
+          </Empty>
         </TabsContent>
 
         <TabsContent value="resources" class="m-0">
