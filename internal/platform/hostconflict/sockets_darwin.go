@@ -494,6 +494,12 @@ func parseDarwinPCBAddress(raw []byte, family int32, vflag uint8, shadow bool) (
 		}
 		return netip.AddrFrom4([4]byte(raw[12:16])), nil
 	case unix.AF_INET6:
+		if vflag == darwinINPIPv4 {
+			if !allDarwinBytesZero(raw[:12]) {
+				return netip.Addr{}, fmt.Errorf("AF_INET6 IPv4-capable xinpcb_n address has nonzero padding")
+			}
+			return netip.AddrFrom4([4]byte(raw[12:16])), nil
+		}
 		if vflag != darwinINPIPv6 && vflag != darwinINPIPv4|darwinINPIPv6 {
 			return netip.Addr{}, fmt.Errorf("AF_INET6 socket has contradictory address flags %#x", vflag)
 		}

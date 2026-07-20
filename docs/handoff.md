@@ -24,6 +24,8 @@ The Darwin host-conflict observer has a bounded, cancellation-aware 10 ms pause 
 
 The hard-restart integration helper now waits in a sleeping loop when it deliberately ignores graceful shutdown. Its prior empty `select` allowed Go to terminate the helper as deadlocked before the durable boundary; the actual restart/recovery contract is unchanged and still needs native macOS execution.
 
+The Darwin PCB parser accepts the documented AF_INET6 null-bind record whose `INP_IPV4` fact is stored in the canonical padded IPv4 slot. It validates every padding byte and still fails closed on mapped, noncanonical, or contradictory family/address facts. This needs the next real macOS suite result before it is native proof.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually

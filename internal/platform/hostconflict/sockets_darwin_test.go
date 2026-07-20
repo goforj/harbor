@@ -65,6 +65,7 @@ func TestParseDarwinPCBTableFindsRequestedCollisionShapes(t *testing.T) {
 		darwinTCPTestRecord(protocol, netip.IPv4Unspecified(), 53, unix.AF_INET, darwinINPIPv4, 0, darwinTCPListen),
 		darwinTCPTestRecord(protocol, netip.IPv6Unspecified(), 53, unix.AF_INET6, darwinINPIPv6, darwinINPV6Only, darwinTCPListen),
 		darwinTCPTestRecord(protocol, netip.IPv6Unspecified(), 443, unix.AF_INET6, darwinINPIPv4|darwinINPIPv6, 0, darwinTCPListen),
+		darwinTCPTestRecord(protocol, netip.IPv4Unspecified(), 8443, unix.AF_INET6, darwinINPIPv4, 0, darwinTCPListen),
 		darwinTCPTestRecord(protocol, testCandidate, 53, unix.AF_INET, darwinINPIPv4, 0, 4),
 		darwinTCPTestRecord(protocol, netip.MustParseAddr("127.77.0.11"), 53, unix.AF_INET, darwinINPIPv4, 0, darwinTCPListen),
 	}
@@ -72,7 +73,7 @@ func TestParseDarwinPCBTableFindsRequestedCollisionShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseDarwinPCBTable() error = %v", err)
 	}
-	if !snapshot.Complete || snapshot.Truncated || len(snapshot.Endpoints) != 4 {
+	if !snapshot.Complete || snapshot.Truncated || len(snapshot.Endpoints) != 5 {
 		t.Fatalf("parseDarwinPCBTable() = %#v", snapshot)
 	}
 	if snapshot.Endpoints[2].IPv6Only != IPv6OnlyEnabled || snapshot.Endpoints[3].IPv6Only != IPv6OnlyDisabled {
@@ -82,6 +83,19 @@ func TestParseDarwinPCBTableFindsRequestedCollisionShapes(t *testing.T) {
 		if !endpoint.TCPAccepting {
 			t.Fatalf("TCP endpoint is not accepting: %#v", endpoint)
 		}
+	}
+}
+
+// TestParseDarwinPCBTableRejectsNoncanonicalIPv4CapableIPv6Facts prevents an IPv6-family record from smuggling arbitrary bytes as IPv4.
+func TestParseDarwinPCBTableRejectsNoncanonicalIPv4CapableIPv6Facts(t *testing.T) {
+	request := darwinTestRequest(t)
+	protocol := requestedDarwinPCBProtocols(request)[0]
+	record := darwinTCPTestRecord(protocol, netip.IPv4Unspecified(), 443, unix.AF_INET6, darwinINPIPv4, 0, darwinTCPListen)
+	raw := darwinPCBTestTable(protocol, []darwinPCBTestRecord{record}, 1, 1)
+	addressOffset := darwinXinpgenBytes + darwinXinpcbOffsetLocal
+	raw[addressOffset] = 1
+	if _, err := parseDarwinPCBTable(raw, protocol, request); err == nil || !strings.Contains(err.Error(), "IPv4-capable xinpcb_n address has nonzero padding") {
+		t.Fatalf("parseDarwinPCBTable() error = %v, want canonical IPv4 padding rejection", err)
 	}
 }
 
