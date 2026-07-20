@@ -6,8 +6,22 @@ import (
 	"encoding/binary"
 	"math/bits"
 	"net/netip"
+	"syscall"
 	"testing"
 )
+
+// TestDarwinRuntimeRepairCallResultAllowsEmptyDescriptorLists keeps zero-FD processes observable without weakening other libproc calls.
+func TestDarwinRuntimeRepairCallResultAllowsEmptyDescriptorLists(t *testing.T) {
+	if got, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, 0, darwinRuntimeRepairMaximumFDs*darwinRuntimeRepairFDInfoBytes); err != nil || got != 0 {
+		t.Fatalf("allow-empty result = %d, %v", got, err)
+	}
+	if _, err := validateDarwinRuntimeRepairCallResult(0, 0, darwinRuntimeRepairMaximumFDs*darwinRuntimeRepairFDInfoBytes); err == nil {
+		t.Fatal("generic zero result was accepted")
+	}
+	if _, err := validateDarwinRuntimeRepairCallResultAllowEmpty(0, syscall.EIO, darwinRuntimeRepairMaximumFDs*darwinRuntimeRepairFDInfoBytes); err == nil {
+		t.Fatal("libproc error was swallowed for an empty result")
+	}
+}
 
 // darwinRuntimeRepairTestSocketRecord builds the exact reviewed listener envelope for parser mutations.
 func darwinRuntimeRepairTestSocketRecord(endpoint netip.AddrPort) []byte {

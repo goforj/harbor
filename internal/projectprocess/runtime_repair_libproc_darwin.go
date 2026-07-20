@@ -161,9 +161,12 @@ func observeDarwinRuntimeRepairSockets(pid int, endpoint netip.AddrPort) ([]runt
 
 // observeDarwinRuntimeRepairFDs obtains one bounded, structurally complete proc_fdinfo array.
 func observeDarwinRuntimeRepairFDs(pid int) ([]darwinRuntimeRepairFDInfoABI, error) {
-	needed, err := callDarwinRuntimeRepairPIDInfo(pid, darwinRuntimeRepairPIDListFDs, 0, nil)
+	needed, err := callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, darwinRuntimeRepairPIDListFDs, 0, nil)
 	if err != nil {
 		return nil, classifyDarwinRuntimeRepairLibprocFailure(pid)
+	}
+	if needed == 0 {
+		return []darwinRuntimeRepairFDInfoABI{}, nil
 	}
 	maximumBytes := darwinRuntimeRepairMaximumFDs * darwinRuntimeRepairFDInfoBytes
 	if needed <= 0 || needed > maximumBytes || needed%darwinRuntimeRepairFDInfoBytes != 0 {
@@ -182,6 +185,22 @@ func observeDarwinRuntimeRepairFDs(pid int) ([]darwinRuntimeRepairFDInfoABI, err
 		return nil, err
 	}
 	return fds, nil
+}
+
+// callDarwinRuntimeRepairPIDInfoAllowEmpty preserves a valid zero-descriptor process result.
+func callDarwinRuntimeRepairPIDInfoAllowEmpty(pid, flavor, arg int, buffer []byte) (int, error) {
+	pointer := runtimeRepairBufferPointer(buffer)
+	result, _, callErr := runtimeRepairDarwinSystemCall6(
+		darwinRuntimeRepairPIDInfoTrampolineAddress,
+		uintptr(pid),
+		uintptr(flavor),
+		uintptr(arg),
+		pointer,
+		uintptr(len(buffer)),
+		0,
+	)
+	runtime.KeepAlive(buffer)
+	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, len(buffer))
 }
 
 // parseDarwinRuntimeRepairFDs decodes unique non-negative descriptors from a fixed-stride native result.
@@ -421,11 +440,16 @@ func callDarwinRuntimeRepairPIDFDInfo(pid, fd, flavor int, buffer []byte) (int, 
 
 // validateDarwinRuntimeRepairCallResult rejects libproc's zero-on-failure wrapper convention and oversized results.
 func validateDarwinRuntimeRepairCallResult(result uintptr, callErr syscall.Errno, limit int) (int, error) {
+	if result == 0 && callErr == 0 {
+		return 0, errDarwinRuntimeRepairUnreadable
+	}
+	return validateDarwinRuntimeRepairCallResultAllowEmpty(result, callErr, limit)
+}
+
+// validateDarwinRuntimeRepairCallResultAllowEmpty accepts zero only for the descriptor-list query's valid empty result.
+func validateDarwinRuntimeRepairCallResultAllowEmpty(result uintptr, callErr syscall.Errno, limit int) (int, error) {
 	if callErr != 0 {
 		return 0, callErr
-	}
-	if result == 0 {
-		return 0, errDarwinRuntimeRepairUnreadable
 	}
 	if result > uintptr(limit) {
 		return 0, errDarwinRuntimeRepairUnreadable
