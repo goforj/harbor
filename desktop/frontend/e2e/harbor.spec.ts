@@ -17,6 +17,52 @@ test('navigates from the Harbor overview to the project list', async ({ page }) 
   await expect(page.getByText('Billing', { exact: true }).first()).toBeVisible()
 })
 
+test('keeps branded artwork behind the application surface in both themes', async ({ page }) => {
+  await page.goto('/#/overview')
+
+  const artwork = page.locator('.harbor-illustration')
+  await expect(artwork).toHaveAttribute('aria-hidden', 'true')
+
+  const light = await artwork.evaluate((element) => {
+    const styles = getComputedStyle(element)
+    return {
+      backgroundImage: styles.backgroundImage,
+      maskImage: styles.maskImage || styles.webkitMaskImage,
+      mixBlendMode: styles.mixBlendMode,
+      opacity: Number(styles.opacity),
+      pointerEvents: styles.pointerEvents,
+      position: styles.position,
+      userSelect: styles.userSelect,
+      zIndex: styles.zIndex,
+    }
+  })
+
+  expect(light.backgroundImage).not.toBe('none')
+  expect(light.maskImage).not.toBe('none')
+  expect(light.mixBlendMode).toBe('multiply')
+  expect(light.opacity).toBeGreaterThanOrEqual(0.04)
+  expect(light.opacity).toBeLessThanOrEqual(0.1)
+  expect(light.pointerEvents).toBe('none')
+  expect(light.position).toBe('fixed')
+  expect(light.userSelect).toBe('none')
+  expect(light.zIndex).toBe('0')
+  await expect.poll(() => page.locator('.harbor-detail-slot').evaluate((element) => getComputedStyle(element).zIndex)).toBe('1')
+
+  await page.evaluate(() => document.documentElement.classList.add('dark'))
+  await expect.poll(() => artwork.evaluate((element) => getComputedStyle(element).mixBlendMode)).toBe('screen')
+  const darkOpacity = await artwork.evaluate((element) => Number(getComputedStyle(element).opacity))
+  expect(darkOpacity).toBeGreaterThanOrEqual(0.04)
+  expect(darkOpacity).toBeLessThanOrEqual(0.1)
+
+  await page.setViewportSize({ width: 430, height: 800 })
+  const mobileBounds = await artwork.boundingBox()
+  expect(mobileBounds).not.toBeNull()
+  expect(mobileBounds!.width / mobileBounds!.height).toBeCloseTo(1.5, 1)
+  expect(mobileBounds!.x + mobileBounds!.width).toBeGreaterThan(430 * 0.8)
+  expect(mobileBounds!.y + mobileBounds!.height).toBeGreaterThan(800 * 0.8)
+  await expect.poll(() => artwork.evaluate((element) => Number(getComputedStyle(element).opacity))).toBe(0.04)
+})
+
 test('adds the selected project and opens its detail immediately', async ({ page }) => {
   await page.goto('/#/overview')
 

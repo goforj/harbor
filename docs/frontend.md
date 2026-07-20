@@ -2,7 +2,7 @@
 
 Status: foundation implemented
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 Harbor does not need a new frontend foundation. The canonical GoForj Vue starter provides the Vue, TypeScript, Vite, Tailwind, shadcn-vue, routing, theming, command-menu, and application-shell conventions Harbor needs. Harbor inherits that foundation and spends its design effort on the operational product.
 
@@ -115,6 +115,12 @@ The initial theme should preserve:
 - system theme by default, with stored light/dark overrides.
 
 Harbor branding, icons, terminology, and status semantics remain Harbor-owned. Lerd's logo, product icons, copy, and PHP-specific surfaces do not enter the product.
+
+## Illustration system
+
+Harbor's maritime illustration language is a first-class, original part of the product identity. [Illustration system](./illustrations.md) defines its purpose, visual vocabulary, metaphor mappings, asset and provenance rules, light/dark treatment, placement constraints, and accessibility contract. Reference products inform the desired warmth and craft but do not supply compositions, branding, or artwork.
+
+Atmospheric scenes are local transparent assets under `src/assets/illustrations/` and enter the shell through the Harbor-owned `HarborIllustration` component, outside the preserved shadcn primitive layer. Its typed image, placement, opacity, size, and fade options keep swapping and composing artwork centralized. The component owns fixed background layering, responsive aspect-preserving sizing, CSS masking, theme-aware blending, the 4–10% opacity boundary, non-interaction, and forced-color suppression. Screens do not reproduce those styles or place decorative artwork over important content.
 
 ## State flow
 

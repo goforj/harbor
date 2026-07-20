@@ -1,6 +1,8 @@
 export { default as ContextPane } from './ContextPane.vue'
 export { default as EntityRow } from './EntityRow.vue'
 export { default as HarborCommandMenu } from './HarborCommandMenu.vue'
+export { default as HarborIllustration } from './HarborIllustration.vue'
+export type { HarborIllustrationFade, HarborIllustrationPlacement, HarborIllustrationSize } from './HarborIllustration.vue'
 export { default as HarborMobileNav } from './HarborMobileNav.vue'
 export { default as HarborRail } from './HarborRail.vue'
 export { default as StatusBadge } from './StatusBadge.vue'

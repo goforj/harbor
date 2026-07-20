@@ -88,6 +88,9 @@
   --status-failed: #c9271d;
   --status-stopped: #737373;
   --status-unavailable: #737373;
+  --harbor-illustration-opacity: 0.065;
+  --harbor-illustration-filter: blur(0.35px) saturate(0.78);
+  --harbor-illustration-blend: multiply;
 }
 
 .dark {
@@ -129,6 +132,9 @@
   --status-failed: #ef6259;
   --status-stopped: #8a8a8a;
   --status-unavailable: #8a8a8a;
+  --harbor-illustration-opacity: 0.05;
+  --harbor-illustration-filter: blur(0.45px) brightness(0.88) saturate(0.68);
+  --harbor-illustration-blend: screen;
 }
 
 @layer base {
@@ -187,6 +193,8 @@
 }
 
 .harbor-workspace {
+  position: relative;
+  isolation: isolate;
   display: grid;
   grid-template: minmax(0, 1fr) 64px / minmax(0, 1fr);
   height: 100dvh;
@@ -199,6 +207,14 @@
   display: none;
 }
 
+.harbor-rail-slot,
+.harbor-context-slot,
+.harbor-detail-slot,
+.harbor-mobile-slot {
+  position: relative;
+  z-index: 1;
+}
+
 .harbor-context-slot,
 .harbor-detail-slot {
   grid-area: 1 / 1;
@@ -209,7 +225,87 @@
 
 .harbor-detail-slot {
   display: none;
-  background: var(--background);
+  background: transparent;
+}
+
+.harbor-illustration {
+  --harbor-illustration-origin: 100% 100%;
+  --harbor-illustration-solid-stop: 42%;
+  --harbor-illustration-blend-stop: 61%;
+  --harbor-illustration-edge-stop: 84%;
+  position: fixed;
+  z-index: 0;
+  right: clamp(-4.5rem, -4.5vw, -1.5rem);
+  bottom: clamp(-3.5rem, -4vw, -1.5rem);
+  width: clamp(32rem, 72%, 72rem);
+  max-width: calc(100% + 2rem);
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  background-size: contain;
+  opacity: var(--harbor-illustration-opacity);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  filter: var(--harbor-illustration-filter);
+  mix-blend-mode: var(--harbor-illustration-blend);
+  -webkit-mask-image: radial-gradient(
+    ellipse 95% 92% at var(--harbor-illustration-origin),
+    #000 0 var(--harbor-illustration-solid-stop),
+    rgb(0 0 0 / 72%) var(--harbor-illustration-blend-stop),
+    transparent var(--harbor-illustration-edge-stop)
+  );
+  mask-image: radial-gradient(
+    ellipse 95% 92% at var(--harbor-illustration-origin),
+    #000 0 var(--harbor-illustration-solid-stop),
+    rgb(0 0 0 / 72%) var(--harbor-illustration-blend-stop),
+    transparent var(--harbor-illustration-edge-stop)
+  );
+  contain: layout paint style;
+}
+
+.harbor-illustration[data-placement="bottom-left"] {
+  --harbor-illustration-origin: 0% 100%;
+  right: auto;
+  left: clamp(-4.5rem, -4.5vw, -1.5rem);
+  background-position: left bottom;
+}
+
+.harbor-illustration[data-placement="top-right"] {
+  --harbor-illustration-origin: 100% 0%;
+  top: clamp(-3.5rem, -4vw, -1.5rem);
+  bottom: auto;
+  background-position: right top;
+}
+
+.harbor-illustration[data-placement="top-left"] {
+  --harbor-illustration-origin: 0% 0%;
+  top: clamp(-3.5rem, -4vw, -1.5rem);
+  right: auto;
+  bottom: auto;
+  left: clamp(-4.5rem, -4.5vw, -1.5rem);
+  background-position: left top;
+}
+
+.harbor-illustration[data-size="compact"] {
+  width: clamp(24rem, 48%, 48rem);
+}
+
+.harbor-illustration[data-size="wide"] {
+  width: clamp(40rem, 86%, 96rem);
+}
+
+.harbor-illustration[data-fade="soft"] {
+  --harbor-illustration-solid-stop: 50%;
+  --harbor-illustration-blend-stop: 70%;
+  --harbor-illustration-edge-stop: 92%;
+}
+
+.harbor-illustration[data-fade="strong"] {
+  --harbor-illustration-solid-stop: 34%;
+  --harbor-illustration-blend-stop: 52%;
+  --harbor-illustration-edge-stop: 76%;
 }
 
 .harbor-workspace[data-has-detail="true"] .harbor-context-slot {
@@ -222,6 +318,42 @@
 
 .harbor-mobile-slot {
   grid-area: 2 / 1;
+}
+
+@media (max-width: 699px) {
+  .harbor-illustration {
+    --harbor-illustration-opacity: 0.04;
+    right: -32%;
+    bottom: -3%;
+    width: min(46rem, 125vw);
+    max-width: none;
+  }
+
+  .harbor-illustration[data-placement="bottom-left"],
+  .harbor-illustration[data-placement="top-left"] {
+    right: auto;
+    left: -32%;
+  }
+
+  .harbor-illustration[data-placement="top-left"],
+  .harbor-illustration[data-placement="top-right"] {
+    top: -3%;
+    bottom: auto;
+  }
+
+  .harbor-illustration[data-size="compact"] {
+    width: min(34rem, 105vw);
+  }
+
+  .harbor-illustration[data-size="wide"] {
+    width: min(54rem, 145vw);
+  }
+}
+
+@media (forced-colors: active) {
+  .harbor-illustration {
+    display: none;
+  }
 }
 
 @media (min-width: 700px) {

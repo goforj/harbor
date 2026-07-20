@@ -4,6 +4,7 @@ import { RouterView, useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import ContextPane from '@/components/harbor/ContextPane.vue'
 import HarborCommandMenu from '@/components/harbor/HarborCommandMenu.vue'
+import HarborIllustration from '@/components/harbor/HarborIllustration.vue'
 import HarborMobileNav from '@/components/harbor/HarborMobileNav.vue'
 import HarborRail from '@/components/harbor/HarborRail.vue'
 import { harborBridgeMode } from '@/bridge'
@@ -13,6 +14,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useHarborStore } from '@/stores/harbor'
+import harborBackground from '@/assets/illustrations/harbor-background.png'
 
 const route = useRoute()
 const harbor = useHarborStore()
@@ -74,6 +76,8 @@ onBeforeUnmount(() => {
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="harbor-workspace" :data-has-detail="hasDetail">
+      <HarborIllustration :image="harborBackground" />
+
       <Badge
         v-if="harborBridgeMode === 'fixture'"
         variant="outline"

@@ -203,6 +203,7 @@ The desktop currently provides:
 - project Start/Stop actions and current failure feedback;
 - current project output with ANSI styling;
 - dark/light/system themes and themed toasts;
+- a reusable, theme-aware Harbor illustration layer with responsive placement, bounded opacity, CSS edge fading, and non-interactive semantics;
 - close-to-hide, single-instance relaunch focus, and native `Open Harbor`/`Quit Harbor UI` menu actions;
 - frontend unit tests, browser fixture tests, Playwright smoke, and native module builds.
 

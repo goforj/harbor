@@ -43,6 +43,7 @@ See [source development](./docs/development.md) for current prerequisites, daemo
 - [Development handoff](./docs/handoff.md): current worktree boundary, reproduction context, and next goal.
 - [Product design](./docs/product-design.md): user model, workflows, UI, and first-release scope.
 - [Frontend](./docs/frontend.md): GoForj Vue/shadcn foundation and the bounded Lerd visual adaptation.
+- [Illustrations](./docs/illustrations.md): Harbor's handcrafted visual language, maritime metaphors, assets, and placement rules.
 - [Architecture](./docs/architecture.md): authority, state, lifecycle, IPC, privilege, and recovery.
 - [Networking](./docs/networking.md): loopback identity, DNS, TLS, ingress, relays, and platform proof gates.
 - [GoForj integration](./docs/goforj-integration.md): the intended versioned project and managed-session contract.

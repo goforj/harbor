@@ -42,6 +42,7 @@ No repository port files need to change, and stopping or unregistering a project
 - [Development handoff](./handoff.md) records the current worktree boundary, host reproduction, uncommitted work, and next goal.
 - [Source development](./development.md) explains how to build and bootstrap the privileged helper from source on macOS and Linux.
 - [Product design](./product-design.md) defines the user model, workflows, UI, lifecycle, and product boundary.
+- [Illustration system](./illustrations.md) defines Harbor's original visual language, maritime metaphor, asset standard, placement rules, and reusable background-artwork contract.
 - [Frontend](./frontend.md) defines the inherited GoForj starter foundation, Harbor component boundary, Lerd styling adaptation, state bridge, and UI test strategy.
 - [Architecture](./architecture.md) defines processes, ownership, IPC, state, reconciliation, privilege, packaging, and recovery.
 - [Networking](./networking.md) defines loopback identities, DNS, TLS, HTTP ingress, native-port relays, and container connectivity.
@@ -56,7 +57,7 @@ The documents intentionally serve different time horizons:
 
 - `current-state.md` describes evidence-backed behavior in the current repository;
 - `handoff.md` is the volatile continuation record for the next development session;
-- product, architecture, networking, frontend, and GoForj integration documents define the approved target, including behavior that is not implemented yet;
+- product, illustration, architecture, networking, frontend, and GoForj integration documents define the approved target, including behavior that is not implemented yet;
 - `delivery-plan.md` orders the work and defines exit gates;
 - `testing.md` defines the native evidence required before Harbor can claim platform support.
 
@@ -64,4 +65,4 @@ When documents appear to conflict, do not treat the more ambitious statement as 
 
 ## Design rule
 
-Use Yerd as the control-plane reference, Lerd as the operational edge-case, test, and visual-layout reference, and Herd as the product-experience reference. Harbor's frontend begins with GoForj's own Vue/shadcn starter rather than a new scaffold. Lerd's narrow navigation rail, dense contextual list, persistent detail pane, and selected styling are adapted through those source-owned shadcn components; Lerd branding and product-specific assets are not copied. Harbor's framework contract must follow GoForj as it exists today.
+Use Yerd as the control-plane reference, Lerd as the operational edge-case, test, and visual-layout reference, and Herd as the product-experience reference. Harbor's frontend begins with GoForj's own Vue/shadcn starter rather than a new scaffold. Lerd's narrow navigation rail, dense contextual list, persistent detail pane, and selected styling are adapted through those source-owned shadcn components; Lerd branding and product-specific assets are not copied. Harbor's illustration system is original, Harbor-owned work governed by [its own design standard](./illustrations.md), not an adaptation of a reference product's artwork. Harbor's framework contract must follow GoForj as it exists today.

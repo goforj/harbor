@@ -12,7 +12,7 @@ Use this order:
 4. Read the relevant approved target document linked from `docs/README.md`.
 5. Use `docs/delivery-plan.md` and `docs/testing.md` for milestone and proof requirements.
 
-For product or frontend work, also read `docs/research.md` and `docs/frontend.md`: Herd is the product-experience reference, Yerd the control-plane reference, and Lerd the operational/test/visual-layout reference. These are research inputs, not substitutes for Harbor's approved design or GoForj's project semantics.
+For product or frontend work, also read `docs/research.md`, `docs/frontend.md`, and `docs/illustrations.md`: Herd is the product-experience reference, Yerd the control-plane reference, and Lerd the operational/test/visual-layout reference. These are research inputs, not substitutes for Harbor's approved design, illustration language, or GoForj's project semantics.
 
 Code and tests are authoritative for present behavior. The target design is authoritative for the intended product. A design statement is not evidence that a capability is implemented, and a temporary implementation bridge does not silently replace the target design.
 

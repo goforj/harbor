@@ -201,6 +201,8 @@ The implementation starts from a complete, pinned import of GoForj's Vue starter
 
 Lerd's density and visual treatment are the initial anchor. Harbor maps selected pane dimensions, spacing, surfaces, borders, and colors into semantic Tailwind tokens and shadcn component composition so the product can evolve without rewriting every view. The detailed ownership and adaptation boundary is defined in [Frontend](./frontend.md).
 
+Harbor's own warmth comes from a restrained editorial illustration system built around docks, ships, lighthouses, waterways, and related working-harbor metaphors. It is a first-party identity layer rather than a copy of any reference product. [Illustrations](./illustrations.md) defines its visual language, semantic mappings, asset standards, placement, theming, and accessibility contract.
+
 The destination map is exact: Home opens `Overview`, the project icon opens `Projects`, the service icon opens `Services`, and the gear opens `System`. Settings is a section inside System rather than a fifth rail destination. The Harbor mark is branding, not an action.
 
 ### Overview
