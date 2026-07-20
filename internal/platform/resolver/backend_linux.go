@@ -84,6 +84,11 @@ func New() *Adapter {
 	return newAdapter(newSystemdResolvedBackend(systemdResolvedNativeStore{}))
 }
 
+// recover repairs only Harbor-owned crash remnants before a public resolver observation.
+func (systemdResolvedNativeStore) recover(ctx context.Context, request Request) error {
+	return recoverSystemdResolvedTransactions(ctx, request)
+}
+
 // snapshot obtains one stable fixed artifact around a stable pair of resolve1 property reads.
 func (systemdResolvedNativeStore) snapshot(
 	ctx context.Context,

@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -15,6 +16,7 @@ import (
 // fakeSystemdResolvedStore retains one complete Linux resolver snapshot for portable CAS tests.
 type fakeSystemdResolvedStore struct {
 	snapshotState          systemdResolvedSnapshot
+	recoverErr             error
 	snapshotErr            error
 	replaceErr             error
 	removeErr              error
@@ -23,14 +25,39 @@ type fakeSystemdResolvedStore struct {
 	replaceCalls           int
 	removeCalls            int
 	nextInode              uint64
+	recoverCalls           int
+	snapshotCalls          int
+}
+
+// recover exposes native transaction recovery as an injectable portable boundary.
+func (store *fakeSystemdResolvedStore) recover(context.Context, Request) error {
+	store.recoverCalls++
+	return store.recoverErr
 }
 
 // snapshot returns independent artifact and runtime storage so observations cannot mutate the fake host.
 func (store *fakeSystemdResolvedStore) snapshot(context.Context, Request) (systemdResolvedSnapshot, error) {
+	store.snapshotCalls++
 	if store.snapshotErr != nil {
 		return systemdResolvedSnapshot{}, store.snapshotErr
 	}
 	return cloneSystemdResolvedTestSnapshot(store.snapshotState), nil
+}
+
+// TestSystemdResolvedObserveRecoversBeforeSnapshot keeps native crash repair ahead of public-state admission.
+func TestSystemdResolvedObserveRecoversBeforeSnapshot(t *testing.T) {
+	recoveryErr := errors.New("recover interrupted publication")
+	store := &fakeSystemdResolvedStore{recoverErr: recoveryErr}
+	backend := newSystemdResolvedBackend(store)
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+
+	_, err := backend.observe(t.Context(), request)
+	if !errors.Is(err, recoveryErr) {
+		t.Fatalf("observe() error = %v, want %v", err, recoveryErr)
+	}
+	if store.recoverCalls != 1 || store.snapshotCalls != 0 {
+		t.Fatalf("observe() calls = recover %d, snapshot %d, want recover 1, snapshot 0", store.recoverCalls, store.snapshotCalls)
+	}
 }
 
 // replace enforces the complete observation twice around an injected race before installing canonical state.

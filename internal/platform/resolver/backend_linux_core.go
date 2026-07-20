@@ -82,6 +82,8 @@ type systemdResolvedGuard struct {
 
 // systemdResolvedStore confines effects to Harbor's fixed drop-in and a fixed systemd-resolved reload operation.
 type systemdResolvedStore interface {
+	// recover repairs only Harbor-owned interrupted publications before public state is observed.
+	recover(context.Context, Request) error
 	// snapshot returns the fixed artifact and every live route that can claim the requested suffix.
 	snapshot(context.Context, Request) (systemdResolvedSnapshot, error)
 	// replace publishes canonical bytes only while the complete observation and artifact guard still match.
@@ -127,7 +129,7 @@ func (backend *systemdResolvedBackend) observe(ctx context.Context, request Requ
 	if err := ctx.Err(); err != nil {
 		return Observation{}, err
 	}
-	if err := recoverSystemdResolvedTransactions(ctx, request); err != nil {
+	if err := backend.store.recover(ctx, request); err != nil {
 		return Observation{}, err
 	}
 	snapshot, err := backend.store.snapshot(ctx, request)
