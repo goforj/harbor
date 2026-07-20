@@ -1182,7 +1182,13 @@ func (a *App) OpenTerminalURL(rawURL string) error {
 	if err != nil || parsed == nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
 		return errors.New("terminal URL must be an absolute credential-free HTTP or HTTPS URL")
 	}
-	a.open(context.Background(), parsed.String())
+	a.mu.RLock()
+	ctx := a.ctx
+	a.mu.RUnlock()
+	if ctx == nil {
+		return errors.New("Harbor desktop lifecycle is not active")
+	}
+	a.open(ctx, parsed.String())
 	return nil
 }
 

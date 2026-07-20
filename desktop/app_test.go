@@ -3082,6 +3082,7 @@ func TestOpenTerminalURLRestrictsLogLinksToSafeWebTargets(t *testing.T) {
 		func(_ context.Context, target string) { opened = target },
 		func(context.Context, time.Duration) bool { return false },
 	)
+	app.ctx = context.Background()
 	if err := app.OpenTerminalURL("https://orders.example.test/docs"); err != nil {
 		t.Fatalf("OpenTerminalURL() error = %v", err)
 	}
