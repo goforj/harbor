@@ -207,7 +207,7 @@ Harbor control traffic does not use a TCP admin server.
 - Mutations return an operation ID. Clients follow the operation event stream or fetch its final result.
 - A snapshot plus monotonic sequence permits reconnect without deriving state from missed events.
 
-The implemented V1 methods cover daemon status and shutdown, authoritative snapshots, natural-identity project registration, and intent-keyed project unregistration. Approval preparation and confirmation exist at the control protocol boundary, but neither the CLI nor desktop currently drives the interactive helper handoff. Project start and stop are not part of the current control surface.
+The implemented V1 methods cover daemon status and shutdown, authoritative snapshots, natural-identity project registration, intent-keyed project unregistration, network setup, project start and stop, and bounded output from only the current durable project session. The desktop drives the network-setup helper handoff without exposing tickets to TypeScript. Interactive project-removal approval and equivalent CLI coverage remain incomplete.
 
 The envelope is stable and golden-tested. Additive fields are tolerated inside a protocol major; semantic removals require a new major. Generated fixtures keep the daemon, CLI, desktop backend, and GoForj session adapter aligned.
 
