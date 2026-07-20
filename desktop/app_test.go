@@ -14,6 +14,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -22,40 +23,50 @@ import (
 
 // fakeControlClient keeps lifecycle and response behavior explicit in desktop adapter tests.
 type fakeControlClient struct {
-	mu                sync.Mutex
-	status            control.DaemonStatus
-	statusErr         error
-	snapshot          domain.Snapshot
-	snapshotErr       error
-	snapshotHook      func()
-	registration      control.ProjectRegistration
-	registerErr       error
-	registerPath      string
-	networkSetup      control.NetworkSetupOperation
-	networkSetupErr   error
-	networkSetupReq   control.StartNetworkSetupRequest
-	networkSetupHook  func(control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
-	setupPreparation  control.NetworkSetupApprovalPreparation
-	setupPrepareErr   error
-	setupPrepareReq   control.PrepareNetworkSetupApprovalRequest
-	setupConfirmation control.NetworkSetupApprovalConfirmation
-	setupConfirmErr   error
-	setupConfirmReq   control.ConfirmNetworkSetupApprovalRequest
-	activity          control.ProjectActivity
-	activityErr       error
-	activityRequest   control.ProjectActivityRequest
-	startLifecycle    control.ProjectLifecycleOperation
-	startErr          error
-	startRequest      control.StartProjectRequest
-	stopLifecycle     control.ProjectLifecycleOperation
-	stopErr           error
-	stopRequest       control.StopProjectRequest
-	unregistration    control.ProjectUnregistration
-	unregisterErr     error
-	unregisterRequest control.UnregisterProjectRequest
-	done              chan struct{}
-	closeOnce         sync.Once
-	closeCount        atomic.Int32
+	mu                   sync.Mutex
+	status               control.DaemonStatus
+	statusErr            error
+	snapshot             domain.Snapshot
+	snapshotErr          error
+	snapshotHook         func()
+	registration         control.ProjectRegistration
+	registerErr          error
+	registerPath         string
+	networkSetup         control.NetworkSetupOperation
+	networkSetupErr      error
+	networkSetupReq      control.StartNetworkSetupRequest
+	networkSetupHook     func(control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
+	setupPreparation     control.NetworkSetupApprovalPreparation
+	setupPrepareErr      error
+	setupPrepareReq      control.PrepareNetworkSetupApprovalRequest
+	setupConfirmation    control.NetworkSetupApprovalConfirmation
+	setupConfirmErr      error
+	setupConfirmReq      control.ConfirmNetworkSetupApprovalRequest
+	resolverSetup        control.NetworkResolverSetupOperation
+	resolverSetupErr     error
+	resolverSetupReq     control.StartNetworkResolverSetupRequest
+	resolverSetupHook    func(control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
+	resolverPreparation  control.NetworkResolverSetupApprovalPreparation
+	resolverPrepareErr   error
+	resolverPrepareReq   control.PrepareNetworkResolverSetupApprovalRequest
+	resolverConfirmation control.NetworkResolverSetupApprovalConfirmation
+	resolverConfirmErr   error
+	resolverConfirmReq   control.ConfirmNetworkResolverSetupApprovalRequest
+	activity             control.ProjectActivity
+	activityErr          error
+	activityRequest      control.ProjectActivityRequest
+	startLifecycle       control.ProjectLifecycleOperation
+	startErr             error
+	startRequest         control.StartProjectRequest
+	stopLifecycle        control.ProjectLifecycleOperation
+	stopErr              error
+	stopRequest          control.StopProjectRequest
+	unregistration       control.ProjectUnregistration
+	unregisterErr        error
+	unregisterRequest    control.UnregisterProjectRequest
+	done                 chan struct{}
+	closeOnce            sync.Once
+	closeCount           atomic.Int32
 }
 
 // fakeNetworkSetupApprovalRunner records one exact setup selection and returns its configured bounded outcome.
@@ -66,8 +77,25 @@ type fakeNetworkSetupApprovalRunner struct {
 	execute  func(context.Context, int, networksetupapproval.Request) (networksetupapproval.Outcome, error)
 }
 
+// fakeNetworkResolverSetupApprovalRunner records one exact resolver selection and returns its configured bounded outcome.
+type fakeNetworkResolverSetupApprovalRunner struct {
+	requests []networkresolverapproval.Request
+	outcome  networkresolverapproval.Outcome
+	err      error
+	execute  func(context.Context, int, networkresolverapproval.Request) (networkresolverapproval.Outcome, error)
+}
+
 // Execute records the selected setup revision without opening native consent.
 func (runner *fakeNetworkSetupApprovalRunner) Execute(ctx context.Context, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
+	runner.requests = append(runner.requests, request)
+	if runner.execute != nil {
+		return runner.execute(ctx, len(runner.requests), request)
+	}
+	return runner.outcome, runner.err
+}
+
+// Execute records the selected resolver revision without opening native consent.
+func (runner *fakeNetworkResolverSetupApprovalRunner) Execute(ctx context.Context, request networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
 	runner.requests = append(runner.requests, request)
 	if runner.execute != nil {
 		return runner.execute(ctx, len(runner.requests), request)
@@ -101,6 +129,7 @@ func newFakeControlClient() *fakeControlClient {
 		snapshot:       testSnapshot(),
 		registration:   testRegistration(),
 		networkSetup:   testNetworkSetupOperation(domain.OperationSucceeded, 10),
+		resolverSetup:  testNetworkResolverSetupOperation(domain.OperationSucceeded, 13),
 		activity:       testProjectActivity(),
 		startLifecycle: testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
 		stopLifecycle:  testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
@@ -139,6 +168,38 @@ func (client *fakeControlClient) ConfirmNetworkSetupApproval(_ context.Context, 
 	}
 	client.setupConfirmReq = request
 	return client.setupConfirmation, client.setupConfirmErr
+}
+
+// StartNetworkResolverSetup records the stable resolver setup identity and returns the configured durable operation.
+func (client *fakeControlClient) StartNetworkResolverSetup(_ context.Context, request control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.resolverSetupReq = request
+	if client.resolverSetupHook != nil {
+		return client.resolverSetupHook(request)
+	}
+	return client.resolverSetup, client.resolverSetupErr
+}
+
+// PrepareNetworkResolverSetupApproval records the selected resolver operation revision for executor-backed tests.
+func (client *fakeControlClient) PrepareNetworkResolverSetupApproval(_ context.Context, request control.PrepareNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalPreparation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.resolverPrepareReq = request
+	return client.resolverPreparation, client.resolverPrepareErr
+}
+
+// ConfirmNetworkResolverSetupApproval records the resolver evidence selected for durable confirmation.
+func (client *fakeControlClient) ConfirmNetworkResolverSetupApproval(_ context.Context, request control.ConfirmNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalConfirmation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	select {
+	case <-client.done:
+		return control.NetworkResolverSetupApprovalConfirmation{}, errors.New("control connection is closed")
+	default:
+	}
+	client.resolverConfirmReq = request
+	return client.resolverConfirmation, client.resolverConfirmErr
 }
 
 // Status returns the configured daemon status or test failure.
@@ -220,7 +281,7 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.presentation == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.resolverApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.resolverIntent == nil || app.presentation == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
 }
@@ -637,6 +698,10 @@ func TestSetupNetworkReplaysCompletedOperationWithoutConsent(t *testing.T) {
 		t.Fatal("setup approval was constructed for a completed operation")
 		return nil
 	}
+	app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner {
+		t.Fatal("resolver approval was constructed for a completed operation")
+		return nil
+	}
 
 	result, err := app.SetupNetwork()
 	if err != nil {
@@ -647,6 +712,498 @@ func TestSetupNetworkReplaysCompletedOperationWithoutConsent(t *testing.T) {
 	}
 	if client.networkSetupReq.IntentID != networkSetupIntentID {
 		t.Fatalf("setup intent = %q, want %q", client.networkSetupReq.IntentID, networkSetupIntentID)
+	}
+	if client.resolverSetupReq.IntentID != networkResolverSetupIntentID {
+		t.Fatalf("resolver setup intent = %q, want %q", client.resolverSetupReq.IntentID, networkResolverSetupIntentID)
+	}
+}
+
+// TestSetupNetworkCompletesAddressThenResolverFirstRun keeps both consent phases exact while preserving the Wails return contract.
+func TestSetupNetworkCompletesAddressThenResolverFirstRun(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	networkConfirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+	networkRunner := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{
+		State:        networksetupapproval.Succeeded,
+		Confirmation: &networkConfirmation,
+	}}
+	client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+	resolverConfirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+	resolverRunner := &fakeNetworkResolverSetupApprovalRunner{outcome: networkresolverapproval.Outcome{
+		State:        networkresolverapproval.Succeeded,
+		Confirmation: &resolverConfirmation,
+	}}
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner { return networkRunner }
+	app.resolverApproval = func(got networkresolverapproval.Client) networkResolverSetupApprovalRunner {
+		if got != client {
+			t.Fatalf("resolver approval client = %T, want installed client", got)
+		}
+		if len(networkRunner.requests) != 1 {
+			t.Fatalf("resolver approval started before address approval completed: %#v", networkRunner.requests)
+		}
+		return resolverRunner
+	}
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if result.Operation.ID != networkConfirmation.Operation.ID || result.Revision != networkConfirmation.Revision {
+		t.Fatalf("SetupNetwork() = %#v, want original network confirmation %#v", result, networkConfirmation)
+	}
+	if len(resolverRunner.requests) != 1 ||
+		resolverRunner.requests[0].OperationID != client.resolverSetup.Operation.ID ||
+		resolverRunner.requests[0].ExpectedOperationRevision != client.resolverSetup.Revision {
+		t.Fatalf("resolver approval requests = %#v", resolverRunner.requests)
+	}
+	if client.resolverSetupReq.IntentID != networkResolverSetupIntentID {
+		t.Fatalf("resolver intent = %q, want %q", client.resolverSetupReq.IntentID, networkResolverSetupIntentID)
+	}
+}
+
+// TestSetupNetworkRepairsResolverApprovalThroughTheSharedPrerequisiteBoundary bounds installation to one exact retry.
+func TestSetupNetworkRepairsResolverApprovalThroughTheSharedPrerequisiteBoundary(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+	confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+	runner := &fakeNetworkResolverSetupApprovalRunner{
+		execute: func(_ context.Context, call int, _ networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
+			if call == 1 {
+				return networkresolverapproval.Outcome{}, rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired)
+			}
+			return networkresolverapproval.Outcome{
+				State:        networkresolverapproval.Succeeded,
+				Confirmation: &confirmation,
+			}, nil
+		},
+	}
+	ensurer := &fakeNetworkPrerequisiteEnsurer{}
+	app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner { return runner }
+	app.setupPrerequisite = ensurer
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if result.Operation.State != domain.OperationSucceeded || ensurer.calls != 1 || len(runner.requests) != 2 {
+		t.Fatalf("setup result/repair/approvals = %#v/%d/%d, want success/1/2", result, ensurer.calls, len(runner.requests))
+	}
+	if runner.requests[0] != runner.requests[1] {
+		t.Fatalf("resolver approval retry crossed request boundary: %#v", runner.requests)
+	}
+}
+
+// TestSetupNetworkReplacesAStaleResolverHelperBeforeRetrying proves a consumed legacy ticket is never reused.
+func TestSetupNetworkReplacesAStaleResolverHelperBeforeRetrying(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+	confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+	runner := &fakeNetworkResolverSetupApprovalRunner{
+		execute: func(_ context.Context, call int, _ networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
+			if call == 1 {
+				return networkresolverapproval.Outcome{
+					State: networkresolverapproval.HelperFailed,
+					HelperFailure: &networkresolverapproval.HelperFailure{
+						Code:    helper.ErrorCodeAuthenticationFailed,
+						Message: "helper ticket redemption failed",
+					},
+				}, nil
+			}
+			return networkresolverapproval.Outcome{
+				State:        networkresolverapproval.Succeeded,
+				Confirmation: &confirmation,
+			}, nil
+		},
+	}
+	ensurer := &fakeNetworkPrerequisiteEnsurer{}
+	app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner { return runner }
+	app.setupPrerequisite = ensurer
+
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if result.Operation.State != domain.OperationSucceeded || ensurer.calls != 1 || len(runner.requests) != 2 {
+		t.Fatalf("setup result/repair/approvals = %#v/%d/%d, want success/1/2", result, ensurer.calls, len(runner.requests))
+	}
+	if runner.requests[0] != runner.requests[1] {
+		t.Fatalf("resolver approval retry crossed request boundary: %#v", runner.requests)
+	}
+}
+
+// TestSetupNetworkBoundsResolverPrerequisiteRepairAndPreservesFailures prevents resolver installation loops and opaque native errors.
+func TestSetupNetworkBoundsResolverPrerequisiteRepairAndPreservesFailures(t *testing.T) {
+	t.Parallel()
+
+	privilegedRequired := rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired)
+	privilegedUnsafe := rpc.NewWireError(rpc.ErrorCodePrivilegedHelperUnsafe)
+	tests := []struct {
+		name          string
+		firstOutcome  networkresolverapproval.Outcome
+		firstErr      error
+		repairErr     error
+		retryOutcome  networkresolverapproval.Outcome
+		retryErr      error
+		wantApprovals int
+		want          string
+	}{
+		{
+			name:          "repair declined",
+			firstErr:      privilegedRequired,
+			repairErr:     networkprerequisite.ErrDeclined,
+			wantApprovals: 1,
+			want:          "declined",
+		},
+		{
+			name:          "repair failed",
+			firstOutcome:  networkresolverapproval.Outcome{State: networkresolverapproval.Unavailable},
+			repairErr:     fmt.Errorf("%w: native repair failed", networkprerequisite.ErrFailed),
+			wantApprovals: 1,
+			want:          "native repair failed",
+		},
+		{
+			name: "stale helper authentication is repaired",
+			firstOutcome: networkresolverapproval.Outcome{
+				State: networkresolverapproval.HelperFailed,
+				HelperFailure: &networkresolverapproval.HelperFailure{
+					Code:    helper.ErrorCodeAuthenticationFailed,
+					Message: "helper ticket redemption failed",
+				},
+			},
+			retryOutcome: networkresolverapproval.Outcome{
+				State: networkresolverapproval.HelperFailed,
+				HelperFailure: &networkresolverapproval.HelperFailure{
+					Code:    helper.ErrorCodeAuthenticationFailed,
+					Message: "helper ticket redemption failed",
+				},
+			},
+			wantApprovals: 2,
+			want:          "could not authenticate a newly issued ticket",
+		},
+		{
+			name:          "retry remains missing",
+			firstErr:      privilegedRequired,
+			retryErr:      privilegedRequired,
+			wantApprovals: 2,
+			want:          "still cannot find the ticket directory",
+		},
+		{
+			name:          "retry finds unsafe installation",
+			firstErr:      privilegedUnsafe,
+			retryErr:      privilegedUnsafe,
+			wantApprovals: 2,
+			want:          "ownership, permissions, type, or ACLs",
+		},
+		{
+			name:          "retry cannot launch helper",
+			firstErr:      privilegedRequired,
+			retryOutcome:  networkresolverapproval.Outcome{State: networkresolverapproval.Unavailable},
+			wantApprovals: 2,
+			want:          "native helper is unavailable",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+			runner := &fakeNetworkResolverSetupApprovalRunner{
+				execute: func(_ context.Context, call int, _ networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
+					if call == 1 {
+						return test.firstOutcome, test.firstErr
+					}
+					return test.retryOutcome, test.retryErr
+				},
+			}
+			ensurer := &fakeNetworkPrerequisiteEnsurer{err: test.repairErr}
+			app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner { return runner }
+			app.setupPrerequisite = ensurer
+
+			if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+			}
+			if ensurer.calls != 1 || len(runner.requests) != test.wantApprovals {
+				t.Fatalf("repair/approval calls = %d/%d, want 1/%d", ensurer.calls, len(runner.requests), test.wantApprovals)
+			}
+		})
+	}
+}
+
+// TestNetworkResolverSetupPrerequisiteVerificationErrorRebuildsFixedWireText prevents forged peer detail from reaching Wails.
+func TestNetworkResolverSetupPrerequisiteVerificationErrorRebuildsFixedWireText(t *testing.T) {
+	t.Parallel()
+
+	const secret = "APP_KEY=secret /Users/person/private"
+	forged := rpc.WireError{Code: rpc.ErrorCodePrivilegedHelperUnsafe, Message: secret}
+	err := networkResolverSetupPrerequisiteVerificationError(networkresolverapproval.Outcome{}, forged)
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "ownership, permissions, type, or ACLs") {
+		t.Fatalf("verification error = %q, want fixed unsafe-installation guidance", err)
+	}
+	if err := networkResolverSetupPrerequisiteVerificationError(networkresolverapproval.Outcome{}, errors.New("other")); !strings.Contains(err.Error(), "result was inconsistent") {
+		t.Fatalf("fallback verification error = %q", err)
+	}
+}
+
+// TestNetworkResolverSetupApprovalErrorPreservesSafeOutcomes keeps resolver consent failures actionable and bounded.
+func TestNetworkResolverSetupApprovalErrorPreservesSafeOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		outcome networkresolverapproval.Outcome
+		want    string
+	}{
+		{name: "declined", outcome: networkresolverapproval.Outcome{State: networkresolverapproval.Declined}, want: "safe to retry"},
+		{name: "unavailable", outcome: networkresolverapproval.Outcome{State: networkresolverapproval.Unavailable}, want: "unavailable"},
+		{
+			name: "helper failed",
+			outcome: networkresolverapproval.Outcome{
+				State: networkresolverapproval.HelperFailed,
+				HelperFailure: &networkresolverapproval.HelperFailure{
+					Code:    helper.ErrorCodeMutationFailed,
+					Message: "resolver setup failed",
+				},
+			},
+			want: "resolver setup failed",
+		},
+		{name: "helper failed without description", outcome: networkresolverapproval.Outcome{State: networkresolverapproval.HelperFailed}, want: "without a problem description"},
+		{name: "indeterminate", outcome: networkresolverapproval.Outcome{State: networkresolverapproval.Indeterminate}, want: "refresh before retrying"},
+		{name: "unsupported", outcome: networkresolverapproval.Outcome{}, want: "unsupported state"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if err := networkResolverSetupApprovalError(test.outcome); !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("networkResolverSetupApprovalError() = %q, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkRetriesRecoverableResolverTerminalOperations gives each safe resolver retry a fresh durable identity.
+func TestSetupNetworkRetriesRecoverableResolverTerminalOperations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		state domain.OperationState
+	}{
+		{name: "cancelled", state: domain.OperationCancelled},
+		{name: "retryable failure", state: domain.OperationFailed},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			const retryIntent domain.IntentID = "intent-network-resolver-setup-retry"
+			app.resolverIntent = func() (domain.IntentID, error) { return retryIntent, nil }
+			terminal := testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+			finishedAt := terminal.Operation.RequestedAt.Add(2 * time.Second)
+			terminal.Operation.State = test.state
+			terminal.Operation.Phase = string(test.state)
+			terminal.Operation.FinishedAt = &finishedAt
+			if test.state == domain.OperationFailed {
+				terminal.Operation.Problem = &domain.Problem{
+					Code:      "network.resolver.setup_failed",
+					Message:   "Harbor could not establish local resolver policy.",
+					Retryable: true,
+				}
+			}
+			requests := make([]control.StartNetworkResolverSetupRequest, 0, 2)
+			client.resolverSetupHook = func(request control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error) {
+				requests = append(requests, request)
+				if len(requests) == 1 {
+					return terminal, nil
+				}
+				result := testNetworkResolverSetupOperation(domain.OperationSucceeded, 14)
+				result.Operation.IntentID = request.IntentID
+				return result, nil
+			}
+
+			if _, err := app.SetupNetwork(); err != nil {
+				t.Fatalf("SetupNetwork() error = %v", err)
+			}
+			if len(requests) != 2 || requests[0].IntentID != networkResolverSetupIntentID || requests[1].IntentID != retryIntent {
+				t.Fatalf("resolver retry requests = %#v", requests)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkSurfacesResolverRetryIdentityFailure avoids silently reusing a poisoned durable intent.
+func TestSetupNetworkSurfacesResolverRetryIdentityFailure(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	cancelled := testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+	finishedAt := cancelled.Operation.RequestedAt.Add(2 * time.Second)
+	cancelled.Operation.State = domain.OperationCancelled
+	cancelled.Operation.Phase = string(domain.OperationCancelled)
+	cancelled.Operation.FinishedAt = &finishedAt
+	client.resolverSetup = cancelled
+	app.resolverIntent = func() (domain.IntentID, error) { return "", errors.New("entropy unavailable") }
+
+	if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), "create Harbor network resolver setup retry: entropy unavailable") {
+		t.Fatalf("SetupNetwork() error = %v, want retry identity failure", err)
+	}
+}
+
+// TestSetupNetworkReplaysResolverSuccessAfterLostConfirmationResponse makes an uncertain first response safe to refresh.
+func TestSetupNetworkReplaysResolverSuccessAfterLostConfirmationResponse(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	awaitingApproval := testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+	completed := testNetworkResolverSetupOperation(domain.OperationSucceeded, 14)
+	requests := make([]control.StartNetworkResolverSetupRequest, 0, 2)
+	client.resolverSetupHook = func(request control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error) {
+		requests = append(requests, request)
+		if len(requests) == 1 {
+			return awaitingApproval, nil
+		}
+		return completed, nil
+	}
+	runner := &fakeNetworkResolverSetupApprovalRunner{
+		outcome: networkresolverapproval.Outcome{State: networkresolverapproval.Indeterminate},
+		err:     errors.New("confirmation response was lost"),
+	}
+	app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner { return runner }
+
+	if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), "response was lost") {
+		t.Fatalf("first SetupNetwork() error = %v, want lost response", err)
+	}
+	result, err := app.SetupNetwork()
+	if err != nil {
+		t.Fatalf("replayed SetupNetwork() error = %v", err)
+	}
+	if result.Operation.State != domain.OperationSucceeded || len(runner.requests) != 1 || len(requests) != 2 {
+		t.Fatalf("replayed result/approval/start calls = %#v/%d/%d", result, len(runner.requests), len(requests))
+	}
+	if requests[0].IntentID != networkResolverSetupIntentID || requests[1].IntentID != networkResolverSetupIntentID {
+		t.Fatalf("lost-response replay changed intent: %#v", requests)
+	}
+}
+
+// TestSetupNetworkRejectsResolverSetupFailures prevents the address phase from masking an incomplete resolver foundation.
+func TestSetupNetworkRejectsResolverSetupFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*fakeControlClient, *fakeNetworkResolverSetupApprovalRunner)
+		want   string
+	}{
+		{
+			name: "start failure",
+			mutate: func(client *fakeControlClient, _ *fakeNetworkResolverSetupApprovalRunner) {
+				client.resolverSetupErr = errors.New("resolver start failed")
+			},
+			want: "resolver start failed",
+		},
+		{
+			name: "invalid start",
+			mutate: func(client *fakeControlClient, _ *fakeNetworkResolverSetupApprovalRunner) {
+				client.resolverSetup = control.NetworkResolverSetupOperation{}
+			},
+			want: "validate Harbor network resolver setup",
+		},
+		{
+			name: "wrong intent",
+			mutate: func(client *fakeControlClient, _ *fakeNetworkResolverSetupApprovalRunner) {
+				client.resolverSetup.Operation.IntentID = "intent-other"
+			},
+			want: "another intent",
+		},
+		{
+			name: "unsupported operation state",
+			mutate: func(client *fakeControlClient, _ *fakeNetworkResolverSetupApprovalRunner) {
+				client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRunning, 11)
+			},
+			want: "is running",
+		},
+		{
+			name: "approval failure",
+			mutate: func(_ *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
+				runner.err = errors.New("resolver approval failed")
+			},
+			want: "resolver approval failed",
+		},
+		{
+			name: "approval declined",
+			mutate: func(_ *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
+				runner.outcome = networkresolverapproval.Outcome{State: networkresolverapproval.Declined}
+			},
+			want: "safe to retry",
+		},
+		{
+			name: "missing confirmation",
+			mutate: func(_ *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
+				runner.outcome = networkresolverapproval.Outcome{State: networkresolverapproval.Succeeded}
+			},
+			want: "inconsistent evidence",
+		},
+		{
+			name: "unexpected helper failure",
+			mutate: func(client *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
+				confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+				runner.outcome = networkresolverapproval.Outcome{
+					State:         networkresolverapproval.Succeeded,
+					Confirmation:  &confirmation,
+					HelperFailure: &networkresolverapproval.HelperFailure{},
+				}
+			},
+			want: "inconsistent evidence",
+		},
+		{
+			name: "invalid confirmation",
+			mutate: func(_ *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
+				confirmation := control.NetworkResolverSetupApprovalConfirmation{}
+				runner.outcome = networkresolverapproval.Outcome{
+					State:        networkresolverapproval.Succeeded,
+					Confirmation: &confirmation,
+				}
+			},
+			want: "validate Harbor network resolver setup confirmation",
+		},
+		{
+			name: "crossed historical revisions",
+			mutate: func(client *fakeControlClient, runner *fakeNetworkResolverSetupApprovalRunner) {
+				confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 14, 15)
+				runner.outcome = networkresolverapproval.Outcome{
+					State:        networkresolverapproval.Succeeded,
+					Confirmation: &confirmation,
+				}
+			},
+			want: "crossed the selected operation",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+			confirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+			runner := &fakeNetworkResolverSetupApprovalRunner{outcome: networkresolverapproval.Outcome{
+				State:        networkresolverapproval.Succeeded,
+				Confirmation: &confirmation,
+			}}
+			test.mutate(client, runner)
+			app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner { return runner }
+
+			if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -1160,6 +1717,21 @@ func TestNewNetworkSetupIntentUsesBoundedEntropy(t *testing.T) {
 	}
 	if _, err := newNetworkSetupIntentFrom(strings.NewReader("short")); err == nil {
 		t.Fatal("newNetworkSetupIntentFrom(short entropy) error = nil")
+	}
+
+	resolverFirst, err := newNetworkResolverSetupIntent()
+	if err != nil {
+		t.Fatalf("newNetworkResolverSetupIntent() error = %v", err)
+	}
+	resolverSecond, err := newNetworkResolverSetupIntent()
+	if err != nil {
+		t.Fatalf("newNetworkResolverSetupIntent() second error = %v", err)
+	}
+	if resolverFirst == resolverSecond || !strings.HasPrefix(string(resolverFirst), "intent-network-resolver-setup-") {
+		t.Fatalf("network resolver setup intents = %q and %q", resolverFirst, resolverSecond)
+	}
+	if _, err := newNetworkResolverSetupIntentFrom(strings.NewReader("short")); err == nil {
+		t.Fatal("newNetworkResolverSetupIntentFrom(short entropy) error = nil")
 	}
 }
 
@@ -1917,6 +2489,47 @@ func testNetworkSetupConfirmation(
 		Revision:        revision,
 		NetworkRevision: networkRevision,
 		Pool:            "127.42.0.0/29",
+	}
+}
+
+// testNetworkResolverSetupOperation returns one valid resolver setup operation at the requested lifecycle state and revision.
+func testNetworkResolverSetupOperation(state domain.OperationState, revision domain.Sequence) control.NetworkResolverSetupOperation {
+	requestedAt := time.Date(2026, time.July, 18, 12, 11, 0, 0, time.UTC)
+	startedAt := requestedAt.Add(time.Second)
+	finishedAt := requestedAt.Add(2 * time.Second)
+	operation := domain.Operation{
+		ID:          "operation-network-resolver-setup",
+		IntentID:    networkResolverSetupIntentID,
+		Kind:        domain.OperationKindNetworkResolverSetup,
+		State:       state,
+		Phase:       string(state),
+		RequestedAt: requestedAt,
+	}
+	switch state {
+	case domain.OperationRunning, domain.OperationRequiresApproval:
+		operation.StartedAt = &startedAt
+	case domain.OperationSucceeded:
+		operation.StartedAt = &startedAt
+		operation.FinishedAt = &finishedAt
+	}
+	return control.NetworkResolverSetupOperation{Operation: operation, Revision: revision}
+}
+
+// testNetworkResolverSetupConfirmation advances one resolver approval operation to a valid historical confirmation.
+func testNetworkResolverSetupConfirmation(
+	setup control.NetworkResolverSetupOperation,
+	networkRevision domain.Sequence,
+	revision domain.Sequence,
+) control.NetworkResolverSetupApprovalConfirmation {
+	operation := setup.Operation
+	finishedAt := operation.RequestedAt.Add(2 * time.Second)
+	operation.State = domain.OperationSucceeded
+	operation.Phase = string(domain.OperationSucceeded)
+	operation.FinishedAt = &finishedAt
+	return control.NetworkResolverSetupApprovalConfirmation{
+		Operation:       operation,
+		Revision:        revision,
+		NetworkRevision: networkRevision,
 	}
 }
 

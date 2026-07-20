@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/launcher"
+	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -23,12 +24,13 @@ import (
 )
 
 const (
-	desktopReconnectDelay   = time.Second
-	desktopPollInterval     = 2 * time.Second
-	networkSetupIntentBytes = 16
-	connectionEventName     = desktopwire.ConnectionEventName
-	snapshotEventName       = desktopwire.SnapshotEventName
-	networkSetupIntentID    = domain.IntentID("intent-network-setup")
+	desktopReconnectDelay        = time.Second
+	desktopPollInterval          = 2 * time.Second
+	networkSetupIntentBytes      = 16
+	connectionEventName          = desktopwire.ConnectionEventName
+	snapshotEventName            = desktopwire.SnapshotEventName
+	networkSetupIntentID         = domain.IntentID("intent-network-setup")
+	networkResolverSetupIntentID = domain.IntentID("intent-network-resolver-setup")
 )
 
 var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
@@ -41,6 +43,9 @@ type controlClient interface {
 	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
 	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
 	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
+	StartNetworkResolverSetup(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
+	PrepareNetworkResolverSetupApproval(context.Context, control.PrepareNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalPreparation, error)
+	ConfirmNetworkResolverSetupApproval(context.Context, control.ConfirmNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalConfirmation, error)
 	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
@@ -74,6 +79,17 @@ type networkSetupApprovalFactory func(networksetupapproval.Client) networkSetupA
 
 // networkSetupIntentFactory creates a fresh retry identity without coupling desktop idempotency to process lifetime.
 type networkSetupIntentFactory func() (domain.IntentID, error)
+
+// networkResolverSetupApprovalRunner performs one exact interactive resolver helper attempt for a daemon-selected revision.
+type networkResolverSetupApprovalRunner interface {
+	Execute(context.Context, networkresolverapproval.Request) (networkresolverapproval.Outcome, error)
+}
+
+// networkResolverSetupApprovalFactory binds resolver approval to the same authenticated session that selected the operation.
+type networkResolverSetupApprovalFactory func(networkresolverapproval.Client) networkResolverSetupApprovalRunner
+
+// networkResolverSetupIntentFactory creates a fresh retry identity after a recoverable resolver setup terminal state.
+type networkResolverSetupIntentFactory func() (domain.IntentID, error)
 
 // ConnectionState identifies the desktop backend's current relationship to harbord.
 type ConnectionState = desktopwire.ConnectionState
@@ -110,8 +126,10 @@ type App struct {
 	open              resourceOpener
 	choose            directoryChooser
 	setupApproval     networkSetupApprovalFactory
+	resolverApproval  networkResolverSetupApprovalFactory
 	setupPrerequisite networkprerequisite.Ensurer
 	setupIntent       networkSetupIntentFactory
+	resolverIntent    networkResolverSetupIntentFactory
 	presentation      *presentationController
 	wait              waitFunc
 	reconnectDelay    time.Duration
@@ -139,8 +157,15 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
 			)
 		},
+		resolverApproval: func(client networkresolverapproval.Client) networkResolverSetupApprovalRunner {
+			return networkresolverapproval.New(
+				client,
+				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
+			)
+		},
 		setupPrerequisite: networkprerequisite.New(),
 		setupIntent:       newNetworkSetupIntent,
+		resolverIntent:    newNetworkResolverSetupIntent,
 		presentation:      newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
 		wait:              wait,
 		reconnectDelay:    desktopReconnectDelay,
@@ -148,7 +173,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 	}
 }
 
-// SetupNetwork starts or resumes Harbor's singleton network setup and opens native consent only when approval is required.
+// SetupNetwork completes the address and resolver foundations before reporting Harbor networking ready.
 func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 	ctx, client, release, err := a.leaseCurrentConnection()
 	if err != nil {
@@ -156,6 +181,18 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 	}
 	defer release()
 
+	setup, err := a.completeNetworkSetup(ctx, client)
+	if err != nil {
+		return control.NetworkSetupOperation{}, err
+	}
+	if err := a.completeNetworkResolverSetup(ctx, client); err != nil {
+		return control.NetworkSetupOperation{}, err
+	}
+	return setup, nil
+}
+
+// completeNetworkSetup starts, replays, or approves the durable loopback pool setup phase.
+func (a *App) completeNetworkSetup(ctx context.Context, client controlClient) (control.NetworkSetupOperation, error) {
 	intentID := networkSetupIntentID
 	setup, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID})
 	if networkSetupNeedsFreshIntent(setup, err) {
@@ -185,8 +222,53 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 	}
 }
 
+// completeNetworkResolverSetup starts, replays, or approves the resolver policy only after the loopback pool exists.
+func (a *App) completeNetworkResolverSetup(ctx context.Context, client controlClient) error {
+	intentID := networkResolverSetupIntentID
+	setup, err := client.StartNetworkResolverSetup(ctx, control.StartNetworkResolverSetupRequest{IntentID: intentID})
+	if networkResolverSetupNeedsFreshIntent(setup, err) {
+		intentID, err = a.resolverIntent()
+		if err != nil {
+			return fmt.Errorf("create Harbor network resolver setup retry: %w", err)
+		}
+		setup, err = client.StartNetworkResolverSetup(ctx, control.StartNetworkResolverSetupRequest{IntentID: intentID})
+	}
+	if err != nil {
+		return fmt.Errorf("start Harbor network resolver setup: %w", err)
+	}
+	if err := setup.Validate(); err != nil {
+		return fmt.Errorf("validate Harbor network resolver setup: %w", err)
+	}
+	if setup.Operation.IntentID != intentID {
+		return errors.New("validate Harbor network resolver setup: daemon result belongs to another intent")
+	}
+
+	switch setup.Operation.State {
+	case domain.OperationSucceeded:
+		return nil
+	case domain.OperationRequiresApproval:
+		return a.approveNetworkResolverSetup(ctx, client, setup)
+	default:
+		return fmt.Errorf("Harbor network resolver setup is %s", setup.Operation.State)
+	}
+}
+
 // networkSetupNeedsFreshIntent recovers only a poisoned singleton retry or an opaque fixed-intent replay failure.
 func networkSetupNeedsFreshIntent(setup control.NetworkSetupOperation, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodeInternal
+	}
+	if setup.Operation.State == domain.OperationCancelled {
+		return true
+	}
+	return setup.Operation.State == domain.OperationFailed &&
+		setup.Operation.Problem != nil &&
+		setup.Operation.Problem.Retryable
+}
+
+// networkResolverSetupNeedsFreshIntent recovers only a poisoned stable replay or a retryable terminal resolver operation.
+func networkResolverSetupNeedsFreshIntent(setup control.NetworkResolverSetupOperation, err error) bool {
 	if err != nil {
 		var wireError rpc.WireError
 		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodeInternal
@@ -213,6 +295,24 @@ func newNetworkSetupIntentFrom(reader io.Reader) (domain.IntentID, error) {
 	intentID := domain.IntentID("intent-network-setup-" + hex.EncodeToString(random))
 	if err := intentID.Validate(); err != nil {
 		return "", fmt.Errorf("validate network setup intent: %w", err)
+	}
+	return intentID, nil
+}
+
+// newNetworkResolverSetupIntent creates an independently retryable resolver setup identity from operating-system entropy.
+func newNetworkResolverSetupIntent() (domain.IntentID, error) {
+	return newNetworkResolverSetupIntentFrom(rand.Reader)
+}
+
+// newNetworkResolverSetupIntentFrom keeps resolver retry entropy failure visible to the desktop action.
+func newNetworkResolverSetupIntentFrom(reader io.Reader) (domain.IntentID, error) {
+	random := make([]byte, networkSetupIntentBytes)
+	if _, err := io.ReadFull(reader, random); err != nil {
+		return "", fmt.Errorf("read network resolver setup intent entropy: %w", err)
+	}
+	intentID := domain.IntentID("intent-network-resolver-setup-" + hex.EncodeToString(random))
+	if err := intentID.Validate(); err != nil {
+		return "", fmt.Errorf("validate network resolver setup intent: %w", err)
 	}
 	return intentID, nil
 }
@@ -312,6 +412,109 @@ func networkSetupApprovalError(outcome networksetupapproval.Outcome) error {
 		return errors.New("Harbor network setup may have changed the host; refresh before retrying")
 	default:
 		return fmt.Errorf("Harbor network setup approval returned unsupported state %q", outcome.State)
+	}
+}
+
+// approveNetworkResolverSetup delegates only the exact daemon-selected resolver revision to native consent.
+func (a *App) approveNetworkResolverSetup(
+	ctx context.Context,
+	client controlClient,
+	setup control.NetworkResolverSetupOperation,
+) error {
+	request := networkresolverapproval.Request{
+		OperationID:               setup.Operation.ID,
+		ExpectedOperationRevision: setup.Revision,
+	}
+	runner := a.resolverApproval(client)
+	outcome, err := runner.Execute(ctx, request)
+	if networkResolverSetupNeedsPrerequisiteRepair(outcome, err) {
+		if repairErr := a.setupPrerequisite.Ensure(ctx); repairErr != nil {
+			return fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
+		}
+		outcome, err = runner.Execute(ctx, request)
+		if networkResolverSetupNeedsPrerequisiteRepair(outcome, err) {
+			return networkResolverSetupPrerequisiteVerificationError(outcome, err)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("approve Harbor network resolver setup: %w", err)
+	}
+	if outcome.State != networkresolverapproval.Succeeded {
+		return networkResolverSetupApprovalError(outcome)
+	}
+	if outcome.Confirmation == nil || outcome.HelperFailure != nil {
+		return errors.New("approve Harbor network resolver setup: successful approval returned inconsistent evidence")
+	}
+
+	confirmation := *outcome.Confirmation
+	if err := confirmation.Validate(); err != nil {
+		return fmt.Errorf("validate Harbor network resolver setup confirmation: %w", err)
+	}
+	if confirmation.Operation.ID != setup.Operation.ID ||
+		confirmation.Operation.IntentID != setup.Operation.IntentID ||
+		confirmation.NetworkRevision != setup.Revision+2 ||
+		confirmation.Revision != setup.Revision+3 {
+		return errors.New("validate Harbor network resolver setup confirmation: result crossed the selected operation revision")
+	}
+	return nil
+}
+
+// networkResolverSetupNeedsPrerequisiteRepair recognizes only reviewed evidence that the shared helper boundary needs repair.
+func networkResolverSetupNeedsPrerequisiteRepair(outcome networkresolverapproval.Outcome, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) &&
+			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
+	}
+	if outcome.State == networkresolverapproval.HelperFailed && outcome.HelperFailure != nil {
+		return outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed
+	}
+	return outcome.State == networkresolverapproval.Unavailable
+}
+
+// networkResolverSetupPrerequisiteVerificationError reports fixed peer-safe diagnostics after one bounded repair.
+func networkResolverSetupPrerequisiteVerificationError(outcome networkresolverapproval.Outcome, err error) error {
+	if err != nil {
+		var wireError rpc.WireError
+		if errors.As(err, &wireError) {
+			switch wireError.Code {
+			case rpc.ErrorCodePrivilegedHelperRequired:
+				return errors.New("verify Harbor privileged networking support after installation: harbord still cannot find the ticket directory")
+			case rpc.ErrorCodePrivilegedHelperUnsafe:
+				return errors.New("verify Harbor privileged networking support after installation: harbord rejected the ticket directory's ownership, permissions, type, or ACLs")
+			}
+		}
+	}
+	if outcome.State == networkresolverapproval.Unavailable {
+		return errors.New("verify Harbor privileged networking support after installation: the native helper is unavailable")
+	}
+	if outcome.State == networkresolverapproval.HelperFailed && outcome.HelperFailure != nil &&
+		outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed {
+		return errors.New("verify Harbor privileged networking support after installation: the installed helper could not authenticate a newly issued ticket")
+	}
+	return errors.New("verify Harbor privileged networking support after installation: the result was inconsistent")
+}
+
+// networkResolverSetupApprovalError preserves retry guidance without exposing helper capabilities or privileged details.
+func networkResolverSetupApprovalError(outcome networkresolverapproval.Outcome) error {
+	switch outcome.State {
+	case networkresolverapproval.Declined:
+		return errors.New("Harbor network resolver setup approval was declined; setup is safe to retry")
+	case networkresolverapproval.Unavailable:
+		return errors.New("Harbor network resolver setup approval is unavailable on this installation")
+	case networkresolverapproval.HelperFailed:
+		if outcome.HelperFailure == nil {
+			return errors.New("Harbor network resolver setup helper failed without a problem description")
+		}
+		return fmt.Errorf(
+			"Harbor network resolver setup helper failed (%s): %s",
+			outcome.HelperFailure.Code,
+			outcome.HelperFailure.Message,
+		)
+	case networkresolverapproval.Indeterminate:
+		return errors.New("Harbor network resolver setup may have changed the host; refresh before retrying")
+	default:
+		return fmt.Errorf("Harbor network resolver setup approval returned unsupported state %q", outcome.State)
 	}
 }
 
