@@ -96,6 +96,7 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
             throw new Error('Runtime repair is not exercised in this setup test')
           },
           async OpenResource() {},
+          async ResourceIconURL() { return '' },
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
@@ -211,6 +212,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
           async ConfirmProjectRuntimeRepair() { throw new Error('Runtime repair confirmation requires explicit test setup') },
           async InspectProjectRuntimeRepair() { throw new Error('Runtime repair inspection requires explicit test setup') },
           async OpenResource() {},
+          async ResourceIconURL() { return '' },
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() { throw new Error('Quarantined project removal is disabled') },
@@ -228,7 +230,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
     }
   }, { initialSnapshot: harborWireFixture.snapshot, initialStatus: harborWireFixture.status })
 
-  await page.goto('/#/projects/reports')
+  await page.goto('/#/projects/reports', { waitUntil: 'domcontentloaded' })
 
   const recoveryAlert = page.getByRole('alert')
   await expect(recoveryAlert.getByText('Project recovery required', { exact: true })).toBeVisible()
@@ -285,6 +287,7 @@ test('leaves project detail when an active removal completes through a snapshot 
             throw new Error('Runtime repair is not exercised in this removal test')
           },
           async OpenResource() {},
+          async ResourceIconURL() { return '' },
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject(projectId, intentId) {
@@ -353,7 +356,7 @@ test('leaves project detail when an active removal completes through a snapshot 
     initialStop: harborWireFixture.stop_project,
     initialUnregistration: harborWireFixture.remove_project,
   })
-  await page.goto('/#/projects/reports')
+  await page.goto('/#/projects/reports', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Remove project', exact: true }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Remove project', exact: true }).click()
@@ -539,6 +542,7 @@ test('uses native bindings and recovers after the first snapshot read fails', as
             throw new Error('Runtime repair is not exercised in this connection test')
           },
           async OpenResource() {},
+          async ResourceIconURL() { return '' },
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
@@ -586,7 +590,7 @@ test('uses native bindings and recovers after the first snapshot read fails', as
       EventsOff: () => undefined,
     }
   })
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   const detail = page.locator('.harbor-detail-slot')
   await expect(detail.getByText('Connected to Harbor. Waiting for the first snapshot.')).toBeVisible()
@@ -623,6 +627,7 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
             throw new Error('Runtime repair is not exercised in this connection test')
           },
           async OpenResource() {},
+          async ResourceIconURL() { return '' },
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
@@ -661,7 +666,7 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
       EventsOff: (eventName) => listeners.delete(eventName),
     }
   })
-  await page.goto('/#/overview')
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   const detail = page.locator('.harbor-detail-slot')
   await expect(page.getByText('Connected to Harbor. Waiting for the first snapshot.', { exact: true }).first()).toBeVisible()

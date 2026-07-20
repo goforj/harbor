@@ -31,6 +31,7 @@ describe('Harbor mock bridge', () => {
       confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair',
       inspect_project_runtime_repair: 'InspectProjectRuntimeRepair',
       open_resource: 'OpenResource',
+      open_terminal_url: 'OpenTerminalURL',
       project_activity: 'ProjectActivity',
       resource_icon_url: 'ResourceIconURL',
       service_logs: 'ServiceLogs',
