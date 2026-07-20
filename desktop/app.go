@@ -18,6 +18,7 @@ import (
 	"github.com/goforj/harbor/internal/helper/launcher"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
+	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -52,6 +53,8 @@ type controlClient interface {
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
+	PrepareProjectUnregisterApproval(context.Context, control.PrepareProjectUnregisterApprovalRequest) (control.ProjectUnregisterApprovalPreparation, error)
+	ConfirmProjectUnregisterApproval(context.Context, control.ConfirmProjectUnregisterApprovalRequest) (control.ProjectUnregisterApprovalConfirmation, error)
 	Done() <-chan struct{}
 	Close() error
 }
@@ -89,6 +92,14 @@ type networkResolverSetupApprovalRunner interface {
 
 // networkResolverSetupApprovalFactory binds resolver approval to the same authenticated session that selected the operation.
 type networkResolverSetupApprovalFactory func(networkresolverapproval.Client) networkResolverSetupApprovalRunner
+
+// projectRemovalApprovalRunner performs one bounded interactive release workflow for an exact unregister revision.
+type projectRemovalApprovalRunner interface {
+	Execute(context.Context, projectapproval.Request) (projectapproval.Outcome, error)
+}
+
+// projectRemovalApprovalFactory binds release approval to the authenticated session that replayed the removal intent.
+type projectRemovalApprovalFactory func(projectapproval.Client) projectRemovalApprovalRunner
 
 // networkResolverSetupIntentFactory creates a fresh retry identity after a recoverable resolver setup terminal state.
 type networkResolverSetupIntentFactory func() (domain.IntentID, error)
@@ -132,6 +143,7 @@ type App struct {
 	choose             directoryChooser
 	setupApproval      networkSetupApprovalFactory
 	resolverApproval   networkResolverSetupApprovalFactory
+	projectApproval    projectRemovalApprovalFactory
 	setupPrerequisite  networkprerequisite.Ensurer
 	setupIntent        networkSetupIntentFactory
 	resolverIntent     networkResolverSetupIntentFactory
@@ -164,6 +176,12 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		},
 		resolverApproval: func(client networkresolverapproval.Client) networkResolverSetupApprovalRunner {
 			return networkresolverapproval.New(
+				client,
+				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
+			)
+		},
+		projectApproval: func(client projectapproval.Client) projectRemovalApprovalRunner {
+			return projectapproval.New(
 				client,
 				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
 			)
@@ -778,14 +796,160 @@ func (a *App) RemoveProject(projectID string, intentID string) (control.ProjectU
 	if err != nil {
 		return control.ProjectUnregistration{}, fmt.Errorf("remove GoForj project: %w", err)
 	}
-	if err := result.Validate(); err != nil {
-		return control.ProjectUnregistration{}, fmt.Errorf("validate project removal: %w", err)
-	}
-	if result.Operation.ProjectID != request.ProjectID || result.Operation.IntentID != request.IntentID {
-		return control.ProjectUnregistration{}, fmt.Errorf("validate project removal: daemon result does not match the requested project and intent")
+	if err := validateProjectRemovalResult(request, result); err != nil {
+		return control.ProjectUnregistration{}, err
 	}
 
 	return result, nil
+}
+
+// ApproveProjectRemoval replays one retained removal identity before opening native consent for its exact current revision.
+func (a *App) ApproveProjectRemoval(projectID string, intentID string) (control.ProjectUnregistration, error) {
+	request := control.UnregisterProjectRequest{
+		ProjectID: domain.ProjectID(projectID),
+		IntentID:  domain.IntentID(intentID),
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("project removal approval request: %w", err)
+	}
+
+	ctx, client, release, err := a.leaseCurrentConnection()
+	if err != nil {
+		return control.ProjectUnregistration{}, err
+	}
+	defer release()
+
+	replayed, err := client.UnregisterProject(ctx, request)
+	if err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("replay GoForj project removal before approval: %w", err)
+	}
+	if err := validateProjectRemovalResult(request, replayed); err != nil {
+		return control.ProjectUnregistration{}, err
+	}
+	if replayed.Operation.State != domain.OperationRequiresApproval {
+		return replayed, nil
+	}
+
+	return a.approveProjectRemoval(ctx, client, request, replayed)
+}
+
+// approveProjectRemoval runs native approval only for the exact replayed operation revision.
+func (a *App) approveProjectRemoval(
+	ctx context.Context,
+	client controlClient,
+	request control.UnregisterProjectRequest,
+	replayed control.ProjectUnregistration,
+) (control.ProjectUnregistration, error) {
+	selection := projectapproval.Request{
+		OperationID:               replayed.Operation.ID,
+		ExpectedOperationRevision: replayed.Revision,
+	}
+	runner := a.projectApproval(client)
+	outcome, err := runner.Execute(ctx, selection)
+	if projectRemovalApprovalNeedsPrerequisiteRepair(outcome, err) {
+		if repairErr := a.setupPrerequisite.Ensure(ctx); repairErr != nil {
+			return control.ProjectUnregistration{}, fmt.Errorf("install Harbor privileged project-removal support: %w", repairErr)
+		}
+		outcome, err = runner.Execute(ctx, selection)
+		if projectRemovalApprovalNeedsPrerequisiteRepair(outcome, err) {
+			return control.ProjectUnregistration{}, projectRemovalApprovalPrerequisiteVerificationError(outcome, err)
+		}
+	}
+	if err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("approve GoForj project removal: %w", err)
+	}
+	if outcome.State != projectapproval.Succeeded {
+		return control.ProjectUnregistration{}, projectRemovalApprovalError(outcome)
+	}
+	if outcome.Confirmation == nil || outcome.HelperFailure != nil {
+		return control.ProjectUnregistration{}, errors.New("approve GoForj project removal: successful approval returned inconsistent evidence")
+	}
+
+	confirmation := *outcome.Confirmation
+	if err := confirmation.Validate(); err != nil {
+		return control.ProjectUnregistration{}, fmt.Errorf("validate project removal approval confirmation: %w", err)
+	}
+	if confirmation.Operation.ID != replayed.Operation.ID ||
+		confirmation.Operation.ProjectID != request.ProjectID ||
+		confirmation.Operation.IntentID != request.IntentID ||
+		confirmation.Revision <= replayed.Revision {
+		return control.ProjectUnregistration{}, errors.New("validate project removal approval confirmation: result crossed the replayed operation, project, intent, or revision")
+	}
+
+	result := control.ProjectUnregistration{
+		Operation: confirmation.Operation,
+		Revision:  confirmation.Revision,
+	}
+	if err := validateProjectRemovalResult(request, result); err != nil {
+		return control.ProjectUnregistration{}, err
+	}
+	return result, nil
+}
+
+// projectRemovalApprovalNeedsPrerequisiteRepair recognizes only reviewed evidence that the fixed helper boundary needs one repair.
+func projectRemovalApprovalNeedsPrerequisiteRepair(outcome projectapproval.Outcome, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) &&
+			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
+	}
+	return outcome.State == projectapproval.Unavailable
+}
+
+// projectRemovalApprovalPrerequisiteVerificationError reports fixed diagnostics after one claimed helper repair.
+func projectRemovalApprovalPrerequisiteVerificationError(outcome projectapproval.Outcome, err error) error {
+	if err != nil {
+		var wireError rpc.WireError
+		if errors.As(err, &wireError) {
+			switch wireError.Code {
+			case rpc.ErrorCodePrivilegedHelperRequired:
+				return errors.New("verify Harbor privileged project-removal support after installation: harbord still cannot find the ticket directory")
+			case rpc.ErrorCodePrivilegedHelperUnsafe:
+				return errors.New("verify Harbor privileged project-removal support after installation: harbord rejected the ticket directory's ownership, permissions, type, or ACLs")
+			}
+		}
+	}
+	if outcome.State == projectapproval.Unavailable {
+		return errors.New("verify Harbor privileged project-removal support after installation: the native helper is unavailable")
+	}
+	return errors.New("verify Harbor privileged project-removal support after installation: the result was inconsistent")
+}
+
+// projectRemovalApprovalError preserves safe retry guidance without exposing helper capabilities or host selections.
+func projectRemovalApprovalError(outcome projectapproval.Outcome) error {
+	switch outcome.State {
+	case projectapproval.Declined:
+		return errors.New("Harbor project removal approval was declined; removal is safe to retry")
+	case projectapproval.Unavailable:
+		return errors.New("Harbor project removal approval is unavailable on this installation")
+	case projectapproval.HelperFailed:
+		if outcome.HelperFailure == nil {
+			return errors.New("Harbor project removal helper failed without a problem description")
+		}
+		return fmt.Errorf(
+			"Harbor project removal helper failed (%s): %s",
+			outcome.HelperFailure.Code,
+			outcome.HelperFailure.Message,
+		)
+	case projectapproval.Indeterminate:
+		return errors.New("Harbor project removal may have changed the host; refresh before retrying")
+	default:
+		return fmt.Errorf("Harbor project removal approval returned unsupported state %q", outcome.State)
+	}
+}
+
+// validateProjectRemovalResult binds one daemon result to the exact project and client-owned intent.
+func validateProjectRemovalResult(
+	request control.UnregisterProjectRequest,
+	result control.ProjectUnregistration,
+) error {
+	if err := result.Validate(); err != nil {
+		return fmt.Errorf("validate project removal: %w", err)
+	}
+	if result.Operation.ProjectID != request.ProjectID || result.Operation.IntentID != request.IntentID {
+		return errors.New("validate project removal: daemon result does not match the requested project and intent")
+	}
+	return nil
 }
 
 // newDesktopClient adapts the concrete control client to the desktop's narrow lifecycle interface.

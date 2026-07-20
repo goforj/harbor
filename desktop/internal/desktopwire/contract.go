@@ -13,6 +13,8 @@ import (
 const (
 	// MethodAddProject is the generated Wails method that selects and registers one local project.
 	MethodAddProject = "AddProject"
+	// MethodApproveProjectRemoval is the generated Wails method that explicitly approves one retained removal intent.
+	MethodApproveProjectRemoval = "ApproveProjectRemoval"
 	// MethodConfirmProjectRuntimeRepair is the generated Wails method that confirms one inspected stale runtime.
 	MethodConfirmProjectRuntimeRepair = "ConfirmProjectRuntimeRepair"
 	// MethodInspectProjectRuntimeRepair is the generated Wails method that inspects one quarantined project runtime.
@@ -64,6 +66,7 @@ func (result AddProjectResult) Validate() error {
 // AppContract is the complete exported method surface Wails may bind from App.
 type AppContract interface {
 	AddProject() (AddProjectResult, error)
+	ApproveProjectRemoval(projectID string, intentID string) (control.ProjectUnregistration, error)
 	ConfirmProjectRuntimeRepair(projectID string, inspectionID string, candidateFingerprint string) (control.ProjectRuntimeRepairConfirmation, error)
 	InspectProjectRuntimeRepair(projectID string) (control.ProjectRuntimeRepairInspection, error)
 	OpenResource(projectID string, resourceID string) error
@@ -89,6 +92,7 @@ func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
 		MethodAddProject:                  {},
+		MethodApproveProjectRemoval:       []string{"projectId", "intentId"},
 		MethodConfirmProjectRuntimeRepair: []string{"projectId", "inspectionId", "candidateFingerprint"},
 		MethodInspectProjectRuntimeRepair: []string{"projectId"},
 		MethodOpenResource:                []string{"projectId", "resourceId"},

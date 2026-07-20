@@ -3,6 +3,7 @@ package wirefixture
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -17,6 +18,7 @@ import (
 // MethodMetadata records the generated Wails method names consumed by the bridge.
 type MethodMetadata struct {
 	AddProject                  string `json:"add_project"`
+	ApproveProjectRemoval       string `json:"approve_project_removal"`
 	ConfirmProjectRuntimeRepair string `json:"confirm_project_runtime_repair"`
 	InspectProjectRuntimeRepair string `json:"inspect_project_runtime_repair"`
 	OpenResource                string `json:"open_resource"`
@@ -51,6 +53,7 @@ type Document struct {
 	Status                            control.DaemonStatus                     `json:"status"`
 	Snapshot                          domain.Snapshot                          `json:"snapshot"`
 	AddProject                        desktopwire.AddProjectResult             `json:"add_project"`
+	ApproveProjectRemoval             control.ProjectUnregistration            `json:"approve_project_removal"`
 	ProjectActivity                   control.ProjectActivity                  `json:"project_activity"`
 	ProjectRuntimeRepairInspection    control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_inspection"`
 	ProjectRuntimeRepairNotActionable control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_not_actionable"`
@@ -79,6 +82,7 @@ func Fixture() Document {
 	return Document{
 		Methods: MethodMetadata{
 			AddProject:                  desktopwire.MethodAddProject,
+			ApproveProjectRemoval:       desktopwire.MethodApproveProjectRemoval,
 			ConfirmProjectRuntimeRepair: desktopwire.MethodConfirmProjectRuntimeRepair,
 			InspectProjectRuntimeRepair: desktopwire.MethodInspectProjectRuntimeRepair,
 			OpenResource:                desktopwire.MethodOpenResource,
@@ -110,6 +114,7 @@ func Fixture() Document {
 				control.CapabilityProjectLifecycleV1,
 				control.CapabilityProjectRegistrationV1,
 				control.CapabilityProjectRuntimeRepairV1,
+				control.CapabilityProjectUnregisterApprovalV1,
 				control.CapabilityProjectUnregisterV1,
 				control.CapabilityV1,
 			},
@@ -263,6 +268,20 @@ func Fixture() Document {
 			},
 			Revision: 44,
 		},
+		ApproveProjectRemoval: control.ProjectUnregistration{
+			Operation: domain.Operation{
+				ID:          "operation-remove-orders",
+				IntentID:    "desktop-remove-orders",
+				Kind:        domain.OperationKindProjectUnregister,
+				ProjectID:   "orders-api",
+				State:       domain.OperationSucceeded,
+				Phase:       "project unregistered",
+				RequestedAt: removeRequestedAt,
+				StartedAt:   &removeStartedAt,
+				FinishedAt:  &lifecycleRequestedAt,
+			},
+			Revision: 46,
+		},
 		SetupNetwork: control.NetworkSetupOperation{
 			Operation: domain.Operation{
 				ID:          "operation-network-setup",
@@ -366,6 +385,7 @@ func fixtureProjectRuntimeRepairConfirmation() control.ProjectRuntimeRepairConfi
 func (document Document) Validate() error {
 	methods := map[string]string{
 		desktopwire.MethodAddProject:                  document.Methods.AddProject,
+		desktopwire.MethodApproveProjectRemoval:       document.Methods.ApproveProjectRemoval,
 		desktopwire.MethodConfirmProjectRuntimeRepair: document.Methods.ConfirmProjectRuntimeRepair,
 		desktopwire.MethodInspectProjectRuntimeRepair: document.Methods.InspectProjectRuntimeRepair,
 		desktopwire.MethodOpenResource:                document.Methods.OpenResource,
@@ -446,6 +466,17 @@ func (document Document) Validate() error {
 	}
 	if err := document.RemoveProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project removal: %w", err)
+	}
+	if err := document.ApproveProjectRemoval.Validate(); err != nil {
+		return fmt.Errorf("validate fixture approved project removal: %w", err)
+	}
+	if document.RemoveProject.Operation.State != domain.OperationRequiresApproval ||
+		document.ApproveProjectRemoval.Operation.State != domain.OperationSucceeded ||
+		document.RemoveProject.Operation.ID != document.ApproveProjectRemoval.Operation.ID ||
+		document.RemoveProject.Operation.ProjectID != document.ApproveProjectRemoval.Operation.ProjectID ||
+		document.RemoveProject.Operation.IntentID != document.ApproveProjectRemoval.Operation.IntentID ||
+		document.ApproveProjectRemoval.Revision <= document.RemoveProject.Revision {
+		return errors.New("fixture approved project removal must complete the exact pending operation at a later revision")
 	}
 	if err := document.SetupNetwork.Validate(); err != nil {
 		return fmt.Errorf("validate fixture network setup: %w", err)

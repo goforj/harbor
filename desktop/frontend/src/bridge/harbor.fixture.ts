@@ -5,6 +5,7 @@ import type { HarborWireFixture } from './types'
 
 export interface WailsAppBindings {
   AddProject(): Promise<AddProjectResult>
+  ApproveProjectRemoval(projectId: string, intentId: string): Promise<ProjectUnregistration>
   ConfirmProjectRuntimeRepair(projectId: string, inspectionId: string, candidateFingerprint: string): Promise<ProjectRuntimeRepairConfirmation>
   InspectProjectRuntimeRepair(projectId: string): Promise<ProjectRuntimeRepairInspection>
   OpenResource(projectId: string, resourceId: string): Promise<void>
@@ -33,6 +34,7 @@ export interface WailsRuntimeEvents {
 export const harborWireFixture = {
   "methods": {
     "add_project": "AddProject",
+    "approve_project_removal": "ApproveProjectRemoval",
     "confirm_project_runtime_repair": "ConfirmProjectRuntimeRepair",
     "inspect_project_runtime_repair": "InspectProjectRuntimeRepair",
     "open_resource": "OpenResource",
@@ -77,6 +79,7 @@ export const harborWireFixture = {
       "control.project-lifecycle.v1",
       "control.project-registration.v1",
       "control.project-runtime-repair.v1",
+      "control.project-unregister-approval.v1",
       "control.project-unregister.v1",
       "control.v1"
     ],
@@ -292,6 +295,20 @@ export const harborWireFixture = {
       "revision": 43,
       "created": true
     }
+  },
+  "approve_project_removal": {
+    "operation": {
+      "id": "operation-remove-orders",
+      "intent_id": "desktop-remove-orders",
+      "kind": "project.unregister",
+      "project_id": "orders-api",
+      "state": "succeeded",
+      "phase": "project unregistered",
+      "requested_at": "2026-07-18T14:40:00Z",
+      "started_at": "2026-07-18T14:40:01Z",
+      "finished_at": "2026-07-18T14:41:00Z"
+    },
+    "revision": 46
   },
   "project_activity": {
     "project_id": "orders-api",

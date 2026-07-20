@@ -150,6 +150,13 @@ func TestDocumentValidateRejectsContractMetadataDrift(t *testing.T) {
 			},
 			want: "connecting fixture connection state",
 		},
+		{
+			name: "approved project removal",
+			mutate: func(document *Document) {
+				document.ApproveProjectRemoval.Operation.IntentID = "desktop-remove-other"
+			},
+			want: "exact pending operation",
+		},
 	}
 
 	for _, test := range tests {

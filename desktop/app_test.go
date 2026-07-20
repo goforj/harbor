@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
+	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -71,6 +72,12 @@ type fakeControlClient struct {
 	unregistration       control.ProjectUnregistration
 	unregisterErr        error
 	unregisterRequest    control.UnregisterProjectRequest
+	projectPreparation   control.ProjectUnregisterApprovalPreparation
+	projectPrepareErr    error
+	projectPrepareReq    control.PrepareProjectUnregisterApprovalRequest
+	projectConfirmation  control.ProjectUnregisterApprovalConfirmation
+	projectConfirmErr    error
+	projectConfirmReq    control.ConfirmProjectUnregisterApprovalRequest
 	done                 chan struct{}
 	closeOnce            sync.Once
 	closeCount           atomic.Int32
@@ -92,6 +99,14 @@ type fakeNetworkResolverSetupApprovalRunner struct {
 	execute  func(context.Context, int, networkresolverapproval.Request) (networkresolverapproval.Outcome, error)
 }
 
+// fakeProjectRemovalApprovalRunner records one exact unregister selection without opening native consent.
+type fakeProjectRemovalApprovalRunner struct {
+	requests []projectapproval.Request
+	outcome  projectapproval.Outcome
+	err      error
+	execute  func(context.Context, int, projectapproval.Request) (projectapproval.Outcome, error)
+}
+
 // Execute records the selected setup revision without opening native consent.
 func (runner *fakeNetworkSetupApprovalRunner) Execute(ctx context.Context, request networksetupapproval.Request) (networksetupapproval.Outcome, error) {
 	runner.requests = append(runner.requests, request)
@@ -103,6 +118,15 @@ func (runner *fakeNetworkSetupApprovalRunner) Execute(ctx context.Context, reque
 
 // Execute records the selected resolver revision without opening native consent.
 func (runner *fakeNetworkResolverSetupApprovalRunner) Execute(ctx context.Context, request networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
+	runner.requests = append(runner.requests, request)
+	if runner.execute != nil {
+		return runner.execute(ctx, len(runner.requests), request)
+	}
+	return runner.outcome, runner.err
+}
+
+// Execute records the selected unregister revision without opening native consent.
+func (runner *fakeProjectRemovalApprovalRunner) Execute(ctx context.Context, request projectapproval.Request) (projectapproval.Outcome, error) {
 	runner.requests = append(runner.requests, request)
 	if runner.execute != nil {
 		return runner.execute(ctx, len(runner.requests), request)
@@ -143,7 +167,11 @@ func newFakeControlClient() *fakeControlClient {
 		startLifecycle:     testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
 		stopLifecycle:      testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
 		unregistration:     testUnregistration(),
-		done:               make(chan struct{}),
+		projectConfirmation: testProjectRemovalApprovalConfirmation(
+			testProjectRemovalOperation(domain.OperationRequiresApproval, 9),
+			11,
+		),
+		done: make(chan struct{}),
 	}
 }
 
@@ -299,6 +327,33 @@ func (client *fakeControlClient) UnregisterProject(_ context.Context, request co
 	return client.unregistration, client.unregisterErr
 }
 
+// PrepareProjectUnregisterApproval records the exact replayed operation revision selected for helper launch.
+func (client *fakeControlClient) PrepareProjectUnregisterApproval(
+	_ context.Context,
+	request control.PrepareProjectUnregisterApprovalRequest,
+) (control.ProjectUnregisterApprovalPreparation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.projectPrepareReq = request
+	return client.projectPreparation, client.projectPrepareErr
+}
+
+// ConfirmProjectUnregisterApproval records the exact replayed operation revision selected for durable confirmation.
+func (client *fakeControlClient) ConfirmProjectUnregisterApproval(
+	_ context.Context,
+	request control.ConfirmProjectUnregisterApprovalRequest,
+) (control.ProjectUnregisterApprovalConfirmation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	select {
+	case <-client.done:
+		return control.ProjectUnregisterApprovalConfirmation{}, errors.New("control connection is closed")
+	default:
+	}
+	client.projectConfirmReq = request
+	return client.projectConfirmation, client.projectConfirmErr
+}
+
 // Done exposes terminal connection state to the desktop owner loop.
 func (client *fakeControlClient) Done() <-chan struct{} {
 	return client.done
@@ -318,7 +373,7 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.resolverApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.resolverIntent == nil || app.presentation == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.resolverApproval == nil || app.projectApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.resolverIntent == nil || app.presentation == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
 }
@@ -1937,6 +1992,382 @@ func TestRemoveProjectPreservesStableIdentityAndOperationState(t *testing.T) {
 	})
 }
 
+// TestApproveProjectRemovalReplaysTheRetainedIntentBeforeNativeConsent covers validation, replay, and exact selection.
+func TestApproveProjectRemovalReplaysTheRetainedIntentBeforeNativeConsent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.ApproveProjectRemoval("", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "project ID") {
+			t.Fatalf("ApproveProjectRemoval() error = %v, want invalid project", err)
+		}
+		if client.unregisterRequest != (control.UnregisterProjectRequest{}) {
+			t.Fatalf("UnregisterProject() request = %+v after local validation", client.unregisterRequest)
+		}
+	})
+
+	t.Run("disconnected", func(t *testing.T) {
+		if _, err := testApp().ApproveProjectRemoval("orders", "desktop-remove-orders"); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("ApproveProjectRemoval() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("replay failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregisterErr = errors.New("replay unavailable")
+		if _, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "replay unavailable") {
+			t.Fatalf("ApproveProjectRemoval() error = %v, want replay failure", err)
+		}
+	})
+
+	t.Run("invalid replay", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregistration = control.ProjectUnregistration{}
+		if _, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "validate project removal") {
+			t.Fatalf("ApproveProjectRemoval() error = %v, want invalid replay", err)
+		}
+	})
+
+	t.Run("crossed replay", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			mutate func(*control.ProjectUnregistration)
+		}{
+			{name: "project", mutate: func(result *control.ProjectUnregistration) { result.Operation.ProjectID = "billing" }},
+			{name: "intent", mutate: func(result *control.ProjectUnregistration) { result.Operation.IntentID = "desktop-remove-billing" }},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				app, client := connectedTestApp()
+				test.mutate(&client.unregistration)
+				if _, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), "does not match") {
+					t.Fatalf("ApproveProjectRemoval() error = %v, want crossed replay", err)
+				}
+			})
+		}
+	})
+
+	t.Run("no longer awaiting approval", func(t *testing.T) {
+		for _, state := range []domain.OperationState{domain.OperationQueued, domain.OperationSucceeded} {
+			t.Run(string(state), func(t *testing.T) {
+				app, client := connectedTestApp()
+				client.unregistration = testProjectRemovalOperation(state, 10)
+				approvalCalls := 0
+				app.projectApproval = func(projectapproval.Client) projectRemovalApprovalRunner {
+					approvalCalls++
+					return &fakeProjectRemovalApprovalRunner{}
+				}
+				result, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+				if err != nil {
+					t.Fatalf("ApproveProjectRemoval() error = %v", err)
+				}
+				if result.Operation.State != state || approvalCalls != 0 {
+					t.Fatalf("ApproveProjectRemoval() = %+v, approval calls = %d, want replay without consent", result, approvalCalls)
+				}
+			})
+		}
+	})
+
+	t.Run("approved", func(t *testing.T) {
+		app, client := connectedTestApp()
+		replayed := testProjectRemovalOperation(domain.OperationRequiresApproval, 9)
+		client.unregistration = replayed
+		confirmation := testProjectRemovalApprovalConfirmation(replayed, 11)
+		runner := &fakeProjectRemovalApprovalRunner{outcome: projectapproval.Outcome{
+			State:        projectapproval.Succeeded,
+			Confirmation: &confirmation,
+		}}
+		app.projectApproval = func(got projectapproval.Client) projectRemovalApprovalRunner {
+			if got != client {
+				t.Fatalf("project approval client = %T, want replayed client", got)
+			}
+			return runner
+		}
+
+		result, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+		if err != nil {
+			t.Fatalf("ApproveProjectRemoval() error = %v", err)
+		}
+		wantReplay := control.UnregisterProjectRequest{ProjectID: "orders", IntentID: "desktop-remove-orders"}
+		if client.unregisterRequest != wantReplay {
+			t.Fatalf("UnregisterProject() request = %+v, want %+v", client.unregisterRequest, wantReplay)
+		}
+		wantSelection := projectapproval.Request{
+			OperationID:               replayed.Operation.ID,
+			ExpectedOperationRevision: replayed.Revision,
+		}
+		if len(runner.requests) != 1 || runner.requests[0] != wantSelection {
+			t.Fatalf("project approval requests = %+v, want %+v", runner.requests, wantSelection)
+		}
+		if result.Operation.State != domain.OperationSucceeded || result.Revision != confirmation.Revision {
+			t.Fatalf("ApproveProjectRemoval() = %+v, want succeeded revision %d", result, confirmation.Revision)
+		}
+	})
+}
+
+// TestApproveProjectRemovalRetainsSelectedConnectionThroughConfirmation prevents polling retirement from closing the replayed session during native consent.
+func TestApproveProjectRemovalRetainsSelectedConnectionThroughConfirmation(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	replayed := testProjectRemovalOperation(domain.OperationRequiresApproval, 9)
+	client.unregistration = replayed
+	client.projectConfirmation = testProjectRemovalApprovalConfirmation(replayed, 11)
+	approvalWaiting := make(chan struct{})
+	confirmApproval := make(chan struct{})
+	app.projectApproval = func(approvalClient projectapproval.Client) projectRemovalApprovalRunner {
+		return &fakeProjectRemovalApprovalRunner{
+			execute: func(ctx context.Context, _ int, request projectapproval.Request) (projectapproval.Outcome, error) {
+				close(approvalWaiting)
+				select {
+				case <-confirmApproval:
+				case <-ctx.Done():
+					return projectapproval.Outcome{}, ctx.Err()
+				}
+				confirmation, err := approvalClient.ConfirmProjectUnregisterApproval(ctx, control.ConfirmProjectUnregisterApprovalRequest{
+					OperationID:               request.OperationID,
+					ExpectedOperationRevision: request.ExpectedOperationRevision,
+				})
+				if err != nil {
+					return projectapproval.Outcome{}, err
+				}
+				return projectapproval.Outcome{
+					State:        projectapproval.Succeeded,
+					Confirmation: &confirmation,
+				}, nil
+			},
+		}
+	}
+
+	result := make(chan control.ProjectUnregistration, 1)
+	approvalErr := make(chan error, 1)
+	go func() {
+		operation, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+		result <- operation
+		approvalErr <- err
+	}()
+	select {
+	case <-approvalWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("project removal did not reach native approval")
+	}
+
+	retired := make(chan struct{})
+	go func() {
+		app.retireClient(context.Background(), client)
+		close(retired)
+	}()
+	waitForClientRemoval(t, app)
+	if got := client.closeCount.Load(); got != 0 {
+		t.Fatalf("connection close count during project removal approval = %d, want 0", got)
+	}
+	select {
+	case <-retired:
+		t.Fatal("connection retirement completed before project removal confirmation")
+	default:
+	}
+
+	close(confirmApproval)
+	select {
+	case err := <-approvalErr:
+		if err != nil {
+			t.Fatalf("ApproveProjectRemoval() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("project removal approval did not return after confirmation")
+	}
+	operation := <-result
+	if operation.Operation.ID != client.projectConfirmation.Operation.ID || operation.Revision != client.projectConfirmation.Revision {
+		t.Fatalf("ApproveProjectRemoval() = %#v, want exact confirmation %#v", operation, client.projectConfirmation)
+	}
+	if client.projectConfirmReq.OperationID != replayed.Operation.ID ||
+		client.projectConfirmReq.ExpectedOperationRevision != replayed.Revision {
+		t.Fatalf("confirmation request = %#v, want replayed project removal revision", client.projectConfirmReq)
+	}
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("retired connection did not close after project removal approval released its lease")
+	}
+	if got := client.closeCount.Load(); got != 1 {
+		t.Fatalf("connection close count after project removal approval = %d, want 1", got)
+	}
+}
+
+// TestApproveProjectRemovalBoundsPrerequisiteRepair permits one retry only for reviewed helper evidence.
+func TestApproveProjectRemovalBoundsPrerequisiteRepair(t *testing.T) {
+	t.Parallel()
+
+	replayed := testProjectRemovalOperation(domain.OperationRequiresApproval, 9)
+	confirmation := testProjectRemovalApprovalConfirmation(replayed, 11)
+	success := projectapproval.Outcome{State: projectapproval.Succeeded, Confirmation: &confirmation}
+	tests := []struct {
+		name         string
+		firstOutcome projectapproval.Outcome
+		firstErr     error
+	}{
+		{name: "helper required", firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired)},
+		{name: "helper unsafe", firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperUnsafe)},
+		{name: "native unavailable", firstOutcome: projectapproval.Outcome{State: projectapproval.Unavailable}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			client.unregistration = replayed
+			ensurer := &fakeNetworkPrerequisiteEnsurer{}
+			app.setupPrerequisite = ensurer
+			runner := &fakeProjectRemovalApprovalRunner{execute: func(_ context.Context, call int, _ projectapproval.Request) (projectapproval.Outcome, error) {
+				if call == 1 {
+					return test.firstOutcome, test.firstErr
+				}
+				return success, nil
+			}}
+			app.projectApproval = func(projectapproval.Client) projectRemovalApprovalRunner { return runner }
+
+			result, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+			if err != nil {
+				t.Fatalf("ApproveProjectRemoval() error = %v", err)
+			}
+			if result.Operation.State != domain.OperationSucceeded || ensurer.calls != 1 || len(runner.requests) != 2 || runner.requests[0] != runner.requests[1] {
+				t.Fatalf("result/repair/requests = %+v / %d / %+v, want one repair and one exact retry", result, ensurer.calls, runner.requests)
+			}
+		})
+	}
+
+	t.Run("repair fails", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregistration = replayed
+		ensurer := &fakeNetworkPrerequisiteEnsurer{err: networkprerequisite.ErrDeclined}
+		app.setupPrerequisite = ensurer
+		runner := &fakeProjectRemovalApprovalRunner{outcome: projectapproval.Outcome{State: projectapproval.Unavailable}}
+		app.projectApproval = func(projectapproval.Client) projectRemovalApprovalRunner { return runner }
+
+		_, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+		if err == nil || !strings.Contains(err.Error(), networkprerequisite.ErrDeclined.Error()) || ensurer.calls != 1 || len(runner.requests) != 1 {
+			t.Fatalf("ApproveProjectRemoval() = %v, repair/requests = %d/%d, want one failed repair", err, ensurer.calls, len(runner.requests))
+		}
+	})
+
+	t.Run("retry remains missing", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregistration = replayed
+		ensurer := &fakeNetworkPrerequisiteEnsurer{}
+		app.setupPrerequisite = ensurer
+		runner := &fakeProjectRemovalApprovalRunner{err: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired)}
+		app.projectApproval = func(projectapproval.Client) projectRemovalApprovalRunner { return runner }
+
+		_, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+		if err == nil || !strings.Contains(err.Error(), "still cannot find the ticket directory") || ensurer.calls != 1 || len(runner.requests) != 2 {
+			t.Fatalf("ApproveProjectRemoval() = %v, repair/requests = %d/%d, want bounded verification failure", err, ensurer.calls, len(runner.requests))
+		}
+	})
+
+	t.Run("unreviewed failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.unregistration = replayed
+		ensurer := &fakeNetworkPrerequisiteEnsurer{}
+		app.setupPrerequisite = ensurer
+		runner := &fakeProjectRemovalApprovalRunner{err: rpc.NewWireError(rpc.ErrorCodeInternal)}
+		app.projectApproval = func(projectapproval.Client) projectRemovalApprovalRunner { return runner }
+
+		_, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders")
+		if err == nil || ensurer.calls != 0 || len(runner.requests) != 1 {
+			t.Fatalf("ApproveProjectRemoval() = %v, repair/requests = %d/%d, want no native repair", err, ensurer.calls, len(runner.requests))
+		}
+	})
+}
+
+// TestProjectRemovalApprovalErrorPreservesSafeOutcomes pins every non-success result shown by Wails.
+func TestProjectRemovalApprovalErrorPreservesSafeOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		outcome projectapproval.Outcome
+		want    string
+	}{
+		{name: "declined", outcome: projectapproval.Outcome{State: projectapproval.Declined}, want: "safe to retry"},
+		{name: "unavailable", outcome: projectapproval.Outcome{State: projectapproval.Unavailable}, want: "unavailable"},
+		{name: "helper failure", outcome: projectapproval.Outcome{
+			State: projectapproval.HelperFailed,
+			HelperFailure: &projectapproval.HelperFailure{
+				Code:    helper.ErrorCodeMutationFailed,
+				Message: "release was rejected",
+			},
+		}, want: "release was rejected"},
+		{name: "helper failure without detail", outcome: projectapproval.Outcome{State: projectapproval.HelperFailed}, want: "without a problem description"},
+		{name: "indeterminate", outcome: projectapproval.Outcome{State: projectapproval.Indeterminate}, want: "refresh before retrying"},
+		{name: "unsupported", outcome: projectapproval.Outcome{}, want: "unsupported state"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := projectRemovalApprovalError(test.outcome); !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("projectRemovalApprovalError() = %q, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestApproveProjectRemovalRejectsInconsistentSuccess prevents defective runners from crossing retained authority.
+func TestApproveProjectRemovalRejectsInconsistentSuccess(t *testing.T) {
+	t.Parallel()
+
+	replayed := testProjectRemovalOperation(domain.OperationRequiresApproval, 9)
+	valid := testProjectRemovalApprovalConfirmation(replayed, 11)
+	tests := []struct {
+		name    string
+		outcome func() projectapproval.Outcome
+		want    string
+	}{
+		{name: "missing confirmation", outcome: func() projectapproval.Outcome {
+			return projectapproval.Outcome{State: projectapproval.Succeeded}
+		}, want: "inconsistent evidence"},
+		{name: "unexpected helper failure", outcome: func() projectapproval.Outcome {
+			confirmation := valid
+			return projectapproval.Outcome{
+				State:         projectapproval.Succeeded,
+				Confirmation:  &confirmation,
+				HelperFailure: &projectapproval.HelperFailure{Code: helper.ErrorCodeMutationFailed, Message: "unexpected"},
+			}
+		}, want: "inconsistent evidence"},
+		{name: "invalid confirmation", outcome: func() projectapproval.Outcome {
+			confirmation := control.ProjectUnregisterApprovalConfirmation{}
+			return projectapproval.Outcome{State: projectapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "validate project removal approval confirmation"},
+		{name: "operation", outcome: func() projectapproval.Outcome {
+			confirmation := valid
+			confirmation.Operation.ID = "operation-remove-other"
+			return projectapproval.Outcome{State: projectapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed"},
+		{name: "project", outcome: func() projectapproval.Outcome {
+			confirmation := valid
+			confirmation.Operation.ProjectID = "billing"
+			return projectapproval.Outcome{State: projectapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed"},
+		{name: "intent", outcome: func() projectapproval.Outcome {
+			confirmation := valid
+			confirmation.Operation.IntentID = "desktop-remove-other"
+			return projectapproval.Outcome{State: projectapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed"},
+		{name: "revision", outcome: func() projectapproval.Outcome {
+			confirmation := valid
+			confirmation.Revision = replayed.Revision
+			return projectapproval.Outcome{State: projectapproval.Succeeded, Confirmation: &confirmation}
+		}, want: "crossed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			client.unregistration = replayed
+			runner := &fakeProjectRemovalApprovalRunner{outcome: test.outcome()}
+			app.projectApproval = func(projectapproval.Client) projectRemovalApprovalRunner { return runner }
+
+			if _, err := app.ApproveProjectRemoval("orders", "desktop-remove-orders"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ApproveProjectRemoval() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
 // TestProjectActivityPreservesCurrentSessionCursor covers validation, correlation, and daemon delegation.
 func TestProjectActivityPreservesCurrentSessionCursor(t *testing.T) {
 	t.Parallel()
@@ -2840,6 +3271,58 @@ func testUnregistration() control.ProjectUnregistration {
 			RequestedAt: time.Date(2026, time.July, 18, 12, 5, 0, 0, time.UTC),
 		},
 		Revision: 9,
+	}
+}
+
+// testProjectRemovalOperation returns one valid removal replay at the requested state and revision.
+func testProjectRemovalOperation(state domain.OperationState, revision domain.Sequence) control.ProjectUnregistration {
+	result := testUnregistration()
+	result.Revision = revision
+	startedAt := result.Operation.RequestedAt.Add(time.Second)
+	finishedAt := result.Operation.RequestedAt.Add(2 * time.Second)
+	result.Operation.State = state
+	result.Operation.Phase = string(state)
+	result.Operation.StartedAt = nil
+	result.Operation.FinishedAt = nil
+	result.Operation.Problem = nil
+	switch state {
+	case domain.OperationRunning, domain.OperationRequiresApproval:
+		result.Operation.StartedAt = &startedAt
+	case domain.OperationSucceeded:
+		result.Operation.StartedAt = &startedAt
+		result.Operation.FinishedAt = &finishedAt
+	case domain.OperationFailed:
+		result.Operation.StartedAt = &startedAt
+		result.Operation.FinishedAt = &finishedAt
+		result.Operation.Problem = &domain.Problem{
+			Code:      "release_failed",
+			Message:   "release failed",
+			Retryable: true,
+		}
+	case domain.OperationCancelled:
+		result.Operation.FinishedAt = &finishedAt
+	}
+	return result
+}
+
+// testProjectRemovalApprovalConfirmation completes one exact approval replay.
+func testProjectRemovalApprovalConfirmation(
+	replayed control.ProjectUnregistration,
+	revision domain.Sequence,
+) control.ProjectUnregisterApprovalConfirmation {
+	operation := replayed.Operation
+	if operation.StartedAt == nil {
+		startedAt := operation.RequestedAt.Add(time.Second)
+		operation.StartedAt = &startedAt
+	}
+	finishedAt := operation.RequestedAt.Add(3 * time.Second)
+	operation.State = domain.OperationSucceeded
+	operation.Phase = string(domain.OperationSucceeded)
+	operation.FinishedAt = &finishedAt
+	operation.Problem = nil
+	return control.ProjectUnregisterApprovalConfirmation{
+		Operation: operation,
+		Revision:  revision,
 	}
 }
 
