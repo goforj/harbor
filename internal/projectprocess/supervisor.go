@@ -54,7 +54,8 @@ var (
 
 // Options controls bounded shutdown and output buffering behavior.
 type Options struct {
-	GracePeriod       time.Duration
+	GracePeriod time.Duration
+	// OutputBufferLines bounds queued output records; its original name remains for API compatibility.
 	OutputBufferLines int
 	// Environment isolates child projects from Harbor's subsequently loaded application configuration.
 	Environment Environment
@@ -71,7 +72,7 @@ func CaptureEnvironment() Environment {
 	return append(Environment(nil), os.Environ()...)
 }
 
-// StartRequest identifies the registered checkout, managed environment, and best-effort line destinations for its development output.
+// StartRequest identifies the registered checkout, managed environment, and best-effort destinations for its development output.
 type StartRequest struct {
 	ProjectID            domain.ProjectID
 	SessionID            domain.SessionID
@@ -107,6 +108,7 @@ type Exit struct {
 	Err                error
 	ScopeSettlementErr error
 	StopRequested      bool
+	// DroppedOutputLines counts dropped output records; its original name remains for API compatibility.
 	DroppedOutputLines uint64
 	ExitedAt           time.Time
 }
@@ -303,8 +305,8 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 
 	var pipeReaders sync.WaitGroup
 	pipeReaders.Add(2)
-	go readOutputLines(stdout, outputStreamStdout, relay, &pipeReaders)
-	go readOutputLines(stderr, outputStreamStderr, relay, &pipeReaders)
+	go readOutputStream(stdout, outputStreamStdout, relay, &pipeReaders)
+	go readOutputStream(stderr, outputStreamStderr, relay, &pipeReaders)
 	// The parent copies must close immediately so EOF represents the complete child tree, not Harbor itself.
 	if err := errors.Join(stdoutChild.Close(), stderrChild.Close()); err != nil {
 		cleanupErr := terminateStartedCommand(command, platform)

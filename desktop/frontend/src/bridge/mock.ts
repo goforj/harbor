@@ -11,6 +11,41 @@ export function createMockBridge(): HarborBridge {
   const lifecycles = new Map<string, ProjectLifecycleOperation>()
   let networkSetup: NetworkSetupOperation | null = null
 
+  // projectActivity applies the fixture's byte-addressed current-session cursor contract.
+  function projectActivity(projectId: string, sessionId: string, cursor: number): ProjectActivity {
+    const project = snapshot.projects.find((entry) => entry.id === projectId)
+    if (!project) {
+      throw new Error(`Unknown project: ${projectId}`)
+    }
+    if (project.state === 'stopped' || project.state === 'failed' || project.state === 'unavailable') {
+      return { project_id: projectId }
+    }
+
+    const fixtureActivity: ProjectActivity = structuredClone(fixture.project_activity)
+    if (!fixtureActivity.session) {
+      return { project_id: projectId }
+    }
+    fixtureActivity.project_id = projectId
+    fixtureActivity.session.id = `session-${projectId}`
+    const output = fixtureActivity.session.output
+    const nextCursor = output.next_cursor
+    if (sessionId && sessionId !== fixtureActivity.session.id) {
+      output.reset = true
+    }
+    else if (cursor > 0) {
+      const encoded = new TextEncoder().encode(output.text)
+      if (cursor > encoded.length || !isUTF8Boundary(encoded, cursor)) {
+        output.reset = true
+      }
+      else {
+        output.text = cursor === encoded.length
+          ? ''
+          : new TextDecoder().decode(encoded.slice(cursor))
+      }
+    }
+    return fixtureActivity
+  }
+
   async function changeProjectLifecycle(projectId: string, intentId: string, action: 'start' | 'stop') {
     const previous = lifecycles.get(intentId)
     const kind = `project.${action}`
@@ -68,37 +103,12 @@ export function createMockBridge(): HarborBridge {
       return structuredClone(snapshot)
     },
     async getProjectActivity(projectId, sessionId, cursor) {
-      const project = snapshot.projects.find((entry) => entry.id === projectId)
-      if (!project) {
-        throw new Error(`Unknown project: ${projectId}`)
-      }
-      if (project.state === 'stopped' || project.state === 'failed' || project.state === 'unavailable') {
-        return { project_id: projectId }
-      }
-
-      const fixtureActivity: ProjectActivity = structuredClone(fixture.project_activity)
-      if (!fixtureActivity.session) {
-        return { project_id: projectId }
-      }
-      fixtureActivity.project_id = projectId
-      fixtureActivity.session.id = `session-${projectId}`
-      const output = fixtureActivity.session.output
-      const nextCursor = output.next_cursor
-      if (sessionId && sessionId !== fixtureActivity.session.id) {
-        output.reset = true
-      }
-      else if (cursor > 0) {
-        const encoded = new TextEncoder().encode(output.text)
-        if (cursor > encoded.length || !isUTF8Boundary(encoded, cursor)) {
-          output.reset = true
-        }
-        else {
-          output.text = cursor === encoded.length
-            ? ''
-            : new TextDecoder().decode(encoded.slice(cursor))
-        }
-      }
-      return fixtureActivity
+      return projectActivity(projectId, sessionId, cursor)
+    },
+    async waitProjectActivity(projectId, sessionId, cursor, waitMilliseconds) {
+      // A synchronous caught-up fixture response would create a tight loop that native long-polling never produces.
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(Math.max(waitMilliseconds, 1), 1000)))
+      return projectActivity(projectId, sessionId, cursor)
     },
     async openResource(projectId, resourceId) {
       const project = fixture.snapshot.projects.find((entry) => entry.id === projectId)

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/joho/godotenv"
 )
@@ -705,45 +706,85 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	}
 }
 
-// TestOutputRelayWritesWholeLinesSerially verifies shared destinations never receive interleaved partial lines.
-func TestOutputRelayWritesWholeLinesSerially(t *testing.T) {
-	writes := &recordingWriter{}
-	relay := newOutputRelay(writes, writes, 8)
+// TestOutputRelaySerializesReadableChunks verifies shared destinations never receive byte-interleaved pipe reads.
+func TestOutputRelaySerializesReadableChunks(t *testing.T) {
+	trace := &recordingWriteCloser{}
+	relay := newOutputRelayWithTrace(io.Discard, io.Discard, trace, 8)
 	var readers sync.WaitGroup
 	readers.Add(2)
-	go readOutputLines(strings.NewReader("one\ntwo\n"), outputStreamStdout, relay, &readers)
-	go readOutputLines(strings.NewReader("error\n"), outputStreamStderr, relay, &readers)
+	go readOutputStream(strings.NewReader("one\ntwo\n"), outputStreamStdout, relay, &readers)
+	go readOutputStream(strings.NewReader("error\n"), outputStreamStderr, relay, &readers)
 	readers.Wait()
 	relay.finish()
-	writes.waitForCount(t, 3)
-	for _, write := range writes.snapshot() {
-		if !strings.HasSuffix(write, "\n") || strings.Count(write, "\n") != 1 {
-			t.Fatalf("writer call = %q, want one complete line", write)
-		}
+	writes := trace.snapshot()
+	if len(writes) != 2 {
+		t.Fatalf("trace writes = %#v, want two serialized reads", writes)
+	}
+	seen := map[string]bool{}
+	for _, write := range writes {
+		seen[write] = true
+	}
+	if !seen["one\ntwo\n"] || !seen["error\n"] {
+		t.Fatalf("trace writes = %#v, want both intact stream chunks", writes)
 	}
 }
 
-// TestOutputRelayBoundsNewlineFreeOutput proves one child write cannot grow Harbor memory without limit.
-func TestOutputRelayBoundsNewlineFreeOutput(t *testing.T) {
-	writer := &recordingWriter{}
-	relay := newOutputRelay(writer, io.Discard, 2)
-	var readers sync.WaitGroup
-	readers.Add(1)
-	input := strings.NewReader(strings.Repeat("x", maximumOutputLineBytes*3))
-	go readOutputLines(input, outputStreamStdout, relay, &readers)
-	readers.Wait()
+// TestOutputRelayBoundsNewlineFreeReads proves arbitrary output is offered in small fixed-size records without waiting for a newline.
+func TestOutputRelayBoundsNewlineFreeReads(t *testing.T) {
+	trace := &recordingWriteCloser{}
+	relay := newOutputRelayWithTrace(io.Discard, io.Discard, trace, 8)
+	want := strings.Repeat("x", outputReadBufferBytes*3+17)
+	readOutputChunks(strings.NewReader(want), outputStreamStdout, relay)
 	relay.finish()
-	writer.waitForCount(t, 1)
 
-	writes := writer.snapshot()
-	if len(writes) != 1 {
-		t.Fatalf("output writes = %d, want 1", len(writes))
+	writes := trace.snapshot()
+	if len(writes) != 4 {
+		t.Fatalf("output writes = %d, want 4", len(writes))
 	}
-	if len(writes[0]) > maximumOutputLineBytes || !strings.HasSuffix(writes[0], string(outputTruncationMarker)) {
-		t.Fatalf("bounded output length = %d, suffix present = %t", len(writes[0]), strings.HasSuffix(writes[0], string(outputTruncationMarker)))
+	for index, write := range writes {
+		if len(write) > outputReadBufferBytes {
+			t.Fatalf("output write %d bytes = %d, want <= %d", index, len(write), outputReadBufferBytes)
+		}
 	}
-	if relay.dropped.Load() != 1 {
-		t.Fatalf("dropped lines = %d, want 1", relay.dropped.Load())
+	if got := strings.Join(writes, ""); got != want {
+		t.Fatalf("joined newline-free output bytes = %d, want %d", len(got), len(want))
+	}
+}
+
+// TestOutputRelayPublishesReadableChunkBeforeEOF proves a blocked child pipe does not hide newline-free progress.
+func TestOutputRelayPublishesReadableChunkBeforeEOF(t *testing.T) {
+	relay := newOutputRelay(io.Discard, io.Discard, 2)
+	reader := newStagedOutputReader([]byte("compiling"))
+	done := make(chan struct{})
+	go func() {
+		readOutputChunks(reader, outputStreamStdout, relay)
+		close(done)
+	}()
+
+	<-reader.blocked
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	chunk, err := relay.transcript.wait(ctx, 0)
+	if err != nil || chunk.Text != "compiling" {
+		t.Fatalf("immediate output = %#v, %v", chunk, err)
+	}
+
+	close(reader.release)
+	<-done
+	relay.finish()
+}
+
+// TestOutputChunksRetainIncompleteUTF8AcrossReads keeps pipe boundaries from corrupting transcript cursors.
+func TestOutputChunksRetainIncompleteUTF8AcrossReads(t *testing.T) {
+	relay := newOutputRelay(io.Discard, io.Discard, 2)
+	encoded := []byte("界")
+	reader := &segmentedOutputReader{segments: [][]byte{encoded[:2], encoded[2:]}}
+	readOutputChunks(reader, outputStreamStdout, relay)
+	relay.finish()
+
+	chunk := relay.transcript.read(0)
+	if chunk.Text != "界" || !utf8.ValidString(chunk.Text) || chunk.NextCursor != uint64(len(encoded)) {
+		t.Fatalf("split UTF-8 output = %#v", chunk)
 	}
 }
 
@@ -751,6 +792,54 @@ func TestOutputRelayBoundsNewlineFreeOutput(t *testing.T) {
 type startResult struct {
 	handle *Handle
 	err    error
+}
+
+// stagedOutputReader exposes when the output loop has relayed its first fragment and blocked for more.
+type stagedOutputReader struct {
+	first   []byte
+	blocked chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+// newStagedOutputReader constructs one reader whose EOF is controlled by the test.
+func newStagedOutputReader(first []byte) *stagedOutputReader {
+	return &stagedOutputReader{
+		first:   append([]byte(nil), first...),
+		blocked: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+// Read returns the staged fragment before blocking so the test can inspect output before EOF.
+func (reader *stagedOutputReader) Read(output []byte) (int, error) {
+	if len(reader.first) > 0 {
+		count := copy(output, reader.first)
+		reader.first = reader.first[count:]
+		return count, nil
+	}
+	reader.once.Do(func() { close(reader.blocked) })
+	<-reader.release
+	return 0, io.EOF
+}
+
+// segmentedOutputReader returns caller-selected pipe boundaries before EOF.
+type segmentedOutputReader struct {
+	segments [][]byte
+}
+
+// Read copies exactly one remaining segment so UTF-8 boundary behavior stays deterministic.
+func (reader *segmentedOutputReader) Read(output []byte) (int, error) {
+	if len(reader.segments) == 0 {
+		return 0, io.EOF
+	}
+	segment := reader.segments[0]
+	reader.segments = reader.segments[1:]
+	count := copy(output, segment)
+	if count != len(segment) {
+		return count, io.ErrShortBuffer
+	}
+	return count, nil
 }
 
 // synchronizedBuffer makes output polling race-free while the relay remains asynchronous.
@@ -796,6 +885,16 @@ func (writer *blockingWriter) Write(bytes []byte) (int, error) {
 type recordingWriter struct {
 	mu     sync.Mutex
 	writes []string
+}
+
+// recordingWriteCloser makes deterministic relay trace assertions without filesystem I/O.
+type recordingWriteCloser struct {
+	recordingWriter
+}
+
+// Close completes the in-memory trace contract.
+func (writer *recordingWriteCloser) Close() error {
+	return nil
 }
 
 // Write records one caller-visible relay operation.

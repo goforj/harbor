@@ -6,6 +6,7 @@ export type { HarborIllustrationFade, HarborIllustrationPlacement, HarborIllustr
 export { default as HarborMobileNav } from './HarborMobileNav.vue'
 export { default as HarborRail } from './HarborRail.vue'
 export { default as StatusBadge } from './StatusBadge.vue'
+export { default as TerminalOutput } from './TerminalOutput.vue'
 export { default as ThemeMenu } from './ThemeMenu.vue'
 export { destinationFromPath, harborNavigation } from './navigation'
 export type { HarborNavigationItem } from './navigation'

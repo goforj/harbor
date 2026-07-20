@@ -37,12 +37,22 @@ func TestAuthorityProjectActivityProjectsOnlyCurrentBoundedOutput(t *testing.T) 
 		},
 	}}
 	authority := projectActivityTestAuthority(lifecycle)
-	request := control.ProjectActivityRequest{ProjectID: "project-orders", SessionID: "session-prior", Cursor: 90}
+	request := control.ProjectActivityRequest{
+		ProjectID:        "project-orders",
+		SessionID:        "session-prior",
+		Cursor:           90,
+		WaitMilliseconds: 25_000,
+	}
 	got, err := authority.ProjectActivity(t.Context(), control.Caller{}, request)
 	if err != nil {
 		t.Fatalf("ProjectActivity() error = %v", err)
 	}
-	wantRequest := reconcile.ProjectActivityRequest{ProjectID: "project-orders", SessionID: "session-prior", Cursor: 90}
+	wantRequest := reconcile.ProjectActivityRequest{
+		ProjectID: "project-orders",
+		SessionID: "session-prior",
+		Cursor:    90,
+		Wait:      25 * time.Second,
+	}
 	if !reflect.DeepEqual(lifecycle.activities, []reconcile.ProjectActivityRequest{wantRequest}) {
 		t.Fatalf("coordinator requests = %#v", lifecycle.activities)
 	}

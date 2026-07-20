@@ -173,6 +173,16 @@ func (*projectLifecycleRevisionRaceSupervisor) ReadOutput(
 	return projectprocess.OutputChunk{}
 }
 
+// WaitOutput returns no transcript because the revision-race fixture never accepts a process launch.
+func (*projectLifecycleRevisionRaceSupervisor) WaitOutput(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+	uint64,
+) (projectprocess.OutputChunk, error) {
+	return projectprocess.OutputChunk{}, nil
+}
+
 // Stop is inert because the revision-race fixture never accepts a process.
 func (*projectLifecycleRevisionRaceSupervisor) Stop(context.Context, domain.ProjectID, domain.SessionID) error {
 	return nil

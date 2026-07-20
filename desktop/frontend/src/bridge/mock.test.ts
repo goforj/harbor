@@ -29,6 +29,7 @@ describe('Harbor mock bridge', () => {
       add_project: 'AddProject',
       open_resource: 'OpenResource',
       project_activity: 'ProjectActivity',
+      wait_project_activity: 'WaitProjectActivity',
       remove_project: 'RemoveProject',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',

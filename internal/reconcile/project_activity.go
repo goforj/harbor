@@ -4,17 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 )
 
+const maximumProjectActivityWait = 25 * time.Second
+
 // ProjectActivityRequest selects the current durable session and one bounded output cursor.
 type ProjectActivityRequest struct {
 	ProjectID domain.ProjectID
 	SessionID domain.SessionID
 	Cursor    uint64
+	Wait      time.Duration
 }
 
 // ProjectActivity is the current session view for one registered project.
@@ -40,6 +44,7 @@ type projectActivityState interface {
 // projectActivityOutputReader limits process access to an exact identity and opaque cursor.
 type projectActivityOutputReader interface {
 	ReadOutput(domain.ProjectID, domain.SessionID, uint64) projectprocess.OutputChunk
+	WaitOutput(context.Context, domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
 }
 
 // ProjectActivity reads only the current durable session and its exact supervised process transcript.
@@ -89,6 +94,31 @@ func readCurrentProjectActivity(
 	if changedSession {
 		cursor = 0
 	}
+	if request.Wait > 0 && request.SessionID == session.ID {
+		waitContext, cancel := context.WithTimeout(ctx, request.Wait)
+		waitedOutput, waitErr := reader.WaitOutput(waitContext, request.ProjectID, session.ID, cursor)
+		cancel()
+		if waitErr != nil && !errors.Is(waitErr, context.DeadlineExceeded) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ProjectActivity{}, ctxErr
+			}
+			return ProjectActivity{}, fmt.Errorf("wait for current project activity: %w", waitErr)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ProjectActivity{}, ctxErr
+		}
+
+		// A held request reselects durable state so session replacement cannot return a stale projection.
+		request.Wait = 0
+		activity, err := readCurrentProjectActivity(ctx, source, reader, request)
+		if err != nil {
+			return ProjectActivity{}, err
+		}
+		if waitErr == nil && waitedOutput.Available && activity.Session != nil && activity.Session.ID == session.ID {
+			activity.Session.Output = waitedOutput
+		}
+		return activity, nil
+	}
 	output := reader.ReadOutput(request.ProjectID, session.ID, cursor)
 	if changedSession {
 		output.Reset = true
@@ -108,6 +138,9 @@ func readCurrentProjectActivity(
 func validateProjectActivityRequest(request ProjectActivityRequest) error {
 	if err := request.ProjectID.Validate(); err != nil {
 		return err
+	}
+	if request.Wait < 0 || request.Wait > maximumProjectActivityWait {
+		return fmt.Errorf("project activity wait must be between 0 and %s", maximumProjectActivityWait)
 	}
 	if request.SessionID == "" {
 		if request.Cursor != 0 {

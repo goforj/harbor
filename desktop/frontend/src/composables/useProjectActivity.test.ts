@@ -5,6 +5,7 @@ import type { ProjectActivity } from '@/domain/harbor'
 import { useProjectActivity } from './useProjectActivity'
 
 type ReadProjectActivity = (projectId: string, sessionId: string, cursor: number) => Promise<ProjectActivity>
+type WaitProjectActivity = (projectId: string, sessionId: string, cursor: number, waitMilliseconds: number) => Promise<ProjectActivity>
 
 interface ActivityChunkOptions {
   available?: boolean
@@ -48,24 +49,33 @@ function deferred<T>() {
   return { promise, reject, resolve }
 }
 
-function mountProjectActivity(read: ReadProjectActivity) {
+function never<T>(): Promise<T> {
+  return new Promise(() => {})
+}
+
+function mountProjectActivity(
+  read: ReadProjectActivity,
+  wait: WaitProjectActivity = () => never<ProjectActivity>(),
+  supportsWait = true,
+) {
   const projectId = ref('orders')
   const supported = ref(true)
+  const waitSupported = ref(supportsWait)
   const connected = ref(true)
   const snapshotSequence = ref<number | undefined>(1)
   let state!: ReturnType<typeof useProjectActivity>
   const wrapper = mount(defineComponent({
     setup() {
-      state = useProjectActivity({ projectId, supported, connected, snapshotSequence, read })
+      state = useProjectActivity({ projectId, supported, waitSupported, connected, snapshotSequence, read, wait })
       return () => h('div')
     },
   }))
-  return { connected, projectId, snapshotSequence, state, supported, wrapper }
+  return { connected, projectId, snapshotSequence, state, supported, waitSupported, wrapper }
 }
 
-async function runReadyTimers(milliseconds = 0) {
-  await vi.advanceTimersByTimeAsync(milliseconds)
+async function settle() {
   await flushPromises()
+  await nextTick()
 }
 
 describe('useProjectActivity', () => {
@@ -78,90 +88,174 @@ describe('useProjectActivity', () => {
     vi.useRealTimers()
   })
 
-  it('assembles every immediately retained chunk using the returned cursor', async () => {
+  it('drains retained chunks and immediately opens one cursor-addressed long poll', async () => {
     const read = vi.fn<ReadProjectActivity>()
       .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'first\n', 6, { hasMore: true }))
       .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'second\n', 13))
-    const { state, wrapper } = mountProjectActivity(read)
+    const wait = vi.fn<WaitProjectActivity>(() => never<ProjectActivity>())
+    const { state, wrapper } = mountProjectActivity(read, wait)
 
-    await runReadyTimers()
+    await settle()
 
     expect(read.mock.calls).toEqual([
       ['orders', '', 0],
       ['orders', 'session-orders', 6],
     ])
+    expect(wait).toHaveBeenCalledWith('orders', 'session-orders', 13, 25_000)
     expect(state.output.value).toBe('first\nsecond\n')
-    expect(state.activity.value?.session?.output.next_cursor).toBe(13)
     wrapper.unmount()
   })
 
-  it('coalesces a snapshot refresh while a cursor read is in flight', async () => {
+  it('appends each completed live wait and begins the next wait without a polling timer', async () => {
+    const firstWait = deferred<ProjectActivity>()
+    const secondWait = deferred<ProjectActivity>()
+    const read = vi.fn<ReadProjectActivity>().mockResolvedValue(projectActivity('orders', 'session-orders', 'ready\n', 6))
+    const wait = vi.fn<WaitProjectActivity>()
+      .mockImplementationOnce(() => firstWait.promise)
+      .mockImplementationOnce(() => secondWait.promise)
+    const { state, wrapper } = mountProjectActivity(read, wait)
+    await settle()
+
+    firstWait.resolve(projectActivity('orders', 'session-orders', 'live\n', 11))
+    await settle()
+
+    expect(state.output.value).toBe('ready\nlive\n')
+    expect(wait.mock.calls).toEqual([
+      ['orders', 'session-orders', 6, 25_000],
+      ['orders', 'session-orders', 11, 25_000],
+    ])
+    expect(vi.getTimerCount()).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('coalesces a snapshot refresh into an immediate backfill after an active wait', async () => {
     const pending = deferred<ProjectActivity>()
     const read = vi.fn<ReadProjectActivity>()
-      .mockImplementationOnce(() => pending.promise)
-      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', '', 1))
-    const { snapshotSequence, state, wrapper } = mountProjectActivity(read)
-
-    await runReadyTimers()
-    expect(read).toHaveBeenCalledTimes(1)
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'A', 1))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'B', 2))
+    const wait = vi.fn<WaitProjectActivity>().mockImplementationOnce(() => pending.promise)
+    const { snapshotSequence, state, wrapper } = mountProjectActivity(read, wait)
+    await settle()
 
     snapshotSequence.value = 2
     await nextTick()
-    await runReadyTimers()
     expect(read).toHaveBeenCalledTimes(1)
 
-    pending.resolve(projectActivity('orders', 'session-orders', 'A', 1))
-    await flushPromises()
-    expect(state.output.value).toBe('A')
-    expect(read).toHaveBeenCalledTimes(1)
+    pending.resolve(projectActivity('orders', 'session-orders', '', 1))
+    await settle()
 
-    await runReadyTimers()
-    expect(read.mock.calls).toEqual([
-      ['orders', '', 0],
-      ['orders', 'session-orders', 1],
-    ])
-    expect(state.output.value).toBe('A')
+    expect(read.mock.calls.at(-1)).toEqual(['orders', 'session-orders', 1])
+    expect(state.output.value).toBe('AB')
+    wrapper.unmount()
+  })
+
+  it('keeps 750 millisecond cursor polling against an older daemon', async () => {
+    const read = vi.fn<ReadProjectActivity>()
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'A', 1))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'B', 2))
+    const wait = vi.fn<WaitProjectActivity>()
+    const { state, wrapper } = mountProjectActivity(read, wait, false)
+    await settle()
+
+    expect(read).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(749)
+    expect(read).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await settle()
+
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(wait).not.toHaveBeenCalled()
+    expect(state.output.value).toBe('AB')
+    wrapper.unmount()
+  })
+
+  it('waits for a snapshot instead of spinning when no live session exists', async () => {
+    const read = vi.fn<ReadProjectActivity>()
+      .mockResolvedValueOnce({ project_id: 'orders' })
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'online', 6))
+    const wait = vi.fn<WaitProjectActivity>(() => never<ProjectActivity>())
+    const { snapshotSequence, wrapper } = mountProjectActivity(read, wait)
+    await settle()
+
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(wait).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+
+    snapshotSequence.value = 2
+    await settle()
+
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(wait).toHaveBeenCalledWith('orders', 'session-orders', 6, 25_000)
+    wrapper.unmount()
+  })
+
+  it('backs off an invalid early wait response that makes no cursor progress', async () => {
+    const read = vi.fn<ReadProjectActivity>()
+      .mockResolvedValue(projectActivity('orders', 'session-orders', 'ready', 5))
+    const wait = vi.fn<WaitProjectActivity>()
+      .mockResolvedValue(projectActivity('orders', 'session-orders', '', 5))
+    const { wrapper } = mountProjectActivity(read, wait)
+    await settle()
+
+    expect(wait).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(99)
+    expect(read).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await settle()
+    expect(read).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('retries only after a transport error and clears the error after recovery', async () => {
+    const read = vi.fn<ReadProjectActivity>()
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'A', 1))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'B', 2))
+    const wait = vi.fn<WaitProjectActivity>()
+      .mockRejectedValueOnce(new Error('connection interrupted'))
+      .mockImplementation(() => never<ProjectActivity>())
+    const { state, wrapper } = mountProjectActivity(read, wait)
+    await settle()
+
+    expect(state.error.value).toBe('connection interrupted')
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    await settle()
+
+    expect(read).toHaveBeenLastCalledWith('orders', 'session-orders', 1)
+    expect(state.output.value).toBe('AB')
+    expect(state.error.value).toBeNull()
     wrapper.unmount()
   })
 
   it('preserves a same-session cursor while its supervised output is unavailable', async () => {
+    const unavailable = deferred<ProjectActivity>()
     const read = vi.fn<ReadProjectActivity>()
       .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'A', 1))
-      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', '', 0, { available: false }))
       .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'B', 2))
-    const { state, wrapper } = mountProjectActivity(read)
+    const wait = vi.fn<WaitProjectActivity>().mockImplementationOnce(() => unavailable.promise)
+    const { snapshotSequence, state, wrapper } = mountProjectActivity(read, wait)
+    await settle()
 
-    await runReadyTimers()
-    await runReadyTimers(750)
-    expect(state.output.value).toBe('A')
-    await runReadyTimers(750)
+    snapshotSequence.value = 2
+    unavailable.resolve(projectActivity('orders', 'session-orders', '', 0, { available: false }))
+    await settle()
 
-    expect(read.mock.calls).toEqual([
-      ['orders', '', 0],
-      ['orders', 'session-orders', 1],
-      ['orders', 'session-orders', 1],
-    ])
+    expect(read).toHaveBeenLastCalledWith('orders', 'session-orders', 1)
     expect(state.output.value).toBe('AB')
     wrapper.unmount()
   })
 
   it('replaces output for session changes, resets, and retained-history truncation', async () => {
     const read = vi.fn<ReadProjectActivity>()
-      .mockResolvedValueOnce(projectActivity('orders', 'session-one', 'old output', 10))
-      .mockResolvedValueOnce(projectActivity('orders', 'session-two', 'new session', 11, { reset: true }))
-      .mockResolvedValueOnce(projectActivity('orders', 'session-two', 'reset output', 12, { reset: true }))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-one', 'old output', 10, { hasMore: true }))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-two', 'new session', 11, { reset: true, hasMore: true }))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-two', 'reset output', 12, { reset: true, hasMore: true }))
       .mockResolvedValueOnce(projectActivity('orders', 'session-two', 'retained tail', 20, { truncated: true }))
     const { state, wrapper } = mountProjectActivity(read)
 
-    await runReadyTimers()
-    expect(state.output.value).toBe('old output')
-    await runReadyTimers(750)
-    expect(state.output.value).toBe('new session')
-    expect(state.truncated.value).toBe(false)
-    await runReadyTimers(750)
-    expect(state.output.value).toBe('reset output')
-    expect(state.truncated.value).toBe(false)
-    await runReadyTimers(750)
+    await settle()
+
     expect(state.output.value).toBe('retained tail')
     expect(state.truncated.value).toBe(true)
     wrapper.unmount()
@@ -172,23 +266,18 @@ describe('useProjectActivity', () => {
     const billing = deferred<ProjectActivity>()
     const read = vi.fn<ReadProjectActivity>((projectId) => projectId === 'orders' ? orders.promise : billing.promise)
     const { projectId, state, wrapper } = mountProjectActivity(read)
-
-    await runReadyTimers()
-    expect(read).toHaveBeenLastCalledWith('orders', '', 0)
+    await settle()
 
     projectId.value = 'billing'
     await nextTick()
+    await settle()
     expect(state.output.value).toBe('')
-    expect(state.activity.value).toBeNull()
-    await runReadyTimers()
-    expect(read).toHaveBeenLastCalledWith('billing', '', 0)
 
     billing.resolve(projectActivity('billing', 'session-billing', 'billing output', 14))
-    await flushPromises()
-    expect(state.output.value).toBe('billing output')
-
+    await settle()
     orders.resolve(projectActivity('orders', 'session-orders', 'stale orders output', 19))
-    await flushPromises()
+    await settle()
+
     expect(state.output.value).toBe('billing output')
     expect(state.activity.value?.project_id).toBe('billing')
     wrapper.unmount()
@@ -198,14 +287,12 @@ describe('useProjectActivity', () => {
     const pending = deferred<ProjectActivity>()
     const read = vi.fn<ReadProjectActivity>(() => pending.promise)
     const { state, wrapper } = mountProjectActivity(read)
-
-    await runReadyTimers()
-    expect(read).toHaveBeenCalledTimes(1)
+    await settle()
     wrapper.unmount()
 
     pending.resolve(projectActivity('orders', 'session-orders', 'late output', 11))
-    await flushPromises()
-    await runReadyTimers(10_000)
+    await settle()
+    await vi.advanceTimersByTimeAsync(10_000)
 
     expect(read).toHaveBeenCalledTimes(1)
     expect(state.activity.value).toBeNull()
@@ -231,10 +318,10 @@ describe('useProjectActivity', () => {
     for (const chunk of chunks) read.mockResolvedValueOnce(chunk)
     const { state, wrapper } = mountProjectActivity(read)
 
-    await runReadyTimers()
+    await settle()
 
     expect(read).toHaveBeenCalledTimes(5)
-    expect(state.output.value).toHaveLength(256 * 1024 - 1)
+    expect(state.output.value).toHaveLength(192 * 1024)
     expect(state.output.value.startsWith('B')).toBe(true)
     expect(state.output.value.endsWith('E')).toBe(true)
     expect(state.truncated.value).toBe(true)

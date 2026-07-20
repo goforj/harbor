@@ -87,6 +87,7 @@ type projectProcessSupervisor interface {
 	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
 	Stop(context.Context, domain.ProjectID, domain.SessionID) error
 	ReadOutput(domain.ProjectID, domain.SessionID, uint64) projectprocess.OutputChunk
+	WaitOutput(context.Context, domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
 	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
 	SettlePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessSettlement, error)
 	Close(context.Context) error

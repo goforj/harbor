@@ -2,6 +2,7 @@ package projectprocess
 
 import (
 	"bytes"
+	"context"
 	"sync"
 	"unicode/utf8"
 
@@ -33,12 +34,14 @@ type OutputChunk struct {
 
 // outputTranscript retains the latest process output without coupling child progress to a reader.
 type outputTranscript struct {
-	mu     sync.Mutex
-	buffer []byte
-	start  int
-	length int
-	base   uint64
-	next   uint64
+	mu      sync.Mutex
+	buffer  []byte
+	start   int
+	length  int
+	base    uint64
+	next    uint64
+	changed chan struct{}
+	closed  bool
 }
 
 // newOutputTranscript creates one fixed-capacity transcript ring.
@@ -46,7 +49,10 @@ func newOutputTranscript(capacity int) *outputTranscript {
 	if capacity <= 0 {
 		panic("projectprocess output transcript capacity must be positive")
 	}
-	return &outputTranscript{buffer: make([]byte, capacity)}
+	return &outputTranscript{
+		buffer:  make([]byte, capacity),
+		changed: make(chan struct{}),
+	}
 }
 
 // ReadOutput returns output only while both identities still select the same supervised process.
@@ -67,6 +73,32 @@ func (supervisor *Supervisor) ReadOutput(
 	return transcript.read(cursor)
 }
 
+// WaitOutput waits until output after cursor is available or the exact supervised process is no longer available.
+func (supervisor *Supervisor) WaitOutput(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	cursor uint64,
+) (OutputChunk, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return OutputChunk{}, err
+	}
+
+	supervisor.mu.Lock()
+	process := supervisor.projects[projectID]
+	if process == nil || supervisor.sessions[sessionID] != process {
+		supervisor.mu.Unlock()
+		return OutputChunk{}, nil
+	}
+	transcript := process.relay.transcript
+	supervisor.mu.Unlock()
+
+	return transcript.wait(ctx, cursor)
+}
+
 // append normalizes one relay record before adding it to the bounded transcript.
 func (transcript *outputTranscript) append(output []byte) {
 	normalized := bytes.ToValidUTF8(output, []byte(outputTranscriptReplacement))
@@ -76,6 +108,9 @@ func (transcript *outputTranscript) append(output []byte) {
 
 	transcript.mu.Lock()
 	defer transcript.mu.Unlock()
+	if transcript.closed {
+		return
+	}
 
 	capacity := len(transcript.buffer)
 	if len(normalized) > capacity {
@@ -87,6 +122,7 @@ func (transcript *outputTranscript) append(output []byte) {
 		transcript.base += uint64(skipped)
 		transcript.writeLocked(normalized[skipped:])
 		transcript.next += uint64(len(normalized))
+		transcript.notifyLocked()
 		return
 	}
 
@@ -99,12 +135,59 @@ func (transcript *outputTranscript) append(output []byte) {
 	}
 	transcript.writeLocked(normalized)
 	transcript.next += uint64(len(normalized))
+	transcript.notifyLocked()
 }
 
 // read copies one bounded chunk while keeping cursors on valid UTF-8 boundaries.
 func (transcript *outputTranscript) read(cursor uint64) OutputChunk {
 	transcript.mu.Lock()
 	defer transcript.mu.Unlock()
+	return transcript.readLocked(cursor)
+}
+
+// wait registers its change signal under the transcript lock so appends cannot race past a waiter.
+func (transcript *outputTranscript) wait(ctx context.Context, cursor uint64) (OutputChunk, error) {
+	for {
+		transcript.mu.Lock()
+		chunk := transcript.readLocked(cursor)
+		if chunk.Text != "" || chunk.Reset || chunk.Truncated || chunk.HasMore {
+			transcript.mu.Unlock()
+			return chunk, nil
+		}
+		if transcript.closed {
+			transcript.mu.Unlock()
+			return OutputChunk{}, nil
+		}
+		changed := transcript.changed
+		transcript.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return OutputChunk{}, ctx.Err()
+		}
+	}
+}
+
+// close makes caught-up waiters observe that no more process output can arrive.
+func (transcript *outputTranscript) close() {
+	transcript.mu.Lock()
+	defer transcript.mu.Unlock()
+	if transcript.closed {
+		return
+	}
+	transcript.closed = true
+	close(transcript.changed)
+}
+
+// notifyLocked advances the one-shot change generation after an append.
+func (transcript *outputTranscript) notifyLocked() {
+	close(transcript.changed)
+	transcript.changed = make(chan struct{})
+}
+
+// readLocked copies one bounded chunk while keeping cursors on valid UTF-8 boundaries.
+func (transcript *outputTranscript) readLocked(cursor uint64) OutputChunk {
 
 	chunk := OutputChunk{Available: true}
 	effective := cursor

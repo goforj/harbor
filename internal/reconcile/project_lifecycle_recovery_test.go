@@ -50,6 +50,16 @@ func (*projectLifecycleRecoverySupervisor) ReadOutput(
 	return projectprocess.OutputChunk{}
 }
 
+// WaitOutput returns no transcript because recovery fixtures never own the prior process.
+func (*projectLifecycleRecoverySupervisor) WaitOutput(
+	context.Context,
+	domain.ProjectID,
+	domain.SessionID,
+	uint64,
+) (projectprocess.OutputChunk, error) {
+	return projectprocess.OutputChunk{}, nil
+}
+
 // ObservePriorProcess returns the configured host classification and records the exact evidence inspected.
 func (supervisor *projectLifecycleRecoverySupervisor) ObservePriorProcess(
 	_ context.Context,

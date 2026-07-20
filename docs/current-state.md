@@ -118,7 +118,7 @@ The implemented path is:
 6. Harbor writes its bounded network block to `.env.host` and launches `forj dev` without a shell;
 7. the daemon records exact process evidence and waits for the App listener to become ready;
 8. ready state publishes the default App/resource at its direct IP-literal HTTP URL; routing primitives reconcile, but `.test` HTTPS is not yet the complete user path;
-9. current bounded stdout/stderr is streamed to the desktop and ANSI styling is rendered as safe HTML;
+9. current bounded stdout/stderr wakes a held, cursor-addressed desktop request as each pipe chunk arrives; the frontend incrementally applies ANSI styling and terminal redraw controls as safe Vue text;
 10. Stop or daemon shutdown settles the complete Harbor-owned process scope before deleting session evidence.
 
 Start and Stop are currently exposed through the control protocol and desktop, but not as first-class user CLI commands.
@@ -201,7 +201,7 @@ The desktop currently provides:
 - project registration and removal;
 - network setup approval and helper installation/repair prompts;
 - project Start/Stop actions and current failure feedback;
-- current project output with ANSI styling;
+- wake-driven current project output with ANSI styling, carriage-return updates, and multiline terminal redraws;
 - dark/light/system themes and themed toasts;
 - a reusable, theme-aware Harbor illustration layer with responsive placement, bounded opacity, CSS edge fading, and non-interactive semantics;
 - close-to-hide, single-instance relaunch focus, and native `Open Harbor`/`Quit Harbor UI` menu actions;

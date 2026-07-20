@@ -13,6 +13,7 @@ export interface WailsAppBindings {
   StartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   Status(): Promise<DaemonStatus>
   StopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
+  WaitProjectActivity(projectId: string, sessionId: string, cursor: number, waitMilliseconds: number): Promise<ProjectActivity>
 }
 
 export interface WailsEventPayloads {
@@ -32,6 +33,7 @@ export const harborWireFixture = {
     "add_project": "AddProject",
     "open_resource": "OpenResource",
     "project_activity": "ProjectActivity",
+    "wait_project_activity": "WaitProjectActivity",
     "remove_project": "RemoveProject",
     "setup_network": "SetupNetwork",
     "snapshot": "Snapshot",
@@ -66,6 +68,7 @@ export const harborWireFixture = {
       "minor": 0
     },
     "capabilities": [
+      "control.project-activity-wait.v1",
       "control.project-activity.v1",
       "control.project-lifecycle.v1",
       "control.project-registration.v1",

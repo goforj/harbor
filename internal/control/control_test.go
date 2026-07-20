@@ -481,7 +481,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}

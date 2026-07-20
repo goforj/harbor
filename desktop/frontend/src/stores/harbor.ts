@@ -847,6 +847,15 @@ export const useHarborStore = defineStore('harbor', () => {
     return harborBridge.getProjectActivity(projectId, sessionId, cursor)
   }
 
+  async function waitProjectActivity(
+    projectId: string,
+    sessionId: string,
+    cursor: number,
+    waitMilliseconds: number,
+  ): Promise<ProjectActivity> {
+    return harborBridge.waitProjectActivity(projectId, sessionId, cursor, waitMilliseconds)
+  }
+
   return {
     snapshot,
     daemonStatus,
@@ -889,6 +898,7 @@ export const useHarborStore = defineStore('harbor', () => {
     startProject,
     stopProject,
     readProjectActivity,
+    waitProjectActivity,
     openResource,
   }
 })

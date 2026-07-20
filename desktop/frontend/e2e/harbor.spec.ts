@@ -91,6 +91,7 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
           },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
+          async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this setup test')
           },
@@ -203,6 +204,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
           async AddProject() { return { canceled: true } },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
+          async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() { throw new Error('Quarantined project removal is disabled') },
           async SetupNetwork() { throw new Error('Network setup is not exercised in this recovery test') },
           async StartProject() { throw new Error('Quarantined project start is disabled') },
@@ -270,6 +272,7 @@ test('leaves project detail when an active removal completes through a snapshot 
           },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
+          async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject(projectId, intentId) {
             const result = structuredClone(initialUnregistration)
             result.revision = snapshot.sequence + 1
@@ -498,6 +501,7 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
+          async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },
@@ -575,6 +579,7 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
           },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
+          async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },

@@ -1,6 +1,8 @@
 package projectprocess
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -159,6 +161,95 @@ func TestSupervisorReadOutputRequiresExactLiveIdentities(t *testing.T) {
 	}
 }
 
+// TestSupervisorWaitOutputWakesForAppend proves output cannot arrive between the caught-up read and waiter registration unnoticed.
+func TestSupervisorWaitOutputWakesForAppend(t *testing.T) {
+	relay := newOutputRelay(io.Discard, io.Discard, 2)
+	defer relay.finish()
+	supervisor := outputTestSupervisor(relay)
+	result := make(chan OutputChunk, 1)
+	errors := make(chan error, 1)
+	go func() {
+		chunk, err := supervisor.WaitOutput(t.Context(), "project-owned", "session-owned", 0)
+		result <- chunk
+		errors <- err
+	}()
+
+	relay.transcript.append([]byte("ready\n"))
+	select {
+	case chunk := <-result:
+		if err := <-errors; err != nil {
+			t.Fatalf("WaitOutput() error = %v", err)
+		}
+		if !chunk.Available || chunk.Text != "ready\n" || chunk.NextCursor != 6 {
+			t.Fatalf("WaitOutput() = %#v", chunk)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitOutput() did not wake for appended output")
+	}
+}
+
+// TestSupervisorWaitOutputHonorsCancellationAndDeadline keeps abandoned long polls from retaining control handlers.
+func TestSupervisorWaitOutputHonorsCancellationAndDeadline(t *testing.T) {
+	relay := newOutputRelay(io.Discard, io.Discard, 2)
+	defer relay.finish()
+	supervisor := outputTestSupervisor(relay)
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if chunk, err := supervisor.WaitOutput(cancelled, "project-owned", "session-owned", 0); !errors.Is(err, context.Canceled) || chunk != (OutputChunk{}) {
+		t.Fatalf("cancelled WaitOutput() = %#v, %v", chunk, err)
+	}
+
+	expired, cancelDeadline := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancelDeadline()
+	if chunk, err := supervisor.WaitOutput(expired, "project-owned", "session-owned", 0); !errors.Is(err, context.DeadlineExceeded) || chunk != (OutputChunk{}) {
+		t.Fatalf("expired WaitOutput() = %#v, %v", chunk, err)
+	}
+}
+
+// TestSupervisorWaitOutputRequiresExactLiveIdentities prevents one long poll from following another process or session.
+func TestSupervisorWaitOutputRequiresExactLiveIdentities(t *testing.T) {
+	relay := newOutputRelay(io.Discard, io.Discard, 2)
+	defer relay.finish()
+	supervisor := outputTestSupervisor(relay)
+	for _, selection := range []struct {
+		project domain.ProjectID
+		session domain.SessionID
+	}{
+		{project: "project-other", session: "session-owned"},
+		{project: "project-owned", session: "session-other"},
+		{project: "project-other", session: "session-other"},
+	} {
+		chunk, err := supervisor.WaitOutput(t.Context(), selection.project, selection.session, 0)
+		if err != nil || chunk != (OutputChunk{}) {
+			t.Fatalf("WaitOutput(%q, %q) = %#v, %v", selection.project, selection.session, chunk, err)
+		}
+	}
+}
+
+// TestSupervisorWaitOutputWakesWhenProcessOutputCloses makes process exit observable without another output append.
+func TestSupervisorWaitOutputWakesWhenProcessOutputCloses(t *testing.T) {
+	relay := newOutputRelay(io.Discard, io.Discard, 2)
+	supervisor := outputTestSupervisor(relay)
+	result := make(chan OutputChunk, 1)
+	errors := make(chan error, 1)
+	go func() {
+		chunk, err := supervisor.WaitOutput(t.Context(), "project-owned", "session-owned", 0)
+		result <- chunk
+		errors <- err
+	}()
+
+	relay.finish()
+	select {
+	case chunk := <-result:
+		if err := <-errors; err != nil || chunk != (OutputChunk{}) {
+			t.Fatalf("closed WaitOutput() = %#v, %v", chunk, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitOutput() did not wake when process output closed")
+	}
+}
+
 // TestOutputRelayTranscriptIgnoresBlockedCaller proves UI or terminal backpressure cannot stop transcript delivery.
 func TestOutputRelayTranscriptIgnoresBlockedCaller(t *testing.T) {
 	writer := newBlockingWriter()
@@ -215,5 +306,14 @@ func TestOutputTranscriptSupportsConcurrentReaders(t *testing.T) {
 	close(errors)
 	for err := range errors {
 		t.Fatal(err)
+	}
+}
+
+// outputTestSupervisor binds one relay to the exact identities used by output wait tests.
+func outputTestSupervisor(relay *outputRelay) *Supervisor {
+	process := &managedProcess{relay: relay}
+	return &Supervisor{
+		projects: map[domain.ProjectID]*managedProcess{"project-owned": process},
+		sessions: map[domain.SessionID]*managedProcess{"session-owned": process},
 	}
 }

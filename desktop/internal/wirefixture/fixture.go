@@ -16,15 +16,16 @@ import (
 
 // MethodMetadata records the generated Wails method names consumed by the bridge.
 type MethodMetadata struct {
-	AddProject      string `json:"add_project"`
-	OpenResource    string `json:"open_resource"`
-	ProjectActivity string `json:"project_activity"`
-	RemoveProject   string `json:"remove_project"`
-	SetupNetwork    string `json:"setup_network"`
-	Snapshot        string `json:"snapshot"`
-	StartProject    string `json:"start_project"`
-	Status          string `json:"status"`
-	StopProject     string `json:"stop_project"`
+	AddProject          string `json:"add_project"`
+	OpenResource        string `json:"open_resource"`
+	ProjectActivity     string `json:"project_activity"`
+	WaitProjectActivity string `json:"wait_project_activity"`
+	RemoveProject       string `json:"remove_project"`
+	SetupNetwork        string `json:"setup_network"`
+	Snapshot            string `json:"snapshot"`
+	StartProject        string `json:"start_project"`
+	Status              string `json:"status"`
+	StopProject         string `json:"stop_project"`
 }
 
 // EventMetadata records the Wails event names consumed by the bridge.
@@ -71,15 +72,16 @@ func Fixture() Document {
 
 	return Document{
 		Methods: MethodMetadata{
-			AddProject:      desktopwire.MethodAddProject,
-			OpenResource:    desktopwire.MethodOpenResource,
-			ProjectActivity: desktopwire.MethodProjectActivity,
-			RemoveProject:   desktopwire.MethodRemoveProject,
-			SetupNetwork:    desktopwire.MethodSetupNetwork,
-			Snapshot:        desktopwire.MethodSnapshot,
-			StartProject:    desktopwire.MethodStartProject,
-			Status:          desktopwire.MethodStatus,
-			StopProject:     desktopwire.MethodStopProject,
+			AddProject:          desktopwire.MethodAddProject,
+			OpenResource:        desktopwire.MethodOpenResource,
+			ProjectActivity:     desktopwire.MethodProjectActivity,
+			WaitProjectActivity: desktopwire.MethodWaitProjectActivity,
+			RemoveProject:       desktopwire.MethodRemoveProject,
+			SetupNetwork:        desktopwire.MethodSetupNetwork,
+			Snapshot:            desktopwire.MethodSnapshot,
+			StartProject:        desktopwire.MethodStartProject,
+			Status:              desktopwire.MethodStatus,
+			StopProject:         desktopwire.MethodStopProject,
 		},
 		Events: EventMetadata{
 			Connection: desktopwire.ConnectionEventName,
@@ -95,6 +97,7 @@ func Fixture() Document {
 			Build:    control.Build{Version: "dev", Revision: "fixture"},
 			Protocol: rpc.Version{Major: 1, Minor: 0},
 			Capabilities: []rpc.Capability{
+				control.CapabilityProjectActivityWaitV1,
 				control.CapabilityProjectActivityV1,
 				control.CapabilityProjectLifecycleV1,
 				control.CapabilityProjectRegistrationV1,
@@ -293,15 +296,16 @@ func Fixture() Document {
 // Validate proves every generated example is legal before TypeScript sees the artifact.
 func (document Document) Validate() error {
 	methods := map[string]string{
-		desktopwire.MethodAddProject:      document.Methods.AddProject,
-		desktopwire.MethodOpenResource:    document.Methods.OpenResource,
-		desktopwire.MethodProjectActivity: document.Methods.ProjectActivity,
-		desktopwire.MethodRemoveProject:   document.Methods.RemoveProject,
-		desktopwire.MethodSetupNetwork:    document.Methods.SetupNetwork,
-		desktopwire.MethodSnapshot:        document.Methods.Snapshot,
-		desktopwire.MethodStartProject:    document.Methods.StartProject,
-		desktopwire.MethodStatus:          document.Methods.Status,
-		desktopwire.MethodStopProject:     document.Methods.StopProject,
+		desktopwire.MethodAddProject:          document.Methods.AddProject,
+		desktopwire.MethodOpenResource:        document.Methods.OpenResource,
+		desktopwire.MethodProjectActivity:     document.Methods.ProjectActivity,
+		desktopwire.MethodWaitProjectActivity: document.Methods.WaitProjectActivity,
+		desktopwire.MethodRemoveProject:       document.Methods.RemoveProject,
+		desktopwire.MethodSetupNetwork:        document.Methods.SetupNetwork,
+		desktopwire.MethodSnapshot:            document.Methods.Snapshot,
+		desktopwire.MethodStartProject:        document.Methods.StartProject,
+		desktopwire.MethodStatus:              document.Methods.Status,
+		desktopwire.MethodStopProject:         document.Methods.StopProject,
 	}
 	contracts := desktopwire.MethodContracts()
 	if len(methods) != len(contracts) {

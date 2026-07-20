@@ -1,16 +1,13 @@
 package projectprocess
 
 import (
-	"bufio"
-	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
-const maximumOutputLineBytes = 64 * 1024
-
-var outputTruncationMarker = []byte(" [output truncated]\n")
+const outputReadBufferBytes = 4 * 1024
 
 // outputStream distinguishes independent failure handling for stdout and stderr writers.
 type outputStream uint8
@@ -20,8 +17,8 @@ const (
 	outputStreamStderr
 )
 
-// outputLine retains one complete child line and its caller-owned destination.
-type outputLine struct {
+// outputRecord retains one serialized child output fragment and its caller-owned destination.
+type outputRecord struct {
 	stream outputStream
 	bytes  []byte
 }
@@ -32,8 +29,8 @@ type outputRelay struct {
 	stderr      io.Writer
 	trace       io.WriteCloser
 	transcript  *outputTranscript
-	queue       chan outputLine
-	callerQueue chan outputLine
+	queue       chan outputRecord
+	callerQueue chan outputRecord
 	traceDone   chan struct{}
 	dropped     atomic.Uint64
 	once        sync.Once
@@ -57,8 +54,8 @@ func newOutputRelayWithTrace(stdout, stderr io.Writer, trace io.WriteCloser, buf
 		stderr:      stderr,
 		trace:       trace,
 		transcript:  newOutputTranscript(outputTranscriptCapacityBytes),
-		queue:       make(chan outputLine, bufferLines),
-		callerQueue: make(chan outputLine, bufferLines),
+		queue:       make(chan outputRecord, bufferLines),
+		callerQueue: make(chan outputRecord, bufferLines),
 		traceDone:   make(chan struct{}),
 	}
 	go relay.deliverCallerOutput()
@@ -66,21 +63,22 @@ func newOutputRelayWithTrace(stdout, stderr io.Writer, trace io.WriteCloser, buf
 	return relay
 }
 
-// offer preserves child progress by dropping complete lines after the bounded diagnostic queue fills.
+// offer preserves child progress by dropping output records after the bounded diagnostic queue fills.
 func (relay *outputRelay) offer(stream outputStream, bytes []byte) {
-	line := outputLine{stream: stream, bytes: append([]byte(nil), bytes...)}
+	record := outputRecord{stream: stream, bytes: append([]byte(nil), bytes...)}
 	select {
-	case relay.queue <- line:
+	case relay.queue <- record:
 	default:
 		relay.dropped.Add(1)
 	}
 }
 
-// finish closes the relay after both pipe readers have stopped producing lines.
+// finish closes the relay after both pipe readers have stopped producing records.
 func (relay *outputRelay) finish() {
 	relay.once.Do(func() {
 		close(relay.queue)
 		<-relay.traceDone
+		relay.transcript.close()
 	})
 }
 
@@ -94,15 +92,15 @@ func (relay *outputRelay) deliver() {
 		close(relay.callerQueue)
 		close(relay.traceDone)
 	}()
-	for line := range relay.queue {
-		relay.transcript.append(line.bytes)
+	for record := range relay.queue {
+		relay.transcript.append(record.bytes)
 		if relay.trace != nil && !traceFailed {
-			if writeOutputLine(relay.trace, line.bytes) != nil {
+			if writeOutputRecord(relay.trace, record.bytes) != nil {
 				traceFailed = true
 			}
 		}
 		select {
-		case relay.callerQueue <- line:
+		case relay.callerQueue <- record:
 		default:
 			relay.dropped.Add(1)
 		}
@@ -113,19 +111,19 @@ func (relay *outputRelay) deliver() {
 func (relay *outputRelay) deliverCallerOutput() {
 	stdoutFailed := false
 	stderrFailed := false
-	for line := range relay.callerQueue {
-		switch line.stream {
+	for record := range relay.callerQueue {
+		switch record.stream {
 		case outputStreamStdout:
 			if stdoutFailed {
 				relay.dropped.Add(1)
-			} else if writeOutputLine(relay.stdout, line.bytes) != nil {
+			} else if writeOutputRecord(relay.stdout, record.bytes) != nil {
 				relay.dropped.Add(1)
 				stdoutFailed = true
 			}
 		case outputStreamStderr:
 			if stderrFailed {
 				relay.dropped.Add(1)
-			} else if writeOutputLine(relay.stderr, line.bytes) != nil {
+			} else if writeOutputRecord(relay.stderr, record.bytes) != nil {
 				relay.dropped.Add(1)
 				stderrFailed = true
 			}
@@ -133,8 +131,8 @@ func (relay *outputRelay) deliverCallerOutput() {
 	}
 }
 
-// writeOutputLine converts a caller-writer panic into a failed stream so process supervision remains intact.
-func writeOutputLine(writer io.Writer, bytes []byte) (err error) {
+// writeOutputRecord converts a caller-writer panic into a failed stream so process supervision remains intact.
+func writeOutputRecord(writer io.Writer, bytes []byte) (err error) {
 	defer func() {
 		if recover() != nil {
 			err = io.ErrClosedPipe
@@ -147,57 +145,54 @@ func writeOutputLine(writer io.Writer, bytes []byte) (err error) {
 	return err
 }
 
-// readOutputLines drains a pipe without allowing caller backpressure to block the child process.
-func readOutputLines(reader io.Reader, stream outputStream, relay *outputRelay, readers *sync.WaitGroup) {
+// readOutputStream drains each readable pipe chunk without allowing caller backpressure to block the child process.
+func readOutputStream(reader io.Reader, stream outputStream, relay *outputRelay, readers *sync.WaitGroup) {
 	defer readers.Done()
 	if closer, ok := reader.(io.Closer); ok {
 		defer closer.Close()
 	}
-	buffered := bufio.NewReaderSize(reader, maximumOutputLineBytes)
-	line := make([]byte, 0, 4096)
-	truncated := false
+	readOutputChunks(reader, stream, relay)
+}
+
+// readOutputChunks relays each successful read while retaining only an incomplete UTF-8 suffix.
+func readOutputChunks(reader io.Reader, stream outputStream, relay *outputRelay) {
+	buffer := make([]byte, outputReadBufferBytes)
+	pending := make([]byte, 0, utf8.UTFMax)
 	for {
-		fragment, err := buffered.ReadSlice('\n')
-		if !truncated && len(fragment) > 0 {
-			remaining := maximumOutputLineBytes - len(line)
-			if len(fragment) > remaining {
-				line = append(line, fragment[:remaining]...)
-				truncated = true
-			} else {
-				line = append(line, fragment...)
+		count, err := reader.Read(buffer)
+		if count > 0 {
+			pending = append(pending, buffer[:count]...)
+			complete := completeUTF8PrefixBytes(pending)
+			if complete > 0 {
+				relay.offer(stream, pending[:complete])
+				copy(pending, pending[complete:])
+				pending = pending[:len(pending)-complete]
 			}
 		}
-		if err == nil {
-			relay.offerBoundedLine(stream, line, truncated)
-			line = line[:0]
-			truncated = false
-			continue
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			truncated = true
-			continue
-		}
-		if len(line) > 0 || truncated {
-			relay.offerBoundedLine(stream, line, truncated)
-		}
-		if errors.Is(err, io.EOF) {
+		if err != nil {
+			if len(pending) > 0 {
+				relay.offer(stream, pending)
+			}
 			return
 		}
-		return
 	}
 }
 
-// offerBoundedLine records one truncated line as dropped while retaining a diagnostic prefix within the memory bound.
-func (relay *outputRelay) offerBoundedLine(stream outputStream, line []byte, truncated bool) {
-	if truncated {
-		relay.dropped.Add(1)
-		prefixBytes := maximumOutputLineBytes - len(outputTruncationMarker)
-		if len(line) > prefixBytes {
-			line = line[:prefixBytes]
+// completeUTF8PrefixBytes keeps a trailing partial encoding until another read or EOF can complete it.
+func completeUTF8PrefixBytes(output []byte) int {
+	start := len(output) - 1
+	minimum := len(output) - utf8.UTFMax
+	if minimum < 0 {
+		minimum = 0
+	}
+	for start >= minimum {
+		if utf8.RuneStart(output[start]) {
+			if !utf8.FullRune(output[start:]) {
+				return start
+			}
+			return len(output)
 		}
-		line = append(line, outputTruncationMarker...)
+		start--
 	}
-	if len(line) > 0 {
-		relay.offer(stream, line)
-	}
+	return len(output)
 }

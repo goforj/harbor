@@ -43,8 +43,26 @@ type projectActivityOutputCall struct {
 
 // projectActivityTestReader returns one configured bounded output chunk.
 type projectActivityTestReader struct {
-	output projectprocess.OutputChunk
-	calls  []projectActivityOutputCall
+	output     projectprocess.OutputChunk
+	waitOutput projectprocess.OutputChunk
+	waitErr    error
+	wait       func()
+	calls      []projectActivityOutputCall
+	waitCalls  []projectActivityOutputCall
+}
+
+// WaitOutput records one exact held transcript selection and returns the configured wake result.
+func (reader *projectActivityTestReader) WaitOutput(
+	_ context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	cursor uint64,
+) (projectprocess.OutputChunk, error) {
+	reader.waitCalls = append(reader.waitCalls, projectActivityOutputCall{projectID: projectID, sessionID: sessionID, cursor: cursor})
+	if reader.wait != nil {
+		reader.wait()
+	}
+	return reader.waitOutput, reader.waitErr
 }
 
 // ReadOutput records and returns one exact current-session transcript read.
@@ -70,6 +88,7 @@ func TestReadCurrentProjectActivityUsesOnlyTheDurableCurrentSession(t *testing.T
 		ProjectID: "project-orders",
 		SessionID: "session-prior",
 		Cursor:    900,
+		Wait:      25 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("readCurrentProjectActivity() error = %v", err)
@@ -80,6 +99,9 @@ func TestReadCurrentProjectActivityUsesOnlyTheDurableCurrentSession(t *testing.T
 	wantCall := projectActivityOutputCall{projectID: "project-orders", sessionID: "session-current", cursor: 0}
 	if len(reader.calls) != 1 || reader.calls[0] != wantCall {
 		t.Fatalf("output calls = %#v, want %#v", reader.calls, wantCall)
+	}
+	if len(reader.waitCalls) != 0 {
+		t.Fatalf("changed session waited on retired output: %#v", reader.waitCalls)
 	}
 }
 
@@ -100,6 +122,96 @@ func TestReadCurrentProjectActivityContinuesAnExactCursor(t *testing.T) {
 	}
 	if len(reader.calls) != 1 || reader.calls[0].cursor != 44 {
 		t.Fatalf("output calls = %#v", reader.calls)
+	}
+}
+
+// TestReadCurrentProjectActivityWaitsAndReselectsDurableState verifies held reads cannot return a replaced session as current.
+func TestReadCurrentProjectActivityWaitsAndReselectsDurableState(t *testing.T) {
+	source := &projectActivityTestState{project: projectActivityTestProject(), session: projectActivityTestSession()}
+	reader := &projectActivityTestReader{output: projectprocess.OutputChunk{Available: true, NextCursor: 4, Text: "next"}}
+	reader.wait = func() {
+		source.session.ID = "session-next"
+		source.session.Generation++
+	}
+	activity, err := readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{
+		ProjectID: "project-orders",
+		SessionID: "session-current",
+		Cursor:    44,
+		Wait:      25 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("readCurrentProjectActivity() error = %v", err)
+	}
+	wantWait := projectActivityOutputCall{projectID: "project-orders", sessionID: "session-current", cursor: 44}
+	if len(reader.waitCalls) != 1 || reader.waitCalls[0] != wantWait {
+		t.Fatalf("wait calls = %#v, want %#v", reader.waitCalls, wantWait)
+	}
+	wantRead := projectActivityOutputCall{projectID: "project-orders", sessionID: "session-next", cursor: 0}
+	if len(reader.calls) != 1 || reader.calls[0] != wantRead {
+		t.Fatalf("read calls = %#v, want %#v", reader.calls, wantRead)
+	}
+	if activity.Session == nil || activity.Session.ID != "session-next" || !activity.Session.Output.Reset {
+		t.Fatalf("activity = %#v, want reset next session", activity)
+	}
+}
+
+// TestReadCurrentProjectActivityReturnsTheWakingChunk verifies a process exit cannot erase output that already woke the held request.
+func TestReadCurrentProjectActivityReturnsTheWakingChunk(t *testing.T) {
+	source := &projectActivityTestState{project: projectActivityTestProject(), session: projectActivityTestSession()}
+	reader := &projectActivityTestReader{
+		output:     projectprocess.OutputChunk{},
+		waitOutput: projectprocess.OutputChunk{Available: true, NextCursor: 48, Text: "wake"},
+	}
+	activity, err := readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{
+		ProjectID: "project-orders",
+		SessionID: "session-current",
+		Cursor:    44,
+		Wait:      time.Second,
+	})
+	if err != nil {
+		t.Fatalf("readCurrentProjectActivity() error = %v", err)
+	}
+	if activity.Session == nil || activity.Session.Output.Text != "wake" || activity.Session.Output.NextCursor != 48 {
+		t.Fatalf("activity = %#v, want waking output", activity)
+	}
+}
+
+// TestReadCurrentProjectActivityTreatsItsWaitDeadlineAsAnEmptyWake verifies timeout is a normal long-poll response.
+func TestReadCurrentProjectActivityTreatsItsWaitDeadlineAsAnEmptyWake(t *testing.T) {
+	source := &projectActivityTestState{project: projectActivityTestProject(), session: projectActivityTestSession()}
+	reader := &projectActivityTestReader{
+		output:  projectprocess.OutputChunk{Available: true, NextCursor: 44},
+		waitErr: context.DeadlineExceeded,
+	}
+	activity, err := readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{
+		ProjectID: "project-orders",
+		SessionID: "session-current",
+		Cursor:    44,
+		Wait:      time.Second,
+	})
+	if err != nil {
+		t.Fatalf("readCurrentProjectActivity() error = %v", err)
+	}
+	if activity.Session == nil || activity.Session.Output.NextCursor != 44 || len(reader.calls) != 1 {
+		t.Fatalf("activity/read calls = %#v / %#v", activity, reader.calls)
+	}
+}
+
+// TestReadCurrentProjectActivityPropagatesCallerCancellation verifies disconnects do not become successful empty output.
+func TestReadCurrentProjectActivityPropagatesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader := &projectActivityTestReader{waitErr: context.Canceled, wait: cancel}
+	_, err := readCurrentProjectActivity(ctx,
+		&projectActivityTestState{project: projectActivityTestProject(), session: projectActivityTestSession()},
+		reader,
+		ProjectActivityRequest{
+			ProjectID: "project-orders",
+			SessionID: "session-current",
+			Wait:      time.Second,
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("readCurrentProjectActivity() error = %v, want context cancellation", err)
 	}
 }
 
@@ -129,6 +241,7 @@ func TestReadCurrentProjectActivityRejectsInvalidOrMissingProjectsBeforeOutput(t
 		want    error
 	}{
 		{name: "cursor without session", source: new(projectActivityTestState), request: ProjectActivityRequest{ProjectID: "project-orders", Cursor: 1}},
+		{name: "wait too long", source: new(projectActivityTestState), request: ProjectActivityRequest{ProjectID: "project-orders", Wait: maximumProjectActivityWait + time.Millisecond}},
 		{name: "missing project", source: &projectActivityTestState{projectErr: missing}, request: ProjectActivityRequest{ProjectID: "project-missing"}, want: missing},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -5,6 +5,7 @@ export interface HarborWireFixture {
     add_project: 'AddProject'
     open_resource: 'OpenResource'
     project_activity: 'ProjectActivity'
+    wait_project_activity: 'WaitProjectActivity'
     remove_project: 'RemoveProject'
     snapshot: 'Snapshot'
     setup_network: 'SetupNetwork'
@@ -42,6 +43,7 @@ export interface HarborBridge {
   getStatus(): Promise<DaemonStatus>
   getSnapshot(): Promise<HarborSnapshot>
   getProjectActivity(projectId: string, sessionId: string, cursor: number): Promise<ProjectActivity>
+  waitProjectActivity(projectId: string, sessionId: string, cursor: number, waitMilliseconds: number): Promise<ProjectActivity>
   openResource(projectId: string, resourceId: string): Promise<void>
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
   setupNetwork(): Promise<NetworkSetupOperation>

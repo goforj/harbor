@@ -17,13 +17,22 @@ import (
 
 // TestDecodeProjectActivityRequestRequiresAnExactBoundedObject protects the pull API from hidden selection authority.
 func TestDecodeProjectActivityRequestRequiresAnExactBoundedObject(t *testing.T) {
-	want := ProjectActivityRequest{ProjectID: "project-orders", SessionID: "session-current", Cursor: 42}
-	got, err := decodeProjectActivityRequest([]byte(`{"project_id":"project-orders","session_id":"session-current","cursor":42}`))
+	want := ProjectActivityRequest{
+		ProjectID:        "project-orders",
+		SessionID:        "session-current",
+		Cursor:           42,
+		WaitMilliseconds: 25_000,
+	}
+	got, err := decodeProjectActivityRequest([]byte(
+		`{"project_id":"project-orders","session_id":"session-current","cursor":42,"wait_milliseconds":25000}`,
+	))
 	if err != nil || got != want {
 		t.Fatalf("decodeProjectActivityRequest() = %#v, %v, want %#v", got, err, want)
 	}
 	for _, payload := range []string{
 		`{"project_id":"project-orders","cursor":0,"cursor":1}`,
+		`{"project_id":"project-orders","cursor":0,"wait_milliseconds":1,"wait_milliseconds":2}`,
+		`{"project_id":"project-orders","cursor":0,"wait_milliseconds":25001}`,
 		`{"project_id":"project-orders","cursor":0,"history":true}`,
 		`{"project_id":"project-orders"}`,
 		`{"project_id":"project-orders","cursor":1}`,
@@ -32,6 +41,20 @@ func TestDecodeProjectActivityRequestRequiresAnExactBoundedObject(t *testing.T) 
 		if _, err := decodeProjectActivityRequest([]byte(payload)); err == nil {
 			t.Fatalf("decodeProjectActivityRequest(%q) error = nil", payload)
 		}
+	}
+}
+
+// TestImmediateProjectActivityRequestRetainsItsOriginalJSONShape protects compatibility with activity-v1 daemons.
+func TestImmediateProjectActivityRequestRetainsItsOriginalJSONShape(t *testing.T) {
+	payload, err := json.Marshal(ProjectActivityRequest{ProjectID: "project-orders", Cursor: 0})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.Contains(string(payload), "wait_milliseconds") {
+		t.Fatalf("immediate request unexpectedly contains wait field: %s", payload)
+	}
+	if CapabilityProjectActivityWaitV1 != "control.project-activity-wait.v1" {
+		t.Fatalf("CapabilityProjectActivityWaitV1 = %q", CapabilityProjectActivityWaitV1)
 	}
 }
 
@@ -110,6 +133,54 @@ func TestControlClientRoundTripsProjectActivityForHumanRoles(t *testing.T) {
 	}
 }
 
+// TestControlClientRoundTripsHeldProjectActivity verifies negotiated callers preserve the bounded wait selection.
+func TestControlClientRoundTripsHeldProjectActivity(t *testing.T) {
+	want := projectActivityTestValue("server ready\n")
+	authority := &recordingAuthority{projectActivity: want}
+	running := newRunningControlClient(t, rpc.RoleDesktop, authority, nil)
+	request := ProjectActivityRequest{
+		ProjectID:        "project-orders",
+		SessionID:        "session-current",
+		Cursor:           0,
+		WaitMilliseconds: 25_000,
+	}
+	got, err := running.client.ProjectActivity(t.Context(), request)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ProjectActivity() = %#v, %v, want %#v", got, err, want)
+	}
+	authority.mu.Lock()
+	requests := append([]ProjectActivityRequest(nil), authority.projectActivityRequests...)
+	authority.mu.Unlock()
+	if !reflect.DeepEqual(requests, []ProjectActivityRequest{request}) {
+		t.Fatalf("authority requests = %#v", requests)
+	}
+}
+
+// TestProjectActivityWaitRequiresNegotiatedCapability protects older strict decoders from additive wait fields.
+func TestProjectActivityWaitRequiresNegotiatedCapability(t *testing.T) {
+	client := newProjectActivityCapabilityTestClient(t, []rpc.Capability{CapabilityProjectActivityV1, CapabilityV1})
+	if _, err := client.ProjectActivity(t.Context(), ProjectActivityRequest{ProjectID: "project-orders"}); err != nil {
+		t.Fatalf("immediate ProjectActivity() error = %v", err)
+	}
+	_, err := client.ProjectActivity(t.Context(), ProjectActivityRequest{
+		ProjectID:        "project-orders",
+		SessionID:        "session-current",
+		WaitMilliseconds: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "live project activity") {
+		t.Fatalf("ProjectActivity() error = %v, want unsupported wait capability", err)
+	}
+	_, err = client.session.Call(t.Context(), methodProjectActivity, ProjectActivityRequest{
+		ProjectID:        "project-orders",
+		SessionID:        "session-current",
+		WaitMilliseconds: 1,
+	})
+	var wireError rpc.WireError
+	if !errors.As(err, &wireError) || wireError.Code != rpc.ErrorCodePermissionDenied {
+		t.Fatalf("raw project activity wait error = %#v, want permission_denied", err)
+	}
+}
+
 // TestProjectActivityRequiresNegotiatedCapability proves a base control session cannot reach current process output.
 func TestProjectActivityRequiresNegotiatedCapability(t *testing.T) {
 	clientStream, serverStream := net.Pipe()
@@ -144,6 +215,38 @@ func TestProjectActivityRequiresNegotiatedCapability(t *testing.T) {
 	if callers := authority.recordedCallers(); len(callers) != 0 {
 		t.Fatalf("unnegotiated project activity reached authority %d times", len(callers))
 	}
+}
+
+// newProjectActivityCapabilityTestClient negotiates only the supplied capabilities against the control server.
+func newProjectActivityCapabilityTestClient(t *testing.T, clientCapabilities []rpc.Capability) *Client {
+	t.Helper()
+	clientStream, serverStream := net.Pipe()
+	controlServer, err := newServer(ServerConfig{
+		Authority:       &recordingAuthority{projectActivity: projectActivityTestValue("ready")},
+		RequestShutdown: func() {},
+	}, testBuild)
+	if err != nil {
+		t.Fatalf("newServer() error = %v", err)
+	}
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- controlServer.Serve(context.Background(), &testLocalConn{Conn: serverStream, peer: testClientPeer})
+	}()
+	clientSession, err := session.NewClient(context.Background(), &testLocalConn{Conn: clientStream, peer: testDaemonPeer}, session.ClientConfig{
+		Role: rpc.RoleDesktop, ClientVersion: testBuild.Version, ProtocolRanges: protocolRanges(), Capabilities: clientCapabilities,
+	})
+	if err != nil {
+		t.Fatalf("session.NewClient() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = clientSession.Close()
+		select {
+		case <-serverDone:
+		case <-time.After(time.Second):
+			t.Error("project activity server did not stop")
+		}
+	})
+	return &Client{session: clientSession, peer: DaemonPeer{Session: clientSession.Peer()}}
 }
 
 // TestControlClientRejectsContradictoryOrOversizedProjectActivity verifies daemon responses retain project and size correlation.

@@ -114,26 +114,29 @@ type snapshotCursor struct {
 
 // App owns the Wails lifecycle and the desktop's single persistent daemon connection.
 type App struct {
-	mu                sync.RWMutex
-	ctx               context.Context
-	cancel            context.CancelFunc
-	done              chan struct{}
-	client            controlClient
-	clientLeases      int
-	clientDrain       chan struct{}
-	clientFactory     clientFactory
-	events            desktopwire.Emitter
-	open              resourceOpener
-	choose            directoryChooser
-	setupApproval     networkSetupApprovalFactory
-	resolverApproval  networkResolverSetupApprovalFactory
-	setupPrerequisite networkprerequisite.Ensurer
-	setupIntent       networkSetupIntentFactory
-	resolverIntent    networkResolverSetupIntentFactory
-	presentation      *presentationController
-	wait              waitFunc
-	reconnectDelay    time.Duration
-	pollInterval      time.Duration
+	mu                 sync.RWMutex
+	activityWaitMu     sync.Mutex
+	activityWaitID     uint64
+	activityWaitCancel context.CancelFunc
+	ctx                context.Context
+	cancel             context.CancelFunc
+	done               chan struct{}
+	client             controlClient
+	clientLeases       int
+	clientDrain        chan struct{}
+	clientFactory      clientFactory
+	events             desktopwire.Emitter
+	open               resourceOpener
+	choose             directoryChooser
+	setupApproval      networkSetupApprovalFactory
+	resolverApproval   networkResolverSetupApprovalFactory
+	setupPrerequisite  networkprerequisite.Ensurer
+	setupIntent        networkSetupIntentFactory
+	resolverIntent     networkResolverSetupIntentFactory
+	presentation       *presentationController
+	wait               waitFunc
+	reconnectDelay     time.Duration
+	pollInterval       time.Duration
 }
 
 // App must remain exactly compatible with the Go-owned Wails method contract.
@@ -580,10 +583,37 @@ func (a *App) StartProject(projectID string, intentID string) (control.ProjectLi
 
 // ProjectActivity reads one bounded output chunk from the project's current durable session.
 func (a *App) ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error) {
+	return a.projectActivity(projectID, sessionID, cursor, 0)
+}
+
+// WaitProjectActivity waits briefly for the current session cursor to advance before returning one bounded output chunk.
+func (a *App) WaitProjectActivity(
+	projectID string,
+	sessionID string,
+	cursor uint64,
+	waitMilliseconds uint64,
+) (control.ProjectActivity, error) {
+	if waitMilliseconds > uint64(control.MaximumProjectActivityWaitMilliseconds) {
+		return control.ProjectActivity{}, fmt.Errorf(
+			"project activity request: wait exceeds %d milliseconds",
+			control.MaximumProjectActivityWaitMilliseconds,
+		)
+	}
+	return a.projectActivity(projectID, sessionID, cursor, uint32(waitMilliseconds))
+}
+
+// projectActivity validates and delegates one immediate or held current-session output read.
+func (a *App) projectActivity(
+	projectID string,
+	sessionID string,
+	cursor uint64,
+	waitMilliseconds uint32,
+) (control.ProjectActivity, error) {
 	request := control.ProjectActivityRequest{
-		ProjectID: domain.ProjectID(projectID),
-		SessionID: domain.SessionID(sessionID),
-		Cursor:    cursor,
+		ProjectID:        domain.ProjectID(projectID),
+		SessionID:        domain.SessionID(sessionID),
+		Cursor:           cursor,
+		WaitMilliseconds: waitMilliseconds,
 	}
 	if err := request.Validate(); err != nil {
 		return control.ProjectActivity{}, fmt.Errorf("project activity request: %w", err)
@@ -593,7 +623,9 @@ func (a *App) ProjectActivity(projectID string, sessionID string, cursor uint64)
 	if err != nil {
 		return control.ProjectActivity{}, err
 	}
-	activity, err := client.ProjectActivity(ctx, request)
+	requestContext, releaseRequest := a.activityRequestContext(ctx, waitMilliseconds > 0)
+	defer releaseRequest()
+	activity, err := client.ProjectActivity(requestContext, request)
 	if err != nil {
 		return control.ProjectActivity{}, fmt.Errorf("read GoForj project activity: %w", err)
 	}
@@ -608,6 +640,34 @@ func (a *App) ProjectActivity(projectID string, sessionID string, cursor uint64)
 	}
 
 	return activity, nil
+}
+
+// activityRequestContext cancels the prior held desktop read before selecting new activity.
+func (a *App) activityRequestContext(parent context.Context, held bool) (context.Context, func()) {
+	requestContext, cancel := context.WithCancel(parent)
+
+	a.activityWaitMu.Lock()
+	prior := a.activityWaitCancel
+	a.activityWaitID++
+	waitID := a.activityWaitID
+	if held {
+		a.activityWaitCancel = cancel
+	} else {
+		a.activityWaitCancel = nil
+	}
+	a.activityWaitMu.Unlock()
+
+	if prior != nil {
+		prior()
+	}
+	return requestContext, func() {
+		cancel()
+		a.activityWaitMu.Lock()
+		if a.activityWaitID == waitID {
+			a.activityWaitCancel = nil
+		}
+		a.activityWaitMu.Unlock()
+	}
 }
 
 // StopProject starts or resumes exactly one client-owned project stop intent through the connected daemon.

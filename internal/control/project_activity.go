@@ -11,20 +11,28 @@ import (
 
 const maximumProjectOutputChunkBytes = 64 * 1024
 
-// MaximumProjectActivityResponseBytes bounds one complete project activity JSON response.
-const MaximumProjectActivityResponseBytes = 64 * 1024
+const (
+	// MaximumProjectActivityResponseBytes bounds one complete project activity JSON response.
+	MaximumProjectActivityResponseBytes = 64 * 1024
+	// MaximumProjectActivityWaitMilliseconds leaves response headroom beneath the control transport deadline.
+	MaximumProjectActivityWaitMilliseconds uint32 = 25_000
+)
 
 // ProjectActivityRequest selects the current session output cursor for one durable project.
 type ProjectActivityRequest struct {
-	ProjectID domain.ProjectID `json:"project_id"`
-	SessionID domain.SessionID `json:"session_id,omitempty"`
-	Cursor    uint64           `json:"cursor"`
+	ProjectID        domain.ProjectID `json:"project_id"`
+	SessionID        domain.SessionID `json:"session_id,omitempty"`
+	Cursor           uint64           `json:"cursor"`
+	WaitMilliseconds uint32           `json:"wait_milliseconds,omitempty"`
 }
 
 // Validate reports whether the request can continue one current-session output stream.
 func (request ProjectActivityRequest) Validate() error {
 	if err := request.ProjectID.Validate(); err != nil {
 		return err
+	}
+	if request.WaitMilliseconds > MaximumProjectActivityWaitMilliseconds {
+		return fmt.Errorf("project activity wait exceeds %d milliseconds", MaximumProjectActivityWaitMilliseconds)
 	}
 	if request.SessionID == "" {
 		if request.Cursor != 0 {

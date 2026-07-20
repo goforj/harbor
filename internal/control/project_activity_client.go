@@ -15,6 +15,9 @@ func (client *Client) ProjectActivity(ctx context.Context, request ProjectActivi
 	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectActivityV1) {
 		return ProjectActivity{}, errors.New("Harbor daemon does not support project activity; upgrade or restart harbord")
 	}
+	if request.WaitMilliseconds > 0 && !containsCapability(client.peer.Session.Capabilities, CapabilityProjectActivityWaitV1) {
+		return ProjectActivity{}, errors.New("Harbor daemon does not support live project activity; upgrade or restart harbord")
+	}
 	payload, err := client.session.Call(ctx, methodProjectActivity, request)
 	if err != nil {
 		return ProjectActivity{}, err

@@ -17,6 +17,7 @@ import {
   TriangleAlert,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -35,7 +36,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { useProjectActivity } from '@/composables/useProjectActivity'
-import { ansiToHtml } from '@/lib/ansi'
 import { useHarborStore } from '@/stores/harbor'
 
 const route = useRoute()
@@ -44,25 +44,29 @@ const store = useHarborStore()
 const copiedPath = ref(false)
 const removeOpen = ref(false)
 const developmentOutputViewport = ref<HTMLElement | null>(null)
+const followDevelopmentOutput = ref(true)
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const projectActivitySupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity.v1') === true)
+const projectActivityWaitSupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity-wait.v1') === true)
 const daemonConnected = computed(() => store.connectionState === 'connected')
 const snapshotSequence = computed(() => store.snapshot?.sequence)
 const {
   activity: projectActivity,
   output: developmentOutput,
+  outputResetKey: developmentOutputResetKey,
   error: developmentOutputError,
   truncated: developmentOutputTruncated,
 } = useProjectActivity({
   projectId,
   supported: projectActivitySupported,
+  waitSupported: projectActivityWaitSupported,
   connected: daemonConnected,
   snapshotSequence,
   read: (selectedProjectId, sessionId, cursor) => store.readProjectActivity(selectedProjectId, sessionId, cursor),
+  wait: (selectedProjectId, sessionId, cursor, waitMilliseconds) => store.waitProjectActivity(selectedProjectId, sessionId, cursor, waitMilliseconds),
 })
 const projectActivitySession = computed(() => projectActivity.value?.session)
-const developmentOutputHtml = computed(() => ansiToHtml(developmentOutput.value))
 const showDevelopmentOutput = computed(() => projectActivitySupported.value && (
   projectActivitySession.value != null
   || developmentOutput.value !== ''
@@ -140,17 +144,25 @@ const updatedAt = computed(() => project.value
   : '')
 
 watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, previousProject]) => {
+  if (nextProjectId !== previousProjectId) followDevelopmentOutput.value = true
   if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
     void router.replace('/projects')
   }
 })
 
-watch(developmentOutput, async (nextOutput, previousOutput) => {
-  if (nextOutput === previousOutput) return
+async function scrollDevelopmentOutput() {
+  if (!followDevelopmentOutput.value) return
   await nextTick()
   const viewport = developmentOutputViewport.value
   if (viewport) viewport.scrollTop = viewport.scrollHeight
-})
+}
+
+// updateDevelopmentOutputFollow pauses automatic tailing while the user inspects earlier output.
+function updateDevelopmentOutputFollow() {
+  const viewport = developmentOutputViewport.value
+  if (!viewport) return
+  followDevelopmentOutput.value = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 32
+}
 
 async function copyPath() {
   if (!project.value) return
@@ -309,9 +321,15 @@ async function setupNetworkAndStartProject() {
               class="max-h-80 min-h-36 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"
               tabindex="0"
               aria-label="Current project development output"
+              @scroll="updateDevelopmentOutputFollow"
             >
               <p v-if="developmentOutputTruncated" class="mb-2 text-amber-300">Earlier output is no longer retained.</p>
-              <pre v-if="developmentOutput" class="whitespace-pre-wrap break-words font-mono" v-html="developmentOutputHtml" />
+              <TerminalOutput
+                v-if="developmentOutput"
+                :output="developmentOutput"
+                :reset-key="developmentOutputResetKey"
+                @rendered="scrollDevelopmentOutput"
+              />
               <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
               <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
             </div>

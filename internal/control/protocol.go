@@ -24,6 +24,8 @@ const (
 	CapabilityNetworkResolverSetupV1 rpc.Capability = "control.network-resolver-setup.v1"
 	// CapabilityProjectActivityV1 identifies bounded current-session project output reads.
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
+	// CapabilityProjectActivityWaitV1 identifies bounded cursor waits on current-session project output.
+	CapabilityProjectActivityWaitV1 rpc.Capability = "control.project-activity-wait.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
 	// CapabilityProjectLifecycleV1 identifies idempotent project start and stop initiation.
@@ -255,6 +257,7 @@ func capabilities() []rpc.Capability {
 		CapabilityDaemonControlV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
+		CapabilityProjectActivityWaitV1,
 		CapabilityProjectActivityV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,

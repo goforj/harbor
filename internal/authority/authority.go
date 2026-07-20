@@ -703,6 +703,7 @@ func (authority *Authority) ProjectActivity(
 		ProjectID: request.ProjectID,
 		SessionID: request.SessionID,
 		Cursor:    request.Cursor,
+		Wait:      time.Duration(request.WaitMilliseconds) * time.Millisecond,
 	})
 	if err != nil {
 		var projectMissing *state.ProjectNotFoundError

@@ -17,6 +17,7 @@ function createUnavailableBridge(): HarborBridge {
     getStatus: unavailable,
     getSnapshot: unavailable,
     getProjectActivity: unavailable,
+    waitProjectActivity: unavailable,
     openResource: unavailable,
     removeProject: unavailable,
     setupNetwork: unavailable,

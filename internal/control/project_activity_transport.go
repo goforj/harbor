@@ -31,6 +31,13 @@ func (server *Server) projectActivityHandler(transportPeer local.PeerIdentity) s
 		if err != nil {
 			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
 		}
+		if activityRequest.WaitMilliseconds > 0 &&
+			!containsCapability(caller.Session.Capabilities, CapabilityProjectActivityWaitV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project activity wait capability was not negotiated"),
+			)
+		}
 		activity, err := server.config.Authority.ProjectActivity(ctx, caller, activityRequest)
 		if err != nil {
 			return nil, authorityError(err)
@@ -66,6 +73,7 @@ func decodeProjectActivityRequest(payload []byte) (ProjectActivityRequest, error
 	var projectSeen bool
 	var sessionSeen bool
 	var cursorSeen bool
+	var waitSeen bool
 	for decoder.More() {
 		fieldToken, err := decoder.Token()
 		if err != nil {
@@ -100,6 +108,14 @@ func decodeProjectActivityRequest(payload []byte) (ProjectActivityRequest, error
 				return ProjectActivityRequest{}, fmt.Errorf("decode project activity cursor: %w", err)
 			}
 			cursorSeen = true
+		case "wait_milliseconds":
+			if waitSeen {
+				return ProjectActivityRequest{}, errors.New("project activity request contains duplicate field \"wait_milliseconds\"")
+			}
+			if err := decoder.Decode(&result.WaitMilliseconds); err != nil {
+				return ProjectActivityRequest{}, fmt.Errorf("decode project activity wait: %w", err)
+			}
+			waitSeen = true
 		default:
 			return ProjectActivityRequest{}, fmt.Errorf("project activity request contains unknown field %q", field)
 		}

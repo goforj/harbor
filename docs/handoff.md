@@ -25,7 +25,7 @@ Do not expand scope before reading [Current implementation state](./current-stat
 - GoForj owns project composition and `forj dev`; Harbor orchestrates it instead of reproducing `.goforj.yml` semantics.
 - Wails v2 remains the stable desktop host. Vue 3, TypeScript, Vite, Tailwind 4, Pinia, Reka/shadcn primitives, and Lucide are the frontend foundation.
 - The GoForj Vue starter's component bones were preserved; Harbor's information architecture and visual density are adapted toward Lerd, not constrained to the starter's original page layout.
-- Current activity matters more than a long operation-history wall. Project detail shows live state, the actionable failure, and current bounded `forj dev` output.
+- Current activity matters more than a long operation-history wall. Project detail shows live state, the actionable failure, and current bounded `forj dev` output. Output delivery is wake-driven over the authenticated control connection and terminal redraw controls update existing rows instead of becoming noisy history.
 - Existing generated API Index and example surfaces remain valuable GoForj resources; Harbor should surface them, not replace or remove them.
 - Compatibility and cross-platform support are claims only when macOS, Linux, and Windows native tests prove the crucial behavior.
 
@@ -199,7 +199,7 @@ No delivery phase has met its complete exit gate.
 - Hosted three-OS CI, Phase 1 evidence, and privileged loopback tests exist.
 - Durable SQLite state, authenticated local RPC, operation journals, project registration/removal, network setup approvals, and recovery are substantial.
 - DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, Linux resolver integration foundation, Windows NRPT core foundation, and runtime activation exist.
-- Wails/Vue can add/remove projects, set up networking, start/stop a project, display actionable errors, and stream current ANSI-formatted output.
+- Wails/Vue can add/remove projects, set up networking, start/stop a project, display actionable errors, and stream current ANSI-formatted output through a held cursor request with incremental terminal redraws.
 - The typed GoForj project descriptor and managed-session handshake do not exist.
 - Compose service projection, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
 - Project Start/Stop exists in control and desktop surfaces, not first-class CLI commands.

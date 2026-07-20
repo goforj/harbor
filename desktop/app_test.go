@@ -55,6 +55,7 @@ type fakeControlClient struct {
 	activity             control.ProjectActivity
 	activityErr          error
 	activityRequest      control.ProjectActivityRequest
+	activityHook         func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
 	startLifecycle       control.ProjectLifecycleOperation
 	startErr             error
 	startRequest         control.StartProjectRequest
@@ -231,11 +232,17 @@ func (client *fakeControlClient) RegisterProject(_ context.Context, request cont
 }
 
 // ProjectActivity records the current-session cursor and returns the configured bounded output.
-func (client *fakeControlClient) ProjectActivity(_ context.Context, request control.ProjectActivityRequest) (control.ProjectActivity, error) {
+func (client *fakeControlClient) ProjectActivity(ctx context.Context, request control.ProjectActivityRequest) (control.ProjectActivity, error) {
 	client.mu.Lock()
-	defer client.mu.Unlock()
 	client.activityRequest = request
-	return client.activity, client.activityErr
+	hook := client.activityHook
+	activity := client.activity
+	err := client.activityErr
+	client.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, request)
+	}
+	return activity, err
 }
 
 // StartProject records the stable lifecycle identity and returns the configured start operation.
@@ -1966,6 +1973,84 @@ func TestProjectActivityPreservesCurrentSessionCursor(t *testing.T) {
 			t.Fatalf("ProjectActivity() = %+v", activity)
 		}
 	})
+
+	t.Run("held output", func(t *testing.T) {
+		app, client := connectedTestApp()
+		activity, err := app.WaitProjectActivity("orders", "session-orders", 4, 25_000)
+		if err != nil {
+			t.Fatalf("WaitProjectActivity() error = %v", err)
+		}
+		wantRequest := control.ProjectActivityRequest{
+			ProjectID:        "orders",
+			SessionID:        "session-orders",
+			Cursor:           4,
+			WaitMilliseconds: 25_000,
+		}
+		if client.activityRequest != wantRequest {
+			t.Fatalf("ProjectActivity() request = %+v, want %+v", client.activityRequest, wantRequest)
+		}
+		if activity.Session == nil || activity.Session.Output.Text != "ding app\n" {
+			t.Fatalf("WaitProjectActivity() = %+v", activity)
+		}
+	})
+
+	t.Run("wait too long", func(t *testing.T) {
+		app, client := connectedTestApp()
+		_, err := app.WaitProjectActivity(
+			"orders",
+			"session-orders",
+			4,
+			uint64(control.MaximumProjectActivityWaitMilliseconds)+1,
+		)
+		if err == nil || !strings.Contains(err.Error(), "wait exceeds") {
+			t.Fatalf("WaitProjectActivity() error = %v, want wait validation", err)
+		}
+		if client.activityRequest != (control.ProjectActivityRequest{}) {
+			t.Fatalf("WaitProjectActivity() request = %+v after local validation", client.activityRequest)
+		}
+	})
+}
+
+// TestProjectActivityCancelsAStaleHeldRead keeps rapid project selection from exhausting daemon request slots.
+func TestProjectActivityCancelsAStaleHeldRead(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	heldStarted := make(chan struct{})
+	client.activityHook = func(ctx context.Context, request control.ProjectActivityRequest) (control.ProjectActivity, error) {
+		if request.WaitMilliseconds == 0 {
+			activity := testProjectActivity()
+			activity.ProjectID = request.ProjectID
+			activity.Session = nil
+			return activity, nil
+		}
+		close(heldStarted)
+		<-ctx.Done()
+		return control.ProjectActivity{}, ctx.Err()
+	}
+
+	heldResult := make(chan error, 1)
+	go func() {
+		_, err := app.WaitProjectActivity("orders", "session-orders", 4, 25_000)
+		heldResult <- err
+	}()
+	select {
+	case <-heldStarted:
+	case <-time.After(time.Second):
+		t.Fatal("held project activity did not reach the control client")
+	}
+
+	if _, err := app.ProjectActivity("billing", "", 0); err != nil {
+		t.Fatalf("replacement ProjectActivity() error = %v", err)
+	}
+	select {
+	case err := <-heldResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("held WaitProjectActivity() error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement project activity did not cancel the stale held read")
+	}
 }
 
 // TestProjectLifecyclePreservesActionIdentityAndOperationState covers both native lifecycle boundaries.
