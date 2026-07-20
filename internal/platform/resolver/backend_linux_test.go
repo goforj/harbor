@@ -386,7 +386,7 @@ func TestPrivilegedSystemdResolvedAdapterLifecycle(t *testing.T) {
 			t.Errorf("cleanup ReleaseIfObserved() error = %v", releaseErr)
 		}
 	}()
-	ensured, err := adapter.EnsureIfObserved(t.Context(), request, resolverFingerprint(t, before))
+	ensured, err := ensurePrivilegedSystemdResolved(t.Context(), adapter, request, resolverFingerprint(t, before))
 	if err != nil {
 		t.Fatalf("EnsureIfObserved() error = %v", err)
 	}
@@ -417,19 +417,30 @@ func TestPrivilegedSystemdResolvedAdapterLifecycle(t *testing.T) {
 // observePrivilegedSystemdResolved adds a bounded native cause only to the opt-in root-host diagnostic path.
 func observePrivilegedSystemdResolved(ctx context.Context, adapter *Adapter, request Request) (Observation, error) {
 	observation, err := adapter.Observe(ctx, request)
+	return observation, privilegedSystemdResolvedDiagnostic(err)
+}
+
+// ensurePrivilegedSystemdResolved adds a bounded native cause only to the opt-in root-host mutation diagnostic path.
+func ensurePrivilegedSystemdResolved(ctx context.Context, adapter *Adapter, request Request, fingerprint string) (Change, error) {
+	change, err := adapter.EnsureIfObserved(ctx, request, fingerprint)
+	return change, privilegedSystemdResolvedDiagnostic(err)
+}
+
+// privilegedSystemdResolvedDiagnostic preserves public redaction while making an opted-in native CI failure actionable.
+func privilegedSystemdResolvedDiagnostic(err error) error {
 	if err == nil {
-		return observation, nil
+		return nil
 	}
 	var resolverError *Error
 	if !errors.As(err, &resolverError) || resolverError.Unwrap() == nil {
-		return observation, err
+		return err
 	}
 	cause := resolverError.Unwrap().Error()
 	const maximumDiagnosticBytes = 4096
 	if len(cause) > maximumDiagnosticBytes {
 		cause = cause[:maximumDiagnosticBytes] + "...[truncated]"
 	}
-	return observation, fmt.Errorf("%w; native cause: %s", err, cause)
+	return fmt.Errorf("%w; native cause: %s", err, cause)
 }
 
 // TestPrivilegedSystemdResolvedAdapterCrashRecovery proves Harbor repairs only its own interrupted stage and quarantine states.
@@ -490,7 +501,7 @@ func TestPrivilegedSystemdResolvedAdapterCrashRecovery(t *testing.T) {
 		t.Fatalf("staged crash artifact remains after recovery: %v", err)
 	}
 
-	_, err = adapter.EnsureIfObserved(t.Context(), request, resolverFingerprint(t, observation))
+	_, err = ensurePrivilegedSystemdResolved(t.Context(), adapter, request, resolverFingerprint(t, observation))
 	if err != nil {
 		t.Fatalf("EnsureIfObserved() error = %v", err)
 	}
