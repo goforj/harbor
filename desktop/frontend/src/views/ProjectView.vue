@@ -47,6 +47,8 @@ const route = useRoute()
 const router = useRouter()
 const store = useHarborStore()
 const copiedPath = ref(false)
+const copiedDevelopmentOutput = ref(false)
+const developmentOutputCopyError = ref<string | null>(null)
 const removeOpen = ref(false)
 const runtimeRepairOpen = ref(false)
 const runtimeRepairNow = ref(Date.now())
@@ -262,6 +264,19 @@ async function copyPath() {
   await copyText(project.value.path)
   copiedPath.value = true
   window.setTimeout(() => { copiedPath.value = false }, 1600)
+}
+
+async function copyDevelopmentOutput() {
+  if (!developmentOutput.value) return
+  developmentOutputCopyError.value = null
+  try {
+    await copyText(developmentOutput.value)
+    copiedDevelopmentOutput.value = true
+    window.setTimeout(() => { copiedDevelopmentOutput.value = false }, 1600)
+  }
+  catch (error) {
+    developmentOutputCopyError.value = error instanceof Error ? error.message : 'Could not copy development output.'
+  }
 }
 
 async function openResource(resourceId: string) {
@@ -518,8 +533,10 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
 
         <TabsContent value="output" class="m-0 flex min-h-0 flex-1 flex-col">
         <Card v-if="showDevelopmentOutput" class="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
+          <CardHeader class="!flex !items-center !justify-between border-b px-4 py-2"><div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Development output</CardTitle></div><Button variant="ghost" size="sm" :disabled="!developmentOutput" @click="copyDevelopmentOutput"><Check v-if="copiedDevelopmentOutput" class="size-3.5" /><Clipboard v-else class="size-3.5" />{{ copiedDevelopmentOutput ? 'Copied' : 'Copy' }}</Button></CardHeader>
           <CardContent class="flex min-h-0 flex-1 flex-col p-0">
             <p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p>
+            <p v-if="developmentOutputCopyError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputCopyError }}</p>
             <div
               ref="developmentOutputViewport"
               class="min-h-0 flex-1 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"

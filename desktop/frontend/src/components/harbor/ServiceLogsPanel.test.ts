@@ -5,6 +5,10 @@ import type { ServiceLogs } from '@/domain/harbor'
 import { useHarborStore } from '@/stores/harbor'
 import ServiceLogsPanel from './ServiceLogsPanel.vue'
 
+const { copyText } = vi.hoisted(() => ({ copyText: vi.fn() }))
+
+vi.mock('@/bridge/clipboard', () => ({ copyText }))
+
 // never models a native held read while the panel remains mounted.
 function never<T>(): Promise<T> {
   return new Promise(() => {})
@@ -72,6 +76,25 @@ describe('ServiceLogsPanel', () => {
     if (!clear) throw new Error('Clear service logs action is missing')
     await clear.trigger('click')
     expect(wrapper.text()).toContain('Waiting for new service log output…')
+    wrapper.unmount()
+  })
+
+  it('copies the complete unrendered service transcript', async () => {
+    const response: ServiceLogs = {
+      project_id: 'orders', service_id: 'mysql', session_id: 'session-orders', supported: true, available: true,
+      output: { available: true, reset: false, truncated: false, has_more: false, next_cursor: 18, text: '\u001b[32mready\u001b[0m\n' },
+    }
+    copyText.mockResolvedValueOnce(undefined)
+    const { wrapper } = mountPanel(['control.service-logs.v1'], response)
+    await flushPromises()
+
+    const copy = wrapper.findAll('button').find((button) => button.text().includes('Copy'))
+    if (!copy) throw new Error('Copy service logs action is missing')
+    await copy.trigger('click')
+    await flushPromises()
+
+    expect(copyText).toHaveBeenCalledWith('\u001b[32mready\u001b[0m\n')
+    expect(wrapper.text()).toContain('Copied')
     wrapper.unmount()
   })
 

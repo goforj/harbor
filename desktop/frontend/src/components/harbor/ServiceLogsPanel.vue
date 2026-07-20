@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CircleDot, Eraser, Radio, SquareTerminal } from '@lucide/vue'
+import { Check, CircleDot, Clipboard, Eraser, Radio, SquareTerminal } from '@lucide/vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useServiceLogs } from '@/composables/useServiceLogs'
 import { useHarborStore } from '@/stores/harbor'
+import { copyText } from '@/bridge/clipboard'
 
 const props = defineProps<{
   projectId: string
@@ -18,6 +19,8 @@ const props = defineProps<{
 const store = useHarborStore()
 const viewport = ref<HTMLElement | null>(null)
 const follow = ref(true)
+const copied = ref(false)
+const copyError = ref<string | null>(null)
 const projectId = computed(() => props.projectId)
 const serviceId = computed(() => props.serviceId)
 const logSupported = computed(() => store.daemonStatus?.capabilities.includes('control.service-logs.v1') === true)
@@ -97,6 +100,20 @@ function clearOutput() {
   clear()
   follow.value = true
 }
+
+// copyOutput preserves the original unrendered transcript, including ANSI control sequences when present.
+async function copyOutput() {
+  if (!output.value) return
+  copyError.value = null
+  try {
+    await copyText(output.value)
+    copied.value = true
+    window.setTimeout(() => { copied.value = false }, 1600)
+  }
+  catch (error) {
+    copyError.value = error instanceof Error ? error.message : 'Could not copy service logs.'
+  }
+}
 </script>
 
 <template>
@@ -121,6 +138,10 @@ function clearOutput() {
           <Eraser class="size-3.5" />
           Clear
         </Button>
+        <Button variant="ghost" size="sm" :disabled="!output" @click="copyOutput">
+          <Check v-if="copied" class="size-3.5" /><Clipboard v-else class="size-3.5" />
+          {{ copied ? 'Copied' : 'Copy' }}
+        </Button>
         <Button
           :variant="follow ? 'secondary' : 'outline'"
           size="sm"
@@ -135,6 +156,7 @@ function clearOutput() {
     </CardHeader>
     <CardContent :class="['p-0', { 'flex min-h-0 flex-1 flex-col': fill }]">
       <p v-if="error" class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{{ error }}</p>
+      <p v-if="copyError" class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{{ copyError }}</p>
       <p v-if="truncated" class="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">Earlier logs are no longer retained. The live stream continues from the newest visible output.</p>
       <div
         ref="viewport"
