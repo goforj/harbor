@@ -43,4 +43,21 @@ describe('TerminalOutput', () => {
 
     expect(wrapper.text()).toBe('old output from a new session')
   })
+
+  it('renders safe HTTP links without interpreting terminal text as HTML', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+    const wrapper = mount(TerminalOutput, { props: { output: 'Open https://orders.test/docs.', resetKey: 0 } })
+    frames.shift()?.(0)
+    await nextTick()
+
+    const link = wrapper.get('a')
+    expect(link.attributes('href')).toBe('https://orders.test/docs')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+    expect(link.text()).toBe('https://orders.test/docs')
+  })
 })

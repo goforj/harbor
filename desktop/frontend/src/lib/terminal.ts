@@ -12,6 +12,12 @@ export interface TerminalLine {
   runs: TerminalRun[]
 }
 
+// TerminalTextSegment is one safe text or web-link fragment for terminal rendering.
+export interface TerminalTextSegment {
+  text: string
+  url?: string
+}
+
 interface TerminalStyle {
   background?: string
   bold: boolean
@@ -440,6 +446,48 @@ export function terminalPlainText(output: string): string {
   const terminal = new TerminalModel()
   terminal.feed(output)
   return terminal.text()
+}
+
+// terminalLinkSegments recognizes only absolute HTTP(S) URLs from untrusted process output.
+export function terminalLinkSegments(text: string): TerminalTextSegment[] {
+  const segments: TerminalTextSegment[] = []
+  const matcher = /https?:\/\/[^\s<>"']+/g
+  let end = 0
+  for (const match of text.matchAll(matcher)) {
+    const start = match.index ?? 0
+    if (start > end) appendTerminalText(segments, text.slice(end, start))
+    const candidate = trimTerminalURLPunctuation(match[0])
+    if (candidate && isSafeTerminalURL(candidate)) segments.push({ text: candidate, url: candidate })
+    else if (candidate) appendTerminalText(segments, candidate)
+    const suffix = match[0].slice(candidate.length)
+    if (suffix) appendTerminalText(segments, suffix)
+    end = start + match[0].length
+  }
+  if (end < text.length) appendTerminalText(segments, text.slice(end))
+  return segments.length ? segments : [{ text }]
+}
+
+// appendTerminalText keeps adjacent plain fragments in one text node for compact terminal DOM output.
+function appendTerminalText(segments: TerminalTextSegment[], text: string): void {
+  const previous = segments.at(-1)
+  if (previous && previous.url == null) previous.text += text
+  else segments.push({ text })
+}
+
+// trimTerminalURLPunctuation leaves sentence punctuation outside a link without altering a valid URL path.
+function trimTerminalURLPunctuation(value: string): string {
+  return value.replace(/[.,!?;:]+$/, '').replace(/\)+$/, '')
+}
+
+// isSafeTerminalURL prevents log text from creating non-web navigation targets.
+function isSafeTerminalURL(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.username === '' && parsed.password === ''
+  }
+  catch {
+    return false
+  }
 }
 
 // readControlSequence returns parameter bytes and the first standards-defined final byte.

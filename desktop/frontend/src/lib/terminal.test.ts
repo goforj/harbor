@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { terminalPlainText, TerminalModel } from './terminal'
+import { terminalLinkSegments, terminalPlainText, TerminalModel } from './terminal'
 
 describe('TerminalModel', () => {
   it('returns clipboard text without ANSI styling sequences', () => {
     expect(terminalPlainText('\u001b[32mready\u001b[0m\n')).toBe('ready\n')
+  })
+
+  it('recognizes only safe web links from terminal output', () => {
+    expect(terminalLinkSegments('Open https://orders.test/docs. ftp://orders.test and https://user:pass@example.test/')).toEqual([
+      { text: 'Open ' }, { text: 'https://orders.test/docs', url: 'https://orders.test/docs' },
+      { text: '. ftp://orders.test and https://user:pass@example.test/' },
+    ])
   })
 
   it('updates carriage-return and backspace loaders in place', () => {
