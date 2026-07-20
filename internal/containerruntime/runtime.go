@@ -43,6 +43,7 @@ type Container struct {
 	ExitCode int
 	Replica  int
 	TTY      bool
+	Environment []string
 	Ports    []Port
 }
 

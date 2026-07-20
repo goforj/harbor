@@ -304,6 +304,7 @@ func (runtime *DockerRuntime) admitContainer(
 			ExitCode: inspected.Container.State.ExitCode,
 			Replica:  replica,
 			TTY:      inspected.Container.Config.Tty,
+			Environment: append([]string(nil), inspected.Container.Config.Env...),
 			Ports:    ports,
 		},
 	}, true, nil
