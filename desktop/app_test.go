@@ -56,6 +56,12 @@ type fakeControlClient struct {
 	activityErr          error
 	activityRequest      control.ProjectActivityRequest
 	activityHook         func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	repairInspection     control.ProjectRuntimeRepairInspection
+	repairInspectionErr  error
+	repairInspectRequest control.InspectProjectRuntimeRepairRequest
+	repairConfirmation   control.ProjectRuntimeRepairConfirmation
+	repairConfirmErr     error
+	repairConfirmRequest control.ConfirmProjectRuntimeRepairRequest
 	startLifecycle       control.ProjectLifecycleOperation
 	startErr             error
 	startRequest         control.StartProjectRequest
@@ -127,15 +133,17 @@ func newFakeControlClient() *fakeControlClient {
 			SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
 			Sequence:              8,
 		},
-		snapshot:       testSnapshot(),
-		registration:   testRegistration(),
-		networkSetup:   testNetworkSetupOperation(domain.OperationSucceeded, 10),
-		resolverSetup:  testNetworkResolverSetupOperation(domain.OperationSucceeded, 13),
-		activity:       testProjectActivity(),
-		startLifecycle: testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
-		stopLifecycle:  testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
-		unregistration: testUnregistration(),
-		done:           make(chan struct{}),
+		snapshot:           testSnapshot(),
+		registration:       testRegistration(),
+		networkSetup:       testNetworkSetupOperation(domain.OperationSucceeded, 10),
+		resolverSetup:      testNetworkResolverSetupOperation(domain.OperationSucceeded, 13),
+		activity:           testProjectActivity(),
+		repairInspection:   testProjectRuntimeRepairInspection(),
+		repairConfirmation: testProjectRuntimeRepairConfirmation(),
+		startLifecycle:     testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
+		stopLifecycle:      testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
+		unregistration:     testUnregistration(),
+		done:               make(chan struct{}),
 	}
 }
 
@@ -243,6 +251,28 @@ func (client *fakeControlClient) ProjectActivity(ctx context.Context, request co
 		return hook(ctx, request)
 	}
 	return activity, err
+}
+
+// InspectProjectRuntimeRepair records the selected project and returns the configured bounded inspection.
+func (client *fakeControlClient) InspectProjectRuntimeRepair(
+	_ context.Context,
+	request control.InspectProjectRuntimeRepairRequest,
+) (control.ProjectRuntimeRepairInspection, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.repairInspectRequest = request
+	return client.repairInspection, client.repairInspectionErr
+}
+
+// ConfirmProjectRuntimeRepair records only the opaque prior selection and returns the configured stopped projection.
+func (client *fakeControlClient) ConfirmProjectRuntimeRepair(
+	_ context.Context,
+	request control.ConfirmProjectRuntimeRepairRequest,
+) (control.ProjectRuntimeRepairConfirmation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.repairConfirmRequest = request
+	return client.repairConfirmation, client.repairConfirmErr
 }
 
 // StartProject records the stable lifecycle identity and returns the configured start operation.
@@ -2141,6 +2171,171 @@ func TestProjectLifecyclePreservesActionIdentityAndOperationState(t *testing.T) 
 	})
 }
 
+// TestProjectRuntimeRepairPreservesOpaqueInspectionAndConfirmation covers both native stale-runtime boundaries.
+func TestProjectRuntimeRepairPreservesOpaqueInspectionAndConfirmation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid inspection request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.InspectProjectRuntimeRepair(""); err == nil || !strings.Contains(err.Error(), "project ID") {
+			t.Fatalf("InspectProjectRuntimeRepair() error = %v, want invalid project", err)
+		}
+		if client.repairInspectRequest != (control.InspectProjectRuntimeRepairRequest{}) {
+			t.Fatalf("InspectProjectRuntimeRepair() request = %+v after local validation", client.repairInspectRequest)
+		}
+	})
+
+	t.Run("disconnected inspection", func(t *testing.T) {
+		if _, err := testApp().InspectProjectRuntimeRepair("orders"); !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("InspectProjectRuntimeRepair() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("inspection daemon failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.repairInspectionErr = errors.New("inspection unavailable")
+		if _, err := app.InspectProjectRuntimeRepair("orders"); err == nil || !strings.Contains(err.Error(), "inspection unavailable") {
+			t.Fatalf("InspectProjectRuntimeRepair() error = %v, want daemon failure", err)
+		}
+	})
+
+	t.Run("invalid inspection result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.repairInspection = control.ProjectRuntimeRepairInspection{}
+		if _, err := app.InspectProjectRuntimeRepair("orders"); err == nil || !strings.Contains(err.Error(), "validate project runtime repair inspection") {
+			t.Fatalf("InspectProjectRuntimeRepair() error = %v, want validation failure", err)
+		}
+	})
+
+	t.Run("mismatched inspection result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.repairInspection.ProjectID = "billing"
+		if _, err := app.InspectProjectRuntimeRepair("orders"); err == nil || !strings.Contains(err.Error(), "another project") {
+			t.Fatalf("InspectProjectRuntimeRepair() error = %v, want project correlation failure", err)
+		}
+	})
+
+	t.Run("inspected", func(t *testing.T) {
+		app, client := connectedTestApp()
+		result, err := app.InspectProjectRuntimeRepair("orders")
+		if err != nil {
+			t.Fatalf("InspectProjectRuntimeRepair() error = %v", err)
+		}
+		wantRequest := control.InspectProjectRuntimeRepairRequest{ProjectID: "orders"}
+		if client.repairInspectRequest != wantRequest {
+			t.Fatalf("InspectProjectRuntimeRepair() request = %+v, want %+v", client.repairInspectRequest, wantRequest)
+		}
+		if result.Disposition != control.ProjectRuntimeRepairInspectionConfirmable || result.Confirmable == nil {
+			t.Fatalf("InspectProjectRuntimeRepair() = %+v, want confirmable inspection", result)
+		}
+	})
+
+	t.Run("invalid confirmation request", func(t *testing.T) {
+		app, client := connectedTestApp()
+		if _, err := app.ConfirmProjectRuntimeRepair("orders", "bad", strings.Repeat("b", 64)); err == nil || !strings.Contains(err.Error(), "inspection ID") {
+			t.Fatalf("ConfirmProjectRuntimeRepair() error = %v, want invalid inspection ID", err)
+		}
+		if client.repairConfirmRequest != (control.ConfirmProjectRuntimeRepairRequest{}) {
+			t.Fatalf("ConfirmProjectRuntimeRepair() request = %+v after local validation", client.repairConfirmRequest)
+		}
+	})
+
+	t.Run("disconnected confirmation", func(t *testing.T) {
+		inspection := testProjectRuntimeRepairInspection().Confirmable
+		if inspection == nil {
+			t.Fatal("test inspection is not confirmable")
+		}
+		_, err := testApp().ConfirmProjectRuntimeRepair(
+			"orders",
+			string(inspection.InspectionID),
+			string(inspection.CandidateFingerprint),
+		)
+		if !errors.Is(err, errDaemonDisconnected) {
+			t.Fatalf("ConfirmProjectRuntimeRepair() error = %v, want disconnected", err)
+		}
+	})
+
+	t.Run("confirmation daemon failure", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.repairConfirmErr = errors.New("candidate drifted")
+		inspection := client.repairInspection.Confirmable
+		if inspection == nil {
+			t.Fatal("test inspection is not confirmable")
+		}
+		_, err := app.ConfirmProjectRuntimeRepair(
+			"orders",
+			string(inspection.InspectionID),
+			string(inspection.CandidateFingerprint),
+		)
+		if err == nil || !strings.Contains(err.Error(), "candidate drifted") {
+			t.Fatalf("ConfirmProjectRuntimeRepair() error = %v, want daemon failure", err)
+		}
+	})
+
+	t.Run("invalid confirmation result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.repairConfirmation = control.ProjectRuntimeRepairConfirmation{}
+		inspection := client.repairInspection.Confirmable
+		if inspection == nil {
+			t.Fatal("test inspection is not confirmable")
+		}
+		_, err := app.ConfirmProjectRuntimeRepair(
+			"orders",
+			string(inspection.InspectionID),
+			string(inspection.CandidateFingerprint),
+		)
+		if err == nil || !strings.Contains(err.Error(), "validate project runtime repair confirmation") {
+			t.Fatalf("ConfirmProjectRuntimeRepair() error = %v, want validation failure", err)
+		}
+	})
+
+	t.Run("mismatched confirmation result", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.repairConfirmation.Project.ID = "billing"
+		client.repairConfirmation.Project.Path = "/workspace/billing"
+		client.repairConfirmation.Project.Slug = "billing"
+		inspection := client.repairInspection.Confirmable
+		if inspection == nil {
+			t.Fatal("test inspection is not confirmable")
+		}
+		_, err := app.ConfirmProjectRuntimeRepair(
+			"orders",
+			string(inspection.InspectionID),
+			string(inspection.CandidateFingerprint),
+		)
+		if err == nil || !strings.Contains(err.Error(), "another project") {
+			t.Fatalf("ConfirmProjectRuntimeRepair() error = %v, want project correlation failure", err)
+		}
+	})
+
+	t.Run("confirmed", func(t *testing.T) {
+		app, client := connectedTestApp()
+		inspection := client.repairInspection.Confirmable
+		if inspection == nil {
+			t.Fatal("test inspection is not confirmable")
+		}
+		result, err := app.ConfirmProjectRuntimeRepair(
+			"orders",
+			string(inspection.InspectionID),
+			string(inspection.CandidateFingerprint),
+		)
+		if err != nil {
+			t.Fatalf("ConfirmProjectRuntimeRepair() error = %v", err)
+		}
+		wantRequest := control.ConfirmProjectRuntimeRepairRequest{
+			ProjectID:    "orders",
+			InspectionID: inspection.InspectionID,
+			Fingerprint:  inspection.CandidateFingerprint,
+		}
+		if client.repairConfirmRequest != wantRequest {
+			t.Fatalf("ConfirmProjectRuntimeRepair() request = %+v, want %+v", client.repairConfirmRequest, wantRequest)
+		}
+		if result.Project.State != domain.ProjectStopped || result.Revision != 9 {
+			t.Fatalf("ConfirmProjectRuntimeRepair() = %+v, want stopped project at revision 9", result)
+		}
+	})
+}
+
 // TestOpenResourceUsesFreshProjectScopedState proves JavaScript cannot supply a URL or rely on a globally unique resource ID.
 func TestOpenResourceUsesFreshProjectScopedState(t *testing.T) {
 	t.Parallel()
@@ -2679,6 +2874,39 @@ func testProjectLifecycle(kind domain.OperationKind, intentID domain.IntentID) c
 		},
 		Revision: 9,
 	}
+}
+
+// testProjectRuntimeRepairInspection returns one valid bounded display with opaque confirmation selectors.
+func testProjectRuntimeRepairInspection() control.ProjectRuntimeRepairInspection {
+	return control.ProjectRuntimeRepairInspection{
+		ProjectID:   "orders",
+		Disposition: control.ProjectRuntimeRepairInspectionConfirmable,
+		Confirmable: &control.ProjectRuntimeRepairConfirmable{
+			Candidate: control.ProjectRuntimeRepairDisplayFacts{
+				Command:     "forj dev",
+				Checkout:    "/workspace/orders",
+				Endpoint:    "127.77.0.10:3000",
+				RootPID:     4127,
+				MemberCount: 3,
+			},
+			InspectionID:         control.ProjectRuntimeRepairInspectionID(strings.Repeat("a", 64)),
+			CandidateFingerprint: control.ProjectRuntimeRepairCandidateFingerprint(strings.Repeat("b", 64)),
+			ExpiresAt:            time.Date(2099, time.July, 18, 12, 7, 0, 0, time.UTC),
+		},
+	}
+}
+
+// testProjectRuntimeRepairConfirmation returns one valid stopped projection for the inspected project.
+func testProjectRuntimeRepairConfirmation() control.ProjectRuntimeRepairConfirmation {
+	project := testSnapshot().Projects[0]
+	project.State = domain.ProjectStopped
+	project.UpdatedAt = time.Date(2026, time.July, 18, 12, 8, 0, 0, time.UTC)
+	project.Apps = []domain.AppSnapshot{
+		{ID: "app", Name: "App", State: domain.EntityStopped, Required: true},
+	}
+	project.Services = []domain.ServiceSnapshot{}
+	project.Resources = []domain.ResourceSnapshot{}
+	return control.ProjectRuntimeRepairConfirmation{Project: project, Revision: 9}
 }
 
 // cloneSnapshot copies the nested collections a test may mutate after a fake response.

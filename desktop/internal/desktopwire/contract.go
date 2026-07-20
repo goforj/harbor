@@ -13,6 +13,10 @@ import (
 const (
 	// MethodAddProject is the generated Wails method that selects and registers one local project.
 	MethodAddProject = "AddProject"
+	// MethodConfirmProjectRuntimeRepair is the generated Wails method that confirms one inspected stale runtime.
+	MethodConfirmProjectRuntimeRepair = "ConfirmProjectRuntimeRepair"
+	// MethodInspectProjectRuntimeRepair is the generated Wails method that inspects one quarantined project runtime.
+	MethodInspectProjectRuntimeRepair = "InspectProjectRuntimeRepair"
 	// MethodOpenResource is the generated Wails method that opens one reviewed project resource.
 	MethodOpenResource = "OpenResource"
 	// MethodProjectActivity is the generated Wails method that reads current project development output.
@@ -60,6 +64,8 @@ func (result AddProjectResult) Validate() error {
 // AppContract is the complete exported method surface Wails may bind from App.
 type AppContract interface {
 	AddProject() (AddProjectResult, error)
+	ConfirmProjectRuntimeRepair(projectID string, inspectionID string, candidateFingerprint string) (control.ProjectRuntimeRepairConfirmation, error)
+	InspectProjectRuntimeRepair(projectID string) (control.ProjectRuntimeRepairInspection, error)
 	OpenResource(projectID string, resourceID string) error
 	ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error)
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
@@ -82,16 +88,18 @@ type MethodContract struct {
 func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
-		MethodAddProject:          {},
-		MethodOpenResource:        []string{"projectId", "resourceId"},
-		MethodProjectActivity:     []string{"projectId", "sessionId", "cursor"},
-		MethodRemoveProject:       []string{"projectId", "intentId"},
-		MethodSetupNetwork:        {},
-		MethodSnapshot:            []string{},
-		MethodStartProject:        []string{"projectId", "intentId"},
-		MethodStatus:              []string{},
-		MethodStopProject:         []string{"projectId", "intentId"},
-		MethodWaitProjectActivity: []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
+		MethodAddProject:                  {},
+		MethodConfirmProjectRuntimeRepair: []string{"projectId", "inspectionId", "candidateFingerprint"},
+		MethodInspectProjectRuntimeRepair: []string{"projectId"},
+		MethodOpenResource:                []string{"projectId", "resourceId"},
+		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
+		MethodRemoveProject:               []string{"projectId", "intentId"},
+		MethodSetupNetwork:                {},
+		MethodSnapshot:                    []string{},
+		MethodStartProject:                []string{"projectId", "intentId"},
+		MethodStatus:                      []string{},
+		MethodStopProject:                 []string{"projectId", "intentId"},
+		MethodWaitProjectActivity:         []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
 	}
 	contracts := make([]MethodContract, 0, contractType.NumMethod())
 	for index := range contractType.NumMethod() {

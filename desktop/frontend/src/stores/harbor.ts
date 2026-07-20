@@ -14,12 +14,21 @@ import type {
   ProjectLifecycleOperation,
   ProjectRegistration,
   ProjectResource,
+  ProjectRuntimeRepairConfirmation,
+  ProjectRuntimeRepairInspection,
+  ProjectRuntimeRepairNotActionableReason,
   ProjectService,
   ProjectUnregistration,
 } from '@/domain/harbor'
 
 export interface ProjectRemovalNotice {
   state: OperationState | 'busy' | 'incomplete' | 'request_failed'
+  title: string
+  message: string
+}
+
+export interface ProjectRuntimeRepairNotice {
+  state: 'blocked' | 'expired' | 'failed' | 'not_actionable' | 'succeeded' | 'unsupported'
   title: string
   message: string
 }
@@ -31,6 +40,7 @@ interface TrackedProjectRemovalIntent {
 }
 
 type ProjectLifecycleAction = 'start' | 'stop'
+type ProjectRuntimeRepairAction = 'inspect' | 'confirm'
 
 interface TrackedProjectLifecycleIntent {
   action: ProjectLifecycleAction
@@ -58,6 +68,10 @@ export const useHarborStore = defineStore('harbor', () => {
   const projectLifecycleErrors = ref<Record<string, string>>({})
   const projectLifecycleProblemCodes = ref<Record<string, string>>({})
   const projectRemovalNotices = ref<Record<string, ProjectRemovalNotice>>({})
+  const projectRuntimeRepairInspection = ref<ProjectRuntimeRepairInspection | null>(null)
+  const projectRuntimeRepairProjectId = ref<string | null>(null)
+  const projectRuntimeRepairAction = ref<ProjectRuntimeRepairAction | null>(null)
+  const projectRuntimeRepairNotices = ref<Record<string, ProjectRuntimeRepairNotice>>({})
   const error = ref<string | null>(null)
   const actionError = ref<string | null>(null)
   const projectRegistrationError = ref<string | null>(null)
@@ -66,6 +80,7 @@ export const useHarborStore = defineStore('harbor', () => {
   let refreshRequest = 0
   let acceptedSnapshots = 0
   let snapshotNeedsBaseline = true
+  let projectRuntimeRepairGeneration = 0
   let unsubscribeSnapshot: (() => void) | null = null
   let unsubscribeConnection: (() => void) | null = null
   const projectRemovalIntents = new Map<string, TrackedProjectRemovalIntent>()
@@ -106,6 +121,7 @@ export const useHarborStore = defineStore('harbor', () => {
     || projectLifecycleIntentCount.value > 0
     || operations.value.some((operation) => (operation.kind === 'project.start' || operation.kind === 'project.stop')
       && isActiveOperation(operation)))
+  const projectRuntimeRepairBusy = computed(() => projectRuntimeRepairProjectId.value !== null)
   const networkSetupOnboarding = computed(() => snapshot.value !== null
     && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true)
   const attentionCount = computed(() => projects.value.filter((project) =>
@@ -173,6 +189,7 @@ export const useHarborStore = defineStore('harbor', () => {
   }
 
   function transitionConnection(event: ConnectionEvent) {
+    discardProjectRuntimeRepair()
     connectionEpoch += 1
     statusRequest += 1
     connectionState.value = event.state
@@ -244,6 +261,7 @@ export const useHarborStore = defineStore('harbor', () => {
       connectionState.value = 'disconnected'
       snapshotStale.value = true
       snapshotNeedsBaseline = true
+      discardProjectRuntimeRepair()
     }
 
     const failure = snapshotResult.status === 'rejected'
@@ -591,6 +609,221 @@ export const useHarborStore = defineStore('harbor', () => {
     return changeProjectLifecycle(projectId, 'stop')
   }
 
+  function projectRuntimeRepairNotice(projectId: string) {
+    return projectRuntimeRepairNotices.value[projectId]
+  }
+
+  function setProjectRuntimeRepairNotice(projectId: string, notice: ProjectRuntimeRepairNotice | null) {
+    const notices = { ...projectRuntimeRepairNotices.value }
+    if (notice) {
+      notices[projectId] = notice
+    }
+    else {
+      delete notices[projectId]
+    }
+    projectRuntimeRepairNotices.value = notices
+  }
+
+  function discardProjectRuntimeRepair() {
+    projectRuntimeRepairGeneration += 1
+    projectRuntimeRepairInspection.value = null
+    projectRuntimeRepairProjectId.value = null
+    projectRuntimeRepairAction.value = null
+  }
+
+  function projectRuntimeRepairBlocker(projectId: string): ProjectRuntimeRepairNotice | null {
+    if (!projectById(projectId)) {
+      return {
+        state: 'blocked',
+        title: 'Stale runtime inspection unavailable',
+        message: 'This project is no longer present in the current Harbor snapshot.',
+      }
+    }
+    if (connectionState.value !== 'connected') {
+      return {
+        state: 'blocked',
+        title: 'Stale runtime inspection unavailable',
+        message: 'Reconnect to Harbor before inspecting or stopping a stale runtime.',
+      }
+    }
+    if (snapshotStale.value) {
+      return {
+        state: 'blocked',
+        title: 'Stale runtime inspection unavailable',
+        message: 'Wait for a fresh Harbor snapshot before inspecting or stopping a stale runtime.',
+      }
+    }
+    if (projectRuntimeRepairBusy.value
+      || settingUpNetwork.value
+      || projectLifecycleBusy.value
+      || removingProjectId.value !== null) {
+      return {
+        state: 'blocked',
+        title: 'Another Harbor action is in progress',
+        message: 'Wait for the current action to finish, then inspect the stale runtime again.',
+      }
+    }
+    return null
+  }
+
+  async function inspectProjectRuntimeRepair(projectId: string): Promise<ProjectRuntimeRepairInspection | null> {
+    discardProjectRuntimeRepair()
+    const attempt = projectRuntimeRepairGeneration
+    setProjectRuntimeRepairNotice(projectId, null)
+    const blocker = projectRuntimeRepairBlocker(projectId)
+    if (blocker) {
+      setProjectRuntimeRepairNotice(projectId, blocker)
+      return null
+    }
+
+    projectRuntimeRepairProjectId.value = projectId
+    projectRuntimeRepairAction.value = 'inspect'
+    try {
+      const inspection = await harborBridge.inspectProjectRuntimeRepair(projectId)
+      validateProjectRuntimeRepairInspection(projectId, inspection)
+      if (attempt !== projectRuntimeRepairGeneration) {
+        return null
+      }
+
+      switch (inspection.disposition) {
+        case 'confirmable':
+          projectRuntimeRepairInspection.value = inspection
+          return inspection
+        case 'not_actionable':
+          setProjectRuntimeRepairNotice(projectId, projectRuntimeRepairDiagnostic(inspection.reason))
+          return inspection
+        case 'unsupported':
+          setProjectRuntimeRepairNotice(projectId, {
+            state: 'unsupported',
+            title: 'Stale runtime inspection unavailable',
+            message: 'Stale runtime inspection is currently available only on macOS.',
+          })
+          return inspection
+      }
+      throw new Error('Harbor returned an unsupported stale runtime inspection result.')
+    }
+    catch (cause) {
+      if (attempt === projectRuntimeRepairGeneration) {
+        setProjectRuntimeRepairNotice(projectId, {
+          state: 'failed',
+          title: 'Stale runtime inspection failed',
+          message: cause instanceof Error ? cause.message : 'Harbor could not inspect the stale runtime.',
+        })
+      }
+      return null
+    }
+    finally {
+      if (attempt === projectRuntimeRepairGeneration) {
+        projectRuntimeRepairProjectId.value = null
+        projectRuntimeRepairAction.value = null
+      }
+    }
+  }
+
+  function stageProjectRuntimeRepairConfirmation(confirmation: ProjectRuntimeRepairConfirmation) {
+    const current = snapshot.value
+    if (!current || confirmation.revision < current.sequence) {
+      return
+    }
+    const projectIndex = current.projects.findIndex((project) => project.id === confirmation.project.id)
+    if (projectIndex < 0) {
+      return
+    }
+
+    const projects = [...current.projects]
+    projects[projectIndex] = confirmation.project
+    snapshot.value = {
+      ...current,
+      sequence: confirmation.revision,
+      projects,
+    }
+    snapshotStale.value = true
+    setProjectLifecycleProblem(confirmation.project.id, null)
+  }
+
+  async function confirmProjectRuntimeRepair(projectId: string): Promise<ProjectRuntimeRepairConfirmation | null> {
+    const inspection = projectRuntimeRepairInspection.value
+    projectRuntimeRepairInspection.value = null
+    setProjectRuntimeRepairNotice(projectId, null)
+
+    if (projectRuntimeRepairBusy.value) {
+      setProjectRuntimeRepairNotice(projectId, {
+        state: 'blocked',
+        title: 'Another Harbor action is in progress',
+        message: 'Wait for the current action to finish, then inspect the stale runtime again.',
+      })
+      await refresh()
+      return null
+    }
+
+    projectRuntimeRepairGeneration += 1
+    const attempt = projectRuntimeRepairGeneration
+
+    if (!inspection || inspection.project_id !== projectId || inspection.disposition !== 'confirmable') {
+      setProjectRuntimeRepairNotice(projectId, {
+        state: 'expired',
+        title: 'Fresh inspection required',
+        message: 'Inspect the stale runtime again before confirming this action.',
+      })
+      await refresh()
+      return null
+    }
+
+    const blocker = projectRuntimeRepairBlocker(projectId)
+    if (blocker) {
+      setProjectRuntimeRepairNotice(projectId, blocker)
+      await refresh()
+      return null
+    }
+
+    projectRuntimeRepairProjectId.value = projectId
+    projectRuntimeRepairAction.value = 'confirm'
+    try {
+      if (Date.parse(inspection.confirmable.expires_at) <= Date.now()) {
+        setProjectRuntimeRepairNotice(projectId, {
+          state: 'expired',
+          title: 'Stale runtime inspection expired',
+          message: 'Inspect the stale runtime again before confirming this action.',
+        })
+        return null
+      }
+
+      const confirmation = await harborBridge.confirmProjectRuntimeRepair(
+        projectId,
+        inspection.confirmable.inspection_id,
+        inspection.confirmable.candidate_fingerprint,
+      )
+      validateProjectRuntimeRepairConfirmation(projectId, confirmation)
+      if (attempt !== projectRuntimeRepairGeneration) {
+        return null
+      }
+      stageProjectRuntimeRepairConfirmation(confirmation)
+      setProjectRuntimeRepairNotice(projectId, {
+        state: 'succeeded',
+        title: 'Stale runtime stopped',
+        message: 'Harbor stopped the process you confirmed and reset the project to stopped.',
+      })
+      return confirmation
+    }
+    catch (cause) {
+      if (attempt === projectRuntimeRepairGeneration) {
+        setProjectRuntimeRepairNotice(projectId, {
+          state: 'failed',
+          title: 'Stale runtime repair failed',
+          message: cause instanceof Error ? cause.message : 'Harbor could not stop the inspected stale runtime.',
+        })
+      }
+      return null
+    }
+    finally {
+      await refresh()
+      if (attempt === projectRuntimeRepairGeneration) {
+        projectRuntimeRepairProjectId.value = null
+        projectRuntimeRepairAction.value = null
+      }
+    }
+  }
+
   function setProjectRemovalNotice(projectId: string, notice: ProjectRemovalNotice | null) {
     const notices = { ...projectRemovalNotices.value }
     if (notice) {
@@ -872,6 +1105,11 @@ export const useHarborStore = defineStore('harbor', () => {
     projectLifecycleBusy,
     projectLifecycleErrors,
     projectLifecycleProblemCodes,
+    projectRuntimeRepairInspection,
+    projectRuntimeRepairProjectId,
+    projectRuntimeRepairAction,
+    projectRuntimeRepairBusy,
+    projectRuntimeRepairNotices,
     loading,
     error,
     actionError,
@@ -897,6 +1135,10 @@ export const useHarborStore = defineStore('harbor', () => {
     activeProjectLifecycle,
     startProject,
     stopProject,
+    projectRuntimeRepairNotice,
+    inspectProjectRuntimeRepair,
+    confirmProjectRuntimeRepair,
+    discardProjectRuntimeRepair,
     readProjectActivity,
     waitProjectActivity,
     openResource,
@@ -937,6 +1179,80 @@ function projectLifecycleTerminalProblem(operation: Operation, action: ProjectLi
     }
   }
   return null
+}
+
+function validateProjectRuntimeRepairInspection(projectId: string, inspection: ProjectRuntimeRepairInspection) {
+  if (inspection.project_id !== projectId) {
+    throw new Error('Harbor returned a stale runtime inspection for another project.')
+  }
+  switch (inspection.disposition) {
+    case 'confirmable': {
+      const candidate = inspection.confirmable?.candidate
+      if (!candidate
+        || candidate.command !== 'forj dev'
+        || !candidate.checkout
+        || !candidate.endpoint
+        || !Number.isSafeInteger(candidate.root_pid)
+        || candidate.root_pid <= 0
+        || !Number.isSafeInteger(candidate.member_count)
+        || candidate.member_count <= 0
+        || !inspection.confirmable.inspection_id
+        || !inspection.confirmable.candidate_fingerprint
+        || !Number.isFinite(Date.parse(inspection.confirmable.expires_at))) {
+        throw new Error('Harbor returned an incomplete stale runtime inspection.')
+      }
+      return
+    }
+    case 'not_actionable':
+      projectRuntimeRepairDiagnostic(inspection.reason)
+      return
+    case 'unsupported':
+      return
+    default:
+      throw new Error('Harbor returned an unsupported stale runtime inspection result.')
+  }
+}
+
+function validateProjectRuntimeRepairConfirmation(projectId: string, confirmation: ProjectRuntimeRepairConfirmation) {
+  if (confirmation.project.id !== projectId) {
+    throw new Error('Harbor returned a stale runtime confirmation for another project.')
+  }
+  if (confirmation.project.state !== 'stopped'
+    || !Number.isSafeInteger(confirmation.revision)
+    || confirmation.revision <= 0) {
+    throw new Error('Harbor returned an incomplete stale runtime confirmation.')
+  }
+}
+
+function projectRuntimeRepairDiagnostic(reason: ProjectRuntimeRepairNotActionableReason): ProjectRuntimeRepairNotice {
+  switch (reason) {
+    case 'none':
+      return {
+        state: 'not_actionable',
+        title: 'No stale runtime found',
+        message: 'Harbor did not find a process listening at this project’s endpoint. No process was stopped.',
+      }
+    case 'ambiguous':
+      return {
+        state: 'not_actionable',
+        title: 'Stale runtime is ambiguous',
+        message: 'Harbor found more than one possible process scope and cannot safely choose one. No process was stopped.',
+      }
+    case 'foreign':
+      return {
+        state: 'not_actionable',
+        title: 'Stale runtime belongs to another user',
+        message: 'The process at this project’s endpoint belongs to another user. Harbor will not stop it.',
+      }
+    case 'unreadable':
+      return {
+        state: 'not_actionable',
+        title: 'Stale runtime details are incomplete',
+        message: 'Harbor could not read all required process details. No process was stopped.',
+      }
+    default:
+      throw new Error('Harbor returned an unsupported stale runtime diagnostic.')
+  }
 }
 
 function activeProjectRemovalNotice(operation: Operation): ProjectRemovalNotice {

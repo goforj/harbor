@@ -116,6 +116,48 @@ export interface ProjectLifecycleOperation {
   revision: number
 }
 
+export type ProjectRuntimeRepairNotActionableReason = 'none' | 'ambiguous' | 'foreign' | 'unreadable'
+
+export interface ProjectRuntimeRepairDisplayFacts {
+  command: 'forj dev'
+  checkout: string
+  endpoint: string
+  root_pid: number
+  member_count: number
+}
+
+export interface ProjectRuntimeRepairConfirmable {
+  candidate: ProjectRuntimeRepairDisplayFacts
+  inspection_id: string
+  candidate_fingerprint: string
+  expires_at: string
+}
+
+export type ProjectRuntimeRepairInspection =
+  | {
+    project_id: string
+    disposition: 'confirmable'
+    confirmable: ProjectRuntimeRepairConfirmable
+    reason?: never
+  }
+  | {
+    project_id: string
+    disposition: 'not_actionable'
+    confirmable?: never
+    reason: ProjectRuntimeRepairNotActionableReason
+  }
+  | {
+    project_id: string
+    disposition: 'unsupported'
+    confirmable?: never
+    reason?: never
+  }
+
+export interface ProjectRuntimeRepairConfirmation {
+  project: ProjectSnapshot
+  revision: number
+}
+
 export interface ProjectOutputChunk {
   available: boolean
   reset: boolean

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   Network,
   Play,
+  Search,
   Server,
   Square,
   SquareTerminal,
@@ -45,6 +46,9 @@ const router = useRouter()
 const store = useHarborStore()
 const copiedPath = ref(false)
 const removeOpen = ref(false)
+const runtimeRepairOpen = ref(false)
+const runtimeRepairNow = ref(Date.now())
+let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const projectId = computed(() => String(route.params.projectId ?? ''))
@@ -99,6 +103,19 @@ const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.val
 const lifecycleProblemCode = computed(() => store.projectLifecycleProblemCodes[projectId.value])
 const needsNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.setup_required')
 const recoveryRequired = computed(() => lifecycleProblemCode.value === 'project.recovery.ambiguous_launch')
+const runtimeRepairNotice = computed(() => store.projectRuntimeRepairNotice(projectId.value))
+const runtimeRepairInspection = computed(() => {
+  const inspection = store.projectRuntimeRepairInspection
+  return inspection?.project_id === projectId.value && inspection.disposition === 'confirmable'
+    ? inspection
+    : undefined
+})
+const runtimeRepairCandidate = computed(() => runtimeRepairInspection.value?.confirmable.candidate)
+const runtimeRepairExpired = computed(() => {
+  const now = runtimeRepairNow.value
+  const expiresAt = runtimeRepairInspection.value?.confirmable.expires_at
+  return expiresAt ? Date.parse(expiresAt) <= now : false
+})
 const lifecycleInFlight = computed(() => store.projectLifecycleProjectId === projectId.value)
 const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
 const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
@@ -116,6 +133,7 @@ const lifecycleLabel = computed(() => {
 const lifecycleDisabled = computed(() => store.snapshotStale
   || store.settingUpNetwork
   || store.projectLifecycleBusy
+  || store.projectRuntimeRepairBusy
   || starting.value
   || stopping.value
   || recoveryRequired.value
@@ -124,6 +142,7 @@ const networkSetupDisabled = computed(() => !needsNetworkSetup.value
   || project.value?.id !== projectId.value
   || store.settingUpNetwork
   || store.projectLifecycleBusy
+  || store.projectRuntimeRepairBusy
   || store.snapshotStale
   || store.connectionState !== 'connected')
 const removing = computed(() => store.removingProjectId === projectId.value)
@@ -132,6 +151,7 @@ const removalPending = computed(() => removalNotice.value?.state === 'queued'
   || removalNotice.value?.state === 'requires_approval')
 const removalDisabled = computed(() => store.removingProjectId !== null
   || store.projectLifecycleProjectId !== null
+  || store.projectRuntimeRepairBusy
   || activeLifecycle.value != null
   || recoveryRequired.value
   || removalPending.value)
@@ -142,15 +162,51 @@ const removalLabel = computed(() => {
   if (removalPending.value) return 'Removal in progress'
   return 'Remove project'
 })
+const runtimeRepairInspecting = computed(() => store.projectRuntimeRepairProjectId === projectId.value
+  && store.projectRuntimeRepairAction === 'inspect')
+const runtimeRepairInspectionDisabled = computed(() => !recoveryRequired.value
+  || store.connectionState !== 'connected'
+  || store.snapshotStale
+  || store.settingUpNetwork
+  || store.projectLifecycleBusy
+  || store.removingProjectId !== null
+  || store.projectRuntimeRepairBusy)
+const runtimeRepairConfirmationDisabled = computed(() => runtimeRepairCandidate.value == null
+  || runtimeRepairExpired.value
+  || store.connectionState !== 'connected'
+  || store.snapshotStale
+  || store.settingUpNetwork
+  || store.projectLifecycleBusy
+  || store.removingProjectId !== null
+  || store.projectRuntimeRepairBusy)
 const updatedAt = computed(() => project.value
   ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(project.value.updated_at))
   : '')
 
 watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, previousProject]) => {
-  if (nextProjectId !== previousProjectId) followDevelopmentOutput.value = true
+  if (nextProjectId !== previousProjectId) {
+    followDevelopmentOutput.value = true
+    runtimeRepairOpen.value = false
+    if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
+  }
   if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
     void router.replace('/projects')
   }
+})
+
+watch(() => runtimeRepairInspection.value?.confirmable.expires_at, (expiresAt) => {
+  if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
+  runtimeRepairNow.value = Date.now()
+  if (expiresAt) scheduleRuntimeRepairExpiry(expiresAt)
+}, { immediate: true })
+
+watch(runtimeRepairInspection, (inspection) => {
+  if (!inspection) runtimeRepairOpen.value = false
+})
+
+onBeforeUnmount(() => {
+  if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
+  if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
 })
 
 async function scrollDevelopmentOutput() {
@@ -209,6 +265,43 @@ async function setupNetworkAndStartProject() {
     || store.projectLifecycleBusy) return
   await store.startProject(requestedProjectId)
 }
+
+async function inspectStaleRuntime() {
+  const requestedProjectId = projectId.value
+  if (runtimeRepairInspectionDisabled.value) return
+  const inspection = await store.inspectProjectRuntimeRepair(requestedProjectId)
+  if (projectId.value === requestedProjectId && inspection?.disposition === 'confirmable') {
+    runtimeRepairOpen.value = true
+  }
+}
+
+async function confirmStaleRuntime() {
+  if (runtimeRepairConfirmationDisabled.value) return
+  await store.confirmProjectRuntimeRepair(projectId.value)
+}
+
+function updateRuntimeRepairOpen(open: boolean) {
+  runtimeRepairOpen.value = open
+  if (open) return
+
+  queueMicrotask(() => {
+    if (!runtimeRepairOpen.value && store.projectRuntimeRepairAction !== 'confirm') {
+      store.discardProjectRuntimeRepair()
+    }
+  })
+}
+
+function scheduleRuntimeRepairExpiry(expiresAt: string) {
+  const remaining = Date.parse(expiresAt) - Date.now()
+  if (remaining <= 0) {
+    runtimeRepairNow.value = Date.now()
+    return
+  }
+  runtimeRepairExpiryTimer = window.setTimeout(() => {
+    runtimeRepairNow.value = Date.now()
+    scheduleRuntimeRepairExpiry(expiresAt)
+  }, Math.min(remaining, 2_147_483_647))
+}
 </script>
 
 <template>
@@ -258,6 +351,34 @@ async function setupNetworkAndStartProject() {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+            <AlertDialog :open="runtimeRepairOpen" @update:open="updateRuntimeRepairOpen">
+              <AlertDialogContent v-if="runtimeRepairCandidate">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Stop this stale runtime?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Harbor no longer has its launch receipt. This process is a candidate, not proven Harbor-owned. Continue only if you recognize it as this project.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <dl class="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-[7rem_minmax(0,1fr)]">
+                  <dt class="text-muted-foreground">Command</dt><dd><code>{{ runtimeRepairCandidate.command }}</code></dd>
+                  <dt class="text-muted-foreground">Checkout</dt><dd class="min-w-0 break-all"><code>{{ runtimeRepairCandidate.checkout }}</code></dd>
+                  <dt class="text-muted-foreground">Endpoint</dt><dd><code>{{ runtimeRepairCandidate.endpoint }}</code></dd>
+                  <dt class="text-muted-foreground">Root PID</dt><dd>{{ runtimeRepairCandidate.root_pid }}</dd>
+                  <dt class="text-muted-foreground">Member count</dt><dd>{{ runtimeRepairCandidate.member_count }}</dd>
+                </dl>
+                <p v-if="runtimeRepairExpired" class="text-sm text-destructive">This inspection has expired. Close this dialog and inspect the stale runtime again.</p>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    class="bg-destructive text-white hover:bg-destructive/90"
+                    :disabled="runtimeRepairConfirmationDisabled"
+                    @click="confirmStaleRuntime"
+                  >
+                    Stop this process and reset project
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             <Button size="sm" :disabled="!primaryResource" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
           </div>
         </div>
@@ -289,7 +410,29 @@ async function setupNetworkAndStartProject() {
               <Network v-else class="size-3.5" aria-hidden="true" />
               {{ store.settingUpNetwork ? 'Setting up networking…' : 'Set up networking and start' }}
             </Button>
+            <Button
+              v-if="recoveryRequired"
+              variant="outline"
+              size="sm"
+              :disabled="runtimeRepairInspectionDisabled"
+              @click="inspectStaleRuntime"
+            >
+              <LoaderCircle v-if="runtimeRepairInspecting" class="size-3.5 animate-spin" aria-hidden="true" />
+              <Search v-else class="size-3.5" aria-hidden="true" />
+              {{ runtimeRepairInspecting ? 'Inspecting stale runtime…' : 'Inspect stale runtime' }}
+            </Button>
           </AlertDescription>
+        </Alert>
+
+        <Alert
+          v-if="runtimeRepairNotice"
+          :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
+          :class="runtimeRepairNotice.state !== 'failed' && runtimeRepairNotice.state !== 'succeeded' ? 'border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200' : ''"
+        >
+          <Check v-if="runtimeRepairNotice.state === 'succeeded'" aria-hidden="true" />
+          <TriangleAlert v-else aria-hidden="true" />
+          <AlertTitle>{{ runtimeRepairNotice.title }}</AlertTitle>
+          <AlertDescription>{{ runtimeRepairNotice.message }}</AlertDescription>
         </Alert>
 
         <Alert

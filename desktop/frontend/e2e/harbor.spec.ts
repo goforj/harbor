@@ -89,6 +89,12 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
           async AddProject() {
             return { canceled: true }
           },
+          async ConfirmProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this setup test')
+          },
+          async InspectProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this setup test')
+          },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
@@ -202,6 +208,8 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
       main: {
         App: {
           async AddProject() { return { canceled: true } },
+          async ConfirmProjectRuntimeRepair() { throw new Error('Runtime repair confirmation requires explicit test setup') },
+          async InspectProjectRuntimeRepair() { throw new Error('Runtime repair inspection requires explicit test setup') },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
@@ -269,6 +277,12 @@ test('leaves project detail when an active removal completes through a snapshot 
         App: {
           async AddProject() {
             return { canceled: true }
+          },
+          async ConfirmProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this removal test')
+          },
+          async InspectProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this removal test')
           },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
@@ -515,6 +529,12 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           async AddProject() {
             return { canceled: true }
           },
+          async ConfirmProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this connection test')
+          },
+          async InspectProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this connection test')
+          },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
@@ -592,6 +612,12 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
         App: {
           async AddProject() {
             return { canceled: true }
+          },
+          async ConfirmProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this connection test')
+          },
+          async InspectProjectRuntimeRepair() {
+            throw new Error('Runtime repair is not exercised in this connection test')
           },
           async OpenResource() {},
           async ProjectActivity(projectId) { return { project_id: projectId } },

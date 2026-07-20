@@ -5,6 +5,8 @@ import { createWailsBridge } from './wails'
 
 function installAppBindings() {
   const AddProject = vi.fn().mockResolvedValue({ canceled: true })
+  const ConfirmProjectRuntimeRepair = vi.fn().mockResolvedValue(harborWireFixture.project_runtime_repair_confirmation)
+  const InspectProjectRuntimeRepair = vi.fn().mockResolvedValue(harborWireFixture.project_runtime_repair_inspection)
   const Status = vi.fn().mockResolvedValue({ state: 'ready' })
   const Snapshot = vi.fn().mockResolvedValue({ schema_version: 1, sequence: 7 })
   const OpenResource = vi.fn().mockResolvedValue(undefined)
@@ -26,8 +28,8 @@ function installAppBindings() {
   })
   const StartProject = vi.fn().mockResolvedValue(harborWireFixture.start_project)
   const StopProject = vi.fn().mockResolvedValue(harborWireFixture.stop_project)
-  window.go = { main: { App: { AddProject, Status, Snapshot, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
-  return { AddProject, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
+  window.go = { main: { App: { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } } }
+  return { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, Status, StopProject }
 }
 
 function installEventRuntime() {
@@ -87,7 +89,7 @@ describe('Harbor bridge selection', () => {
     await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
-  it.each(['ProjectActivity', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
+  it.each(['ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
     installAppBindings()
     delete window.go?.main?.App?.[method]
     installEventRuntime()
@@ -142,7 +144,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
+    const { AddProject, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, StopProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -151,6 +153,8 @@ describe('Harbor bridge selection', () => {
       await selection.bridge.getStatus()
       await selection.bridge.getSnapshot()
       await selection.bridge.getProjectActivity('orders-api', 'session-orders-api', 4)
+      await selection.bridge.inspectProjectRuntimeRepair('billing')
+      await selection.bridge.confirmProjectRuntimeRepair('billing', 'inspection-1', 'fingerprint-1')
       await selection.bridge.waitProjectActivity('orders-api', 'session-orders-api', 4, 20_000)
       await selection.bridge.addProject()
       await selection.bridge.openResource('orders', 'application')
@@ -162,6 +166,8 @@ describe('Harbor bridge selection', () => {
 
     expect(OpenResource).toHaveBeenCalledWith('orders', 'application')
     expect(ProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4)
+    expect(InspectProjectRuntimeRepair).toHaveBeenCalledWith('billing')
+    expect(ConfirmProjectRuntimeRepair).toHaveBeenCalledWith('billing', 'inspection-1', 'fingerprint-1')
     expect(WaitProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4, 20_000)
     expect(RemoveProject).toHaveBeenCalledWith('orders', 'desktop-remove-orders')
     expect(SetupNetwork).toHaveBeenCalledTimes(2)

@@ -46,6 +46,8 @@ type controlClient interface {
 	StartNetworkResolverSetup(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
 	PrepareNetworkResolverSetupApproval(context.Context, control.PrepareNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalPreparation, error)
 	ConfirmNetworkResolverSetupApproval(context.Context, control.ConfirmNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalConfirmation, error)
+	InspectProjectRuntimeRepair(context.Context, control.InspectProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairInspection, error)
+	ConfirmProjectRuntimeRepair(context.Context, control.ConfirmProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairConfirmation, error)
 	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
@@ -576,6 +578,64 @@ func (a *App) StartProject(projectID string, intentID string) (control.ProjectLi
 		result.Operation.ProjectID != request.ProjectID ||
 		result.Operation.IntentID != request.IntentID {
 		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project start: daemon result does not match the requested action, project, and intent")
+	}
+
+	return result, nil
+}
+
+// InspectProjectRuntimeRepair asks the daemon to derive one bounded stale-runtime candidate for explicit review.
+func (a *App) InspectProjectRuntimeRepair(projectID string) (control.ProjectRuntimeRepairInspection, error) {
+	request := control.InspectProjectRuntimeRepairRequest{ProjectID: domain.ProjectID(projectID)}
+	if err := request.Validate(); err != nil {
+		return control.ProjectRuntimeRepairInspection{}, fmt.Errorf("project runtime repair inspection request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectRuntimeRepairInspection{}, err
+	}
+	result, err := client.InspectProjectRuntimeRepair(ctx, request)
+	if err != nil {
+		return control.ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect stale GoForj runtime: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectRuntimeRepairInspection{}, fmt.Errorf("validate project runtime repair inspection: %w", err)
+	}
+	if result.ProjectID != request.ProjectID {
+		return control.ProjectRuntimeRepairInspection{}, errors.New("validate project runtime repair inspection: daemon result belongs to another project")
+	}
+
+	return result, nil
+}
+
+// ConfirmProjectRuntimeRepair submits only the opaque selection from one prior inspection for immediate daemon revalidation.
+func (a *App) ConfirmProjectRuntimeRepair(
+	projectID string,
+	inspectionID string,
+	candidateFingerprint string,
+) (control.ProjectRuntimeRepairConfirmation, error) {
+	request := control.ConfirmProjectRuntimeRepairRequest{
+		ProjectID:    domain.ProjectID(projectID),
+		InspectionID: control.ProjectRuntimeRepairInspectionID(inspectionID),
+		Fingerprint:  control.ProjectRuntimeRepairCandidateFingerprint(candidateFingerprint),
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectRuntimeRepairConfirmation{}, fmt.Errorf("project runtime repair confirmation request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectRuntimeRepairConfirmation{}, err
+	}
+	result, err := client.ConfirmProjectRuntimeRepair(ctx, request)
+	if err != nil {
+		return control.ProjectRuntimeRepairConfirmation{}, fmt.Errorf("confirm stale GoForj runtime repair: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectRuntimeRepairConfirmation{}, fmt.Errorf("validate project runtime repair confirmation: %w", err)
+	}
+	if result.Project.ID != request.ProjectID {
+		return control.ProjectRuntimeRepairConfirmation{}, errors.New("validate project runtime repair confirmation: daemon result belongs to another project")
 	}
 
 	return result, nil

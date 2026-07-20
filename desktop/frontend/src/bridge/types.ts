@@ -1,8 +1,10 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
+import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
     add_project: 'AddProject'
+    confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair'
+    inspect_project_runtime_repair: 'InspectProjectRuntimeRepair'
     open_resource: 'OpenResource'
     project_activity: 'ProjectActivity'
     wait_project_activity: 'WaitProjectActivity'
@@ -26,6 +28,10 @@ export interface HarborWireFixture {
   snapshot: HarborSnapshot
   add_project: AddProjectResult & { canceled: false; registration: NonNullable<AddProjectResult['registration']> }
   project_activity: ProjectActivity & { session: NonNullable<ProjectActivity['session']> }
+  project_runtime_repair_inspection: ProjectRuntimeRepairInspection & { disposition: 'confirmable' }
+  project_runtime_repair_not_actionable: ProjectRuntimeRepairInspection & { disposition: 'not_actionable'; reason: 'ambiguous' }
+  project_runtime_repair_unsupported: ProjectRuntimeRepairInspection & { disposition: 'unsupported' }
+  project_runtime_repair_confirmation: ProjectRuntimeRepairConfirmation & { project: ProjectRuntimeRepairConfirmation['project'] & { state: 'stopped' } }
   remove_project: ProjectUnregistration & { operation: Operation & { state: 'requires_approval' } }
   setup_network: NetworkSetupOperation & { operation: Operation & { kind: 'network.setup'; state: 'succeeded' } }
   start_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.start'; state: 'queued' } }
@@ -40,9 +46,11 @@ export interface HarborWireFixture {
 
 export interface HarborBridge {
   addProject(): Promise<AddProjectResult>
+  confirmProjectRuntimeRepair(projectId: string, inspectionId: string, candidateFingerprint: string): Promise<ProjectRuntimeRepairConfirmation>
   getStatus(): Promise<DaemonStatus>
   getSnapshot(): Promise<HarborSnapshot>
   getProjectActivity(projectId: string, sessionId: string, cursor: number): Promise<ProjectActivity>
+  inspectProjectRuntimeRepair(projectId: string): Promise<ProjectRuntimeRepairInspection>
   waitProjectActivity(projectId: string, sessionId: string, cursor: number, waitMilliseconds: number): Promise<ProjectActivity>
   openResource(projectId: string, resourceId: string): Promise<void>
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>

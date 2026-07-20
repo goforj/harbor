@@ -27,6 +27,8 @@ declare global {
 export function hasWailsBridge(): boolean {
   const app = window.go?.main?.App
   return typeof app?.AddProject === 'function'
+    && typeof app.ConfirmProjectRuntimeRepair === 'function'
+    && typeof app.InspectProjectRuntimeRepair === 'function'
     && typeof app.Status === 'function'
     && typeof app.Snapshot === 'function'
     && typeof app.OpenResource === 'function'
@@ -47,6 +49,8 @@ export function createWailsBridge(): HarborBridge {
   const app = window.go?.main?.App
   const runtime = window.runtime
   const addProject = app?.AddProject
+  const confirmProjectRuntimeRepair = app?.ConfirmProjectRuntimeRepair
+  const inspectProjectRuntimeRepair = app?.InspectProjectRuntimeRepair
   const status = app?.Status
   const snapshot = app?.Snapshot
   const openResource = app?.OpenResource
@@ -57,6 +61,8 @@ export function createWailsBridge(): HarborBridge {
   const startProject = app?.StartProject
   const stopProject = app?.StopProject
   if (typeof addProject !== 'function'
+    || typeof confirmProjectRuntimeRepair !== 'function'
+    || typeof inspectProjectRuntimeRepair !== 'function'
     || typeof status !== 'function'
     || typeof snapshot !== 'function'
     || typeof openResource !== 'function'
@@ -72,9 +78,11 @@ export function createWailsBridge(): HarborBridge {
 
   return {
     addProject: () => addProject(),
+    confirmProjectRuntimeRepair: (projectId, inspectionId, candidateFingerprint) => confirmProjectRuntimeRepair(projectId, inspectionId, candidateFingerprint),
     getStatus: () => status(),
     getSnapshot: () => snapshot(),
     getProjectActivity: (projectId, sessionId, cursor) => projectActivity(projectId, sessionId, cursor),
+    inspectProjectRuntimeRepair: (projectId) => inspectProjectRuntimeRepair(projectId),
     waitProjectActivity: (projectId, sessionId, cursor, waitMilliseconds) => waitProjectActivity(projectId, sessionId, cursor, waitMilliseconds),
     openResource: (projectId, resourceId) => openResource(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),

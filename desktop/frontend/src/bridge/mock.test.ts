@@ -27,6 +27,8 @@ describe('Harbor mock bridge', () => {
     })
     expect(harborWireFixture.methods).toEqual({
       add_project: 'AddProject',
+      confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair',
+      inspect_project_runtime_repair: 'InspectProjectRuntimeRepair',
       open_resource: 'OpenResource',
       project_activity: 'ProjectActivity',
       wait_project_activity: 'WaitProjectActivity',
@@ -188,6 +190,51 @@ describe('Harbor mock bridge', () => {
 
     await expect(bridge.startProject('billing', 'desktop-lifecycle-replay')).rejects.toThrow('another project action')
     await expect(bridge.stopProject('reports', 'desktop-lifecycle-replay')).rejects.toThrow('another project action')
+  })
+
+  it('requires inspection before one opaque stale-runtime confirmation and consumes the plan on every attempt', async () => {
+    const bridge = createMockBridge()
+    await expect(bridge.confirmProjectRuntimeRepair('billing', 'missing', 'missing')).rejects.toThrow('no longer available')
+
+    const mismatched = await bridge.inspectProjectRuntimeRepair('billing')
+    expect(mismatched).toMatchObject({
+      project_id: 'billing',
+      disposition: 'confirmable',
+      confirmable: {
+        candidate: {
+          command: 'forj dev',
+          checkout: '/workspace/apps/billing',
+        },
+      },
+    })
+    if (mismatched.disposition !== 'confirmable') return
+    await expect(bridge.confirmProjectRuntimeRepair(
+      'billing',
+      mismatched.confirmable.inspection_id,
+      'wrong-fingerprint',
+    )).rejects.toThrow('does not match')
+    await expect(bridge.confirmProjectRuntimeRepair(
+      'billing',
+      mismatched.confirmable.inspection_id,
+      mismatched.confirmable.candidate_fingerprint,
+    )).rejects.toThrow('no longer available')
+
+    const inspected = await bridge.inspectProjectRuntimeRepair('billing')
+    if (inspected.disposition !== 'confirmable') return
+    const confirmed = await bridge.confirmProjectRuntimeRepair(
+      'billing',
+      inspected.confirmable.inspection_id,
+      inspected.confirmable.candidate_fingerprint,
+    )
+    const snapshot = await bridge.getSnapshot()
+
+    expect(confirmed).toMatchObject({ project: { id: 'billing', state: 'stopped' } })
+    expect(snapshot.projects.find((project) => project.id === 'billing')?.state).toBe('stopped')
+    await expect(bridge.confirmProjectRuntimeRepair(
+      'billing',
+      inspected.confirmable.inspection_id,
+      inspected.confirmable.candidate_fingerprint,
+    )).rejects.toThrow('no longer available')
   })
 
   it('opens a known project-scoped resource without giving the new page an opener', async () => {

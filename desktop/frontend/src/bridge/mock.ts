@@ -1,8 +1,9 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectUnregistration } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration } from '@/domain/harbor'
 
 const fixture = harborWireFixture
+type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
 
 export function createMockBridge(): HarborBridge {
   const snapshot: HarborSnapshot = structuredClone(fixture.snapshot)
@@ -10,6 +11,7 @@ export function createMockBridge(): HarborBridge {
   const removals = new Map<string, ProjectUnregistration>()
   const lifecycles = new Map<string, ProjectLifecycleOperation>()
   let networkSetup: NetworkSetupOperation | null = null
+  let runtimeRepairPlan: ConfirmableProjectRuntimeRepairInspection | null = null
 
   // projectActivity applies the fixture's byte-addressed current-session cursor contract.
   function projectActivity(projectId: string, sessionId: string, cursor: number): ProjectActivity {
@@ -104,6 +106,54 @@ export function createMockBridge(): HarborBridge {
     },
     async getProjectActivity(projectId, sessionId, cursor) {
       return projectActivity(projectId, sessionId, cursor)
+    },
+    async inspectProjectRuntimeRepair(projectId) {
+      const project = snapshot.projects.find((entry) => entry.id === projectId)
+      if (!project) {
+        throw new Error(`Unknown project: ${projectId}`)
+      }
+
+      const inspection: ConfirmableProjectRuntimeRepairInspection = structuredClone(fixture.project_runtime_repair_inspection)
+      inspection.project_id = projectId
+      inspection.confirmable.candidate.checkout = project.path
+      runtimeRepairPlan = structuredClone(inspection)
+      return inspection
+    },
+    async confirmProjectRuntimeRepair(projectId, inspectionId, candidateFingerprint) {
+      const inspection = runtimeRepairPlan
+      runtimeRepairPlan = null
+      if (!inspection) {
+        throw new Error('The stale runtime inspection is no longer available.')
+      }
+      if (inspection.project_id !== projectId
+        || inspection.confirmable.inspection_id !== inspectionId
+        || inspection.confirmable.candidate_fingerprint !== candidateFingerprint) {
+        throw new Error('The stale runtime confirmation does not match its inspection.')
+      }
+      if (Date.parse(inspection.confirmable.expires_at) <= Date.now()) {
+        throw new Error('The stale runtime inspection has expired.')
+      }
+
+      const projectIndex = snapshot.projects.findIndex((entry) => entry.id === projectId)
+      if (projectIndex < 0) {
+        throw new Error(`Unknown project: ${projectId}`)
+      }
+      const revision = snapshot.sequence + 1
+      const repairedAt = new Date().toISOString()
+      const project = structuredClone(snapshot.projects[projectIndex])
+      project.state = 'stopped'
+      project.updated_at = repairedAt
+      project.apps = project.apps.map((app) => ({ ...app, state: 'stopped', active: false }))
+      project.services = project.services.map((service) => ({ ...service, state: 'stopped' }))
+      project.resources = []
+      const confirmation: ProjectRuntimeRepairConfirmation = { project, revision }
+      snapshot.projects[projectIndex] = project
+      snapshot.operations = snapshot.operations.filter((operation) => operation.project_id !== projectId
+        || (operation.kind !== 'project.start' && operation.kind !== 'project.stop'))
+      snapshot.recent_resource_ids = snapshot.recent_resource_ids.filter((reference) => reference.project_id !== projectId)
+      snapshot.sequence = revision
+      status.sequence = revision
+      return confirmation
     },
     async waitProjectActivity(projectId, sessionId, cursor, waitMilliseconds) {
       // A synchronous caught-up fixture response would create a tight loop that native long-polling never produces.

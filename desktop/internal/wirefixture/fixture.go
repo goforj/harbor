@@ -16,16 +16,18 @@ import (
 
 // MethodMetadata records the generated Wails method names consumed by the bridge.
 type MethodMetadata struct {
-	AddProject          string `json:"add_project"`
-	OpenResource        string `json:"open_resource"`
-	ProjectActivity     string `json:"project_activity"`
-	WaitProjectActivity string `json:"wait_project_activity"`
-	RemoveProject       string `json:"remove_project"`
-	SetupNetwork        string `json:"setup_network"`
-	Snapshot            string `json:"snapshot"`
-	StartProject        string `json:"start_project"`
-	Status              string `json:"status"`
-	StopProject         string `json:"stop_project"`
+	AddProject                  string `json:"add_project"`
+	ConfirmProjectRuntimeRepair string `json:"confirm_project_runtime_repair"`
+	InspectProjectRuntimeRepair string `json:"inspect_project_runtime_repair"`
+	OpenResource                string `json:"open_resource"`
+	ProjectActivity             string `json:"project_activity"`
+	WaitProjectActivity         string `json:"wait_project_activity"`
+	RemoveProject               string `json:"remove_project"`
+	SetupNetwork                string `json:"setup_network"`
+	Snapshot                    string `json:"snapshot"`
+	StartProject                string `json:"start_project"`
+	Status                      string `json:"status"`
+	StopProject                 string `json:"stop_project"`
 }
 
 // EventMetadata records the Wails event names consumed by the bridge.
@@ -43,18 +45,22 @@ type ConnectionPayloads struct {
 
 // Document is the complete frontend contract fixture as encoded by production Go wire types.
 type Document struct {
-	Methods            MethodMetadata                    `json:"methods"`
-	Events             EventMetadata                     `json:"events"`
-	ConnectionPayloads ConnectionPayloads                `json:"connection_payloads"`
-	Status             control.DaemonStatus              `json:"status"`
-	Snapshot           domain.Snapshot                   `json:"snapshot"`
-	AddProject         desktopwire.AddProjectResult      `json:"add_project"`
-	ProjectActivity    control.ProjectActivity           `json:"project_activity"`
-	RemoveProject      control.ProjectUnregistration     `json:"remove_project"`
-	SetupNetwork       control.NetworkSetupOperation     `json:"setup_network"`
-	StartProject       control.ProjectLifecycleOperation `json:"start_project"`
-	StopProject        control.ProjectLifecycleOperation `json:"stop_project"`
-	TerminalOperation  domain.Operation                  `json:"terminal_operation"`
+	Methods                           MethodMetadata                           `json:"methods"`
+	Events                            EventMetadata                            `json:"events"`
+	ConnectionPayloads                ConnectionPayloads                       `json:"connection_payloads"`
+	Status                            control.DaemonStatus                     `json:"status"`
+	Snapshot                          domain.Snapshot                          `json:"snapshot"`
+	AddProject                        desktopwire.AddProjectResult             `json:"add_project"`
+	ProjectActivity                   control.ProjectActivity                  `json:"project_activity"`
+	ProjectRuntimeRepairInspection    control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_inspection"`
+	ProjectRuntimeRepairNotActionable control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_not_actionable"`
+	ProjectRuntimeRepairUnsupported   control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_unsupported"`
+	ProjectRuntimeRepairConfirmation  control.ProjectRuntimeRepairConfirmation `json:"project_runtime_repair_confirmation"`
+	RemoveProject                     control.ProjectUnregistration            `json:"remove_project"`
+	SetupNetwork                      control.NetworkSetupOperation            `json:"setup_network"`
+	StartProject                      control.ProjectLifecycleOperation        `json:"start_project"`
+	StopProject                       control.ProjectLifecycleOperation        `json:"stop_project"`
+	TerminalOperation                 domain.Operation                         `json:"terminal_operation"`
 }
 
 // Fixture returns deterministic status and snapshot data rich enough to exercise every current desktop view.
@@ -72,16 +78,18 @@ func Fixture() Document {
 
 	return Document{
 		Methods: MethodMetadata{
-			AddProject:          desktopwire.MethodAddProject,
-			OpenResource:        desktopwire.MethodOpenResource,
-			ProjectActivity:     desktopwire.MethodProjectActivity,
-			WaitProjectActivity: desktopwire.MethodWaitProjectActivity,
-			RemoveProject:       desktopwire.MethodRemoveProject,
-			SetupNetwork:        desktopwire.MethodSetupNetwork,
-			Snapshot:            desktopwire.MethodSnapshot,
-			StartProject:        desktopwire.MethodStartProject,
-			Status:              desktopwire.MethodStatus,
-			StopProject:         desktopwire.MethodStopProject,
+			AddProject:                  desktopwire.MethodAddProject,
+			ConfirmProjectRuntimeRepair: desktopwire.MethodConfirmProjectRuntimeRepair,
+			InspectProjectRuntimeRepair: desktopwire.MethodInspectProjectRuntimeRepair,
+			OpenResource:                desktopwire.MethodOpenResource,
+			ProjectActivity:             desktopwire.MethodProjectActivity,
+			WaitProjectActivity:         desktopwire.MethodWaitProjectActivity,
+			RemoveProject:               desktopwire.MethodRemoveProject,
+			SetupNetwork:                desktopwire.MethodSetupNetwork,
+			Snapshot:                    desktopwire.MethodSnapshot,
+			StartProject:                desktopwire.MethodStartProject,
+			Status:                      desktopwire.MethodStatus,
+			StopProject:                 desktopwire.MethodStopProject,
 		},
 		Events: EventMetadata{
 			Connection: desktopwire.ConnectionEventName,
@@ -101,6 +109,7 @@ func Fixture() Document {
 				control.CapabilityProjectActivityV1,
 				control.CapabilityProjectLifecycleV1,
 				control.CapabilityProjectRegistrationV1,
+				control.CapabilityProjectRuntimeRepairV1,
 				control.CapabilityProjectUnregisterV1,
 				control.CapabilityV1,
 			},
@@ -228,6 +237,19 @@ func Fixture() Document {
 				},
 			},
 		},
+		ProjectRuntimeRepairInspection: fixtureProjectRuntimeRepairInspection(
+			control.ProjectRuntimeRepairInspectionConfirmable,
+			"",
+		),
+		ProjectRuntimeRepairNotActionable: fixtureProjectRuntimeRepairInspection(
+			control.ProjectRuntimeRepairInspectionNotActionable,
+			control.ProjectRuntimeRepairReasonAmbiguous,
+		),
+		ProjectRuntimeRepairUnsupported: fixtureProjectRuntimeRepairInspection(
+			control.ProjectRuntimeRepairInspectionUnsupported,
+			"",
+		),
+		ProjectRuntimeRepairConfirmation: fixtureProjectRuntimeRepairConfirmation(),
 		RemoveProject: control.ProjectUnregistration{
 			Operation: domain.Operation{
 				ID:          "operation-remove-orders",
@@ -293,19 +315,68 @@ func Fixture() Document {
 	}
 }
 
+// fixtureProjectRuntimeRepairInspection returns one valid example for each reviewed tagged result shape.
+func fixtureProjectRuntimeRepairInspection(
+	disposition control.ProjectRuntimeRepairInspectionDisposition,
+	reason control.ProjectRuntimeRepairNotActionableReason,
+) control.ProjectRuntimeRepairInspection {
+	inspection := control.ProjectRuntimeRepairInspection{
+		ProjectID:   "billing",
+		Disposition: disposition,
+		Reason:      reason,
+	}
+	if disposition == control.ProjectRuntimeRepairInspectionConfirmable {
+		inspection.Confirmable = &control.ProjectRuntimeRepairConfirmable{
+			Candidate: control.ProjectRuntimeRepairDisplayFacts{
+				Command:     "forj dev",
+				Checkout:    "/workspace/apps/billing",
+				Endpoint:    "127.77.0.12:3000",
+				RootPID:     4217,
+				MemberCount: 3,
+			},
+			InspectionID:         control.ProjectRuntimeRepairInspectionID(strings.Repeat("a", 64)),
+			CandidateFingerprint: control.ProjectRuntimeRepairCandidateFingerprint(strings.Repeat("b", 64)),
+			ExpiresAt:            time.Date(2099, time.July, 18, 14, 37, 20, 0, time.UTC),
+		}
+	}
+	return inspection
+}
+
+// fixtureProjectRuntimeRepairConfirmation returns the authoritative stopped project projected after repair.
+func fixtureProjectRuntimeRepairConfirmation() control.ProjectRuntimeRepairConfirmation {
+	return control.ProjectRuntimeRepairConfirmation{
+		Project: domain.ProjectSnapshot{
+			ID:        "billing",
+			Name:      "Billing",
+			Path:      "/workspace/apps/billing",
+			Slug:      "billing",
+			State:     domain.ProjectStopped,
+			UpdatedAt: time.Date(2026, time.July, 18, 14, 42, 0, 0, time.UTC),
+			Apps: []domain.AppSnapshot{
+				{ID: "web", Name: "Web", State: domain.EntityStopped, Required: true},
+			},
+			Services:  []domain.ServiceSnapshot{},
+			Resources: []domain.ResourceSnapshot{},
+		},
+		Revision: 46,
+	}
+}
+
 // Validate proves every generated example is legal before TypeScript sees the artifact.
 func (document Document) Validate() error {
 	methods := map[string]string{
-		desktopwire.MethodAddProject:          document.Methods.AddProject,
-		desktopwire.MethodOpenResource:        document.Methods.OpenResource,
-		desktopwire.MethodProjectActivity:     document.Methods.ProjectActivity,
-		desktopwire.MethodWaitProjectActivity: document.Methods.WaitProjectActivity,
-		desktopwire.MethodRemoveProject:       document.Methods.RemoveProject,
-		desktopwire.MethodSetupNetwork:        document.Methods.SetupNetwork,
-		desktopwire.MethodSnapshot:            document.Methods.Snapshot,
-		desktopwire.MethodStartProject:        document.Methods.StartProject,
-		desktopwire.MethodStatus:              document.Methods.Status,
-		desktopwire.MethodStopProject:         document.Methods.StopProject,
+		desktopwire.MethodAddProject:                  document.Methods.AddProject,
+		desktopwire.MethodConfirmProjectRuntimeRepair: document.Methods.ConfirmProjectRuntimeRepair,
+		desktopwire.MethodInspectProjectRuntimeRepair: document.Methods.InspectProjectRuntimeRepair,
+		desktopwire.MethodOpenResource:                document.Methods.OpenResource,
+		desktopwire.MethodProjectActivity:             document.Methods.ProjectActivity,
+		desktopwire.MethodWaitProjectActivity:         document.Methods.WaitProjectActivity,
+		desktopwire.MethodRemoveProject:               document.Methods.RemoveProject,
+		desktopwire.MethodSetupNetwork:                document.Methods.SetupNetwork,
+		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
+		desktopwire.MethodStartProject:                document.Methods.StartProject,
+		desktopwire.MethodStatus:                      document.Methods.Status,
+		desktopwire.MethodStopProject:                 document.Methods.StopProject,
 	}
 	contracts := desktopwire.MethodContracts()
 	if len(methods) != len(contracts) {
@@ -358,6 +429,21 @@ func (document Document) Validate() error {
 	if err := document.ProjectActivity.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project activity: %w", err)
 	}
+	if err := document.ProjectRuntimeRepairInspection.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project runtime repair inspection: %w", err)
+	}
+	if err := document.ProjectRuntimeRepairNotActionable.Validate(); err != nil {
+		return fmt.Errorf("validate fixture non-actionable project runtime repair inspection: %w", err)
+	}
+	if err := document.ProjectRuntimeRepairUnsupported.Validate(); err != nil {
+		return fmt.Errorf("validate fixture unsupported project runtime repair inspection: %w", err)
+	}
+	if err := document.ProjectRuntimeRepairConfirmation.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project runtime repair confirmation: %w", err)
+	}
+	if document.ProjectRuntimeRepairInspection.ProjectID != document.ProjectRuntimeRepairConfirmation.Project.ID {
+		return fmt.Errorf("fixture project runtime repair inspection and confirmation belong to different projects")
+	}
 	if err := document.RemoveProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project removal: %w", err)
 	}
@@ -393,7 +479,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, ProjectActivity, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -507,6 +593,10 @@ func typeScriptType(goType reflect.Type) (string, error) {
 		return "NetworkSetupOperation", nil
 	case reflect.TypeFor[control.ProjectLifecycleOperation]():
 		return "ProjectLifecycleOperation", nil
+	case reflect.TypeFor[control.ProjectRuntimeRepairInspection]():
+		return "ProjectRuntimeRepairInspection", nil
+	case reflect.TypeFor[control.ProjectRuntimeRepairConfirmation]():
+		return "ProjectRuntimeRepairConfirmation", nil
 	case reflect.TypeFor[domain.Snapshot]():
 		return "HarborSnapshot", nil
 	default:

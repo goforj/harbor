@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
-import type { ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectUnregistration } from '@/domain/harbor'
+import type { ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectRuntimeRepairNotActionableReason, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
 function deferred<T>() {
@@ -57,6 +57,18 @@ function lifecycleOperation(
     operation.finished_at = '2026-07-19T18:00:02Z'
   }
   return operation
+}
+
+function confirmableRuntimeRepairInspection(projectId = 'billing'): Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }> {
+  const inspection = structuredClone(harborWireFixture.project_runtime_repair_inspection)
+  inspection.project_id = projectId
+  return inspection
+}
+
+function runtimeRepairConfirmation(projectId = 'billing'): ProjectRuntimeRepairConfirmation {
+  const confirmation = structuredClone(harborWireFixture.project_runtime_repair_confirmation)
+  confirmation.project.id = projectId
+  return confirmation
 }
 
 describe('Harbor store', () => {
@@ -751,6 +763,236 @@ describe('Harbor store', () => {
     await store.stopProject('orders-api')
 
     expect(stopProject).toHaveBeenCalledWith('orders-api', 'desktop-existing-stop')
+  })
+
+  it('keeps a confirmable runtime inspection for explicit confirmation without confirming automatically', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const inspection = confirmableRuntimeRepairInspection()
+    const inspect = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
+    const confirm = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
+
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toEqual(inspection)
+
+    expect(inspect).toHaveBeenCalledWith('billing')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(store.projectRuntimeRepairInspection).toEqual(inspection)
+    expect(store.projectRuntimeRepairBusy).toBe(false)
+    expect(store.projectRuntimeRepairNotice('billing')).toBeUndefined()
+  })
+
+  it.each([
+    {
+      reason: 'none',
+      title: 'No stale runtime found',
+      message: 'Harbor did not find a process listening at this project’s endpoint. No process was stopped.',
+    },
+    {
+      reason: 'ambiguous',
+      title: 'Stale runtime is ambiguous',
+      message: 'Harbor found more than one possible process scope and cannot safely choose one. No process was stopped.',
+    },
+    {
+      reason: 'foreign',
+      title: 'Stale runtime belongs to another user',
+      message: 'The process at this project’s endpoint belongs to another user. Harbor will not stop it.',
+    },
+    {
+      reason: 'unreadable',
+      title: 'Stale runtime details are incomplete',
+      message: 'Harbor could not read all required process details. No process was stopped.',
+    },
+  ] satisfies Array<{ reason: ProjectRuntimeRepairNotActionableReason; title: string; message: string }>)('shows the fixed $reason runtime diagnostic without retaining a plan', async ({ reason, title, message }) => {
+    const store = useHarborStore()
+    await store.initialize()
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce({
+      project_id: 'billing',
+      disposition: 'not_actionable',
+      reason,
+    })
+
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toMatchObject({ disposition: 'not_actionable', reason })
+
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')).toEqual({
+      state: 'not_actionable',
+      title,
+      message,
+    })
+  })
+
+  it('labels an unsupported runtime inspection as macOS-only without retaining a plan', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce({
+      project_id: 'billing',
+      disposition: 'unsupported',
+    })
+
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toMatchObject({ disposition: 'unsupported' })
+
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')).toEqual({
+      state: 'unsupported',
+      title: 'Stale runtime inspection unavailable',
+      message: 'Stale runtime inspection is currently available only on macOS.',
+    })
+  })
+
+  it('rejects blocked, failed, cross-project, and incomplete runtime inspections without retaining authority', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const inspect = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair')
+
+    store.$patch({ snapshotStale: true })
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
+    expect(inspect).not.toHaveBeenCalled()
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('fresh Harbor snapshot')
+
+    store.$patch({ snapshotStale: false })
+    inspect.mockRejectedValueOnce(new Error('native inspection failed'))
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')).toMatchObject({ state: 'failed', message: 'native inspection failed' })
+
+    inspect.mockResolvedValueOnce(confirmableRuntimeRepairInspection('orders-api'))
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('another project')
+
+    const incomplete = confirmableRuntimeRepairInspection()
+    incomplete.confirmable.candidate.command = '' as 'forj dev'
+    inspect.mockResolvedValueOnce(incomplete)
+    await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('incomplete stale runtime inspection')
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+  })
+
+  it('discards a runtime inspection and ignores its delayed result across every reconnect event', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    const store = useHarborStore()
+    await store.initialize()
+    const pending = deferred<ProjectRuntimeRepairInspection>()
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockReturnValueOnce(pending.promise)
+
+    const inspecting = store.inspectProjectRuntimeRepair('billing')
+    expect(store.projectRuntimeRepairBusy).toBe(true)
+    connectionListener?.({ state: 'disconnected' })
+    pending.resolve(confirmableRuntimeRepairInspection())
+
+    await expect(inspecting).resolves.toBeNull()
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(store.projectRuntimeRepairBusy).toBe(false)
+
+    for (const state of ['connecting', 'connected'] as const) {
+      store.$patch({ projectRuntimeRepairInspection: confirmableRuntimeRepairInspection() })
+      connectionListener?.({ state })
+      expect(store.projectRuntimeRepairInspection).toBeNull()
+    }
+  })
+
+  it('consumes opaque runtime selectors before confirmation and refreshes the stopped projection afterward', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const inspection = confirmableRuntimeRepairInspection()
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
+    await store.inspectProjectRuntimeRepair('billing')
+    const pending = deferred<ProjectRuntimeRepairConfirmation>()
+    const confirm = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair').mockReturnValueOnce(pending.promise)
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    const confirming = store.confirmProjectRuntimeRepair('billing')
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(store.projectRuntimeRepairBusy).toBe(true)
+    expect(confirm).toHaveBeenCalledWith(
+      'billing',
+      inspection.confirmable.inspection_id,
+      inspection.confirmable.candidate_fingerprint,
+    )
+
+    const confirmation = runtimeRepairConfirmation()
+    pending.resolve(confirmation)
+    await expect(confirming).resolves.toEqual(confirmation)
+
+    expect(getSnapshot).toHaveBeenCalledOnce()
+    expect(store.projectById('billing')?.state).toBe('stopped')
+    expect(store.projectRuntimeRepairBusy).toBe(false)
+    expect(store.projectRuntimeRepairNotice('billing')).toMatchObject({ state: 'succeeded' })
+  })
+
+  it('requires a fresh runtime plan and refreshes even when a confirmation attempt cannot be sent', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const confirm = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    await expect(store.confirmProjectRuntimeRepair('billing')).resolves.toBeNull()
+
+    expect(confirm).not.toHaveBeenCalled()
+    expect(getSnapshot).toHaveBeenCalledOnce()
+    expect(store.projectRuntimeRepairNotice('billing')).toEqual({
+      state: 'expired',
+      title: 'Fresh inspection required',
+      message: 'Inspect the stale runtime again before confirming this action.',
+    })
+  })
+
+  it('consumes expired and failed runtime plans without confirming and refreshes after each attempt', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const inspect = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair')
+    const confirm = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    const expired = confirmableRuntimeRepairInspection()
+    expired.confirmable.expires_at = '2020-01-01T00:00:00Z'
+    inspect.mockResolvedValueOnce(expired)
+    await store.inspectProjectRuntimeRepair('billing')
+    await expect(store.confirmProjectRuntimeRepair('billing')).resolves.toBeNull()
+
+    expect(confirm).not.toHaveBeenCalled()
+    expect(getSnapshot).toHaveBeenCalledTimes(1)
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')).toMatchObject({ state: 'expired' })
+
+    inspect.mockResolvedValueOnce(confirmableRuntimeRepairInspection())
+    confirm.mockRejectedValueOnce(new Error('candidate changed before signal'))
+    await store.inspectProjectRuntimeRepair('billing')
+    await expect(store.confirmProjectRuntimeRepair('billing')).resolves.toBeNull()
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2)
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')).toEqual({
+      state: 'failed',
+      title: 'Stale runtime repair failed',
+      message: 'candidate changed before signal',
+    })
+  })
+
+  it('rejects a mismatched or incomplete runtime confirmation and still refreshes authoritative state', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const inspect = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair')
+    const confirm = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    inspect.mockResolvedValueOnce(confirmableRuntimeRepairInspection())
+    confirm.mockResolvedValueOnce(runtimeRepairConfirmation('orders-api'))
+    await store.inspectProjectRuntimeRepair('billing')
+    await expect(store.confirmProjectRuntimeRepair('billing')).resolves.toBeNull()
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('another project')
+
+    const incomplete = runtimeRepairConfirmation()
+    incomplete.project.state = 'unavailable'
+    inspect.mockResolvedValueOnce(confirmableRuntimeRepairInspection())
+    confirm.mockResolvedValueOnce(incomplete)
+    await store.inspectProjectRuntimeRepair('billing')
+    await expect(store.confirmProjectRuntimeRepair('billing')).resolves.toBeNull()
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2)
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('incomplete stale runtime confirmation')
   })
 
   it('refreshes authoritative state after an immediate project removal', async () => {

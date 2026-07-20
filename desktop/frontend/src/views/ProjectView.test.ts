@@ -1,0 +1,181 @@
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia, type Pinia } from 'pinia'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
+import { describe, expect, it, vi } from 'vitest'
+import { harborBridge } from '@/bridge'
+import { harborWireFixture } from '@/bridge/harbor.fixture'
+import { mockSnapshot } from '@/bridge/mock'
+import type { ProjectRuntimeRepairInspection } from '@/domain/harbor'
+import { useHarborStore } from '@/stores/harbor'
+import ProjectView from './ProjectView.vue'
+
+interface MountedProjectView {
+  pinia: Pinia
+  router: Router
+  store: ReturnType<typeof useHarborStore>
+  wrapper: VueWrapper
+}
+
+async function mountRecoveryProject(): Promise<MountedProjectView> {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const store = useHarborStore()
+  await store.initialize()
+  const snapshot = mockSnapshot()
+  const project = snapshot.projects.find((entry) => entry.id === 'billing')
+  if (!project) throw new Error('Billing fixture project is missing')
+  project.state = 'unavailable'
+  store.$patch({
+    snapshot,
+    projectLifecycleErrors: {
+      billing: 'Harbor could not prove that the previous development runtime stopped.',
+    },
+    projectLifecycleProblemCodes: {
+      billing: 'project.recovery.ambiguous_launch',
+    },
+  })
+
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/projects/:projectId', component: ProjectView },
+      { path: '/projects', component: { template: '<div>Projects</div>' } },
+    ],
+  })
+  await router.push('/projects/billing')
+  await router.isReady()
+  const wrapper = mount(ProjectView, {
+    attachTo: document.body,
+    global: { plugins: [pinia, router] },
+  })
+  await flushPromises()
+  return { pinia, router, store, wrapper }
+}
+
+function confirmableInspection(): Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }> {
+  return structuredClone(harborWireFixture.project_runtime_repair_inspection)
+}
+
+function bodyButton(label: string): HTMLButtonElement {
+  const button = [...document.body.querySelectorAll('button')]
+    .find((candidate) => candidate.textContent?.trim() === label)
+  if (!(button instanceof HTMLButtonElement)) throw new Error(`Button not found: ${label}`)
+  return button
+}
+
+describe('ProjectView stale runtime recovery', () => {
+  it('adds an explicit inspection action and disables it for disconnected, stale, or busy state', async () => {
+    const { store, wrapper } = await mountRecoveryProject()
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    expect(inspect).toBeDefined()
+    expect(inspect?.attributes('disabled')).toBeUndefined()
+
+    store.$patch({ snapshotStale: true })
+    await wrapper.vm.$nextTick()
+    expect(inspect?.attributes('disabled')).toBeDefined()
+
+    store.$patch({ snapshotStale: false, connectionState: 'disconnected' })
+    await wrapper.vm.$nextTick()
+    expect(inspect?.attributes('disabled')).toBeDefined()
+
+    store.$patch({ connectionState: 'connected', projectLifecycleProjectId: 'orders-api' })
+    await wrapper.vm.$nextTick()
+    expect(inspect?.attributes('disabled')).toBeDefined()
+
+    wrapper.unmount()
+  })
+
+  it('opens a destructive review dialog with only the bounded candidate facts and never auto-confirms', async () => {
+    const inspection = confirmableInspection()
+    const inspectRuntime = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
+    const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
+    const { store, wrapper } = await mountRecoveryProject()
+
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    if (!inspect) throw new Error('Inspect stale runtime action is missing')
+    await inspect.trigger('click')
+    await flushPromises()
+
+    expect(inspectRuntime).toHaveBeenCalledWith('billing')
+    expect(confirmRuntime).not.toHaveBeenCalled()
+    const dialog = document.body.querySelector('[role="alertdialog"]')
+    expect(dialog).not.toBeNull()
+    const text = dialog?.textContent ?? ''
+    expect(text).toContain('Harbor no longer has its launch receipt. This process is a candidate, not proven Harbor-owned. Continue only if you recognize it as this project.')
+    expect(text).toContain('Commandforj dev')
+    expect(text).toContain(`Checkout${inspection.confirmable.candidate.checkout}`)
+    expect(text).toContain(`Endpoint${inspection.confirmable.candidate.endpoint}`)
+    expect(text).toContain(`Root PID${inspection.confirmable.candidate.root_pid}`)
+    expect(text).toContain(`Member count${inspection.confirmable.candidate.member_count}`)
+    expect(text).not.toContain(inspection.confirmable.inspection_id)
+    expect(text).not.toContain(inspection.confirmable.candidate_fingerprint)
+    expect(text).not.toContain(inspection.confirmable.expires_at)
+    expect(bodyButton('Stop this process and reset project').disabled).toBe(false)
+
+    await bodyButton('Cancel').click()
+    await flushPromises()
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(confirmRuntime).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('submits opaque selectors only after confirmation and refreshes while consuming the plan', async () => {
+    const inspection = confirmableInspection()
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
+    const confirmation = structuredClone(harborWireFixture.project_runtime_repair_confirmation)
+    const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair').mockResolvedValueOnce(confirmation)
+    const { store, wrapper } = await mountRecoveryProject()
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    if (!inspect) throw new Error('Inspect stale runtime action is missing')
+    await inspect.trigger('click')
+    await flushPromises()
+    bodyButton('Stop this process and reset project').click()
+    await flushPromises()
+
+    expect(confirmRuntime).toHaveBeenCalledWith(
+      'billing',
+      inspection.confirmable.inspection_id,
+      inspection.confirmable.candidate_fingerprint,
+    )
+    expect(store.projectRuntimeRepairInspection).toBeNull()
+    expect(getSnapshot).toHaveBeenCalledOnce()
+    expect(store.projectById('billing')?.state).toBe('stopped')
+    wrapper.unmount()
+  })
+
+  it('keeps confirmation disabled after expiry or while connection state is unsafe', async () => {
+    const inspection = confirmableInspection()
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
+    const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
+    const { store, wrapper } = await mountRecoveryProject()
+
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    if (!inspect) throw new Error('Inspect stale runtime action is missing')
+    await inspect.trigger('click')
+    await flushPromises()
+    const confirm = bodyButton('Stop this process and reset project')
+
+    store.$patch({ snapshotStale: true })
+    await wrapper.vm.$nextTick()
+    expect(confirm.disabled).toBe(true)
+
+    store.$patch({ snapshotStale: false, connectionState: 'disconnected' })
+    await wrapper.vm.$nextTick()
+    expect(confirm.disabled).toBe(true)
+
+    store.$patch({ connectionState: 'connected', settingUpNetwork: true })
+    await wrapper.vm.$nextTick()
+    expect(confirm.disabled).toBe(true)
+
+    const expired = confirmableInspection()
+    expired.confirmable.expires_at = '2020-01-01T00:00:00Z'
+    store.$patch({ settingUpNetwork: false, projectRuntimeRepairInspection: expired })
+    await flushPromises()
+    expect(bodyButton('Stop this process and reset project').disabled).toBe(true)
+    expect(document.body.textContent).toContain('This inspection has expired.')
+    expect(confirmRuntime).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
