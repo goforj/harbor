@@ -57,8 +57,8 @@ async function addProject() {
 async function setupNetwork() {
   const result = await store.setupNetwork()
   if (result) {
-    toast.success('Harbor networking is ready', {
-      description: 'The local network foundation was verified or completed.',
+    toast.success('Project addressing is ready', {
+      description: 'Harbor verified or reserved its loopback address pool.',
     })
   }
 }
@@ -103,18 +103,18 @@ async function setupNetwork() {
         <CardHeader class="border-b px-4 py-3">
           <div class="flex items-center gap-2">
             <Network class="size-4 text-muted-foreground" aria-hidden="true" />
-            <CardTitle class="text-sm">Local networking</CardTitle>
+            <CardTitle class="text-sm">Project addressing</CardTitle>
           </div>
-          <p class="text-xs text-muted-foreground">Verify or complete Harbor’s local network foundation. This action is safe to run again.</p>
+          <p class="text-xs text-muted-foreground">Verify or reserve Harbor’s loopback address pool. This action is safe to run again.</p>
         </CardHeader>
         <CardContent class="flex flex-col items-start gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0 text-sm">
             <p v-if="store.networkSetupResult" class="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-400">
               <CircleCheck class="size-4 shrink-0" aria-hidden="true" />
-              Harbor networking is ready.
+              Harbor’s loopback address pool is ready.
             </p>
             <template v-else>
-              <p class="font-medium">Set up networking before you need project routes.</p>
+              <p class="font-medium">Set up project addressing before you start a project.</p>
               <p v-if="store.networkSetupError" class="mt-1 text-xs text-destructive" role="alert">{{ store.networkSetupError }}</p>
             </template>
           </div>
@@ -126,7 +126,7 @@ async function setupNetwork() {
           >
             <Spinner v-if="store.settingUpNetwork" aria-hidden="true" />
             <Network v-else class="size-4" aria-hidden="true" />
-            {{ store.settingUpNetwork ? 'Setting up…' : 'Set up networking' }}
+            {{ store.settingUpNetwork ? 'Setting up…' : 'Set up project addressing' }}
           </Button>
         </CardContent>
       </Card>
