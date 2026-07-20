@@ -952,6 +952,12 @@ func classifyProjectUnregisterApprovalError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
+	if errors.Is(err, ticketspool.ErrNotInstalled) {
+		return control.NewProjectUnregisterApprovalPrivilegedHelperRequiredError(err)
+	}
+	if errors.Is(err, ticketspool.ErrUnsafePath) {
+		return control.NewProjectUnregisterApprovalPrivilegedHelperUnsafeError(err)
+	}
 	var staleRevision *state.StaleRevisionError
 	var projectBusy *state.ProjectBusyError
 	var projectRevisionConflict *state.ProjectRevisionConflictError

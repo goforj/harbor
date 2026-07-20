@@ -18,6 +18,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/helper/ticketspool"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -355,6 +356,41 @@ func TestAuthorityProjectUnregisterApprovalClassifiesCoordinatorFailures(t *test
 	assertAuthorityHandlerError(t, confirmErr, confirmCause, rpc.ErrorCodeNotFound)
 }
 
+// TestAuthorityPrepareProjectUnregisterApprovalClassifiesHelperPrerequisites verifies desktop callers receive the reviewed repair distinction.
+func TestAuthorityPrepareProjectUnregisterApprovalClassifiesHelperPrerequisites(t *testing.T) {
+	prepared := validAuthorityPrepareResult()
+	tests := []struct {
+		name     string
+		cause    error
+		wantCode rpc.ErrorCode
+	}{
+		{name: "missing", cause: fmt.Errorf("open helper ticket issuer: %w", ticketspool.ErrNotInstalled), wantCode: rpc.ErrorCodePrivilegedHelperRequired},
+		{name: "unsafe", cause: fmt.Errorf("open helper ticket issuer: %w", ticketspool.ErrUnsafePath), wantCode: rpc.ErrorCodePrivilegedHelperUnsafe},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			authority := newAuthority(
+				&recordingStore{},
+				&recordingProjectUnregisterApprovals{prepareErr: test.cause},
+				buildinfo.Info{Version: "dev"},
+				testProjectLifecycles(),
+				testNetworkSetups(),
+				testNetworkResolverSetups(),
+				testHTTPRoutes(),
+			)
+			_, err := authority.PrepareProjectUnregisterApproval(
+				t.Context(),
+				control.Caller{},
+				control.PrepareProjectUnregisterApprovalRequest{
+					OperationID:               prepared.OperationID,
+					ExpectedOperationRevision: prepared.OperationRevision,
+				},
+			)
+			assertAuthorityHandlerError(t, err, test.cause, test.wantCode)
+		})
+	}
+}
+
 // TestAuthorityPrepareProjectUnregisterApprovalRejectsMismatchedAndInvalidResults verifies coordinator output cannot cross operation boundaries.
 func TestAuthorityPrepareProjectUnregisterApprovalRejectsMismatchedAndInvalidResults(t *testing.T) {
 	for _, test := range []struct {
@@ -457,6 +493,8 @@ func TestClassifyProjectUnregisterApprovalErrorCoversReviewedFailures(t *testing
 		{name: "host state", cause: &reconcile.HostStateConflictError{Address: netip.MustParseAddr("127.77.0.11"), State: loopback.StateForeign}, wantCode: rpc.ErrorCodeConflict},
 		{name: "release progress", cause: &reconcile.ReleaseIncompleteError{OperationID: operationID, Remaining: 1}, wantCode: rpc.ErrorCodeConflict},
 		{name: "withdrawal verification", cause: fmt.Errorf("runtime observation: %w", harbordruntime.ErrProjectWithdrawalUnverified), wantCode: rpc.ErrorCodeConflict},
+		{name: "privileged helper missing", cause: fmt.Errorf("open helper ticket issuer: %w", ticketspool.ErrNotInstalled), wantCode: rpc.ErrorCodePrivilegedHelperRequired},
+		{name: "privileged helper unsafe", cause: fmt.Errorf("open helper ticket issuer: %w", ticketspool.ErrUnsafePath), wantCode: rpc.ErrorCodePrivilegedHelperUnsafe},
 		{name: "operation missing", cause: &state.OperationNotFoundError{OperationID: operationID}, wantCode: rpc.ErrorCodeNotFound},
 		{name: "project missing", cause: &state.ProjectNotFoundError{ProjectID: projectID}, wantCode: rpc.ErrorCodeNotFound},
 		{name: "release missing", cause: &state.ProjectNetworkReleaseNotFoundError{ProjectID: projectID, OperationID: operationID}, wantCode: rpc.ErrorCodeNotFound},
@@ -465,6 +503,7 @@ func TestClassifyProjectUnregisterApprovalErrorCoversReviewedFailures(t *testing
 		{name: "unknown", cause: errors.New("database unavailable")},
 		{name: "corruption around not found", cause: &state.CorruptStateError{Entity: "operation", Key: string(operationID), Cause: &state.OperationNotFoundError{OperationID: operationID}}},
 		{name: "corruption around conflict", cause: &state.CorruptStateError{Entity: "network", Key: "singleton", Cause: &state.NetworkRevisionConflictError{Expected: 41, Actual: 42}}},
+		{name: "corruption around privileged helper", cause: &state.CorruptStateError{Entity: "operation", Key: string(operationID), Cause: ticketspool.ErrNotInstalled}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

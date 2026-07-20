@@ -22,6 +22,8 @@ func TestProjectUnregisterApprovalErrorConstructorsKeepWireClassificationInContr
 	}{
 		{name: "conflict", construct: NewProjectUnregisterApprovalConflictError, want: rpc.ErrorCodeConflict},
 		{name: "not found", construct: NewProjectUnregisterApprovalNotFoundError, want: rpc.ErrorCodeNotFound},
+		{name: "privileged helper required", construct: NewProjectUnregisterApprovalPrivilegedHelperRequiredError, want: rpc.ErrorCodePrivilegedHelperRequired},
+		{name: "privileged helper unsafe", construct: NewProjectUnregisterApprovalPrivilegedHelperUnsafeError, want: rpc.ErrorCodePrivilegedHelperUnsafe},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.construct(cause)

@@ -271,3 +271,13 @@ func NewProjectUnregisterApprovalConflictError(cause error) error {
 func NewProjectUnregisterApprovalNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
+
+// NewProjectUnregisterApprovalPrivilegedHelperRequiredError reports an absent unregister helper boundary without exposing its path.
+func NewProjectUnregisterApprovalPrivilegedHelperRequiredError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)
+}
+
+// NewProjectUnregisterApprovalPrivilegedHelperUnsafeError reports an unregister helper boundary that failed its fixed filesystem policy.
+func NewProjectUnregisterApprovalPrivilegedHelperUnsafeError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperUnsafe, cause)
+}
