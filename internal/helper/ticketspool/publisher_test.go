@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -658,6 +659,16 @@ func TestPublisherRetainedRootSurvivesPathSwap(t *testing.T) {
 	parent := filepath.Dir(directory)
 	moved := filepath.Join(parent, "moved-pending")
 	if err := os.Rename(directory, moved); err != nil {
+		if runtime.GOOS == "windows" {
+			_, privateKey := testKey(11)
+			reference, publishErr := publisher.Publish(context.Background(), testTicket(now, "path-swap"), privateKey)
+			if publishErr != nil {
+				t.Fatalf("Publish() after Windows root rename refusal: %v", publishErr)
+			}
+			_ = readPublished(t, directory, reference)
+			assertOnlyFinalFiles(t, directory, 1)
+			return
+		}
 		t.Fatalf("move opened pending directory: %v", err)
 	}
 	prepareTestDirectory(t, directory)

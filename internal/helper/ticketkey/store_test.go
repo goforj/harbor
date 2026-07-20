@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -413,6 +414,13 @@ func TestStoreWritesThroughRetainedRoot(t *testing.T) {
 	defer store.Close()
 	original := filepath.Join(workspace, "original")
 	if err := os.Rename(directory, original); err != nil {
+		if runtime.GOOS == "windows" {
+			if _, loadErr := store.LoadOrCreate(context.Background()); loadErr != nil {
+				t.Fatalf("LoadOrCreate() after Windows root rename refusal: %v", loadErr)
+			}
+			assertStoreLayout(t, directory)
+			return
+		}
 		t.Fatalf("Rename(root) error = %v", err)
 	}
 	if err := os.Mkdir(directory, privateDirectoryMode); err != nil {
