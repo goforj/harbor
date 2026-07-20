@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,11 +16,12 @@ import (
 
 // routeReplacementFixture owns one ready shared-listener generation with a stable native relay.
 type routeReplacementFixture struct {
-	runtime   *Runtime
-	listeners ListenerPlan
-	native    []NativeRoute
-	current   DesiredState
-	next      DesiredState
+	runtime                 *Runtime
+	listeners               ListenerPlan
+	native                  []NativeRoute
+	current                 DesiredState
+	next                    DesiredState
+	alternateNativeUpstream netip.AddrPort
 }
 
 // TestRuntimeReplaceHTTPRoutesOrdersPublicationAndUpdatesSnapshot verifies mixed replacements never publish a dangling DNS name.
@@ -91,7 +93,7 @@ func TestRuntimeReplaceHTTPRoutesRejectsInvalidLifecycleAndTopology(t *testing.T
 	}
 
 	changedNative := fixture.next.NativeRoutes()
-	changedNative[0].Upstream = testEndpoint("127.0.0.1:42006")
+	changedNative[0].Upstream = fixture.alternateNativeUpstream
 	changedNativeState := mustDesiredState(t, fixture.listeners, fixture.next.HTTPRoutes(), changedNative)
 	if err := fixture.runtime.ReplaceHTTPRoutes(changedNativeState); err == nil || !strings.Contains(err.Error(), "native route topology") {
 		t.Fatalf("ReplaceHTTPRoutes(changed native) error = %v", err)
@@ -271,19 +273,21 @@ func newRouteReplacementFixture(t *testing.T) routeReplacementFixture {
 	t.Helper()
 	ports := reserveTCPPorts(t, 3)
 	listeners := ListenerPlan{DNS: reserveDNSPort(t), HTTP: ports[0], HTTPS: ports[1]}
+	excluded := append([]netip.AddrPort{listeners.DNS}, ports...)
+	upstreams := reserveDistinctTCPPorts(t, 5, excluded...)
 	native := []NativeRoute{{
 		ID:       "tcp:mysql",
 		Host:     "mysql.app.test",
 		Listen:   ports[2],
-		Upstream: testEndpoint("127.0.0.1:41006"),
+		Upstream: upstreams[4],
 	}}
 	current := mustDesiredState(t, listeners, []HTTPRoute{
-		{ID: "http:remove", Host: "remove.test", Upstream: testEndpoint("127.0.0.1:41001")},
-		{ID: "http:retain", Host: "retain.test", Upstream: testEndpoint("127.0.0.1:41002")},
+		{ID: "http:remove", Host: "remove.test", Upstream: upstreams[0]},
+		{ID: "http:retain", Host: "retain.test", Upstream: upstreams[1]},
 	}, native)
 	next := mustDesiredState(t, listeners, []HTTPRoute{
-		{ID: "http:add", Host: "add.test", Upstream: testEndpoint("127.0.0.1:41003")},
-		{ID: "http:retain", Host: "retain.test", Upstream: testEndpoint("127.0.0.1:41004")},
+		{ID: "http:add", Host: "add.test", Upstream: upstreams[2]},
+		{ID: "http:retain", Host: "retain.test", Upstream: upstreams[3]},
 	}, native)
 	runtime := mustRuntime(t, Config{Desired: current, CertificateProvider: inertCertificateProvider()})
 	if err := runtime.Start(context.Background()); err != nil {
@@ -294,7 +298,32 @@ func newRouteReplacementFixture(t *testing.T) routeReplacementFixture {
 		defer cancel()
 		_ = runtime.Close(ctx)
 	})
-	return routeReplacementFixture{runtime: runtime, listeners: listeners, native: native, current: current, next: next}
+	return routeReplacementFixture{runtime: runtime, listeners: listeners, native: native, current: current, next: next, alternateNativeUpstream: upstreams[0]}
+}
+
+// reserveDistinctTCPPorts returns ephemeral loopback endpoints that cannot alias any excluded listener.
+func reserveDistinctTCPPorts(t *testing.T, count int, excluded ...netip.AddrPort) []netip.AddrPort {
+	t.Helper()
+	for range 20 {
+		candidates := reserveTCPPorts(t, count)
+		valid := true
+		for _, candidate := range candidates {
+			for _, excludedEndpoint := range excluded {
+				if candidate == excludedEndpoint {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				break
+			}
+		}
+		if valid {
+			return candidates
+		}
+	}
+	t.Fatal("could not reserve distinct upstream endpoints")
+	return nil
 }
 
 // dnsReplacementEvent renders only public record names so publication order failures remain readable.
