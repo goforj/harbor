@@ -18,6 +18,8 @@ Commit `b531d7f` replaces the GoForj service-state/log dependency with a daemon-
 
 The native desktop bridge fixture now includes the required `ResourceIconURL` binding. Native selection rejects its absence, while the native bridge test calls it directly; browser fixtures therefore cannot hide this generated-binding drift.
 
+The framework-resource observer test harness now resolves checkout aliases before its exact process-context comparison. This unblocks its intended macOS process-context coverage when temporary directories are spelled through `/var` by the parent and `/private/var` by the child, without admitting another checkout.
+
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
 ## Product decisions that should not be reopened casually

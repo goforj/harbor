@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,30 @@ func TestObserveUsesExactProcessContext(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(observation.Resources, want) {
 		t.Fatalf("Observe() resources = %#v, want %#v", observation.Resources, want)
+	}
+}
+
+// TestCanonicalCheckoutRecognizesOneResolvedCheckout verifies macOS's /var alias does not make an exact child process appear foreign.
+func TestCanonicalCheckoutRecognizesOneResolvedCheckout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows test symlinks require a privilege that Harbor does not assume")
+	}
+	checkout := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(checkout, alias); err != nil {
+		t.Fatalf("os.Symlink() error = %v", err)
+	}
+
+	resolvedCheckout, err := canonicalCheckout(checkout)
+	if err != nil {
+		t.Fatalf("canonicalCheckout(checkout) error = %v", err)
+	}
+	resolvedAlias, err := canonicalCheckout(alias)
+	if err != nil {
+		t.Fatalf("canonicalCheckout(alias) error = %v", err)
+	}
+	if resolvedCheckout != resolvedAlias {
+		t.Fatalf("canonical checkout paths = (%q, %q), want one path", resolvedCheckout, resolvedAlias)
 	}
 }
 
@@ -363,7 +388,17 @@ func runFrameworkResourceHelper() {
 		os.Exit(90)
 	}
 	checkout, err := os.Getwd()
-	if err != nil || filepath.Clean(checkout) != filepath.Clean(os.Getenv("FRAMEWORK_RESOURCE_HELPER_CHECKOUT")) {
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "unexpected checkout: %q", checkout)
+		os.Exit(91)
+	}
+	actualCheckout, err := canonicalCheckout(checkout)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "unexpected checkout: %q", checkout)
+		os.Exit(91)
+	}
+	expectedCheckout, err := canonicalCheckout(os.Getenv("FRAMEWORK_RESOURCE_HELPER_CHECKOUT"))
+	if err != nil || actualCheckout != expectedCheckout {
 		_, _ = fmt.Fprintf(os.Stderr, "unexpected checkout: %q", checkout)
 		os.Exit(91)
 	}
@@ -390,4 +425,13 @@ func runFrameworkResourceHelper() {
 		_, _ = fmt.Fprintln(os.Stderr, "unknown helper mode")
 		os.Exit(92)
 	}
+}
+
+// canonicalCheckout resolves filesystem aliases before exact checkout identity comparison.
+func canonicalCheckout(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
 }

@@ -26,6 +26,8 @@ The daemon-owned container adapter currently implements local list, inspect, and
 
 The desktop bridge treats every required generated Wails binding as part of its native capability boundary. Its fixture and selection tests include `ResourceIconURL`, reject native mode when that binding is absent, and exercise it through the authoritative bridge; this prevents browser fixtures from disguising an incomplete native bridge.
 
+The framework-resource process harness canonicalizes both its supplied checkout and the child working directory before comparing them. This retains one exact checkout identity while accepting macOS's equivalent `/var` and `/private/var` spellings; it does not permit a different resolved checkout.
+
 ## Repository shape
 
 | Path | Role |
