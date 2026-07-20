@@ -1,16 +1,18 @@
 # Development Handoff
 
-Status: stopping point after the first real managed-project vertical slice
+Status: retained macOS runtime repair implemented; native host proof and broader desktop workflow remain
 
 Last updated: 2026-07-20
 
 ## Read this first
 
-Harbor is working far enough to register a real GoForj checkout, initialize macOS networking, assign a project-specific loopback, launch `forj dev`, detect App readiness, and stream current development output into the Wails desktop. It is not close to release-complete.
+Harbor is working far enough to register a real GoForj checkout, initialize macOS networking, assign a project-specific loopback, launch `forj dev`, detect App readiness, observe conventional Compose services, and stream current development output into the Wails desktop. It is not close to release-complete.
 
 The work immediately before this handoff hardened the most painful current failure: `harbord` could disappear while a watcher-created child continued listening on the project's address. The old supervisor owned only the outer process group, so the surviving App looked like a foreign port conflict on restart. New Unix launches use a dedicated session, recovery settles all exact members across watcher-created process groups, and unresolved scope quarantines only the affected project instead of preventing daemon startup.
 
 The regression is intentionally end to end: an outer process and daemon generation are killed, a listener in a separate process group ignores graceful shutdown, replacement recovery removes the complete owned scope, and a second Start reaches Ready on the same address and port.
+
+Retained missing-receipt state now has a separate explicit recovery path. A quarantined project can inspect one bounded macOS candidate, show only reviewed display facts, and ask the user to confirm before the daemon revalidates and signals anything. The plan is caller-bound, short-lived, one-use, and consumed before confirmation. Linux and Windows preserve the same contract but currently return unsupported. The native Darwin implementation has portable and cross-build evidence, not a completed real-host proof.
 
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 
@@ -26,7 +28,7 @@ Do not expand scope before reading [Current implementation state](./current-stat
 - Wails v2 remains the stable desktop host. Vue 3, TypeScript, Vite, Tailwind 4, Pinia, Reka/shadcn primitives, and Lucide are the frontend foundation.
 - The GoForj Vue starter's component bones were preserved; Harbor's information architecture and visual density are adapted toward Lerd, not constrained to the starter's original page layout.
 - Current activity matters more than a long operation-history wall. Project detail shows live state, the actionable failure, and current bounded `forj dev` output. Output delivery is wake-driven over the authenticated control connection and terminal redraw controls update existing rows instead of becoming noisy history.
-- Harbor never inspects Docker or parses `forj dev` prose. The current service bridge asks the exact supervising GoForj binary for a versioned `dev:status` report after App readiness; the eventual authenticated managed session remains the authority for live topology.
+- Harbor never parses Compose YAML or `forj dev` prose. GoForj owns Compose intent and every mutation. The approved container boundary gives only `harbord` a read-only Docker Engine adapter for state, publications, events, and logs attributed through Compose labels, accepted project identity, and canonical checkout ownership; generated Apps and frontend clients never inspect Docker.
 - Existing generated API Index and example surfaces remain valuable GoForj resources; Harbor should surface them, not replace or remove them.
 - Compatibility and cross-platform support are claims only when macOS, Linux, and Windows native tests prove the crucial behavior.
 
@@ -161,6 +163,16 @@ The stopping baseline contains these logical commits:
 - `cdc496e feat: add Linux resolver integration foundation`
 - `c84093f feat: add Windows NRPT resolver backend foundation`
 
+The retained-runtime continuation is split into focused commits:
+
+- `0a3bb00 feat: add retained runtime repair boundary`
+- `44a1165 fix: clear completed runtime recovery warning`
+- `ac5d508 feat: define runtime repair control contract`
+- `4520f61 feat: add macOS runtime repair backend`
+- `44dbffe feat: coordinate retained runtime repair`
+- `78a35f6 feat: expose project runtime repair control`
+- `5615316 feat: add desktop runtime repair flow`
+
 No push was part of the stopping sequence. Confirm the live relationship rather than relying on a recorded ahead/behind count after more work:
 
 ```sh
@@ -200,8 +212,8 @@ No delivery phase has met its complete exit gate.
 - Hosted three-OS CI, Phase 1 evidence, and privileged loopback tests exist.
 - Durable SQLite state, authenticated local RPC, operation journals, project registration/removal, network setup approvals, and recovery are substantial.
 - DNS, HTTP ingress, TCP relay, local CA/certificate primitives, loopback identity, Darwin resolver ownership, Linux resolver integration foundation, Windows NRPT core foundation, and runtime activation exist.
-- Wails/Vue can add/remove projects, set up networking, start/stop a project, display actionable errors, and stream current ANSI-formatted output through a held cursor request with incremental terminal redraws.
-- The typed GoForj project descriptor and managed-session handshake do not exist. A narrow `forj dev:status --json` startup observation now populates active conventional Compose services without making Harbor a Docker client.
+- Wails/Vue can add/remove projects, set up networking, start/stop a project, inspect and explicitly confirm one retained macOS runtime candidate, display actionable errors, and stream current ANSI-formatted output through a held cursor request with incremental terminal redraws.
+- The typed GoForj project descriptor and managed-session handshake do not exist. The checked-in startup service projection still comes from the narrow `forj dev:status --json` bridge. Replacing container-state and container-log dependence on that bridge with the approved daemon-owned read-only Docker adapter is current work and is not complete until its implementation and ownership tests land.
 - Live Compose topology, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
 - Project Start/Stop exists in control and desktop surfaces, not first-class CLI commands.
 - Project-removal approval handoff is not implemented in the desktop.
@@ -210,38 +222,31 @@ No delivery phase has met its complete exit gate.
 
 ## Immediate next goal
 
-Make restart and stale-runtime recovery boring on macOS without weakening process ownership.
+Keep the macOS daily workflow moving in visible vertical slices without weakening the portable control boundaries.
 
-Completion means:
+The retained-session repair implementation is complete in the repository. Its remaining gate is native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation.
 
-1. a new Harbor-owned project can be started on its assigned loopback;
-2. abrupt daemon/Desktop/`forj dev` loss is recovered automatically when a durable exact scope receipt exists;
-3. an old quarantined runtime with a retained session produces an `Inspect stale runtime` action instead of a dead end;
-4. an ordinary busy-port failure caused by already-retired evidence can inspect a uniquely correlated same-user listener while labeling it unattributed, never Harbor-owned;
-5. retained-session confirmation stops only one fully revalidated candidate, proves the socket and process identity are gone, atomically retires the legacy session, returns the project to stopped, and permits Start on the same address and port;
-6. unattributed-listener confirmation, if implemented, changes no Harbor ownership state and only retries Start after the exact user-authorized process scope and socket are gone;
-7. zero-signal tests cover every ambiguity or drift branch;
-8. the real Ditracker project survives repeated daemon restarts and can be stopped/started without manual SQLite or `lsof` intervention.
+The next product slice is the desktop project-removal approval handoff. The daemon approval protocol and native helper executor already exist, and the Wails backend now replays the retained project/intent before selecting an exact approval revision. Finish the explicit desktop action and its declined, unavailable, indeterminate, retry, refresh, and success states; never open native consent automatically from Remove or snapshot reconciliation.
 
-After that goal is green, return to Linux resolver crash recovery before expanding product surface.
+Continue broad macOS-visible work one bounded slice at a time after that—service detail/log experience, first-class lifecycle client parity, trusted routing, and tray presence—while retaining explicit unsupported adapters for unfinished native platforms. Linux resolver crash recovery remains required, but it should not displace the current effort to make the exercised macOS experience coherent.
 
 ## Next-session start checklist
 
 1. Read `AGENTS.md`, [Current implementation state](./current-state.md), and this handoff before changing code.
 2. Run `git status -sb`, inspect `origin/main...HEAD`, and preserve unexplained local artifacts rather than sweeping them into a commit.
 3. Re-observe the macOS host and Ditracker runtime; paths, PIDs, listeners, leases, and database rows in this document are historical evidence until confirmed.
-4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, Stop, and second Start before changing recovery policy.
-5. Implement only the next missing recovery capability with zero-signal ambiguity tests and native birth/socket revalidation.
+4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, explicit retained-session repair, Stop, and second Start before claiming native recovery complete.
+5. Finish the current desktop workflow slice before opening another native-platform implementation front.
 6. Validate both Go modules and any affected frontend or native OS surface.
 7. Commit explicit paths as `Chris Miles <chris.miles.e@gmail.com>` and update `current-state.md` plus this handoff when the continuation point changes.
 
-## Legacy stale-runtime repair design
+## Retained stale-runtime repair implementation
 
 The retained-session case uses a two-call, user-confirmed, process-local inspection plan. The already-retired listener is a separate case and must not be smuggled through the retained-session mutation.
 
 ### Inspect
 
-Add a control capability such as `control.project-runtime-repair.v1` and an inspect method taking only `ProjectID`. The daemon, not the client, derives the project revision, unresolved session, network/lease revision, assigned address, target port, and native candidate.
+The `control.project-runtime-repair.v1` capability exposes an inspect method taking only `ProjectID`. The daemon, not the client, derives the project revision, unresolved session, network/lease revision, assigned address, target port, and native candidate.
 
 Inspection is eligible for repair only when all of these correlate:
 
@@ -252,7 +257,7 @@ Inspection is eligible for repair only when all of these correlate:
 - default runtime discovery derives the same address and port;
 - one same-user process uniquely correlates by native socket owner, immutable birth, executable, working directory, sanitized command identity, and stable parent/descendant facts.
 
-Return bounded display facts and an opaque inspection ID/fingerprint. Never return raw birth tokens or environment values. Zero, multiple, cross-user, unreadable, or partially correlated candidates are diagnostic only and cannot be confirmed.
+Inspection returns bounded display facts and an opaque inspection ID/fingerprint. It never returns raw birth tokens, argv, or environment values. Zero, multiple, cross-user, unreadable, or partially correlated candidates are diagnostic only and cannot be confirmed.
 
 ### Confirm
 
@@ -260,15 +265,15 @@ Confirmation supplies only project ID, opaque inspection ID, and candidate finge
 
 Before signaling, re-read and compare every durable fence and every native process/socket fact. Any drift emits zero signals and expires the plan. Stop only the exact candidate scope shown to the user; never accept a PID or address from the client and never kill “whatever owns this port.”
 
-For the first version, prefer graceful exact termination. Poll exact birth absence and socket release. If a watcher respawns or identity changes, fail and require a fresh inspection. Only after the postcondition succeeds should one atomic state mutation retire the legacy session and project the route-free project to stopped.
+The first version uses graceful exact termination and polls exact birth absence, complete session absence, and socket release. A watcher respawn or identity change fails confirmation and requires a fresh inspection. Only after every postcondition succeeds does one atomic state mutation retire the retained session and project the route-free project to stopped.
 
-The desktop already recognizes `project.recovery.ambiguous_launch`. Replace its dead-end recovery state with an inspect action and an explicit confirmation dialog. Suggested copy:
+The desktop replaces the `project.recovery.ambiguous_launch` dead end with an inspect action and explicit confirmation dialog. Its warning is:
 
 > Harbor no longer has its launch receipt. This process is a candidate, not proven Harbor-owned. Continue only if you recognize it as this project.
 
 The confirmation label should describe the effect, such as `Stop this process and reset project`, rather than generic `Repair`.
 
-Required tests include caller mismatch, expiry, revision drift, PID reuse, birth/executable/argv/cwd/socket/parent drift, multiple owners, respawn, cancellation, and proof that every failed branch sends no signal. Native hosted tests are required on macOS, Linux, and Windows.
+Portable tests cover caller mismatch, expiry, revision drift, PID reuse, birth/executable/argv/cwd/socket/parent drift, multiple owners, respawn, cancellation, one-use consumption, and zero-signal failed branches. Native macOS execution is still required; Linux and Windows currently prove only the explicit unsupported seam.
 
 ### Already-retired listener
 
@@ -294,6 +299,8 @@ go vet ./internal/projectprocess ./internal/state ./internal/reconcile
 
 Darwin, Windows, and FreeBSD project-process cross-compiles and Darwin/Windows lifecycle cross-compiles also passed. The final zombie and failed-project adjustments have focused tests and must remain covered by the committed suite.
 
+The retained-runtime slice passed full root and desktop Go tests and vet, focused race tests across `projectprocess`, `reconcile`, `control`, and `authority`, all frontend unit tests, production frontend build, and generator parity. Chromium and Firefox browser suites pass after the Wails fixtures were extended with the new binding surface. WebKit cannot launch in the current Linux workspace because its GTK/GStreamer host libraries are absent. Darwin ARM64 and AMD64 cgo-free project-process test binaries link successfully; that is build evidence only, not native libproc/signaling proof.
+
 The Linux resolver checkpoint also passed isolated root-module tests and vet, focused resolver/helper/wire tests, and source formatting. Its root-only native lifecycle is delegated to CI. The Windows checkpoint passed focused and full resolver package tests, vet, and a Windows AMD64 cross-compile; it has no native lifecycle evidence yet.
 
 ## Things not to do
@@ -303,6 +310,7 @@ The Linux resolver checkpoint also passed isolated root-module tests and vet, fo
 - Do not wipe the user's database as ordinary recovery.
 - Do not let one quarantined project prevent the daemon or other projects from starting.
 - Do not pass Harbor's assignment through new special `forj dev` flags.
+- Do not make generated Apps or the frontend inspect Docker, and do not let Harbor's read-only adapter perform Compose or Docker mutations.
 - Do not replace the accepted `.env.host` bridge until a working GoForj managed-session overlay exists.
 - Do not run `forj dev`, Wails, or `harbord` with elevation.
 - Do not hand-write startup schema creation; use embedded GoForj migrations.

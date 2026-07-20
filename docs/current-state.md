@@ -22,6 +22,8 @@ The repository is a working vertical slice, not a releasable product. One real G
 
 The current slice launches one default App at a direct `http://<assigned-loopback>:<project-port>` URL. Once that App is ready, Harbor asks the exact supervising GoForj executable for its bounded `dev:status` report and projects active conventional Compose services into the existing Services UI. This is a startup observation, not the complete managed-session Compose topology contract. Stable `.test` HTTPS, the common ingress path, named Apps, private service publications, and native service relays remain approved target design rather than current user-facing behavior.
 
+The approved next container boundary is a daemon-owned, read-only Docker Engine adapter for container state, publications, events, and log streaming. It attributes containers from Compose labels, the accepted Compose project identity, and the registered canonical checkout. It does not parse Compose YAML or perform mutations, and no generated App or frontend code receives Docker access. This paragraph records work in progress, not a completed current capability; the `dev:status` startup bridge remains the checked-in behavior until the adapter and its ownership tests land.
+
 ## Repository shape
 
 | Path | Role |
@@ -124,7 +126,7 @@ The implemented path is:
 
 Start and Stop are currently exposed through the control protocol and desktop, but not as first-class user CLI commands.
 
-This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. Compose output is parsed and normalized only inside GoForj; Harbor consumes the versioned report and never opens Docker or Compose itself. Do not expand this interim discovery model; replace it with the typed GoForj descriptor and managed-session contracts in [GoForj integration](./goforj-integration.md).
+This is intentionally narrow compatibility code, not a second GoForj parser. Registration reads `APP_NAME` from `.env`, then root `project_name` from `.goforj.yml`, then `APP_NAME` from `.env.example`. Runtime discovery reads only `API_HTTP_PORT` or `PORT` from `.env` and then `.env.example`, and verifies the generated `internal/http/runtime.go` default-host contract through bounded Go AST inspection. `Supervisor.Start` executes ordinary `forj dev` directly, without a shell or a managed-session protocol. The current startup bridge leaves Compose parsing and normalization inside GoForj. Do not expand that bridge or teach Harbor Compose-file semantics; the approved daemon adapter observes only attributed runtime facts, while the typed GoForj descriptor and managed-session contracts remain the source of project intent described in [GoForj integration](./goforj-integration.md).
 
 ## Temporary `.env.host` bridge
 
@@ -159,6 +161,10 @@ The durable process receipt includes exact birth identity. Unix recovery walks t
 Before session evidence is retired, Harbor must prove that the complete owned scope is absent. An unresolved scope makes only that project unavailable and route-free while retaining its evidence; it must not prevent `harbord` or unrelated projects from starting.
 
 Legacy state created before complete scope receipts cannot be killed automatically. A port, PID, checkout path, `.env.host`, or command line can corroborate a candidate but cannot independently prove ownership. A retained quarantined session can support an explicit inspect/confirm repair that retires the session only after exact process and socket postconditions. An older listener whose session was already deleted is an unattributed host process; an in-app action for that case must label it as such and cannot pretend to repair durable Harbor ownership.
+
+The retained-session repair is now wired through reconciliation, authenticated control, Wails, and the project detail view. Inspection accepts only a project ID; the daemon derives durable and native facts, retains the native receipt in a short-lived process-local plan bound to the authenticated caller, and returns only `forj dev`, checkout, endpoint, root PID, member count, expiry, and opaque selectors. Confirmation consumes the plan before revalidating every durable and native fence. Drift, ambiguity, expiry, caller mismatch, replacement, or incomplete settlement cannot signal a process and requires a fresh inspection.
+
+The native implementation is currently macOS-only. It requires one exact same-user listener, a dedicated session rooted at the expected `forj dev` process, stable birth/executable/argv/cwd/socket/tree facts, and complete session plus socket settlement after root-only `SIGTERM`; it never escalates to `SIGKILL`. Linux, Windows, and other adapters report unsupported through the same portable contract. Darwin AMD64/ARM64 cross-builds and portable tests pass, but the libproc and signaling path still needs execution on a real macOS host before this behavior is a native support claim. Repair of an already-retired unattributed listener is not implemented.
 
 ## Networking state
 
@@ -202,6 +208,7 @@ The desktop currently provides:
 - project registration and removal;
 - network setup approval and helper installation/repair prompts;
 - project Start/Stop actions and current failure feedback;
+- an explicit retained-runtime inspection and destructive confirmation dialog for quarantined macOS projects, with one-use plans discarded on cancellation, reconnect, navigation, expiry, or any confirmation attempt;
 - active conventional Compose services presented with container runtime state reported by GoForj after readiness, with observed service identities retained as stopped after shutdown;
 - wake-driven current project output with ANSI styling, carriage-return updates, and multiline terminal redraws;
 - dark/light/system themes and themed toasts;
@@ -221,7 +228,7 @@ No phase in `delivery-plan.md` has met its full exit gate.
 | Platform proof | Partial: loopbacks, helper, local CA primitives, and Darwin resolver exist; trust, low ports, and resolver parity do not. |
 | Headless control plane | Partial but substantial: SQLite, authenticated IPC, operations, registration/removal, recovery, and acceptance coverage exist. |
 | Network data plane | Partial: servers, planning, setup, activation, and routes exist; full cross-platform host integration is incomplete. |
-| GoForj contract | Early/partial: discovery, `forj dev` supervision, and a bounded startup Compose-service report work; the typed descriptor and live managed-session Compose contract do not. |
+| GoForj contract | Early/partial: discovery, `forj dev` supervision, and a bounded startup Compose-service report work; the typed descriptor and live managed-session Compose contract do not. Direct daemon-owned read-only Docker observation/logging is approved and in progress, not yet claimed complete. |
 | Desktop experience | Partial: the working Wails/Vue client covers the main development slice; tray, packaging, and several approvals remain. |
 | Release | Not started. |
 
