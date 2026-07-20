@@ -7,7 +7,7 @@ The current checkout requires:
 - Go 1.26.1 for both Go modules;
 - Node.js 22 for the frontend;
 - Wails v2.13 and its native platform prerequisites;
-- a canonical GoForj CLI at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `bf5f5e65ab64ba25cbd2fe53e42014bff1115a81`.
+- a canonical GoForj CLI at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `d8a46284c1bf0615826158974678a16ddf6a8fe2`.
 
 The development-build rule is deliberately exact today: an unversioned binary from a newer revision is rejected. The current compatibility error says “bf5f5e65-or-newer,” which overstates that rule. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
 

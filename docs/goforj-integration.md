@@ -4,7 +4,7 @@ Status: approved target design; implementation tracked in [Current implementatio
 
 Original design-research baseline: `goforj/goforj` commit `6422f32eb3013c44ce3b18d236a90158dc8e7f16`
 
-The current tactical launcher has a newer, temporary compatibility gate: it accepts a canonical released GoForj build at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `bf5f5e65ab64ba25cbd2fe53e42014bff1115a81`. Other unversioned development builds are rejected even when their revision is newer. The current error text says “bf5f5e65-or-newer,” which is broader than the implemented development-build policy and should be corrected with that policy. The `goforj_version: 0.19.0` field in Harbor's `.goforj.yml` is render metadata, not the runtime CLI admission rule.
+The current tactical launcher has a newer, temporary compatibility gate: it accepts a canonical released GoForj build at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `d8a46284c1bf0615826158974678a16ddf6a8fe2`. Other unversioned development builds are rejected even when their revision is newer. The current error text says “bf5f5e65-or-newer,” which is broader than the implemented development-build policy and should be corrected with that policy. The `goforj_version: 0.19.0` field in Harbor's `.goforj.yml` is render metadata, not the runtime CLI admission rule.
 
 ## Boundary
 
