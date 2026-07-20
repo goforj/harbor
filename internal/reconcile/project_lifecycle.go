@@ -112,6 +112,11 @@ type projectRuntimeRefresher interface {
 	RefreshProjectServices(context.Context, state.RefreshProjectServicesRequest) (state.ProjectRecord, error)
 }
 
+// projectDescriptorObserver validates the static GoForj contract before process authority is created.
+type projectDescriptorObserver interface {
+	ObserveProjectDescriptor(context.Context, string) (projectprocess.ProjectDescriptorObservation, error)
+}
+
 // ProjectRouteReconciler projects durable project lifecycle changes into Harbor's live route table.
 type ProjectRouteReconciler interface {
 	Reconcile(context.Context) error
@@ -490,6 +495,14 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	project := admission.Project
+	descriptor := projectprocess.ProjectDescriptorObservation{}
+	if observer, ok := coordinator.supervisor.(projectDescriptorObserver); ok {
+		descriptor, err = observer.ObserveProjectDescriptor(coordinator.ctx, project.Project.Path)
+		if err != nil {
+			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
+			return
+		}
+	}
 	at := lifecycleTime(coordinator.now())
 	if at.Before(project.Project.UpdatedAt) {
 		at = project.Project.UpdatedAt
@@ -501,6 +514,13 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if err != nil {
 		coordinator.cancelQueued(record, err)
 		return
+	}
+	if descriptor.TopologyDigest != "" {
+		session.DescriptorDigest = descriptor.TopologyDigest
+		if err := session.Validate(); err != nil {
+			coordinator.cancelQueued(record, fmt.Errorf("validate GoForj project descriptor session: %w", err))
+			return
+		}
 	}
 	begun, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 		return coordinator.state.BeginProjectStart(coordinator.ctx, state.BeginProjectStartRequest{
@@ -522,6 +542,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		ProjectID:            record.Operation.ProjectID,
 		SessionID:            session.ID,
 		CheckoutRoot:         project.Project.Path,
+		GoForjExecutable:     descriptor.Executable,
 		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
 		// The daemon retains this transcript for its authenticated clients; mirroring it would mix project output with daemon diagnostics.
 		Stdout: io.Discard,

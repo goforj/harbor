@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -328,6 +329,14 @@ func TestMain(m *testing.M) {
 
 // runProjectLifecycleHelper exposes the generated readiness shape until Harbor stops the owned process.
 func runProjectLifecycleHelper() {
+	if len(os.Args) > 1 && os.Args[1] == "project:describe" {
+		if len(os.Args) != 3 || os.Args[2] != "--json" {
+			_, _ = fmt.Fprintln(os.Stderr, "unexpected project descriptor arguments")
+			os.Exit(90)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"project":{"name":"lifecycle","module":"example.com/lifecycle","config_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[{"id":"app","name":"app","entrypoint":"cmd/app/main.go","runtimes":[{"id":"http","kind":"http","default_port":3000,"public_url":true,"readiness_path":"/-/ready"}]}]}`)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "dev:status" {
 		if os.Getenv(projectLifecycleServiceReportEnvironment) == "problem" {
 			_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"supported":true,"problem":"Compose status unavailable","services":[]}`)
@@ -540,6 +549,13 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	}
 	if len(ready.Project.Services) != 1 || ready.Project.Services[0].ID != "mysql" || ready.Project.Services[0].State != domain.EntityReady || ready.Project.Services[0].Owner != domain.ServiceOwnerCompose {
 		t.Fatalf("ready project services = %#v", ready.Project.Services)
+	}
+	session, err := store.ActiveProjectSession(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read active session: %v", err)
+	}
+	if session.DescriptorDigest != strings.Repeat("a", 64) {
+		t.Fatalf("active session descriptor digest = %q, want descriptor topology digest", session.DescriptorDigest)
 	}
 	if !slices.Equal(discoverer.calls, []netip.Addr{netip.MustParseAddr("127.0.0.1")}) {
 		t.Fatalf("admission target discoveries = %v, want one exact assigned target", discoverer.calls)

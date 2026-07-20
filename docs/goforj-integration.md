@@ -84,7 +84,7 @@ The command must not:
 
 The command returns one documented JSON object on stdout and diagnostics on stderr. The schema is versioned independently from the GoForj CLI version.
 
-The initial implementation provides the `schema_version`, project identity, a non-secret normalized topology digest, CLI/generation metadata, and the conventional available-App/HTTP-runtime inventory. It reads only `.goforj.yml` and conventional App markers; it does not read dotenv files, execute generated code, or mutate the checkout. Environment-derived service requirements and resources remain intentionally absent until GoForj has the required pure topology reader, and Harbor must not treat the initial descriptor as a managed-session capability.
+The initial implementation provides the `schema_version`, project identity, a non-secret normalized topology digest, CLI/generation metadata, and the conventional available-App/HTTP-runtime inventory. It reads only `.goforj.yml` and conventional App markers; it does not read dotenv files, execute generated code, or mutate the checkout. Environment-derived service requirements and resources remain intentionally absent until GoForj has the required pure topology reader, and Harbor must not treat the initial descriptor as a managed-session capability. Harbor's production start path now invokes this command through the exact admitted GoForj executable, strictly validates schema v1, and stores the normalized `config_digest` in the active session before launching `forj dev`; it does not yet consume the App inventory for endpoint assignment.
 
 An illustrative v1 shape is:
 

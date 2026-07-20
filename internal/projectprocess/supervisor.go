@@ -78,9 +78,11 @@ func CaptureEnvironment() Environment {
 
 // StartRequest identifies the registered checkout, managed environment, and best-effort destinations for its development output.
 type StartRequest struct {
-	ProjectID            domain.ProjectID
-	SessionID            domain.SessionID
-	CheckoutRoot         string
+	ProjectID    domain.ProjectID
+	SessionID    domain.SessionID
+	CheckoutRoot string
+	// GoForjExecutable binds a descriptor preflight to the exact executable image that will be launched.
+	GoForjExecutable     string
 	EnvironmentOverrides EnvironmentOverrides
 	Stdout               io.Writer
 	Stderr               io.Writer
@@ -252,18 +254,10 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize checkout root: %w", err)
 	}
-	executable, err := exec.LookPath("forj")
+	executable, err := supervisor.acceptedGoForjExecutable(request.GoForjExecutable)
 	if err != nil {
-		return nil, incompatibleGoForjError("", fmt.Sprintf("resolve executable from PATH: %v", err))
-	}
-	executableIdentity, err := canonicalExecutable(executable)
-	if err != nil {
-		return nil, incompatibleGoForjError(executable, fmt.Sprintf("canonicalize executable: %v", err))
-	}
-	if err := supervisor.verifyExecutable(executableIdentity); err != nil {
 		return nil, err
 	}
-	executable = executableIdentity
 
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
@@ -389,7 +383,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			Evidence: Evidence{
 				PID:                int64(command.Process.Pid),
 				BirthToken:         birthToken,
-				ExecutableIdentity: executableIdentity,
+				ExecutableIdentity: executable,
 				ArgumentsSHA256:    digestArguments(arguments),
 			},
 			StartedAt: startedAt,

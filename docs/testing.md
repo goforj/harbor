@@ -284,6 +284,7 @@ Adapter-focused tests record every Engine request and fail on any create, start,
 On every OS:
 
 - `forj project:describe --json` is deterministic, non-mutating, emits no environment values, and digests normalized non-secret topology rather than raw `.env` files;
+- Harbor invokes the exact admitted executable for that descriptor before creating process authority, rejects unknown or malformed schema data, and persists only the validated normalized digest in the session;
 - multiple requirements sharing one service key retain distinct non-secret endpoint IDs, affinity, and consumer mappings;
 - default, named, selected, and build-only Apps map to distinct available/active states and public domains; an undeclared custom runtime/watcher blocks full mode;
 - CLI capabilities and checked-in generated-project capabilities negotiate independently; an older generated App is read-only/upgrade-required before lifecycle work;
