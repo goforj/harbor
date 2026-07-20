@@ -75,8 +75,11 @@ func AutoRegisterMigrations() error {
 		app, connection, name, pathBase, driver := parseMigrationPath(path)
 
 		downFilename := pathBase + ".down.sql"
-		if _, err := migrationFS.Open(downFilename); err != nil {
+		downFile, err := migrationFS.Open(downFilename)
+		if err != nil {
 			console.Warnf("migration %s is missing Down file (%s)", pathBase, downFilename)
+		} else if closeErr := downFile.Close(); closeErr != nil {
+			return closeErr
 		}
 
 		registerSQLMigration(app, connection, name, pathBase, driver)
