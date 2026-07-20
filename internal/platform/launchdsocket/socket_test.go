@@ -152,8 +152,8 @@ func requireClosed(t *testing.T, file *os.File) {
 	if file == nil {
 		return
 	}
-	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("activated descriptor remains open: Stat() error = %v", err)
+	if descriptor := file.Fd(); descriptor != ^uintptr(0) {
+		t.Fatalf("activated descriptor remains open: Fd() = %#x", descriptor)
 	}
 }
 
