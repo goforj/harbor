@@ -210,6 +210,41 @@ func validateSystemdResolvedRequest(request Request) error {
 	return nil
 }
 
+// recoverSystemdResolvedStage distinguishes unpublished canonical staging from an exchanged prior artifact.
+func recoverSystemdResolvedStage(fixed, stage systemdResolvedArtifact, request Request) (bool, error) {
+	if !systemdResolvedArtifactOwnedByRequest(stage, request) {
+		return false, fmt.Errorf("systemd-resolved stage is not owned by this request")
+	}
+	stageExact := bytes.Equal(stage.Content, marshalSystemdResolvedValidated(request))
+	if !fixed.Exists {
+		if !stageExact {
+			return false, fmt.Errorf("systemd-resolved stage has no fixed artifact and is not unpublished canonical content")
+		}
+		return false, nil
+	}
+	if !systemdResolvedArtifactOwnedByRequest(fixed, request) {
+		return false, fmt.Errorf("systemd-resolved stage has a foreign fixed artifact")
+	}
+	fixedExact := bytes.Equal(fixed.Content, marshalSystemdResolvedValidated(request))
+	if stageExact && !fixedExact {
+		return false, nil
+	}
+	if fixedExact {
+		// An exact public artifact with a retained owned stage may have crossed exchange before a restart.
+		return true, nil
+	}
+	return false, fmt.Errorf("systemd-resolved stage and fixed artifact are an ambiguous interrupted mutation")
+}
+
+// systemdResolvedArtifactOwnedByRequest requires the exact marker and immutable root-owned file shape.
+func systemdResolvedArtifactOwnedByRequest(artifact systemdResolvedArtifact, request Request) bool {
+	if !artifact.Exists || !secureSystemdResolvedArtifact(artifact.Metadata) {
+		return false
+	}
+	parsed, err := parseSystemdResolvedArtifact(artifact.Content)
+	return err == nil && parsed.Owner != nil && *parsed.Owner == request.OwnerMarker()
+}
+
 // validateSystemdResolvedObservation requires the exact immutable request admitted by the adapter.
 func validateSystemdResolvedObservation(observation Observation, request Request) error {
 	if err := observation.Validate(); err != nil {

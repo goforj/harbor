@@ -30,7 +30,7 @@ Phase 1 acceptance treats retained terminal operations as durable client-visible
 
 The Unix transport integration now waits for authenticated server acceptance before closing its client. This removes a test-only close race with Darwin `LOCAL_PEERCRED`; peer admission itself remains fail-closed.
 
-The privileged Linux resolver test preserves the public `observe-failed` contract but adds a 4 KiB-capped unwrapped native cause to its root-only failure report. Linux recovery now distinguishes unpublished canonical staging from an exchanged old owned artifact: only the latter causes one post-cleanup `systemd-resolved` restart. Foreign, malformed, unsafe, excess, and ambiguous transaction states remain preserved and fail closed. Native CI evidence is still required.
+The privileged Linux resolver test preserves the public `observe-failed` contract but adds a 4 KiB-capped unwrapped native cause to its root-only failure report. Linux recovery now distinguishes unpublished canonical staging from an exchanged old owned artifact: only the latter causes one post-cleanup `systemd-resolved` restart. Its `DNSEx` reader normalizes only systemd's zero-port default representation to port 53. Foreign, malformed, unsafe, excess, and ambiguous transaction states remain preserved and fail closed. Native CI evidence is still required.
 
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.
 

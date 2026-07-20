@@ -129,6 +129,15 @@ func TestSystemdResolvedBusctlParserRetainsCompleteRelevantState(t *testing.T) {
 	if err != nil || len(rootRoutes) != 0 {
 		t.Fatalf("root route parse = %#v, %v, want no equal-or-more-specific claims", rootRoutes, err)
 	}
+
+	implicitPortOutput := []byte(
+		`{"type":"a(isb)","data":[[0,"test",true]]}` + "\n" +
+			`{"type":"a(iiayqs)","data":[[0,2,[127,0,0,1],0,""]]}` + "\n",
+	)
+	implicitPortRules, err := parseSystemdResolvedBusctlProperties(implicitPortOutput, request)
+	if err != nil || len(implicitPortRules) != 1 || implicitPortRules[0].Servers[0].Endpoint.String() != "127.0.0.1:53" {
+		t.Fatalf("implicit DNSEx port parse = %#v, %v", implicitPortRules, err)
+	}
 }
 
 // TestSystemdResolvedBusctlParserRejectsMalformedOrAmbiguousState covers strict signatures, tuples, and bounds.
@@ -150,7 +159,6 @@ func TestSystemdResolvedBusctlParserRejectsMalformedOrAmbiguousState(t *testing.
 		{name: "negative interface", output: []byte(strings.Replace(domains, `[[0,`, `[[-1,`, 1) + "\n" + servers)},
 		{name: "unsupported family", output: []byte(domains + "\n" + strings.Replace(servers, `,2,[`, `,99,[`, 1))},
 		{name: "wrong address size", output: []byte(domains + "\n" + strings.Replace(servers, `[127,0,0,1]`, `[127,0,0]`, 1))},
-		{name: "zero port", output: []byte(domains + "\n" + strings.Replace(servers, `25000`, `0`, 1))},
 		{name: "invalid server name", output: []byte(domains + "\n" + strings.Replace(servers, `""]]`, `"DNS.Test"]]`, 1))},
 		{name: "duplicate route", output: []byte(strings.Replace(domains, `]]}`, `],[0,"test",true]]}`, 1) + "\n" + servers)},
 		{name: "conflicting route flags", output: []byte(strings.Replace(domains, `]]}`, `],[0,"test",false]]}`, 1) + "\n" + servers)},
