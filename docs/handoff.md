@@ -220,7 +220,7 @@ No delivery phase has met its complete exit gate.
 - Wails/Vue can add/remove projects, set up networking, start/stop a project, inspect and explicitly confirm one retained macOS runtime candidate, display actionable errors, stream current ANSI-formatted development output, and follow a selected Compose service's current-session logs through independent held cursors with incremental terminal redraws.
 - The typed GoForj project descriptor and managed-session handshake do not exist. Startup service state now comes from `harbord`'s read-only local Docker list/inspect adapter, while the optional GoForj resource-only status query supplies framework links rather than container state or logs. Direct service logs are daemon-owned and do not depend on a GoForj log capability.
 - Docker event consumption, continuously refreshed Compose topology, publication-derived routing, terminal-owned attachment, three-real-project acceptance, resolver parity, trust installation, low ports, tray, signed packaging, updates, and release evidence remain incomplete.
-- Project Start/Stop exists in control and desktop surfaces, not first-class CLI commands.
+- Project Start/Stop exists in control, desktop, and first-class CLI surfaces; the CLI exposes `harbor start <project>` and `harbor stop <project>` with `--json` and an explicit retry intent.
 - Project-removal approval handoff is not implemented in the desktop.
 
 [Current implementation state](./current-state.md) contains the fuller matrix and commands.

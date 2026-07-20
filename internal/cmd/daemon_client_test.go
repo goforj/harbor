@@ -16,6 +16,8 @@ type fakeDaemonControlClient struct {
 	snapshot                         domain.Snapshot
 	registration                     control.ProjectRegistration
 	unregistration                   control.ProjectUnregistration
+	startLifecycle                   control.ProjectLifecycleOperation
+	stopLifecycle                    control.ProjectLifecycleOperation
 	networkSetup                     control.NetworkSetupOperation
 	networkSetupPreparation          control.NetworkSetupApprovalPreparation
 	networkSetupConfirmation         control.NetworkSetupApprovalConfirmation
@@ -24,6 +26,8 @@ type fakeDaemonControlClient struct {
 	snapshotErr                      error
 	registrationErr                  error
 	unregistrationErr                error
+	startLifecycleErr                error
+	stopLifecycleErr                 error
 	networkSetupErr                  error
 	networkSetupPreparationErr       error
 	networkSetupConfirmationErr      error
@@ -33,11 +37,15 @@ type fakeDaemonControlClient struct {
 	snapshotCalls                    int
 	registrationCalls                int
 	unregistrationCalls              int
+	startLifecycleCalls              int
+	stopLifecycleCalls               int
 	networkSetupCalls                int
 	networkSetupPreparationCalls     int
 	networkSetupConfirmationCalls    int
 	registrationRequests             []control.RegisterProjectRequest
 	unregistrationRequests           []control.UnregisterProjectRequest
+	startLifecycleRequests           []control.StartProjectRequest
+	stopLifecycleRequests            []control.StopProjectRequest
 	networkSetupRequests             []control.StartNetworkSetupRequest
 	networkSetupPreparationRequests  []control.PrepareNetworkSetupApprovalRequest
 	networkSetupConfirmationRequests []control.ConfirmNetworkSetupApprovalRequest
@@ -45,6 +53,26 @@ type fakeDaemonControlClient struct {
 	networkSetupPreparationContexts  []context.Context
 	networkSetupConfirmationContexts []context.Context
 	closeCalls                       int
+}
+
+// StartProject returns configured lifecycle progress and records the client-owned start intent.
+func (client *fakeDaemonControlClient) StartProject(
+	_ context.Context,
+	request control.StartProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	client.startLifecycleCalls++
+	client.startLifecycleRequests = append(client.startLifecycleRequests, request)
+	return client.startLifecycle, client.startLifecycleErr
+}
+
+// StopProject returns configured lifecycle progress and records the client-owned stop intent.
+func (client *fakeDaemonControlClient) StopProject(
+	_ context.Context,
+	request control.StopProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	client.stopLifecycleCalls++
+	client.stopLifecycleRequests = append(client.stopLifecycleRequests, request)
+	return client.stopLifecycle, client.stopLifecycleErr
 }
 
 // StartNetworkSetup returns the configured setup operation and records the caller-owned intent.

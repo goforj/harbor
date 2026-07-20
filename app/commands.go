@@ -12,6 +12,8 @@ import (
 type Commands struct {
 	AddCmd        cmd.AddCmd        `cmd:""`
 	RemoveCmd     cmd.RemoveCmd     `cmd:""`
+	StartCmd      cmd.StartCmd      `cmd:""`
+	StopCmd       cmd.StopCmd       `cmd:""`
 	SetupCmd      cmd.SetupCmd      `cmd:""`
 	ResourcesCmd  cmd.ResourcesCmd  `cmd:""`
 	AboutCmd      cmd.AboutCmd      `cmd:""`
@@ -23,6 +25,8 @@ type Commands struct {
 func NewCommands(
 	addCmd *cmd.AddCmd,
 	removeCmd *cmd.RemoveCmd,
+	startCmd *cmd.StartCmd,
+	stopCmd *cmd.StopCmd,
 	setupCmd *cmd.SetupCmd,
 	resourcesCmd *cmd.ResourcesCmd,
 	aboutCmd *cmd.AboutCmd,
@@ -32,6 +36,8 @@ func NewCommands(
 	return &Commands{
 		AddCmd:        *addCmd,
 		RemoveCmd:     *removeCmd,
+		StartCmd:      *startCmd,
+		StopCmd:       *stopCmd,
 		SetupCmd:      *setupCmd,
 		ResourcesCmd:  *resourcesCmd,
 		AboutCmd:      *aboutCmd,

@@ -16,6 +16,8 @@ type daemonControlClient interface {
 	Snapshot(context.Context) (domain.Snapshot, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
+	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
+	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
 	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
 	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
 	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
@@ -82,6 +84,26 @@ func (client *DaemonClient) UnregisterProject(
 ) (control.ProjectUnregistration, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectUnregistration, error) {
 		return connection.UnregisterProject(ctx, request)
+	})
+}
+
+// StartProject starts or resumes one project lifecycle through the daemon and closes the one-shot connection.
+func (client *DaemonClient) StartProject(
+	ctx context.Context,
+	request control.StartProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectLifecycleOperation, error) {
+		return connection.StartProject(ctx, request)
+	})
+}
+
+// StopProject stops or resumes one project lifecycle through the daemon and closes the one-shot connection.
+func (client *DaemonClient) StopProject(
+	ctx context.Context,
+	request control.StopProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectLifecycleOperation, error) {
+		return connection.StopProject(ctx, request)
 	})
 }
 
