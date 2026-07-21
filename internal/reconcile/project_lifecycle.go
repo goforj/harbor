@@ -572,6 +572,24 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 			return
 		}
 	}
+	if descriptor.ServiceRequirementsSupported {
+		if err := coordinator.primaryLeases.assignServiceEndpointReservations(coordinator.ctx, record.Operation.ProjectID, descriptor.ServiceRequirements); err != nil {
+			coordinator.failQueuedAdmission(record, lifecycleProblem("project.endpoint.assignment.failed", err))
+			return
+		}
+		refreshed, readErr := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
+		if readErr != nil {
+			coordinator.cancelQueued(record, readErr)
+			return
+		}
+		project = refreshed
+		if network, initialized, readErr := coordinator.primaryLeases.state.Network(coordinator.ctx); readErr != nil {
+			coordinator.cancelQueued(record, readErr)
+			return
+		} else if initialized && network.UpdatedAt.After(admission.NetworkUpdatedAt) {
+			admission.NetworkUpdatedAt = network.UpdatedAt
+		}
+	}
 	at := lifecycleTime(coordinator.now())
 	if at.Before(project.Project.UpdatedAt) {
 		at = project.Project.UpdatedAt

@@ -166,6 +166,9 @@ func (set *HandlerSet) runtimePlanHandler() session.Handler {
 		}
 		response, err := authority.PlanManagedRuntime(ctx, set.peer, planRequest)
 		if err != nil {
+			if errors.Is(err, ErrManagedSessionNotReady) {
+				return nil, session.NewHandlerError(rpc.ErrorCodeUnavailable, err)
+			}
 			return nil, session.NewHandlerError(rpc.ErrorCodeInternal, err)
 		}
 		if err := ValidateRuntimePlanCorrelation(planRequest, response); err != nil {

@@ -281,6 +281,32 @@ func (authority *Authority) ReplaceManagedPublications(
 	return response, nil
 }
 
+// PlanManagedRuntime returns one exact assignment plan after reauthenticating the attached process fence.
+func (authority *Authority) PlanManagedRuntime(
+	ctx context.Context,
+	peer local.PeerIdentity,
+	request managedsession.RuntimePlanRequest,
+) (managedsession.RuntimePlanResponse, error) {
+	if err := request.Validate(); err != nil {
+		return managedsession.RuntimePlanResponse{}, err
+	}
+	if _, err := authority.authorizeManagedFence(ctx, peer, request.Fence); err != nil {
+		return managedsession.RuntimePlanResponse{}, err
+	}
+	planner, ok := authority.lifecycle.(managedRuntimePlanObserver)
+	if !ok {
+		return managedsession.RuntimePlanResponse{}, fmt.Errorf("%w: managed runtime-plan authority is unavailable", managedsession.ErrManagedSessionNotReady)
+	}
+	response, err := planner.PlanManagedRuntime(normalizeContext(ctx), request)
+	if err != nil {
+		return managedsession.RuntimePlanResponse{}, err
+	}
+	if err := managedsession.ValidateRuntimePlanCorrelation(request, response); err != nil {
+		return managedsession.RuntimePlanResponse{}, fmt.Errorf("validate managed runtime plan authority: %w", err)
+	}
+	return response, nil
+}
+
 // managedPublicationStateSource joins the control aggregate and exact session reads for native route planning.
 type managedPublicationStateSource struct {
 	runtime  controlState

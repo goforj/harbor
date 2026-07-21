@@ -62,6 +62,11 @@ type managedPublicationObserver interface {
 	ObserveManagedPublications(context.Context, domain.ProjectID, domain.SessionID, harbordruntime.ManagedPublicationFence) ([]harbordruntime.ManagedEndpointPublication, error)
 }
 
+// managedRuntimePlanObserver supplies exact App and service assignments from one attached lifecycle session.
+type managedRuntimePlanObserver interface {
+	PlanManagedRuntime(context.Context, managedsession.RuntimePlanRequest) (managedsession.RuntimePlanResponse, error)
+}
+
 // managedPublicationPhaseObserver optionally accepts the early Compose barrier before App readiness.
 type managedPublicationPhaseObserver interface {
 	ObserveManagedPublicationsForPhase(context.Context, domain.ProjectID, domain.SessionID, harbordruntime.ManagedPublicationFence, bool) ([]harbordruntime.ManagedEndpointPublication, error)
