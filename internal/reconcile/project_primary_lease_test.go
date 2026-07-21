@@ -562,6 +562,179 @@ func TestProjectPrimaryLeaseCoordinatorAddsAndRetainsDefaultHTTPForRetainedLease
 	}
 }
 
+// TestProjectPrimaryLeaseCoordinatorAssignsDescriptorResources proves ready resource facts become exact loopback HTTP reservations.
+func TestProjectPrimaryLeaseCoordinatorAssignsDescriptorResources(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.project.Project.State = domain.ProjectStarting
+	fixture.state.project.Project.Apps = []domain.AppSnapshot{{
+		ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true,
+	}}
+	fixture.state.project.Project.Services = []domain.ServiceSnapshot{{
+		ID: "mailpit", Name: "Mailpit", Kind: "compose", State: domain.EntityReady,
+		Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected,
+	}}
+	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.network.Reservations.Endpoints = []state.EndpointReservation{
+		{
+			Key:      state.EndpointReservationKey{ProjectID: fixture.state.project.Project.ID, EndpointID: "api-reference"},
+			Protocol: state.EndpointProtocolHTTP, Host: "api-reference.orders.test",
+			Public: fixture.state.network.Reservations.Listeners.HTTPS.Advertised, Generation: 5,
+		},
+		{
+			Key:      state.EndpointReservationKey{ProjectID: fixture.state.project.Project.ID, EndpointID: "legacy"},
+			Protocol: state.EndpointProtocolHTTP, Host: "legacy.orders.test",
+			Public: fixture.state.network.Reservations.Listeners.HTTPS.Advertised, Generation: 2,
+		},
+	}
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("assignment fixture Validate() error = %v", err)
+	}
+	resources := []domain.ResourceSnapshot{
+		{ID: "app-http", Name: "App", Kind: "application", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000"},
+		{ID: "api-reference", Name: "API Reference", Kind: "docs", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000/swagger"},
+		{ID: "mailpit", Name: "Mailpit", Kind: "mail", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: "mailpit"}, URL: "http://127.77.0.11:8025/"},
+	}
+	if err := fixture.coordinator.assignHTTPResourceEndpoints(t.Context(), fixture.state.project.Project.ID, resources); err != nil {
+		t.Fatalf("assignHTTPResourceEndpoints() error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != 1 {
+		t.Fatalf("endpoint assignment writes = %d, want 1", len(fixture.state.replaceCalls))
+	}
+	endpoints := fixture.state.network.Reservations.Endpoints
+	if len(endpoints) != 3 {
+		t.Fatalf("assigned endpoints = %#v, want app-http and two descriptor resources", endpoints)
+	}
+	byID := make(map[string]state.EndpointReservation, len(endpoints))
+	for _, endpoint := range endpoints {
+		byID[endpoint.Key.EndpointID] = endpoint
+	}
+	if byID["app-http"].Host != "orders.test" || byID["api-reference"].Host != "api-reference.orders.test" || byID["mailpit"].Host != "mailpit.orders.test" {
+		t.Fatalf("assigned endpoint hosts = %#v", byID)
+	}
+	if byID["api-reference"].Generation != 5 || byID["mailpit"].Generation != 1 {
+		t.Fatalf("assigned endpoint generations = %#v", byID)
+	}
+	if _, exists := byID["legacy"]; exists {
+		t.Fatalf("stale optional endpoint survived assignment: %#v", endpoints)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorRejectsDescriptorResourceKeyCollision keeps HTTP intent from replacing native endpoint authority.
+func TestProjectPrimaryLeaseCoordinatorRejectsDescriptorResourceKeyCollision(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.project.Project.State = domain.ProjectStarting
+	fixture.state.project.Project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true}}
+	primary := primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)
+	fixture.state.network.Leases = []identity.Lease{primary}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.network.Reservations.Endpoints = []state.EndpointReservation{{
+		Key:      state.EndpointReservationKey{ProjectID: fixture.state.project.Project.ID, EndpointID: "api-reference"},
+		Protocol: state.EndpointProtocolTCP, Host: "api-reference.orders.test",
+		Public: netip.AddrPortFrom(address, 3306), Identity: &primary.Key, Generation: 1,
+	}}
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("key collision fixture Validate() error = %v", err)
+	}
+	resources := []domain.ResourceSnapshot{
+		{ID: "app-http", Name: "App", Kind: "application", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000"},
+		{ID: "api-reference", Name: "API Reference", Kind: "docs", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000/swagger"},
+	}
+	if err := fixture.coordinator.assignHTTPResourceEndpoints(t.Context(), fixture.state.project.Project.ID, resources); err == nil || !strings.Contains(err.Error(), "conflicts with preserved TCP endpoint") {
+		t.Fatalf("assignHTTPResourceEndpoints() error = %v, want TCP key collision", err)
+	}
+	if len(fixture.state.replaceCalls) != 0 {
+		t.Fatalf("key collision wrote durable state: %#v", fixture.state.replaceCalls)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorRejectsUnsafeDescriptorResourceEndpoint keeps endpoint assignment fail-closed.
+func TestProjectPrimaryLeaseCoordinatorRejectsUnsafeDescriptorResourceEndpoint(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	baseResources := func() []domain.ResourceSnapshot {
+		return []domain.ResourceSnapshot{
+			{ID: "app-http", Name: "App", Kind: "application", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000"},
+			{ID: "api-reference", Name: "API Reference", Kind: "docs", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000/swagger"},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func([]domain.ResourceSnapshot) []domain.ResourceSnapshot
+		want   string
+	}{
+		{name: "missing app", mutate: func(resources []domain.ResourceSnapshot) []domain.ResourceSnapshot { return resources[1:] }, want: "required \"app-http\" resource"},
+		{name: "foreign address", mutate: func(resources []domain.ResourceSnapshot) []domain.ResourceSnapshot {
+			resources[1].URL = "http://127.77.0.12:3000/swagger"
+			return resources
+		}, want: "assigned IPv4 loopback address"},
+		{name: "mapped address", mutate: func(resources []domain.ResourceSnapshot) []domain.ResourceSnapshot {
+			resources[1].URL = "http://[::ffff:127.77.0.11]:3000/swagger"
+			return resources
+		}, want: "assigned IPv4 loopback address"},
+		{name: "non-DNS ID", mutate: func(resources []domain.ResourceSnapshot) []domain.ResourceSnapshot {
+			resources[1].ID = "api.reference"
+			return resources
+		}, want: "lowercase DNS label"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPrimaryLeaseTestFixture(t, address)
+			fixture.state.project.Project.State = domain.ProjectStarting
+			fixture.state.project.Project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true}}
+			fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+			primaryLeaseTestEnableFullStage(t, fixture)
+			if err := fixture.coordinator.assignHTTPResourceEndpoints(t.Context(), fixture.state.project.Project.ID, test.mutate(baseResources())); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("assignHTTPResourceEndpoints() error = %v, want containing %q", err, test.want)
+			}
+			if len(fixture.state.replaceCalls) != 0 {
+				t.Fatalf("unsafe endpoint assignment wrote durable state: %#v", fixture.state.replaceCalls)
+			}
+		})
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorDefersDescriptorEndpointsBeforeFullStage preserves the non-publishable network boundary.
+func TestProjectPrimaryLeaseCoordinatorDefersDescriptorEndpointsBeforeFullStage(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	resources := []domain.ResourceSnapshot{{
+		ID: "app-http", Name: "App", Kind: "application",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000",
+	}}
+	if err := fixture.coordinator.assignHTTPResourceEndpoints(t.Context(), fixture.state.project.Project.ID, resources); err != nil {
+		t.Fatalf("assignHTTPResourceEndpoints(identity stage) error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != 0 || len(fixture.state.network.Reservations.Endpoints) != 0 {
+		t.Fatalf("identity-stage endpoint effects = writes %d, endpoints %#v", len(fixture.state.replaceCalls), fixture.state.network.Reservations.Endpoints)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorBoundsDescriptorEndpointRevisionRaces prevents endpoint assignment from looping on hostile writer churn.
+func TestProjectPrimaryLeaseCoordinatorBoundsDescriptorEndpointRevisionRaces(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.project.Project.State = domain.ProjectStarting
+	fixture.state.project.Project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true}}
+	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.replace = func(request state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error) {
+		return state.NetworkMutationResult{}, &state.NetworkRevisionConflictError{Expected: request.ExpectedNetworkRevision, Actual: request.ExpectedNetworkRevision + 1}
+	}
+	resources := []domain.ResourceSnapshot{{
+		ID: "app-http", Name: "App", Kind: "application",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.11:3000",
+	}}
+	err := fixture.coordinator.assignHTTPResourceEndpoints(t.Context(), fixture.state.project.Project.ID, resources)
+	if err == nil || !strings.Contains(err.Error(), "did not converge after 4 revisions") {
+		t.Fatalf("AssignHTTPResourceEndpoints() error = %v, want bounded convergence failure", err)
+	}
+	if len(fixture.state.replaceCalls) != primaryLeasePersistenceAttempts {
+		t.Fatalf("endpoint assignment attempts = %d, want %d", len(fixture.state.replaceCalls), primaryLeasePersistenceAttempts)
+	}
+}
+
 // TestProjectPrimaryLeaseCoordinatorLeavesIdentityStageEndpointFree proves endpoint activation waits for ingress authority.
 func TestProjectPrimaryLeaseCoordinatorLeavesIdentityStageEndpointFree(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")

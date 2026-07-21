@@ -19,6 +19,7 @@ import (
 
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/goforj"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/projectreadiness"
@@ -606,7 +607,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		coordinator.stopAndFailUnattached(begun, session, handle, err)
 		return
 	}
-	coordinator.waitForReadiness(begun, attached, handle, admission.Target)
+	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
 }
 
 // projectRuntimeEnvironmentOverrides keeps App and project-owned service publications on one assigned identity.
@@ -629,6 +630,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 	session domain.ProjectSession,
 	handle *projectprocess.Handle,
 	target projectdiscovery.RuntimeTarget,
+	descriptor projectprocess.ProjectDescriptorObservation,
 ) {
 	deadline := time.NewTimer(coordinator.startupTimeout)
 	defer deadline.Stop()
@@ -691,6 +693,17 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if readyAt.Before(session.UpdatedAt) {
 				readyAt = session.UpdatedAt
 			}
+			runtime := defaultRuntime(target, observation.Services, descriptor, resourceObservation)
+			if descriptor.ResourcesSupported {
+				if err := coordinator.primaryLeases.assignHTTPResourceEndpoints(
+					coordinator.ctx,
+					mutation.Operation.Operation.ProjectID,
+					runtime.Resources,
+				); err != nil {
+					coordinator.stopAndFailAttached(mutation, session, handle, "project.endpoint.assignment.failed", err)
+					return
+				}
+			}
 			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 				return coordinator.state.CompleteProjectStart(coordinator.ctx, state.CompleteProjectStartRequest{
 					ProjectID:                 mutation.Operation.Operation.ProjectID,
@@ -698,7 +711,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 					ExpectedOperationRevision: mutation.Operation.Revision,
 					SessionID:                 session.ID,
 					ExpectedSessionGeneration: session.Generation,
-					Runtime:                   defaultRuntime(target, observation.Services, resourceObservation),
+					Runtime:                   runtime,
 					Phase:                     completionPhase,
 					At:                        readyAt,
 				})
@@ -1625,6 +1638,7 @@ func processEvidence(info projectprocess.Info) domain.ProcessEvidence {
 func defaultRuntime(
 	target projectdiscovery.RuntimeTarget,
 	services []domain.ServiceSnapshot,
+	descriptor projectprocess.ProjectDescriptorObservation,
 	observation projectprocess.FrameworkResourceObservation,
 ) state.DefaultProjectRuntime {
 	resources := []domain.ResourceSnapshot{{
@@ -1641,15 +1655,27 @@ func defaultRuntime(
 	for _, service := range services {
 		serviceIDs[service.ID] = struct{}{}
 	}
+	intents := descriptorResourceIntents(descriptor)
 	for _, reported := range frameworkResources(observation) {
 		if reported.ID == "app-http" || !frameworkResourceUsesAssignedAddress(reported.URL, target.Address) {
 			continue
+		}
+		intent, constrained := intents[reported.ID]
+		if descriptor.ResourcesSupported {
+			if !constrained || !intent.Enabled || !frameworkResourceMatchesDescriptor(reported, intent) {
+				continue
+			}
 		}
 		resource := domain.ResourceSnapshot{
 			ID:   domain.ResourceID(reported.ID),
 			Name: reported.Name,
 			Kind: reported.Kind,
 			URL:  reported.URL,
+		}
+		if descriptor.ResourcesSupported {
+			resource.Name = intent.Name
+			resource.Kind = intent.Category
+			resource.URL = canonicalDescriptorResourceURL(reported.URL)
 		}
 		switch {
 		case reported.App == string(target.AppID) && reported.Service == "":
@@ -1680,6 +1706,63 @@ func defaultRuntime(
 		Services:  append(make([]domain.ServiceSnapshot, 0, len(services)), services...),
 		Resources: resources,
 	}
+}
+
+// canonicalDescriptorResourceURL removes only the harmless root slash that would otherwise change Harbor's origin identity.
+func canonicalDescriptorResourceURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Path != "/" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return rawURL
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	return parsed.String()
+}
+
+// descriptorResourceIntents indexes validated static resource intent without allowing callers to mutate the source slice.
+func descriptorResourceIntents(descriptor projectprocess.ProjectDescriptorObservation) map[string]goforj.Resource {
+	intents := make(map[string]goforj.Resource, len(descriptor.Resources))
+	if !descriptor.ResourcesSupported {
+		return intents
+	}
+	for _, resource := range descriptor.Resources {
+		intents[resource.ID] = resource
+	}
+	return intents
+}
+
+// frameworkResourceMatchesDescriptor joins live resource facts to one static owner, runtime, and path intent.
+func frameworkResourceMatchesDescriptor(reported projectprocess.FrameworkResource, intent goforj.Resource) bool {
+	if intent.Protocol != goforj.ResourceProtocolHTTP {
+		return false
+	}
+	switch intent.Owner {
+	case goforj.ResourceOwnerApp:
+		if reported.App != intent.App || reported.Service != "" {
+			return false
+		}
+	case goforj.ResourceOwnerService:
+		if reported.Service != intent.Service || reported.App != "" {
+			return false
+		}
+	default:
+		return false
+	}
+	if reported.Runtime != intent.Runtime {
+		return false
+	}
+	parsed, err := url.Parse(reported.URL)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return false
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	return path == intent.Path
 }
 
 // frameworkResources prevents unsupported optional observations from publishing stray payload data.

@@ -302,7 +302,13 @@ func readyProjectHTTPRoutes(
 				return nil, fmt.Errorf("App %q must be required", app.ID)
 			}
 		}
-		upstream, err := canonicalHTTPUpstream(resource.URL)
+		var upstream netip.AddrPort
+		var err error
+		if reservation.Key.EndpointID == string(appHTTPResourceID) {
+			upstream, err = canonicalHTTPUpstream(resource.URL)
+		} else {
+			upstream, err = resourceHTTPUpstream(resource.URL)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
@@ -353,6 +359,30 @@ func readyHTTPResourceOwner(
 		return fmt.Errorf("resource owner kind %q is unsupported", resource.Owner.Kind)
 	}
 	return nil
+}
+
+// resourceHTTPUpstream extracts the private origin from a named resource URL while preserving its browser path.
+//
+// The ingress relay forwards the request path unchanged, so a descriptor resource such as /swagger still needs
+// the origin-only upstream shape used by the data plane. Query and fragment-bearing links are not route authority.
+func resourceHTTPUpstream(rawURL string) (netip.AddrPort, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("parse URL: %w", err)
+	}
+	if parsed.Scheme != "http" || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return netip.AddrPort{}, fmt.Errorf("URL %q must be a query-free HTTP resource", rawURL)
+	}
+	upstream, err := netip.ParseAddrPort(parsed.Host)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("URL host %q must be a literal address with an explicit port", parsed.Host)
+	}
+	upstream = netip.AddrPortFrom(upstream.Addr().Unmap(), upstream.Port())
+	canonicalHost := upstream.String()
+	if !upstream.Addr().Is4() || !upstream.Addr().IsLoopback() || upstream.Port() == 0 || parsed.Host != canonicalHost {
+		return netip.AddrPort{}, fmt.Errorf("URL %q must use a canonical IPv4 loopback HTTP origin", rawURL)
+	}
+	return upstream, nil
 }
 
 // canonicalHTTPUpstream accepts only the canonical raw loopback HTTP origin persisted by project startup.

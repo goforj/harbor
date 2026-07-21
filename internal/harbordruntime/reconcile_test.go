@@ -72,6 +72,73 @@ func TestDesiredHTTPStateFromRuntimeStateProjectsOnlyReservedReadyServiceResourc
 	}
 }
 
+// TestDesiredHTTPStateFromRuntimeStateProjectsResourcePathURLs proves named resources keep their browser path while routing by private origin.
+func TestDesiredHTTPStateFromRuntimeStateProjectsResourcePathURLs(t *testing.T) {
+	runtimeState := readyHTTPRuntimeState()
+	project := &runtimeState.Snapshot.Projects[0]
+	project.Resources = append(project.Resources, domain.ResourceSnapshot{
+		ID: "api-reference", Name: "API Reference", Kind: "docs",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
+		URL:   "http://127.77.0.10:3000/swagger",
+	})
+	runtimeState.Network.Reservations.Endpoints = []state.EndpointReservation{
+		{
+			Key:      state.EndpointReservationKey{ProjectID: project.ID, EndpointID: "api-reference"},
+			Protocol: state.EndpointProtocolHTTP, Host: "api-reference.orders.test",
+			Public: runtimeState.Network.Reservations.Listeners.HTTPS.Advertised, Generation: 1,
+		},
+		runtimeState.Network.Reservations.Endpoints[0],
+	}
+	if err := runtimeState.Validate(); err != nil {
+		t.Fatalf("resource path runtime state is invalid: %v", err)
+	}
+
+	desired, err := desiredHTTPStateFromRuntimeState(runtimeState)
+	if err != nil {
+		t.Fatalf("desiredHTTPStateFromRuntimeState() error = %v", err)
+	}
+	want := []dataplane.HTTPRoute{
+		{ID: "orders:api-reference", Host: "api-reference.orders.test", Upstream: netip.MustParseAddrPort("127.77.0.10:3000")},
+		{ID: "orders:app-http", Host: "orders.test", Upstream: netip.MustParseAddrPort("127.77.0.10:3000")},
+	}
+	if got := desired.HTTPRoutes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("HTTPRoutes() = %#v, want %#v", got, want)
+	}
+}
+
+// TestResourceHTTPUpstreamAcceptsOnlyPrivateOriginBearingURLs keeps named-resource route authority separate from browser-only URL decoration.
+func TestResourceHTTPUpstreamAcceptsOnlyPrivateOriginBearingURLs(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawURL  string
+		want    netip.AddrPort
+		wantErr string
+	}{
+		{name: "path", rawURL: "http://127.77.0.10:3000/swagger", want: netip.MustParseAddrPort("127.77.0.10:3000")},
+		{name: "root slash", rawURL: "http://127.77.0.10:3000/", want: netip.MustParseAddrPort("127.77.0.10:3000")},
+		{name: "query", rawURL: "http://127.77.0.10:3000/swagger?raw=1", wantErr: "query-free"},
+		{name: "fragment", rawURL: "http://127.77.0.10:3000/swagger#section", wantErr: "query-free"},
+		{name: "HTTPS", rawURL: "https://127.77.0.10:3000/swagger", wantErr: "query-free"},
+		{name: "user", rawURL: "http://user@127.77.0.10:3000/swagger", wantErr: "query-free"},
+		{name: "hostname", rawURL: "http://localhost:3000/swagger", wantErr: "literal address"},
+		{name: "public", rawURL: "http://192.0.2.10:3000/swagger", wantErr: "canonical IPv4 loopback"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resourceHTTPUpstream(test.rawURL)
+			if test.wantErr == "" {
+				if err != nil || got != test.want {
+					t.Fatalf("resourceHTTPUpstream(%q) = %s, %v; want %s", test.rawURL, got, err, test.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("resourceHTTPUpstream(%q) error = %v, want containing %q", test.rawURL, err, test.wantErr)
+			}
+		})
+	}
+}
+
 // TestDesiredHTTPStateFromRuntimeStateDoesNotPublishUnreservedResource keeps a discovered framework link private.
 func TestDesiredHTTPStateFromRuntimeStateDoesNotPublishUnreservedResource(t *testing.T) {
 	runtimeState := readyHTTPRuntimeState()

@@ -899,6 +899,7 @@ func completeProjectLifecycleRecoveryStart(
 		Runtime: defaultRuntime(
 			target,
 			[]domain.ServiceSnapshot{},
+			projectprocess.ProjectDescriptorObservation{},
 			projectprocess.FrameworkResourceObservation{Resources: []projectprocess.FrameworkResource{}},
 		),
 		Phase: "ready",

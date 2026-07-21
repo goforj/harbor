@@ -213,7 +213,7 @@ type wireReport struct {
 	Project       *wireProject    `json:"project"`
 	GoForj        *wireGoForj     `json:"goforj"`
 	Apps          *[]wireApp      `json:"apps"`
-	Resources     *[]wireResource `json:"resources"`
+	Resources     json.RawMessage `json:"resources"`
 }
 
 // wireProject keeps required scalar fields distinguishable from omitted JSON fields.
@@ -326,7 +326,7 @@ func decodeReport(payload []byte) (Observation, error) {
 	if err != nil {
 		return Observation{}, err
 	}
-	resources, err := projectResources(report.Resources)
+	resources, resourcesSupported, err := decodeResourceSection(report.Resources)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -336,7 +336,7 @@ func decodeReport(payload []byte) (Observation, error) {
 		Project:            Project{Name: report.Project.Name, Module: report.Project.Module, ConfigDigest: report.Project.ConfigDigest},
 		GoForj:             GoForj{Version: report.GoForj.Version, CLICapabilities: append([]string(nil), (*report.GoForj.CLICapabilities)...), GeneratedProject: GeneratedProject{Generation: report.GoForj.GeneratedProject.Generation, Capabilities: append([]string(nil), (*report.GoForj.GeneratedProject.Capabilities)...)}},
 		Apps:               apps,
-		ResourcesSupported: report.Resources != nil,
+		ResourcesSupported: resourcesSupported,
 		Resources:          resources,
 		TopologyDigest:     digest,
 	}, nil
@@ -429,6 +429,30 @@ func projectApps(source []wireApp) ([]App, error) {
 	return apps, nil
 }
 
+// decodeResourceSection distinguishes an omitted optional section from malformed null or non-array input.
+func decodeResourceSection(raw json.RawMessage) ([]Resource, bool, error) {
+	if len(raw) == 0 {
+		return []Resource{}, false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, true, errors.New("GoForj project descriptor resources must be an array")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var wire []wireResource
+	if err := decoder.Decode(&wire); err != nil {
+		return nil, true, fmt.Errorf("decode GoForj project descriptor resources: %w", err)
+	}
+	if err := requireJSONEnd(decoder); err != nil {
+		return nil, true, err
+	}
+	resources, err := projectResources(&wire)
+	if err != nil {
+		return nil, true, err
+	}
+	return resources, true, nil
+}
+
 // projectResources validates optional resource intent without deriving URLs or private endpoints.
 func projectResources(source *[]wireResource) ([]Resource, error) {
 	if source == nil {
@@ -443,6 +467,9 @@ func projectResources(source *[]wireResource) ([]Resource, error) {
 		label := fmt.Sprintf("resource %d", index+1)
 		if err := validateToken(label+" ID", candidate.ID, maximumIdentifierBytes); err != nil {
 			return nil, err
+		}
+		if candidate.ID == "app-http" {
+			return nil, fmt.Errorf("%s ID %q is reserved for Harbor's default App resource", label, candidate.ID)
 		}
 		if _, exists := seen[candidate.ID]; exists {
 			return nil, fmt.Errorf("duplicate resource ID %q in GoForj project descriptor", candidate.ID)

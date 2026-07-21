@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ const (
 	primaryLeaseDefaultHTTPEndpointID = "app-http"
 	// primaryLeaseDefaultHTTPEndpointInitialGeneration starts the endpoint's independent shape history.
 	primaryLeaseDefaultHTTPEndpointInitialGeneration uint64 = 1
+	// primaryLeaseResourceHTTPEndpointInitialGeneration starts an optional descriptor resource endpoint history.
+	primaryLeaseResourceHTTPEndpointInitialGeneration uint64 = 1
 	// primaryLeaseEvidenceDomain prevents a digest from being reused as evidence for another Harbor operation.
 	primaryLeaseEvidenceDomain = "goforj.harbor.project-primary-lease.v1\x00"
 )
@@ -178,6 +181,261 @@ func (coordinator *projectPrimaryLeaseCoordinator) Ensure(
 		primaryLeasePersistenceAttempts,
 		lastConflict,
 	)
+}
+
+// assignHTTPResourceEndpoints replaces optional HTTP reservations with the exact ready resources admitted from one descriptor.
+func (coordinator *projectPrimaryLeaseCoordinator) assignHTTPResourceEndpoints(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	resources []domain.ResourceSnapshot,
+) error {
+	if coordinator == nil {
+		panic("reconcile.projectPrimaryLeaseCoordinator.assignHTTPResourceEndpoints requires a non-nil receiver")
+	}
+	if err := projectID.Validate(); err != nil {
+		return err
+	}
+	if resources == nil {
+		return errors.New("descriptor resource endpoint assignment requires initialized resources")
+	}
+	ctx = normalizeLifecycleContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	var lastConflict error
+	for attempt := 0; attempt < primaryLeasePersistenceAttempts; attempt++ {
+		project, err := coordinator.state.Project(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("read project before HTTP resource endpoint assignment: %w", err)
+		}
+		network, initialized, err := coordinator.state.Network(ctx)
+		if err != nil {
+			return fmt.Errorf("read network before HTTP resource endpoint assignment: %w", err)
+		}
+		if !initialized {
+			return fmt.Errorf("assign HTTP resource endpoints for project %q: network identity is not initialized", projectID)
+		}
+		if err := network.Validate(); err != nil {
+			return fmt.Errorf("assign HTTP resource endpoints for project %q: invalid network authority: %w", projectID, err)
+		}
+		if network.Stage != state.NetworkStageFull {
+			return nil
+		}
+		primary, found := primaryLeaseForKey(network.Leases, identity.LeaseKey{ProjectID: projectID})
+		if !found {
+			return fmt.Errorf("assign HTTP resource endpoints for project %q: primary lease is missing", projectID)
+		}
+		desired, err := primaryLeaseHTTPResourceEndpoints(network, project, primary.Address, resources)
+		if err != nil {
+			return err
+		}
+		current := projectNetworkEndpoints(network, projectID)
+		if slices.Equal(current, desired) {
+			return nil
+		}
+		at := lifecycleTime(coordinator.now())
+		if at.Before(project.Project.UpdatedAt) {
+			at = project.Project.UpdatedAt
+		}
+		if at.Before(network.UpdatedAt) {
+			at = network.UpdatedAt
+		}
+		result, err := coordinator.state.ReplaceProjectNetwork(ctx, state.ReplaceProjectNetworkRequest{
+			ProjectID:               projectID,
+			ExpectedNetworkRevision: network.Revision,
+			ExpectedProjectRevision: project.Revision,
+			Ensures:                 []state.NetworkLeaseEnsure{},
+			Releases:                []state.NetworkLeaseRelease{},
+			Endpoints:               desired,
+			At:                      at,
+		})
+		if err != nil {
+			if primaryLeaseRevisionConflict(err) {
+				lastConflict = err
+				continue
+			}
+			return fmt.Errorf("persist HTTP resource endpoints for project %q: %w", projectID, err)
+		}
+		if err := result.Validate(); err != nil {
+			return fmt.Errorf("validate persisted HTTP resource endpoints for project %q: %w", projectID, err)
+		}
+		if got := projectNetworkEndpoints(result.Record, projectID); !slices.Equal(got, desired) {
+			return fmt.Errorf("persisted HTTP resource endpoints for project %q differ from requested authority", projectID)
+		}
+		return nil
+	}
+	return fmt.Errorf(
+		"assign HTTP resource endpoints for project %q did not converge after %d revisions: %w",
+		projectID,
+		primaryLeasePersistenceAttempts,
+		lastConflict,
+	)
+}
+
+// primaryLeaseHTTPResourceEndpoints derives one exact HTTP reservation set while preserving native TCP authority.
+func primaryLeaseHTTPResourceEndpoints(
+	network state.NetworkRecord,
+	project state.ProjectRecord,
+	primary netip.Addr,
+	resources []domain.ResourceSnapshot,
+) ([]state.EndpointReservation, error) {
+	if err := project.Project.Validate(); err != nil {
+		return nil, fmt.Errorf("validate project before HTTP resource endpoint assignment: %w", err)
+	}
+	if len(resources) == 0 {
+		return nil, fmt.Errorf("project %q has no resources for HTTP endpoint assignment", project.Project.ID)
+	}
+	current, _, err := primaryLeaseProjectEndpoints(network, project.Project)
+	if err != nil {
+		return nil, fmt.Errorf("derive existing project HTTP endpoint authority: %w", err)
+	}
+	existing := make(map[state.EndpointReservationKey]state.EndpointReservation, len(current))
+	result := make([]state.EndpointReservation, 0, len(current)+len(resources))
+	preserved := make(map[state.EndpointReservationKey]struct{}, len(current))
+	hosts := make(map[string]state.EndpointReservation, len(current)+len(resources))
+	for _, endpoint := range current {
+		existing[endpoint.Key] = endpoint
+		if endpoint.Protocol != state.EndpointProtocolTCP && endpoint.Key.EndpointID != primaryLeaseDefaultHTTPEndpointID {
+			continue
+		}
+		if _, duplicate := preserved[endpoint.Key]; duplicate {
+			return nil, fmt.Errorf("project %q has duplicate preserved endpoint key %q", project.Project.ID, endpoint.Key.EndpointID)
+		}
+		preserved[endpoint.Key] = struct{}{}
+		if prior, duplicate := hosts[endpoint.Host]; duplicate && prior.Key != endpoint.Key {
+			return nil, fmt.Errorf("project %q has duplicate preserved endpoint host %q", project.Project.ID, endpoint.Host)
+		}
+		hosts[endpoint.Host] = endpoint
+		result = append(result, endpoint)
+	}
+
+	appHTTP := false
+	seenResources := make(map[domain.ResourceID]struct{}, len(resources))
+	for _, resource := range resources {
+		if err := resource.Validate(); err != nil {
+			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
+		}
+		if _, duplicate := seenResources[resource.ID]; duplicate {
+			return nil, fmt.Errorf("duplicate ready resource %q", resource.ID)
+		}
+		seenResources[resource.ID] = struct{}{}
+		if _, err := privateHTTPResourceAddress(resource.URL, primary); err != nil {
+			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
+		}
+		if resource.ID == domain.ResourceID(primaryLeaseDefaultHTTPEndpointID) {
+			appHTTP = true
+			continue
+		}
+		host, err := projectResourceEndpointHost(project.Project.Slug, resource.ID)
+		if err != nil {
+			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
+		}
+		key := state.EndpointReservationKey{ProjectID: project.Project.ID, EndpointID: string(resource.ID)}
+		if prior, conflict := existing[key]; conflict && prior.Protocol == state.EndpointProtocolTCP {
+			return nil, fmt.Errorf("resource %q conflicts with preserved TCP endpoint", resource.ID)
+		}
+		if prior, duplicate := hosts[host]; duplicate && prior.Key != key {
+			return nil, fmt.Errorf("resource %q host %q collides with endpoint %q", resource.ID, host, prior.Key.EndpointID)
+		}
+		public := network.Reservations.Listeners.HTTPS.Advertised
+		generation := primaryLeaseResourceHTTPEndpointInitialGeneration
+		if prior, exists := existing[key]; exists {
+			if prior.Protocol == state.EndpointProtocolHTTP && prior.Host == host && prior.Public == public {
+				generation = prior.Generation
+			} else if prior.Generation == ^uint64(0) {
+				return nil, fmt.Errorf("resource %q endpoint generation cannot advance", resource.ID)
+			} else {
+				generation = prior.Generation + 1
+			}
+		}
+		endpoint := state.EndpointReservation{
+			Key:        key,
+			Protocol:   state.EndpointProtocolHTTP,
+			Host:       host,
+			Public:     public,
+			Generation: generation,
+		}
+		if prior, duplicate := hosts[host]; duplicate && prior.Key != endpoint.Key {
+			return nil, fmt.Errorf("resource %q host %q collides with endpoint %q", resource.ID, host, prior.Key.EndpointID)
+		}
+		hosts[host] = endpoint
+		result = append(result, endpoint)
+	}
+	if !appHTTP {
+		return nil, fmt.Errorf("project %q resources do not contain the required %q resource", project.Project.ID, primaryLeaseDefaultHTTPEndpointID)
+	}
+	slices.SortFunc(result, projectEndpointReservationCompare)
+	return result, nil
+}
+
+// privateHTTPResourceAddress validates that one ready resource points to the assigned loopback identity.
+func privateHTTPResourceAddress(rawURL string, assigned netip.Addr) (netip.AddrPort, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("parse URL: %w", err)
+	}
+	if parsed.Scheme != "http" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return netip.AddrPort{}, fmt.Errorf("URL %q must be a query-free HTTP origin", rawURL)
+	}
+	upstream, err := netip.ParseAddrPort(parsed.Host)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("URL host %q must be a literal address with an explicit port", parsed.Host)
+	}
+	upstream = netip.AddrPortFrom(upstream.Addr().Unmap(), upstream.Port())
+	if !upstream.Addr().Is4() || !upstream.Addr().IsLoopback() || upstream.Addr() != assigned.Unmap() || upstream.Port() == 0 || parsed.Host != upstream.String() {
+		return netip.AddrPort{}, fmt.Errorf("URL %q must use assigned IPv4 loopback address %s", rawURL, assigned)
+	}
+	return upstream, nil
+}
+
+// projectResourceEndpointHost applies Harbor's exact resource-label naming policy inside the project .test zone.
+func projectResourceEndpointHost(slug string, resourceID domain.ResourceID) (string, error) {
+	label := string(resourceID)
+	if label == primaryLeaseDefaultHTTPEndpointID {
+		return slug + ".test", nil
+	}
+	if !validProjectResourceHostLabel(label) {
+		return "", fmt.Errorf("resource ID %q must be a lowercase DNS label for HTTP publication", resourceID)
+	}
+	return label + "." + slug + ".test", nil
+}
+
+// validProjectResourceHostLabel keeps descriptor IDs from becoming ambiguous or invalid DNS names.
+func validProjectResourceHostLabel(value string) bool {
+	if value == "" || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for index := range len(value) {
+		character := value[index]
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// projectNetworkEndpoints returns one defensive project-scoped reservation slice in durable order.
+func projectNetworkEndpoints(network state.NetworkRecord, projectID domain.ProjectID) []state.EndpointReservation {
+	result := make([]state.EndpointReservation, 0)
+	for _, endpoint := range network.Reservations.Endpoints {
+		if endpoint.Key.ProjectID == projectID {
+			result = append(result, endpoint)
+		}
+	}
+	return result
+}
+
+// projectEndpointReservationCompare mirrors durable endpoint ordering for preflight equality and persistence.
+func projectEndpointReservationCompare(left state.EndpointReservation, right state.EndpointReservation) int {
+	if left.Host != right.Host {
+		return strings.Compare(left.Host, right.Host)
+	}
+	if left.Key.ProjectID != right.Key.ProjectID {
+		return strings.Compare(string(left.Key.ProjectID), string(right.Key.ProjectID))
+	}
+	return strings.Compare(left.Key.EndpointID, right.Key.EndpointID)
 }
 
 // ensureAtCurrentRevision joins one project and network snapshot through ReplaceProjectNetwork's exact revisions.

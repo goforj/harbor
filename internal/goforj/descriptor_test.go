@@ -75,6 +75,7 @@ func TestProjectResourcesRejectsUnsafeIntent(t *testing.T) {
 		want   string
 	}{
 		{name: "invalid ID", mutate: func(resources *[]wireResource) { (*resources)[0].ID = "bad id" }, want: "must not contain whitespace"},
+		{name: "reserved ID", mutate: func(resources *[]wireResource) { (*resources)[0].ID = "app-http" }, want: "reserved for Harbor"},
 		{name: "duplicate ID", mutate: func(resources *[]wireResource) { *resources = append(*resources, (*resources)[0]) }, want: "duplicate resource ID"},
 		{name: "empty name", mutate: func(resources *[]wireResource) { (*resources)[0].Name = "" }, want: "name must not be empty"},
 		{name: "empty category", mutate: func(resources *[]wireResource) { (*resources)[0].Category = "" }, want: "category must not be empty"},
@@ -118,6 +119,7 @@ func TestObserveRejectsUnsafeReports(t *testing.T) {
 		"resource-invalid-owner":    "owner \"other\" is unsupported",
 		"resource-missing-enabled":  "enabled is required",
 		"resource-invalid-path":     "must be an absolute URL path",
+		"resource-null":             "resources must be an array",
 	}
 	for mode, want := range tests {
 		t.Run(mode, func(t *testing.T) {
@@ -220,6 +222,8 @@ func runDescriptorHelper() {
 	case "resource-invalid-path":
 		payload := strings.Replace(resourceFixtureJSON(), "\"path\":\"/swagger\"", "\"path\":\"swagger\"", 1)
 		_, _ = fmt.Fprint(os.Stdout, descriptorWithResourcesJSON(payload))
+	case "resource-null":
+		_, _ = fmt.Fprint(os.Stdout, descriptorWithResourcesJSON("null"))
 	case "duplicate-app":
 		payload := strings.TrimSuffix(validDescriptorJSON(), "\n")
 		payload = strings.Replace(payload, `"apps":[{`, `"apps":[{"id":"app","name":"app","entrypoint":"cmd/app/main.go","runtimes":[]},{`, 1)

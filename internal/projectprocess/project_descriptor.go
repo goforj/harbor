@@ -11,8 +11,10 @@ import (
 
 // ProjectDescriptorObservation is the validated descriptor identity reserved for one subsequent process launch.
 type ProjectDescriptorObservation struct {
-	Executable     string
-	TopologyDigest string
+	Executable         string
+	TopologyDigest     string
+	ResourcesSupported bool
+	Resources          []goforj.Resource
 }
 
 // ObserveProjectDescriptor reads the static GoForj descriptor before a managed process is launched.
@@ -42,7 +44,14 @@ func (supervisor *Supervisor) ObserveProjectDescriptor(ctx context.Context, chec
 	if observation.TopologyDigest == "" {
 		return ProjectDescriptorObservation{}, fmt.Errorf("observe GoForj project descriptor: topology digest is empty")
 	}
-	return ProjectDescriptorObservation{Executable: executable, TopologyDigest: observation.TopologyDigest}, nil
+	resources := make([]goforj.Resource, len(observation.Resources))
+	copy(resources, observation.Resources)
+	return ProjectDescriptorObservation{
+		Executable:         executable,
+		TopologyDigest:     observation.TopologyDigest,
+		ResourcesSupported: observation.ResourcesSupported,
+		Resources:          resources,
+	}, nil
 }
 
 // acceptedGoForjExecutable resolves and verifies one canonical GoForj executable for all process boundaries.

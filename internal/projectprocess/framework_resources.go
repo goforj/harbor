@@ -16,6 +16,7 @@ type FrameworkResource struct {
 	URL     string
 	App     string
 	Service string
+	Runtime string
 }
 
 // FrameworkResourceObservation is optional framework-owned resource metadata for one supervised project.
@@ -59,6 +60,7 @@ func (supervisor *Supervisor) ObserveFrameworkResources(
 			URL:     resource.URL,
 			App:     resource.App,
 			Service: resource.Service,
+			Runtime: resource.Runtime,
 		})
 	}
 	return FrameworkResourceObservation{Supported: observation.Supported, Resources: resources}, nil

@@ -93,7 +93,7 @@ Default conventions are:
 | Grafana | `grafana.<project>.test` |
 | VictoriaMetrics | `metrics.<project>.test` |
 
-GoForj's resolved resource projection supplies the actual resource IDs and protocols. Harbor applies naming policy and detects collisions; it does not infer enabled tools from these examples.
+GoForj's resolved resource projection supplies the actual resource IDs and protocols. Harbor applies naming policy and detects collisions; an enabled HTTP resource currently receives `<resource-id>.<project>.test` (with `app-http` reserved for `<project>.test`), and a resource ID that is not already a lowercase DNS label cannot be published in this profile. Harbor does not infer enabled tools from these examples.
 
 The project slug is chosen at registration, normalized with DNS-label rules, and stable across directory renames. A named App or resource that collides with another proposed domain makes registration fail until the slug or endpoint override is changed.
 
