@@ -12,7 +12,7 @@ Install the [Wails v2 prerequisites](https://wails.io/docs/gettingstarted/instal
 forj dev
 ```
 
-GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. On macOS, Wails' pre-build hook creates the native development helper artifacts for the current architecture, so they do not need a separate build command. Linux and Windows source hooks are not implemented yet. Changes to Harbor's root `internal/` packages also trigger a Wails reload.
+GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. On macOS, Wails' pre-build hook creates the native development helper artifacts for the current architecture, so they do not need a separate build command. Linux and Windows source hooks are not implemented yet. Wails watches the desktop's direct Harbor API and approval packages for native rebuilds; unrelated daemon-only packages no longer respawn the window. Frontend asset changes still refresh the webview in place.
 
 To run only the desktop while an existing daemon is already running, use `wails dev` from `desktop/`.
 

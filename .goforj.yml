@@ -26,7 +26,7 @@ dev:
       root: .
       watch: [./.goforj.yml]
       workdir: ./desktop
-      exec: wails dev -reloaddirs ../internal
+      exec: wails dev -reloaddirs ../internal/control,../internal/domain,../internal/helper,../internal/helper/launcher,../internal/networkresolverapproval,../internal/networksetupapproval,../internal/projectapproval,../internal/rpc
 render:
   components: [cli]
   starter_kit: none
