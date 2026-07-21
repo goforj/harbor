@@ -33,6 +33,8 @@ const (
 	defaultServiceObserveTimeout = 20 * time.Second
 	lifecyclePersistenceAttempts = 3
 	lifecyclePersistenceDelay    = 20 * time.Millisecond
+	serviceChangeRetryDelay      = 250 * time.Millisecond
+	maximumServiceChangeRetries  = 8
 )
 
 const (
@@ -838,6 +840,7 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 	refresher := coordinator.state.(projectRuntimeRefresher)
 	runtimeRefresher, runtimeRefreshOK := coordinator.state.(projectRuntimeProjectionRefresher)
 	expectedRevision := project.Revision
+	transientFailures := 0
 	for {
 		if err := waiter.WaitServiceChange(ctx, session.ProjectID, session.ID); err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
@@ -846,9 +849,21 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 			if errors.Is(err, containerruntime.ErrProjectChangeUnsupported) || errors.Is(err, projectprocess.ErrNotRunning) {
 				return
 			}
+			if errors.Is(err, containerruntime.ErrProjectChangeTransient) {
+				transientFailures++
+				if transientFailures > maximumServiceChangeRetries {
+					coordinator.recordAsyncError(fmt.Errorf("watch project %q service topology after %d transient runtime failures: %w", session.ProjectID, transientFailures, err))
+					return
+				}
+				if err := waitForServiceChangeRetry(ctx); err != nil {
+					return
+				}
+				continue
+			}
 			coordinator.recordAsyncError(fmt.Errorf("watch project %q service topology: %w", session.ProjectID, err))
 			return
 		}
+		transientFailures = 0
 
 		observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
 		observation, err := coordinator.supervisor.ObserveServices(observationCtx, session.ProjectID, session.ID)
@@ -938,6 +953,18 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 		}
 		coordinator.recordAsyncError(fmt.Errorf("refresh project %q services: %w", session.ProjectID, err))
 		return
+	}
+}
+
+// waitForServiceChangeRetry bounds reconnection churn while allowing daemon shutdown to interrupt the wait.
+func waitForServiceChangeRetry(ctx context.Context) error {
+	timer := time.NewTimer(serviceChangeRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

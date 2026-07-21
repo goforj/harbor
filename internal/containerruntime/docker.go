@@ -155,10 +155,10 @@ func (runtime *DockerRuntime) WaitProjectChange(ctx context.Context, checkoutRoo
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("read container runtime change stream: %w", err)
+			return fmt.Errorf("%w: read container runtime change stream: %w", ErrProjectChangeTransient, err)
 		}
 	}
-	return errors.New("container runtime change stream closed without an event")
+	return fmt.Errorf("%w: container runtime change stream closed without an event", ErrProjectChangeTransient)
 }
 
 // OpenServiceLogs opens every admitted replica in deterministic order and closes partial results on failure.

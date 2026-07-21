@@ -145,7 +145,8 @@ func TestDockerRuntimeWaitProjectChangePropagatesStreamErrors(t *testing.T) {
 		},
 	}
 
-	if err := newDockerRuntime(engine).WaitProjectChange(t.Context(), root); err == nil || !strings.Contains(err.Error(), "event transport failed") {
+	err := newDockerRuntime(engine).WaitProjectChange(t.Context(), root)
+	if err == nil || !errors.Is(err, ErrProjectChangeTransient) || !strings.Contains(err.Error(), "event transport failed") {
 		t.Fatalf("WaitProjectChange() error = %v, want stream failure", err)
 	}
 }

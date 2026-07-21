@@ -10,6 +10,12 @@ import (
 var (
 	// ErrProjectChangeUnsupported indicates that the host runtime cannot stream container changes.
 	ErrProjectChangeUnsupported = errors.New("container runtime change stream unsupported")
+	// ErrProjectChangeTransient indicates that a runtime event stream ended while the caller may reconnect safely.
+	//
+	// The event stream is only a wake hint. A caller that receives this error must
+	// reconnect and perform a fresh observation rather than treating the failed
+	// stream as a topology change.
+	ErrProjectChangeTransient = errors.New("container runtime change stream is transiently unavailable")
 )
 
 // Runtime observes Compose-owned containers admitted to one canonical Harbor checkout.
