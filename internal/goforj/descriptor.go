@@ -20,20 +20,23 @@ import (
 
 const (
 	// DescriptorSchemaVersion is the static project descriptor schema Harbor understands.
-	DescriptorSchemaVersion   = 1
-	maximumReportBytes        = 1 << 20
-	maximumDiagnosticBytes    = 16 << 10
-	maximumApps               = 256
-	maximumRuntimes           = 32
-	maximumResources          = 256
-	maximumCapabilities       = 128
-	maximumIdentifierBytes    = 128
-	maximumNameBytes          = 512
-	maximumModuleBytes        = 1024
-	maximumPathBytes          = 2048
-	maximumVersionBytes       = 256
-	defaultObservationTimeout = 5 * time.Second
-	commandSettlementDelay    = 250 * time.Millisecond
+	DescriptorSchemaVersion    = 1
+	maximumReportBytes         = 1 << 20
+	maximumDiagnosticBytes     = 16 << 10
+	maximumApps                = 256
+	maximumRuntimes            = 32
+	maximumResources           = 256
+	maximumServiceRequirements = 256
+	maximumServiceEndpoints    = 256
+	maximumServiceConsumers    = 256
+	maximumCapabilities        = 128
+	maximumIdentifierBytes     = 128
+	maximumNameBytes           = 512
+	maximumModuleBytes         = 1024
+	maximumPathBytes           = 2048
+	maximumVersionBytes        = 256
+	defaultObservationTimeout  = 5 * time.Second
+	commandSettlementDelay     = 250 * time.Millisecond
 )
 
 var (
@@ -131,6 +134,80 @@ type Resource struct {
 	Enabled bool
 }
 
+// ServiceRequirementOwner identifies who supplies a service requirement.
+type ServiceRequirementOwner string
+
+const (
+	// ServiceRequirementOwnerCompose identifies a service selected from the project's Compose plan.
+	ServiceRequirementOwnerCompose ServiceRequirementOwner = "compose"
+	// ServiceRequirementOwnerExternal identifies a service supplied outside Harbor and GoForj.
+	ServiceRequirementOwnerExternal ServiceRequirementOwner = "external"
+	// ServiceRequirementOwnerAvailable identifies a service capability that is available but not selected.
+	ServiceRequirementOwnerAvailable ServiceRequirementOwner = "available"
+)
+
+// ServiceRequirementLifecycle identifies how long a service requirement is owned by a project.
+type ServiceRequirementLifecycle string
+
+const (
+	// ServiceRequirementLifecycleProject identifies a service whose lifetime follows the project session.
+	ServiceRequirementLifecycleProject ServiceRequirementLifecycle = "project"
+)
+
+// ServiceEndpointProtocol identifies the transport exposed by a service endpoint.
+type ServiceEndpointProtocol string
+
+const (
+	// ServiceEndpointProtocolTCP identifies a TCP service endpoint.
+	ServiceEndpointProtocolTCP ServiceEndpointProtocol = "tcp"
+	// ServiceEndpointProtocolHTTP identifies an HTTP service endpoint.
+	ServiceEndpointProtocolHTTP ServiceEndpointProtocol = "http"
+	// ServiceEndpointProtocolHTTPS identifies an HTTPS service endpoint.
+	ServiceEndpointProtocolHTTPS ServiceEndpointProtocol = "https"
+)
+
+// ServiceEndpointVisibility identifies the intended reach of a service endpoint.
+type ServiceEndpointVisibility string
+
+const (
+	// ServiceEndpointVisibilityHost identifies an endpoint that GoForj publishes on the local host.
+	ServiceEndpointVisibilityHost ServiceEndpointVisibility = "host"
+	// ServiceEndpointVisibilityPrivate identifies an endpoint that remains private to the project network.
+	ServiceEndpointVisibilityPrivate ServiceEndpointVisibility = "private"
+)
+
+// ServiceEndpoint identifies one stable, non-secret endpoint within a service requirement.
+type ServiceEndpoint struct {
+	// ID is the stable endpoint identity used to join planned and observed service facts.
+	ID string
+	// Protocol identifies the endpoint transport.
+	Protocol ServiceEndpointProtocol
+	// NativePort is the service's port inside its native runtime.
+	NativePort int
+	// Visibility identifies whether the endpoint is host-published or private.
+	Visibility ServiceEndpointVisibility
+}
+
+// ServiceRequirement identifies one stable, non-secret service contract emitted by GoForj.
+type ServiceRequirement struct {
+	// ID is the stable requirement identity used to join planned and observed service facts.
+	ID string
+	// ServiceKey identifies the logical service family, such as mysql or redis.
+	ServiceKey string
+	// Kind identifies the service category without exposing implementation details.
+	Kind string
+	// Driver identifies the client-facing service driver.
+	Driver string
+	// Owner identifies whether the requirement is Compose-managed, external, or available but unselected.
+	Owner ServiceRequirementOwner
+	// Lifecycle identifies the project boundary that owns this requirement.
+	Lifecycle ServiceRequirementLifecycle
+	// Consumers contains stable App IDs that use this requirement.
+	Consumers []string
+	// Endpoints contains stable endpoint identities for this requirement.
+	Endpoints []ServiceEndpoint
+}
+
 // Observation is a validated static descriptor projection.
 type Observation struct {
 	SchemaVersion int
@@ -140,8 +217,12 @@ type Observation struct {
 	// ResourcesSupported distinguishes an older descriptor from one that reports resource intent.
 	ResourcesSupported bool
 	// Resources contains the optional resource intent in the descriptor's stable order.
-	Resources      []Resource
-	TopologyDigest string
+	Resources []Resource
+	// ServiceRequirementsSupported distinguishes an older descriptor from one that reports service intent.
+	ServiceRequirementsSupported bool
+	// ServiceRequirements contains optional, non-secret service intent in the descriptor's stable order.
+	ServiceRequirements []ServiceRequirement
+	TopologyDigest      string
 }
 
 // Observe invokes GoForj directly and validates exactly one descriptor document.
@@ -209,11 +290,12 @@ func validateQuery(query Query) error {
 
 // wireReport is the strict schema-v1 allowlist accepted from GoForj.
 type wireReport struct {
-	SchemaVersion *int            `json:"schema_version"`
-	Project       *wireProject    `json:"project"`
-	GoForj        *wireGoForj     `json:"goforj"`
-	Apps          *[]wireApp      `json:"apps"`
-	Resources     json.RawMessage `json:"resources"`
+	SchemaVersion       *int            `json:"schema_version"`
+	Project             *wireProject    `json:"project"`
+	GoForj              *wireGoForj     `json:"goforj"`
+	Apps                *[]wireApp      `json:"apps"`
+	ServiceRequirements json.RawMessage `json:"service_requirements"`
+	Resources           json.RawMessage `json:"resources"`
 }
 
 // wireProject keeps required scalar fields distinguishable from omitted JSON fields.
@@ -266,6 +348,26 @@ type wireResource struct {
 	Path            string `json:"path"`
 	BackingArtifact string `json:"backing_artifact,omitempty"`
 	Enabled         *bool  `json:"enabled"`
+}
+
+// wireServiceRequirement keeps service intent behind the schema allowlist.
+type wireServiceRequirement struct {
+	ID         string                 `json:"id"`
+	ServiceKey string                 `json:"service_key"`
+	Kind       string                 `json:"kind"`
+	Driver     string                 `json:"driver"`
+	Owner      string                 `json:"owner"`
+	Lifecycle  string                 `json:"lifecycle"`
+	Consumers  *[]string              `json:"consumers"`
+	Endpoints  *[]wireServiceEndpoint `json:"endpoints"`
+}
+
+// wireServiceEndpoint keeps endpoint intent behind the schema allowlist.
+type wireServiceEndpoint struct {
+	ID         string `json:"id"`
+	Protocol   string `json:"protocol"`
+	NativePort *int   `json:"native_port"`
+	Visibility string `json:"visibility"`
 }
 
 // boundedBuffer retains a fixed prefix while continuing to drain a child process safely.
@@ -330,15 +432,21 @@ func decodeReport(payload []byte) (Observation, error) {
 	if err != nil {
 		return Observation{}, err
 	}
+	serviceRequirements, serviceRequirementsSupported, err := decodeServiceRequirementsSection(report.ServiceRequirements, apps)
+	if err != nil {
+		return Observation{}, err
+	}
 	digest := strings.TrimPrefix(report.Project.ConfigDigest, "sha256:")
 	return Observation{
-		SchemaVersion:      DescriptorSchemaVersion,
-		Project:            Project{Name: report.Project.Name, Module: report.Project.Module, ConfigDigest: report.Project.ConfigDigest},
-		GoForj:             GoForj{Version: report.GoForj.Version, CLICapabilities: append([]string(nil), (*report.GoForj.CLICapabilities)...), GeneratedProject: GeneratedProject{Generation: report.GoForj.GeneratedProject.Generation, Capabilities: append([]string(nil), (*report.GoForj.GeneratedProject.Capabilities)...)}},
-		Apps:               apps,
-		ResourcesSupported: resourcesSupported,
-		Resources:          resources,
-		TopologyDigest:     digest,
+		SchemaVersion:                DescriptorSchemaVersion,
+		Project:                      Project{Name: report.Project.Name, Module: report.Project.Module, ConfigDigest: report.Project.ConfigDigest},
+		GoForj:                       GoForj{Version: report.GoForj.Version, CLICapabilities: append([]string(nil), (*report.GoForj.CLICapabilities)...), GeneratedProject: GeneratedProject{Generation: report.GoForj.GeneratedProject.Generation, Capabilities: append([]string(nil), (*report.GoForj.GeneratedProject.Capabilities)...)}},
+		Apps:                         apps,
+		ResourcesSupported:           resourcesSupported,
+		Resources:                    resources,
+		ServiceRequirementsSupported: serviceRequirementsSupported,
+		ServiceRequirements:          serviceRequirements,
+		TopologyDigest:               digest,
 	}, nil
 }
 
@@ -539,6 +647,133 @@ func validateResourceOwner(label string, candidate wireResource) error {
 		return fmt.Errorf("%s owner %q is unsupported", label, candidate.Owner)
 	}
 	return nil
+}
+
+// decodeServiceRequirementsSection distinguishes an omitted optional section from malformed input.
+func decodeServiceRequirementsSection(raw json.RawMessage, apps []App) ([]ServiceRequirement, bool, error) {
+	if len(raw) == 0 {
+		return []ServiceRequirement{}, false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, true, errors.New("GoForj project descriptor service_requirements must be an array")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var wire []wireServiceRequirement
+	if err := decoder.Decode(&wire); err != nil {
+		return nil, true, fmt.Errorf("decode GoForj project descriptor service_requirements: %w", err)
+	}
+	if err := requireJSONEnd(decoder); err != nil {
+		return nil, true, err
+	}
+	requirements, err := projectServiceRequirements(wire, apps)
+	if err != nil {
+		return nil, true, err
+	}
+	return requirements, true, nil
+}
+
+// projectServiceRequirements validates service intent and keeps all cross-references explicit.
+func projectServiceRequirements(source []wireServiceRequirement, apps []App) ([]ServiceRequirement, error) {
+	if len(source) > maximumServiceRequirements {
+		return nil, fmt.Errorf("GoForj project descriptor contains more than %d service requirements", maximumServiceRequirements)
+	}
+	knownApps := make(map[string]struct{}, len(apps))
+	for _, app := range apps {
+		knownApps[app.ID] = struct{}{}
+	}
+	requirements := make([]ServiceRequirement, 0, len(source))
+	seenRequirements := make(map[string]struct{}, len(source))
+	seenEndpoints := make(map[string]string)
+	for index, candidate := range source {
+		label := fmt.Sprintf("service requirement %d", index+1)
+		if err := validateToken(label+" ID", candidate.ID, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		if _, exists := seenRequirements[candidate.ID]; exists {
+			return nil, fmt.Errorf("duplicate service requirement ID %q in GoForj project descriptor", candidate.ID)
+		}
+		seenRequirements[candidate.ID] = struct{}{}
+		if err := validateToken(label+" service key", candidate.ServiceKey, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		if err := validateToken(label+" kind", candidate.Kind, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		if err := validateToken(label+" driver", candidate.Driver, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		owner := ServiceRequirementOwner(candidate.Owner)
+		switch owner {
+		case ServiceRequirementOwnerCompose, ServiceRequirementOwnerExternal, ServiceRequirementOwnerAvailable:
+		default:
+			return nil, fmt.Errorf("%s owner %q is unsupported", label, candidate.Owner)
+		}
+		lifecycle := ServiceRequirementLifecycle(candidate.Lifecycle)
+		if lifecycle != ServiceRequirementLifecycleProject {
+			return nil, fmt.Errorf("%s lifecycle %q is unsupported", label, candidate.Lifecycle)
+		}
+		if candidate.Consumers == nil {
+			return nil, fmt.Errorf("%s consumers must be an array", label)
+		}
+		if len(*candidate.Consumers) > maximumServiceConsumers {
+			return nil, fmt.Errorf("%s contains more than %d consumers", label, maximumServiceConsumers)
+		}
+		consumers := make([]string, 0, len(*candidate.Consumers))
+		seenConsumers := make(map[string]struct{}, len(*candidate.Consumers))
+		for consumerIndex, consumer := range *candidate.Consumers {
+			consumerLabel := fmt.Sprintf("%s consumer %d", label, consumerIndex+1)
+			if err := validateToken(consumerLabel, consumer, maximumIdentifierBytes); err != nil {
+				return nil, err
+			}
+			if _, exists := seenConsumers[consumer]; exists {
+				return nil, fmt.Errorf("%s is duplicated", consumerLabel)
+			}
+			if _, exists := knownApps[consumer]; !exists {
+				return nil, fmt.Errorf("%s references unknown App %q", consumerLabel, consumer)
+			}
+			seenConsumers[consumer] = struct{}{}
+			consumers = append(consumers, consumer)
+		}
+		if candidate.Endpoints == nil {
+			return nil, fmt.Errorf("%s endpoints must be an array", label)
+		}
+		if len(*candidate.Endpoints) == 0 {
+			return nil, fmt.Errorf("%s must contain at least one endpoint", label)
+		}
+		if len(*candidate.Endpoints) > maximumServiceEndpoints {
+			return nil, fmt.Errorf("%s contains more than %d endpoints", label, maximumServiceEndpoints)
+		}
+		endpoints := make([]ServiceEndpoint, 0, len(*candidate.Endpoints))
+		for endpointIndex, endpoint := range *candidate.Endpoints {
+			endpointLabel := fmt.Sprintf("%s endpoint %d", label, endpointIndex+1)
+			if err := validateToken(endpointLabel+" ID", endpoint.ID, maximumIdentifierBytes); err != nil {
+				return nil, err
+			}
+			if previous, exists := seenEndpoints[endpoint.ID]; exists {
+				return nil, fmt.Errorf("duplicate service endpoint ID %q in %s and %s", endpoint.ID, previous, label)
+			}
+			seenEndpoints[endpoint.ID] = label
+			protocol := ServiceEndpointProtocol(endpoint.Protocol)
+			switch protocol {
+			case ServiceEndpointProtocolTCP, ServiceEndpointProtocolHTTP, ServiceEndpointProtocolHTTPS:
+			default:
+				return nil, fmt.Errorf("%s protocol %q is unsupported", endpointLabel, endpoint.Protocol)
+			}
+			if endpoint.NativePort == nil || *endpoint.NativePort < 1 || *endpoint.NativePort > 65535 {
+				return nil, fmt.Errorf("%s native_port must be between 1 and 65535", endpointLabel)
+			}
+			visibility := ServiceEndpointVisibility(endpoint.Visibility)
+			switch visibility {
+			case ServiceEndpointVisibilityHost, ServiceEndpointVisibilityPrivate:
+			default:
+				return nil, fmt.Errorf("%s visibility %q is unsupported", endpointLabel, endpoint.Visibility)
+			}
+			endpoints = append(endpoints, ServiceEndpoint{ID: endpoint.ID, Protocol: protocol, NativePort: *endpoint.NativePort, Visibility: visibility})
+		}
+		requirements = append(requirements, ServiceRequirement{ID: candidate.ID, ServiceKey: candidate.ServiceKey, Kind: candidate.Kind, Driver: candidate.Driver, Owner: owner, Lifecycle: lifecycle, Consumers: consumers, Endpoints: endpoints})
+	}
+	return requirements, nil
 }
 
 // validateCapabilities bounds capability arrays and excludes invisible text from diagnostics and durable projections.

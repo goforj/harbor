@@ -11,10 +11,12 @@ import (
 
 // ProjectDescriptorObservation is the validated descriptor identity reserved for one subsequent process launch.
 type ProjectDescriptorObservation struct {
-	Executable         string
-	TopologyDigest     string
-	ResourcesSupported bool
-	Resources          []goforj.Resource
+	Executable                   string
+	TopologyDigest               string
+	ResourcesSupported           bool
+	Resources                    []goforj.Resource
+	ServiceRequirementsSupported bool
+	ServiceRequirements          []goforj.ServiceRequirement
 }
 
 // ObserveProjectDescriptor reads the static GoForj descriptor before a managed process is launched.
@@ -46,12 +48,29 @@ func (supervisor *Supervisor) ObserveProjectDescriptor(ctx context.Context, chec
 	}
 	resources := make([]goforj.Resource, len(observation.Resources))
 	copy(resources, observation.Resources)
+	serviceRequirements := cloneServiceRequirements(observation.ServiceRequirements)
 	return ProjectDescriptorObservation{
-		Executable:         executable,
-		TopologyDigest:     observation.TopologyDigest,
-		ResourcesSupported: observation.ResourcesSupported,
-		Resources:          resources,
+		Executable:                   executable,
+		TopologyDigest:               observation.TopologyDigest,
+		ResourcesSupported:           observation.ResourcesSupported,
+		Resources:                    resources,
+		ServiceRequirementsSupported: observation.ServiceRequirementsSupported,
+		ServiceRequirements:          serviceRequirements,
 	}, nil
+}
+
+// cloneServiceRequirements prevents a caller from mutating descriptor-owned nested slices after observation.
+func cloneServiceRequirements(source []goforj.ServiceRequirement) []goforj.ServiceRequirement {
+	if len(source) == 0 {
+		return []goforj.ServiceRequirement{}
+	}
+	clone := make([]goforj.ServiceRequirement, len(source))
+	for index, requirement := range source {
+		clone[index] = requirement
+		clone[index].Consumers = append([]string(nil), requirement.Consumers...)
+		clone[index].Endpoints = append([]goforj.ServiceEndpoint(nil), requirement.Endpoints...)
+	}
+	return clone
 }
 
 // acceptedGoForjExecutable resolves and verifies one canonical GoForj executable for all process boundaries.
