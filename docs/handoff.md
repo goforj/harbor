@@ -195,6 +195,7 @@ The retained-runtime continuation is split into focused commits:
 - `78a35f6 feat: expose project runtime repair control`
 - `5615316 feat: add desktop runtime repair flow`
 - `b531d7f feat: add direct container service tooling`
+- `3e3e2a7 feat: add unattributed runtime inspection boundary`
 
 No push was part of the stopping sequence. Confirm the live relationship rather than relying on a recorded ahead/behind count after more work:
 
