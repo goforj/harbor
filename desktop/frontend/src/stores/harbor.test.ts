@@ -480,6 +480,21 @@ describe('Harbor store', () => {
     await setup
   })
 
+  it.each([
+    ['disconnected', { connectionState: 'disconnected' as const, snapshotStale: true }, 'Harbor is disconnected. Reconnect, then try again.'],
+    ['stale', { connectionState: 'connected' as const, snapshotStale: true }, 'Harbor is still reconciling local state. Wait for a fresh snapshot, then try again.'],
+  ])('does not send a lifecycle request while daemon state is %s', async (_name, state, message) => {
+    const store = useHarborStore()
+    await store.initialize()
+    store.$patch(state)
+    const startProject = vi.spyOn(harborBridge, 'startProject')
+
+    await expect(store.startProject('reports')).resolves.toBeNull()
+    expect(startProject).not.toHaveBeenCalled()
+    expect(store.projectLifecycleErrors.reports).toBe(message)
+    expect(store.projectLifecycleBusy).toBe(false)
+  })
+
   it('does not send network setup while a project lifecycle request is active', async () => {
     const store = useHarborStore()
     await store.initialize()

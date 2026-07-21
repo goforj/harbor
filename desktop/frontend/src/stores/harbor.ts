@@ -554,6 +554,16 @@ export const useHarborStore = defineStore('harbor', () => {
       setProjectLifecycleError(projectId, 'Wait for network setup to finish, then try the project action again.')
       return null
     }
+    // A caller may retry an uncertain first request before Harbor has a baseline snapshot; once a project snapshot exists,
+    // lifecycle actions must wait for an authenticated, current daemon view instead of acting on retained state.
+    if (snapshot.value && connectionState.value !== 'connected') {
+      setProjectLifecycleError(projectId, 'Harbor is disconnected. Reconnect, then try again.')
+      return null
+    }
+    if (snapshot.value && snapshotStale.value) {
+      setProjectLifecycleError(projectId, 'Harbor is still reconciling local state. Wait for a fresh snapshot, then try again.')
+      return null
+    }
     if (projectLifecycleProjectId.value) {
       setProjectLifecycleError(projectId, 'Wait for the current project action to finish, then try again.')
       return null

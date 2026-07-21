@@ -174,6 +174,7 @@ const lifecycleLabel = computed(() => {
   return lifecycleAction.value === 'start' ? 'Start project' : 'Stop project'
 })
 const lifecycleDisabled = computed(() => store.snapshotStale
+  || store.connectionState !== 'connected'
   || store.settingUpNetwork
   || store.projectLifecycleBusy
   || store.projectRuntimeRepairBusy

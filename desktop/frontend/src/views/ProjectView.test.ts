@@ -113,6 +113,7 @@ describe('ProjectView stale runtime recovery', () => {
 
     store.$patch({ snapshotStale: false, connectionState: 'disconnected' })
     await wrapper.vm.$nextTick()
+    expect(recover?.attributes('disabled')).toBeDefined()
     expect(inspect?.attributes('disabled')).toBeDefined()
 
     store.$patch({ connectionState: 'connected', projectLifecycleProjectId: 'orders-api' })
