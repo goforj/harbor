@@ -1,6 +1,6 @@
 # Development Handoff
 
-Status: durable scoped project restart, strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs, read-only CLI log cursors, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
+Status: durable scoped project restart, strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs, read-only CLI log cursors, control-plane doctor foundation, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
 
 Last updated: 2026-07-21
 
@@ -254,6 +254,7 @@ No delivery phase has met its complete exit gate.
 - `harbor status <project>` provides the CLI's read-only view of one project from the authoritative daemon snapshot, with compact human output or the exact typed project object through `--json`.
 - `harbor open <project> [resource]` now resolves one fresh, project-scoped resource and invokes only the fixed native browser handler; it defaults to `app-http` and never accepts a caller-supplied URL.
 - `harbor logs <project>` now exposes the existing bounded current-session project and Compose-service cursors through a read-only CLI surface, with `--follow` using the negotiated held-read capability and resetting on session replacement.
+- `harbor doctor [project] [--json]` now emits a versioned, explicitly `control-plane` report from authenticated daemon status and a validated snapshot; it records sequence drift and raw project state without claiming native host health or offering repairs.
 - The pending resource-projection repair migration retains only the readiness-proven `app-http` resource and removes older optional runtime links that could make the daemon reject its complete snapshot. It is intentionally one-way: the links are derived and are rebuilt on a successful Start; it does not affect project source, volumes, secrets, or operations.
 - The desktop now exposes the typed project-removal approval handoff: an active `requires_approval` removal retains its intent, offers one explicit administrator-approval action, consumes the terminal result, and remains retryable after a declined or unavailable native approval. Native consent execution and release-grade macOS proof remain outstanding.
 

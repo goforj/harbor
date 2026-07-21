@@ -20,6 +20,7 @@ var appCommandSet = wire.NewSet(
 	cmd.NewRestartCmd,
 	cmd.NewOpenCmd,
 	cmd.NewLogsCmd,
+	cmd.NewDoctorCmd,
 	cmd.NewProjectStatusCmd,
 	provideNetworkSetupApprovalRunner,
 	cmd.NewSetupCmd,

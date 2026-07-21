@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -63,5 +64,27 @@ func TestInitializeApplicationWiresLogsCommand(t *testing.T) {
 	}
 	if parsed.Command() != "logs <project>" {
 		t.Fatalf("Parse(logs) command = %q, want logs <project>", parsed.Command())
+	}
+}
+
+// TestInitializeApplicationWiresDoctorCommand proves the diagnostic surface is registered without opening native checks during assembly.
+func TestInitializeApplicationWiresDoctorCommand(t *testing.T) {
+	application, err := InitializeApplication()
+	if err != nil {
+		t.Fatalf("InitializeApplication() error = %v", err)
+	}
+
+	parser, err := kong.New(application.RootCmd(), kong.Name("harbor"))
+	if err != nil {
+		t.Fatalf("kong.New() error = %v", err)
+	}
+	for _, args := range [][]string{{"doctor"}, {"doctor", "project-orders", "--json"}} {
+		parsed, err := parser.Parse(args)
+		if err != nil {
+			t.Fatalf("Parse(%v) error = %v", args, err)
+		}
+		if !strings.HasPrefix(parsed.Command(), "doctor") {
+			t.Fatalf("Parse(%v) command = %q", args, parsed.Command())
+		}
 	}
 }

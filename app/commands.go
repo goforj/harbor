@@ -17,6 +17,7 @@ type Commands struct {
 	RestartCmd    cmd.RestartCmd       `cmd:""`
 	OpenCmd       cmd.OpenCmd          `cmd:""`
 	LogsCmd       cmd.LogsCmd          `cmd:""`
+	DoctorCmd     cmd.DoctorCmd        `cmd:""`
 	StatusCmd     cmd.ProjectStatusCmd `cmd:""`
 	SetupCmd      cmd.SetupCmd         `cmd:""`
 	ResourcesCmd  cmd.ResourcesCmd     `cmd:""`
@@ -34,6 +35,7 @@ func NewCommands(
 	restartCmd *cmd.RestartCmd,
 	openCmd *cmd.OpenCmd,
 	logsCmd *cmd.LogsCmd,
+	doctorCmd *cmd.DoctorCmd,
 	statusCmd *cmd.ProjectStatusCmd,
 	setupCmd *cmd.SetupCmd,
 	resourcesCmd *cmd.ResourcesCmd,
@@ -49,6 +51,7 @@ func NewCommands(
 		RestartCmd:    *restartCmd,
 		OpenCmd:       *openCmd,
 		LogsCmd:       *logsCmd,
+		DoctorCmd:     *doctorCmd,
 		StatusCmd:     *statusCmd,
 		SetupCmd:      *setupCmd,
 		ResourcesCmd:  *resourcesCmd,

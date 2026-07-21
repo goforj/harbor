@@ -35,6 +35,10 @@ daemon stop
 start <project> [--json] [--intent <intent>]
 stop <project> [--json] [--intent <intent>]
 restart <project> [--json] [--intent <intent>]
+status <project> [--json]
+open <project> [resource]
+logs <project> [--service <id>] [--follow]
+doctor [project] [--json]
 ```
 
 Project lifecycle commands return the daemon-authoritative operation and preserve the supplied intent for safe retries.
