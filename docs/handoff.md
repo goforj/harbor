@@ -1,6 +1,6 @@
 # Development Handoff
 
-Status: durable scoped project restart, resilient quarantined-project Start convergence, strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs, read-only CLI log cursors, control-plane doctor foundation, fenced refresh, session-fenced managed-publication planning, and desktop project-removal approval handoff committed; native host proof remains
+Status: durable scoped project restart, resilient quarantined-project Start convergence, strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs with projection-gap-safe followers, read-only CLI log cursors, control-plane doctor foundation, fenced refresh, session-fenced managed-publication planning, and desktop project-removal approval handoff committed; native host proof remains
 
 Last updated: 2026-07-21
 
@@ -17,6 +17,8 @@ Retained missing-receipt state now has a separate explicit recovery path. A quar
 Commit `b531d7f` replaces the GoForj service-state/log dependency with a daemon-owned, read-only Docker Engine vertical. `harbord` lists local containers, re-inspects candidates, and admits them only when the Compose project, service, and working-directory labels resolve to the registered canonical checkout. A selected service's current-session log stream now crosses authenticated control, Wails, and the typed Vue bridge. The continuation adds a Docker container-event wake hint; event payloads are discarded, exact admission is repeated, and service/resource changes are persisted only behind project-revision and session-generation fences. Supported descriptor resource reports then update loopback HTTP reservations after the durable write; unsupported or failed reports retain the prior resource links. No GoForj log capability is involved, neither the generated App nor Vue can access Docker, and the route reconciler now promotes only explicitly reserved HTTP resources whose owners and private loopback upstreams are ready.
 
 The latest bounded Harbor-only slice adds a pure managed-publication planner. It joins only exact project/session/reservation generations, TCP endpoint reservations, and fresh canonical IPv4 loopback high-port upstreams; it returns deterministic native routes, withholds unobserved reservations, and rejects duplicate or cross-route sockets before any relay can be constructed. The planner has direct tests but is intentionally not wired into the runtime until GoForj supplies the managed-session handshake and Harbor has an actual publication observation.
+
+The service-log follow path now treats event-driven durable projection as a replaceable read model. After a service has been authenticated for the current session, a held read that races with its temporary removal returns a clean unavailable result without replaying output, resetting the cursor, or reading a replacement session. Initial unknown or external service IDs still fail before runtime access, and a simultaneous session change remains fenced.
 
 The native desktop bridge fixture now includes the required `ResourceIconURL` binding. Native selection rejects its absence, while the native bridge test calls it directly; browser fixtures therefore cannot hide this generated-binding drift.
 

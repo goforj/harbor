@@ -143,6 +143,68 @@ func TestProjectServiceLogsWaitReselectsDurableSession(t *testing.T) {
 	}
 }
 
+// TestProjectServiceLogsWaitReturnsUnavailableDuringProjectionGap preserves a current follower while event refresh rebuilds its service row.
+func TestProjectServiceLogsWaitReturnsUnavailableDuringProjectionGap(t *testing.T) {
+	source := projectServiceLogStateFixture()
+	reader := &projectServiceLogTestReader{selection: projectprocess.ServiceLogSelection{
+		Supported: true,
+		Available: true,
+		Output:    projectprocess.OutputChunk{Available: true, NextCursor: 30, Text: "stale\n"},
+	}}
+	reader.waitSelection = reader.selection
+	reader.wait = func() {
+		source.project.Project.Services = []domain.ServiceSnapshot{
+			{ID: "mail", Name: "Mail", Kind: "mail", State: domain.EntityReady, Owner: domain.ServiceOwnerExternal, Selection: domain.ServiceSelected},
+		}
+	}
+	request := ProjectServiceLogsRequest{
+		ProjectID: "project-orders", SessionID: "session-current", ServiceID: "mysql", Cursor: 17, Wait: time.Second,
+	}
+	logs, err := readCurrentProjectServiceLogs(t.Context(), source, reader, request)
+	if err != nil {
+		t.Fatalf("readCurrentProjectServiceLogs() error = %v", err)
+	}
+	if logs.SessionID != request.SessionID || logs.Available || logs.Output.Available || logs.Output.Text != "" || logs.Output.Reset {
+		t.Fatalf("logs = %#v, want same-session unavailable response without output reset", logs)
+	}
+	if len(reader.waits) != 1 || len(reader.reads) != 0 {
+		t.Fatalf("waits/reads = %#v / %#v, want one wait and no runtime reselection during gap", reader.waits, reader.reads)
+	}
+
+	source.project.Project.Services = append(source.project.Project.Services, domain.ServiceSnapshot{
+		ID: "mysql", Name: "MySQL", Kind: "compose", State: domain.EntityReady, Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected,
+	})
+	recovered, err := readCurrentProjectServiceLogs(t.Context(), source, reader, ProjectServiceLogsRequest{
+		ProjectID: request.ProjectID, SessionID: request.SessionID, ServiceID: request.ServiceID, Cursor: 17,
+	})
+	if err != nil {
+		t.Fatalf("readCurrentProjectServiceLogs() after re-add error = %v", err)
+	}
+	if recovered.Available != reader.selection.Available || len(reader.reads) != 1 || reader.reads[0].cursor != 17 {
+		t.Fatalf("recovered logs/reads = %#v / %#v, want cursor-preserving retry", recovered, reader.reads)
+	}
+}
+
+// TestProjectServiceLogsProjectionGapDoesNotCrossSession keeps a disappearing service from authorizing a retired session.
+func TestProjectServiceLogsProjectionGapDoesNotCrossSession(t *testing.T) {
+	source := projectServiceLogStateFixture()
+	reader := &projectServiceLogTestReader{selection: projectprocess.ServiceLogSelection{Supported: true}}
+	reader.wait = func() {
+		source.project.Project.Services = []domain.ServiceSnapshot{
+			{ID: "mail", Name: "Mail", Kind: "mail", State: domain.EntityReady, Owner: domain.ServiceOwnerExternal, Selection: domain.ServiceSelected},
+		}
+		source.session.ID = "session-next"
+		source.session.Generation++
+	}
+	_, err := readCurrentProjectServiceLogs(t.Context(), source, reader, ProjectServiceLogsRequest{
+		ProjectID: "project-orders", SessionID: "session-current", ServiceID: "mysql", Cursor: 4, Wait: time.Second,
+	})
+	var missing *ProjectServiceNotFoundError
+	if !errors.As(err, &missing) || len(reader.reads) != 0 {
+		t.Fatalf("error/reads = %v / %#v, want missing-service fence and no runtime read", err, reader.reads)
+	}
+}
+
 // TestProjectServiceLogsReturnsCleanUnavailableWithoutActiveSession avoids selecting historical runtime output.
 func TestProjectServiceLogsReturnsCleanUnavailableWithoutActiveSession(t *testing.T) {
 	source := projectServiceLogStateFixture()

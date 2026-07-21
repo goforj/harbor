@@ -77,6 +77,17 @@ func readCurrentProjectServiceLogs(
 	reader projectServiceLogReader,
 	request ProjectServiceLogsRequest,
 ) (ProjectServiceLogs, error) {
+	return readCurrentProjectServiceLogsWithSelection(ctx, source, reader, request, false)
+}
+
+// readCurrentProjectServiceLogsWithSelection reuses one authenticated service selection across a transient projection gap.
+func readCurrentProjectServiceLogsWithSelection(
+	ctx context.Context,
+	source projectServiceLogState,
+	reader projectServiceLogReader,
+	request ProjectServiceLogsRequest,
+	allowMissingService bool,
+) (ProjectServiceLogs, error) {
 	ctx = normalizeLifecycleContext(ctx)
 	if err := validateProjectServiceLogsRequest(request); err != nil {
 		return ProjectServiceLogs{}, err
@@ -88,8 +99,13 @@ func readCurrentProjectServiceLogs(
 	if project.Project.ID != request.ProjectID {
 		return ProjectServiceLogs{}, errors.New("current project record does not match the selected project")
 	}
+	serviceMissing := false
 	if err := validateSelectedComposeService(project.Project, request.ServiceID); err != nil {
-		return ProjectServiceLogs{}, err
+		var missing *ProjectServiceNotFoundError
+		if !allowMissingService || !errors.As(err, &missing) {
+			return ProjectServiceLogs{}, err
+		}
+		serviceMissing = true
 	}
 
 	base := ProjectServiceLogs{
@@ -112,6 +128,13 @@ func readCurrentProjectServiceLogs(
 		return ProjectServiceLogs{}, errors.New("current project session does not match the selected project")
 	}
 	base.SessionID = session.ID
+	changedSession := request.SessionID != "" && request.SessionID != session.ID
+	if serviceMissing {
+		if changedSession {
+			return ProjectServiceLogs{}, &ProjectServiceNotFoundError{ProjectID: request.ProjectID, ServiceID: request.ServiceID}
+		}
+		return base, nil
+	}
 	portReader, ok := reader.(projectServicePortReader)
 	if ok {
 		ports, err := portReader.ObserveServicePorts(ctx, request.ProjectID, session.ID, request.ServiceID)
@@ -124,7 +147,6 @@ func readCurrentProjectServiceLogs(
 	}
 
 	cursor := request.Cursor
-	changedSession := request.SessionID != "" && request.SessionID != session.ID
 	if changedSession {
 		cursor = 0
 	}
@@ -150,11 +172,11 @@ func readCurrentProjectServiceLogs(
 
 		// Durable reselection prevents a stopped and restarted project from crossing process transcripts.
 		request.Wait = 0
-		current, err := readCurrentProjectServiceLogs(ctx, source, reader, request)
+		current, err := readCurrentProjectServiceLogsWithSelection(ctx, source, reader, request, true)
 		if err != nil {
 			return ProjectServiceLogs{}, err
 		}
-		if waitErr == nil && current.SessionID == session.ID {
+		if waitErr == nil && current.SessionID == session.ID && current.Available {
 			return projectServiceLogsFromSelection(base, waited, false), nil
 		}
 		return current, nil
