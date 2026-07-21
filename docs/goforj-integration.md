@@ -182,19 +182,17 @@ Harbor stores the schema version and normalized topology digest. A digest change
 
 GoForj should add a managed mode to `forj dev`. The transport remains domain-neutral even though Harbor is its first consumer.
 
-Harbor now has the transport-neutral v1 message contract and authenticated handler seam that this mode will use. GoForj
-now contains a private transport adapter that mirrors the v1 frame, envelope, handshake, and typed calls because Harbor's
-implementation packages are intentionally not importable across modules. A GoForj client negotiates the
-`managed-session.v1` capability and sends only bounded request/response methods: `managed-session.v1.register`,
-`managed-session.v1.publications.replace`, and `managed-session.v1.barrier`. Registration carries the canonical
-project/session identity, descriptor digest, client nonce, owner, generated-project capabilities, and a sorted active
-App/runtime set. Harbor returns an attached-session fence and a short-lived ticket; the ticket is never durable. The
-publication method is a complete replacement fenced by the exact session generation and accepts only canonical IPv4
-loopback high-port upstreams. The Compose barrier is explicitly acknowledged, rather than inferred from a process or
-container event. The contract rejects unknown or duplicate JSON fields, trailing values, unsorted identities, invalid
-digests, and cross-session publication facts before an authority handler is called. Neither side is wired into ordinary
-`forj dev` or the daemon's production endpoint yet: secure inherited launch context, live attachment, plan delivery, action
-handling, publication observation, and server-push events remain later integration work.
+Harbor now has the transport-neutral v1 message contract and authenticated handler seam that this mode uses. GoForj
+contains a private transport adapter that mirrors the v1 frame, envelope, handshake, and typed calls because Harbor's
+implementation packages are intentionally not importable across modules. Production Start/Restart supplies GoForj an
+owner-only inherited context; GoForj consumes it before project environment loading, negotiates
+`managed-session.v1` plus `managed-session.launch-context.v1`, and retries only the short planned-to-awaiting process
+attachment race. Registration carries the canonical project/session identity, descriptor digest, client nonce, owner,
+the negotiated capabilities, and a bounded launch ticket. Harbor hashes that exact ticket against the durable session
+digest and never stores the raw value. The publication and Compose-barrier methods remain bounded complete replacements
+fenced by the exact attached-session generation; native publication observation and route activation are still later
+integration work. The contract rejects unknown or duplicate JSON fields, trailing values, unsorted identities, invalid
+digests, and cross-session publication facts before an authority handler is called.
 
 Conceptual invocation:
 
@@ -225,7 +223,7 @@ Shutdown receives the same treatment. The generated raw `dev.down` Compose comma
 
 The publication barrier prevents a migration configured for `mysql.<project>.test:3306` from running before Harbor can relay that name to the newly started private Compose port.
 
-If Harbor is absent, an ordinary `forj dev` behaves exactly as it does now. An explicit `--no-harbor` disables discovery and attachment. Ordinary daemon absence or an unregistered project falls back silently before lifecycle work. If a reachable daemon says the project is registered but rejects, conflicts, or times out during attachment, GoForj stops before lifecycle work and directs the user to repair Harbor or explicitly use `--no-harbor`; it cannot switch port policy halfway through startup.
+If Harbor is absent, an ordinary `forj dev` behaves exactly as it does now. An explicit `--no-harbor` remains the future terminal-owned opt-out. An inherited production context is fail-closed: daemon absence, capability mismatch, or attachment rejection stops before lifecycle work rather than switching port policy halfway through startup.
 
 ### Terminal-owned attachment
 
