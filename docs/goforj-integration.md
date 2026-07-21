@@ -182,6 +182,18 @@ Harbor stores the schema version and normalized topology digest. A digest change
 
 GoForj should add a managed mode to `forj dev`. The transport remains domain-neutral even though Harbor is its first consumer.
 
+Harbor now has the transport-neutral v1 message contract that this mode will use. A GoForj client negotiates the
+`managed-session.v1` capability and sends only bounded request/response methods: `managed-session.v1.register`,
+`managed-session.v1.publications.replace`, and `managed-session.v1.barrier`. Registration carries the canonical
+project/session identity, descriptor digest, client nonce, owner, generated-project capabilities, and a sorted active
+App/runtime set. Harbor returns an attached-session fence and a short-lived ticket; the ticket is never durable. The
+publication method is a complete replacement fenced by the exact session generation and accepts only canonical IPv4
+loopback high-port upstreams. The Compose barrier is explicitly acknowledged, rather than inferred from a process or
+container event. The contract rejects unknown or duplicate JSON fields, trailing values, unsorted identities, invalid
+digests, and cross-session publication facts before any future authority handler is called. It intentionally has no
+server-push event path yet; live attachment, plan delivery, action handling, and publication observation remain the
+next integration slice.
+
 Conceptual invocation:
 
 ```text

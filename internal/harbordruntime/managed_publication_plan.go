@@ -14,9 +14,9 @@ const minimumManagedUpstreamPort uint16 = 1024
 
 // ManagedPublicationFence binds one observed publication to the project session that authorized it.
 type ManagedPublicationFence struct {
-	ProjectID         domain.ProjectID
-	SessionID         domain.SessionID
-	SessionGeneration uint64
+	ProjectID         domain.ProjectID `json:"project_id"`
+	SessionID         domain.SessionID `json:"session_id"`
+	SessionGeneration uint64           `json:"session_generation"`
 }
 
 // Validate reports whether a managed publication fence contains complete session identity.
@@ -35,10 +35,10 @@ func (fence ManagedPublicationFence) Validate() error {
 
 // ManagedEndpointPublication is one private host publication observed for an authorized session endpoint.
 type ManagedEndpointPublication struct {
-	Fence                 ManagedPublicationFence
-	EndpointID            string
-	ReservationGeneration uint64
-	Upstream              netip.AddrPort
+	Fence                 ManagedPublicationFence `json:"fence"`
+	EndpointID            string                  `json:"endpoint_id"`
+	ReservationGeneration uint64                  `json:"reservation_generation"`
+	Upstream              netip.AddrPort          `json:"upstream"`
 }
 
 // Validate reports whether a publication contains only a bounded loopback high-port upstream.
