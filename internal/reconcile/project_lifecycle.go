@@ -23,6 +23,7 @@ import (
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/projectreadiness"
+	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -162,6 +163,7 @@ type ProjectLifecycleCoordinator struct {
 	newOperationID    func() (domain.OperationID, error)
 	newIntentID       func() (domain.IntentID, error)
 	newSession        func(domain.ProjectID, string, time.Time) (domain.ProjectSession, error)
+	newManagedLaunch  func(domain.ProjectID, string, time.Time) (domain.ProjectSession, string, error)
 	startupTimeout    time.Duration
 	readinessInterval time.Duration
 	ctx               context.Context
@@ -188,7 +190,7 @@ func NewProjectLifecycleCoordinator(
 		panic("reconcile.NewProjectLifecycleCoordinator requires non-nil state, journal, supervisor, and route dependencies")
 	}
 	discoverer := projectdiscovery.NewDiscoverer()
-	return newProjectLifecycleCoordinator(
+	coordinator := newProjectLifecycleCoordinator(
 		projectState,
 		operations,
 		newSystemProjectPrimaryLeaseCoordinator(projectState, discoverer),
@@ -202,6 +204,8 @@ func NewProjectLifecycleCoordinator(
 		defaultProjectStartupTimeout,
 		defaultReadinessInterval,
 	)
+	coordinator.newManagedLaunch = newHarborProjectSessionWithTicket
+	return coordinator
 }
 
 // newProjectLifecycleCoordinator keeps clocks, identity, discovery, process, and readiness boundaries deterministic in tests.
@@ -575,17 +579,10 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if at.Before(admission.NetworkUpdatedAt) {
 		at = admission.NetworkUpdatedAt
 	}
-	session, err := coordinator.newSession(record.Operation.ProjectID, project.Project.Path, at)
+	session, managedLaunch, err := coordinator.prepareLaunchSession(record.Operation.ProjectID, project.Project.Path, at, descriptor)
 	if err != nil {
 		coordinator.cancelQueued(record, err)
 		return
-	}
-	if descriptor.TopologyDigest != "" {
-		session.DescriptorDigest = descriptor.TopologyDigest
-		if err := session.Validate(); err != nil {
-			coordinator.cancelQueued(record, fmt.Errorf("validate GoForj project descriptor session: %w", err))
-			return
-		}
 	}
 	begun, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 		return coordinator.state.BeginProjectStart(coordinator.ctx, state.BeginProjectStartRequest{
@@ -609,6 +606,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		CheckoutRoot:         project.Project.Path,
 		GoForjExecutable:     descriptor.Executable,
 		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
+		ManagedLaunch:        managedLaunch,
 		// The daemon retains this transcript for its authenticated clients; mirroring it would mix project output with daemon diagnostics.
 		Stdout: io.Discard,
 		Stderr: io.Discard,
@@ -654,6 +652,56 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
+}
+
+// prepareLaunchSession creates the durable session and, in production, the exact one-use context used by its child.
+func (coordinator *ProjectLifecycleCoordinator) prepareLaunchSession(
+	projectID domain.ProjectID,
+	checkoutRoot string,
+	at time.Time,
+	descriptor projectprocess.ProjectDescriptorObservation,
+) (domain.ProjectSession, *projectprocess.ManagedLaunchContext, error) {
+	var (
+		session domain.ProjectSession
+		ticket  string
+		err     error
+	)
+	if coordinator.newManagedLaunch != nil {
+		session, ticket, err = coordinator.newManagedLaunch(projectID, checkoutRoot, at)
+	} else {
+		session, err = coordinator.newSession(projectID, checkoutRoot, at)
+	}
+	if err != nil {
+		return domain.ProjectSession{}, nil, err
+	}
+	if descriptor.TopologyDigest != "" {
+		session.DescriptorDigest = descriptor.TopologyDigest
+		if err := session.Validate(); err != nil {
+			return domain.ProjectSession{}, nil, fmt.Errorf("validate GoForj project descriptor session: %w", err)
+		}
+	}
+	if ticket == "" {
+		return session, nil, nil
+	}
+	endpoint, err := local.EndpointReference()
+	if err != nil {
+		return domain.ProjectSession{}, nil, fmt.Errorf("resolve managed session endpoint: %w", err)
+	}
+	managedLaunch := &projectprocess.ManagedLaunchContext{
+		SchemaVersion:             projectprocess.ManagedLaunchContextSchemaVersion,
+		ProjectID:                 session.ProjectID,
+		SessionID:                 session.ID,
+		ProjectRoot:               checkoutRoot,
+		ExpectedSessionGeneration: session.Generation + 1,
+		DescriptorDigest:          session.DescriptorDigest,
+		EndpointReference:         endpoint,
+		Owner:                     session.Owner,
+		Ticket:                    ticket,
+	}
+	if err := managedLaunch.Validate(); err != nil {
+		return domain.ProjectSession{}, nil, fmt.Errorf("validate managed launch context: %w", err)
+	}
+	return session, managedLaunch, nil
 }
 
 // projectRuntimeEnvironmentOverrides keeps App and project-owned service publications on one assigned identity.
@@ -760,14 +808,20 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 					return
 				}
 			}
+			completionSession := session
 			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+				current, currentErr := coordinator.state.ActiveProjectSession(coordinator.ctx, session.ProjectID)
+				if currentErr != nil {
+					return state.ProjectLifecycleMutation{}, currentErr
+				}
+				completionSession = current
 				return coordinator.state.CompleteProjectStart(coordinator.ctx, state.CompleteProjectStartRequest{
 					ProjectID:                 mutation.Operation.Operation.ProjectID,
 					OperationID:               mutation.Operation.Operation.ID,
 					OperationKind:             mutation.Operation.Operation.Kind,
 					ExpectedOperationRevision: mutation.Operation.Revision,
-					SessionID:                 session.ID,
-					ExpectedSessionGeneration: session.Generation,
+					SessionID:                 current.ID,
+					ExpectedSessionGeneration: current.Generation,
 					Runtime:                   runtime,
 					Phase:                     completionPhase,
 					At:                        readyAt,
@@ -780,8 +834,8 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
 				coordinator.recordAsyncError(err)
 			}
-			coordinator.startReadyServiceWatcher(completed.Project, session, handle, target, descriptor)
-			coordinator.watchReadyProcess(session, handle)
+			coordinator.startReadyServiceWatcher(completed.Project, completionSession, handle, target, descriptor)
+			coordinator.watchReadyProcess(completionSession, handle)
 			return
 		}
 
@@ -1521,17 +1575,10 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 			at = lowerBound
 		}
 	}
-	session, err := coordinator.newSession(record.Operation.ProjectID, admission.Project.Project.Path, at)
+	session, managedLaunch, err := coordinator.prepareLaunchSession(record.Operation.ProjectID, admission.Project.Project.Path, at, descriptor)
 	if err != nil {
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.session", err)
 		return
-	}
-	if descriptor.TopologyDigest != "" {
-		session.DescriptorDigest = descriptor.TopologyDigest
-		if err := session.Validate(); err != nil {
-			coordinator.failRestartAfterStop(record, stoppedProject, "project.descriptor.invalid", err)
-			return
-		}
 	}
 	begun, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 		return coordinator.state.BeginProjectStart(context.Background(), state.BeginProjectStartRequest{
@@ -1555,6 +1602,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		CheckoutRoot:         admission.Project.Project.Path,
 		GoForjExecutable:     descriptor.Executable,
 		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
+		ManagedLaunch:        managedLaunch,
 		Stdout:               io.Discard,
 		Stderr:               io.Discard,
 	})
@@ -2575,18 +2623,30 @@ func validateNewLifecycleState(projectState projectLifecycleState, ctx context.C
 
 // newHarborProjectSession binds launch shape to a digest while keeping fresh credential material out of durable state.
 func newHarborProjectSession(projectID domain.ProjectID, checkoutRoot string, at time.Time) (domain.ProjectSession, error) {
+	session, _, err := newHarborProjectSessionWithTicket(projectID, checkoutRoot, at)
+	return session, err
+}
+
+// newHarborProjectSessionWithTicket creates a session and its exact launch proof as one atomic identity pair.
+func newHarborProjectSessionWithTicket(projectID domain.ProjectID, checkoutRoot string, at time.Time) (domain.ProjectSession, string, error) {
 	sessionID, err := newLifecycleSessionID()
 	if err != nil {
-		return domain.ProjectSession{}, err
+		return domain.ProjectSession{}, "", err
 	}
 	if strings.TrimSpace(checkoutRoot) == "" {
-		return domain.ProjectSession{}, errors.New("project lifecycle descriptor requires a checkout root")
+		return domain.ProjectSession{}, "", errors.New("project lifecycle descriptor requires a checkout root")
 	}
 	descriptorHash := sha256.Sum256([]byte(checkoutRoot + "\x00forj\x00dev"))
 	descriptor := hex.EncodeToString(descriptorHash[:])
-	credential, err := randomLifecycleDigest()
-	if err != nil {
-		return domain.ProjectSession{}, err
+	rawTicket := make([]byte, 32)
+	if _, err := rand.Read(rawTicket); err != nil {
+		return domain.ProjectSession{}, "", err
+	}
+	ticket := hex.EncodeToString(rawTicket)
+	credentialHash := sha256.Sum256([]byte(ticket))
+	credential := hex.EncodeToString(credentialHash[:])
+	if err := validateLifecycleTicket(ticket); err != nil {
+		return domain.ProjectSession{}, "", err
 	}
 	session := domain.ProjectSession{
 		ID:               sessionID,
@@ -2600,9 +2660,9 @@ func newHarborProjectSession(projectID domain.ProjectID, checkoutRoot string, at
 		UpdatedAt:        lifecycleTime(at),
 	}
 	if err := session.Validate(); err != nil {
-		return domain.ProjectSession{}, err
+		return domain.ProjectSession{}, "", err
 	}
-	return session, nil
+	return session, ticket, nil
 }
 
 // newLifecycleOperationID creates a daemon-owned operation identity independent of client idempotency.
@@ -2632,14 +2692,15 @@ func randomLifecycleIdentity(prefix string) (string, error) {
 	return prefix + hex.EncodeToString(random), nil
 }
 
-// randomLifecycleDigest hashes fresh credential material so only a one-way verifier reaches durable state.
-func randomLifecycleDigest() (string, error) {
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		return "", err
+// validateLifecycleTicket keeps the pre-launch proof inside the same bounded token grammar as the IPC contract.
+func validateLifecycleTicket(ticket string) error {
+	if len(ticket) != 64 {
+		return errors.New("managed session launch ticket must contain 64 bytes")
 	}
-	digest := sha256.Sum256(random)
-	return hex.EncodeToString(digest[:]), nil
+	if _, err := hex.DecodeString(ticket); err != nil {
+		return errors.New("managed session launch ticket must contain lowercase hexadecimal bytes")
+	}
+	return nil
 }
 
 // lifecycleProblem bounds asynchronous failure text before it becomes client-visible durable state.

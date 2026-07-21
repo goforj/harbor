@@ -109,7 +109,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
 	if server.config.ManagedAuthority != nil {
-		serverCapabilities = append(serverCapabilities, managedsession.CapabilityV1)
+		serverCapabilities = append(serverCapabilities, managedsession.CapabilityLaunchContextV1, managedsession.CapabilityV1)
 		serverAuthorize = func(ctx context.Context, hello rpc.Hello) error {
 			if hello.Role == rpc.RoleGoForjSession {
 				if err := normalizeContext(ctx).Err(); err != nil {

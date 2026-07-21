@@ -3,6 +3,8 @@ package authority
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,9 +19,10 @@ import (
 
 // managedSessionAttachment retains the authenticated peer and response needed to replay one registration.
 type managedSessionAttachment struct {
-	request  managedsession.RegisterRequest
-	response managedsession.RegisterResponse
-	peer     local.PeerIdentity
+	request            managedsession.RegisterRequest
+	launchTicketDigest string
+	response           managedsession.RegisterResponse
+	peer               local.PeerIdentity
 }
 
 // RegisterManagedSession authenticates one Harbor-launched process against its awaiting durable session.
@@ -47,6 +50,9 @@ func (authority *Authority) RegisterManagedSession(
 	if authority.managedSessions == nil {
 		authority.managedSessions = make(map[domain.ProjectID]managedSessionAttachment)
 	}
+	replayRequest := request
+	replayRequest.LaunchTicket = ""
+	launchTicketDigest := managedLaunchTicketDigest(request.LaunchTicket)
 	if existing, found := authority.managedSessions[request.ProjectID]; found {
 		active, err := authority.managedStore.ActiveProjectSession(ctx, request.ProjectID)
 		if err != nil {
@@ -62,7 +68,7 @@ func (authority *Authority) RegisterManagedSession(
 			active.Generation == existing.response.Fence.SessionGeneration &&
 			active.State == domain.SessionAttached &&
 			active.Process != nil && active.Process.PID == int64(existing.peer.ProcessID) {
-			if existing.peer == peer && reflect.DeepEqual(existing.request, request) {
+			if existing.peer == peer && reflect.DeepEqual(existing.request, replayRequest) && secureStringEqual(existing.launchTicketDigest, launchTicketDigest) {
 				return existing.response, nil
 			}
 			return managedsession.RegisterResponse{}, fmt.Errorf("project %q already has an attached managed session", request.ProjectID)
@@ -89,6 +95,9 @@ func (authority *Authority) RegisterManagedSession(
 		return managedsession.RegisterResponse{}, fmt.Errorf("managed session %q is not the active project session", request.SessionID)
 	}
 	if active.State != domain.SessionAwaitingAttach {
+		if active.State == domain.SessionPlanned {
+			return managedsession.RegisterResponse{}, fmt.Errorf("%w: session %q is still planned", managedsession.ErrManagedSessionAwaitingAttach, request.SessionID)
+		}
 		return managedsession.RegisterResponse{}, fmt.Errorf("managed session %q is %q, not awaiting attachment", request.SessionID, active.State)
 	}
 	if active.Generation != request.ExpectedSessionGeneration {
@@ -99,6 +108,11 @@ func (authority *Authority) RegisterManagedSession(
 	}
 	if active.DescriptorDigest != request.DescriptorDigest {
 		return managedsession.RegisterResponse{}, errors.New("managed session descriptor digest does not match the admitted project")
+	}
+	if request.LaunchTicket != "" {
+		if err := verifyManagedLaunchTicket(request.LaunchTicket, active.CredentialDigest); err != nil {
+			return managedsession.RegisterResponse{}, err
+		}
 	}
 	if active.Process == nil || active.Process.PID != int64(peer.ProcessID) {
 		return managedsession.RegisterResponse{}, errors.New("managed session peer is not the admitted process")
@@ -154,9 +168,10 @@ func (authority *Authority) RegisterManagedSession(
 		return managedsession.RegisterResponse{}, errors.New("managed session registry returned an unexpected fence")
 	}
 	authority.managedSessions[request.ProjectID] = managedSessionAttachment{
-		request:  request,
-		response: response,
-		peer:     peer,
+		request:            replayRequest,
+		launchTicketDigest: launchTicketDigest,
+		response:           response,
+		peer:               peer,
 	}
 	closeRegistry = false
 	return response, nil
@@ -261,4 +276,26 @@ func newManagedAttachmentTicket() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(value), nil
+}
+
+// verifyManagedLaunchTicket compares the inherited one-use proof with the durable digest without exposing either value.
+func verifyManagedLaunchTicket(ticket, expectedDigest string) error {
+	if !secureStringEqual(managedLaunchTicketDigest(ticket), expectedDigest) {
+		return errors.New("managed session launch ticket does not match the admitted session")
+	}
+	return nil
+}
+
+// managedLaunchTicketDigest hashes one inherited ticket before it enters any process-local replay identity.
+func managedLaunchTicketDigest(ticket string) string {
+	if ticket == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(ticket))
+	return hex.EncodeToString(digest[:])
+}
+
+// secureStringEqual compares replay digests without making ticket material observable through timing.
+func secureStringEqual(left, right string) bool {
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }

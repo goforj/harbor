@@ -86,11 +86,14 @@ func TestControlServerRoutesManagedRoleToExclusiveHandlers(t *testing.T) {
 		Role:           rpc.RoleGoForjSession,
 		ClientVersion:  "forj-test",
 		ProtocolRanges: protocolRanges(),
-		Capabilities:   []rpc.Capability{managedsession.CapabilityV1},
+		Capabilities:   []rpc.Capability{managedsession.CapabilityLaunchContextV1, managedsession.CapabilityV1},
 	})
 	if err != nil {
 		cancelServer()
 		t.Fatalf("negotiate managed client: %v", err)
+	}
+	if !containsCapability(managedClient.Peer().Capabilities, managedsession.CapabilityLaunchContextV1) {
+		t.Fatal("managed server did not advertise the launch-context capability")
 	}
 	t.Cleanup(func() {
 		_ = managedClient.Close()
@@ -111,8 +114,9 @@ func TestControlServerRoutesManagedRoleToExclusiveHandlers(t *testing.T) {
 		DescriptorDigest:          strings.Repeat("a", 64),
 		ClientNonce:               "nonce",
 		Owner:                     domain.SessionOwnerHarbor,
-		Capabilities:              []rpc.Capability{managedsession.CapabilityV1},
+		Capabilities:              []rpc.Capability{managedsession.CapabilityLaunchContextV1, managedsession.CapabilityV1},
 		ActiveApps:                []managedsession.ActiveApp{},
+		LaunchTicket:              strings.Repeat("b", 64),
 	}
 	registerPayload, err := managedsession.MarshalRegisterRequest(registerRequest)
 	if err != nil {

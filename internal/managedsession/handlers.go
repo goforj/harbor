@@ -65,8 +65,14 @@ func (set *HandlerSet) registerHandler() session.Handler {
 		if err != nil {
 			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
 		}
+		if registration.LaunchTicket != "" && !containsManagedSessionCapability(request.Peer.Capabilities, CapabilityLaunchContextV1) {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, errors.New("managed session launch context was not negotiated"))
+		}
 		response, err := set.authority.RegisterManagedSession(ctx, set.peer, registration)
 		if err != nil {
+			if errors.Is(err, ErrManagedSessionAwaitingAttach) {
+				return nil, session.NewHandlerError(rpc.ErrorCodeUnavailable, err)
+			}
 			return nil, session.NewHandlerError(rpc.ErrorCodeInternal, err)
 		}
 		if err := ValidateRegisterCorrelation(registration, response); err != nil {

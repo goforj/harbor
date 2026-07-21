@@ -197,6 +197,37 @@ func TestManagedSessionHandlersRejectUnauthenticatedOrMalformedCalls(t *testing.
 	}
 }
 
+// TestManagedSessionHandlerRejectsUnnegotiatedLaunchTicket prevents a client from smuggling optional proof past handshake negotiation.
+func TestManagedSessionHandlerRejectsUnnegotiatedLaunchTicket(t *testing.T) {
+	authority := managedSessionHandlerTestAuthority()
+	set, err := NewHandlerSet(managedSessionHandlerTestPeer(), authority)
+	if err != nil {
+		t.Fatalf("NewHandlerSet() error = %v", err)
+	}
+	request := managedSessionTestRequest()
+	request.Capabilities = []rpc.Capability{CapabilityLaunchContextV1, CapabilityV1, "project-descriptor.v1"}
+	request.LaunchTicket = strings.Repeat("b", 64)
+	payload, err := MarshalRegisterRequest(request)
+	if err != nil {
+		t.Fatalf("MarshalRegisterRequest() error = %v", err)
+	}
+	_, err = set.Handlers()[MethodRegister](t.Context(), session.Request{
+		Method:  MethodRegister,
+		Payload: payload,
+		Peer:    managedSessionHandlerTestSessionPeer(),
+	})
+	if err == nil {
+		t.Fatal("handler accepted unnegotiated launch ticket")
+	}
+	var handlerError *session.HandlerError
+	if !errors.As(err, &handlerError) || handlerError.Code() != rpc.ErrorCodePermissionDenied {
+		t.Fatalf("handler error = %v, want permission denied", err)
+	}
+	if authority.registerCalls != 0 {
+		t.Fatalf("authority register calls = %d, want zero", authority.registerCalls)
+	}
+}
+
 // TestManagedSessionHandlersRedactAuthorityFailuresAndRejectBadResponses keeps implementation errors off the wire.
 func TestManagedSessionHandlersRedactAuthorityFailuresAndRejectBadResponses(t *testing.T) {
 	registrationPayload := mustManagedSessionHandlerPayload(t, MarshalRegisterRequest, managedSessionTestRequest)
@@ -227,6 +258,22 @@ func TestManagedSessionHandlersRedactAuthorityFailuresAndRejectBadResponses(t *t
 			}
 			// HandlerError intentionally retains the daemon-local cause for logging; the generic RPC server redacts it when encoding the response.
 		})
+	}
+}
+
+// TestManagedSessionHandlerClassifiesPlannedStartupAsUnavailable preserves a narrow retryable race category.
+func TestManagedSessionHandlerClassifiesPlannedStartupAsUnavailable(t *testing.T) {
+	authority := managedSessionHandlerTestAuthority()
+	authority.err = ErrManagedSessionAwaitingAttach
+	set, err := NewHandlerSet(managedSessionHandlerTestPeer(), authority)
+	if err != nil {
+		t.Fatalf("NewHandlerSet() error = %v", err)
+	}
+	body := mustManagedSessionHandlerPayload(t, MarshalRegisterRequest, managedSessionTestRequest)
+	_, err = set.Handlers()[MethodRegister](t.Context(), session.Request{Method: MethodRegister, Payload: body, Peer: managedSessionHandlerTestSessionPeer()})
+	var handlerError *session.HandlerError
+	if !errors.As(err, &handlerError) || handlerError.Code() != rpc.ErrorCodeUnavailable {
+		t.Fatalf("handler error = %#v, want unavailable HandlerError", err)
 	}
 }
 

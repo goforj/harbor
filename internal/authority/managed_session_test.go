@@ -2,6 +2,8 @@ package authority
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/netip"
 	"strings"
@@ -187,5 +189,48 @@ func TestAuthorityManagedSessionRejectsPeerDrift(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "peer") {
 		t.Fatalf("peer drift error = %v, want peer rejection", err)
+	}
+}
+
+// TestAuthorityManagedSessionVerifiesNegotiatedLaunchTicket binds the inherited credential to durable session authority.
+func TestAuthorityManagedSessionVerifiesNegotiatedLaunchTicket(t *testing.T) {
+	store := managedSessionAuthorityFixture()
+	ticket := strings.Repeat("launch-ticket-", 8)
+	digest := sha256.Sum256([]byte(ticket))
+	store.session.CredentialDigest = hex.EncodeToString(digest[:])
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
+	request := managedSessionAuthorityRequest()
+	request.Capabilities = []rpc.Capability{managedsession.CapabilityLaunchContextV1, managedsession.CapabilityV1}
+	request.LaunchTicket = ticket
+	if _, err := authority.RegisterManagedSession(t.Context(), peer, request); err != nil {
+		t.Fatalf("RegisterManagedSession(valid launch ticket) error = %v", err)
+	}
+	attachment := authority.managedSessions[request.ProjectID]
+	if attachment.request.LaunchTicket != "" || attachment.launchTicketDigest != hex.EncodeToString(digest[:]) {
+		t.Fatalf("managed replay identity retained launch proof: request=%#v digest=%q", attachment.request, attachment.launchTicketDigest)
+	}
+
+	store = managedSessionAuthorityFixture()
+	authority = newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	request.LaunchTicket = "wrong-launch-ticket"
+	if _, err := authority.RegisterManagedSession(t.Context(), peer, request); err == nil || !strings.Contains(err.Error(), "launch ticket") {
+		t.Fatalf("RegisterManagedSession(wrong launch ticket) error = %v, want launch-ticket rejection", err)
+	}
+}
+
+// TestAuthorityManagedSessionReportsPlannedStartupAsRetryable isolates the child-before-process-evidence race.
+func TestAuthorityManagedSessionReportsPlannedStartupAsRetryable(t *testing.T) {
+	store := managedSessionAuthorityFixture()
+	store.session.State = domain.SessionPlanned
+	store.session.Generation = 1
+	store.session.Process = nil
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	request := managedSessionAuthorityRequest()
+	request.ExpectedSessionGeneration = 1
+	peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
+	_, err := authority.RegisterManagedSession(t.Context(), peer, request)
+	if !errors.Is(err, managedsession.ErrManagedSessionAwaitingAttach) {
+		t.Fatalf("RegisterManagedSession() error = %v, want awaiting-attach sentinel", err)
 	}
 }

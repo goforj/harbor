@@ -135,6 +135,32 @@ func TestManagedSessionRegistrationValidationRejectsUnsafeAuthority(t *testing.T
 	}
 }
 
+// TestManagedSessionLaunchTicketRequiresNegotiatedCapability keeps optional credential fields compatible with v1 peers.
+func TestManagedSessionLaunchTicketRequiresNegotiatedCapability(t *testing.T) {
+	request := managedSessionTestRequest()
+	request.LaunchTicket = strings.Repeat("b", 64)
+	if err := request.Validate(); err == nil {
+		t.Fatal("launch ticket without capability passed validation")
+	}
+	request.Capabilities = []rpc.Capability{CapabilityLaunchContextV1, CapabilityV1, "project-descriptor.v1"}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("negotiated launch ticket rejected: %v", err)
+	}
+	request.LaunchTicket = strings.Repeat(" ", 64)
+	if err := request.Validate(); err == nil {
+		t.Fatal("whitespace launch ticket passed validation")
+	}
+	request.LaunchTicket = ""
+	request.Capabilities = []rpc.Capability{CapabilityV1, "project-descriptor.v1"}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("empty optional launch ticket rejected: %v", err)
+	}
+	request.Capabilities = []rpc.Capability{CapabilityLaunchContextV1, CapabilityV1, "project-descriptor.v1"}
+	if err := request.Validate(); err == nil {
+		t.Fatal("negotiated launch capability without ticket passed validation")
+	}
+}
+
 // TestManagedSessionStrictDecodersRejectUnknownDuplicateAndTrailingFields prevents schema smuggling through JSON.
 func TestManagedSessionStrictDecodersRejectUnknownDuplicateAndTrailingFields(t *testing.T) {
 	requestPayload, err := MarshalRegisterRequest(managedSessionTestRequest())
