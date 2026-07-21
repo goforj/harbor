@@ -218,6 +218,9 @@ jobs:
       # hosted runner's Unix socket even when the runner image exports a Docker-in-Docker TCP override.
       DOCKER_HOST: unix:///var/run/docker.sock
       DOCKER_CONTEXT: default
+      HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-docker-product-evidence
+      HARBOR_DOCKER_PRODUCT_COMMIT: ${{ github.sha }}
+      HARBOR_DOCKER_PRODUCT_ENGINE_KIND: docker-engine
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -237,6 +240,15 @@ jobs:
           cache-dependency-path: |
             go.sum
             .ci/goforj/go.sum
+
+      - name: Capture Docker product runner identity
+        run: |
+          test -n "${RUNNER_NAME:-}"
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
+          printf 'HARBOR_DOCKER_PRODUCT_RUNNER_NAME=%s\n' "$RUNNER_NAME" >> "$GITHUB_ENV"
+          printf 'HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE=%s\n' "$ImageOS" >> "$GITHUB_ENV"
+          printf 'HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE_VERSION=%s\n' "$ImageVersion" >> "$GITHUB_ENV"
 
       - name: Build pinned GoForj CLI
         run: |
@@ -283,6 +295,9 @@ jobs:
           HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
         run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test -tags='projectidentityacceptance projectdockeracceptance' -count=1 -timeout=10m -run '^TestNativeGeneratedMySQLProjectsExposeComposeServices$' ./internal/reconcile
 
+      - name: Verify Docker product evidence
+        run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go run ./cmd/platformproof verify-docker-projects --root "${HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY}" --commit "${GITHUB_SHA}" --platforms linux --app-port 3000 --service-port 3306
+
       - name: Remove generated-project proof identities
         if: always()
         run: |
@@ -308,6 +323,15 @@ jobs:
               sudo ip address delete "$address/32" dev "$interface"
             done < "$ownership_file"
           fi
+
+      - name: Upload Docker product evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-product-proof-linux
+          path: ${{ env.HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY }}
+          if-no-files-found: error
+          retention-days: 7
 
   frontend:
     name: Frontend
