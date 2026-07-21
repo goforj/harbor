@@ -100,6 +100,51 @@ func TestObserveManagedPublicationsRepairsMissingServiceReservation(t *testing.T
 	}
 }
 
+// TestObserveManagedPublicationsWaitsForFullNetworkStage proves a pre-full barrier reports retryable readiness instead of a misleading reservation defect.
+func TestObserveManagedPublicationsWaitsForFullNetworkStage(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.12")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.project.Project.State = domain.ProjectStarting
+	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+	fixture.state.network.Stage = state.NetworkStageResolver
+	session := managedPublicationTestSession(fixture.state.project.Project.ID)
+	stateSource := &managedPublicationLifecycleState{leaseState: fixture.state, session: session}
+	descriptor := projectprocess.ProjectDescriptorObservation{
+		ServiceRequirementsSupported: true,
+		ServiceRequirements: []goforj.ServiceRequirement{{
+			ID: "requirement.mysql.database", ServiceKey: "mysql", Owner: goforj.ServiceRequirementOwnerCompose,
+			Lifecycle: goforj.ServiceRequirementLifecycleProject,
+			Endpoints: []goforj.ServiceEndpoint{{
+				ID: "requirement.mysql.database.endpoint.tcp", Protocol: goforj.ServiceEndpointProtocolTCP,
+				NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost,
+			}},
+		}},
+	}
+	supervisor := &managedPublicationTestSupervisor{
+		descriptor: descriptor,
+		ports: projectprocess.ServicePortObservation{
+			Supported: true, Available: true,
+			Ports: []projectprocess.ServicePort{{Address: "127.0.0.1", Private: 3306, Public: 43106, Protocol: "tcp", Replica: 1}},
+		},
+	}
+	coordinator := &ProjectLifecycleCoordinator{state: stateSource, supervisor: supervisor, primaryLeases: fixture.coordinator}
+	fence := managedPublicationTestFence(fixture.state.project.Project.ID, session)
+
+	_, err := coordinator.ObserveManagedPublicationsForPhase(t.Context(), fixture.state.project.Project.ID, session.ID, fence, true)
+	if err == nil {
+		t.Fatal("ObserveManagedPublicationsForPhase() error = nil, want retryable pre-full network error")
+	}
+	if !strings.Contains(err.Error(), "full stage is required") {
+		t.Fatalf("ObserveManagedPublicationsForPhase() error = %v, want full-stage explanation", err)
+	}
+	if strings.Contains(err.Error(), "no exact durable reservation") {
+		t.Fatalf("ObserveManagedPublicationsForPhase() error = %v, retained misleading reservation error", err)
+	}
+	if len(fixture.state.replaceCalls) != 0 {
+		t.Fatalf("pre-full service reservation writes = %d, want 0", len(fixture.state.replaceCalls))
+	}
+}
+
 // managedPublicationTestSession creates a valid attached Harbor-owned process fence for observer tests.
 func managedPublicationTestSession(projectID domain.ProjectID) domain.ProjectSession {
 	at := time.Date(2026, time.July, 21, 18, 0, 0, 0, time.UTC)

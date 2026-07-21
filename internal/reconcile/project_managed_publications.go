@@ -9,6 +9,7 @@ import (
 	"github.com/goforj/harbor/internal/goforj"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/managedsession"
+	"github.com/goforj/harbor/internal/state"
 )
 
 // managedPublicationObserver is the daemon-owned observation boundary used by the authenticated managed barrier.
@@ -105,6 +106,9 @@ func (coordinator *ProjectLifecycleCoordinator) observeManagedPublications(
 	}
 	if err := network.Validate(); err != nil {
 		return nil, fmt.Errorf("validate managed publication network: %w", err)
+	}
+	if network.Stage != state.NetworkStageFull {
+		return nil, fmt.Errorf("%w: managed publication network is at %q stage; full stage is required", managedsession.ErrManagedSessionNotReady, network.Stage)
 	}
 
 	portReader, ok := coordinator.supervisor.(projectServicePortReader)

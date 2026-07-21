@@ -29,6 +29,8 @@ import (
 
 const (
 	defaultProjectStartupTimeout     = 2 * time.Minute
+	defaultProjectLaunchTimeout      = 30 * time.Second
+	defaultProjectProcessJoinTimeout = 15 * time.Second
 	defaultReadinessInterval         = 150 * time.Millisecond
 	defaultReadinessHTTPTimeout      = time.Second
 	defaultServiceObserveTimeout     = 20 * time.Second
@@ -166,30 +168,32 @@ type ProjectRouteReconciler interface {
 
 // ProjectLifecycleCoordinator turns durable start, stop, and scoped restart intents into supervised GoForj development processes.
 type ProjectLifecycleCoordinator struct {
-	state             projectLifecycleState
-	operations        projectLifecycleJournal
-	primaryLeases     *projectPrimaryLeaseCoordinator
-	readiness         projectReadinessProber
-	supervisor        projectProcessSupervisor
-	routes            ProjectRouteReconciler
-	now               func() time.Time
-	newOperationID    func() (domain.OperationID, error)
-	newIntentID       func() (domain.IntentID, error)
-	newSession        func(domain.ProjectID, string, time.Time) (domain.ProjectSession, error)
-	newManagedLaunch  func(domain.ProjectID, string, time.Time) (domain.ProjectSession, string, error)
-	startupTimeout    time.Duration
-	readinessInterval time.Duration
-	ctx               context.Context
-	cancel            context.CancelFunc
-	mutex             sync.Mutex
-	closed            bool
-	closeDone         chan struct{}
-	closeErr          error
-	asyncErr          error
-	dispatched        map[domain.OperationID]struct{}
-	recoveredStarts   []state.OperationRecord
-	handles           map[domain.ProjectID]*projectprocess.Handle
-	wait              sync.WaitGroup
+	state              projectLifecycleState
+	operations         projectLifecycleJournal
+	primaryLeases      *projectPrimaryLeaseCoordinator
+	readiness          projectReadinessProber
+	supervisor         projectProcessSupervisor
+	routes             ProjectRouteReconciler
+	now                func() time.Time
+	newOperationID     func() (domain.OperationID, error)
+	newIntentID        func() (domain.IntentID, error)
+	newSession         func(domain.ProjectID, string, time.Time) (domain.ProjectSession, error)
+	newManagedLaunch   func(domain.ProjectID, string, time.Time) (domain.ProjectSession, string, error)
+	startupTimeout     time.Duration
+	launchTimeout      time.Duration
+	processJoinTimeout time.Duration
+	readinessInterval  time.Duration
+	ctx                context.Context
+	cancel             context.CancelFunc
+	mutex              sync.Mutex
+	closed             bool
+	closeDone          chan struct{}
+	closeErr           error
+	asyncErr           error
+	dispatched         map[domain.OperationID]struct{}
+	recoveredStarts    []state.OperationRecord
+	handles            map[domain.ProjectID]*projectprocess.Handle
+	wait               sync.WaitGroup
 }
 
 // NewProjectLifecycleCoordinator creates the production managed-process reconciler.
@@ -246,23 +250,25 @@ func newProjectLifecycleCoordinator(
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ProjectLifecycleCoordinator{
-		state:             projectState,
-		operations:        operations,
-		primaryLeases:     primaryLeases,
-		readiness:         readiness,
-		supervisor:        supervisor,
-		routes:            routes,
-		now:               now,
-		newOperationID:    newOperationID,
-		newIntentID:       newIntentID,
-		newSession:        newSession,
-		startupTimeout:    startupTimeout,
-		readinessInterval: readinessInterval,
-		ctx:               ctx,
-		cancel:            cancel,
-		dispatched:        make(map[domain.OperationID]struct{}),
-		handles:           make(map[domain.ProjectID]*projectprocess.Handle),
-		closeDone:         make(chan struct{}),
+		state:              projectState,
+		operations:         operations,
+		primaryLeases:      primaryLeases,
+		readiness:          readiness,
+		supervisor:         supervisor,
+		routes:             routes,
+		now:                now,
+		newOperationID:     newOperationID,
+		newIntentID:        newIntentID,
+		newSession:         newSession,
+		startupTimeout:     startupTimeout,
+		launchTimeout:      defaultProjectLaunchTimeout,
+		processJoinTimeout: defaultProjectProcessJoinTimeout,
+		readinessInterval:  readinessInterval,
+		ctx:                ctx,
+		cancel:             cancel,
+		dispatched:         make(map[domain.OperationID]struct{}),
+		handles:            make(map[domain.ProjectID]*projectprocess.Handle),
+		closeDone:          make(chan struct{}),
 	}
 }
 
@@ -454,6 +460,28 @@ func lifecycleContextEnded(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// withProjectLaunchTimeout bounds pre-attachment process setup so a child-launch race cannot strand a start worker.
+func (coordinator *ProjectLifecycleCoordinator) withProjectLaunchTimeout() (context.Context, context.CancelFunc) {
+	timeout := coordinator.launchTimeout
+	if timeout <= 0 {
+		timeout = defaultProjectLaunchTimeout
+	}
+	parent := coordinator.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+// withProjectJoinTimeout bounds process stop and durable attachment joins while retaining exact evidence on timeout.
+func (coordinator *ProjectLifecycleCoordinator) withProjectJoinTimeout() (context.Context, context.CancelFunc) {
+	timeout := coordinator.processJoinTimeout
+	if timeout <= 0 {
+		timeout = defaultProjectProcessJoinTimeout
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}
+
 // transitionQueuedCancellation commits the only safe terminal edge before lifecycle effects begin.
 func (coordinator *ProjectLifecycleCoordinator) transitionQueuedCancellation(record state.OperationRecord) error {
 	at := lifecycleTime(coordinator.now())
@@ -631,7 +659,8 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 
-	handle, err := coordinator.supervisor.Start(coordinator.ctx, projectprocess.StartRequest{
+	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
+	handle, err := coordinator.supervisor.Start(launchContext, projectprocess.StartRequest{
 		ProjectID:            record.Operation.ProjectID,
 		SessionID:            session.ID,
 		CheckoutRoot:         project.Project.Path,
@@ -642,6 +671,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		Stdout: io.Discard,
 		Stderr: io.Discard,
 	})
+	cancelLaunch()
 	if err != nil {
 		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
 			problem := domain.Problem{
@@ -670,8 +700,9 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if attachedAt.Before(session.UpdatedAt) {
 		attachedAt = session.UpdatedAt
 	}
+	attachContext, cancelAttach := coordinator.withProjectJoinTimeout()
 	attached, err := retryLifecycleResult(func() (domain.ProjectSession, error) {
-		return coordinator.state.AttachProjectProcess(coordinator.ctx, state.AttachProjectProcessRequest{
+		return coordinator.state.AttachProjectProcess(attachContext, state.AttachProjectProcessRequest{
 			ProjectID:                 record.Operation.ProjectID,
 			SessionID:                 session.ID,
 			ExpectedSessionGeneration: session.Generation,
@@ -680,6 +711,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 			At:                        attachedAt,
 		})
 	})
+	cancelAttach()
 	if err != nil {
 		coordinator.stopAndFailUnattached(begun, session, handle, err)
 		return
@@ -1296,7 +1328,10 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 	if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "withdraw stopping project routes"); err != nil {
 		coordinator.recordAsyncError(err)
 	}
-	if err := coordinator.supervisor.Stop(context.Background(), record.Operation.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
+	stopErr := coordinator.supervisor.Stop(stopContext, record.Operation.ProjectID, session.ID)
+	cancelStop()
+	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		stopErr := fmt.Errorf("stop project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -1309,7 +1344,9 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 		}
 		return
 	}
-	exit, err := handle.Wait(context.Background())
+	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
+	exit, err := handle.Wait(joinContext)
+	cancelJoin()
 	if err != nil {
 		joinErr := fmt.Errorf("join project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
@@ -1401,7 +1438,10 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 		}
 		return
 	}
-	if err := coordinator.supervisor.Stop(context.Background(), record.Operation.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
+	stopErr := coordinator.supervisor.Stop(stopContext, record.Operation.ProjectID, session.ID)
+	cancelStop()
+	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		stopErr := fmt.Errorf("restart project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -1414,7 +1454,9 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 		}
 		return
 	}
-	exit, err := handle.Wait(context.Background())
+	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
+	exit, err := handle.Wait(joinContext)
+	cancelJoin()
 	if err != nil {
 		joinErr := fmt.Errorf("join restart project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
@@ -1548,7 +1590,10 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 	if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "withdraw restarting project routes"); err != nil {
 		coordinator.recordAsyncError(err)
 	}
-	if err := coordinator.supervisor.Stop(context.Background(), record.Operation.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
+	stopErr := coordinator.supervisor.Stop(stopContext, record.Operation.ProjectID, session.ID)
+	cancelStop()
+	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		stopErr := fmt.Errorf("restart project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -1561,7 +1606,9 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 		}
 		return
 	}
-	exit, err := handle.Wait(context.Background())
+	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
+	exit, err := handle.Wait(joinContext)
+	cancelJoin()
 	if err != nil {
 		joinErr := fmt.Errorf("join restart project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
@@ -1647,7 +1694,8 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.state", err)
 		return
 	}
-	handle, err := coordinator.supervisor.Start(context.Background(), projectprocess.StartRequest{
+	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
+	handle, err := coordinator.supervisor.Start(launchContext, projectprocess.StartRequest{
 		ProjectID:            record.Operation.ProjectID,
 		SessionID:            session.ID,
 		CheckoutRoot:         admission.Project.Project.Path,
@@ -1657,6 +1705,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		Stdout:               io.Discard,
 		Stderr:               io.Discard,
 	})
+	cancelLaunch()
 	if err != nil {
 		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
 			if quarantineErr := coordinator.quarantineProjectProcessScope(context.Background(), begun.Operation, session, processScopeRecoveryProblem()); quarantineErr != nil {
@@ -1673,8 +1722,9 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 	if attachedAt.Before(session.UpdatedAt) {
 		attachedAt = session.UpdatedAt
 	}
+	attachContext, cancelAttach := coordinator.withProjectJoinTimeout()
 	attached, err := retryLifecycleResult(func() (domain.ProjectSession, error) {
-		return coordinator.state.AttachProjectProcess(context.Background(), state.AttachProjectProcessRequest{
+		return coordinator.state.AttachProjectProcess(attachContext, state.AttachProjectProcessRequest{
 			ProjectID:                 record.Operation.ProjectID,
 			SessionID:                 session.ID,
 			ExpectedSessionGeneration: session.Generation,
@@ -1682,6 +1732,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 			At:                        attachedAt,
 		})
 	})
+	cancelAttach()
 	if err != nil {
 		coordinator.stopAndFailUnattached(begun, session, handle, err)
 		return
@@ -2267,10 +2318,15 @@ func (coordinator *ProjectLifecycleCoordinator) failStartWithoutProcess(mutation
 
 // stopAndFailUnattached joins an accepted process that never reached durable evidence attachment.
 func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle *projectprocess.Handle, cause error) {
-	if err := coordinator.supervisor.Stop(context.Background(), session.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
+	stopErr := coordinator.supervisor.Stop(stopContext, session.ProjectID, session.ID)
+	cancelStop()
+	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		coordinator.recordAsyncError(err)
 	}
-	exit, err := handle.Wait(context.Background())
+	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
+	exit, err := handle.Wait(joinContext)
+	cancelJoin()
 	if err != nil {
 		coordinator.releaseHandle(session.ProjectID, handle)
 		// Attach the immutable birth before retaining an unresolved scope; a planned row has
@@ -2333,7 +2389,10 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation s
 
 // stopAndFailAttached joins an exact process before retiring its durable process-backed session.
 func (coordinator *ProjectLifecycleCoordinator) stopAndFailAttached(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle *projectprocess.Handle, code string, cause error) {
-	if err := coordinator.supervisor.Stop(context.Background(), session.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
+	stopErr := coordinator.supervisor.Stop(stopContext, session.ProjectID, session.ID)
+	cancelStop()
+	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
 		coordinator.recordAsyncError(err)
 	}
 	coordinator.failExitedStart(mutation, session, handle, code, cause)
@@ -2341,7 +2400,9 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailAttached(mutation sta
 
 // failExitedStart records failure only after the supervised process tree has joined.
 func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle *projectprocess.Handle, code string, cause error) {
-	exit, err := handle.Wait(context.Background())
+	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
+	exit, err := handle.Wait(joinContext)
+	cancelJoin()
 	coordinator.releaseHandle(session.ProjectID, handle)
 	if err != nil {
 		if quarantineErr := coordinator.quarantineProjectProcessScope(

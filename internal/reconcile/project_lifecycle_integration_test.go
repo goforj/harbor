@@ -675,6 +675,44 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	)
 }
 
+// TestProjectLifecycleCoordinatorLeavesNoStartingProjectAfterReadinessTimeout proves a stalled child converges to a terminal failure.
+func TestProjectLifecycleCoordinatorLeavesNoStartingProjectAfterReadinessTimeout(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, port := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	installProjectLifecycleIntegrationForj(t, port)
+	t.Setenv(projectLifecycleHelperModeEnvironment, projectLifecycleHelperIgnoringListenerMode)
+	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 100 * time.Millisecond})
+	coordinator, _ := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
+	coordinator.startupTimeout = 100 * time.Millisecond
+	coordinator.processJoinTimeout = 2 * time.Second
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := coordinator.Close(ctx); err != nil && ctx.Err() == nil {
+			t.Errorf("close lifecycle coordinator: %v", err)
+		}
+	})
+
+	if _, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID: project.ID, OperationID: "operation-start-readiness-timeout", IntentID: "intent-start-readiness-timeout",
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	failed := waitForProjectLifecycleState(t, store, project.ID, domain.ProjectFailed)
+	if failed.Project.State != domain.ProjectFailed {
+		t.Fatalf("project after readiness timeout = %q, want failed", failed.Project.State)
+	}
+	operation := waitForProjectLifecycleOperationState(t, journal, "intent-start-readiness-timeout", domain.OperationFailed)
+	if operation.Operation.Problem == nil || operation.Operation.Problem.Code != "project.readiness.timeout" {
+		t.Fatalf("readiness timeout operation = %#v", operation.Operation)
+	}
+	if _, err := store.ActiveProjectSession(t.Context(), project.ID); err == nil {
+		t.Fatal("readiness timeout retained an active session")
+	}
+}
+
 // TestProjectLifecycleCoordinatorStopsAfterRouteWithdrawalFailure proves a publication failure cannot strand a project in stopping.
 func TestProjectLifecycleCoordinatorStopsAfterRouteWithdrawalFailure(t *testing.T) {
 	store, journal := newProjectLifecycleIntegrationState(t)
