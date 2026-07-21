@@ -4,6 +4,8 @@ Status: durable scoped project restart, resilient quarantined-project Start conv
 
 Last updated: 2026-07-21
 
+Commit `bd54830` closes a managed-session restart gap: the authenticated Compose barrier now idempotently reconciles descriptor-declared host service reservations before joining observed ports. An already-attached GoForj process therefore converges after a daemon restart even when its original Start admission did not write the reservation; the focused regression and full root test suite pass. Native Docker Desktop proof remains outstanding.
+
 ## Read this first
 
 The managed runtime plan now carries GoForj-declared, secret-free service-consumer assignments for database host/port, SMTP host/port, and Redis addresses. Harbor materializes those values only from the exact observed loopback publication, and GoForj applies them in the process-local overlay for App processes, managed setup tasks, database preparation, and migrations (`e35f8220e9b2efb61c86e65d49c8caa8e52d232c` in the dedicated GoForj worktree); driver-specific URL/DSN shapes remain fail-closed. The next evidence edge is native macOS Docker Desktop execution, followed by the remaining lifecycle/event contract. Durable broker evidence is now persisted with first-start attachment, and recovery revalidates and adopts the surviving broker on Linux/macOS; unsupported readers fail closed to historical spool output.
