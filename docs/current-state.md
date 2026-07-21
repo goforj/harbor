@@ -10,6 +10,8 @@ The macOS retained-lease repair boundary now correlates every endpoint row back 
 
 Project activity now surfaces the owner-private output spool as explicitly historical output when the live supervisor is unavailable. The retained tail remains read-only diagnostics rather than process authority; malformed or missing history leaves the activity view cleanly unavailable, and a later live stream replaces the historical view at a fresh cursor boundary.
 
+The new `OutputBrokerJournal` boundary reuses that checksummed spool for exact frame replay, idempotent append retries, bounded live subscribers, explicit backpressure gaps, and monotonic acknowledgements. It is a transport-neutral journal only: no broker process, authenticated endpoint, pipe re-adoption, or stop authority is active yet.
+
 This document describes the repository as it works today. The other documents in this directory describe Harbor's intended product and architecture; their phase gates are not claims that the corresponding work is complete.
 
 ## Product shape
