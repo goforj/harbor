@@ -27,6 +27,14 @@ func TestVerifyDockerProjectEvidenceDirectory(t *testing.T) {
 	}
 }
 
+// TestVerifyDockerProjectEvidenceDirectoryRejectsUnknownPlatform keeps the product gate from accepting unreviewed OS semantics.
+func TestVerifyDockerProjectEvidenceDirectoryRejectsUnknownPlatform(t *testing.T) {
+	t.Parallel()
+	if err := VerifyDockerProjectEvidenceDirectory(t.TempDir(), DockerProjectRequirement{Platforms: []string{"plan9"}, AppPort: 3000, ServicePort: 3306}); err == nil || !strings.Contains(err.Error(), "unsupported Docker project proof platform") {
+		t.Fatalf("expected unsupported platform rejection, got %v", err)
+	}
+}
+
 // TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence exercises every fail-closed manifest boundary.
 func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T) {
 	t.Parallel()
@@ -41,6 +49,9 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 		{name: "wrong engine", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Dependencies.EngineKind = "remote-docker"
 		}, want: "unsupported Docker engine kind"},
+		{name: "Linux Docker Desktop", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.Dependencies.EngineKind = "docker-desktop"
+		}, want: "requires docker-engine on Linux"},
 		{name: "old engine", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Dependencies.EngineVersion = "27.5.1"
 		}, want: "below the supported major version"},
@@ -111,6 +122,25 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 	}
 }
 
+// TestVerifyDockerProjectEvidenceRequiresDesktopOnClientPlatforms prevents a hosted Engine result from standing in for Docker Desktop proof.
+func TestVerifyDockerProjectEvidenceRequiresDesktopOnClientPlatforms(t *testing.T) {
+	t.Parallel()
+	for _, platform := range []string{"darwin", "windows"} {
+		platform := platform
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			lifecycle := validDockerProjectFixture(platform)
+			lifecycle.Dependencies.EngineKind = "docker-engine"
+			writeDockerProjectEvidenceFixture(t, root, lifecycle, validDockerCleanupFixture(platform))
+			err := VerifyDockerProjectEvidenceDirectory(root, DockerProjectRequirement{Commit: "abc123", Platforms: []string{platform}, AppPort: 3000, ServicePort: 3306})
+			if err == nil || !strings.Contains(err.Error(), "requires docker-desktop") {
+				t.Fatalf("expected Docker Desktop requirement, got %v", err)
+			}
+		})
+	}
+}
+
 // TestVerifyDockerProjectEvidenceDirectoryRejectsUntrustedDocuments keeps the product verifier strict before it sees platform facts.
 func TestVerifyDockerProjectEvidenceDirectoryRejectsUntrustedDocuments(t *testing.T) {
 	t.Parallel()
@@ -151,6 +181,10 @@ func TestWriteDockerProjectEvidenceCreatesOnlyTheFixedManifests(t *testing.T) {
 
 // validDockerProjectFixture builds a complete generated-project lifecycle manifest for verifier tests.
 func validDockerProjectFixture(platform string) DockerProjectEvidence {
+	engineKind := "docker-engine"
+	if platform == "darwin" || platform == "windows" {
+		engineKind = "docker-desktop"
+	}
 	return DockerProjectEvidence{
 		SchemaVersion: DockerProjectEvidenceSchemaVersion,
 		Capability:    dockerProjectCapability,
@@ -166,7 +200,7 @@ func validDockerProjectFixture(platform string) DockerProjectEvidence {
 		Dependencies: DependencyEvidence{
 			GoForjVersion: "0.19.0",
 			GoForjDigest:  strings.Repeat("a", 64),
-			EngineKind:    "docker-engine",
+			EngineKind:    engineKind,
 			EngineVersion: "28.5.2",
 		},
 		Projects: []ProjectEvidence{

@@ -181,6 +181,11 @@ func VerifyDockerProjectEvidenceDirectory(root string, requirement DockerProject
 	if len(requirement.Platforms) == 0 {
 		return errors.New("at least one required platform is required")
 	}
+	for _, platform := range requirement.Platforms {
+		if !isSupportedDockerProjectPlatform(platform) {
+			return fmt.Errorf("unsupported Docker project proof platform %q", platform)
+		}
+	}
 	if requirement.AppPort == 0 || requirement.ServicePort == 0 {
 		return errors.New("required app and service ports must be non-zero")
 	}
@@ -208,6 +213,16 @@ func VerifyDockerProjectEvidenceDirectory(root string, requirement DockerProject
 		return fmt.Errorf("evidence contains unexpected platform results: %d lifecycles and %d cleanups", len(lifecycles), len(cleanups))
 	}
 	return nil
+}
+
+// isSupportedDockerProjectPlatform keeps the product gate bound to the OS profiles with reviewed runtime semantics.
+func isSupportedDockerProjectPlatform(platform string) bool {
+	switch platform {
+	case "linux", "darwin", "windows":
+		return true
+	default:
+		return false
+	}
 }
 
 // collectDockerProjectEvidence admits only the two fixed manifests expected from every product worker.
@@ -323,6 +338,16 @@ func verifyDependencies(dependencies DependencyEvidence, platform string) error 
 	}
 	if dependencies.EngineKind != "docker-engine" && dependencies.EngineKind != "docker-desktop" {
 		return fmt.Errorf("%s evidence has unsupported Docker engine kind %q", platform, dependencies.EngineKind)
+	}
+	switch platform {
+	case "linux":
+		if dependencies.EngineKind != "docker-engine" {
+			return fmt.Errorf("%s evidence requires docker-engine on Linux, got %q", platform, dependencies.EngineKind)
+		}
+	case "darwin", "windows":
+		if dependencies.EngineKind != "docker-desktop" {
+			return fmt.Errorf("%s evidence requires docker-desktop on %s, got %q", platform, platform, dependencies.EngineKind)
+		}
 	}
 	if err := verifyDockerEngineVersion(dependencies.EngineVersion, platform); err != nil {
 		return err
