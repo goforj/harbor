@@ -301,6 +301,9 @@ func verifyDockerProjectCleanup(cleanup DockerCleanupEvidence, lifecycle DockerP
 	if err := verifyRuntime(cleanup.Runtime, requirement.Commit, platform); err != nil {
 		return err
 	}
+	if !sameRuntimeEvidence(cleanup.Runtime, lifecycle.Runtime) {
+		return fmt.Errorf("%s Docker cleanup runtime identity does not match lifecycle evidence", platform)
+	}
 	expected := make([]string, 0, len(lifecycle.Projects))
 	for _, project := range lifecycle.Projects {
 		expected = append(expected, project.ID)
@@ -314,7 +317,13 @@ func verifyDockerProjectCleanup(cleanup DockerCleanupEvidence, lifecycle DockerP
 	if err := verifyAssertions(cleanup.Assertions, []string{"docker.cleanup.exact"}, platform); err != nil {
 		return err
 	}
-	return verifyDigests(cleanup.ArtifactDigests, platform)
+	if err := verifyDigests(cleanup.ArtifactDigests, platform); err != nil {
+		return err
+	}
+	if !sameStringSet(cleanup.ArtifactDigests, lifecycle.ArtifactDigests) {
+		return fmt.Errorf("%s Docker cleanup artifact digests do not match lifecycle evidence", platform)
+	}
+	return nil
 }
 
 // verifyRuntime ensures a product artifact cannot be replayed from another commit, platform, or unidentifiable worker.
@@ -329,6 +338,25 @@ func verifyRuntime(runtime RuntimeEvidence, commit, platform string) error {
 		return fmt.Errorf("%s evidence reports commit %q instead of %q", platform, runtime.Commit, commit)
 	}
 	return nil
+}
+
+// sameRuntimeEvidence binds lifecycle and cleanup artifacts to one native worker identity.
+func sameRuntimeEvidence(left, right RuntimeEvidence) bool {
+	return left.GOOS == right.GOOS &&
+		left.GOARCH == right.GOARCH &&
+		left.Commit == right.Commit &&
+		left.RunnerName == right.RunnerName &&
+		left.RunnerImage == right.RunnerImage &&
+		left.RunnerImageVersion == right.RunnerImageVersion
+}
+
+// sameStringSet compares canonical digest sets without making manifest ordering a hidden authority.
+func sameStringSet(left, right []string) bool {
+	left = slices.Clone(left)
+	right = slices.Clone(right)
+	slices.Sort(left)
+	slices.Sort(right)
+	return slices.Equal(left, right)
 }
 
 // verifyDependencies requires pinned GoForj and Engine/Desktop facts before a generated project claim is admitted.

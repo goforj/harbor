@@ -104,6 +104,12 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 		{name: "missing digest", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) { lifecycle.ArtifactDigests = nil }, want: "no artifact digests"},
 		{name: "cleanup mismatch", mutate: func(_ *DockerProjectEvidence, cleanup *DockerCleanupEvidence) { cleanup.ProjectIDs[0] = "foreign" }, want: "do not match"},
 		{name: "cleanup missing assertion", mutate: func(_ *DockerProjectEvidence, cleanup *DockerCleanupEvidence) { cleanup.Assertions = nil }, want: "missing assertion"},
+		{name: "cleanup runner mismatch", mutate: func(_ *DockerProjectEvidence, cleanup *DockerCleanupEvidence) {
+			cleanup.Runtime.RunnerName = "other-runner"
+		}, want: "runtime identity does not match lifecycle"},
+		{name: "cleanup digest mismatch", mutate: func(_ *DockerProjectEvidence, cleanup *DockerCleanupEvidence) {
+			cleanup.ArtifactDigests[0] = strings.Repeat("c", 64)
+		}, want: "artifact digests do not match lifecycle"},
 	}
 	for _, test := range tests {
 		test := test
@@ -249,7 +255,7 @@ func validDockerCleanupFixture(platform string) DockerCleanupEvidence {
 		},
 		ProjectIDs:      []string{"orders", "billing", "inventory"},
 		Assertions:      []AssertionEvidence{{ID: "docker.cleanup.exact", Passed: true, Detail: "only product-worker project state was removed"}},
-		ArtifactDigests: []string{strings.Repeat("c", 64)},
+		ArtifactDigests: []string{strings.Repeat("b", 64)},
 	}
 }
 
