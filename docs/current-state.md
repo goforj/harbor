@@ -12,6 +12,8 @@ Project activity now surfaces the owner-private output spool as explicitly histo
 
 The new `OutputBrokerJournal` boundary reuses that checksummed spool for exact frame replay, idempotent append retries, bounded live subscribers, explicit backpressure gaps, and monotonic acknowledgements. It is a transport-neutral journal only: no broker process, authenticated endpoint, pipe re-adoption, or stop authority is active yet.
 
+The local IPC package now also admits endpoint-specific owner-private Unix sockets and Windows named pipes through the same operating-system peer checks as Harbor's daemon endpoint. `OutputBrokerPeer` binds that transport identity to an exact project/session, endpoint shape, and separate broker `ProcessEvidence`; `AuthenticateOutputBrokerPeer` requires the kernel PID and a fresh full process observation to match field-for-field. This remains an unlaunched transport/evidence seam: no broker process or pipe re-adoption is wired yet.
+
 This document describes the repository as it works today. The other documents in this directory describe Harbor's intended product and architecture; their phase gates are not claims that the corresponding work is complete.
 
 ## Product shape

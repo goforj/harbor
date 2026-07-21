@@ -15,7 +15,17 @@ func listen() (Listener, error) {
 	return nil, errUnsupportedPlatform
 }
 
+// listenAt rejects endpoint-specific transport on unsupported platforms.
+func listenAt(string) (Listener, error) {
+	return nil, errUnsupportedPlatform
+}
+
 // dial rejects platforms without an authenticated transport implementation.
 func dial(context.Context) (Conn, error) {
+	return nil, errUnsupportedPlatform
+}
+
+// dialAt rejects endpoint-specific transport on unsupported platforms.
+func dialAt(context.Context, string) (Conn, error) {
 	return nil, errUnsupportedPlatform
 }

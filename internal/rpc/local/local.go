@@ -26,6 +26,16 @@ type Conn interface {
 	Peer() PeerIdentity
 }
 
+// EndpointConn exposes the exact local endpoint authenticated for a connection.
+//
+// It is additive to Conn so existing protocol fakes can remain transport-only while security-sensitive
+// endpoint-bound protocols can require the stronger identity surface.
+type EndpointConn interface {
+	Conn
+	// EndpointReference returns the canonical endpoint reference used by the connection.
+	EndpointReference() string
+}
+
 // Listener accepts only connections whose peer identity has been inspected by the operating system.
 type Listener interface {
 	// Accept returns the next connection after operating-system peer admission.
@@ -39,12 +49,18 @@ type Listener interface {
 // authenticatedConn keeps identity immutable for the lifetime of its underlying connection.
 type authenticatedConn struct {
 	net.Conn
-	peer PeerIdentity
+	peer              PeerIdentity
+	endpointReference string
 }
 
 // Peer returns the operating-system identity authenticated when the connection was established.
 func (connection *authenticatedConn) Peer() PeerIdentity {
 	return connection.peer
+}
+
+// EndpointReference returns the endpoint captured when this authenticated connection was established.
+func (connection *authenticatedConn) EndpointReference() string {
+	return connection.endpointReference
 }
 
 // authenticatingListener rejects a connection before application bytes are read when peer admission fails.
@@ -64,7 +80,7 @@ func (listener *authenticatingListener) Accept() (Conn, error) {
 
 	identity, err := listener.authenticate(connection)
 	if err == nil {
-		return &authenticatedConn{Conn: connection, peer: identity}, nil
+		return &authenticatedConn{Conn: connection, peer: identity, endpointReference: listener.listener.Addr().String()}, nil
 	}
 
 	if closeErr := connection.Close(); closeErr != nil {
@@ -103,6 +119,23 @@ func Dial(ctx context.Context) (Conn, error) {
 // other's endpoint during startup.
 func Listen() (Listener, error) {
 	return listen()
+}
+
+// ListenAt creates an authenticated owner-private endpoint at the supplied local reference.
+//
+// The caller must hold Harbor's daemon or broker singleton authority before creating the endpoint;
+// the transport refuses foreign owners, unsafe endpoint objects, and unsupported platform shapes.
+func ListenAt(endpoint string) (Listener, error) {
+	return listenAt(endpoint)
+}
+
+// DialAt connects to an authenticated owner-private endpoint at the supplied local reference.
+func DialAt(ctx context.Context, endpoint string) (Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return dialAt(ctx, endpoint)
 }
 
 // EndpointReference returns the current user's Harbor IPC endpoint without opening a connection.

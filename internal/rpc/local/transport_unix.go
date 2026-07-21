@@ -38,6 +38,11 @@ func listen() (Listener, error) {
 		return nil, fmt.Errorf("resolve local IPC socket: %w", err)
 	}
 
+	return listenAt(path)
+}
+
+// listenAt creates one owner-authenticated Unix endpoint without coupling its path to the daemon singleton endpoint.
+func listenAt(path string) (Listener, error) {
 	return listenUnix(path, uint32(os.Geteuid()), readUnixPeerIdentity)
 }
 
@@ -234,6 +239,11 @@ func dial(ctx context.Context) (Conn, error) {
 		return nil, fmt.Errorf("resolve local IPC socket: %w", err)
 	}
 
+	return dialAt(ctx, path)
+}
+
+// dialAt connects to one owner-authenticated Unix endpoint without coupling its path to the daemon singleton endpoint.
+func dialAt(ctx context.Context, path string) (Conn, error) {
 	return dialUnix(ctx, path, uint32(os.Geteuid()), readUnixPeerIdentity)
 }
 
@@ -249,7 +259,7 @@ func dialUnix(ctx context.Context, path string, expectedUID uint32, readIdentity
 		return nil, errors.Join(err, connection.Close())
 	}
 
-	return &authenticatedConn{Conn: connection, peer: identity}, nil
+	return &authenticatedConn{Conn: connection, peer: identity, endpointReference: filepath.Clean(path)}, nil
 }
 
 // authenticateUnixPeer compares kernel credentials with the effective user that owns Harbor's runtime state.

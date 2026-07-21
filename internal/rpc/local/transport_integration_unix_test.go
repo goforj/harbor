@@ -4,6 +4,7 @@ package local_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/goforj/harbor/internal/daemon"
@@ -60,5 +61,36 @@ func TestDefaultUnixTransportUsesRuntimeDiscovery(t *testing.T) {
 	}
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close discovered Unix connection: %v", err)
+	}
+}
+
+// TestEndpointSpecificUnixTransportUsesTheSamePeerAdmission verifies per-session broker endpoints retain the daemon transport's kernel identity checks.
+func TestEndpointSpecificUnixTransportUsesTheSamePeerAdmission(t *testing.T) {
+	root := shortUnixRuntimeRoot(t)
+	endpoint := filepath.Join(root, "broker.sock")
+	listener, err := local.ListenAt(endpoint)
+	if err != nil {
+		t.Fatalf("listen on endpoint-specific Unix socket: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	accepted := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if connection != nil {
+			_ = connection.Close()
+		}
+		accepted <- acceptErr
+	}()
+
+	connection, err := local.DialAt(t.Context(), endpoint)
+	if err != nil {
+		t.Fatalf("dial endpoint-specific Unix socket: %v", err)
+	}
+	if err := <-accepted; err != nil {
+		t.Fatalf("accept endpoint-specific Unix connection: %v", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatalf("close endpoint-specific Unix connection: %v", err)
 	}
 }

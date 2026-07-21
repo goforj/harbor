@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/goforj/harbor/internal/platform/runtimepath"
@@ -31,6 +32,15 @@ func listen() (Listener, error) {
 	path, err := runtimepath.PipePath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve local IPC named pipe: %w", err)
+	}
+
+	return listenAt(path)
+}
+
+// listenAt creates one owner-authenticated named pipe without coupling its name to the daemon singleton endpoint.
+func listenAt(path string) (Listener, error) {
+	if err := validateWindowsPipePath(path); err != nil {
+		return nil, err
 	}
 	userID, err := currentWindowsUserID()
 	if err != nil {
@@ -85,12 +95,30 @@ func dial(ctx context.Context) (Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve local IPC named pipe: %w", err)
 	}
+
+	return dialAt(ctx, path)
+}
+
+// dialAt connects to one owner-authenticated named pipe without coupling its name to the daemon singleton endpoint.
+func dialAt(ctx context.Context, path string) (Conn, error) {
+	if err := validateWindowsPipePath(path); err != nil {
+		return nil, err
+	}
 	userID, err := currentWindowsUserID()
 	if err != nil {
 		return nil, err
 	}
 
 	return dialWindows(ctx, path, userID, readWindowsServerIdentity)
+}
+
+// validateWindowsPipePath keeps endpoint-specific callers inside the named-pipe namespace.
+func validateWindowsPipePath(path string) error {
+	const prefix = `\\.\pipe\`
+	if !strings.HasPrefix(path, prefix) || len(path) == len(prefix) || strings.ContainsAny(path[len(prefix):], "/\\\r\n\x00") {
+		return fmt.Errorf("local IPC named pipe path %q is not a canonical named-pipe reference", path)
+	}
+	return nil
 }
 
 // dialWindows keeps named-pipe endpoint and identity admission injectable for Windows-native tests.
@@ -106,7 +134,7 @@ func dialWindows(ctx context.Context, path, expectedUserID string, readIdentity 
 		return nil, errors.Join(err, connection.Close())
 	}
 
-	return &authenticatedConn{Conn: connection, peer: identity}, nil
+	return &authenticatedConn{Conn: connection, peer: identity, endpointReference: path}, nil
 }
 
 // authenticateWindowsPeer requires both endpoint ACL admission and a matching process-token SID.

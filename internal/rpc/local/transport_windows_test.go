@@ -260,3 +260,21 @@ func TestWindowsDialHonorsCanceledContext(t *testing.T) {
 		t.Fatalf("dial error = %v, want %v", err, context.Canceled)
 	}
 }
+
+// TestValidateWindowsPipePathRejectsCrossNamespaceReferences keeps endpoint-specific callers inside the named-pipe namespace.
+func TestValidateWindowsPipePathRejectsCrossNamespaceReferences(t *testing.T) {
+	if err := validateWindowsPipePath(`\\.\pipe\harbor-broker-test`); err != nil {
+		t.Fatalf("valid named-pipe path rejected: %v", err)
+	}
+	for _, path := range []string{
+		"",
+		`\\.\pipe\`,
+		`\\.\pipe\harbor/broker`,
+		`\\.\pipe\harbor\broker`,
+		`/tmp/harbor.sock`,
+	} {
+		if err := validateWindowsPipePath(path); err == nil {
+			t.Fatalf("named-pipe path %q accepted", path)
+		}
+	}
+}

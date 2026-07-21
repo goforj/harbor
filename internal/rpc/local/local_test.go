@@ -103,6 +103,13 @@ func TestAuthenticatingListenerReturnsImmutablePeer(t *testing.T) {
 	if got := connection.Peer(); got != want {
 		t.Fatalf("peer = %+v, want %+v", got, want)
 	}
+	endpointConnection, ok := connection.(EndpointConn)
+	if !ok {
+		t.Fatalf("connection type = %T, want EndpointConn", connection)
+	}
+	if endpointConnection.EndpointReference() != "local-test" {
+		t.Fatalf("endpoint reference = %q, want local-test", endpointConnection.EndpointReference())
+	}
 }
 
 // TestAuthenticatingListenerClosesRejectedPeer verifies untrusted processes cannot retain an admitted connection.
