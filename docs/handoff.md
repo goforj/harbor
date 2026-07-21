@@ -6,6 +6,8 @@ Last updated: 2026-07-21
 
 ## Read this first
 
+The managed runtime plan now carries GoForj-declared, secret-free service-consumer assignments for database host/port, SMTP host/port, and Redis addresses. Harbor materializes those values only from the exact observed loopback publication, and GoForj applies them in the process-local overlay; driver-specific URL/DSN shapes remain fail-closed. The next evidence edge is native macOS Docker Desktop execution, followed by supervisor output re-adoption and the remaining lifecycle/event contract.
+
 Harbor is working far enough to register a real GoForj checkout, initialize macOS networking, assign a project-specific loopback, launch `forj dev`, detect App readiness, observe conventional Compose services, and stream current development and selected service output into the Wails desktop. It is not close to release-complete.
 
 The work immediately before this handoff hardened the most painful current failure: `harbord` could disappear while a watcher-created child continued listening on the project's address. The old supervisor owned only the outer process group, so the surviving App looked like a foreign port conflict on restart. New Unix launches use a dedicated session, recovery settles all exact members across watcher-created process groups, and unresolved scope quarantines only the affected project instead of preventing daemon startup. Fresh lease admission now uses the same exact project-scope repair before replanning, so a newly selected Harbor address is not abandoned when its listener is proven to belong to that checkout.

@@ -20,23 +20,24 @@ import (
 
 const (
 	// DescriptorSchemaVersion is the static project descriptor schema Harbor understands.
-	DescriptorSchemaVersion    = 1
-	maximumReportBytes         = 1 << 20
-	maximumDiagnosticBytes     = 16 << 10
-	maximumApps                = 256
-	maximumRuntimes            = 32
-	maximumResources           = 256
-	maximumServiceRequirements = 256
-	maximumServiceEndpoints    = 256
-	maximumServiceConsumers    = 256
-	maximumCapabilities        = 128
-	maximumIdentifierBytes     = 128
-	maximumNameBytes           = 512
-	maximumModuleBytes         = 1024
-	maximumPathBytes           = 2048
-	maximumVersionBytes        = 256
-	defaultObservationTimeout  = 5 * time.Second
-	commandSettlementDelay     = 250 * time.Millisecond
+	DescriptorSchemaVersion           = 1
+	maximumReportBytes                = 1 << 20
+	maximumDiagnosticBytes            = 16 << 10
+	maximumApps                       = 256
+	maximumRuntimes                   = 32
+	maximumResources                  = 256
+	maximumServiceRequirements        = 256
+	maximumServiceEndpoints           = 256
+	maximumServiceEndpointEnvironment = 64
+	maximumServiceConsumers           = 256
+	maximumCapabilities               = 128
+	maximumIdentifierBytes            = 128
+	maximumNameBytes                  = 512
+	maximumModuleBytes                = 1024
+	maximumPathBytes                  = 2048
+	maximumVersionBytes               = 256
+	defaultObservationTimeout         = 5 * time.Second
+	commandSettlementDelay            = 250 * time.Millisecond
 )
 
 var (
@@ -176,6 +177,28 @@ const (
 	ServiceEndpointVisibilityPrivate ServiceEndpointVisibility = "private"
 )
 
+// ServiceEndpointEnvironmentKind identifies how Harbor materializes one service publication for an App.
+type ServiceEndpointEnvironmentKind string
+
+const (
+	// ServiceEndpointEnvironmentKindHost assigns only the publication address.
+	ServiceEndpointEnvironmentKindHost ServiceEndpointEnvironmentKind = "host"
+	// ServiceEndpointEnvironmentKindPort assigns only the publication port.
+	ServiceEndpointEnvironmentKindPort ServiceEndpointEnvironmentKind = "port"
+	// ServiceEndpointEnvironmentKindAddress assigns the publication as host:port.
+	ServiceEndpointEnvironmentKindAddress ServiceEndpointEnvironmentKind = "address"
+)
+
+// ServiceEndpointEnvironment identifies one exact generated environment key without carrying a value.
+type ServiceEndpointEnvironment struct {
+	// AppID identifies the App process that receives the assignment.
+	AppID string
+	// Key is the generated environment key that consumes the assignment.
+	Key string
+	// Kind identifies how the observed publication becomes a value.
+	Kind ServiceEndpointEnvironmentKind
+}
+
 // ServiceEndpoint identifies one stable, non-secret endpoint within a service requirement.
 type ServiceEndpoint struct {
 	// ID is the stable endpoint identity used to join planned and observed service facts.
@@ -186,6 +209,8 @@ type ServiceEndpoint struct {
 	NativePort int
 	// Visibility identifies whether the endpoint is host-published or private.
 	Visibility ServiceEndpointVisibility
+	// Environment contains exact generated keys that consume this endpoint.
+	Environment []ServiceEndpointEnvironment
 }
 
 // ServiceRequirement identifies one stable, non-secret service contract emitted by GoForj.
@@ -364,10 +389,18 @@ type wireServiceRequirement struct {
 
 // wireServiceEndpoint keeps endpoint intent behind the schema allowlist.
 type wireServiceEndpoint struct {
-	ID         string `json:"id"`
-	Protocol   string `json:"protocol"`
-	NativePort *int   `json:"native_port"`
-	Visibility string `json:"visibility"`
+	ID          string                            `json:"id"`
+	Protocol    string                            `json:"protocol"`
+	NativePort  *int                              `json:"native_port"`
+	Visibility  string                            `json:"visibility"`
+	Environment *[]wireServiceEndpointEnvironment `json:"environment"`
+}
+
+// wireServiceEndpointEnvironment keeps generated environment metadata behind the schema allowlist.
+type wireServiceEndpointEnvironment struct {
+	AppID string `json:"app_id"`
+	Key   string `json:"key"`
+	Kind  string `json:"kind"`
 }
 
 // boundedBuffer retains a fixed prefix while continuing to drain a child process safely.
@@ -769,7 +802,49 @@ func projectServiceRequirements(source []wireServiceRequirement, apps []App) ([]
 			default:
 				return nil, fmt.Errorf("%s visibility %q is unsupported", endpointLabel, endpoint.Visibility)
 			}
-			endpoints = append(endpoints, ServiceEndpoint{ID: endpoint.ID, Protocol: protocol, NativePort: *endpoint.NativePort, Visibility: visibility})
+			var environments []ServiceEndpointEnvironment
+			if endpoint.Environment != nil {
+				if len(*endpoint.Environment) > maximumServiceEndpointEnvironment {
+					return nil, fmt.Errorf("%s contains more than %d environment assignments", endpointLabel, maximumServiceEndpointEnvironment)
+				}
+				environments = make([]ServiceEndpointEnvironment, 0, len(*endpoint.Environment))
+				seenEnvironmentKeys := make(map[string]struct{}, len(*endpoint.Environment))
+				knownConsumers := make(map[string]struct{}, len(consumers))
+				for _, consumer := range consumers {
+					knownConsumers[consumer] = struct{}{}
+				}
+				for environmentIndex, candidateEnvironment := range *endpoint.Environment {
+					environmentLabel := fmt.Sprintf("%s environment %d", endpointLabel, environmentIndex+1)
+					if err := validateToken(environmentLabel+" App ID", candidateEnvironment.AppID, maximumIdentifierBytes); err != nil {
+						return nil, err
+					}
+					if _, known := knownConsumers[candidateEnvironment.AppID]; !known {
+						return nil, fmt.Errorf("%s references App %q that is not an endpoint consumer", environmentLabel, candidateEnvironment.AppID)
+					}
+					if err := validateEnvironmentKey(environmentLabel+" key", candidateEnvironment.Key); err != nil {
+						return nil, err
+					}
+					kind := ServiceEndpointEnvironmentKind(candidateEnvironment.Kind)
+					switch kind {
+					case ServiceEndpointEnvironmentKindHost, ServiceEndpointEnvironmentKindPort, ServiceEndpointEnvironmentKindAddress:
+					default:
+						return nil, fmt.Errorf("%s kind %q is unsupported", environmentLabel, candidateEnvironment.Kind)
+					}
+					identity := candidateEnvironment.AppID + "\x00" + candidateEnvironment.Key
+					if _, duplicate := seenEnvironmentKeys[identity]; duplicate {
+						return nil, fmt.Errorf("%s is duplicated", environmentLabel)
+					}
+					seenEnvironmentKeys[identity] = struct{}{}
+					if environmentIndex > 0 {
+						previous := (*endpoint.Environment)[environmentIndex-1]
+						if previous.AppID > candidateEnvironment.AppID || previous.AppID == candidateEnvironment.AppID && previous.Key >= candidateEnvironment.Key {
+							return nil, fmt.Errorf("%s environment assignments must be sorted and unique", endpointLabel)
+						}
+					}
+					environments = append(environments, ServiceEndpointEnvironment{AppID: candidateEnvironment.AppID, Key: candidateEnvironment.Key, Kind: kind})
+				}
+			}
+			endpoints = append(endpoints, ServiceEndpoint{ID: endpoint.ID, Protocol: protocol, NativePort: *endpoint.NativePort, Visibility: visibility, Environment: environments})
 		}
 		requirements = append(requirements, ServiceRequirement{ID: candidate.ID, ServiceKey: candidate.ServiceKey, Kind: candidate.Kind, Driver: candidate.Driver, Owner: owner, Lifecycle: lifecycle, Consumers: consumers, Endpoints: endpoints})
 	}
@@ -814,6 +889,22 @@ func validateToken(name, value string, maximum int) error {
 	for _, character := range value {
 		if unicode.IsSpace(character) || unicode.IsControl(character) {
 			return fmt.Errorf("%s must not contain whitespace or control characters", name)
+		}
+	}
+	return nil
+}
+
+// validateEnvironmentKey accepts only the uppercase keys that generated Apps can consume safely.
+func validateEnvironmentKey(name, value string) error {
+	if err := validateToken(name, value, maximumIdentifierBytes); err != nil {
+		return err
+	}
+	for index, character := range value {
+		if index == 0 && (character < 'A' || character > 'Z') {
+			return fmt.Errorf("%s must start with an uppercase letter", name)
+		}
+		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
+			return fmt.Errorf("%s must contain only uppercase letters, digits, and underscores", name)
 		}
 	}
 	return nil

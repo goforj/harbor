@@ -84,7 +84,7 @@ The command must not:
 
 The command returns one documented JSON object on stdout and diagnostics on stderr. The schema is versioned independently from the GoForj CLI version.
 
-The descriptor provides the `schema_version`, project identity, a non-secret normalized topology digest, CLI/generation metadata, the conventional available-App/HTTP-runtime inventory, and (when the catalog can prove a native endpoint) a deterministic service-requirement projection. The service projection reads only project-owned `.env.example` and `.env` layers in memory; it never applies values to the command process or emits credentials, addresses, or raw endpoint-affinity material. It distinguishes Compose-managed, external, and available requirements and includes stable requirement/endpoint IDs, App consumers, protocols, native ports, and visibility. The command does not execute generated code or mutate the checkout, and Harbor must not treat the descriptor as a managed-session capability. Harbor's production start path invokes this command through the exact admitted GoForj executable, strictly validates schema v1, and stores the normalized `config_digest` in the active session before launching `forj dev`; when an additive resource section is present, Harbor consumes it only to constrain matching live links and assign exact local reservations. Harbor consumes the App inventory for capability-gated runtime-plan App assignments; service endpoint consumer mapping remains a separate GoForj work item because the plan does not yet carry resource-scope metadata.
+The descriptor provides the `schema_version`, project identity, a non-secret normalized topology digest, CLI/generation metadata, the conventional available-App/HTTP-runtime inventory, and (when the catalog can prove a native endpoint) a deterministic service-requirement projection. The service projection reads only project-owned `.env.example` and `.env` layers in memory; it never applies values to the command process or emits credentials, addresses, or raw endpoint-affinity material. It distinguishes Compose-managed, external, and available requirements and includes stable requirement/endpoint IDs, App consumers, protocols, native ports, visibility, and optional exact generated environment metadata. Each metadata item names its App, generated key, and bounded value shape (`host`, `port`, or `address`); Harbor materializes the value only after observing the matching private publication. The command does not execute generated code or mutate the checkout, and Harbor must not treat the descriptor as a managed-session capability. Harbor's production start path invokes this command through the exact admitted GoForj executable, strictly validates schema v1, and stores the normalized `config_digest` in the active session before launching `forj dev`; when an additive resource section is present, Harbor consumes it only to constrain matching live links and assign exact local reservations. Harbor consumes the App inventory and explicit service metadata for capability-gated runtime-plan assignments; unsupported driver-specific URL formats remain fail-closed until their value shape is added to the contract.
 
 An illustrative v1 shape is:
 
@@ -276,7 +276,11 @@ Harbor sends semantic assignments, not hardcoded environment-key names:
       "publish_host": "127.0.0.1",
       "publish_port": 43106,
       "public_host": "mysql.orders.test",
-      "public_port": 3306
+      "public_port": 3306,
+      "environment": [
+        {"app_id": "app", "key": "DB_HOST", "kind": "host"},
+        {"app_id": "app", "key": "DB_PORT", "kind": "port"}
+      ]
     },
     "endpoint.cache.primary.tcp": {
       "requirement_id": "requirement.cache.primary",
@@ -296,7 +300,7 @@ The request/response is capability-gated (`managed-session.runtime-plan.v1`) and
 fence. Harbor does not advertise the capability until its authority can produce real assignments, and GoForj keeps it
 off by default; this contract therefore does not change the current startup path or imply that the overlay exists yet.
 
-GoForj validates every ID and maps the assignments through its current project, App, service-requirement, and resource plans. Stable IDs are assigned from normalized structural identity, not from the current affinity hash when that hash may include a credential-bearing DSN. Harbor does not need to know whether a current template uses `DB_MYSQL_PORT`, an App-prefixed key, or a future typed config field.
+GoForj validates every ID and maps the assignments through its current project, App, service-requirement, and resource plans. Stable IDs are assigned from normalized structural identity, not from the current affinity hash when that hash may include a credential-bearing DSN. Harbor does not need to know whether a current template uses `DB_MYSQL_PORT`, an App-prefixed key, or a future typed config field; GoForj emits the exact generated key and Harbor supplies only the value shape it was told to materialize.
 
 The plan covers every listener-bearing active command shape. A generated combined HTTP `run` has one listener whose routes include health, readiness, `/metrics`, and Lighthouse; those routes are not separate ports. Standalone worker or scheduler commands receive their own metrics listener only when that active command actually opens one. SPAs are build nodes, not listeners, unless an explicitly modeled development server exists.
 
@@ -309,7 +313,7 @@ A managed endpoint assignment must beat normal project files without modifying t
 GoForj materializes three separate outputs after validating the semantic plan:
 
 1. a command-local Compose publication environment containing private host addresses and private high ports;
-2. an App-final connection overlay containing public domains, native service ports, and private App listener assignments;
+2. an App-final connection overlay containing explicit service-consumer values and private App listener assignments;
 3. session artifacts such as a Compose override and metrics scrape targets, stored outside the checkout.
 
 The publication environment is applied only to the typed Compose command. It must not leak into App, build, migration, or watcher environments. The App overlay is applied:
@@ -327,12 +331,11 @@ For the default App, a materialized overlay may include values corresponding to:
 APP_URL=https://orders.test
 API_HTTP_HOST=127.77.0.10
 API_HTTP_PORT=3000
-DB_HOST=mysql.orders.test
-DB_PORT=3306
-REDIS_HOST=redis.orders.test
-REDIS_PORT=6379
-MAIL_SMTP_HOST=smtp.orders.test
-MAIL_SMTP_PORT=1025
+DB_HOST=127.77.0.11
+DB_PORT=43106
+CACHE_ADDR=127.77.0.12:43107
+MAIL_SMTP_HOST=127.77.0.13
+MAIL_SMTP_PORT=43108
 LIGHTHOUSE_URL=ws://127.77.0.10:3000/lighthouse/ws/agent
 ```
 

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,11 +29,12 @@ func TestManagedRuntimeServiceEndpointRequiresExactPublicationGeneration(t *test
 		Public:     netip.MustParseAddrPort("127.77.1.8:3306"),
 		Generation: 4,
 	}
-	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, publication, reservation); err == nil || !strings.Contains(err.Error(), "does not match durable generation") {
+	declared := goforj.ServiceEndpoint{ID: "endpoint.database.primary.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost}
+	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation); err == nil || !strings.Contains(err.Error(), "does not match durable generation") {
 		t.Fatalf("managedRuntimeServiceEndpoint() error = %v, want generation mismatch", err)
 	}
 	publication.ReservationGeneration = reservation.Generation
-	endpoint, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, publication, reservation)
+	endpoint, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation)
 	if err != nil {
 		t.Fatalf("managedRuntimeServiceEndpoint() error = %v", err)
 	}
@@ -40,13 +42,44 @@ func TestManagedRuntimeServiceEndpointRequiresExactPublicationGeneration(t *test
 		t.Fatalf("managed service endpoint = %#v", endpoint)
 	}
 	reservation.Protocol = state.EndpointProtocolHTTP
-	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, publication, reservation); err == nil || !strings.Contains(err.Error(), "is not TCP") {
+	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation); err == nil || !strings.Contains(err.Error(), "is not TCP") {
 		t.Fatalf("managedRuntimeServiceEndpoint() protocol error = %v, want TCP rejection", err)
 	}
 	reservation.Protocol = state.EndpointProtocolTCP
 	publication.Fence.SessionGeneration++
-	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, publication, reservation); err == nil || !strings.Contains(err.Error(), "does not match the requested fence") {
+	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation); err == nil || !strings.Contains(err.Error(), "does not match the requested fence") {
 		t.Fatalf("managedRuntimeServiceEndpoint() fence error = %v, want fence rejection", err)
+	}
+}
+
+// TestManagedRuntimeServiceEndpointMaterializesDeclaredEnvironmentKeys keeps Harbor from guessing framework names.
+func TestManagedRuntimeServiceEndpointMaterializesDeclaredEnvironmentKeys(t *testing.T) {
+	fence := harbordruntime.ManagedPublicationFence{ProjectID: "project-orders", SessionID: "session-orders", SessionGeneration: 2}
+	requirement := goforj.ServiceRequirement{ID: "database", Consumers: []string{"app"}}
+	declared := goforj.ServiceEndpoint{
+		ID: "endpoint.database.primary.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost,
+		Environment: []goforj.ServiceEndpointEnvironment{
+			{AppID: "app", Key: "DB_HOST", Kind: goforj.ServiceEndpointEnvironmentKindHost},
+			{AppID: "app", Key: "DB_PORT", Kind: goforj.ServiceEndpointEnvironmentKindPort},
+		},
+	}
+	publication := harbordruntime.ManagedEndpointPublication{
+		Fence: fence, EndpointID: "service:database.tcp", ReservationGeneration: 4, Upstream: netip.MustParseAddrPort("127.0.0.1:43106"),
+	}
+	reservation := state.EndpointReservation{
+		Key: state.EndpointReservationKey{ProjectID: fence.ProjectID, EndpointID: publication.EndpointID}, Protocol: state.EndpointProtocolTCP,
+		Host: "database.orders.test", Public: netip.MustParseAddrPort("127.77.1.8:3306"), Generation: 4,
+	}
+	endpoint, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation)
+	if err != nil {
+		t.Fatalf("managedRuntimeServiceEndpoint() error = %v", err)
+	}
+	want := []managedsession.RuntimePlanServiceEnvironment{
+		{AppID: "app", Key: "DB_HOST", Value: "127.0.0.1"},
+		{AppID: "app", Key: "DB_PORT", Value: "43106"},
+	}
+	if !slices.Equal(endpoint.Environment, want) {
+		t.Fatalf("managed runtime environment = %#v, want %#v", endpoint.Environment, want)
 	}
 }
 

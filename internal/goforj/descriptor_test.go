@@ -83,11 +83,32 @@ func TestObserveAdmitsOptionalServiceIntent(t *testing.T) {
 	if first.ID != "requirement.database.primary" || first.ServiceKey != "mysql" || first.Owner != ServiceRequirementOwnerCompose || first.Lifecycle != ServiceRequirementLifecycleProject || !reflect.DeepEqual(first.Consumers, []string{"app"}) {
 		t.Fatalf("database requirement = %#v", first)
 	}
-	if len(first.Endpoints) != 1 || first.Endpoints[0] != (ServiceEndpoint{ID: "endpoint.database.primary.tcp", Protocol: ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: ServiceEndpointVisibilityHost}) {
+	if len(first.Endpoints) != 1 || !reflect.DeepEqual(first.Endpoints[0], ServiceEndpoint{ID: "endpoint.database.primary.tcp", Protocol: ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: ServiceEndpointVisibilityHost}) {
 		t.Fatalf("database endpoints = %#v", first.Endpoints)
 	}
 	if got := observation.ServiceRequirements[1]; got.Owner != ServiceRequirementOwnerAvailable || got.Consumers[0] != "app" {
 		t.Fatalf("available requirement = %#v", got)
+	}
+}
+
+// TestProjectServiceRequirementsProjectsEnvironmentMetadata keeps generated keys explicit and secret-free.
+func TestProjectServiceRequirementsProjectsEnvironmentMetadata(t *testing.T) {
+	requirements := serviceRequirementWireFixtures()
+	environment := []wireServiceEndpointEnvironment{
+		{AppID: "app", Key: "DB_HOST", Kind: "host"},
+		{AppID: "app", Key: "DB_PORT", Kind: "port"},
+	}
+	(*requirements[0].Endpoints)[0].Environment = &environment
+	projected, err := projectServiceRequirements(requirements, []App{{ID: "app"}})
+	if err != nil {
+		t.Fatalf("projectServiceRequirements() error = %v", err)
+	}
+	want := []ServiceEndpointEnvironment{
+		{AppID: "app", Key: "DB_HOST", Kind: ServiceEndpointEnvironmentKindHost},
+		{AppID: "app", Key: "DB_PORT", Kind: ServiceEndpointEnvironmentKindPort},
+	}
+	if got := projected[0].Endpoints[0].Environment; !reflect.DeepEqual(got, want) {
+		t.Fatalf("endpoint environment = %#v, want %#v", got, want)
 	}
 }
 
@@ -118,6 +139,22 @@ func TestProjectServiceRequirementsRejectsAmbiguousIntent(t *testing.T) {
 		{name: "invalid port", mutate: func(requirements *[]wireServiceRequirement) {
 			(*requirements)[0].Endpoints = serviceEndpointWire("tcp", 0, "host")
 		}, want: "native_port must be between"},
+		{name: "environment unknown consumer", mutate: func(requirements *[]wireServiceRequirement) {
+			environment := []wireServiceEndpointEnvironment{{AppID: "worker", Key: "DB_HOST", Kind: "host"}}
+			(*(*requirements)[0].Endpoints)[0].Environment = &environment
+		}, want: "not an endpoint consumer"},
+		{name: "environment invalid key", mutate: func(requirements *[]wireServiceRequirement) {
+			environment := []wireServiceEndpointEnvironment{{AppID: "app", Key: "db_host", Kind: "host"}}
+			(*(*requirements)[0].Endpoints)[0].Environment = &environment
+		}, want: "uppercase"},
+		{name: "environment invalid kind", mutate: func(requirements *[]wireServiceRequirement) {
+			environment := []wireServiceEndpointEnvironment{{AppID: "app", Key: "DB_HOST", Kind: "url"}}
+			(*(*requirements)[0].Endpoints)[0].Environment = &environment
+		}, want: "kind"},
+		{name: "environment unsorted", mutate: func(requirements *[]wireServiceRequirement) {
+			environment := []wireServiceEndpointEnvironment{{AppID: "app", Key: "DB_PORT", Kind: "port"}, {AppID: "app", Key: "DB_HOST", Kind: "host"}}
+			(*(*requirements)[0].Endpoints)[0].Environment = &environment
+		}, want: "sorted"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

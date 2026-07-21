@@ -37,6 +37,10 @@ func runtimePlanTestResponse(request RuntimePlanRequest) RuntimePlanResponse {
 				ID: "endpoint.database.primary.tcp", RequirementID: "requirement.database.primary",
 				Consumers: []string{"app"}, PublishHost: "127.0.0.11", PublishPort: 43106,
 				PublicHost: "mysql.orders.test", PublicPort: 3306,
+				Environment: []RuntimePlanServiceEnvironment{
+					{AppID: "app", Key: "DB_HOST", Value: "127.0.0.11"},
+					{AppID: "app", Key: "DB_PORT", Value: "43106"},
+				},
 			}},
 		},
 	}
@@ -87,6 +91,15 @@ func TestRuntimePlanValidationRejectsUnsafeAssignments(t *testing.T) {
 			routes[0], routes[1] = routes[1], routes[0]
 		}, want: "routes"},
 		{name: "invalid upstream", mutate: func(response *RuntimePlanResponse) { response.Plan.ServiceEndpoints[0].PublishHost = "::1" }, want: "loopback"},
+		{name: "environment foreign App", mutate: func(response *RuntimePlanResponse) { response.Plan.ServiceEndpoints[0].Environment[0].AppID = "worker" }, want: "not a consumer"},
+		{name: "environment invalid key", mutate: func(response *RuntimePlanResponse) { response.Plan.ServiceEndpoints[0].Environment[0].Key = "db_host" }, want: "uppercase"},
+		{name: "environment line break", mutate: func(response *RuntimePlanResponse) {
+			response.Plan.ServiceEndpoints[0].Environment[0].Value = "127.0.0.11\n"
+		}, want: "line breaks"},
+		{name: "environment unsorted", mutate: func(response *RuntimePlanResponse) {
+			assignments := response.Plan.ServiceEndpoints[0].Environment
+			assignments[0], assignments[1] = assignments[1], assignments[0]
+		}, want: "sorted"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
