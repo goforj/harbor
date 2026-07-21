@@ -90,6 +90,21 @@ func (coordinator *ProjectLifecycleCoordinator) isProjectProcessScopeQuarantined
 		operation.Problem.Code == projectRecoveryAmbiguousLaunchCode, nil
 }
 
+// preserveAttachedManagedSession keeps a live Harbor-owned process across daemon restart when its exact birth still matches.
+//
+// Observation failures deliberately fall through to the existing settlement path. A process is preserved only after
+// the native supervisor proves the persisted birth is still present and the session has already completed attachment.
+func (coordinator *ProjectLifecycleCoordinator) preserveAttachedManagedSession(ctx context.Context, session domain.ProjectSession) bool {
+	if session.Owner != domain.SessionOwnerHarbor || session.State != domain.SessionAttached || session.Process == nil {
+		return false
+	}
+	observation, err := coordinator.supervisor.ObservePriorProcess(ctx, *session.Process)
+	if err != nil {
+		return false
+	}
+	return observation.State == projectprocess.PriorProcessPresent
+}
+
 // quarantineTerminalProjectSession publishes a route-free failure without observing or acting on an unidentified prior process.
 func (coordinator *ProjectLifecycleCoordinator) quarantineTerminalProjectSession(
 	ctx context.Context,

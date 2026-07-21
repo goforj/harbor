@@ -356,6 +356,113 @@ func TestProjectLifecycleRecoverRetiresSettledTerminalSession(t *testing.T) {
 	}
 }
 
+// TestProjectLifecycleRecoverPreservesLiveAttachedManagedSession proves daemon restart does not kill an exact live managed process.
+func TestProjectLifecycleRecoverPreservesLiveAttachedManagedSession(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	seed := completeProjectLifecycleRecoveryStart(t, store, seedProjectLifecycleRecoveryStart(t, store, journal, true))
+	seed = completeManagedLifecycleRecoveryAttachment(t, store, seed)
+	supervisor := &projectLifecycleRecoverySupervisor{
+		observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessPresent},
+	}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		store,
+		supervisor,
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	coordinator.now = func() time.Time { return seed.recoverAt }
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close recovery coordinator: %v", err)
+		}
+	})
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	project, err := store.Project(t.Context(), seed.project.ID)
+	if err != nil || project.Project.State != domain.ProjectReady {
+		t.Fatalf("recovered project = %#v, %v; want ready", project.Project, err)
+	}
+	session, err := store.ActiveProjectSession(t.Context(), seed.project.ID)
+	if err != nil || session.State != domain.SessionAttached || session.Process == nil || *session.Process != seed.evidence {
+		t.Fatalf("recovered attached session = %#v, %v; want exact live fence", session, err)
+	}
+	if len(supervisor.observed) != 1 || supervisor.observed[0] != seed.evidence {
+		t.Fatalf("observed evidence = %#v, want one exact observation", supervisor.observed)
+	}
+	if len(supervisor.settled) != 0 {
+		t.Fatalf("settled evidence = %#v, want no signal during recovery", supervisor.settled)
+	}
+}
+
+// TestProjectLifecycleRecoverSettlesAttachedManagedSessionWhenBirthIsGone preserves terminal cleanup after a negative liveness observation.
+func TestProjectLifecycleRecoverSettlesAttachedManagedSessionWhenBirthIsGone(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	seed := completeManagedLifecycleRecoveryAttachment(t, store, completeProjectLifecycleRecoveryStart(t, store, seedProjectLifecycleRecoveryStart(t, store, journal, true)))
+	supervisor := &projectLifecycleRecoverySupervisor{
+		observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessAbsent},
+		settlement:  projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementAbsent},
+	}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		store,
+		supervisor,
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	coordinator.now = func() time.Time { return seed.recoverAt }
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close recovery coordinator: %v", err)
+		}
+	})
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	if _, err := store.ActiveProjectSession(t.Context(), seed.project.ID); err == nil {
+		t.Fatal("attached session survived absent process recovery")
+	}
+	if len(supervisor.observed) != 1 || len(supervisor.settled) != 1 || supervisor.settled[0] != seed.evidence {
+		t.Fatalf("recovery calls observed=%#v settled=%#v, want one exact observation and settlement", supervisor.observed, supervisor.settled)
+	}
+}
+
+// TestProjectLifecycleRecoverAttachedManagedSessionFallsBackOnObservationFailure keeps an unreadable live check on the safe settlement path.
+func TestProjectLifecycleRecoverAttachedManagedSessionFallsBackOnObservationFailure(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	seed := completeManagedLifecycleRecoveryAttachment(t, store, completeProjectLifecycleRecoveryStart(t, store, seedProjectLifecycleRecoveryStart(t, store, journal, true)))
+	supervisor := &projectLifecycleRecoverySupervisor{
+		observationErr: errors.New("prior process observation unavailable"),
+		settlement:     projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementAbsent},
+	}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		store,
+		supervisor,
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	coordinator.now = func() time.Time { return seed.recoverAt }
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close recovery coordinator: %v", err)
+		}
+	})
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	if _, err := store.ActiveProjectSession(t.Context(), seed.project.ID); err == nil {
+		t.Fatal("attached session survived failed liveness fallback")
+	}
+	if len(supervisor.observed) != 1 || len(supervisor.settled) != 1 {
+		t.Fatalf("recovery calls observed=%#v settled=%#v, want observation then settlement", supervisor.observed, supervisor.settled)
+	}
+}
+
 // TestProjectLifecycleRecoverQuarantinesUnsettledTerminalSessions verifies failed settlement stays route-free and durable.
 func TestProjectLifecycleRecoverQuarantinesUnsettledTerminalSessions(t *testing.T) {
 	sentinel := errors.New("host observation unavailable")
@@ -1084,5 +1191,27 @@ func completeProjectLifecycleRecoveryStart(
 	seed.operation = completed.Operation
 	seed.session = *completed.Session
 	seed.recoverAt = readyAt.Add(time.Second)
+	return seed
+}
+
+// completeManagedLifecycleRecoveryAttachment advances a ready recovery fixture through the authenticated managed-session fence.
+func completeManagedLifecycleRecoveryAttachment(
+	t *testing.T,
+	store *state.Store,
+	seed projectLifecycleRecoverySeed,
+) projectLifecycleRecoverySeed {
+	t.Helper()
+	attached, err := store.CompleteManagedSessionAttachment(t.Context(), state.CompleteManagedSessionAttachmentRequest{
+		ProjectID:                 seed.project.ID,
+		SessionID:                 seed.session.ID,
+		ExpectedSessionGeneration: seed.session.Generation,
+		Process:                   seed.evidence,
+		At:                        seed.session.UpdatedAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("complete managed attachment: %v", err)
+	}
+	seed.session = attached
+	seed.recoverAt = attached.UpdatedAt.Add(time.Second)
 	return seed
 }

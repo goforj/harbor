@@ -1982,6 +1982,11 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded && project.State != domain.ProjectFailed) || session.Process == nil {
 		return false, nil
 	}
+	if coordinator.preserveAttachedManagedSession(ctx, session) {
+		// The durable attached fence and exact birth still identify the live process. Leave it in
+		// place so a fresh managed-session connection can replay the ephemeral publication authority.
+		return true, nil
+	}
 	_, err := coordinator.settleRecoveredProjectProcess(
 		ctx,
 		fmt.Sprintf("project %q terminal session %q", project.ID, session.ID),
