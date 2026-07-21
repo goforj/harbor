@@ -25,6 +25,7 @@ type commandRunner func(context.Context, string, string, ...string) error
 var artifactBuilds = []buildInvocation{
 	{packagePath: "./cmd/helper", outputName: "helper"},
 	{packagePath: "./cmd/devbootstrap", outputName: "devbootstrap"},
+	{packagePath: "./cmd/outputbroker", outputName: "outputbroker"},
 }
 
 // main builds the adjacent tools before Wails compiles or recompiles the development desktop.

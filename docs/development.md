@@ -17,7 +17,7 @@ Run the complete development graph from the repository root:
 forj dev
 ```
 
-GoForj builds and watches `harbord`, applies its embedded migrations, runs the daemon in the foreground, and starts Wails. The Wails macOS pre-build hook runs `cmd/devartifacts`, which places architecture-specific development helper binaries beneath `desktop/build/bin/devtools`. The desktop uses those artifacts when network setup needs to install or repair privileged support.
+GoForj builds and watches `harbord`, builds the optional sibling `outputbroker`, applies its embedded migrations, runs the daemon in the foreground, and starts Wails. The daemon uses the broker when that exact sibling artifact is available and keeps direct pipes when it is not. The Wails macOS pre-build hook runs `cmd/devartifacts`, which places architecture-specific development helper and broker binaries beneath `desktop/build/bin/devtools`. The desktop uses those artifacts when network setup needs to install or repair privileged support.
 
 Harbor's durable SQLite state is outside the checkout. On macOS it is `~/Library/Application Support/GoForj/Harbor/harbor.db`; see [Current implementation state](./current-state.md) for all platform paths and validation commands.
 

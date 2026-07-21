@@ -240,7 +240,13 @@ func provideProjectUnregisterCoordinator(
 
 // provideProjectProcessSupervisor creates the one process-tree owner shared by all managed projects.
 func provideProjectProcessSupervisor(environment projectprocess.Environment) *projectprocess.Supervisor {
-	return projectprocess.New(projectprocess.Options{Environment: environment})
+	options := projectprocess.Options{Environment: environment}
+	// The broker is an additive artifact during development and packaging. Until it is installed beside
+	// harbord, retaining direct pipes keeps ordinary project lifecycle behavior available.
+	if launcher, err := projectprocess.NewSiblingOutputBrokerProcessLauncher(); err == nil {
+		options.OutputBrokerLauncher = launcher
+	}
+	return projectprocess.New(options)
 }
 
 // provideProjectUnregisterCoordinatorWithIssuerOpener keeps default issuer storage injectable without making it process-global.

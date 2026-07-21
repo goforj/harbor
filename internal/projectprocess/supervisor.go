@@ -292,10 +292,25 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if _, exists := supervisor.sessions[request.SessionID]; exists {
 		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
 	}
-	spool, spoolErr := openOutputSpool(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID)
-	if spoolErr != nil {
-		// Output history is diagnostic state; a corrupt or unavailable spool must never block process ownership.
-		spool = nil
+	brokerLauncher := supervisor.outputBrokerLauncher
+	if brokerLauncher != nil {
+		// Probe the broker's journal before child start so a corrupt diagnostic spool disables only the
+		// optional broker path; ordinary direct-pipe output remains available for the lifecycle.
+		if supervisor.outputSpoolDirectory == "" {
+			brokerLauncher = nil
+		} else if _, _, probeErr := readOutputSpool(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID); probeErr != nil {
+			brokerLauncher = nil
+		}
+	}
+	var spool *outputSpool
+	var spoolErr error
+	// When a broker is enabled it is the sole writer for this session's spool; two appenders would race cursor ownership.
+	if brokerLauncher == nil {
+		spool, spoolErr = openOutputSpool(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID)
+		if spoolErr != nil {
+			// Output history is diagnostic state; a corrupt or unavailable spool must never block process ownership.
+			spool = nil
+		}
 	}
 	spoolCleanup := spool != nil
 	defer func() {
@@ -379,8 +394,20 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 
 	var brokerAttachment OutputBrokerAttachment
 	var brokerPeer *OutputBrokerPeer
-	if supervisor.outputBrokerLauncher != nil {
-		brokerAttachment, err = supervisor.outputBrokerLauncher.Launch(ctx, OutputBrokerLaunchSpec{
+	fallbackBrokerToDirect := func() {
+		if brokerAttachment != nil {
+			_ = brokerAttachment.Close()
+			brokerAttachment = nil
+		}
+		brokerPeer = nil
+		if relay.spool == nil && supervisor.outputSpoolDirectory != "" {
+			if fallbackSpool, fallbackErr := openOutputSpool(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID); fallbackErr == nil {
+				relay.spool = fallbackSpool
+			}
+		}
+	}
+	if brokerLauncher != nil {
+		brokerAttachment, err = brokerLauncher.Launch(ctx, OutputBrokerLaunchSpec{
 			ProjectID:       request.ProjectID,
 			SessionID:       request.SessionID,
 			OutputDirectory: supervisor.outputSpoolDirectory,
@@ -388,52 +415,19 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			Stderr:          stderr,
 		})
 		if err != nil {
-			if brokerAttachment != nil {
-				_ = brokerAttachment.Close()
+			fallbackBrokerToDirect()
+		} else if brokerAttachment == nil {
+			fallbackBrokerToDirect()
+		} else {
+			peer := brokerAttachment.Peer()
+			if peerErr := peer.Validate(); peerErr != nil {
+				fallbackBrokerToDirect()
+			} else if peer.ProjectID != request.ProjectID || peer.SessionID != request.SessionID {
+				fallbackBrokerToDirect()
+			} else {
+				brokerPeer = &peer
 			}
-			cleanupErr := terminateStartedCommand(command, platform)
-			_ = stdout.Close()
-			_ = stderr.Close()
-			_ = stdoutChild.Close()
-			_ = stderrChild.Close()
-			relay.finish()
-			platform.close()
-			return nil, acceptedProcessStartError("launch output broker", err, cleanupErr)
 		}
-		if brokerAttachment == nil {
-			cleanupErr := terminateStartedCommand(command, platform)
-			_ = stdout.Close()
-			_ = stderr.Close()
-			_ = stdoutChild.Close()
-			_ = stderrChild.Close()
-			relay.finish()
-			platform.close()
-			return nil, acceptedProcessStartError("launch output broker", errors.New("launcher returned no attachment"), cleanupErr)
-		}
-		peer := brokerAttachment.Peer()
-		if err := peer.Validate(); err != nil {
-			_ = brokerAttachment.Close()
-			cleanupErr := terminateStartedCommand(command, platform)
-			_ = stdout.Close()
-			_ = stderr.Close()
-			_ = stdoutChild.Close()
-			_ = stderrChild.Close()
-			relay.finish()
-			platform.close()
-			return nil, acceptedProcessStartError("validate output broker", err, cleanupErr)
-		}
-		if peer.ProjectID != request.ProjectID || peer.SessionID != request.SessionID {
-			_ = brokerAttachment.Close()
-			cleanupErr := terminateStartedCommand(command, platform)
-			_ = stdout.Close()
-			_ = stderr.Close()
-			_ = stdoutChild.Close()
-			_ = stderrChild.Close()
-			relay.finish()
-			platform.close()
-			return nil, acceptedProcessStartError("validate output broker", errors.New("output broker lifecycle does not match process request"), cleanupErr)
-		}
-		brokerPeer = &peer
 	}
 
 	var pipeReaders sync.WaitGroup
@@ -500,12 +494,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		platform.close()
 		return nil, acceptedProcessStartError("resume forj process", err, cleanupErr)
 	}
-	if brokerAttachment != nil {
-		_ = stdout.Close()
-		_ = stderr.Close()
-		pipeReaders.Add(1)
-		go readOutputBrokerAttachment(ctx, brokerAttachment, relay, &pipeReaders)
-	}
 
 	arguments := append([]string(nil), command.Args...)
 	handle := &Handle{
@@ -542,6 +530,19 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 	supervisor.projects[request.ProjectID] = process
 	supervisor.sessions[request.SessionID] = process
+	if brokerAttachment != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		pipeReaders.Add(1)
+		// The request context ends with the Start RPC; broker observation must instead last until the
+		// inherited child pipes reach EOF so a normal client disconnect cannot retire live output.
+		go readOutputBrokerAttachment(context.Background(), brokerAttachment, relay, &pipeReaders, func() {
+			alive, observeErr := process.observeTree()
+			if observeErr == nil && alive {
+				process.requestStop()
+			}
+		})
+	}
 	managedLaunchCleanup = false
 	go supervisor.wait(process)
 	return handle, nil
@@ -652,6 +653,8 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 		_ = process.stderr.Close()
 	}
 	process.pipeReaders.Wait()
+	_ = process.stdout.Close()
+	_ = process.stderr.Close()
 	process.relay.finish()
 	process.platform.close()
 

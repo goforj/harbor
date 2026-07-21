@@ -6,10 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 )
@@ -159,7 +157,8 @@ func TestSupervisorUsesOptionalOutputBrokerAttachment(t *testing.T) {
 	supervisor := newTestSupervisor(Options{OutputBrokerLauncher: launcher})
 	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
 
-	handle, err := supervisor.Start(t.Context(), StartRequest{
+	startContext, cancelStart := context.WithCancel(t.Context())
+	handle, err := supervisor.Start(startContext, StartRequest{
 		ProjectID:            projectID,
 		SessionID:            sessionID,
 		CheckoutRoot:         t.TempDir(),
@@ -170,6 +169,7 @@ func TestSupervisorUsesOptionalOutputBrokerAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	cancelStart()
 	if info := handle.Info(); info.OutputBroker == nil || *info.OutputBroker != peer {
 		t.Fatalf("Handle.Info().OutputBroker = %#v, want %#v", info.OutputBroker, peer)
 	}
@@ -194,12 +194,12 @@ func TestSupervisorUsesOptionalOutputBrokerAttachment(t *testing.T) {
 	waitForOutput(t, stdout, "broker-output")
 }
 
-// TestSupervisorBrokerLaunchFailureSettlesChildBeforeReturning proves a failed optional handoff cannot strand a started process.
-func TestSupervisorBrokerLaunchFailureSettlesChildBeforeReturning(t *testing.T) {
-	installForjHelper(t, "wait")
+// TestSupervisorBrokerLaunchFailureFallsBackToDirectPipes proves an optional handoff cannot block a started process.
+func TestSupervisorBrokerLaunchFailureFallsBackToDirectPipes(t *testing.T) {
+	installForjHelper(t, "exit")
 	supervisor := newTestSupervisor(Options{OutputBrokerLauncher: &supervisorOutputBrokerLauncher{err: errors.New("broker unavailable")}})
 	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
-	_, err := supervisor.Start(t.Context(), StartRequest{
+	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-broker-failure",
 		SessionID:            "session-broker-failure",
 		CheckoutRoot:         t.TempDir(),
@@ -207,18 +207,13 @@ func TestSupervisorBrokerLaunchFailureSettlesChildBeforeReturning(t *testing.T) 
 		Stdout:               io.Discard,
 		Stderr:               io.Discard,
 	})
-	if err == nil || !strings.Contains(err.Error(), "launch output broker") {
-		t.Fatalf("Start() error = %v, want broker launch failure", err)
+	if err != nil {
+		t.Fatalf("Start() error = %v, want direct-pipe fallback", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		supervisor.mu.Lock()
-		remaining := len(supervisor.projects) + len(supervisor.sessions)
-		supervisor.mu.Unlock()
-		if remaining == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if handle.Info().OutputBroker != nil {
+		t.Fatalf("Handle.Info().OutputBroker = %#v, want direct-pipe fallback", handle.Info().OutputBroker)
 	}
-	t.Fatal("failed broker launch left process ownership registered")
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("handle.Wait() error = %v", err)
+	}
 }

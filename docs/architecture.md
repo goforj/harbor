@@ -119,6 +119,7 @@ Named Apps share `internal/domain` and generated protocol packages, but they do 
 |---|---|
 | default `app` → `harbor` | Build to `./bin/harbor`; `run: false`. |
 | `harbord` | Build to `./bin/harbord`; explicit full-process `run.exec` starts the foreground daemon. |
+| `outputbroker` | Optional build-only sibling at `./bin/outputbroker`; Harbor launches it only when the exact artifact is present. |
 | `harbor-helper` | Bespoke build-only custom watcher; not a generated App and never elevated by `forj dev`. |
 | `harbor-installer` | Bespoke build-only custom watcher; not a generated App and never elevated by `forj dev`. |
 | `desktop` | Nested module, not a `dev.apps` entry; a custom `dev.watches` entry runs Wails in `./desktop`. |
@@ -147,9 +148,13 @@ dev:
       watch: [.go]
       roots: [./cmd/installer, ./internal]
       exec: go build -o ./bin/harbor-installer ./cmd/installer
+    - name: Build outputbroker
+      watch: [.go]
+      roots: [./cmd/outputbroker, ./internal/projectprocess]
+      exec: go build -o ./bin/outputbroker ./cmd/outputbroker
 ```
 
-The desktop phase adds its custom development entry and verifies the final YAML through GoForj's parser and live watcher tests. One ordinary standalone `forj dev --no-harbor` then develops the complete graph. Developing Harbor must never launch the helper or installer elevated or leave either running as a watcher. The current checked-in `.goforj.yml` is intentionally smaller while installer and managed attachment work remain incomplete.
+The desktop phase adds its custom development entry and verifies the final YAML through GoForj's parser and live watcher tests. One ordinary standalone `forj dev --no-harbor` then develops the complete graph. Developing Harbor must never launch the helper or installer elevated or leave either running as a watcher. The checked-in `.goforj.yml` also builds the optional output broker, while installer and restart-time managed attachment work remain incomplete.
 
 Interfaces are owned by the consumer package and describe semantic operations such as `EnsureResolverRoute` or `InstallTrustAnchor`. Platform implementations do not translate a Linux service file into another operating system's model.
 

@@ -37,11 +37,12 @@ func TestRunBuildsOnlyFixedRootArtifacts(t *testing.T) {
 	wantCalls := [][]string{
 		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "helper"), "./cmd/helper"},
 		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "devbootstrap"), "./cmd/devbootstrap"},
+		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "outputbroker"), "./cmd/outputbroker"},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
 	}
-	for _, name := range []string{"helper", "devbootstrap"} {
+	for _, name := range []string{"helper", "devbootstrap", "outputbroker"} {
 		information, err := os.Stat(filepath.Join(artifactDirectory, name))
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)

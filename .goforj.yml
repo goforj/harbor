@@ -18,6 +18,10 @@ dev:
       run:
         exec: ./bin/harbord migrate && ./bin/harbord --foreground
   watches:
+    - name: Build Harbor Output Broker
+      root: .
+      watch: [./cmd/outputbroker, ./internal/projectprocess, ./go.mod, ./go.sum]
+      exec: go build -o ./bin/outputbroker ./cmd/outputbroker
     - name: Harbor Desktop
       root: .
       watch: [./.goforj.yml]

@@ -10,9 +10,82 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 )
+
+// TestAttachOutputBrokerCompletesChallengeAndAcksLiveRecords proves Supervisor can use the transport client instead of hand-rolling protocol frames.
+func TestAttachOutputBrokerCompletesChallengeAndAcksLiveRecords(t *testing.T) {
+	evidence, err := CaptureCurrentProcessEvidence()
+	if err != nil {
+		t.Fatalf("CaptureCurrentProcessEvidence() error = %v", err)
+	}
+	outputRoot := t.TempDir()
+	endpoint := filepath.Join(t.TempDir(), "output-broker-client.sock")
+	projectID := domain.ProjectID("project-client-broker")
+	sessionID := domain.SessionID("session-client-broker")
+	peer := OutputBrokerPeer{ProjectID: projectID, SessionID: sessionID, EndpointReference: endpoint, Process: evidence}
+	stdoutReader, stdoutWriter := io.Pipe()
+	stderrReader, stderrWriter := io.Pipe()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- RunOutputBroker(ctx, OutputBrokerRuntimeConfig{
+			ProjectID:         projectID,
+			SessionID:         sessionID,
+			OutputDirectory:   outputRoot,
+			EndpointReference: endpoint,
+			AttachmentTicket:  "client-ticket-1",
+			Process:           evidence,
+			Stdout:            stdoutReader,
+			Stderr:            stderrReader,
+		})
+	}()
+	clientContext, clientCancel := context.WithTimeout(ctx, 2*time.Second)
+	client, err := attachOutputBrokerWithRetry(clientContext, OutputBrokerAttachmentConfig{
+		ProjectID:         projectID,
+		SessionID:         sessionID,
+		EndpointReference: endpoint,
+		Ticket:            "client-ticket-1",
+		Peer:              peer,
+		ObservedProcess:   evidence,
+	})
+	clientCancel()
+	if err != nil {
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
+		t.Fatalf("attachOutputBrokerWithRetry() error = %v", err)
+	}
+	if _, err := stdoutWriter.Write([]byte("client output\n")); err != nil {
+		t.Fatalf("write client broker output: %v", err)
+	}
+	record, err := client.Receive(ctx)
+	if err != nil {
+		t.Fatalf("client.Receive() error = %v", err)
+	}
+	if record.Frame == nil || record.Frame.Text != "client output\n" {
+		t.Fatalf("client.Receive() = %#v, want live frame", record)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client.Close() error = %v", err)
+	}
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatalf("close client stdout writer: %v", err)
+	}
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatalf("close client stderr writer: %v", err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunOutputBroker() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("RunOutputBroker() timed out: %v", ctx.Err())
+	}
+}
 
 // TestCaptureCurrentProcessEvidenceBindsTheRunningExecutable proves broker evidence is derived from the process, not a request payload.
 func TestCaptureCurrentProcessEvidenceBindsTheRunningExecutable(t *testing.T) {
