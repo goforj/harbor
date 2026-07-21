@@ -205,6 +205,12 @@ Cloudflare configuration, or a user's router. Public exposure therefore remains 
 flow with its own consent, authentication, firewall, certificate, and native-platform proof gates,
 not a permissive option on the local proxy constructor.
 
+The local `.test` listener and its exposure listener are separate ownership scopes. They may share
+the router and transport implementation, but enabling an external App route must not widen or move
+the loopback socket. A Cloudflare tunnel that connects to a local Harbor endpoint can therefore use
+the same private upstream without requiring a LAN bind at all; a user-owned NAT path uses the
+explicitly selected interface address and its own exact external route.
+
 The local CA and leaf lifecycle is defined in [architecture.md](./architecture.md). Each leaf contains only registered exact domains. Trust is verified with the supported Safari, Edge, Chrome, Firefox, sandbox-package, and OS-native client combinations declared for that platform profile, not merely by checking that a certificate file exists. A Linux packaging/browser combination that uses a separate trust store is either integrated and tested or visibly outside full mode.
 
 ## Native TCP relays
