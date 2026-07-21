@@ -99,7 +99,7 @@ func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRep
 	if len(owners) == 0 {
 		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionForeign}, nil
 	}
-	if observedSocketCount != network.exactListeners+network.conflictingBinds {
+	if observedSocketCount < network.exactListeners+network.conflictingBinds {
 		// A second native row that cannot be tied to this user's owner set may belong to a foreign
 		// process or an incomplete kernel snapshot; neither case authorizes automatic signaling.
 		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionAmbiguous}, nil
