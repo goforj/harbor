@@ -6,6 +6,8 @@ Last updated: 2026-07-21
 
 Since the previous handoff, Harbor also has a post-start native-route activator: the managed barrier now plans the complete observed publication set against Harbor-owned reservations, replaces native relays without rebinding shared listeners, and acknowledges only after every relay is live. An inherited GoForj session now sends the complete replacement reset and retries that barrier once its initial watcher graph is online; Harbor re-observes service ports instead of trusting GoForj to invent upstreams. The managed registration path can now reconstruct its ephemeral publication authority from an exact durable attached session after a daemon restart, and GoForj retains a process-local launch context for a fresh authenticated replay connection. GoForj now retries one lost managed-session transport and runs a bounded heartbeat that resets and republishes observations while the dev process remains alive; process-preserving daemon recovery and the fully phased pre-Compose/post-Compose lifecycle remain open.
 
+The macOS retained-lease repair boundary now correlates every endpoint row back to native socket owners before deciding ambiguity. One same-user process may expose the leased port through multiple exact, wildcard, or dual-stack records and still be settled as one project scope; multiple owners, foreign rows, or incomplete native evidence remain fail-closed.
+
 This document describes the repository as it works today. The other documents in this directory describe Harbor's intended product and architecture; their phase gates are not claims that the corresponding work is complete.
 
 ## Product shape
