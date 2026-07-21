@@ -21,3 +21,12 @@ func newRuntimeRepairControl() runtimeRepairControl {
 		},
 	}
 }
+
+// newUnattributedRuntimeControl returns an explicit unsupported result without inferring host-process ownership.
+func newUnattributedRuntimeControl() unattributedRuntimeControl {
+	return unattributedRuntimeControl{
+		inspect: func(_ context.Context, _ RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
+			return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnsupported}, nil
+		},
+	}
+}

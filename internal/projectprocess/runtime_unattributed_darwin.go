@@ -1,0 +1,292 @@
+//go:build darwin
+
+package projectprocess
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+
+// newUnattributedRuntimeControl wires Darwin's read-only same-user process-tree observer.
+func newUnattributedRuntimeControl() unattributedRuntimeControl {
+	return unattributedRuntimeControl{inspect: inspectStableDarwinUnattributedRuntime}
+}
+
+// inspectStableDarwinUnattributedRuntime requires two consecutive equal scopes before returning a candidate.
+func inspectStableDarwinUnattributedRuntime(ctx context.Context, target RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
+	var previous *unattributedRuntimeNativeInspection
+	for attempt := 0; attempt < darwinRuntimeRepairObservationAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return unattributedRuntimeNativeInspection{}, err
+		}
+		inspection, err := inspectDarwinUnattributedRuntimePass(ctx, target)
+		if errors.Is(err, errDarwinRuntimeRepairUnstable) {
+			previous = nil
+			continue
+		}
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return unattributedRuntimeNativeInspection{}, ctxErr
+			}
+			return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnreadable}, nil
+		}
+		if previous != nil && equalDarwinUnattributedRuntimeInspections(*previous, inspection) {
+			return inspection, nil
+		}
+		copy := inspection
+		if inspection.Observation != nil {
+			observation := inspection.Observation.clone()
+			copy.Observation = &observation
+		}
+		previous = &copy
+	}
+	return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnreadable}, nil
+}
+
+// inspectDarwinUnattributedRuntimePass correlates one exact listener with one same-user forj dev descendant scope.
+func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
+	network, err := observeDarwinRuntimeRepairNetwork(ctx, target.Endpoint)
+	if err != nil {
+		return unattributedRuntimeNativeInspection{}, err
+	}
+	cardinality := runtimeRepairListenerCardinality(network.exactListeners, network.conflictingBinds)
+	if cardinality != RuntimeRepairInspectionActionable {
+		return unattributedRuntimeNativeInspection{State: cardinality}, nil
+	}
+
+	daemonUID := uint32(os.Geteuid())
+	userProcesses, err := unix.SysctlKinfoProcSlice("kern.proc.uid", int(daemonUID))
+	if err != nil {
+		return unattributedRuntimeNativeInspection{}, fmt.Errorf("enumerate daemon-user Darwin processes: %w", errDarwinRuntimeRepairUnreadable)
+	}
+	if len(userProcesses) > runtimeRepairMaximumProcesses {
+		return unattributedRuntimeNativeInspection{}, fmt.Errorf("daemon-user Darwin process count exceeds %d: %w", runtimeRepairMaximumProcesses, errDarwinRuntimeRepairUnreadable)
+	}
+	slices.SortFunc(userProcesses, func(left, right unix.KinfoProc) int {
+		return cmp.Compare(left.Proc.P_pid, right.Proc.P_pid)
+	})
+	owners := make([]runtimeRepairSocketFact, 0, 1)
+	for _, process := range userProcesses {
+		if process.Proc.P_stat == darwinProcessStateZombie || process.Proc.P_pid <= 0 {
+			continue
+		}
+		facts, err := observeDarwinRuntimeRepairSockets(int(process.Proc.P_pid), target.Endpoint)
+		if err != nil {
+			return unattributedRuntimeNativeInspection{}, err
+		}
+		owners = append(owners, facts...)
+		if len(owners) > 1 {
+			return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionAmbiguous}, nil
+		}
+	}
+	if len(owners) == 0 {
+		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionForeign}, nil
+	}
+
+	observation, state, err := observeDarwinUnattributedRuntimeScope(ctx, target, daemonUID, owners[0])
+	if err != nil {
+		return unattributedRuntimeNativeInspection{}, err
+	}
+	if state != RuntimeRepairInspectionActionable {
+		return unattributedRuntimeNativeInspection{State: state}, nil
+	}
+	return unattributedRuntimeNativeInspection{State: state, Observation: &observation}, nil
+}
+
+// observeDarwinUnattributedRuntimeScope proves the listener owner descends from one exact same-user forj dev root.
+func observeDarwinUnattributedRuntimeScope(
+	ctx context.Context,
+	target RuntimeRepairTarget,
+	daemonUID uint32,
+	listener runtimeRepairSocketFact,
+) (unattributedRuntimeNativeObservation, RuntimeRepairInspectionState, error) {
+	allProcesses, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if err != nil {
+		return unattributedRuntimeNativeObservation{}, "", fmt.Errorf("enumerate Darwin process scope: %w", errDarwinRuntimeRepairUnreadable)
+	}
+	if len(allProcesses) > darwinRuntimeRepairMaximumSystemProcesses {
+		return unattributedRuntimeNativeObservation{}, "", fmt.Errorf("Darwin process census exceeds %d: %w", darwinRuntimeRepairMaximumSystemProcesses, errDarwinRuntimeRepairUnreadable)
+	}
+	processByPID := make(map[int]unix.KinfoProc, len(allProcesses))
+	for _, process := range allProcesses {
+		if process.Proc.P_stat == darwinProcessStateZombie || process.Proc.P_pid <= 0 {
+			continue
+		}
+		processByPID[int(process.Proc.P_pid)] = process
+	}
+	if _, found := processByPID[listener.OwnerPID]; !found {
+		return unattributedRuntimeNativeObservation{}, "", errDarwinRuntimeRepairUnstable
+	}
+
+	roots, err := findDarwinUnattributedRuntimeRoots(ctx, target, daemonUID, listener.OwnerPID, processByPID)
+	if err != nil {
+		return unattributedRuntimeNativeObservation{}, "", err
+	}
+	if len(roots) == 0 {
+		return unattributedRuntimeNativeObservation{}, RuntimeRepairInspectionAmbiguous, nil
+	}
+	if len(roots) != 1 {
+		return unattributedRuntimeNativeObservation{}, RuntimeRepairInspectionAmbiguous, nil
+	}
+	rootPID := roots[0]
+
+	memberProcesses := make([]unix.KinfoProc, 0, 1)
+	for pid, process := range processByPID {
+		descendant, stable := darwinProcessDescendsFromRoot(pid, rootPID, processByPID)
+		if !stable {
+			continue
+		}
+		if !descendant {
+			continue
+		}
+		if process.Eproc.Ucred.Uid != daemonUID || process.Eproc.Pcred.P_ruid != daemonUID {
+			return unattributedRuntimeNativeObservation{}, RuntimeRepairInspectionForeign, nil
+		}
+		memberProcesses = append(memberProcesses, process)
+		if len(memberProcesses) > runtimeRepairMaximumProcesses {
+			return unattributedRuntimeNativeObservation{}, "", fmt.Errorf("unattributed Darwin process scope exceeds %d: %w", runtimeRepairMaximumProcesses, errDarwinRuntimeRepairUnreadable)
+		}
+	}
+	slices.SortFunc(memberProcesses, func(left, right unix.KinfoProc) int {
+		return cmp.Compare(left.Proc.P_pid, right.Proc.P_pid)
+	})
+	if len(memberProcesses) == 0 {
+		return unattributedRuntimeNativeObservation{}, "", errDarwinRuntimeRepairUnstable
+	}
+
+	members := make([]runtimeRepairProcessFact, 0, len(memberProcesses))
+	for _, process := range memberProcesses {
+		if err := ctx.Err(); err != nil {
+			return unattributedRuntimeNativeObservation{}, "", err
+		}
+		pid := int(process.Proc.P_pid)
+		sessionID, err := unix.Getsid(pid)
+		if errors.Is(err, syscall.ESRCH) {
+			return unattributedRuntimeNativeObservation{}, "", errDarwinRuntimeRepairUnstable
+		}
+		if err != nil || sessionID <= 0 {
+			return unattributedRuntimeNativeObservation{}, "", fmt.Errorf("read Darwin process %d session: %w", pid, errDarwinRuntimeRepairUnreadable)
+		}
+		fact, err := observeDarwinRuntimeRepairProcess(process, sessionID)
+		if err != nil {
+			return unattributedRuntimeNativeObservation{}, "", err
+		}
+		members = append(members, fact)
+	}
+	rootIndex, found := slices.BinarySearchFunc(members, rootPID, func(member runtimeRepairProcessFact, pid int) int {
+		return cmp.Compare(member.PID, pid)
+	})
+	if !found {
+		return unattributedRuntimeNativeObservation{}, "", errDarwinRuntimeRepairUnstable
+	}
+	root := members[rootIndex]
+	parentBirth, present, err := observeProcessBirthToken(root.ParentPID)
+	if err != nil {
+		return unattributedRuntimeNativeObservation{}, "", fmt.Errorf("read Darwin unattributed runtime root parent birth: %w", errDarwinRuntimeRepairUnreadable)
+	}
+	if !present {
+		return unattributedRuntimeNativeObservation{}, "", errDarwinRuntimeRepairUnstable
+	}
+	ownerIndex, ownerFound := slices.BinarySearchFunc(members, listener.OwnerPID, func(member runtimeRepairProcessFact, pid int) int {
+		return cmp.Compare(member.PID, pid)
+	})
+	if !ownerFound {
+		return unattributedRuntimeNativeObservation{}, RuntimeRepairInspectionAmbiguous, nil
+	}
+	listener.OwnerBirthToken = members[ownerIndex].BirthToken
+	observation := unattributedRuntimeNativeObservation{
+		Target:     target,
+		DaemonUID:  daemonUID,
+		Root:       root,
+		RootParent: runtimeRepairParentFact{PID: root.ParentPID, BirthToken: parentBirth},
+		Members:    members,
+		Listener:   listener,
+	}
+	if err := observation.validate(); err != nil {
+		return unattributedRuntimeNativeObservation{}, RuntimeRepairInspectionAmbiguous, nil
+	}
+	return observation, RuntimeRepairInspectionActionable, nil
+}
+
+// findDarwinUnattributedRuntimeRoots walks the listener owner's parent chain and returns exact forj dev ancestors.
+func findDarwinUnattributedRuntimeRoots(
+	ctx context.Context,
+	target RuntimeRepairTarget,
+	daemonUID uint32,
+	ownerPID int,
+	processByPID map[int]unix.KinfoProc,
+) ([]int, error) {
+	roots := make([]int, 0, 1)
+	seen := make(map[int]struct{}, len(processByPID))
+	for pid := ownerPID; pid > 0; {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[pid]; duplicate {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		seen[pid] = struct{}{}
+		process, found := processByPID[pid]
+		if !found {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		if process.Eproc.Ucred.Uid == daemonUID && process.Eproc.Pcred.P_ruid == daemonUID {
+			sessionID, err := unix.Getsid(pid)
+			if errors.Is(err, syscall.ESRCH) {
+				return nil, errDarwinRuntimeRepairUnstable
+			}
+			if err != nil || sessionID <= 0 {
+				return nil, fmt.Errorf("read Darwin process %d session: %w", pid, errDarwinRuntimeRepairUnreadable)
+			}
+			fact, err := observeDarwinRuntimeRepairProcess(process, sessionID)
+			if err != nil {
+				return nil, err
+			}
+			if fact.CommandExact && fact.WorkingDirectory == target.CheckoutRoot && filepath.Base(fact.ExecutableIdentity) == "forj" {
+				roots = append(roots, pid)
+			}
+		}
+		parentPID := int(process.Eproc.Ppid)
+		if parentPID <= 0 || parentPID == pid {
+			break
+		}
+		pid = parentPID
+	}
+	return roots, nil
+}
+
+// darwinProcessDescendsFromRoot walks one current parent chain without treating a missing parent as stable ownership.
+func darwinProcessDescendsFromRoot(pid, rootPID int, processByPID map[int]unix.KinfoProc) (bool, bool) {
+	seen := make(map[int]struct{}, len(processByPID))
+	for pid != rootPID {
+		if _, duplicate := seen[pid]; duplicate {
+			return false, false
+		}
+		seen[pid] = struct{}{}
+		process, found := processByPID[pid]
+		if !found || process.Eproc.Ppid <= 0 {
+			return false, false
+		}
+		pid = int(process.Eproc.Ppid)
+	}
+	return true, true
+}
+
+// equalDarwinUnattributedRuntimeInspections compares classifications and every actionable scope fact.
+func equalDarwinUnattributedRuntimeInspections(left, right unattributedRuntimeNativeInspection) bool {
+	if left.State != right.State {
+		return false
+	}
+	if left.Observation == nil || right.Observation == nil {
+		return left.Observation == nil && right.Observation == nil
+	}
+	return unattributedRuntimeObservationsEqual(*left.Observation, *right.Observation)
+}

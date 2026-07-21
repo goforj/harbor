@@ -169,6 +169,67 @@ func TestNativeDarwinRuntimeRepairRejectsAmbiguousScopeWithoutSignal(t *testing.
 	}
 }
 
+// TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope proves read-only inspection can correlate an older direct launch without claiming a Harbor-created session.
+func TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope(t *testing.T) {
+	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
+		t.Skip("set HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 on a disposable macOS runner")
+	}
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize checkout error = %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable error = %v", err)
+	}
+	forjPath := filepath.Join(checkout, "forj")
+	if err := copyRuntimeRepairNativeHelper(executable, forjPath); err != nil {
+		t.Fatalf("copy forj helper error = %v", err)
+	}
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("reserve listener error = %v", err)
+	}
+	endpoint := netip.MustParseAddrPort(listener.Addr().String())
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release listener reservation error = %v", err)
+	}
+
+	command := exec.Command(forjPath, "dev")
+	command.Dir = checkout
+	command.Env = append(
+		os.Environ(),
+		runtimeRepairNativeHelperEnvironment+"=1",
+		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
+	)
+	if err := command.Start(); err != nil {
+		t.Fatalf("start non-dedicated native forj helper error = %v", err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("wait for non-dedicated native listener error = %v", err)
+	}
+
+	inspection, err := NewUnattributedRuntimeInspector().Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if inspection.State != RuntimeRepairInspectionActionable || inspection.Candidate == nil {
+		t.Fatalf("Inspect() = %#v, want actionable candidate", inspection)
+	}
+	if err := inspection.Validate(); err != nil {
+		t.Fatalf("inspection.Validate() error = %v", err)
+	}
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("read-only inspection stopped the listener: %v", err)
+	}
+}
+
 // TestNativeDarwinRuntimeRepairRejectsDriftWithoutSignal proves a replacement listener cannot inherit an inspected repair candidate's signal.
 func TestNativeDarwinRuntimeRepairRejectsDriftWithoutSignal(t *testing.T) {
 	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
