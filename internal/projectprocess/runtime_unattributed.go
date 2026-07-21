@@ -324,6 +324,10 @@ const (
 	unattributedRuntimeRootForjDev unattributedRuntimeRootKind = "forj_dev"
 	// unattributedRuntimeRootProjectListener identifies a same-user listener process whose checkout is the project authority.
 	unattributedRuntimeRootProjectListener unattributedRuntimeRootKind = "project_listener"
+	// unattributedRuntimeRootProjectForj identifies an exact forj dev ancestor selected by the project's leased socket.
+	unattributedRuntimeRootProjectForj unattributedRuntimeRootKind = "project_forj"
+	// unattributedRuntimeRootProjectAddress identifies a same-user listener process selected by an exact Harbor lease.
+	unattributedRuntimeRootProjectAddress unattributedRuntimeRootKind = "project_address"
 )
 
 // rootKind returns the legacy forj-dev interpretation used by portable fixtures created before root kinds were recorded.
@@ -357,17 +361,28 @@ func (observation unattributedRuntimeNativeObservation) validate() error {
 	if observation.Root.EffectiveUID != observation.DaemonUID || observation.Root.RealUID != observation.DaemonUID {
 		return fmt.Errorf("unattributed runtime root is not owned exclusively by the daemon user")
 	}
-	if observation.Root.WorkingDirectory != observation.Target.CheckoutRoot {
-		return fmt.Errorf("unattributed runtime root working directory does not match the target checkout")
-	}
 	switch observation.rootKind() {
 	case unattributedRuntimeRootForjDev:
+		if observation.Root.WorkingDirectory != observation.Target.CheckoutRoot {
+			return fmt.Errorf("unattributed runtime forj root working directory does not match the target checkout")
+		}
 		if filepath.Base(observation.Root.ExecutableIdentity) != "forj" || observation.Root.ArgumentCount != 2 || !observation.Root.CommandExact {
 			return fmt.Errorf("unattributed runtime root command is not exactly forj dev")
 		}
+	case unattributedRuntimeRootProjectForj:
+		if filepath.Base(observation.Root.ExecutableIdentity) != "forj" || observation.Root.ArgumentCount != 2 || !observation.Root.CommandExact {
+			return fmt.Errorf("project forj root command is not exactly forj dev")
+		}
 	case unattributedRuntimeRootProjectListener:
+		if observation.Root.WorkingDirectory != observation.Target.CheckoutRoot {
+			return fmt.Errorf("project-owned listener root working directory does not match the target checkout")
+		}
 		if observation.Root.PID != observation.Listener.OwnerPID {
 			return fmt.Errorf("project-owned listener root must own the exact target socket")
+		}
+	case unattributedRuntimeRootProjectAddress:
+		if observation.Root.PID != observation.Listener.OwnerPID {
+			return fmt.Errorf("project-address listener root must own the exact target socket")
 		}
 	default:
 		return fmt.Errorf("unattributed runtime root kind %q is unsupported", observation.RootKind)
@@ -480,7 +495,7 @@ func unattributedRuntimeInspection(native unattributedRuntimeNativeInspection) (
 // unattributedRuntimeDisplay derives bounded confirmation facts from one validated native observation.
 func unattributedRuntimeDisplay(observation unattributedRuntimeNativeObservation) RuntimeRepairDisplay {
 	command := runtimeRepairCommand
-	if observation.rootKind() == unattributedRuntimeRootProjectListener {
+	if observation.rootKind() == unattributedRuntimeRootProjectListener || observation.rootKind() == unattributedRuntimeRootProjectAddress {
 		command = runtimeRepairProjectListenerCommand
 	}
 	return RuntimeRepairDisplay{

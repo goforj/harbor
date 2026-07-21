@@ -115,6 +115,77 @@ func TestNativeDarwinUnattributedRuntimeRepairSettlesCheckoutOwnedListener(t *te
 	}
 }
 
+// TestNativeDarwinUnattributedRuntimeRepairSettlesExactLeasedAddressListener proves Start can clean a same-user listener after its checkout metadata has drifted.
+func TestNativeDarwinUnattributedRuntimeRepairSettlesExactLeasedAddressListener(t *testing.T) {
+	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
+		t.Skip("set HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 on a disposable macOS runner")
+	}
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize checkout error = %v", err)
+	}
+	workingDirectory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize working directory error = %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable error = %v", err)
+	}
+	appPath := filepath.Join(checkout, ".app.address-run-test")
+	if err := copyRuntimeRepairNativeHelper(executable, appPath); err != nil {
+		t.Fatalf("copy app helper error = %v", err)
+	}
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("reserve listener error = %v", err)
+	}
+	endpoint := netip.MustParseAddrPort(listener.Addr().String())
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release listener reservation error = %v", err)
+	}
+
+	command := exec.Command(appPath, "serve")
+	command.Dir = workingDirectory
+	command.Env = append(
+		os.Environ(),
+		runtimeRepairNativeHelperEnvironment+"=1",
+		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
+		runtimeRepairNativeProjectProcess+"=1",
+	)
+	if err := command.Start(); err != nil {
+		t.Fatalf("start exact leased-address app helper error = %v", err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("wait for exact leased-address app listener error = %v", err)
+	}
+
+	repairer := NewUnattributedRuntimeRepairer()
+	inspection, err := repairer.Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if inspection.State != RuntimeRepairInspectionActionable || inspection.Candidate == nil {
+		t.Fatalf("Inspect() = %#v, want actionable exact leased-address candidate", inspection)
+	}
+	if inspection.Candidate.Display.Command != runtimeRepairProjectListenerCommand {
+		t.Fatalf("candidate command = %q, want %q", inspection.Candidate.Display.Command, runtimeRepairProjectListenerCommand)
+	}
+	confirmation, err := repairer.Confirm(t.Context(), *inspection.Candidate)
+	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want settled graceful signal", confirmation, err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("wait for terminated exact leased-address app helper error = %v", err)
+	}
+}
+
 // TestNativeDarwinRuntimeRepairLifecycle proves the reviewed native backend signals only an exact forj dev session and settles its listener.
 func TestNativeDarwinRuntimeRepairLifecycle(t *testing.T) {
 	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {

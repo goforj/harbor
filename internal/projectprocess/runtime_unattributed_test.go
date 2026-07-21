@@ -131,6 +131,39 @@ func TestUnattributedRuntimeObservationAllowsProjectOwnedListenerRoot(t *testing
 	}
 }
 
+// TestUnattributedRuntimeObservationAllowsExactLeasedAddressRoot proves a same-user listener remains actionable when its working directory no longer identifies the checkout.
+func TestUnattributedRuntimeObservationAllowsExactLeasedAddressRoot(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	listener := observation.Members[1]
+	listener.ParentPID = observation.RootParent.PID
+	listener.ProcessGroupID = listener.PID
+	listener.SessionID = listener.PID
+	listener.WorkingDirectory = "/private/tmp/unrelated-working-directory"
+	observation.RootKind = unattributedRuntimeRootProjectAddress
+	observation.Root = listener
+	observation.Members = []runtimeRepairProcessFact{listener}
+	if err := observation.validate(); err != nil {
+		t.Fatalf("exact leased-address observation error = %v", err)
+	}
+	if display := unattributedRuntimeDisplay(observation); display.Command != runtimeRepairProjectListenerCommand {
+		t.Fatalf("exact leased-address display command = %q, want %q", display.Command, runtimeRepairProjectListenerCommand)
+	}
+}
+
+// TestUnattributedRuntimeObservationAllowsExactLeasedForjScope proves an exact forj dev ancestor remains actionable when its checkout path is no longer available as process metadata.
+func TestUnattributedRuntimeObservationAllowsExactLeasedForjScope(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	observation.RootKind = unattributedRuntimeRootProjectForj
+	observation.Root.WorkingDirectory = "/private/tmp/unrelated-working-directory"
+	observation.Members[0] = observation.Root
+	if err := observation.validate(); err != nil {
+		t.Fatalf("exact leased forj observation error = %v", err)
+	}
+	if display := unattributedRuntimeDisplay(observation); display.Command != runtimeRepairCommand {
+		t.Fatalf("exact leased forj display command = %q, want %q", display.Command, runtimeRepairCommand)
+	}
+}
+
 // TestUnattributedRuntimeObservationRejectsUnsafeScopes proves foreign and detached descendants cannot become candidates.
 func TestUnattributedRuntimeObservationRejectsUnsafeScopes(t *testing.T) {
 	tests := []struct {

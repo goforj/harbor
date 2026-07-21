@@ -480,7 +480,7 @@ Native release jobs perform macOS hardened-runtime signing and notarization, Win
 | Network/VPN changes | One dirty signal triggers resolver and route observation, then an owned repair if needed. |
 | Sleep/resume | Revalidate loopback aliases, low-port ingress, DNS, certificates, PIDs, and Docker publications. |
 | Project path moves | Mark unavailable and offer an explicit relink to a matching descriptor; never scan and assume. |
-| Port is occupied | Identify the listener when permitted, keep the endpoint failed, and do not shift the public port. A busy port alone never authorizes a signal; automatic cleanup requires either an exact Harbor receipt or an exact project primary lease plus same-user checkout-owned listener scope, while other unattributed-process actions require explicit user inspection and confirmation. |
+| Port is occupied | Identify the listener when permitted, keep the endpoint failed, and do not shift the public port. A busy port alone never authorizes a signal; automatic cleanup requires either an exact Harbor receipt or an exact project primary lease plus one same-user scope owning that exact leased socket. Foreign users, wildcard binds, multiple owners, and unstable native facts remain fail-closed, while other unattributed-process actions require explicit user inspection and confirmation. |
 | Config changes | Ask GoForj for a new descriptor, diff desired endpoints, and apply a transactional session refresh. |
 | Partial registration | Resume or roll back ownership-marked staged effects from the operation journal. |
 | Unsupported protocol | Refuse the operation with required version ranges; do not parse human output as fallback. |

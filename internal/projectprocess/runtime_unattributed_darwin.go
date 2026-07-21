@@ -228,7 +228,7 @@ type darwinUnattributedRuntimeRoot struct {
 	Kind unattributedRuntimeRootKind
 }
 
-// findDarwinUnattributedRuntimeRoots prefers one exact forj dev ancestor and otherwise accepts the exact same-user checkout listener.
+// findDarwinUnattributedRuntimeRoots prefers one exact forj dev ancestor and otherwise selects the exact leased listener.
 func findDarwinUnattributedRuntimeRoots(
 	ctx context.Context,
 	target RuntimeRepairTarget,
@@ -237,7 +237,9 @@ func findDarwinUnattributedRuntimeRoots(
 	processByPID map[int]unix.KinfoProc,
 ) ([]darwinUnattributedRuntimeRoot, error) {
 	forjRoots := make([]darwinUnattributedRuntimeRoot, 0, 1)
+	forjAddressRoots := make([]darwinUnattributedRuntimeRoot, 0, 1)
 	var projectListenerRoot *darwinUnattributedRuntimeRoot
+	var projectAddressRoot *darwinUnattributedRuntimeRoot
 	seen := make(map[int]struct{}, len(processByPID))
 	for pid := ownerPID; pid > 0; {
 		if err := ctx.Err(); err != nil {
@@ -263,12 +265,22 @@ func findDarwinUnattributedRuntimeRoots(
 			if err != nil {
 				return nil, err
 			}
-			if fact.CommandExact && fact.WorkingDirectory == target.CheckoutRoot && filepath.Base(fact.ExecutableIdentity) == "forj" {
-				forjRoots = append(forjRoots, darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootForjDev})
+			if fact.CommandExact && filepath.Base(fact.ExecutableIdentity) == "forj" {
+				if fact.WorkingDirectory == target.CheckoutRoot {
+					forjRoots = append(forjRoots, darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootForjDev})
+				} else {
+					forjAddressRoots = append(forjAddressRoots, darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootProjectForj})
+				}
 			}
 			if pid == ownerPID && fact.WorkingDirectory == target.CheckoutRoot {
 				candidate := darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootProjectListener}
 				projectListenerRoot = &candidate
+			} else if pid == ownerPID {
+				// The exact primary lease is the Harbor-side project identity. When a generated
+				// listener has changed directory or detached from its forj ancestor, retain only
+				// the listener owner's same-user scope rather than leaving Start stuck on a stale port.
+				candidate := darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootProjectAddress}
+				projectAddressRoot = &candidate
 			}
 		}
 		parentPID := int(process.Eproc.Ppid)
@@ -280,8 +292,14 @@ func findDarwinUnattributedRuntimeRoots(
 	if len(forjRoots) != 0 {
 		return forjRoots, nil
 	}
+	if len(forjAddressRoots) != 0 {
+		return forjAddressRoots, nil
+	}
 	if projectListenerRoot != nil {
 		return []darwinUnattributedRuntimeRoot{*projectListenerRoot}, nil
+	}
+	if projectAddressRoot != nil {
+		return []darwinUnattributedRuntimeRoot{*projectAddressRoot}, nil
 	}
 	return nil, nil
 }
