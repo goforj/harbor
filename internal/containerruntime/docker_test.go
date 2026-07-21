@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/errdefs"
 	dockercontext "github.com/docker/go-sdk/context"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
@@ -24,7 +25,9 @@ import (
 type fakeDockerEngine struct {
 	listed       client.ContainerListResult
 	listSequence []client.ContainerListResult
+	listErr      error
 	inspections  map[string]client.ContainerInspectResult
+	inspectErrs  map[string]error
 	logs         map[string]client.ContainerLogsResult
 	logOutputs   map[string]string
 	logFactories map[string]func(context.Context) client.ContainerLogsResult
@@ -60,6 +63,9 @@ func (engine *fakeDockerEngine) ContainerList(
 	defer engine.mu.Unlock()
 	engine.listOptions = options
 	engine.listCalls++
+	if engine.listErr != nil {
+		return client.ContainerListResult{}, engine.listErr
+	}
 	if len(engine.listSequence) > 0 {
 		index := engine.listCalls - 1
 		if index >= len(engine.listSequence) {
@@ -76,6 +82,9 @@ func (engine *fakeDockerEngine) ContainerInspect(
 	containerID string,
 	_ client.ContainerInspectOptions,
 ) (client.ContainerInspectResult, error) {
+	if err := engine.inspectErrs[containerID]; err != nil {
+		return client.ContainerInspectResult{}, err
+	}
 	return engine.inspections[containerID], nil
 }
 
@@ -157,6 +166,54 @@ func TestDockerRuntimeWaitProjectChangeRejectsEnginesWithoutEvents(t *testing.T)
 	engine := &fakeDockerEngine{logs: make(map[string]client.ContainerLogsResult)}
 	if err := newDockerRuntime(engine).WaitProjectChange(t.Context(), root); !errors.Is(err, ErrProjectChangeUnsupported) {
 		t.Fatalf("WaitProjectChange() error = %v, want unsupported capability", err)
+	}
+}
+
+// TestDockerRuntimeObserveProjectClassifiesEngineAvailabilityFailures allows reconnect without weakening admission checks.
+func TestDockerRuntimeObserveProjectClassifiesEngineAvailabilityFailures(t *testing.T) {
+	root := t.TempDir()
+	engine := &fakeDockerEngine{
+		listErr: errdefs.ErrUnavailable.WithMessage("Docker is restarting"),
+		logs:    make(map[string]client.ContainerLogsResult),
+	}
+
+	_, err := newDockerRuntime(engine).ObserveProject(t.Context(), root)
+	if err == nil || !errors.Is(err, ErrProjectObservationTransient) || !strings.Contains(err.Error(), "Docker is restarting") {
+		t.Fatalf("ObserveProject() error = %v, want transient engine availability failure", err)
+	}
+}
+
+// TestDockerRuntimeObserveProjectClassifiesTransientInspectFailure keeps an Engine restart during admission retryable.
+func TestDockerRuntimeObserveProjectClassifiesTransientInspectFailure(t *testing.T) {
+	root := t.TempDir()
+	engine := &fakeDockerEngine{
+		listed: client.ContainerListResult{Items: []container.Summary{{
+			ID: "orders-db", Labels: composeLabels(root, "orders", "db", "1"),
+		}}},
+		inspectErrs: map[string]error{"orders-db": errdefs.ErrUnavailable.WithMessage("Docker inspect is restarting")},
+		logs:        make(map[string]client.ContainerLogsResult),
+	}
+
+	_, err := newDockerRuntime(engine).ObserveProject(t.Context(), root)
+	if err == nil || !errors.Is(err, ErrProjectObservationTransient) || !strings.Contains(err.Error(), "Docker inspect is restarting") {
+		t.Fatalf("ObserveProject() error = %v, want transient inspect failure", err)
+	}
+}
+
+// TestDockerRuntimeObserveProjectKeepsAdmissionFailuresTerminal prevents malformed runtime facts from being retried as transport loss.
+func TestDockerRuntimeObserveProjectKeepsAdmissionFailuresTerminal(t *testing.T) {
+	root := t.TempDir()
+	engine := &fakeDockerEngine{
+		listed: client.ContainerListResult{Items: []container.Summary{{
+			ID: "orders-db", Labels: composeLabels(root, "orders", "db", "1"),
+		}}},
+		inspectErrs: map[string]error{"orders-db": errors.New("inspect response is malformed")},
+		logs:        make(map[string]client.ContainerLogsResult),
+	}
+
+	_, err := newDockerRuntime(engine).ObserveProject(t.Context(), root)
+	if err == nil || errors.Is(err, ErrProjectObservationTransient) || !strings.Contains(err.Error(), "inspect response is malformed") {
+		t.Fatalf("ObserveProject() error = %v, want terminal admission failure", err)
 	}
 }
 

@@ -253,7 +253,7 @@ func (runtime *DockerRuntime) containers(
 	}
 	listed, err := runtime.engine.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
 	if err != nil {
-		return nil, fmt.Errorf("list Compose containers: %w", err)
+		return nil, wrapObservationRuntimeError("list Compose containers", err)
 	}
 	if len(listed.Items) > maximumRuntimeCandidates {
 		return nil, fmt.Errorf("host reports more than %d Compose container candidates", maximumRuntimeCandidates)
@@ -304,7 +304,7 @@ func (runtime *DockerRuntime) admitContainer(
 	}
 	inspected, err := runtime.engine.ContainerInspect(ctx, summary.ID, client.ContainerInspectOptions{})
 	if err != nil {
-		return admittedContainer{}, false, fmt.Errorf("inspect Compose container %q: %w", summary.ID, err)
+		return admittedContainer{}, false, wrapObservationRuntimeError(fmt.Sprintf("inspect Compose container %q", summary.ID), err)
 	}
 	if inspected.Container.Config == nil || inspected.Container.State == nil ||
 		!labelsSelectCheckout(inspected.Container.Config.Labels, canonicalRoot) {
@@ -360,6 +360,19 @@ func (runtime *DockerRuntime) admitContainer(
 			Ports:       ports,
 		},
 	}, true, nil
+}
+
+// wrapObservationRuntimeError marks only engine-availability failures as retryable while preserving all other facts as terminal.
+func wrapObservationRuntimeError(operation string, err error) error {
+	if transientEngineError(err) {
+		return fmt.Errorf("%w: %s: %w", ErrProjectObservationTransient, operation, err)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
+// transientEngineError recognizes transport-level engine loss without treating ownership or malformed data errors as transient.
+func transientEngineError(err error) bool {
+	return client.IsErrConnectionFailed(err) || errdefs.IsUnavailable(err) || errdefs.IsDeadlineExceeded(err)
 }
 
 // labelsSelectCheckout compares canonical host paths rather than trusting a Compose project name alone.

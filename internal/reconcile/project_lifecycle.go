@@ -27,14 +27,15 @@ import (
 )
 
 const (
-	defaultProjectStartupTimeout = 2 * time.Minute
-	defaultReadinessInterval     = 150 * time.Millisecond
-	defaultReadinessHTTPTimeout  = time.Second
-	defaultServiceObserveTimeout = 20 * time.Second
-	lifecyclePersistenceAttempts = 3
-	lifecyclePersistenceDelay    = 20 * time.Millisecond
-	serviceChangeRetryDelay      = 250 * time.Millisecond
-	maximumServiceChangeRetries  = 8
+	defaultProjectStartupTimeout     = 2 * time.Minute
+	defaultReadinessInterval         = 150 * time.Millisecond
+	defaultReadinessHTTPTimeout      = time.Second
+	defaultServiceObserveTimeout     = 20 * time.Second
+	lifecyclePersistenceAttempts     = 3
+	lifecyclePersistenceDelay        = 20 * time.Millisecond
+	serviceChangeRetryDelay          = 250 * time.Millisecond
+	maximumServiceChangeRetries      = 8
+	maximumServiceObservationRetries = 8
 )
 
 const (
@@ -841,6 +842,7 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 	runtimeRefresher, runtimeRefreshOK := coordinator.state.(projectRuntimeProjectionRefresher)
 	expectedRevision := project.Revision
 	transientFailures := 0
+	transientObservationFailures := 0
 	for {
 		if err := waiter.WaitServiceChange(ctx, session.ProjectID, session.ID); err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
@@ -855,7 +857,7 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 					coordinator.recordAsyncError(fmt.Errorf("watch project %q service topology after %d transient runtime failures: %w", session.ProjectID, transientFailures, err))
 					return
 				}
-				if err := waitForServiceChangeRetry(ctx); err != nil {
+				if err := waitForRuntimeRetry(ctx); err != nil {
 					return
 				}
 				continue
@@ -865,12 +867,29 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 		}
 		transientFailures = 0
 
-		observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
-		observation, err := coordinator.supervisor.ObserveServices(observationCtx, session.ProjectID, session.ID)
-		cancel()
-		if err != nil {
+		var observation projectprocess.ServiceObservation
+		var err error
+		for {
+			observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
+			observation, err = coordinator.supervisor.ObserveServices(observationCtx, session.ProjectID, session.ID)
+			cancel()
+			if err == nil {
+				transientObservationFailures = 0
+				break
+			}
 			if ctx.Err() != nil {
 				return
+			}
+			if errors.Is(err, containerruntime.ErrProjectObservationTransient) {
+				transientObservationFailures++
+				if transientObservationFailures > maximumServiceObservationRetries {
+					coordinator.recordAsyncError(fmt.Errorf("observe project %q services after %d transient runtime failures: %w", session.ProjectID, transientObservationFailures, err))
+					return
+				}
+				if err := waitForRuntimeRetry(ctx); err != nil {
+					return
+				}
+				continue
 			}
 			coordinator.recordAsyncError(fmt.Errorf("observe project %q services after host change: %w", session.ProjectID, err))
 			return
@@ -956,8 +975,8 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 	}
 }
 
-// waitForServiceChangeRetry bounds reconnection churn while allowing daemon shutdown to interrupt the wait.
-func waitForServiceChangeRetry(ctx context.Context) error {
+// waitForRuntimeRetry bounds Docker reconnect churn while allowing daemon shutdown to interrupt the wait.
+func waitForRuntimeRetry(ctx context.Context) error {
 	timer := time.NewTimer(serviceChangeRetryDelay)
 	defer timer.Stop()
 	select {

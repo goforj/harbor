@@ -16,6 +16,11 @@ var (
 	// reconnect and perform a fresh observation rather than treating the failed
 	// stream as a topology change.
 	ErrProjectChangeTransient = errors.New("container runtime change stream is transiently unavailable")
+	// ErrProjectObservationTransient indicates that a point-in-time runtime observation could not complete while the local engine was unavailable.
+	//
+	// A caller may retry the same canonical checkout observation. It must discard
+	// any partial result because no incomplete runtime view is an ownership fact.
+	ErrProjectObservationTransient = errors.New("container runtime observation is transiently unavailable")
 )
 
 // Runtime observes Compose-owned containers admitted to one canonical Harbor checkout.

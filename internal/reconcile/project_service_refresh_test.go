@@ -132,6 +132,7 @@ type projectServiceRefreshTestSupervisor struct {
 	resourceErr         error
 	changeErr           error
 	changeErrors        []error
+	observationErrors   []error
 
 	mutex         sync.Mutex
 	waitCalls     int
@@ -168,6 +169,10 @@ func (supervisor *projectServiceRefreshTestSupervisor) ObserveServices(
 	supervisor.mutex.Lock()
 	defer supervisor.mutex.Unlock()
 	supervisor.observeCalls++
+	call := supervisor.observeCalls
+	if call <= len(supervisor.observationErrors) {
+		return projectprocess.ServiceObservation{}, supervisor.observationErrors[call-1]
+	}
 	return supervisor.observation, nil
 }
 
@@ -636,5 +641,87 @@ func TestWatchReadyServicesSurfacesPersistentTransientEventFailure(t *testing.T)
 	}
 	if supervisor.waitCalls != maximumServiceChangeRetries+1 {
 		t.Fatalf("transient event waits = %d, want %d", supervisor.waitCalls, maximumServiceChangeRetries+1)
+	}
+}
+
+// TestWatchReadyServicesRetriesTransientObservationFailure keeps a Docker restart from losing the ready service watcher.
+func TestWatchReadyServicesRetriesTransientObservationFailure(t *testing.T) {
+	at := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	project := projectActivityTestProject()
+	project.Project.State = domain.ProjectReady
+	project.Project.UpdatedAt = at
+	session := projectActivityTestSession()
+	service := domain.ServiceSnapshot{
+		ID: "mysql", Name: "MySQL", Kind: "compose", State: domain.EntityReady,
+		Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected,
+	}
+	refreshed := project
+	refreshed.Revision++
+	refreshed.Project.Services = []domain.ServiceSnapshot{service}
+	source := &projectServiceRefreshTestState{
+		project:     project,
+		session:     session,
+		refresh:     refreshed,
+		refreshDone: make(chan struct{}),
+	}
+	supervisor := &projectServiceRefreshTestSupervisor{
+		observationErrors: []error{fmt.Errorf("%w: Docker is restarting", containerruntime.ErrProjectObservationTransient)},
+		observation: projectprocess.ServiceObservation{
+			Supported: true,
+			Services:  []domain.ServiceSnapshot{service},
+		},
+	}
+	coordinator := &ProjectLifecycleCoordinator{
+		state: source, supervisor: supervisor, routes: new(projectServiceRefreshTestRoutes), now: func() time.Time { return at },
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		coordinator.watchReadyServices(ctx, project, session)
+	}()
+	select {
+	case <-source.refreshDone:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("watchReadyServices() did not retry observation after a transient Docker failure")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("watchReadyServices() did not stop after cancellation")
+	}
+	if len(source.Refreshes()) != 1 || supervisor.ObserveCalls() != 2 || supervisor.waitCalls < 1 {
+		t.Fatalf("observation/wait calls and refreshes = %d/%d/%#v, want two observations and one refresh", supervisor.ObserveCalls(), supervisor.waitCalls, source.Refreshes())
+	}
+	if coordinator.asyncErr != nil {
+		t.Fatalf("transient observation failure became an async error: %v", coordinator.asyncErr)
+	}
+}
+
+// TestWatchReadyServicesSurfacesPersistentTransientObservationFailure keeps Docker observation retries bounded and diagnosable.
+func TestWatchReadyServicesSurfacesPersistentTransientObservationFailure(t *testing.T) {
+	testErr := fmt.Errorf("%w: Docker remains unavailable", containerruntime.ErrProjectObservationTransient)
+	observationErrors := make([]error, maximumServiceObservationRetries+1)
+	for index := range observationErrors {
+		observationErrors[index] = testErr
+	}
+	supervisor := &projectServiceRefreshTestSupervisor{observationErrors: observationErrors}
+	project := projectActivityTestProject()
+	session := projectActivityTestSession()
+	coordinator := &ProjectLifecycleCoordinator{
+		state:      &projectServiceRefreshTestState{project: project, session: session},
+		supervisor: supervisor,
+		routes:     new(projectServiceRefreshTestRoutes),
+		now:        time.Now,
+	}
+
+	coordinator.watchReadyServices(t.Context(), project, session)
+	if coordinator.asyncErr == nil || !errors.Is(coordinator.asyncErr, testErr) {
+		t.Fatalf("persistent transient observation failure = %v, want bounded terminal error", coordinator.asyncErr)
+	}
+	if supervisor.ObserveCalls() != maximumServiceObservationRetries+1 || supervisor.waitCalls != 1 {
+		t.Fatalf("transient observation/wait calls = %d/%d, want %d/1", supervisor.ObserveCalls(), supervisor.waitCalls, maximumServiceObservationRetries+1)
 	}
 }

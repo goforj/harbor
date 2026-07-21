@@ -20,6 +20,8 @@ The native desktop bridge fixture now includes the required `ResourceIconURL` bi
 
 The ready-project Docker watcher now reconnects transient container-event stream failures within a bounded retry budget. Unsupported event sources remain quiet, persistent failures remain visible, and every successful wake still discards the event payload before performing fresh checkout-attributed observation.
 
+The post-wake Docker observation now retries only typed Engine transport unavailability, keeping canonical checkout admission and malformed runtime facts terminal. A successful retry still replaces the projection through the existing revision/session fences; an exhausted budget records a bounded asynchronous failure instead of inventing topology.
+
 The framework-resource observer test harness now resolves checkout aliases before its exact process-context comparison. This unblocks its intended macOS process-context coverage when temporary directories are spelled through `/var` by the parent and `/private/var` by the child, without admitting another checkout.
 
 The Darwin host-conflict observer has a bounded, cancellation-aware 10 ms pause between recognized native table-generation races, with at most 31 retries after the initial pass (32 passes total). It continues to require consecutive complete facts and returns an error rather than an admission result on unresolved churn.
