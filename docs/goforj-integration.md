@@ -209,8 +209,9 @@ readiness, fresh service-port observations, Harbor-owned TCP reservations, and l
 not trust client-supplied ports; it replaces the registry with its own exact observation before acknowledging. The
 Compose barrier may now perform that service-only join while the exact project is still `Starting`; public App
 readiness and default publication planning remain `Ready`-gated. Managed startup now executes the explicit pre-Compose,
-Compose, post-Compose, and post-migrate task buckets around that barrier; the semantic runtime-plan/overlay handshake
-and typed Compose-down execution remain later slices, while ordinary standalone
+Compose, post-Compose, and post-migrate task buckets around that barrier, and Harbor-owned `down_on_exit` cleanup
+executes typed pre-Compose-down, Compose-down, and post-Compose-down buckets. The semantic runtime-plan/overlay
+handshake and full process/action event delivery remain later slices, while ordinary standalone
 `forj dev` remains unchanged.
 
 Startup ordering matters:
