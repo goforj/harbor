@@ -1,8 +1,8 @@
 # Development Handoff
 
-Status: strict GoForj descriptor preflight/session digest, direct Docker service observation/logs, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
+Status: strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 ## Read this first
 
@@ -254,7 +254,7 @@ The route reconciler now implements the first publication-derived join through H
 
 The retained-session repair still needs native execution on a real macOS host: reproduce Start, abrupt daemon loss, explicit inspection, cancellation, confirmation, complete settlement, and a second Start on the same endpoint. The historical already-retired listener remains unattributed and is not covered by this mutation. The desktop project-removal approval handoff is now wired; native consent execution/proof, trusted routing, and tray presence remain later bounded desktop slices. Linux resolver crash recovery now has focused stage/exchange/quarantine/foreign-state coverage and a root-only lifecycle command required by Linux CI. That workflow evidence is still required before claiming native resolver support.
 
-The production lifecycle path now invokes the exact admitted GoForj executable with `project:describe --json` before creating process authority. Harbor strictly admits descriptor schema v1, rejects unknown or unsafe fields, and stores the descriptor's normalized `config_digest` as the active session digest; portable subprocess, schema, timeout, and lifecycle integration coverage is green. The managed session and endpoint-assignment portions of the descriptor contract remain future work.
+The production lifecycle path now invokes the exact registered GoForj executable with `project:describe --json` before any project-network mutation or process authority. Harbor strictly admits descriptor schema v1, rejects unknown or unsafe fields, and stores the descriptor's normalized topology digest as the active session digest; an invalid descriptor leaves no primary lease or endpoint reservation, and a registration path change is revalidated after lease admission before launch. Portable subprocess, schema, timeout, ordering, and lifecycle integration coverage is green. The managed session and endpoint-assignment portions of the descriptor contract remain future work.
 
 ## Next-session start checklist
 

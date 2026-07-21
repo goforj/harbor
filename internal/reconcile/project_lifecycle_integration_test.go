@@ -40,6 +40,7 @@ import (
 const (
 	projectLifecycleHelperEnvironment          = "HARBOR_PROJECT_LIFECYCLE_HELPER"
 	projectLifecycleHelperModeEnvironment      = "HARBOR_PROJECT_LIFECYCLE_HELPER_MODE"
+	projectLifecycleDescriptorModeEnvironment  = "HARBOR_PROJECT_LIFECYCLE_DESCRIPTOR_MODE"
 	projectLifecycleServiceReportEnvironment   = "HARBOR_PROJECT_LIFECYCLE_SERVICE_REPORT"
 	projectLifecycleHelperWatcherMode          = "watcher"
 	projectLifecycleHelperIgnoringListenerMode = "ignoring-listener"
@@ -334,6 +335,10 @@ func runProjectLifecycleHelper() {
 			_, _ = fmt.Fprintln(os.Stderr, "unexpected project descriptor arguments")
 			os.Exit(90)
 		}
+		if os.Getenv(projectLifecycleDescriptorModeEnvironment) == "invalid" {
+			_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"project":{"name":"lifecycle","module":"example.com/lifecycle","config_digest":"not-a-digest"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[]}`)
+			return
+		}
 		_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"project":{"name":"lifecycle","module":"example.com/lifecycle","config_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[{"id":"app","name":"app","entrypoint":"cmd/app/main.go","runtimes":[{"id":"http","kind":"http","default_port":3000,"public_url":true,"readiness_path":"/-/ready"}]}]}`)
 		return
 	}
@@ -406,6 +411,56 @@ func runProjectLifecycleHelper() {
 func waitForProjectLifecycleHelperTermination() {
 	for {
 		time.Sleep(time.Hour)
+	}
+}
+
+// TestProjectLifecycleCoordinatorRejectsDescriptorBeforeNetworkMutation proves invalid static intent cannot allocate a durable project identity.
+func TestProjectLifecycleCoordinatorRejectsDescriptorBeforeNetworkMutation(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, port := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	installProjectLifecycleIntegrationForj(t, port)
+	t.Setenv(projectLifecycleDescriptorModeEnvironment, "invalid")
+
+	coordinator, _ := newProjectLifecycleIntegrationCoordinator(
+		t,
+		store,
+		journal,
+		newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond}),
+		netip.MustParseAddr("127.0.0.1"),
+		uint16(port),
+	)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := coordinator.Close(ctx); err != nil && ctx.Err() == nil {
+			t.Errorf("close lifecycle coordinator: %v", err)
+		}
+	})
+
+	if _, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID: project.ID, OperationID: "operation-start-invalid-descriptor", IntentID: "intent-start-invalid-descriptor",
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	failed := waitForProjectLifecycleOperationState(t, journal, "intent-start-invalid-descriptor", domain.OperationFailed)
+	if failed.Operation.Problem == nil || failed.Operation.Problem.Code != "project.descriptor.invalid" {
+		t.Fatalf("failed descriptor operation = %#v", failed.Operation)
+	}
+	current, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read project after invalid descriptor: %v", err)
+	}
+	if current.Project.State != domain.ProjectStopped {
+		t.Fatalf("project after invalid descriptor = %q, want stopped", current.Project.State)
+	}
+	network, initialized, err := store.Network(t.Context())
+	if err != nil || !initialized {
+		t.Fatalf("read network after invalid descriptor = %#v, %t, %v", network, initialized, err)
+	}
+	if len(network.Leases) != 0 || len(network.Reservations.Endpoints) != 0 {
+		t.Fatalf("network mutated before descriptor admission: leases=%#v endpoints=%#v", network.Leases, network.Reservations.Endpoints)
 	}
 }
 

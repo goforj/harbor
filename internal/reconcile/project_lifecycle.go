@@ -476,6 +476,24 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if record.Operation.State != domain.OperationQueued {
 		return
 	}
+	descriptor := projectprocess.ProjectDescriptorObservation{}
+	var descriptorObserver projectDescriptorObserver
+	var descriptorProjectPath string
+	var err error
+	if observer, ok := coordinator.supervisor.(projectDescriptorObserver); ok {
+		descriptorObserver = observer
+		registered, readErr := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
+		if readErr != nil {
+			coordinator.cancelQueued(record, readErr)
+			return
+		}
+		descriptorProjectPath = registered.Project.Path
+		descriptor, err = descriptorObserver.ObserveProjectDescriptor(coordinator.ctx, descriptorProjectPath)
+		if err != nil {
+			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
+			return
+		}
+	}
 	admission, err := coordinator.primaryLeases.Ensure(coordinator.ctx, record.Operation.ProjectID)
 	if err != nil {
 		if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
@@ -495,9 +513,9 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	project := admission.Project
-	descriptor := projectprocess.ProjectDescriptorObservation{}
-	if observer, ok := coordinator.supervisor.(projectDescriptorObserver); ok {
-		descriptor, err = observer.ObserveProjectDescriptor(coordinator.ctx, project.Project.Path)
+	if descriptorObserver != nil && project.Project.Path != descriptorProjectPath {
+		// The lease coordinator rereads the registration under its own revision fence; revalidate the path it admitted before launch.
+		descriptor, err = descriptorObserver.ObserveProjectDescriptor(coordinator.ctx, project.Project.Path)
 		if err != nil {
 			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
 			return
