@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"time"
 )
 
 const unattributedRuntimeFingerprintDomain = "goforj.harbor.unattributed-runtime-candidate.v1\x00"
@@ -96,14 +98,24 @@ type UnattributedRuntimeInspector interface {
 	Inspect(context.Context, RuntimeRepairTarget) (UnattributedRuntimeInspection, error)
 }
 
+// UnattributedRuntimeRepairer inspects and explicitly confirms one same-user scope without mutating Harbor state.
+type UnattributedRuntimeRepairer interface {
+	UnattributedRuntimeInspector
+	Confirm(context.Context, UnattributedRuntimeCandidate) (RuntimeRepairConfirmation, error)
+}
+
 // unattributedRuntimeControl isolates native observation for the no-session listener path.
 type unattributedRuntimeControl struct {
-	inspect func(context.Context, RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error)
+	inspect  func(context.Context, RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error)
+	graceful func(context.Context, unattributedRuntimeReceipt) (bool, error)
+	settled  func(context.Context, unattributedRuntimeReceipt) (bool, error)
 }
 
 // unattributedRuntimeAdapter applies common validation and receipt projection to native inspection.
 type unattributedRuntimeAdapter struct {
-	control unattributedRuntimeControl
+	control          unattributedRuntimeControl
+	settlementPeriod time.Duration
+	settlementPoll   time.Duration
 }
 
 // NewUnattributedRuntimeInspector selects the reviewed platform backend for read-only listener inspection.
@@ -111,12 +123,32 @@ func NewUnattributedRuntimeInspector() UnattributedRuntimeInspector {
 	return newUnattributedRuntimeInspectorWithControl(newUnattributedRuntimeControl())
 }
 
+// NewUnattributedRuntimeRepairer selects the reviewed platform backend for explicit no-session cleanup.
+func NewUnattributedRuntimeRepairer() UnattributedRuntimeRepairer {
+	return newUnattributedRuntimeRepairerWithControl(newUnattributedRuntimeControl(), runtimeRepairSettlementPeriod, runtimeRepairSettlementPoll)
+}
+
 // newUnattributedRuntimeInspectorWithControl constructs the deterministic native seam used by tests.
 func newUnattributedRuntimeInspectorWithControl(control unattributedRuntimeControl) *unattributedRuntimeAdapter {
 	if control.inspect == nil {
 		panic("projectprocess unattributed runtime inspection requires native control")
 	}
-	return &unattributedRuntimeAdapter{control: control}
+	return &unattributedRuntimeAdapter{
+		control:          control,
+		settlementPeriod: runtimeRepairSettlementPeriod,
+		settlementPoll:   runtimeRepairSettlementPoll,
+	}
+}
+
+// newUnattributedRuntimeRepairerWithControl constructs the deterministic signal and settlement seam used by tests.
+func newUnattributedRuntimeRepairerWithControl(control unattributedRuntimeControl, settlementPeriod, settlementPoll time.Duration) *unattributedRuntimeAdapter {
+	if control.inspect == nil || control.graceful == nil || control.settled == nil {
+		panic("projectprocess unattributed runtime repair requires complete native control")
+	}
+	if settlementPeriod <= 0 || settlementPoll <= 0 {
+		panic("projectprocess unattributed runtime repair requires positive settlement bounds")
+	}
+	return &unattributedRuntimeAdapter{control: control, settlementPeriod: settlementPeriod, settlementPoll: settlementPoll}
 }
 
 // Inspect returns only a fixed classification or one validated opaque candidate and never signals a process.
@@ -140,6 +172,78 @@ func (inspector *unattributedRuntimeAdapter) Inspect(ctx context.Context, target
 		return UnattributedRuntimeInspection{}, err
 	}
 	return inspection, nil
+}
+
+// Confirm reobserves the exact scope before graceful signaling and waits for its target listener to settle.
+func (repairer *unattributedRuntimeAdapter) Confirm(ctx context.Context, candidate UnattributedRuntimeCandidate) (RuntimeRepairConfirmation, error) {
+	if repairer == nil {
+		panic("projectprocess unattributed runtime repair Confirm requires a non-nil receiver")
+	}
+	ctx = normalizeRuntimeRepairContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return runtimeRepairFailed(false, err)
+	}
+	candidate = candidate.Clone()
+	if err := candidate.Validate(); err != nil {
+		return runtimeRepairFailed(false, err)
+	}
+	if repairer.control.graceful == nil || repairer.control.settled == nil {
+		return runtimeRepairFailed(false, fmt.Errorf("unattributed runtime repair confirmation is unsupported on this platform"))
+	}
+	receipt := candidate.receipt.clone()
+	current, err := repairer.control.inspect(ctx, receipt.observation.Target)
+	if err != nil {
+		return runtimeRepairFailed(false, err)
+	}
+	if current.State != RuntimeRepairInspectionActionable || current.Observation == nil ||
+		!unattributedRuntimeObservationsEqual(*current.Observation, receipt.observation) {
+		return RuntimeRepairConfirmation{State: RuntimeRepairConfirmationDrifted}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return runtimeRepairFailed(false, err)
+	}
+	signaled, err := repairer.control.graceful(ctx, receipt)
+	if errors.Is(err, ErrRuntimeRepairDrift) {
+		if signaled {
+			return runtimeRepairFailed(true, fmt.Errorf("unattributed runtime repair backend reported drift after signaling: %w", err))
+		}
+		return RuntimeRepairConfirmation{State: RuntimeRepairConfirmationDrifted}, nil
+	}
+	if err != nil {
+		return runtimeRepairFailed(signaled, err)
+	}
+	if !signaled {
+		return runtimeRepairFailed(false, fmt.Errorf("unattributed runtime repair backend returned without signaling or drift"))
+	}
+	settled, err := repairer.waitForSettlement(ctx, receipt)
+	if err != nil {
+		return runtimeRepairFailed(true, err)
+	}
+	if !settled {
+		return runtimeRepairFailed(true, ErrRuntimeRepairNotSettled)
+	}
+	return RuntimeRepairConfirmation{State: RuntimeRepairConfirmationSettled, Signaled: true}, nil
+}
+
+// waitForSettlement polls until every captured birth and the exact target socket are absent.
+func (repairer *unattributedRuntimeAdapter) waitForSettlement(ctx context.Context, receipt unattributedRuntimeReceipt) (bool, error) {
+	timer := time.NewTimer(repairer.settlementPeriod)
+	defer timer.Stop()
+	ticker := time.NewTicker(repairer.settlementPoll)
+	defer ticker.Stop()
+	for {
+		settled, err := repairer.control.settled(ctx, receipt)
+		if err != nil || settled {
+			return settled, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-timer.C:
+			return repairer.control.settled(ctx, receipt)
+		case <-ticker.C:
+		}
+	}
 }
 
 // unattributedRuntimeNativeInspection retains native-only facts until safe public projection.

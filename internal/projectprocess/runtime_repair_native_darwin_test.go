@@ -169,7 +169,7 @@ func TestNativeDarwinRuntimeRepairRejectsAmbiguousScopeWithoutSignal(t *testing.
 	}
 }
 
-// TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope proves read-only inspection can correlate an older direct launch without claiming a Harbor-created session.
+// TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope proves an older direct launch can be correlated and explicitly settled without claiming a Harbor-created session.
 func TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope(t *testing.T) {
 	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
 		t.Skip("set HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 on a disposable macOS runner")
@@ -215,7 +215,8 @@ func TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope(t *te
 		t.Fatalf("wait for non-dedicated native listener error = %v", err)
 	}
 
-	inspection, err := NewUnattributedRuntimeInspector().Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+	repairer := NewUnattributedRuntimeRepairer()
+	inspection, err := repairer.Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
 	if err != nil {
 		t.Fatalf("Inspect() error = %v", err)
 	}
@@ -225,8 +226,12 @@ func TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope(t *te
 	if err := inspection.Validate(); err != nil {
 		t.Fatalf("inspection.Validate() error = %v", err)
 	}
-	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
-		t.Fatalf("read-only inspection stopped the listener: %v", err)
+	confirmation, err := repairer.Confirm(t.Context(), *inspection.Candidate)
+	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want settled graceful signal", confirmation, err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("wait for terminated native forj helper error = %v", err)
 	}
 }
 

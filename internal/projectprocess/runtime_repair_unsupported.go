@@ -28,5 +28,11 @@ func newUnattributedRuntimeControl() unattributedRuntimeControl {
 		inspect: func(_ context.Context, _ RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
 			return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnsupported}, nil
 		},
+		graceful: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
+			return false, fmt.Errorf("unattributed runtime graceful termination is unsupported on this platform")
+		},
+		settled: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
+			return false, fmt.Errorf("unattributed runtime settlement observation is unsupported on this platform")
+		},
 	}
 }

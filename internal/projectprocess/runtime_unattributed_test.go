@@ -1,9 +1,48 @@
 package projectprocess
 
 import (
+	"context"
+	"errors"
 	"net/netip"
 	"testing"
+	"time"
 )
+
+// unattributedRuntimeTestControl records native policy effects for confirmation tests.
+type unattributedRuntimeTestControl struct {
+	inspection       unattributedRuntimeNativeInspection
+	inspectErr       error
+	gracefulSignaled bool
+	gracefulErr      error
+	settled          bool
+	settledErr       error
+	inspectCalls     int
+	gracefulCalls    int
+	settledCalls     int
+}
+
+// control exposes deterministic native hooks through the production adapter seam.
+func (control *unattributedRuntimeTestControl) control() unattributedRuntimeControl {
+	return unattributedRuntimeControl{
+		inspect: func(_ context.Context, _ RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
+			control.inspectCalls++
+			inspection := control.inspection
+			if inspection.Observation != nil {
+				observation := inspection.Observation.clone()
+				inspection.Observation = &observation
+			}
+			return inspection, control.inspectErr
+		},
+		graceful: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
+			control.gracefulCalls++
+			return control.gracefulSignaled, control.gracefulErr
+		},
+		settled: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
+			control.settledCalls++
+			return control.settled, control.settledErr
+		},
+	}
+}
 
 // unattributedRuntimeTestObservation adapts the shared synthetic process scope to the no-session contract.
 func unattributedRuntimeTestObservation(t *testing.T) unattributedRuntimeNativeObservation {
@@ -85,5 +124,72 @@ func TestUnattributedRuntimeObservationRejectsUnsafeScopes(t *testing.T) {
 				t.Fatal("observation.validate() error = nil")
 			}
 		})
+	}
+}
+
+// TestUnattributedRuntimeRepairConfirmSettles proves explicit confirmation signals only after exact reinspection and waits for settlement.
+func TestUnattributedRuntimeRepairConfirmSettles(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	inspection, err := unattributedRuntimeInspection(unattributedRuntimeNativeInspection{
+		State:       RuntimeRepairInspectionActionable,
+		Observation: &observation,
+	})
+	if err != nil {
+		t.Fatalf("unattributedRuntimeInspection() error = %v", err)
+	}
+	control := &unattributedRuntimeTestControl{
+		inspection:       unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionActionable, Observation: &observation},
+		gracefulSignaled: true,
+		settled:          true,
+	}
+	repairer := newUnattributedRuntimeRepairerWithControl(control.control(), time.Second, time.Millisecond)
+	confirmation, err := repairer.Confirm(context.Background(), *inspection.Candidate)
+	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want settled signal", confirmation, err)
+	}
+	if control.inspectCalls != 1 || control.gracefulCalls != 1 || control.settledCalls != 1 {
+		t.Fatalf("native calls = inspect %d, graceful %d, settled %d; want one each", control.inspectCalls, control.gracefulCalls, control.settledCalls)
+	}
+}
+
+// TestUnattributedRuntimeRepairConfirmRejectsDriftWithoutSignal proves a changed scope consumes no signal authority.
+func TestUnattributedRuntimeRepairConfirmRejectsDriftWithoutSignal(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	inspection, err := unattributedRuntimeInspection(unattributedRuntimeNativeInspection{
+		State:       RuntimeRepairInspectionActionable,
+		Observation: &observation,
+	})
+	if err != nil {
+		t.Fatalf("unattributedRuntimeInspection() error = %v", err)
+	}
+	control := &unattributedRuntimeTestControl{inspection: unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionAmbiguous}}
+	repairer := newUnattributedRuntimeRepairerWithControl(control.control(), time.Second, time.Millisecond)
+	confirmation, err := repairer.Confirm(context.Background(), *inspection.Candidate)
+	if err != nil || confirmation.State != RuntimeRepairConfirmationDrifted || confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want zero-signal drift", confirmation, err)
+	}
+	if control.gracefulCalls != 0 || control.settledCalls != 0 {
+		t.Fatalf("native calls after drift = graceful %d, settled %d; want zero", control.gracefulCalls, control.settledCalls)
+	}
+}
+
+// TestUnattributedRuntimeRepairConfirmReportsUnsettledScope proves a successful signal cannot be reported as settled without postconditions.
+func TestUnattributedRuntimeRepairConfirmReportsUnsettledScope(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	inspection, err := unattributedRuntimeInspection(unattributedRuntimeNativeInspection{
+		State:       RuntimeRepairInspectionActionable,
+		Observation: &observation,
+	})
+	if err != nil {
+		t.Fatalf("unattributedRuntimeInspection() error = %v", err)
+	}
+	control := &unattributedRuntimeTestControl{
+		inspection:       unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionActionable, Observation: &observation},
+		gracefulSignaled: true,
+	}
+	repairer := newUnattributedRuntimeRepairerWithControl(control.control(), 2*time.Millisecond, time.Millisecond)
+	confirmation, err := repairer.Confirm(context.Background(), *inspection.Candidate)
+	if !errors.Is(err, ErrRuntimeRepairNotSettled) || confirmation.State != RuntimeRepairConfirmationFailed || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want signaled unsettled failure", confirmation, err)
 	}
 }

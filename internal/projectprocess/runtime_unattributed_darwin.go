@@ -17,7 +17,11 @@ import (
 
 // newUnattributedRuntimeControl wires Darwin's read-only same-user process-tree observer.
 func newUnattributedRuntimeControl() unattributedRuntimeControl {
-	return unattributedRuntimeControl{inspect: inspectStableDarwinUnattributedRuntime}
+	return unattributedRuntimeControl{
+		inspect:  inspectStableDarwinUnattributedRuntime,
+		graceful: gracefullyTerminateDarwinUnattributedRuntime,
+		settled:  observeDarwinUnattributedRuntimeSettlement,
+	}
 }
 
 // inspectStableDarwinUnattributedRuntime requires two consecutive equal scopes before returning a candidate.
@@ -289,4 +293,52 @@ func equalDarwinUnattributedRuntimeInspections(left, right unattributedRuntimeNa
 		return left.Observation == nil && right.Observation == nil
 	}
 	return unattributedRuntimeObservationsEqual(*left.Observation, *right.Observation)
+}
+
+// gracefullyTerminateDarwinUnattributedRuntime revalidates the exact scope before signaling only its displayed root.
+func gracefullyTerminateDarwinUnattributedRuntime(ctx context.Context, receipt unattributedRuntimeReceipt) (bool, error) {
+	inspection, err := inspectStableDarwinUnattributedRuntime(ctx, receipt.observation.Target)
+	if err != nil {
+		return false, err
+	}
+	if inspection.State != RuntimeRepairInspectionActionable || inspection.Observation == nil ||
+		!unattributedRuntimeObservationsEqual(*inspection.Observation, receipt.observation) {
+		return false, ErrRuntimeRepairDrift
+	}
+	root := receipt.observation.Root
+	birth, present, err := observeProcessBirthToken(root.PID)
+	if err != nil || !present || birth != root.BirthToken {
+		return false, ErrRuntimeRepairDrift
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := syscall.Kill(root.PID, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return false, ErrRuntimeRepairDrift
+		}
+		return false, fmt.Errorf("gracefully terminate exact Darwin unattributed runtime root: %w", err)
+	}
+	return true, nil
+}
+
+// observeDarwinUnattributedRuntimeSettlement proves captured births and the exact target socket have disappeared.
+func observeDarwinUnattributedRuntimeSettlement(ctx context.Context, receipt unattributedRuntimeReceipt) (bool, error) {
+	for _, member := range receipt.observation.Members {
+		birth, present, err := observeProcessBirthToken(member.PID)
+		if err != nil {
+			return false, fmt.Errorf("observe Darwin unattributed runtime settlement: %w", err)
+		}
+		if present && birth == member.BirthToken {
+			return false, nil
+		}
+	}
+	network, err := observeDarwinRuntimeRepairNetwork(ctx, receipt.observation.Target.Endpoint)
+	if err != nil {
+		return false, err
+	}
+	if network.exactListeners != 0 || network.conflictingBinds != 0 {
+		return false, nil
+	}
+	return probeDarwinRuntimeRepairEndpoint(receipt.observation.Target.Endpoint)
 }
