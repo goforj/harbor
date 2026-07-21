@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,14 +89,17 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady))
 	}
 	before := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
+	observations := make(map[domain.ProjectID]projectprocess.ServiceObservation, len(projects))
 	for _, project := range projects {
 		observation := assertGeneratedComposeServices(t, ctx, store, supervisor, project)
+		observations[project.id] = observation
 		assertGeneratedComposeLogs(t, ctx, store, supervisor, project, observation)
 	}
 	after := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 	if !sameGeneratedComposeContainerIDs(before, after) {
 		t.Fatalf("generated Compose container IDs changed across Harbor observation: before=%v after=%v", before, after)
 	}
+	assertGeneratedComposeEventRefresh(t, ctx, store, runtime, supervisor, projects, projects[0], observations[projects[0].id])
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
 
 	stopped := projects[0]
@@ -122,6 +127,186 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	ready[0] = waitForProjectIdentityAcceptanceState(t, ctx, store, journal, stopped.id, restartIntent, domain.ProjectReady)
 	assertGeneratedComposeServices(t, ctx, store, supervisor, stopped)
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
+}
+
+// assertGeneratedComposeEventRefresh proves a test-controlled Compose replacement reaches Harbor through the event wake path.
+func assertGeneratedComposeEventRefresh(
+	t *testing.T,
+	ctx context.Context,
+	store *state.Store,
+	runtime *containerruntime.DockerRuntime,
+	supervisor *projectprocess.Supervisor,
+	projects []projectIdentityAcceptanceProject,
+	target projectIdentityAcceptanceProject,
+	initial projectprocess.ServiceObservation,
+) {
+	t.Helper()
+	if !initial.Supported || len(initial.Services) == 0 {
+		t.Fatalf("event-refresh target %q has no supported service observation: %#v", target.id, initial)
+	}
+	service := initial.Services[0]
+	beforeProject, err := store.Project(ctx, target.id)
+	if err != nil {
+		t.Fatalf("read event-refresh target %q before replacement: %v", target.id, err)
+	}
+	beforeServiceIDs := generatedComposeServiceContainerIDs(t, ctx, runtime, target, service.ID)
+	if len(beforeServiceIDs) == 0 {
+		t.Fatalf("event-refresh target %q service %q has no admitted containers before replacement", target.id, service.ID)
+	}
+	composeProject := generatedComposeServiceProject(t, ctx, runtime, target, service.ID)
+	beforeAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
+
+	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "stop", string(service.ID))
+	stopped := waitForGeneratedComposeServiceProjection(t, ctx, store, target.id, service.ID, false)
+	if stopped.Project.State != domain.ProjectReady {
+		t.Fatalf("event-refresh target %q state after service stop = %q, want ready", target.id, stopped.Project.State)
+	}
+	duringAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
+	assertGeneratedComposeNeighborContainerIDs(t, beforeAll, duringAll, target.id)
+
+	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "up", "--detach", "--force-recreate", string(service.ID))
+	refreshed := waitForGeneratedComposeServiceProjection(t, ctx, store, target.id, service.ID, true)
+	if refreshed.Revision <= beforeProject.Revision {
+		t.Fatalf("event-refresh target %q revision = %d, want greater than %d", target.id, refreshed.Revision, beforeProject.Revision)
+	}
+	afterServiceIDs := generatedComposeServiceContainerIDs(t, ctx, runtime, target, service.ID)
+	if len(afterServiceIDs) == 0 {
+		t.Fatalf("event-refresh target %q service %q has no admitted containers after replacement", target.id, service.ID)
+	}
+	for id := range beforeServiceIDs {
+		if _, stillPresent := afterServiceIDs[id]; stillPresent {
+			t.Fatalf("event-refresh target %q service %q retained container %q across force recreation", target.id, service.ID, id)
+		}
+	}
+	afterAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
+	assertGeneratedComposeNeighborContainerIDs(t, beforeAll, afterAll, target.id)
+}
+
+// generatedComposeServiceContainerIDs returns the current admitted identities for one exact generated service.
+func generatedComposeServiceContainerIDs(
+	t *testing.T,
+	ctx context.Context,
+	runtime *containerruntime.DockerRuntime,
+	project projectIdentityAcceptanceProject,
+	serviceID domain.ServiceID,
+) map[string]struct{} {
+	t.Helper()
+	observation, err := runtime.ObserveProject(ctx, project.project.Root)
+	if err != nil {
+		t.Fatalf("observe event-refresh runtime for %q: %v", project.id, err)
+	}
+	ids := make(map[string]struct{})
+	for _, service := range observation.Services {
+		if service.ID != string(serviceID) || !service.Active {
+			continue
+		}
+		for _, container := range service.Containers {
+			if container.ID == "" {
+				t.Fatalf("event-refresh service %q for %q contains an empty container ID", serviceID, project.id)
+			}
+			ids[container.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// generatedComposeServiceProject returns the exact Compose project label needed by the test-owned replacement command.
+func generatedComposeServiceProject(
+	t *testing.T,
+	ctx context.Context,
+	runtime *containerruntime.DockerRuntime,
+	project projectIdentityAcceptanceProject,
+	serviceID domain.ServiceID,
+) string {
+	t.Helper()
+	observation, err := runtime.ObserveProject(ctx, project.project.Root)
+	if err != nil {
+		t.Fatalf("observe event-refresh Compose project for %q: %v", project.id, err)
+	}
+	for _, service := range observation.Services {
+		if service.ID == string(serviceID) && service.Project != "" {
+			return service.Project
+		}
+	}
+	t.Fatalf("event-refresh service %q for %q has no Compose project identity", serviceID, project.id)
+	return ""
+}
+
+// waitForGeneratedComposeServiceProjection waits for one durable service identity to appear or disappear after a host event.
+func waitForGeneratedComposeServiceProjection(
+	t *testing.T,
+	ctx context.Context,
+	store *state.Store,
+	projectID domain.ProjectID,
+	serviceID domain.ServiceID,
+	wantPresent bool,
+) state.ProjectRecord {
+	t.Helper()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		record, err := store.Project(ctx, projectID)
+		if err == nil {
+			present := false
+			for _, service := range record.Project.Services {
+				if service.ID == serviceID {
+					present = true
+					break
+				}
+			}
+			if present == wantPresent {
+				return record
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for generated Compose service %q on project %q to become present=%t: %v", serviceID, projectID, wantPresent, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// runGeneratedComposeCommand performs only the test-owned Compose mutation used to create a native replacement event.
+func runGeneratedComposeCommand(
+	t *testing.T,
+	ctx context.Context,
+	checkoutRoot string,
+	composeProject string,
+	arguments ...string,
+) {
+	t.Helper()
+	base := []string{"compose", "--project-directory", checkoutRoot, "--project-name", composeProject}
+	command := exec.CommandContext(ctx, "docker", append(base, arguments...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker %s: %v\n%s", strings.Join(append(base, arguments...), " "), err, output)
+	}
+}
+
+// assertGeneratedComposeNeighborContainerIDs proves a test-controlled target mutation cannot alter peer projects.
+func assertGeneratedComposeNeighborContainerIDs(
+	t *testing.T,
+	before map[string]domain.ProjectID,
+	after map[string]domain.ProjectID,
+	targetID domain.ProjectID,
+) {
+	t.Helper()
+	for containerID, projectID := range before {
+		if projectID == targetID {
+			continue
+		}
+		if after[containerID] != projectID {
+			t.Fatalf("neighbor container %q for project %q changed during target %q replacement", containerID, projectID, targetID)
+		}
+	}
+	for containerID, projectID := range after {
+		if projectID == targetID {
+			continue
+		}
+		if before[containerID] != projectID {
+			t.Fatalf("new neighbor container %q for project %q appeared during target %q replacement", containerID, projectID, targetID)
+		}
+	}
 }
 
 // assertGeneratedComposeServices confirms one running generated checkout cannot accidentally project an empty or foreign service set.
