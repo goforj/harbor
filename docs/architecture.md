@@ -475,7 +475,7 @@ Native release jobs perform macOS hardened-runtime signing and notarization, Win
 | Failure | Behavior |
 |---|---|
 | Desktop exits | Daemon, projects, DNS, and ingress continue; relaunch reconnects from a snapshot. |
-| Daemon restarts | Harbor observes each exact durable process receipt. A matching managed session may reconnect; otherwise Harbor settles the complete owned scope before retiring evidence. Uncertainty quarantines only that project as unavailable and route-free while preserving the receipt for repair. |
+| Daemon restarts | Harbor observes each exact durable process receipt. A matching managed session may reconnect; otherwise Harbor settles the complete owned scope before retiring evidence. If PID-only settlement cannot converge but the project still owns its primary lease, replacement Start gets one bounded same-user listener repair attempt against that exact address and App port before uncertainty quarantines only that project as unavailable and route-free. |
 | Docker stops | Apps or resources depending on it become degraded/failed with one Docker diagnostic; no repeated destructive retries. |
 | Network/VPN changes | One dirty signal triggers resolver and route observation, then an owned repair if needed. |
 | Sleep/resume | Revalidate loopback aliases, low-port ingress, DNS, certificates, PIDs, and Docker publications. |

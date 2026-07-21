@@ -522,6 +522,29 @@ func TestProjectPrimaryLeaseCoordinatorRetriesTransientListenerDrift(t *testing.
 	}
 }
 
+// TestProjectPrimaryLeaseCoordinatorRequiresSignalProofForProcessBackedRecovery prevents a vanished listener from hiding an unresolved process scope.
+func TestProjectPrimaryLeaseCoordinatorRequiresSignalProofForProcessBackedRecovery(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{
+			State: projectprocess.RuntimeRepairInspectionMissing,
+		},
+	}
+	fixture.coordinator.runtimeRepairer = repairer
+
+	resolved, err := fixture.coordinator.repairAppPortConflict(t.Context(), "/test/orders", address, 3000, true)
+	if err != nil {
+		t.Fatalf("repairAppPortConflict() error = %v", err)
+	}
+	if resolved {
+		t.Fatal("repairAppPortConflict() reported a vanished listener as signal-backed settlement")
+	}
+	if len(repairer.candidates) != 0 {
+		t.Fatalf("repairAppPortConflict() signaled %d candidates after listener disappearance", len(repairer.candidates))
+	}
+}
+
 // TestProjectPrimaryLeaseCoordinatorPreservesForeignListenerFailure proves ownership of an address never authorizes killing an unrelated process.
 func TestProjectPrimaryLeaseCoordinatorPreservesForeignListenerFailure(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")

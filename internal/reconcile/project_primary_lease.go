@@ -837,6 +837,17 @@ func (coordinator *projectPrimaryLeaseCoordinator) repairRetainedAppPortConflict
 	address netip.Addr,
 	port uint16,
 ) (bool, error) {
+	return coordinator.repairAppPortConflict(ctx, checkoutRoot, address, port, false)
+}
+
+// repairAppPortConflict applies bounded native cleanup while optionally requiring a signal-backed settlement proof.
+func (coordinator *projectPrimaryLeaseCoordinator) repairAppPortConflict(
+	ctx context.Context,
+	checkoutRoot string,
+	address netip.Addr,
+	port uint16,
+	requireConfirmation bool,
+) (bool, error) {
 	if coordinator.runtimeRepairer == nil {
 		return false, nil
 	}
@@ -864,6 +875,9 @@ func (coordinator *projectPrimaryLeaseCoordinator) repairRetainedAppPortConflict
 		switch inspection.State {
 		case projectprocess.RuntimeRepairInspectionMissing:
 			// The listener disappeared during the probe; a fresh primary observation decides whether admission can continue.
+			if requireConfirmation {
+				return false, nil
+			}
 			return true, nil
 		case projectprocess.RuntimeRepairInspectionActionable:
 			if inspection.Candidate == nil {

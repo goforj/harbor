@@ -329,7 +329,18 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 		return fmt.Errorf("validate project %q process-backed recovery boundary before start: %w", projectID, err)
 	}
 	if _, err := coordinator.settleRecoveredProjectProcess(ctx, fmt.Sprintf("project %q replacement start", projectID), boundary.Process); err != nil {
-		return err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return err
+		}
+		// A managed process can leave its exact persisted birth behind while still holding the
+		// project's reserved listener. The lease is the stronger project boundary here, so give
+		// the reviewed same-user listener repairer one bounded chance to settle that scope.
+		if repairErr := coordinator.repairProjectOwnedPrimaryListener(ctx, boundary); repairErr != nil {
+			return errors.Join(err, repairErr)
+		}
+		if _, settleErr := coordinator.settleRecoveredProjectProcess(ctx, fmt.Sprintf("project %q replacement start after listener repair", projectID), boundary.Process); settleErr != nil {
+			return errors.Join(err, settleErr)
+		}
 	}
 	at := completionTimeForProjectRuntimeRepair(
 		retainedProjectRuntimeRepairBoundaryFromProcessBacked(boundary),
@@ -340,6 +351,38 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 		processBackedProjectRuntimeRepairCompletionRequest(boundary, at),
 	); err != nil {
 		return fmt.Errorf("retire project %q process-backed recovery boundary before start: %w", projectID, err)
+	}
+	return nil
+}
+
+// repairProjectOwnedPrimaryListener settles one project-owned App listener when PID-only recovery cannot converge.
+func (coordinator *ProjectLifecycleCoordinator) repairProjectOwnedPrimaryListener(
+	ctx context.Context,
+	boundary state.ProcessBackedProjectRuntimeRepairBoundary,
+) error {
+	if coordinator == nil || coordinator.primaryLeases == nil || coordinator.primaryLeases.runtimeRepairer == nil {
+		return errors.New("project-owned primary listener repair is unavailable")
+	}
+	target, err := coordinator.primaryLeases.discoverer.DiscoverDefaultRuntimeAtAddress(
+		ctx,
+		boundary.Project.Project.Path,
+		boundary.PrimaryLease.Address,
+	)
+	if err != nil {
+		return fmt.Errorf("discover project-owned primary listener for %q: %w", boundary.Project.Project.ID, err)
+	}
+	resolved, err := coordinator.primaryLeases.repairAppPortConflict(
+		ctx,
+		boundary.Project.Project.Path,
+		boundary.PrimaryLease.Address,
+		target.Port,
+		true,
+	)
+	if err != nil {
+		return fmt.Errorf("settle project-owned primary listener for %q: %w", boundary.Project.Project.ID, err)
+	}
+	if !resolved {
+		return fmt.Errorf("project-owned primary listener for %q did not settle", boundary.Project.Project.ID)
 	}
 	return nil
 }

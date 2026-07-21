@@ -780,8 +780,23 @@ func TestProjectLifecycleStartSettlesProcessBackedQuarantine(t *testing.T) {
 		t.Fatalf("process-backed quarantine session = %#v, %v", active, sessionErr)
 	}
 
-	supervisor.settlementErr = nil
-	supervisor.settlement = projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementAbsent}
+	// Keep PID-only recovery failing to prove the replacement path can fall back to the
+	// project-owned listener boundary instead of trapping the project behind recovery-required.
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{
+			State:     projectprocess.RuntimeRepairInspectionActionable,
+			Candidate: &projectprocess.UnattributedRuntimeCandidate{},
+		},
+		confirmation: projectprocess.RuntimeRepairConfirmation{
+			State:    projectprocess.RuntimeRepairConfirmationSettled,
+			Signaled: true,
+		},
+		onConfirm: func() {
+			supervisor.settlementErr = nil
+			supervisor.settlement = projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementAbsent}
+		},
+	}
+	coordinator.primaryLeases.runtimeRepairer = repairer
 	replacement, err := coordinator.Start(t.Context(), ProjectStartRequest{
 		ProjectID: project.ID, OperationID: "operation-process-backed-replacement", IntentID: "intent-process-backed-replacement",
 	})
@@ -790,6 +805,12 @@ func TestProjectLifecycleStartSettlesProcessBackedQuarantine(t *testing.T) {
 	}
 	if replacement.Operation.State != domain.OperationQueued {
 		t.Fatalf("process-backed replacement operation = %#v, want queued", replacement.Operation)
+	}
+	if len(repairer.inspectTargets) != 1 || len(repairer.candidates) != 1 {
+		t.Fatalf("project-owned listener fallback calls = inspections %d candidates %d, want one each", len(repairer.inspectTargets), len(repairer.candidates))
+	}
+	if len(supervisor.settled) != 3 {
+		t.Fatalf("process settlement calls = %d, want recovery observation plus retry proof before and after repair", len(supervisor.settled))
 	}
 	if active, sessionErr := store.ActiveProjectSession(t.Context(), project.ID); sessionErr == nil && active.ID == attached.ID {
 		t.Fatalf("process-backed replacement retained quarantined session %#v", active)
