@@ -202,6 +202,78 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	}
 }
 
+// TestCompleteManagedSessionAttachmentAdvancesOneExactGeneration proves authenticated attachment is a fenced durable edge.
+func TestCompleteManagedSessionAttachmentAdvancesOneExactGeneration(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project := emptyProjectStoreMutationProject("project-managed-attach")
+	if _, err := store.PutProject(t.Context(), project); err != nil {
+		t.Fatalf("PutProject() error = %v", err)
+	}
+	queued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectStart, project.ID, "managed-attach")
+	startAt := queued.Operation.RequestedAt.Add(time.Second)
+	session := projectLifecycleTestPlannedSession(t, project.ID, startAt)
+	running, err := store.BeginProjectStart(t.Context(), BeginProjectStartRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
+		ExpectedProjectRevision: projectLifecycleTestProjectRevision(t, store, project.ID), Session: session,
+		Phase: "launching managed forj dev", At: startAt,
+	})
+	if err != nil {
+		t.Fatalf("BeginProjectStart() error = %v", err)
+	}
+	process := projectLifecycleTestProcess(t)
+	awaiting, err := store.AttachProjectProcess(t.Context(), AttachProjectProcessRequest{
+		ProjectID: project.ID, SessionID: session.ID, ExpectedSessionGeneration: 1, Process: process, At: startAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("AttachProjectProcess() error = %v", err)
+	}
+	managedAt := startAt.Add(2 * time.Second)
+	request := CompleteManagedSessionAttachmentRequest{
+		ProjectID: project.ID, SessionID: session.ID, ExpectedSessionGeneration: awaiting.Generation,
+		Process: process, At: managedAt,
+	}
+	staleRequest := request
+	staleRequest.ExpectedSessionGeneration--
+	if _, err := store.CompleteManagedSessionAttachment(t.Context(), staleRequest); err == nil || !strings.Contains(err.Error(), "generation is") {
+		t.Fatalf("CompleteManagedSessionAttachment(stale) error = %v", err)
+	}
+	wrongProcessRequest := request
+	wrongProcessRequest.Process.ArgumentDigest = strings.Repeat("d", 64)
+	if _, err := store.CompleteManagedSessionAttachment(t.Context(), wrongProcessRequest); err == nil || !strings.Contains(err.Error(), "process evidence") {
+		t.Fatalf("CompleteManagedSessionAttachment(process drift) error = %v", err)
+	}
+	oldTimeRequest := request
+	oldTimeRequest.At = awaiting.UpdatedAt.Add(-time.Second)
+	if _, err := store.CompleteManagedSessionAttachment(t.Context(), oldTimeRequest); err == nil || !strings.Contains(err.Error(), "precedes session generation") {
+		t.Fatalf("CompleteManagedSessionAttachment(time drift) error = %v", err)
+	}
+	attached, err := store.CompleteManagedSessionAttachment(t.Context(), request)
+	if err != nil {
+		t.Fatalf("CompleteManagedSessionAttachment() error = %v", err)
+	}
+	if attached.State != domain.SessionAttached || attached.Generation != awaiting.Generation+1 || attached.Process == nil || *attached.Process != process || !attached.UpdatedAt.Equal(managedAt) {
+		t.Fatalf("CompleteManagedSessionAttachment() = %#v", attached)
+	}
+	sequenceAfterAttach := projectStoreMutationSequence(t, store)
+	replayed, err := store.CompleteManagedSessionAttachment(t.Context(), request)
+	if err != nil || !reflect.DeepEqual(replayed, attached) || projectStoreMutationSequence(t, store) != sequenceAfterAttach {
+		t.Fatalf("CompleteManagedSessionAttachment(replay) = %#v, %v", replayed, err)
+	}
+	wrongStateRequest := request
+	wrongStateRequest.ExpectedSessionGeneration = attached.Generation
+	wrongStateRequest.At = managedAt.Add(time.Second)
+	if _, err := store.CompleteManagedSessionAttachment(t.Context(), wrongStateRequest); err == nil || !strings.Contains(err.Error(), "must await managed attachment") {
+		t.Fatalf("CompleteManagedSessionAttachment(wrong state) error = %v", err)
+	}
+	if _, err := store.CompleteProjectStart(t.Context(), CompleteProjectStartRequest{
+		ProjectID: project.ID, OperationID: running.Operation.Operation.ID, ExpectedOperationRevision: running.Operation.Revision,
+		SessionID: session.ID, ExpectedSessionGeneration: attached.Generation, Runtime: projectLifecycleTestRuntime(),
+		Phase: "default App ready", At: startAt.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("CompleteProjectStart(attached session) error = %v", err)
+	}
+}
+
 // TestProjectLifecycleMutationsCommitRestartBoundaryWithExactReplay proves one restart identity survives its retired-session boundary.
 func TestProjectLifecycleMutationsCommitRestartBoundaryWithExactReplay(t *testing.T) {
 	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
@@ -535,6 +607,21 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		mutate(&request)
 		if err := validateAttachProjectProcessRequest(request); err == nil {
 			t.Fatal("validateAttachProjectProcessRequest() error = nil")
+		}
+	}
+
+	validManagedAttach := CompleteManagedSessionAttachmentRequest{ProjectID: projectID, SessionID: session.ID, ExpectedSessionGeneration: 2, Process: process, At: at}
+	for _, mutate := range []func(*CompleteManagedSessionAttachmentRequest){
+		func(request *CompleteManagedSessionAttachmentRequest) { request.ProjectID = "" },
+		func(request *CompleteManagedSessionAttachmentRequest) { request.SessionID = "" },
+		func(request *CompleteManagedSessionAttachmentRequest) { request.ExpectedSessionGeneration = 0 },
+		func(request *CompleteManagedSessionAttachmentRequest) { request.Process.PID = 0 },
+		func(request *CompleteManagedSessionAttachmentRequest) { request.At = time.Time{} },
+	} {
+		request := validManagedAttach
+		mutate(&request)
+		if err := validateCompleteManagedSessionAttachmentRequest(request); err == nil {
+			t.Fatal("validateCompleteManagedSessionAttachmentRequest() error = nil")
 		}
 	}
 

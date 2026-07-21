@@ -135,6 +135,15 @@ type AttachProjectProcessRequest struct {
 	At                        time.Time
 }
 
+// CompleteManagedSessionAttachmentRequest binds authenticated managed-session proof to one awaiting process generation.
+type CompleteManagedSessionAttachmentRequest struct {
+	ProjectID                 domain.ProjectID
+	SessionID                 domain.SessionID
+	ExpectedSessionGeneration uint64
+	Process                   domain.ProcessEvidence
+	At                        time.Time
+}
+
 // CompleteProjectStartRequest publishes proven readiness for one process-backed start operation.
 type CompleteProjectStartRequest struct {
 	ProjectID   domain.ProjectID
@@ -348,6 +357,56 @@ func (store *Store) AttachProjectProcess(ctx context.Context, request AttachProj
 	})
 	if err != nil {
 		return domain.ProjectSession{}, fmt.Errorf("attach project %q process: %w", request.ProjectID, err)
+	}
+	return result, nil
+}
+
+// CompleteManagedSessionAttachment advances one process-backed session after its external managed-session proof succeeds.
+func (store *Store) CompleteManagedSessionAttachment(ctx context.Context, request CompleteManagedSessionAttachmentRequest) (domain.ProjectSession, error) {
+	ctx = normalizeContext(ctx)
+	if err := validateCompleteManagedSessionAttachmentRequest(request); err != nil {
+		return domain.ProjectSession{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return domain.ProjectSession{}, err
+	}
+
+	var result domain.ProjectSession
+	err := store.mutations.mutate(ctx, "complete managed session attachment", func(tx *gorm.DB) error {
+		current, err := readExactProjectSession(tx, request.ProjectID, request.SessionID)
+		if err != nil {
+			return err
+		}
+		if current.State == domain.SessionAttached && current.Generation == request.ExpectedSessionGeneration+1 &&
+			current.Process != nil && *current.Process == request.Process && current.UpdatedAt.Equal(request.At) {
+			result = current
+			return nil
+		}
+		if current.Generation != request.ExpectedSessionGeneration {
+			return staleSessionGeneration(request.ProjectID, request.SessionID, request.ExpectedSessionGeneration, current.Generation)
+		}
+		if current.State != domain.SessionAwaitingAttach {
+			return fmt.Errorf("session %q must await managed attachment, got %q", request.SessionID, current.State)
+		}
+		if current.Process == nil || *current.Process != request.Process {
+			return fmt.Errorf("managed attachment process evidence does not match session %q", request.SessionID)
+		}
+		if request.At.Before(current.UpdatedAt) {
+			return fmt.Errorf("managed attachment time precedes session generation")
+		}
+		next := current
+		next.State = domain.SessionAttached
+		next.Generation++
+		next.UpdatedAt = request.At
+		updated, err := updateExactProjectSession(tx, current, next)
+		if err != nil {
+			return err
+		}
+		result = updated
+		return nil
+	})
+	if err != nil {
+		return domain.ProjectSession{}, fmt.Errorf("complete managed attachment for project %q: %w", request.ProjectID, err)
 	}
 	return result, nil
 }
@@ -872,6 +931,23 @@ func validateAttachProjectProcessRequest(request AttachProjectProcessRequest) er
 		return err
 	}
 	return validateStoredTime("process attachment time", request.At)
+}
+
+// validateCompleteManagedSessionAttachmentRequest rejects incomplete authenticated-process proof before mutation.
+func validateCompleteManagedSessionAttachmentRequest(request CompleteManagedSessionAttachmentRequest) error {
+	if err := request.ProjectID.Validate(); err != nil {
+		return err
+	}
+	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	if _, err := unsignedToModelInt("expected session generation", request.ExpectedSessionGeneration, false); err != nil {
+		return err
+	}
+	if err := request.Process.Validate(); err != nil {
+		return err
+	}
+	return validateStoredTime("managed attachment time", request.At)
 }
 
 // validateCompleteProjectStartRequest rejects readiness that is not tied to one exact durable boundary.
