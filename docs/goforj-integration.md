@@ -207,7 +207,9 @@ Harbor's authenticated barrier now has a live native-route activator: once the i
 initial watcher graph, GoForj sends a complete empty client replacement and retries the barrier while Harbor waits for
 readiness, fresh service-port observations, Harbor-owned TCP reservations, and live native relay evidence. Harbor does
 not trust client-supplied ports; it replaces the registry with its own exact observation before acknowledging. The
-fully phased pre-Compose/post-Compose lifecycle ordering remains a later GoForj slice, while ordinary standalone
+Compose barrier may now perform that service-only join while the exact project is still `Starting`; public App
+readiness and default publication planning remain `Ready`-gated. The fully phased pre-Compose/post-Compose lifecycle
+ordering remains a later GoForj slice, while ordinary standalone
 `forj dev` remains unchanged.
 
 Startup ordering matters:
