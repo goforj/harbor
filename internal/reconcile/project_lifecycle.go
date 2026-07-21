@@ -654,13 +654,13 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 		}
 		if readinessState == projectreadiness.StateReady {
 			completionPhase := "ready"
-			observationCtx, observationCancel := context.WithTimeout(coordinator.ctx, defaultServiceObserveTimeout)
-			observation, observationErr := coordinator.supervisor.ObserveServices(
-				observationCtx,
+			observationRetryContext, observationRetryCancel := context.WithTimeout(coordinator.ctx, defaultServiceObserveTimeout)
+			observation, observationErr := coordinator.observeServicesWithRetry(
+				observationRetryContext,
 				mutation.Operation.Operation.ProjectID,
 				session.ID,
 			)
-			observationCancel()
+			observationRetryCancel()
 			select {
 			case <-handle.Done():
 				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("forj dev exited while Harbor observed project services"))
@@ -842,7 +842,6 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 	runtimeRefresher, runtimeRefreshOK := coordinator.state.(projectRuntimeProjectionRefresher)
 	expectedRevision := project.Revision
 	transientFailures := 0
-	transientObservationFailures := 0
 	for {
 		if err := waiter.WaitServiceChange(ctx, session.ProjectID, session.ID); err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
@@ -867,29 +866,10 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 		}
 		transientFailures = 0
 
-		var observation projectprocess.ServiceObservation
-		var err error
-		for {
-			observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
-			observation, err = coordinator.supervisor.ObserveServices(observationCtx, session.ProjectID, session.ID)
-			cancel()
-			if err == nil {
-				transientObservationFailures = 0
-				break
-			}
+		observation, err := coordinator.observeServicesWithRetry(ctx, session.ProjectID, session.ID)
+		if err != nil {
 			if ctx.Err() != nil {
 				return
-			}
-			if errors.Is(err, containerruntime.ErrProjectObservationTransient) {
-				transientObservationFailures++
-				if transientObservationFailures > maximumServiceObservationRetries {
-					coordinator.recordAsyncError(fmt.Errorf("observe project %q services after %d transient runtime failures: %w", session.ProjectID, transientObservationFailures, err))
-					return
-				}
-				if err := waitForRuntimeRetry(ctx); err != nil {
-					return
-				}
-				continue
 			}
 			coordinator.recordAsyncError(fmt.Errorf("observe project %q services after host change: %w", session.ProjectID, err))
 			return
@@ -972,6 +952,44 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 		}
 		coordinator.recordAsyncError(fmt.Errorf("refresh project %q services: %w", session.ProjectID, err))
 		return
+	}
+}
+
+// observeServicesWithRetry obtains one complete service view while retrying only typed Engine transport failures.
+func (coordinator *ProjectLifecycleCoordinator) observeServicesWithRetry(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+) (projectprocess.ServiceObservation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	transientFailures := 0
+	for {
+		observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
+		observation, err := coordinator.supervisor.ObserveServices(observationCtx, projectID, sessionID)
+		cancel()
+		if err == nil {
+			return observation, nil
+		}
+		if ctx.Err() != nil {
+			return projectprocess.ServiceObservation{}, ctx.Err()
+		}
+		if !errors.Is(err, containerruntime.ErrProjectObservationTransient) {
+			return projectprocess.ServiceObservation{}, err
+		}
+		transientFailures++
+		if transientFailures > maximumServiceObservationRetries {
+			return projectprocess.ServiceObservation{}, fmt.Errorf(
+				"observe project %q services after %d transient runtime failures: %w",
+				projectID,
+				transientFailures,
+				err,
+			)
+		}
+		if err := waitForRuntimeRetry(ctx); err != nil {
+			return projectprocess.ServiceObservation{}, err
+		}
 	}
 }
 

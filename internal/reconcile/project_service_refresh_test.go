@@ -725,3 +725,20 @@ func TestWatchReadyServicesSurfacesPersistentTransientObservationFailure(t *test
 		t.Fatalf("transient observation/wait calls = %d/%d, want %d/1", supervisor.ObserveCalls(), supervisor.waitCalls, maximumServiceObservationRetries+1)
 	}
 }
+
+// TestObserveServicesWithRetryKeepsNonTransientFailureTerminal prevents data errors from entering the reconnect loop.
+func TestObserveServicesWithRetryKeepsNonTransientFailureTerminal(t *testing.T) {
+	testErr := errors.New("malformed service observation")
+	supervisor := &projectServiceRefreshTestSupervisor{observationErrors: []error{testErr}}
+	coordinator := &ProjectLifecycleCoordinator{supervisor: supervisor}
+	project := projectActivityTestProject()
+	session := projectActivityTestSession()
+
+	_, err := coordinator.observeServicesWithRetry(t.Context(), project.Project.ID, session.ID)
+	if err == nil || !errors.Is(err, testErr) {
+		t.Fatalf("observeServicesWithRetry() error = %v, want terminal observation error", err)
+	}
+	if supervisor.ObserveCalls() != 1 {
+		t.Fatalf("ObserveServices() calls = %d, want one terminal attempt", supervisor.ObserveCalls())
+	}
+}
