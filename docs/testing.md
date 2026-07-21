@@ -279,6 +279,8 @@ Image versions are pinned by the GoForj fixture. Updating them is a separate rev
 
 Adapter-focused tests record every Engine request and fail on any create, start, stop, restart, remove, exec, attach, build, pull, network, volume, or generic pass-through route. They cover container replacement, replica aggregation, event reconnect, bounded log cursors, cancellation, unavailable Engine access, label/path mismatch, symlink/case normalization on supported platforms, and a checkout move. Native jobs prove the selected Unix socket or Docker Desktop endpoint behavior without exposing that endpoint to a generated App, helper, frontend binding, or test fixture process.
 
+The product-proof verifier additionally requires a non-skipped event-refresh assertion and rejects Engine versions below the supported 28-equivalent floor before accepting uploaded lifecycle evidence.
+
 ## GoForj managed-session tests
 
 On every OS:

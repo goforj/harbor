@@ -41,6 +41,12 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 		{name: "wrong engine", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Dependencies.EngineKind = "remote-docker"
 		}, want: "unsupported Docker engine kind"},
+		{name: "old engine", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.Dependencies.EngineVersion = "27.5.1"
+		}, want: "below the supported major version"},
+		{name: "invalid engine version", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.Dependencies.EngineVersion = "desktop-latest"
+		}, want: "invalid Docker engine version"},
 		{name: "missing project", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Projects = lifecycle.Projects[:2]
 		}, want: "three generated projects"},
@@ -151,6 +157,7 @@ func validDockerProjectFixture(platform string) DockerProjectEvidence {
 			{ID: "docker.projects.isolated", Passed: true, Detail: "admitted container identities were disjoint"},
 			{ID: "docker.adapter.read_only", Passed: true, Detail: "observer calls did not change admitted container identities"},
 			{ID: "docker.logs.available", Passed: true, Detail: "one exact service log follower opened for every project"},
+			{ID: "docker.events.refresh", Passed: true, Detail: "container replacement woke a fenced fresh service observation"},
 			{ID: "docker.projects.stop_peer_survival", Passed: true, Detail: "two peers remained ready while orders stopped"},
 			{ID: "docker.projects.restart", Passed: true, Detail: "orders restarted on its original identity"},
 		},

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,8 @@ const (
 	dockerProjectCapability            = "docker_project_lifecycle"
 	dockerProjectCleanupCapability     = "docker_project_lifecycle_cleanup"
 	dockerProjectScope                 = "product_end_to_end"
+	minimumDockerEngineMajor           = 28
+	maximumEngineVersionBytes          = 128
 )
 
 var requiredDockerProjectAssertions = []string{
@@ -29,6 +32,7 @@ var requiredDockerProjectAssertions = []string{
 	"docker.projects.isolated",
 	"docker.adapter.read_only",
 	"docker.logs.available",
+	"docker.events.refresh",
 	"docker.projects.stop_peer_survival",
 	"docker.projects.restart",
 }
@@ -298,7 +302,40 @@ func verifyDependencies(dependencies DependencyEvidence, platform string) error 
 	if dependencies.EngineKind != "docker-engine" && dependencies.EngineKind != "docker-desktop" {
 		return fmt.Errorf("%s evidence has unsupported Docker engine kind %q", platform, dependencies.EngineKind)
 	}
+	if err := verifyDockerEngineVersion(dependencies.EngineVersion, platform); err != nil {
+		return err
+	}
 	return verifyDigests([]string{dependencies.GoForjDigest}, platform)
+}
+
+// verifyDockerEngineVersion enforces the supported Engine 28-equivalent floor before accepting lifecycle evidence.
+func verifyDockerEngineVersion(version, platform string) error {
+	if len(version) == 0 || len(version) > maximumEngineVersionBytes {
+		return fmt.Errorf("%s evidence has an invalid Docker engine version", platform)
+	}
+	normalized := strings.TrimPrefix(version, "v")
+	parts := strings.Split(normalized, ".")
+	if len(parts) < 3 {
+		return fmt.Errorf("%s evidence has an invalid Docker engine version %q", platform, version)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil || major < 0 {
+		return fmt.Errorf("%s evidence has an invalid Docker engine version %q", platform, version)
+	}
+	for _, part := range parts[:3] {
+		if part == "" {
+			return fmt.Errorf("%s evidence has an invalid Docker engine version %q", platform, version)
+		}
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return fmt.Errorf("%s evidence has an invalid Docker engine version %q", platform, version)
+			}
+		}
+	}
+	if major < minimumDockerEngineMajor {
+		return fmt.Errorf("%s evidence uses Docker engine %q below the supported major version %d", platform, version, minimumDockerEngineMajor)
+	}
+	return nil
 }
 
 // verifyProjects requires exactly three distinct loopback identities and independently owned admitted containers.
