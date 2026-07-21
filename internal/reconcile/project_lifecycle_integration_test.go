@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -672,6 +673,64 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 		routes,
 		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectReady, domain.ProjectStopping, domain.ProjectStopped},
 	)
+}
+
+// TestProjectLifecycleCoordinatorStopsAfterRouteWithdrawalFailure proves a publication failure cannot strand a project in stopping.
+func TestProjectLifecycleCoordinatorStopsAfterRouteWithdrawalFailure(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, port := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	installProjectLifecycleIntegrationForj(t, port)
+	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 500 * time.Millisecond})
+	coordinator, _ := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
+	routeErr := errors.New("route withdrawal unavailable")
+	var failRoutes atomic.Bool
+	coordinator.routes = projectLifecycleRouteReconcilerFunc(func(context.Context) error {
+		if failRoutes.Load() {
+			return routeErr
+		}
+		return nil
+	})
+	closed := false
+	t.Cleanup(func() {
+		if closed {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = coordinator.Close(ctx)
+	})
+
+	if _, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID: project.ID, OperationID: "operation-start-route-failure", IntentID: "intent-start-route-failure",
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForProjectLifecycleState(t, store, project.ID, domain.ProjectReady)
+
+	failRoutes.Store(true)
+	if _, err := coordinator.Stop(t.Context(), ProjectStopRequest{
+		ProjectID: project.ID, OperationID: "operation-stop-route-failure", IntentID: "intent-stop-route-failure",
+	}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	stopped := waitForProjectLifecycleState(t, store, project.ID, domain.ProjectStopped)
+	if stopped.Project.State != domain.ProjectStopped {
+		t.Fatalf("project after route withdrawal failure = %q, want stopped", stopped.Project.State)
+	}
+	operation := waitForProjectLifecycleOperationState(t, journal, "intent-stop-route-failure", domain.OperationSucceeded)
+	if operation.Operation.State != domain.OperationSucceeded {
+		t.Fatalf("stop operation after route withdrawal failure = %q, want succeeded", operation.Operation.State)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	closeErr := coordinator.Close(ctx)
+	closed = true
+	if !errors.Is(closeErr, routeErr) {
+		t.Fatalf("Close() error = %v, want route withdrawal failure retained for diagnostics", closeErr)
+	}
 }
 
 // TestProjectLifecycleCoordinatorCloseRetiresReadyProcessAuthority proves a daemon restart does not preserve a phantom online session.

@@ -75,6 +75,18 @@ async function mountProject(projectId = 'orders-api'): Promise<MountedProjectVie
   return { pinia, router, store, wrapper }
 }
 
+async function mountStaleRuntimeProject(projectId = 'billing'): Promise<MountedProjectView> {
+  const mounted = await mountProject(projectId)
+  const project = mounted.store.projectById(projectId)
+  if (!project) throw new Error(`${projectId} fixture project is missing`)
+  project.state = 'stopped'
+  project.apps = project.apps.map((app) => ({ ...app, state: 'stopped', active: false }))
+  project.services = project.services.map((service) => ({ ...service, state: 'stopped' }))
+  project.resources = []
+  await mounted.wrapper.vm.$nextTick()
+  return mounted
+}
+
 function confirmableInspection(): Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }> {
   return structuredClone(harborWireFixture.project_runtime_repair_inspection)
 }
@@ -98,55 +110,50 @@ describe('ProjectView stale runtime recovery', () => {
     wrapper.unmount()
   })
 
-  it('keeps the normal recovery start action available and disables inspection only for unsafe client state', async () => {
+  it('keeps the ordinary start action available for a recovered project', async () => {
     const { store, wrapper } = await mountRecoveryProject()
-    const recover = wrapper.findAll('button').find((button) => button.text().includes('Recover and start'))
+    const recover = wrapper.findAll('button').find((button) => button.text().includes('Start project'))
     expect(recover).toBeDefined()
     expect(recover?.attributes('disabled')).toBeUndefined()
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
-    expect(inspect).toBeDefined()
-    expect(inspect?.attributes('disabled')).toBeUndefined()
+    expect(wrapper.findAll('button').some((button) => button.text().includes('Inspect stale runtime'))).toBe(false)
 
     store.$patch({ snapshotStale: true })
     await wrapper.vm.$nextTick()
-    expect(inspect?.attributes('disabled')).toBeDefined()
+    expect(recover?.attributes('disabled')).toBeDefined()
 
     store.$patch({ snapshotStale: false, connectionState: 'disconnected' })
     await wrapper.vm.$nextTick()
     expect(recover?.attributes('disabled')).toBeDefined()
-    expect(inspect?.attributes('disabled')).toBeDefined()
 
-    store.$patch({ connectionState: 'connected', projectLifecycleProjectId: 'orders-api' })
+    store.$patch({ connectionState: 'connected', projectLifecycleProjectId: 'billing' })
     await wrapper.vm.$nextTick()
-    expect(inspect?.attributes('disabled')).toBeDefined()
+    expect(recover?.attributes('disabled')).toBeDefined()
 
     wrapper.unmount()
   })
 
-  it('keeps a failed recovery check inside the single recovery surface', async () => {
-    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockRejectedValueOnce(new Error('native inspection failed'))
+  it('does not require stale-runtime inspection before retrying start', async () => {
+    const inspect = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair')
+    const start = vi.spyOn(harborBridge, 'startProject').mockImplementationOnce(async (projectId, intentId) => {
+      const result = structuredClone(harborWireFixture.start_project)
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
     const { wrapper } = await mountRecoveryProject()
 
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
-    if (!inspect) throw new Error('Inspect stale runtime action is missing')
-    await inspect.trigger('click')
+    const recover = wrapper.findAll('button').find((button) => button.text().includes('Start project'))
+    if (!recover) throw new Error('Start project action is missing')
+    await recover.trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('[role="alert"]')).toHaveLength(1)
-    expect(wrapper.text()).toContain('Harbor could not verify the previous runtime. Try again.')
-    expect(wrapper.text()).not.toContain('Stale runtime inspection failed')
+    expect(start).toHaveBeenCalledWith('billing', expect.any(String))
+    expect(inspect).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
   it('offers a read-only stale-runtime check for an otherwise stopped route-free project', async () => {
-    const { store, wrapper } = await mountProject()
-    const project = store.projectById('orders-api')
-    if (!project) throw new Error('Orders fixture project is missing')
-    project.state = 'stopped'
-    project.apps = project.apps.map((app) => ({ ...app, state: 'stopped', active: false }))
-    project.services = project.services.map((service) => ({ ...service, state: 'stopped' }))
-    project.resources = []
-    await wrapper.vm.$nextTick()
+    const { wrapper } = await mountStaleRuntimeProject()
 
     const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
     expect(inspect).toBeDefined()
@@ -159,9 +166,9 @@ describe('ProjectView stale runtime recovery', () => {
     const inspection = confirmableInspection()
     const inspectRuntime = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
     const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
-    const { store, wrapper } = await mountRecoveryProject()
+    const { store, wrapper } = await mountStaleRuntimeProject('billing')
 
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
     if (!inspect) throw new Error('Inspect stale runtime action is missing')
     await inspect.trigger('click')
     await flushPromises()
@@ -194,10 +201,10 @@ describe('ProjectView stale runtime recovery', () => {
     vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
     const confirmation = structuredClone(harborWireFixture.project_runtime_repair_confirmation)
     const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair').mockResolvedValueOnce(confirmation)
-    const { store, wrapper } = await mountRecoveryProject()
+    const { store, wrapper } = await mountStaleRuntimeProject('billing')
     const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
 
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
     if (!inspect) throw new Error('Inspect stale runtime action is missing')
     await inspect.trigger('click')
     await flushPromises()
@@ -219,9 +226,9 @@ describe('ProjectView stale runtime recovery', () => {
     const inspection = confirmableInspection()
     vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
     const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
-    const { store, wrapper } = await mountRecoveryProject()
+    const { store, wrapper } = await mountStaleRuntimeProject('billing')
 
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
     if (!inspect) throw new Error('Inspect stale runtime action is missing')
     await inspect.trigger('click')
     await flushPromises()

@@ -167,7 +167,6 @@ const lifecycleAction = computed(() => project.value?.state === 'stopped'
   ? 'start'
   : 'stop')
 const lifecycleLabel = computed(() => {
-  if (recoveryRequired.value) return 'Recover and start'
   if (restarting.value) return 'Restarting…'
   if (starting.value) return 'Starting…'
   if (stopping.value) return 'Stopping…'
@@ -220,7 +219,7 @@ const removalApprovalDisabled = computed(() => removalNotice.value?.state !== 'r
   || store.projectRuntimeRepairBusy)
 const runtimeRepairInspecting = computed(() => store.projectRuntimeRepairProjectId === projectId.value
   && store.projectRuntimeRepairAction === 'inspect')
-const runtimeRepairInspectionDisabled = computed(() => (!recoveryRequired.value && !runtimeRepairEligible.value)
+const runtimeRepairInspectionDisabled = computed(() => !runtimeRepairEligible.value
   || store.connectionState !== 'connected'
   || store.snapshotStale
   || store.settingUpNetwork
@@ -536,17 +535,6 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               <LoaderCircle v-if="store.settingUpNetwork" class="size-3.5 animate-spin" aria-hidden="true" />
               <Network v-else class="size-3.5" aria-hidden="true" />
               {{ store.settingUpNetwork ? 'Setting up networking…' : 'Set up networking and start' }}
-            </Button>
-            <Button
-              v-if="recoveryRequired"
-              variant="outline"
-              size="sm"
-              :disabled="runtimeRepairInspectionDisabled"
-              @click="inspectStaleRuntime"
-            >
-              <LoaderCircle v-if="runtimeRepairInspecting" class="size-3.5 animate-spin" aria-hidden="true" />
-              <Search v-else class="size-3.5" aria-hidden="true" />
-              {{ runtimeRepairInspecting ? 'Inspecting stale runtime…' : 'Inspect stale runtime' }}
             </Button>
           </AlertDescription>
         </Alert>
