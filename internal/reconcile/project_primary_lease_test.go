@@ -137,13 +137,17 @@ type primaryLeaseTestPortProber struct {
 // primaryLeaseTestRuntimeRepairer models the reviewed same-user cleanup boundary without native process effects.
 type primaryLeaseTestRuntimeRepairer struct {
 	inspection     projectprocess.UnattributedRuntimeInspection
+	inspections    []projectprocess.UnattributedRuntimeInspection
 	confirmation   projectprocess.RuntimeRepairConfirmation
+	confirmations  []projectprocess.RuntimeRepairConfirmation
 	inspectErr     error
 	confirmErr     error
 	inspectTargets []projectprocess.RuntimeRepairTarget
 	candidates     []projectprocess.UnattributedRuntimeCandidate
 	onInspect      func()
 	onConfirm      func()
+	inspectIndex   int
+	confirmIndex   int
 }
 
 // Inspect returns one configured exact-listener classification for automatic retained-port recovery.
@@ -154,6 +158,11 @@ func (repairer *primaryLeaseTestRuntimeRepairer) Inspect(_ context.Context, targ
 	}
 	if repairer.inspectErr != nil {
 		return projectprocess.UnattributedRuntimeInspection{}, repairer.inspectErr
+	}
+	if repairer.inspectIndex < len(repairer.inspections) {
+		inspection := repairer.inspections[repairer.inspectIndex]
+		repairer.inspectIndex++
+		return inspection, nil
 	}
 	return repairer.inspection, nil
 }
@@ -166,6 +175,11 @@ func (repairer *primaryLeaseTestRuntimeRepairer) Confirm(_ context.Context, cand
 	}
 	if repairer.confirmErr != nil {
 		return projectprocess.RuntimeRepairConfirmation{}, repairer.confirmErr
+	}
+	if repairer.confirmIndex < len(repairer.confirmations) {
+		confirmation := repairer.confirmations[repairer.confirmIndex]
+		repairer.confirmIndex++
+		return confirmation, nil
 	}
 	return repairer.confirmation, nil
 }
@@ -465,6 +479,46 @@ func TestProjectPrimaryLeaseCoordinatorConfirmsAnExactProjectListener(t *testing
 	}
 	if len(repairer.inspectTargets) != 1 || repairer.inspectTargets[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") || len(repairer.candidates) != 1 {
 		t.Fatalf("automatic cleanup calls = targets %#v candidates %d, want one exact target and candidate", repairer.inspectTargets, len(repairer.candidates))
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorRetriesTransientListenerDrift keeps a process race from surfacing as a user-visible port conflict.
+func TestProjectPrimaryLeaseCoordinatorRetriesTransientListenerDrift(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
+	var repairer *primaryLeaseTestRuntimeRepairer
+	repairer = &primaryLeaseTestRuntimeRepairer{
+		inspections: []projectprocess.UnattributedRuntimeInspection{
+			{
+				State:     projectprocess.RuntimeRepairInspectionActionable,
+				Candidate: &projectprocess.UnattributedRuntimeCandidate{},
+			},
+			{
+				State:     projectprocess.RuntimeRepairInspectionActionable,
+				Candidate: &projectprocess.UnattributedRuntimeCandidate{},
+			},
+		},
+		confirmations: []projectprocess.RuntimeRepairConfirmation{
+			{State: projectprocess.RuntimeRepairConfirmationDrifted},
+			{State: projectprocess.RuntimeRepairConfirmationSettled, Signaled: true},
+		},
+		onConfirm: func() {
+			if len(repairer.candidates) == 2 {
+				fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
+			}
+		},
+	}
+	fixture.coordinator.runtimeRepairer = repairer
+
+	if _, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID); err != nil {
+		t.Fatalf("Ensure() error = %v, want retry after transient listener drift", err)
+	}
+	if len(repairer.inspectTargets) != 2 || len(repairer.candidates) != 2 {
+		t.Fatalf("automatic cleanup retries = inspections %d candidates %d, want two each", len(repairer.inspectTargets), len(repairer.candidates))
 	}
 }
 

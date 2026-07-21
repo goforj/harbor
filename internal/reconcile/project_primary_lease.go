@@ -43,6 +43,10 @@ const (
 	primaryLeaseServiceEndpointIDPrefix = "service:"
 	// primaryLeaseEvidenceDomain prevents a digest from being reused as evidence for another Harbor operation.
 	primaryLeaseEvidenceDomain = "goforj.harbor.project-primary-lease.v1\x00"
+	// primaryLeaseRuntimeRepairAttempts bounds transient native process races before Start reports a real conflict.
+	primaryLeaseRuntimeRepairAttempts = 3
+	// primaryLeaseRuntimeRepairRetryDelay gives a terminating listener a short window to publish its new state.
+	primaryLeaseRuntimeRepairRetryDelay = 50 * time.Millisecond
 )
 
 // projectPrimaryLeaseState is the optimistic durable surface needed to allocate one registered project identity.
@@ -840,35 +844,81 @@ func (coordinator *projectPrimaryLeaseCoordinator) repairRetainedAppPortConflict
 		CheckoutRoot: checkoutRoot,
 		Endpoint:     netip.AddrPortFrom(address.Unmap(), port),
 	}
-	inspection, err := coordinator.runtimeRepairer.Inspect(ctx, target)
-	if err != nil {
-		return false, err
-	}
-	if err := inspection.State.Validate(); err != nil {
-		return false, fmt.Errorf("validate automatic listener inspection: %w", err)
-	}
-	switch inspection.State {
-	case projectprocess.RuntimeRepairInspectionMissing:
-		// The listener disappeared during the probe; a fresh primary observation decides whether admission can continue.
-		return true, nil
-	case projectprocess.RuntimeRepairInspectionActionable:
-		if inspection.Candidate == nil {
-			return false, errors.New("automatic listener inspection was actionable without a candidate")
-		}
-		confirmation, err := coordinator.runtimeRepairer.Confirm(ctx, *inspection.Candidate)
+	var lastErr error
+	for attempt := 0; attempt < primaryLeaseRuntimeRepairAttempts; attempt++ {
+		inspection, err := coordinator.runtimeRepairer.Inspect(ctx, target)
 		if err != nil {
-			return false, err
+			lastErr = err
+			if !waitForPrimaryLeaseRuntimeRepairRetry(ctx, attempt) {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return false, ctxErr
+				}
+				return false, lastErr
+			}
+			continue
 		}
-		if err := confirmation.Validate(); err != nil {
-			return false, fmt.Errorf("validate automatic listener cleanup: %w", err)
+		lastErr = nil
+		if err := inspection.State.Validate(); err != nil {
+			return false, fmt.Errorf("validate automatic listener inspection: %w", err)
 		}
-		if confirmation.State == projectprocess.RuntimeRepairConfirmationSettled {
+		switch inspection.State {
+		case projectprocess.RuntimeRepairInspectionMissing:
+			// The listener disappeared during the probe; a fresh primary observation decides whether admission can continue.
 			return true, nil
+		case projectprocess.RuntimeRepairInspectionActionable:
+			if inspection.Candidate == nil {
+				return false, errors.New("automatic listener inspection was actionable without a candidate")
+			}
+			confirmation, err := coordinator.runtimeRepairer.Confirm(ctx, *inspection.Candidate)
+			if err != nil {
+				lastErr = err
+				if !waitForPrimaryLeaseRuntimeRepairRetry(ctx, attempt) {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return false, ctxErr
+					}
+					return false, lastErr
+				}
+				continue
+			}
+			lastErr = nil
+			if err := confirmation.Validate(); err != nil {
+				return false, fmt.Errorf("validate automatic listener cleanup: %w", err)
+			}
+			if confirmation.State == projectprocess.RuntimeRepairConfirmationSettled {
+				return true, nil
+			}
+			if confirmation.State == projectprocess.RuntimeRepairConfirmationFailed {
+				lastErr = errors.New("automatic listener cleanup returned a failed confirmation")
+			}
+			if !waitForPrimaryLeaseRuntimeRepairRetry(ctx, attempt) {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return false, ctxErr
+				}
+				if lastErr != nil {
+					return false, lastErr
+				}
+				return false, nil
+			}
+		default:
+			// Foreign, ambiguous, unreadable, and unsupported listeners remain fail-closed rather than becoming kill-anything authority.
+			return false, nil
 		}
-		return false, nil
-	default:
-		// Foreign, ambiguous, unreadable, and unsupported listeners remain fail-closed rather than becoming kill-anything authority.
-		return false, nil
+	}
+	return false, lastErr
+}
+
+// waitForPrimaryLeaseRuntimeRepairRetry bounds the pause between native observations while a process exits.
+func waitForPrimaryLeaseRuntimeRepairRetry(ctx context.Context, attempt int) bool {
+	if attempt+1 >= primaryLeaseRuntimeRepairAttempts {
+		return false
+	}
+	timer := time.NewTimer(primaryLeaseRuntimeRepairRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
