@@ -15,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/managedsession"
 	"github.com/goforj/harbor/internal/network/dataplane"
+	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -96,6 +97,9 @@ func (authority *Authority) RegisterManagedSession(
 	if active.ID != request.SessionID {
 		return managedsession.RegisterResponse{}, fmt.Errorf("managed session %q is not the active project session", request.SessionID)
 	}
+	if active.State == domain.SessionAttached {
+		return authority.replayAttachedManagedSession(peer, request, active)
+	}
 	if active.State != domain.SessionAwaitingAttach {
 		if active.State == domain.SessionPlanned {
 			return managedsession.RegisterResponse{}, fmt.Errorf("%w: session %q is still planned", managedsession.ErrManagedSessionAwaitingAttach, request.SessionID)
@@ -172,6 +176,77 @@ func (authority *Authority) RegisterManagedSession(
 	authority.managedSessions[request.ProjectID] = managedSessionAttachment{
 		request:            replayRequest,
 		launchTicketDigest: launchTicketDigest,
+		response:           response,
+		peer:               peer,
+	}
+	closeRegistry = false
+	return response, nil
+}
+
+// replayAttachedManagedSession reconstructs process-local authority after Harbor restarts without mutating durable state.
+//
+// The durable attached session is sufficient to prove the process boundary: the reconnecting peer must have the
+// same operating-system PID, project root, session generation, descriptor digest, and inherited launch credential.
+// Reopening the ephemeral registry here lets the next publication/barrier call rebuild native routes while the
+// existing GoForj process remains the source of truth for its running watchers.
+func (authority *Authority) replayAttachedManagedSession(
+	peer local.PeerIdentity,
+	request managedsession.RegisterRequest,
+	active domain.ProjectSession,
+) (managedsession.RegisterResponse, error) {
+	if active.Generation == 0 || request.ExpectedSessionGeneration == rpc.MaximumSequence ||
+		active.Generation != request.ExpectedSessionGeneration+1 {
+		return managedsession.RegisterResponse{}, fmt.Errorf("managed session %q generation does not match the requested replay fence", request.SessionID)
+	}
+	if active.Owner != request.Owner {
+		return managedsession.RegisterResponse{}, fmt.Errorf("managed session owner %q does not match the replay request", active.Owner)
+	}
+	if active.DescriptorDigest != request.DescriptorDigest {
+		return managedsession.RegisterResponse{}, errors.New("managed session descriptor digest does not match the durable replay session")
+	}
+	if request.LaunchTicket != "" {
+		if err := verifyManagedLaunchTicket(request.LaunchTicket, active.CredentialDigest); err != nil {
+			return managedsession.RegisterResponse{}, err
+		}
+	}
+	if active.Process == nil || active.Process.PID != int64(peer.ProcessID) {
+		return managedsession.RegisterResponse{}, errors.New("managed session replay peer is not the attached process")
+	}
+
+	ticket, err := newManagedAttachmentTicket()
+	if err != nil {
+		return managedsession.RegisterResponse{}, fmt.Errorf("issue managed session replay attachment ticket: %w", err)
+	}
+	response := managedsession.RegisterResponse{
+		SchemaVersion: managedsession.SchemaVersion,
+		Fence: harbordruntime.ManagedPublicationFence{
+			ProjectID:         active.ProjectID,
+			SessionID:         active.ID,
+			SessionGeneration: active.Generation,
+		},
+		AttachmentTicket: ticket,
+	}
+	if err := managedsession.ValidateRegisterCorrelation(request, response); err != nil {
+		return managedsession.RegisterResponse{}, err
+	}
+	fence, err := authority.managedRegistry.Open(active)
+	if err != nil {
+		return managedsession.RegisterResponse{}, fmt.Errorf("reopen managed publication stream: %w", err)
+	}
+	closeRegistry := true
+	defer func() {
+		if closeRegistry {
+			_ = authority.managedRegistry.Close(fence)
+		}
+	}()
+	if response.Fence != fence {
+		return managedsession.RegisterResponse{}, errors.New("managed session replay registry returned an unexpected fence")
+	}
+	replayRequest := request
+	replayRequest.LaunchTicket = ""
+	authority.managedSessions[request.ProjectID] = managedSessionAttachment{
+		request:            replayRequest,
+		launchTicketDigest: managedLaunchTicketDigest(request.LaunchTicket),
 		response:           response,
 		peer:               peer,
 	}

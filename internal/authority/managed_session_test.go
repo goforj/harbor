@@ -210,6 +210,71 @@ func TestAuthorityManagedSessionRoundTripBindsPeerAndFence(t *testing.T) {
 	}
 }
 
+// TestAuthorityManagedSessionReplaysDurableAttachmentAfterRestart proves a fresh authority can rebuild only its
+// ephemeral publication stream from the exact attached process evidence already persisted by the prior daemon.
+func TestAuthorityManagedSessionReplaysDurableAttachmentAfterRestart(t *testing.T) {
+	store := managedSessionAuthorityFixture()
+	peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
+	request := managedSessionAuthorityRequest()
+	first := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	response, err := first.RegisterManagedSession(t.Context(), peer, request)
+	if err != nil {
+		t.Fatalf("initial RegisterManagedSession() error = %v", err)
+	}
+	if response.Fence.SessionGeneration != 3 {
+		t.Fatalf("initial fence generation = %d, want 3", response.Fence.SessionGeneration)
+	}
+
+	restarted := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	request.ExpectedSessionGeneration = 2
+	replayed, err := restarted.RegisterManagedSession(t.Context(), peer, request)
+	if err != nil {
+		t.Fatalf("replayed RegisterManagedSession() error = %v", err)
+	}
+	if replayed.Fence != response.Fence || replayed.AttachmentTicket == "" {
+		t.Fatalf("replayed response = %#v, want the durable fence and a fresh ephemeral ticket", replayed)
+	}
+	if store.attachmentCalls != 1 || store.session.State != domain.SessionAttached || store.session.Generation != 3 {
+		t.Fatalf("durable replay mutated attachment state: calls=%d state=%q generation=%d", store.attachmentCalls, store.session.State, store.session.Generation)
+	}
+	if _, err := restarted.ReplaceManagedPublications(t.Context(), peer, managedsession.ReplacePublicationsRequest{
+		SchemaVersion: managedsession.SchemaVersion,
+		Fence:         replayed.Fence,
+		Publications:  []harbordruntime.ManagedEndpointPublication{},
+	}); err != nil {
+		t.Fatalf("publication after replay = %v", err)
+	}
+}
+
+// TestAuthorityManagedSessionReplayRejectsIdentityDrift keeps a restarted daemon from rebuilding a fence for a
+// different generation, descriptor, or operating-system process.
+func TestAuthorityManagedSessionReplayRejectsIdentityDrift(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*managedsession.RegisterRequest, *local.PeerIdentity)
+		want   string
+	}{
+		{name: "generation", mutate: func(request *managedsession.RegisterRequest, _ *local.PeerIdentity) { request.ExpectedSessionGeneration = 1 }, want: "generation"},
+		{name: "descriptor", mutate: func(request *managedsession.RegisterRequest, _ *local.PeerIdentity) { request.DescriptorDigest = strings.Repeat("d", 64) }, want: "descriptor"},
+		{name: "peer", mutate: func(_ *managedsession.RegisterRequest, peer *local.PeerIdentity) { peer.ProcessID++ }, want: "peer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := managedSessionAuthorityFixture()
+			request := managedSessionAuthorityRequest()
+			peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
+			first := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+			if _, err := first.RegisterManagedSession(t.Context(), peer, request); err != nil {
+				t.Fatalf("initial RegisterManagedSession() error = %v", err)
+			}
+			restarted := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+			test.mutate(&request, &peer)
+			if _, err := restarted.RegisterManagedSession(t.Context(), peer, request); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("replayed RegisterManagedSession() error = %v, want %q rejection", err, test.want)
+			}
+		})
+	}
+}
+
 // TestAuthorityManagedBarrierRequiresLiveRouteActivator proves the typed barrier becomes positive only after the controller accepts the complete route set.
 func TestAuthorityManagedBarrierRequiresLiveRouteActivator(t *testing.T) {
 	store := managedSessionAuthorityFixture()
