@@ -6,7 +6,7 @@ Last updated: 2026-07-21
 
 Commit `bd54830` closes a managed-session restart gap: the authenticated Compose barrier now idempotently reconciles descriptor-declared host service reservations before joining observed ports. An already-attached GoForj process therefore converges after a daemon restart even when its original Start admission did not write the reservation; the focused regression and full root test suite pass. Native Docker Desktop proof remains outstanding.
 
-The follow-up barrier hardening reports resolver-stage network ownership as a retryable readiness condition rather than “no exact durable reservation.” GoForj commit `3d88a0f0` bounds an un-deadlined managed Compose barrier to 90 seconds, leaving Harbor time to observe the child exit inside its two-minute readiness budget. Harbor's launch, attachment, stop, and join calls are bounded as well; an unresolved process scope enters the existing unavailable/quarantine boundary instead of leaving a durable project in `starting` forever. Focused and full Harbor tests pass; native Docker Desktop proof remains outstanding.
+The follow-up barrier hardening reports resolver-stage network ownership as a retryable readiness condition rather than “no exact durable reservation.” GoForj commit `a4b35cd5` bounds an un-deadlined managed Compose barrier to 30 seconds, failing fast while Harbor still has time to observe and settle the child inside its two-minute readiness budget. Harbor's launch, attachment, stop, and join calls are bounded as well; an unresolved process scope enters the existing unavailable/quarantine boundary instead of leaving a durable project in `starting` forever. Focused and full Harbor tests pass; native Docker Desktop proof remains outstanding.
 
 ## Read this first
 
