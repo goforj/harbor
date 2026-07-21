@@ -225,7 +225,7 @@ func (request OutputReattachBeginRequest) Validate() error {
 	if err := validateManagedSessionEndpointReference(request.EndpointReference); err != nil {
 		return err
 	}
-	return validateManagedSessionToken("managed session output reattach client nonce", request.ClientNonce, maximumManagedSessionTokenBytes)
+	return validateManagedSessionOutputReattachToken("managed session output reattach client nonce", request.ClientNonce)
 }
 
 // OutputReattachChallengeResponse carries a fresh challenge correlated to one begin request.
@@ -252,10 +252,10 @@ func (response OutputReattachChallengeResponse) Validate() error {
 	if err := validateManagedSessionEndpointReference(response.EndpointReference); err != nil {
 		return err
 	}
-	if err := validateManagedSessionToken("managed session output reattach challenge client nonce", response.ClientNonce, maximumManagedSessionTokenBytes); err != nil {
+	if err := validateManagedSessionOutputReattachToken("managed session output reattach challenge client nonce", response.ClientNonce); err != nil {
 		return err
 	}
-	return validateManagedSessionToken("managed session output reattach challenge", response.Challenge, maximumManagedSessionTokenBytes)
+	return validateManagedSessionOutputReattachToken("managed session output reattach challenge", response.Challenge)
 }
 
 // ValidateOutputReattachChallengeCorrelation binds a challenge to one exact begin request.
@@ -300,10 +300,10 @@ func (request OutputReattachConfirmRequest) Validate() error {
 	if err := validateManagedSessionEndpointReference(request.EndpointReference); err != nil {
 		return err
 	}
-	if err := validateManagedSessionToken("managed session output reattach confirm client nonce", request.ClientNonce, maximumManagedSessionTokenBytes); err != nil {
+	if err := validateManagedSessionOutputReattachToken("managed session output reattach confirm client nonce", request.ClientNonce); err != nil {
 		return err
 	}
-	return validateManagedSessionToken("managed session output reattach confirm challenge", request.Challenge, maximumManagedSessionTokenBytes)
+	return validateManagedSessionOutputReattachToken("managed session output reattach confirm challenge", request.Challenge)
 }
 
 // ValidateOutputReattachConfirmCorrelation binds a confirmation to one exact challenge response.
@@ -354,14 +354,14 @@ func (response OutputReattachResponse) Validate() error {
 	if err := validateManagedSessionEndpointReference(response.EndpointReference); err != nil {
 		return err
 	}
-	if err := validateManagedSessionToken("managed session output reattach response client nonce", response.ClientNonce, maximumManagedSessionTokenBytes); err != nil {
+	if err := validateManagedSessionOutputReattachToken("managed session output reattach response client nonce", response.ClientNonce); err != nil {
 		return err
 	}
-	if err := validateManagedSessionToken("managed session output reattach response challenge", response.Challenge, maximumManagedSessionTokenBytes); err != nil {
+	if err := validateManagedSessionOutputReattachToken("managed session output reattach response challenge", response.Challenge); err != nil {
 		return err
 	}
 	if response.Accepted {
-		return validateManagedSessionToken("managed session output reattach attachment ticket", response.AttachmentTicket, maximumManagedSessionTokenBytes)
+		return validateManagedSessionOutputReattachToken("managed session output reattach attachment ticket", response.AttachmentTicket)
 	}
 	if response.AttachmentTicket != "" {
 		return errors.New("rejected managed session output reattach response must not carry an attachment ticket")
@@ -1082,4 +1082,30 @@ func validateManagedSessionToken(name, value string, maximum int) error {
 		}
 	}
 	return nil
+}
+
+// validateManagedSessionOutputReattachToken keeps the future broker handshake on the portable ASCII wire vocabulary mirrored by GoForj.
+func validateManagedSessionOutputReattachToken(name, value string) error {
+	if err := validateManagedSessionToken(name, value, maximumManagedSessionTokenBytes); err != nil {
+		return err
+	}
+	for _, character := range value {
+		if character > unicode.MaxASCII || !isManagedSessionOutputReattachTokenCharacter(byte(character)) {
+			return fmt.Errorf("%s contains an unsupported character", name)
+		}
+	}
+	return nil
+}
+
+// isManagedSessionOutputReattachTokenCharacter defines the portable ASCII vocabulary shared by Harbor and GoForj.
+func isManagedSessionOutputReattachTokenCharacter(character byte) bool {
+	if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' {
+		return true
+	}
+	switch character {
+	case '.', '_', '-', ':', '+':
+		return true
+	default:
+		return false
+	}
 }

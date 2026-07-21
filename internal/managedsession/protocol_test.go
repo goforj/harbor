@@ -268,6 +268,7 @@ func TestManagedSessionOutputReattachValidationRejectsUnsafeValues(t *testing.T)
 		mutate func(*OutputReattachBeginRequest)
 	}{
 		{name: "empty nonce", mutate: func(value *OutputReattachBeginRequest) { value.ClientNonce = "" }},
+		{name: "non-ASCII nonce", mutate: func(value *OutputReattachBeginRequest) { value.ClientNonce = "nonce-é" }},
 		{name: "oversized nonce", mutate: func(value *OutputReattachBeginRequest) {
 			value.ClientNonce = strings.Repeat("n", maximumManagedSessionTokenBytes+1)
 		}},
