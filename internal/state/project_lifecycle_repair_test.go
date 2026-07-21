@@ -53,6 +53,78 @@ func TestRetainedProjectRuntimeRepairBoundaryReturnsExactDurableAuthority(t *tes
 	}
 }
 
+// TestUnattributedProjectRuntimeInspectionBoundaryRequiresNoSession proves the separate listener case cannot reuse retained session authority.
+func TestUnattributedProjectRuntimeInspectionBoundaryRequiresNoSession(t *testing.T) {
+	fixture := newRetainedRuntimeRepairFixture(t)
+	if _, err := fixture.store.UnattributedProjectRuntimeInspectionBoundary(t.Context(), fixture.boundary.Project.Project.ID); err == nil {
+		t.Fatal("UnattributedProjectRuntimeInspectionBoundary(active session) error = nil")
+	} else {
+		var missing *ProjectSessionProcessEvidenceMissingError
+		if !errors.As(err, &missing) || missing.SessionID != fixture.boundary.SessionID {
+			t.Fatalf("UnattributedProjectRuntimeInspectionBoundary(active session) error = %v, want retained session rejection", err)
+		}
+	}
+
+	project, err := fixture.store.CompleteRetainedProjectRuntimeRepair(t.Context(), retainedRuntimeRepairCompletionRequest(fixture.boundary))
+	if err != nil {
+		t.Fatalf("CompleteRetainedProjectRuntimeRepair() error = %v", err)
+	}
+	boundary, err := fixture.store.UnattributedProjectRuntimeInspectionBoundary(t.Context(), project.Project.ID)
+	if err != nil {
+		t.Fatalf("UnattributedProjectRuntimeInspectionBoundary() error = %v", err)
+	}
+	if err := boundary.Validate(); err != nil {
+		t.Fatalf("UnattributedProjectRuntimeInspectionBoundary.Validate() error = %v", err)
+	}
+	if boundary.Project.Project.State != domain.ProjectStopped || boundary.PrimaryLease != fixture.boundary.PrimaryLease ||
+		boundary.PrimaryLeaseGeneration != fixture.boundary.PrimaryLeaseGeneration {
+		t.Fatalf("unattributed boundary = %#v, want stopped project and retained lease", boundary)
+	}
+}
+
+// TestUnattributedProjectRuntimeInspectionBoundaryRejectsInvalidFacts proves callers cannot manufacture a retry boundary from partial durable facts.
+func TestUnattributedProjectRuntimeInspectionBoundaryRejectsInvalidFacts(t *testing.T) {
+	fixture := newRetainedRuntimeRepairFixture(t)
+	project, err := fixture.store.CompleteRetainedProjectRuntimeRepair(t.Context(), retainedRuntimeRepairCompletionRequest(fixture.boundary))
+	if err != nil {
+		t.Fatalf("CompleteRetainedProjectRuntimeRepair() error = %v", err)
+	}
+	boundary, err := fixture.store.UnattributedProjectRuntimeInspectionBoundary(t.Context(), project.Project.ID)
+	if err != nil {
+		t.Fatalf("UnattributedProjectRuntimeInspectionBoundary() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*UnattributedProjectRuntimeInspectionBoundary)
+	}{
+		{name: "active project", mutate: func(candidate *UnattributedProjectRuntimeInspectionBoundary) {
+			candidate.Project.Project.State = domain.ProjectReady
+		}},
+		{name: "zero network revision", mutate: func(candidate *UnattributedProjectRuntimeInspectionBoundary) {
+			candidate.NetworkRevision = 0
+		}},
+		{name: "zero network update time", mutate: func(candidate *UnattributedProjectRuntimeInspectionBoundary) {
+			candidate.NetworkUpdatedAt = time.Time{}
+		}},
+		{name: "foreign primary lease", mutate: func(candidate *UnattributedProjectRuntimeInspectionBoundary) {
+			candidate.PrimaryLease.Key.ProjectID = "project-other"
+		}},
+		{name: "zero lease generation", mutate: func(candidate *UnattributedProjectRuntimeInspectionBoundary) {
+			candidate.PrimaryLeaseGeneration = 0
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := boundary
+			test.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("Validate() error = nil")
+			}
+		})
+	}
+}
+
 // TestCompleteRetainedProjectRuntimeRepairRestoresStoppedProject proves exact finalization retires only the legacy row and leaves network authority unchanged.
 func TestCompleteRetainedProjectRuntimeRepairRestoresStoppedProject(t *testing.T) {
 	fixture := newRetainedRuntimeRepairFixture(t)

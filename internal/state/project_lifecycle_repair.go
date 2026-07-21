@@ -216,7 +216,7 @@ func readRetainedProjectRuntimeRepairBoundary(
 		return RetainedProjectRuntimeRepairBoundary{}, err
 	}
 
-	network, lease, leaseGeneration, err := readRetainedProjectRuntimeNetworkBoundary(tx, projectID)
+	network, lease, leaseGeneration, err := readProjectRuntimeNetworkBoundary(tx, projectID, "retained runtime repair")
 	if err != nil {
 		return RetainedProjectRuntimeRepairBoundary{}, err
 	}
@@ -350,17 +350,18 @@ func validateRetainedProjectRuntimeRecoveryHistory(
 	return nil
 }
 
-// readRetainedProjectRuntimeNetworkBoundary validates the aggregate before returning its one raw-generation primary lease.
-func readRetainedProjectRuntimeNetworkBoundary(
+// readProjectRuntimeNetworkBoundary validates the aggregate before returning its one raw-generation primary lease.
+func readProjectRuntimeNetworkBoundary(
 	tx *gorm.DB,
 	projectID domain.ProjectID,
+	purpose string,
 ) (NetworkRecord, identity.Lease, uint64, error) {
 	present, err := inspectNetworkSchema(tx)
 	if err != nil {
 		return NetworkRecord{}, identity.Lease{}, 0, err
 	}
 	if !present {
-		return NetworkRecord{}, identity.Lease{}, 0, fmt.Errorf("retained runtime repair requires initialized network state")
+		return NetworkRecord{}, identity.Lease{}, 0, fmt.Errorf("%s requires initialized network state", purpose)
 	}
 	rows, err := readNetworkModelRows(tx)
 	if err != nil {
@@ -371,7 +372,7 @@ func readRetainedProjectRuntimeNetworkBoundary(
 		return NetworkRecord{}, identity.Lease{}, 0, err
 	}
 	if !initialized {
-		return NetworkRecord{}, identity.Lease{}, 0, fmt.Errorf("retained runtime repair requires initialized network state")
+		return NetworkRecord{}, identity.Lease{}, 0, fmt.Errorf("%s requires initialized network state", purpose)
 	}
 
 	matches := make([]models.LoopbackAddressLease, 0, 1)
@@ -388,7 +389,7 @@ func readRetainedProjectRuntimeNetworkBoundary(
 		return NetworkRecord{}, identity.Lease{}, 0, corruptStateError(
 			"loopback address lease",
 			string(projectID),
-			fmt.Errorf("retained runtime repair requires one active primary lease, found %d", len(matches)),
+			fmt.Errorf("%s requires one active primary lease, found %d", purpose, len(matches)),
 		)
 	}
 	lease, err := helperApprovalLeaseFromActiveRow(matches[0])
@@ -399,10 +400,10 @@ func readRetainedProjectRuntimeNetworkBoundary(
 		return NetworkRecord{}, identity.Lease{}, 0, corruptStateError(
 			"loopback address lease",
 			string(projectID),
-			fmt.Errorf("active repair lease is not the project primary"),
+			fmt.Errorf("active %s lease is not the project primary", purpose),
 		)
 	}
-	generation, err := positiveNetworkGeneration("retained runtime primary lease generation", matches[0].LeaseGeneration)
+	generation, err := positiveNetworkGeneration(purpose+" primary lease generation", matches[0].LeaseGeneration)
 	if err != nil {
 		return NetworkRecord{}, identity.Lease{}, 0, corruptStateError("loopback address lease", string(projectID), err)
 	}

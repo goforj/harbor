@@ -179,6 +179,32 @@ The ingress supports the application behavior GoForj already needs:
 
 Connection count, header size, body policy, TLS handshake, upstream connect, read, write, idle, and upgraded-connection limits are explicit and tested. A slow or broken project cannot exhaust the daemon's entire ingress.
 
+### Explicit external exposure (future profile)
+
+Loopback is the only default publication scope. A project that needs to be reachable from another
+device, a NAT rule, or a managed edge such as Cloudflare must opt into a separate exposure grant;
+the ordinary `.test` route must never become LAN-reachable as a side effect of choosing a network
+interface.
+
+The grant will keep Harbor's routing authority while separating four facts that are easy to conflate:
+
+1. the exact App route and upstream, which remain project-scoped and loopback-only;
+2. the concrete host address on which the shared ingress listens, selected from an explicitly
+   approved interface or address rather than an implicit `0.0.0.0` wildcard;
+3. the exact external hostname(s) accepted by Host and SNI, which are distinct from local `.test`
+   names; and
+4. the host's reachability mechanism, such as a LAN client, a user-owned port forward, or a
+   Cloudflare proxy/tunnel, which Harbor observes but does not silently configure or credential.
+
+Exposure is visible, revocable, and scoped to named Apps. Harbor must recheck the selected address,
+interface, listener ownership, route snapshot, and certificate policy before publishing and after
+network changes. If DHCP, Wi-Fi, VPN, NAT, or the edge proxy changes the facts, Harbor unpublishes
+or degrades the exposure rather than rebinding to a different interface or forwarding an unknown
+Host. Revocation removes only Harbor's exact listener and route projection; it does not edit DNS,
+Cloudflare configuration, or a user's router. Public exposure therefore remains an explicit product
+flow with its own consent, authentication, firewall, certificate, and native-platform proof gates,
+not a permissive option on the local proxy constructor.
+
 The local CA and leaf lifecycle is defined in [architecture.md](./architecture.md). Each leaf contains only registered exact domains. Trust is verified with the supported Safari, Edge, Chrome, Firefox, sandbox-package, and OS-native client combinations declared for that platform profile, not merely by checking that a certificate file exists. A Linux packaging/browser combination that uses a separate trust store is either integrated and tested or visibly outside full mode.
 
 ## Native TCP relays
