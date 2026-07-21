@@ -273,6 +273,43 @@ func (coordinator *projectPrimaryLeaseCoordinator) assignHTTPResourceEndpoints(
 	)
 }
 
+// verifyPrimaryLeaseAddress rejects a refresh built from an address that is no longer the project's durable lease.
+func (coordinator *projectPrimaryLeaseCoordinator) verifyPrimaryLeaseAddress(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	address netip.Addr,
+) error {
+	if coordinator == nil {
+		panic("reconcile.projectPrimaryLeaseCoordinator.verifyPrimaryLeaseAddress requires a non-nil receiver")
+	}
+	if err := projectID.Validate(); err != nil {
+		return err
+	}
+	if !address.IsValid() || !address.Is4() || !address.IsLoopback() {
+		return fmt.Errorf("project %q refresh address must be an IPv4 loopback", projectID)
+	}
+	ctx = normalizeLifecycleContext(ctx)
+	network, initialized, err := coordinator.state.Network(ctx)
+	if err != nil {
+		return fmt.Errorf("read network while refreshing project %q resources: %w", projectID, err)
+	}
+	if !initialized {
+		return fmt.Errorf("refresh project %q resources: network identity is not initialized", projectID)
+	}
+	key, err := identity.NewPrimaryKey(projectID)
+	if err != nil {
+		return err
+	}
+	lease, found := primaryLeaseForKey(network.Leases, key)
+	if !found {
+		return fmt.Errorf("refresh project %q resources: primary lease is missing", projectID)
+	}
+	if lease.Address != address.Unmap() {
+		return fmt.Errorf("refresh project %q resources: assigned address changed from %s to %s", projectID, address, lease.Address)
+	}
+	return nil
+}
+
 // primaryLeaseHTTPResourceEndpoints derives one exact HTTP reservation set while preserving native TCP authority.
 func primaryLeaseHTTPResourceEndpoints(
 	network state.NetworkRecord,

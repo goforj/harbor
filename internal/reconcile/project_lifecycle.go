@@ -113,6 +113,11 @@ type projectRuntimeRefresher interface {
 	RefreshProjectServices(context.Context, state.RefreshProjectServicesRequest) (state.ProjectRecord, error)
 }
 
+// projectRuntimeProjectionRefresher replaces services and framework resources behind one durable lifecycle fence.
+type projectRuntimeProjectionRefresher interface {
+	RefreshProjectRuntime(context.Context, state.RefreshProjectRuntimeRequest) (state.ProjectRecord, error)
+}
+
 // projectDescriptorObserver validates the static GoForj contract before process authority is created.
 type projectDescriptorObserver interface {
 	ObserveProjectDescriptor(context.Context, string) (projectprocess.ProjectDescriptorObservation, error)
@@ -723,7 +728,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
 				coordinator.recordAsyncError(err)
 			}
-			coordinator.startReadyServiceWatcher(completed.Project, session, handle)
+			coordinator.startReadyServiceWatcher(completed.Project, session, handle, target, descriptor)
 			coordinator.watchReadyProcess(session, handle)
 			return
 		}
@@ -787,6 +792,8 @@ func (coordinator *ProjectLifecycleCoordinator) startReadyServiceWatcher(
 	project state.ProjectRecord,
 	session domain.ProjectSession,
 	handle *projectprocess.Handle,
+	target projectdiscovery.RuntimeTarget,
+	descriptor projectprocess.ProjectDescriptorObservation,
 ) {
 	if _, waitOK := coordinator.supervisor.(projectServiceChangeWaiter); !waitOK {
 		return
@@ -806,7 +813,7 @@ func (coordinator *ProjectLifecycleCoordinator) startReadyServiceWatcher(
 			case <-watchContext.Done():
 			}
 		}()
-		coordinator.watchReadyServices(watchContext, project, session)
+		coordinator.watchReadyServicesWithRuntime(watchContext, project, session, target, descriptor)
 	}()
 }
 
@@ -816,8 +823,20 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServices(
 	project state.ProjectRecord,
 	session domain.ProjectSession,
 ) {
+	coordinator.watchReadyServicesWithRuntime(ctx, project, session, projectdiscovery.RuntimeTarget{}, projectprocess.ProjectDescriptorObservation{})
+}
+
+// watchReadyServicesWithRuntime refreshes services and descriptor-constrained resources from one host wake edge.
+func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
+	ctx context.Context,
+	project state.ProjectRecord,
+	session domain.ProjectSession,
+	target projectdiscovery.RuntimeTarget,
+	descriptor projectprocess.ProjectDescriptorObservation,
+) {
 	waiter := coordinator.supervisor.(projectServiceChangeWaiter)
 	refresher := coordinator.state.(projectRuntimeRefresher)
+	runtimeRefresher, runtimeRefreshOK := coordinator.state.(projectRuntimeProjectionRefresher)
 	expectedRevision := project.Revision
 	for {
 		if err := waiter.WaitServiceChange(ctx, session.ProjectID, session.ID); err != nil {
@@ -849,18 +868,38 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServices(
 		if at.Before(project.Project.UpdatedAt) {
 			at = project.Project.UpdatedAt
 		}
-		refreshed, err := refresher.RefreshProjectServices(ctx, state.RefreshProjectServicesRequest{
-			ProjectID:                 session.ProjectID,
-			ExpectedProjectRevision:   expectedRevision,
-			SessionID:                 session.ID,
-			ExpectedSessionGeneration: session.Generation,
-			Services:                  observation.Services,
-			At:                        at,
-		})
+		refreshed, err, resourceRefresh := coordinator.refreshReadyProjectRuntime(
+			ctx,
+			refresher,
+			runtimeRefresher,
+			runtimeRefreshOK,
+			project,
+			session,
+			expectedRevision,
+			at,
+			target,
+			descriptor,
+			observation.Services,
+		)
 		if err == nil {
-			if refreshed.Revision != expectedRevision {
-				expectedRevision = refreshed.Revision
-				project = refreshed
+			projectChanged := refreshed.Revision != expectedRevision
+			expectedRevision = refreshed.Revision
+			project = refreshed
+			if resourceRefresh {
+				if descriptor.ResourcesSupported {
+					if endpointErr := coordinator.primaryLeases.assignHTTPResourceEndpoints(ctx, session.ProjectID, refreshed.Project.Resources); endpointErr != nil {
+						if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed resource endpoint refresh"); routeErr != nil {
+							coordinator.recordAsyncError(routeErr)
+						}
+						coordinator.recordAsyncError(fmt.Errorf("refresh project %q resource endpoints: %w", session.ProjectID, endpointErr))
+						return
+					}
+				}
+				if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
+					coordinator.recordAsyncError(routeErr)
+					return
+				}
+			} else if projectChanged {
 				if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
 					coordinator.recordAsyncError(routeErr)
 					return
@@ -892,9 +931,73 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServices(
 			expectedRevision = current.Revision
 			continue
 		}
+		if resourceRefresh {
+			if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed resource refresh"); routeErr != nil {
+				coordinator.recordAsyncError(routeErr)
+			}
+		}
 		coordinator.recordAsyncError(fmt.Errorf("refresh project %q services: %w", session.ProjectID, err))
 		return
 	}
+}
+
+// refreshReadyProjectRuntime chooses the complete resource projection only after a fresh supported framework report.
+func (coordinator *ProjectLifecycleCoordinator) refreshReadyProjectRuntime(
+	ctx context.Context,
+	refresher projectRuntimeRefresher,
+	runtimeRefresher projectRuntimeProjectionRefresher,
+	runtimeRefreshOK bool,
+	project state.ProjectRecord,
+	session domain.ProjectSession,
+	expectedRevision domain.Sequence,
+	at time.Time,
+	target projectdiscovery.RuntimeTarget,
+	descriptor projectprocess.ProjectDescriptorObservation,
+	services []domain.ServiceSnapshot,
+) (state.ProjectRecord, error, bool) {
+	if !runtimeRefreshOK || !descriptor.ResourcesSupported || !target.Address.IsValid() || target.AppID == "" {
+		refreshed, err := refresher.RefreshProjectServices(ctx, state.RefreshProjectServicesRequest{
+			ProjectID:                 session.ProjectID,
+			ExpectedProjectRevision:   expectedRevision,
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Services:                  services,
+			At:                        at,
+		})
+		return refreshed, err, false
+	}
+	if err := coordinator.primaryLeases.verifyPrimaryLeaseAddress(ctx, session.ProjectID, target.Address); err != nil {
+		return state.ProjectRecord{}, err, true
+	}
+	resourceCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
+	resourceObservation, err := coordinator.supervisor.ObserveFrameworkResources(resourceCtx, session.ProjectID, session.ID)
+	cancel()
+	if err != nil || !resourceObservation.Supported {
+		refreshed, refreshErr := refresher.RefreshProjectServices(ctx, state.RefreshProjectServicesRequest{
+			ProjectID:                 session.ProjectID,
+			ExpectedProjectRevision:   expectedRevision,
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Services:                  services,
+			At:                        at,
+		})
+		return refreshed, refreshErr, false
+	}
+	runtime := defaultRuntime(target, services, descriptor, resourceObservation)
+	if err := runtime.Validate(); err != nil {
+		return state.ProjectRecord{}, fmt.Errorf("validate refreshed project runtime: %w", err), true
+	}
+	refreshed, err := runtimeRefresher.RefreshProjectRuntime(ctx, state.RefreshProjectRuntimeRequest{
+		ProjectID:                 session.ProjectID,
+		ExpectedProjectRevision:   expectedRevision,
+		SessionID:                 session.ID,
+		ExpectedSessionGeneration: session.Generation,
+		PrimaryAddress:            target.Address,
+		Services:                  runtime.Services,
+		Resources:                 runtime.Resources,
+		At:                        at,
+	})
+	return refreshed, err, true
 }
 
 // runStop fences one exact durable session before asking the supervisor to terminate its process tree.
