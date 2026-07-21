@@ -18,7 +18,7 @@ import (
 
 const (
 	// DockerProjectEvidenceSchemaVersion identifies the generated Docker-project lifecycle evidence schema.
-	DockerProjectEvidenceSchemaVersion = 1
+	DockerProjectEvidenceSchemaVersion = 2
 	maximumEvidenceBytes               = 1 << 20
 	dockerProjectCapability            = "docker_project_lifecycle"
 	dockerProjectCleanupCapability     = "docker_project_lifecycle_cleanup"
@@ -71,16 +71,35 @@ type ProjectEvidence struct {
 	ContainerIDs []string `json:"container_ids"`
 }
 
+// EventRefreshEvidence records the before-and-after identities that prove one host event refreshed a project projection.
+type EventRefreshEvidence struct {
+	TargetProjectID    string                     `json:"target_project_id"`
+	TargetServiceID    string                     `json:"target_service_id"`
+	BeforeRevision     uint64                     `json:"before_revision"`
+	AfterRevision      uint64                     `json:"after_revision"`
+	BeforeContainerIDs []string                   `json:"before_container_ids"`
+	AfterContainerIDs  []string                   `json:"after_container_ids"`
+	Peers              []EventRefreshPeerEvidence `json:"peers"`
+}
+
+// EventRefreshPeerEvidence records one neighboring project's identities across an unrelated target replacement.
+type EventRefreshPeerEvidence struct {
+	ProjectID          string   `json:"project_id"`
+	BeforeContainerIDs []string `json:"before_container_ids"`
+	AfterContainerIDs  []string `json:"after_container_ids"`
+}
+
 // DockerProjectEvidence is the bounded native product result for three generated GoForj projects.
 type DockerProjectEvidence struct {
-	SchemaVersion   int                 `json:"schema_version"`
-	Capability      string              `json:"capability"`
-	Scope           string              `json:"scope"`
-	Runtime         RuntimeEvidence     `json:"runtime"`
-	Dependencies    DependencyEvidence  `json:"dependencies"`
-	Projects        []ProjectEvidence   `json:"projects"`
-	Assertions      []AssertionEvidence `json:"assertions"`
-	ArtifactDigests []string            `json:"artifact_digests"`
+	SchemaVersion   int                  `json:"schema_version"`
+	Capability      string               `json:"capability"`
+	Scope           string               `json:"scope"`
+	Runtime         RuntimeEvidence      `json:"runtime"`
+	Dependencies    DependencyEvidence   `json:"dependencies"`
+	Projects        []ProjectEvidence    `json:"projects"`
+	EventRefresh    EventRefreshEvidence `json:"event_refresh"`
+	Assertions      []AssertionEvidence  `json:"assertions"`
+	ArtifactDigests []string             `json:"artifact_digests"`
 }
 
 // DockerCleanupEvidence proves the product worker removed only the exact namespace it created.
@@ -250,6 +269,9 @@ func verifyDockerProjectLifecycle(evidence DockerProjectEvidence, requirement Do
 	if err := verifyProjects(evidence.Projects, requirement, platform); err != nil {
 		return err
 	}
+	if err := verifyEventRefresh(evidence.EventRefresh, evidence.Projects, platform); err != nil {
+		return err
+	}
 	if err := verifyAssertions(evidence.Assertions, requiredDockerProjectAssertions, platform); err != nil {
 		return err
 	}
@@ -376,6 +398,129 @@ func verifyProjects(projects []ProjectEvidence, requirement DockerProjectRequire
 				return fmt.Errorf("%s evidence admits container %q to multiple projects", platform, container)
 			}
 			containers[container] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// verifyEventRefresh requires a replacement target, advancing projection revision, and unchanged peer ownership.
+func verifyEventRefresh(refresh EventRefreshEvidence, projects []ProjectEvidence, platform string) error {
+	projectIDs := make(map[string]struct{}, len(projects))
+	for _, project := range projects {
+		projectIDs[project.ID] = struct{}{}
+	}
+	if refresh.TargetProjectID == "" || strings.TrimSpace(refresh.TargetProjectID) != refresh.TargetProjectID {
+		return fmt.Errorf("%s event-refresh evidence has an invalid target project ID", platform)
+	}
+	if _, exists := projectIDs[refresh.TargetProjectID]; !exists {
+		return fmt.Errorf("%s event-refresh evidence names unknown target project %q", platform, refresh.TargetProjectID)
+	}
+	if refresh.TargetServiceID == "" || strings.TrimSpace(refresh.TargetServiceID) != refresh.TargetServiceID {
+		return fmt.Errorf("%s event-refresh evidence has an invalid target service ID", platform)
+	}
+	if refresh.BeforeRevision == 0 || refresh.AfterRevision <= refresh.BeforeRevision {
+		return fmt.Errorf("%s event-refresh project revision did not advance from %d to %d", platform, refresh.BeforeRevision, refresh.AfterRevision)
+	}
+	before, err := normalizeEventRefreshContainerIDs(refresh.BeforeContainerIDs, "target before", platform)
+	if err != nil {
+		return err
+	}
+	after, err := normalizeEventRefreshContainerIDs(refresh.AfterContainerIDs, "target after", platform)
+	if err != nil {
+		return err
+	}
+	if containsSharedContainer(before, after) {
+		return fmt.Errorf("%s event-refresh target retained a shared container identity across replacement", platform)
+	}
+	if len(refresh.Peers) != len(projects)-1 {
+		return fmt.Errorf("%s event-refresh evidence has %d peers, want %d", platform, len(refresh.Peers), len(projects)-1)
+	}
+	peerIDs := make(map[string]struct{}, len(refresh.Peers))
+	peerBefore := make([][]string, 0, len(refresh.Peers))
+	peerAfter := make([][]string, 0, len(refresh.Peers))
+	for _, peer := range refresh.Peers {
+		if peer.ProjectID == "" || strings.TrimSpace(peer.ProjectID) != peer.ProjectID {
+			return fmt.Errorf("%s event-refresh evidence has an invalid peer project ID", platform)
+		}
+		if peer.ProjectID == refresh.TargetProjectID {
+			return fmt.Errorf("%s event-refresh evidence lists target project %q as a peer", platform, peer.ProjectID)
+		}
+		if _, exists := projectIDs[peer.ProjectID]; !exists {
+			return fmt.Errorf("%s event-refresh evidence names unknown peer project %q", platform, peer.ProjectID)
+		}
+		if _, exists := peerIDs[peer.ProjectID]; exists {
+			return fmt.Errorf("%s event-refresh evidence duplicates peer project %q", platform, peer.ProjectID)
+		}
+		peerIDs[peer.ProjectID] = struct{}{}
+		beforeIDs, beforeErr := normalizeEventRefreshContainerIDs(peer.BeforeContainerIDs, "peer before", platform)
+		if beforeErr != nil {
+			return beforeErr
+		}
+		afterIDs, afterErr := normalizeEventRefreshContainerIDs(peer.AfterContainerIDs, "peer after", platform)
+		if afterErr != nil {
+			return afterErr
+		}
+		if !slices.Equal(beforeIDs, afterIDs) {
+			return fmt.Errorf("%s event-refresh peer project %q changed container identities", platform, peer.ProjectID)
+		}
+		peerBefore = append(peerBefore, beforeIDs)
+		peerAfter = append(peerAfter, afterIDs)
+	}
+	if len(peerIDs) != len(projects)-1 {
+		return fmt.Errorf("%s event-refresh evidence does not cover every peer project", platform)
+	}
+	if err := verifyEventRefreshSnapshotOwnership(before, peerBefore, "before", platform); err != nil {
+		return err
+	}
+	return verifyEventRefreshSnapshotOwnership(after, peerAfter, "after", platform)
+}
+
+// normalizeEventRefreshContainerIDs validates and sorts one bounded container identity set for set comparisons.
+func normalizeEventRefreshContainerIDs(ids []string, scope, platform string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%s event-refresh evidence has no %s container IDs", platform, scope)
+	}
+	normalized := slices.Clone(ids)
+	for _, id := range normalized {
+		if id == "" || strings.TrimSpace(id) != id {
+			return nil, fmt.Errorf("%s event-refresh evidence has an invalid %s container ID", platform, scope)
+		}
+	}
+	slices.Sort(normalized)
+	for index := 1; index < len(normalized); index++ {
+		if normalized[index] == normalized[index-1] {
+			return nil, fmt.Errorf("%s event-refresh evidence duplicates a %s container ID", platform, scope)
+		}
+	}
+	return normalized, nil
+}
+
+// containsSharedContainer reports whether a replacement retained any identity from the pre-event target set.
+func containsSharedContainer(before, after []string) bool {
+	seen := make(map[string]struct{}, len(before))
+	for _, id := range before {
+		seen[id] = struct{}{}
+	}
+	for _, id := range after {
+		if _, exists := seen[id]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyEventRefreshSnapshotOwnership rejects identities shared by target and peers at either event snapshot.
+func verifyEventRefreshSnapshotOwnership(target []string, peers [][]string, snapshot, platform string) error {
+	owners := make(map[string]string, len(target))
+	for _, id := range target {
+		owners[id] = "target"
+	}
+	for peerIndex, peer := range peers {
+		for _, id := range peer {
+			if owner, exists := owners[id]; exists {
+				return fmt.Errorf("%s event-refresh snapshot %s shares container %q between %s and peer %d", platform, snapshot, id, owner, peerIndex)
+			}
+			owners[id] = fmt.Sprintf("peer %d", peerIndex)
 		}
 	}
 	return nil

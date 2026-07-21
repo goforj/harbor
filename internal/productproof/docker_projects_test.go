@@ -59,6 +59,28 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 		{name: "shared container", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Projects[1].ContainerIDs[0] = lifecycle.Projects[0].ContainerIDs[0]
 		}, want: "multiple projects"},
+		{name: "missing event target", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.TargetProjectID = ""
+		}, want: "invalid target project"},
+		{name: "unknown event target", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.TargetProjectID = "foreign"
+		}, want: "unknown target project"},
+		{name: "unchanged event target", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.AfterContainerIDs = append([]string(nil), lifecycle.EventRefresh.BeforeContainerIDs...)
+		}, want: "retained a shared container"},
+		{name: "non advancing event revision", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.AfterRevision = lifecycle.EventRefresh.BeforeRevision
+		}, want: "revision did not advance"},
+		{name: "unknown event peer", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.Peers[0].ProjectID = "foreign"
+		}, want: "unknown peer project"},
+		{name: "shared event peer container", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.Peers[0].BeforeContainerIDs[0] = lifecycle.EventRefresh.AfterContainerIDs[0]
+			lifecycle.EventRefresh.Peers[0].AfterContainerIDs[0] = lifecycle.EventRefresh.AfterContainerIDs[0]
+		}, want: "shares container"},
+		{name: "changed event peer", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.EventRefresh.Peers[0].AfterContainerIDs[0] = "billing-mysql-replaced"
+		}, want: "changed container identities"},
 		{name: "failed assertion", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Assertions[0].Passed = false
 		}, want: "failed assertion"},
@@ -151,6 +173,18 @@ func validDockerProjectFixture(platform string) DockerProjectEvidence {
 			{ID: "orders", Address: "127.77.254.10", AppPort: 3000, ServicePort: 3306, ContainerIDs: []string{"orders-mysql"}},
 			{ID: "billing", Address: "127.77.254.11", AppPort: 3000, ServicePort: 3306, ContainerIDs: []string{"billing-mysql"}},
 			{ID: "inventory", Address: "127.77.254.12", AppPort: 3000, ServicePort: 3306, ContainerIDs: []string{"inventory-mysql"}},
+		},
+		EventRefresh: EventRefreshEvidence{
+			TargetProjectID:    "orders",
+			TargetServiceID:    "mysql",
+			BeforeRevision:     4,
+			AfterRevision:      5,
+			BeforeContainerIDs: []string{"orders-mysql-before"},
+			AfterContainerIDs:  []string{"orders-mysql-after"},
+			Peers: []EventRefreshPeerEvidence{
+				{ProjectID: "billing", BeforeContainerIDs: []string{"billing-mysql"}, AfterContainerIDs: []string{"billing-mysql"}},
+				{ProjectID: "inventory", BeforeContainerIDs: []string{"inventory-mysql"}, AfterContainerIDs: []string{"inventory-mysql"}},
+			},
 		},
 		Assertions: []AssertionEvidence{
 			{ID: "docker.projects.generated", Passed: true, Detail: "three generated GoForj projects started"},

@@ -152,7 +152,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	if !sameGeneratedComposeContainerIDs(before, after) {
 		t.Fatalf("generated Compose container IDs changed across Harbor observation: before=%v after=%v", before, after)
 	}
-	assertGeneratedComposeEventRefresh(t, ctx, store, runtime, supervisor, projects, projects[0], observations[projects[0].id])
+	eventRefreshEvidence := assertGeneratedComposeEventRefresh(t, ctx, store, runtime, supervisor, projects, projects[0], observations[projects[0].id])
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
 
 	stopped := projects[0]
@@ -189,6 +189,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 			configuration.addresses,
 			runtime,
 			composeProjects,
+			eventRefreshEvidence,
 		)
 		if evidenceErr != nil {
 			t.Fatalf("build Docker product evidence: %v", evidenceErr)
@@ -208,10 +209,11 @@ func assertGeneratedComposeEventRefresh(
 	projects []projectIdentityAcceptanceProject,
 	target projectIdentityAcceptanceProject,
 	initial projectprocess.ServiceObservation,
-) {
+) productproof.EventRefreshEvidence {
 	t.Helper()
 	if !initial.Supported || len(initial.Services) == 0 {
 		t.Fatalf("event-refresh target %q has no supported service observation: %#v", target.id, initial)
+		return productproof.EventRefreshEvidence{}
 	}
 	service := initial.Services[0]
 	beforeProject, err := store.Project(ctx, target.id)
@@ -221,6 +223,7 @@ func assertGeneratedComposeEventRefresh(
 	beforeServiceIDs := generatedComposeServiceContainerIDs(t, ctx, runtime, target, service.ID)
 	if len(beforeServiceIDs) == 0 {
 		t.Fatalf("event-refresh target %q service %q has no admitted containers before replacement", target.id, service.ID)
+		return productproof.EventRefreshEvidence{}
 	}
 	composeProject := generatedComposeServiceProject(t, ctx, runtime, target, service.ID)
 	beforeAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
@@ -241,6 +244,7 @@ func assertGeneratedComposeEventRefresh(
 	afterServiceIDs := generatedComposeServiceContainerIDs(t, ctx, runtime, target, service.ID)
 	if len(afterServiceIDs) == 0 {
 		t.Fatalf("event-refresh target %q service %q has no admitted containers after replacement", target.id, service.ID)
+		return productproof.EventRefreshEvidence{}
 	}
 	for id := range beforeServiceIDs {
 		if _, stillPresent := afterServiceIDs[id]; stillPresent {
@@ -249,6 +253,15 @@ func assertGeneratedComposeEventRefresh(
 	}
 	afterAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 	assertGeneratedComposeNeighborContainerIDs(t, beforeAll, afterAll, target.id)
+	return productproof.EventRefreshEvidence{
+		TargetProjectID:    string(target.id),
+		TargetServiceID:    string(service.ID),
+		BeforeRevision:     uint64(beforeProject.Revision),
+		AfterRevision:      uint64(refreshed.Revision),
+		BeforeContainerIDs: sortedContainerIDs(beforeServiceIDs),
+		AfterContainerIDs:  sortedContainerIDs(afterServiceIDs),
+		Peers:              generatedComposeEventRefreshPeers(beforeAll, afterAll, target.id),
+	}
 }
 
 // assertGeneratedComposePeerSurvival proves stopping one project leaves every other ready project online.
@@ -278,6 +291,7 @@ func buildGeneratedDockerProductEvidence(
 	addresses []netip.Addr,
 	dockerRuntime *containerruntime.DockerRuntime,
 	composeProjects map[domain.ProjectID]string,
+	eventRefresh productproof.EventRefreshEvidence,
 ) (productproof.DockerProjectEvidence, productproof.DockerCleanupEvidence, error) {
 	if len(projects) != 3 || len(addresses) != len(projects) {
 		return productproof.DockerProjectEvidence{}, productproof.DockerCleanupEvidence{}, fmt.Errorf("Docker product evidence requires three projects and matching addresses")
@@ -339,6 +353,7 @@ func buildGeneratedDockerProductEvidence(
 		Runtime:         runtimeEvidence,
 		Dependencies:    dependencies,
 		Projects:        projectEvidence,
+		EventRefresh:    eventRefresh,
 		Assertions:      assertions,
 		ArtifactDigests: append([]string(nil), digests...),
 	}
@@ -754,6 +769,65 @@ func observeGeneratedComposeContainerIDs(
 		t.Fatal("generated Compose runtime has no admitted container IDs")
 	}
 	return identities
+}
+
+// sortedContainerIDs produces deterministic evidence ordering without changing the runtime observation map.
+func sortedContainerIDs(ids map[string]struct{}) []string {
+	ordered := make([]string, 0, len(ids))
+	for id := range ids {
+		ordered = append(ordered, id)
+	}
+	sort.Strings(ordered)
+	return ordered
+}
+
+// generatedComposeEventRefreshPeers converts exact before-and-after ownership maps into peer evidence.
+func generatedComposeEventRefreshPeers(
+	before map[string]domain.ProjectID,
+	after map[string]domain.ProjectID,
+	targetID domain.ProjectID,
+) []productproof.EventRefreshPeerEvidence {
+	beforeByProject := make(map[string]map[string]struct{})
+	for containerID, projectID := range before {
+		if projectID == targetID {
+			continue
+		}
+		if beforeByProject[string(projectID)] == nil {
+			beforeByProject[string(projectID)] = make(map[string]struct{})
+		}
+		beforeByProject[string(projectID)][containerID] = struct{}{}
+	}
+	afterByProject := make(map[string]map[string]struct{})
+	for containerID, projectID := range after {
+		if projectID == targetID {
+			continue
+		}
+		if afterByProject[string(projectID)] == nil {
+			afterByProject[string(projectID)] = make(map[string]struct{})
+		}
+		afterByProject[string(projectID)][containerID] = struct{}{}
+	}
+	peerIDs := make(map[string]struct{}, len(beforeByProject)+len(afterByProject))
+	for projectID := range beforeByProject {
+		peerIDs[projectID] = struct{}{}
+	}
+	for projectID := range afterByProject {
+		peerIDs[projectID] = struct{}{}
+	}
+	orderedPeerIDs := make([]string, 0, len(peerIDs))
+	for projectID := range peerIDs {
+		orderedPeerIDs = append(orderedPeerIDs, projectID)
+	}
+	sort.Strings(orderedPeerIDs)
+	peers := make([]productproof.EventRefreshPeerEvidence, 0, len(orderedPeerIDs))
+	for _, projectID := range orderedPeerIDs {
+		peers = append(peers, productproof.EventRefreshPeerEvidence{
+			ProjectID:          projectID,
+			BeforeContainerIDs: sortedContainerIDs(beforeByProject[projectID]),
+			AfterContainerIDs:  sortedContainerIDs(afterByProject[projectID]),
+		})
+	}
+	return peers
 }
 
 // sameGeneratedComposeContainerIDs compares exact admitted container identity ownership without depending on map iteration order.
