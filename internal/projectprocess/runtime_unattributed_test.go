@@ -14,10 +14,14 @@ type unattributedRuntimeTestControl struct {
 	inspectErr       error
 	gracefulSignaled bool
 	gracefulErr      error
+	forceSignaled    bool
+	forceErr         error
 	settled          bool
 	settledErr       error
+	afterSettled     func()
 	inspectCalls     int
 	gracefulCalls    int
+	forceCalls       int
 	settledCalls     int
 }
 
@@ -37,8 +41,15 @@ func (control *unattributedRuntimeTestControl) control() unattributedRuntimeCont
 			control.gracefulCalls++
 			return control.gracefulSignaled, control.gracefulErr
 		},
+		force: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
+			control.forceCalls++
+			return control.forceSignaled, control.forceErr
+		},
 		settled: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
 			control.settledCalls++
+			if control.afterSettled != nil {
+				control.afterSettled()
+			}
 			return control.settled, control.settledErr
 		},
 	}
@@ -191,5 +202,38 @@ func TestUnattributedRuntimeRepairConfirmReportsUnsettledScope(t *testing.T) {
 	confirmation, err := repairer.Confirm(context.Background(), *inspection.Candidate)
 	if !errors.Is(err, ErrRuntimeRepairNotSettled) || confirmation.State != RuntimeRepairConfirmationFailed || !confirmation.Signaled {
 		t.Fatalf("Confirm() = %#v, %v; want signaled unsettled failure", confirmation, err)
+	}
+	if control.forceCalls != 1 {
+		t.Fatalf("force calls = %d, want one bounded escalation", control.forceCalls)
+	}
+}
+
+// TestUnattributedRuntimeRepairConfirmEscalatesAfterGracefulNonconvergence proves an exact no-session scope gets one bounded forceful pass.
+func TestUnattributedRuntimeRepairConfirmEscalatesAfterGracefulNonconvergence(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	inspection, err := unattributedRuntimeInspection(unattributedRuntimeNativeInspection{
+		State:       RuntimeRepairInspectionActionable,
+		Observation: &observation,
+	})
+	if err != nil {
+		t.Fatalf("unattributedRuntimeInspection() error = %v", err)
+	}
+	control := &unattributedRuntimeTestControl{
+		inspection:       unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionActionable, Observation: &observation},
+		gracefulSignaled: true,
+		forceSignaled:    true,
+	}
+	control.afterSettled = func() {
+		if control.forceCalls > 0 {
+			control.settled = true
+		}
+	}
+	repairer := newUnattributedRuntimeRepairerWithControl(control.control(), 2*time.Millisecond, time.Millisecond)
+	confirmation, err := repairer.Confirm(context.Background(), *inspection.Candidate)
+	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want settled confirmation", confirmation, err)
+	}
+	if control.gracefulCalls != 1 || control.forceCalls != 1 {
+		t.Fatalf("signals = graceful %d, force %d; want one each", control.gracefulCalls, control.forceCalls)
 	}
 }

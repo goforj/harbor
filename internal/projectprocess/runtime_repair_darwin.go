@@ -44,6 +44,7 @@ func newRuntimeRepairControl() runtimeRepairControl {
 	return runtimeRepairControl{
 		inspect:  inspectStableDarwinRuntimeRepair,
 		graceful: gracefullyTerminateDarwinRuntimeRepair,
+		force:    forcefullyTerminateDarwinRuntimeRepair,
 		settled:  observeDarwinRuntimeRepairSettlement,
 	}
 }
@@ -367,6 +368,114 @@ func gracefullyTerminateDarwinRuntimeRepair(ctx context.Context, receipt runtime
 		return false, fmt.Errorf("gracefully terminate exact Darwin runtime repair root: %w", err)
 	}
 	return true, nil
+}
+
+// forcefullyTerminateDarwinRuntimeRepair revalidates every captured member before escalating to SIGKILL.
+func forcefullyTerminateDarwinRuntimeRepair(ctx context.Context, receipt runtimeRepairReceipt) (bool, error) {
+	root := receipt.observation.Root
+	rootBirth, present, err := observeProcessBirthToken(root.PID)
+	if err != nil {
+		return false, fmt.Errorf("revalidate Darwin runtime repair root before forceful termination: %w", err)
+	}
+	if present && rootBirth != root.BirthToken {
+		return false, ErrRuntimeRepairDrift
+	}
+	if present {
+		if sessionID, err := unix.Getsid(root.PID); err != nil || sessionID != root.SessionID {
+			if errors.Is(err, syscall.ESRCH) {
+				present = false
+			} else if err != nil {
+				return false, fmt.Errorf("revalidate Darwin runtime repair root session: %w", err)
+			} else {
+				return false, ErrRuntimeRepairDrift
+			}
+		}
+	}
+	if present {
+		parentBirth, parentPresent, err := observeProcessBirthToken(receipt.observation.RootParent.PID)
+		if err != nil || !parentPresent || parentBirth != receipt.observation.RootParent.BirthToken {
+			return false, ErrRuntimeRepairDrift
+		}
+	}
+
+	currentMembers := make([]unixProcessMember, 0, len(receipt.observation.Members))
+	if present {
+		currentMembers, err = unixSessionMembers(root.SessionID)
+		if err != nil {
+			return false, fmt.Errorf("enumerate Darwin runtime repair scope before forceful termination: %w", err)
+		}
+		if len(currentMembers) == 0 {
+			return false, ErrRuntimeRepairDrift
+		}
+	} else {
+		for _, member := range receipt.observation.Members {
+			currentMembers = append(currentMembers, unixProcessMember{PID: member.PID, BirthToken: member.BirthToken})
+		}
+	}
+	if !present && len(currentMembers) == 0 {
+		return false, ErrRuntimeRepairDrift
+	}
+	if present {
+		expectedFacts := make([]runtimeRepairProcessFact, len(currentMembers))
+		for index, member := range currentMembers {
+			expectedFacts[index] = runtimeRepairProcessFact{PID: member.PID, BirthToken: member.BirthToken}
+		}
+		currentFacts, err := observeDarwinRuntimeRepairSessionProcessFacts(ctx, root.SessionID, expectedFacts)
+		if err != nil {
+			if errors.Is(err, errDarwinRuntimeRepairUnstable) {
+				return false, ErrRuntimeRepairDrift
+			}
+			return false, err
+		}
+		currentByPID := make(map[int]runtimeRepairProcessFact, len(currentFacts))
+		for _, fact := range currentFacts {
+			if fact.EffectiveUID != receipt.observation.DaemonUID || fact.RealUID != receipt.observation.DaemonUID {
+				return false, ErrRuntimeRepairDrift
+			}
+			currentByPID[fact.PID] = fact
+		}
+		currentRoot, found := currentByPID[root.PID]
+		if !found || !reflect.DeepEqual(currentRoot, root) {
+			return false, ErrRuntimeRepairDrift
+		}
+		for _, fact := range currentFacts {
+			if fact.PID != root.PID && !runtimeRepairDescendsFromRoot(fact.PID, root.PID, currentByPID) {
+				return false, ErrRuntimeRepairDrift
+			}
+		}
+	}
+
+	forced := false
+	for _, member := range currentMembers {
+		if err := ctx.Err(); err != nil {
+			return forced, err
+		}
+		birth, present, err := observeProcessBirthToken(member.PID)
+		if err != nil {
+			return forced, fmt.Errorf("revalidate Darwin runtime repair member %d before forceful termination: %w", member.PID, err)
+		}
+		if !present || birth != member.BirthToken {
+			continue
+		}
+		actualSessionID, err := unix.Getsid(member.PID)
+		if errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return forced, fmt.Errorf("revalidate Darwin runtime repair member %d session: %w", member.PID, err)
+		}
+		if actualSessionID != root.SessionID {
+			return forced, ErrRuntimeRepairDrift
+		}
+		if err := syscall.Kill(member.PID, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return forced, fmt.Errorf("forcefully terminate exact Darwin runtime repair member %d: %w", member.PID, err)
+		}
+		forced = true
+	}
+	return forced, nil
 }
 
 // observeDarwinRuntimeRepairSessionProcessFacts rereads every captured member identity immediately before signaling.

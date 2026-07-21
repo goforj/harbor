@@ -108,6 +108,7 @@ type UnattributedRuntimeRepairer interface {
 type unattributedRuntimeControl struct {
 	inspect  func(context.Context, RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error)
 	graceful func(context.Context, unattributedRuntimeReceipt) (bool, error)
+	force    func(context.Context, unattributedRuntimeReceipt) (bool, error)
 	settled  func(context.Context, unattributedRuntimeReceipt) (bool, error)
 }
 
@@ -142,7 +143,7 @@ func newUnattributedRuntimeInspectorWithControl(control unattributedRuntimeContr
 
 // newUnattributedRuntimeRepairerWithControl constructs the deterministic signal and settlement seam used by tests.
 func newUnattributedRuntimeRepairerWithControl(control unattributedRuntimeControl, settlementPeriod, settlementPoll time.Duration) *unattributedRuntimeAdapter {
-	if control.inspect == nil || control.graceful == nil || control.settled == nil {
+	if control.inspect == nil || control.graceful == nil || control.force == nil || control.settled == nil {
 		panic("projectprocess unattributed runtime repair requires complete native control")
 	}
 	if settlementPeriod <= 0 || settlementPoll <= 0 {
@@ -216,6 +217,26 @@ func (repairer *unattributedRuntimeAdapter) Confirm(ctx context.Context, candida
 		return runtimeRepairFailed(false, fmt.Errorf("unattributed runtime repair backend returned without signaling or drift"))
 	}
 	settled, err := repairer.waitForSettlement(ctx, receipt)
+	if err != nil {
+		return runtimeRepairFailed(true, err)
+	}
+	if settled {
+		return RuntimeRepairConfirmation{State: RuntimeRepairConfirmationSettled, Signaled: true}, nil
+	}
+
+	// The candidate was explicitly confirmed and remains bound to one exact scope, so a bounded
+	// forceful pass can finish descendants that ignored the graceful root signal.
+	forced, err := repairer.control.force(ctx, receipt)
+	if errors.Is(err, ErrRuntimeRepairDrift) {
+		return runtimeRepairFailed(true, fmt.Errorf("unattributed runtime scope drifted during forceful settlement: %w", err))
+	}
+	if err != nil {
+		return runtimeRepairFailed(true, err)
+	}
+	if !forced {
+		return runtimeRepairFailed(true, ErrRuntimeRepairNotSettled)
+	}
+	settled, err = repairer.waitForSettlement(ctx, receipt)
 	if err != nil {
 		return runtimeRepairFailed(true, err)
 	}

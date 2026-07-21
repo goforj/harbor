@@ -300,6 +300,7 @@ type runtimeRepairAdapter struct {
 type runtimeRepairControl struct {
 	inspect  func(context.Context, RuntimeRepairTarget) (runtimeRepairNativeInspection, error)
 	graceful func(context.Context, runtimeRepairReceipt) (bool, error)
+	force    func(context.Context, runtimeRepairReceipt) (bool, error)
 	settled  func(context.Context, runtimeRepairReceipt) (bool, error)
 }
 
@@ -310,7 +311,7 @@ func NewRuntimeRepairer() RuntimeRepairer {
 
 // newRuntimeRepairerWithControl constructs the deterministic policy seam used by unit tests.
 func newRuntimeRepairerWithControl(control runtimeRepairControl, settlementPeriod, settlementPoll time.Duration) *runtimeRepairAdapter {
-	if control.inspect == nil || control.graceful == nil || control.settled == nil {
+	if control.inspect == nil || control.graceful == nil || control.force == nil || control.settled == nil {
 		panic("projectprocess runtime repair requires complete native control")
 	}
 	if settlementPeriod <= 0 || settlementPoll <= 0 {
@@ -381,6 +382,26 @@ func (repairer *runtimeRepairAdapter) Confirm(ctx context.Context, candidate Run
 		return runtimeRepairFailed(false, fmt.Errorf("runtime repair backend returned without signaling or drift"))
 	}
 	settled, err := repairer.waitForSettlement(ctx, receipt)
+	if err != nil {
+		return runtimeRepairFailed(true, err)
+	}
+	if settled {
+		return RuntimeRepairConfirmation{State: RuntimeRepairConfirmationSettled, Signaled: true}, nil
+	}
+
+	// A confirmed repair owns one exact session scope, so a bounded SIGKILL escalation can finish a
+	// process tree whose root ignored SIGTERM without widening the user's explicit confirmation.
+	forced, err := repairer.control.force(ctx, receipt)
+	if errors.Is(err, ErrRuntimeRepairDrift) {
+		return runtimeRepairFailed(true, fmt.Errorf("runtime repair scope drifted during forceful settlement: %w", err))
+	}
+	if err != nil {
+		return runtimeRepairFailed(true, err)
+	}
+	if !forced {
+		return runtimeRepairFailed(true, ErrRuntimeRepairNotSettled)
+	}
+	settled, err = repairer.waitForSettlement(ctx, receipt)
 	if err != nil {
 		return runtimeRepairFailed(true, err)
 	}

@@ -16,12 +16,15 @@ type runtimeRepairTestControl struct {
 	inspectErr       error
 	gracefulSignaled bool
 	gracefulErr      error
+	forceSignaled    bool
+	forceErr         error
 	settled          bool
 	settledErr       error
 	afterInspect     func()
 	afterSettled     func()
 	inspectCalls     int
 	gracefulCalls    int
+	forceCalls       int
 	settledCalls     int
 }
 
@@ -43,6 +46,10 @@ func (control *runtimeRepairTestControl) control() runtimeRepairControl {
 		graceful: func(_ context.Context, _ runtimeRepairReceipt) (bool, error) {
 			control.gracefulCalls++
 			return control.gracefulSignaled, control.gracefulErr
+		},
+		force: func(_ context.Context, _ runtimeRepairReceipt) (bool, error) {
+			control.forceCalls++
+			return control.forceSignaled, control.forceErr
 		},
 		settled: func(_ context.Context, _ runtimeRepairReceipt) (bool, error) {
 			control.settledCalls++
@@ -596,8 +603,36 @@ func TestRuntimeRepairConfirmReportsPostSignalNonconvergence(t *testing.T) {
 	if validationErr := confirmation.Validate(); validationErr != nil {
 		t.Fatalf("confirmation.Validate() error = %v", validationErr)
 	}
-	if confirmation.State != RuntimeRepairConfirmationFailed || !confirmation.Signaled || control.gracefulCalls != 1 {
-		t.Fatalf("Confirm() = %#v, graceful calls = %d", confirmation, control.gracefulCalls)
+	if confirmation.State != RuntimeRepairConfirmationFailed || !confirmation.Signaled || control.gracefulCalls != 1 || control.forceCalls != 1 {
+		t.Fatalf("Confirm() = %#v, graceful calls = %d, force calls = %d", confirmation, control.gracefulCalls, control.forceCalls)
+	}
+}
+
+// TestRuntimeRepairConfirmEscalatesAfterGracefulNonconvergence proves a confirmed exact scope gets one bounded forceful pass.
+func TestRuntimeRepairConfirmEscalatesAfterGracefulNonconvergence(t *testing.T) {
+	observation := runtimeRepairTestObservation(t)
+	candidate := runtimeRepairTestCandidate(t, observation)
+	control := &runtimeRepairTestControl{
+		inspection:       runtimeRepairNativeInspection{State: RuntimeRepairInspectionActionable, Observation: &observation},
+		gracefulSignaled: true,
+		forceSignaled:    true,
+	}
+	control.forceErr = nil
+	control.afterSettled = func() {
+		if control.forceCalls > 0 {
+			control.settled = true
+		}
+	}
+	repairer := newRuntimeRepairerWithControl(control.control(), 3*time.Millisecond, time.Millisecond)
+	confirmation, err := repairer.Confirm(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	if confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, want settled confirmation", confirmation)
+	}
+	if control.gracefulCalls != 1 || control.forceCalls != 1 {
+		t.Fatalf("signals = graceful %d, force %d; want one each", control.gracefulCalls, control.forceCalls)
 	}
 }
 

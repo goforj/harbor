@@ -16,6 +16,9 @@ func newRuntimeRepairControl() runtimeRepairControl {
 		graceful: func(_ context.Context, _ runtimeRepairReceipt) (bool, error) {
 			return false, fmt.Errorf("runtime repair graceful termination is unsupported on this platform")
 		},
+		force: func(_ context.Context, _ runtimeRepairReceipt) (bool, error) {
+			return false, fmt.Errorf("runtime repair forceful termination is unsupported on this platform")
+		},
 		settled: func(_ context.Context, _ runtimeRepairReceipt) (bool, error) {
 			return false, fmt.Errorf("runtime repair settlement observation is unsupported on this platform")
 		},
@@ -30,6 +33,9 @@ func newUnattributedRuntimeControl() unattributedRuntimeControl {
 		},
 		graceful: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
 			return false, fmt.Errorf("unattributed runtime graceful termination is unsupported on this platform")
+		},
+		force: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
+			return false, fmt.Errorf("unattributed runtime forceful termination is unsupported on this platform")
 		},
 		settled: func(_ context.Context, _ unattributedRuntimeReceipt) (bool, error) {
 			return false, fmt.Errorf("unattributed runtime settlement observation is unsupported on this platform")

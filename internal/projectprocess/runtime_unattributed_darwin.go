@@ -20,6 +20,7 @@ func newUnattributedRuntimeControl() unattributedRuntimeControl {
 	return unattributedRuntimeControl{
 		inspect:  inspectStableDarwinUnattributedRuntime,
 		graceful: gracefullyTerminateDarwinUnattributedRuntime,
+		force:    forcefullyTerminateDarwinUnattributedRuntime,
 		settled:  observeDarwinUnattributedRuntimeSettlement,
 	}
 }
@@ -320,6 +321,59 @@ func gracefullyTerminateDarwinUnattributedRuntime(ctx context.Context, receipt u
 		return false, fmt.Errorf("gracefully terminate exact Darwin unattributed runtime root: %w", err)
 	}
 	return true, nil
+}
+
+// forcefullyTerminateDarwinUnattributedRuntime revalidates the captured descendant births before SIGKILL escalation.
+func forcefullyTerminateDarwinUnattributedRuntime(ctx context.Context, receipt unattributedRuntimeReceipt) (bool, error) {
+	root := receipt.observation.Root
+	rootBirth, present, err := observeProcessBirthToken(root.PID)
+	if err != nil {
+		return false, fmt.Errorf("revalidate Darwin unattributed runtime root before forceful termination: %w", err)
+	}
+	if present && rootBirth != root.BirthToken {
+		return false, ErrRuntimeRepairDrift
+	}
+	if present {
+		parentBirth, parentPresent, err := observeProcessBirthToken(receipt.observation.RootParent.PID)
+		if err != nil || !parentPresent || parentBirth != receipt.observation.RootParent.BirthToken {
+			return false, ErrRuntimeRepairDrift
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	forced := false
+	for _, member := range receipt.observation.Members {
+		if err := ctx.Err(); err != nil {
+			return forced, err
+		}
+		birth, present, err := observeProcessBirthToken(member.PID)
+		if err != nil {
+			return forced, fmt.Errorf("revalidate Darwin unattributed runtime member %d before forceful termination: %w", member.PID, err)
+		}
+		if !present || birth != member.BirthToken {
+			continue
+		}
+		actualSessionID, err := unix.Getsid(member.PID)
+		if errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return forced, fmt.Errorf("revalidate Darwin unattributed runtime member %d session: %w", member.PID, err)
+		}
+		if actualSessionID != member.SessionID {
+			return forced, ErrRuntimeRepairDrift
+		}
+		if err := syscall.Kill(member.PID, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return forced, fmt.Errorf("forcefully terminate exact Darwin unattributed runtime member %d: %w", member.PID, err)
+		}
+		forced = true
+	}
+	return forced, nil
 }
 
 // observeDarwinUnattributedRuntimeSettlement proves captured births and the exact target socket have disappeared.

@@ -21,6 +21,7 @@ const (
 	runtimeRepairNativeTestEnvironment   = "HARBOR_NATIVE_RUNTIME_REPAIR_TEST"
 	runtimeRepairNativeHelperEnvironment = "HARBOR_RUNTIME_REPAIR_NATIVE_HELPER"
 	runtimeRepairNativeHelperAddress     = "HARBOR_RUNTIME_REPAIR_NATIVE_ADDRESS"
+	runtimeRepairNativeIgnoreTermination = "HARBOR_RUNTIME_REPAIR_NATIVE_IGNORE_TERM"
 )
 
 // init turns a copied test binary into the exact dedicated-session forj dev process used by the native proof.
@@ -39,6 +40,10 @@ func init() {
 	defer listener.Close()
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM)
+	if os.Getenv(runtimeRepairNativeIgnoreTermination) == "1" {
+		for range signals {
+		}
+	}
 	<-signals
 }
 
@@ -108,6 +113,74 @@ func TestNativeDarwinRuntimeRepairLifecycle(t *testing.T) {
 	}
 	if err := command.Wait(); err != nil {
 		t.Fatalf("wait for terminated native forj helper error = %v", err)
+	}
+}
+
+// TestNativeDarwinRuntimeRepairEscalatesAfterGracefulNonconvergence proves a confirmed exact scope cannot remain quarantined when its root ignores SIGTERM.
+func TestNativeDarwinRuntimeRepairEscalatesAfterGracefulNonconvergence(t *testing.T) {
+	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
+		t.Skip("set HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 on a disposable macOS runner")
+	}
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize checkout error = %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable error = %v", err)
+	}
+	forjPath := filepath.Join(checkout, "forj")
+	if err := copyRuntimeRepairNativeHelper(executable, forjPath); err != nil {
+		t.Fatalf("copy forj helper error = %v", err)
+	}
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("reserve listener error = %v", err)
+	}
+	endpoint := netip.MustParseAddrPort(listener.Addr().String())
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release listener reservation error = %v", err)
+	}
+
+	command := exec.Command(forjPath, "dev")
+	command.Dir = checkout
+	command.Env = append(
+		os.Environ(),
+		runtimeRepairNativeHelperEnvironment+"=1",
+		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
+		runtimeRepairNativeIgnoreTermination+"=1",
+	)
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := command.Start(); err != nil {
+		t.Fatalf("start stubborn native forj helper error = %v", err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("wait for stubborn native forj helper listener error = %v", err)
+	}
+
+	repairer := NewRuntimeRepairer()
+	inspection, err := repairer.Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if inspection.State != RuntimeRepairInspectionActionable || inspection.Candidate == nil {
+		t.Fatalf("Inspect() = %#v, want actionable candidate", inspection)
+	}
+	confirmation, err := repairer.Confirm(t.Context(), *inspection.Candidate)
+	if err != nil {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	if confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, want settled forceful confirmation", confirmation)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("stubborn native forj helper exited cleanly; expected SIGKILL escalation")
 	}
 }
 
