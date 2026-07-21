@@ -1,6 +1,8 @@
 package projectprocess
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 )
 
 const maximumOutputBrokerEndpointBytes = 4096
+
+const outputBrokerTicketDigestLength = 64
 
 var (
 	// ErrOutputBrokerPeerMismatch rejects a broker connection whose kernel identity or observed process birth differs from the expected broker.
@@ -34,6 +38,30 @@ type OutputBrokerPeer struct {
 	EndpointReference string `json:"endpoint_reference"`
 	// Process is immutable evidence for the broker process, not the child GoForj process.
 	Process domain.ProcessEvidence `json:"process"`
+	// ManifestPath identifies the owner-private launch manifest retained for restart re-adoption.
+	ManifestPath string `json:"manifest_path,omitempty"`
+	// TicketDigest identifies the opaque attachment ticket held by ManifestPath without persisting the ticket itself.
+	TicketDigest string `json:"ticket_digest,omitempty"`
+}
+
+// DigestOutputBrokerTicket returns the canonical digest persisted beside durable broker process evidence.
+func DigestOutputBrokerTicket(ticket string) string {
+	digest := sha256.Sum256([]byte(ticket))
+	return hex.EncodeToString(digest[:])
+}
+
+// validateOutputBrokerTicketDigest keeps durable broker metadata on the same canonical SHA-256 vocabulary as sessions.
+func validateOutputBrokerTicketDigest(digest string) error {
+	if len(digest) != outputBrokerTicketDigestLength {
+		return fmt.Errorf("output broker ticket digest must contain exactly %d lowercase hexadecimal characters", outputBrokerTicketDigestLength)
+	}
+	for _, character := range digest {
+		if (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') {
+			continue
+		}
+		return fmt.Errorf("output broker ticket digest must contain exactly %d lowercase hexadecimal characters", outputBrokerTicketDigestLength)
+	}
+	return nil
 }
 
 // Validate reports whether the broker proof is complete without treating its endpoint or process fields as authority by themselves.
@@ -49,6 +77,17 @@ func (peer OutputBrokerPeer) Validate() error {
 	}
 	if err := peer.Process.Validate(); err != nil {
 		return fmt.Errorf("output broker process evidence: %w", err)
+	}
+	if (peer.ManifestPath == "") != (peer.TicketDigest == "") {
+		return errors.New("output broker reattach metadata must contain both manifest path and ticket digest")
+	}
+	if peer.ManifestPath != "" {
+		if !filepath.IsAbs(peer.ManifestPath) || filepath.Clean(peer.ManifestPath) != peer.ManifestPath {
+			return errors.New("output broker manifest path must be a canonical absolute path")
+		}
+		if err := validateOutputBrokerTicketDigest(peer.TicketDigest); err != nil {
+			return err
+		}
 	}
 	return nil
 }

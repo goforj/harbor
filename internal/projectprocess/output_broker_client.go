@@ -35,6 +35,12 @@ type OutputBrokerAttachmentConfig struct {
 	Peer OutputBrokerPeer
 	// ObservedProcess is a fresh observation of Peer.Process.
 	ObservedProcess domain.ProcessEvidence
+	// RevalidateProcess optionally rereads Peer.Process after the endpoint is connected and before authentication.
+	//
+	// Restart adoption supplies this callback because a persisted PID can be recycled between the initial
+	// process census and the local endpoint dial. Existing in-process callers may omit it when their process
+	// evidence was captured as part of the same launch boundary.
+	RevalidateProcess func(domain.ProcessEvidence) (domain.ProcessEvidence, error)
 }
 
 // Validate reports whether an attachment request contains one exact broker identity.
@@ -101,7 +107,14 @@ func AttachOutputBroker(ctx context.Context, config OutputBrokerAttachmentConfig
 			_ = connection.Close()
 		}
 	}()
-	if err := AuthenticateOutputBrokerPeer(connection, config.Peer, config.ObservedProcess); err != nil {
+	observedProcess := config.ObservedProcess
+	if config.RevalidateProcess != nil {
+		observedProcess, err = config.RevalidateProcess(config.Peer.Process)
+		if err != nil {
+			return nil, fmt.Errorf("revalidate output broker process before authentication: %w", err)
+		}
+	}
+	if err := AuthenticateOutputBrokerPeer(connection, config.Peer, observedProcess); err != nil {
 		return nil, err
 	}
 	if err := connection.SetDeadline(time.Now().Add(outputBrokerHandshakeTimeout)); err != nil {

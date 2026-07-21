@@ -110,6 +110,8 @@ type OutputBrokerRuntimeConfig struct {
 	EndpointReference string
 	// AttachmentTicket is the opaque credential required for Harbor attachment.
 	AttachmentTicket string
+	// ManifestPath is the owner-private launch manifest retained until the broker exits.
+	ManifestPath string
 	// Process is the exact evidence for this broker process.
 	Process domain.ProcessEvidence
 	// Stdout is the inherited child standard-output pipe.
@@ -143,10 +145,13 @@ func RunOutputBroker(ctx context.Context, config OutputBrokerRuntimeConfig) erro
 		return fmt.Errorf("listen on output broker endpoint: %w", err)
 	}
 	defer listener.Close()
+	if config.ManifestPath != "" {
+		defer func() { _ = os.Remove(config.ManifestPath) }()
+	}
 	server, err := NewOutputBrokerServer(OutputBrokerServerConfig{
 		Listener:         listener,
 		Journal:          journal,
-		Peer:             OutputBrokerPeer{ProjectID: config.ProjectID, SessionID: config.SessionID, EndpointReference: config.EndpointReference, Process: config.Process},
+		Peer:             outputBrokerRuntimePeer(config),
 		AttachmentTicket: config.AttachmentTicket,
 	})
 	if err != nil {
@@ -207,6 +212,21 @@ func RunOutputBroker(ctx context.Context, config OutputBrokerRuntimeConfig) erro
 	return result
 }
 
+// outputBrokerRuntimePeer adds restart metadata only for production launches that retain a manifest path.
+func outputBrokerRuntimePeer(config OutputBrokerRuntimeConfig) OutputBrokerPeer {
+	peer := OutputBrokerPeer{
+		ProjectID:         config.ProjectID,
+		SessionID:         config.SessionID,
+		EndpointReference: config.EndpointReference,
+		Process:           config.Process,
+	}
+	if config.ManifestPath != "" {
+		peer.ManifestPath = config.ManifestPath
+		peer.TicketDigest = DigestOutputBrokerTicket(config.AttachmentTicket)
+	}
+	return peer
+}
+
 // outputBrokerInput serializes one inherited pipe fragment before the journal assigns its global cursor.
 type outputBrokerInput struct {
 	stream OutputBrokerStream
@@ -257,6 +277,9 @@ func validateOutputBrokerRuntimeConfig(config OutputBrokerRuntimeConfig) error {
 	}
 	if err := validateOutputBrokerToken("output broker attachment ticket", config.AttachmentTicket); err != nil {
 		return err
+	}
+	if config.ManifestPath != "" && (!filepath.IsAbs(config.ManifestPath) || filepath.Clean(config.ManifestPath) != config.ManifestPath) {
+		return errors.New("output broker manifest path must be a canonical absolute path")
 	}
 	if err := config.Process.Validate(); err != nil {
 		return fmt.Errorf("output broker process evidence: %w", err)

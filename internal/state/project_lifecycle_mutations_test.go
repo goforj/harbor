@@ -54,18 +54,30 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 
 	process := projectLifecycleTestProcess(t)
 	attachAt := startAt.Add(time.Second)
+	broker := domain.OutputBrokerSession{
+		EndpointReference: filepath.Join(t.TempDir(), "output-broker.sock"),
+		ManifestPath:      filepath.Join(t.TempDir(), "output-broker.json"),
+		CredentialDigest:  strings.Repeat("d", 64),
+		Process: domain.ProcessEvidence{
+			PID:                4103,
+			BirthToken:         "broker-birth-4103",
+			ExecutableIdentity: process.ExecutableIdentity,
+			ArgumentDigest:     strings.Repeat("e", 64),
+		},
+	}
 	attachRequest := AttachProjectProcessRequest{
 		ProjectID:                 project.ID,
 		SessionID:                 session.ID,
 		ExpectedSessionGeneration: session.Generation,
 		Process:                   process,
+		OutputBroker:              &broker,
 		At:                        attachAt,
 	}
 	attached, err := store.AttachProjectProcess(t.Context(), attachRequest)
 	if err != nil {
 		t.Fatalf("AttachProjectProcess() error = %v", err)
 	}
-	if attached.State != domain.SessionAwaitingAttach || attached.Generation != 2 || attached.Process == nil || *attached.Process != process {
+	if attached.State != domain.SessionAwaitingAttach || attached.Generation != 2 || attached.Process == nil || *attached.Process != process || attached.OutputBroker == nil || *attached.OutputBroker != broker {
 		t.Fatalf("AttachProjectProcess() = %#v", attached)
 	}
 	replayedAttach, err := store.AttachProjectProcess(t.Context(), attachRequest)

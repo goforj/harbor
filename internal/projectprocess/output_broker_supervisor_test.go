@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 )
@@ -50,10 +52,13 @@ func (attachment *supervisorOutputBrokerAttachment) Close() error {
 
 // supervisorOutputBrokerLauncher records the launch boundary and returns one supplied attachment.
 type supervisorOutputBrokerLauncher struct {
-	attachment *supervisorOutputBrokerAttachment
-	err        error
-	mu         sync.Mutex
-	spec       OutputBrokerLaunchSpec
+	attachment         *supervisorOutputBrokerAttachment
+	adoptionAttachment *supervisorOutputBrokerAttachment
+	err                error
+	adoptionErr        error
+	mu                 sync.Mutex
+	spec               OutputBrokerLaunchSpec
+	adoptionSpec       OutputBrokerAdoptionSpec
 }
 
 // Launch validates and records the exact pipe handoff before returning the configured test attachment.
@@ -68,6 +73,20 @@ func (launcher *supervisorOutputBrokerLauncher) Launch(_ context.Context, spec O
 		return nil, launcher.err
 	}
 	return launcher.attachment, nil
+}
+
+// Adopt returns the configured test attachment after recording the restart-only boundary.
+func (launcher *supervisorOutputBrokerLauncher) Adopt(_ context.Context, spec OutputBrokerAdoptionSpec) (OutputBrokerAttachment, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	launcher.mu.Lock()
+	launcher.adoptionSpec = spec
+	launcher.mu.Unlock()
+	if launcher.adoptionErr != nil {
+		return nil, launcher.adoptionErr
+	}
+	return launcher.adoptionAttachment, nil
 }
 
 // outputBrokerSupervisorTestPeer supplies valid evidence without granting the broker any child authority.
@@ -215,5 +234,84 @@ func TestSupervisorBrokerLaunchFailureFallsBackToDirectPipes(t *testing.T) {
 	}
 	if _, err := handle.Wait(t.Context()); err != nil {
 		t.Fatalf("handle.Wait() error = %v", err)
+	}
+}
+
+// TestSupervisorAdoptsOutputWithoutCreatingSyntheticProcessAuthority proves restart output remains live while stop/reap stays native.
+func TestSupervisorAdoptsOutputWithoutCreatingSyntheticProcessAuthority(t *testing.T) {
+	projectID := domain.ProjectID("project-adopted-broker")
+	sessionID := domain.SessionID("session-adopted-broker")
+	outputRoot := t.TempDir()
+	manifestDirectory := filepath.Join(outputRoot, outputSpoolDirectoryName)
+	if err := os.MkdirAll(manifestDirectory, 0o700); err != nil {
+		t.Fatalf("create broker manifest directory: %v", err)
+	}
+	executable, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("canonicalize test executable: %v", err)
+	}
+	birthToken, err := processBirthToken(os.Getpid())
+	if err != nil {
+		t.Fatalf("capture broker test birth: %v", err)
+	}
+	peer := OutputBrokerPeer{
+		ProjectID:         projectID,
+		SessionID:         sessionID,
+		EndpointReference: filepath.Join(t.TempDir(), "broker.sock"),
+		Process: domain.ProcessEvidence{
+			PID:                int64(os.Getpid()),
+			BirthToken:         birthToken,
+			ExecutableIdentity: executable,
+			ArgumentDigest:     digestArguments(os.Args),
+		},
+		ManifestPath: filepath.Join(manifestDirectory, "broker.json"),
+		TicketDigest: strings.Repeat("a", 64),
+	}
+	attachment := &supervisorOutputBrokerAttachment{
+		peer:    peer,
+		records: make(chan OutputBrokerRecord, 2),
+		closed:  make(chan struct{}),
+	}
+	launcher := &supervisorOutputBrokerLauncher{adoptionAttachment: attachment}
+	supervisor := newTestSupervisor(Options{OutputSpoolDirectory: outputRoot, OutputBrokerLauncher: launcher})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	broker := domain.OutputBrokerSession{
+		EndpointReference: peer.EndpointReference,
+		ManifestPath:      peer.ManifestPath,
+		CredentialDigest:  peer.TicketDigest,
+		Process:           peer.Process,
+	}
+	if err := supervisor.AdoptOutputBroker(t.Context(), projectID, sessionID, broker); err != nil {
+		t.Fatalf("AdoptOutputBroker() error = %v", err)
+	}
+	attachment.records <- OutputBrokerRecord{Frame: &OutputBrokerFrame{
+		Cursor:     0,
+		NextCursor: 15,
+		Stream:     OutputBrokerStreamStdout,
+		Text:       "adopted output\n",
+	}}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		chunk := supervisor.ReadOutput(projectID, sessionID, 0)
+		if chunk.Available && chunk.Text == "adopted output\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("adopted output did not reach supervisor: %#v", chunk)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, exists := supervisor.projects[projectID]; exists {
+		t.Fatal("AdoptOutputBroker() created synthetic project process authority")
+	}
+	if _, exists := supervisor.sessions[sessionID]; exists {
+		t.Fatal("AdoptOutputBroker() created synthetic session process authority")
+	}
+	if err := supervisor.AdoptOutputBroker(t.Context(), projectID, sessionID, broker); err != nil {
+		t.Fatalf("idempotent AdoptOutputBroker() error = %v", err)
 	}
 }

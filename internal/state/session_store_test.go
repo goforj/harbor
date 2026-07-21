@@ -26,6 +26,19 @@ func TestProjectSessionConversionRoundTripsEveryEvidenceShape(t *testing.T) {
 		session.State = state
 		if state == domain.SessionPlanned {
 			session.Process = nil
+			session.OutputBroker = nil
+		} else {
+			session.OutputBroker = &domain.OutputBrokerSession{
+				EndpointReference: filepath.Join(t.TempDir(), "output-broker.sock"),
+				ManifestPath:      filepath.Join(t.TempDir(), "output-broker.json"),
+				CredentialDigest:  strings.Repeat("d", 64),
+				Process: domain.ProcessEvidence{
+					PID:                4103,
+					BirthToken:         "broker-birth-4103",
+					ExecutableIdentity: filepath.Clean(session.Process.ExecutableIdentity),
+					ArgumentDigest:     strings.Repeat("e", 64),
+				},
+			}
 		}
 		row, err := projectSessionModelFromDomain(session)
 		if err != nil {
@@ -86,6 +99,24 @@ func TestProjectSessionConversionRejectsInvalidDomainAndModelFacts(t *testing.T)
 		{name: "session correlation", mutate: func(row *models.ProjectSession) { row.ProjectId = "" }, want: "project ID"},
 		{name: "descriptor digest", mutate: func(row *models.ProjectSession) { row.DescriptorDigest = strings.Repeat("A", 64) }, want: "descriptor digest"},
 		{name: "process identity", mutate: func(row *models.ProjectSession) { row.ExecutableIdentity = null.StringFrom("relative/forj") }, want: "canonical absolute"},
+		{name: "partial output broker evidence", mutate: func(row *models.ProjectSession) {
+			row.OutputBrokerEndpointReference = null.StringFrom("/tmp/output-broker.sock")
+			row.OutputBrokerTicketDigest = null.StringFrom(strings.Repeat("d", 64))
+			row.OutputBrokerManifestPath = null.String{}
+			row.OutputBrokerPid = null.IntFrom(4103)
+			row.OutputBrokerBirthToken = null.StringFrom("broker-birth-4103")
+			row.OutputBrokerExecutableIdentity = null.StringFrom("/usr/local/bin/outputbroker")
+			row.OutputBrokerArgumentDigest = null.StringFrom(strings.Repeat("e", 64))
+		}, want: "output broker evidence must be all present or all absent"},
+		{name: "output broker digest", mutate: func(row *models.ProjectSession) {
+			row.OutputBrokerEndpointReference = null.StringFrom("/tmp/output-broker.sock")
+			row.OutputBrokerTicketDigest = null.StringFrom(strings.Repeat("D", 64))
+			row.OutputBrokerManifestPath = null.StringFrom("/tmp/output-broker.json")
+			row.OutputBrokerPid = null.IntFrom(4103)
+			row.OutputBrokerBirthToken = null.StringFrom("broker-birth-4103")
+			row.OutputBrokerExecutableIdentity = null.StringFrom("/usr/local/bin/outputbroker")
+			row.OutputBrokerArgumentDigest = null.StringFrom(strings.Repeat("e", 64))
+		}, want: "output broker credential digest"},
 		{name: "creation time", mutate: func(row *models.ProjectSession) { row.CreatedAt = time.Time{} }, want: "creation time"},
 		{name: "time order", mutate: func(row *models.ProjectSession) { row.UpdatedAt = row.CreatedAt.Add(-time.Second) }, want: "must not precede"},
 	}
@@ -223,6 +254,13 @@ func newSessionStoreTestHarness(t *testing.T) (*Store, *gorm.DB) {
 		birth_token TEXT,
 		executable_identity TEXT,
 		argument_digest TEXT,
+		output_broker_endpoint_reference TEXT,
+		output_broker_ticket_digest TEXT,
+		output_broker_manifest_path TEXT,
+		output_broker_pid INTEGER,
+		output_broker_birth_token TEXT,
+		output_broker_executable_identity TEXT,
+		output_broker_argument_digest TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	)`).Error; err != nil {

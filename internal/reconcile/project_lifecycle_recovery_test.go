@@ -26,6 +26,8 @@ type projectLifecycleRecoverySupervisor struct {
 	settlement     projectprocess.PriorProcessSettlement
 	settlementErr  error
 	settled        []domain.ProcessEvidence
+	adoptionErr    error
+	adopted        []domain.OutputBrokerSession
 }
 
 // Start rejects launches because recovery must never replay a process-backed running start.
@@ -116,6 +118,17 @@ func (supervisor *projectLifecycleRecoverySupervisor) SettlePriorProcess(
 ) (projectprocess.PriorProcessSettlement, error) {
 	supervisor.settled = append(supervisor.settled, evidence)
 	return supervisor.settlement, supervisor.settlementErr
+}
+
+// AdoptOutputBroker records the optional live-output recovery boundary without granting process authority.
+func (supervisor *projectLifecycleRecoverySupervisor) AdoptOutputBroker(
+	_ context.Context,
+	_ domain.ProjectID,
+	_ domain.SessionID,
+	broker domain.OutputBrokerSession,
+) error {
+	supervisor.adopted = append(supervisor.adopted, broker)
+	return supervisor.adoptionErr
 }
 
 // Close is inert because the recovery fixture never owns a process.
@@ -394,6 +407,49 @@ func TestProjectLifecycleRecoverPreservesLiveAttachedManagedSession(t *testing.T
 	}
 	if len(supervisor.settled) != 0 {
 		t.Fatalf("settled evidence = %#v, want no signal during recovery", supervisor.settled)
+	}
+}
+
+// TestProjectLifecycleRecoverAdoptsPersistedOutputBrokerAfterLiveProcessProof keeps broker reconnect optional and exact.
+func TestProjectLifecycleRecoverAdoptsPersistedOutputBrokerAfterLiveProcessProof(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	broker := domain.OutputBrokerSession{
+		EndpointReference: filepath.Join(t.TempDir(), "broker.sock"),
+		ManifestPath:      filepath.Join(t.TempDir(), "broker.json"),
+		CredentialDigest:  strings.Repeat("b", 64),
+		Process: domain.ProcessEvidence{
+			PID:                4343,
+			BirthToken:         "test-broker-birth",
+			ExecutableIdentity: filepath.Join(t.TempDir(), "outputbroker"),
+			ArgumentDigest:     strings.Repeat("c", 64),
+		},
+	}
+	seed := completeManagedLifecycleRecoveryAttachment(t, store,
+		completeProjectLifecycleRecoveryStart(t, store,
+			seedProjectLifecycleRecoveryStartWithOutputBroker(t, store, journal, true, &broker)))
+	supervisor := &projectLifecycleRecoverySupervisor{
+		observation: projectprocess.PriorProcessObservation{State: projectprocess.PriorProcessPresent},
+	}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(store, journal, store, supervisor, netip.MustParseAddr("127.0.0.1"))
+	coordinator.now = func() time.Time { return seed.recoverAt }
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close broker recovery coordinator: %v", err)
+		}
+	})
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	if len(supervisor.adopted) != 1 || !reflect.DeepEqual(supervisor.adopted[0], broker) {
+		t.Fatalf("adopted broker evidence = %#v, want %#v", supervisor.adopted, broker)
+	}
+	supervisor.adoptionErr = errors.New("broker endpoint unavailable")
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() with optional broker adoption failure = %v", err)
+	}
+	current, err := store.ActiveProjectSession(t.Context(), seed.project.ID)
+	if err != nil || current.State != domain.SessionAttached || current.OutputBroker == nil {
+		t.Fatalf("session after broker adoption = %#v, %v", current, err)
 	}
 }
 
@@ -1081,6 +1137,17 @@ func seedProjectLifecycleRecoveryStart(
 	journal *state.OperationJournal,
 	attachProcess bool,
 ) projectLifecycleRecoverySeed {
+	return seedProjectLifecycleRecoveryStartWithOutputBroker(t, store, journal, attachProcess, nil)
+}
+
+// seedProjectLifecycleRecoveryStartWithOutputBroker creates the same crash boundary with optional broker evidence.
+func seedProjectLifecycleRecoveryStartWithOutputBroker(
+	t *testing.T,
+	store *state.Store,
+	journal *state.OperationJournal,
+	attachProcess bool,
+	outputBroker *domain.OutputBrokerSession,
+) projectLifecycleRecoverySeed {
 	t.Helper()
 	root, _ := newProjectLifecycleIntegrationCheckout(t)
 	project := registerProjectLifecycleIntegrationProject(t, store, root)
@@ -1139,6 +1206,7 @@ func seedProjectLifecycleRecoveryStart(
 		SessionID:                 session.ID,
 		ExpectedSessionGeneration: session.Generation,
 		Process:                   evidence,
+		OutputBroker:              outputBroker,
 		At:                        startAt.Add(time.Second),
 	})
 	if err != nil {

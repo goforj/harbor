@@ -72,11 +72,17 @@ func (supervisor *Supervisor) ReadOutput(
 ) OutputChunk {
 	supervisor.mu.Lock()
 	process := supervisor.projects[projectID]
-	if process == nil || supervisor.sessions[sessionID] != process {
+	if process != nil && supervisor.sessions[sessionID] == process {
+		transcript := process.relay.transcript
+		supervisor.mu.Unlock()
+		return transcript.read(cursor)
+	}
+	adopted := supervisor.adoptedOutputs[outputBrokerKey{projectID: projectID, sessionID: sessionID}]
+	if adopted == nil || adopted.relay == nil {
 		supervisor.mu.Unlock()
 		return OutputChunk{}
 	}
-	transcript := process.relay.transcript
+	transcript := adopted.relay.transcript
 	supervisor.mu.Unlock()
 
 	return transcript.read(cursor)
@@ -117,11 +123,17 @@ func (supervisor *Supervisor) WaitOutput(
 
 	supervisor.mu.Lock()
 	process := supervisor.projects[projectID]
-	if process == nil || supervisor.sessions[sessionID] != process {
+	if process != nil && supervisor.sessions[sessionID] == process {
+		transcript := process.relay.transcript
+		supervisor.mu.Unlock()
+		return transcript.wait(ctx, cursor)
+	}
+	adopted := supervisor.adoptedOutputs[outputBrokerKey{projectID: projectID, sessionID: sessionID}]
+	if adopted == nil || adopted.relay == nil {
 		supervisor.mu.Unlock()
 		return OutputChunk{}, nil
 	}
-	transcript := process.relay.transcript
+	transcript := adopted.relay.transcript
 	supervisor.mu.Unlock()
 
 	return transcript.wait(ctx, cursor)

@@ -102,7 +102,18 @@ func (coordinator *ProjectLifecycleCoordinator) preserveAttachedManagedSession(c
 	if err != nil {
 		return false
 	}
-	return observation.State == projectprocess.PriorProcessPresent
+	if observation.State != projectprocess.PriorProcessPresent {
+		return false
+	}
+	if session.OutputBroker != nil {
+		if adopter, ok := coordinator.supervisor.(projectOutputBrokerRecoveryAdopter); ok {
+			// Broker adoption is optional diagnostic continuity. A failed reattach must not
+			// turn a proven live managed process into a recovery quarantine; the checksummed
+			// spool remains available through the ordinary historical-output path.
+			_ = adopter.AdoptOutputBroker(ctx, session.ProjectID, session.ID, *session.OutputBroker)
+		}
+	}
+	return true
 }
 
 // quarantineTerminalProjectSession publishes a route-free failure without observing or acting on an unidentified prior process.

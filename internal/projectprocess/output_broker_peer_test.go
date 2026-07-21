@@ -160,3 +160,27 @@ func TestOutputBrokerPeerValidationKeepsProjectAndSessionBindingExplicit(t *test
 		})
 	}
 }
+
+// TestOutputBrokerPeerValidationRequiresCompleteReattachMetadata prevents a durable session from pointing at half an authority.
+func TestOutputBrokerPeerValidationRequiresCompleteReattachMetadata(t *testing.T) {
+	proof := outputBrokerPeerTestProof(t)
+	proof.ManifestPath = filepath.Join(t.TempDir(), "broker.json")
+	proof.TicketDigest = DigestOutputBrokerTicket("broker-ticket")
+	if err := proof.Validate(); err != nil {
+		t.Fatalf("OutputBrokerPeer.Validate() complete metadata error = %v", err)
+	}
+	for name, mutate := range map[string]func(*OutputBrokerPeer){
+		"missing digest":    func(value *OutputBrokerPeer) { value.TicketDigest = "" },
+		"missing manifest":  func(value *OutputBrokerPeer) { value.ManifestPath = "" },
+		"invalid digest":    func(value *OutputBrokerPeer) { value.TicketDigest = strings.Repeat("A", 64) },
+		"relative manifest": func(value *OutputBrokerPeer) { value.ManifestPath = "broker.json" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := proof
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("OutputBrokerPeer.Validate() accepted incomplete reattach metadata")
+			}
+		})
+	}
+}

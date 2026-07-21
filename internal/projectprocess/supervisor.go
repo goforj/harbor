@@ -51,6 +51,8 @@ var (
 	ErrSessionRunning = errors.New("project session process is already running")
 	// ErrNotRunning means no process matches both requested identities.
 	ErrNotRunning = errors.New("project process is not running")
+	// ErrOutputBrokerAdoptionUnavailable means no reviewed live-broker adoption boundary is installed.
+	ErrOutputBrokerAdoptionUnavailable = errors.New("output broker adoption is unavailable")
 )
 
 // Options controls bounded shutdown and output buffering behavior.
@@ -200,6 +202,7 @@ type Supervisor struct {
 	serviceLogs          map[serviceLogKey]*serviceLogStream
 	outputSpoolDirectory string
 	outputBrokerLauncher OutputBrokerLauncher
+	adoptedOutputs       map[outputBrokerKey]*adoptedOutput
 }
 
 // New constructs an empty project process supervisor.
@@ -252,7 +255,142 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 		serviceLogs:          make(map[serviceLogKey]*serviceLogStream),
 		outputSpoolDirectory: outputSpoolDirectory,
 		outputBrokerLauncher: options.OutputBrokerLauncher,
+		adoptedOutputs:       make(map[outputBrokerKey]*adoptedOutput),
 	}
+}
+
+// outputBrokerKey selects one live output relay without pretending it is a child-process handle.
+type outputBrokerKey struct {
+	projectID domain.ProjectID
+	sessionID domain.SessionID
+}
+
+// adoptedOutput retains a live transcript for a broker that was adopted after daemon restart.
+type adoptedOutput struct {
+	attachment OutputBrokerAttachment
+	relay      *outputRelay
+	done       chan struct{}
+}
+
+// AdoptOutputBroker reconnects the supervisor's output surface to one exact durable broker session.
+//
+// This method intentionally does not add a synthetic child to the process maps. Stop and reap authority
+// remains on the native recovery boundary for the managed GoForj process; the adopted broker contributes
+// only live output, while its checksummed spool remains the fallback if the transport disappears.
+func (supervisor *Supervisor) AdoptOutputBroker(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	broker domain.OutputBrokerSession,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if supervisor == nil {
+		return ErrOutputBrokerAdoptionUnavailable
+	}
+	if err := projectID.Validate(); err != nil {
+		return fmt.Errorf("output broker adoption project ID: %w", err)
+	}
+	if err := sessionID.Validate(); err != nil {
+		return fmt.Errorf("output broker adoption session ID: %w", err)
+	}
+	if err := broker.Validate(); err != nil {
+		return fmt.Errorf("validate output broker adoption evidence: %w", err)
+	}
+	launcher, ok := supervisor.outputBrokerLauncher.(OutputBrokerAdopter)
+	if !ok {
+		return ErrOutputBrokerAdoptionUnavailable
+	}
+	if supervisor.outputSpoolDirectory == "" {
+		return ErrOutputBrokerAdoptionUnavailable
+	}
+	peer := OutputBrokerPeer{
+		ProjectID:         projectID,
+		SessionID:         sessionID,
+		EndpointReference: broker.EndpointReference,
+		Process:           broker.Process,
+		ManifestPath:      broker.ManifestPath,
+		TicketDigest:      broker.CredentialDigest,
+	}
+	if err := peer.Validate(); err != nil {
+		return fmt.Errorf("validate output broker adoption peer: %w", err)
+	}
+	key := outputBrokerKey{projectID: projectID, sessionID: sessionID}
+	supervisor.mu.Lock()
+	if supervisor.closed {
+		supervisor.mu.Unlock()
+		return ErrClosed
+	}
+	if supervisor.adoptedOutputs == nil {
+		supervisor.adoptedOutputs = make(map[outputBrokerKey]*adoptedOutput)
+	}
+	if existing := supervisor.adoptedOutputs[key]; existing != nil {
+		if existing.attachment != nil && existing.attachment.Peer() == peer {
+			supervisor.mu.Unlock()
+			return nil
+		}
+		supervisor.mu.Unlock()
+		return errors.New("output broker is already adopted for this lifecycle")
+	}
+	supervisor.mu.Unlock()
+
+	attachment, err := launcher.Adopt(ctx, OutputBrokerAdoptionSpec{
+		ProjectID:       projectID,
+		SessionID:       sessionID,
+		OutputDirectory: supervisor.outputSpoolDirectory,
+		Peer:            peer,
+	})
+	if err != nil {
+		return fmt.Errorf("adopt output broker: %w", err)
+	}
+	if attachment == nil {
+		return errors.New("adopt output broker returned a nil attachment")
+	}
+	if adoptedPeer := attachment.Peer(); adoptedPeer != peer {
+		_ = attachment.Close()
+		return errors.New("adopted output broker peer differs from durable evidence")
+	}
+	relay := newOutputRelayWithTraceAndSpool(io.Discard, io.Discard, nil, nil, supervisor.outputLines)
+	adopted := &adoptedOutput{attachment: attachment, relay: relay, done: make(chan struct{})}
+	supervisor.mu.Lock()
+	if supervisor.closed {
+		supervisor.mu.Unlock()
+		_ = attachment.Close()
+		relay.finish()
+		return ErrClosed
+	}
+	if existing := supervisor.adoptedOutputs[key]; existing != nil {
+		supervisor.mu.Unlock()
+		_ = attachment.Close()
+		relay.finish()
+		if existing.attachment != nil && existing.attachment.Peer() == peer {
+			return nil
+		}
+		return errors.New("output broker is already adopted for this lifecycle")
+	}
+	supervisor.adoptedOutputs[key] = adopted
+	supervisor.mu.Unlock()
+	go supervisor.readAdoptedOutput(key, adopted)
+	return nil
+}
+
+// readAdoptedOutput feeds one adopted broker into the same bounded transcript used by live processes.
+func (supervisor *Supervisor) readAdoptedOutput(key outputBrokerKey, adopted *adoptedOutput) {
+	defer close(adopted.done)
+	var readers sync.WaitGroup
+	readers.Add(1)
+	readOutputBrokerAttachment(context.Background(), adopted.attachment, adopted.relay, &readers, nil)
+	readers.Wait()
+	adopted.relay.finish()
+	supervisor.mu.Lock()
+	if supervisor.adoptedOutputs[key] == adopted {
+		delete(supervisor.adoptedOutputs, key)
+	}
+	supervisor.mu.Unlock()
 }
 
 // Start launches the checkout's current GoForj development command without a shell or terminal.
@@ -603,6 +741,10 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 			process.requestStop()
 		}
 	}
+	adoptedOutputs := make([]*adoptedOutput, 0, len(supervisor.adoptedOutputs))
+	for _, adopted := range supervisor.adoptedOutputs {
+		adoptedOutputs = append(adoptedOutputs, adopted)
+	}
 	supervisor.mu.Unlock()
 
 	deadlineReached := make(chan struct{})
@@ -619,6 +761,19 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 	for _, process := range processes {
 		<-process.stopComplete
 		closeErr = errors.Join(closeErr, process.stopErr)
+	}
+	for _, adopted := range adoptedOutputs {
+		if adopted == nil {
+			continue
+		}
+		if adopted.attachment != nil {
+			closeErr = errors.Join(closeErr, adopted.attachment.Close())
+		}
+		select {
+		case <-adopted.done:
+		case <-ctx.Done():
+			closeErr = errors.Join(closeErr, ctx.Err())
+		}
 	}
 	close(deadlineReached)
 	supervisor.mu.Lock()

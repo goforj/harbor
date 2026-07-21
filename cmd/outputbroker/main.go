@@ -66,6 +66,7 @@ func run(ctx context.Context, arguments []string) error {
 		OutputDirectory:   config.OutputDirectory,
 		EndpointReference: config.EndpointReference,
 		AttachmentTicket:  config.AttachmentTicket,
+		ManifestPath:      parsed.configPath,
 		Process:           evidence,
 		Stdout:            stdout,
 		Stderr:            stderr,

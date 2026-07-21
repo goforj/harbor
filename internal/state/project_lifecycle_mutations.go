@@ -10,6 +10,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/null/v6"
 	"gorm.io/gorm"
 )
 
@@ -132,6 +133,7 @@ type AttachProjectProcessRequest struct {
 	SessionID                 domain.SessionID
 	ExpectedSessionGeneration uint64
 	Process                   domain.ProcessEvidence
+	OutputBroker              *domain.OutputBrokerSession
 	At                        time.Time
 }
 
@@ -329,7 +331,7 @@ func (store *Store) AttachProjectProcess(ctx context.Context, request AttachProj
 			return err
 		}
 		if current.State == domain.SessionAwaitingAttach && current.Generation == request.ExpectedSessionGeneration+1 {
-			if current.Process != nil && *current.Process == request.Process && current.UpdatedAt.Equal(request.At) {
+			if current.Process != nil && *current.Process == request.Process && outputBrokerSessionsEqual(current.OutputBroker, request.OutputBroker) && current.UpdatedAt.Equal(request.At) {
 				result = current
 				return nil
 			}
@@ -347,6 +349,7 @@ func (store *Store) AttachProjectProcess(ctx context.Context, request AttachProj
 		next.State = domain.SessionAwaitingAttach
 		next.Generation++
 		next.Process = cloneProcessEvidence(&request.Process)
+		next.OutputBroker = cloneOutputBrokerSession(request.OutputBroker)
 		next.UpdatedAt = request.At
 		updated, err := updateExactProjectSession(tx, current, next)
 		if err != nil {
@@ -930,7 +933,29 @@ func validateAttachProjectProcessRequest(request AttachProjectProcessRequest) er
 	if err := request.Process.Validate(); err != nil {
 		return err
 	}
+	if request.OutputBroker != nil {
+		if err := request.OutputBroker.Validate(); err != nil {
+			return err
+		}
+	}
 	return validateStoredTime("process attachment time", request.At)
+}
+
+// cloneOutputBrokerSession keeps lifecycle mutations from retaining mutable request-owned broker metadata.
+func cloneOutputBrokerSession(broker *domain.OutputBrokerSession) *domain.OutputBrokerSession {
+	if broker == nil {
+		return nil
+	}
+	clone := *broker
+	return &clone
+}
+
+// outputBrokerSessionsEqual compares optional broker metadata without treating nil and zero evidence as equivalent.
+func outputBrokerSessionsEqual(left, right *domain.OutputBrokerSession) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // validateCompleteManagedSessionAttachmentRequest rejects incomplete authenticated-process proof before mutation.
@@ -1241,13 +1266,20 @@ func updateExactProjectSession(tx *gorm.DB, current domain.ProjectSession, next 
 		return domain.ProjectSession{}, err
 	}
 	updates := map[string]any{
-		"state":               row.State,
-		"generation":          row.Generation,
-		"pid":                 row.Pid.Int64,
-		"birth_token":         row.BirthToken.String,
-		"executable_identity": row.ExecutableIdentity.String,
-		"argument_digest":     row.ArgumentDigest.String,
-		"updated_at":          row.UpdatedAt,
+		"state":                             row.State,
+		"generation":                        row.Generation,
+		"pid":                               nullableProjectSessionInt(row.Pid),
+		"birth_token":                       nullableProjectSessionString(row.BirthToken),
+		"executable_identity":               nullableProjectSessionString(row.ExecutableIdentity),
+		"argument_digest":                   nullableProjectSessionString(row.ArgumentDigest),
+		"output_broker_endpoint_reference":  nullableProjectSessionString(row.OutputBrokerEndpointReference),
+		"output_broker_ticket_digest":       nullableProjectSessionString(row.OutputBrokerTicketDigest),
+		"output_broker_manifest_path":       nullableProjectSessionString(row.OutputBrokerManifestPath),
+		"output_broker_pid":                 nullableProjectSessionInt(row.OutputBrokerPid),
+		"output_broker_birth_token":         nullableProjectSessionString(row.OutputBrokerBirthToken),
+		"output_broker_executable_identity": nullableProjectSessionString(row.OutputBrokerExecutableIdentity),
+		"output_broker_argument_digest":     nullableProjectSessionString(row.OutputBrokerArgumentDigest),
+		"updated_at":                        row.UpdatedAt,
 	}
 	updated := tx.Model(&models.ProjectSession{}).
 		Where("session_id = ? AND project_id = ? AND generation = ?", string(current.ID), string(current.ProjectID), int(current.Generation)).
@@ -1270,6 +1302,22 @@ func updateExactProjectSession(tx *gorm.DB, current domain.ProjectSession, next 
 		return domain.ProjectSession{}, corruptStateError("project session", string(current.ID), fmt.Errorf("session update readback differs from requested generation"))
 	}
 	return persisted, nil
+}
+
+// nullableProjectSessionString maps generated nullable strings to SQL NULL instead of an empty authority value.
+func nullableProjectSessionString(value null.String) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
+}
+
+// nullableProjectSessionInt maps generated nullable integers to SQL NULL instead of a zero PID.
+func nullableProjectSessionInt(value null.Int) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
 }
 
 // deleteExactProjectSession removes only the process authority whose generation was joined by the caller.

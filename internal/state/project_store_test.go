@@ -48,6 +48,13 @@ var projectStoreReadTestSchema = []string{
 		birth_token TEXT,
 		executable_identity TEXT,
 		argument_digest TEXT,
+		output_broker_endpoint_reference TEXT,
+		output_broker_ticket_digest TEXT,
+		output_broker_manifest_path TEXT,
+		output_broker_pid INTEGER,
+		output_broker_birth_token TEXT,
+		output_broker_executable_identity TEXT,
+		output_broker_argument_digest TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	)`,

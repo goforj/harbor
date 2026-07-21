@@ -128,6 +128,8 @@ func (launcher *OutputBrokerProcessLauncher) Launch(ctx context.Context, spec Ou
 		SessionID:         spec.SessionID,
 		EndpointReference: endpoint,
 		Process:           process,
+		ManifestPath:      configPath,
+		TicketDigest:      DigestOutputBrokerTicket(ticket),
 	}
 	attachContext, cancel := context.WithTimeout(ctx, outputBrokerHandshakeTimeout)
 	client, err := attachOutputBrokerWithRetry(attachContext, OutputBrokerAttachmentConfig{
@@ -142,14 +144,67 @@ func (launcher *OutputBrokerProcessLauncher) Launch(ctx context.Context, spec Ou
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Remove(configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = client.Close()
-		return nil, fmt.Errorf("retire output broker launch config: %w", err)
-	}
 	removeConfig = false
 	terminate = false
 	go func() { _ = command.Wait() }()
-	return &outputBrokerProcessAttachment{client: client, process: command}, nil
+	return &outputBrokerProcessAttachment{client: client, process: command, manifestPath: configPath}, nil
+}
+
+// Adopt reattaches Harbor to a broker that survived the daemon which launched it.
+//
+// The manifest is read only after its canonical owner-private path is checked against the configured
+// runtime root. The raw ticket stays in that manifest, while the persisted process evidence is reread
+// from the host before the authenticated endpoint handshake. An adopted attachment never owns broker
+// termination; the broker exits naturally when its inherited child pipes reach EOF.
+func (launcher *OutputBrokerProcessLauncher) Adopt(ctx context.Context, spec OutputBrokerAdoptionSpec) (OutputBrokerAttachment, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if launcher == nil || launcher.executable == "" {
+		return nil, errors.New("output broker process launcher is not initialized")
+	}
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	manifestDirectory := filepath.Join(spec.OutputDirectory, outputSpoolDirectoryName)
+	if filepath.Dir(spec.Peer.ManifestPath) != manifestDirectory {
+		return nil, errors.New("output broker manifest is outside the configured owner-private runtime directory")
+	}
+	config, err := ReadOutputBrokerLaunchConfig(spec.Peer.ManifestPath)
+	if err != nil {
+		return nil, err
+	}
+	if config.ProjectID != spec.ProjectID || config.SessionID != spec.SessionID {
+		return nil, errors.New("output broker manifest lifecycle does not match durable session")
+	}
+	if config.OutputDirectory != spec.OutputDirectory || config.EndpointReference != spec.Peer.EndpointReference {
+		return nil, errors.New("output broker manifest runtime identity does not match durable session")
+	}
+	if DigestOutputBrokerTicket(config.AttachmentTicket) != spec.Peer.TicketDigest {
+		return nil, errors.New("output broker manifest ticket digest does not match durable session")
+	}
+	observed, err := ObservePersistedOutputBrokerProcessEvidence(spec.Peer.Process)
+	if err != nil {
+		return nil, err
+	}
+	attachContext, cancel := context.WithTimeout(ctx, outputBrokerHandshakeTimeout)
+	client, err := attachOutputBrokerWithRetry(attachContext, OutputBrokerAttachmentConfig{
+		ProjectID:         spec.ProjectID,
+		SessionID:         spec.SessionID,
+		EndpointReference: spec.Peer.EndpointReference,
+		Ticket:            config.AttachmentTicket,
+		Peer:              spec.Peer,
+		ObservedProcess:   observed,
+		RevalidateProcess: ObservePersistedOutputBrokerProcessEvidence,
+	})
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	return &outputBrokerAdoptedAttachment{client: client}, nil
 }
 
 // writeOutputBrokerLaunchConfig publishes one complete owner-private manifest before the broker is started.
@@ -302,8 +357,38 @@ func (process *outputBrokerProcess) PID() int {
 
 // outputBrokerProcessAttachment couples transport cleanup to the broker process it launched without acquiring child authority.
 type outputBrokerProcessAttachment struct {
-	client  *OutputBrokerClient
-	process outputBrokerCommand
+	client       *OutputBrokerClient
+	process      outputBrokerCommand
+	manifestPath string
+}
+
+// outputBrokerAdoptedAttachment owns only a fresh reader transport; the surviving broker remains independent.
+type outputBrokerAdoptedAttachment struct {
+	client *OutputBrokerClient
+}
+
+// Peer returns the authenticated broker evidence carried by this adopted transport.
+func (attachment *outputBrokerAdoptedAttachment) Peer() OutputBrokerPeer {
+	if attachment == nil || attachment.client == nil {
+		return OutputBrokerPeer{}
+	}
+	return attachment.client.Peer()
+}
+
+// Receive returns one replay or live record from the adopted broker.
+func (attachment *outputBrokerAdoptedAttachment) Receive(ctx context.Context) (OutputBrokerRecord, error) {
+	if attachment == nil || attachment.client == nil {
+		return OutputBrokerRecord{}, errors.New("adopted output broker attachment is not initialized")
+	}
+	return attachment.client.Receive(ctx)
+}
+
+// Close retires only the adopted transport and never signals the surviving broker process.
+func (attachment *outputBrokerAdoptedAttachment) Close() error {
+	if attachment == nil || attachment.client == nil {
+		return nil
+	}
+	return attachment.client.Close()
 }
 
 // Peer returns the authenticated broker evidence carried by the transport client.
@@ -330,6 +415,11 @@ func (attachment *outputBrokerProcessAttachment) Close() error {
 	var closeErr error
 	if attachment.client != nil {
 		closeErr = attachment.client.Close()
+	}
+	if attachment.manifestPath != "" {
+		if err := os.Remove(attachment.manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			closeErr = errors.Join(closeErr, fmt.Errorf("retire output broker manifest: %w", err))
+		}
 	}
 	if attachment.process != nil {
 		_ = attachment.process.Terminate()

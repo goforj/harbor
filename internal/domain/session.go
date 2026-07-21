@@ -76,6 +76,36 @@ type ProcessEvidence struct {
 	ArgumentDigest     string `json:"argument_digest"`
 }
 
+// OutputBrokerSession binds one optional owner-private output broker to the exact project lifecycle.
+//
+// The attachment credential itself is never persisted here. CredentialDigest proves which private
+// manifest Harbor must read when re-adoption is implemented, while ManifestPath keeps that secret
+// outside the database and checkout.
+type OutputBrokerSession struct {
+	// EndpointReference identifies the owner-private local endpoint served by the broker.
+	EndpointReference string `json:"endpoint_reference"`
+	// Process identifies the broker process independently from the managed GoForj process.
+	Process ProcessEvidence `json:"process"`
+	// ManifestPath identifies the owner-private file that contains the opaque broker ticket.
+	ManifestPath string `json:"manifest_path"`
+	// CredentialDigest identifies the opaque ticket held by the private manifest.
+	CredentialDigest string `json:"credential_digest"`
+}
+
+// Validate reports whether broker evidence is complete without treating it as child-process authority.
+func (broker OutputBrokerSession) Validate() error {
+	if err := validateOutputBrokerEndpointReference(broker.EndpointReference); err != nil {
+		return err
+	}
+	if err := broker.Process.Validate(); err != nil {
+		return fmt.Errorf("output broker process evidence: %w", err)
+	}
+	if broker.ManifestPath == "" || !filepath.IsAbs(broker.ManifestPath) || filepath.Clean(broker.ManifestPath) != broker.ManifestPath {
+		return fmt.Errorf("output broker manifest path must be a canonical absolute path")
+	}
+	return validateSHA256Digest("output broker credential digest", broker.CredentialDigest)
+}
+
 // Validate reports whether the evidence is complete and safe to use for later process correlation.
 func (evidence ProcessEvidence) Validate() error {
 	if evidence.PID <= 0 {
@@ -95,16 +125,17 @@ func (evidence ProcessEvidence) Validate() error {
 
 // ProjectSession is the one durable active session correlated to a registered project.
 type ProjectSession struct {
-	ID               SessionID        `json:"id"`
-	ProjectID        ProjectID        `json:"project_id"`
-	Owner            SessionOwner     `json:"owner"`
-	State            SessionState     `json:"state"`
-	DescriptorDigest string           `json:"descriptor_digest"`
-	CredentialDigest string           `json:"credential_digest"`
-	Generation       uint64           `json:"generation"`
-	Process          *ProcessEvidence `json:"process,omitempty"`
-	CreatedAt        time.Time        `json:"created_at"`
-	UpdatedAt        time.Time        `json:"updated_at"`
+	ID               SessionID            `json:"id"`
+	ProjectID        ProjectID            `json:"project_id"`
+	Owner            SessionOwner         `json:"owner"`
+	State            SessionState         `json:"state"`
+	DescriptorDigest string               `json:"descriptor_digest"`
+	CredentialDigest string               `json:"credential_digest"`
+	Generation       uint64               `json:"generation"`
+	Process          *ProcessEvidence     `json:"process,omitempty"`
+	OutputBroker     *OutputBrokerSession `json:"output_broker,omitempty"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
 }
 
 // Validate reports whether the session has one complete lifecycle and process-ownership shape.
@@ -134,12 +165,23 @@ func (session ProjectSession) Validate() error {
 		if session.Process != nil {
 			return fmt.Errorf("planned session must not contain process evidence")
 		}
+		if session.OutputBroker != nil {
+			return fmt.Errorf("planned session must not contain output broker evidence")
+		}
 	} else {
 		if session.Process == nil {
 			return fmt.Errorf("%s session must contain process evidence", session.State)
 		}
 		if err := session.Process.Validate(); err != nil {
 			return err
+		}
+		if session.OutputBroker != nil {
+			if session.Owner != SessionOwnerHarbor {
+				return fmt.Errorf("output broker evidence requires a Harbor-owned session")
+			}
+			if err := session.OutputBroker.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 	if err := validateCanonicalSessionTime("session creation time", session.CreatedAt); err != nil {
@@ -184,6 +226,24 @@ func validateBoundedProcessIdentity(name, value string, maximumBytes int) error 
 	}
 	if len(value) > maximumBytes {
 		return fmt.Errorf("%s must not exceed %d bytes", name, maximumBytes)
+	}
+	return nil
+}
+
+// validateOutputBrokerEndpointReference admits only canonical local endpoint shapes on both supported platforms.
+func validateOutputBrokerEndpointReference(endpoint string) error {
+	if err := validateBoundedProcessIdentity("output broker endpoint reference", endpoint, 4096); err != nil {
+		return err
+	}
+	if strings.HasPrefix(endpoint, `\\.\pipe\`) {
+		name := strings.TrimPrefix(endpoint, `\\.\pipe\`)
+		if name == "" || strings.ContainsAny(name, `/\\`) {
+			return fmt.Errorf("output broker named pipe reference must contain one name")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(endpoint) || filepath.Clean(endpoint) != endpoint {
+		return fmt.Errorf("output broker endpoint reference must be a canonical absolute path")
 	}
 	return nil
 }

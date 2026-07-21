@@ -22,6 +22,10 @@ func projectSessionFromModel(row models.ProjectSession) (domain.ProjectSession, 
 	if err != nil {
 		return domain.ProjectSession{}, err
 	}
+	outputBroker, err := outputBrokerFromModel(row, key)
+	if err != nil {
+		return domain.ProjectSession{}, err
+	}
 	session := domain.ProjectSession{
 		ID:               domain.SessionID(row.SessionId),
 		ProjectID:        domain.ProjectID(row.ProjectId),
@@ -31,6 +35,7 @@ func projectSessionFromModel(row models.ProjectSession) (domain.ProjectSession, 
 		CredentialDigest: row.CredentialDigest,
 		Generation:       uint64(row.Generation),
 		Process:          process,
+		OutputBroker:     outputBroker,
 		CreatedAt:        row.CreatedAt,
 		UpdatedAt:        row.UpdatedAt,
 	}
@@ -81,6 +86,15 @@ func projectSessionModelFromDomain(session domain.ProjectSession) (models.Projec
 		row.ExecutableIdentity = null.StringFrom(session.Process.ExecutableIdentity)
 		row.ArgumentDigest = null.StringFrom(session.Process.ArgumentDigest)
 	}
+	if session.OutputBroker != nil {
+		row.OutputBrokerEndpointReference = null.StringFrom(session.OutputBroker.EndpointReference)
+		row.OutputBrokerTicketDigest = null.StringFrom(session.OutputBroker.CredentialDigest)
+		row.OutputBrokerManifestPath = null.StringFrom(session.OutputBroker.ManifestPath)
+		row.OutputBrokerPid = null.IntFrom(session.OutputBroker.Process.PID)
+		row.OutputBrokerBirthToken = null.StringFrom(session.OutputBroker.Process.BirthToken)
+		row.OutputBrokerExecutableIdentity = null.StringFrom(session.OutputBroker.Process.ExecutableIdentity)
+		row.OutputBrokerArgumentDigest = null.StringFrom(session.OutputBroker.Process.ArgumentDigest)
+	}
 	return row, nil
 }
 
@@ -103,5 +117,41 @@ func processEvidenceFromModel(row models.ProjectSession, key string) (*domain.Pr
 		BirthToken:         row.BirthToken.String,
 		ExecutableIdentity: row.ExecutableIdentity.String,
 		ArgumentDigest:     row.ArgumentDigest.String,
+	}, nil
+}
+
+// outputBrokerFromModel rejects partial broker evidence before any caller can use a persisted endpoint or ticket digest.
+func outputBrokerFromModel(row models.ProjectSession, key string) (*domain.OutputBrokerSession, error) {
+	values := []bool{
+		row.OutputBrokerEndpointReference.Valid,
+		row.OutputBrokerTicketDigest.Valid,
+		row.OutputBrokerManifestPath.Valid,
+		row.OutputBrokerPid.Valid,
+		row.OutputBrokerBirthToken.Valid,
+		row.OutputBrokerExecutableIdentity.Valid,
+		row.OutputBrokerArgumentDigest.Valid,
+	}
+	validFields := 0
+	for _, valid := range values {
+		if valid {
+			validFields++
+		}
+	}
+	if validFields == 0 {
+		return nil, nil
+	}
+	if validFields != len(values) {
+		return nil, corruptStateError("project session", key, fmt.Errorf("output broker evidence must be all present or all absent"))
+	}
+	return &domain.OutputBrokerSession{
+		EndpointReference: row.OutputBrokerEndpointReference.String,
+		CredentialDigest:  row.OutputBrokerTicketDigest.String,
+		ManifestPath:      row.OutputBrokerManifestPath.String,
+		Process: domain.ProcessEvidence{
+			PID:                row.OutputBrokerPid.Int64,
+			BirthToken:         row.OutputBrokerBirthToken.String,
+			ExecutableIdentity: row.OutputBrokerExecutableIdentity.String,
+			ArgumentDigest:     row.OutputBrokerArgumentDigest.String,
+		},
 	}, nil
 }

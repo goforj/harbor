@@ -94,6 +94,14 @@ type receiptFreeLifecycleRecoveryState interface {
 	ReleaseUnavailableProjectSession(context.Context, state.ReleaseUnavailableProjectSessionRequest) (state.ProjectRecord, error)
 }
 
+// projectOutputBrokerRecoveryAdopter reconnects only the output surface after a daemon restart.
+//
+// It is deliberately optional so test supervisors and platforms without a reviewed broker identity
+// reader retain the safe historical-output fallback rather than receiving synthetic process authority.
+type projectOutputBrokerRecoveryAdopter interface {
+	AdoptOutputBroker(context.Context, domain.ProjectID, domain.SessionID, domain.OutputBrokerSession) error
+}
+
 // projectLifecycleJournal is the durable idempotency and recovery surface required by project lifecycle operations.
 type projectLifecycleJournal interface {
 	Enqueue(context.Context, domain.Operation) (state.OperationRecord, error)
@@ -652,6 +660,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	}
 	coordinator.retainHandle(record.Operation.ProjectID, handle)
 	evidence := processEvidence(handle.Info())
+	broker := outputBrokerSession(handle.Info().OutputBroker)
 	attachedAt := lifecycleTime(coordinator.now())
 	if attachedAt.Before(session.UpdatedAt) {
 		attachedAt = session.UpdatedAt
@@ -662,6 +671,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 			SessionID:                 session.ID,
 			ExpectedSessionGeneration: session.Generation,
 			Process:                   evidence,
+			OutputBroker:              broker,
 			At:                        attachedAt,
 		})
 	})
@@ -670,6 +680,24 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
+}
+
+// outputBrokerSession converts complete launcher metadata into neutral durable evidence without importing supervisor types into state.
+func outputBrokerSession(peer *projectprocess.OutputBrokerPeer) *domain.OutputBrokerSession {
+	if peer == nil || peer.ManifestPath == "" || peer.TicketDigest == "" {
+		return nil
+	}
+	return &domain.OutputBrokerSession{
+		EndpointReference: peer.EndpointReference,
+		ManifestPath:      peer.ManifestPath,
+		CredentialDigest:  peer.TicketDigest,
+		Process: domain.ProcessEvidence{
+			PID:                peer.Process.PID,
+			BirthToken:         peer.Process.BirthToken,
+			ExecutableIdentity: peer.Process.ExecutableIdentity,
+			ArgumentDigest:     peer.Process.ArgumentDigest,
+		},
+	}
 }
 
 // prepareLaunchSession creates the durable session and, in production, the exact one-use context used by its child.
@@ -2243,6 +2271,7 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation s
 		// Attach the immutable birth before retaining an unresolved scope; a planned row has
 		// no evidence and must never be mistaken for proof that an accepted process is absent.
 		evidence := processEvidence(handle.Info())
+		broker := outputBrokerSession(handle.Info().OutputBroker)
 		attachedAt := lifecycleTime(coordinator.now())
 		if attachedAt.Before(session.UpdatedAt) {
 			attachedAt = session.UpdatedAt
@@ -2253,6 +2282,7 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation s
 				SessionID:                 session.ID,
 				ExpectedSessionGeneration: session.Generation,
 				Process:                   evidence,
+				OutputBroker:              broker,
 				At:                        attachedAt,
 			})
 		})

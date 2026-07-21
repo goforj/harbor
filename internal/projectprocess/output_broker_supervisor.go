@@ -30,6 +30,45 @@ type OutputBrokerLaunchSpec struct {
 	Stderr *os.File
 }
 
+// OutputBrokerAdoptionSpec identifies one owner-private broker that survived a Harbor restart.
+//
+// Adoption has no child-pipe inputs: the broker already owns those descriptors and only needs a fresh,
+// independently authenticated Harbor reader. The persisted peer evidence remains separate from the
+// managed GoForj process evidence so adopting output never grants stop or reap authority.
+type OutputBrokerAdoptionSpec struct {
+	// ProjectID identifies the registered project whose output is retained.
+	ProjectID domain.ProjectID
+	// SessionID identifies the exact lifecycle whose output is retained.
+	SessionID domain.SessionID
+	// OutputDirectory is the per-user root that owns the broker journal and manifest.
+	OutputDirectory string
+	// Peer is the complete broker process, endpoint, and manifest evidence persisted with the session.
+	Peer OutputBrokerPeer
+}
+
+// Validate reports whether an adoption request contains one complete durable broker boundary.
+func (spec OutputBrokerAdoptionSpec) Validate() error {
+	if err := spec.ProjectID.Validate(); err != nil {
+		return fmt.Errorf("output broker adoption project ID: %w", err)
+	}
+	if err := spec.SessionID.Validate(); err != nil {
+		return fmt.Errorf("output broker adoption session ID: %w", err)
+	}
+	if spec.OutputDirectory == "" || !filepath.IsAbs(spec.OutputDirectory) || filepath.Clean(spec.OutputDirectory) != spec.OutputDirectory {
+		return errors.New("output broker adoption output directory must be a canonical absolute path")
+	}
+	if err := spec.Peer.Validate(); err != nil {
+		return fmt.Errorf("output broker adoption peer: %w", err)
+	}
+	if spec.Peer.ProjectID != spec.ProjectID || spec.Peer.SessionID != spec.SessionID {
+		return errors.New("output broker adoption peer does not match lifecycle")
+	}
+	if spec.Peer.ManifestPath == "" || spec.Peer.TicketDigest == "" {
+		return errors.New("output broker adoption requires owner-private manifest metadata")
+	}
+	return nil
+}
+
 // Validate reports whether a broker launcher received one complete, canonical launch boundary.
 func (spec OutputBrokerLaunchSpec) Validate() error {
 	if err := spec.ProjectID.Validate(); err != nil {
@@ -68,6 +107,15 @@ type OutputBrokerAttachment interface {
 type OutputBrokerLauncher interface {
 	// Launch transfers output-pipe ownership to one authenticated broker attachment.
 	Launch(context.Context, OutputBrokerLaunchSpec) (OutputBrokerAttachment, error)
+}
+
+// OutputBrokerAdopter is the optional restart boundary for a process-surviving broker.
+//
+// Launchers that do not implement this interface retain the existing safe behavior: Harbor can still
+// display the checksummed historical spool, but it will not guess how to reconnect to a live broker.
+type OutputBrokerAdopter interface {
+	// Adopt attaches a fresh transport to one broker whose persisted process and manifest evidence were revalidated.
+	Adopt(context.Context, OutputBrokerAdoptionSpec) (OutputBrokerAttachment, error)
 }
 
 // readOutputBrokerAttachment feeds authenticated broker records into the existing bounded output relay.

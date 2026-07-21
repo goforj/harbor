@@ -11,20 +11,27 @@ import (
 
 // ProjectSession stores the durable process correlation for one active project lifecycle.
 type ProjectSession struct {
-	Id                 int         `gorm:"column:id" json:"id"`
-	SessionId          string      `gorm:"column:session_id" json:"session_id"`
-	ProjectId          string      `gorm:"column:project_id" json:"project_id"`
-	Owner              string      `gorm:"column:owner" json:"owner"`
-	State              string      `gorm:"column:state" json:"state"`
-	DescriptorDigest   string      `gorm:"column:descriptor_digest" json:"descriptor_digest"`
-	CredentialDigest   string      `gorm:"column:credential_digest" json:"credential_digest"`
-	Generation         int         `gorm:"column:generation" json:"generation"`
-	Pid                null.Int    `gorm:"column:pid" json:"pid"`
-	BirthToken         null.String `gorm:"column:birth_token" json:"birth_token"`
-	ExecutableIdentity null.String `gorm:"column:executable_identity" json:"executable_identity"`
-	ArgumentDigest     null.String `gorm:"column:argument_digest" json:"argument_digest"`
-	CreatedAt          time.Time   `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt          time.Time   `gorm:"column:updated_at" json:"updated_at"`
+	Id                             int         `gorm:"column:id" json:"id"`
+	SessionId                      string      `gorm:"column:session_id" json:"session_id"`
+	ProjectId                      string      `gorm:"column:project_id" json:"project_id"`
+	Owner                          string      `gorm:"column:owner" json:"owner"`
+	State                          string      `gorm:"column:state" json:"state"`
+	DescriptorDigest               string      `gorm:"column:descriptor_digest" json:"descriptor_digest"`
+	CredentialDigest               string      `gorm:"column:credential_digest" json:"credential_digest"`
+	Generation                     int         `gorm:"column:generation" json:"generation"`
+	Pid                            null.Int    `gorm:"column:pid" json:"pid"`
+	BirthToken                     null.String `gorm:"column:birth_token" json:"birth_token"`
+	ExecutableIdentity             null.String `gorm:"column:executable_identity" json:"executable_identity"`
+	ArgumentDigest                 null.String `gorm:"column:argument_digest" json:"argument_digest"`
+	OutputBrokerEndpointReference  null.String `gorm:"column:output_broker_endpoint_reference" json:"output_broker_endpoint_reference"`
+	OutputBrokerTicketDigest       null.String `gorm:"column:output_broker_ticket_digest" json:"output_broker_ticket_digest"`
+	OutputBrokerManifestPath       null.String `gorm:"column:output_broker_manifest_path" json:"output_broker_manifest_path"`
+	OutputBrokerPid                null.Int    `gorm:"column:output_broker_pid" json:"output_broker_pid"`
+	OutputBrokerBirthToken         null.String `gorm:"column:output_broker_birth_token" json:"output_broker_birth_token"`
+	OutputBrokerExecutableIdentity null.String `gorm:"column:output_broker_executable_identity" json:"output_broker_executable_identity"`
+	OutputBrokerArgumentDigest     null.String `gorm:"column:output_broker_argument_digest" json:"output_broker_argument_digest"`
+	CreatedAt                      time.Time   `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt                      time.Time   `gorm:"column:updated_at" json:"updated_at"`
 }
 
 // TableName returns the database table name.
