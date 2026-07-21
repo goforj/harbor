@@ -32,6 +32,8 @@ The Unix transport integration now waits for authenticated server acceptance bef
 
 The Darwin retained-runtime libproc census now admits only a bounded positive `PROC_PIDLISTFDS` size result when no output buffer is supplied. The subsequent descriptor read adds a twenty-record spare margin and remains unreadable on saturation, malformed stride, or an over-limit census. This fixes the native observer's prior immediate `native_unreadable` classification without widening signal authority.
 
+The Darwin retained-runtime final signal gate now rereads every captured session member's full native identity, not only PID and birth. Executable, argv digest/count, working directory, UID, process-group, session, parent, and birth drift therefore emits zero signals before the exact root `SIGTERM`; native execution remains required to prove the complete lifecycle.
+
 The privileged Linux resolver test preserves its public typed failure contract but adds a 4 KiB-capped unwrapped native cause to its root-only observation and mutation failure reports. Linux recovery now distinguishes unpublished canonical staging from an exchanged old owned artifact: only the latter causes one post-cleanup `systemd-resolved` restart. Its `DNSEx` reader normalizes only systemd's zero-port default representation to port 53. Foreign, malformed, unsafe, excess, and ambiguous transaction states remain preserved and fail closed. Native CI evidence is still required.
 
 Do not expand scope before reading [Current implementation state](./current-state.md), this handoff, and the relevant design document.

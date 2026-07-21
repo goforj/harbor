@@ -343,8 +343,14 @@ func gracefullyTerminateDarwinRuntimeRepair(ctx context.Context, receipt runtime
 	if err != nil || !parentPresent || parentBirth != receipt.observation.RootParent.BirthToken {
 		return false, ErrRuntimeRepairDrift
 	}
-	currentMembers, err := unixSessionMembers(root.SessionID)
-	if err != nil || !sameDarwinRuntimeRepairSessionMembers(currentMembers, receipt.observation.Members) {
+	currentMembers, err := observeDarwinRuntimeRepairSessionProcessFacts(ctx, root.SessionID, receipt.observation.Members)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, ErrRuntimeRepairDrift
+	}
+	if !sameDarwinRuntimeRepairProcessFacts(currentMembers, receipt.observation.Members) {
 		return false, ErrRuntimeRepairDrift
 	}
 	finalBirth, present, err := observeProcessBirthToken(root.PID)
@@ -363,6 +369,62 @@ func gracefullyTerminateDarwinRuntimeRepair(ctx context.Context, receipt runtime
 	return true, nil
 }
 
+// observeDarwinRuntimeRepairSessionProcessFacts rereads every captured member identity immediately before signaling.
+func observeDarwinRuntimeRepairSessionProcessFacts(
+	ctx context.Context,
+	sessionID int,
+	expected []runtimeRepairProcessFact,
+) ([]runtimeRepairProcessFact, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	members, err := unixSessionMembers(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !sameDarwinRuntimeRepairSessionMembers(members, expected) {
+		return nil, errDarwinRuntimeRepairUnstable
+	}
+	observed := make([]runtimeRepairProcessFact, 0, len(members))
+	for _, member := range members {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		processes, err := unix.SysctlKinfoProcSlice("kern.proc.pid", member.PID)
+		if err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil, errDarwinRuntimeRepairUnstable
+			}
+			return nil, fmt.Errorf("read Darwin process %d for runtime repair: %w", member.PID, errDarwinRuntimeRepairUnreadable)
+		}
+		if len(processes) == 0 {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		if len(processes) != 1 || processes[0].Proc.P_stat == darwinProcessStateZombie || int(processes[0].Proc.P_pid) != member.PID {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		observedSessionID, err := unix.Getsid(member.PID)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read Darwin process %d session for runtime repair: %w", member.PID, errDarwinRuntimeRepairUnreadable)
+		}
+		if observedSessionID != sessionID {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		fact, err := observeDarwinRuntimeRepairProcess(processes[0], observedSessionID)
+		if err != nil {
+			return nil, err
+		}
+		if fact.PID != member.PID || fact.BirthToken != member.BirthToken {
+			return nil, errDarwinRuntimeRepairUnstable
+		}
+		observed = append(observed, fact)
+	}
+	return observed, nil
+}
+
 // sameDarwinRuntimeRepairSessionMembers proves the exact captured session scope still exists immediately before signaling.
 func sameDarwinRuntimeRepairSessionMembers(observed []unixProcessMember, expected []runtimeRepairProcessFact) bool {
 	if len(observed) != len(expected) {
@@ -370,6 +432,19 @@ func sameDarwinRuntimeRepairSessionMembers(observed []unixProcessMember, expecte
 	}
 	for index, member := range observed {
 		if member.PID != expected[index].PID || member.BirthToken != expected[index].BirthToken {
+			return false
+		}
+	}
+	return true
+}
+
+// sameDarwinRuntimeRepairProcessFacts compares every native identity fact, not only PID and birth.
+func sameDarwinRuntimeRepairProcessFacts(observed, expected []runtimeRepairProcessFact) bool {
+	if len(observed) != len(expected) {
+		return false
+	}
+	for index := range observed {
+		if !reflect.DeepEqual(observed[index], expected[index]) {
 			return false
 		}
 	}

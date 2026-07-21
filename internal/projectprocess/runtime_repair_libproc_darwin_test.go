@@ -79,6 +79,48 @@ func TestSameDarwinRuntimeRepairSessionMembersRejectsBirthOrScopeDrift(t *testin
 	}
 }
 
+// TestSameDarwinRuntimeRepairProcessFactsRejectsNonRootIdentityDrift keeps the final signal gate bound to every captured member fact.
+func TestSameDarwinRuntimeRepairProcessFactsRejectsNonRootIdentityDrift(t *testing.T) {
+	expected := []runtimeRepairProcessFact{
+		{
+			PID:                10,
+			BirthToken:         "darwin:10:1",
+			ParentPID:          1,
+			ProcessGroupID:     10,
+			SessionID:          10,
+			EffectiveUID:       501,
+			RealUID:            501,
+			ExecutableIdentity: "/opt/forj",
+			ArgumentDigest:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ArgumentCount:      2,
+			CommandExact:       true,
+			WorkingDirectory:   "/tmp/project",
+		},
+		{
+			PID:                11,
+			BirthToken:         "darwin:11:1",
+			ParentPID:          10,
+			ProcessGroupID:     10,
+			SessionID:          10,
+			EffectiveUID:       501,
+			RealUID:            501,
+			ExecutableIdentity: "/usr/bin/watcher",
+			ArgumentDigest:     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			ArgumentCount:      1,
+			CommandExact:       false,
+			WorkingDirectory:   "/tmp/project",
+		},
+	}
+	observed := append([]runtimeRepairProcessFact(nil), expected...)
+	if !sameDarwinRuntimeRepairProcessFacts(observed, expected) {
+		t.Fatal("unchanged process facts were rejected")
+	}
+	observed[1].WorkingDirectory = "/tmp/other-project"
+	if sameDarwinRuntimeRepairProcessFacts(observed, expected) {
+		t.Fatal("non-root working-directory drift was accepted")
+	}
+}
+
 // darwinRuntimeRepairTestSocketRecord builds the exact reviewed listener envelope for parser mutations.
 func darwinRuntimeRepairTestSocketRecord(endpoint netip.AddrPort) []byte {
 	raw := make([]byte, darwinRuntimeRepairSocketFDInfoBytes)
