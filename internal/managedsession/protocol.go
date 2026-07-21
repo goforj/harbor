@@ -30,12 +30,16 @@ const (
 	CapabilityLaunchContextV1 rpc.Capability = "managed-session.launch-context.v1"
 	// CapabilityEventsV1 identifies the optional ordered state and output event stream.
 	CapabilityEventsV1 rpc.Capability = "managed-session.events.v1"
+	// CapabilityRuntimePlanV1 identifies the optional semantic endpoint-assignment plan.
+	CapabilityRuntimePlanV1 rpc.Capability = "managed-session.runtime-plan.v1"
 	// MethodRegister attaches one authenticated GoForj process to a Harbor session.
 	MethodRegister = "managed-session.v1.register"
 	// MethodReplacePublications replaces every private publication observed by a session.
 	MethodReplacePublications = "managed-session.v1.publications.replace"
 	// MethodBarrier asks Harbor whether a named lifecycle barrier has been acknowledged.
 	MethodBarrier = "managed-session.v1.barrier"
+	// MethodRuntimePlan asks Harbor for one authenticated semantic runtime assignment plan.
+	MethodRuntimePlan = "managed-session.v1.runtime-plan"
 
 	maximumManagedSessionPayloadBytes = 1 << 20
 	maximumManagedSessionApps         = 256

@@ -290,6 +290,12 @@ Harbor sends semantic assignments, not hardcoded environment-key names:
 }
 ```
 
+The mirrored managed-session wire contract represents the two assignment collections as sorted arrays rather than
+JSON objects so every peer can enforce deterministic IDs and duplicate rejection without relying on map ordering.
+The request/response is capability-gated (`managed-session.runtime-plan.v1`) and bound to the exact attached session
+fence. Harbor does not advertise the capability until its authority can produce real assignments, and GoForj keeps it
+off by default; this contract therefore does not change the current startup path or imply that the overlay exists yet.
+
 GoForj validates every ID and maps the assignments through its current project, App, service-requirement, and resource plans. Stable IDs are assigned from normalized structural identity, not from the current affinity hash when that hash may include a credential-bearing DSN. Harbor does not need to know whether a current template uses `DB_MYSQL_PORT`, an App-prefixed key, or a future typed config field.
 
 The plan covers every listener-bearing active command shape. A generated combined HTTP `run` has one listener whose routes include health, readiness, `/metrics`, and Lighthouse; those routes are not separate ports. Standalone worker or scheduler commands receive their own metrics listener only when that active command actually opens one. SPAs are build nodes, not listeners, unless an explicitly modeled development server exists.

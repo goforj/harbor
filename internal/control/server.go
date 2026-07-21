@@ -127,6 +127,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 			_ = connection.Close()
 			return fmt.Errorf("configure managed session handlers: %w", handlerErr)
 		}
+		serverCapabilities = append(serverCapabilities, managedHandlers.Capabilities()...)
 		roleHandlers = map[rpc.Role]map[string]session.Handler{
 			rpc.RoleGoForjSession: managedHandlers.Handlers(),
 		}

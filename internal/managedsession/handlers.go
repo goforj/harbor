@@ -26,7 +26,12 @@ type Authority interface {
 	AcknowledgeManagedBarrier(context.Context, local.PeerIdentity, BarrierRequest) (BarrierResponse, error)
 }
 
-// HandlerSet exposes the three bounded managed-session methods to the generic RPC session server.
+// RuntimePlanAuthority optionally provides the additive semantic runtime-plan method.
+type RuntimePlanAuthority interface {
+	PlanManagedRuntime(context.Context, local.PeerIdentity, RuntimePlanRequest) (RuntimePlanResponse, error)
+}
+
+// HandlerSet exposes the bounded managed-session methods to the generic RPC session server.
 type HandlerSet struct {
 	authority Authority
 	peer      local.PeerIdentity
@@ -48,11 +53,26 @@ func (set *HandlerSet) Handlers() map[string]session.Handler {
 	if set == nil {
 		return nil
 	}
-	return map[string]session.Handler{
+	handlers := map[string]session.Handler{
 		MethodRegister:            set.registerHandler(),
 		MethodReplacePublications: set.replacePublicationsHandler(),
 		MethodBarrier:             set.barrierHandler(),
 	}
+	if _, supported := set.authority.(RuntimePlanAuthority); supported {
+		handlers[MethodRuntimePlan] = set.runtimePlanHandler()
+	}
+	return handlers
+}
+
+// Capabilities reports optional managed-session features implemented by the bound authority.
+func (set *HandlerSet) Capabilities() []rpc.Capability {
+	if set == nil {
+		return nil
+	}
+	if _, supported := set.authority.(RuntimePlanAuthority); supported {
+		return []rpc.Capability{CapabilityRuntimePlanV1}
+	}
+	return nil
 }
 
 // registerHandler admits only a negotiated GoForj session and validates the authority response before writing it.
@@ -122,6 +142,34 @@ func (set *HandlerSet) barrierHandler() session.Handler {
 		}
 		if err := ValidateBarrierCorrelation(barrierRequest, response); err != nil {
 			return nil, session.NewHandlerError(rpc.ErrorCodeInternal, fmt.Errorf("validate managed session barrier response: %w", err))
+		}
+		return response, nil
+	}
+}
+
+// runtimePlanHandler dispatches one capability-gated semantic endpoint plan without changing legacy handlers.
+func (set *HandlerSet) runtimePlanHandler() session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		if err := validateManagedSessionRequestPeer(request); err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsManagedSessionCapability(request.Peer.Capabilities, CapabilityRuntimePlanV1) {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, errors.New("managed runtime-plan capability was not negotiated"))
+		}
+		planRequest, err := DecodeRuntimePlanRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		authority, supported := set.authority.(RuntimePlanAuthority)
+		if !supported {
+			return nil, session.NewHandlerError(rpc.ErrorCodeUnavailable, errors.New("managed runtime-plan authority is unavailable"))
+		}
+		response, err := authority.PlanManagedRuntime(ctx, set.peer, planRequest)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInternal, err)
+		}
+		if err := ValidateRuntimePlanCorrelation(planRequest, response); err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInternal, fmt.Errorf("validate managed runtime plan response: %w", err))
 		}
 		return response, nil
 	}
