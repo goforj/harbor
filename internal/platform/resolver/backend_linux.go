@@ -1378,6 +1378,9 @@ func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, 
 	if len(transactions) > maximumSystemdResolvedTransactions {
 		return false, fmt.Errorf("systemd-resolved transactions exceed limit %d", maximumSystemdResolvedTransactions)
 	}
+	if len(transactions) > 1 {
+		return false, fmt.Errorf("systemd-resolved transaction set is ambiguous; refusing mutation")
+	}
 	if len(transactions) == 0 {
 		return false, nil
 	}

@@ -290,6 +290,42 @@ func TestSystemdResolvedRecoveryRejectsExcessTransactionsBeforeMutation(t *testi
 	}
 }
 
+// TestSystemdResolvedRecoveryRejectsAmbiguousTransactionsBeforeMutation preserves every artifact when two crash remnants coexist.
+func TestSystemdResolvedRecoveryRejectsAmbiguousTransactionsBeforeMutation(t *testing.T) {
+	directoryPath := t.TempDir()
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	content := marshalSystemdResolvedValidated(request)
+	names := []string{
+		fixedSystemdResolvedName,
+		systemdResolvedStagePrefix + strings.Repeat("a", systemdResolvedTransactionHexBytes*2),
+		systemdResolvedQuarantinePrefix + strings.Repeat("b", systemdResolvedTransactionHexBytes*2),
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(directoryPath, name), content, 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
+	}
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer directory.Close()
+
+	restarted, err := recoverSystemdResolvedTransactionsAt(t.Context(), request, directory)
+	if err == nil || restarted {
+		t.Fatalf("recoverSystemdResolvedTransactionsAt() = restart %t, error %v, want ambiguous rejection", restarted, err)
+	}
+	for _, name := range names {
+		got, readErr := os.ReadFile(filepath.Join(directoryPath, name))
+		if readErr != nil {
+			t.Fatalf("ReadFile(%q) after rejection error = %v", name, readErr)
+		}
+		if !bytes.Equal(got, content) {
+			t.Fatalf("transaction %q changed during ambiguous recovery", name)
+		}
+	}
+}
+
 // TestVerifySystemdResolvedReleasePreservesForeignRuntime pins the exact post-removal runtime expectation.
 func TestVerifySystemdResolvedReleasePreservesForeignRuntime(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
