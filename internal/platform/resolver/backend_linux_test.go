@@ -264,6 +264,138 @@ func TestSystemdResolvedTransactionScanAdmitsOnlyTheRetainedName(t *testing.T) {
 	}
 }
 
+// TestSystemdResolvedTransactionScansRejectMalformedReservedNames keeps malformed Harbor remnants from hiding in the private namespace.
+func TestSystemdResolvedTransactionScansRejectMalformedReservedNames(t *testing.T) {
+	tests := []struct {
+		name        string
+		transaction string
+	}{
+		{name: "stage prefix only", transaction: systemdResolvedStagePrefix},
+		{name: "stage truncated", transaction: systemdResolvedStagePrefix + strings.Repeat("a", systemdResolvedTransactionHexBytes*2-1)},
+		{name: "stage uppercase", transaction: systemdResolvedStagePrefix + strings.Repeat("A", systemdResolvedTransactionHexBytes*2)},
+		{name: "stage invalid hex", transaction: systemdResolvedStagePrefix + strings.Repeat("g", systemdResolvedTransactionHexBytes*2)},
+		{name: "quarantine prefix only", transaction: systemdResolvedQuarantinePrefix},
+		{name: "quarantine truncated", transaction: systemdResolvedQuarantinePrefix + strings.Repeat("b", systemdResolvedTransactionHexBytes*2-1)},
+		{name: "quarantine uppercase", transaction: systemdResolvedQuarantinePrefix + strings.Repeat("B", systemdResolvedTransactionHexBytes*2)},
+		{name: "quarantine invalid hex", transaction: systemdResolvedQuarantinePrefix + strings.Repeat("h", systemdResolvedTransactionHexBytes*2)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directoryPath := t.TempDir()
+			malformedContent := []byte("malformed transaction\n")
+			malformedPath := filepath.Join(directoryPath, test.transaction)
+			if err := os.WriteFile(malformedPath, malformedContent, 0o600); err != nil {
+				t.Fatalf("WriteFile(%q) error = %v", malformedPath, err)
+			}
+			unrelatedPath := filepath.Join(directoryPath, "ordinary.conf")
+			unrelatedContent := []byte("foreign drop-in\n")
+			if err := os.WriteFile(unrelatedPath, unrelatedContent, 0o600); err != nil {
+				t.Fatalf("WriteFile(%q) error = %v", unrelatedPath, err)
+			}
+			openDirectory := func() *os.File {
+				directory, err := os.Open(directoryPath)
+				if err != nil {
+					t.Fatalf("Open() error = %v", err)
+				}
+				return directory
+			}
+
+			directory := openDirectory()
+			if err := requireNoSystemdResolvedTransactionsAt(directory); err == nil {
+				t.Fatal("requireNoSystemdResolvedTransactionsAt() accepted malformed reserved name")
+			}
+			if err := directory.Close(); err != nil {
+				t.Fatalf("Close() after no-transaction scan error = %v", err)
+			}
+			allowed := systemdResolvedStagePrefix + strings.Repeat("c", systemdResolvedTransactionHexBytes*2)
+			directory = openDirectory()
+			if err := requireSystemdResolvedTransactionsAt(directory, allowed); err == nil {
+				t.Fatal("requireSystemdResolvedTransactionsAt() accepted malformed reserved name")
+			}
+			if err := directory.Close(); err != nil {
+				t.Fatalf("Close() after retained-transaction scan error = %v", err)
+			}
+
+			got, err := os.ReadFile(malformedPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) after rejection error = %v", malformedPath, err)
+			}
+			if !bytes.Equal(got, malformedContent) {
+				t.Fatalf("malformed transaction changed during scan: got %q, want %q", got, malformedContent)
+			}
+			got, err = os.ReadFile(unrelatedPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) after rejection error = %v", unrelatedPath, err)
+			}
+			if !bytes.Equal(got, unrelatedContent) {
+				t.Fatalf("unrelated artifact changed during scan: got %q, want %q", got, unrelatedContent)
+			}
+		})
+	}
+}
+
+// TestSystemdResolvedRecoveryRejectsMalformedReservedNamesBeforeMutation keeps failed recovery retryable and side-effect free.
+func TestSystemdResolvedRecoveryRejectsMalformedReservedNamesBeforeMutation(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	tests := []struct {
+		name        string
+		transaction string
+	}{
+		{name: "stage truncated", transaction: systemdResolvedStagePrefix + strings.Repeat("a", systemdResolvedTransactionHexBytes*2-1)},
+		{name: "stage uppercase", transaction: systemdResolvedStagePrefix + strings.Repeat("A", systemdResolvedTransactionHexBytes*2)},
+		{name: "quarantine wrong length", transaction: systemdResolvedQuarantinePrefix + strings.Repeat("b", systemdResolvedTransactionHexBytes*2+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directoryPath := t.TempDir()
+			malformedContent := []byte("malformed transaction\n")
+			malformedPath := filepath.Join(directoryPath, test.transaction)
+			if err := os.WriteFile(malformedPath, malformedContent, 0o600); err != nil {
+				t.Fatalf("WriteFile(%q) error = %v", malformedPath, err)
+			}
+			unrelatedPath := filepath.Join(directoryPath, "ordinary.conf")
+			unrelatedContent := []byte("foreign drop-in\n")
+			if err := os.WriteFile(unrelatedPath, unrelatedContent, 0o600); err != nil {
+				t.Fatalf("WriteFile(%q) error = %v", unrelatedPath, err)
+			}
+			directory, err := os.Open(directoryPath)
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			defer directory.Close()
+
+			restartCalls := 0
+			restarted, err := recoverSystemdResolvedTransactionsAt(
+				t.Context(),
+				request,
+				directory,
+				func(context.Context) error {
+					restartCalls++
+					return nil
+				},
+			)
+			if err == nil || restarted || restartCalls != 0 {
+				t.Fatalf("recoverSystemdResolvedTransactionsAt() = restart %t, calls %d, error %v; want rejection without restart", restarted, restartCalls, err)
+			}
+
+			got, err := os.ReadFile(malformedPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) after rejection error = %v", malformedPath, err)
+			}
+			if !bytes.Equal(got, malformedContent) {
+				t.Fatalf("malformed transaction changed during recovery: got %q, want %q", got, malformedContent)
+			}
+			got, err = os.ReadFile(unrelatedPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) after rejection error = %v", unrelatedPath, err)
+			}
+			if !bytes.Equal(got, unrelatedContent) {
+				t.Fatalf("unrelated artifact changed during recovery: got %q, want %q", got, unrelatedContent)
+			}
+		})
+	}
+}
+
 // TestSystemdResolvedRecoveryRejectsExcessTransactionsBeforeMutation keeps a crowded private namespace fail-closed.
 func TestSystemdResolvedRecoveryRejectsExcessTransactionsBeforeMutation(t *testing.T) {
 	directoryPath := t.TempDir()

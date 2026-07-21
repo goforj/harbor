@@ -1376,9 +1376,13 @@ func recoverSystemdResolvedTransactionsAt(
 	}
 	transactions := make([]string, 0, len(names))
 	for _, name := range names {
-		if isSystemdResolvedTransactionName(name) {
-			transactions = append(transactions, name)
+		if !isSystemdResolvedReservedTransactionName(name) {
+			continue
 		}
+		if !isSystemdResolvedTransactionName(name) {
+			return false, fmt.Errorf("systemd-resolved transaction name %q is malformed; refusing mutation", name)
+		}
+		transactions = append(transactions, name)
 	}
 	if len(transactions) > maximumSystemdResolvedTransactions {
 		return false, fmt.Errorf("systemd-resolved transactions exceed limit %d", maximumSystemdResolvedTransactions)
@@ -1507,8 +1511,11 @@ func requireSystemdResolvedTransactionsAt(directory *os.File, allowedTransaction
 	transactions := 0
 	allowedFound := false
 	for _, name := range names {
-		if !isSystemdResolvedTransactionName(name) {
+		if !isSystemdResolvedReservedTransactionName(name) {
 			continue
+		}
+		if !isSystemdResolvedTransactionName(name) {
+			return fmt.Errorf("systemd-resolved transaction name %q is malformed; refusing mutation", name)
 		}
 		transactions++
 		if transactions > maximumSystemdResolvedTransactions {
@@ -1524,6 +1531,11 @@ func requireSystemdResolvedTransactionsAt(directory *os.File, allowedTransaction
 		return fmt.Errorf("retained systemd-resolved transaction %q is absent", allowedTransaction)
 	}
 	return nil
+}
+
+// isSystemdResolvedReservedTransactionName recognizes every Harbor transaction prefix, including malformed names.
+func isSystemdResolvedReservedTransactionName(name string) bool {
+	return strings.HasPrefix(name, systemdResolvedStagePrefix) || strings.HasPrefix(name, systemdResolvedQuarantinePrefix)
 }
 
 // isSystemdResolvedTransactionName recognizes only Harbor's fixed unpredictable staging namespaces.
