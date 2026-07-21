@@ -45,3 +45,23 @@ func TestInitializeApplicationWiresOpenCommand(t *testing.T) {
 		t.Fatalf("Parse(open) command = %q, want open <project>", parsed.Command())
 	}
 }
+
+// TestInitializeApplicationWiresLogsCommand proves the bounded log surface is registered without contacting harbord during assembly.
+func TestInitializeApplicationWiresLogsCommand(t *testing.T) {
+	application, err := InitializeApplication()
+	if err != nil {
+		t.Fatalf("InitializeApplication() error = %v", err)
+	}
+
+	parser, err := kong.New(application.RootCmd(), kong.Name("harbor"))
+	if err != nil {
+		t.Fatalf("kong.New() error = %v", err)
+	}
+	parsed, err := parser.Parse([]string{"logs", "project-orders", "--service", "mysql", "--follow"})
+	if err != nil {
+		t.Fatalf("Parse(logs) error = %v", err)
+	}
+	if parsed.Command() != "logs <project>" {
+		t.Fatalf("Parse(logs) command = %q, want logs <project>", parsed.Command())
+	}
+}

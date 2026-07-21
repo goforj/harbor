@@ -14,6 +14,8 @@ type daemonControlClient interface {
 	Status(context.Context) (control.DaemonStatus, error)
 	Stop(context.Context) error
 	Snapshot(context.Context) (domain.Snapshot, error)
+	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	ServiceLogs(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
 	RegisterProject(context.Context, control.RegisterProjectRequest) (control.ProjectRegistration, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
@@ -65,6 +67,26 @@ func (client *DaemonClient) Stop(ctx context.Context) error {
 func (client *DaemonClient) Snapshot(ctx context.Context) (domain.Snapshot, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (domain.Snapshot, error) {
 		return connection.Snapshot(ctx)
+	})
+}
+
+// ProjectActivity reads one bounded current-session output chunk and closes its one-shot control connection.
+func (client *DaemonClient) ProjectActivity(
+	ctx context.Context,
+	request control.ProjectActivityRequest,
+) (control.ProjectActivity, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectActivity, error) {
+		return connection.ProjectActivity(ctx, request)
+	})
+}
+
+// ServiceLogs reads one bounded current-session service chunk and closes its one-shot control connection.
+func (client *DaemonClient) ServiceLogs(
+	ctx context.Context,
+	request control.ServiceLogsRequest,
+) (control.ServiceLogs, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ServiceLogs, error) {
+		return connection.ServiceLogs(ctx, request)
 	})
 }
 

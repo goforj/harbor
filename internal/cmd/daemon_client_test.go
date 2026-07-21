@@ -14,6 +14,8 @@ import (
 type fakeDaemonControlClient struct {
 	status                           control.DaemonStatus
 	snapshot                         domain.Snapshot
+	projectActivity                  control.ProjectActivity
+	serviceLogs                      control.ServiceLogs
 	registration                     control.ProjectRegistration
 	unregistration                   control.ProjectUnregistration
 	startLifecycle                   control.ProjectLifecycleOperation
@@ -25,6 +27,8 @@ type fakeDaemonControlClient struct {
 	statusErr                        error
 	stopErr                          error
 	snapshotErr                      error
+	projectActivityErr               error
+	serviceLogsErr                   error
 	registrationErr                  error
 	unregistrationErr                error
 	startLifecycleErr                error
@@ -37,6 +41,12 @@ type fakeDaemonControlClient struct {
 	statusCalls                      int
 	stopCalls                        int
 	snapshotCalls                    int
+	projectActivityCalls             int
+	serviceLogsCalls                 int
+	projectActivityRequests          []control.ProjectActivityRequest
+	serviceLogsRequests              []control.ServiceLogsRequest
+	projectActivityHook              func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	serviceLogsHook                  func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
 	registrationCalls                int
 	unregistrationCalls              int
 	startLifecycleCalls              int
@@ -158,6 +168,26 @@ func (client *fakeDaemonControlClient) Stop(context.Context) error {
 func (client *fakeDaemonControlClient) Snapshot(context.Context) (domain.Snapshot, error) {
 	client.snapshotCalls++
 	return client.snapshot, client.snapshotErr
+}
+
+// ProjectActivity returns the configured current-session output and records the request.
+func (client *fakeDaemonControlClient) ProjectActivity(ctx context.Context, request control.ProjectActivityRequest) (control.ProjectActivity, error) {
+	client.projectActivityCalls++
+	client.projectActivityRequests = append(client.projectActivityRequests, request)
+	if client.projectActivityHook != nil {
+		return client.projectActivityHook(ctx, request)
+	}
+	return client.projectActivity, client.projectActivityErr
+}
+
+// ServiceLogs returns the configured current-session service output and records the request.
+func (client *fakeDaemonControlClient) ServiceLogs(ctx context.Context, request control.ServiceLogsRequest) (control.ServiceLogs, error) {
+	client.serviceLogsCalls++
+	client.serviceLogsRequests = append(client.serviceLogsRequests, request)
+	if client.serviceLogsHook != nil {
+		return client.serviceLogsHook(ctx, request)
+	}
+	return client.serviceLogs, client.serviceLogsErr
 }
 
 // Close records deterministic connection cleanup and returns its configured failure.
