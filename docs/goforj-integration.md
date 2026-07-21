@@ -208,8 +208,9 @@ initial watcher graph, GoForj sends a complete empty client replacement and retr
 readiness, fresh service-port observations, Harbor-owned TCP reservations, and live native relay evidence. Harbor does
 not trust client-supplied ports; it replaces the registry with its own exact observation before acknowledging. The
 Compose barrier may now perform that service-only join while the exact project is still `Starting`; public App
-readiness and default publication planning remain `Ready`-gated. The fully phased pre-Compose/post-Compose lifecycle
-ordering remains a later GoForj slice, while ordinary standalone
+readiness and default publication planning remain `Ready`-gated. Managed startup now executes the explicit pre-Compose,
+Compose, post-Compose, and post-migrate task buckets around that barrier; the semantic runtime-plan/overlay handshake
+and typed Compose-down execution remain later slices, while ordinary standalone
 `forj dev` remains unchanged.
 
 Startup ordering matters:
