@@ -9,6 +9,7 @@ type WaitProjectActivity = (projectId: string, sessionId: string, cursor: number
 
 interface ActivityChunkOptions {
   available?: boolean
+  historical?: boolean
   reset?: boolean
   truncated?: boolean
   hasMore?: boolean
@@ -29,6 +30,7 @@ function projectActivity(
       generation: 1,
       output: {
         available: options.available ?? true,
+        historical: options.historical,
         reset: options.reset ?? false,
         truncated: options.truncated ?? false,
         has_more: options.hasMore ?? false,
@@ -243,6 +245,24 @@ describe('useProjectActivity', () => {
 
     expect(read).toHaveBeenLastCalledWith('orders', 'session-orders', 1)
     expect(state.output.value).toBe('AB')
+    wrapper.unmount()
+  })
+
+  it('shows retained history as non-live and replaces it when live output resumes', async () => {
+    const read = vi.fn<ReadProjectActivity>()
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'retained\n', 9, { available: false, historical: true }))
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'live\n', 5))
+    const wait = vi.fn<WaitProjectActivity>(() => never<ProjectActivity>())
+    const { state, snapshotSequence, wrapper } = mountProjectActivity(read, wait)
+
+    await settle()
+    expect(state.output.value).toBe('retained\n')
+    expect(state.activity.value?.session?.output.historical).toBe(true)
+
+    snapshotSequence.value = 2
+    await settle()
+    expect(state.output.value).toBe('live\n')
+    expect(state.activity.value?.session?.output.historical).toBeUndefined()
     wrapper.unmount()
   })
 

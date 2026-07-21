@@ -160,6 +160,7 @@ export interface ProjectRuntimeRepairConfirmation {
 
 export interface ProjectOutputChunk {
   available: boolean
+  historical?: boolean
   reset: boolean
   truncated: boolean
   has_more: boolean

@@ -20,6 +20,8 @@ const (
 type OutputChunk struct {
 	// Available reports whether the exact project and session still name a supervised process.
 	Available bool `json:"available"`
+	// Historical reports that this chunk came from owner-private persisted history rather than a live process.
+	Historical bool `json:"historical,omitempty"`
 	// Reset reports that the supplied cursor was ahead of or not aligned with the current transcript.
 	Reset bool `json:"reset"`
 	// Truncated reports that retained output begins after the supplied cursor.
@@ -78,6 +80,25 @@ func (supervisor *Supervisor) ReadOutput(
 	supervisor.mu.Unlock()
 
 	return transcript.read(cursor)
+}
+
+// ReadOutputHistory returns retained output without treating persisted bytes as live process authority.
+func (supervisor *Supervisor) ReadOutputHistory(
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	cursor uint64,
+) (OutputChunk, error) {
+	snapshot, available, err := readOutputSpool(supervisor.outputSpoolDirectory, projectID, sessionID)
+	if err != nil {
+		return OutputChunk{}, err
+	}
+	if !available {
+		return OutputChunk{}, nil
+	}
+	chunk := snapshot.transcript.read(cursor)
+	chunk.Available = false
+	chunk.Historical = true
+	return chunk, nil
 }
 
 // WaitOutput waits until output after cursor is available or the exact supervised process is no longer available.

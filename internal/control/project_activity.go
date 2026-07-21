@@ -91,6 +91,7 @@ func (activity ProjectSessionActivity) Validate() error {
 // ProjectOutputChunk is one bounded cursor-addressed view of current process output.
 type ProjectOutputChunk struct {
 	Available  bool   `json:"available"`
+	Historical bool   `json:"historical,omitempty"`
 	Reset      bool   `json:"reset"`
 	Truncated  bool   `json:"truncated"`
 	HasMore    bool   `json:"has_more"`
@@ -110,10 +111,11 @@ func (chunk ProjectOutputChunk) Validate() error {
 		return fmt.Errorf("project output cursor exceeds %d", domain.MaximumSequence)
 	}
 	if !chunk.Available {
-		if chunk.Truncated || chunk.HasMore || chunk.NextCursor != 0 || chunk.Text != "" {
+		if !chunk.Historical && (chunk.Truncated || chunk.HasMore || chunk.NextCursor != 0 || chunk.Text != "") {
 			return errors.New("unavailable project output must not contain transcript state")
 		}
-		return nil
+	} else if chunk.Historical {
+		return errors.New("live project output must not be marked historical")
 	}
 	if chunk.NextCursor < uint64(len(chunk.Text)) {
 		return errors.New("project output cursor cannot precede returned transcript bytes")

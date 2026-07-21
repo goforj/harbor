@@ -52,6 +52,23 @@ type projectActivityTestReader struct {
 	waitCalls  []projectActivityOutputCall
 }
 
+// projectActivityHistoryTestReader adds one optional retained transcript to the normal output fixture.
+type projectActivityHistoryTestReader struct {
+	projectActivityTestReader
+	historyOutput projectprocess.OutputChunk
+	historyErr    error
+}
+
+// ReadOutputHistory returns one optional owner-private retained transcript for fallback tests.
+func (reader *projectActivityHistoryTestReader) ReadOutputHistory(
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	cursor uint64,
+) (projectprocess.OutputChunk, error) {
+	reader.calls = append(reader.calls, projectActivityOutputCall{projectID: projectID, sessionID: sessionID, cursor: cursor})
+	return reader.historyOutput, reader.historyErr
+}
+
 // WaitOutput records one exact held transcript selection and returns the configured wake result.
 func (reader *projectActivityTestReader) WaitOutput(
 	_ context.Context,
@@ -103,6 +120,44 @@ func TestReadCurrentProjectActivityUsesOnlyTheDurableCurrentSession(t *testing.T
 	}
 	if len(reader.waitCalls) != 0 {
 		t.Fatalf("changed session waited on retired output: %#v", reader.waitCalls)
+	}
+}
+
+// TestReadCurrentProjectActivityFallsBackToExplicitHistory keeps persisted output visible without relabeling it live.
+func TestReadCurrentProjectActivityFallsBackToExplicitHistory(t *testing.T) {
+	source := &projectActivityTestState{project: projectActivityTestProject(), session: projectActivityTestSession()}
+	reader := &projectActivityHistoryTestReader{
+		projectActivityTestReader: projectActivityTestReader{output: projectprocess.OutputChunk{}},
+		historyOutput: projectprocess.OutputChunk{
+			Historical: true,
+			Truncated:  true,
+			NextCursor: 12,
+			Text:       "retained tail",
+		},
+	}
+	activity, err := readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{
+		ProjectID: "project-orders",
+		SessionID: "session-current",
+		Cursor:    0,
+	})
+	if err != nil {
+		t.Fatalf("readCurrentProjectActivity() error = %v", err)
+	}
+	if activity.Session == nil || activity.Session.Output.Available || !activity.Session.Output.Historical || !activity.Session.Output.Truncated || activity.Session.Output.Text != "retained tail" {
+		t.Fatalf("activity = %#v, want explicit non-live retained output", activity)
+	}
+	if len(reader.calls) != 2 || reader.calls[1].cursor != 0 {
+		t.Fatalf("output/history calls = %#v, want one exact fallback read", reader.calls)
+	}
+
+	reader.historyOutput = projectprocess.OutputChunk{}
+	reader.historyErr = errors.New("spool is corrupt")
+	activity, err = readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{
+		ProjectID: "project-orders",
+		SessionID: "session-current",
+	})
+	if err != nil || activity.Session == nil || activity.Session.Output != (projectprocess.OutputChunk{}) {
+		t.Fatalf("corrupt history fallback = %#v, %v, want clean unavailable output", activity, err)
 	}
 }
 

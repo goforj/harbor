@@ -8,6 +8,8 @@ Since the previous handoff, Harbor also has a post-start native-route activator:
 
 The macOS retained-lease repair boundary now correlates every endpoint row back to native socket owners before deciding ambiguity. One same-user process may expose the leased port through multiple exact, wildcard, or dual-stack records and still be settled as one project scope; a process that exits during descriptor census is treated as a bounded transient race when the stable listener rows remain fully accounted for, while unaccounted rows, multiple owners, or foreign evidence remain fail-closed.
 
+Project activity now surfaces the owner-private output spool as explicitly historical output when the live supervisor is unavailable. The retained tail remains read-only diagnostics rather than process authority; malformed or missing history leaves the activity view cleanly unavailable, and a later live stream replaces the historical view at a fresh cursor boundary.
+
 This document describes the repository as it works today. The other documents in this directory describe Harbor's intended product and architecture; their phase gates are not claims that the corresponding work is complete.
 
 ## Product shape

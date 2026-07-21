@@ -806,6 +806,7 @@ func (authority *Authority) ProjectActivity(
 			Generation: activity.Session.Generation,
 			Output: control.ProjectOutputChunk{
 				Available:  activity.Session.Output.Available,
+				Historical: activity.Session.Output.Historical,
 				Reset:      activity.Session.Output.Reset,
 				Truncated:  activity.Session.Output.Truncated,
 				HasMore:    activity.Session.Output.HasMore,

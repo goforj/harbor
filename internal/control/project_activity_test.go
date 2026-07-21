@@ -106,6 +106,23 @@ func TestBoundProjectActivityResponseAccountsForJSONEscaping(t *testing.T) {
 	}
 }
 
+// TestProjectOutputChunkValidationAllowsExplicitHistory verifies retained output is visible without granting live authority.
+func TestProjectOutputChunkValidationAllowsExplicitHistory(t *testing.T) {
+	history := ProjectOutputChunk{
+		Historical: true,
+		Truncated:  true,
+		NextCursor: 13,
+		Text:       "retained tail",
+	}
+	if err := history.Validate(); err != nil {
+		t.Fatalf("historical output validation = %v", err)
+	}
+	history.Available = true
+	if err := history.Validate(); err == nil {
+		t.Fatal("live output marked historical passed validation")
+	}
+}
+
 // TestControlClientRoundTripsProjectActivityForHumanRoles verifies negotiated callers receive only current bounded activity.
 func TestControlClientRoundTripsProjectActivityForHumanRoles(t *testing.T) {
 	for _, role := range []rpc.Role{rpc.RoleCLI, rpc.RoleDesktop} {

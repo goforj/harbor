@@ -47,6 +47,11 @@ type projectActivityOutputReader interface {
 	WaitOutput(context.Context, domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
 }
 
+// projectActivityHistoryReader is an optional read-only fallback for owner-private retained output.
+type projectActivityHistoryReader interface {
+	ReadOutputHistory(domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
+}
+
 // ProjectActivity reads only the current durable session and its exact supervised process transcript.
 func (coordinator *ProjectLifecycleCoordinator) ProjectActivity(
 	ctx context.Context,
@@ -120,6 +125,15 @@ func readCurrentProjectActivity(
 		return activity, nil
 	}
 	output := reader.ReadOutput(request.ProjectID, session.ID, cursor)
+	if !output.Available {
+		if historyReader, ok := reader.(projectActivityHistoryReader); ok {
+			history, historyErr := historyReader.ReadOutputHistory(request.ProjectID, session.ID, cursor)
+			// Persisted output is diagnostic state; a corrupt or unavailable spool must not block the live activity view.
+			if historyErr == nil && history.Historical {
+				output = history
+			}
+		}
+	}
 	if changedSession {
 		output.Reset = true
 	}

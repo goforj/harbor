@@ -616,12 +616,14 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               @scroll="updateDevelopmentOutputFollow"
             >
               <p v-if="developmentOutputTruncated" class="mb-2 text-amber-300">Earlier output is no longer retained.</p>
+              <p v-if="projectActivitySession?.output.historical" class="mb-2 text-amber-300">Showing retained output from before Harbor reconnected; live output will resume when the process is reattached.</p>
               <TerminalOutput
                 v-if="developmentOutput"
                 :output="developmentOutput"
                 :reset-key="developmentOutputResetKey"
                 @rendered="scrollDevelopmentOutput"
               />
+              <p v-else-if="projectActivitySession?.output.historical" class="text-zinc-500">No retained output was recorded before Harbor reconnected.</p>
               <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
               <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
             </div>

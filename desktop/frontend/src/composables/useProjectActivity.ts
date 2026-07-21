@@ -34,6 +34,7 @@ export function useProjectActivity(source: ProjectActivitySource) {
   const output = ref('')
   const error = ref<string | null>(null)
   const truncated = ref(false)
+  const historicalOutput = ref(false)
   const outputResetKey = ref(0)
   let cursor = 0
   let sessionId = ''
@@ -79,6 +80,7 @@ export function useProjectActivity(source: ProjectActivitySource) {
     output.value = ''
     error.value = null
     truncated.value = false
+    historicalOutput.value = false
     cursor = 0
     sessionId = ''
     outputResetKey.value += 1
@@ -196,16 +198,33 @@ export function useProjectActivity(source: ProjectActivitySource) {
     if (newSelection) sessionId = session.id
 
     if (!session.output.available) {
+      if (session.output.historical) {
+        const replace = !historicalOutput.value || session.output.reset || session.output.truncated
+        historicalOutput.value = true
+        cursor = session.output.next_cursor
+        if (replace) {
+          output.value = session.output.text
+          truncated.value = session.output.truncated
+          outputResetKey.value += 1
+        }
+        else if (session.output.text) {
+          output.value += session.output.text
+        }
+        trimVisibleOutput()
+        return { hasMore: session.output.has_more, waitable: false }
+      }
       if (newSelection) {
         cursor = 0
         output.value = ''
         truncated.value = false
+        historicalOutput.value = false
         outputResetKey.value += 1
       }
       return { hasMore: false, waitable: false }
     }
 
-    const replace = changedSession || session.output.reset || session.output.truncated
+    const replace = historicalOutput.value || changedSession || session.output.reset || session.output.truncated
+    historicalOutput.value = false
     cursor = session.output.next_cursor
     if (replace) {
       output.value = session.output.text

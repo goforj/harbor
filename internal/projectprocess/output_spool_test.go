@@ -69,6 +69,40 @@ func TestOutputSpoolReopensExactSessionHistory(t *testing.T) {
 	}
 }
 
+// TestReadOutputHistoryMarksPersistedBytesNonLive proves replayed output cannot be mistaken for a supervised process.
+func TestReadOutputHistoryMarksPersistedBytesNonLive(t *testing.T) {
+	directory := t.TempDir()
+	projectID := domain.ProjectID("project-history")
+	sessionID := domain.SessionID("session-history")
+	spool, err := openOutputSpool(directory, projectID, sessionID)
+	if err != nil {
+		t.Fatalf("openOutputSpool() error = %v", err)
+	}
+	if err := spool.appendNormalized(outputStreamStdout, []byte("retained\n")); err != nil {
+		t.Fatalf("append history: %v", err)
+	}
+	if err := spool.close(); err != nil {
+		t.Fatalf("close spool: %v", err)
+	}
+
+	supervisor := New(Options{OutputSpoolDirectory: directory})
+	chunk, err := supervisor.ReadOutputHistory(projectID, sessionID, 0)
+	if err != nil {
+		t.Fatalf("ReadOutputHistory() error = %v", err)
+	}
+	if chunk.Available || !chunk.Historical || chunk.Text != "retained\n" || chunk.NextCursor != uint64(len("retained\n")) {
+		t.Fatalf("historical chunk = %#v, want non-live retained output", chunk)
+	}
+
+	missing, err := supervisor.ReadOutputHistory(projectID, domain.SessionID("session-missing"), 0)
+	if err != nil {
+		t.Fatalf("ReadOutputHistory(missing) error = %v", err)
+	}
+	if missing != (OutputChunk{}) {
+		t.Fatalf("missing history = %#v, want unavailable empty chunk", missing)
+	}
+}
+
 // TestOutputSpoolIgnoresOneIncompleteCrashTail proves a daemon crash cannot expose a torn frame as output.
 func TestOutputSpoolIgnoresOneIncompleteCrashTail(t *testing.T) {
 	directory := t.TempDir()
