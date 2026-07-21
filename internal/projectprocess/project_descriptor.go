@@ -11,8 +11,10 @@ import (
 
 // ProjectDescriptorObservation is the validated descriptor identity reserved for one subsequent process launch.
 type ProjectDescriptorObservation struct {
-	Executable                   string
-	TopologyDigest               string
+	Executable     string
+	TopologyDigest string
+	// Apps contains the validated static App/runtime inventory used by a later managed assignment plan.
+	Apps                         []goforj.App
 	ResourcesSupported           bool
 	Resources                    []goforj.Resource
 	ServiceRequirementsSupported bool
@@ -48,15 +50,30 @@ func (supervisor *Supervisor) ObserveProjectDescriptor(ctx context.Context, chec
 	}
 	resources := make([]goforj.Resource, len(observation.Resources))
 	copy(resources, observation.Resources)
+	apps := cloneApps(observation.Apps)
 	serviceRequirements := cloneServiceRequirements(observation.ServiceRequirements)
 	return ProjectDescriptorObservation{
 		Executable:                   executable,
 		TopologyDigest:               observation.TopologyDigest,
+		Apps:                         apps,
 		ResourcesSupported:           observation.ResourcesSupported,
 		Resources:                    resources,
 		ServiceRequirementsSupported: observation.ServiceRequirementsSupported,
 		ServiceRequirements:          serviceRequirements,
 	}, nil
+}
+
+// cloneApps prevents a later assignment planner from mutating descriptor-owned App/runtime intent.
+func cloneApps(source []goforj.App) []goforj.App {
+	if len(source) == 0 {
+		return []goforj.App{}
+	}
+	clone := make([]goforj.App, len(source))
+	for index, app := range source {
+		clone[index] = app
+		clone[index].Runtimes = append([]goforj.Runtime(nil), app.Runtimes...)
+	}
+	return clone
 }
 
 // cloneServiceRequirements prevents a caller from mutating descriptor-owned nested slices after observation.

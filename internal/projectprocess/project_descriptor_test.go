@@ -33,3 +33,16 @@ func TestCloneServiceRequirementsCopiesNestedIntent(t *testing.T) {
 		t.Fatalf("clone mutated original: %#v", original)
 	}
 }
+
+// TestCloneAppsCopiesRuntimeIntent keeps descriptor App assignments immutable across lifecycle boundaries.
+func TestCloneAppsCopiesRuntimeIntent(t *testing.T) {
+	original := []goforj.App{{
+		ID:       "app",
+		Runtimes: []goforj.Runtime{{ID: "http", DefaultPort: 3000}},
+	}}
+	clone := cloneApps(original)
+	clone[0].Runtimes[0].DefaultPort = 8080
+	if original[0].Runtimes[0].DefaultPort != 3000 {
+		t.Fatalf("clone mutated original: %#v", original)
+	}
+}
