@@ -14,6 +14,7 @@ import (
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
+	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -131,6 +132,42 @@ type primaryLeaseTestPortProber struct {
 	results map[netip.Addr]identity.ProbeResult
 	errs    map[netip.Addr]error
 	calls   []identity.ProbeRequest
+}
+
+// primaryLeaseTestRuntimeRepairer models the reviewed same-user cleanup boundary without native process effects.
+type primaryLeaseTestRuntimeRepairer struct {
+	inspection     projectprocess.UnattributedRuntimeInspection
+	confirmation   projectprocess.RuntimeRepairConfirmation
+	inspectErr     error
+	confirmErr     error
+	inspectTargets []projectprocess.RuntimeRepairTarget
+	candidates     []projectprocess.UnattributedRuntimeCandidate
+	onInspect      func()
+	onConfirm      func()
+}
+
+// Inspect returns one configured exact-listener classification for automatic retained-port recovery.
+func (repairer *primaryLeaseTestRuntimeRepairer) Inspect(_ context.Context, target projectprocess.RuntimeRepairTarget) (projectprocess.UnattributedRuntimeInspection, error) {
+	repairer.inspectTargets = append(repairer.inspectTargets, target)
+	if repairer.onInspect != nil {
+		repairer.onInspect()
+	}
+	if repairer.inspectErr != nil {
+		return projectprocess.UnattributedRuntimeInspection{}, repairer.inspectErr
+	}
+	return repairer.inspection, nil
+}
+
+// Confirm records one exact candidate and returns the configured bounded settlement result.
+func (repairer *primaryLeaseTestRuntimeRepairer) Confirm(_ context.Context, candidate projectprocess.UnattributedRuntimeCandidate) (projectprocess.RuntimeRepairConfirmation, error) {
+	repairer.candidates = append(repairer.candidates, candidate)
+	if repairer.onConfirm != nil {
+		repairer.onConfirm()
+	}
+	if repairer.confirmErr != nil {
+		return projectprocess.RuntimeRepairConfirmation{}, repairer.confirmErr
+	}
+	return repairer.confirmation, nil
 }
 
 // Probe returns configured facts or an available result for every requested port.
@@ -373,6 +410,83 @@ func TestProjectPrimaryLeaseCoordinatorRejectsUnsafeRetainedLeaseWithoutRealloca
 				t.Fatalf("unsafe retained lease effects = writes %d, observations %v", len(fixture.state.replaceCalls), fixture.loopback.calls)
 			}
 		})
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorSettlesAProjectOwnedListenerBeforeRejecting proves a same-project stale listener is an automatic retry edge.
+func TestProjectPrimaryLeaseCoordinatorSettlesAProjectOwnedListenerBeforeRejecting(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
+	fixture.coordinator.runtimeRepairer = &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{State: projectprocess.RuntimeRepairInspectionMissing},
+		onInspect: func() {
+			fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
+		},
+	}
+
+	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err != nil || admission.Lease.Address != address {
+		t.Fatalf("Ensure() = %#v, %v, want retained lease after automatic settlement", admission, err)
+	}
+	if len(fixture.coordinator.runtimeRepairer.(*primaryLeaseTestRuntimeRepairer).inspectTargets) != 1 || len(fixture.ports.calls) != 2 {
+		t.Fatalf("automatic cleanup observations = %#v, probes %d, want one inspection and two probes", fixture.coordinator.runtimeRepairer, len(fixture.ports.calls))
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorConfirmsAnExactProjectListener proves actionable same-user scope is signaled before retrying admission.
+func TestProjectPrimaryLeaseCoordinatorConfirmsAnExactProjectListener(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{
+			State:     projectprocess.RuntimeRepairInspectionActionable,
+			Candidate: &projectprocess.UnattributedRuntimeCandidate{},
+		},
+		confirmation: projectprocess.RuntimeRepairConfirmation{
+			State:    projectprocess.RuntimeRepairConfirmationSettled,
+			Signaled: true,
+		},
+		onConfirm: func() {
+			fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
+		},
+	}
+	fixture.coordinator.runtimeRepairer = repairer
+
+	if _, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID); err != nil {
+		t.Fatalf("Ensure() error = %v, want automatic exact-scope cleanup", err)
+	}
+	if len(repairer.inspectTargets) != 1 || repairer.inspectTargets[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") || len(repairer.candidates) != 1 {
+		t.Fatalf("automatic cleanup calls = targets %#v candidates %d, want one exact target and candidate", repairer.inspectTargets, len(repairer.candidates))
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorPreservesForeignListenerFailure proves ownership of an address never authorizes killing an unrelated process.
+func TestProjectPrimaryLeaseCoordinatorPreservesForeignListenerFailure(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{State: projectprocess.RuntimeRepairInspectionForeign},
+	}
+	fixture.coordinator.runtimeRepairer = repairer
+
+	_, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err == nil || !strings.Contains(err.Error(), "App port 3000 is unavailable") {
+		t.Fatalf("Ensure() error = %v, want retained foreign-listener rejection", err)
+	}
+	if len(repairer.candidates) != 0 {
+		t.Fatalf("foreign listener cleanup signaled %d candidates", len(repairer.candidates))
 	}
 }
 

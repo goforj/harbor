@@ -18,6 +18,7 @@ import (
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
+	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -106,12 +107,13 @@ type projectPrimaryLeaseObservation struct {
 
 // projectPrimaryLeaseCoordinator allocates from a verified pool without changing operating-system state.
 type projectPrimaryLeaseCoordinator struct {
-	state      projectPrimaryLeaseState
-	discoverer projectPrimaryLeaseDiscoverer
-	loopback   projectPrimaryLeaseLoopbackObserver
-	ports      identity.HostProber
-	planner    identity.Planner
-	now        func() time.Time
+	state           projectPrimaryLeaseState
+	discoverer      projectPrimaryLeaseDiscoverer
+	loopback        projectPrimaryLeaseLoopbackObserver
+	ports           identity.HostProber
+	planner         identity.Planner
+	now             func() time.Time
+	runtimeRepairer projectprocess.UnattributedRuntimeRepairer
 }
 
 // newProjectPrimaryLeaseCoordinator creates the independently observable allocation boundary used before process launch.
@@ -144,13 +146,15 @@ func newSystemProjectPrimaryLeaseCoordinator(
 	if projectState == nil {
 		panic("reconcile.newSystemProjectPrimaryLeaseCoordinator requires non-nil state")
 	}
-	return newProjectPrimaryLeaseCoordinator(
+	coordinator := newProjectPrimaryLeaseCoordinator(
 		projectState,
 		discoverer,
 		loopback.New(),
 		identity.NewSystemHost(),
 		time.Now,
 	)
+	coordinator.runtimeRepairer = projectprocess.NewUnattributedRuntimeRepairer()
+	return coordinator
 }
 
 // Ensure returns an existing primary unchanged or durably admits one newly observed pool candidate.
@@ -750,6 +754,51 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 		}
 		if len(observation.UnavailableAppPorts) != 0 {
 			port := observation.UnavailableAppPorts[0]
+			resolved, repairErr := coordinator.repairRetainedAppPortConflict(
+				ctx,
+				project.Project.Path,
+				existing.Address,
+				port,
+			)
+			if repairErr != nil {
+				return projectPrimaryLeaseAdmission{}, newProjectPrimaryLeaseRejection(domain.Problem{
+					Code:      "project.network.port_unavailable",
+					Message:   fmt.Sprintf("Harbor found a project-owned listener on port %d but could not settle it automatically. Try Start again or inspect the project runtime.", port),
+					Retryable: true,
+				}, fmt.Errorf("admit retained primary lease for project %q: automatic listener cleanup failed: %w", projectID, repairErr))
+			}
+			if resolved {
+				observation, observeErr = coordinator.observePrimaryLease(ctx, project.Project.Path, network.Pool, existing)
+				if observeErr != nil {
+					return projectPrimaryLeaseAdmission{}, fmt.Errorf("re-observe retained primary lease for project %q after listener cleanup: %w", projectID, observeErr)
+				}
+				if observation.Loopback.State != loopback.StateExact {
+					cause := fmt.Errorf(
+						"admit retained primary lease for project %q: assigned address %s has host state %q after listener cleanup",
+						projectID,
+						existing.Address,
+						observation.Loopback.State,
+					)
+					return projectPrimaryLeaseAdmission{}, newProjectPrimaryLeaseRejection(domain.Problem{
+						Code:      "project.network.identity_unavailable",
+						Message:   fmt.Sprintf("The assigned Harbor address %s is not configured exactly on this machine. Repair Harbor networking and try again.", existing.Address),
+						Retryable: true,
+					}, cause)
+				}
+				if len(observation.UnavailableAppPorts) == 0 {
+					// The retained lease is safe to reuse after the exact project scope settled.
+					admission := projectPrimaryLeaseAdmission{
+						Lease:            existing,
+						Target:           observation.Target,
+						Project:          project,
+						NetworkUpdatedAt: network.UpdatedAt,
+					}
+					if !endpointsChanged {
+						return admission, nil
+					}
+					return coordinator.persistRetainedPrimaryLeaseEndpoints(ctx, admission, network, projectEndpoints)
+				}
+			}
 			cause := fmt.Errorf(
 				"admit retained primary lease for project %q: App port %d is unavailable on %s",
 				projectID,
@@ -775,6 +824,52 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 	}
 
 	return coordinator.allocateAtCurrentRevision(ctx, project, network, key, projectEndpoints)
+}
+
+// repairRetainedAppPortConflict settles one exact same-user project runtime before exposing a retryable port failure.
+func (coordinator *projectPrimaryLeaseCoordinator) repairRetainedAppPortConflict(
+	ctx context.Context,
+	checkoutRoot string,
+	address netip.Addr,
+	port uint16,
+) (bool, error) {
+	if coordinator.runtimeRepairer == nil {
+		return false, nil
+	}
+	target := projectprocess.RuntimeRepairTarget{
+		CheckoutRoot: checkoutRoot,
+		Endpoint:     netip.AddrPortFrom(address.Unmap(), port),
+	}
+	inspection, err := coordinator.runtimeRepairer.Inspect(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	if err := inspection.State.Validate(); err != nil {
+		return false, fmt.Errorf("validate automatic listener inspection: %w", err)
+	}
+	switch inspection.State {
+	case projectprocess.RuntimeRepairInspectionMissing:
+		// The listener disappeared during the probe; a fresh primary observation decides whether admission can continue.
+		return true, nil
+	case projectprocess.RuntimeRepairInspectionActionable:
+		if inspection.Candidate == nil {
+			return false, errors.New("automatic listener inspection was actionable without a candidate")
+		}
+		confirmation, err := coordinator.runtimeRepairer.Confirm(ctx, *inspection.Candidate)
+		if err != nil {
+			return false, err
+		}
+		if err := confirmation.Validate(); err != nil {
+			return false, fmt.Errorf("validate automatic listener cleanup: %w", err)
+		}
+		if confirmation.State == projectprocess.RuntimeRepairConfirmationSettled {
+			return true, nil
+		}
+		return false, nil
+	default:
+		// Foreign, ambiguous, unreadable, and unsupported listeners remain fail-closed rather than becoming kill-anything authority.
+		return false, nil
+	}
 }
 
 // allocateAtCurrentRevision rejects unsafe candidates through the planner until one exact identity and port set is proved.
