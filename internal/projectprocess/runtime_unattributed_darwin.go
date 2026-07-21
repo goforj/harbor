@@ -56,13 +56,13 @@ func inspectStableDarwinUnattributedRuntime(ctx context.Context, target RuntimeR
 	return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnreadable}, nil
 }
 
-// inspectDarwinUnattributedRuntimePass correlates one exact listener with one same-user project scope.
+// inspectDarwinUnattributedRuntimePass correlates one exact or wildcard listener with one same-user project scope.
 func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
 	network, err := observeDarwinRuntimeRepairNetwork(ctx, target.Endpoint)
 	if err != nil {
 		return unattributedRuntimeNativeInspection{}, err
 	}
-	cardinality := runtimeRepairListenerCardinality(network.exactListeners, network.conflictingBinds)
+	cardinality := runtimeRepairProjectListenerCardinality(network.exactListeners, network.conflictingBinds)
 	if cardinality != RuntimeRepairInspectionActionable {
 		return unattributedRuntimeNativeInspection{State: cardinality}, nil
 	}

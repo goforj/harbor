@@ -164,6 +164,30 @@ func TestUnattributedRuntimeObservationAllowsExactLeasedForjScope(t *testing.T) 
 	}
 }
 
+// TestRuntimeRepairProjectListenerCardinalityAllowsOneWildcard keeps ownership correlation available for a stale wildcard bind.
+func TestRuntimeRepairProjectListenerCardinalityAllowsOneWildcard(t *testing.T) {
+	tests := []struct {
+		name        string
+		exact       int
+		conflicting int
+		want        RuntimeRepairInspectionState
+	}{
+		{name: "missing", want: RuntimeRepairInspectionMissing},
+		{name: "exact", exact: 1, want: RuntimeRepairInspectionActionable},
+		{name: "wildcard", conflicting: 1, want: RuntimeRepairInspectionActionable},
+		{name: "exact and wildcard", exact: 1, conflicting: 1, want: RuntimeRepairInspectionAmbiguous},
+		{name: "multiple wildcard", conflicting: 2, want: RuntimeRepairInspectionAmbiguous},
+		{name: "negative", exact: -1, want: RuntimeRepairInspectionUnreadable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runtimeRepairProjectListenerCardinality(test.exact, test.conflicting); got != test.want {
+				t.Fatalf("runtimeRepairProjectListenerCardinality(%d, %d) = %q, want %q", test.exact, test.conflicting, got, test.want)
+			}
+		})
+	}
+}
+
 // TestUnattributedRuntimeObservationRejectsUnsafeScopes proves foreign and detached descendants cannot become candidates.
 func TestUnattributedRuntimeObservationRejectsUnsafeScopes(t *testing.T) {
 	tests := []struct {

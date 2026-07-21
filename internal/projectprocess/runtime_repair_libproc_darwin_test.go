@@ -184,8 +184,8 @@ func TestParseDarwinRuntimeRepairFDsRejectsPartialAndAmbiguousRecords(t *testing
 	}
 }
 
-// TestParseDarwinRuntimeRepairSocketFDRequiresExactOpaqueListener covers endpoint, state, and kernel identity checks.
-func TestParseDarwinRuntimeRepairSocketFDRequiresExactOpaqueListener(t *testing.T) {
+// TestParseDarwinRuntimeRepairSocketFDRequiresOwnedOpaqueListener covers exact and wildcard endpoint, state, and kernel identity checks.
+func TestParseDarwinRuntimeRepairSocketFDRequiresOwnedOpaqueListener(t *testing.T) {
 	endpoint := netip.MustParseAddrPort("127.0.0.42:38473")
 	raw := darwinRuntimeRepairTestSocketRecord(endpoint)
 	fact, matches, err := parseDarwinRuntimeRepairSocketFD(raw, 100, 7, endpoint)
@@ -194,6 +194,14 @@ func TestParseDarwinRuntimeRepairSocketFDRequiresExactOpaqueListener(t *testing.
 	}
 	if fact.OwnerPID != 100 || fact.FileDescriptor != 7 || fact.SocketHandle != 11 || fact.PCBHandle != 12 || fact.Generation != 13 || fact.Endpoint != endpoint {
 		t.Fatalf("socket fact = %#v", fact)
+	}
+	wildcard := append([]byte(nil), raw...)
+	for index := 0; index < 4; index++ {
+		wildcard[darwinRuntimeRepairIPv4AddressOffset+index] = 0
+	}
+	wildcardFact, wildcardMatches, wildcardErr := parseDarwinRuntimeRepairSocketFD(wildcard, 100, 7, endpoint)
+	if wildcardErr != nil || !wildcardMatches || wildcardFact.Endpoint != endpoint {
+		t.Fatalf("wildcard socket = %#v, %t, %v; want normalized target endpoint", wildcardFact, wildcardMatches, wildcardErr)
 	}
 
 	notListening := append([]byte(nil), raw...)

@@ -239,7 +239,7 @@ func inspectDarwinRuntimeRepairSocketFD(pid, fd int, endpoint netip.AddrPort) (r
 	return parseDarwinRuntimeRepairSocketFD(raw, pid, fd, endpoint)
 }
 
-// parseDarwinRuntimeRepairSocketFD accepts only one exact IPv4 TCP listening endpoint with opaque kernel identity.
+// parseDarwinRuntimeRepairSocketFD accepts one exact or IPv4 wildcard TCP listening endpoint with opaque kernel identity.
 func parseDarwinRuntimeRepairSocketFD(raw []byte, pid, fd int, endpoint netip.AddrPort) (runtimeRepairSocketFact, bool, error) {
 	if len(raw) != darwinRuntimeRepairSocketFDInfoBytes || pid <= 0 || fd < 0 {
 		return runtimeRepairSocketFact{}, false, fmt.Errorf("Darwin socket record has invalid envelope: %w", errDarwinRuntimeRepairUnreadable)
@@ -258,7 +258,7 @@ func parseDarwinRuntimeRepairSocketFD(raw []byte, pid, fd int, endpoint netip.Ad
 	port := bits.ReverseBytes16(uint16(localPort))
 	address := netip.AddrFrom4([4]byte(raw[darwinRuntimeRepairIPv4AddressOffset : darwinRuntimeRepairIPv4AddressOffset+4]))
 	observedEndpoint := netip.AddrPortFrom(address, port)
-	if observedEndpoint != endpoint {
+	if observedEndpoint.Port() != endpoint.Port() || (observedEndpoint.Addr() != endpoint.Addr() && !observedEndpoint.Addr().IsUnspecified()) {
 		return runtimeRepairSocketFact{}, false, nil
 	}
 	socketHandle := binary.LittleEndian.Uint64(raw[darwinRuntimeRepairSocketHandleOffset : darwinRuntimeRepairSocketHandleOffset+8])
@@ -273,7 +273,9 @@ func parseDarwinRuntimeRepairSocketFD(raw []byte, pid, fd int, endpoint netip.Ad
 		SocketHandle:   socketHandle,
 		PCBHandle:      pcbHandle,
 		Generation:     generation,
-		Endpoint:       observedEndpoint,
+		// Normalize a wildcard socket to the Harbor-assigned endpoint so the receipt remains bound to the
+		// exact port admission request while the opaque kernel identity protects confirmation from replacement.
+		Endpoint: endpoint,
 	}, true, nil
 }
 

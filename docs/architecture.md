@@ -480,7 +480,7 @@ Native release jobs perform macOS hardened-runtime signing and notarization, Win
 | Network/VPN changes | One dirty signal triggers resolver and route observation, then an owned repair if needed. |
 | Sleep/resume | Revalidate loopback aliases, low-port ingress, DNS, certificates, PIDs, and Docker publications. |
 | Project path moves | Mark unavailable and offer an explicit relink to a matching descriptor; never scan and assume. |
-| Port is occupied | Identify the listener when permitted, keep the endpoint failed, and do not shift the public port. A busy port alone never authorizes a signal; automatic cleanup requires either an exact Harbor receipt or an exact project primary lease plus one same-user scope owning that exact leased socket. Foreign users, wildcard binds, multiple owners, and unstable native facts remain fail-closed, while other unattributed-process actions require explicit user inspection and confirmation. |
+| Port is occupied | Identify the listener when permitted, keep the endpoint failed, and do not shift the public port. A busy port alone never authorizes a signal; automatic cleanup requires either an exact Harbor receipt or an exact project primary lease plus one same-user scope owning the leased port, including a uniquely correlated wildcard bind. Foreign users, multiple owners, and unstable native facts remain fail-closed, while other unattributed-process actions require explicit user inspection and confirmation. |
 | Config changes | Ask GoForj for a new descriptor, diff desired endpoints, and apply a transactional session refresh. |
 | Partial registration | Resume or roll back ownership-marked staged effects from the operation journal. |
 | Unsupported protocol | Refuse the operation with required version ranges; do not parse human output as fallback. |
@@ -493,7 +493,7 @@ Recovery distinguishes three cases:
 
 1. A current exact receipt authorizes automatic settlement of only its complete revalidated Harbor-owned scope.
 2. A retained legacy session that lacks the new complete-scope receipt remains quarantined. It may offer `Inspect stale runtime`, but confirmation is allowed only through a short-lived daemon-owned plan bound to the caller, project, session, lease, target, and exact native candidate evidence.
-3. A listener whose Harbor session was already retired is explicitly unattributed. When the primary lease is exact, Start may automatically settle one uniquely correlated same-user `forj dev` scope or listener process whose working directory is the registered checkout. Without that lease/correlation, `Inspect listener` remains the explicit path; it must not call the process Harbor-owned or mutate a nonexistent Harbor session.
+3. A listener whose Harbor session was already retired is explicitly unattributed. When the primary lease is exact, Start may automatically settle one uniquely correlated same-user `forj dev` scope or listener process whose exact or wildcard bind owns the leased port. Without that lease/correlation, `Inspect listener` remains the explicit path; it must not call the process Harbor-owned or mutate a nonexistent Harbor session.
 
 Clients never supply a PID, address, or scope to stop. Inspection returns bounded display facts and an opaque plan identity. Confirmation re-reads every durable fence and native birth, executable, arguments, working directory, parent/scope, and socket fact immediately before signaling. Expiry, replacement, respawn, ambiguity, cross-user ownership, unreadable evidence, or any drift sends zero signals and requires a fresh inspection.
 

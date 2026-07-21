@@ -744,6 +744,24 @@ func runtimeRepairListenerCardinality(exactListeners, conflictingBinds int) Runt
 	return RuntimeRepairInspectionActionable
 }
 
+// runtimeRepairProjectListenerCardinality admits one exact or wildcard bind for later same-user ownership correlation.
+//
+// A wildcard bind can block a Harbor-assigned loopback even when the project process was started before Harbor
+// injected its exact host. Ownership must still be proven from the native socket owner and process scope; this helper
+// only avoids discarding that evidence before correlation.
+func runtimeRepairProjectListenerCardinality(exactListeners, conflictingBinds int) RuntimeRepairInspectionState {
+	if exactListeners < 0 || conflictingBinds < 0 || exactListeners > runtimeRepairMaximumProcesses || conflictingBinds > runtimeRepairMaximumProcesses {
+		return RuntimeRepairInspectionUnreadable
+	}
+	if exactListeners == 0 && conflictingBinds == 0 {
+		return RuntimeRepairInspectionMissing
+	}
+	if exactListeners+conflictingBinds != 1 {
+		return RuntimeRepairInspectionAmbiguous
+	}
+	return RuntimeRepairInspectionActionable
+}
+
 // runtimeRepairObservationsEqual requires structural equality in addition to matching digests.
 func runtimeRepairObservationsEqual(left, right runtimeRepairNativeObservation) bool {
 	leftFingerprint, leftErr := left.fingerprint()
