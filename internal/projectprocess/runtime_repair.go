@@ -20,6 +20,8 @@ const (
 	runtimeRepairFingerprintDomain = "goforj.harbor.runtime-repair-candidate.v1\x00"
 	// runtimeRepairCommand is fixed because client text must not expose native command data.
 	runtimeRepairCommand = "forj dev"
+	// runtimeRepairProjectListenerCommand is fixed because project-owned fallback displays must not expose native command data.
+	runtimeRepairProjectListenerCommand = "project listener"
 	// runtimeRepairMaximumProcesses bounds both native collection and receipt validation.
 	runtimeRepairMaximumProcesses = 4096
 	// runtimeRepairMaximumArguments bounds argv collection before native bytes become receipt facts.
@@ -155,8 +157,8 @@ func (display RuntimeRepairDisplay) Validate() error {
 	if display.RootPID <= 0 {
 		return fmt.Errorf("runtime repair display root PID must be positive")
 	}
-	if display.Command != runtimeRepairCommand {
-		return fmt.Errorf("runtime repair display command must be %q", runtimeRepairCommand)
+	if display.Command != runtimeRepairCommand && display.Command != runtimeRepairProjectListenerCommand {
+		return fmt.Errorf("runtime repair display command must be %q or %q", runtimeRepairCommand, runtimeRepairProjectListenerCommand)
 	}
 	if display.CheckoutRoot == "" || len(display.CheckoutRoot) > runtimeRepairMaximumTextBytes ||
 		!filepath.IsAbs(display.CheckoutRoot) || filepath.Clean(display.CheckoutRoot) != display.CheckoutRoot {

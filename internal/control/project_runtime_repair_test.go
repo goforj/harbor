@@ -137,6 +137,15 @@ func TestProjectRuntimeRepairDisplayFactsRemainFixedAndBounded(t *testing.T) {
 	}
 }
 
+// TestProjectRuntimeRepairDisplayFactsAllowsCheckoutOwnedListener keeps the stale-app fallback visible without exposing native command text.
+func TestProjectRuntimeRepairDisplayFactsAllowsCheckoutOwnedListener(t *testing.T) {
+	facts := runtimeRepairContractTestDisplayFacts(t)
+	facts.Command = projectRuntimeRepairProjectListener
+	if err := facts.Validate(); err != nil {
+		t.Fatalf("ProjectRuntimeRepairDisplayFacts.Validate(project listener) error = %v", err)
+	}
+}
+
 // TestProjectRuntimeRepairInspectionRequiresExactlyOneTaggedShape protects the client from ambiguous result combinations.
 func TestProjectRuntimeRepairInspectionRequiresExactlyOneTaggedShape(t *testing.T) {
 	confirmable := runtimeRepairContractTestConfirmable(t)

@@ -13,6 +13,7 @@ const (
 	projectRuntimeRepairOpaqueHexLength = 64
 	maximumProjectRuntimeMemberCount    = 1<<16 - 1
 	projectRuntimeRepairCommand         = "forj dev"
+	projectRuntimeRepairProjectListener = "project listener"
 )
 
 // ProjectRuntimeRepairInspectionDisposition identifies the only three inspection result shapes exposed to clients.
@@ -94,10 +95,10 @@ type ProjectRuntimeRepairDisplayFacts struct {
 	MemberCount uint32 `json:"member_count"`
 }
 
-// Validate reports whether display facts describe the fixed GoForj command and one bounded local candidate.
+// Validate reports whether display facts describe one fixed sanitized command shape and one bounded local candidate.
 func (facts ProjectRuntimeRepairDisplayFacts) Validate() error {
-	if facts.Command != projectRuntimeRepairCommand {
-		return fmt.Errorf("project runtime repair command must be %q", projectRuntimeRepairCommand)
+	if facts.Command != projectRuntimeRepairCommand && facts.Command != projectRuntimeRepairProjectListener {
+		return fmt.Errorf("project runtime repair command must be %q or %q", projectRuntimeRepairCommand, projectRuntimeRepairProjectListener)
 	}
 	if err := (RegisterProjectRequest{Path: facts.Checkout}).Validate(); err != nil {
 		return fmt.Errorf("project runtime repair checkout: %w", err)

@@ -147,7 +147,7 @@ func (request ProjectRuntimeRepairConfirmRequest) Validate() error {
 type ProjectRuntimeRepairDisplay struct {
 	// RootPID identifies the displayed root without carrying reusable birth authority.
 	RootPID uint32
-	// Command is the fixed sanitized GoForj development command.
+	// Command is one fixed sanitized process-shape label.
 	Command string
 	// CheckoutRoot is the durable canonical checkout displayed to the caller.
 	CheckoutRoot string

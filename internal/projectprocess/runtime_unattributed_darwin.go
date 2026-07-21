@@ -56,7 +56,7 @@ func inspectStableDarwinUnattributedRuntime(ctx context.Context, target RuntimeR
 	return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnreadable}, nil
 }
 
-// inspectDarwinUnattributedRuntimePass correlates one exact listener with one same-user forj dev descendant scope.
+// inspectDarwinUnattributedRuntimePass correlates one exact listener with one same-user project scope.
 func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
 	network, err := observeDarwinRuntimeRepairNetwork(ctx, target.Endpoint)
 	if err != nil {
@@ -106,7 +106,7 @@ func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRep
 	return unattributedRuntimeNativeInspection{State: state, Observation: &observation}, nil
 }
 
-// observeDarwinUnattributedRuntimeScope proves the listener owner descends from one exact same-user forj dev root.
+// observeDarwinUnattributedRuntimeScope proves one exact same-user project scope owns the listener.
 func observeDarwinUnattributedRuntimeScope(
 	ctx context.Context,
 	target RuntimeRepairTarget,
@@ -141,11 +141,11 @@ func observeDarwinUnattributedRuntimeScope(
 	if len(roots) != 1 {
 		return unattributedRuntimeNativeObservation{}, RuntimeRepairInspectionAmbiguous, nil
 	}
-	rootPID := roots[0]
+	selectedRoot := roots[0]
 
 	memberProcesses := make([]unix.KinfoProc, 0, 1)
 	for pid, process := range processByPID {
-		descendant, stable := darwinProcessDescendsFromRoot(pid, rootPID, processByPID)
+		descendant, stable := darwinProcessDescendsFromRoot(pid, selectedRoot.PID, processByPID)
 		if !stable {
 			continue
 		}
@@ -186,14 +186,14 @@ func observeDarwinUnattributedRuntimeScope(
 		}
 		members = append(members, fact)
 	}
-	rootIndex, found := slices.BinarySearchFunc(members, rootPID, func(member runtimeRepairProcessFact, pid int) int {
+	rootIndex, found := slices.BinarySearchFunc(members, selectedRoot.PID, func(member runtimeRepairProcessFact, pid int) int {
 		return cmp.Compare(member.PID, pid)
 	})
 	if !found {
 		return unattributedRuntimeNativeObservation{}, "", errDarwinRuntimeRepairUnstable
 	}
-	root := members[rootIndex]
-	parentBirth, present, err := observeProcessBirthToken(root.ParentPID)
+	rootFact := members[rootIndex]
+	parentBirth, present, err := observeProcessBirthToken(rootFact.ParentPID)
 	if err != nil {
 		return unattributedRuntimeNativeObservation{}, "", fmt.Errorf("read Darwin unattributed runtime root parent birth: %w", errDarwinRuntimeRepairUnreadable)
 	}
@@ -210,8 +210,9 @@ func observeDarwinUnattributedRuntimeScope(
 	observation := unattributedRuntimeNativeObservation{
 		Target:     target,
 		DaemonUID:  daemonUID,
-		Root:       root,
-		RootParent: runtimeRepairParentFact{PID: root.ParentPID, BirthToken: parentBirth},
+		RootKind:   selectedRoot.Kind,
+		Root:       rootFact,
+		RootParent: runtimeRepairParentFact{PID: rootFact.ParentPID, BirthToken: parentBirth},
 		Members:    members,
 		Listener:   listener,
 	}
@@ -221,15 +222,22 @@ func observeDarwinUnattributedRuntimeScope(
 	return observation, RuntimeRepairInspectionActionable, nil
 }
 
-// findDarwinUnattributedRuntimeRoots walks the listener owner's parent chain and returns exact forj dev ancestors.
+// darwinUnattributedRuntimeRoot binds one selected root PID to the reason its checkout scope is trusted.
+type darwinUnattributedRuntimeRoot struct {
+	PID  int
+	Kind unattributedRuntimeRootKind
+}
+
+// findDarwinUnattributedRuntimeRoots prefers one exact forj dev ancestor and otherwise accepts the exact same-user checkout listener.
 func findDarwinUnattributedRuntimeRoots(
 	ctx context.Context,
 	target RuntimeRepairTarget,
 	daemonUID uint32,
 	ownerPID int,
 	processByPID map[int]unix.KinfoProc,
-) ([]int, error) {
-	roots := make([]int, 0, 1)
+) ([]darwinUnattributedRuntimeRoot, error) {
+	forjRoots := make([]darwinUnattributedRuntimeRoot, 0, 1)
+	var projectListenerRoot *darwinUnattributedRuntimeRoot
 	seen := make(map[int]struct{}, len(processByPID))
 	for pid := ownerPID; pid > 0; {
 		if err := ctx.Err(); err != nil {
@@ -256,7 +264,11 @@ func findDarwinUnattributedRuntimeRoots(
 				return nil, err
 			}
 			if fact.CommandExact && fact.WorkingDirectory == target.CheckoutRoot && filepath.Base(fact.ExecutableIdentity) == "forj" {
-				roots = append(roots, pid)
+				forjRoots = append(forjRoots, darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootForjDev})
+			}
+			if pid == ownerPID && fact.WorkingDirectory == target.CheckoutRoot {
+				candidate := darwinUnattributedRuntimeRoot{PID: pid, Kind: unattributedRuntimeRootProjectListener}
+				projectListenerRoot = &candidate
 			}
 		}
 		parentPID := int(process.Eproc.Ppid)
@@ -265,7 +277,13 @@ func findDarwinUnattributedRuntimeRoots(
 		}
 		pid = parentPID
 	}
-	return roots, nil
+	if len(forjRoots) != 0 {
+		return forjRoots, nil
+	}
+	if projectListenerRoot != nil {
+		return []darwinUnattributedRuntimeRoot{*projectListenerRoot}, nil
+	}
+	return nil, nil
 }
 
 // darwinProcessDescendsFromRoot walks one current parent chain without treating a missing parent as stable ownership.

@@ -22,14 +22,15 @@ const (
 	runtimeRepairNativeHelperEnvironment = "HARBOR_RUNTIME_REPAIR_NATIVE_HELPER"
 	runtimeRepairNativeHelperAddress     = "HARBOR_RUNTIME_REPAIR_NATIVE_ADDRESS"
 	runtimeRepairNativeIgnoreTermination = "HARBOR_RUNTIME_REPAIR_NATIVE_IGNORE_TERM"
+	runtimeRepairNativeProjectProcess    = "HARBOR_RUNTIME_REPAIR_NATIVE_PROJECT_PROCESS"
 )
 
-// init turns a copied test binary into the exact dedicated-session forj dev process used by the native proof.
+// init turns a copied test binary into the listener helper used by the native process-scope proofs.
 func init() {
 	if os.Getenv(runtimeRepairNativeHelperEnvironment) != "1" {
 		return
 	}
-	if len(os.Args) != 2 || os.Args[1] != "dev" {
+	if len(os.Args) != 2 || (os.Args[1] != "dev" && os.Getenv(runtimeRepairNativeProjectProcess) != "1") {
 		os.Exit(90)
 	}
 	address := os.Getenv(runtimeRepairNativeHelperAddress)
@@ -45,6 +46,73 @@ func init() {
 		}
 	}
 	<-signals
+}
+
+// TestNativeDarwinUnattributedRuntimeRepairSettlesCheckoutOwnedListener proves Start can clean an app listener whose forj ancestor has already exited.
+func TestNativeDarwinUnattributedRuntimeRepairSettlesCheckoutOwnedListener(t *testing.T) {
+	if os.Getenv(runtimeRepairNativeTestEnvironment) != "1" {
+		t.Skip("set HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 on a disposable macOS runner")
+	}
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize checkout error = %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable error = %v", err)
+	}
+	appPath := filepath.Join(checkout, ".app.run-test")
+	if err := copyRuntimeRepairNativeHelper(executable, appPath); err != nil {
+		t.Fatalf("copy app helper error = %v", err)
+	}
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("reserve listener error = %v", err)
+	}
+	endpoint := netip.MustParseAddrPort(listener.Addr().String())
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release listener reservation error = %v", err)
+	}
+
+	command := exec.Command(appPath, "serve")
+	command.Dir = checkout
+	command.Env = append(
+		os.Environ(),
+		runtimeRepairNativeHelperEnvironment+"=1",
+		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
+		runtimeRepairNativeProjectProcess+"=1",
+	)
+	if err := command.Start(); err != nil {
+		t.Fatalf("start checkout-owned app helper error = %v", err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
+		t.Fatalf("wait for checkout-owned app listener error = %v", err)
+	}
+
+	repairer := NewUnattributedRuntimeRepairer()
+	inspection, err := repairer.Inspect(t.Context(), RuntimeRepairTarget{CheckoutRoot: checkout, Endpoint: endpoint})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if inspection.State != RuntimeRepairInspectionActionable || inspection.Candidate == nil {
+		t.Fatalf("Inspect() = %#v, want actionable project-owned candidate", inspection)
+	}
+	if inspection.Candidate.Display.Command != runtimeRepairProjectListenerCommand {
+		t.Fatalf("candidate command = %q, want %q", inspection.Candidate.Display.Command, runtimeRepairProjectListenerCommand)
+	}
+	confirmation, err := repairer.Confirm(t.Context(), *inspection.Candidate)
+	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
+		t.Fatalf("Confirm() = %#v, %v; want settled graceful signal", confirmation, err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("wait for terminated checkout-owned app helper error = %v", err)
+	}
 }
 
 // TestNativeDarwinRuntimeRepairLifecycle proves the reviewed native backend signals only an exact forj dev session and settles its listener.

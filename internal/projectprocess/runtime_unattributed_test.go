@@ -108,6 +108,29 @@ func TestUnattributedRuntimeObservationAllowsNonDedicatedRoot(t *testing.T) {
 	}
 }
 
+// TestUnattributedRuntimeObservationAllowsProjectOwnedListenerRoot proves a stale app listener can be correlated by exact checkout ownership after its forj ancestor is gone.
+func TestUnattributedRuntimeObservationAllowsProjectOwnedListenerRoot(t *testing.T) {
+	observation := unattributedRuntimeTestObservation(t)
+	listener := observation.Members[1]
+	listener.ParentPID = observation.RootParent.PID
+	listener.ProcessGroupID = 201
+	listener.SessionID = 202
+	listener.CommandExact = false
+	observation.RootKind = unattributedRuntimeRootProjectListener
+	observation.Root = listener
+	observation.Members = []runtimeRepairProcessFact{listener}
+	if err := observation.validate(); err != nil {
+		t.Fatalf("project-owned listener observation error = %v", err)
+	}
+	display := unattributedRuntimeDisplay(observation)
+	if display.Command != runtimeRepairProjectListenerCommand {
+		t.Fatalf("project-owned listener display command = %q, want %q", display.Command, runtimeRepairProjectListenerCommand)
+	}
+	if err := display.Validate(); err != nil {
+		t.Fatalf("project-owned listener display validation error = %v", err)
+	}
+}
+
 // TestUnattributedRuntimeObservationRejectsUnsafeScopes proves foreign and detached descendants cannot become candidates.
 func TestUnattributedRuntimeObservationRejectsUnsafeScopes(t *testing.T) {
 	tests := []struct {
@@ -135,6 +158,15 @@ func TestUnattributedRuntimeObservationRejectsUnsafeScopes(t *testing.T) {
 				t.Fatal("observation.validate() error = nil")
 			}
 		})
+	}
+
+	projectOwned := unattributedRuntimeTestObservation(t)
+	projectOwned.RootKind = unattributedRuntimeRootProjectListener
+	projectOwned.Root = projectOwned.Members[1]
+	projectOwned.Members = []runtimeRepairProcessFact{projectOwned.Root}
+	projectOwned.Root.PID = projectOwned.Root.PID + 1
+	if err := projectOwned.validate(); err == nil {
+		t.Fatal("project-owned listener root PID drift validation error = nil")
 	}
 }
 

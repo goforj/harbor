@@ -309,10 +309,29 @@ func (receipt unattributedRuntimeReceipt) clone() unattributedRuntimeReceipt {
 type unattributedRuntimeNativeObservation struct {
 	Target     RuntimeRepairTarget
 	DaemonUID  uint32
+	RootKind   unattributedRuntimeRootKind
 	Root       runtimeRepairProcessFact
 	RootParent runtimeRepairParentFact
 	Members    []runtimeRepairProcessFact
 	Listener   runtimeRepairSocketFact
+}
+
+// unattributedRuntimeRootKind identifies the bounded ownership evidence used for one no-session repair.
+type unattributedRuntimeRootKind string
+
+const (
+	// unattributedRuntimeRootForjDev identifies the ordinary forj dev ancestor scope.
+	unattributedRuntimeRootForjDev unattributedRuntimeRootKind = "forj_dev"
+	// unattributedRuntimeRootProjectListener identifies a same-user listener process whose checkout is the project authority.
+	unattributedRuntimeRootProjectListener unattributedRuntimeRootKind = "project_listener"
+)
+
+// rootKind returns the legacy forj-dev interpretation used by portable fixtures created before root kinds were recorded.
+func (observation unattributedRuntimeNativeObservation) rootKind() unattributedRuntimeRootKind {
+	if observation.RootKind == "" {
+		return unattributedRuntimeRootForjDev
+	}
+	return observation.RootKind
 }
 
 // validate proves the root command, descendant scope, process births, and listener owner correlate exactly.
@@ -341,8 +360,17 @@ func (observation unattributedRuntimeNativeObservation) validate() error {
 	if observation.Root.WorkingDirectory != observation.Target.CheckoutRoot {
 		return fmt.Errorf("unattributed runtime root working directory does not match the target checkout")
 	}
-	if filepath.Base(observation.Root.ExecutableIdentity) != "forj" || observation.Root.ArgumentCount != 2 || !observation.Root.CommandExact {
-		return fmt.Errorf("unattributed runtime root command is not exactly forj dev")
+	switch observation.rootKind() {
+	case unattributedRuntimeRootForjDev:
+		if filepath.Base(observation.Root.ExecutableIdentity) != "forj" || observation.Root.ArgumentCount != 2 || !observation.Root.CommandExact {
+			return fmt.Errorf("unattributed runtime root command is not exactly forj dev")
+		}
+	case unattributedRuntimeRootProjectListener:
+		if observation.Root.PID != observation.Listener.OwnerPID {
+			return fmt.Errorf("project-owned listener root must own the exact target socket")
+		}
+	default:
+		return fmt.Errorf("unattributed runtime root kind %q is unsupported", observation.RootKind)
 	}
 	if observation.Listener.Endpoint != observation.Target.Endpoint {
 		return fmt.Errorf("unattributed runtime listener does not match the target endpoint")
@@ -402,6 +430,7 @@ func (observation unattributedRuntimeNativeObservation) fingerprint() (string, e
 	payload = runtimeRepairAppendString(payload, observation.Target.CheckoutRoot)
 	payload = runtimeRepairAppendAddressPort(payload, observation.Target.Endpoint)
 	payload = binary.AppendUvarint(payload, uint64(observation.DaemonUID))
+	payload = runtimeRepairAppendString(payload, string(observation.rootKind()))
 	payload = runtimeRepairAppendProcess(payload, observation.Root)
 	payload = binary.AppendVarint(payload, int64(observation.RootParent.PID))
 	payload = runtimeRepairAppendString(payload, observation.RootParent.BirthToken)
@@ -450,9 +479,13 @@ func unattributedRuntimeInspection(native unattributedRuntimeNativeInspection) (
 
 // unattributedRuntimeDisplay derives bounded confirmation facts from one validated native observation.
 func unattributedRuntimeDisplay(observation unattributedRuntimeNativeObservation) RuntimeRepairDisplay {
+	command := runtimeRepairCommand
+	if observation.rootKind() == unattributedRuntimeRootProjectListener {
+		command = runtimeRepairProjectListenerCommand
+	}
 	return RuntimeRepairDisplay{
 		RootPID:      int64(observation.Root.PID),
-		Command:      runtimeRepairCommand,
+		Command:      command,
 		CheckoutRoot: observation.Target.CheckoutRoot,
 		Endpoint:     observation.Target.Endpoint,
 		ProcessCount: len(observation.Members),
