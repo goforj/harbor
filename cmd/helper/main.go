@@ -108,12 +108,13 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 		}
 	}()
 
-	dispatcher := helper.NewDispatcherWithResolver(
+	dispatcher := helper.NewDispatcherWithResolverAndTrust(
 		redeemer,
 		clock,
 		replayGuard,
 		dependencies.newLoopbackIdentityHandler(),
 		resolverHandler,
+		helper.UnavailableTrustHandler{},
 	)
 	return helper.ServeOnce(ctx, reader, writer, dispatcher)
 }

@@ -213,7 +213,7 @@ Implemented foundations include:
 Important incomplete work:
 
 - Windows NRPT portable tests and cross-compilation pass, and the daemon plus privileged helper now select the reviewed fixed-PowerShell backend. Its required elevated CI test exercises a fresh rule's observe, CAS add, bounded name-server Set repair, exact verification, and release; native workflow evidence and complete latent-field repair policy remain absent;
-- native trust-store installation and complete trusted-HTTPS product proof are absent; the portable adapter is not OS evidence and has no native backend yet;
+- native trust-store installation and complete trusted-HTTPS product proof are absent; the helper now carries strict public-CA trust tickets and bounded CAS evidence into a fail-closed handler boundary, while the portable adapter remains test infrastructure with no native backend yet;
 - low-port mechanisms and native-port service relays are not complete product paths;
 - the required three-real-project, full-stack acceptance test has not been reached.
 
@@ -224,7 +224,7 @@ Current platform capability is therefore uneven:
 | Loopback, host-conflict, process-scope, and local IPC foundations | Implemented with native proof for the exercised paths | Implemented with hosted native proof for exercised paths | Implemented with hosted native proof for exercised paths |
 | Resolver backend | Darwin backend integrated and crash-recovery tested | `systemd-resolved` foundation includes cancelable locking plus owned stage/quarantine recovery; its root-only lifecycle and crash-recovery test is required in Linux CI, while broader resolver parity remains | NRPT backend is wired into daemon confirmation and the privileged helper; elevated workflow evidence and complete latent-field repair remain |
 | Source helper installation | Automatic Wails development flow | Manual development bootstrap | Not implemented |
-| Trusted CA/leaf use | Material plus portable ownership/CAS boundary; native trust installation absent | Material plus portable ownership/CAS boundary; native trust installation absent | Material plus portable ownership/CAS boundary; native trust installation absent |
+| Trusted CA/leaf use | Material plus portable ownership/CAS boundary and helper trust protocol; native trust installation absent | Material plus portable ownership/CAS boundary and helper trust protocol; native trust installation absent | Material plus portable ownership/CAS boundary and helper trust protocol; native trust installation absent |
 | Low ports and shared public path | Darwin launchd primitives only | Not complete | Not complete |
 
 ## Desktop state

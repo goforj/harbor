@@ -48,6 +48,10 @@ const (
 	OperationEnsureResolver Operation = "ensure_resolver"
 	// OperationReleaseResolver admits one exact policy-bound resolver release operation.
 	OperationReleaseResolver Operation = "release_resolver"
+	// OperationEnsureTrust admits one exact public-CA trust ensure operation.
+	OperationEnsureTrust Operation = "ensure_trust"
+	// OperationReleaseTrust admits one exact public-CA trust release operation.
+	OperationReleaseTrust Operation = "release_trust"
 )
 
 // ObservationState identifies the expected pre-mutation state of an approved address.
@@ -174,6 +178,32 @@ func (o ExpectedResolverObservation) Validate() error {
 	return nil
 }
 
+// ExpectedTrustObservation binds one trust mutation to a complete native observation.
+type ExpectedTrustObservation struct {
+	Fingerprint string `json:"fingerprint"`
+}
+
+// Validate requires the canonical digest emitted by the trust adapter.
+func (o ExpectedTrustObservation) Validate() error {
+	if !validFingerprint(o.Fingerprint) {
+		return newRequestError(ErrorCodeInvalidTicket, "expected trust observation fingerprint is invalid")
+	}
+	return nil
+}
+
+// TrustRoot carries only the public CA material that a signed trust ticket may authorize.
+type TrustRoot struct {
+	CertificatePEM []byte    `json:"certificate_pem"`
+	Fingerprint    string    `json:"fingerprint"`
+	NotBefore      time.Time `json:"not_before"`
+	NotAfter       time.Time `json:"not_after"`
+}
+
+// Validate rejects missing, private, oversized, or internally inconsistent public CA material.
+func (root TrustRoot) Validate() error {
+	return validateTrustRootShape(root)
+}
+
 // Validate verifies that the authority contains every exact /29 address once in canonical order with route-only absent-state evidence.
 func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
 	if !pool.IsValid() || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() {
@@ -232,6 +262,8 @@ type Ticket struct {
 	ExpectedPreAssignment       *ExpectedPreAssignment       `json:"expected_pre_assignment,omitempty"`
 	ExpectedLoopbackPool        *ExpectedLoopbackPool        `json:"expected_loopback_pool,omitempty"`
 	ExpectedResolverObservation *ExpectedResolverObservation `json:"expected_resolver_observation,omitempty"`
+	TrustRoot                   *TrustRoot                   `json:"trust_root,omitempty"`
+	ExpectedTrustObservation    *ExpectedTrustObservation    `json:"expected_trust_observation,omitempty"`
 	Nonce                       string                       `json:"nonce"`
 	ExpiresAt                   time.Time                    `json:"expires_at"`
 }
@@ -273,9 +305,13 @@ func (t Ticket) Validate(now time.Time) error {
 		if err := t.validateResolverAuthority(); err != nil {
 			return err
 		}
+	} else if t.Operation == OperationEnsureTrust || t.Operation == OperationReleaseTrust {
+		if err := t.validateTrustAuthority(); err != nil {
+			return err
+		}
 	} else if t.Operation == OperationEnsureLoopbackPool {
-		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil {
-			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain resolver authority")
+		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain network authority")
 		}
 		if pool.Bits() != loopbackPoolPrefixBits || pool.String() != t.ApprovedPool {
 			return newRequestError(ErrorCodeInvalidTicket, "pool ensure requires a canonical IPv4 loopback /29")
@@ -290,8 +326,8 @@ func (t Ticket) Validate(now time.Time) error {
 			return err
 		}
 	} else {
-		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil {
-			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain resolver authority")
+		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain network authority")
 		}
 		if t.ExpectedLoopbackPool != nil {
 			return newRequestError(ErrorCodeInvalidTicket, "single-address operation cannot contain expected loopback pool authority")
@@ -322,7 +358,9 @@ func validOperation(operation Operation) bool {
 		OperationEnsureLoopbackPool,
 		OperationReleaseLoopbackIdentity,
 		OperationEnsureResolver,
-		OperationReleaseResolver:
+		OperationReleaseResolver,
+		OperationEnsureTrust,
+		OperationReleaseTrust:
 		return true
 	default:
 		return false
@@ -345,13 +383,65 @@ func (t Ticket) validateResolverAuthority() error {
 		return newRequestError(ErrorCodeInvalidTicket, "resolver host-network policy fingerprint does not match ownership")
 	}
 	if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) ||
-		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil {
-		return newRequestError(ErrorCodeInvalidTicket, "resolver operation cannot contain loopback mutation authority")
+		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "resolver operation cannot contain loopback or trust mutation authority")
 	}
 	if t.ExpectedResolverObservation == nil {
 		return newRequestError(ErrorCodeInvalidTicket, "resolver operation requires an expected observation")
 	}
 	return t.ExpectedResolverObservation.Validate()
+}
+
+// validateTrustAuthority binds trust effects to one complete policy and public-only CA material.
+func (t Ticket) validateTrustAuthority() error {
+	if t.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+		return newRequestError(ErrorCodeInvalidTicket, "trust operation requires network-policy ownership")
+	}
+	if t.NetworkPolicy == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "trust operation requires a host-network policy")
+	}
+	if err := t.NetworkPolicy.Validate(); err != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "trust host-network policy is invalid")
+	}
+	policyFingerprint, err := t.NetworkPolicy.Fingerprint()
+	if err != nil || policyFingerprint != t.NetworkPolicyFingerprint {
+		return newRequestError(ErrorCodeInvalidTicket, "trust host-network policy fingerprint does not match ownership")
+	}
+	if t.TrustRoot == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "trust operation requires public CA material")
+	}
+	if err := validateTrustRootShape(*t.TrustRoot); err != nil {
+		return err
+	}
+	if t.TrustRoot.Fingerprint != t.NetworkPolicy.AuthorityFingerprint {
+		return newRequestError(ErrorCodeInvalidTicket, "trust CA fingerprint does not match host-network policy")
+	}
+	if t.ExpectedTrustObservation == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "trust operation requires an expected observation")
+	}
+	if err := t.ExpectedTrustObservation.Validate(); err != nil {
+		return err
+	}
+	if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) ||
+		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.ExpectedResolverObservation != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "trust operation cannot contain loopback or resolver mutation authority")
+	}
+	return nil
+}
+
+// validateTrustRootShape bounds signed public CA material before the trust handler performs deep certificate validation.
+func validateTrustRootShape(root TrustRoot) error {
+	if len(root.CertificatePEM) == 0 || len(root.CertificatePEM) > 64<<10 {
+		return newRequestError(ErrorCodeInvalidTicket, "trust CA certificate material is missing or too large")
+	}
+	if strings.Contains(string(root.CertificatePEM), "PRIVATE KEY") {
+		return newRequestError(ErrorCodeInvalidTicket, "trust CA certificate material must not contain private key data")
+	}
+	if !validFingerprint(root.Fingerprint) || root.NotBefore.IsZero() || root.NotAfter.IsZero() ||
+		root.NotBefore.Location() != time.UTC || root.NotAfter.Location() != time.UTC || !root.NotAfter.After(root.NotBefore) {
+		return newRequestError(ErrorCodeInvalidTicket, "trust CA public identity is invalid")
+	}
+	return nil
 }
 
 // validateSingleAddressAuthority verifies the legacy exact-address authority used by ensure and release operations.

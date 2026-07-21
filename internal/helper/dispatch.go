@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 // MutationEvidence is the bounded postcondition returned by a loopback identity handler.
@@ -36,6 +38,27 @@ type ResolverMutationEvidence struct {
 	OwnershipFingerprint   string                `json:"ownership_fingerprint"`
 	ObservationFingerprint string                `json:"observation_fingerprint"`
 	Postcondition          ResolverPostcondition `json:"postcondition"`
+}
+
+// TrustPostcondition identifies the exact public-CA trust state proven after a trust operation.
+type TrustPostcondition string
+
+const (
+	// TrustPostconditionExact means one Harbor-owned trust entry exactly matches the signed public CA.
+	TrustPostconditionExact TrustPostcondition = "exact"
+	// TrustPostconditionPreexisting means an identical unowned CA was already trusted and was preserved.
+	TrustPostconditionPreexisting TrustPostcondition = "preexisting"
+	// TrustPostconditionOwnedAbsent means no trust entry owned by the signed installation remains.
+	TrustPostconditionOwnedAbsent TrustPostcondition = "owned_absent"
+)
+
+// TrustMutationEvidence is the bounded trust postcondition returned by the privileged handler.
+type TrustMutationEvidence struct {
+	Changed                bool                         `json:"changed"`
+	AuthorityFingerprint   string                       `json:"authority_fingerprint"`
+	Mechanism              networkpolicy.TrustMechanism `json:"mechanism"`
+	ObservationFingerprint string                       `json:"observation_fingerprint"`
+	Postcondition          TrustPostcondition           `json:"postcondition"`
 }
 
 // LoopbackIdentityHandler applies only the loopback operations admitted by this protocol.
@@ -74,6 +97,27 @@ type ResolverHandler interface {
 	ReleaseResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error)
 }
 
+// TrustHandler applies only the public-CA trust operations admitted by this protocol.
+type TrustHandler interface {
+	// EnsureTrust ensures the signed public CA trust projection and returns its verified postcondition.
+	EnsureTrust(context.Context, Ticket) (TrustMutationEvidence, error)
+	// ReleaseTrust removes only the signed installation's owned public CA trust projection.
+	ReleaseTrust(context.Context, Ticket) (TrustMutationEvidence, error)
+}
+
+// UnavailableTrustHandler fails closed until a reviewed platform trust adapter is installed.
+type UnavailableTrustHandler struct{}
+
+// EnsureTrust rejects trust ensure operations because no trust mutation authority is installed.
+func (UnavailableTrustHandler) EnsureTrust(context.Context, Ticket) (TrustMutationEvidence, error) {
+	return TrustMutationEvidence{}, ErrMutationUnavailable
+}
+
+// ReleaseTrust rejects trust release operations because no trust mutation authority is installed.
+func (UnavailableTrustHandler) ReleaseTrust(context.Context, Ticket) (TrustMutationEvidence, error) {
+	return TrustMutationEvidence{}, ErrMutationUnavailable
+}
+
 // UnavailableResolverHandler fails closed on platforms without an installed resolver adapter.
 type UnavailableResolverHandler struct{}
 
@@ -104,6 +148,7 @@ type OperationResult struct {
 	Evidence         MutationEvidence          `json:"evidence,omitzero"`
 	PoolEvidence     *PoolMutationEvidence     `json:"pool_evidence,omitempty"`
 	ResolverEvidence *ResolverMutationEvidence `json:"resolver_evidence,omitempty"`
+	TrustEvidence    *TrustMutationEvidence    `json:"trust_evidence,omitempty"`
 }
 
 // Response is the versioned one-shot helper response envelope.
@@ -121,14 +166,15 @@ type Dispatcher struct {
 	replayGuard ReplayGuard
 	loopback    LoopbackIdentityHandler
 	resolver    ResolverHandler
+	trust       TrustHandler
 }
 
-// NewDispatcher constructs a dispatcher with resolver effects intentionally unavailable.
+// NewDispatcher constructs a dispatcher with resolver and trust effects intentionally unavailable.
 func NewDispatcher(redeemer TicketRedeemer, clock Clock, replayGuard ReplayGuard, handler LoopbackIdentityHandler) *Dispatcher {
-	return NewDispatcherWithResolver(redeemer, clock, replayGuard, handler, UnavailableResolverHandler{})
+	return NewDispatcherWithResolverAndTrust(redeemer, clock, replayGuard, handler, UnavailableResolverHandler{}, UnavailableTrustHandler{})
 }
 
-// NewDispatcherWithResolver constructs a dispatcher whose platform handlers must fail closed themselves.
+// NewDispatcherWithResolver constructs a dispatcher with an explicit resolver handler and unavailable trust effects.
 func NewDispatcherWithResolver(
 	redeemer TicketRedeemer,
 	clock Clock,
@@ -136,20 +182,42 @@ func NewDispatcherWithResolver(
 	loopbackHandler LoopbackIdentityHandler,
 	resolverHandler ResolverHandler,
 ) *Dispatcher {
+	return NewDispatcherWithResolverAndTrust(
+		redeemer,
+		clock,
+		replayGuard,
+		loopbackHandler,
+		resolverHandler,
+		UnavailableTrustHandler{},
+	)
+}
+
+// NewDispatcherWithResolverAndTrust constructs a dispatcher with explicit resolver and trust authorities.
+func NewDispatcherWithResolverAndTrust(
+	redeemer TicketRedeemer,
+	clock Clock,
+	replayGuard ReplayGuard,
+	loopbackHandler LoopbackIdentityHandler,
+	resolverHandler ResolverHandler,
+	trustHandler TrustHandler,
+) *Dispatcher {
 	if redeemer == nil {
-		panic("helper.NewDispatcherWithResolver requires a non-nil ticket redeemer")
+		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil ticket redeemer")
 	}
 	if clock == nil {
-		panic("helper.NewDispatcherWithResolver requires a non-nil clock")
+		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil clock")
 	}
 	if replayGuard == nil {
-		panic("helper.NewDispatcherWithResolver requires a non-nil replay guard")
+		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil replay guard")
 	}
 	if loopbackHandler == nil {
-		panic("helper.NewDispatcherWithResolver requires a non-nil loopback identity handler")
+		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil loopback identity handler")
 	}
 	if resolverHandler == nil {
-		panic("helper.NewDispatcherWithResolver requires a non-nil resolver handler")
+		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil resolver handler")
+	}
+	if trustHandler == nil {
+		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil trust handler")
 	}
 	return &Dispatcher{
 		redeemer:    redeemer,
@@ -157,6 +225,7 @@ func NewDispatcherWithResolver(
 		replayGuard: replayGuard,
 		loopback:    loopbackHandler,
 		resolver:    resolverHandler,
+		trust:       trustHandler,
 	}
 }
 
@@ -234,6 +303,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 			err = resolverEvidence.validate(ticket, redemption.Admission)
 		}
 		result.ResolverEvidence = &resolverEvidence
+	case OperationEnsureTrust:
+		trustEvidence, trustErr := d.trust.EnsureTrust(operationContext, ticket)
+		err = trustErr
+		if err == nil {
+			err = trustEvidence.validate(ticket)
+		}
+		result.TrustEvidence = &trustEvidence
+	case OperationReleaseTrust:
+		trustEvidence, trustErr := d.trust.ReleaseTrust(operationContext, ticket)
+		err = trustErr
+		if err == nil {
+			err = trustEvidence.validate(ticket)
+		}
+		result.TrustEvidence = &trustEvidence
 	default:
 		err = newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
 	}
@@ -277,6 +360,48 @@ func (e ResolverMutationEvidence) validateShape(operation Operation) error {
 	}
 	if e.Postcondition != want {
 		return errors.New("resolver mutation evidence state does not match the operation")
+	}
+	return nil
+}
+
+// validate prevents a trust adapter from returning evidence for another CA, mechanism, or postcondition.
+func (e TrustMutationEvidence) validate(ticket Ticket) error {
+	if err := e.validateShape(ticket.Operation); err != nil {
+		return newRequestError(ErrorCodeMutationFailed, "trust mutation evidence is invalid")
+	}
+	if ticket.NetworkPolicy == nil || ticket.TrustRoot == nil {
+		return newRequestError(ErrorCodeMutationFailed, "trust mutation evidence has no approved authority")
+	}
+	if e.AuthorityFingerprint != ticket.TrustRoot.Fingerprint || e.AuthorityFingerprint != ticket.NetworkPolicy.AuthorityFingerprint {
+		return newRequestError(ErrorCodeMutationFailed, "trust mutation evidence authority does not match the approved CA")
+	}
+	if e.Mechanism != ticket.NetworkPolicy.Mechanisms.Trust {
+		return newRequestError(ErrorCodeMutationFailed, "trust mutation evidence mechanism does not match the approved policy")
+	}
+	return nil
+}
+
+// validateShape enforces the standalone trust response shape before ticket correlation.
+func (e TrustMutationEvidence) validateShape(operation Operation) error {
+	if !validFingerprint(e.AuthorityFingerprint) || !validFingerprint(e.ObservationFingerprint) {
+		return errors.New("trust mutation evidence fingerprints are invalid")
+	}
+	if e.Mechanism != networkpolicy.DarwinCurrentUserTrust &&
+		e.Mechanism != networkpolicy.UbuntuSystemTrust &&
+		e.Mechanism != networkpolicy.WindowsCurrentUserTrust {
+		return errors.New("trust mutation evidence mechanism is unsupported")
+	}
+	switch operation {
+	case OperationEnsureTrust:
+		if e.Postcondition != TrustPostconditionExact && e.Postcondition != TrustPostconditionPreexisting {
+			return errors.New("trust mutation evidence ensure postcondition is invalid")
+		}
+	case OperationReleaseTrust:
+		if e.Postcondition != TrustPostconditionOwnedAbsent {
+			return errors.New("trust mutation evidence release postcondition is invalid")
+		}
+	default:
+		return errors.New("trust mutation evidence operation is unsupported")
 	}
 	return nil
 }
