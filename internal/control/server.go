@@ -15,6 +15,7 @@ import (
 
 	"github.com/goforj/harbor/internal/buildinfo"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/managedsession"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/rpc/session"
@@ -45,6 +46,8 @@ type ServerConfig struct {
 	RequestShutdown func()
 	// ObserveError optionally records causes that are redacted from IPC responses.
 	ObserveError ErrorObserver
+	// ManagedAuthority optionally enables the isolated GoForj managed-session role on the same authenticated endpoint.
+	ManagedAuthority managedsession.Authority
 }
 
 // Server adapts authenticated local connections to the typed Harbor control API.
@@ -102,11 +105,38 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	shutdownAccepted := make(chan struct{})
 	var acceptShutdown sync.Once
 	var shutdownCaller Caller
+	serverCapabilities := capabilities()
+	serverAuthorize := authorizeControlHello
+	var roleHandlers map[rpc.Role]map[string]session.Handler
+	if server.config.ManagedAuthority != nil {
+		serverCapabilities = append(serverCapabilities, managedsession.CapabilityV1)
+		serverAuthorize = func(ctx context.Context, hello rpc.Hello) error {
+			if hello.Role == rpc.RoleGoForjSession {
+				if err := normalizeContext(ctx).Err(); err != nil {
+					return err
+				}
+				if !containsCapability(hello.Capabilities, managedsession.CapabilityV1) {
+					return errors.New("managed-session.v1 capability is required")
+				}
+				return nil
+			}
+			return authorizeControlHello(ctx, hello)
+		}
+		managedHandlers, handlerErr := managedsession.NewHandlerSet(transportPeer, server.config.ManagedAuthority)
+		if handlerErr != nil {
+			_ = connection.Close()
+			return fmt.Errorf("configure managed session handlers: %w", handlerErr)
+		}
+		roleHandlers = map[rpc.Role]map[string]session.Handler{
+			rpc.RoleGoForjSession: managedHandlers.Handlers(),
+		}
+	}
 	controlSession, err := session.NewServer(session.ServerConfig{
 		DaemonVersion:  server.build.Version,
 		ProtocolRanges: protocolRanges(),
-		Capabilities:   capabilities(),
-		Authorize:      authorizeControlHello,
+		Capabilities:   serverCapabilities,
+		Authorize:      serverAuthorize,
+		RoleHandlers:   roleHandlers,
 		Handlers: map[string]session.Handler{
 			methodDaemonStatus: server.statusHandler(transportPeer),
 			methodDaemonStop: server.stopHandler(transportPeer, func(caller Caller) {

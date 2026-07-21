@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/goforj/harbor/internal/buildinfo"
@@ -18,6 +19,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/helper/ticketspool"
+	"github.com/goforj/harbor/internal/managedsession"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -33,6 +35,13 @@ type controlState interface {
 	RuntimeState(context.Context) (state.RuntimeState, error)
 	// RegisterProject creates or replays one inert project registration atomically.
 	RegisterProject(context.Context, domain.ProjectSnapshot) (state.ProjectRegistration, error)
+}
+
+// managedSessionState limits managed attachment authority to exact project/session mutations.
+type managedSessionState interface {
+	Project(context.Context, domain.ProjectID) (state.ProjectRecord, error)
+	ActiveProjectSession(context.Context, domain.ProjectID) (domain.ProjectSession, error)
+	CompleteManagedSessionAttachment(context.Context, state.CompleteManagedSessionAttachmentRequest) (domain.ProjectSession, error)
 }
 
 // httpRouteObserver limits public URL projection to exact routes owned by the ready data plane.
@@ -106,9 +115,14 @@ type Authority struct {
 	newProjectID      func() (domain.ProjectID, error)
 	newOperationID    func() (domain.OperationID, error)
 	newInstallationID func() (identity.InstallationID, error)
+	managedStore      managedSessionState
+	managedRegistry   *harbordruntime.ManagedPublicationRegistry
+	managedMu         sync.Mutex
+	managedSessions   map[domain.ProjectID]managedSessionAttachment
 }
 
 var _ control.Authority = (*Authority)(nil)
+var _ managedsession.Authority = (*Authority)(nil)
 
 // NewAuthority creates the production control authority from durable state and required reconciliation coordinators.
 func NewAuthority(
@@ -222,7 +236,16 @@ func newAuthorityWithIdentityFactories(
 		newProjectID:      newProjectID,
 		newOperationID:    newOperationID,
 		newInstallationID: newInstallationID,
+		managedStore:      managedStoreFromControlState(store),
+		managedRegistry:   harbordruntime.NewManagedPublicationRegistry(),
+		managedSessions:   make(map[domain.ProjectID]managedSessionAttachment),
 	}
+}
+
+// managedStoreFromControlState keeps the existing control test seam while enabling managed attachment for production state.
+func managedStoreFromControlState(store controlState) managedSessionState {
+	managedStore, _ := store.(managedSessionState)
+	return managedStore
 }
 
 // nilAuthorityDependency rejects nil and typed-nil collaborators before request dispatch can panic.
