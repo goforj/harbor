@@ -22,6 +22,8 @@ type ManagedPublicationStateSource interface {
 type ManagedNativeRoutePlanRequest struct {
 	Fence        ManagedPublicationFence
 	Publications []ManagedEndpointPublication
+	// AllowProjectStarting is reserved for the authenticated Compose barrier, before App readiness is complete.
+	AllowProjectStarting bool
 }
 
 // Validate reports whether a managed native route request contains a complete fence and bounded observations.
@@ -53,7 +55,7 @@ func PlanVerifiedManagedNativeRoutes(
 		return nil, err
 	}
 
-	first, err := readVerifiedManagedPublicationAuthority(ctx, source, request.Fence)
+	first, err := readVerifiedManagedPublicationAuthority(ctx, source, request.Fence, request.AllowProjectStarting)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +68,7 @@ func PlanVerifiedManagedNativeRoutes(
 		return nil, err
 	}
 
-	second, err := readVerifiedManagedPublicationAuthority(ctx, source, request.Fence)
+	second, err := readVerifiedManagedPublicationAuthority(ctx, source, request.Fence, request.AllowProjectStarting)
 	if err != nil {
 		return nil, errors.Join(managedPublicationAuthorityChanged, err)
 	}
@@ -103,6 +105,7 @@ func readVerifiedManagedPublicationAuthority(
 	ctx context.Context,
 	source ManagedPublicationStateSource,
 	fence ManagedPublicationFence,
+	allowProjectStarting bool,
 ) (managedPublicationAuthority, error) {
 	runtimeState, err := source.RuntimeState(ctx)
 	if err != nil {
@@ -119,7 +122,7 @@ func readVerifiedManagedPublicationAuthority(
 	if !found {
 		return managedPublicationAuthority{}, &state.ProjectNotFoundError{ProjectID: fence.ProjectID}
 	}
-	if project.State != domain.ProjectReady {
+	if project.State != domain.ProjectReady && !(allowProjectStarting && project.State == domain.ProjectStarting) {
 		return managedPublicationAuthority{}, fmt.Errorf("managed publication project %q is %q, not ready", fence.ProjectID, project.State)
 	}
 

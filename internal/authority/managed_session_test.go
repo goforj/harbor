@@ -37,15 +37,27 @@ type recordingManagedNativeRoutes struct {
 
 // recordingManagedPublicationObserver returns the Harbor-owned replacement used by barrier activation assertions.
 type recordingManagedPublicationObserver struct {
-	publications []harbordruntime.ManagedEndpointPublication
-	calls        int
-	lastFence    harbordruntime.ManagedPublicationFence
+	publications         []harbordruntime.ManagedEndpointPublication
+	calls                int
+	lastFence            harbordruntime.ManagedPublicationFence
+	allowProjectStarting bool
 }
 
 // ObserveManagedPublications records the exact fence and returns a fresh Harbor-owned publication set.
 func (observer *recordingManagedPublicationObserver) ObserveManagedPublications(_ context.Context, _ domain.ProjectID, _ domain.SessionID, fence harbordruntime.ManagedPublicationFence) ([]harbordruntime.ManagedEndpointPublication, error) {
+	return observer.observe(fence, false)
+}
+
+// ObserveManagedPublicationsForPhase records whether the barrier requested pre-ready Compose observation.
+func (observer *recordingManagedPublicationObserver) ObserveManagedPublicationsForPhase(_ context.Context, _ domain.ProjectID, _ domain.SessionID, fence harbordruntime.ManagedPublicationFence, allowProjectStarting bool) ([]harbordruntime.ManagedEndpointPublication, error) {
+	return observer.observe(fence, allowProjectStarting)
+}
+
+// observe records one publication observation without changing the returned topology.
+func (observer *recordingManagedPublicationObserver) observe(fence harbordruntime.ManagedPublicationFence, allowProjectStarting bool) ([]harbordruntime.ManagedEndpointPublication, error) {
 	observer.calls++
 	observer.lastFence = fence
+	observer.allowProjectStarting = allowProjectStarting
 	return append([]harbordruntime.ManagedEndpointPublication(nil), observer.publications...), nil
 }
 
@@ -254,8 +266,12 @@ func TestAuthorityManagedSessionReplayRejectsIdentityDrift(t *testing.T) {
 		mutate func(*managedsession.RegisterRequest, *local.PeerIdentity)
 		want   string
 	}{
-		{name: "generation", mutate: func(request *managedsession.RegisterRequest, _ *local.PeerIdentity) { request.ExpectedSessionGeneration = 1 }, want: "generation"},
-		{name: "descriptor", mutate: func(request *managedsession.RegisterRequest, _ *local.PeerIdentity) { request.DescriptorDigest = strings.Repeat("d", 64) }, want: "descriptor"},
+		{name: "generation", mutate: func(request *managedsession.RegisterRequest, _ *local.PeerIdentity) {
+			request.ExpectedSessionGeneration = 1
+		}, want: "generation"},
+		{name: "descriptor", mutate: func(request *managedsession.RegisterRequest, _ *local.PeerIdentity) {
+			request.DescriptorDigest = strings.Repeat("d", 64)
+		}, want: "descriptor"},
 		{name: "peer", mutate: func(_ *managedsession.RegisterRequest, peer *local.PeerIdentity) { peer.ProcessID++ }, want: "peer"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -348,6 +364,9 @@ func TestAuthorityManagedBarrierRequiresLiveRouteActivator(t *testing.T) {
 	}
 	if observer.calls != 1 || observer.lastFence != response.Fence {
 		t.Fatalf("publication observer calls = %d fence = %#v, want one call for %#v", observer.calls, observer.lastFence, response.Fence)
+	}
+	if !observer.allowProjectStarting {
+		t.Fatal("publication observer did not receive the Compose pre-ready allowance")
 	}
 }
 

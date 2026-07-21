@@ -62,6 +62,11 @@ type managedPublicationObserver interface {
 	ObserveManagedPublications(context.Context, domain.ProjectID, domain.SessionID, harbordruntime.ManagedPublicationFence) ([]harbordruntime.ManagedEndpointPublication, error)
 }
 
+// managedPublicationPhaseObserver optionally accepts the early Compose barrier before App readiness.
+type managedPublicationPhaseObserver interface {
+	ObserveManagedPublicationsForPhase(context.Context, domain.ProjectID, domain.SessionID, harbordruntime.ManagedPublicationFence, bool) ([]harbordruntime.ManagedEndpointPublication, error)
+}
+
 // projectDiscoverer isolates filesystem discovery from durable registration policy.
 type projectDiscoverer interface {
 	// Discover returns one canonical marker-validated checkout and its allowlisted presentation metadata.

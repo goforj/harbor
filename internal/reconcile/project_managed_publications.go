@@ -27,6 +27,28 @@ func (coordinator *ProjectLifecycleCoordinator) ObserveManagedPublications(
 	sessionID domain.SessionID,
 	fence harbordruntime.ManagedPublicationFence,
 ) ([]harbordruntime.ManagedEndpointPublication, error) {
+	return coordinator.observeManagedPublications(ctx, projectID, sessionID, fence, false)
+}
+
+// ObserveManagedPublicationsForPhase joins Compose service ports before App readiness when the authenticated barrier allows it.
+func (coordinator *ProjectLifecycleCoordinator) ObserveManagedPublicationsForPhase(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	fence harbordruntime.ManagedPublicationFence,
+	allowProjectStarting bool,
+) ([]harbordruntime.ManagedEndpointPublication, error) {
+	return coordinator.observeManagedPublications(ctx, projectID, sessionID, fence, allowProjectStarting)
+}
+
+// observeManagedPublications performs the fenced descriptor and service-port join for one lifecycle phase.
+func (coordinator *ProjectLifecycleCoordinator) observeManagedPublications(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+	fence harbordruntime.ManagedPublicationFence,
+	allowProjectStarting bool,
+) ([]harbordruntime.ManagedEndpointPublication, error) {
 	if coordinator == nil {
 		panic("reconcile.ProjectLifecycleCoordinator.ObserveManagedPublications requires a non-nil receiver")
 	}
@@ -52,7 +74,7 @@ func (coordinator *ProjectLifecycleCoordinator) ObserveManagedPublications(
 	if active.ID != sessionID || active.Generation != fence.SessionGeneration || active.State != domain.SessionAttached || active.Process == nil {
 		return nil, fmt.Errorf("%w: managed publication session %q is not the attached fence", managedsession.ErrManagedSessionNotReady, sessionID)
 	}
-	if project.Project.State != domain.ProjectReady {
+	if project.Project.State != domain.ProjectReady && !(allowProjectStarting && project.Project.State == domain.ProjectStarting) {
 		return nil, fmt.Errorf("%w: managed publication project %q is %q, not ready", managedsession.ErrManagedSessionNotReady, projectID, project.Project.State)
 	}
 

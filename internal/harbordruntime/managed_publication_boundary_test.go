@@ -96,6 +96,33 @@ func TestPlanVerifiedManagedNativeRoutesRequiresReadyProject(t *testing.T) {
 	}
 }
 
+// TestPlanVerifiedManagedNativeRoutesAllowsComposeStarting proves only the explicit Compose boundary may run before App readiness.
+func TestPlanVerifiedManagedNativeRoutesAllowsComposeStarting(t *testing.T) {
+	source, request := managedPublicationBoundaryFixture()
+	source.runtimeValues[0].Snapshot.Projects[0].State = domain.ProjectStarting
+	source.runtimeValues[1] = source.runtimeValues[0]
+	request.AllowProjectStarting = true
+
+	routes, err := PlanVerifiedManagedNativeRoutes(t.Context(), source, request)
+	if err != nil {
+		t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v", err)
+	}
+	if len(routes) != 1 || routes[0].ID != "orders:service:mysql" {
+		t.Fatalf("routes = %#v, want one mysql route", routes)
+	}
+}
+
+// TestPlanVerifiedManagedNativeRoutesStillRejectsStartingWithoutComposeAllowance keeps the default readiness fence strict.
+func TestPlanVerifiedManagedNativeRoutesStillRejectsStartingWithoutComposeAllowance(t *testing.T) {
+	source, request := managedPublicationBoundaryFixture()
+	source.runtimeValues[0].Snapshot.Projects[0].State = domain.ProjectStarting
+	source.runtimeValues[1] = source.runtimeValues[0]
+
+	if _, err := PlanVerifiedManagedNativeRoutes(t.Context(), source, request); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v, want readiness rejection", err)
+	}
+}
+
 // TestPlanVerifiedManagedNativeRoutesRejectsSessionFenceFailures keeps missing, replaced, and unattached sessions out of publication authority.
 func TestPlanVerifiedManagedNativeRoutesRejectsSessionFenceFailures(t *testing.T) {
 	tests := []struct {

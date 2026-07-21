@@ -298,7 +298,7 @@ func (source managedPublicationStateSource) ActiveProjectSession(ctx context.Con
 }
 
 // currentManagedNativeRoutes plans every attached managed session from its latest complete observation.
-func (authority *Authority) currentManagedNativeRoutes(ctx context.Context) ([]dataplane.NativeRoute, error) {
+func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allowProjectStarting bool, startingFence harbordruntime.ManagedPublicationFence) ([]dataplane.NativeRoute, error) {
 	if authority.managedStore == nil || authority.managedRegistry == nil {
 		return nil, errors.New("managed session route authority is unavailable")
 	}
@@ -312,13 +312,15 @@ func (authority *Authority) currentManagedNativeRoutes(ctx context.Context) ([]d
 	source := managedPublicationStateSource{runtime: authority.store, sessions: authority.managedStore}
 	for _, attachment := range attachments {
 		fence := attachment.response.Fence
+		allowStartingForAttachment := allowProjectStarting && fence == startingFence
 		publications, err := authority.managedRegistry.Snapshot(fence)
 		if err != nil {
 			return nil, err
 		}
 		planned, err := harbordruntime.PlanVerifiedManagedNativeRoutes(ctx, source, harbordruntime.ManagedNativeRoutePlanRequest{
-			Fence:        fence,
-			Publications: publications,
+			Fence:                fence,
+			Publications:         publications,
+			AllowProjectStarting: allowStartingForAttachment,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("plan managed native routes for project %q: %w", fence.ProjectID, err)
@@ -357,13 +359,26 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 	}
 	acknowledged := false
 	if authority.managedRoutes != nil {
+		allowProjectStarting := request.Phase == managedsession.BarrierPhaseCompose
 		if authority.managedObserver != nil {
-			observed, err := authority.managedObserver.ObserveManagedPublications(
-				normalizeContext(ctx),
-				request.Fence.ProjectID,
-				request.Fence.SessionID,
-				request.Fence,
-			)
+			var observed []harbordruntime.ManagedEndpointPublication
+			var err error
+			if phaseObserver, ok := authority.managedObserver.(managedPublicationPhaseObserver); ok {
+				observed, err = phaseObserver.ObserveManagedPublicationsForPhase(
+					normalizeContext(ctx),
+					request.Fence.ProjectID,
+					request.Fence.SessionID,
+					request.Fence,
+					allowProjectStarting,
+				)
+			} else {
+				observed, err = authority.managedObserver.ObserveManagedPublications(
+					normalizeContext(ctx),
+					request.Fence.ProjectID,
+					request.Fence.SessionID,
+					request.Fence,
+				)
+			}
 			if err != nil {
 				return managedsession.BarrierResponse{}, err
 			}
@@ -371,7 +386,7 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 				return managedsession.BarrierResponse{}, err
 			}
 		}
-		routes, err := authority.currentManagedNativeRoutes(normalizeContext(ctx))
+		routes, err := authority.currentManagedNativeRoutes(normalizeContext(ctx), allowProjectStarting, request.Fence)
 		if err != nil {
 			return managedsession.BarrierResponse{}, fmt.Errorf("%w: plan managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
