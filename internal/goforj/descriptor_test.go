@@ -316,7 +316,7 @@ func runDescriptorHelper() {
 
 // validDescriptorJSON returns a deterministic schema-v1 descriptor with no environment values.
 func validDescriptorJSON() string {
-	return `{"schema_version":1,"project":{"name":"orders","module":"example.com/orders","config_digest":"sha256:` + strings.Repeat("a", 64) + `"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[{"id":"app","name":"app","entrypoint":"cmd/app/main.go","runtimes":[{"id":"http","kind":"http","default_port":3000,"public_url":true,"readiness_path":"/-/ready"}]}]}` + "\n"
+	return `{"schema_version":1,"project":{"name":"orders","module":"example.com/orders","config_digest":"sha256:` + strings.Repeat("a", 64) + `"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1","service-requirements.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[{"id":"app","name":"app","entrypoint":"cmd/app/main.go","runtimes":[{"id":"http","kind":"http","default_port":3000,"public_url":true,"readiness_path":"/-/ready"}]}]}` + "\n"
 }
 
 // errorsContain keeps the test independent of a concrete wrapped error type.
