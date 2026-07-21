@@ -341,7 +341,7 @@ func TestAggregateServiceStatePreservesTheMostActionableReplicaFailure(t *testin
 	}
 }
 
-// TestDockerLogSourceDecodesMultiplexedStreams keeps Engine framing bytes out while retaining stdout and stderr provenance.
+// TestDockerLogSourceDecodesMultiplexedStreams keeps one-replica logs free of Engine framing and source decoration.
 func TestDockerLogSourceDecodesMultiplexedStreams(t *testing.T) {
 	encoded := new(bytes.Buffer)
 	writeMultiplexedTestFrame(t, encoded, 1, []byte("database ready\n"))
@@ -359,8 +359,27 @@ func TestDockerLogSourceDecodesMultiplexedStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("copyContainerLogs() error = %v", err)
 	}
-	if output.String() != "[orders-db-1 stdout] database ready\n[orders-db-1 stderr] slow query\n" {
+	if output.String() != "database ready\nslow query\n" {
 		t.Fatalf("decoded output = %q", output.String())
+	}
+}
+
+// TestDockerLogSourceAttributesConcurrentReplicas keeps interleaved multi-replica output identifiable.
+func TestDockerLogSourceAttributesConcurrentReplicas(t *testing.T) {
+	encoded := new(bytes.Buffer)
+	writeMultiplexedTestFrame(t, encoded, 1, []byte("database ready\n"))
+	writeMultiplexedTestFrame(t, encoded, 2, []byte("slow query\n"))
+	engine := &fakeDockerEngine{logs: map[string]client.ContainerLogsResult{
+		"orders-db": &testLogResult{Reader: bytes.NewReader(encoded.Bytes())},
+	}}
+	output := new(bytes.Buffer)
+	follower := &dockerLogFollower{runtime: newDockerRuntime(engine), tail: 200}
+	follower.attributeSources.Store(true)
+	if err := follower.copyContainerLogs(t.Context(), Container{ID: "orders-db", Name: "orders-db-1", Replica: 1}, 200, output); err != nil {
+		t.Fatalf("copyContainerLogs() error = %v", err)
+	}
+	if output.String() != "[orders-db-1 stdout] database ready\n[orders-db-1 stderr] slow query\n" {
+		t.Fatalf("attributed output = %q", output.String())
 	}
 }
 

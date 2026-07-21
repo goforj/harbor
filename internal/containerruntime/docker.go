@@ -476,25 +476,26 @@ func aggregateServiceState(containers []Container) (string, string, bool) {
 
 // dockerLogFollower reconciles ephemeral container IDs while preserving one monotonic Harbor transcript.
 type dockerLogFollower struct {
-	runtime        *DockerRuntime
-	ctx            context.Context
-	cancel         context.CancelFunc
-	checkoutRoot   string
-	serviceID      string
-	projectID      string
-	tail           int
-	initial        []admittedContainer
-	available      atomic.Bool
-	availabilityMu sync.Mutex
-	changed        chan struct{}
-	copyOnce       sync.Once
-	copyDoneOnce   sync.Once
-	closeOnce      sync.Once
-	copyMu         sync.Mutex
-	copyStarted    bool
-	closed         bool
-	copyDone       chan struct{}
-	copyErr        error
+	runtime          *DockerRuntime
+	ctx              context.Context
+	cancel           context.CancelFunc
+	checkoutRoot     string
+	serviceID        string
+	projectID        string
+	tail             int
+	initial          []admittedContainer
+	attributeSources atomic.Bool
+	available        atomic.Bool
+	availabilityMu   sync.Mutex
+	changed          chan struct{}
+	copyOnce         sync.Once
+	copyDoneOnce     sync.Once
+	closeOnce        sync.Once
+	copyMu           sync.Mutex
+	copyStarted      bool
+	closed           bool
+	copyDone         chan struct{}
+	copyErr          error
 }
 
 // Available reports whether the latest canonical label selection contains a current replica.
@@ -585,6 +586,9 @@ func (follower *dockerLogFollower) CopyTo(destination io.Writer) error {
 // copyTo owns per-container cancellations so one exited replica cannot block discovery of its replacement.
 func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 	destination = &synchronizedLogWriter{destination: destination}
+	if len(follower.initial) > 1 {
+		follower.attributeSources.Store(true)
+	}
 	type sourceResult struct {
 		id  string
 		err error
@@ -673,6 +677,9 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 				}
 			}
 			follower.setAvailable(len(next) > 0)
+			if len(next) > 1 {
+				follower.attributeSources.Store(true)
+			}
 			for id, cancel := range active {
 				if _, exists := next[id]; !exists {
 					cancel()
@@ -683,7 +690,7 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 	}
 }
 
-// copyContainerLogs decodes TTY or multiplexed Engine framing and prefixes every complete line with replica context.
+// copyContainerLogs decodes TTY or multiplexed Engine framing and adds source labels only after replica ambiguity appears.
 func (follower *dockerLogFollower) copyContainerLogs(
 	ctx context.Context,
 	observed Container,
@@ -706,12 +713,14 @@ func (follower *dockerLogFollower) copyContainerLogs(
 		stdout := &containerLineWriter{
 			destination:        destination,
 			prefix:             containerLogPrefix(observed, "stdout"),
+			attribute:          &follower.attributeSources,
 			lineStart:          true,
 			attributeFragments: true,
 		}
 		stderr := &containerLineWriter{
 			destination:        destination,
 			prefix:             containerLogPrefix(observed, "stderr"),
+			attribute:          &follower.attributeSources,
 			lineStart:          true,
 			attributeFragments: true,
 		}
@@ -763,6 +772,7 @@ func (writer *synchronizedLogWriter) Write(output []byte) (int, error) {
 type containerLineWriter struct {
 	destination        io.Writer
 	prefix             []byte
+	attribute          *atomic.Bool
 	pending            []byte
 	lineStart          bool
 	attributeFragments bool
@@ -798,7 +808,9 @@ func (writer *containerLineWriter) format(output []byte) []byte {
 	formatted := make([]byte, 0, len(output)+len(writer.prefix))
 	for _, character := range output {
 		if writer.lineStart {
-			formatted = append(formatted, writer.prefix...)
+			if writer.attribute == nil || writer.attribute.Load() {
+				formatted = append(formatted, writer.prefix...)
+			}
 			writer.lineStart = false
 		}
 		formatted = append(formatted, character)
