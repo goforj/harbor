@@ -28,6 +28,7 @@ type outputRelay struct {
 	stdout      io.Writer
 	stderr      io.Writer
 	trace       io.WriteCloser
+	spool       *outputSpool
 	transcript  *outputTranscript
 	queue       chan outputRecord
 	callerQueue chan outputRecord
@@ -43,6 +44,11 @@ func newOutputRelay(stdout, stderr io.Writer, bufferLines int) *outputRelay {
 
 // newOutputRelayWithTrace retains an owned launch trace without making project progress depend on a caller-owned writer.
 func newOutputRelayWithTrace(stdout, stderr io.Writer, trace io.WriteCloser, bufferLines int) *outputRelay {
+	return newOutputRelayWithTraceAndSpool(stdout, stderr, trace, nil, bufferLines)
+}
+
+// newOutputRelayWithTraceAndSpool adds a durable history sink without coupling child progress to that sink.
+func newOutputRelayWithTraceAndSpool(stdout, stderr io.Writer, trace io.WriteCloser, spool *outputSpool, bufferLines int) *outputRelay {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -53,6 +59,7 @@ func newOutputRelayWithTrace(stdout, stderr io.Writer, trace io.WriteCloser, buf
 		stdout:      stdout,
 		stderr:      stderr,
 		trace:       trace,
+		spool:       spool,
 		transcript:  newOutputTranscript(outputTranscriptCapacityBytes),
 		queue:       make(chan outputRecord, bufferLines),
 		callerQueue: make(chan outputRecord, bufferLines),
@@ -89,11 +96,22 @@ func (relay *outputRelay) deliver() {
 		if relay.trace != nil {
 			_ = relay.trace.Close()
 		}
+		if relay.spool != nil {
+			_ = relay.spool.close()
+		}
 		close(relay.callerQueue)
 		close(relay.traceDone)
 	}()
 	for record := range relay.queue {
-		relay.transcript.append(record.bytes)
+		normalized := normalizeOutputBytes(record.bytes)
+		relay.transcript.appendNormalized(normalized)
+		if relay.spool != nil {
+			if err := relay.spool.appendNormalized(record.stream, normalized); err != nil {
+				// Durable history is diagnostic state. A broken spool must not block or terminate the child.
+				_ = relay.spool.close()
+				relay.spool = nil
+			}
+		}
 		if relay.trace != nil && !traceFailed {
 			if writeOutputRecord(relay.trace, record.bytes) != nil {
 				traceFailed = true

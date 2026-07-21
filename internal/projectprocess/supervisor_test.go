@@ -581,6 +581,33 @@ func TestBlockedWriterCannotBackpressureChild(t *testing.T) {
 	}
 }
 
+// TestSupervisorStartIgnoresOutputSpoolFailure keeps diagnostic history from becoming a lifecycle prerequisite.
+func TestSupervisorStartIgnoresOutputSpoolFailure(t *testing.T) {
+	installForjHelper(t, "exit")
+	root := t.TempDir()
+	spoolPath := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(spoolPath, []byte("occupied"), 0o600); err != nil {
+		t.Fatalf("create invalid spool path: %v", err)
+	}
+	supervisor := newTestSupervisor(Options{
+		OutputSpoolDirectory: spoolPath,
+		GracePeriod:          100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-spool-failure",
+		SessionID:            "session-spool-failure",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want diagnostic spool failure to be ignored", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+}
+
 // TestCloseStopsAllProcessesAndRejectsNewStarts verifies shutdown joins every owned child and remains idempotent.
 func TestCloseStopsAllProcessesAndRejectsNewStarts(t *testing.T) {
 	installForjHelper(t, "wait")

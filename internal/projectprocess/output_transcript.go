@@ -46,11 +46,18 @@ type outputTranscript struct {
 
 // newOutputTranscript creates one fixed-capacity transcript ring.
 func newOutputTranscript(capacity int) *outputTranscript {
+	return newOutputTranscriptAt(capacity, 0)
+}
+
+// newOutputTranscriptAt creates one fixed-capacity transcript whose first cursor is persisted history's base.
+func newOutputTranscriptAt(capacity int, cursor uint64) *outputTranscript {
 	if capacity <= 0 {
 		panic("projectprocess output transcript capacity must be positive")
 	}
 	return &outputTranscript{
 		buffer:  make([]byte, capacity),
+		base:    cursor,
+		next:    cursor,
 		changed: make(chan struct{}),
 	}
 }
@@ -101,7 +108,16 @@ func (supervisor *Supervisor) WaitOutput(
 
 // append normalizes one relay record before adding it to the bounded transcript.
 func (transcript *outputTranscript) append(output []byte) {
-	normalized := bytes.ToValidUTF8(output, []byte(outputTranscriptReplacement))
+	transcript.appendNormalized(normalizeOutputBytes(output))
+}
+
+// normalizeOutputBytes gives every output sink the same replacement and cursor semantics.
+func normalizeOutputBytes(output []byte) []byte {
+	return bytes.ToValidUTF8(output, []byte(outputTranscriptReplacement))
+}
+
+// appendNormalized adds bytes whose UTF-8 normalization and absolute cursor were already established by the relay.
+func (transcript *outputTranscript) appendNormalized(normalized []byte) {
 	if len(normalized) == 0 {
 		return
 	}

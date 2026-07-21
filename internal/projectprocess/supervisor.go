@@ -62,6 +62,8 @@ type Options struct {
 	ContainerRuntime containerruntime.Runtime
 	// ServiceLogIdlePeriod bounds how long a log follower remains after the desktop stops renewing reads.
 	ServiceLogIdlePeriod time.Duration
+	// OutputSpoolDirectory overrides the per-user runtime root used for persisted session output history.
+	OutputSpoolDirectory string
 	// Environment isolates child projects from Harbor's subsequently loaded application configuration.
 	Environment Environment
 }
@@ -175,19 +177,20 @@ func (handle *Handle) complete(result Exit) {
 
 // Supervisor owns every process tree it launches until exit or shutdown.
 type Supervisor struct {
-	mu               sync.Mutex
-	closed           bool
-	gracePeriod      time.Duration
-	outputLines      int
-	environment      Environment
-	verifyExecutable ExecutableVerifier
-	projects         map[domain.ProjectID]*managedProcess
-	sessions         map[domain.SessionID]*managedProcess
-	containerRuntime containerruntime.Runtime
-	runtimeCloseOnce sync.Once
-	runtimeCloseErr  error
-	serviceLogIdle   time.Duration
-	serviceLogs      map[serviceLogKey]*serviceLogStream
+	mu                   sync.Mutex
+	closed               bool
+	gracePeriod          time.Duration
+	outputLines          int
+	environment          Environment
+	verifyExecutable     ExecutableVerifier
+	projects             map[domain.ProjectID]*managedProcess
+	sessions             map[domain.SessionID]*managedProcess
+	containerRuntime     containerruntime.Runtime
+	runtimeCloseOnce     sync.Once
+	runtimeCloseErr      error
+	serviceLogIdle       time.Duration
+	serviceLogs          map[serviceLogKey]*serviceLogStream
+	outputSpoolDirectory string
 }
 
 // New constructs an empty project process supervisor.
@@ -227,16 +230,18 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 	if serviceLogIdle <= 0 {
 		serviceLogIdle = defaultServiceLogIdle
 	}
+	outputSpoolDirectory := resolveOutputSpoolDirectory(options.OutputSpoolDirectory)
 	return &Supervisor{
-		gracePeriod:      gracePeriod,
-		outputLines:      outputLines,
-		environment:      environment,
-		verifyExecutable: verifier,
-		projects:         make(map[domain.ProjectID]*managedProcess),
-		sessions:         make(map[domain.SessionID]*managedProcess),
-		containerRuntime: containerRuntime,
-		serviceLogIdle:   serviceLogIdle,
-		serviceLogs:      make(map[serviceLogKey]*serviceLogStream),
+		gracePeriod:          gracePeriod,
+		outputLines:          outputLines,
+		environment:          environment,
+		verifyExecutable:     verifier,
+		projects:             make(map[domain.ProjectID]*managedProcess),
+		sessions:             make(map[domain.SessionID]*managedProcess),
+		containerRuntime:     containerRuntime,
+		serviceLogIdle:       serviceLogIdle,
+		serviceLogs:          make(map[serviceLogKey]*serviceLogStream),
+		outputSpoolDirectory: outputSpoolDirectory,
 	}
 }
 
@@ -277,6 +282,17 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if _, exists := supervisor.sessions[request.SessionID]; exists {
 		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
 	}
+	spool, spoolErr := openOutputSpool(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID)
+	if spoolErr != nil {
+		// Output history is diagnostic state; a corrupt or unavailable spool must never block process ownership.
+		spool = nil
+	}
+	spoolCleanup := spool != nil
+	defer func() {
+		if spoolCleanup {
+			_ = spool.close()
+		}
+	}()
 	managedOverrides, err := writeManagedHostEnvironment(checkoutRoot, request.EnvironmentOverrides)
 	if err != nil {
 		return nil, fmt.Errorf("apply Harbor managed host environment: %w", err)
@@ -339,7 +355,8 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		platform.close()
 		return nil, err
 	}
-	relay := newOutputRelayWithTrace(request.Stdout, request.Stderr, trace, supervisor.outputLines)
+	relay := newOutputRelayWithTraceAndSpool(request.Stdout, request.Stderr, trace, spool, supervisor.outputLines)
+	spoolCleanup = false
 	if err := command.Start(); err != nil {
 		_ = stdout.Close()
 		_ = stdoutChild.Close()
