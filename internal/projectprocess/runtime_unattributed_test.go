@@ -209,6 +209,33 @@ func TestRuntimeRepairProjectListenerOwnerCardinalityRejectsMultipleOwners(t *te
 	}
 }
 
+// TestClassifyRuntimeRepairSocketOwnersKeepsTransientCensusRacesFailClosed proves an exiting unrelated PID does not erase an unaccounted listener row.
+func TestClassifyRuntimeRepairSocketOwnersKeepsTransientCensusRacesFailClosed(t *testing.T) {
+	tests := []struct {
+		name      string
+		required  int
+		observed  int
+		owners    int
+		transient bool
+		want      RuntimeRepairInspectionState
+	}{
+		{name: "complete owner set", required: 1, observed: 1, owners: 1, want: RuntimeRepairInspectionActionable},
+		{name: "unrelated process exit", required: 1, observed: 1, owners: 1, transient: true, want: RuntimeRepairInspectionActionable},
+		{name: "exited owner left row unaccounted", required: 1, observed: 0, transient: true, want: RuntimeRepairInspectionAmbiguous},
+		{name: "transient empty owner set", required: 1, observed: 1, transient: true, want: RuntimeRepairInspectionAmbiguous},
+		{name: "stable foreign owner", required: 1, observed: 1, want: RuntimeRepairInspectionForeign},
+		{name: "multiple owners", required: 1, observed: 1, owners: 2, want: RuntimeRepairInspectionAmbiguous},
+		{name: "invalid required rows", required: 0, observed: 0, want: RuntimeRepairInspectionUnreadable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyRuntimeRepairSocketOwners(test.required, test.observed, test.owners, test.transient); got != test.want {
+				t.Fatalf("classifyRuntimeRepairSocketOwners(%d, %d, %d, %t) = %q, want %q", test.required, test.observed, test.owners, test.transient, got, test.want)
+			}
+		})
+	}
+}
+
 // TestUnattributedRuntimeObservationRejectsUnsafeScopes proves foreign and detached descendants cannot become candidates.
 func TestUnattributedRuntimeObservationRejectsUnsafeScopes(t *testing.T) {
 	tests := []struct {

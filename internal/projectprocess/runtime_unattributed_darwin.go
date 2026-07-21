@@ -80,12 +80,23 @@ func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRep
 	})
 	owners := make(map[int][]runtimeRepairSocketFact, 1)
 	observedSocketCount := 0
+	transientProcessExit := false
 	for _, process := range userProcesses {
+		if err := ctx.Err(); err != nil {
+			return unattributedRuntimeNativeInspection{}, err
+		}
 		if process.Proc.P_stat == darwinProcessStateZombie || process.Proc.P_pid <= 0 {
 			continue
 		}
 		facts, err := observeDarwinRuntimeRepairSockets(int(process.Proc.P_pid), target.Endpoint)
 		if err != nil {
+			if errors.Is(err, errDarwinRuntimeRepairUnstable) {
+				// A process can disappear between the user census and its descriptor read. That
+				// race is not ownership evidence; the stable network snapshot below still decides
+				// whether every listener row was accounted for before a signal can be authorized.
+				transientProcessExit = true
+				continue
+			}
 			return unattributedRuntimeNativeInspection{}, err
 		}
 		if len(facts) != 0 {
@@ -96,13 +107,14 @@ func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRep
 			}
 		}
 	}
-	if len(owners) == 0 {
-		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionForeign}, nil
-	}
-	if observedSocketCount < network.exactListeners+network.conflictingBinds {
-		// A second native row that cannot be tied to this user's owner set may belong to a foreign
-		// process or an incomplete kernel snapshot; neither case authorizes automatic signaling.
-		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionAmbiguous}, nil
+	state := classifyRuntimeRepairSocketOwners(
+		network.exactListeners+network.conflictingBinds,
+		observedSocketCount,
+		len(owners),
+		transientProcessExit,
+	)
+	if state != RuntimeRepairInspectionActionable {
+		return unattributedRuntimeNativeInspection{State: state}, nil
 	}
 	var ownerFacts []runtimeRepairSocketFact
 	for _, facts := range owners {

@@ -773,6 +773,27 @@ func runtimeRepairProjectListenerOwnerCardinality(ownerCount int) RuntimeRepairI
 	return RuntimeRepairInspectionActionable
 }
 
+// classifyRuntimeRepairSocketOwners separates a transient process census race from missing ownership evidence.
+//
+// The native network snapshot is authoritative for how many listener rows must be accounted for. A process that
+// exits during descriptor enumeration may be skipped safely only when every row in that stable snapshot is still
+// attributed to a same-user owner; an unaccounted row remains ambiguous and cannot authorize a signal.
+func classifyRuntimeRepairSocketOwners(requiredSocketCount, observedSocketCount, ownerCount int, transientProcessExit bool) RuntimeRepairInspectionState {
+	if requiredSocketCount <= 0 || requiredSocketCount > runtimeRepairMaximumProcesses || observedSocketCount < 0 || observedSocketCount > runtimeRepairMaximumProcesses || ownerCount < 0 || ownerCount > runtimeRepairMaximumProcesses {
+		return RuntimeRepairInspectionUnreadable
+	}
+	if observedSocketCount < requiredSocketCount {
+		return RuntimeRepairInspectionAmbiguous
+	}
+	if ownerCount != 1 {
+		if ownerCount == 0 && !transientProcessExit {
+			return RuntimeRepairInspectionForeign
+		}
+		return RuntimeRepairInspectionAmbiguous
+	}
+	return RuntimeRepairInspectionActionable
+}
+
 // runtimeRepairObservationsEqual requires structural equality in addition to matching digests.
 func runtimeRepairObservationsEqual(left, right runtimeRepairNativeObservation) bool {
 	leftFingerprint, leftErr := left.fingerprint()

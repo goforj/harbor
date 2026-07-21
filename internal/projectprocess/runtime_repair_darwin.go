@@ -100,6 +100,7 @@ func inspectDarwinRuntimeRepairPass(ctx context.Context, target RuntimeRepairTar
 		return runtimeRepairNativeInspection{}, fmt.Errorf("daemon-user Darwin process count exceeds %d: %w", runtimeRepairMaximumProcesses, errDarwinRuntimeRepairUnreadable)
 	}
 	owners := make([]runtimeRepairSocketFact, 0, 1)
+	transientProcessExit := false
 	for _, process := range processes {
 		if err := ctx.Err(); err != nil {
 			return runtimeRepairNativeInspection{}, err
@@ -110,6 +111,13 @@ func inspectDarwinRuntimeRepairPass(ctx context.Context, target RuntimeRepairTar
 		pid := int(process.Proc.P_pid)
 		facts, err := observeDarwinRuntimeRepairSockets(pid, target.Endpoint)
 		if err != nil {
+			if errors.Is(err, errDarwinRuntimeRepairUnstable) {
+				// Ignore a process that vanished between the census and descriptor read. A
+				// stable listener owner is still required below; an empty owner set remains
+				// non-actionable rather than becoming a signal target.
+				transientProcessExit = true
+				continue
+			}
 			return runtimeRepairNativeInspection{}, err
 		}
 		owners = append(owners, facts...)
@@ -118,6 +126,9 @@ func inspectDarwinRuntimeRepairPass(ctx context.Context, target RuntimeRepairTar
 		}
 	}
 	if len(owners) == 0 {
+		if transientProcessExit {
+			return runtimeRepairNativeInspection{State: RuntimeRepairInspectionAmbiguous}, nil
+		}
 		return runtimeRepairNativeInspection{State: RuntimeRepairInspectionForeign}, nil
 	}
 
