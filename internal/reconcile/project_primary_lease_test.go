@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/goforj"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
@@ -618,6 +619,148 @@ func TestProjectPrimaryLeaseCoordinatorAssignsDescriptorResources(t *testing.T) 
 	}
 	if _, exists := byID["legacy"]; exists {
 		t.Fatalf("stale optional endpoint survived assignment: %#v", endpoints)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorAssignsSelectedNativeServiceEndpoints proves static service intent becomes stable public authority without a relay.
+func TestProjectPrimaryLeaseCoordinatorAssignsSelectedNativeServiceEndpoints(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	primary := primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)
+	fixture.state.network.Leases = []identity.Lease{primary}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.network.Reservations.Endpoints = []state.EndpointReservation{
+		primaryLeaseTestDefaultHTTPEndpoint(fixture, primaryLeaseDefaultHTTPEndpointInitialGeneration),
+		{
+			Key:      state.EndpointReservationKey{ProjectID: fixture.state.project.Project.ID, EndpointID: "service:stale"},
+			Protocol: state.EndpointProtocolTCP,
+			Host:     "stale.orders.test", Public: netip.AddrPortFrom(address, 43100), Identity: &primary.Key, Generation: 4,
+		},
+		{
+			Key:      state.EndpointReservationKey{ProjectID: fixture.state.project.Project.ID, EndpointID: "custom"},
+			Protocol: state.EndpointProtocolHTTP,
+			Host:     "custom.orders.test", Public: fixture.state.network.Reservations.Listeners.HTTPS.Advertised, Generation: 2,
+		},
+	}
+	slices.SortFunc(fixture.state.network.Reservations.Endpoints, primaryLeaseEndpointCompare)
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("native endpoint fixture Validate() error = %v", err)
+	}
+	requirements := []goforj.ServiceRequirement{
+		{
+			ID: "requirement.database.primary", ServiceKey: "mysql", Owner: goforj.ServiceRequirementOwnerCompose, Lifecycle: goforj.ServiceRequirementLifecycleProject,
+			Endpoints: []goforj.ServiceEndpoint{{ID: "endpoint.database.primary.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost}},
+		},
+		{
+			ID: "requirement.cache.primary", ServiceKey: "redis", Owner: goforj.ServiceRequirementOwnerCompose, Lifecycle: goforj.ServiceRequirementLifecycleProject,
+			Endpoints: []goforj.ServiceEndpoint{{ID: "endpoint.cache.primary.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 6379, Visibility: goforj.ServiceEndpointVisibilityHost}},
+		},
+	}
+	if err := fixture.coordinator.assignServiceEndpointReservations(t.Context(), fixture.state.project.Project.ID, requirements); err != nil {
+		t.Fatalf("assignServiceEndpointReservations() error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != 1 {
+		t.Fatalf("service endpoint assignment writes = %d, want 1", len(fixture.state.replaceCalls))
+	}
+	byID := make(map[string]state.EndpointReservation, len(fixture.state.network.Reservations.Endpoints))
+	for _, endpoint := range fixture.state.network.Reservations.Endpoints {
+		byID[endpoint.Key.EndpointID] = endpoint
+	}
+	for _, want := range []struct {
+		id     string
+		host   string
+		public netip.AddrPort
+		gen    uint64
+	}{
+		{id: primaryLeaseServiceEndpointIDPrefix + "endpoint.database.primary.tcp", host: "mysql.orders.test", public: netip.AddrPortFrom(address, 3306), gen: 1},
+		{id: primaryLeaseServiceEndpointIDPrefix + "endpoint.cache.primary.tcp", host: "redis.orders.test", public: netip.AddrPortFrom(address, 6379), gen: 1},
+	} {
+		got, exists := byID[want.id]
+		if !exists || got.Protocol != state.EndpointProtocolTCP || got.Host != want.host || got.Public != want.public || got.Identity == nil || *got.Identity != primary.Key || got.Generation != want.gen {
+			t.Fatalf("service endpoint %q = %#v, want host %q public %s generation %d", want.id, got, want.host, want.public, want.gen)
+		}
+	}
+	if _, exists := byID["service:stale"]; exists {
+		t.Fatalf("stale Harbor service endpoint survived assignment: %#v", byID)
+	}
+	if _, exists := byID["custom"]; !exists {
+		t.Fatalf("unmanaged endpoint was removed: %#v", byID)
+	}
+
+	if err := fixture.coordinator.assignServiceEndpointReservations(t.Context(), fixture.state.project.Project.ID, requirements); err != nil {
+		t.Fatalf("repeat assignServiceEndpointReservations() error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != 1 {
+		t.Fatalf("repeat service endpoint assignment writes = %d, want idempotent 1", len(fixture.state.replaceCalls))
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorSkipsPrivateAndAvailableServiceEndpoints keeps non-host intent from becoming public authority.
+func TestProjectPrimaryLeaseCoordinatorSkipsPrivateAndAvailableServiceEndpoints(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	requirements := []goforj.ServiceRequirement{
+		{ID: "available", ServiceKey: "mysql", Owner: goforj.ServiceRequirementOwnerAvailable, Lifecycle: goforj.ServiceRequirementLifecycleProject, Endpoints: []goforj.ServiceEndpoint{{ID: "available.endpoint", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost}}},
+		{ID: "private", ServiceKey: "redis", Owner: goforj.ServiceRequirementOwnerCompose, Lifecycle: goforj.ServiceRequirementLifecycleProject, Endpoints: []goforj.ServiceEndpoint{{ID: "private.endpoint", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 6379, Visibility: goforj.ServiceEndpointVisibilityPrivate}}},
+	}
+	if err := fixture.coordinator.assignServiceEndpointReservations(t.Context(), fixture.state.project.Project.ID, requirements); err != nil {
+		t.Fatalf("assignServiceEndpointReservations() error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != 0 || len(fixture.state.network.Reservations.Endpoints) != 0 {
+		t.Fatalf("non-host service intent changed durable authority: writes %d endpoints %#v", len(fixture.state.replaceCalls), fixture.state.network.Reservations.Endpoints)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorRejectsUnsafeNativeServiceEndpointIntent keeps unsupported publication shapes fail-closed.
+func TestProjectPrimaryLeaseCoordinatorRejectsUnsafeNativeServiceEndpointIntent(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	tests := []struct {
+		name       string
+		serviceKey string
+		protocol   goforj.ServiceEndpointProtocol
+		port       int
+		want       string
+	}{
+		{name: "invalid service host label", serviceKey: "MySQL", protocol: goforj.ServiceEndpointProtocolTCP, port: 3306, want: "lowercase DNS label"},
+		{name: "host HTTP before managed session", serviceKey: "mailpit", protocol: goforj.ServiceEndpointProtocolHTTP, port: 8025, want: "cannot be host-published"},
+		{name: "native port out of range", serviceKey: "mysql", protocol: goforj.ServiceEndpointProtocolTCP, port: 65536, want: "outside 1-65535"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPrimaryLeaseTestFixture(t, address)
+			fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+			primaryLeaseTestEnableFullStage(t, fixture)
+			requirements := []goforj.ServiceRequirement{{
+				ID: "requirement", ServiceKey: test.serviceKey, Owner: goforj.ServiceRequirementOwnerCompose, Lifecycle: goforj.ServiceRequirementLifecycleProject,
+				Endpoints: []goforj.ServiceEndpoint{{ID: "endpoint", Protocol: test.protocol, NativePort: test.port, Visibility: goforj.ServiceEndpointVisibilityHost}},
+			}}
+			if err := fixture.coordinator.assignServiceEndpointReservations(t.Context(), fixture.state.project.Project.ID, requirements); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("assignServiceEndpointReservations() error = %v, want containing %q", err, test.want)
+			}
+			if len(fixture.state.replaceCalls) != 0 {
+				t.Fatalf("unsafe service endpoint intent wrote durable state: %#v", fixture.state.replaceCalls)
+			}
+		})
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorRejectsNativeServiceHostCollision keeps one DNS name tied to one endpoint owner.
+func TestProjectPrimaryLeaseCoordinatorRejectsNativeServiceHostCollision(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	requirements := []goforj.ServiceRequirement{
+		{ID: "first", ServiceKey: "mysql", Owner: goforj.ServiceRequirementOwnerCompose, Lifecycle: goforj.ServiceRequirementLifecycleProject, Endpoints: []goforj.ServiceEndpoint{{ID: "first.endpoint", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost}}},
+		{ID: "second", ServiceKey: "mysql", Owner: goforj.ServiceRequirementOwnerExternal, Lifecycle: goforj.ServiceRequirementLifecycleProject, Endpoints: []goforj.ServiceEndpoint{{ID: "second.endpoint", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3307, Visibility: goforj.ServiceEndpointVisibilityHost}}},
+	}
+	if err := fixture.coordinator.assignServiceEndpointReservations(t.Context(), fixture.state.project.Project.ID, requirements); err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("assignServiceEndpointReservations() error = %v, want host collision", err)
+	}
+	if len(fixture.state.replaceCalls) != 0 {
+		t.Fatalf("host collision wrote durable state: %#v", fixture.state.replaceCalls)
 	}
 }
 

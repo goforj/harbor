@@ -750,6 +750,16 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 					return
 				}
 			}
+			if descriptor.ServiceRequirementsSupported {
+				if err := coordinator.primaryLeases.assignServiceEndpointReservations(
+					coordinator.ctx,
+					mutation.Operation.Operation.ProjectID,
+					descriptor.ServiceRequirements,
+				); err != nil {
+					coordinator.stopAndFailAttached(mutation, session, handle, "project.endpoint.assignment.failed", err)
+					return
+				}
+			}
 			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 				return coordinator.state.CompleteProjectStart(coordinator.ctx, state.CompleteProjectStartRequest{
 					ProjectID:                 mutation.Operation.Operation.ProjectID,
@@ -948,14 +958,34 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 						return
 					}
 				}
+				if descriptor.ServiceRequirementsSupported {
+					if endpointErr := coordinator.primaryLeases.assignServiceEndpointReservations(ctx, session.ProjectID, descriptor.ServiceRequirements); endpointErr != nil {
+						if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed service endpoint refresh"); routeErr != nil {
+							coordinator.recordAsyncError(routeErr)
+						}
+						coordinator.recordAsyncError(fmt.Errorf("refresh project %q service endpoints: %w", session.ProjectID, endpointErr))
+						return
+					}
+				}
 				if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
 					coordinator.recordAsyncError(routeErr)
 					return
 				}
-			} else if projectChanged {
-				if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
-					coordinator.recordAsyncError(routeErr)
-					return
+			} else {
+				if descriptor.ServiceRequirementsSupported {
+					if endpointErr := coordinator.primaryLeases.assignServiceEndpointReservations(ctx, session.ProjectID, descriptor.ServiceRequirements); endpointErr != nil {
+						if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed service endpoint refresh"); routeErr != nil {
+							coordinator.recordAsyncError(routeErr)
+						}
+						coordinator.recordAsyncError(fmt.Errorf("refresh project %q service endpoints: %w", session.ProjectID, endpointErr))
+						return
+					}
+				}
+				if projectChanged || descriptor.ServiceRequirementsSupported {
+					if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
+						coordinator.recordAsyncError(routeErr)
+						return
+					}
 				}
 			}
 			continue
