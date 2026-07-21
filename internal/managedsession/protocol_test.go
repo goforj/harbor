@@ -21,6 +21,65 @@ func managedSessionTestFence() harbordruntime.ManagedPublicationFence {
 	}
 }
 
+// managedSessionTestProcess returns complete immutable process evidence for output-reattachment fixtures.
+func managedSessionTestProcess() domain.ProcessEvidence {
+	return domain.ProcessEvidence{
+		PID:                4102,
+		BirthToken:         "linux:boot-1:process-4102",
+		ExecutableIdentity: "/usr/local/bin/forj",
+		ArgumentDigest:     strings.Repeat("b", 64),
+	}
+}
+
+// managedSessionTestOutputReattachBegin returns one bounded output-reattachment identity.
+func managedSessionTestOutputReattachBegin() OutputReattachBeginRequest {
+	return OutputReattachBeginRequest{
+		SchemaVersion:     SchemaVersion,
+		Fence:             managedSessionTestFence(),
+		SessionProcess:    managedSessionTestProcess(),
+		EndpointReference: "/tmp/harbor-output-orders.sock",
+		ClientNonce:       "output-client-nonce-1",
+	}
+}
+
+// managedSessionTestOutputReattachChallenge returns one challenge correlated to the begin fixture.
+func managedSessionTestOutputReattachChallenge(begin OutputReattachBeginRequest) OutputReattachChallengeResponse {
+	return OutputReattachChallengeResponse{
+		SchemaVersion:     SchemaVersion,
+		Fence:             begin.Fence,
+		SessionProcess:    begin.SessionProcess,
+		EndpointReference: begin.EndpointReference,
+		ClientNonce:       begin.ClientNonce,
+		Challenge:         "output-server-challenge-1",
+	}
+}
+
+// managedSessionTestOutputReattachConfirm returns one confirmation correlated to the challenge fixture.
+func managedSessionTestOutputReattachConfirm(challenge OutputReattachChallengeResponse) OutputReattachConfirmRequest {
+	return OutputReattachConfirmRequest{
+		SchemaVersion:     SchemaVersion,
+		Fence:             challenge.Fence,
+		SessionProcess:    challenge.SessionProcess,
+		EndpointReference: challenge.EndpointReference,
+		ClientNonce:       challenge.ClientNonce,
+		Challenge:         challenge.Challenge,
+	}
+}
+
+// managedSessionTestOutputReattachResponse returns one accepted response correlated to the confirmation fixture.
+func managedSessionTestOutputReattachResponse(confirm OutputReattachConfirmRequest) OutputReattachResponse {
+	return OutputReattachResponse{
+		SchemaVersion:     SchemaVersion,
+		Fence:             confirm.Fence,
+		SessionProcess:    confirm.SessionProcess,
+		EndpointReference: confirm.EndpointReference,
+		ClientNonce:       confirm.ClientNonce,
+		Challenge:         confirm.Challenge,
+		Accepted:          true,
+		AttachmentTicket:  "output-attachment-ticket-1",
+	}
+}
+
 // managedSessionTestRequest returns a complete deterministic registration request.
 func managedSessionTestRequest() RegisterRequest {
 	return RegisterRequest{
@@ -65,6 +124,10 @@ func TestManagedSessionProtocolRoundTripsBoundedMessages(t *testing.T) {
 		AcceptedProjectIdentity: "orders-dev",
 	}
 	barrierResponse := BarrierResponse{SchemaVersion: SchemaVersion, Fence: fence, Phase: BarrierPhaseCompose, Acknowledged: true}
+	outputBegin := managedSessionTestOutputReattachBegin()
+	outputChallenge := managedSessionTestOutputReattachChallenge(outputBegin)
+	outputConfirm := managedSessionTestOutputReattachConfirm(outputChallenge)
+	outputResponse := managedSessionTestOutputReattachResponse(outputConfirm)
 	logEvent := Event{
 		SchemaVersion: SchemaVersion,
 		ProjectID:     "orders",
@@ -104,6 +167,10 @@ func TestManagedSessionProtocolRoundTripsBoundedMessages(t *testing.T) {
 		{name: "publication response", value: publicationResponse, marshal: func() ([]byte, error) { return MarshalReplacePublicationsResponse(publicationResponse) }, decode: func(payload []byte) (any, error) { return DecodeReplacePublicationsResponse(payload) }, want: publicationResponse},
 		{name: "barrier request", value: barrierRequest, marshal: func() ([]byte, error) { return MarshalBarrierRequest(barrierRequest) }, decode: func(payload []byte) (any, error) { return DecodeBarrierRequest(payload) }, want: barrierRequest},
 		{name: "barrier response", value: barrierResponse, marshal: func() ([]byte, error) { return MarshalBarrierResponse(barrierResponse) }, decode: func(payload []byte) (any, error) { return DecodeBarrierResponse(payload) }, want: barrierResponse},
+		{name: "output reattach begin", value: outputBegin, marshal: func() ([]byte, error) { return MarshalOutputReattachBeginRequest(outputBegin) }, decode: func(payload []byte) (any, error) { return DecodeOutputReattachBeginRequest(payload) }, want: outputBegin},
+		{name: "output reattach challenge", value: outputChallenge, marshal: func() ([]byte, error) { return MarshalOutputReattachChallengeResponse(outputChallenge) }, decode: func(payload []byte) (any, error) { return DecodeOutputReattachChallengeResponse(payload) }, want: outputChallenge},
+		{name: "output reattach confirm", value: outputConfirm, marshal: func() ([]byte, error) { return MarshalOutputReattachConfirmRequest(outputConfirm) }, decode: func(payload []byte) (any, error) { return DecodeOutputReattachConfirmRequest(payload) }, want: outputConfirm},
+		{name: "output reattach response", value: outputResponse, marshal: func() ([]byte, error) { return MarshalOutputReattachResponse(outputResponse) }, decode: func(payload []byte) (any, error) { return DecodeOutputReattachResponse(payload) }, want: outputResponse},
 		{name: "log event", value: logEvent, marshal: func() ([]byte, error) { return MarshalEvent(logEvent) }, decode: func(payload []byte) (any, error) { return DecodeEvent(payload) }, want: logEvent},
 		{name: "output gap event", value: gapEvent, marshal: func() ([]byte, error) { return MarshalEvent(gapEvent) }, decode: func(payload []byte) (any, error) { return DecodeEvent(payload) }, want: gapEvent},
 	}
@@ -119,6 +186,180 @@ func TestManagedSessionProtocolRoundTripsBoundedMessages(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("decoded = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+// TestManagedSessionOutputReattachCorrelationRejectsIdentityDrift keeps every handshake step bound to one exact process and endpoint.
+func TestManagedSessionOutputReattachCorrelationRejectsIdentityDrift(t *testing.T) {
+	begin := managedSessionTestOutputReattachBegin()
+	challenge := managedSessionTestOutputReattachChallenge(begin)
+	confirm := managedSessionTestOutputReattachConfirm(challenge)
+	response := managedSessionTestOutputReattachResponse(confirm)
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*OutputReattachChallengeResponse)
+	}{
+		{name: "challenge fence", mutate: func(value *OutputReattachChallengeResponse) { value.Fence.SessionGeneration++ }},
+		{name: "challenge process", mutate: func(value *OutputReattachChallengeResponse) { value.SessionProcess.PID++ }},
+		{name: "challenge endpoint", mutate: func(value *OutputReattachChallengeResponse) { value.EndpointReference += ".other" }},
+		{name: "challenge nonce", mutate: func(value *OutputReattachChallengeResponse) { value.ClientNonce += ".other" }},
+	} {
+		t.Run("begin to challenge/"+test.name, func(t *testing.T) {
+			candidate := challenge
+			test.mutate(&candidate)
+			if err := ValidateOutputReattachChallengeCorrelation(begin, candidate); err == nil {
+				t.Fatal("challenge identity drift passed correlation")
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*OutputReattachConfirmRequest)
+	}{
+		{name: "confirm fence", mutate: func(value *OutputReattachConfirmRequest) { value.Fence.SessionID = "other-session" }},
+		{name: "confirm process", mutate: func(value *OutputReattachConfirmRequest) { value.SessionProcess.BirthToken += ".other" }},
+		{name: "confirm endpoint", mutate: func(value *OutputReattachConfirmRequest) { value.EndpointReference += ".other" }},
+		{name: "confirm nonce", mutate: func(value *OutputReattachConfirmRequest) { value.ClientNonce += ".other" }},
+		{name: "confirm challenge", mutate: func(value *OutputReattachConfirmRequest) { value.Challenge += ".other" }},
+	} {
+		t.Run("challenge to confirm/"+test.name, func(t *testing.T) {
+			candidate := confirm
+			test.mutate(&candidate)
+			if err := ValidateOutputReattachConfirmCorrelation(challenge, candidate); err == nil {
+				t.Fatal("confirmation identity drift passed correlation")
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*OutputReattachResponse)
+	}{
+		{name: "response fence", mutate: func(value *OutputReattachResponse) { value.Fence.ProjectID = "other-project" }},
+		{name: "response process", mutate: func(value *OutputReattachResponse) { value.SessionProcess.ArgumentDigest = strings.Repeat("c", 64) }},
+		{name: "response endpoint", mutate: func(value *OutputReattachResponse) { value.EndpointReference += ".other" }},
+		{name: "response nonce", mutate: func(value *OutputReattachResponse) { value.ClientNonce += ".other" }},
+		{name: "response challenge", mutate: func(value *OutputReattachResponse) { value.Challenge += ".other" }},
+	} {
+		t.Run("confirm to response/"+test.name, func(t *testing.T) {
+			candidate := response
+			test.mutate(&candidate)
+			if err := ValidateOutputReattachResponseCorrelation(confirm, candidate); err == nil {
+				t.Fatal("response identity drift passed correlation")
+			}
+		})
+	}
+}
+
+// TestManagedSessionOutputReattachValidationRejectsUnsafeValues keeps the future broker boundary bounded and opaque.
+func TestManagedSessionOutputReattachValidationRejectsUnsafeValues(t *testing.T) {
+	begin := managedSessionTestOutputReattachBegin()
+	pipeEndpoint := begin
+	pipeEndpoint.EndpointReference = `\\.\pipe\harbor-output-orders`
+	if err := pipeEndpoint.Validate(); err != nil {
+		t.Fatalf("valid Windows pipe endpoint rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*OutputReattachBeginRequest)
+	}{
+		{name: "empty nonce", mutate: func(value *OutputReattachBeginRequest) { value.ClientNonce = "" }},
+		{name: "oversized nonce", mutate: func(value *OutputReattachBeginRequest) {
+			value.ClientNonce = strings.Repeat("n", maximumManagedSessionTokenBytes+1)
+		}},
+		{name: "relative endpoint", mutate: func(value *OutputReattachBeginRequest) { value.EndpointReference = "harbor.sock" }},
+		{name: "unclean endpoint", mutate: func(value *OutputReattachBeginRequest) { value.EndpointReference = "/tmp/../harbor.sock" }},
+		{name: "control endpoint", mutate: func(value *OutputReattachBeginRequest) { value.EndpointReference = "/tmp/harbor\x00.sock" }},
+		{name: "empty endpoint", mutate: func(value *OutputReattachBeginRequest) { value.EndpointReference = "" }},
+		{name: "oversized endpoint", mutate: func(value *OutputReattachBeginRequest) {
+			value.EndpointReference = "/" + strings.Repeat("x", maximumManagedSessionEndpointBytes)
+		}},
+		{name: "invalid process", mutate: func(value *OutputReattachBeginRequest) { value.SessionProcess.PID = 0 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := begin
+			test.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("unsafe begin request passed validation")
+			}
+		})
+	}
+
+	challenge := managedSessionTestOutputReattachChallenge(begin)
+	confirm := managedSessionTestOutputReattachConfirm(challenge)
+	response := managedSessionTestOutputReattachResponse(confirm)
+	for _, test := range []struct {
+		name   string
+		mutate func(*OutputReattachChallengeResponse)
+	}{
+		{name: "empty challenge", mutate: func(value *OutputReattachChallengeResponse) { value.Challenge = "" }},
+		{name: "oversized challenge", mutate: func(value *OutputReattachChallengeResponse) {
+			value.Challenge = strings.Repeat("c", maximumManagedSessionTokenBytes+1)
+		}},
+	} {
+		t.Run("challenge "+test.name, func(t *testing.T) {
+			candidate := challenge
+			test.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("unsafe challenge passed validation")
+			}
+		})
+	}
+	response.Accepted = false
+	response.AttachmentTicket = "ticket-must-not-be-present"
+	if err := response.Validate(); err == nil {
+		t.Fatal("rejected response with a ticket passed validation")
+	}
+	response.AttachmentTicket = ""
+	if err := response.Validate(); err != nil {
+		t.Fatalf("valid rejected response failed validation: %v", err)
+	}
+	response.Accepted = true
+	response.AttachmentTicket = ""
+	if err := response.Validate(); err == nil {
+		t.Fatal("accepted response without a ticket passed validation")
+	}
+	response.AttachmentTicket = strings.Repeat("t", maximumManagedSessionTokenBytes+1)
+	if err := response.Validate(); err == nil {
+		t.Fatal("accepted response with an oversized ticket passed validation")
+	}
+}
+
+// TestManagedSessionOutputReattachDecodersRemainStrict prevents handshake fields from smuggling duplicate or trailing JSON values.
+func TestManagedSessionOutputReattachDecodersRemainStrict(t *testing.T) {
+	begin := managedSessionTestOutputReattachBegin()
+	challenge := managedSessionTestOutputReattachChallenge(begin)
+	confirm := managedSessionTestOutputReattachConfirm(challenge)
+	response := managedSessionTestOutputReattachResponse(confirm)
+	tests := []struct {
+		name    string
+		payload func() ([]byte, error)
+		decode  func([]byte) error
+	}{
+		{name: "begin", payload: func() ([]byte, error) { return MarshalOutputReattachBeginRequest(begin) }, decode: func(payload []byte) error { _, err := DecodeOutputReattachBeginRequest(payload); return err }},
+		{name: "challenge", payload: func() ([]byte, error) { return MarshalOutputReattachChallengeResponse(challenge) }, decode: func(payload []byte) error { _, err := DecodeOutputReattachChallengeResponse(payload); return err }},
+		{name: "confirm", payload: func() ([]byte, error) { return MarshalOutputReattachConfirmRequest(confirm) }, decode: func(payload []byte) error { _, err := DecodeOutputReattachConfirmRequest(payload); return err }},
+		{name: "response", payload: func() ([]byte, error) { return MarshalOutputReattachResponse(response) }, decode: func(payload []byte) error { _, err := DecodeOutputReattachResponse(payload); return err }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := test.payload()
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			valid := strings.TrimSuffix(string(payload), "}")
+			for _, invalid := range []string{
+				valid + `,"unknown":true}`,
+				valid + `,"schema_version":1}`,
+				string(payload) + `{}`,
+			} {
+				if err := test.decode([]byte(invalid)); err == nil {
+					t.Fatalf("decoder accepted invalid payload %s", invalid)
+				}
 			}
 		})
 	}

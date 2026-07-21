@@ -32,6 +32,8 @@ const (
 	CapabilityEventsV1 rpc.Capability = "managed-session.events.v1"
 	// CapabilityRuntimePlanV1 identifies the optional semantic endpoint-assignment plan.
 	CapabilityRuntimePlanV1 rpc.Capability = "managed-session.runtime-plan.v1"
+	// CapabilityOutputReattachV1 identifies the optional authenticated output-reattachment handshake.
+	CapabilityOutputReattachV1 rpc.Capability = "managed-session.output-reattach.v1"
 	// MethodRegister attaches one authenticated GoForj process to a Harbor session.
 	MethodRegister = "managed-session.v1.register"
 	// MethodReplacePublications replaces every private publication observed by a session.
@@ -40,15 +42,20 @@ const (
 	MethodBarrier = "managed-session.v1.barrier"
 	// MethodRuntimePlan asks Harbor for one authenticated semantic runtime assignment plan.
 	MethodRuntimePlan = "managed-session.v1.runtime-plan"
+	// MethodOutputReattachBegin starts one authenticated output-reattachment challenge.
+	MethodOutputReattachBegin = "managed-session.v1.output-reattach.begin"
+	// MethodOutputReattachConfirm completes one authenticated output-reattachment challenge.
+	MethodOutputReattachConfirm = "managed-session.v1.output-reattach.confirm"
 
-	maximumManagedSessionPayloadBytes = 1 << 20
-	maximumManagedSessionApps         = 256
-	maximumManagedSessionRuntimes     = 256
-	maximumManagedSessionCapabilities = 128
-	maximumManagedSessionTokenBytes   = 512
-	maximumManagedSessionRootBytes    = 4096
-	maximumManagedPublications        = 256
-	maximumManagedSessionEventText    = 64 * 1024
+	maximumManagedSessionPayloadBytes  = 1 << 20
+	maximumManagedSessionApps          = 256
+	maximumManagedSessionRuntimes      = 256
+	maximumManagedSessionCapabilities  = 128
+	maximumManagedSessionTokenBytes    = 512
+	maximumManagedSessionRootBytes     = 4096
+	maximumManagedSessionEndpointBytes = 4096
+	maximumManagedPublications         = 256
+	maximumManagedSessionEventText     = 64 * 1024
 )
 
 // ActiveApp identifies one App and the runtime IDs GoForj selected for this session.
@@ -187,6 +194,196 @@ func ValidateRegisterCorrelation(request RegisterRequest, response RegisterRespo
 	}
 	if request.ExpectedSessionGeneration == rpc.MaximumSequence || response.Fence.SessionGeneration != request.ExpectedSessionGeneration+1 {
 		return errors.New("managed session registration response does not match the requested next generation")
+	}
+	return nil
+}
+
+// OutputReattachBeginRequest starts one authenticated output-reattachment handshake.
+//
+// SessionProcess identifies the durable GoForj process that owns the session. It is deliberately
+// named separately from any future broker process evidence so a broker cannot be mistaken for the
+// process that Harbor admitted for the session.
+type OutputReattachBeginRequest struct {
+	SchemaVersion     uint16                                 `json:"schema_version"`
+	Fence             harbordruntime.ManagedPublicationFence `json:"fence"`
+	SessionProcess    domain.ProcessEvidence                 `json:"session_process"`
+	EndpointReference string                                 `json:"endpoint_reference"`
+	ClientNonce       string                                 `json:"client_nonce"`
+}
+
+// Validate reports whether an output-reattachment begin request carries one exact bounded identity.
+func (request OutputReattachBeginRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("managed session output reattach begin schema version %d is unsupported", request.SchemaVersion)
+	}
+	if err := request.Fence.Validate(); err != nil {
+		return err
+	}
+	if err := request.SessionProcess.Validate(); err != nil {
+		return fmt.Errorf("managed session output reattach session process: %w", err)
+	}
+	if err := validateManagedSessionEndpointReference(request.EndpointReference); err != nil {
+		return err
+	}
+	return validateManagedSessionToken("managed session output reattach client nonce", request.ClientNonce, maximumManagedSessionTokenBytes)
+}
+
+// OutputReattachChallengeResponse carries a fresh challenge correlated to one begin request.
+type OutputReattachChallengeResponse struct {
+	SchemaVersion     uint16                                 `json:"schema_version"`
+	Fence             harbordruntime.ManagedPublicationFence `json:"fence"`
+	SessionProcess    domain.ProcessEvidence                 `json:"session_process"`
+	EndpointReference string                                 `json:"endpoint_reference"`
+	ClientNonce       string                                 `json:"client_nonce"`
+	Challenge         string                                 `json:"challenge"`
+}
+
+// Validate reports whether a challenge response contains one bounded ephemeral challenge.
+func (response OutputReattachChallengeResponse) Validate() error {
+	if response.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("managed session output reattach challenge schema version %d is unsupported", response.SchemaVersion)
+	}
+	if err := response.Fence.Validate(); err != nil {
+		return err
+	}
+	if err := response.SessionProcess.Validate(); err != nil {
+		return fmt.Errorf("managed session output reattach challenge session process: %w", err)
+	}
+	if err := validateManagedSessionEndpointReference(response.EndpointReference); err != nil {
+		return err
+	}
+	if err := validateManagedSessionToken("managed session output reattach challenge client nonce", response.ClientNonce, maximumManagedSessionTokenBytes); err != nil {
+		return err
+	}
+	return validateManagedSessionToken("managed session output reattach challenge", response.Challenge, maximumManagedSessionTokenBytes)
+}
+
+// ValidateOutputReattachChallengeCorrelation binds a challenge to one exact begin request.
+func ValidateOutputReattachChallengeCorrelation(
+	request OutputReattachBeginRequest,
+	response OutputReattachChallengeResponse,
+) error {
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate managed session output reattach begin request: %w", err)
+	}
+	if err := response.Validate(); err != nil {
+		return fmt.Errorf("validate managed session output reattach challenge response: %w", err)
+	}
+	if response.Fence != request.Fence || response.SessionProcess != request.SessionProcess ||
+		response.EndpointReference != request.EndpointReference || response.ClientNonce != request.ClientNonce {
+		return errors.New("managed session output reattach challenge does not match the begin request")
+	}
+	return nil
+}
+
+// OutputReattachConfirmRequest proves possession of one challenge before any future stream authority is granted.
+type OutputReattachConfirmRequest struct {
+	SchemaVersion     uint16                                 `json:"schema_version"`
+	Fence             harbordruntime.ManagedPublicationFence `json:"fence"`
+	SessionProcess    domain.ProcessEvidence                 `json:"session_process"`
+	EndpointReference string                                 `json:"endpoint_reference"`
+	ClientNonce       string                                 `json:"client_nonce"`
+	Challenge         string                                 `json:"challenge"`
+}
+
+// Validate reports whether a confirmation carries one complete bounded challenge identity.
+func (request OutputReattachConfirmRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("managed session output reattach confirm schema version %d is unsupported", request.SchemaVersion)
+	}
+	if err := request.Fence.Validate(); err != nil {
+		return err
+	}
+	if err := request.SessionProcess.Validate(); err != nil {
+		return fmt.Errorf("managed session output reattach confirm session process: %w", err)
+	}
+	if err := validateManagedSessionEndpointReference(request.EndpointReference); err != nil {
+		return err
+	}
+	if err := validateManagedSessionToken("managed session output reattach confirm client nonce", request.ClientNonce, maximumManagedSessionTokenBytes); err != nil {
+		return err
+	}
+	return validateManagedSessionToken("managed session output reattach confirm challenge", request.Challenge, maximumManagedSessionTokenBytes)
+}
+
+// ValidateOutputReattachConfirmCorrelation binds a confirmation to one exact challenge response.
+func ValidateOutputReattachConfirmCorrelation(
+	challenge OutputReattachChallengeResponse,
+	request OutputReattachConfirmRequest,
+) error {
+	if err := challenge.Validate(); err != nil {
+		return fmt.Errorf("validate managed session output reattach challenge: %w", err)
+	}
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate managed session output reattach confirm request: %w", err)
+	}
+	if request.Fence != challenge.Fence || request.SessionProcess != challenge.SessionProcess ||
+		request.EndpointReference != challenge.EndpointReference || request.ClientNonce != challenge.ClientNonce ||
+		request.Challenge != challenge.Challenge {
+		return errors.New("managed session output reattach confirmation does not match the challenge")
+	}
+	return nil
+}
+
+// OutputReattachResponse reports whether one confirmed output-reattachment handshake was accepted.
+//
+// An accepted response contains only an opaque ephemeral ticket. It does not grant stream authority
+// or expose a supervisor pipe; a future broker contract will bind that ticket to a separate process.
+type OutputReattachResponse struct {
+	SchemaVersion     uint16                                 `json:"schema_version"`
+	Fence             harbordruntime.ManagedPublicationFence `json:"fence"`
+	SessionProcess    domain.ProcessEvidence                 `json:"session_process"`
+	EndpointReference string                                 `json:"endpoint_reference"`
+	ClientNonce       string                                 `json:"client_nonce"`
+	Challenge         string                                 `json:"challenge"`
+	Accepted          bool                                   `json:"accepted"`
+	AttachmentTicket  string                                 `json:"attachment_ticket,omitempty"`
+}
+
+// Validate reports whether a confirmation response contains only bounded ephemeral authority.
+func (response OutputReattachResponse) Validate() error {
+	if response.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("managed session output reattach response schema version %d is unsupported", response.SchemaVersion)
+	}
+	if err := response.Fence.Validate(); err != nil {
+		return err
+	}
+	if err := response.SessionProcess.Validate(); err != nil {
+		return fmt.Errorf("managed session output reattach response session process: %w", err)
+	}
+	if err := validateManagedSessionEndpointReference(response.EndpointReference); err != nil {
+		return err
+	}
+	if err := validateManagedSessionToken("managed session output reattach response client nonce", response.ClientNonce, maximumManagedSessionTokenBytes); err != nil {
+		return err
+	}
+	if err := validateManagedSessionToken("managed session output reattach response challenge", response.Challenge, maximumManagedSessionTokenBytes); err != nil {
+		return err
+	}
+	if response.Accepted {
+		return validateManagedSessionToken("managed session output reattach attachment ticket", response.AttachmentTicket, maximumManagedSessionTokenBytes)
+	}
+	if response.AttachmentTicket != "" {
+		return errors.New("rejected managed session output reattach response must not carry an attachment ticket")
+	}
+	return nil
+}
+
+// ValidateOutputReattachResponseCorrelation binds a response to one exact confirmation request.
+func ValidateOutputReattachResponseCorrelation(
+	request OutputReattachConfirmRequest,
+	response OutputReattachResponse,
+) error {
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate managed session output reattach confirm request: %w", err)
+	}
+	if err := response.Validate(); err != nil {
+		return fmt.Errorf("validate managed session output reattach response: %w", err)
+	}
+	if response.Fence != request.Fence || response.SessionProcess != request.SessionProcess ||
+		response.EndpointReference != request.EndpointReference || response.ClientNonce != request.ClientNonce ||
+		response.Challenge != request.Challenge {
+		return errors.New("managed session output reattach response does not match the confirmation request")
 	}
 	return nil
 }
@@ -507,6 +704,54 @@ func DecodeRegisterResponse(payload []byte) (RegisterResponse, error) {
 	return response, nil
 }
 
+// DecodeOutputReattachBeginRequest strictly decodes one output-reattachment begin request.
+func DecodeOutputReattachBeginRequest(payload []byte) (OutputReattachBeginRequest, error) {
+	var request OutputReattachBeginRequest
+	if err := decodeManagedSessionObject(payload, "managed session output reattach begin", &request); err != nil {
+		return OutputReattachBeginRequest{}, err
+	}
+	if err := request.Validate(); err != nil {
+		return OutputReattachBeginRequest{}, err
+	}
+	return request, nil
+}
+
+// DecodeOutputReattachChallengeResponse strictly decodes one output-reattachment challenge response.
+func DecodeOutputReattachChallengeResponse(payload []byte) (OutputReattachChallengeResponse, error) {
+	var response OutputReattachChallengeResponse
+	if err := decodeManagedSessionObject(payload, "managed session output reattach challenge", &response); err != nil {
+		return OutputReattachChallengeResponse{}, err
+	}
+	if err := response.Validate(); err != nil {
+		return OutputReattachChallengeResponse{}, err
+	}
+	return response, nil
+}
+
+// DecodeOutputReattachConfirmRequest strictly decodes one output-reattachment confirmation request.
+func DecodeOutputReattachConfirmRequest(payload []byte) (OutputReattachConfirmRequest, error) {
+	var request OutputReattachConfirmRequest
+	if err := decodeManagedSessionObject(payload, "managed session output reattach confirm", &request); err != nil {
+		return OutputReattachConfirmRequest{}, err
+	}
+	if err := request.Validate(); err != nil {
+		return OutputReattachConfirmRequest{}, err
+	}
+	return request, nil
+}
+
+// DecodeOutputReattachResponse strictly decodes one output-reattachment response.
+func DecodeOutputReattachResponse(payload []byte) (OutputReattachResponse, error) {
+	var response OutputReattachResponse
+	if err := decodeManagedSessionObject(payload, "managed session output reattach response", &response); err != nil {
+		return OutputReattachResponse{}, err
+	}
+	if err := response.Validate(); err != nil {
+		return OutputReattachResponse{}, err
+	}
+	return response, nil
+}
+
 // DecodeReplacePublicationsRequest strictly decodes one complete publication replacement.
 func DecodeReplacePublicationsRequest(payload []byte) (ReplacePublicationsRequest, error) {
 	var request ReplacePublicationsRequest
@@ -563,6 +808,26 @@ func MarshalRegisterRequest(request RegisterRequest) ([]byte, error) {
 // MarshalRegisterResponse validates and encodes one registration response.
 func MarshalRegisterResponse(response RegisterResponse) ([]byte, error) {
 	return marshalManagedSessionObject("managed session registration response", response, response.Validate)
+}
+
+// MarshalOutputReattachBeginRequest validates and encodes one output-reattachment begin request.
+func MarshalOutputReattachBeginRequest(request OutputReattachBeginRequest) ([]byte, error) {
+	return marshalManagedSessionObject("managed session output reattach begin", request, request.Validate)
+}
+
+// MarshalOutputReattachChallengeResponse validates and encodes one output-reattachment challenge response.
+func MarshalOutputReattachChallengeResponse(response OutputReattachChallengeResponse) ([]byte, error) {
+	return marshalManagedSessionObject("managed session output reattach challenge", response, response.Validate)
+}
+
+// MarshalOutputReattachConfirmRequest validates and encodes one output-reattachment confirmation request.
+func MarshalOutputReattachConfirmRequest(request OutputReattachConfirmRequest) ([]byte, error) {
+	return marshalManagedSessionObject("managed session output reattach confirm", request, request.Validate)
+}
+
+// MarshalOutputReattachResponse validates and encodes one output-reattachment response.
+func MarshalOutputReattachResponse(response OutputReattachResponse) ([]byte, error) {
+	return marshalManagedSessionObject("managed session output reattach response", response, response.Validate)
 }
 
 // MarshalReplacePublicationsRequest validates and encodes one complete publication replacement.
@@ -744,6 +1009,37 @@ func validateManagedSessionRoot(root string) error {
 	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return errors.New("managed session project root must be a canonical absolute path")
+	}
+	return nil
+}
+
+// validateManagedSessionEndpointReference accepts only canonical local endpoint shapes.
+//
+// This check is intentionally structural. Ownership comes from the authenticated local transport
+// and a future Harbor-created endpoint record; a path supplied in a request is never authority.
+func validateManagedSessionEndpointReference(endpoint string) error {
+	if endpoint == "" {
+		return errors.New("managed session output reattach endpoint reference is required")
+	}
+	if !utf8.ValidString(endpoint) || len([]byte(endpoint)) > maximumManagedSessionEndpointBytes {
+		return fmt.Errorf("managed session output reattach endpoint reference must be valid UTF-8 of at most %d bytes", maximumManagedSessionEndpointBytes)
+	}
+	if strings.IndexByte(endpoint, 0) >= 0 {
+		return errors.New("managed session output reattach endpoint reference contains NUL")
+	}
+	for _, character := range endpoint {
+		if unicode.IsControl(character) {
+			return errors.New("managed session output reattach endpoint reference contains a control character")
+		}
+	}
+	if strings.HasPrefix(endpoint, `\\.\pipe\`) {
+		if len(endpoint) == len(`\\.\pipe\`) {
+			return errors.New("managed session output reattach endpoint reference must name a pipe")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(endpoint) || filepath.Clean(endpoint) != endpoint {
+		return errors.New("managed session output reattach endpoint reference must be a canonical local absolute path")
 	}
 	return nil
 }
