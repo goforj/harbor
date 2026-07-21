@@ -60,21 +60,36 @@ type Runtime struct {
 	replaceIngress func(*httpingress.Snapshot) error
 	relays         []managedRelay
 
-	mutex       sync.RWMutex
-	state       State
-	desired     DesiredState
-	run         *runtimeRun
-	terminalErr error
-	stop        chan struct{}
-	done        chan struct{}
-	stopOnce    sync.Once
-	doneOnce    sync.Once
+	mutex              sync.RWMutex
+	state              State
+	desired            DesiredState
+	run                *runtimeRun
+	terminalErr        error
+	stop               chan struct{}
+	done               chan struct{}
+	stopOnce           sync.Once
+	doneOnce           sync.Once
+	nativeReplaceMutex sync.Mutex
+	dynamicMutex       sync.Mutex
+	dynamicRelays      map[string]*dynamicNativeRelay
 }
 
 // managedRelay couples stable desired identity with its one-shot relay instance.
 type managedRelay struct {
 	route NativeRoute
 	relay *tcprelay.Relay
+}
+
+// dynamicNativeRelay owns one managed publication that was admitted after the shared runtime started.
+type dynamicNativeRelay struct {
+	route    NativeRoute
+	relay    *tcprelay.Relay
+	cancel   context.CancelFunc
+	done     chan struct{}
+	mutex    sync.Mutex
+	err      error
+	stopping bool
+	admitted bool
 }
 
 // runtimeRun contains every resource that must be joined before terminal state is published.
@@ -130,6 +145,7 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 		stop:                   make(chan struct{}),
 		done:                   make(chan struct{}),
 		relays:                 make([]managedRelay, 0, len(config.Desired.nativeRoutes)),
+		dynamicRelays:          make(map[string]*dynamicNativeRelay),
 	}
 	if config.Desired.listeners.DNS != (netip.AddrPort{}) {
 		dnsConfig := dnsserver.DefaultConfig(config.Desired.listeners.DNS.Addr(), config.Desired.listeners.DNS.Port())
@@ -229,15 +245,29 @@ func (runtime *Runtime) ReplaceHTTPRoutes(next DesiredState) error {
 		return ErrNotReady
 	}
 
+	runtime.nativeReplaceMutex.Lock()
+	defer runtime.nativeReplaceMutex.Unlock()
 	runtime.mutex.Lock()
 	defer runtime.mutex.Unlock()
 	if runtime.state != StateReady {
 		return fmt.Errorf("%w: lifecycle state is %q", ErrNotReady, runtime.state)
 	}
+	current := runtime.desired
+	if !next.valid {
+		if err := next.validate(); err != nil {
+			return fmt.Errorf("replace data plane HTTP routes: %w", err)
+		}
+	}
+	if len(next.nativeRoutes) == 0 && len(current.nativeRoutes) != 0 {
+		preserved, err := NewDesiredState(next.listeners, next.httpRoutes, current.nativeRoutes, next.ttl)
+		if err != nil {
+			return fmt.Errorf("replace data plane HTTP routes: preserve managed native routes: %w", err)
+		}
+		next = preserved
+	}
 	if err := next.validate(); err != nil {
 		return fmt.Errorf("replace data plane HTTP routes: %w", err)
 	}
-	current := runtime.desired
 	if current.listeners != next.listeners {
 		return fmt.Errorf("replace data plane HTTP routes: listener topology must remain unchanged")
 	}
@@ -312,6 +342,259 @@ func (runtime *Runtime) ReplaceHTTPRoutes(next DesiredState) error {
 
 	runtime.desired = next
 	return nil
+}
+
+// ReplaceNativeRoutes replaces managed TCP relay publications while preserving shared DNS and HTTP listeners.
+//
+// Native listeners are deliberately admitted after the shared generation is ready. Harbor withdraws their DNS
+// records before stopping an old relay, then binds and proves every replacement before publishing the new records.
+// A failed replacement leaves the data plane failed and route-free rather than claiming a partially known generation.
+func (runtime *Runtime) ReplaceNativeRoutes(ctx context.Context, routes []NativeRoute) error {
+	if runtime == nil {
+		return ErrNotReady
+	}
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	runtime.nativeReplaceMutex.Lock()
+	defer runtime.nativeReplaceMutex.Unlock()
+
+	runtime.mutex.RLock()
+	if runtime.state != StateReady {
+		runtime.mutex.RUnlock()
+		return fmt.Errorf("%w: lifecycle state is %q", ErrNotReady, runtime.state)
+	}
+	current := runtime.desired
+	run := runtime.run
+	staticRelayCount := len(runtime.relays)
+	runtime.mutex.RUnlock()
+	if staticRelayCount != 0 {
+		return fmt.Errorf("replace data plane native routes: initial native topology is immutable")
+	}
+	if run == nil || run.context == nil {
+		return fmt.Errorf("%w: runtime startup context is unavailable", ErrNotReady)
+	}
+	if err := runtime.validateDynamicRouteOwnership(current.nativeRoutes); err != nil {
+		return err
+	}
+	next, err := NewDesiredState(current.listeners, current.httpRoutes, routes, current.ttl)
+	if err != nil {
+		return fmt.Errorf("replace data plane native routes: construct desired state: %w", err)
+	}
+	if slices.Equal(current.nativeRoutes, next.nativeRoutes) {
+		return nil
+	}
+	if runtime.dns == nil || runtime.replaceDNS == nil {
+		return fmt.Errorf("%w: DNS is not configured", ErrNotReady)
+	}
+	if _, running := runtime.dns.Address(); !running {
+		return fmt.Errorf("%w: DNS is not running", ErrNotReady)
+	}
+	intermediate, err := NewDesiredState(current.listeners, current.httpRoutes, nil, current.ttl)
+	if err != nil {
+		return fmt.Errorf("replace data plane native routes: construct withdrawal generation: %w", err)
+	}
+	if err := runtime.replaceDNS(intermediate.dnsSnapshot); err != nil {
+		return fmt.Errorf("replace data plane native routes: withdraw DNS records: %w", err)
+	}
+	if err := runtime.stopDynamicRoutes(ctx); err != nil {
+		cause := fmt.Errorf("replace data plane native routes: stop prior relays: %w", err)
+		runtime.failNativeRouteReplacement(cause)
+		return cause
+	}
+	runtime.mutex.Lock()
+	runtime.desired = intermediate
+	runtime.mutex.Unlock()
+
+	for _, route := range next.nativeRoutes {
+		entry, startErr := runtime.startDynamicNativeRelay(run.context, route)
+		if startErr != nil {
+			cleanupErr := runtime.stopDynamicRoutes(context.Background())
+			cause := fmt.Errorf("replace data plane native routes: start relay %q: %w", route.ID, startErr)
+			runtime.failNativeRouteReplacement(errors.Join(cause, cleanupErr))
+			return errors.Join(cause, cleanupErr)
+		}
+		runtime.admitDynamicNativeRelay(entry)
+	}
+	if err := runtime.replaceDNS(next.dnsSnapshot); err != nil {
+		cleanupErr := runtime.stopDynamicRoutes(context.Background())
+		cause := fmt.Errorf("replace data plane native routes: publish DNS records: %w", err)
+		runtime.failNativeRouteReplacement(errors.Join(cause, cleanupErr))
+		return errors.Join(cause, cleanupErr)
+	}
+	runtime.mutex.Lock()
+	runtime.desired = next
+	runtime.mutex.Unlock()
+	return nil
+}
+
+// validateDynamicRouteOwnership proves the current native routes are all managed entries rather than immutable startup relays.
+func (runtime *Runtime) validateDynamicRouteOwnership(routes []NativeRoute) error {
+	runtime.dynamicMutex.Lock()
+	defer runtime.dynamicMutex.Unlock()
+	if len(routes) != len(runtime.dynamicRelays) {
+		return fmt.Errorf("replace data plane native routes: dynamic relay ownership does not match the current topology")
+	}
+	for _, route := range routes {
+		entry, found := runtime.dynamicRelays[route.ID]
+		if !found || entry.route != route {
+			return fmt.Errorf("replace data plane native routes: relay %q ownership is not provable", route.ID)
+		}
+	}
+	return nil
+}
+
+// startDynamicNativeRelay binds and proves one managed relay before it can enter the replacement set.
+func (runtime *Runtime) startDynamicNativeRelay(ctx context.Context, route NativeRoute) (*dynamicNativeRelay, error) {
+	relay, err := tcprelay.New(tcprelay.Config{Upstream: route.Upstream, ShutdownTimeout: runtime.config.ShutdownTimeout})
+	if err != nil {
+		return nil, fmt.Errorf("construct relay: %w", err)
+	}
+	listener, err := runtime.listen(ctx, route.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("bind listener %s: %w", route.Listen, err)
+	}
+	actual, err := exactListenerAddress(listener)
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("verify listener %s: %w", route.Listen, err)
+	}
+	if actual != route.Listen {
+		_ = listener.Close()
+		return nil, fmt.Errorf("bind listener %s: acquired unexpected socket %s", route.Listen, actual)
+	}
+	serveContext, cancel := context.WithCancel(ctx)
+	entry := &dynamicNativeRelay{route: route, relay: relay, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		err := relay.Serve(serveContext, listener)
+		entry.mutex.Lock()
+		entry.err = err
+		close(entry.done)
+		entry.mutex.Unlock()
+		runtime.handleDynamicRelayExit(entry)
+	}()
+	deadline := time.NewTimer(runtime.config.StartupTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(startupPollInterval)
+	defer ticker.Stop()
+	for {
+		if relay.Snapshot().Running {
+			return entry, nil
+		}
+		select {
+		case <-entry.done:
+			return nil, fmt.Errorf("relay exited before readiness: %w", dynamicNativeRelayError(entry))
+		case <-ctx.Done():
+			entry.mutex.Lock()
+			entry.stopping = true
+			entry.mutex.Unlock()
+			cancel()
+			<-entry.done
+			return nil, ctx.Err()
+		case <-deadline.C:
+			entry.mutex.Lock()
+			entry.stopping = true
+			entry.mutex.Unlock()
+			cancel()
+			<-entry.done
+			return nil, fmt.Errorf("relay did not become ready within %s", runtime.config.StartupTimeout)
+		case <-ticker.C:
+		}
+	}
+}
+
+// admitDynamicNativeRelay publishes one ready relay into the process-local replacement set.
+func (runtime *Runtime) admitDynamicNativeRelay(entry *dynamicNativeRelay) {
+	entry.mutex.Lock()
+	entry.admitted = true
+	entry.mutex.Unlock()
+	runtime.dynamicMutex.Lock()
+	runtime.dynamicRelays[entry.route.ID] = entry
+	runtime.dynamicMutex.Unlock()
+}
+
+// stopDynamicRoutes cancels every dynamic relay and waits for listener and connection ownership to settle.
+func (runtime *Runtime) stopDynamicRoutes(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
+	runtime.dynamicMutex.Lock()
+	entries := make([]*dynamicNativeRelay, 0, len(runtime.dynamicRelays))
+	for _, entry := range runtime.dynamicRelays {
+		entry.mutex.Lock()
+		entry.stopping = true
+		entry.mutex.Unlock()
+		entries = append(entries, entry)
+	}
+	runtime.dynamicMutex.Unlock()
+	for _, entry := range entries {
+		entry.cancel()
+	}
+	var result error
+	for _, entry := range entries {
+		select {
+		case <-entry.done:
+			runtime.dynamicMutex.Lock()
+			if current := runtime.dynamicRelays[entry.route.ID]; current == entry {
+				delete(runtime.dynamicRelays, entry.route.ID)
+			}
+			runtime.dynamicMutex.Unlock()
+		case <-ctx.Done():
+			result = errors.Join(result, ctx.Err())
+		}
+	}
+	return result
+}
+
+// dynamicNativeRelayError returns the terminal relay result without exposing its mutable lifecycle state.
+func dynamicNativeRelayError(entry *dynamicNativeRelay) error {
+	entry.mutex.Lock()
+	defer entry.mutex.Unlock()
+	if entry.err == nil {
+		return errors.New("relay stopped unexpectedly")
+	}
+	return entry.err
+}
+
+// handleDynamicRelayExit fails the shared runtime when an admitted relay loses listener ownership unexpectedly.
+func (runtime *Runtime) handleDynamicRelayExit(entry *dynamicNativeRelay) {
+	entry.mutex.Lock()
+	stopping := entry.stopping
+	admitted := entry.admitted
+	entry.mutex.Unlock()
+	if stopping || !admitted || runtime.stopRequested() {
+		return
+	}
+	runtime.mutex.Lock()
+	if runtime.state != StateReady {
+		runtime.mutex.Unlock()
+		return
+	}
+	if runtime.terminalErr == nil {
+		runtime.terminalErr = fmt.Errorf("data plane native route %s failed: %w", entry.route.ID, dynamicNativeRelayError(entry))
+	}
+	run := runtime.run
+	runtime.state = StateFailed
+	runtime.mutex.Unlock()
+	if run != nil {
+		run.cancel()
+	}
+}
+
+// failNativeRouteReplacement fails closed after a route update has withdrawn the previous DNS generation.
+func (runtime *Runtime) failNativeRouteReplacement(cause error) {
+	runtime.mutex.Lock()
+	if runtime.terminalErr == nil {
+		runtime.terminalErr = cause
+	} else if cause != nil {
+		runtime.terminalErr = errors.Join(runtime.terminalErr, cause)
+	}
+	runtime.state = StateFailed
+	run := runtime.run
+	runtime.mutex.Unlock()
+	if run != nil {
+		run.cancel()
+	}
 }
 
 // retainedHTTPDesiredState keeps only existing HTTP hosts that remain authorized by the next generation.
@@ -407,6 +690,33 @@ func (runtime *Runtime) Snapshot() Snapshot {
 			DroppedDiagnostics:   relay.DroppedDiagnostics,
 		})
 	}
+	runtime.dynamicMutex.Lock()
+	dynamic := make([]*dynamicNativeRelay, 0, len(runtime.dynamicRelays))
+	for _, entry := range runtime.dynamicRelays {
+		dynamic = append(dynamic, entry)
+	}
+	runtime.dynamicMutex.Unlock()
+	for _, entry := range dynamic {
+		relay := entry.relay.Snapshot()
+		listenAddress := entry.route.Listen
+		if relay.ListenAddress.IsValid() {
+			listenAddress = relay.ListenAddress
+		}
+		snapshot.Relays = append(snapshot.Relays, RelayStatus{
+			ID:                   entry.route.ID,
+			Host:                 entry.route.Host,
+			ListenAddress:        listenAddress,
+			Upstream:             relay.Upstream,
+			Running:              relay.Running,
+			ActiveConnections:    relay.ActiveConnections,
+			CompletedConnections: relay.CompletedConnections,
+			DialFailures:         relay.DialFailures,
+			ClientBytes:          relay.ClientBytes,
+			UpstreamBytes:        relay.UpstreamBytes,
+			DroppedDiagnostics:   relay.DroppedDiagnostics,
+		})
+	}
+	slices.SortFunc(snapshot.Relays, compareRelayStatuses)
 	if snapshot.State == StateReady && !snapshot.configuredChildrenRunning() {
 		if runtime.stopRequested() || run != nil && run.context.Err() != nil {
 			snapshot.State = StateStopping
@@ -646,6 +956,13 @@ func (runtime *Runtime) routedChildrenRunning() bool {
 			return false
 		}
 	}
+	runtime.dynamicMutex.Lock()
+	defer runtime.dynamicMutex.Unlock()
+	for _, entry := range runtime.dynamicRelays {
+		if !entry.relay.Snapshot().Running {
+			return false
+		}
+	}
 	return true
 }
 
@@ -685,7 +1002,10 @@ func (runtime *Runtime) monitor(parent context.Context, run *runtimeRun) {
 	runtime.mutex.Unlock()
 	run.cancel()
 
-	terminal := collectChildResults(run, first, consumed, intentional)
+	cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), runtime.config.ShutdownTimeout+time.Second)
+	dynamicCleanupErr := runtime.stopDynamicRoutes(cleanupContext)
+	cancelCleanup()
+	terminal := errors.Join(dynamicCleanupErr, collectChildResults(run, first, consumed, intentional))
 	if !intentional && consumed {
 		terminal = errors.Join(unexpectedChildError(first), terminal)
 	}
@@ -777,6 +1097,23 @@ func (runtime *Runtime) stopRequested() bool {
 	default:
 		return false
 	}
+}
+
+// compareRelayStatuses keeps static and dynamically admitted native routes in one canonical snapshot order.
+func compareRelayStatuses(left, right RelayStatus) int {
+	if left.Host < right.Host {
+		return -1
+	}
+	if left.Host > right.Host {
+		return 1
+	}
+	if left.ID < right.ID {
+		return -1
+	}
+	if left.ID > right.ID {
+		return 1
+	}
+	return 0
 }
 
 // closeDone publishes terminal completion exactly once across startup and shutdown races.

@@ -4,6 +4,8 @@ Status: active development
 
 Last updated: 2026-07-21
 
+Since the previous handoff, Harbor also has a post-start native-route activator: the managed barrier now plans the complete observed publication set against Harbor-owned reservations, replaces native relays without rebinding shared listeners, and acknowledges only after every relay is live. GoForj still needs to emit the publication replacement and barrier calls from its typed lifecycle; durable replay after daemon restart remains open.
+
 This document describes the repository as it works today. The other documents in this directory describe Harbor's intended product and architecture; their phase gates are not claims that the corresponding work is complete.
 
 ## Product shape

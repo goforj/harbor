@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/managedsession"
+	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -204,6 +206,68 @@ func (authority *Authority) ReplaceManagedPublications(
 	return response, nil
 }
 
+// managedPublicationStateSource joins the control aggregate and exact session reads for native route planning.
+type managedPublicationStateSource struct {
+	runtime  controlState
+	sessions managedSessionState
+}
+
+// RuntimeState returns the Harbor-owned network and project aggregate used by the publication boundary.
+func (source managedPublicationStateSource) RuntimeState(ctx context.Context) (state.RuntimeState, error) {
+	return source.runtime.RuntimeState(ctx)
+}
+
+// ActiveProjectSession returns one exact durable session for publication planning.
+func (source managedPublicationStateSource) ActiveProjectSession(ctx context.Context, projectID domain.ProjectID) (domain.ProjectSession, error) {
+	return source.sessions.ActiveProjectSession(ctx, projectID)
+}
+
+// currentManagedNativeRoutes plans every attached managed session from its latest complete observation.
+func (authority *Authority) currentManagedNativeRoutes(ctx context.Context) ([]dataplane.NativeRoute, error) {
+	if authority.managedStore == nil || authority.managedRegistry == nil {
+		return nil, errors.New("managed session route authority is unavailable")
+	}
+	authority.managedMu.Lock()
+	attachments := make([]managedSessionAttachment, 0, len(authority.managedSessions))
+	for _, attachment := range authority.managedSessions {
+		attachments = append(attachments, attachment)
+	}
+	authority.managedMu.Unlock()
+	routes := make([]dataplane.NativeRoute, 0)
+	source := managedPublicationStateSource{runtime: authority.store, sessions: authority.managedStore}
+	for _, attachment := range attachments {
+		fence := attachment.response.Fence
+		publications, err := authority.managedRegistry.Snapshot(fence)
+		if err != nil {
+			return nil, err
+		}
+		planned, err := harbordruntime.PlanVerifiedManagedNativeRoutes(ctx, source, harbordruntime.ManagedNativeRoutePlanRequest{
+			Fence:        fence,
+			Publications: publications,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("plan managed native routes for project %q: %w", fence.ProjectID, err)
+		}
+		routes = append(routes, planned...)
+	}
+	slices.SortFunc(routes, func(left, right dataplane.NativeRoute) int {
+		if left.Host < right.Host {
+			return -1
+		}
+		if left.Host > right.Host {
+			return 1
+		}
+		if left.ID < right.ID {
+			return -1
+		}
+		if left.ID > right.ID {
+			return 1
+		}
+		return 0
+	})
+	return routes, nil
+}
+
 // AcknowledgeManagedBarrier reports the route barrier only after a future native activation owner proves it.
 func (authority *Authority) AcknowledgeManagedBarrier(
 	ctx context.Context,
@@ -216,12 +280,25 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 	if _, err := authority.authorizeManagedFence(ctx, peer, request.Fence); err != nil {
 		return managedsession.BarrierResponse{}, err
 	}
+	acknowledged := false
+	if authority.managedRoutes != nil {
+		routes, err := authority.currentManagedNativeRoutes(normalizeContext(ctx))
+		if err != nil {
+			return managedsession.BarrierResponse{}, err
+		}
+		if err := authority.managedRoutes.ReplaceManagedNativeRoutes(normalizeContext(ctx), routes); err != nil {
+			return managedsession.BarrierResponse{}, err
+		}
+		if err := authority.managedRoutes.ManagedNativeRoutesLive(normalizeContext(ctx), routes); err != nil {
+			return managedsession.BarrierResponse{}, err
+		}
+		acknowledged = true
+	}
 	response := managedsession.BarrierResponse{
 		SchemaVersion: managedsession.SchemaVersion,
 		Fence:         request.Fence,
 		Phase:         request.Phase,
-		// Publication observations are accepted into the registry, but native route activation is not wired yet.
-		Acknowledged: false,
+		Acknowledged:  acknowledged,
 	}
 	if err := managedsession.ValidateBarrierCorrelation(request, response); err != nil {
 		return managedsession.BarrierResponse{}, err

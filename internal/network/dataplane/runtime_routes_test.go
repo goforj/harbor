@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -13,6 +14,90 @@ import (
 	"github.com/goforj/harbor/internal/network/dnsserver"
 	"github.com/goforj/harbor/internal/network/httpingress"
 )
+
+// TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays proves native publications can join a ready shared generation without rebinding its HTTP listeners.
+func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing.T) {
+	listeners := ListenerPlan{DNS: reserveDNSPort(t)}
+	shared := reserveTCPPorts(t, 2)
+	listeners.HTTP = shared[0]
+	listeners.HTTPS = shared[1]
+	excluded := append([]netip.AddrPort{listeners.DNS}, shared...)
+	upstreams := reserveDistinctTCPPorts(t, 2, excluded...)
+	desired := mustDesiredState(t, listeners, []HTTPRoute{{ID: "http:app", Host: "app.test", Upstream: upstreams[0]}}, nil)
+	runtime := mustRuntime(t, Config{Desired: desired, CertificateProvider: inertCertificateProvider()})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = runtime.Close(ctx)
+	})
+	route := NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   shared[0],
+		Upstream: upstreams[1],
+	}
+	// Use a separate exact listener because the shared HTTP listener must remain untouched by native admission.
+	conflict := reserveTCPPorts(t, 1)[0]
+	route.Listen = conflict
+	if err := runtime.ReplaceNativeRoutes(context.Background(), []NativeRoute{route}); err != nil {
+		t.Fatalf("ReplaceNativeRoutes() error = %v", err)
+	}
+	snapshot := runtime.Snapshot()
+	if snapshot.State != StateReady || len(snapshot.Relays) != 1 || snapshot.Relays[0].ID != route.ID || snapshot.Relays[0].ListenAddress != route.Listen {
+		t.Fatalf("managed route snapshot = %#v", snapshot)
+	}
+	if snapshot.Ingress.HTTPAddress != listeners.HTTP || snapshot.Ingress.HTTPSAddress != listeners.HTTPS {
+		t.Fatalf("managed route publication rebound shared listeners: %#v", snapshot.Ingress)
+	}
+	if snapshot.DNS.Records != 2 {
+		t.Fatalf("managed route DNS records = %d, want 2", snapshot.DNS.Records)
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("managed route snapshot validation error = %v", err)
+	}
+	if err := runtime.ReplaceNativeRoutes(context.Background(), []NativeRoute{}); err != nil {
+		t.Fatalf("withdraw managed routes error = %v", err)
+	}
+	snapshot = runtime.Snapshot()
+	if snapshot.State != StateReady || len(snapshot.Relays) != 0 || snapshot.DNS.Records != 1 {
+		t.Fatalf("withdrawn managed route snapshot = %#v", snapshot)
+	}
+}
+
+// TestRuntimeReplaceNativeRoutesFailsClosedOnListenerConflict proves a partially withdrawn publication cannot remain routable after replacement fails.
+func TestRuntimeReplaceNativeRoutesFailsClosedOnListenerConflict(t *testing.T) {
+	listeners := ListenerPlan{DNS: reserveDNSPort(t)}
+	shared := reserveTCPPorts(t, 2)
+	listeners.HTTP = shared[0]
+	listeners.HTTPS = shared[1]
+	excluded := append([]netip.AddrPort{listeners.DNS}, shared...)
+	upstream := reserveDistinctTCPPorts(t, 1, excluded...)[0]
+	desired := mustDesiredState(t, listeners, []HTTPRoute{{ID: "http:app", Host: "app.test", Upstream: upstream}}, nil)
+	runtime := mustRuntime(t, Config{Desired: desired, CertificateProvider: inertCertificateProvider()})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		_ = runtime.Close(context.Background())
+	}()
+	conflictEndpoint := reserveTCPPorts(t, 1)[0]
+	conflict, err := net.Listen("tcp4", conflictEndpoint.String())
+	if err != nil {
+		t.Fatalf("reserve conflict listener: %v", err)
+	}
+	defer conflict.Close()
+	route := NativeRoute{ID: "orders:service:mysql", Host: "mysql.orders.test", Listen: conflictEndpoint, Upstream: upstream}
+	if err := runtime.ReplaceNativeRoutes(context.Background(), []NativeRoute{route}); err == nil {
+		t.Fatal("ReplaceNativeRoutes() conflict error = nil")
+	}
+	snapshot := runtime.Snapshot()
+	if snapshot.State != StateFailed || len(snapshot.Relays) != 0 || snapshot.DNS.Records != 1 {
+		t.Fatalf("failed managed route snapshot = %#v", snapshot)
+	}
+}
 
 // routeReplacementFixture owns one ready shared-listener generation with a stable native relay.
 type routeReplacementFixture struct {

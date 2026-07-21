@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +63,11 @@ type dataPlane interface {
 	Done() <-chan struct{}
 	Err() error
 	Close(context.Context) error
+}
+
+// managedNativeRouteDataPlane is the narrow post-start publication seam used by managed sessions.
+type managedNativeRouteDataPlane interface {
+	ReplaceNativeRoutes(context.Context, []dataplane.NativeRoute) error
 }
 
 // materialStoreOpener opens the protected certificate store only after durable state authorizes startup.
@@ -127,6 +134,7 @@ type Controller struct {
 	root                  certificates.Root
 	httpFoundation        dataplane.DesiredState
 	publishedHTTPRoutes   []dataplane.HTTPRoute
+	managedNativeRoutes   []dataplane.NativeRoute
 	terminalErr           error
 	stop                  chan struct{}
 	done                  chan struct{}
@@ -354,6 +362,85 @@ func (controller *Controller) NetworkSnapshot() (dataplane.Snapshot, error) {
 	return runtime.Snapshot(), nil
 }
 
+// ReplaceManagedNativeRoutes publishes one complete, already-planned managed TCP route set through the live data plane.
+//
+// The caller must have joined every route to Harbor-owned reservations and an attached session. Keeping that proof
+// outside the controller lets the network runtime remain ignorant of project and GoForj semantics while retaining one
+// serialized publication boundary here.
+func (controller *Controller) ReplaceManagedNativeRoutes(ctx context.Context, routes []dataplane.NativeRoute) error {
+	if controller == nil || !controller.initialized {
+		return ErrNotInitialized
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	controller.reconcileMutex.Lock()
+	defer controller.reconcileMutex.Unlock()
+	controller.mutex.RLock()
+	lifecycle := controller.state
+	runtime := controller.dataPlane
+	controller.mutex.RUnlock()
+	if lifecycle != controllerStateReady || runtime == nil {
+		return ErrNotReady
+	}
+	managedRuntime, ok := runtime.(managedNativeRouteDataPlane)
+	if !ok {
+		return errors.New("managed native route publication is unavailable")
+	}
+	routes = canonicalManagedNativeRoutes(routes)
+	if err := managedRuntime.ReplaceNativeRoutes(ctx, routes); err != nil {
+		return err
+	}
+	controller.mutex.Lock()
+	controller.managedNativeRoutes = append([]dataplane.NativeRoute(nil), routes...)
+	controller.mutex.Unlock()
+	return nil
+}
+
+// ManagedNativeRoutesLive proves that every requested managed route is currently served by the controller generation.
+func (controller *Controller) ManagedNativeRoutesLive(ctx context.Context, routes []dataplane.NativeRoute) error {
+	if controller == nil || !controller.initialized {
+		return ErrNotInitialized
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	controller.reconcileMutex.Lock()
+	defer controller.reconcileMutex.Unlock()
+	controller.mutex.RLock()
+	lifecycle := controller.state
+	runtime := controller.dataPlane
+	managed := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
+	controller.mutex.RUnlock()
+	routes = canonicalManagedNativeRoutes(routes)
+	if lifecycle != controllerStateReady || runtime == nil {
+		return ErrNotReady
+	}
+	if !slices.Equal(managed, routes) {
+		return errors.New("managed native route publication does not match the controller generation")
+	}
+	snapshot := runtime.Snapshot()
+	if snapshot.State != dataplane.StateReady {
+		return fmt.Errorf("managed native route publication data plane is %q", snapshot.State)
+	}
+	if len(snapshot.Relays) != len(routes) {
+		return fmt.Errorf("managed native route publication has %d relays, want %d", len(snapshot.Relays), len(routes))
+	}
+	for index, route := range routes {
+		relay := snapshot.Relays[index]
+		if relay.ID != route.ID || relay.Host != route.Host || relay.ListenAddress != route.Listen || relay.Upstream != route.Upstream || !relay.Running {
+			return fmt.Errorf("managed native route %q is not live", route.ID)
+		}
+	}
+	return nil
+}
+
 // VerifyProjectWithdrawn proves the current process generation cannot route traffic for a project before host identity release.
 func (controller *Controller) VerifyProjectWithdrawn(
 	ctx context.Context,
@@ -385,6 +472,7 @@ func (controller *Controller) VerifyProjectWithdrawn(
 	controller.mutex.RLock()
 	lifecycle := controller.state
 	runtime := controller.dataPlane
+	managedNativeRoutes := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
 	controller.mutex.RUnlock()
 	if lifecycle == controllerStateNew && runtime == nil {
 		return nil
@@ -455,7 +543,7 @@ func (controller *Controller) VerifyProjectWithdrawn(
 			snapshot.State,
 		)
 	}
-	if err := verifyPublishedRouteObservation(snapshot, controller.publishedHTTPRoutes, controller.httpFoundation); err != nil {
+	if err := verifyPublishedRouteObservation(snapshot, controller.publishedHTTPRoutes, controller.httpFoundation, managedNativeRoutes); err != nil {
 		return fmt.Errorf(
 			"%w for project %q at network revision %d: %v",
 			ErrProjectWithdrawalUnverified,
@@ -467,6 +555,14 @@ func (controller *Controller) VerifyProjectWithdrawn(
 	if projectHasPublishedHTTPRoute(project, controller.publishedHTTPRoutes) {
 		return fmt.Errorf(
 			"%w for project %q at network revision %d: project HTTP route remains live",
+			ErrProjectWithdrawalUnverified,
+			projectID,
+			networkRevision,
+		)
+	}
+	if projectHasPublishedNativeRoute(project.ID, managedNativeRoutes) {
+		return fmt.Errorf(
+			"%w for project %q at network revision %d: project native route remains live",
 			ErrProjectWithdrawalUnverified,
 			projectID,
 			networkRevision,
@@ -490,6 +586,7 @@ func verifyPublishedRouteObservation(
 	snapshot dataplane.Snapshot,
 	httpRoutes []dataplane.HTTPRoute,
 	foundation dataplane.DesiredState,
+	managedNativeRoutes []dataplane.NativeRoute,
 ) error {
 	listeners := foundation.ListenerPlan()
 	if snapshot.DNS.Configured != listeners.DNS.IsValid() ||
@@ -509,14 +606,24 @@ func verifyPublishedRouteObservation(
 			len(httpRoutes),
 		)
 	}
-	if len(snapshot.Relays) != 0 || len(foundation.NativeRoutes()) != 0 {
+	if len(foundation.NativeRoutes()) != 0 {
 		return fmt.Errorf("native route ownership is unavailable")
 	}
-	if snapshot.DNS.Records != len(httpRoutes) {
+	if len(snapshot.Relays) != len(managedNativeRoutes) {
+		return fmt.Errorf("data-plane native routes differ from controller-owned managed routes")
+	}
+	for index, route := range managedNativeRoutes {
+		relay := snapshot.Relays[index]
+		if relay.ID != route.ID || relay.Host != route.Host || relay.ListenAddress != route.Listen || relay.Upstream != route.Upstream || !relay.Running {
+			return fmt.Errorf("data-plane native route %q differs from controller-owned route", route.ID)
+		}
+	}
+	if snapshot.DNS.Records != len(httpRoutes)+len(managedNativeRoutes) {
 		return fmt.Errorf(
-			"data-plane DNS reports %d records while the controller owns %d HTTP routes",
+			"data-plane DNS reports %d records while the controller owns %d HTTP and %d native routes",
 			snapshot.DNS.Records,
 			len(httpRoutes),
+			len(managedNativeRoutes),
 		)
 	}
 	return nil
@@ -532,6 +639,38 @@ func projectHasPublishedHTTPRoute(project domain.ProjectSnapshot, routes []datap
 		}
 	}
 	return false
+}
+
+// projectHasPublishedNativeRoute reports whether one managed native route still belongs to the requested project.
+func projectHasPublishedNativeRoute(projectID domain.ProjectID, routes []dataplane.NativeRoute) bool {
+	prefix := string(projectID) + ":"
+	for _, route := range routes {
+		if strings.HasPrefix(route.ID, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalManagedNativeRoutes keeps route comparisons stable when an authority source enumerates observations in map order.
+func canonicalManagedNativeRoutes(routes []dataplane.NativeRoute) []dataplane.NativeRoute {
+	canonical := append([]dataplane.NativeRoute(nil), routes...)
+	slices.SortFunc(canonical, func(left, right dataplane.NativeRoute) int {
+		if left.Host < right.Host {
+			return -1
+		}
+		if left.Host > right.Host {
+			return 1
+		}
+		if left.ID < right.ID {
+			return -1
+		}
+		if left.ID > right.ID {
+			return 1
+		}
+		return 0
+	})
+	return canonical
 }
 
 // PublicRoot returns a defensive public-only copy of the authority retained by the ready generation.

@@ -14,6 +14,8 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/managedsession"
+	"github.com/goforj/harbor/internal/network/dataplane"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/state"
@@ -25,6 +27,27 @@ type managedSessionAuthorityStore struct {
 	project         state.ProjectRecord
 	session         domain.ProjectSession
 	attachmentCalls int
+}
+
+// recordingManagedNativeRoutes records the complete route set handed to the live data-plane boundary.
+type recordingManagedNativeRoutes struct {
+	replacements [][]dataplane.NativeRoute
+	live         bool
+}
+
+// ReplaceManagedNativeRoutes records one complete route replacement for barrier assertions.
+func (routes *recordingManagedNativeRoutes) ReplaceManagedNativeRoutes(_ context.Context, replacement []dataplane.NativeRoute) error {
+	routes.replacements = append(routes.replacements, append([]dataplane.NativeRoute(nil), replacement...))
+	routes.live = true
+	return nil
+}
+
+// ManagedNativeRoutesLive reports the configured route publication postcondition.
+func (routes *recordingManagedNativeRoutes) ManagedNativeRoutesLive(context.Context, []dataplane.NativeRoute) error {
+	if !routes.live {
+		return errors.New("managed native routes are not live")
+	}
+	return nil
 }
 
 // Project returns the one registered project selected by the test request.
@@ -170,6 +193,72 @@ func TestAuthorityManagedSessionRoundTripBindsPeerAndFence(t *testing.T) {
 	}
 	if replayed != response || store.attachmentCalls != 1 {
 		t.Fatalf("replayed registration = %#v, calls = %d, want exact response and no second transition", replayed, store.attachmentCalls)
+	}
+}
+
+// TestAuthorityManagedBarrierRequiresLiveRouteActivator proves the typed barrier becomes positive only after the controller accepts the complete route set.
+func TestAuthorityManagedBarrierRequiresLiveRouteActivator(t *testing.T) {
+	store := managedSessionAuthorityFixture()
+	store.recordingStore.runtimeState = authorityRouteRuntimeState()
+	runtimeState := &store.recordingStore.runtimeState
+	runtimeState.Network.Revision = runtimeState.Snapshot.Sequence
+	runtimeState.Network.CreatedAt = runtimeState.Snapshot.CapturedAt
+	runtimeState.Network.UpdatedAt = runtimeState.Snapshot.CapturedAt
+	runtimeState.Network.Ownership = identity.Ownership{InstallationID: "harbor-installation", Generation: 1}
+	runtimeState.Network.Pool, _ = identity.NewPool(netip.MustParsePrefix("127.77.0.0/24"), []netip.Addr{netip.MustParseAddr("127.77.0.10")})
+	runtimeState.Network.Leases = []identity.Lease{{
+		Key:       identity.LeaseKey{ProjectID: "project-orders"},
+		Address:   netip.MustParseAddr("127.77.0.10"),
+		Ownership: identity.Ownership{InstallationID: "harbor-installation", Generation: 1},
+	}}
+	runtimeState.Network.Quarantines = []identity.Quarantine{}
+	runtimeState.Network.Reservations.Listeners = state.SharedListenerReservations{
+		DNS:   state.ListenerReservation{Mode: state.ListenerModeDirect, Advertised: netip.MustParseAddrPort("127.0.0.2:53"), Bind: netip.MustParseAddrPort("127.0.0.2:53"), Generation: 1, VerifiedAt: runtimeState.Snapshot.CapturedAt},
+		HTTP:  state.ListenerReservation{Mode: state.ListenerModeDirect, Advertised: netip.MustParseAddrPort("127.0.0.2:80"), Bind: netip.MustParseAddrPort("127.0.0.2:80"), Generation: 1, VerifiedAt: runtimeState.Snapshot.CapturedAt},
+		HTTPS: state.ListenerReservation{Mode: state.ListenerModeDirect, Advertised: netip.MustParseAddrPort("127.0.0.2:443"), Bind: netip.MustParseAddrPort("127.0.0.2:443"), Generation: 1, VerifiedAt: runtimeState.Snapshot.CapturedAt},
+	}
+	runtimeState.Network.Reservations.Endpoints[0].Public = netip.MustParseAddrPort("127.0.0.2:443")
+	serviceReservation := state.EndpointReservation{
+		Key:        state.EndpointReservationKey{ProjectID: "project-orders", EndpointID: "service:mysql"},
+		Protocol:   state.EndpointProtocolTCP,
+		Host:       "mysql.orders.test",
+		Public:     netip.MustParseAddrPort("127.77.0.10:3306"),
+		Identity:   &identity.LeaseKey{ProjectID: "project-orders"},
+		Generation: 1,
+	}
+	runtimeState.Network.Reservations.Endpoints = append([]state.EndpointReservation{serviceReservation}, runtimeState.Network.Reservations.Endpoints...)
+	runtimeState.Network.Reservations.SuppressedProjectIDs = []domain.ProjectID{}
+	activator := new(recordingManagedNativeRoutes)
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	authority.managedRoutes = activator
+	peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
+	response, err := authority.RegisterManagedSession(t.Context(), peer, managedSessionAuthorityRequest())
+	if err != nil {
+		t.Fatalf("RegisterManagedSession() error = %v", err)
+	}
+	if _, err := authority.ReplaceManagedPublications(t.Context(), peer, managedsession.ReplacePublicationsRequest{
+		SchemaVersion: managedsession.SchemaVersion,
+		Fence:         response.Fence,
+		Publications: []harbordruntime.ManagedEndpointPublication{{
+			Fence:                 response.Fence,
+			EndpointID:            "service:mysql",
+			ReservationGeneration: 1,
+			Upstream:              netip.MustParseAddrPort("127.0.0.1:43007"),
+		}},
+	}); err != nil {
+		t.Fatalf("ReplaceManagedPublications() error = %v", err)
+	}
+	barrier, err := authority.AcknowledgeManagedBarrier(t.Context(), peer, managedsession.BarrierRequest{
+		SchemaVersion:           managedsession.SchemaVersion,
+		Fence:                   response.Fence,
+		Phase:                   managedsession.BarrierPhaseCompose,
+		AcceptedProjectIdentity: "orders",
+	})
+	if err != nil {
+		t.Fatalf("AcknowledgeManagedBarrier() error = %v", err)
+	}
+	if !barrier.Acknowledged || len(activator.replacements) != 1 || len(activator.replacements[0]) != 1 || activator.replacements[0][0].ID != "project-orders:service:mysql" {
+		t.Fatalf("barrier = %#v, replacements = %#v; want acknowledged mysql route", barrier, activator.replacements)
 	}
 }
 

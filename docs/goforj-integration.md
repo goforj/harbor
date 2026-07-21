@@ -202,6 +202,8 @@ forj dev --managed --control-endpoint <inherited-or-owner-only-reference>
 
 The control credential is inherited or stored in an owner-only runtime file. It is not printed or placed in an argument visible to other processes.
 
+Harbor's authenticated barrier now has a live native-route activator: once GoForj sends a complete publication replacement, the barrier can join those observations to Harbor-owned TCP reservations, replace the native relay set without rebinding shared HTTP/DNS listeners, and acknowledge only after every requested relay is serving. GoForj lifecycle emission of these calls remains the next integration step; an inherited launch session currently attaches before the ordinary development workflow continues.
+
 Startup ordering matters:
 
 1. acquire the existing project dev lock;

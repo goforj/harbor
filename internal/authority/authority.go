@@ -20,6 +20,7 @@ import (
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/helper/ticketspool"
 	"github.com/goforj/harbor/internal/managedsession"
+	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -48,6 +49,12 @@ type managedSessionState interface {
 type httpRouteObserver interface {
 	// HTTPRouteLive reports whether one exact host-to-upstream route is currently published.
 	HTTPRouteLive(string, netip.AddrPort) bool
+}
+
+// managedNativeRouteActivator is the optional live-data-plane seam for authenticated managed publications.
+type managedNativeRouteActivator interface {
+	ReplaceManagedNativeRoutes(context.Context, []dataplane.NativeRoute) error
+	ManagedNativeRoutesLive(context.Context, []dataplane.NativeRoute) error
 }
 
 // projectDiscoverer isolates filesystem discovery from durable registration policy.
@@ -117,6 +124,7 @@ type Authority struct {
 	newInstallationID func() (identity.InstallationID, error)
 	managedStore      managedSessionState
 	managedRegistry   *harbordruntime.ManagedPublicationRegistry
+	managedRoutes     managedNativeRouteActivator
 	managedMu         sync.Mutex
 	managedSessions   map[domain.ProjectID]managedSessionAttachment
 }
@@ -222,6 +230,7 @@ func newAuthorityWithIdentityFactories(
 		nilAuthorityDependency(routes) {
 		panic("authority.newAuthorityWithIdentityFactories requires every dependency")
 	}
+	managedRoutes, _ := routes.(managedNativeRouteActivator)
 	return &Authority{
 		store:             store,
 		routes:            routes,
@@ -238,6 +247,7 @@ func newAuthorityWithIdentityFactories(
 		newInstallationID: newInstallationID,
 		managedStore:      managedStoreFromControlState(store),
 		managedRegistry:   harbordruntime.NewManagedPublicationRegistry(),
+		managedRoutes:     managedRoutes,
 		managedSessions:   make(map[domain.ProjectID]managedSessionAttachment),
 	}
 }

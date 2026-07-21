@@ -199,6 +199,7 @@ func (controller *Controller) publishNetworkActivation(
 	controller.runtimeDone = candidateDone
 	controller.httpFoundation = activation.desired
 	controller.publishedHTTPRoutes = activation.desired.HTTPRoutes()
+	controller.managedNativeRoutes = nil
 	return controller.runtimeGeneration, nil
 }
 
