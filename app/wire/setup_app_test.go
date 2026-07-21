@@ -25,3 +25,23 @@ func TestInitializeApplicationWiresSetupCommand(t *testing.T) {
 		t.Fatalf("Parse(setup) command = %q, want setup", parsed.Command())
 	}
 }
+
+// TestInitializeApplicationWiresOpenCommand proves the resource-opening UX is registered without contacting harbord during assembly.
+func TestInitializeApplicationWiresOpenCommand(t *testing.T) {
+	application, err := InitializeApplication()
+	if err != nil {
+		t.Fatalf("InitializeApplication() error = %v", err)
+	}
+
+	parser, err := kong.New(application.RootCmd(), kong.Name("harbor"))
+	if err != nil {
+		t.Fatalf("kong.New() error = %v", err)
+	}
+	parsed, err := parser.Parse([]string{"open", "project-orders"})
+	if err != nil {
+		t.Fatalf("Parse(open) error = %v", err)
+	}
+	if parsed.Command() != "open <project>" {
+		t.Fatalf("Parse(open) command = %q, want open <project>", parsed.Command())
+	}
+}
