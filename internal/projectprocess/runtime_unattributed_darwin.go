@@ -56,15 +56,15 @@ func inspectStableDarwinUnattributedRuntime(ctx context.Context, target RuntimeR
 	return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionUnreadable}, nil
 }
 
-// inspectDarwinUnattributedRuntimePass correlates one exact or wildcard listener with one same-user project scope.
+// inspectDarwinUnattributedRuntimePass correlates all observed endpoint rows with one same-user project scope.
 func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRepairTarget) (unattributedRuntimeNativeInspection, error) {
 	network, err := observeDarwinRuntimeRepairNetwork(ctx, target.Endpoint)
 	if err != nil {
 		return unattributedRuntimeNativeInspection{}, err
 	}
-	cardinality := runtimeRepairProjectListenerCardinality(network.exactListeners, network.conflictingBinds)
-	if cardinality != RuntimeRepairInspectionActionable {
-		return unattributedRuntimeNativeInspection{State: cardinality}, nil
+	presence := runtimeRepairProjectListenerPresence(network.exactListeners, network.conflictingBinds)
+	if presence != RuntimeRepairInspectionActionable {
+		return unattributedRuntimeNativeInspection{State: presence}, nil
 	}
 
 	daemonUID := uint32(os.Geteuid())
@@ -78,7 +78,8 @@ func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRep
 	slices.SortFunc(userProcesses, func(left, right unix.KinfoProc) int {
 		return cmp.Compare(left.Proc.P_pid, right.Proc.P_pid)
 	})
-	owners := make([]runtimeRepairSocketFact, 0, 1)
+	owners := make(map[int][]runtimeRepairSocketFact, 1)
+	observedSocketCount := 0
 	for _, process := range userProcesses {
 		if process.Proc.P_stat == darwinProcessStateZombie || process.Proc.P_pid <= 0 {
 			continue
@@ -87,16 +88,32 @@ func inspectDarwinUnattributedRuntimePass(ctx context.Context, target RuntimeRep
 		if err != nil {
 			return unattributedRuntimeNativeInspection{}, err
 		}
-		owners = append(owners, facts...)
-		if len(owners) > 1 {
-			return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionAmbiguous}, nil
+		if len(facts) != 0 {
+			observedSocketCount += len(facts)
+			owners[int(process.Proc.P_pid)] = facts
+			if state := runtimeRepairProjectListenerOwnerCardinality(len(owners)); state != RuntimeRepairInspectionActionable {
+				return unattributedRuntimeNativeInspection{State: state}, nil
+			}
 		}
 	}
 	if len(owners) == 0 {
 		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionForeign}, nil
 	}
+	if observedSocketCount != network.exactListeners+network.conflictingBinds {
+		// A second native row that cannot be tied to this user's owner set may belong to a foreign
+		// process or an incomplete kernel snapshot; neither case authorizes automatic signaling.
+		return unattributedRuntimeNativeInspection{State: RuntimeRepairInspectionAmbiguous}, nil
+	}
+	var ownerFacts []runtimeRepairSocketFact
+	for _, facts := range owners {
+		ownerFacts = facts
+		break
+	}
+	slices.SortFunc(ownerFacts, func(left, right runtimeRepairSocketFact) int {
+		return cmp.Compare(left.FileDescriptor, right.FileDescriptor)
+	})
 
-	observation, state, err := observeDarwinUnattributedRuntimeScope(ctx, target, daemonUID, owners[0])
+	observation, state, err := observeDarwinUnattributedRuntimeScope(ctx, target, daemonUID, ownerFacts[0])
 	if err != nil {
 		return unattributedRuntimeNativeInspection{}, err
 	}

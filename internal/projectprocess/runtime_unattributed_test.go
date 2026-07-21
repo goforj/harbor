@@ -164,8 +164,8 @@ func TestUnattributedRuntimeObservationAllowsExactLeasedForjScope(t *testing.T) 
 	}
 }
 
-// TestRuntimeRepairProjectListenerCardinalityAllowsOneWildcard keeps ownership correlation available for a stale wildcard bind.
-func TestRuntimeRepairProjectListenerCardinalityAllowsOneWildcard(t *testing.T) {
+// TestRuntimeRepairProjectListenerPresenceDefersOwnership keeps endpoint-row correlation separate from native owner proof.
+func TestRuntimeRepairProjectListenerPresenceDefersOwnership(t *testing.T) {
 	tests := []struct {
 		name        string
 		exact       int
@@ -175,14 +175,35 @@ func TestRuntimeRepairProjectListenerCardinalityAllowsOneWildcard(t *testing.T) 
 		{name: "missing", want: RuntimeRepairInspectionMissing},
 		{name: "exact", exact: 1, want: RuntimeRepairInspectionActionable},
 		{name: "wildcard", conflicting: 1, want: RuntimeRepairInspectionActionable},
-		{name: "exact and wildcard", exact: 1, conflicting: 1, want: RuntimeRepairInspectionAmbiguous},
-		{name: "multiple wildcard", conflicting: 2, want: RuntimeRepairInspectionAmbiguous},
+		{name: "exact and wildcard", exact: 1, conflicting: 1, want: RuntimeRepairInspectionActionable},
+		{name: "multiple wildcard", conflicting: 2, want: RuntimeRepairInspectionActionable},
 		{name: "negative", exact: -1, want: RuntimeRepairInspectionUnreadable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := runtimeRepairProjectListenerCardinality(test.exact, test.conflicting); got != test.want {
-				t.Fatalf("runtimeRepairProjectListenerCardinality(%d, %d) = %q, want %q", test.exact, test.conflicting, got, test.want)
+			if got := runtimeRepairProjectListenerPresence(test.exact, test.conflicting); got != test.want {
+				t.Fatalf("runtimeRepairProjectListenerPresence(%d, %d) = %q, want %q", test.exact, test.conflicting, got, test.want)
+			}
+		})
+	}
+}
+
+// TestRuntimeRepairProjectListenerOwnerCardinalityRejectsMultipleOwners keeps a shared port fail-closed after socket correlation.
+func TestRuntimeRepairProjectListenerOwnerCardinalityRejectsMultipleOwners(t *testing.T) {
+	tests := []struct {
+		name  string
+		count int
+		want  RuntimeRepairInspectionState
+	}{
+		{name: "missing", want: RuntimeRepairInspectionMissing},
+		{name: "one owner", count: 1, want: RuntimeRepairInspectionActionable},
+		{name: "multiple owners", count: 2, want: RuntimeRepairInspectionAmbiguous},
+		{name: "negative", count: -1, want: RuntimeRepairInspectionUnreadable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runtimeRepairProjectListenerOwnerCardinality(test.count); got != test.want {
+				t.Fatalf("runtimeRepairProjectListenerOwnerCardinality(%d) = %q, want %q", test.count, got, test.want)
 			}
 		})
 	}

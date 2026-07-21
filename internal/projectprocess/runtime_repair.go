@@ -744,19 +744,30 @@ func runtimeRepairListenerCardinality(exactListeners, conflictingBinds int) Runt
 	return RuntimeRepairInspectionActionable
 }
 
-// runtimeRepairProjectListenerCardinality admits one exact or wildcard bind for later same-user ownership correlation.
+// runtimeRepairProjectListenerPresence admits any bounded listener evidence for later same-user ownership correlation.
 //
-// A wildcard bind can block a Harbor-assigned loopback even when the project process was started before Harbor
-// injected its exact host. Ownership must still be proven from the native socket owner and process scope; this helper
-// only avoids discarding that evidence before correlation.
-func runtimeRepairProjectListenerCardinality(exactListeners, conflictingBinds int) RuntimeRepairInspectionState {
+// A single process can expose one port through multiple exact, wildcard, or dual-stack records. The native backend
+// must correlate those records to socket owners before deciding whether the scope is unique; counting endpoint rows
+// here would reject a safe one-process repair before that proof exists.
+func runtimeRepairProjectListenerPresence(exactListeners, conflictingBinds int) RuntimeRepairInspectionState {
 	if exactListeners < 0 || conflictingBinds < 0 || exactListeners > runtimeRepairMaximumProcesses || conflictingBinds > runtimeRepairMaximumProcesses {
 		return RuntimeRepairInspectionUnreadable
 	}
 	if exactListeners == 0 && conflictingBinds == 0 {
 		return RuntimeRepairInspectionMissing
 	}
-	if exactListeners+conflictingBinds != 1 {
+	return RuntimeRepairInspectionActionable
+}
+
+// runtimeRepairProjectListenerOwnerCardinality classifies the number of distinct native socket owners after correlation.
+func runtimeRepairProjectListenerOwnerCardinality(ownerCount int) RuntimeRepairInspectionState {
+	if ownerCount < 0 || ownerCount > runtimeRepairMaximumProcesses {
+		return RuntimeRepairInspectionUnreadable
+	}
+	if ownerCount == 0 {
+		return RuntimeRepairInspectionMissing
+	}
+	if ownerCount != 1 {
 		return RuntimeRepairInspectionAmbiguous
 	}
 	return RuntimeRepairInspectionActionable
