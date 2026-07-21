@@ -199,6 +199,26 @@ func TestReleaseUnavailableProjectSessionRetiresReceiptFreeBoundaries(t *testing
 	}
 }
 
+// TestReceiptFreeProjectRuntimeRepairBoundaryAcceptsPlannedLaunches proves a crash before process attachment still exposes the project listener fence.
+func TestReceiptFreeProjectRuntimeRepairBoundaryAcceptsPlannedLaunches(t *testing.T) {
+	fixture := newRetainedRuntimeRepairFixture(t)
+	if err := fixture.connection.Exec(
+		"UPDATE project_sessions SET state = ?, updated_at = ? WHERE project_id = ?",
+		string(domain.SessionPlanned),
+		fixture.boundary.SessionUpdatedAt,
+		string(fixture.boundary.Project.Project.ID),
+	).Error; err != nil {
+		t.Fatalf("set planned receipt-free session state: %v", err)
+	}
+	boundary, err := fixture.store.ReceiptFreeProjectRuntimeRepairBoundary(t.Context(), fixture.boundary.Project.Project.ID)
+	if err != nil {
+		t.Fatalf("ReceiptFreeProjectRuntimeRepairBoundary() error = %v", err)
+	}
+	if boundary.SessionID != fixture.boundary.SessionID || boundary.PrimaryLease != fixture.boundary.PrimaryLease {
+		t.Fatalf("receipt-free boundary = %#v, want session %q and lease %#v", boundary, fixture.boundary.SessionID, fixture.boundary.PrimaryLease)
+	}
+}
+
 // TestReleaseUnavailableProjectSessionRefusesProcessEvidence proves a durable process receipt still requires native settlement.
 func TestReleaseUnavailableProjectSessionRefusesProcessEvidence(t *testing.T) {
 	fixture := newProcessBackedProjectRuntimeRepairFixture(t)

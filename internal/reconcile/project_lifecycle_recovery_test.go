@@ -863,6 +863,30 @@ func TestProjectLifecycleStartReleasesReceiptFreeQuarantine(t *testing.T) {
 	if err != nil || currentProject.Project.State != domain.ProjectUnavailable {
 		t.Fatalf("project after planned quarantine = %#v, %v", currentProject.Project, err)
 	}
+	boundary, err := store.ReceiptFreeProjectRuntimeRepairBoundary(t.Context(), seed.project.ID)
+	if err != nil {
+		t.Fatalf("read receipt-free repair boundary: %v", err)
+	}
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{
+			State: projectprocess.RuntimeRepairInspectionForeign,
+		},
+	}
+	coordinator.primaryLeases.runtimeRepairer = repairer
+	if err := coordinator.repairReceiptFreeProjectListener(t.Context(), boundary); err == nil {
+		t.Fatal("receipt-free listener repair accepted foreign ownership")
+	}
+	if len(repairer.inspectTargets) != 1 || len(repairer.candidates) != 0 {
+		t.Fatalf("foreign receipt-free repair calls = inspections %d candidates %d, want one inspection and no signal", len(repairer.inspectTargets), len(repairer.candidates))
+	}
+	repairer.inspection = projectprocess.UnattributedRuntimeInspection{
+		State:     projectprocess.RuntimeRepairInspectionActionable,
+		Candidate: &projectprocess.UnattributedRuntimeCandidate{},
+	}
+	repairer.confirmation = projectprocess.RuntimeRepairConfirmation{
+		State:    projectprocess.RuntimeRepairConfirmationSettled,
+		Signaled: true,
+	}
 
 	replacement, err := coordinator.Start(t.Context(), ProjectStartRequest{
 		ProjectID: seed.project.ID, OperationID: "operation-replacement-start", IntentID: "intent-replacement-start",
@@ -872,6 +896,9 @@ func TestProjectLifecycleStartReleasesReceiptFreeQuarantine(t *testing.T) {
 	}
 	if replacement.Operation.State != domain.OperationQueued {
 		t.Fatalf("replacement start operation = %#v, want queued", replacement.Operation)
+	}
+	if len(repairer.inspectTargets) != 2 || len(repairer.candidates) != 1 {
+		t.Fatalf("receipt-free replacement repair calls = inspections %d candidates %d, want two inspections and one signal", len(repairer.inspectTargets), len(repairer.candidates))
 	}
 	active, sessionErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
 	if sessionErr == nil && active.ID == seed.session.ID {

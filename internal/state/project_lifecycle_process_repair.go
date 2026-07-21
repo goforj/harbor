@@ -93,6 +93,66 @@ func (store *Store) ProcessBackedProjectRuntimeRepairBoundary(
 	return boundary, nil
 }
 
+// ReceiptFreeProjectRuntimeRepairBoundary returns the project and primary-listener fence for a planned or awaiting-attach launch with no process receipt.
+//
+// This read is intentionally separate from RetainedProjectRuntimeRepairBoundary: the latter accepts only the
+// legacy awaiting-attach shape that can be retired by its existing completion mutation, while a crashed launch may
+// still be planned. The caller may use this boundary only to settle the project-owned listener before replacement.
+func (store *Store) ReceiptFreeProjectRuntimeRepairBoundary(
+	ctx context.Context,
+	projectID domain.ProjectID,
+) (RetainedProjectRuntimeRepairBoundary, error) {
+	ctx = normalizeContext(ctx)
+	if err := projectID.Validate(); err != nil {
+		return RetainedProjectRuntimeRepairBoundary{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return RetainedProjectRuntimeRepairBoundary{}, err
+	}
+	builder, err := store.projects.WithContext(ctx).Builder()
+	if err != nil {
+		return RetainedProjectRuntimeRepairBoundary{}, fmt.Errorf("open receipt-free project runtime repair boundary: %w", err)
+	}
+
+	var boundary RetainedProjectRuntimeRepairBoundary
+	err = builder.Transaction(func(tx *gorm.DB) error {
+		authority, readErr := readProjectRuntimeRepairDurableAuthority(tx, projectID, projectRuntimeRepairSessionReceiptFree)
+		if readErr != nil {
+			return readErr
+		}
+		if err := validateProcessBackedProjectRuntimeRecoveryHistory(authority.Project, authority.RecoveryOperation, authority.RecoveryHistory); err != nil {
+			return err
+		}
+		boundary = retainedProjectRuntimeRepairBoundaryFromAuthority(authority)
+		if err := validateReceiptFreeProjectRuntimeRepairBoundary(boundary); err != nil {
+			return corruptStateError("receipt-free project runtime repair", string(projectID), err)
+		}
+		return nil
+	})
+	if err != nil {
+		return RetainedProjectRuntimeRepairBoundary{}, fmt.Errorf("read project %q receipt-free runtime repair boundary: %w", projectID, err)
+	}
+	return boundary, nil
+}
+
+// validateReceiptFreeProjectRuntimeRepairBoundary validates the shared durable fences without requiring an awaiting-attach deletion shape.
+func validateReceiptFreeProjectRuntimeRepairBoundary(boundary RetainedProjectRuntimeRepairBoundary) error {
+	if err := validateProjectRuntimeRepairBoundaryAuthority(
+		boundary.Project,
+		boundary.SessionID,
+		boundary.SessionGeneration,
+		boundary.SessionUpdatedAt,
+		boundary.RecoveryOperation,
+		boundary.NetworkRevision,
+		boundary.NetworkUpdatedAt,
+		boundary.PrimaryLease,
+		boundary.PrimaryLeaseGeneration,
+	); err != nil {
+		return err
+	}
+	return validateProcessBackedProjectRuntimeRecoveryOperation(boundary.Project, boundary.RecoveryOperation)
+}
+
 // CompleteProcessBackedProjectRuntimeRepair retires exact process-backed authority only after native settlement and every fence still match.
 func (store *Store) CompleteProcessBackedProjectRuntimeRepair(
 	ctx context.Context,

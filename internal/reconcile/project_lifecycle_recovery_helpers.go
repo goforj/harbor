@@ -335,6 +335,19 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 			return nil
 		}
 		if errors.As(err, &missing) {
+			if coordinator.primaryLeases != nil && coordinator.primaryLeases.runtimeRepairer != nil {
+				retained, ok := coordinator.state.(retainedProjectRuntimeRecoveryState)
+				if !ok {
+					return fmt.Errorf("read project %q receipt-free recovery listener boundary: durable repair state is unavailable", projectID)
+				}
+				boundary, boundaryErr := retained.ReceiptFreeProjectRuntimeRepairBoundary(ctx, projectID)
+				if boundaryErr != nil {
+					return fmt.Errorf("read project %q receipt-free recovery listener boundary: %w", projectID, boundaryErr)
+				}
+				if repairErr := coordinator.repairReceiptFreeProjectListener(ctx, boundary); repairErr != nil {
+					return fmt.Errorf("settle project %q receipt-free recovery listener before start: %w", projectID, repairErr)
+				}
+			}
 			receiptFree, ok := coordinator.state.(receiptFreeLifecycleRecoveryState)
 			if !ok {
 				return nil
@@ -377,6 +390,42 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 		processBackedProjectRuntimeRepairCompletionRequest(boundary, at),
 	); err != nil {
 		return fmt.Errorf("retire project %q process-backed recovery boundary before start: %w", projectID, err)
+	}
+	return nil
+}
+
+// repairReceiptFreeProjectListener settles only the primary listener owned by a receipt-free launch boundary.
+//
+// The missing process receipt means Harbor cannot claim the complete prior process tree. The listener is the
+// remaining project-scoped native boundary: an exact same-user candidate may be terminated, while foreign,
+// ambiguous, unreadable, or unsupported ownership remains fail-closed.
+func (coordinator *ProjectLifecycleCoordinator) repairReceiptFreeProjectListener(
+	ctx context.Context,
+	boundary state.RetainedProjectRuntimeRepairBoundary,
+) error {
+	if coordinator == nil || coordinator.primaryLeases == nil || coordinator.primaryLeases.runtimeRepairer == nil {
+		return errors.New("project-owned primary listener repair is unavailable")
+	}
+	target, err := coordinator.primaryLeases.discoverer.DiscoverDefaultRuntimeAtAddress(
+		ctx,
+		boundary.Project.Project.Path,
+		boundary.PrimaryLease.Address,
+	)
+	if err != nil {
+		return fmt.Errorf("discover project-owned primary listener: %w", err)
+	}
+	resolved, err := coordinator.primaryLeases.repairAppPortConflict(
+		ctx,
+		boundary.Project.Project.Path,
+		boundary.PrimaryLease.Address,
+		target.Port,
+		false,
+	)
+	if err != nil {
+		return err
+	}
+	if !resolved {
+		return errors.New("project-owned primary listener did not settle")
 	}
 	return nil
 }

@@ -94,6 +94,11 @@ type receiptFreeLifecycleRecoveryState interface {
 	ReleaseUnavailableProjectSession(context.Context, state.ReleaseUnavailableProjectSessionRequest) (state.ProjectRecord, error)
 }
 
+// retainedProjectRuntimeRecoveryState exposes the durable project and primary-listener fence needed before retiring a receipt-free launch boundary.
+type retainedProjectRuntimeRecoveryState interface {
+	ReceiptFreeProjectRuntimeRepairBoundary(context.Context, domain.ProjectID) (state.RetainedProjectRuntimeRepairBoundary, error)
+}
+
 // projectOutputBrokerRecoveryAdopter reconnects only the output surface after a daemon restart.
 //
 // It is deliberately optional so test supervisors and platforms without a reviewed broker identity

@@ -204,7 +204,16 @@ func readRetainedProjectRuntimeRepairBoundary(
 	if err := validateRetainedProjectRuntimeRecoveryHistory(authority.Project, authority.RecoveryOperation, authority.RecoveryHistory); err != nil {
 		return RetainedProjectRuntimeRepairBoundary{}, err
 	}
-	boundary := RetainedProjectRuntimeRepairBoundary{
+	boundary := retainedProjectRuntimeRepairBoundaryFromAuthority(authority)
+	if err := boundary.Validate(); err != nil {
+		return RetainedProjectRuntimeRepairBoundary{}, corruptStateError("retained project runtime repair", string(projectID), err)
+	}
+	return boundary, nil
+}
+
+// retainedProjectRuntimeRepairBoundaryFromAuthority maps shared durable fences without importing process evidence into the legacy repair shape.
+func retainedProjectRuntimeRepairBoundaryFromAuthority(authority projectRuntimeRepairDurableAuthority) RetainedProjectRuntimeRepairBoundary {
+	return RetainedProjectRuntimeRepairBoundary{
 		Project:                authority.Project,
 		SessionID:              authority.SessionID,
 		SessionGeneration:      authority.SessionGeneration,
@@ -215,10 +224,6 @@ func readRetainedProjectRuntimeRepairBoundary(
 		PrimaryLease:           authority.PrimaryLease,
 		PrimaryLeaseGeneration: authority.PrimaryLeaseGeneration,
 	}
-	if err := boundary.Validate(); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, corruptStateError("retained project runtime repair", string(projectID), err)
-	}
-	return boundary, nil
 }
 
 type projectRuntimeRepairSessionMode uint8
@@ -226,6 +231,7 @@ type projectRuntimeRepairSessionMode uint8
 const (
 	projectRuntimeRepairSessionMissing projectRuntimeRepairSessionMode = iota + 1
 	projectRuntimeRepairSessionProcessBacked
+	projectRuntimeRepairSessionReceiptFree
 )
 
 type projectRuntimeRepairDurableAuthority struct {
@@ -343,12 +349,12 @@ func readProjectRuntimeRepairSession(
 				ProjectID: projectID, SessionID: sessionID, Owner: owner, State: sessionState, Generation: generation, UpdatedAt: sessionRow.UpdatedAt,
 			}
 		}
-		if owner != domain.SessionOwnerHarbor || !isProcessBackedProjectRuntimeRepairSessionState(sessionState) {
+		if owner != domain.SessionOwnerHarbor || !isProjectRuntimeRepairSessionStateAllowed(mode, sessionState) {
 			return models.ProjectSession{}, "", 0, nil, fmt.Errorf("session %q is not a Harbor-owned process-backed repair boundary", sessionID)
 		}
 		return sessionRow, sessionID, generation, process, nil
 	}
-	if missing.Owner != domain.SessionOwnerHarbor || missing.State != domain.SessionAwaitingAttach {
+	if missing.Owner != domain.SessionOwnerHarbor || !isProjectRuntimeRepairSessionStateAllowed(mode, missing.State) {
 		return models.ProjectSession{}, "", 0, nil, fmt.Errorf("session %q is not a Harbor-owned awaiting-attach repair boundary", missing.SessionID)
 	}
 	return row, missing.SessionID, missing.Generation, nil, nil
@@ -357,6 +363,14 @@ func readProjectRuntimeRepairSession(
 // isProcessBackedProjectRuntimeRepairSessionState accepts the launch and stopping states whose complete process receipt remains actionable.
 func isProcessBackedProjectRuntimeRepairSessionState(sessionState domain.SessionState) bool {
 	return sessionState == domain.SessionAwaitingAttach || sessionState == domain.SessionStopping
+}
+
+// isProjectRuntimeRepairSessionStateAllowed keeps each repair reader aligned with the mutation it is allowed to perform.
+func isProjectRuntimeRepairSessionStateAllowed(mode projectRuntimeRepairSessionMode, sessionState domain.SessionState) bool {
+	if mode == projectRuntimeRepairSessionReceiptFree {
+		return sessionState == domain.SessionPlanned || sessionState == domain.SessionAwaitingAttach
+	}
+	return isProcessBackedProjectRuntimeRepairSessionState(sessionState)
 }
 
 // readOnlyMissingEvidenceProjectSession rejects complete, partial, absent, or multiply-owned session authority.
