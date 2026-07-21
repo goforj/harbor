@@ -344,7 +344,7 @@ func (s *serverConnection) serveRequest(ctx context.Context, envelope rpc.Envelo
 		return
 	}
 
-	handler, exists := s.server.config.Handlers[envelope.Method]
+	handler, exists := s.handlerFor(envelope.Method)
 	if !exists {
 		s.writeRequestError(
 			envelope.RequestID,
@@ -382,6 +382,17 @@ func (s *serverConnection) serveRequest(ctx context.Context, envelope rpc.Envelo
 		return
 	}
 	s.invokeAfterWrite(request, afterWrite)
+}
+
+// handlerFor selects the negotiated role's exclusive methods before legacy defaults.
+func (s *serverConnection) handlerFor(method string) (Handler, bool) {
+	if handlers, configured := s.server.config.RoleHandlers[s.peer.Role]; configured {
+		handler, exists := handlers[method]
+		return handler, exists
+	}
+
+	handler, exists := s.server.config.Handlers[method]
+	return handler, exists
 }
 
 // invokeAfterWrite runs successful response completion work without letting a

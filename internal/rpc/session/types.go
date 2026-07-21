@@ -96,6 +96,9 @@ type ServerConfig struct {
 	Capabilities []rpc.Capability
 	// Handlers maps bounded method names to their implementation.
 	Handlers map[string]Handler
+	// RoleHandlers optionally maps one negotiated client role to its complete method set.
+	// When a role is present, its nested map is exclusive and the default Handlers map is not used for that role.
+	RoleHandlers map[rpc.Role]map[string]Handler
 	// Authorize optionally tightens access for authenticated CLI and desktop
 	// peers and is required before a GoForj session role can connect.
 	Authorize AuthorizeFunc
@@ -311,15 +314,20 @@ func normalizedServerConfig(config ServerConfig) (ServerConfig, error) {
 		config.MaxQueuedRequests = defaultMaxQueuedRequests
 	}
 
-	handlers := make(map[string]Handler, len(config.Handlers))
-	for method, handler := range config.Handlers {
-		if handler == nil {
-			return ServerConfig{}, fmt.Errorf("handler %q is nil", method)
+	handlers, err := normalizeHandlerMap(ranges[0].Min, config.Handlers)
+	if err != nil {
+		return ServerConfig{}, fmt.Errorf("server handlers: %w", err)
+	}
+	roleHandlers := make(map[rpc.Role]map[string]Handler, len(config.RoleHandlers))
+	for role, configuredHandlers := range config.RoleHandlers {
+		if err := role.ValidateClient(); err != nil {
+			return ServerConfig{}, fmt.Errorf("role %q handlers: %w", role, err)
 		}
-		if _, err := rpc.NewRequestEnvelope(ranges[0].Min, "config-check", method, time.Now().UTC().Add(time.Second), struct{}{}); err != nil {
-			return ServerConfig{}, fmt.Errorf("handler method %q: %w", method, err)
+		normalizedHandlers, err := normalizeHandlerMap(ranges[0].Min, configuredHandlers)
+		if err != nil {
+			return ServerConfig{}, fmt.Errorf("role %q handlers: %w", role, err)
 		}
-		handlers[method] = handler
+		roleHandlers[role] = normalizedHandlers
 	}
 
 	// Negotiating a known-good synthetic client reuses the protocol's daemon
@@ -336,8 +344,27 @@ func normalizedServerConfig(config ServerConfig) (ServerConfig, error) {
 	config.ProtocolRanges = ranges
 	config.Capabilities = capabilities
 	config.Handlers = handlers
+	if config.RoleHandlers != nil {
+		config.RoleHandlers = roleHandlers
+	}
 
 	return config, nil
+}
+
+// normalizeHandlerMap validates method names and freezes one handler map for a server.
+func normalizeHandlerMap(protocol rpc.Version, configured map[string]Handler) (map[string]Handler, error) {
+	normalized := make(map[string]Handler, len(configured))
+	for method, handler := range configured {
+		if handler == nil {
+			return nil, fmt.Errorf("handler %q is nil", method)
+		}
+		if _, err := rpc.NewRequestEnvelope(protocol, "config-check", method, time.Now().UTC().Add(time.Second), struct{}{}); err != nil {
+			return nil, fmt.Errorf("handler method %q: %w", method, err)
+		}
+		normalized[method] = handler
+	}
+
+	return normalized, nil
 }
 
 // normalizedClientConfig validates and copies mutable client configuration.
