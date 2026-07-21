@@ -64,6 +64,8 @@ type Options struct {
 	ServiceLogIdlePeriod time.Duration
 	// OutputSpoolDirectory overrides the per-user runtime root used for persisted session output history.
 	OutputSpoolDirectory string
+	// OutputBrokerLauncher optionally transfers child output pipes to a process-surviving broker.
+	OutputBrokerLauncher OutputBrokerLauncher
 	// Environment isolates child projects from Harbor's subsequently loaded application configuration.
 	Environment Environment
 }
@@ -108,6 +110,8 @@ type Info struct {
 	CheckoutRoot string
 	Arguments    []string
 	Evidence     Evidence
+	// OutputBroker identifies the optional process-surviving output broker attached to this session.
+	OutputBroker *OutputBrokerPeer
 	StartedAt    time.Time
 }
 
@@ -137,6 +141,10 @@ type Handle struct {
 func (handle *Handle) Info() Info {
 	info := handle.info
 	info.Arguments = append([]string(nil), handle.info.Arguments...)
+	if handle.info.OutputBroker != nil {
+		peer := *handle.info.OutputBroker
+		info.OutputBroker = &peer
+	}
 	return info
 }
 
@@ -191,6 +199,7 @@ type Supervisor struct {
 	serviceLogIdle       time.Duration
 	serviceLogs          map[serviceLogKey]*serviceLogStream
 	outputSpoolDirectory string
+	outputBrokerLauncher OutputBrokerLauncher
 }
 
 // New constructs an empty project process supervisor.
@@ -242,6 +251,7 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 		serviceLogIdle:       serviceLogIdle,
 		serviceLogs:          make(map[serviceLogKey]*serviceLogStream),
 		outputSpoolDirectory: outputSpoolDirectory,
+		outputBrokerLauncher: options.OutputBrokerLauncher,
 	}
 }
 
@@ -367,12 +377,76 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		return nil, fmt.Errorf("start forj dev: %w", err)
 	}
 
+	var brokerAttachment OutputBrokerAttachment
+	var brokerPeer *OutputBrokerPeer
+	if supervisor.outputBrokerLauncher != nil {
+		brokerAttachment, err = supervisor.outputBrokerLauncher.Launch(ctx, OutputBrokerLaunchSpec{
+			ProjectID:       request.ProjectID,
+			SessionID:       request.SessionID,
+			OutputDirectory: supervisor.outputSpoolDirectory,
+			Stdout:          stdout,
+			Stderr:          stderr,
+		})
+		if err != nil {
+			if brokerAttachment != nil {
+				_ = brokerAttachment.Close()
+			}
+			cleanupErr := terminateStartedCommand(command, platform)
+			_ = stdout.Close()
+			_ = stderr.Close()
+			_ = stdoutChild.Close()
+			_ = stderrChild.Close()
+			relay.finish()
+			platform.close()
+			return nil, acceptedProcessStartError("launch output broker", err, cleanupErr)
+		}
+		if brokerAttachment == nil {
+			cleanupErr := terminateStartedCommand(command, platform)
+			_ = stdout.Close()
+			_ = stderr.Close()
+			_ = stdoutChild.Close()
+			_ = stderrChild.Close()
+			relay.finish()
+			platform.close()
+			return nil, acceptedProcessStartError("launch output broker", errors.New("launcher returned no attachment"), cleanupErr)
+		}
+		peer := brokerAttachment.Peer()
+		if err := peer.Validate(); err != nil {
+			_ = brokerAttachment.Close()
+			cleanupErr := terminateStartedCommand(command, platform)
+			_ = stdout.Close()
+			_ = stderr.Close()
+			_ = stdoutChild.Close()
+			_ = stderrChild.Close()
+			relay.finish()
+			platform.close()
+			return nil, acceptedProcessStartError("validate output broker", err, cleanupErr)
+		}
+		if peer.ProjectID != request.ProjectID || peer.SessionID != request.SessionID {
+			_ = brokerAttachment.Close()
+			cleanupErr := terminateStartedCommand(command, platform)
+			_ = stdout.Close()
+			_ = stderr.Close()
+			_ = stdoutChild.Close()
+			_ = stderrChild.Close()
+			relay.finish()
+			platform.close()
+			return nil, acceptedProcessStartError("validate output broker", errors.New("output broker lifecycle does not match process request"), cleanupErr)
+		}
+		brokerPeer = &peer
+	}
+
 	var pipeReaders sync.WaitGroup
-	pipeReaders.Add(2)
-	go readOutputStream(stdout, outputStreamStdout, relay, &pipeReaders)
-	go readOutputStream(stderr, outputStreamStderr, relay, &pipeReaders)
+	if brokerAttachment == nil {
+		pipeReaders.Add(2)
+		go readOutputStream(stdout, outputStreamStdout, relay, &pipeReaders)
+		go readOutputStream(stderr, outputStreamStderr, relay, &pipeReaders)
+	}
 	// The parent copies must close immediately so EOF represents the complete child tree, not Harbor itself.
 	if err := errors.Join(stdoutChild.Close(), stderrChild.Close()); err != nil {
+		if brokerAttachment != nil {
+			_ = brokerAttachment.Close()
+		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -385,6 +459,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 	birthToken, err := platform.attach(command.Process)
 	if err != nil {
+		if brokerAttachment != nil {
+			_ = brokerAttachment.Close()
+		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -396,6 +473,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		return nil, acceptedProcessStartError("capture forj process ownership", err, cleanupErr)
 	}
 	if err := ctx.Err(); err != nil {
+		if brokerAttachment != nil {
+			_ = brokerAttachment.Close()
+		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -407,6 +487,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		return nil, acceptedProcessStartError("cancel accepted forj process", err, cleanupErr)
 	}
 	if err := platform.resume(command.Process); err != nil {
+		if brokerAttachment != nil {
+			_ = brokerAttachment.Close()
+		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -416,6 +499,12 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		relay.finish()
 		platform.close()
 		return nil, acceptedProcessStartError("resume forj process", err, cleanupErr)
+	}
+	if brokerAttachment != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		pipeReaders.Add(1)
+		go readOutputBrokerAttachment(ctx, brokerAttachment, relay, &pipeReaders)
 	}
 
 	arguments := append([]string(nil), command.Args...)
@@ -431,7 +520,8 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 				ExecutableIdentity: executable,
 				ArgumentsSHA256:    digestArguments(arguments),
 			},
-			StartedAt: startedAt,
+			OutputBroker: brokerPeer,
+			StartedAt:    startedAt,
 		},
 		done: make(chan struct{}),
 	}
