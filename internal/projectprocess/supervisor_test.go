@@ -64,6 +64,7 @@ func init() {
 	}
 	fmt.Fprintf(os.Stdout, "argument=%s\n", os.Args[1])
 	fmt.Fprintf(os.Stdout, "plain=%s\n", os.Getenv("FORJ_DEV_PLAIN"))
+	fmt.Fprintf(os.Stdout, "managed-context=%s\n", os.Getenv(ManagedLaunchContextEnvironment))
 	fmt.Fprintf(os.Stdout, "app-name=%s\n", os.Getenv("APP_NAME"))
 	fmt.Fprintf(os.Stdout, "forj-app=%s\n", os.Getenv("FORJ_APP"))
 	fmt.Fprintf(os.Stdout, "dev-service-ip-address=%s\n", os.Getenv("DEV_SERVICE_IP_ADDRESS"))
@@ -264,6 +265,55 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	if handle.Info().Arguments[1] != "dev" {
 		t.Fatal("Info() returned mutable arguments")
 	}
+}
+
+// TestStartCarriesOwnerOnlyManagedContextWithoutChangingArgv verifies the context crosses only through the reserved file reference.
+func TestStartCarriesOwnerOnlyManagedContextWithoutChangingArgv(t *testing.T) {
+	checkout := t.TempDir()
+	managedContext := validManagedLaunchContext(t)
+	managedContext.ProjectRoot = canonicalTestPath(t, checkout)
+	stdout := &synchronizedBuffer{}
+	installForjHelper(t, "exit")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            managedContext.ProjectID,
+		SessionID:            managedContext.SessionID,
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		ManagedLaunch:        &managedContext,
+		Stdout:               stdout,
+		Stderr:               io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	result, err := handle.Wait(t.Context())
+	if err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if result.Err == nil {
+		t.Fatalf("Wait() result = %#v, want helper exit error", result)
+	}
+	waitForOutput(t, stdout, "managed-context=")
+	info := handle.Info()
+	if len(info.Arguments) != 2 || info.Arguments[1] != "dev" {
+		t.Fatalf("Info().Arguments = %#v, want exact dev argv", info.Arguments)
+	}
+	for _, entry := range strings.Split(stdout.String(), "\n") {
+		if strings.HasPrefix(entry, "managed-context=") {
+			path := strings.TrimPrefix(entry, "managed-context=")
+			if path == "" {
+				t.Fatal("managed context environment was empty")
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("managed context stat after child exit = %v, want not exist", err)
+			}
+			return
+		}
+	}
+	t.Fatalf("managed context output missing from %q", stdout.String())
 }
 
 // TestStartUsesCapturedEnvironment prevents Harbor's loaded app identity from selecting an App inside managed projects.

@@ -34,6 +34,7 @@ var developmentLaunchIsolationNames = []string{
 	"FORJ_APP",
 	"FORJ_BUILD_PROGRESS",
 	"FORJ_COMMAND_PREFIX",
+	ManagedLaunchContextEnvironment,
 	developmentPlainEnvName,
 }
 
@@ -84,8 +85,10 @@ type StartRequest struct {
 	// GoForjExecutable binds a descriptor preflight to the exact executable image that will be launched.
 	GoForjExecutable     string
 	EnvironmentOverrides EnvironmentOverrides
-	Stdout               io.Writer
-	Stderr               io.Writer
+	// ManagedLaunch carries one owner-only session credential without changing the ordinary dev argv.
+	ManagedLaunch *ManagedLaunchContext
+	Stdout        io.Writer
+	Stderr        io.Writer
 }
 
 // Evidence binds later process actions to one exact executable birth instead of a reusable PID.
@@ -246,6 +249,10 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		return nil, err
 	}
 	request.EnvironmentOverrides = cloneEnvironmentOverrides(request.EnvironmentOverrides)
+	if request.ManagedLaunch != nil {
+		managedLaunch := request.ManagedLaunch.Clone()
+		request.ManagedLaunch = &managedLaunch
+	}
 	if err := validateStartRequest(request); err != nil {
 		return nil, err
 	}
@@ -277,10 +284,31 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
+	if request.ManagedLaunch != nil {
+		if request.ManagedLaunch.ProjectID != request.ProjectID || request.ManagedLaunch.SessionID != request.SessionID {
+			return nil, fmt.Errorf("%w: managed launch context identity does not match process request", ErrInvalidRequest)
+		}
+		if request.ManagedLaunch.ProjectRoot != checkoutRoot {
+			return nil, fmt.Errorf("%w: managed launch context project root does not match checkout", ErrInvalidRequest)
+		}
+	}
 
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
-	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides)
+	managedLaunchPath := ""
+	if request.ManagedLaunch != nil {
+		managedLaunchPath, err = writeManagedLaunchContext(*request.ManagedLaunch)
+		if err != nil {
+			return nil, err
+		}
+	}
+	managedLaunchCleanup := true
+	defer func() {
+		if managedLaunchCleanup {
+			_ = removeManagedLaunchContext(managedLaunchPath)
+		}
+	}()
+	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -391,21 +419,23 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		done: make(chan struct{}),
 	}
 	process := &managedProcess{
-		command:       command,
-		platform:      platform,
-		relay:         relay,
-		stdout:        stdout,
-		stderr:        stderr,
-		pipeReaders:   &pipeReaders,
-		handle:        handle,
-		gracePeriod:   supervisor.gracePeriod,
-		acceptingStop: true,
-		forced:        make(chan struct{}),
-		signalsDone:   make(chan struct{}),
-		stopComplete:  make(chan struct{}),
+		command:           command,
+		platform:          platform,
+		relay:             relay,
+		stdout:            stdout,
+		stderr:            stderr,
+		pipeReaders:       &pipeReaders,
+		handle:            handle,
+		gracePeriod:       supervisor.gracePeriod,
+		acceptingStop:     true,
+		forced:            make(chan struct{}),
+		signalsDone:       make(chan struct{}),
+		stopComplete:      make(chan struct{}),
+		managedLaunchPath: managedLaunchPath,
 	}
 	supervisor.projects[request.ProjectID] = process
 	supervisor.sessions[request.SessionID] = process
+	managedLaunchCleanup = false
 	go supervisor.wait(process)
 	return handle, nil
 }
@@ -540,6 +570,7 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	if stopRequested && cleanupErr == nil {
 		cleanupErr = removeManagedHostEnvironment(info.CheckoutRoot)
 	}
+	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))
 
 	exitCode := 0
 	if process.command.ProcessState != nil {
@@ -561,26 +592,27 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 
 // managedProcess retains the private handles needed to stop and reap one process tree.
 type managedProcess struct {
-	command       *exec.Cmd
-	platform      *platformProcess
-	relay         *outputRelay
-	stdout        *os.File
-	stderr        *os.File
-	pipeReaders   *sync.WaitGroup
-	handle        *Handle
-	gracePeriod   time.Duration
-	acceptingStop bool
-	stopRequested atomic.Bool
-	stopOnce      sync.Once
-	forceOnce     sync.Once
-	signalMu      sync.Mutex
-	signalsClosed bool
-	treeSettled   bool
-	forceErr      error
-	forced        chan struct{}
-	signalsDone   chan struct{}
-	stopErr       error
-	stopComplete  chan struct{}
+	command           *exec.Cmd
+	platform          *platformProcess
+	relay             *outputRelay
+	stdout            *os.File
+	stderr            *os.File
+	pipeReaders       *sync.WaitGroup
+	handle            *Handle
+	gracePeriod       time.Duration
+	acceptingStop     bool
+	stopRequested     atomic.Bool
+	stopOnce          sync.Once
+	forceOnce         sync.Once
+	signalMu          sync.Mutex
+	signalsClosed     bool
+	treeSettled       bool
+	forceErr          error
+	forced            chan struct{}
+	signalsDone       chan struct{}
+	stopErr           error
+	stopComplete      chan struct{}
+	managedLaunchPath string
 }
 
 // requestStop starts the one bounded graceful-shutdown sequence shared by concurrent callers.
@@ -717,6 +749,11 @@ func validateStartRequest(request StartRequest) error {
 	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
+	if request.ManagedLaunch != nil {
+		if err := request.ManagedLaunch.Validate(); err != nil {
+			return fmt.Errorf("%w: managed launch context: %v", ErrInvalidRequest, err)
+		}
+	}
 	return nil
 }
 
@@ -841,10 +878,13 @@ type environmentAssignment struct {
 }
 
 // withDevelopmentEnvironment removes file-owned values from the ambient launch and selects non-interactive output.
-func withDevelopmentEnvironment(environment []string, fileValues EnvironmentOverrides) []string {
+func withDevelopmentEnvironment(environment []string, fileValues EnvironmentOverrides, managedLaunchPath ...string) []string {
 	names := sortedEnvironmentOverrideNames(fileValues)
 	replacedNames := append(append([]string(nil), names...), developmentLaunchIsolationNames...)
 	assignments := []environmentAssignment{{name: developmentPlainEnvName, value: "1"}}
+	if len(managedLaunchPath) > 0 && managedLaunchPath[0] != "" {
+		assignments = append(assignments, environmentAssignment{name: ManagedLaunchContextEnvironment, value: managedLaunchPath[0]})
+	}
 	return mergeEnvironmentAssignments(environment, replacedNames, assignments)
 }
 

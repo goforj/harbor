@@ -104,3 +104,8 @@ func Dial(ctx context.Context) (Conn, error) {
 func Listen() (Listener, error) {
 	return listen()
 }
+
+// EndpointReference returns the current user's Harbor IPC endpoint without opening a connection.
+func EndpointReference() (string, error) {
+	return endpointReference()
+}
