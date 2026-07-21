@@ -645,6 +645,157 @@ func TestProjectLifecycleRecoverQuarantinesPlannedStart(t *testing.T) {
 	}
 }
 
+// TestProjectLifecycleStartReleasesReceiptFreeQuarantine proves a fresh Start cannot be stranded behind a planned launch with no process receipt.
+func TestProjectLifecycleStartReleasesReceiptFreeQuarantine(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, _ := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	supervisor := &projectLifecycleRecoverySupervisor{}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		store,
+		supervisor,
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close receipt-free recovery coordinator: %v", err)
+		}
+	})
+	if _, err := coordinator.primaryLeases.Ensure(t.Context(), project.ID); err != nil {
+		t.Fatalf("ensure receipt-free project lease: %v", err)
+	}
+	projectRecord, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read receipt-free project: %v", err)
+	}
+	startAt := lifecycleTime(projectRecord.Project.UpdatedAt.Add(time.Second))
+	operation, err := domain.NewOperation("operation-receipt-free-start", "intent-receipt-free-start", domain.OperationKindProjectStart, project.ID, startAt)
+	if err != nil {
+		t.Fatalf("create receipt-free operation: %v", err)
+	}
+	queued, err := journal.Enqueue(t.Context(), operation)
+	if err != nil {
+		t.Fatalf("enqueue receipt-free operation: %v", err)
+	}
+	session, err := newHarborProjectSession(project.ID, root, startAt)
+	if err != nil {
+		t.Fatalf("create receipt-free session: %v", err)
+	}
+	begun, err := store.BeginProjectStart(t.Context(), state.BeginProjectStartRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
+		ExpectedProjectRevision: projectRecord.Revision, Session: session, Phase: "launching", At: startAt,
+	})
+	if err != nil || begun.Session == nil {
+		t.Fatalf("begin receipt-free start = %#v, %v", begun, err)
+	}
+	seed := projectLifecycleRecoverySeed{project: begun.Project.Project, operation: begun.Operation, session: *begun.Session}
+
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	currentProject, err := store.Project(t.Context(), seed.project.ID)
+	if err != nil || currentProject.Project.State != domain.ProjectUnavailable {
+		t.Fatalf("project after planned quarantine = %#v, %v", currentProject.Project, err)
+	}
+
+	replacement, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID: seed.project.ID, OperationID: "operation-replacement-start", IntentID: "intent-replacement-start",
+	})
+	if err != nil {
+		t.Fatalf("Start(after receipt-free quarantine) error = %v", err)
+	}
+	if replacement.Operation.State != domain.OperationQueued {
+		t.Fatalf("replacement start operation = %#v, want queued", replacement.Operation)
+	}
+	active, sessionErr := store.ActiveProjectSession(t.Context(), seed.project.ID)
+	if sessionErr == nil && active.ID == seed.session.ID {
+		t.Fatalf("replacement start retained receipt-free quarantine session %#v", active)
+	}
+}
+
+// TestProjectLifecycleStartSettlesProcessBackedQuarantine proves the screenshot-shaped exact receipt is reclaimed by the normal Start action.
+func TestProjectLifecycleStartSettlesProcessBackedQuarantine(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, _ := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	supervisor := &projectLifecycleRecoverySupervisor{settlementErr: errors.New("scope was not settled")}
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(store, journal, store, supervisor, netip.MustParseAddr("127.0.0.1"))
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close process-backed recovery coordinator: %v", err)
+		}
+	})
+	if _, err := coordinator.primaryLeases.Ensure(t.Context(), project.ID); err != nil {
+		t.Fatalf("ensure process-backed project lease: %v", err)
+	}
+	projectRecord, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read process-backed project: %v", err)
+	}
+	startAt := lifecycleTime(projectRecord.Project.UpdatedAt.Add(time.Second))
+	operation, err := domain.NewOperation("operation-process-backed-start", "intent-process-backed-start", domain.OperationKindProjectStart, project.ID, startAt)
+	if err != nil {
+		t.Fatalf("create process-backed operation: %v", err)
+	}
+	queued, err := journal.Enqueue(t.Context(), operation)
+	if err != nil {
+		t.Fatalf("enqueue process-backed operation: %v", err)
+	}
+	session, err := newHarborProjectSession(project.ID, root, startAt)
+	if err != nil {
+		t.Fatalf("create process-backed session: %v", err)
+	}
+	begun, err := store.BeginProjectStart(t.Context(), state.BeginProjectStartRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
+		ExpectedProjectRevision: projectRecord.Revision, Session: session, Phase: "launching", At: startAt,
+	})
+	if err != nil || begun.Session == nil {
+		t.Fatalf("begin process-backed start = %#v, %v", begun, err)
+	}
+	evidence := domain.ProcessEvidence{
+		PID:                4242,
+		BirthToken:         "process-backed-start-birth",
+		ExecutableIdentity: filepath.Join(root, "forj"),
+		ArgumentDigest:     strings.Repeat("b", 64),
+	}
+	attached, err := store.AttachProjectProcess(t.Context(), state.AttachProjectProcessRequest{
+		ProjectID: project.ID, SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+		Process: evidence, At: startAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("attach process-backed evidence: %v", err)
+	}
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover(process-backed quarantine) error = %v", err)
+	}
+	quarantined, err := store.Project(t.Context(), project.ID)
+	if err != nil || quarantined.Project.State != domain.ProjectUnavailable {
+		t.Fatalf("process-backed project after quarantine = %#v, %v", quarantined.Project, err)
+	}
+	if active, sessionErr := store.ActiveProjectSession(t.Context(), project.ID); sessionErr != nil || active.ID != attached.ID {
+		t.Fatalf("process-backed quarantine session = %#v, %v", active, sessionErr)
+	}
+
+	supervisor.settlementErr = nil
+	supervisor.settlement = projectprocess.PriorProcessSettlement{Outcome: projectprocess.PriorProcessSettlementAbsent}
+	replacement, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID: project.ID, OperationID: "operation-process-backed-replacement", IntentID: "intent-process-backed-replacement",
+	})
+	if err != nil {
+		t.Fatalf("Start(after process-backed quarantine) error = %v", err)
+	}
+	if replacement.Operation.State != domain.OperationQueued {
+		t.Fatalf("process-backed replacement operation = %#v, want queued", replacement.Operation)
+	}
+	if active, sessionErr := store.ActiveProjectSession(t.Context(), project.ID); sessionErr == nil && active.ID == attached.ID {
+		t.Fatalf("process-backed replacement retained quarantined session %#v", active)
+	}
+}
+
 // TestProjectLifecycleRecoverQuarantinesTerminalSessionWithoutProcessEvidence isolates one legacy project while unrelated recovery continues.
 func TestProjectLifecycleRecoverQuarantinesTerminalSessionWithoutProcessEvidence(t *testing.T) {
 	for _, terminalState := range []domain.ProjectState{domain.ProjectReady, domain.ProjectDegraded} {

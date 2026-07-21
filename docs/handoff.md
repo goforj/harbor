@@ -1,6 +1,6 @@
 # Development Handoff
 
-Status: durable scoped project restart, strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs, read-only CLI log cursors, control-plane doctor foundation, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
+Status: durable scoped project restart, resilient quarantined-project Start convergence, strict GoForj descriptor preflight-before-network/session digest, direct Docker service observation/logs, read-only CLI log cursors, control-plane doctor foundation, fenced refresh, and desktop project-removal approval handoff committed; native host proof remains
 
 Last updated: 2026-07-21
 
@@ -12,7 +12,7 @@ The work immediately before this handoff hardened the most painful current failu
 
 The regression is intentionally end to end: an outer process and daemon generation are killed, a listener in a separate process group ignores graceful shutdown, replacement recovery removes the complete owned scope, and a second Start reaches Ready on the same address and port.
 
-Retained missing-receipt state now has a separate explicit recovery path. A quarantined project can inspect one bounded macOS candidate, show only reviewed display facts, and ask the user to confirm before the daemon revalidates and signals anything. The plan is caller-bound, short-lived, one-use, and consumed before confirmation. The same authenticated repair surface now also checks route-free stopped, failed, or unavailable projects for an already-retired listener and routes confirmable evidence through the no-session inspector; confirmation returns the unchanged retryable project and performs no durable completion mutation. Linux and Windows preserve the same contract but currently return unsupported. The native Darwin implementation has portable and cross-build evidence, not a completed real-host proof.
+Retained missing-receipt state now has a separate explicit recovery path. A quarantined project can inspect one bounded macOS candidate, show only reviewed display facts, and ask the user to confirm before the daemon revalidates and signals anything. The plan is caller-bound, short-lived, one-use, and consumed before confirmation. Normal Start no longer dead-ends on this state: an exact retained process receipt is settled through the native supervisor before a replacement session is admitted, and a receipt-free planned/awaiting-attach row is retired transactionally only when all process fields are absent. The desktop presents that path as `Recover and start`; explicit inspection remains the fallback for already-retired or unattributed listeners. The same authenticated repair surface now also checks route-free stopped, failed, or unavailable projects for an already-retired listener and routes confirmable evidence through the no-session inspector; confirmation returns the unchanged retryable project and performs no durable completion mutation. Linux and Windows preserve the same contract but currently return unsupported. The native Darwin implementation has portable and cross-build evidence, not a completed real-host proof.
 
 Commit `b531d7f` replaces the GoForj service-state/log dependency with a daemon-owned, read-only Docker Engine vertical. `harbord` lists local containers, re-inspects candidates, and admits them only when the Compose project, service, and working-directory labels resolve to the registered canonical checkout. A selected service's current-session log stream now crosses authenticated control, Wails, and the typed Vue bridge. The continuation adds a Docker container-event wake hint; event payloads are discarded, exact admission is repeated, and service/resource changes are persisted only behind project-revision and session-generation fences. Supported descriptor resource reports then update loopback HTTP reservations after the durable write; unsupported or failed reports retain the prior resource links. No GoForj log capability is involved, neither the generated App nor Vue can access Docker, and the route reconciler now promotes only explicitly reserved HTTP resources whose owners and private loopback upstreams are ready.
 
@@ -160,7 +160,7 @@ PID="$(lsof -t -nP -iTCP@127.77.59.72:3000 -sTCP:LISTEN)"
 ps -o pid=,ppid=,pgid=,command= -p "$PID"
 ```
 
-Do not delete SQLite state, wipe the database, or make Harbor kill whatever happens to own port 3000. New sessions launched after the process-scope commit retain enough evidence for automatic recovery. A retained pre-receipt quarantine can use the explicit legacy repair workflow below. This already-retired remnant cannot: it needs a separate, explicitly unattributed listener-inspection action or manual user action.
+Do not delete SQLite state, wipe the database, or make Harbor kill whatever happens to own port 3000. New sessions launched after the process-scope commit retain enough evidence for automatic recovery. A retained pre-receipt quarantine no longer blocks a normal Start: Harbor retires only the receipt-free row, then lets the normal process admission and native port checks establish the replacement runtime. An already-retired remnant still needs a separate, explicitly unattributed listener-inspection action or manual user action.
 
 ## What the process-scope stopping commit changes
 
@@ -175,6 +175,7 @@ The logical commit is `06b542f fix: recover complete project process scopes`.
 - Normal child exit errors are separate from `ScopeSettlementErr`; durable evidence is deleted only when the entire scope settled.
 - Post-acceptance launch cleanup exposes `ErrCleanupUncertain` instead of pretending that no process escaped.
 - Uncertainty during live Start, Stop, daemon shutdown, or restart recovery atomically makes only that project unavailable and route-free, retains its session/evidence, and fails the affected operation.
+- A subsequent Start is a convergence edge: exact retained evidence is settled before replacement admission, while a quarantined session with no process receipt is retired only after a fenced all-null receipt check.
 - Successful project-local quarantine does not poison coordinator health or abort all of `harbord`.
 - The hard-restart integration test proves the same port can be used by a second successful Start after exact cleanup.
 
@@ -279,7 +280,7 @@ The production lifecycle path now invokes the exact registered GoForj executable
 1. Read `AGENTS.md`, [Current implementation state](./current-state.md), and this handoff before changing code.
 2. Run `git status -sb`, inspect `origin/main...HEAD`, and preserve unexplained local artifacts rather than sweeping them into a commit.
 3. Re-observe the macOS host and Ditracker runtime; paths, PIDs, listeners, leases, and database rows in this document are historical evidence until confirmed.
-4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, explicit retained-session repair, Stop, and second Start before claiming native recovery complete.
+4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, replacement Start from both exact and receipt-free quarantine, explicit retained-session repair, Stop, and second Start before claiming native recovery complete.
 5. Prove the direct Docker service/log slice plus event-driven topology refresh on native macOS before adding publication routing.
 6. Validate both Go modules and any affected frontend or native OS surface.
 7. Commit explicit paths as `Chris Miles <chris.miles.e@gmail.com>` and update `current-state.md` plus this handoff when the continuation point changes.
@@ -311,7 +312,7 @@ Before signaling, re-read and compare every durable fence and every native proce
 
 The first version uses graceful exact termination and polls exact birth absence, complete session absence, and socket release. A watcher respawn or identity change fails confirmation and requires a fresh inspection. Only after every postcondition succeeds does one atomic state mutation retire the retained session and project the route-free project to stopped.
 
-The desktop replaces the `project.recovery.ambiguous_launch` dead end with an inspect action and explicit confirmation dialog. Its warning is:
+The desktop keeps an explicit inspection action for the cases that still need native user confirmation; ordinary Start first attempts automatic convergence and is no longer a `project.recovery.ambiguous_launch` dead end. Its warning is:
 
 > Harbor no longer has its launch receipt. This process is a candidate, not proven Harbor-owned. Continue only if you recognize it as this project.
 
@@ -350,7 +351,7 @@ The Linux resolver checkpoint also passed isolated root-module tests and vet, fo
 ## Things not to do
 
 - Do not infer process ownership from a busy port.
-- Do not clear a session row merely to make Start clickable.
+- Do not clear a session row that retains process evidence; receipt-free quarantines may only be retired through the fenced lifecycle release path.
 - Do not wipe the user's database as ordinary recovery.
 - Do not let one quarantined project prevent the daemon or other projects from starting.
 - Do not pass Harbor's assignment through new special `forj dev` flags.

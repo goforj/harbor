@@ -171,6 +171,47 @@ func TestCompleteRetainedProjectRuntimeRepairRestoresStoppedProject(t *testing.T
 	}
 }
 
+// TestReleaseUnavailableProjectSessionRetiresReceiptFreeBoundaries proves a missing process receipt cannot strand a replacement start.
+func TestReleaseUnavailableProjectSessionRetiresReceiptFreeBoundaries(t *testing.T) {
+	for _, sessionState := range []domain.SessionState{domain.SessionAwaitingAttach, domain.SessionPlanned} {
+		t.Run(string(sessionState), func(t *testing.T) {
+			fixture := newRetainedRuntimeRepairFixture(t)
+			if sessionState == domain.SessionPlanned {
+				if err := fixture.connection.Model(&models.ProjectSession{}).
+					Where("project_id = ?", string(fixture.boundary.Project.Project.ID)).
+					Update("state", string(sessionState)).Error; err != nil {
+					t.Fatalf("set receipt-free session state: %v", err)
+				}
+			}
+			at := fixture.boundary.Project.Project.UpdatedAt.Add(time.Second)
+			project, err := fixture.store.ReleaseUnavailableProjectSession(t.Context(), ReleaseUnavailableProjectSessionRequest{
+				ProjectID: fixture.boundary.Project.Project.ID,
+				At:        at,
+			})
+			if err != nil {
+				t.Fatalf("ReleaseUnavailableProjectSession() error = %v", err)
+			}
+			if !projectMatchesInactiveState(project.Project, domain.ProjectStopped, project.Project.UpdatedAt) {
+				t.Fatalf("released project = %#v", project)
+			}
+			requireLifecycleTestSessionCount(t, fixture.connection, fixture.boundary.Project.Project.ID, 0)
+		})
+	}
+}
+
+// TestReleaseUnavailableProjectSessionRefusesProcessEvidence proves a durable process receipt still requires native settlement.
+func TestReleaseUnavailableProjectSessionRefusesProcessEvidence(t *testing.T) {
+	fixture := newProcessBackedProjectRuntimeRepairFixture(t)
+	_, err := fixture.store.ReleaseUnavailableProjectSession(t.Context(), ReleaseUnavailableProjectSessionRequest{
+		ProjectID: fixture.projectID,
+		At:        fixture.request.At,
+	})
+	if err == nil {
+		t.Fatal("ReleaseUnavailableProjectSession(process-backed) error = nil")
+	}
+	requireLifecycleTestSessionCount(t, fixture.connection, fixture.projectID, 1)
+}
+
 // TestCompleteRetainedProjectRuntimeRepairRejectsEveryCallerFence proves stale inspection data cannot retire retained authority.
 func TestCompleteRetainedProjectRuntimeRepairRejectsEveryCallerFence(t *testing.T) {
 	fixture := newRetainedRuntimeRepairFixture(t)
@@ -364,6 +405,107 @@ func TestRetainedProjectRuntimeRepairBoundaryRejectsUnsafeSessionShapes(t *testi
 			}
 			requireLifecycleTestSessionCount(t, fixture.connection, fixture.boundary.Project.Project.ID, 1)
 		})
+	}
+}
+
+// TestProcessBackedProjectRuntimeRepairUsesNativeFence proves exact process receipts use a separate durable boundary and can be retired only after native settlement.
+func TestProcessBackedProjectRuntimeRepairUsesNativeFence(t *testing.T) {
+	fixture := newProcessBackedProjectRuntimeRepairFixture(t)
+	completed, err := fixture.store.CompleteProcessBackedProjectRuntimeRepair(t.Context(), fixture.request)
+	if err != nil {
+		t.Fatalf("CompleteProcessBackedProjectRuntimeRepair() error = %v", err)
+	}
+	if completed.Project.State != domain.ProjectStopped {
+		t.Fatalf("completed project state = %q, want stopped", completed.Project.State)
+	}
+	requireLifecycleTestSessionCount(t, fixture.connection, fixture.projectID, 0)
+}
+
+// TestProcessBackedProjectRuntimeRepairAcceptsStoppingReceipt proves Stop/Restart quarantine can use the same exact native fence.
+func TestProcessBackedProjectRuntimeRepairAcceptsStoppingReceipt(t *testing.T) {
+	fixture := newProcessBackedProjectRuntimeRepairFixture(t)
+	if err := fixture.connection.Exec(
+		"UPDATE project_sessions SET state = ?, updated_at = ? WHERE project_id = ?",
+		string(domain.SessionStopping), fixture.request.ExpectedSessionUpdatedAt, string(fixture.projectID),
+	).Error; err != nil {
+		t.Fatalf("set process-backed session stopping: %v", err)
+	}
+	boundary, err := fixture.store.ProcessBackedProjectRuntimeRepairBoundary(t.Context(), fixture.projectID)
+	if err != nil {
+		t.Fatalf("ProcessBackedProjectRuntimeRepairBoundary(stopping) error = %v", err)
+	}
+	if boundary.Process != fixture.request.ExpectedProcess {
+		t.Fatalf("stopping process boundary = %#v, want %#v", boundary.Process, fixture.request.ExpectedProcess)
+	}
+	if _, err := fixture.store.CompleteProcessBackedProjectRuntimeRepair(t.Context(), fixture.request); err != nil {
+		t.Fatalf("CompleteProcessBackedProjectRuntimeRepair(stopping) error = %v", err)
+	}
+	requireLifecycleTestSessionCount(t, fixture.connection, fixture.projectID, 0)
+}
+
+// TestCompleteProcessBackedProjectRuntimeRepairRejectsReceiptDrift proves a changed process receipt cannot retire the session row.
+func TestCompleteProcessBackedProjectRuntimeRepairRejectsReceiptDrift(t *testing.T) {
+	fixture := newProcessBackedProjectRuntimeRepairFixture(t)
+	fixture.request.ExpectedProcess.BirthToken = "different-process-birth"
+	if _, err := fixture.store.CompleteProcessBackedProjectRuntimeRepair(t.Context(), fixture.request); err == nil {
+		t.Fatal("CompleteProcessBackedProjectRuntimeRepair(receipt drift) error = nil")
+	}
+	requireLifecycleTestSessionCount(t, fixture.connection, fixture.projectID, 1)
+}
+
+// processBackedProjectRuntimeRepairStateFixture owns one exact process-backed quarantine and completion fence.
+type processBackedProjectRuntimeRepairStateFixture struct {
+	store      *Store
+	connection *gorm.DB
+	projectID  domain.ProjectID
+	request    CompleteProcessBackedProjectRuntimeRepairRequest
+}
+
+// newProcessBackedProjectRuntimeRepairFixture creates a quarantined process receipt with initialized network authority.
+func newProcessBackedProjectRuntimeRepairFixture(t *testing.T) processBackedProjectRuntimeRepairStateFixture {
+	t.Helper()
+	store, connection := newNetworkInitializeTestHarness(t, true)
+	if _, err := store.InitializeNetwork(t.Context(), networkMutationTestInitializeRequest()); err != nil {
+		t.Fatalf("InitializeNetwork() error = %v", err)
+	}
+	project, session, process := projectLifecycleTestReadyProject(t, store, "project-alpha")
+	projectRecord, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("Project() error = %v", err)
+	}
+	at := project.UpdatedAt.Add(time.Second)
+	operation, err := domain.NewOperation("operation-process-backed-repair", "intent-process-backed-repair", domain.OperationKindProjectStart, project.ID, at)
+	if err != nil {
+		t.Fatalf("NewOperation() error = %v", err)
+	}
+	problem := domain.Problem{Code: domain.ProjectRecoveryAmbiguousLaunchProblemCode, Message: "process scope unresolved", Retryable: false}
+	if _, err := store.QuarantineTerminalProjectSession(t.Context(), QuarantineTerminalProjectSessionRequest{
+		ProjectID: project.ID, ExpectedProjectRevision: projectRecord.Revision,
+		SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+		Operation: operation, RunningPhase: domain.ProjectRecoveryIsolationPhase,
+		FailurePhase: domain.ProjectRecoveryRequiredPhase, Problem: problem, At: at,
+	}); err != nil {
+		t.Fatalf("QuarantineTerminalProjectSession() error = %v", err)
+	}
+
+	boundary, err := store.ProcessBackedProjectRuntimeRepairBoundary(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("ProcessBackedProjectRuntimeRepairBoundary() error = %v", err)
+	}
+	if err := boundary.Validate(); err != nil {
+		t.Fatalf("ProcessBackedProjectRuntimeRepairBoundary.Validate() error = %v", err)
+	}
+	if boundary.Process != process || boundary.RecoveryOperation.Operation.Kind != domain.OperationKindProjectStart {
+		t.Fatalf("process-backed boundary = %#v, want process %#v", boundary, process)
+	}
+	return processBackedProjectRuntimeRepairStateFixture{
+		store: store, connection: connection, projectID: project.ID,
+		request: CompleteProcessBackedProjectRuntimeRepairRequest{
+			CompleteRetainedProjectRuntimeRepairRequest: retainedRuntimeRepairCompletionRequest(
+				retainedProjectRuntimeRepairBoundaryFromProcess(boundary),
+			),
+			ExpectedProcess: boundary.Process,
+		},
 	}
 }
 

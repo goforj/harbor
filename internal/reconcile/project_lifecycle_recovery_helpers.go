@@ -292,6 +292,58 @@ func (coordinator *ProjectLifecycleCoordinator) settleRecoveredProjectProcess(
 	}
 }
 
+// recoverProcessBackedProjectBeforeStart settles an exact quarantined process scope before admitting a replacement start.
+func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBeforeStart(
+	ctx context.Context,
+	projectID domain.ProjectID,
+) error {
+	store, ok := coordinator.state.(processBackedLifecycleRecoveryState)
+	if !ok {
+		return nil
+	}
+	boundary, err := store.ProcessBackedProjectRuntimeRepairBoundary(ctx, projectID)
+	if err != nil {
+		var missing *state.ProjectSessionProcessEvidenceMissingError
+		var notFound *state.ProjectSessionNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		if errors.As(err, &missing) {
+			receiptFree, ok := coordinator.state.(receiptFreeLifecycleRecoveryState)
+			if !ok {
+				return nil
+			}
+			// An all-null receipt proves no Harbor-owned host process, so retire only that durable launch fence and let the next Start establish truth natively.
+			at := lifecycleTime(coordinator.now())
+			if _, releaseErr := receiptFree.ReleaseUnavailableProjectSession(
+				ctx,
+				state.ReleaseUnavailableProjectSessionRequest{ProjectID: projectID, At: at},
+			); releaseErr != nil {
+				return fmt.Errorf("release project %q receipt-free recovery boundary before start: %w", projectID, releaseErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("read project %q process-backed recovery boundary before start: %w", projectID, err)
+	}
+	if err := boundary.Validate(); err != nil {
+		return fmt.Errorf("validate project %q process-backed recovery boundary before start: %w", projectID, err)
+	}
+	if _, err := coordinator.settleRecoveredProjectProcess(ctx, fmt.Sprintf("project %q replacement start", projectID), boundary.Process); err != nil {
+		return err
+	}
+	at := completionTimeForProjectRuntimeRepair(
+		retainedProjectRuntimeRepairBoundaryFromProcessBacked(boundary),
+		coordinator.now(),
+	)
+	if _, err := store.CompleteProcessBackedProjectRuntimeRepair(
+		ctx,
+		processBackedProjectRuntimeRepairCompletionRequest(boundary, at),
+	); err != nil {
+		return fmt.Errorf("retire project %q process-backed recovery boundary before start: %w", projectID, err)
+	}
+	return nil
+}
+
 // recoverQueuedProjectStop settles the exact prior process before crossing the queued-to-running durability edge.
 func (coordinator *ProjectLifecycleCoordinator) recoverQueuedProjectStop(
 	ctx context.Context,

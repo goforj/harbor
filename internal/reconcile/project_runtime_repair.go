@@ -344,6 +344,12 @@ type projectRuntimeRepairStore interface {
 	CompleteRetainedProjectRuntimeRepair(context.Context, state.CompleteRetainedProjectRuntimeRepairRequest) (state.ProjectRecord, error)
 }
 
+// processBackedProjectRuntimeRepairStore owns the native-confirmed completion path for exact retained process receipts.
+type processBackedProjectRuntimeRepairStore interface {
+	ProcessBackedProjectRuntimeRepairBoundary(context.Context, domain.ProjectID) (state.ProcessBackedProjectRuntimeRepairBoundary, error)
+	CompleteProcessBackedProjectRuntimeRepair(context.Context, state.CompleteProcessBackedProjectRuntimeRepairRequest) (state.ProjectRecord, error)
+}
+
 // projectRuntimeRepairDiscoverer derives the exact default listener from one durable checkout and assigned address.
 type projectRuntimeRepairDiscoverer interface {
 	DiscoverDefaultRuntimeAtAddress(context.Context, string, netip.Addr) (projectdiscovery.RuntimeTarget, error)
@@ -351,13 +357,14 @@ type projectRuntimeRepairDiscoverer interface {
 
 // projectRuntimeRepairPlan retains all authority that must remain process-local between inspect and confirm.
 type projectRuntimeRepairPlan struct {
-	caller      ProjectRuntimeRepairCaller
-	projectID   domain.ProjectID
-	boundary    state.RetainedProjectRuntimeRepairBoundary
-	target      projectprocess.RuntimeRepairTarget
-	candidate   projectprocess.RuntimeRepairCandidate
-	fingerprint ProjectRuntimeRepairCandidateFingerprint
-	expiresAt   time.Time
+	caller          ProjectRuntimeRepairCaller
+	projectID       domain.ProjectID
+	boundary        state.RetainedProjectRuntimeRepairBoundary
+	processBoundary *state.ProcessBackedProjectRuntimeRepairBoundary
+	target          projectprocess.RuntimeRepairTarget
+	candidate       projectprocess.RuntimeRepairCandidate
+	fingerprint     ProjectRuntimeRepairCandidateFingerprint
+	expiresAt       time.Time
 }
 
 // ProjectRuntimeRepairCoordinator owns bounded, caller-bound plans for explicit legacy-runtime repair.
@@ -457,6 +464,15 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Inspect(
 	coordinator.inspectionMutex.Lock()
 	defer coordinator.inspectionMutex.Unlock()
 	coordinator.invalidateProjectPlans(request.ProjectID, coordinator.now().UTC().Round(0))
+	if processStore, ok := coordinator.store.(processBackedProjectRuntimeRepairStore); ok {
+		processBoundary, err := processStore.ProcessBackedProjectRuntimeRepairBoundary(ctx, request.ProjectID)
+		if err == nil {
+			return coordinator.inspectProcessBackedProjectRuntime(ctx, request, processBoundary)
+		}
+		if !isMissingProcessBackedRuntimeBoundary(err) {
+			return ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect process-backed project runtime boundary: %w", err)
+		}
+	}
 
 	boundary, err := coordinator.store.RetainedProjectRuntimeRepairBoundary(ctx, request.ProjectID)
 	if err != nil {
@@ -479,7 +495,34 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Inspect(
 	if err := validateProjectRuntimeRepairNativeInspection(inspection, target); err != nil {
 		return ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect native project runtime result: %w", err)
 	}
-	return coordinator.projectInspection(request, boundary, target, inspection)
+	return coordinator.projectInspection(request, boundary, nil, target, inspection)
+}
+
+// inspectProcessBackedProjectRuntime performs native inspection after the durable process-backed fence is read.
+func (coordinator *ProjectRuntimeRepairCoordinator) inspectProcessBackedProjectRuntime(
+	ctx context.Context,
+	request ProjectRuntimeRepairInspectRequest,
+	boundary state.ProcessBackedProjectRuntimeRepairBoundary,
+) (ProjectRuntimeRepairInspection, error) {
+	if err := boundary.Validate(); err != nil {
+		return ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect process-backed project runtime boundary is invalid: %w", err)
+	}
+	if boundary.Project.Project.ID != request.ProjectID {
+		return ProjectRuntimeRepairInspection{}, errors.New("process-backed project runtime boundary belongs to another project")
+	}
+	target, err := coordinator.discoverProcessBackedTarget(ctx, boundary)
+	if err != nil {
+		return ProjectRuntimeRepairInspection{}, err
+	}
+	inspection, err := coordinator.repairer.Inspect(ctx, target)
+	if err != nil {
+		return ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect native process-backed project runtime: %w", err)
+	}
+	if err := validateProjectRuntimeRepairNativeInspection(inspection, target); err != nil {
+		return ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect native process-backed project runtime result: %w", err)
+	}
+	base := retainedProjectRuntimeRepairBoundaryFromProcessBacked(boundary)
+	return coordinator.projectInspection(request, base, &boundary, target, inspection)
 }
 
 // Confirm consumes one plan before revalidating durable, discovery, and native postconditions in order.
@@ -523,18 +566,43 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Confirm(
 		return state.ProjectRecord{}, &ProjectRuntimeRepairPlanExpiredError{}
 	}
 
-	boundary, err := coordinator.store.RetainedProjectRuntimeRepairBoundary(ctx, request.ProjectID)
-	if err != nil {
-		if isProjectRuntimeRepairContextError(ctx, err) {
-			return state.ProjectRecord{}, err
+	boundary := plan.boundary
+	var processBoundary *state.ProcessBackedProjectRuntimeRepairBoundary
+	if plan.processBoundary != nil {
+		processStore, ok := coordinator.store.(processBackedProjectRuntimeRepairStore)
+		if !ok {
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{}
 		}
-		return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{cause: err}
-	}
-	if err := boundary.Validate(); err != nil {
-		return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{cause: err}
-	}
-	if !projectRuntimeRepairBoundariesEqual(boundary, plan.boundary) {
-		return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{}
+		current, err := processStore.ProcessBackedProjectRuntimeRepairBoundary(ctx, request.ProjectID)
+		if err != nil {
+			if isProjectRuntimeRepairContextError(ctx, err) {
+				return state.ProjectRecord{}, err
+			}
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{cause: err}
+		}
+		if err := current.Validate(); err != nil {
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{cause: err}
+		}
+		if !projectRuntimeRepairProcessBoundariesEqual(current, *plan.processBoundary) {
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{}
+		}
+		processBoundary = &current
+		boundary = retainedProjectRuntimeRepairBoundaryFromProcessBacked(current)
+	} else {
+		current, err := coordinator.store.RetainedProjectRuntimeRepairBoundary(ctx, request.ProjectID)
+		if err != nil {
+			if isProjectRuntimeRepairContextError(ctx, err) {
+				return state.ProjectRecord{}, err
+			}
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{cause: err}
+		}
+		if err := current.Validate(); err != nil {
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{cause: err}
+		}
+		if !projectRuntimeRepairBoundariesEqual(current, plan.boundary) {
+			return state.ProjectRecord{}, &ProjectRuntimeRepairDurableDriftError{}
+		}
+		boundary = current
 	}
 	target, err := coordinator.discoverTarget(ctx, boundary)
 	if err != nil {
@@ -573,12 +641,21 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Confirm(
 		)
 	}
 
-	completed, err := coordinator.store.CompleteRetainedProjectRuntimeRepair(
-		ctx,
-		projectRuntimeRepairCompletionRequest(plan.boundary, completionTimeForProjectRuntimeRepair(plan.boundary, coordinator.now())),
-	)
+	var completed state.ProjectRecord
+	if processBoundary != nil {
+		processStore := coordinator.store.(processBackedProjectRuntimeRepairStore)
+		completed, err = processStore.CompleteProcessBackedProjectRuntimeRepair(
+			ctx,
+			processBackedProjectRuntimeRepairCompletionRequest(*processBoundary, completionTimeForProjectRuntimeRepair(boundary, coordinator.now())),
+		)
+	} else {
+		completed, err = coordinator.store.CompleteRetainedProjectRuntimeRepair(
+			ctx,
+			projectRuntimeRepairCompletionRequest(boundary, completionTimeForProjectRuntimeRepair(boundary, coordinator.now())),
+		)
+	}
 	if err != nil {
-		return state.ProjectRecord{}, fmt.Errorf("complete retained project runtime repair: %w", err)
+		return state.ProjectRecord{}, fmt.Errorf("complete project runtime repair: %w", err)
 	}
 	if err := completed.Validate(); err != nil {
 		return state.ProjectRecord{}, fmt.Errorf("completed retained project runtime repair is invalid: %w", err)
@@ -593,6 +670,7 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Confirm(
 func (coordinator *ProjectRuntimeRepairCoordinator) projectInspection(
 	request ProjectRuntimeRepairInspectRequest,
 	boundary state.RetainedProjectRuntimeRepairBoundary,
+	processBoundary *state.ProcessBackedProjectRuntimeRepairBoundary,
 	target projectprocess.RuntimeRepairTarget,
 	inspection projectprocess.RuntimeRepairInspection,
 ) (ProjectRuntimeRepairInspection, error) {
@@ -620,13 +698,14 @@ func (coordinator *ProjectRuntimeRepairCoordinator) projectInspection(
 		}
 		expiresAt := coordinator.now().UTC().Round(0).Add(coordinator.planTTL)
 		plan := projectRuntimeRepairPlan{
-			caller:      request.Caller,
-			projectID:   request.ProjectID,
-			boundary:    boundary,
-			target:      target,
-			candidate:   candidate,
-			fingerprint: ProjectRuntimeRepairCandidateFingerprint(candidate.Fingerprint),
-			expiresAt:   expiresAt,
+			caller:          request.Caller,
+			projectID:       request.ProjectID,
+			boundary:        boundary,
+			processBoundary: cloneProcessBackedProjectRuntimeRepairBoundary(processBoundary),
+			target:          target,
+			candidate:       candidate,
+			fingerprint:     ProjectRuntimeRepairCandidateFingerprint(candidate.Fingerprint),
+			expiresAt:       expiresAt,
 		}
 		inspectionID, err := coordinator.storePlan(plan)
 		if err != nil {
@@ -653,8 +732,24 @@ func (coordinator *ProjectRuntimeRepairCoordinator) discoverTarget(
 	ctx context.Context,
 	boundary state.RetainedProjectRuntimeRepairBoundary,
 ) (projectprocess.RuntimeRepairTarget, error) {
-	address := boundary.PrimaryLease.Address
-	discovered, err := coordinator.discoverer.DiscoverDefaultRuntimeAtAddress(ctx, boundary.Project.Project.Path, address)
+	return coordinator.discoverTargetAtProject(ctx, boundary.Project.Project.Path, boundary.PrimaryLease.Address)
+}
+
+// discoverProcessBackedTarget derives the exact native target from process-backed durable identity and lease fences.
+func (coordinator *ProjectRuntimeRepairCoordinator) discoverProcessBackedTarget(
+	ctx context.Context,
+	boundary state.ProcessBackedProjectRuntimeRepairBoundary,
+) (projectprocess.RuntimeRepairTarget, error) {
+	return coordinator.discoverTargetAtProject(ctx, boundary.Project.Project.Path, boundary.PrimaryLease.Address)
+}
+
+// discoverTargetAtProject derives and validates one exact default listener from a checkout and primary address.
+func (coordinator *ProjectRuntimeRepairCoordinator) discoverTargetAtProject(
+	ctx context.Context,
+	checkoutRoot string,
+	address netip.Addr,
+) (projectprocess.RuntimeRepairTarget, error) {
+	discovered, err := coordinator.discoverer.DiscoverDefaultRuntimeAtAddress(ctx, checkoutRoot, address)
 	if err != nil {
 		return projectprocess.RuntimeRepairTarget{}, fmt.Errorf("discover retained project runtime target: %w", err)
 	}
@@ -665,7 +760,7 @@ func (coordinator *ProjectRuntimeRepairCoordinator) discoverTarget(
 		return projectprocess.RuntimeRepairTarget{}, errors.New("discovered retained project runtime target differs from the durable primary lease")
 	}
 	target := projectprocess.RuntimeRepairTarget{
-		CheckoutRoot: boundary.Project.Project.Path,
+		CheckoutRoot: checkoutRoot,
 		Endpoint:     netip.AddrPortFrom(discovered.Address, discovered.Port),
 	}
 	if err := target.Validate(); err != nil {
@@ -827,6 +922,62 @@ func projectRuntimeRepairBoundariesEqual(
 	return reflect.DeepEqual(current, inspected)
 }
 
+// projectRuntimeRepairProcessBoundariesEqual requires every process-backed durable fence to remain exact.
+func projectRuntimeRepairProcessBoundariesEqual(
+	current state.ProcessBackedProjectRuntimeRepairBoundary,
+	inspected state.ProcessBackedProjectRuntimeRepairBoundary,
+) bool {
+	return reflect.DeepEqual(current, inspected)
+}
+
+// retainedProjectRuntimeRepairBoundaryFromProcessBacked maps shared durable fences without treating the receipt as runtime health.
+func retainedProjectRuntimeRepairBoundaryFromProcessBacked(
+	boundary state.ProcessBackedProjectRuntimeRepairBoundary,
+) state.RetainedProjectRuntimeRepairBoundary {
+	return state.RetainedProjectRuntimeRepairBoundary{
+		Project: boundary.Project, SessionID: boundary.SessionID, SessionGeneration: boundary.SessionGeneration,
+		SessionUpdatedAt: boundary.SessionUpdatedAt, RecoveryOperation: boundary.RecoveryOperation,
+		NetworkRevision: boundary.NetworkRevision, NetworkUpdatedAt: boundary.NetworkUpdatedAt,
+		PrimaryLease: boundary.PrimaryLease, PrimaryLeaseGeneration: boundary.PrimaryLeaseGeneration,
+	}
+}
+
+// cloneProcessBackedProjectRuntimeRepairBoundary isolates the exact process receipt held by a process-local plan.
+func cloneProcessBackedProjectRuntimeRepairBoundary(
+	boundary *state.ProcessBackedProjectRuntimeRepairBoundary,
+) *state.ProcessBackedProjectRuntimeRepairBoundary {
+	if boundary == nil {
+		return nil
+	}
+	clone := *boundary
+	clone.Project.Project.Apps = make([]domain.AppSnapshot, len(boundary.Project.Project.Apps))
+	copy(clone.Project.Project.Apps, boundary.Project.Project.Apps)
+	clone.Project.Project.Services = make([]domain.ServiceSnapshot, len(boundary.Project.Project.Services))
+	copy(clone.Project.Project.Services, boundary.Project.Project.Services)
+	clone.Project.Project.Resources = make([]domain.ResourceSnapshot, len(boundary.Project.Project.Resources))
+	copy(clone.Project.Project.Resources, boundary.Project.Project.Resources)
+	if clone.RecoveryOperation.Operation.StartedAt != nil {
+		startedAt := *clone.RecoveryOperation.Operation.StartedAt
+		clone.RecoveryOperation.Operation.StartedAt = &startedAt
+	}
+	if clone.RecoveryOperation.Operation.FinishedAt != nil {
+		finishedAt := *clone.RecoveryOperation.Operation.FinishedAt
+		clone.RecoveryOperation.Operation.FinishedAt = &finishedAt
+	}
+	if clone.RecoveryOperation.Operation.Problem != nil {
+		problem := *clone.RecoveryOperation.Operation.Problem
+		clone.RecoveryOperation.Operation.Problem = &problem
+	}
+	return &clone
+}
+
+// isMissingProcessBackedRuntimeBoundary selects the legacy receipt-free path only when no complete process receipt exists.
+func isMissingProcessBackedRuntimeBoundary(err error) bool {
+	var missing *state.ProjectSessionProcessEvidenceMissingError
+	var notFound *state.ProjectSessionNotFoundError
+	return errors.As(err, &missing) || errors.As(err, &notFound)
+}
+
 // projectRuntimeRepairCompletionRequest copies every finalization fence from the process-local inspected boundary.
 func projectRuntimeRepairCompletionRequest(
 	boundary state.RetainedProjectRuntimeRepairBoundary,
@@ -845,6 +996,19 @@ func projectRuntimeRepairCompletionRequest(
 		ExpectedPrimaryLease:              boundary.PrimaryLease,
 		ExpectedPrimaryLeaseGeneration:    boundary.PrimaryLeaseGeneration,
 		At:                                at,
+	}
+}
+
+// processBackedProjectRuntimeRepairCompletionRequest copies every process-backed durable fence into one completion request.
+func processBackedProjectRuntimeRepairCompletionRequest(
+	boundary state.ProcessBackedProjectRuntimeRepairBoundary,
+	at time.Time,
+) state.CompleteProcessBackedProjectRuntimeRepairRequest {
+	return state.CompleteProcessBackedProjectRuntimeRepairRequest{
+		CompleteRetainedProjectRuntimeRepairRequest: projectRuntimeRepairCompletionRequest(
+			retainedProjectRuntimeRepairBoundaryFromProcessBacked(boundary), at,
+		),
+		ExpectedProcess: boundary.Process,
 	}
 }
 

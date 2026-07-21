@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -26,43 +27,71 @@ type RetainedProjectRuntimeRepairBoundary struct {
 
 // Validate reports whether the boundary identifies one quarantined missing-evidence runtime and its current primary address authority.
 func (boundary RetainedProjectRuntimeRepairBoundary) Validate() error {
-	if err := boundary.Project.Validate(); err != nil {
+	if err := validateProjectRuntimeRepairBoundaryAuthority(
+		boundary.Project,
+		boundary.SessionID,
+		boundary.SessionGeneration,
+		boundary.SessionUpdatedAt,
+		boundary.RecoveryOperation,
+		boundary.NetworkRevision,
+		boundary.NetworkUpdatedAt,
+		boundary.PrimaryLease,
+		boundary.PrimaryLeaseGeneration,
+	); err != nil {
 		return err
-	}
-	if boundary.Project.Project.State != domain.ProjectUnavailable {
-		return fmt.Errorf("repair project must be unavailable")
-	}
-	if err := boundary.SessionID.Validate(); err != nil {
-		return err
-	}
-	if _, err := unsignedToModelInt("repair session generation", boundary.SessionGeneration, false); err != nil {
-		return err
-	}
-	if err := validateStoredTime("repair session update time", boundary.SessionUpdatedAt); err != nil {
-		return err
-	}
-	if boundary.SessionUpdatedAt.After(boundary.Project.Project.UpdatedAt) {
-		return fmt.Errorf("repair session update time must not follow project quarantine")
 	}
 	if err := validateRetainedProjectRuntimeRecoveryOperation(boundary.Project, boundary.RecoveryOperation); err != nil {
 		return err
 	}
-	if _, err := sequenceToModelInt("repair network revision", boundary.NetworkRevision, false); err != nil {
-		return err
-	}
-	if err := validateStoredTime("repair network update time", boundary.NetworkUpdatedAt); err != nil {
-		return err
-	}
-	if err := boundary.PrimaryLease.Validate(); err != nil {
-		return err
-	}
-	if boundary.PrimaryLease.Key.ProjectID != boundary.Project.Project.ID || boundary.PrimaryLease.Key.Kind() != identity.LeaseKindPrimary {
-		return fmt.Errorf("repair primary lease must belong to project %q", boundary.Project.Project.ID)
-	}
-	if _, err := unsignedToModelInt("repair primary lease generation", boundary.PrimaryLeaseGeneration, false); err != nil {
-		return err
-	}
 	return nil
+}
+
+// validateProjectRuntimeRepairBoundaryAuthority validates the durable identity, lifecycle, network, and lease fences shared by repair boundaries.
+func validateProjectRuntimeRepairBoundaryAuthority(
+	project ProjectRecord,
+	sessionID domain.SessionID,
+	sessionGeneration uint64,
+	sessionUpdatedAt time.Time,
+	recoveryOperation OperationRecord,
+	networkRevision domain.Sequence,
+	networkUpdatedAt time.Time,
+	primaryLease identity.Lease,
+	primaryLeaseGeneration uint64,
+) error {
+	if err := project.Validate(); err != nil {
+		return err
+	}
+	if project.Project.State != domain.ProjectUnavailable {
+		return fmt.Errorf("repair project must be unavailable")
+	}
+	if err := sessionID.Validate(); err != nil {
+		return err
+	}
+	if _, err := unsignedToModelInt("repair session generation", sessionGeneration, false); err != nil {
+		return err
+	}
+	if err := validateStoredTime("repair session update time", sessionUpdatedAt); err != nil {
+		return err
+	}
+	if sessionUpdatedAt.After(project.Project.UpdatedAt) {
+		return fmt.Errorf("repair session update time must not follow project quarantine")
+	}
+	if _, err := sequenceToModelInt("repair network revision", networkRevision, false); err != nil {
+		return err
+	}
+	if err := validateStoredTime("repair network update time", networkUpdatedAt); err != nil {
+		return err
+	}
+	if err := primaryLease.Validate(); err != nil {
+		return err
+	}
+	if primaryLease.Key.ProjectID != project.Project.ID || primaryLease.Key.Kind() != identity.LeaseKindPrimary {
+		return fmt.Errorf("repair primary lease must belong to project %q", project.Project.ID)
+	}
+	if _, err := unsignedToModelInt("repair primary lease generation", primaryLeaseGeneration, false); err != nil {
+		return err
+	}
+	return recoveryOperation.Operation.Validate()
 }
 
 // CompleteRetainedProjectRuntimeRepairRequest fences the durable authority that was revalidated immediately before finalization.
@@ -165,83 +194,169 @@ func readRetainedProjectRuntimeRepairBoundary(
 	tx *gorm.DB,
 	projectID domain.ProjectID,
 ) (RetainedProjectRuntimeRepairBoundary, error) {
-	if err := requireNoCompetingProjectOperation(tx, projectID, ""); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	highWater, err := readSnapshotSequence(tx)
+	authority, err := readProjectRuntimeRepairDurableAuthority(tx, projectID, projectRuntimeRepairSessionMissing)
 	if err != nil {
 		return RetainedProjectRuntimeRepairBoundary{}, err
 	}
-	project, err := readLifecycleProject(tx, projectID)
-	if err != nil {
+	if err := validateRetainedProjectRuntimeRecoveryOperation(authority.Project, authority.RecoveryOperation); err != nil {
 		return RetainedProjectRuntimeRepairBoundary{}, err
 	}
-	if project.Project.State != domain.ProjectUnavailable {
-		return RetainedProjectRuntimeRepairBoundary{}, fmt.Errorf("project %q must be unavailable before retained runtime repair, got %q", projectID, project.Project.State)
-	}
-	if err := validateVisibleSequence(highWater, project.Revision, "retained runtime repair project", nil); err != nil {
+	if err := validateRetainedProjectRuntimeRecoveryHistory(authority.Project, authority.RecoveryOperation, authority.RecoveryHistory); err != nil {
 		return RetainedProjectRuntimeRepairBoundary{}, err
 	}
-	if err := validateProjectSequenceOwner(tx, project); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-
-	sessionRow, missing, err := readOnlyMissingEvidenceProjectSession(tx, projectID)
-	if err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	if missing.Owner != domain.SessionOwnerHarbor || missing.State != domain.SessionAwaitingAttach {
-		return RetainedProjectRuntimeRepairBoundary{}, fmt.Errorf("session %q is not a Harbor-owned awaiting-attach repair boundary", missing.SessionID)
-	}
-
-	operation, history, err := readRetainedProjectRuntimeRecoveryOperation(tx, projectID)
-	if err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	if err := validateVisibleSequence(highWater, operation.Revision, "retained runtime recovery operation", nil); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	for _, transition := range history {
-		if err := validateVisibleSequence(highWater, transition.Sequence, "retained runtime recovery transition", nil); err != nil {
-			return RetainedProjectRuntimeRepairBoundary{}, err
-		}
-	}
-	if err := validateOperationHistorySequenceOwners(tx, operation, history); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	if err := validateRetainedProjectRuntimeRecoveryOperation(project, operation); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	if err := validateRetainedProjectRuntimeRecoveryHistory(project, operation, history); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-
-	network, lease, leaseGeneration, err := readProjectRuntimeNetworkBoundary(tx, projectID, "retained runtime repair")
-	if err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	if err := validateVisibleSequence(highWater, network.Revision, "retained runtime repair network", nil); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-	if err := validateNetworkSequenceExclusivity(tx, network.Revision); err != nil {
-		return RetainedProjectRuntimeRepairBoundary{}, err
-	}
-
 	boundary := RetainedProjectRuntimeRepairBoundary{
-		Project:                project,
-		SessionID:              missing.SessionID,
-		SessionGeneration:      missing.Generation,
-		SessionUpdatedAt:       sessionRow.UpdatedAt,
-		RecoveryOperation:      operation,
-		NetworkRevision:        network.Revision,
-		NetworkUpdatedAt:       network.UpdatedAt,
-		PrimaryLease:           lease,
-		PrimaryLeaseGeneration: leaseGeneration,
+		Project:                authority.Project,
+		SessionID:              authority.SessionID,
+		SessionGeneration:      authority.SessionGeneration,
+		SessionUpdatedAt:       authority.SessionUpdatedAt,
+		RecoveryOperation:      authority.RecoveryOperation,
+		NetworkRevision:        authority.NetworkRevision,
+		NetworkUpdatedAt:       authority.NetworkUpdatedAt,
+		PrimaryLease:           authority.PrimaryLease,
+		PrimaryLeaseGeneration: authority.PrimaryLeaseGeneration,
 	}
 	if err := boundary.Validate(); err != nil {
 		return RetainedProjectRuntimeRepairBoundary{}, corruptStateError("retained project runtime repair", string(projectID), err)
 	}
 	return boundary, nil
+}
+
+type projectRuntimeRepairSessionMode uint8
+
+const (
+	projectRuntimeRepairSessionMissing projectRuntimeRepairSessionMode = iota + 1
+	projectRuntimeRepairSessionProcessBacked
+)
+
+type projectRuntimeRepairDurableAuthority struct {
+	Project                ProjectRecord
+	SessionID              domain.SessionID
+	SessionGeneration      uint64
+	SessionUpdatedAt       time.Time
+	RecoveryOperation      OperationRecord
+	RecoveryHistory        []OperationTransition
+	NetworkRevision        domain.Sequence
+	NetworkUpdatedAt       time.Time
+	PrimaryLease           identity.Lease
+	PrimaryLeaseGeneration uint64
+	Process                *domain.ProcessEvidence
+}
+
+// readProjectRuntimeRepairDurableAuthority reads one process-shaped repair fence without treating SQLite as host-process health.
+func readProjectRuntimeRepairDurableAuthority(
+	tx *gorm.DB,
+	projectID domain.ProjectID,
+	mode projectRuntimeRepairSessionMode,
+) (projectRuntimeRepairDurableAuthority, error) {
+	if err := requireNoCompetingProjectOperation(tx, projectID, ""); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	highWater, err := readSnapshotSequence(tx)
+	if err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	project, err := readLifecycleProject(tx, projectID)
+	if err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	if project.Project.State != domain.ProjectUnavailable {
+		return projectRuntimeRepairDurableAuthority{}, fmt.Errorf("project %q must be unavailable before runtime repair, got %q", projectID, project.Project.State)
+	}
+	if err := validateVisibleSequence(highWater, project.Revision, "runtime repair project", nil); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	if err := validateProjectSequenceOwner(tx, project); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	sessionRow, sessionID, generation, process, err := readProjectRuntimeRepairSession(tx, projectID, mode)
+	if err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	operation, history, err := readRetainedProjectRuntimeRecoveryOperation(tx, projectID)
+	if err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	if err := validateVisibleSequence(highWater, operation.Revision, "runtime recovery operation", nil); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	for _, transition := range history {
+		if err := validateVisibleSequence(highWater, transition.Sequence, "runtime recovery transition", nil); err != nil {
+			return projectRuntimeRepairDurableAuthority{}, err
+		}
+	}
+	if err := validateOperationHistorySequenceOwners(tx, operation, history); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	network, lease, leaseGeneration, err := readProjectRuntimeNetworkBoundary(tx, projectID, "runtime repair")
+	if err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	if err := validateVisibleSequence(highWater, network.Revision, "runtime repair network", nil); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	if err := validateNetworkSequenceExclusivity(tx, network.Revision); err != nil {
+		return projectRuntimeRepairDurableAuthority{}, err
+	}
+	return projectRuntimeRepairDurableAuthority{
+		Project: project, SessionID: sessionID, SessionGeneration: generation, SessionUpdatedAt: sessionRow.UpdatedAt,
+		RecoveryOperation: operation, RecoveryHistory: history, NetworkRevision: network.Revision, NetworkUpdatedAt: network.UpdatedAt,
+		PrimaryLease: lease, PrimaryLeaseGeneration: leaseGeneration, Process: process,
+	}, nil
+}
+
+// readProjectRuntimeRepairSession accepts only one Harbor-owned awaiting-attach session in the selected evidence shape.
+func readProjectRuntimeRepairSession(
+	tx *gorm.DB,
+	projectID domain.ProjectID,
+	mode projectRuntimeRepairSessionMode,
+) (models.ProjectSession, domain.SessionID, uint64, *domain.ProcessEvidence, error) {
+	var rows []models.ProjectSession
+	if err := tx.Where("project_id = ?", string(projectID)).Order("id ASC").Find(&rows).Error; err != nil {
+		return models.ProjectSession{}, "", 0, nil, fmt.Errorf("read project runtime repair session row: %w", err)
+	}
+	if len(rows) == 0 {
+		return models.ProjectSession{}, "", 0, nil, &ProjectSessionNotFoundError{ProjectID: projectID}
+	}
+	if len(rows) != 1 {
+		return models.ProjectSession{}, "", 0, nil, corruptStateError("project session", string(projectID), fmt.Errorf("project owns multiple active sessions"))
+	}
+	row := rows[0]
+	sessionID := domain.SessionID(row.SessionId)
+	sessionRow, owner, sessionState, generation, readErr := readExactUnresolvedProjectSession(tx, projectID, sessionID)
+	var missing *ProjectSessionProcessEvidenceMissingError
+	if readErr != nil && !errors.As(readErr, &missing) {
+		return models.ProjectSession{}, "", 0, nil, readErr
+	}
+	if readErr != nil && mode == projectRuntimeRepairSessionProcessBacked {
+		return models.ProjectSession{}, "", 0, nil, readErr
+	}
+	if readErr == nil {
+		process, processErr := processEvidenceFromModel(sessionRow, durableKey(sessionRow.SessionId, sessionRow.Id))
+		if processErr != nil {
+			return models.ProjectSession{}, "", 0, nil, processErr
+		}
+		if mode == projectRuntimeRepairSessionMissing && process != nil {
+			return models.ProjectSession{}, "", 0, nil, fmt.Errorf("session %q retains exact process evidence", sessionID)
+		}
+		if mode == projectRuntimeRepairSessionProcessBacked && process == nil {
+			return models.ProjectSession{}, "", 0, nil, &ProjectSessionProcessEvidenceMissingError{
+				ProjectID: projectID, SessionID: sessionID, Owner: owner, State: sessionState, Generation: generation, UpdatedAt: sessionRow.UpdatedAt,
+			}
+		}
+		if owner != domain.SessionOwnerHarbor || !isProcessBackedProjectRuntimeRepairSessionState(sessionState) {
+			return models.ProjectSession{}, "", 0, nil, fmt.Errorf("session %q is not a Harbor-owned process-backed repair boundary", sessionID)
+		}
+		return sessionRow, sessionID, generation, process, nil
+	}
+	if missing.Owner != domain.SessionOwnerHarbor || missing.State != domain.SessionAwaitingAttach {
+		return models.ProjectSession{}, "", 0, nil, fmt.Errorf("session %q is not a Harbor-owned awaiting-attach repair boundary", missing.SessionID)
+	}
+	return row, missing.SessionID, missing.Generation, nil, nil
+}
+
+// isProcessBackedProjectRuntimeRepairSessionState accepts the launch and stopping states whose complete process receipt remains actionable.
+func isProcessBackedProjectRuntimeRepairSessionState(sessionState domain.SessionState) bool {
+	return sessionState == domain.SessionAwaitingAttach || sessionState == domain.SessionStopping
 }
 
 // readOnlyMissingEvidenceProjectSession rejects complete, partial, absent, or multiply-owned session authority.

@@ -98,11 +98,13 @@ describe('ProjectView stale runtime recovery', () => {
     wrapper.unmount()
   })
 
-  it('adds an explicit inspection action and disables it for disconnected, stale, or busy state', async () => {
+  it('keeps the normal recovery start action available and disables inspection only for unsafe client state', async () => {
     const { store, wrapper } = await mountRecoveryProject()
+    const recover = wrapper.findAll('button').find((button) => button.text().includes('Recover and start'))
+    expect(recover).toBeDefined()
+    expect(recover?.attributes('disabled')).toBeUndefined()
     const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
     expect(inspect).toBeDefined()
-    expect(wrapper.findAll('button').filter((button) => button.text().includes('Recovery required'))).toHaveLength(0)
     expect(inspect?.attributes('disabled')).toBeUndefined()
 
     store.$patch({ snapshotStale: true })

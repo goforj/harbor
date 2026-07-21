@@ -167,7 +167,7 @@ const lifecycleAction = computed(() => project.value?.state === 'stopped'
   ? 'start'
   : 'stop')
 const lifecycleLabel = computed(() => {
-  if (recoveryRequired.value) return 'Recovery required'
+  if (recoveryRequired.value) return 'Recover and start'
   if (restarting.value) return 'Restarting…'
   if (starting.value) return 'Starting…'
   if (stopping.value) return 'Stopping…'
@@ -180,7 +180,6 @@ const lifecycleDisabled = computed(() => store.snapshotStale
   || store.projectRemovalApprovalBusy
   || starting.value
   || stopping.value
-  || recoveryRequired.value
   || removalPending.value)
 const restartDisabled = computed(() => lifecycleDisabled.value || !restartAvailable.value)
 const networkSetupDisabled = computed(() => !needsNetworkSetup.value
@@ -413,7 +412,6 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           </div>
           <div class="flex items-center gap-2">
             <Button
-              v-if="!recoveryRequired"
               :variant="lifecycleAction === 'start' ? 'default' : 'outline'"
               size="sm"
               :disabled="lifecycleDisabled"
@@ -517,11 +515,12 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </TabsList>
 
         <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
-        <Alert v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" variant="destructive">
+        <Alert v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" :variant="recoveryRequired ? 'default' : 'destructive'">
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>{{ recoveryRequired ? 'Project recovery required' : 'Project action failed' }}</AlertTitle>
+          <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
-            <p v-if="lifecycleError">{{ lifecycleError }}</p>
+            <p v-if="recoveryRequired">Starting again will reconcile the previous runtime and launch a fresh process.</p>
+            <p v-else-if="lifecycleError">{{ lifecycleError }}</p>
             <p v-if="recoveryRequired && runtimeRepairNotice" class="text-destructive">
               {{ runtimeRepairNotice.message }}
             </p>

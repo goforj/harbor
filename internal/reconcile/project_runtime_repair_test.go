@@ -29,6 +29,45 @@ type projectRuntimeRepairTestStore struct {
 	events          *[]string
 }
 
+// processBackedProjectRuntimeRepairTestStore exposes the separate exact-receipt boundary without changing legacy fixture behavior.
+type processBackedProjectRuntimeRepairTestStore struct {
+	*projectRuntimeRepairTestStore
+	processBoundary        state.ProcessBackedProjectRuntimeRepairBoundary
+	processBoundaryCalls   int
+	processCompletionCalls []state.CompleteProcessBackedProjectRuntimeRepairRequest
+	processBoundaryErr     error
+	processCompletionErr   error
+}
+
+// ProcessBackedProjectRuntimeRepairBoundary returns a detached process-backed boundary for native inspection tests.
+func (store *processBackedProjectRuntimeRepairTestStore) ProcessBackedProjectRuntimeRepairBoundary(
+	_ context.Context,
+	_ domain.ProjectID,
+) (state.ProcessBackedProjectRuntimeRepairBoundary, error) {
+	store.processBoundaryCalls++
+	appendProjectRuntimeRepairTestEvent(store.events, "process-boundary")
+	if store.processBoundaryErr != nil {
+		return state.ProcessBackedProjectRuntimeRepairBoundary{}, store.processBoundaryErr
+	}
+	return cloneProcessBackedProjectRuntimeRepairTestBoundary(store.processBoundary), nil
+}
+
+// CompleteProcessBackedProjectRuntimeRepair records native-confirmed process fences and returns a stopped projection.
+func (store *processBackedProjectRuntimeRepairTestStore) CompleteProcessBackedProjectRuntimeRepair(
+	_ context.Context,
+	request state.CompleteProcessBackedProjectRuntimeRepairRequest,
+) (state.ProjectRecord, error) {
+	store.processCompletionCalls = append(store.processCompletionCalls, request)
+	appendProjectRuntimeRepairTestEvent(store.events, "process-complete")
+	if store.processCompletionErr != nil {
+		return state.ProjectRecord{}, store.processCompletionErr
+	}
+	project := cloneProjectRuntimeRepairTestBoundary(store.boundary).Project.Project
+	project.State = domain.ProjectStopped
+	project.UpdatedAt = request.At
+	return state.ProjectRecord{Project: project, Revision: store.boundary.Project.Revision + 1}, nil
+}
+
 // RetainedProjectRuntimeRepairBoundary returns a detached copy so test drift cannot mutate an already-retained plan through pointers.
 func (store *projectRuntimeRepairTestStore) RetainedProjectRuntimeRepairBoundary(
 	_ context.Context,
@@ -195,6 +234,51 @@ func TestProjectRuntimeRepairInspectMapsNativeStates(t *testing.T) {
 				t.Fatalf("retained plan count = %d, want 1", len(fixture.coordinator.plans))
 			}
 		})
+	}
+}
+
+// TestProjectRuntimeRepairProcessBackedBoundaryReachesNativeConfirmation proves complete receipts no longer fall into the legacy missing-evidence reader.
+func TestProjectRuntimeRepairProcessBackedBoundaryReachesNativeConfirmation(t *testing.T) {
+	fixture := newProjectRuntimeRepairTestFixture(t)
+	processPath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable() error = %v", err)
+	}
+	processBoundary := state.ProcessBackedProjectRuntimeRepairBoundary{
+		Project:                fixture.boundary.Project,
+		SessionID:              fixture.boundary.SessionID,
+		SessionGeneration:      fixture.boundary.SessionGeneration,
+		SessionUpdatedAt:       fixture.boundary.SessionUpdatedAt,
+		RecoveryOperation:      fixture.boundary.RecoveryOperation,
+		NetworkRevision:        fixture.boundary.NetworkRevision,
+		NetworkUpdatedAt:       fixture.boundary.NetworkUpdatedAt,
+		PrimaryLease:           fixture.boundary.PrimaryLease,
+		PrimaryLeaseGeneration: fixture.boundary.PrimaryLeaseGeneration,
+		Process: domain.ProcessEvidence{
+			PID: 4102, BirthToken: "process-backed-test", ExecutableIdentity: filepath.Clean(processPath), ArgumentDigest: strings.Repeat("c", 64),
+		},
+	}
+	if err := processBoundary.Validate(); err != nil {
+		t.Fatalf("process boundary Validate() error = %v", err)
+	}
+	processStore := &processBackedProjectRuntimeRepairTestStore{
+		projectRuntimeRepairTestStore: fixture.store,
+		processBoundary:               processBoundary,
+	}
+	fixture.coordinator.store = processStore
+
+	confirmable := inspectActionableProjectRuntimeRepair(t, fixture)
+	if processStore.processBoundaryCalls != 1 || fixture.store.boundaryCalls != 0 {
+		t.Fatalf("inspection boundary calls = process %d legacy %d", processStore.processBoundaryCalls, fixture.store.boundaryCalls)
+	}
+	if _, err := fixture.coordinator.Confirm(t.Context(), projectRuntimeRepairConfirmRequest(fixture, confirmable)); err != nil {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	if len(processStore.processCompletionCalls) != 1 || len(fixture.store.completionCalls) != 0 {
+		t.Fatalf("completion calls = process %d legacy %d", len(processStore.processCompletionCalls), len(fixture.store.completionCalls))
+	}
+	if got := processStore.processCompletionCalls[0].ExpectedProcess; got != processBoundary.Process {
+		t.Fatalf("completion process fence = %#v, want %#v", got, processBoundary.Process)
 	}
 }
 
@@ -649,6 +733,34 @@ func inspectActionableProjectRuntimeRepair(
 func cloneProjectRuntimeRepairTestBoundary(
 	boundary state.RetainedProjectRuntimeRepairBoundary,
 ) state.RetainedProjectRuntimeRepairBoundary {
+	clone := boundary
+	clone.Project.Project.Apps = make([]domain.AppSnapshot, len(boundary.Project.Project.Apps))
+	copy(clone.Project.Project.Apps, boundary.Project.Project.Apps)
+	clone.Project.Project.Services = make([]domain.ServiceSnapshot, len(boundary.Project.Project.Services))
+	copy(clone.Project.Project.Services, boundary.Project.Project.Services)
+	clone.Project.Project.Resources = make([]domain.ResourceSnapshot, len(boundary.Project.Project.Resources))
+	copy(clone.Project.Project.Resources, boundary.Project.Project.Resources)
+	operation := boundary.RecoveryOperation.Operation
+	if operation.StartedAt != nil {
+		startedAt := *operation.StartedAt
+		operation.StartedAt = &startedAt
+	}
+	if operation.FinishedAt != nil {
+		finishedAt := *operation.FinishedAt
+		operation.FinishedAt = &finishedAt
+	}
+	if operation.Problem != nil {
+		problem := *operation.Problem
+		operation.Problem = &problem
+	}
+	clone.RecoveryOperation.Operation = operation
+	return clone
+}
+
+// cloneProcessBackedProjectRuntimeRepairTestBoundary isolates process-backed fixture data for each durable read.
+func cloneProcessBackedProjectRuntimeRepairTestBoundary(
+	boundary state.ProcessBackedProjectRuntimeRepairBoundary,
+) state.ProcessBackedProjectRuntimeRepairBoundary {
 	clone := boundary
 	clone.Project.Project.Apps = make([]domain.AppSnapshot, len(boundary.Project.Project.Apps))
 	copy(clone.Project.Project.Apps, boundary.Project.Project.Apps)

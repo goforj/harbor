@@ -82,6 +82,17 @@ type projectLifecycleState interface {
 	RecordUnexpectedProjectExit(context.Context, state.RecordUnexpectedProjectExitRequest) (state.ProjectRecord, error)
 }
 
+// processBackedLifecycleRecoveryState exposes the narrow automatic recovery seam used before a fresh start is enqueued.
+type processBackedLifecycleRecoveryState interface {
+	ProcessBackedProjectRuntimeRepairBoundary(context.Context, domain.ProjectID) (state.ProcessBackedProjectRuntimeRepairBoundary, error)
+	CompleteProcessBackedProjectRuntimeRepair(context.Context, state.CompleteProcessBackedProjectRuntimeRepairRequest) (state.ProjectRecord, error)
+}
+
+// receiptFreeLifecycleRecoveryState exposes the narrow reset seam for quarantines that never retained process identity.
+type receiptFreeLifecycleRecoveryState interface {
+	ReleaseUnavailableProjectSession(context.Context, state.ReleaseUnavailableProjectSessionRequest) (state.ProjectRecord, error)
+}
+
 // projectLifecycleJournal is the durable idempotency and recovery surface required by project lifecycle operations.
 type projectLifecycleJournal interface {
 	Enqueue(context.Context, domain.Operation) (state.OperationRecord, error)
@@ -301,6 +312,15 @@ func (coordinator *ProjectLifecycleCoordinator) enqueue(
 	project, err := coordinator.state.Project(ctx, projectID)
 	if err != nil {
 		return state.OperationRecord{}, err
+	}
+	if kind == domain.OperationKindProjectStart && project.Project.State == domain.ProjectUnavailable {
+		if err := coordinator.recoverProcessBackedProjectBeforeStart(ctx, projectID); err != nil {
+			return state.OperationRecord{}, err
+		}
+		project, err = coordinator.state.Project(ctx, projectID)
+		if err != nil {
+			return state.OperationRecord{}, err
+		}
 	}
 	if err := validateNewLifecycleState(coordinator.state, ctx, project.Project, kind); err != nil {
 		return state.OperationRecord{}, err
