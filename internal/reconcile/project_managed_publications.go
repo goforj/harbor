@@ -89,6 +89,12 @@ func (coordinator *ProjectLifecycleCoordinator) observeManagedPublications(
 	if !descriptor.ServiceRequirementsSupported {
 		return []harbordruntime.ManagedEndpointPublication{}, nil
 	}
+	// Reconcile static service intent at the authenticated barrier as well as at Start. A daemon restart or an
+	// already-attached process can reach this boundary without passing through the current launch admission, but the
+	// managed publication join still requires the exact durable reservation before it can observe private ports.
+	if err := coordinator.primaryLeases.assignServiceEndpointReservations(ctx, projectID, descriptor.ServiceRequirements); err != nil {
+		return nil, fmt.Errorf("%w: assign managed publication service endpoints: %w", managedsession.ErrManagedSessionNotReady, err)
+	}
 
 	network, initialized, err := coordinator.primaryLeases.state.Network(ctx)
 	if err != nil {
