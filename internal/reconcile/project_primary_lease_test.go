@@ -358,6 +358,42 @@ func TestProjectPrimaryLeaseCoordinatorReplansAroundObservedCandidateConflicts(t
 	}
 }
 
+// TestProjectPrimaryLeaseCoordinatorSettlesAnOwnedFreshCandidateBeforeReplanning proves a stale project listener does not force a new address.
+func TestProjectPrimaryLeaseCoordinatorSettlesAnOwnedFreshCandidateBeforeReplanning(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{
+			State:     projectprocess.RuntimeRepairInspectionActionable,
+			Candidate: &projectprocess.UnattributedRuntimeCandidate{},
+		},
+		confirmation: projectprocess.RuntimeRepairConfirmation{
+			State:    projectprocess.RuntimeRepairConfirmationSettled,
+			Signaled: true,
+		},
+		onConfirm: func() {
+			fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
+		},
+	}
+	fixture.coordinator.runtimeRepairer = repairer
+
+	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err != nil || admission.Lease.Address != address {
+		t.Fatalf("Ensure() = %#v, %v, want the repaired candidate address", admission, err)
+	}
+	if len(repairer.inspectTargets) != 1 || len(repairer.candidates) != 1 {
+		t.Fatalf("fresh candidate cleanup calls = inspections %d candidates %d, want one each", len(repairer.inspectTargets), len(repairer.candidates))
+	}
+	if repairer.inspectTargets[0].CheckoutRoot != fixture.state.project.Project.Path ||
+		repairer.inspectTargets[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") {
+		t.Fatalf("fresh candidate repair target = %#v, want project checkout and exact listener", repairer.inspectTargets[0])
+	}
+	if len(fixture.ports.calls) != 2 {
+		t.Fatalf("fresh candidate probes = %d, want initial and post-settlement probes", len(fixture.ports.calls))
+	}
+}
+
 // TestProjectPrimaryLeaseCoordinatorReturnsRetainedLeaseWithoutHostMutation proves allocation never churns durable identity.
 func TestProjectPrimaryLeaseCoordinatorReturnsRetainedLeaseWithoutHostMutation(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")

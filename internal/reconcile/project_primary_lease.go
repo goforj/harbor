@@ -758,7 +758,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 		}
 		if len(observation.UnavailableAppPorts) != 0 {
 			port := observation.UnavailableAppPorts[0]
-			resolved, repairErr := coordinator.repairRetainedAppPortConflict(
+			resolved, repairErr := coordinator.repairProjectAppPortConflict(
 				ctx,
 				project.Project.Path,
 				existing.Address,
@@ -830,8 +830,8 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 	return coordinator.allocateAtCurrentRevision(ctx, project, network, key, projectEndpoints)
 }
 
-// repairRetainedAppPortConflict settles one exact same-user project runtime before exposing a retryable port failure.
-func (coordinator *projectPrimaryLeaseCoordinator) repairRetainedAppPortConflict(
+// repairProjectAppPortConflict settles one exact same-user project runtime before exposing a retryable port failure.
+func (coordinator *projectPrimaryLeaseCoordinator) repairProjectAppPortConflict(
 	ctx context.Context,
 	checkoutRoot string,
 	address netip.Addr,
@@ -985,6 +985,27 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 			continue
 		}
 		if len(observation.UnavailableAppPorts) != 0 {
+			for _, port := range observation.UnavailableAppPorts {
+				resolved, repairErr := coordinator.repairProjectAppPortConflict(
+					ctx,
+					project.Project.Path,
+					lease.Address,
+					port,
+				)
+				if repairErr != nil || !resolved {
+					// A fresh lease is still only a candidate. If native ownership cannot be
+					// proven, leave the listener untouched and let the planner choose another
+					// address rather than turning a probe into kill authority.
+					continue
+				}
+				observation, err = coordinator.observePrimaryLease(ctx, project.Project.Path, network.Pool, lease)
+				if err != nil {
+					return projectPrimaryLeaseAdmission{}, err
+				}
+				if observation.Loopback.State == loopback.StateExact && len(observation.UnavailableAppPorts) == 0 {
+					return coordinator.persistPrimaryLease(ctx, project, network, lease, observation, projectEndpoints)
+				}
+			}
 			for _, port := range observation.UnavailableAppPorts {
 				conflicts = append(conflicts, identity.Conflict{
 					Address: lease.Address,
