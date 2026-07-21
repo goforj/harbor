@@ -85,7 +85,7 @@ jobs:
 
       - name: Exercise Darwin runtime repair lifecycle
         if: runner.os == 'macOS'
-        run: env HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 "${{ runner.temp }}/harbor-runtime-repair.test" -test.run '^TestNativeDarwinRuntimeRepair(Lifecycle|RejectsAmbiguousScopeWithoutSignal|RejectsDriftWithoutSignal)$' -test.v
+        run: env HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 "${{ runner.temp }}/harbor-runtime-repair.test" -test.run '^(TestNativeDarwinRuntimeRepair(Lifecycle|RejectsAmbiguousScopeWithoutSignal|RejectsDriftWithoutSignal)|TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope)$' -test.v
 
       - name: Build focused Darwin helper resolver test
         if: runner.os == 'macOS'
