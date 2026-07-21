@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestValidateDarwinRuntimeRepairCallResultAllowsEmptyFDInventory preserves zero as valid only for descriptor census reads.
@@ -221,6 +223,44 @@ func TestParseDarwinRuntimeRepairSocketFDRequiresOwnedOpaqueListener(t *testing.
 	}
 	if _, _, err := parseDarwinRuntimeRepairSocketFD(raw[:len(raw)-1], 100, 7, endpoint); err == nil {
 		t.Fatal("short socket record passed parsing")
+	}
+}
+
+// TestParseDarwinRuntimeRepairSocketFDAdmitsIPv4CapableIPv6Listeners proves wildcard dual-stack binds cannot strand a project-owned port.
+func TestParseDarwinRuntimeRepairSocketFDAdmitsIPv4CapableIPv6Listeners(t *testing.T) {
+	endpoint := netip.MustParseAddrPort("127.0.0.42:38473")
+	tests := []struct {
+		name     string
+		vflag    uint8
+		wildcard bool
+	}{
+		{name: "IPv4 capable exact", vflag: darwinRuntimeRepairIPv4Flag},
+		{name: "IPv4 capable wildcard", vflag: darwinRuntimeRepairIPv4Flag, wildcard: true},
+		{name: "dual stack wildcard", vflag: darwinRuntimeRepairIPv4Flag | darwinRuntimeRepairIPv6Flag, wildcard: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := darwinRuntimeRepairTestSocketRecord(endpoint)
+			binary.LittleEndian.PutUint32(raw[darwinRuntimeRepairSocketFamilyOffset:], uint32(unix.AF_INET6))
+			raw[darwinRuntimeRepairIPv4FlagOffset] = test.vflag
+			if test.wildcard {
+				for index := 0; index < 4; index++ {
+					raw[darwinRuntimeRepairIPv4AddressOffset+index] = 0
+				}
+			}
+			fact, matches, err := parseDarwinRuntimeRepairSocketFD(raw, 100, 7, endpoint)
+			if err != nil || !matches || fact.Endpoint != endpoint {
+				t.Fatalf("IPv4-capable listener = %#v, %t, %v; want normalized target endpoint", fact, matches, err)
+			}
+		})
+	}
+
+	noncanonical := darwinRuntimeRepairTestSocketRecord(endpoint)
+	binary.LittleEndian.PutUint32(noncanonical[darwinRuntimeRepairSocketFamilyOffset:], uint32(unix.AF_INET6))
+	noncanonical[darwinRuntimeRepairIPv4FlagOffset] = darwinRuntimeRepairIPv4Flag
+	noncanonical[darwinRuntimeRepairIPv4AddressPrefixOffset] = 1
+	if _, _, err := parseDarwinRuntimeRepairSocketFD(noncanonical, 100, 7, endpoint); err == nil {
+		t.Fatal("AF_INET6 listener with nonzero IPv4 padding passed parsing")
 	}
 }
 

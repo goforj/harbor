@@ -30,6 +30,8 @@ const (
 	darwinRuntimeRepairTCPStateListen = 1
 	// darwinRuntimeRepairIPv4Flag proves in_sockinfo contains an IPv4 address.
 	darwinRuntimeRepairIPv4Flag = 1
+	// darwinRuntimeRepairIPv6Flag identifies the IPv6 half of an IPv4-capable dual-stack socket.
+	darwinRuntimeRepairIPv6Flag = 2
 	// darwinRuntimeRepairMaximumFDs bounds one process descriptor census.
 	darwinRuntimeRepairMaximumFDs = 4096
 	// darwinRuntimeRepairFDReadSpareRecords lets proc_pidinfo reveal a growing descriptor table without treating a complete read as a race.
@@ -64,6 +66,8 @@ const (
 	darwinRuntimeRepairIPv4FlagOffset = 288
 	// darwinRuntimeRepairIPv4AddressOffset pins the IPv4 suffix of in_sockinfo's local address union.
 	darwinRuntimeRepairIPv4AddressOffset = 324
+	// darwinRuntimeRepairIPv4AddressPrefixOffset pins the first byte of in_sockinfo's 12-byte IPv4 padding.
+	darwinRuntimeRepairIPv4AddressPrefixOffset = darwinRuntimeRepairIPv4AddressOffset - 12
 	// darwinRuntimeRepairTCPStateOffset pins tcp_sockinfo.tcpsi_state in socket_fdinfo.
 	darwinRuntimeRepairTCPStateOffset = 344
 )
@@ -239,7 +243,7 @@ func inspectDarwinRuntimeRepairSocketFD(pid, fd int, endpoint netip.AddrPort) (r
 	return parseDarwinRuntimeRepairSocketFD(raw, pid, fd, endpoint)
 }
 
-// parseDarwinRuntimeRepairSocketFD accepts one exact or IPv4 wildcard TCP listening endpoint with opaque kernel identity.
+// parseDarwinRuntimeRepairSocketFD accepts one exact or IPv4-capable wildcard TCP listener with opaque kernel identity.
 func parseDarwinRuntimeRepairSocketFD(raw []byte, pid, fd int, endpoint netip.AddrPort) (runtimeRepairSocketFact, bool, error) {
 	if len(raw) != darwinRuntimeRepairSocketFDInfoBytes || pid <= 0 || fd < 0 {
 		return runtimeRepairSocketFact{}, false, fmt.Errorf("Darwin socket record has invalid envelope: %w", errDarwinRuntimeRepairUnreadable)
@@ -248,8 +252,35 @@ func parseDarwinRuntimeRepairSocketFD(raw []byte, pid, fd int, endpoint netip.Ad
 	kind := int32(binary.LittleEndian.Uint32(raw[darwinRuntimeRepairSocketKindOffset : darwinRuntimeRepairSocketKindOffset+4]))
 	state := int32(binary.LittleEndian.Uint32(raw[darwinRuntimeRepairTCPStateOffset : darwinRuntimeRepairTCPStateOffset+4]))
 	vflag := raw[darwinRuntimeRepairIPv4FlagOffset]
-	if family != unix.AF_INET || kind != darwinRuntimeRepairSocketInfoTCP || state != darwinRuntimeRepairTCPStateListen || vflag != darwinRuntimeRepairIPv4Flag {
+	if kind != darwinRuntimeRepairSocketInfoTCP || state != darwinRuntimeRepairTCPStateListen {
 		return runtimeRepairSocketFact{}, false, nil
+	}
+	addressPrefix := raw[darwinRuntimeRepairIPv4AddressPrefixOffset:darwinRuntimeRepairIPv4AddressOffset]
+	switch family {
+	case unix.AF_INET:
+		if vflag != darwinRuntimeRepairIPv4Flag || !allDarwinRuntimeRepairBytesZero(addressPrefix) {
+			return runtimeRepairSocketFact{}, false, fmt.Errorf("Darwin AF_INET listener has contradictory address facts: %w", errDarwinRuntimeRepairUnreadable)
+		}
+	case unix.AF_INET6:
+		switch vflag {
+		case darwinRuntimeRepairIPv4Flag:
+			// XNU reports an IPv4-capable AF_INET6 socket with the IPv4 address in the
+			// final four bytes of the in6 union. The preceding twelve bytes must be
+			// zero, matching the kernel's canonical IPv4-in-IPv6 null-bind form.
+			if !allDarwinRuntimeRepairBytesZero(addressPrefix) {
+				return runtimeRepairSocketFact{}, false, fmt.Errorf("Darwin AF_INET6 IPv4 listener has nonzero address padding: %w", errDarwinRuntimeRepairUnreadable)
+			}
+		case darwinRuntimeRepairIPv4Flag | darwinRuntimeRepairIPv6Flag:
+			// A dual-stack wildcard carries an IPv6 null address; it accepts the
+			// requested IPv4 port even though only the IPv4 suffix is retained here.
+			if !allDarwinRuntimeRepairBytesZero(raw[darwinRuntimeRepairIPv4AddressPrefixOffset : darwinRuntimeRepairIPv4AddressOffset+4]) {
+				return runtimeRepairSocketFact{}, false, fmt.Errorf("Darwin dual-stack listener has a nonzero IPv6 address: %w", errDarwinRuntimeRepairUnreadable)
+			}
+		default:
+			return runtimeRepairSocketFact{}, false, nil
+		}
+	default:
+		return runtimeRepairSocketFact{}, false, fmt.Errorf("Darwin listener has unsupported socket family %d: %w", family, errDarwinRuntimeRepairUnreadable)
 	}
 	localPort := binary.LittleEndian.Uint32(raw[darwinRuntimeRepairLocalPortOffset : darwinRuntimeRepairLocalPortOffset+4])
 	if localPort>>16 != 0 {
@@ -277,6 +308,16 @@ func parseDarwinRuntimeRepairSocketFD(raw []byte, pid, fd int, endpoint netip.Ad
 		// exact port admission request while the opaque kernel identity protects confirmation from replacement.
 		Endpoint: endpoint,
 	}, true, nil
+}
+
+// allDarwinRuntimeRepairBytesZero checks address padding before a native fact authorizes cleanup.
+func allDarwinRuntimeRepairBytesZero(raw []byte) bool {
+	for _, value := range raw {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // observeDarwinRuntimeRepairExecutable reads and canonicalizes proc_pidpath without trusting argv zero.
