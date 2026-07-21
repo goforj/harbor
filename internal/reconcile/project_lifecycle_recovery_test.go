@@ -906,6 +906,69 @@ func TestProjectLifecycleStartReleasesReceiptFreeQuarantine(t *testing.T) {
 	}
 }
 
+// TestProjectLifecycleStartReleasesReceiptFreeQuarantineWhenListenerRepairIsUncertain keeps native ambiguity from becoming a durable recovery dead end.
+func TestProjectLifecycleStartReleasesReceiptFreeQuarantineWhenListenerRepairIsUncertain(t *testing.T) {
+	store, journal := newProjectLifecycleIntegrationState(t)
+	root, _ := newProjectLifecycleIntegrationCheckout(t)
+	project := registerProjectLifecycleIntegrationProject(t, store, root)
+	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
+	coordinator := newProjectLifecycleAdmissionTestCoordinator(
+		store,
+		journal,
+		store,
+		&projectLifecycleRecoverySupervisor{},
+		netip.MustParseAddr("127.0.0.1"),
+	)
+	t.Cleanup(func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Errorf("close uncertain receipt-free recovery coordinator: %v", err)
+		}
+	})
+	if _, err := coordinator.primaryLeases.Ensure(t.Context(), project.ID); err != nil {
+		t.Fatalf("ensure receipt-free project lease: %v", err)
+	}
+	projectRecord, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read receipt-free project: %v", err)
+	}
+	startAt := lifecycleTime(projectRecord.Project.UpdatedAt.Add(time.Second))
+	operation, err := domain.NewOperation("operation-receipt-free-uncertain", "intent-receipt-free-uncertain", domain.OperationKindProjectStart, project.ID, startAt)
+	if err != nil {
+		t.Fatalf("create receipt-free operation: %v", err)
+	}
+	queued, err := journal.Enqueue(t.Context(), operation)
+	if err != nil {
+		t.Fatalf("enqueue receipt-free operation: %v", err)
+	}
+	session, err := newHarborProjectSession(project.ID, root, startAt)
+	if err != nil {
+		t.Fatalf("create receipt-free session: %v", err)
+	}
+	begun, err := store.BeginProjectStart(t.Context(), state.BeginProjectStartRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: queued.Revision,
+		ExpectedProjectRevision: projectRecord.Revision, Session: session, Phase: "launching", At: startAt,
+	})
+	if err != nil || begun.Session == nil {
+		t.Fatalf("begin receipt-free start = %#v, %v", begun, err)
+	}
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	coordinator.primaryLeases.runtimeRepairer = &primaryLeaseTestRuntimeRepairer{
+		inspection: projectprocess.UnattributedRuntimeInspection{State: projectprocess.RuntimeRepairInspectionForeign},
+	}
+	if err := coordinator.recoverProcessBackedProjectBeforeStart(t.Context(), project.ID); err != nil {
+		t.Fatalf("recover receipt-free project before replacement start: %v", err)
+	}
+	stopped, err := store.Project(t.Context(), project.ID)
+	if err != nil || stopped.Project.State != domain.ProjectStopped {
+		t.Fatalf("project after uncertain receipt-free release = %#v, %v, want stopped", stopped.Project, err)
+	}
+	if _, err := store.ActiveProjectSession(t.Context(), project.ID); err == nil {
+		t.Fatal("uncertain receipt-free release retained a stale active session")
+	}
+}
+
 // TestProjectLifecycleStartSettlesProcessBackedQuarantine proves the screenshot-shaped exact receipt is reclaimed by the normal Start action.
 func TestProjectLifecycleStartSettlesProcessBackedQuarantine(t *testing.T) {
 	store, journal := newProjectLifecycleIntegrationState(t)

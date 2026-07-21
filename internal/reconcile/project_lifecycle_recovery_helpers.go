@@ -345,7 +345,12 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 					return fmt.Errorf("read project %q receipt-free recovery listener boundary: %w", projectID, boundaryErr)
 				}
 				if repairErr := coordinator.repairReceiptFreeProjectListener(ctx, boundary); repairErr != nil {
-					return fmt.Errorf("settle project %q receipt-free recovery listener before start: %w", projectID, repairErr)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return fmt.Errorf("settle project %q receipt-free recovery listener before start: %w", projectID, repairErr)
+					}
+					// A receipt-free session has no process authority to retain. Release its durable
+					// launch fence even when native inspection cannot prove cleanup; the normal lease
+					// admission then reports a precise port conflict without trapping Start in recovery.
 				}
 			}
 			receiptFree, ok := coordinator.state.(receiptFreeLifecycleRecoveryState)
