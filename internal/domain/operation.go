@@ -18,6 +18,8 @@ const (
 	OperationKindProjectStart OperationKind = "project.start"
 	// OperationKindProjectStop identifies the graceful shutdown of one managed project session.
 	OperationKindProjectStop OperationKind = "project.stop"
+	// OperationKindProjectRestart identifies one stop-then-start replacement of a managed project session.
+	OperationKindProjectRestart OperationKind = "project.restart"
 	// OperationKindProjectUnregister identifies the atomic removal of one registered project.
 	OperationKindProjectUnregister OperationKind = "project.unregister"
 )
@@ -74,7 +76,7 @@ func (operation Operation) Validate() error {
 		if operation.ProjectID != "" {
 			return fmt.Errorf("network setup operation %q must not identify a project", operation.Kind)
 		}
-	case OperationKindProjectStart, OperationKindProjectStop, OperationKindProjectUnregister:
+	case OperationKindProjectStart, OperationKindProjectStop, OperationKindProjectRestart, OperationKindProjectUnregister:
 		if operation.ProjectID == "" {
 			return fmt.Errorf("project lifecycle operation %q must identify a project", operation.Kind)
 		}

@@ -71,7 +71,7 @@ func (store *Store) QuarantineProjectProcessScope(
 			}
 		}
 		expectedProjectState := domain.ProjectStarting
-		if operationKind == domain.OperationKindProjectStop {
+		if operationKind == domain.OperationKindProjectStop || operationKind == domain.OperationKindProjectRestart {
 			expectedProjectState = domain.ProjectStopping
 		}
 		if project.Project.State != expectedProjectState {
@@ -132,7 +132,7 @@ func (store *Store) QuarantineProjectProcessScope(
 
 // validateQuarantineProjectProcessScopeRequest rejects quarantine intent without exact operation, project, and session fences.
 func validateQuarantineProjectProcessScopeRequest(request QuarantineProjectProcessScopeRequest) error {
-	if kind := request.OperationKind; kind != domain.OperationKindProjectStart && kind != domain.OperationKindProjectStop {
+	if kind := request.OperationKind; kind != domain.OperationKindProjectStart && kind != domain.OperationKindProjectStop && kind != domain.OperationKindProjectRestart {
 		return fmt.Errorf("lifecycle quarantine operation kind %q is unsupported", kind)
 	}
 	if err := validateLifecycleOperationRequest(

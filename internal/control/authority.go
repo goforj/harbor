@@ -67,6 +67,8 @@ type Authority interface {
 	StartProject(context.Context, Caller, StartProjectRequest) (ProjectLifecycleOperation, error)
 	// StopProject stops or resumes one idempotent managed project lifecycle.
 	StopProject(context.Context, Caller, StopProjectRequest) (ProjectLifecycleOperation, error)
+	// RestartProject stops and replaces one idempotent managed project lifecycle.
+	RestartProject(context.Context, Caller, RestartProjectRequest) (ProjectLifecycleOperation, error)
 	// UnregisterProject starts or resumes one idempotent project removal intent.
 	UnregisterProject(context.Context, Caller, UnregisterProjectRequest) (ProjectUnregistration, error)
 	// PrepareProjectUnregisterApproval returns release progress and at most one caller-bound helper capability.
@@ -107,17 +109,17 @@ func NewProjectRegistrationInvalidError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
 }
 
-// NewProjectLifecycleInvalidError classifies a start or stop request that cannot form a valid lifecycle intent.
+// NewProjectLifecycleInvalidError classifies a start, stop, or restart request that cannot form a valid lifecycle intent.
 func NewProjectLifecycleInvalidError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
 }
 
-// NewProjectLifecycleNotFoundError classifies a start or stop request for an unknown durable project.
+// NewProjectLifecycleNotFoundError classifies a start, stop, or restart request for an unknown durable project.
 func NewProjectLifecycleNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 
-// NewProjectLifecycleConflictError classifies durable state that prevents a project start or stop.
+// NewProjectLifecycleConflictError classifies durable state that prevents a project start, stop, or restart.
 func NewProjectLifecycleConflictError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
 }

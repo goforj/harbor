@@ -55,6 +55,7 @@ type controlClient interface {
 	ServiceLogs(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
+	RestartProject(context.Context, control.RestartProjectRequest) (control.ProjectLifecycleOperation, error)
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
 	PrepareProjectUnregisterApproval(context.Context, control.PrepareProjectUnregisterApprovalRequest) (control.ProjectUnregisterApprovalPreparation, error)
 	ConfirmProjectUnregisterApproval(context.Context, control.ConfirmProjectUnregisterApprovalRequest) (control.ProjectUnregisterApprovalConfirmation, error)
@@ -193,13 +194,13 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
 			)
 		},
-		setupPrerequisite: networkprerequisite.New(),
-		setupIntent:       newNetworkSetupIntent,
-		resolverIntent:    newNetworkResolverSetupIntent,
-		presentation:      newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
-		wait:              wait,
-		reconnectDelay:    desktopReconnectDelay,
-		pollInterval:      desktopPollInterval,
+		setupPrerequisite:  networkprerequisite.New(),
+		setupIntent:        newNetworkSetupIntent,
+		resolverIntent:     newNetworkResolverSetupIntent,
+		presentation:       newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
+		wait:               wait,
+		reconnectDelay:     desktopReconnectDelay,
+		pollInterval:       desktopPollInterval,
 		resourceIconClient: &http.Client{},
 	}
 }
@@ -881,6 +882,36 @@ func (a *App) StopProject(projectID string, intentID string) (control.ProjectLif
 		result.Operation.ProjectID != request.ProjectID ||
 		result.Operation.IntentID != request.IntentID {
 		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project stop: daemon result does not match the requested action, project, and intent")
+	}
+
+	return result, nil
+}
+
+// RestartProject stops and replaces exactly one client-owned project session through the connected daemon.
+func (a *App) RestartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error) {
+	request := control.RestartProjectRequest{
+		ProjectID: domain.ProjectID(projectID),
+		IntentID:  domain.IntentID(intentID),
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("project restart request: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, err
+	}
+	result, err := client.RestartProject(ctx, request)
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("restart GoForj project: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project restart: %w", err)
+	}
+	if result.Operation.Kind != domain.OperationKindProjectRestart ||
+		result.Operation.ProjectID != request.ProjectID ||
+		result.Operation.IntentID != request.IntentID {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("validate project restart: daemon result does not match the requested action, project, and intent")
 	}
 
 	return result, nil

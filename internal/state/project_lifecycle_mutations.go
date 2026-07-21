@@ -115,8 +115,10 @@ func validateDefaultProjectRuntimeResources(
 
 // BeginProjectStartRequest binds one queued start operation to the planned session it creates.
 type BeginProjectStartRequest struct {
-	ProjectID                 domain.ProjectID
-	OperationID               domain.OperationID
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	// OperationKind identifies whether this is a new start or the start half of a durable restart.
+	OperationKind             domain.OperationKind
 	ExpectedOperationRevision domain.Sequence
 	ExpectedProjectRevision   domain.Sequence
 	Session                   domain.ProjectSession
@@ -135,8 +137,10 @@ type AttachProjectProcessRequest struct {
 
 // CompleteProjectStartRequest publishes proven readiness for one process-backed start operation.
 type CompleteProjectStartRequest struct {
-	ProjectID                 domain.ProjectID
-	OperationID               domain.OperationID
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	// OperationKind identifies whether readiness completes a start or a restart.
+	OperationKind             domain.OperationKind
 	ExpectedOperationRevision domain.Sequence
 	SessionID                 domain.SessionID
 	ExpectedSessionGeneration uint64
@@ -155,18 +159,33 @@ type ConfirmedProjectProcessExit struct {
 
 // FailProjectStartRequest terminates one running start after launch rejection or confirmed process exit.
 type FailProjectStartRequest struct {
-	ProjectID                 domain.ProjectID
-	OperationID               domain.OperationID
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	// OperationKind identifies whether failure belongs to a start or a restart.
+	OperationKind             domain.OperationKind
 	ExpectedOperationRevision domain.Sequence
 	Exit                      ConfirmedProjectProcessExit
 	Phase                     string
 	Problem                   domain.Problem
 }
 
-// BeginProjectStopRequest binds one queued stop operation to an exact process-backed session generation.
-type BeginProjectStopRequest struct {
+// FailProjectRestartRequest records a restart failure after its old session was retired but before a replacement session existed.
+type FailProjectRestartRequest struct {
 	ProjectID                 domain.ProjectID
 	OperationID               domain.OperationID
+	ExpectedOperationRevision domain.Sequence
+	ExpectedProjectRevision   domain.Sequence
+	Phase                     string
+	Problem                   domain.Problem
+	At                        time.Time
+}
+
+// BeginProjectStopRequest binds one queued stop operation to an exact process-backed session generation.
+type BeginProjectStopRequest struct {
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	// OperationKind identifies whether this is a stop or the stop half of a durable restart.
+	OperationKind             domain.OperationKind
 	ExpectedOperationRevision domain.Sequence
 	SessionID                 domain.SessionID
 	ExpectedSessionGeneration uint64
@@ -176,8 +195,10 @@ type BeginProjectStopRequest struct {
 
 // CompleteProjectStopRequest retires one stopping session only after its exact process tree has joined.
 type CompleteProjectStopRequest struct {
-	ProjectID                 domain.ProjectID
-	OperationID               domain.OperationID
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	// OperationKind identifies whether completion terminates a stop or advances a restart to its start half.
+	OperationKind             domain.OperationKind
 	ExpectedOperationRevision domain.Sequence
 	Exit                      ConfirmedProjectProcessExit
 	Phase                     string
@@ -192,6 +213,7 @@ type RecordUnexpectedProjectExitRequest struct {
 // BeginProjectStart atomically starts an existing queued operation, creates its planned session, and marks the project starting.
 func (store *Store) BeginProjectStart(ctx context.Context, request BeginProjectStartRequest) (ProjectLifecycleMutation, error) {
 	ctx = normalizeContext(ctx)
+	request.OperationKind = normalizedProjectStartOperationKind(request.OperationKind)
 	if err := validateBeginProjectStartRequest(request); err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
@@ -201,11 +223,19 @@ func (store *Store) BeginProjectStart(ctx context.Context, request BeginProjectS
 
 	var result ProjectLifecycleMutation
 	err := store.mutations.mutate(ctx, "begin project start", func(tx *gorm.DB) error {
-		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectStart)
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, request.OperationKind)
 		if err != nil {
 			return err
 		}
 		if current.Operation.State == domain.OperationRunning {
+			if request.OperationKind == domain.OperationKindProjectRestart {
+				replayed, replayErr := beginRunningProjectRestartStart(tx, current, request)
+				if replayErr != nil {
+					return replayErr
+				}
+				result = replayed
+				return nil
+			}
 			replayed, replayErr := replayBeginProjectStart(tx, current, history, request)
 			if replayErr != nil {
 				return replayErr
@@ -325,6 +355,7 @@ func (store *Store) AttachProjectProcess(ctx context.Context, request AttachProj
 // CompleteProjectStart atomically succeeds the running operation and publishes the ready default runtime.
 func (store *Store) CompleteProjectStart(ctx context.Context, request CompleteProjectStartRequest) (ProjectLifecycleMutation, error) {
 	ctx = normalizeContext(ctx)
+	request.OperationKind = normalizedProjectStartOperationKind(request.OperationKind)
 	if err := validateCompleteProjectStartRequest(request); err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
@@ -334,7 +365,7 @@ func (store *Store) CompleteProjectStart(ctx context.Context, request CompletePr
 
 	var result ProjectLifecycleMutation
 	err := store.mutations.mutate(ctx, "complete project start", func(tx *gorm.DB) error {
-		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectStart)
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, request.OperationKind)
 		if err != nil {
 			return err
 		}
@@ -400,6 +431,7 @@ func (store *Store) CompleteProjectStart(ctx context.Context, request CompletePr
 // FailProjectStart atomically fails the running start and removes its session only after process absence is confirmed.
 func (store *Store) FailProjectStart(ctx context.Context, request FailProjectStartRequest) (ProjectLifecycleMutation, error) {
 	ctx = normalizeContext(ctx)
+	request.OperationKind = normalizedProjectStartOperationKind(request.OperationKind)
 	if err := validateFailProjectStartRequest(request); err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
@@ -409,7 +441,7 @@ func (store *Store) FailProjectStart(ctx context.Context, request FailProjectSta
 
 	var result ProjectLifecycleMutation
 	err := store.mutations.mutate(ctx, "fail project start", func(tx *gorm.DB) error {
-		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectStart)
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, request.OperationKind)
 		if err != nil {
 			return err
 		}
@@ -465,9 +497,82 @@ func (store *Store) FailProjectStart(ctx context.Context, request FailProjectSta
 	return result, nil
 }
 
+// FailProjectRestart records a bounded failure while preserving the stopped, route-free project projection.
+func (store *Store) FailProjectRestart(ctx context.Context, request FailProjectRestartRequest) (ProjectLifecycleMutation, error) {
+	ctx = normalizeContext(ctx)
+	if err := validateFailProjectRestartRequest(request); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+
+	var result ProjectLifecycleMutation
+	err := store.mutations.mutate(ctx, "fail project restart", func(tx *gorm.DB) error {
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectRestart)
+		if err != nil {
+			return err
+		}
+		if current.Operation.State == domain.OperationFailed {
+			if err := requireExactLifecycleReplay(history, request.ExpectedOperationRevision, domain.OperationFailed, request.Phase, request.At, &request.Problem); err != nil {
+				return err
+			}
+			if err := requireNoActiveProjectSession(tx, request.ProjectID); err != nil {
+				return err
+			}
+			project, projectErr := readLifecycleProject(tx, request.ProjectID)
+			if projectErr != nil {
+				return projectErr
+			}
+			if !projectMatchesInactiveState(project.Project, domain.ProjectFailed, request.At) {
+				return fmt.Errorf("restart failure replay does not match the committed failed projection")
+			}
+			result = lifecycleMutation(current, project, nil)
+			return nil
+		}
+		if current.Operation.State != domain.OperationRunning {
+			return fmt.Errorf("project restart operation %q must be running, got %q", request.OperationID, current.Operation.State)
+		}
+		if current.Revision != request.ExpectedOperationRevision {
+			return staleLifecycleRevision(request.OperationID, request.ExpectedOperationRevision, current.Revision)
+		}
+		if err := requireNoActiveProjectSession(tx, request.ProjectID); err != nil {
+			return err
+		}
+		project, err := readLifecycleProject(tx, request.ProjectID)
+		if err != nil {
+			return err
+		}
+		if project.Revision != request.ExpectedProjectRevision {
+			return &ProjectRevisionConflictError{ProjectID: request.ProjectID, Expected: request.ExpectedProjectRevision, Actual: project.Revision}
+		}
+		if project.Project.State != domain.ProjectStopped {
+			return fmt.Errorf("project %q must be stopped before restart failure, got %q", request.ProjectID, project.Project.State)
+		}
+		if err := validateLifecycleProjectionTime(project.Project, request.At); err != nil {
+			return err
+		}
+		failed, err := transitionOperationInTransaction(tx, request.OperationID, current.Revision, domain.OperationFailed, request.Phase, request.At, &request.Problem)
+		if err != nil {
+			return err
+		}
+		persistedProject, err := persistLifecycleProject(tx, failedProjectProjection(project.Project, request.At))
+		if err != nil {
+			return err
+		}
+		result = lifecycleMutation(failed, persistedProject, nil)
+		return nil
+	})
+	if err != nil {
+		return ProjectLifecycleMutation{}, fmt.Errorf("fail project %q restart: %w", request.ProjectID, err)
+	}
+	return result, nil
+}
+
 // BeginProjectStop atomically starts an existing queued stop, fences its process session, and marks the project stopping.
 func (store *Store) BeginProjectStop(ctx context.Context, request BeginProjectStopRequest) (ProjectLifecycleMutation, error) {
 	ctx = normalizeContext(ctx)
+	request.OperationKind = normalizedProjectStopOperationKind(request.OperationKind)
 	if err := validateBeginProjectStopRequest(request); err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
@@ -477,7 +582,7 @@ func (store *Store) BeginProjectStop(ctx context.Context, request BeginProjectSt
 
 	var result ProjectLifecycleMutation
 	err := store.mutations.mutate(ctx, "begin project stop", func(tx *gorm.DB) error {
-		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectStop)
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, request.OperationKind)
 		if err != nil {
 			return err
 		}
@@ -552,6 +657,7 @@ func (store *Store) BeginProjectStop(ctx context.Context, request BeginProjectSt
 // CompleteProjectStop atomically retires a joined session, stops its projection, and succeeds the stop operation.
 func (store *Store) CompleteProjectStop(ctx context.Context, request CompleteProjectStopRequest) (ProjectLifecycleMutation, error) {
 	ctx = normalizeContext(ctx)
+	request.OperationKind = normalizedProjectStopOperationKind(request.OperationKind)
 	if err := validateCompleteProjectStopRequest(request); err != nil {
 		return ProjectLifecycleMutation{}, err
 	}
@@ -561,7 +667,7 @@ func (store *Store) CompleteProjectStop(ctx context.Context, request CompletePro
 
 	var result ProjectLifecycleMutation
 	err := store.mutations.mutate(ctx, "complete project stop", func(tx *gorm.DB) error {
-		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, domain.OperationKindProjectStop)
+		current, history, err := readLifecycleOperation(tx, request.OperationID, request.ProjectID, request.OperationKind)
 		if err != nil {
 			return err
 		}
@@ -578,6 +684,12 @@ func (store *Store) CompleteProjectStop(ctx context.Context, request CompletePro
 		}
 		if current.Revision != request.ExpectedOperationRevision {
 			return staleLifecycleRevision(request.OperationID, request.ExpectedOperationRevision, current.Revision)
+		}
+		if request.OperationKind == domain.OperationKindProjectRestart {
+			if replayed, replayErr := replayCompleteProjectRestartStop(tx, current, request); replayErr == nil {
+				result = replayed
+				return nil
+			}
 		}
 		session, err := readExactProjectSession(tx, request.ProjectID, request.Exit.SessionID)
 		if err != nil {
@@ -598,6 +710,18 @@ func (store *Store) CompleteProjectStop(ctx context.Context, request CompletePro
 		}
 		if err := validateLifecycleProjectionTime(project.Project, request.Exit.ExitedAt); err != nil {
 			return err
+		}
+		if request.OperationKind == domain.OperationKindProjectRestart {
+			if err := deleteExactProjectSession(tx, session); err != nil {
+				return err
+			}
+			nextProject := stoppedProjectProjection(project.Project, request.Exit.ExitedAt)
+			persistedProject, err := persistLifecycleProject(tx, nextProject)
+			if err != nil {
+				return err
+			}
+			result = lifecycleMutation(current, persistedProject, nil)
+			return nil
 		}
 		succeeded, err := transitionOperationInTransaction(tx, request.OperationID, current.Revision, domain.OperationSucceeded, request.Phase, request.Exit.ExitedAt, nil)
 		if err != nil {
@@ -675,8 +799,43 @@ func (store *Store) RecordUnexpectedProjectExit(ctx context.Context, request Rec
 	return result, nil
 }
 
+// normalizedProjectStartOperationKind keeps the existing state request shape compatible while admitting restart start phases.
+func normalizedProjectStartOperationKind(kind domain.OperationKind) domain.OperationKind {
+	if kind == "" {
+		return domain.OperationKindProjectStart
+	}
+	return kind
+}
+
+// normalizedProjectStopOperationKind keeps the existing state request shape compatible while admitting restart stop phases.
+func normalizedProjectStopOperationKind(kind domain.OperationKind) domain.OperationKind {
+	if kind == "" {
+		return domain.OperationKindProjectStop
+	}
+	return kind
+}
+
+// validateProjectStartOperationKind limits start-shaped mutations to start and restart operations.
+func validateProjectStartOperationKind(kind domain.OperationKind) error {
+	if kind != domain.OperationKindProjectStart && kind != domain.OperationKindProjectRestart {
+		return fmt.Errorf("project start operation kind %q is unsupported", kind)
+	}
+	return nil
+}
+
+// validateProjectStopOperationKind limits stop-shaped mutations to stop and restart operations.
+func validateProjectStopOperationKind(kind domain.OperationKind) error {
+	if kind != domain.OperationKindProjectStop && kind != domain.OperationKindProjectRestart {
+		return fmt.Errorf("project stop operation kind %q is unsupported", kind)
+	}
+	return nil
+}
+
 // validateBeginProjectStartRequest rejects uncorrelated session intent before writer admission.
 func validateBeginProjectStartRequest(request BeginProjectStartRequest) error {
+	if err := validateProjectStartOperationKind(request.OperationKind); err != nil {
+		return err
+	}
 	if err := validateLifecycleOperationRequest(request.ProjectID, request.OperationID, request.ExpectedOperationRevision, request.Phase, request.At); err != nil {
 		return err
 	}
@@ -717,6 +876,9 @@ func validateAttachProjectProcessRequest(request AttachProjectProcessRequest) er
 
 // validateCompleteProjectStartRequest rejects readiness that is not tied to one exact durable boundary.
 func validateCompleteProjectStartRequest(request CompleteProjectStartRequest) error {
+	if err := validateProjectStartOperationKind(request.OperationKind); err != nil {
+		return err
+	}
 	if err := validateLifecycleOperationRequest(request.ProjectID, request.OperationID, request.ExpectedOperationRevision, request.Phase, request.At); err != nil {
 		return err
 	}
@@ -747,6 +909,9 @@ func validateConfirmedProjectProcessExit(exit ConfirmedProjectProcessExit) error
 
 // validateFailProjectStartRequest keeps terminal failure evidence correlated to its running operation.
 func validateFailProjectStartRequest(request FailProjectStartRequest) error {
+	if err := validateProjectStartOperationKind(request.OperationKind); err != nil {
+		return err
+	}
 	if err := request.ProjectID.Validate(); err != nil {
 		return err
 	}
@@ -765,8 +930,34 @@ func validateFailProjectStartRequest(request FailProjectStartRequest) error {
 	return validateConfirmedProjectProcessExit(request.Exit)
 }
 
+// validateFailProjectRestartRequest rejects a restart failure without the post-stop project fence.
+func validateFailProjectRestartRequest(request FailProjectRestartRequest) error {
+	if err := request.ProjectID.Validate(); err != nil {
+		return err
+	}
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	if _, err := sequenceToModelInt("expected operation revision", request.ExpectedOperationRevision, false); err != nil {
+		return err
+	}
+	if _, err := sequenceToModelInt("expected project revision", request.ExpectedProjectRevision, false); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.Phase) == "" {
+		return fmt.Errorf("operation phase must not be empty")
+	}
+	if err := request.Problem.Validate(); err != nil {
+		return err
+	}
+	return validateStoredTime("restart failure time", request.At)
+}
+
 // validateBeginProjectStopRequest rejects stop intent without exact operation and session fences.
 func validateBeginProjectStopRequest(request BeginProjectStopRequest) error {
+	if err := validateProjectStopOperationKind(request.OperationKind); err != nil {
+		return err
+	}
 	if err := validateLifecycleOperationRequest(request.ProjectID, request.OperationID, request.ExpectedOperationRevision, request.Phase, request.At); err != nil {
 		return err
 	}
@@ -779,6 +970,9 @@ func validateBeginProjectStopRequest(request BeginProjectStopRequest) error {
 
 // validateCompleteProjectStopRequest rejects completion without exact joined-process evidence.
 func validateCompleteProjectStopRequest(request CompleteProjectStopRequest) error {
+	if err := validateProjectStopOperationKind(request.OperationKind); err != nil {
+		return err
+	}
 	if err := request.ProjectID.Validate(); err != nil {
 		return err
 	}
@@ -1066,6 +1260,82 @@ func replayBeginProjectStart(
 	return lifecycleMutation(operation, project, &session), nil
 }
 
+// beginRunningProjectRestartStart crosses the restart operation's durable stop-to-start boundary.
+// The operation remains running while the project projection proves that the old session is gone and a new planned session owns the next launch.
+func beginRunningProjectRestartStart(
+	tx *gorm.DB,
+	operation OperationRecord,
+	request BeginProjectStartRequest,
+) (ProjectLifecycleMutation, error) {
+	if operation.Operation.Kind != domain.OperationKindProjectRestart || operation.Operation.State != domain.OperationRunning {
+		return ProjectLifecycleMutation{}, fmt.Errorf("restart start continuation requires a running restart operation")
+	}
+	if operation.Revision != request.ExpectedOperationRevision {
+		return ProjectLifecycleMutation{}, staleLifecycleRevision(request.OperationID, request.ExpectedOperationRevision, operation.Revision)
+	}
+	project, err := readLifecycleProject(tx, request.ProjectID)
+	if err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if project.Project.State == domain.ProjectStarting {
+		session, sessionErr := readExactProjectSession(tx, request.ProjectID, request.Session.ID)
+		if sessionErr != nil {
+			return ProjectLifecycleMutation{}, sessionErr
+		}
+		if !reflect.DeepEqual(session, request.Session) {
+			return ProjectLifecycleMutation{}, fmt.Errorf("restart start replay does not match the committed planned session")
+		}
+		return lifecycleMutation(operation, project, &session), nil
+	}
+	if project.Project.State != domain.ProjectStopped {
+		return ProjectLifecycleMutation{}, fmt.Errorf("project %q must be stopped before restart start, got %q", request.ProjectID, project.Project.State)
+	}
+	if err := requireNoActiveProjectSession(tx, request.ProjectID); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if err := requireNoCompetingProjectOperation(tx, request.ProjectID, request.OperationID); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if project.Revision != request.ExpectedProjectRevision {
+		return ProjectLifecycleMutation{}, &ProjectRevisionConflictError{
+			ProjectID: request.ProjectID,
+			Expected:  request.ExpectedProjectRevision,
+			Actual:    project.Revision,
+		}
+	}
+	if err := validateLifecycleProjectionTime(project.Project, request.At); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if err := request.Session.Validate(); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if request.Session.ProjectID != request.ProjectID || request.Session.State != domain.SessionPlanned || request.Session.Generation != 1 {
+		return ProjectLifecycleMutation{}, fmt.Errorf("restart planned session is not correlated to project %q", request.ProjectID)
+	}
+	if !request.Session.CreatedAt.Equal(request.At) || !request.Session.UpdatedAt.Equal(request.At) {
+		return ProjectLifecycleMutation{}, fmt.Errorf("restart planned session timestamps must equal start transition time")
+	}
+	row, err := projectSessionModelFromDomain(request.Session)
+	if err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if err := requireOneCreate(tx.Create(&row), "create planned restart project session", string(request.Session.ID)); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	nextProject := project.Project
+	nextProject.State = domain.ProjectStarting
+	nextProject.UpdatedAt = request.At
+	persistedProject, err := persistLifecycleProject(tx, nextProject)
+	if err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	persistedSession, err := readExactProjectSession(tx, request.ProjectID, request.Session.ID)
+	if err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	return lifecycleMutation(operation, persistedProject, &persistedSession), nil
+}
+
 // replayCompleteProjectStart accepts only the exact readiness edge and runtime projection originally committed.
 func replayCompleteProjectStart(
 	tx *gorm.DB,
@@ -1176,6 +1446,31 @@ func replayCompleteProjectStop(
 	}
 	if !projectMatchesInactiveState(project.Project, domain.ProjectStopped, request.Exit.ExitedAt) {
 		return ProjectLifecycleMutation{}, fmt.Errorf("stop completion replay does not match the committed stopped projection")
+	}
+	return lifecycleMutation(operation, project, nil), nil
+}
+
+// replayCompleteProjectRestartStop recognizes the restart boundary after the old session has been retired.
+func replayCompleteProjectRestartStop(
+	tx *gorm.DB,
+	operation OperationRecord,
+	request CompleteProjectStopRequest,
+) (ProjectLifecycleMutation, error) {
+	if operation.Operation.Kind != domain.OperationKindProjectRestart || operation.Operation.State != domain.OperationRunning {
+		return ProjectLifecycleMutation{}, fmt.Errorf("restart stop replay requires a running restart operation")
+	}
+	if operation.Revision != request.ExpectedOperationRevision {
+		return ProjectLifecycleMutation{}, staleLifecycleRevision(request.OperationID, request.ExpectedOperationRevision, operation.Revision)
+	}
+	if err := requireNoActiveProjectSession(tx, request.ProjectID); err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	project, err := readLifecycleProject(tx, request.ProjectID)
+	if err != nil {
+		return ProjectLifecycleMutation{}, err
+	}
+	if !projectMatchesInactiveState(project.Project, domain.ProjectStopped, request.Exit.ExitedAt) {
+		return ProjectLifecycleMutation{}, fmt.Errorf("restart stop replay does not match the committed stopped projection")
 	}
 	return lifecycleMutation(operation, project, nil), nil
 }

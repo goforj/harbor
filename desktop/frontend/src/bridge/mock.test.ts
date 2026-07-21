@@ -41,6 +41,7 @@ describe('Harbor mock bridge', () => {
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',
       start_project: 'StartProject',
+      restart_project: 'RestartProject',
       status: 'Status',
       stop_project: 'StopProject',
     })

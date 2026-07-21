@@ -246,6 +246,39 @@ func (client *Client) StopProject(
 	return response.Lifecycle, nil
 }
 
+// RestartProject stops and replaces one managed project session through the daemon.
+func (client *Client) RestartProject(
+	ctx context.Context,
+	request RestartProjectRequest,
+) (ProjectLifecycleOperation, error) {
+	if err := request.Validate(); err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	if !containsCapability(client.peer.Session.Capabilities, CapabilityProjectRestartV1) {
+		return ProjectLifecycleOperation{}, errors.New("Harbor daemon does not support project restart; upgrade or restart harbord")
+	}
+	payload, err := client.session.Call(ctx, methodProjectRestart, request)
+	if err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	var response projectLifecycleResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("decode project restart response: %w", err)
+	}
+	if err := response.Lifecycle.Validate(); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("validate project restart response: %w", err)
+	}
+	if err := validateProjectLifecycleCorrelation(
+		request.ProjectID,
+		request.IntentID,
+		domain.OperationKindProjectRestart,
+		response.Lifecycle,
+	); err != nil {
+		return ProjectLifecycleOperation{}, fmt.Errorf("validate project restart response: %w", err)
+	}
+	return response.Lifecycle, nil
+}
+
 // UnregisterProject starts or resumes one client-stable project removal intent.
 func (client *Client) UnregisterProject(
 	ctx context.Context,

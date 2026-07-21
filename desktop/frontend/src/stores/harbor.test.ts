@@ -38,14 +38,18 @@ function completedNetworkSetup(): NetworkSetupOperation {
 
 function lifecycleOperation(
   projectId: string,
-  action: 'start' | 'stop',
+  action: 'start' | 'stop' | 'restart',
   intentId: string,
   state: Operation['state'],
   problem?: Operation['problem'],
 ): Operation {
-  const operation: Operation = structuredClone(action === 'start'
-    ? harborWireFixture.start_project.operation
-    : harborWireFixture.stop_project.operation)
+  const operation: Operation = structuredClone(
+    action === 'start'
+      ? harborWireFixture.start_project.operation
+      : action === 'stop'
+        ? harborWireFixture.stop_project.operation
+        : harborWireFixture.restart_project.operation,
+  )
   operation.id = `operation-${intentId}`
   operation.intent_id = intentId
   operation.project_id = projectId
@@ -593,6 +597,31 @@ describe('Harbor store', () => {
     expect(store.projectLifecycleErrors.reports).toBeUndefined()
   })
 
+  it('restarts a project with a client-owned intent and tracks the replacement operation', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const result: ProjectLifecycleOperation = structuredClone(harborWireFixture.restart_project)
+    const restartProject = vi.spyOn(harborBridge, 'restartProject').mockImplementationOnce(async (projectId, intentId) => {
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+    const confirmed = mockSnapshot()
+    confirmed.sequence = result.revision
+    const billing = confirmed.projects.find((project) => project.id === 'billing')
+    if (!billing) throw new Error('billing fixture is missing')
+    billing.state = 'stopping'
+    confirmed.operations = [result.operation]
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValueOnce(confirmed)
+
+    await expect(store.restartProject('billing')).resolves.toMatchObject({ operation: { kind: 'project.restart' } })
+
+    expect(restartProject.mock.calls[0][1]).toMatch(/^desktop-project-restart-[0-9a-f]{32}$/)
+    expect(store.activeProjectLifecycle('billing')?.kind).toBe('project.restart')
+    expect(store.projectLifecycleProjectId).toBeNull()
+    expect(store.projectLifecycleErrors.billing).toBeUndefined()
+  })
+
   it('keeps the daemon-reviewed problem when a project start fails during refresh', async () => {
     const store = useHarborStore()
     await store.initialize()
@@ -852,17 +881,21 @@ describe('Harbor store', () => {
     store.$patch({ snapshotStale: false })
     inspect.mockRejectedValueOnce(new Error('native inspection failed'))
     await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
-    expect(store.projectRuntimeRepairNotice('billing')).toMatchObject({ state: 'failed', message: 'native inspection failed' })
+    expect(store.projectRuntimeRepairNotice('billing')).toMatchObject({
+      state: 'failed',
+      title: 'Recovery check failed',
+      message: 'Harbor could not verify the previous runtime. Try again.',
+    })
 
     inspect.mockResolvedValueOnce(confirmableRuntimeRepairInspection('orders-api'))
     await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
-    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('another project')
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toBe('Harbor could not verify the previous runtime. Try again.')
 
     const incomplete = confirmableRuntimeRepairInspection()
     incomplete.confirmable.candidate.command = '' as 'forj dev'
     inspect.mockResolvedValueOnce(incomplete)
     await expect(store.inspectProjectRuntimeRepair('billing')).resolves.toBeNull()
-    expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('incomplete stale runtime inspection')
+    expect(store.projectRuntimeRepairNotice('billing')?.message).toBe('Harbor could not verify the previous runtime. Try again.')
     expect(store.projectRuntimeRepairInspection).toBeNull()
   })
 

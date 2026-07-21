@@ -77,7 +77,19 @@ func newStopCommandFixture(t *testing.T, connection *fakeDaemonControlClient) (*
 	return command, output
 }
 
-// TestProjectLifecycleCommandsForwardStableActionIntents verifies Start and Stop share the daemon contract without sharing an action identity.
+// newRestartCommandFixture creates a restart command with deterministic intent generation and captured output.
+func newRestartCommandFixture(t *testing.T, connection *fakeDaemonControlClient) (*RestartCmd, *bytes.Buffer) {
+	t.Helper()
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+	command := NewRestartCmd(client)
+	command.ProjectID = "project-orders"
+	command.newIntentID = func(domain.OperationKind) (domain.IntentID, error) { return "intent-restart", nil }
+	output := &bytes.Buffer{}
+	command.output = output
+	return command, output
+}
+
+// TestProjectLifecycleCommandsForwardStableActionIntents verifies each lifecycle action shares the daemon contract without sharing an action identity.
 func TestProjectLifecycleCommandsForwardStableActionIntents(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -114,13 +126,29 @@ func TestProjectLifecycleCommandsForwardStableActionIntents(t *testing.T) {
 				}
 			}, want: "Stopped: project-orders\n",
 		},
+		{
+			name: "restart", kind: domain.OperationKindProjectRestart,
+			command: func(connection *fakeDaemonControlClient) (error, *bytes.Buffer) {
+				command, output := newRestartCommandFixture(t, connection)
+				return command.Run(t.Context()), output
+			},
+			assert: func(t *testing.T, connection *fakeDaemonControlClient) {
+				t.Helper()
+				want := []control.RestartProjectRequest{{ProjectID: "project-orders", IntentID: "intent-restart"}}
+				if connection.restartLifecycleCalls != 1 || !reflect.DeepEqual(connection.restartLifecycleRequests, want) || connection.startLifecycleCalls != 0 || connection.stopLifecycleCalls != 0 {
+					t.Fatalf("restart requests = %#v, calls = start:%d stop:%d restart:%d", connection.restartLifecycleRequests, connection.startLifecycleCalls, connection.stopLifecycleCalls, connection.restartLifecycleCalls)
+				}
+			}, want: "Restarted: project-orders\n",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := &fakeDaemonControlClient{}
 			if test.kind == domain.OperationKindProjectStart {
 				connection.startLifecycle = projectLifecycleTestOperation(t, test.kind, domain.OperationSucceeded)
-			} else {
+			} else if test.kind == domain.OperationKindProjectStop {
 				connection.stopLifecycle = projectLifecycleTestOperation(t, test.kind, domain.OperationSucceeded)
+			} else {
+				connection.restartLifecycle = projectLifecycleTestOperation(t, test.kind, domain.OperationSucceeded)
 			}
 			err, output := test.command(connection)
 			if err != nil {
@@ -261,6 +289,17 @@ func TestProjectLifecycleCommandsKongSurfaceAcceptsExplicitRetryIntent(t *testin
 				return &struct {
 					Stop StopCmd `cmd:""`
 				}{Stop: *command}
+			},
+		},
+		{
+			name: "restart", args: []string{"restart", "project-orders", "--intent", "intent-restart"},
+			root: func(connection *fakeDaemonControlClient) any {
+				connection.restartLifecycle = projectLifecycleTestOperation(t, domain.OperationKindProjectRestart, domain.OperationSucceeded)
+				command, _ := newRestartCommandFixture(t, connection)
+				command.ProjectID = ""
+				return &struct {
+					Restart RestartCmd `cmd:""`
+				}{Restart: *command}
 			},
 		},
 	} {

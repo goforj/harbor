@@ -63,6 +63,8 @@ type projectLifecycleCoordinator interface {
 	Start(context.Context, reconcile.ProjectStartRequest) (state.OperationRecord, error)
 	// Stop durably records and schedules one idempotent project stop.
 	Stop(context.Context, reconcile.ProjectStopRequest) (state.OperationRecord, error)
+	// Restart durably records and schedules one idempotent project restart.
+	Restart(context.Context, reconcile.ProjectRestartRequest) (state.OperationRecord, error)
 	// ProjectActivity reads bounded output only for the current durable session.
 	ProjectActivity(context.Context, reconcile.ProjectActivityRequest) (reconcile.ProjectActivity, error)
 	// ServiceLogs reads bounded output for one Compose service in the current durable session.
@@ -695,6 +697,31 @@ func (authority *Authority) StopProject(
 		return control.ProjectLifecycleOperation{}, classifyProjectLifecycleError(err)
 	}
 	return projectLifecycleResult(stopped, request.ProjectID, request.IntentID, domain.OperationKindProjectStop)
+}
+
+// RestartProject assigns daemon operation identity before durably scheduling one managed project replacement.
+func (authority *Authority) RestartProject(
+	ctx context.Context,
+	_ control.Caller,
+	request control.RestartProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectLifecycleOperation{}, control.NewProjectLifecycleInvalidError(err)
+	}
+	operationID, err := authority.newOperationID()
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, fmt.Errorf("generate project restart operation identity: %w", err)
+	}
+	restarted, err := authority.lifecycle.Restart(ctx, reconcile.ProjectRestartRequest{
+		ProjectID:   request.ProjectID,
+		OperationID: operationID,
+		IntentID:    request.IntentID,
+	})
+	if err != nil {
+		return control.ProjectLifecycleOperation{}, classifyProjectLifecycleError(err)
+	}
+	return projectLifecycleResult(restarted, request.ProjectID, request.IntentID, domain.OperationKindProjectRestart)
 }
 
 // ProjectActivity projects current durable session output without exposing process ownership evidence.

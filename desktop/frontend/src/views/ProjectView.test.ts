@@ -102,6 +102,7 @@ describe('ProjectView stale runtime recovery', () => {
     const { store, wrapper } = await mountRecoveryProject()
     const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
     expect(inspect).toBeDefined()
+    expect(wrapper.findAll('button').filter((button) => button.text().includes('Recovery required'))).toHaveLength(0)
     expect(inspect?.attributes('disabled')).toBeUndefined()
 
     store.$patch({ snapshotStale: true })
@@ -116,6 +117,21 @@ describe('ProjectView stale runtime recovery', () => {
     await wrapper.vm.$nextTick()
     expect(inspect?.attributes('disabled')).toBeDefined()
 
+    wrapper.unmount()
+  })
+
+  it('keeps a failed recovery check inside the single recovery surface', async () => {
+    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockRejectedValueOnce(new Error('native inspection failed'))
+    const { wrapper } = await mountRecoveryProject()
+
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Inspect stale runtime'))
+    if (!inspect) throw new Error('Inspect stale runtime action is missing')
+    await inspect.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[role="alert"]')).toHaveLength(1)
+    expect(wrapper.text()).toContain('Harbor could not verify the previous runtime. Try again.')
+    expect(wrapper.text()).not.toContain('Stale runtime inspection failed')
     wrapper.unmount()
   })
 
@@ -266,6 +282,26 @@ describe('ProjectView project removal approval', () => {
     expect(approveProjectRemoval).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-remove-/))
     expect(router.currentRoute.value.path).toBe('/projects')
     expect(store.projectById('orders-api')).toBeUndefined()
+    wrapper.unmount()
+  })
+})
+
+describe('ProjectView project restart', () => {
+  it('exposes restart for a ready project and sends the typed intent', async () => {
+    const { wrapper } = await mountProject('orders-api')
+    const restart = vi.spyOn(harborBridge, 'restartProject').mockImplementationOnce(async (projectId, intentId) => {
+      const result = structuredClone(harborWireFixture.restart_project)
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+
+    const button = bodyButton('Restart project')
+    expect(button.disabled).toBe(false)
+    await button.click()
+    await flushPromises()
+
+    expect(restart).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-restart-/))
     wrapper.unmount()
   })
 })

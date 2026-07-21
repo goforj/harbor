@@ -35,19 +35,33 @@ func (request StopProjectRequest) Validate() error {
 	return request.IntentID.Validate()
 }
 
-// ProjectLifecycleOperation is the authoritative durable progress reached by a start or stop request.
+// RestartProjectRequest identifies one project and the client-stable intent that owns its replacement session.
+type RestartProjectRequest struct {
+	ProjectID domain.ProjectID `json:"project_id"`
+	IntentID  domain.IntentID  `json:"intent_id"`
+}
+
+// Validate reports whether the request can identify one idempotent project restart.
+func (request RestartProjectRequest) Validate() error {
+	if err := request.ProjectID.Validate(); err != nil {
+		return err
+	}
+	return request.IntentID.Validate()
+}
+
+// ProjectLifecycleOperation is the authoritative durable progress reached by a project start, stop, or restart request.
 type ProjectLifecycleOperation struct {
 	Operation domain.Operation `json:"operation"`
 	Revision  domain.Sequence  `json:"revision"`
 }
 
-// Validate reports whether the result contains one bounded project start or stop operation revision.
+// Validate reports whether the result contains one bounded project start, stop, or restart operation revision.
 func (result ProjectLifecycleOperation) Validate() error {
 	if err := result.Operation.Validate(); err != nil {
 		return err
 	}
-	if result.Operation.Kind != domain.OperationKindProjectStart && result.Operation.Kind != domain.OperationKindProjectStop {
-		return errors.New("project lifecycle result must contain a project start or stop operation")
+	if result.Operation.Kind != domain.OperationKindProjectStart && result.Operation.Kind != domain.OperationKindProjectStop && result.Operation.Kind != domain.OperationKindProjectRestart {
+		return errors.New("project lifecycle result must contain a project start, stop, or restart operation")
 	}
 	if result.Revision == 0 || result.Revision > domain.MaximumSequence {
 		return fmt.Errorf("project lifecycle revision must be between 1 and %d", domain.MaximumSequence)

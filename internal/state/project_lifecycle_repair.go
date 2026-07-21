@@ -273,6 +273,7 @@ func readRetainedProjectRuntimeRecoveryOperation(
 		Where("kind IN ?", []string{
 			string(domain.OperationKindProjectStart),
 			string(domain.OperationKindProjectStop),
+			string(domain.OperationKindProjectRestart),
 			string(domain.OperationKindProjectUnregister),
 		}).
 		Order("revision DESC").

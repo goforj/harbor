@@ -52,14 +52,17 @@ type recordingProjectLifecycle struct {
 	mutex              sync.Mutex
 	startRecord        state.OperationRecord
 	stopRecord         state.OperationRecord
+	restartRecord      state.OperationRecord
 	startErr           error
 	stopErr            error
+	restartErr         error
 	activity           reconcile.ProjectActivity
 	activityErr        error
 	serviceLogs        reconcile.ProjectServiceLogs
 	serviceLogsErr     error
 	starts             []reconcile.ProjectStartRequest
 	stops              []reconcile.ProjectStopRequest
+	restarts           []reconcile.ProjectRestartRequest
 	activities         []reconcile.ProjectActivityRequest
 	serviceLogRequests []reconcile.ProjectServiceLogsRequest
 }
@@ -80,6 +83,14 @@ func (lifecycle *recordingProjectLifecycle) Stop(_ context.Context, request reco
 	lifecycle.stops = append(lifecycle.stops, request)
 	lifecycle.mutex.Unlock()
 	return lifecycle.stopRecord, lifecycle.stopErr
+}
+
+// Restart returns the configured durable restart progress.
+func (lifecycle *recordingProjectLifecycle) Restart(_ context.Context, request reconcile.ProjectRestartRequest) (state.OperationRecord, error) {
+	lifecycle.mutex.Lock()
+	lifecycle.restarts = append(lifecycle.restarts, request)
+	lifecycle.mutex.Unlock()
+	return lifecycle.restartRecord, lifecycle.restartErr
 }
 
 // ProjectActivity returns configured current-session activity while retaining the exact selection.

@@ -41,6 +41,8 @@ const (
 	MethodStartProject = "StartProject"
 	// MethodStopProject is the generated Wails method that stops one registered project.
 	MethodStopProject = "StopProject"
+	// MethodRestartProject is the generated Wails method that replaces one registered project session.
+	MethodRestartProject = "RestartProject"
 	// MethodSnapshot is the generated Wails method that returns complete desktop-visible state.
 	MethodSnapshot = "Snapshot"
 	// MethodStatus is the generated Wails method that returns the daemon diagnostic.
@@ -88,6 +90,7 @@ type AppContract interface {
 	StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	Status() (control.DaemonStatus, error)
 	StopProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
+	RestartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	WaitProjectActivity(projectID string, sessionID string, cursor uint64, waitMilliseconds uint64) (control.ProjectActivity, error)
 	WaitServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64, waitMilliseconds uint64) (control.ServiceLogs, error)
 }
@@ -108,7 +111,7 @@ func MethodContracts() []MethodContract {
 		MethodConfirmProjectRuntimeRepair: []string{"projectId", "inspectionId", "candidateFingerprint"},
 		MethodInspectProjectRuntimeRepair: []string{"projectId"},
 		MethodOpenResource:                []string{"projectId", "resourceId"},
-		MethodOpenTerminalURL:              []string{"rawURL"},
+		MethodOpenTerminalURL:             []string{"rawURL"},
 		MethodResourceIconURL:             []string{"projectId", "resourceId"},
 		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
 		MethodServiceLogs:                 []string{"projectId", "sessionId", "serviceId", "cursor"},
@@ -118,6 +121,7 @@ func MethodContracts() []MethodContract {
 		MethodStartProject:                []string{"projectId", "intentId"},
 		MethodStatus:                      []string{},
 		MethodStopProject:                 []string{"projectId", "intentId"},
+		MethodRestartProject:              []string{"projectId", "intentId"},
 		MethodWaitProjectActivity:         []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
 		MethodWaitServiceLogs:             []string{"projectId", "sessionId", "serviceId", "cursor", "waitMilliseconds"},
 	}

@@ -21,11 +21,15 @@ import (
 func TestProjectLifecycleRequestsRequireStableProjectAndIntent(t *testing.T) {
 	validStart := StartProjectRequest{ProjectID: "project-orders", IntentID: "intent-start-orders"}
 	validStop := StopProjectRequest{ProjectID: "project-orders", IntentID: "intent-stop-orders"}
+	validRestart := RestartProjectRequest{ProjectID: "project-orders", IntentID: "intent-restart-orders"}
 	if err := validStart.Validate(); err != nil {
 		t.Fatalf("StartProjectRequest.Validate() error = %v", err)
 	}
 	if err := validStop.Validate(); err != nil {
 		t.Fatalf("StopProjectRequest.Validate() error = %v", err)
+	}
+	if err := validRestart.Validate(); err != nil {
+		t.Fatalf("RestartProjectRequest.Validate() error = %v", err)
 	}
 
 	for _, test := range []struct {
@@ -46,9 +50,9 @@ func TestProjectLifecycleRequestsRequireStableProjectAndIntent(t *testing.T) {
 	}
 }
 
-// TestProjectLifecycleOperationAcceptsOnlyStartAndStopProgress keeps unrelated operations off the action response.
-func TestProjectLifecycleOperationAcceptsOnlyStartAndStopProgress(t *testing.T) {
-	for _, kind := range []domain.OperationKind{domain.OperationKindProjectStart, domain.OperationKindProjectStop} {
+// TestProjectLifecycleOperationAcceptsOnlyProjectLifecycleProgress keeps unrelated operations off the action response.
+func TestProjectLifecycleOperationAcceptsOnlyProjectLifecycleProgress(t *testing.T) {
+	for _, kind := range []domain.OperationKind{domain.OperationKindProjectStart, domain.OperationKindProjectStop, domain.OperationKindProjectRestart} {
 		result := projectLifecycleTestResult(t, kind)
 		if err := result.Validate(); err != nil {
 			t.Fatalf("ProjectLifecycleOperation{%s}.Validate() error = %v", kind, err)
@@ -57,7 +61,7 @@ func TestProjectLifecycleOperationAcceptsOnlyStartAndStopProgress(t *testing.T) 
 
 	invalid := projectLifecycleTestResult(t, domain.OperationKindProjectStart)
 	invalid.Operation.Kind = domain.OperationKindProjectUnregister
-	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "start or stop") {
+	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "start, stop, or restart") {
 		t.Fatalf("ProjectLifecycleOperation(unregister).Validate() error = %v", err)
 	}
 	invalid = projectLifecycleTestResult(t, domain.OperationKindProjectStart)
@@ -95,7 +99,7 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 	if CapabilityProjectLifecycleV1 != "control.project-lifecycle.v1" {
 		t.Fatalf("CapabilityProjectLifecycleV1 = %q", CapabilityProjectLifecycleV1)
 	}
-	if methodProjectStart != "control.v1.project.start" || methodProjectStop != "control.v1.project.stop" {
+	if methodProjectStart != "control.v1.project.start" || methodProjectStop != "control.v1.project.stop" || methodProjectRestart != "control.v1.project.restart" {
 		t.Fatalf("lifecycle methods = %q / %q", methodProjectStart, methodProjectStop)
 	}
 	if !reflect.DeepEqual(capabilities(), []rpc.Capability{
@@ -106,6 +110,7 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 		CapabilityProjectActivityV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
+		CapabilityProjectRestartV1,
 		CapabilityProjectRuntimeRepairV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,
@@ -127,6 +132,10 @@ func TestDecodeProjectLifecycleRequestsRequiresExactObjects(t *testing.T) {
 	stop, err := decodeStopProjectRequest([]byte(valid))
 	if err != nil || stop != (StopProjectRequest{ProjectID: "project-orders", IntentID: "intent-orders"}) {
 		t.Fatalf("decodeStopProjectRequest() = %#v, %v", stop, err)
+	}
+	restart, err := decodeRestartProjectRequest([]byte(valid))
+	if err != nil || restart != (RestartProjectRequest{ProjectID: "project-orders", IntentID: "intent-orders"}) {
+		t.Fatalf("decodeRestartProjectRequest() = %#v, %v", restart, err)
 	}
 
 	tooLarge := "{" + strings.Repeat(" ", maximumProjectLifecycleRequestBytes) + "}"
@@ -156,6 +165,7 @@ func TestDecodeProjectLifecycleRequestsRequiresExactObjects(t *testing.T) {
 	}{
 		{name: "start", call: func(payload []byte) error { _, err := decodeStartProjectRequest(payload); return err }},
 		{name: "stop", call: func(payload []byte) error { _, err := decodeStopProjectRequest(payload); return err }},
+		{name: "restart", call: func(payload []byte) error { _, err := decodeRestartProjectRequest(payload); return err }},
 	} {
 		decoder := decoder
 		t.Run(decoder.name, func(t *testing.T) {
@@ -187,17 +197,19 @@ func TestDecodeProjectLifecycleRequestsAllowsMaximumEscapedIDs(t *testing.T) {
 	}
 }
 
-// TestControlClientRoundTripsProjectLifecycleForHumanRoles verifies both actions retain caller and intent correlation.
+// TestControlClientRoundTripsProjectLifecycleForHumanRoles verifies every action retains caller and intent correlation.
 func TestControlClientRoundTripsProjectLifecycleForHumanRoles(t *testing.T) {
 	for _, role := range []rpc.Role{rpc.RoleCLI, rpc.RoleDesktop} {
 		role := role
 		t.Run(string(role), func(t *testing.T) {
 			start := projectLifecycleTestResult(t, domain.OperationKindProjectStart)
 			stop := projectLifecycleTestResult(t, domain.OperationKindProjectStop)
-			authority := &recordingAuthority{startLifecycle: start, stopLifecycle: stop}
+			restart := projectLifecycleTestResult(t, domain.OperationKindProjectRestart)
+			authority := &recordingAuthority{startLifecycle: start, stopLifecycle: stop, restartLifecycle: restart}
 			running := newRunningControlClient(t, role, authority, nil)
 			startRequest := StartProjectRequest{ProjectID: start.Operation.ProjectID, IntentID: start.Operation.IntentID}
 			stopRequest := StopProjectRequest{ProjectID: stop.Operation.ProjectID, IntentID: stop.Operation.IntentID}
+			restartRequest := RestartProjectRequest{ProjectID: restart.Operation.ProjectID, IntentID: restart.Operation.IntentID}
 
 			gotStart, err := running.client.StartProject(t.Context(), startRequest)
 			if err != nil || !reflect.DeepEqual(gotStart, start) {
@@ -207,18 +219,24 @@ func TestControlClientRoundTripsProjectLifecycleForHumanRoles(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(gotStop, stop) {
 				t.Fatalf("StopProject() = %#v, %v, want %#v", gotStop, err, stop)
 			}
+			gotRestart, err := running.client.RestartProject(t.Context(), restartRequest)
+			if err != nil || !reflect.DeepEqual(gotRestart, restart) {
+				t.Fatalf("RestartProject() = %#v, %v, want %#v", gotRestart, err, restart)
+			}
 
 			authority.mu.Lock()
 			startRequests := append([]StartProjectRequest(nil), authority.startRequests...)
 			stopRequests := append([]StopProjectRequest(nil), authority.stopRequests...)
+			restartRequests := append([]RestartProjectRequest(nil), authority.restartRequests...)
 			authority.mu.Unlock()
 			if !reflect.DeepEqual(startRequests, []StartProjectRequest{startRequest}) ||
-				!reflect.DeepEqual(stopRequests, []StopProjectRequest{stopRequest}) {
-				t.Fatalf("authority requests = %#v / %#v", startRequests, stopRequests)
+				!reflect.DeepEqual(stopRequests, []StopProjectRequest{stopRequest}) ||
+				!reflect.DeepEqual(restartRequests, []RestartProjectRequest{restartRequest}) {
+				t.Fatalf("authority requests = %#v / %#v / %#v", startRequests, stopRequests, restartRequests)
 			}
 			callers := authority.recordedCallers()
-			if len(callers) != 2 {
-				t.Fatalf("authority callers = %d, want 2", len(callers))
+			if len(callers) != 3 {
+				t.Fatalf("authority callers = %d, want 3", len(callers))
 			}
 			for _, caller := range callers {
 				if caller.Transport != testClientPeer || caller.Session.Role != role ||
@@ -241,11 +259,12 @@ func (payload rawProjectLifecyclePayload) MarshalJSON() ([]byte, error) {
 // TestProjectLifecycleHandlersRejectUnreviewedJSON proves strict decoding precedes daemon authority.
 func TestProjectLifecycleHandlersRejectUnreviewedJSON(t *testing.T) {
 	authority := &recordingAuthority{
-		startLifecycle: projectLifecycleTestResult(t, domain.OperationKindProjectStart),
-		stopLifecycle:  projectLifecycleTestResult(t, domain.OperationKindProjectStop),
+		startLifecycle:   projectLifecycleTestResult(t, domain.OperationKindProjectStart),
+		stopLifecycle:    projectLifecycleTestResult(t, domain.OperationKindProjectStop),
+		restartLifecycle: projectLifecycleTestResult(t, domain.OperationKindProjectRestart),
 	}
 	running := newRunningControlClient(t, rpc.RoleCLI, authority, nil)
-	for _, method := range []string{methodProjectStart, methodProjectStop} {
+	for _, method := range []string{methodProjectStart, methodProjectStop, methodProjectRestart} {
 		for _, payload := range []rawProjectLifecyclePayload{
 			`{"project_id":"project-orders","project_id":"project-other","intent_id":"intent-orders"}`,
 			`{"project_id":"project-orders","intent_id":"intent-orders","force":true}`,
@@ -268,6 +287,7 @@ func TestProjectLifecycleHandlersRejectInvalidSessionIdentity(t *testing.T) {
 	for _, handler := range []session.Handler{
 		server.projectStartHandler(testClientPeer),
 		server.projectStopHandler(testClientPeer),
+		server.projectRestartHandler(testClientPeer),
 	} {
 		_, err := handler(t.Context(), session.Request{})
 		var handlerError *session.HandlerError
@@ -312,6 +332,7 @@ func TestProjectLifecycleRequiresNegotiatedCapability(t *testing.T) {
 	}{
 		{method: methodProjectStart, request: StartProjectRequest{ProjectID: "project-orders", IntentID: "intent-start-orders"}},
 		{method: methodProjectStop, request: StopProjectRequest{ProjectID: "project-orders", IntentID: "intent-stop-orders"}},
+		{method: methodProjectRestart, request: RestartProjectRequest{ProjectID: "project-orders", IntentID: "intent-restart-orders"}},
 	} {
 		_, err := client.Call(t.Context(), call.method, call.request)
 		var wireError rpc.WireError
@@ -364,6 +385,9 @@ func TestControlClientRejectsProjectLifecycleAgainstOlderDaemon(t *testing.T) {
 	}
 	if _, err := client.StopProject(t.Context(), StopProjectRequest{ProjectID: "project-orders", IntentID: "intent-stop-orders"}); err == nil || !strings.Contains(err.Error(), "does not support project lifecycle") {
 		t.Fatalf("StopProject() error = %v", err)
+	}
+	if _, err := client.RestartProject(t.Context(), RestartProjectRequest{ProjectID: "project-orders", IntentID: "intent-restart-orders"}); err == nil || !strings.Contains(err.Error(), "does not support project restart") {
+		t.Fatalf("RestartProject() error = %v", err)
 	}
 	select {
 	case <-handlerCalled:

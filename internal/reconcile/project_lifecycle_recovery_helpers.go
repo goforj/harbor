@@ -82,7 +82,9 @@ func (coordinator *ProjectLifecycleCoordinator) isProjectProcessScopeQuarantined
 		return false, fmt.Errorf("read project %q recovery quarantine marker: %w", project.ID, err)
 	}
 	operation := record.Operation
-	return (operation.Kind == domain.OperationKindProjectStart || operation.Kind == domain.OperationKindProjectStop) &&
+	return (operation.Kind == domain.OperationKindProjectStart ||
+		operation.Kind == domain.OperationKindProjectStop ||
+		operation.Kind == domain.OperationKindProjectRestart) &&
 		operation.State == domain.OperationFailed &&
 		operation.Problem != nil &&
 		operation.Problem.Code == projectRecoveryAmbiguousLaunchCode, nil
@@ -313,6 +315,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverQueuedProjectStop(
 			return coordinator.state.BeginProjectStop(ctx, state.BeginProjectStopRequest{
 				ProjectID:                 record.Operation.ProjectID,
 				OperationID:               record.Operation.ID,
+				OperationKind:             record.Operation.Kind,
 				ExpectedOperationRevision: record.Revision,
 				SessionID:                 session.ID,
 				ExpectedSessionGeneration: session.Generation,
@@ -335,6 +338,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverQueuedProjectStop(
 		return coordinator.state.BeginProjectStop(ctx, state.BeginProjectStopRequest{
 			ProjectID:                 record.Operation.ProjectID,
 			OperationID:               record.Operation.ID,
+			OperationKind:             record.Operation.Kind,
 			ExpectedOperationRevision: record.Revision,
 			SessionID:                 session.ID,
 			ExpectedSessionGeneration: session.Generation,
@@ -389,6 +393,7 @@ func (coordinator *ProjectLifecycleCoordinator) completeRecoveredProjectStop(
 	request := state.CompleteProjectStopRequest{
 		ProjectID:                 record.Operation.ProjectID,
 		OperationID:               record.Operation.ID,
+		OperationKind:             record.Operation.Kind,
 		ExpectedOperationRevision: record.Revision,
 		Exit: state.ConfirmedProjectProcessExit{
 			SessionID:                 session.ID,

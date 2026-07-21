@@ -32,8 +32,10 @@ const (
 	CapabilityServiceLogsWaitV1 rpc.Capability = "control.service-logs-wait.v1"
 	// CapabilityProjectRegistrationV1 identifies the additive local-project registration surface.
 	CapabilityProjectRegistrationV1 rpc.Capability = "control.project-registration.v1"
-	// CapabilityProjectLifecycleV1 identifies idempotent project start and stop initiation.
+	// CapabilityProjectLifecycleV1 identifies idempotent project start, stop, and restart initiation.
 	CapabilityProjectLifecycleV1 rpc.Capability = "control.project-lifecycle.v1"
+	// CapabilityProjectRestartV1 identifies durable stop-then-start project replacement.
+	CapabilityProjectRestartV1 rpc.Capability = "control.project-restart.v1"
 	// CapabilityProjectUnregisterV1 identifies idempotent local-project unregister initiation.
 	CapabilityProjectUnregisterV1 rpc.Capability = "control.project-unregister.v1"
 	// CapabilityProjectRuntimeRepairV1 identifies explicit inspection and confirmation of one stale project runtime.
@@ -54,6 +56,7 @@ const (
 	methodServiceLogs                         = "control.v1.project.service.logs"
 	methodProjectStart                        = "control.v1.project.start"
 	methodProjectStop                         = "control.v1.project.stop"
+	methodProjectRestart                      = "control.v1.project.restart"
 	methodProjectRegister                     = "control.v1.project.register"
 	methodProjectRuntimeRepairInspect         = "control.v1.project.runtime-repair.inspect"
 	methodProjectRuntimeRepairConfirm         = "control.v1.project.runtime-repair.confirm"
@@ -270,6 +273,7 @@ func capabilities() []rpc.Capability {
 		CapabilityProjectActivityV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
+		CapabilityProjectRestartV1,
 		CapabilityProjectRuntimeRepairV1,
 		CapabilityProjectUnregisterApprovalV1,
 		CapabilityProjectUnregisterV1,

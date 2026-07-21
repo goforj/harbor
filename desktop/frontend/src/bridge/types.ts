@@ -17,6 +17,7 @@ export interface HarborWireFixture {
     snapshot: 'Snapshot'
     setup_network: 'SetupNetwork'
     start_project: 'StartProject'
+    restart_project: 'RestartProject'
     status: 'Status'
     stop_project: 'StopProject'
   }
@@ -43,6 +44,7 @@ export interface HarborWireFixture {
   setup_network: NetworkSetupOperation & { operation: Operation & { kind: 'network.setup'; state: 'succeeded' } }
   start_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.start'; state: 'queued' } }
   stop_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.stop'; state: 'queued' } }
+  restart_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.restart'; state: 'queued' } }
   terminal_operation: Operation & {
     state: 'failed'
     problem: Problem
@@ -69,6 +71,7 @@ export interface HarborBridge {
   setupNetwork(): Promise<NetworkSetupOperation>
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
+  restartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   subscribe(listener: (snapshot: HarborSnapshot) => void): () => void
   subscribeConnection(listener: (event: ConnectionEvent) => void): () => void
 }

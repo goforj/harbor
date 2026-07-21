@@ -445,7 +445,7 @@ func (journal *OperationJournal) OperationByIntent(ctx context.Context, intentID
 	return operationRecordFromModel(*row)
 }
 
-// LatestProjectLifecycleOperation returns the newest start, stop, or unregister operation retained for one project.
+// LatestProjectLifecycleOperation returns the newest start, stop, restart, or unregister operation retained for one project.
 func (journal *OperationJournal) LatestProjectLifecycleOperation(
 	ctx context.Context,
 	projectID domain.ProjectID,
@@ -467,6 +467,7 @@ func (journal *OperationJournal) LatestProjectLifecycleOperation(
 		Where("kind IN ?", []string{
 			string(domain.OperationKindProjectStart),
 			string(domain.OperationKindProjectStop),
+			string(domain.OperationKindProjectRestart),
 			string(domain.OperationKindProjectUnregister),
 		}).
 		Order("revision DESC").

@@ -83,7 +83,41 @@ func (command *StopCmd) Run(ctx context.Context) error {
 	})
 }
 
-// projectLifecycleCommand keeps StartCmd and StopCmd on one validation, retry, and presentation contract.
+// RestartCmd replaces one registered GoForj project session through Harbor's durable lifecycle.
+type RestartCmd struct {
+	ProjectID domain.ProjectID `arg:"" name:"project" help:"Registered Harbor project ID"`
+	JSON      bool             `help:"Print the typed machine-readable lifecycle operation"`
+	Intent    domain.IntentID  `help:"Reuse this intent when retrying an indeterminate restart"`
+
+	client      *DaemonClient
+	output      io.Writer
+	newIntentID projectLifecycleIntentFactory
+}
+
+// NewRestartCmd creates the project restart command without contacting the daemon.
+func NewRestartCmd(client *DaemonClient) *RestartCmd {
+	return &RestartCmd{client: client, output: os.Stdout, newIntentID: newProjectLifecycleIntentID}
+}
+
+// Signature defines CLI metadata for project restart.
+func (*RestartCmd) Signature() string {
+	return `name:"restart" help:"Restart a registered Harbor project"`
+}
+
+// Run starts or resumes one project restart intent and reports only daemon-authoritative progress.
+func (command *RestartCmd) Run(ctx context.Context) error {
+	return runProjectLifecycle(ctx, projectLifecycleCommand{
+		projectID: command.ProjectID,
+		intent:    command.Intent,
+		json:      command.JSON,
+		kind:      domain.OperationKindProjectRestart,
+		client:    command.client,
+		output:    command.output,
+		newIntent: command.newIntentID,
+	})
+}
+
+// projectLifecycleCommand keeps StartCmd, StopCmd, and RestartCmd on one validation, retry, and presentation contract.
 type projectLifecycleCommand struct {
 	projectID domain.ProjectID
 	intent    domain.IntentID
@@ -110,6 +144,8 @@ func runProjectLifecycle(ctx context.Context, command projectLifecycleCommand) e
 		lifecycle, err = command.client.StartProject(ctx, control.StartProjectRequest{ProjectID: command.projectID, IntentID: intentID})
 	case domain.OperationKindProjectStop:
 		lifecycle, err = command.client.StopProject(ctx, control.StopProjectRequest{ProjectID: command.projectID, IntentID: intentID})
+	case domain.OperationKindProjectRestart:
+		lifecycle, err = command.client.RestartProject(ctx, control.RestartProjectRequest{ProjectID: command.projectID, IntentID: intentID})
 	default:
 		return fmt.Errorf("unsupported project lifecycle kind %q", command.kind)
 	}
@@ -171,6 +207,8 @@ func projectLifecycleAction(kind domain.OperationKind) string {
 		return "start"
 	case domain.OperationKindProjectStop:
 		return "stop"
+	case domain.OperationKindProjectRestart:
+		return "restart"
 	default:
 		return string(kind)
 	}
@@ -183,10 +221,16 @@ func writeProjectLifecycle(output io.Writer, lifecycle control.ProjectLifecycleO
 	if operation.Kind == domain.OperationKindProjectStop {
 		label = "Stopping"
 	}
+	if operation.Kind == domain.OperationKindProjectRestart {
+		label = "Restarting"
+	}
 	if operation.State == domain.OperationSucceeded {
 		label = "Started"
 		if operation.Kind == domain.OperationKindProjectStop {
 			label = "Stopped"
+		}
+		if operation.Kind == domain.OperationKindProjectRestart {
+			label = "Restarted"
 		}
 	}
 	if operation.State == domain.OperationFailed {
@@ -205,7 +249,7 @@ func writeProjectLifecycle(output io.Writer, lifecycle control.ProjectLifecycleO
 	return nil
 }
 
-// projectLifecycleTerminalError makes an authoritative failed or cancelled start/stop visible to shell callers.
+// projectLifecycleTerminalError makes an authoritative failed or cancelled lifecycle action visible to shell callers.
 type projectLifecycleTerminalError struct {
 	projectID   domain.ProjectID
 	operationID domain.OperationID

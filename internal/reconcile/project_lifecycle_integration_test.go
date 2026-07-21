@@ -609,6 +609,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read active session: %v", err)
 	}
+	firstSessionID := session.ID
 	if session.DescriptorDigest != strings.Repeat("a", 64) {
 		t.Fatalf("active session descriptor digest = %q, want descriptor topology digest", session.DescriptorDigest)
 	}
@@ -624,6 +625,30 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 		t.Fatalf("start operation = %#v, %v", startOperation, err)
 	}
 	waitForProjectLifecycleRouteStates(t, routes, []domain.ProjectState{domain.ProjectReady})
+
+	restarting, err := coordinator.Restart(t.Context(), ProjectRestartRequest{
+		ProjectID: project.ID, OperationID: "operation-restart", IntentID: "intent-restart",
+	})
+	if err != nil || restarting.Operation.State != domain.OperationQueued {
+		t.Fatalf("Restart() = %#v, %v", restarting, err)
+	}
+	readyAgain := waitForProjectLifecycleState(t, store, project.ID, domain.ProjectReady)
+	restartOperation := waitForProjectLifecycleOperationState(t, journal, "intent-restart", domain.OperationSucceeded)
+	if readyAgain.Project.State != domain.ProjectReady || readyAgain.Project.Resources[0].URL != fmt.Sprintf("http://127.0.0.1:%d", port) {
+		t.Fatalf("restarted project = %#v", readyAgain.Project)
+	}
+	replacementSession, err := store.ActiveProjectSession(t.Context(), project.ID)
+	if err != nil {
+		t.Fatalf("read replacement active session: %v", err)
+	}
+	if replacementSession.ID == firstSessionID || restartOperation.Operation.Kind != domain.OperationKindProjectRestart {
+		t.Fatalf("replacement session = %#v, restart operation = %#v", replacementSession, restartOperation.Operation)
+	}
+	waitForProjectLifecycleRouteStates(
+		t,
+		routes,
+		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectReady},
+	)
 
 	stopping, err := coordinator.Stop(t.Context(), ProjectStopRequest{
 		ProjectID: project.ID, OperationID: "operation-stop", IntentID: "intent-stop",
@@ -645,7 +670,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	waitForProjectLifecycleRouteStates(
 		t,
 		routes,
-		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectStopped},
+		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectReady, domain.ProjectStopping, domain.ProjectStopped},
 	)
 }
 

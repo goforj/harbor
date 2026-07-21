@@ -49,6 +49,7 @@ type recordingAuthority struct {
 	networkResolverSetupConfirmation    NetworkResolverSetupApprovalConfirmation
 	startLifecycle                      ProjectLifecycleOperation
 	stopLifecycle                       ProjectLifecycleOperation
+	restartLifecycle                    ProjectLifecycleOperation
 	projectActivity                     ProjectActivity
 	serviceLogs                         ServiceLogs
 	projectRuntimeRepairInspection      ProjectRuntimeRepairInspection
@@ -67,6 +68,7 @@ type recordingAuthority struct {
 	networkResolverSetupConfirmErr      error
 	startErr                            error
 	stopErr                             error
+	restartErr                          error
 	projectActivityErr                  error
 	serviceLogsErr                      error
 	projectRuntimeRepairInspectErr      error
@@ -84,6 +86,7 @@ type recordingAuthority struct {
 	networkResolverSetupConfirmRequests []ConfirmNetworkResolverSetupApprovalRequest
 	startRequests                       []StartProjectRequest
 	stopRequests                        []StopProjectRequest
+	restartRequests                     []RestartProjectRequest
 	projectActivityRequests             []ProjectActivityRequest
 	serviceLogsRequests                 []ServiceLogsRequest
 	projectRuntimeRepairInspectRequests []InspectProjectRuntimeRepairRequest
@@ -283,6 +286,22 @@ func (authority *recordingAuthority) StopProject(
 	authority.stopRequests = append(authority.stopRequests, request)
 	authority.mu.Unlock()
 	return authority.stopLifecycle, authority.stopErr
+}
+
+// RestartProject records the authenticated caller and client-owned restart intent before returning durable progress.
+func (authority *recordingAuthority) RestartProject(
+	ctx context.Context,
+	caller Caller,
+	request RestartProjectRequest,
+) (ProjectLifecycleOperation, error) {
+	if err := normalizeContext(ctx).Err(); err != nil {
+		return ProjectLifecycleOperation{}, err
+	}
+	authority.mu.Lock()
+	authority.callers = append(authority.callers, caller)
+	authority.restartRequests = append(authority.restartRequests, request)
+	authority.mu.Unlock()
+	return authority.restartLifecycle, authority.restartErr
 }
 
 // UnregisterProject records the authenticated caller and client-owned intent before returning durable progress.
@@ -538,7 +557,7 @@ func TestControlResponseJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal status response: %v", err)
 	}
-	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-runtime-repair.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.service-logs-wait.v1","control.service-logs.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
+	wantStatus := `{"status":{"state":"ready","build":{"version":"v1.2.3+ipc","revision":"abc123","modified":true},"protocol":{"major":1,"minor":0},"capabilities":["control.daemon-control.v1","control.network-resolver-setup.v1","control.network-setup.v1","control.project-activity-wait.v1","control.project-activity.v1","control.project-lifecycle.v1","control.project-registration.v1","control.project-restart.v1","control.project-runtime-repair.v1","control.project-unregister-approval.v1","control.project-unregister.v1","control.service-logs-wait.v1","control.service-logs.v1","control.v1"],"snapshot_schema_version":1,"sequence":42}}`
 	if string(statusJSON) != wantStatus {
 		t.Fatalf("status JSON = %s, want %s", statusJSON, wantStatus)
 	}

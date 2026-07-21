@@ -32,6 +32,7 @@ type MethodMetadata struct {
 	SetupNetwork                string `json:"setup_network"`
 	Snapshot                    string `json:"snapshot"`
 	StartProject                string `json:"start_project"`
+	RestartProject              string `json:"restart_project"`
 	Status                      string `json:"status"`
 	StopProject                 string `json:"stop_project"`
 }
@@ -68,6 +69,7 @@ type Document struct {
 	SetupNetwork                      control.NetworkSetupOperation            `json:"setup_network"`
 	StartProject                      control.ProjectLifecycleOperation        `json:"start_project"`
 	StopProject                       control.ProjectLifecycleOperation        `json:"stop_project"`
+	RestartProject                    control.ProjectLifecycleOperation        `json:"restart_project"`
 	TerminalOperation                 domain.Operation                         `json:"terminal_operation"`
 }
 
@@ -101,6 +103,7 @@ func Fixture() Document {
 			SetupNetwork:                desktopwire.MethodSetupNetwork,
 			Snapshot:                    desktopwire.MethodSnapshot,
 			StartProject:                desktopwire.MethodStartProject,
+			RestartProject:              desktopwire.MethodRestartProject,
 			Status:                      desktopwire.MethodStatus,
 			StopProject:                 desktopwire.MethodStopProject,
 		},
@@ -122,6 +125,7 @@ func Fixture() Document {
 				control.CapabilityProjectActivityV1,
 				control.CapabilityProjectLifecycleV1,
 				control.CapabilityProjectRegistrationV1,
+				control.CapabilityProjectRestartV1,
 				control.CapabilityProjectRuntimeRepairV1,
 				control.CapabilityProjectUnregisterApprovalV1,
 				control.CapabilityProjectUnregisterV1,
@@ -259,7 +263,7 @@ func Fixture() Document {
 			SessionID: "session-orders-api",
 			Supported: true,
 			Available: true,
-			Ports: []control.ServicePort{{Address: "127.0.0.1", Private: 3306, Public: 3306, Protocol: "tcp", Replica: 1}},
+			Ports:     []control.ServicePort{{Address: "127.0.0.1", Private: 3306, Public: 3306, Protocol: "tcp", Replica: 1}},
 			Output: control.ServiceLogOutputChunk{
 				Available:  true,
 				NextCursor: 28,
@@ -337,6 +341,18 @@ func Fixture() Document {
 				IntentID:    "desktop-project-stop-orders-api",
 				Kind:        domain.OperationKindProjectStop,
 				ProjectID:   "orders-api",
+				State:       domain.OperationQueued,
+				Phase:       string(domain.OperationQueued),
+				RequestedAt: lifecycleRequestedAt,
+			},
+			Revision: 45,
+		},
+		RestartProject: control.ProjectLifecycleOperation{
+			Operation: domain.Operation{
+				ID:          "operation-restart-billing",
+				IntentID:    "desktop-project-restart-billing",
+				Kind:        domain.OperationKindProjectRestart,
+				ProjectID:   "billing",
 				State:       domain.OperationQueued,
 				Phase:       string(domain.OperationQueued),
 				RequestedAt: lifecycleRequestedAt,
@@ -423,6 +439,7 @@ func (document Document) Validate() error {
 		desktopwire.MethodSetupNetwork:                document.Methods.SetupNetwork,
 		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
 		desktopwire.MethodStartProject:                document.Methods.StartProject,
+		desktopwire.MethodRestartProject:              document.Methods.RestartProject,
 		desktopwire.MethodStatus:                      document.Methods.Status,
 		desktopwire.MethodStopProject:                 document.Methods.StopProject,
 	}
@@ -517,6 +534,9 @@ func (document Document) Validate() error {
 	}
 	if err := document.StopProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project stop: %w", err)
+	}
+	if err := document.RestartProject.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project restart: %w", err)
 	}
 	if err := document.TerminalOperation.Validate(); err != nil {
 		return fmt.Errorf("validate fixture terminal operation: %w", err)

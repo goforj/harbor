@@ -90,7 +90,7 @@ export function createMockBridge(): HarborBridge {
     }
   }
 
-  async function changeProjectLifecycle(projectId: string, intentId: string, action: 'start' | 'stop') {
+  async function changeProjectLifecycle(projectId: string, intentId: string, action: 'start' | 'stop' | 'restart') {
     const previous = lifecycles.get(intentId)
     const kind = `project.${action}`
     if (previous) {
@@ -106,7 +106,13 @@ export function createMockBridge(): HarborBridge {
     }
 
     const revision = snapshot.sequence + 1
-    const operation = structuredClone(action === 'start' ? fixture.start_project.operation : fixture.stop_project.operation)
+    const operation = structuredClone(
+      action === 'start'
+        ? fixture.start_project.operation
+        : action === 'stop'
+          ? fixture.stop_project.operation
+          : fixture.restart_project.operation,
+    )
     operation.id = `operation-${revision}-${action}-${projectId}`
     operation.intent_id = intentId
     operation.project_id = projectId
@@ -115,7 +121,7 @@ export function createMockBridge(): HarborBridge {
     project.updated_at = operation.requested_at
     snapshot.operations = [
       ...snapshot.operations.filter((entry) => entry.project_id !== projectId
-        || (entry.kind !== 'project.start' && entry.kind !== 'project.stop')),
+        || (entry.kind !== 'project.start' && entry.kind !== 'project.stop' && entry.kind !== 'project.restart')),
       operation,
     ]
     snapshot.sequence = revision
@@ -194,7 +200,7 @@ export function createMockBridge(): HarborBridge {
       const confirmation: ProjectRuntimeRepairConfirmation = { project, revision }
       snapshot.projects[projectIndex] = project
       snapshot.operations = snapshot.operations.filter((operation) => operation.project_id !== projectId
-        || (operation.kind !== 'project.start' && operation.kind !== 'project.stop'))
+        || (operation.kind !== 'project.start' && operation.kind !== 'project.stop' && operation.kind !== 'project.restart'))
       snapshot.recent_resource_ids = snapshot.recent_resource_ids.filter((reference) => reference.project_id !== projectId)
       snapshot.sequence = revision
       status.sequence = revision
@@ -335,6 +341,9 @@ export function createMockBridge(): HarborBridge {
     },
     stopProject(projectId, intentId) {
       return changeProjectLifecycle(projectId, intentId, 'stop')
+    },
+    restartProject(projectId, intentId) {
+      return changeProjectLifecycle(projectId, intentId, 'restart')
     },
     subscribe() {
       return () => undefined

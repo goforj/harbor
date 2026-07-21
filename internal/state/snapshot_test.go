@@ -20,7 +20,7 @@ func TestOperationJournalSnapshotBuildsDomainState(t *testing.T) {
 	requestedAt := operationJournalTestTime()
 	first := newOperationJournalTestOperation(t, "operation-first", "intent-first", "", "host.setup", requestedAt)
 	second := newOperationJournalTestOperation(t, "operation-second", "intent-second", "", "host.teardown", requestedAt.Add(time.Second))
-	third := newOperationJournalTestOperation(t, "operation-third", "intent-third", "", "project.restart", requestedAt.Add(2*time.Second))
+	third := newOperationJournalTestOperation(t, "operation-third", "intent-third", "", "project.custom", requestedAt.Add(2*time.Second))
 
 	firstRecord, err := journal.Enqueue(context.Background(), first)
 	if err != nil {

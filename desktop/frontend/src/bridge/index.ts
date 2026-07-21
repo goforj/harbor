@@ -30,6 +30,7 @@ function createUnavailableBridge(): HarborBridge {
     setupNetwork: unavailable,
     startProject: unavailable,
     stopProject: unavailable,
+    restartProject: unavailable,
     subscribe: () => () => undefined,
     subscribeConnection: () => () => undefined,
   }

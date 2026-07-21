@@ -18,6 +18,7 @@ type daemonControlClient interface {
 	UnregisterProject(context.Context, control.UnregisterProjectRequest) (control.ProjectUnregistration, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
+	RestartProject(context.Context, control.RestartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
 	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
 	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
@@ -104,6 +105,16 @@ func (client *DaemonClient) StopProject(
 ) (control.ProjectLifecycleOperation, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectLifecycleOperation, error) {
 		return connection.StopProject(ctx, request)
+	})
+}
+
+// RestartProject stops and replaces one project lifecycle through the daemon and closes the one-shot connection.
+func (client *DaemonClient) RestartProject(
+	ctx context.Context,
+	request control.RestartProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.ProjectLifecycleOperation, error) {
+		return connection.RestartProject(ctx, request)
 	})
 }
 

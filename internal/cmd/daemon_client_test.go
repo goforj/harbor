@@ -18,6 +18,7 @@ type fakeDaemonControlClient struct {
 	unregistration                   control.ProjectUnregistration
 	startLifecycle                   control.ProjectLifecycleOperation
 	stopLifecycle                    control.ProjectLifecycleOperation
+	restartLifecycle                 control.ProjectLifecycleOperation
 	networkSetup                     control.NetworkSetupOperation
 	networkSetupPreparation          control.NetworkSetupApprovalPreparation
 	networkSetupConfirmation         control.NetworkSetupApprovalConfirmation
@@ -28,6 +29,7 @@ type fakeDaemonControlClient struct {
 	unregistrationErr                error
 	startLifecycleErr                error
 	stopLifecycleErr                 error
+	restartLifecycleErr              error
 	networkSetupErr                  error
 	networkSetupPreparationErr       error
 	networkSetupConfirmationErr      error
@@ -39,6 +41,7 @@ type fakeDaemonControlClient struct {
 	unregistrationCalls              int
 	startLifecycleCalls              int
 	stopLifecycleCalls               int
+	restartLifecycleCalls            int
 	networkSetupCalls                int
 	networkSetupPreparationCalls     int
 	networkSetupConfirmationCalls    int
@@ -46,6 +49,7 @@ type fakeDaemonControlClient struct {
 	unregistrationRequests           []control.UnregisterProjectRequest
 	startLifecycleRequests           []control.StartProjectRequest
 	stopLifecycleRequests            []control.StopProjectRequest
+	restartLifecycleRequests         []control.RestartProjectRequest
 	networkSetupRequests             []control.StartNetworkSetupRequest
 	networkSetupPreparationRequests  []control.PrepareNetworkSetupApprovalRequest
 	networkSetupConfirmationRequests []control.ConfirmNetworkSetupApprovalRequest
@@ -73,6 +77,16 @@ func (client *fakeDaemonControlClient) StopProject(
 	client.stopLifecycleCalls++
 	client.stopLifecycleRequests = append(client.stopLifecycleRequests, request)
 	return client.stopLifecycle, client.stopLifecycleErr
+}
+
+// RestartProject returns configured lifecycle progress and records the client-owned restart intent.
+func (client *fakeDaemonControlClient) RestartProject(
+	_ context.Context,
+	request control.RestartProjectRequest,
+) (control.ProjectLifecycleOperation, error) {
+	client.restartLifecycleCalls++
+	client.restartLifecycleRequests = append(client.restartLifecycleRequests, request)
+	return client.restartLifecycle, client.restartLifecycleErr
 }
 
 // StartNetworkSetup returns the configured setup operation and records the caller-owned intent.

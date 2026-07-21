@@ -31,7 +31,7 @@ The first desktop foundation is present under `desktop/`:
 - hash routing, Pinia connection epochs and snapshot ordering, light/dark/system themes, typed bridge adapters, a Go-generated deterministic browser fixture, Vitest, and Playwright are wired and exercised;
 - the Overview can open the operating system's directory picker through the narrow `AddProject` binding, register the selected checkout with the daemon, refresh the snapshot, and open the resulting project detail;
 - an empty-project Overview can run the idempotent `SetupNetwork` action when the daemon advertises network setup, with native consent, bounded retry guidance, and a fresh authoritative snapshot after the attempt;
-- project detail can start and stop the selected project and follow bounded output from only its current durable `forj dev` session through a wake-driven cursor request, with cursor resets and retained-output truncation shown explicitly;
+- project detail can start, stop, and restart the selected project and follow bounded output from only its current durable `forj dev` session through a wake-driven cursor request, with cursor resets and retained-output truncation shown explicitly;
 - service detail can follow bounded logs for one current Compose service through authenticated daemon control and narrow Wails bindings, with explicit connecting, waiting, live, reconnecting, ended, unsupported, and failure states;
 - project detail can confirm removal through the narrow `RemoveProject` binding, keep one client-owned intent across an uncertain retry, reconcile it against daemon snapshots, and leave the checkout on disk;
 - Vite restores the tracked empty embed marker after production builds so the nested Go module also compiles before frontend assets are generated;

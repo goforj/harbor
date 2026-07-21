@@ -128,6 +128,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 			methodProjectRuntimeRepairConfirm:         server.projectRuntimeRepairConfirmHandler(transportPeer),
 			methodProjectStart:                        server.projectStartHandler(transportPeer),
 			methodProjectStop:                         server.projectStopHandler(transportPeer),
+			methodProjectRestart:                      server.projectRestartHandler(transportPeer),
 			methodProjectRegister:                     server.projectRegisterHandler(transportPeer),
 			methodProjectUnregister:                   server.projectUnregisterHandler(transportPeer),
 			methodProjectUnregisterApprovalPrepare:    server.projectUnregisterApprovalPrepareHandler(transportPeer),
@@ -220,6 +221,42 @@ func (server *Server) projectStopHandler(transportPeer local.PeerIdentity) sessi
 			lifecycle,
 		); err != nil {
 			return nil, authorityError(fmt.Errorf("validate project stop: %w", err))
+		}
+		return projectLifecycleResponse{Lifecycle: lifecycle}, nil
+	}
+}
+
+// projectRestartHandler admits one bounded restart intent and validates daemon-selected operation identity before replying.
+func (server *Server) projectRestartHandler(transportPeer local.PeerIdentity) session.Handler {
+	return func(ctx context.Context, request session.Request) (any, error) {
+		caller, err := callerFromRequest(transportPeer, request)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsCapability(caller.Session.Capabilities, CapabilityProjectRestartV1) {
+			return nil, session.NewHandlerError(
+				rpc.ErrorCodePermissionDenied,
+				errors.New("project restart capability was not negotiated"),
+			)
+		}
+		restartRequest, err := decodeRestartProjectRequest(request.Payload)
+		if err != nil {
+			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		lifecycle, err := server.config.Authority.RestartProject(ctx, caller, restartRequest)
+		if err != nil {
+			return nil, authorityError(err)
+		}
+		if err := lifecycle.Validate(); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project restart: %w", err))
+		}
+		if err := validateProjectLifecycleCorrelation(
+			restartRequest.ProjectID,
+			restartRequest.IntentID,
+			domain.OperationKindProjectRestart,
+			lifecycle,
+		); err != nil {
+			return nil, authorityError(fmt.Errorf("validate project restart: %w", err))
 		}
 		return projectLifecycleResponse{Lifecycle: lifecycle}, nil
 	}
@@ -674,6 +711,19 @@ func decodeStopProjectRequest(payload []byte) (StopProjectRequest, error) {
 	request := StopProjectRequest{ProjectID: projectID, IntentID: intentID}
 	if err := request.Validate(); err != nil {
 		return StopProjectRequest{}, err
+	}
+	return request, nil
+}
+
+// decodeRestartProjectRequest rejects hidden authority beyond one project and its client-stable restart intent.
+func decodeRestartProjectRequest(payload []byte) (RestartProjectRequest, error) {
+	projectID, intentID, err := decodeProjectLifecycleSelection(payload, "restart")
+	if err != nil {
+		return RestartProjectRequest{}, err
+	}
+	request := RestartProjectRequest{ProjectID: projectID, IntentID: intentID}
+	if err := request.Validate(); err != nil {
+		return RestartProjectRequest{}, err
 	}
 	return request, nil
 }

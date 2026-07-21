@@ -202,6 +202,150 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	}
 }
 
+// TestProjectLifecycleMutationsCommitRestartBoundaryWithExactReplay proves one restart identity survives its retired-session boundary.
+func TestProjectLifecycleMutationsCommitRestartBoundaryWithExactReplay(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project, session, process := projectLifecycleTestReadyProject(t, store, "project-restart-boundary")
+	restartQueued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectRestart, project.ID, "restart-boundary")
+	stopAt := restartQueued.Operation.RequestedAt.Add(time.Second)
+	beginStopRequest := BeginProjectStopRequest{
+		ProjectID: project.ID, OperationID: restartQueued.Operation.ID,
+		OperationKind: domain.OperationKindProjectRestart, ExpectedOperationRevision: restartQueued.Revision,
+		SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+		Phase: "restarting", At: stopAt,
+	}
+	stopping, err := store.BeginProjectStop(t.Context(), beginStopRequest)
+	if err != nil {
+		t.Fatalf("BeginProjectStop(restart) error = %v", err)
+	}
+	if stopping.Operation.Operation.State != domain.OperationRunning || stopping.Project.Project.State != domain.ProjectStopping || stopping.Session == nil || stopping.Session.Generation != session.Generation+1 {
+		t.Fatalf("BeginProjectStop(restart) = %#v", stopping)
+	}
+	sequenceAfterBegin := projectStoreMutationSequence(t, store)
+	replayedStopping, err := store.BeginProjectStop(t.Context(), beginStopRequest)
+	if err != nil || !reflect.DeepEqual(replayedStopping, stopping) || projectStoreMutationSequence(t, store) != sequenceAfterBegin {
+		t.Fatalf("BeginProjectStop(restart replay) = %#v, %v", replayedStopping, err)
+	}
+
+	stoppedAt := stopAt.Add(time.Second)
+	completeStopRequest := CompleteProjectStopRequest{
+		ProjectID: project.ID, OperationID: stopping.Operation.Operation.ID,
+		OperationKind: domain.OperationKindProjectRestart, ExpectedOperationRevision: stopping.Operation.Revision,
+		Exit: ConfirmedProjectProcessExit{
+			SessionID: session.ID, ExpectedSessionGeneration: stopping.Session.Generation,
+			Process: &process, ExitedAt: stoppedAt,
+		},
+		Phase: "restart stopped",
+	}
+	stopped, err := store.CompleteProjectStop(t.Context(), completeStopRequest)
+	if err != nil {
+		t.Fatalf("CompleteProjectStop(restart) error = %v", err)
+	}
+	if stopped.Operation.Operation.State != domain.OperationRunning || stopped.Operation.Revision != stopping.Operation.Revision || stopped.Session != nil || !projectMatchesInactiveState(stopped.Project.Project, domain.ProjectStopped, stoppedAt) {
+		t.Fatalf("CompleteProjectStop(restart) = %#v", stopped)
+	}
+	sequenceAfterStopped := projectStoreMutationSequence(t, store)
+	replayedStopped, err := store.CompleteProjectStop(t.Context(), completeStopRequest)
+	if err != nil || !reflect.DeepEqual(replayedStopped, stopped) || projectStoreMutationSequence(t, store) != sequenceAfterStopped {
+		t.Fatalf("CompleteProjectStop(restart replay) = %#v, %v", replayedStopped, err)
+	}
+
+	startAt := stoppedAt.Add(time.Second)
+	replacement := projectLifecycleTestPlannedSession(t, project.ID, startAt)
+	replacement.ID = "session-restart-replacement"
+	beginStartRequest := BeginProjectStartRequest{
+		ProjectID: project.ID, OperationID: stopped.Operation.Operation.ID,
+		OperationKind: domain.OperationKindProjectRestart, ExpectedOperationRevision: stopped.Operation.Revision,
+		ExpectedProjectRevision: stopped.Project.Revision, Session: replacement,
+		Phase: "restart launching", At: startAt,
+	}
+	starting, err := store.BeginProjectStart(t.Context(), beginStartRequest)
+	if err != nil {
+		t.Fatalf("BeginProjectStart(restart) error = %v", err)
+	}
+	if starting.Operation.Operation.State != domain.OperationRunning || starting.Project.Project.State != domain.ProjectStarting || starting.Session == nil || starting.Session.ID != replacement.ID {
+		t.Fatalf("BeginProjectStart(restart) = %#v", starting)
+	}
+	sequenceAfterRestartBegin := projectStoreMutationSequence(t, store)
+	replayedStarting, err := store.BeginProjectStart(t.Context(), beginStartRequest)
+	if err != nil || !reflect.DeepEqual(replayedStarting, starting) || projectStoreMutationSequence(t, store) != sequenceAfterRestartBegin {
+		t.Fatalf("BeginProjectStart(restart replay) = %#v, %v", replayedStarting, err)
+	}
+
+	replacementProcess := process
+	replacementProcess.PID++
+	attached, err := store.AttachProjectProcess(t.Context(), AttachProjectProcessRequest{
+		ProjectID: project.ID, SessionID: replacement.ID, ExpectedSessionGeneration: replacement.Generation,
+		Process: replacementProcess, At: startAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("AttachProjectProcess(restart) error = %v", err)
+	}
+	readyAt := startAt.Add(2 * time.Second)
+	completeStartRequest := CompleteProjectStartRequest{
+		ProjectID: project.ID, OperationID: starting.Operation.Operation.ID,
+		OperationKind: domain.OperationKindProjectRestart, ExpectedOperationRevision: starting.Operation.Revision,
+		SessionID: replacement.ID, ExpectedSessionGeneration: attached.Generation,
+		Runtime: projectLifecycleTestRuntime(), Phase: "restart ready", At: readyAt,
+	}
+	ready, err := store.CompleteProjectStart(t.Context(), completeStartRequest)
+	if err != nil {
+		t.Fatalf("CompleteProjectStart(restart) error = %v", err)
+	}
+	if ready.Operation.Operation.State != domain.OperationSucceeded || !projectMatchesReadyRuntime(ready.Project.Project, completeStartRequest.Runtime, readyAt) || ready.Session == nil || ready.Session.ID != replacement.ID {
+		t.Fatalf("CompleteProjectStart(restart) = %#v", ready)
+	}
+	sequenceAfterReady := projectStoreMutationSequence(t, store)
+	replayedReady, err := store.CompleteProjectStart(t.Context(), completeStartRequest)
+	if err != nil || !reflect.DeepEqual(replayedReady, ready) || projectStoreMutationSequence(t, store) != sequenceAfterReady {
+		t.Fatalf("CompleteProjectStart(restart replay) = %#v, %v", replayedReady, err)
+	}
+}
+
+// TestFailProjectRestartCommitsStoppedBoundaryWithExactReplay proves replacement launch failures do not resurrect the retired session.
+func TestFailProjectRestartCommitsStoppedBoundaryWithExactReplay(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project, session, process := projectLifecycleTestReadyProject(t, store, "project-restart-failure")
+	queued := enqueueProjectLifecycleTestOperation(t, store, domain.OperationKindProjectRestart, project.ID, "restart-failure")
+	stopping, err := store.BeginProjectStop(t.Context(), BeginProjectStopRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, OperationKind: domain.OperationKindProjectRestart,
+		ExpectedOperationRevision: queued.Revision, SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+		Phase: "restarting", At: queued.Operation.RequestedAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("BeginProjectStop() error = %v", err)
+	}
+	stoppedAt := stopping.Project.Project.UpdatedAt.Add(time.Second)
+	stopped, err := store.CompleteProjectStop(t.Context(), CompleteProjectStopRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, OperationKind: domain.OperationKindProjectRestart,
+		ExpectedOperationRevision: stopping.Operation.Revision,
+		Exit:                      ConfirmedProjectProcessExit{SessionID: session.ID, ExpectedSessionGeneration: stopping.Session.Generation, Process: &process, ExitedAt: stoppedAt},
+		Phase:                     "restart stopped",
+	})
+	if err != nil {
+		t.Fatalf("CompleteProjectStop() error = %v", err)
+	}
+
+	failedAt := stopped.Project.Project.UpdatedAt.Add(time.Second)
+	problem := domain.Problem{Code: "project.restart.launch", Message: "replacement process was rejected", Retryable: true}
+	failureRequest := FailProjectRestartRequest{
+		ProjectID: project.ID, OperationID: queued.Operation.ID, ExpectedOperationRevision: stopped.Operation.Revision,
+		ExpectedProjectRevision: stopped.Project.Revision, Phase: "restart failed", Problem: problem, At: failedAt,
+	}
+	failed, err := store.FailProjectRestart(t.Context(), failureRequest)
+	if err != nil {
+		t.Fatalf("FailProjectRestart() error = %v", err)
+	}
+	if failed.Operation.Operation.State != domain.OperationFailed || failed.Project.Project.State != domain.ProjectFailed || failed.Session != nil {
+		t.Fatalf("FailProjectRestart() = %#v", failed)
+	}
+	sequenceAfterFailure := projectStoreMutationSequence(t, store)
+	replayed, err := store.FailProjectRestart(t.Context(), failureRequest)
+	if err != nil || !reflect.DeepEqual(replayed, failed) || projectStoreMutationSequence(t, store) != sequenceAfterFailure {
+		t.Fatalf("FailProjectRestart(replay) = %#v, %v", replayed, err)
+	}
+}
+
 // TestBeginProjectStartPermitsRetryableTerminalStates ensures the GUI can retry failures without a synthetic stop transition.
 func TestBeginProjectStartPermitsRetryableTerminalStates(t *testing.T) {
 	for _, projectState := range []domain.ProjectState{domain.ProjectFailed, domain.ProjectUnavailable} {
@@ -353,6 +497,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		name   string
 		mutate func(*BeginProjectStartRequest)
 	}{
+		{name: "operation kind", mutate: func(request *BeginProjectStartRequest) { request.OperationKind = domain.OperationKindProjectStop }},
 		{name: "project", mutate: func(request *BeginProjectStartRequest) { request.ProjectID = "" }},
 		{name: "operation", mutate: func(request *BeginProjectStartRequest) { request.OperationID = "" }},
 		{name: "revision", mutate: func(request *BeginProjectStartRequest) { request.ExpectedOperationRevision = 0 }},
@@ -398,6 +543,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		SessionID: session.ID, ExpectedSessionGeneration: 2, Runtime: runtime, Phase: "ready", At: at,
 	}
 	for _, mutate := range []func(*CompleteProjectStartRequest){
+		func(request *CompleteProjectStartRequest) { request.OperationKind = domain.OperationKindProjectStop },
 		func(request *CompleteProjectStartRequest) { request.ProjectID = "" },
 		func(request *CompleteProjectStartRequest) { request.SessionID = "" },
 		func(request *CompleteProjectStartRequest) { request.ExpectedSessionGeneration = 0 },
@@ -445,6 +591,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		Exit: validExit, Phase: "failed", Problem: problem,
 	}
 	for _, mutate := range []func(*FailProjectStartRequest){
+		func(request *FailProjectStartRequest) { request.OperationKind = domain.OperationKindProjectStop },
 		func(request *FailProjectStartRequest) { request.ProjectID = "" },
 		func(request *FailProjectStartRequest) { request.OperationID = "" },
 		func(request *FailProjectStartRequest) { request.ExpectedOperationRevision = 0 },
@@ -464,6 +611,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		SessionID: session.ID, ExpectedSessionGeneration: 2, Phase: "stopping", At: at,
 	}
 	for _, mutate := range []func(*BeginProjectStopRequest){
+		func(request *BeginProjectStopRequest) { request.OperationKind = domain.OperationKindProjectStart },
 		func(request *BeginProjectStopRequest) { request.ProjectID = "" },
 		func(request *BeginProjectStopRequest) { request.SessionID = "" },
 		func(request *BeginProjectStopRequest) { request.ExpectedSessionGeneration = 0 },
@@ -480,6 +628,7 @@ func TestProjectLifecycleRequestValidationRejectsEveryUnfencedBoundary(t *testin
 		Exit: validExit, Phase: "stopped",
 	}
 	for _, mutate := range []func(*CompleteProjectStopRequest){
+		func(request *CompleteProjectStopRequest) { request.OperationKind = domain.OperationKindProjectStart },
 		func(request *CompleteProjectStopRequest) { request.ProjectID = "" },
 		func(request *CompleteProjectStopRequest) { request.OperationID = "" },
 		func(request *CompleteProjectStopRequest) { request.ExpectedOperationRevision = 0 },

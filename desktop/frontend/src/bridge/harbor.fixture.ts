@@ -13,6 +13,7 @@ export interface WailsAppBindings {
   ProjectActivity(projectId: string, sessionId: string, cursor: number): Promise<ProjectActivity>
   RemoveProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
   ResourceIconURL(projectId: string, resourceId: string): Promise<string>
+  RestartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): Promise<ServiceLogs>
   SetupNetwork(): Promise<NetworkSetupOperation>
   Snapshot(): Promise<HarborSnapshot>
@@ -52,6 +53,7 @@ export const harborWireFixture = {
     "setup_network": "SetupNetwork",
     "snapshot": "Snapshot",
     "start_project": "StartProject",
+    "restart_project": "RestartProject",
     "status": "Status",
     "stop_project": "StopProject"
   },
@@ -86,6 +88,7 @@ export const harborWireFixture = {
       "control.project-activity.v1",
       "control.project-lifecycle.v1",
       "control.project-registration.v1",
+      "control.project-restart.v1",
       "control.project-runtime-repair.v1",
       "control.project-unregister-approval.v1",
       "control.project-unregister.v1",
@@ -452,6 +455,18 @@ export const harborWireFixture = {
       "intent_id": "desktop-project-stop-orders-api",
       "kind": "project.stop",
       "project_id": "orders-api",
+      "state": "queued",
+      "phase": "queued",
+      "requested_at": "2026-07-18T14:41:00Z"
+    },
+    "revision": 45
+  },
+  "restart_project": {
+    "operation": {
+      "id": "operation-restart-billing",
+      "intent_id": "desktop-project-restart-billing",
+      "kind": "project.restart",
+      "project_id": "billing",
       "state": "queued",
       "phase": "queued",
       "requested_at": "2026-07-18T14:41:00Z"

@@ -59,6 +59,13 @@ type ProjectStopRequest struct {
 	IntentID    domain.IntentID
 }
 
+// ProjectRestartRequest identifies one daemon-owned stop-then-start replacement and its client-stable intent.
+type ProjectRestartRequest struct {
+	ProjectID   domain.ProjectID
+	OperationID domain.OperationID
+	IntentID    domain.IntentID
+}
+
 // projectLifecycleState is the durable aggregate surface required by managed process reconciliation.
 type projectLifecycleState interface {
 	Project(context.Context, domain.ProjectID) (state.ProjectRecord, error)
@@ -79,6 +86,7 @@ type projectLifecycleState interface {
 type projectLifecycleJournal interface {
 	Enqueue(context.Context, domain.Operation) (state.OperationRecord, error)
 	EnqueueProjectStart(context.Context, domain.Operation) (state.OperationRecord, error)
+	Operation(context.Context, domain.OperationID) (state.OperationRecord, error)
 	Transition(context.Context, domain.OperationID, domain.Sequence, domain.OperationState, string, time.Time, *domain.Problem) (state.OperationRecord, error)
 	FailQueued(context.Context, domain.OperationID, domain.Sequence, string, string, time.Time, domain.Problem) (state.OperationRecord, error)
 	OperationByIntent(context.Context, domain.IntentID) (state.OperationRecord, error)
@@ -131,7 +139,7 @@ type ProjectRouteReconciler interface {
 	Reconcile(context.Context) error
 }
 
-// ProjectLifecycleCoordinator turns durable start and stop intents into supervised GoForj development processes.
+// ProjectLifecycleCoordinator turns durable start, stop, and scoped restart intents into supervised GoForj development processes.
 type ProjectLifecycleCoordinator struct {
 	state             projectLifecycleState
 	operations        projectLifecycleJournal
@@ -246,6 +254,14 @@ func (coordinator *ProjectLifecycleCoordinator) Stop(ctx context.Context, reques
 	return coordinator.enqueue(ctx, request.ProjectID, request.OperationID, request.IntentID, domain.OperationKindProjectStop)
 }
 
+// Restart durably journals one idempotent project restart before scheduling its exact stop and replacement start.
+func (coordinator *ProjectLifecycleCoordinator) Restart(ctx context.Context, request ProjectRestartRequest) (state.OperationRecord, error) {
+	if err := validateProjectRestartRequest(request); err != nil {
+		return state.OperationRecord{}, err
+	}
+	return coordinator.enqueue(ctx, request.ProjectID, request.OperationID, request.IntentID, domain.OperationKindProjectRestart)
+}
+
 // enqueue preserves exact client idempotency while rejecting new lifecycle work after shutdown begins.
 func (coordinator *ProjectLifecycleCoordinator) enqueue(
 	ctx context.Context,
@@ -336,6 +352,8 @@ func (coordinator *ProjectLifecycleCoordinator) dispatch(record state.OperationR
 			coordinator.runStart(record)
 		case domain.OperationKindProjectStop:
 			coordinator.runStop(record)
+		case domain.OperationKindProjectRestart:
+			coordinator.runRestart(record)
 		}
 	}()
 }
@@ -716,6 +734,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				return coordinator.state.CompleteProjectStart(coordinator.ctx, state.CompleteProjectStartRequest{
 					ProjectID:                 mutation.Operation.Operation.ProjectID,
 					OperationID:               mutation.Operation.Operation.ID,
+					OperationKind:             mutation.Operation.Operation.Kind,
 					ExpectedOperationRevision: mutation.Operation.Revision,
 					SessionID:                 session.ID,
 					ExpectedSessionGeneration: session.Generation,
@@ -1153,6 +1172,309 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 	}
 }
 
+// runRestart performs a durable stop and replacement start while retaining one operation identity and exact process fences.
+func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.OperationRecord) {
+	if record.Operation.State == domain.OperationQueued {
+		coordinator.runQueuedRestart(record)
+		return
+	}
+	if record.Operation.State != domain.OperationRunning {
+		return
+	}
+	project, err := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
+	if err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
+	session, err := coordinator.state.ActiveProjectSession(coordinator.ctx, record.Operation.ProjectID)
+	if err != nil {
+		var missing *state.ProjectSessionNotFoundError
+		if errors.As(err, &missing) && project.Project.State == domain.ProjectStopped {
+			coordinator.startRestartAfterStop(record, project, projectprocess.ProjectDescriptorObservation{})
+			return
+		}
+		coordinator.recordAsyncError(err)
+		return
+	}
+	if session.State != domain.SessionStopping || session.Process == nil {
+		coordinator.recordAsyncError(priorProcessOwnershipError(record, session))
+		return
+	}
+	handle := coordinator.handle(record.Operation.ProjectID, session.ID)
+	if handle == nil {
+		coordinator.recordAsyncError(fmt.Errorf("restart project %q session %q: supervised process handle is unavailable", record.Operation.ProjectID, session.ID))
+		return
+	}
+	if err := coordinator.supervisor.Stop(context.Background(), record.Operation.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+		coordinator.recordAsyncError(fmt.Errorf("restart project %q process: %w", record.Operation.ProjectID, err))
+		return
+	}
+	exit, err := handle.Wait(context.Background())
+	if err != nil {
+		coordinator.recordAsyncError(fmt.Errorf("join restart project %q process: %w", record.Operation.ProjectID, err))
+		return
+	}
+	if err := requireSettledProjectExit(exit); err != nil {
+		coordinator.releaseHandle(record.Operation.ProjectID, handle)
+		if quarantineErr := coordinator.quarantineProjectProcessScope(context.Background(), record, session, processScopeRecoveryProblem()); quarantineErr != nil {
+			coordinator.recordAsyncError(errors.Join(err, quarantineErr))
+		}
+		return
+	}
+	coordinator.releaseHandle(record.Operation.ProjectID, handle)
+	completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return coordinator.state.CompleteProjectStop(context.Background(), state.CompleteProjectStopRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			OperationID:               record.Operation.ID,
+			OperationKind:             domain.OperationKindProjectRestart,
+			ExpectedOperationRevision: record.Revision,
+			Exit:                      confirmedExit(session, handle, exit),
+			Phase:                     "restart stopped",
+		})
+	})
+	if err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
+	coordinator.startRestartAfterStop(completed.Operation, completed.Project, projectprocess.ProjectDescriptorObservation{})
+}
+
+// runQueuedRestart validates launch intent before taking the currently healthy project offline.
+func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.OperationRecord) {
+	descriptor := projectprocess.ProjectDescriptorObservation{}
+	var descriptorObserver projectDescriptorObserver
+	var descriptorPath string
+	if observer, ok := coordinator.supervisor.(projectDescriptorObserver); ok {
+		descriptorObserver = observer
+		registered, err := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
+		if err != nil {
+			coordinator.cancelQueued(record, err)
+			return
+		}
+		descriptorPath = registered.Project.Path
+		descriptor, err = observer.ObserveProjectDescriptor(coordinator.ctx, descriptorPath)
+		if err != nil {
+			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
+			return
+		}
+	}
+	admission, err := coordinator.primaryLeases.Ensure(coordinator.ctx, record.Operation.ProjectID)
+	if err != nil {
+		if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
+			coordinator.cancelQueued(record, ctxErr)
+			return
+		}
+		var rejection *projectPrimaryLeaseRejection
+		if errors.As(err, &rejection) {
+			coordinator.failQueuedAdmission(record, rejection.Problem())
+			return
+		}
+		coordinator.cancelQueued(record, err)
+		return
+	}
+	if descriptorObserver != nil && admission.Project.Project.Path != descriptorPath {
+		descriptor, err = descriptorObserver.ObserveProjectDescriptor(coordinator.ctx, admission.Project.Project.Path)
+		if err != nil {
+			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
+			return
+		}
+	}
+	session, err := coordinator.state.ActiveProjectSession(coordinator.ctx, record.Operation.ProjectID)
+	if err != nil {
+		coordinator.cancelQueued(record, err)
+		return
+	}
+	handle := coordinator.handle(record.Operation.ProjectID, session.ID)
+	if handle == nil {
+		coordinator.cancelQueued(record, fmt.Errorf("restart project %q session %q: supervised process handle is unavailable", record.Operation.ProjectID, session.ID))
+		return
+	}
+	at := lifecycleTime(coordinator.now())
+	for _, lowerBound := range []time.Time{admission.Project.Project.UpdatedAt, session.UpdatedAt} {
+		if at.Before(lowerBound) {
+			at = lowerBound
+		}
+	}
+	begun, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return coordinator.state.BeginProjectStop(coordinator.ctx, state.BeginProjectStopRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			OperationID:               record.Operation.ID,
+			OperationKind:             domain.OperationKindProjectRestart,
+			ExpectedOperationRevision: record.Revision,
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Phase:                     "restarting",
+			At:                        at,
+		})
+	})
+	if err != nil {
+		coordinator.cancelQueued(record, err)
+		return
+	}
+	if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "withdraw restarting project routes"); err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
+	if err := coordinator.supervisor.Stop(context.Background(), record.Operation.ProjectID, session.ID); err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+		coordinator.recordAsyncError(fmt.Errorf("restart project %q process: %w", record.Operation.ProjectID, err))
+		return
+	}
+	exit, err := handle.Wait(context.Background())
+	if err != nil {
+		coordinator.recordAsyncError(fmt.Errorf("join restart project %q process: %w", record.Operation.ProjectID, err))
+		return
+	}
+	if err := requireSettledProjectExit(exit); err != nil {
+		coordinator.releaseHandle(record.Operation.ProjectID, handle)
+		if quarantineErr := coordinator.quarantineProjectProcessScope(context.Background(), begun.Operation, *begun.Session, processScopeRecoveryProblem()); quarantineErr != nil {
+			coordinator.recordAsyncError(errors.Join(err, quarantineErr))
+		}
+		return
+	}
+	coordinator.releaseHandle(record.Operation.ProjectID, handle)
+	completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return coordinator.state.CompleteProjectStop(context.Background(), state.CompleteProjectStopRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			OperationID:               record.Operation.ID,
+			OperationKind:             domain.OperationKindProjectRestart,
+			ExpectedOperationRevision: begun.Operation.Revision,
+			Exit:                      confirmedExit(*begun.Session, handle, exit),
+			Phase:                     "restart stopped",
+		})
+	})
+	if err != nil {
+		coordinator.recordAsyncError(err)
+		return
+	}
+	coordinator.startRestartAfterStop(completed.Operation, completed.Project, descriptor)
+}
+
+// startRestartAfterStop creates and launches the replacement process from the durable stopped boundary.
+func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
+	record state.OperationRecord,
+	stoppedProject state.ProjectRecord,
+	descriptor projectprocess.ProjectDescriptorObservation,
+) {
+	admission, err := coordinator.primaryLeases.Ensure(context.Background(), record.Operation.ProjectID)
+	if err != nil {
+		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.admission", err)
+		return
+	}
+	descriptorObserver, observesDescriptor := coordinator.supervisor.(projectDescriptorObserver)
+	if observesDescriptor {
+		fresh, observeErr := descriptorObserver.ObserveProjectDescriptor(context.Background(), admission.Project.Project.Path)
+		if observeErr != nil {
+			coordinator.failRestartAfterStop(record, stoppedProject, "project.descriptor.invalid", observeErr)
+			return
+		}
+		descriptor = fresh
+	}
+	at := lifecycleTime(coordinator.now())
+	for _, lowerBound := range []time.Time{stoppedProject.Project.UpdatedAt, admission.Project.Project.UpdatedAt} {
+		if at.Before(lowerBound) {
+			at = lowerBound
+		}
+	}
+	session, err := coordinator.newSession(record.Operation.ProjectID, admission.Project.Project.Path, at)
+	if err != nil {
+		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.session", err)
+		return
+	}
+	if descriptor.TopologyDigest != "" {
+		session.DescriptorDigest = descriptor.TopologyDigest
+		if err := session.Validate(); err != nil {
+			coordinator.failRestartAfterStop(record, stoppedProject, "project.descriptor.invalid", err)
+			return
+		}
+	}
+	begun, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return coordinator.state.BeginProjectStart(context.Background(), state.BeginProjectStartRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			OperationID:               record.Operation.ID,
+			OperationKind:             domain.OperationKindProjectRestart,
+			ExpectedOperationRevision: record.Revision,
+			ExpectedProjectRevision:   admission.Project.Revision,
+			Session:                   session,
+			Phase:                     "restart launching",
+			At:                        at,
+		})
+	})
+	if err != nil {
+		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.state", err)
+		return
+	}
+	handle, err := coordinator.supervisor.Start(context.Background(), projectprocess.StartRequest{
+		ProjectID:            record.Operation.ProjectID,
+		SessionID:            session.ID,
+		CheckoutRoot:         admission.Project.Project.Path,
+		GoForjExecutable:     descriptor.Executable,
+		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
+		Stdout:               io.Discard,
+		Stderr:               io.Discard,
+	})
+	if err != nil {
+		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
+			if quarantineErr := coordinator.quarantineProjectProcessScope(context.Background(), begun.Operation, session, processScopeRecoveryProblem()); quarantineErr != nil {
+				coordinator.recordAsyncError(quarantineErr)
+			}
+			return
+		}
+		coordinator.failStartWithoutProcess(begun, session, "project.restart.launch", err)
+		return
+	}
+	coordinator.retainHandle(record.Operation.ProjectID, handle)
+	evidence := processEvidence(handle.Info())
+	attachedAt := lifecycleTime(coordinator.now())
+	if attachedAt.Before(session.UpdatedAt) {
+		attachedAt = session.UpdatedAt
+	}
+	attached, err := retryLifecycleResult(func() (domain.ProjectSession, error) {
+		return coordinator.state.AttachProjectProcess(context.Background(), state.AttachProjectProcessRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			SessionID:                 session.ID,
+			ExpectedSessionGeneration: session.Generation,
+			Process:                   evidence,
+			At:                        attachedAt,
+		})
+	})
+	if err != nil {
+		coordinator.stopAndFailUnattached(begun, session, handle, err)
+		return
+	}
+	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
+}
+
+// failRestartAfterStop records a restart failure without inventing a replacement process session.
+func (coordinator *ProjectLifecycleCoordinator) failRestartAfterStop(record state.OperationRecord, project state.ProjectRecord, code string, cause error) {
+	failureState, ok := coordinator.state.(interface {
+		FailProjectRestart(context.Context, state.FailProjectRestartRequest) (state.ProjectLifecycleMutation, error)
+	})
+	if !ok {
+		coordinator.recordAsyncError(errors.Join(fmt.Errorf("project restart failure boundary is unavailable"), cause))
+		return
+	}
+	at := lifecycleTime(coordinator.now())
+	if at.Before(project.Project.UpdatedAt) {
+		at = project.Project.UpdatedAt
+	}
+	if record.Operation.StartedAt != nil && at.Before(*record.Operation.StartedAt) {
+		at = *record.Operation.StartedAt
+	}
+	if _, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
+		return failureState.FailProjectRestart(context.Background(), state.FailProjectRestartRequest{
+			ProjectID:                 record.Operation.ProjectID,
+			OperationID:               record.Operation.ID,
+			ExpectedOperationRevision: record.Revision,
+			ExpectedProjectRevision:   project.Revision,
+			Phase:                     "restart failed",
+			Problem:                   lifecycleProblem(code, cause),
+			At:                        at,
+		})
+	}); err != nil {
+		coordinator.recordAsyncError(errors.Join(err, cause))
+	}
+}
+
 // completeDaemonStop records clean daemon shutdown as a stopped project instead of stale ready process authority.
 func (coordinator *ProjectLifecycleCoordinator) completeDaemonStop(session domain.ProjectSession, handle *projectprocess.Handle, exit projectprocess.Exit) {
 	if err := requireSettledProjectExit(exit); err != nil {
@@ -1278,7 +1600,7 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 	}
 	queuedStarts := make([]state.OperationRecord, 0, len(records))
 	for _, record := range records {
-		if record.Operation.Kind != domain.OperationKindProjectStart && record.Operation.Kind != domain.OperationKindProjectStop {
+		if record.Operation.Kind != domain.OperationKindProjectStart && record.Operation.Kind != domain.OperationKindProjectStop && record.Operation.Kind != domain.OperationKindProjectRestart {
 			continue
 		}
 		switch record.Operation.State {
@@ -1301,10 +1623,29 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 			if err := coordinator.recoverQueuedProjectStop(ctx, record, session); err != nil {
 				return err
 			}
+			if record.Operation.Kind == domain.OperationKindProjectRestart {
+				continued, readErr := coordinator.operations.Operation(ctx, record.Operation.ID)
+				if readErr != nil {
+					return readErr
+				}
+				queuedStarts = append(queuedStarts, continued)
+			}
 			continue
 		case domain.OperationRunning:
 			session, sessionErr := coordinator.state.ActiveProjectSession(ctx, record.Operation.ProjectID)
 			if sessionErr != nil {
+				var missing *state.ProjectSessionNotFoundError
+				if record.Operation.Kind == domain.OperationKindProjectRestart && errors.As(sessionErr, &missing) {
+					project, projectErr := coordinator.state.Project(ctx, record.Operation.ProjectID)
+					if projectErr != nil {
+						return projectErr
+					}
+					if project.Project.State != domain.ProjectStopped {
+						return fmt.Errorf("recover project restart operation %q without a session from state %q", record.Operation.ID, project.Project.State)
+					}
+					queuedStarts = append(queuedStarts, record)
+					continue
+				}
 				return sessionErr
 			}
 			switch record.Operation.Kind {
@@ -1327,6 +1668,27 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 					return err
 				}
 				continue
+			case domain.OperationKindProjectRestart:
+				if session.State == domain.SessionStopping {
+					if err := coordinator.recoverRunningProjectStop(ctx, record, session); err != nil {
+						return err
+					}
+					queuedStarts = append(queuedStarts, record)
+					continue
+				}
+				if session.Process == nil {
+					if err := coordinator.quarantineProjectProcessScope(ctx, record, session, plannedProjectRecoveryProblem()); err != nil {
+						return err
+					}
+					continue
+				}
+				recovered, recoveryErr := coordinator.recoverRunningProjectStart(ctx, record, session)
+				if recoveryErr != nil {
+					return recoveryErr
+				}
+				if recovered {
+					continue
+				}
 			}
 			return priorProcessOwnershipError(record, session)
 		default:
@@ -1511,6 +1873,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 	request := state.FailProjectStartRequest{
 		ProjectID:                 record.Operation.ProjectID,
 		OperationID:               record.Operation.ID,
+		OperationKind:             record.Operation.Kind,
 		ExpectedOperationRevision: record.Revision,
 		Exit: state.ConfirmedProjectProcessExit{
 			SessionID:                 session.ID,
@@ -1636,6 +1999,7 @@ func (coordinator *ProjectLifecycleCoordinator) failStartWithoutProcess(mutation
 		return coordinator.state.FailProjectStart(context.Background(), state.FailProjectStartRequest{
 			ProjectID:                 session.ProjectID,
 			OperationID:               mutation.Operation.Operation.ID,
+			OperationKind:             mutation.Operation.Operation.Kind,
 			ExpectedOperationRevision: mutation.Operation.Revision,
 			Exit: state.ConfirmedProjectProcessExit{
 				SessionID:                 session.ID,
@@ -1717,6 +2081,7 @@ func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.P
 		return coordinator.state.FailProjectStart(context.Background(), state.FailProjectStartRequest{
 			ProjectID:                 session.ProjectID,
 			OperationID:               mutation.Operation.Operation.ID,
+			OperationKind:             mutation.Operation.Operation.Kind,
 			ExpectedOperationRevision: mutation.Operation.Revision,
 			Exit:                      confirmedExit(session, handle, exit),
 			Phase:                     "failed",
@@ -1976,6 +2341,11 @@ func validateProjectStopRequest(request ProjectStopRequest) error {
 	return validateProjectLifecycleIdentity(request.ProjectID, request.OperationID, request.IntentID)
 }
 
+// validateProjectRestartRequest rejects incomplete daemon and client identity before journaling.
+func validateProjectRestartRequest(request ProjectRestartRequest) error {
+	return validateProjectLifecycleIdentity(request.ProjectID, request.OperationID, request.IntentID)
+}
+
 // validateProjectLifecycleIdentity keeps operation ownership explicit across asynchronous dispatch.
 func validateProjectLifecycleIdentity(projectID domain.ProjectID, operationID domain.OperationID, intentID domain.IntentID) error {
 	if err := projectID.Validate(); err != nil {
@@ -1997,6 +2367,13 @@ func validateNewLifecycleState(projectState projectLifecycleState, ctx context.C
 	case domain.OperationKindProjectStop:
 		if project.State != domain.ProjectReady && project.State != domain.ProjectFailed && project.State != domain.ProjectDegraded {
 			return fmt.Errorf("project %q cannot stop from state %q", project.ID, project.State)
+		}
+		if _, err := projectState.ActiveProjectSession(ctx, project.ID); err != nil {
+			return err
+		}
+	case domain.OperationKindProjectRestart:
+		if project.State != domain.ProjectReady && project.State != domain.ProjectFailed && project.State != domain.ProjectDegraded {
+			return fmt.Errorf("project %q cannot restart from state %q", project.ID, project.State)
 		}
 		if _, err := projectState.ActiveProjectSession(ctx, project.ID); err != nil {
 			return err

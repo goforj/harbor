@@ -89,6 +89,9 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
           async AddProject() {
             return { canceled: true }
           },
+          async ApproveProjectRemoval() {
+            throw new Error('Project removal approval is not exercised in this setup test')
+          },
           async ConfirmProjectRuntimeRepair() {
             throw new Error('Runtime repair is not exercised in this setup test')
           },
@@ -125,6 +128,9 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
           },
           async StartProject() {
             throw new Error('Project start is not exercised in this setup test')
+          },
+          async RestartProject() {
+            throw new Error('Project restart is not exercised in this setup test')
           },
           async StopProject() {
             throw new Error('Project stop is not exercised in this setup test')
@@ -208,6 +214,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
       main: {
         App: {
           async AddProject() { return { canceled: true } },
+          async ApproveProjectRemoval() { throw new Error('Project removal approval is not exercised in this recovery test') },
           async ConfirmProjectRuntimeRepair() { throw new Error('Runtime repair confirmation requires explicit test setup') },
           async InspectProjectRuntimeRepair() { throw new Error('Runtime repair inspection requires explicit test setup') },
           async OpenResource() {},
@@ -217,6 +224,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
           async RemoveProject() { throw new Error('Quarantined project removal is disabled') },
           async SetupNetwork() { throw new Error('Network setup is not exercised in this recovery test') },
           async StartProject() { throw new Error('Quarantined project start is disabled') },
+          async RestartProject() { throw new Error('Quarantined project restart is disabled') },
           async StopProject() { throw new Error('Quarantined project stop is disabled') },
           async Status() { return structuredClone(status) },
           async Snapshot() { return structuredClone(snapshot) },
@@ -234,13 +242,15 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
   const recoveryAlert = page.getByRole('alert')
   await expect(recoveryAlert.getByText('Project recovery required', { exact: true })).toBeVisible()
   await expect(recoveryAlert.getByText('Harbor restarted before it could record the managed process identity.', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Recovery required', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Recovery required', exact: true })).toHaveCount(0)
+  await expect(recoveryAlert.getByRole('button', { name: 'Inspect stale runtime', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open resource', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Current activity' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Project summary' }).getByText('recovery required', { exact: true })).toBeVisible()
 })
 
-test('confirms project removal and explains when desktop approval is unavailable', async ({ page }) => {
+test('confirms project removal and offers the administrator approval action', async ({ page }) => {
   await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   const remove = page.getByRole('button', { name: 'Remove project', exact: true })
@@ -252,8 +262,8 @@ test('confirms project removal and explains when desktop approval is unavailable
   await dialog.getByRole('button', { name: 'Remove project', exact: true }).click()
 
   await expect(page.getByText('Administrator approval required', { exact: true })).toBeVisible()
-  await expect(page.getByText('Approval is not available from the desktop app yet.', { exact: false })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Awaiting approval', exact: true })).toBeDisabled()
+  await expect(page.getByText('Harbor paused removal until it can release this project’s local networking.', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Approve and remove', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Orders API' })).toBeVisible()
 })
 
@@ -278,6 +288,9 @@ test('leaves project detail when an active removal completes through a snapshot 
         App: {
           async AddProject() {
             return { canceled: true }
+          },
+          async ApproveProjectRemoval() {
+            throw new Error('Project removal approval is not exercised in this removal test')
           },
           async ConfirmProjectRuntimeRepair() {
             throw new Error('Runtime repair is not exercised in this removal test')
@@ -323,6 +336,9 @@ test('leaves project detail when an active removal completes through a snapshot 
             result.operation.project_id = projectId
             result.operation.intent_id = intentId
             return result
+          },
+          async RestartProject() {
+            throw new Error('Project restart is not exercised in this removal test')
           },
           async StopProject(projectId, intentId) {
             const result = structuredClone(initialStop)
@@ -536,6 +552,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           async AddProject() {
             return { canceled: true }
           },
+          async ApproveProjectRemoval() {
+            throw new Error('Project removal approval is not exercised in this connection test')
+          },
           async ConfirmProjectRuntimeRepair() {
             throw new Error('Runtime repair is not exercised in this connection test')
           },
@@ -554,6 +573,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           },
           async StartProject() {
             throw new Error('Project start is not exercised in this connection test')
+          },
+          async RestartProject() {
+            throw new Error('Project restart is not exercised in this connection test')
           },
           async StopProject() {
             throw new Error('Project stop is not exercised in this connection test')
@@ -621,6 +643,9 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
           async AddProject() {
             return { canceled: true }
           },
+          async ApproveProjectRemoval() {
+            throw new Error('Project removal approval is not exercised in this connection test')
+          },
           async ConfirmProjectRuntimeRepair() {
             throw new Error('Runtime repair is not exercised in this connection test')
           },
@@ -639,6 +664,9 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
           },
           async StartProject() {
             throw new Error('Project start is not exercised in this connection test')
+          },
+          async RestartProject() {
+            throw new Error('Project restart is not exercised in this connection test')
           },
           async StopProject() {
             throw new Error('Project stop is not exercised in this connection test')

@@ -73,6 +73,9 @@ type fakeControlClient struct {
 	stopLifecycle        control.ProjectLifecycleOperation
 	stopErr              error
 	stopRequest          control.StopProjectRequest
+	restartLifecycle     control.ProjectLifecycleOperation
+	restartErr           error
+	restartRequest       control.RestartProjectRequest
 	unregistration       control.ProjectUnregistration
 	unregisterErr        error
 	unregisterRequest    control.UnregisterProjectRequest
@@ -171,6 +174,7 @@ func newFakeControlClient() *fakeControlClient {
 		repairConfirmation: testProjectRuntimeRepairConfirmation(),
 		startLifecycle:     testProjectLifecycle(domain.OperationKindProjectStart, "desktop-start-orders"),
 		stopLifecycle:      testProjectLifecycle(domain.OperationKindProjectStop, "desktop-stop-orders"),
+		restartLifecycle:   testProjectLifecycle(domain.OperationKindProjectRestart, "desktop-restart-orders"),
 		unregistration:     testUnregistration(),
 		projectConfirmation: testProjectRemovalApprovalConfirmation(
 			testProjectRemovalOperation(domain.OperationRequiresApproval, 9),
@@ -336,6 +340,14 @@ func (client *fakeControlClient) StopProject(_ context.Context, request control.
 	defer client.mu.Unlock()
 	client.stopRequest = request
 	return client.stopLifecycle, client.stopErr
+}
+
+// RestartProject records the stable lifecycle identity and returns the configured restart operation.
+func (client *fakeControlClient) RestartProject(_ context.Context, request control.RestartProjectRequest) (control.ProjectLifecycleOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.restartRequest = request
+	return client.restartLifecycle, client.restartErr
 }
 
 // UnregisterProject records the stable removal identity and returns the configured authoritative operation.
@@ -2741,7 +2753,7 @@ func TestServiceLogsWaitCancellationIsIndependentFromProjectActivity(t *testing.
 	}
 }
 
-// TestProjectLifecyclePreservesActionIdentityAndOperationState covers both native lifecycle boundaries.
+// TestProjectLifecyclePreservesActionIdentityAndOperationState covers every native lifecycle boundary.
 func TestProjectLifecyclePreservesActionIdentityAndOperationState(t *testing.T) {
 	t.Parallel()
 
@@ -2825,6 +2837,21 @@ func TestProjectLifecyclePreservesActionIdentityAndOperationState(t *testing.T) 
 		}
 		if result.Operation.Kind != domain.OperationKindProjectStop || result.Revision != 9 {
 			t.Fatalf("StopProject() = %+v, want queued stop at revision 9", result)
+		}
+	})
+
+	t.Run("restarted", func(t *testing.T) {
+		app, client := connectedTestApp()
+		result, err := app.RestartProject("orders", "desktop-restart-orders")
+		if err != nil {
+			t.Fatalf("RestartProject() error = %v", err)
+		}
+		wantRequest := control.RestartProjectRequest{ProjectID: "orders", IntentID: "desktop-restart-orders"}
+		if client.restartRequest != wantRequest {
+			t.Fatalf("RestartProject() request = %+v, want %+v", client.restartRequest, wantRequest)
+		}
+		if result.Operation.Kind != domain.OperationKindProjectRestart || result.Revision != 9 {
+			t.Fatalf("RestartProject() = %+v, want queued restart at revision 9", result)
 		}
 	})
 }

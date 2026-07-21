@@ -40,7 +40,7 @@ interface TrackedProjectRemovalIntent {
   state: 'active' | 'new' | 'uncertain'
 }
 
-type ProjectLifecycleAction = 'start' | 'stop'
+type ProjectLifecycleAction = 'start' | 'stop' | 'restart'
 type ProjectRuntimeRepairAction = 'inspect' | 'confirm'
 
 interface TrackedProjectLifecycleIntent {
@@ -121,7 +121,9 @@ export const useHarborStore = defineStore('harbor', () => {
   const operations = computed(() => snapshot.value?.operations ?? [])
   const projectLifecycleBusy = computed(() => projectLifecycleProjectId.value !== null
     || projectLifecycleIntentCount.value > 0
-    || operations.value.some((operation) => (operation.kind === 'project.start' || operation.kind === 'project.stop')
+    || operations.value.some((operation) => (operation.kind === 'project.start'
+      || operation.kind === 'project.stop'
+      || operation.kind === 'project.restart')
       && isActiveOperation(operation)))
   const projectRuntimeRepairBusy = computed(() => projectRuntimeRepairProjectId.value !== null)
   const projectRemovalApprovalBusy = computed(() => projectRemovalApprovalProjectId.value !== null)
@@ -402,7 +404,9 @@ export const useHarborStore = defineStore('harbor', () => {
 
   function activeProjectLifecycle(projectId: string) {
     return operations.value.find((operation) => operation.project_id === projectId
-      && (operation.kind === 'project.start' || operation.kind === 'project.stop')
+      && (operation.kind === 'project.start'
+        || operation.kind === 'project.stop'
+        || operation.kind === 'project.restart')
       && isActiveOperation(operation))
   }
 
@@ -421,7 +425,9 @@ export const useHarborStore = defineStore('harbor', () => {
     const latestOperations = new Map<string, Operation>()
     for (const operation of nextSnapshot.operations) {
       if (!operation.project_id
-        || (operation.kind !== 'project.start' && operation.kind !== 'project.stop')) {
+        || (operation.kind !== 'project.start'
+          && operation.kind !== 'project.stop'
+          && operation.kind !== 'project.restart')) {
         continue
       }
       latestOperations.set(operation.project_id, operation)
@@ -437,7 +443,7 @@ export const useHarborStore = defineStore('harbor', () => {
         continue
       }
       trackProjectLifecycleIntent(projectId, {
-        action: operation.kind === 'project.start' ? 'start' : 'stop',
+        action: lifecycleActionForOperation(operation),
         id: operation.intent_id,
       })
       setProjectLifecycleProblem(projectId, null)
@@ -453,7 +459,7 @@ export const useHarborStore = defineStore('harbor', () => {
       const trackedOperation = nextSnapshot.operations.find((operation) => operation.project_id === projectId
         && operation.intent_id === tracked.id)
       const active = trackedOperation ? isActiveOperation(trackedOperation) : false
-      const reachedTarget = tracked.action === 'start'
+      const reachedTarget = tracked.action !== 'stop'
         ? project.state === 'ready' || project.state === 'degraded'
         : project.state === 'stopped'
       if (!active && (trackedOperation || reachedTarget)) {
@@ -484,7 +490,7 @@ export const useHarborStore = defineStore('harbor', () => {
       }
       const problem = projectLifecycleTerminalProblem(
         operation,
-        operation.kind === 'project.start' ? 'start' : 'stop',
+        lifecycleActionForOperation(operation),
       )
       setProjectLifecycleProblem(
         projectId,
@@ -555,7 +561,7 @@ export const useHarborStore = defineStore('harbor', () => {
 
     const active = activeProjectLifecycle(projectId)
     if (active && active.kind !== `project.${action}`) {
-      setProjectLifecycleError(projectId, `Harbor is already ${active.kind === 'project.start' ? 'starting' : 'stopping'} this project.`)
+      setProjectLifecycleError(projectId, `Harbor is already ${lifecycleProgressLabel(active.kind)} this project.`)
       return null
     }
     const remembered = projectLifecycleIntents.get(projectId)
@@ -571,7 +577,9 @@ export const useHarborStore = defineStore('harbor', () => {
     try {
       const result = action === 'start'
         ? await harborBridge.startProject(projectId, intent.id)
-        : await harborBridge.stopProject(projectId, intent.id)
+        : action === 'stop'
+          ? await harborBridge.stopProject(projectId, intent.id)
+          : await harborBridge.restartProject(projectId, intent.id)
       if (result.operation.project_id !== projectId
         || result.operation.intent_id !== intent.id
         || result.operation.kind !== `project.${action}`) {
@@ -610,6 +618,10 @@ export const useHarborStore = defineStore('harbor', () => {
 
   function stopProject(projectId: string) {
     return changeProjectLifecycle(projectId, 'stop')
+  }
+
+  function restartProject(projectId: string) {
+    return changeProjectLifecycle(projectId, 'restart')
   }
 
   function projectRuntimeRepairNotice(projectId: string) {
@@ -709,8 +721,8 @@ export const useHarborStore = defineStore('harbor', () => {
       if (attempt === projectRuntimeRepairGeneration) {
         setProjectRuntimeRepairNotice(projectId, {
           state: 'failed',
-          title: 'Stale runtime inspection failed',
-          message: cause instanceof Error ? cause.message : 'Harbor could not inspect the stale runtime.',
+          title: 'Recovery check failed',
+          message: 'Harbor could not verify the previous runtime. Try again.',
         })
       }
       return null
@@ -1237,6 +1249,7 @@ export const useHarborStore = defineStore('harbor', () => {
     activeProjectLifecycle,
     startProject,
     stopProject,
+    restartProject,
     projectRuntimeRepairNotice,
     inspectProjectRuntimeRepair,
     confirmProjectRuntimeRepair,
@@ -1259,6 +1272,32 @@ function newProjectLifecycleIntent(action: ProjectLifecycleAction): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
   const opaque = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
   return `desktop-project-${action}-${opaque}`
+}
+
+function lifecycleActionForOperation(operation: Operation): ProjectLifecycleAction {
+  switch (operation.kind) {
+    case 'project.start':
+      return 'start'
+    case 'project.stop':
+      return 'stop'
+    case 'project.restart':
+      return 'restart'
+    default:
+      throw new Error(`Unsupported project lifecycle operation: ${operation.kind}`)
+  }
+}
+
+function lifecycleProgressLabel(kind: string): string {
+  switch (kind) {
+    case 'project.start':
+      return 'starting'
+    case 'project.stop':
+      return 'stopping'
+    case 'project.restart':
+      return 'restarting'
+    default:
+      return 'changing'
+  }
 }
 
 function isActiveOperation(operation: Operation): boolean {

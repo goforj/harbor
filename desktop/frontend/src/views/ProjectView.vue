@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   Network,
   Play,
+  RefreshCw,
   Search,
   Square,
   SquareTerminal,
@@ -153,6 +154,13 @@ const runtimeRepairExpired = computed(() => {
 const lifecycleInFlight = computed(() => store.projectLifecycleProjectId === projectId.value)
 const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
 const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
+const restarting = computed(() => activeLifecycle.value?.kind === 'project.restart')
+const restartAvailable = computed(() => project.value?.state === 'ready'
+  || project.value?.state === 'degraded'
+  || restarting.value)
+const resourceOpenAvailable = computed(() => (project.value?.state === 'ready' || project.value?.state === 'degraded')
+  && primaryResource.value != null
+  && !recoveryRequired.value)
 const lifecycleAction = computed(() => project.value?.state === 'stopped'
   || project.value?.state === 'failed'
   || project.value?.state === 'unavailable'
@@ -160,6 +168,7 @@ const lifecycleAction = computed(() => project.value?.state === 'stopped'
   : 'stop')
 const lifecycleLabel = computed(() => {
   if (recoveryRequired.value) return 'Recovery required'
+  if (restarting.value) return 'Restarting…'
   if (starting.value) return 'Starting…'
   if (stopping.value) return 'Stopping…'
   return lifecycleAction.value === 'start' ? 'Start project' : 'Stop project'
@@ -173,6 +182,7 @@ const lifecycleDisabled = computed(() => store.snapshotStale
   || stopping.value
   || recoveryRequired.value
   || removalPending.value)
+const restartDisabled = computed(() => lifecycleDisabled.value || !restartAvailable.value)
 const networkSetupDisabled = computed(() => !needsNetworkSetup.value
   || project.value?.id !== projectId.value
   || store.settingUpNetwork
@@ -331,6 +341,11 @@ async function changeProjectLifecycle() {
   await store.stopProject(project.value.id)
 }
 
+async function restartProject() {
+  if (!project.value || restartDisabled.value) return
+  await store.restartProject(project.value.id)
+}
+
 async function setupNetworkAndStartProject() {
   const requestedProjectId = projectId.value
   if (networkSetupDisabled.value || project.value?.id !== requestedProjectId) return
@@ -398,15 +413,27 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           </div>
           <div class="flex items-center gap-2">
             <Button
+              v-if="!recoveryRequired"
               :variant="lifecycleAction === 'start' ? 'default' : 'outline'"
               size="sm"
               :disabled="lifecycleDisabled"
               @click="changeProjectLifecycle"
             >
-              <LoaderCircle v-if="lifecycleInFlight || starting || stopping" class="size-3.5 animate-spin" />
+              <LoaderCircle v-if="lifecycleInFlight || starting || stopping || restarting" class="size-3.5 animate-spin" />
               <Play v-else-if="lifecycleAction === 'start'" class="size-3.5 fill-current" />
               <Square v-else class="size-3.5 fill-current" />
               {{ lifecycleLabel }}
+            </Button>
+            <Button
+              v-if="restartAvailable"
+              variant="outline"
+              size="sm"
+              :disabled="restartDisabled"
+              @click="restartProject"
+            >
+              <LoaderCircle v-if="restarting || lifecycleInFlight" class="size-3.5 animate-spin" />
+              <RefreshCw v-else class="size-3.5" />
+              {{ restarting || lifecycleInFlight ? 'Restarting…' : 'Restart project' }}
             </Button>
             <AlertDialog v-model:open="removeOpen">
               <AlertDialogTrigger as-child>
@@ -468,7 +495,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               <Search v-else class="size-3.5" aria-hidden="true" />
               {{ runtimeRepairInspecting ? 'Checking stale runtime…' : 'Check for stale runtime' }}
             </Button>
-            <Button size="sm" :disabled="!primaryResource" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
+            <Button v-if="resourceOpenAvailable" size="sm" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
           </div>
         </div>
 
@@ -490,11 +517,14 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </TabsList>
 
         <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
-        <Alert v-if="lifecycleError" variant="destructive">
+        <Alert v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ recoveryRequired ? 'Project recovery required' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
-            <p>{{ lifecycleError }}</p>
+            <p v-if="lifecycleError">{{ lifecycleError }}</p>
+            <p v-if="recoveryRequired && runtimeRepairNotice" class="text-destructive">
+              {{ runtimeRepairNotice.message }}
+            </p>
             <p v-if="needsNetworkSetup && store.networkSetupError" class="text-destructive">{{ store.networkSetupError }}</p>
             <Button
               v-if="needsNetworkSetup"
@@ -522,7 +552,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </Alert>
 
         <Alert
-          v-if="runtimeRepairNotice"
+          v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
           :class="runtimeRepairNotice.state !== 'failed' && runtimeRepairNotice.state !== 'succeeded' ? 'border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200' : ''"
         >
