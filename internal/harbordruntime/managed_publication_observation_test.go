@@ -1,6 +1,7 @@
 package harbordruntime
 
 import (
+	"errors"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -30,6 +31,31 @@ func TestNormalizeManagedEndpointPublicationsMapsSelectedComposeEndpoints(t *tes
 	}
 	if !reflect.DeepEqual(publications, want) {
 		t.Fatalf("publications = %#v, want %#v", publications, want)
+	}
+}
+
+// TestValidateManagedEndpointPublicationsCompleteDistinguishesWithdrawalFromReadiness proves a barrier cannot acknowledge a partial host observation.
+func TestValidateManagedEndpointPublicationsCompleteDistinguishesWithdrawalFromReadiness(t *testing.T) {
+	input := managedPublicationObservationFixture()
+	publications, err := NormalizeManagedEndpointPublications(input)
+	if err != nil {
+		t.Fatalf("NormalizeManagedEndpointPublications() error = %v", err)
+	}
+	if err := ValidateManagedEndpointPublicationsComplete(input, publications); err != nil {
+		t.Fatalf("ValidateManagedEndpointPublicationsComplete(complete) error = %v", err)
+	}
+	input.ServicePorts = input.ServicePorts[:1]
+	withdrawn, err := NormalizeManagedEndpointPublications(input)
+	if err != nil {
+		t.Fatalf("NormalizeManagedEndpointPublications(incomplete) error = %v", err)
+	}
+	if err := ValidateManagedEndpointPublicationsComplete(input, withdrawn); !errors.Is(err, ErrManagedPublicationsIncomplete) {
+		t.Fatalf("ValidateManagedEndpointPublicationsComplete(incomplete) error = %v, want incomplete sentinel", err)
+	}
+	input.Requirements = nil
+	input.ServicePorts = []ManagedServicePortObservation{}
+	if err := ValidateManagedEndpointPublicationsComplete(input, []ManagedEndpointPublication{}); err != nil {
+		t.Fatalf("ValidateManagedEndpointPublicationsComplete(no endpoints) error = %v", err)
 	}
 }
 

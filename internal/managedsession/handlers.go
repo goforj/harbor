@@ -115,6 +115,9 @@ func (set *HandlerSet) barrierHandler() session.Handler {
 		}
 		response, err := set.authority.AcknowledgeManagedBarrier(ctx, set.peer, barrierRequest)
 		if err != nil {
+			if errors.Is(err, ErrManagedSessionNotReady) {
+				return nil, session.NewHandlerError(rpc.ErrorCodeUnavailable, err)
+			}
 			return nil, session.NewHandlerError(rpc.ErrorCodeInternal, err)
 		}
 		if err := ValidateBarrierCorrelation(barrierRequest, response); err != nil {

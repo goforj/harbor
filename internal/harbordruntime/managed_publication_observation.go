@@ -1,6 +1,7 @@
 package harbordruntime
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -13,6 +14,11 @@ import (
 )
 
 const managedPublicationServiceEndpointPrefix = "service:"
+
+var (
+	// ErrManagedPublicationsIncomplete means Harbor has not observed every declared host endpoint yet.
+	ErrManagedPublicationsIncomplete = errors.New("managed endpoint publications are incomplete")
+)
 
 // ManagedServicePortObservation pairs one exact Compose service identity with its current host port facts.
 type ManagedServicePortObservation struct {
@@ -102,6 +108,46 @@ func NormalizeManagedEndpointPublications(input ManagedPublicationObservationInp
 	}
 	slices.SortFunc(publications, compareManagedEndpointPublications)
 	return publications, nil
+}
+
+// ValidateManagedEndpointPublicationsComplete proves that one normalized replacement covers every declared host endpoint.
+//
+// A partial observation is deliberately represented as an empty replacement by NormalizeManagedEndpointPublications
+// so stale native routes can be withdrawn. A lifecycle barrier must distinguish that safe withdrawal from a project
+// that has no host-visible service endpoints, and therefore calls this check before acknowledging Compose.
+func ValidateManagedEndpointPublicationsComplete(
+	input ManagedPublicationObservationInput,
+	publications []ManagedEndpointPublication,
+) error {
+	if err := input.Fence.Validate(); err != nil {
+		return err
+	}
+	targets, err := managedPublicationTargets(input.Requirements)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(publications))
+	for index, publication := range publications {
+		if err := publication.Validate(); err != nil {
+			return fmt.Errorf("managed publication %d: %w", index+1, err)
+		}
+		if publication.Fence != input.Fence {
+			return fmt.Errorf("managed publication %q does not match the requested fence", publication.EndpointID)
+		}
+		if _, duplicate := seen[publication.EndpointID]; duplicate {
+			return fmt.Errorf("managed publication endpoint %q is duplicated", publication.EndpointID)
+		}
+		seen[publication.EndpointID] = struct{}{}
+	}
+	if len(seen) != len(targets) {
+		return fmt.Errorf("%w: observed %d of %d declared host endpoints", ErrManagedPublicationsIncomplete, len(seen), len(targets))
+	}
+	for endpointID := range targets {
+		if _, found := seen[endpointID]; !found {
+			return fmt.Errorf("%w: endpoint %q has not been observed", ErrManagedPublicationsIncomplete, endpointID)
+		}
+	}
+	return nil
 }
 
 // managedPublicationTarget records one declared host-visible endpoint that requires an observed publication.

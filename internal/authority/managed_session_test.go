@@ -35,6 +35,20 @@ type recordingManagedNativeRoutes struct {
 	live         bool
 }
 
+// recordingManagedPublicationObserver returns the Harbor-owned replacement used by barrier activation assertions.
+type recordingManagedPublicationObserver struct {
+	publications []harbordruntime.ManagedEndpointPublication
+	calls        int
+	lastFence    harbordruntime.ManagedPublicationFence
+}
+
+// ObserveManagedPublications records the exact fence and returns a fresh Harbor-owned publication set.
+func (observer *recordingManagedPublicationObserver) ObserveManagedPublications(_ context.Context, _ domain.ProjectID, _ domain.SessionID, fence harbordruntime.ManagedPublicationFence) ([]harbordruntime.ManagedEndpointPublication, error) {
+	observer.calls++
+	observer.lastFence = fence
+	return append([]harbordruntime.ManagedEndpointPublication(nil), observer.publications...), nil
+}
+
 // ReplaceManagedNativeRoutes records one complete route replacement for barrier assertions.
 func (routes *recordingManagedNativeRoutes) ReplaceManagedNativeRoutes(_ context.Context, replacement []dataplane.NativeRoute) error {
 	routes.replacements = append(routes.replacements, append([]dataplane.NativeRoute(nil), replacement...))
@@ -229,8 +243,15 @@ func TestAuthorityManagedBarrierRequiresLiveRouteActivator(t *testing.T) {
 	runtimeState.Network.Reservations.Endpoints = append([]state.EndpointReservation{serviceReservation}, runtimeState.Network.Reservations.Endpoints...)
 	runtimeState.Network.Reservations.SuppressedProjectIDs = []domain.ProjectID{}
 	activator := new(recordingManagedNativeRoutes)
+	observer := &recordingManagedPublicationObserver{publications: []harbordruntime.ManagedEndpointPublication{{
+		Fence:                 harbordruntime.ManagedPublicationFence{ProjectID: "project-orders", SessionID: "session-orders", SessionGeneration: 3},
+		EndpointID:            "service:mysql",
+		ReservationGeneration: 1,
+		Upstream:              netip.MustParseAddrPort("127.0.0.1:43007"),
+	}}}
 	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
 	authority.managedRoutes = activator
+	authority.managedObserver = observer
 	peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
 	response, err := authority.RegisterManagedSession(t.Context(), peer, managedSessionAuthorityRequest())
 	if err != nil {
@@ -259,6 +280,9 @@ func TestAuthorityManagedBarrierRequiresLiveRouteActivator(t *testing.T) {
 	}
 	if !barrier.Acknowledged || len(activator.replacements) != 1 || len(activator.replacements[0]) != 1 || activator.replacements[0][0].ID != "project-orders:service:mysql" {
 		t.Fatalf("barrier = %#v, replacements = %#v; want acknowledged mysql route", barrier, activator.replacements)
+	}
+	if observer.calls != 1 || observer.lastFence != response.Fence {
+		t.Fatalf("publication observer calls = %d fence = %#v, want one call for %#v", observer.calls, observer.lastFence, response.Fence)
 	}
 }
 

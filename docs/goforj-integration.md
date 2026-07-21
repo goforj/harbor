@@ -189,9 +189,10 @@ owner-only inherited context; GoForj consumes it before project environment load
 `managed-session.v1` plus `managed-session.launch-context.v1`, and retries only the short planned-to-awaiting process
 attachment race. Registration carries the canonical project/session identity, descriptor digest, client nonce, owner,
 the negotiated capabilities, and a bounded launch ticket. Harbor hashes that exact ticket against the durable session
-digest and never stores the raw value. The publication and Compose-barrier methods remain bounded complete replacements
-fenced by the exact attached-session generation; native publication observation and route activation are still later
-integration work. The contract rejects unknown or duplicate JSON fields, trailing values, unsorted identities, invalid
+digest and never stores the raw value. The publication and Compose-barrier methods are bounded complete replacements
+fenced by the exact attached-session generation. In the current vertical slice, GoForj sends an empty replacement and
+starts a retrying Compose barrier when the initial watcher graph is online; Harbor ignores invented client ports and
+re-observes the supervised Compose services before activating native routes. The contract rejects unknown or duplicate JSON fields, trailing values, unsorted identities, invalid
 digests, and cross-session publication facts before an authority handler is called.
 
 Conceptual invocation:
@@ -202,7 +203,12 @@ forj dev --managed --control-endpoint <inherited-or-owner-only-reference>
 
 The control credential is inherited or stored in an owner-only runtime file. It is not printed or placed in an argument visible to other processes.
 
-Harbor's authenticated barrier now has a live native-route activator: once GoForj sends a complete publication replacement, the barrier can join those observations to Harbor-owned TCP reservations, replace the native relay set without rebinding shared HTTP/DNS listeners, and acknowledge only after every requested relay is serving. GoForj lifecycle emission of these calls remains the next integration step; an inherited launch session currently attaches before the ordinary development workflow continues.
+Harbor's authenticated barrier now has a live native-route activator: once the inherited GoForj session reaches its
+initial watcher graph, GoForj sends a complete empty client replacement and retries the barrier while Harbor waits for
+readiness, fresh service-port observations, Harbor-owned TCP reservations, and live native relay evidence. Harbor does
+not trust client-supplied ports; it replaces the registry with its own exact observation before acknowledging. The
+fully phased pre-Compose/post-Compose lifecycle ordering remains a later GoForj slice, while ordinary standalone
+`forj dev` remains unchanged.
 
 Startup ordering matters:
 

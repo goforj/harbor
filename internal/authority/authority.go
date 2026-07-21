@@ -57,6 +57,11 @@ type managedNativeRouteActivator interface {
 	ManagedNativeRoutesLive(context.Context, []dataplane.NativeRoute) error
 }
 
+// managedPublicationObserver supplies fresh Harbor-owned Compose port facts for one attached managed session.
+type managedPublicationObserver interface {
+	ObserveManagedPublications(context.Context, domain.ProjectID, domain.SessionID, harbordruntime.ManagedPublicationFence) ([]harbordruntime.ManagedEndpointPublication, error)
+}
+
 // projectDiscoverer isolates filesystem discovery from durable registration policy.
 type projectDiscoverer interface {
 	// Discover returns one canonical marker-validated checkout and its allowlisted presentation metadata.
@@ -125,6 +130,7 @@ type Authority struct {
 	managedStore      managedSessionState
 	managedRegistry   *harbordruntime.ManagedPublicationRegistry
 	managedRoutes     managedNativeRouteActivator
+	managedObserver   managedPublicationObserver
 	managedMu         sync.Mutex
 	managedSessions   map[domain.ProjectID]managedSessionAttachment
 }
@@ -231,6 +237,7 @@ func newAuthorityWithIdentityFactories(
 		panic("authority.newAuthorityWithIdentityFactories requires every dependency")
 	}
 	managedRoutes, _ := routes.(managedNativeRouteActivator)
+	managedObserver, _ := lifecycle.(managedPublicationObserver)
 	return &Authority{
 		store:             store,
 		routes:            routes,
@@ -248,6 +255,7 @@ func newAuthorityWithIdentityFactories(
 		managedStore:      managedStoreFromControlState(store),
 		managedRegistry:   harbordruntime.NewManagedPublicationRegistry(),
 		managedRoutes:     managedRoutes,
+		managedObserver:   managedObserver,
 		managedSessions:   make(map[domain.ProjectID]managedSessionAttachment),
 	}
 }

@@ -282,15 +282,29 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 	}
 	acknowledged := false
 	if authority.managedRoutes != nil {
+		if authority.managedObserver != nil {
+			observed, err := authority.managedObserver.ObserveManagedPublications(
+				normalizeContext(ctx),
+				request.Fence.ProjectID,
+				request.Fence.SessionID,
+				request.Fence,
+			)
+			if err != nil {
+				return managedsession.BarrierResponse{}, err
+			}
+			if err := authority.managedRegistry.Replace(request.Fence, observed); err != nil {
+				return managedsession.BarrierResponse{}, err
+			}
+		}
 		routes, err := authority.currentManagedNativeRoutes(normalizeContext(ctx))
 		if err != nil {
-			return managedsession.BarrierResponse{}, err
+			return managedsession.BarrierResponse{}, fmt.Errorf("%w: plan managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
 		if err := authority.managedRoutes.ReplaceManagedNativeRoutes(normalizeContext(ctx), routes); err != nil {
-			return managedsession.BarrierResponse{}, err
+			return managedsession.BarrierResponse{}, fmt.Errorf("%w: replace managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
 		if err := authority.managedRoutes.ManagedNativeRoutesLive(normalizeContext(ctx), routes); err != nil {
-			return managedsession.BarrierResponse{}, err
+			return managedsession.BarrierResponse{}, fmt.Errorf("%w: verify managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
 		acknowledged = true
 	}
