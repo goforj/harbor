@@ -25,6 +25,7 @@ const (
 	maximumDiagnosticBytes    = 16 << 10
 	maximumApps               = 256
 	maximumRuntimes           = 32
+	maximumResources          = 256
 	maximumCapabilities       = 128
 	maximumIdentifierBytes    = 128
 	maximumNameBytes          = 512
@@ -86,12 +87,60 @@ type Runtime struct {
 	ReadinessPath string
 }
 
+// ResourceProtocol identifies the transport used by one descriptor resource.
+type ResourceProtocol string
+
+const (
+	// ResourceProtocolHTTP identifies a launchable HTTP resource whose path is served by an App or service runtime.
+	ResourceProtocolHTTP ResourceProtocol = "http"
+)
+
+// ResourceOwner identifies the project entity that serves one descriptor resource.
+type ResourceOwner string
+
+const (
+	// ResourceOwnerApp means the resource is served by one GoForj App runtime.
+	ResourceOwnerApp ResourceOwner = "app"
+	// ResourceOwnerService means the resource is served by one selected project service.
+	ResourceOwnerService ResourceOwner = "service"
+)
+
+// Resource is one optional, secret-free launchable resource declared by GoForj.
+type Resource struct {
+	// ID is the stable resource identity used by endpoint assignment and snapshots.
+	ID string
+	// Name is the user-facing resource name.
+	Name string
+	// Category is the GoForj resource category, such as docs or mail.
+	Category string
+	// Protocol identifies the resource transport.
+	Protocol ResourceProtocol
+	// Owner identifies whether an App or service serves the resource.
+	Owner ResourceOwner
+	// App is the owning App ID when Owner is ResourceOwnerApp.
+	App string
+	// Service is the owning service ID when Owner is ResourceOwnerService.
+	Service string
+	// Runtime is the owning runtime identity within the App or service plan.
+	Runtime string
+	// Path is the absolute HTTP URL path exposed by the resource.
+	Path string
+	// BackingArtifact identifies a generated artifact, such as an API index, when one exists.
+	BackingArtifact string
+	// Enabled reports whether GoForj selected this resource for the active project shape.
+	Enabled bool
+}
+
 // Observation is a validated static descriptor projection.
 type Observation struct {
-	SchemaVersion  int
-	Project        Project
-	GoForj         GoForj
-	Apps           []App
+	SchemaVersion int
+	Project       Project
+	GoForj        GoForj
+	Apps          []App
+	// ResourcesSupported distinguishes an older descriptor from one that reports resource intent.
+	ResourcesSupported bool
+	// Resources contains the optional resource intent in the descriptor's stable order.
+	Resources      []Resource
 	TopologyDigest string
 }
 
@@ -160,10 +209,11 @@ func validateQuery(query Query) error {
 
 // wireReport is the strict schema-v1 allowlist accepted from GoForj.
 type wireReport struct {
-	SchemaVersion *int         `json:"schema_version"`
-	Project       *wireProject `json:"project"`
-	GoForj        *wireGoForj  `json:"goforj"`
-	Apps          *[]wireApp   `json:"apps"`
+	SchemaVersion *int            `json:"schema_version"`
+	Project       *wireProject    `json:"project"`
+	GoForj        *wireGoForj     `json:"goforj"`
+	Apps          *[]wireApp      `json:"apps"`
+	Resources     *[]wireResource `json:"resources"`
 }
 
 // wireProject keeps required scalar fields distinguishable from omitted JSON fields.
@@ -201,6 +251,21 @@ type wireRuntime struct {
 	DefaultPort   *int   `json:"default_port"`
 	PublicURL     *bool  `json:"public_url"`
 	ReadinessPath string `json:"readiness_path"`
+}
+
+// wireResource keeps descriptor resource intent behind the schema-v1 allowlist.
+type wireResource struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Category        string `json:"category"`
+	Protocol        string `json:"protocol"`
+	Owner           string `json:"owner"`
+	App             string `json:"app,omitempty"`
+	Service         string `json:"service,omitempty"`
+	Runtime         string `json:"runtime"`
+	Path            string `json:"path"`
+	BackingArtifact string `json:"backing_artifact,omitempty"`
+	Enabled         *bool  `json:"enabled"`
 }
 
 // boundedBuffer retains a fixed prefix while continuing to drain a child process safely.
@@ -261,13 +326,19 @@ func decodeReport(payload []byte) (Observation, error) {
 	if err != nil {
 		return Observation{}, err
 	}
+	resources, err := projectResources(report.Resources)
+	if err != nil {
+		return Observation{}, err
+	}
 	digest := strings.TrimPrefix(report.Project.ConfigDigest, "sha256:")
 	return Observation{
-		SchemaVersion:  DescriptorSchemaVersion,
-		Project:        Project{Name: report.Project.Name, Module: report.Project.Module, ConfigDigest: report.Project.ConfigDigest},
-		GoForj:         GoForj{Version: report.GoForj.Version, CLICapabilities: append([]string(nil), (*report.GoForj.CLICapabilities)...), GeneratedProject: GeneratedProject{Generation: report.GoForj.GeneratedProject.Generation, Capabilities: append([]string(nil), (*report.GoForj.GeneratedProject.Capabilities)...)}},
-		Apps:           apps,
-		TopologyDigest: digest,
+		SchemaVersion:      DescriptorSchemaVersion,
+		Project:            Project{Name: report.Project.Name, Module: report.Project.Module, ConfigDigest: report.Project.ConfigDigest},
+		GoForj:             GoForj{Version: report.GoForj.Version, CLICapabilities: append([]string(nil), (*report.GoForj.CLICapabilities)...), GeneratedProject: GeneratedProject{Generation: report.GoForj.GeneratedProject.Generation, Capabilities: append([]string(nil), (*report.GoForj.GeneratedProject.Capabilities)...)}},
+		Apps:               apps,
+		ResourcesSupported: report.Resources != nil,
+		Resources:          resources,
+		TopologyDigest:     digest,
 	}, nil
 }
 
@@ -356,6 +427,91 @@ func projectApps(source []wireApp) ([]App, error) {
 		apps = append(apps, App{ID: sourceApp.ID, Name: sourceApp.Name, Entrypoint: sourceApp.Entrypoint, Runtimes: runtimes})
 	}
 	return apps, nil
+}
+
+// projectResources validates optional resource intent without deriving URLs or private endpoints.
+func projectResources(source *[]wireResource) ([]Resource, error) {
+	if source == nil {
+		return []Resource{}, nil
+	}
+	if len(*source) > maximumResources {
+		return nil, fmt.Errorf("GoForj project descriptor contains more than %d resources", maximumResources)
+	}
+	resources := make([]Resource, 0, len(*source))
+	seen := make(map[string]struct{}, len(*source))
+	for index, candidate := range *source {
+		label := fmt.Sprintf("resource %d", index+1)
+		if err := validateToken(label+" ID", candidate.ID, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		if _, exists := seen[candidate.ID]; exists {
+			return nil, fmt.Errorf("duplicate resource ID %q in GoForj project descriptor", candidate.ID)
+		}
+		seen[candidate.ID] = struct{}{}
+		if err := validateText(label+" name", candidate.Name, maximumNameBytes, false); err != nil {
+			return nil, err
+		}
+		if err := validateToken(label+" category", candidate.Category, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		if ResourceProtocol(candidate.Protocol) != ResourceProtocolHTTP {
+			return nil, fmt.Errorf("%s protocol %q is unsupported", label, candidate.Protocol)
+		}
+		if err := validateResourceOwner(label, candidate); err != nil {
+			return nil, err
+		}
+		if err := validateToken(label+" runtime", candidate.Runtime, maximumIdentifierBytes); err != nil {
+			return nil, err
+		}
+		if err := validatePath(label+" path", candidate.Path); err != nil {
+			return nil, err
+		}
+		if candidate.BackingArtifact != "" {
+			if err := validateToken(label+" backing artifact", candidate.BackingArtifact, maximumIdentifierBytes); err != nil {
+				return nil, err
+			}
+		}
+		if candidate.Enabled == nil {
+			return nil, fmt.Errorf("%s enabled is required", label)
+		}
+		resources = append(resources, Resource{
+			ID:              candidate.ID,
+			Name:            candidate.Name,
+			Category:        candidate.Category,
+			Protocol:        ResourceProtocol(candidate.Protocol),
+			Owner:           ResourceOwner(candidate.Owner),
+			App:             candidate.App,
+			Service:         candidate.Service,
+			Runtime:         candidate.Runtime,
+			Path:            candidate.Path,
+			BackingArtifact: candidate.BackingArtifact,
+			Enabled:         *candidate.Enabled,
+		})
+	}
+	return resources, nil
+}
+
+// validateResourceOwner requires exactly one stable App or service identity for each resource.
+func validateResourceOwner(label string, candidate wireResource) error {
+	switch ResourceOwner(candidate.Owner) {
+	case ResourceOwnerApp:
+		if err := validateToken(label+" App", candidate.App, maximumIdentifierBytes); err != nil {
+			return err
+		}
+		if candidate.Service != "" {
+			return fmt.Errorf("%s App-owned resource must not name a service", label)
+		}
+	case ResourceOwnerService:
+		if err := validateToken(label+" service", candidate.Service, maximumIdentifierBytes); err != nil {
+			return err
+		}
+		if candidate.App != "" {
+			return fmt.Errorf("%s service-owned resource must not name an App", label)
+		}
+	default:
+		return fmt.Errorf("%s owner %q is unsupported", label, candidate.Owner)
+	}
+	return nil
 }
 
 // validateCapabilities bounds capability arrays and excludes invisible text from diagnostics and durable projections.
