@@ -160,7 +160,7 @@ func (store systemdResolvedNativeStore) replace(
 	defer func() {
 		err = errors.Join(err, unlockSystemdResolvedDirectory(directory))
 	}()
-	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory)
+	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory, restartSystemdResolved)
 	if err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ func (store systemdResolvedNativeStore) remove(
 	defer func() {
 		err = errors.Join(err, unlockSystemdResolvedDirectory(directory))
 	}()
-	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory)
+	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory, restartSystemdResolved)
 	if err != nil {
 		return err
 	}
@@ -1336,7 +1336,7 @@ func recoverSystemdResolvedTransactions(ctx context.Context, request Request) (e
 		return err
 	}
 	defer func() { err = errors.Join(err, unlockSystemdResolvedDirectory(directory)) }()
-	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory)
+	restartRequired, err := recoverSystemdResolvedTransactionsAt(ctx, request, directory, restartSystemdResolved)
 	if err != nil {
 		return err
 	}
@@ -1348,8 +1348,13 @@ func recoverSystemdResolvedTransactions(ctx context.Context, request Request) (e
 	return nil
 }
 
-// recoverSystemdResolvedTransactionsAt removes unpublished stages and restores only exact owned quarantines.
-func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, directory *os.File) (bool, error) {
+// recoverSystemdResolvedTransactionsAt removes unpublished stages, restarts and revalidates exchanged stages before cleanup, and restores only exact owned quarantines.
+func recoverSystemdResolvedTransactionsAt(
+	ctx context.Context,
+	request Request,
+	directory *os.File,
+	restart func(context.Context) error,
+) (bool, error) {
 	if err := validateSystemdResolvedRequest(request); err != nil {
 		return false, err
 	}
@@ -1411,10 +1416,31 @@ func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, 
 			if err != nil {
 				return false, fmt.Errorf("recover systemd-resolved stage %q: %w", name, err)
 			}
-			if err := removeSystemdResolvedTransaction(directory, name); err != nil {
-				return false, fmt.Errorf("remove recovered systemd-resolved stage %q: %w", name, err)
+			if err := completeSystemdResolvedStageRecovery(
+				ctx,
+				stageRestartRequired,
+				restart,
+				func() error {
+					currentFixed, err := readSystemdResolvedArtifactAt(directory, fixedSystemdResolvedName)
+					if err != nil {
+						return fmt.Errorf("inspect fixed systemd-resolved artifact after restart: %w", err)
+					}
+					currentStage, err := readSystemdResolvedArtifactAt(directory, name)
+					if err != nil {
+						return fmt.Errorf("inspect recovered systemd-resolved stage after restart: %w", err)
+					}
+					if !sameSystemdResolvedCapturedArtifact(fixed, currentFixed) ||
+						!sameSystemdResolvedCapturedArtifact(artifact, currentStage) {
+						return fmt.Errorf("systemd-resolved recovery state changed during restart")
+					}
+					return nil
+				},
+				func() error {
+					return removeSystemdResolvedTransaction(directory, name)
+				},
+			); err != nil {
+				return false, fmt.Errorf("complete systemd-resolved stage recovery %q: %w", name, err)
 			}
-			restartRequired = restartRequired || stageRestartRequired
 		case strings.HasPrefix(name, systemdResolvedQuarantinePrefix):
 			if !systemdResolvedArtifactOwnedByRequest(artifact, request) {
 				return false, fmt.Errorf("systemd-resolved quarantine %q is not owned by this request", name)
@@ -1434,6 +1460,28 @@ func recoverSystemdResolvedTransactionsAt(ctx context.Context, request Request, 
 		}
 	}
 	return restartRequired, nil
+}
+
+// completeSystemdResolvedStageRecovery retains restart evidence until the fixed service has accepted unchanged recovered state.
+func completeSystemdResolvedStageRecovery(
+	ctx context.Context,
+	restartRequired bool,
+	restart func(context.Context) error,
+	revalidate func() error,
+	cleanup func() error,
+) error {
+	if restartRequired {
+		if err := restart(ctx); err != nil {
+			return fmt.Errorf("restart systemd-resolved before recovered stage cleanup: %w", err)
+		}
+		if err := revalidate(); err != nil {
+			return fmt.Errorf("revalidate systemd-resolved stage after restart: %w", err)
+		}
+	}
+	if err := cleanup(); err != nil {
+		return fmt.Errorf("remove recovered systemd-resolved stage: %w", err)
+	}
+	return nil
 }
 
 // requireNoSystemdResolvedTransactionsAt scans a bounded direct directory namespace for incomplete mutations.

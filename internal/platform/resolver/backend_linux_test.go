@@ -279,7 +279,15 @@ func TestSystemdResolvedRecoveryRejectsExcessTransactionsBeforeMutation(t *testi
 	}
 	defer directory.Close()
 	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
-	if restarted, err := recoverSystemdResolvedTransactionsAt(t.Context(), request, directory); err == nil || restarted {
+	if restarted, err := recoverSystemdResolvedTransactionsAt(
+		t.Context(),
+		request,
+		directory,
+		func(context.Context) error {
+			t.Fatal("rejected recovery attempted a restart")
+			return nil
+		},
+	); err == nil || restarted {
 		t.Fatalf("recoverSystemdResolvedTransactionsAt() = restart %t, error %v, want rejected without restart", restarted, err)
 	}
 	for index := 0; index < maximumSystemdResolvedTransactions+1; index++ {
@@ -311,7 +319,15 @@ func TestSystemdResolvedRecoveryRejectsAmbiguousTransactionsBeforeMutation(t *te
 	}
 	defer directory.Close()
 
-	restarted, err := recoverSystemdResolvedTransactionsAt(t.Context(), request, directory)
+	restarted, err := recoverSystemdResolvedTransactionsAt(
+		t.Context(),
+		request,
+		directory,
+		func(context.Context) error {
+			t.Fatal("ambiguous recovery attempted a restart")
+			return nil
+		},
+	)
 	if err == nil || restarted {
 		t.Fatalf("recoverSystemdResolvedTransactionsAt() = restart %t, error %v, want ambiguous rejection", restarted, err)
 	}
@@ -323,6 +339,106 @@ func TestSystemdResolvedRecoveryRejectsAmbiguousTransactionsBeforeMutation(t *te
 		if !bytes.Equal(got, content) {
 			t.Fatalf("transaction %q changed during ambiguous recovery", name)
 		}
+	}
+}
+
+// TestCompleteSystemdResolvedStageRecoveryRetainsEvidenceUntilRestartAndValidation proves an uncertain reload remains retryable.
+func TestCompleteSystemdResolvedStageRecoveryRetainsEvidenceUntilRestartAndValidation(t *testing.T) {
+	markerContent := []byte("owned exchanged stage")
+	markerPath := filepath.Join(t.TempDir(), "stage")
+	if err := os.WriteFile(markerPath, markerContent, 0o600); err != nil {
+		t.Fatalf("WriteFile(marker) error = %v", err)
+	}
+	cleanupCalls := 0
+	cleanup := func() error {
+		cleanupCalls++
+		return os.Remove(markerPath)
+	}
+
+	restartFailure := errors.New("injected restart failure")
+	events := make([]string, 0, 3)
+	err := completeSystemdResolvedStageRecovery(
+		t.Context(),
+		true,
+		func(context.Context) error {
+			events = append(events, "restart")
+			return restartFailure
+		},
+		func() error {
+			events = append(events, "revalidate")
+			return nil
+		},
+		cleanup,
+	)
+	if !errors.Is(err, restartFailure) {
+		t.Fatalf("completeSystemdResolvedStageRecovery(restart failure) error = %v, want %v", err, restartFailure)
+	}
+	if cleanupCalls != 0 || !slices.Equal(events, []string{"restart"}) {
+		t.Fatalf("restart failure calls = cleanup %d, events %v", cleanupCalls, events)
+	}
+	retained, err := os.ReadFile(markerPath)
+	if err != nil || !bytes.Equal(retained, markerContent) {
+		t.Fatalf("restart failure retained marker = %q, %v", retained, err)
+	}
+
+	revalidationFailure := errors.New("injected revalidation failure")
+	events = events[:0]
+	err = completeSystemdResolvedStageRecovery(
+		t.Context(),
+		true,
+		func(context.Context) error {
+			events = append(events, "restart")
+			return nil
+		},
+		func() error {
+			events = append(events, "revalidate")
+			return revalidationFailure
+		},
+		cleanup,
+	)
+	if !errors.Is(err, revalidationFailure) {
+		t.Fatalf("completeSystemdResolvedStageRecovery(revalidation failure) error = %v, want %v", err, revalidationFailure)
+	}
+	if cleanupCalls != 0 || !slices.Equal(events, []string{"restart", "revalidate"}) {
+		t.Fatalf("revalidation failure calls = cleanup %d, events %v", cleanupCalls, events)
+	}
+	retained, err = os.ReadFile(markerPath)
+	if err != nil || !bytes.Equal(retained, markerContent) {
+		t.Fatalf("revalidation failure retained marker = %q, %v", retained, err)
+	}
+
+	events = events[:0]
+	err = completeSystemdResolvedStageRecovery(
+		t.Context(),
+		true,
+		func(context.Context) error {
+			events = append(events, "restart")
+			return nil
+		},
+		func() error {
+			events = append(events, "revalidate")
+			got, readErr := os.ReadFile(markerPath)
+			if readErr != nil {
+				return readErr
+			}
+			if !bytes.Equal(got, markerContent) {
+				return fmt.Errorf("marker bytes changed")
+			}
+			return nil
+		},
+		func() error {
+			events = append(events, "cleanup")
+			return cleanup()
+		},
+	)
+	if err != nil {
+		t.Fatalf("completeSystemdResolvedStageRecovery(retry) error = %v", err)
+	}
+	if cleanupCalls != 1 || !slices.Equal(events, []string{"restart", "revalidate", "cleanup"}) {
+		t.Fatalf("successful retry calls = cleanup %d, events %v", cleanupCalls, events)
+	}
+	if _, err := os.Lstat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("successful retry marker remains: %v", err)
 	}
 }
 
@@ -560,6 +676,28 @@ func TestPrivilegedSystemdResolvedAdapterCrashRecovery(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("simulate exchanged publication crash error = %v", err)
+	}
+	restartFailure := errors.New("injected recovery restart failure")
+	if err := lockSystemdResolvedDirectory(t.Context(), directory); err != nil {
+		t.Fatalf("lock failed exchange recovery error = %v", err)
+	}
+	_, recoveryErr := recoverSystemdResolvedTransactionsAt(
+		t.Context(),
+		request,
+		directory,
+		func(context.Context) error {
+			return restartFailure
+		},
+	)
+	if unlockErr := unlockSystemdResolvedDirectory(directory); unlockErr != nil {
+		t.Fatalf("unlock failed exchange recovery error = %v", unlockErr)
+	}
+	if !errors.Is(recoveryErr, restartFailure) {
+		t.Fatalf("recover exchanged publication with failed restart error = %v, want %v", recoveryErr, restartFailure)
+	}
+	retainedExchange, err := os.ReadFile(filepath.Join(fixedSystemdResolvedDirectory, exchangeName))
+	if err != nil || !bytes.Equal(retainedExchange, marshalSystemdResolvedValidated(request)) {
+		t.Fatalf("failed restart retained exchange = %q, %v", retainedExchange, err)
 	}
 	exchanged, err := adapter.Observe(t.Context(), request)
 	if err != nil {
