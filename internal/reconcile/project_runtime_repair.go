@@ -365,6 +365,7 @@ type ProjectRuntimeRepairCoordinator struct {
 	store           projectRuntimeRepairStore
 	discoverer      projectRuntimeRepairDiscoverer
 	repairer        projectprocess.RuntimeRepairer
+	unattributed    *UnattributedProjectRuntimeCoordinator
 	now             func() time.Time
 	random          io.Reader
 	planTTL         time.Duration
@@ -379,7 +380,7 @@ func NewProjectRuntimeRepairCoordinator(store *state.Store) *ProjectRuntimeRepai
 	if store == nil {
 		panic("reconcile.NewProjectRuntimeRepairCoordinator requires non-nil state")
 	}
-	return newProjectRuntimeRepairCoordinator(
+	coordinator := newProjectRuntimeRepairCoordinator(
 		store,
 		projectdiscovery.NewDiscoverer(),
 		projectprocess.NewRuntimeRepairer(),
@@ -388,6 +389,8 @@ func NewProjectRuntimeRepairCoordinator(store *state.Store) *ProjectRuntimeRepai
 		defaultProjectRuntimeRepairPlanTTL,
 		defaultProjectRuntimeRepairMaximumPlans,
 	)
+	coordinator.unattributed = NewUnattributedProjectRuntimeCoordinator(store)
+	return coordinator
 }
 
 // newProjectRuntimeRepairCoordinator injects every durable, discovery, native, time, and entropy boundary for tests.
@@ -437,6 +440,19 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Inspect(
 	if err := ctx.Err(); err != nil {
 		return ProjectRuntimeRepairInspection{}, err
 	}
+	if coordinator.unattributed != nil {
+		unattributed, err := coordinator.unattributed.Inspect(ctx, UnattributedProjectRuntimeInspectRequest{
+			Caller:    request.Caller,
+			ProjectID: request.ProjectID,
+		})
+		if err == nil {
+			return projectRuntimeRepairInspectionFromUnattributed(unattributed)
+		}
+		var active *state.ProjectSessionActiveError
+		if !errors.As(err, &active) {
+			return ProjectRuntimeRepairInspection{}, fmt.Errorf("inspect unattributed project runtime: %w", err)
+		}
+	}
 
 	coordinator.inspectionMutex.Lock()
 	defer coordinator.inspectionMutex.Unlock()
@@ -480,6 +496,18 @@ func (coordinator *ProjectRuntimeRepairCoordinator) Confirm(
 	}
 	if err := ctx.Err(); err != nil {
 		return state.ProjectRecord{}, err
+	}
+	if coordinator.unattributed != nil && !coordinator.hasPlan(request.InspectionID) && coordinator.unattributed.hasPlan(request.InspectionID) {
+		confirmation, err := coordinator.unattributed.Confirm(ctx, UnattributedProjectRuntimeConfirmRequest{
+			Caller:       request.Caller,
+			ProjectID:    request.ProjectID,
+			InspectionID: request.InspectionID,
+			Fingerprint:  request.Fingerprint,
+		})
+		if err != nil {
+			return state.ProjectRecord{}, err
+		}
+		return confirmation.Project, nil
 	}
 
 	plan, found := coordinator.takePlan(request.InspectionID)
@@ -694,6 +722,37 @@ func (coordinator *ProjectRuntimeRepairCoordinator) takePlan(inspectionID Projec
 		delete(coordinator.plans, inspectionID)
 	}
 	return plan, found
+}
+
+// hasPlan reports whether the retained-runtime map currently owns an inspection ID before fallback dispatch.
+func (coordinator *ProjectRuntimeRepairCoordinator) hasPlan(inspectionID ProjectRuntimeRepairInspectionID) bool {
+	coordinator.plansMutex.Lock()
+	defer coordinator.plansMutex.Unlock()
+	_, found := coordinator.plans[inspectionID]
+	return found
+}
+
+// projectRuntimeRepairInspectionFromUnattributed maps the no-session coordinator into the existing client repair contract.
+func projectRuntimeRepairInspectionFromUnattributed(
+	inspection UnattributedProjectRuntimeInspection,
+) (ProjectRuntimeRepairInspection, error) {
+	result := ProjectRuntimeRepairInspection{
+		ProjectID:   inspection.ProjectID,
+		Disposition: ProjectRuntimeRepairInspectionDisposition(inspection.Disposition),
+		Reason:      ProjectRuntimeRepairNotActionableReason(inspection.Reason),
+	}
+	if inspection.Confirmable != nil {
+		result.Confirmable = &ProjectRuntimeRepairConfirmable{
+			Display:      inspection.Confirmable.Display,
+			InspectionID: inspection.Confirmable.InspectionID,
+			Fingerprint:  inspection.Confirmable.Fingerprint,
+			ExpiresAt:    inspection.Confirmable.ExpiresAt,
+		}
+	}
+	if err := result.Validate(); err != nil {
+		return ProjectRuntimeRepairInspection{}, fmt.Errorf("project runtime unattributed inspection projection: %w", err)
+	}
+	return result, nil
 }
 
 // validateProjectRuntimeRepairNativeInspection checks the fixed public shape without requiring access to its private native receipt.

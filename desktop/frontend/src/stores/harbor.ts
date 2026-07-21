@@ -804,7 +804,9 @@ export const useHarborStore = defineStore('harbor', () => {
       setProjectRuntimeRepairNotice(projectId, {
         state: 'succeeded',
         title: 'Stale runtime stopped',
-        message: 'Harbor stopped the process you confirmed and reset the project to stopped.',
+        message: confirmation.project.state === 'stopped'
+          ? 'Harbor stopped the process you confirmed and left the project stopped.'
+          : 'Harbor stopped the process you confirmed and left the project route-free for a later retry.',
       })
       return confirmation
     }
@@ -1319,10 +1321,13 @@ function validateProjectRuntimeRepairConfirmation(projectId: string, confirmatio
   if (confirmation.project.id !== projectId) {
     throw new Error('Harbor returned a stale runtime confirmation for another project.')
   }
-  if (confirmation.project.state !== 'stopped'
+  if (!['stopped', 'failed', 'unavailable'].includes(confirmation.project.state)
+    || confirmation.project.resources.length !== 0
+    || confirmation.project.apps.some((app) => app.state !== 'stopped' || app.active)
+    || confirmation.project.services.some((service) => service.state !== 'stopped')
     || !Number.isSafeInteger(confirmation.revision)
     || confirmation.revision <= 0) {
-    throw new Error('Harbor returned an incomplete stale runtime confirmation.')
+    throw new Error('Harbor returned an incomplete stale runtime confirmation; the project must remain route-free and retryable.')
   }
 }
 

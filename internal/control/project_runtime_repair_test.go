@@ -333,17 +333,30 @@ func TestProjectRuntimeRepairInspectionJSONContainsOnlyReviewedDisplayFacts(t *t
 	}
 }
 
-// TestProjectRuntimeRepairConfirmationRequiresAStoppedProject verifies successful repair projects only the committed inert state.
-func TestProjectRuntimeRepairConfirmationRequiresAStoppedProject(t *testing.T) {
+// TestProjectRuntimeRepairConfirmationRequiresRetryableRouteFreeProject verifies repair results remain retryable and route-free.
+func TestProjectRuntimeRepairConfirmationRequiresRetryableRouteFreeProject(t *testing.T) {
 	valid := runtimeRepairContractTestConfirmation(t)
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("ProjectRuntimeRepairConfirmation.Validate() error = %v", err)
+	}
+	for _, state := range []domain.ProjectState{domain.ProjectFailed, domain.ProjectUnavailable} {
+		retryable := valid
+		retryable.Project.State = state
+		if err := retryable.Validate(); err != nil {
+			t.Errorf("ProjectRuntimeRepairConfirmation.Validate(%q) error = %v", state, err)
+		}
 	}
 
 	invalidProject := valid
 	invalidProject.Project.Path = ""
 	activeProject := valid
 	activeProject.Project.State = domain.ProjectReady
+	activeApp := valid
+	activeApp.Project.Apps = []domain.AppSnapshot{{ID: "app-orders", Name: "API", State: domain.EntityReady, Active: true}}
+	activeService := valid
+	activeService.Project.Services = []domain.ServiceSnapshot{{ID: "db-orders", Name: "Database", Kind: "database", State: domain.EntityReady, Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected}}
+	publicResource := valid
+	publicResource.Project.Resources = []domain.ResourceSnapshot{{ID: "api", Name: "API", Kind: "app-http", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app-orders"}, URL: "http://orders.test"}}
 	zeroRevision := valid
 	zeroRevision.Revision = 0
 	overflowRevision := valid
@@ -351,6 +364,9 @@ func TestProjectRuntimeRepairConfirmationRequiresAStoppedProject(t *testing.T) {
 	for _, confirmation := range []ProjectRuntimeRepairConfirmation{
 		invalidProject,
 		activeProject,
+		activeApp,
+		activeService,
+		publicResource,
 		zeroRevision,
 		overflowRevision,
 	} {

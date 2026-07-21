@@ -985,7 +985,7 @@ describe('Harbor store', () => {
     expect(store.projectRuntimeRepairNotice('billing')?.message).toContain('another project')
 
     const incomplete = runtimeRepairConfirmation()
-    incomplete.project.state = 'unavailable'
+    incomplete.project.state = 'ready'
     inspect.mockResolvedValueOnce(confirmableRuntimeRepairInspection())
     confirm.mockResolvedValueOnce(incomplete)
     await store.inspectProjectRuntimeRepair('billing')

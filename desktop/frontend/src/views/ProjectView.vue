@@ -137,6 +137,14 @@ const runtimeRepairInspection = computed(() => {
     : undefined
 })
 const runtimeRepairCandidate = computed(() => runtimeRepairInspection.value?.confirmable.candidate)
+const runtimeRepairEligible = computed(() => {
+  const current = project.value
+  return current != null
+    && (current.state === 'stopped' || current.state === 'failed' || current.state === 'unavailable')
+    && current.resources.length === 0
+    && current.apps.every((app) => app.state === 'stopped' && !app.active)
+    && current.services.every((service) => service.state === 'stopped')
+})
 const runtimeRepairExpired = computed(() => {
   const now = runtimeRepairNow.value
   const expiresAt = runtimeRepairInspection.value?.confirmable.expires_at
@@ -202,7 +210,7 @@ const removalApprovalDisabled = computed(() => removalNotice.value?.state !== 'r
   || store.projectRuntimeRepairBusy)
 const runtimeRepairInspecting = computed(() => store.projectRuntimeRepairProjectId === projectId.value
   && store.projectRuntimeRepairAction === 'inspect')
-const runtimeRepairInspectionDisabled = computed(() => !recoveryRequired.value
+const runtimeRepairInspectionDisabled = computed(() => (!recoveryRequired.value && !runtimeRepairEligible.value)
   || store.connectionState !== 'connected'
   || store.snapshotStale
   || store.settingUpNetwork
@@ -449,6 +457,17 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+            <Button
+              v-if="runtimeRepairEligible && !recoveryRequired"
+              variant="outline"
+              size="sm"
+              :disabled="runtimeRepairInspectionDisabled"
+              @click="inspectStaleRuntime"
+            >
+              <LoaderCircle v-if="runtimeRepairInspecting" class="size-3.5 animate-spin" aria-hidden="true" />
+              <Search v-else class="size-3.5" aria-hidden="true" />
+              {{ runtimeRepairInspecting ? 'Checking stale runtime…' : 'Check for stale runtime' }}
+            </Button>
             <Button size="sm" :disabled="!primaryResource" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
           </div>
         </div>

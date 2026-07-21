@@ -119,6 +119,23 @@ describe('ProjectView stale runtime recovery', () => {
     wrapper.unmount()
   })
 
+  it('offers a read-only stale-runtime check for an otherwise stopped route-free project', async () => {
+    const { store, wrapper } = await mountProject()
+    const project = store.projectById('orders-api')
+    if (!project) throw new Error('Orders fixture project is missing')
+    project.state = 'stopped'
+    project.apps = project.apps.map((app) => ({ ...app, state: 'stopped', active: false }))
+    project.services = project.services.map((service) => ({ ...service, state: 'stopped' }))
+    project.resources = []
+    await wrapper.vm.$nextTick()
+
+    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
+    expect(inspect).toBeDefined()
+    expect(inspect?.attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
   it('opens a destructive review dialog with only the bounded candidate facts and never auto-confirms', async () => {
     const inspection = confirmableInspection()
     const inspectRuntime = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)

@@ -195,19 +195,34 @@ func (reason ProjectRuntimeRepairNotActionableReason) Validate() error {
 	}
 }
 
-// ProjectRuntimeRepairConfirmation is the authoritative stopped projection committed after native postconditions.
+// ProjectRuntimeRepairConfirmation is the authoritative retryable projection returned after native postconditions.
 type ProjectRuntimeRepairConfirmation struct {
 	Project  domain.ProjectSnapshot `json:"project"`
 	Revision domain.Sequence        `json:"revision"`
 }
 
-// Validate reports whether confirmation contains one stopped project at a JavaScript-safe revision.
+// Validate reports whether confirmation contains one route-free retryable project at a JavaScript-safe revision.
 func (confirmation ProjectRuntimeRepairConfirmation) Validate() error {
 	if err := confirmation.Project.Validate(); err != nil {
 		return err
 	}
-	if confirmation.Project.State != domain.ProjectStopped {
-		return errors.New("project runtime repair confirmation must contain a stopped project")
+	switch confirmation.Project.State {
+	case domain.ProjectStopped, domain.ProjectFailed, domain.ProjectUnavailable:
+	default:
+		return errors.New("project runtime repair confirmation must contain a retryable project")
+	}
+	if len(confirmation.Project.Resources) != 0 {
+		return errors.New("project runtime repair confirmation must remain route-free")
+	}
+	for _, app := range confirmation.Project.Apps {
+		if app.State != domain.EntityStopped || app.Active {
+			return errors.New("project runtime repair confirmation must not contain an active App")
+		}
+	}
+	for _, service := range confirmation.Project.Services {
+		if service.State != domain.EntityStopped {
+			return errors.New("project runtime repair confirmation must not contain an active service")
+		}
 	}
 	if confirmation.Revision == 0 || confirmation.Revision > domain.MaximumSequence {
 		return fmt.Errorf(
