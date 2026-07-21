@@ -115,9 +115,32 @@ func TestSameDarwinRuntimeRepairProcessFactsRejectsNonRootIdentityDrift(t *testi
 	if !sameDarwinRuntimeRepairProcessFacts(observed, expected) {
 		t.Fatal("unchanged process facts were rejected")
 	}
-	observed[1].WorkingDirectory = "/tmp/other-project"
-	if sameDarwinRuntimeRepairProcessFacts(observed, expected) {
-		t.Fatal("non-root working-directory drift was accepted")
+	mutations := []struct {
+		name   string
+		mutate func(*runtimeRepairProcessFact)
+	}{
+		{name: "birth", mutate: func(fact *runtimeRepairProcessFact) { fact.BirthToken = "darwin:11:2" }},
+		{name: "parent", mutate: func(fact *runtimeRepairProcessFact) { fact.ParentPID = 12 }},
+		{name: "process group", mutate: func(fact *runtimeRepairProcessFact) { fact.ProcessGroupID = 12 }},
+		{name: "session", mutate: func(fact *runtimeRepairProcessFact) { fact.SessionID = 12 }},
+		{name: "effective uid", mutate: func(fact *runtimeRepairProcessFact) { fact.EffectiveUID = 502 }},
+		{name: "real uid", mutate: func(fact *runtimeRepairProcessFact) { fact.RealUID = 502 }},
+		{name: "executable", mutate: func(fact *runtimeRepairProcessFact) { fact.ExecutableIdentity = "/usr/bin/other-watcher" }},
+		{name: "argv digest", mutate: func(fact *runtimeRepairProcessFact) {
+			fact.ArgumentDigest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		}},
+		{name: "argv count", mutate: func(fact *runtimeRepairProcessFact) { fact.ArgumentCount = 2 }},
+		{name: "command exactness", mutate: func(fact *runtimeRepairProcessFact) { fact.CommandExact = true }},
+		{name: "working directory", mutate: func(fact *runtimeRepairProcessFact) { fact.WorkingDirectory = "/tmp/other-project" }},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			observed := append([]runtimeRepairProcessFact(nil), expected...)
+			mutation.mutate(&observed[1])
+			if sameDarwinRuntimeRepairProcessFacts(observed, expected) {
+				t.Fatalf("non-root %s drift was accepted", mutation.name)
+			}
+		})
 	}
 }
 
