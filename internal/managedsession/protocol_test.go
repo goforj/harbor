@@ -65,6 +65,31 @@ func TestManagedSessionProtocolRoundTripsBoundedMessages(t *testing.T) {
 		AcceptedProjectIdentity: "orders-dev",
 	}
 	barrierResponse := BarrierResponse{SchemaVersion: SchemaVersion, Fence: fence, Phase: BarrierPhaseCompose, Acknowledged: true}
+	logEvent := Event{
+		SchemaVersion: SchemaVersion,
+		ProjectID:     "orders",
+		SessionID:     "session-orders",
+		Sequence:      42,
+		Timestamp:     "2026-07-21T04:51:00Z",
+		Kind:          EventKindLogChunk,
+		AppID:         "api",
+		WatcherID:     "api.runtime",
+		Stream:        EventStreamStdout,
+		Text:          "ready\n",
+	}
+	gapEvent := Event{
+		SchemaVersion: SchemaVersion,
+		ProjectID:     "orders",
+		SessionID:     "session-orders",
+		Sequence:      46,
+		Timestamp:     "2026-07-21T04:51:01Z",
+		Kind:          EventKindOutputGap,
+		WatcherID:     "api.runtime",
+		Stream:        EventStreamStdout,
+		DroppedFrom:   43,
+		DroppedTo:     45,
+		DroppedCount:  3,
+	}
 
 	tests := []struct {
 		name    string
@@ -79,6 +104,8 @@ func TestManagedSessionProtocolRoundTripsBoundedMessages(t *testing.T) {
 		{name: "publication response", value: publicationResponse, marshal: func() ([]byte, error) { return MarshalReplacePublicationsResponse(publicationResponse) }, decode: func(payload []byte) (any, error) { return DecodeReplacePublicationsResponse(payload) }, want: publicationResponse},
 		{name: "barrier request", value: barrierRequest, marshal: func() ([]byte, error) { return MarshalBarrierRequest(barrierRequest) }, decode: func(payload []byte) (any, error) { return DecodeBarrierRequest(payload) }, want: barrierRequest},
 		{name: "barrier response", value: barrierResponse, marshal: func() ([]byte, error) { return MarshalBarrierResponse(barrierResponse) }, decode: func(payload []byte) (any, error) { return DecodeBarrierResponse(payload) }, want: barrierResponse},
+		{name: "log event", value: logEvent, marshal: func() ([]byte, error) { return MarshalEvent(logEvent) }, decode: func(payload []byte) (any, error) { return DecodeEvent(payload) }, want: logEvent},
+		{name: "output gap event", value: gapEvent, marshal: func() ([]byte, error) { return MarshalEvent(gapEvent) }, decode: func(payload []byte) (any, error) { return DecodeEvent(payload) }, want: gapEvent},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,6 +121,83 @@ func TestManagedSessionProtocolRoundTripsBoundedMessages(t *testing.T) {
 				t.Fatalf("decoded = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+// TestManagedSessionEventValidationRejectsLossyOrAmbiguousRecords keeps future replay explicit about ordering and drops.
+func TestManagedSessionEventValidationRejectsLossyOrAmbiguousRecords(t *testing.T) {
+	valid := Event{
+		SchemaVersion: SchemaVersion,
+		ProjectID:     "orders",
+		SessionID:     "session-orders",
+		Sequence:      2,
+		Timestamp:     "2026-07-21T04:51:00Z",
+		Kind:          EventKindLogChunk,
+		WatcherID:     "api.runtime",
+		Stream:        EventStreamStdout,
+		Text:          "ready",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Event)
+	}{
+		{name: "sequence", mutate: func(event *Event) { event.Sequence = 0 }},
+		{name: "timestamp zone", mutate: func(event *Event) { event.Timestamp = "2026-07-21T04:51:00+01:00" }},
+		{name: "source", mutate: func(event *Event) { event.AppID, event.WatcherID = "", "" }},
+		{name: "stream", mutate: func(event *Event) { event.Stream = "combined" }},
+		{name: "empty text", mutate: func(event *Event) { event.Text = "" }},
+		{name: "oversized text", mutate: func(event *Event) { event.Text = strings.Repeat("x", maximumManagedSessionEventText+1) }},
+		{name: "unexpected gap", mutate: func(event *Event) { event.DroppedFrom, event.DroppedTo, event.DroppedCount = 1, 1, 1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := valid
+			test.mutate(&event)
+			if err := event.Validate(); err == nil {
+				t.Fatal("invalid event passed validation")
+			}
+		})
+	}
+
+	gap := valid
+	gap.Kind = EventKindOutputGap
+	gap.Text = ""
+	gap.DroppedFrom, gap.DroppedTo, gap.DroppedCount = 2, 3, 1
+	if err := gap.Validate(); err == nil {
+		t.Fatal("gap with mismatched count passed validation")
+	}
+	gap.DroppedFrom, gap.DroppedTo, gap.DroppedCount = 3, 4, 2
+	if err := gap.Validate(); err == nil {
+		t.Fatal("gap that reaches its own sequence passed validation")
+	}
+}
+
+// TestManagedSessionEventDecoderRemainsStrict prevents future event fields from smuggling duplicate or trailing data.
+func TestManagedSessionEventDecoderRemainsStrict(t *testing.T) {
+	event := Event{
+		SchemaVersion: SchemaVersion,
+		ProjectID:     "orders",
+		SessionID:     "session-orders",
+		Sequence:      1,
+		Timestamp:     "2026-07-21T04:51:00Z",
+		Kind:          EventKindLogChunk,
+		AppID:         "api",
+		Stream:        EventStreamStderr,
+		Text:          "failure",
+	}
+	payload, err := MarshalEvent(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	valid := strings.TrimSuffix(string(payload), "}")
+	for _, invalid := range []string{
+		valid + `,"unknown":true}`,
+		valid + `,"sequence":1}`,
+		string(payload) + `{}`,
+	} {
+		if _, err := DecodeEvent([]byte(invalid)); err == nil {
+			t.Fatalf("event decoder accepted invalid payload %s", invalid)
+		}
 	}
 }
 

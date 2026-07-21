@@ -364,6 +364,15 @@ Harbor joins those GoForj facts with its own Docker, DNS, route, relay, TLS, and
 
 ## Events
 
+The additive `managed-session.events.v1` capability currently defines only the bounded event shape; it is not
+advertised by default and has no handler or writer integration yet. Its first records are `log.chunk` and
+`output.gap`: each carries stable project/session identity, a producer-assigned session sequence, an RFC3339 UTC
+timestamp, App or watcher source identity, an honest `stdout`, `stderr`, or `pty/combined` stream, and normalized
+valid-UTF-8 text. A gap names its inclusive dropped sequence range and count instead of silently claiming continuity.
+Attachment generation remains a future batch/append fence, so events can retain their sequence across a Harbor
+reconnect. This schema does not make the current supervisor pipe or diagnostic spool re-adoptable and does not claim
+durable event replay.
+
 The event envelope includes at least:
 
 ```json
