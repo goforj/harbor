@@ -105,7 +105,7 @@ type projectPrimaryLeaseObservation struct {
 	UnavailableAppPorts []uint16
 }
 
-// projectPrimaryLeaseCoordinator allocates from a verified pool without changing operating-system state.
+// projectPrimaryLeaseCoordinator allocates from a verified pool and can settle one exact project runtime before retrying admission.
 type projectPrimaryLeaseCoordinator struct {
 	state           projectPrimaryLeaseState
 	discoverer      projectPrimaryLeaseDiscoverer
