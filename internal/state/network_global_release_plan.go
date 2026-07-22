@@ -70,6 +70,8 @@ type GlobalNetworkReleasePlanRecord struct {
 	LowPortReceipt     *GlobalNetworkReleaseLowPortReceipt
 	// ResolverReceipt retains the proof required before later release phases can run.
 	ResolverReceipt *GlobalNetworkReleaseResolverReceipt
+	// TrustReceipt retains the proof required before loopback release can run.
+	TrustReceipt *GlobalNetworkReleaseTrustReceipt
 }
 
 // Clone returns a copy whose retained authority bytes and slices cannot be modified by the caller.
@@ -82,6 +84,10 @@ func (record GlobalNetworkReleasePlanRecord) Clone() GlobalNetworkReleasePlanRec
 	if record.ResolverReceipt != nil {
 		receipt := *record.ResolverReceipt
 		record.ResolverReceipt = &receipt
+	}
+	if record.TrustReceipt != nil {
+		receipt := *record.TrustReceipt
+		record.TrustReceipt = &receipt
 	}
 	return record
 }
@@ -246,6 +252,11 @@ func validateActiveGlobalNetworkReleasePlan(
 		return GlobalNetworkReleasePlanRecord{}, err
 	}
 	plan.ResolverReceipt = resolverReceipt
+	trustReceipt, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan)
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, err
+	}
+	plan.TrustReceipt = trustReceipt
 	if err := requireCurrentGlobalNetworkReleaseAuthority(tx, plan.Authority); err != nil {
 		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current network authority: %w", err))
 	}

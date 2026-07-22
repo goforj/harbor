@@ -183,18 +183,21 @@ func TestGlobalNetworkReleaseLowPortReceiptFencesLaterPhases(t *testing.T) {
 				t.Fatalf("advance low ports: %v", err)
 			}
 			resolverRequest := AdvanceGlobalNetworkReleaseResolverRequest{}
+			trustRequest := AdvanceGlobalNetworkReleaseTrustRequest{}
 			if test.advanceCheckpoint {
 				resolverRequest = validAdvanceGlobalNetworkReleaseResolverRequest(stage, request.CheckpointRevision+1)
-				if _, err := journal.AdvanceGlobalNetworkReleaseResolver(context.Background(), resolverRequest); err != nil {
+				trust, err := journal.AdvanceGlobalNetworkReleaseResolver(context.Background(), resolverRequest)
+				if err != nil {
 					t.Fatalf("advance resolver: %v", err)
 				}
-				globalNetworkReleaseStageExec(t, connection, "UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1")
-				globalNetworkReleaseStageExec(
-					t,
-					connection,
-					"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
-					GlobalNetworkReleasePlanPhaseLoopbacks,
+				trustRequest = validAdvanceGlobalNetworkReleaseTrustRequest(
+					stage,
+					trust.CheckpointRevision,
+					*trust.ResolverReceipt,
 				)
+				if _, err := journal.AdvanceGlobalNetworkReleaseTrust(context.Background(), trustRequest); err != nil {
+					t.Fatalf("advance trust: %v", err)
+				}
 			} else {
 				globalNetworkReleaseStageExec(
 					t,
@@ -218,7 +221,9 @@ func TestGlobalNetworkReleaseLowPortReceiptFencesLaterPhases(t *testing.T) {
 				plan.LowPortReceipt == nil ||
 				*plan.LowPortReceipt != request.Receipt ||
 				plan.ResolverReceipt == nil ||
-				*plan.ResolverReceipt != resolverRequest.Receipt {
+				*plan.ResolverReceipt != resolverRequest.Receipt ||
+				plan.TrustReceipt == nil ||
+				*plan.TrustReceipt != trustRequest.Receipt {
 				t.Fatalf("later release plan = %#v", plan)
 			}
 		})

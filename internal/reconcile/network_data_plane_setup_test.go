@@ -28,14 +28,31 @@ func TestNetworkDataPlaneSetupPrepareTrustPreservesIndeterminatePublication(t *t
 	plan, _ := networkDataPlaneSetupTestTrustPlan(t)
 	policy, _ := plan.Policy.Fingerprint()
 	owner, _ := plan.TargetOwnership.Fingerprint()
-	result := ticketissuer.TrustResult{OperationID: plan.OperationID, Reference: helper.TicketReference(strings.Repeat("d", 64)), Operation: helper.OperationEnsureTrust, PolicyFingerprint: policy, OwnershipFingerprint: owner, AuthorityFingerprint: plan.Root.Fingerprint, Mechanism: plan.Policy.Mechanisms.Trust, ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	result := ticketissuer.TrustResult{
+		OperationID:          plan.Operation.ID,
+		Reference:            helper.TicketReference(strings.Repeat("d", 64)),
+		Operation:            helper.OperationEnsureTrust,
+		PolicyFingerprint:    policy,
+		OwnershipFingerprint: owner,
+		AuthorityFingerprint: plan.Root.Fingerprint,
+		Mechanism:            plan.Policy.Mechanisms.Trust,
+		ExpiresAt:            time.Now().UTC().Add(time.Minute),
+	}
 	issuer := &networkDataPlaneSetupTestTrustIssuer{result: result, err: ticketissuer.ErrTrustPublicationIndeterminate}
 	c := &NetworkDataPlaneSetupCoordinator{trustPlans: networkDataPlaneSetupTestTrustPlans{plan}, trustIssuers: func() (NetworkDataPlaneSetupTrustIssuer, error) { return issuer, nil }, clock: networkDataPlaneSetupTestClock{time.Now().UTC()}}
-	got, err := c.PrepareTrust(context.Background(), NetworkDataPlaneSetupPrepareTrustRequest{OperationID: plan.OperationID, ExpectedOperationRevision: plan.OperationRevision, RequesterIdentity: plan.TargetOwnership.OwnerIdentity})
+	got, err := c.PrepareTrust(context.Background(), NetworkDataPlaneSetupPrepareTrustRequest{
+		OperationID:               plan.Operation.ID,
+		ExpectedOperationRevision: plan.OperationRevision,
+		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
+	})
 	if !errors.Is(err, ticketissuer.ErrTrustPublicationIndeterminate) || got != result || !issuer.closed || issuer.requester != plan.TargetOwnership.OwnerIdentity {
 		t.Fatalf("PrepareTrust() = %#v, %v; issuer=%#v", got, err, issuer)
 	}
-	_, err = c.PrepareTrust(context.Background(), NetworkDataPlaneSetupPrepareTrustRequest{OperationID: plan.OperationID, ExpectedOperationRevision: plan.OperationRevision + 1, RequesterIdentity: plan.TargetOwnership.OwnerIdentity})
+	_, err = c.PrepareTrust(context.Background(), NetworkDataPlaneSetupPrepareTrustRequest{
+		OperationID:               plan.Operation.ID,
+		ExpectedOperationRevision: plan.OperationRevision + 1,
+		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
+	})
 	var stale *state.StaleRevisionError
 	if !errors.As(err, &stale) {
 		t.Fatalf("PrepareTrust(stale) error = %v", err)
@@ -208,7 +225,45 @@ func networkDataPlaneSetupTestTrustPlan(t *testing.T) (ticketissuer.TrustPlan, t
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ticketissuer.TrustPlan{OperationID: domain.OperationID("operation-data-plane"), OperationRevision: 41, OperationState: domain.OperationRequiresApproval, Mutation: helper.OperationEnsureTrust, TargetOwnership: target, Policy: policy, Root: root}, request
+	queued, err := domain.NewOperation(
+		"operation-data-plane",
+		"intent-data-plane",
+		domain.OperationKindNetworkDataPlaneSetup,
+		"",
+		now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := queued.Transition(
+		domain.OperationRunning,
+		"preparing trust",
+		now.Add(time.Second),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := running.Transition(
+		domain.OperationRequiresApproval,
+		"awaiting trust approval",
+		now.Add(2*time.Second),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ticketissuer.TrustPlan{
+		Purpose:            ticketissuer.TrustPlanPurposeDataPlaneSetup,
+		Operation:          operation,
+		OperationRevision:  41,
+		CheckpointRevision: 0,
+		CheckpointPhase:    ticketissuer.TrustCheckpointPhaseSetupApproval,
+		Mutation:           helper.OperationEnsureTrust,
+		TargetOwnership:    target,
+		Policy:             policy,
+		Root:               root,
+	}, request
 }
 
 // networkDataPlaneSetupTrustObservation constructs an exact owned or unowned trust observation.
@@ -328,7 +383,11 @@ func TestNetworkDataPlaneSetupRejectsNilIssuers(t *testing.T) {
 	lowPlan := networkDataPlaneSetupTestLowPortPlan(t)
 	var nilTrust *networkDataPlaneSetupNilTrustIssuer
 	trust := &NetworkDataPlaneSetupCoordinator{trustPlans: networkDataPlaneSetupTestTrustPlans{trustPlan}, trustIssuers: func() (NetworkDataPlaneSetupTrustIssuer, error) { return nilTrust, nil }, clock: networkDataPlaneSetupTestClock{time.Now().UTC()}}
-	if _, err := trust.PrepareTrust(t.Context(), NetworkDataPlaneSetupPrepareTrustRequest{OperationID: trustPlan.OperationID, ExpectedOperationRevision: trustPlan.OperationRevision, RequesterIdentity: trustPlan.TargetOwnership.OwnerIdentity}); err == nil || !strings.Contains(err.Error(), "issuer is nil") {
+	if _, err := trust.PrepareTrust(t.Context(), NetworkDataPlaneSetupPrepareTrustRequest{
+		OperationID:               trustPlan.Operation.ID,
+		ExpectedOperationRevision: trustPlan.OperationRevision,
+		RequesterIdentity:         trustPlan.TargetOwnership.OwnerIdentity,
+	}); err == nil || !strings.Contains(err.Error(), "issuer is nil") {
 		t.Fatalf("PrepareTrust(typed nil) error = %v", err)
 	}
 	var nilLow *networkDataPlaneSetupNilLowPortIssuer
@@ -362,7 +421,17 @@ func TestNetworkDataPlaneSetupConfirmTrustRejectsDifferentSupportedMechanism(t *
 			return state.OperationRecord{}, nil
 		}},
 	}
-	_, err = coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{OperationID: plan.OperationID, ExpectedOperationRevision: plan.OperationRevision, RequesterIdentity: plan.TargetOwnership.OwnerIdentity, TrustEvidence: helper.TrustMutationEvidence{AuthorityFingerprint: plan.Root.Fingerprint, Mechanism: networkpolicy.UbuntuSystemTrust, ObservationFingerprint: fingerprint, Postcondition: helper.TrustPostconditionExact}})
+	_, err = coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{
+		OperationID:               plan.Operation.ID,
+		ExpectedOperationRevision: plan.OperationRevision,
+		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
+		TrustEvidence: helper.TrustMutationEvidence{
+			AuthorityFingerprint:   plan.Root.Fingerprint,
+			Mechanism:              networkpolicy.UbuntuSystemTrust,
+			ObservationFingerprint: fingerprint,
+			Postcondition:          helper.TrustPostconditionExact,
+		},
+	})
 	if err == nil || observed || advanced {
 		t.Fatalf("ConfirmTrust(different mechanism) error=%v, observed=%t, advanced=%t", err, observed, advanced)
 	}
@@ -388,7 +457,17 @@ func TestNetworkDataPlaneSetupObservationRequestMismatchRejectsCrossAuthorityFac
 		trustAdvanced = true
 		return state.OperationRecord{}, nil
 	}}}
-	_, err = trustCoordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{OperationID: trustPlan.OperationID, ExpectedOperationRevision: trustPlan.OperationRevision, RequesterIdentity: trustPlan.TargetOwnership.OwnerIdentity, TrustEvidence: helper.TrustMutationEvidence{AuthorityFingerprint: trustPlan.Root.Fingerprint, Mechanism: trustPlan.Policy.Mechanisms.Trust, ObservationFingerprint: trustFingerprint, Postcondition: helper.TrustPostconditionExact}})
+	_, err = trustCoordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{
+		OperationID:               trustPlan.Operation.ID,
+		ExpectedOperationRevision: trustPlan.OperationRevision,
+		RequesterIdentity:         trustPlan.TargetOwnership.OwnerIdentity,
+		TrustEvidence: helper.TrustMutationEvidence{
+			AuthorityFingerprint:   trustPlan.Root.Fingerprint,
+			Mechanism:              trustPlan.Policy.Mechanisms.Trust,
+			ObservationFingerprint: trustFingerprint,
+			Postcondition:          helper.TrustPostconditionExact,
+		},
+	})
 	if err == nil || trustAdvanced {
 		t.Fatalf("ConfirmTrust(mismatched observation request) error=%v, advanced=%t", err, trustAdvanced)
 	}
@@ -443,7 +522,17 @@ func TestNetworkDataPlaneSetupTrustObservationRejectsRootValidityMetadataMismatc
 		advanced = true
 		return state.OperationRecord{}, nil
 	}}}
-	_, err = coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{OperationID: plan.OperationID, ExpectedOperationRevision: plan.OperationRevision, RequesterIdentity: plan.TargetOwnership.OwnerIdentity, TrustEvidence: helper.TrustMutationEvidence{AuthorityFingerprint: plan.Root.Fingerprint, Mechanism: plan.Policy.Mechanisms.Trust, ObservationFingerprint: fingerprint, Postcondition: helper.TrustPostconditionExact}})
+	_, err = coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{
+		OperationID:               plan.Operation.ID,
+		ExpectedOperationRevision: plan.OperationRevision,
+		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
+		TrustEvidence: helper.TrustMutationEvidence{
+			AuthorityFingerprint:   plan.Root.Fingerprint,
+			Mechanism:              plan.Policy.Mechanisms.Trust,
+			ObservationFingerprint: fingerprint,
+			Postcondition:          helper.TrustPostconditionExact,
+		},
+	})
 	if err == nil || advanced {
 		t.Fatalf("ConfirmTrust(mismatched root validity metadata) error=%v, advanced=%t", err, advanced)
 	}
@@ -473,7 +562,11 @@ func TestNetworkDataPlaneSetupCanceledContextsHaveNoEffects(t *testing.T) {
 			t.Fatal("PrepareTrust() opened issuer for canceled context")
 			return nil, nil
 		}, clock: networkDataPlaneSetupTestClock{time.Now()}}
-		_, err := coordinator.PrepareTrust(ctx, NetworkDataPlaneSetupPrepareTrustRequest{OperationID: trustPlan.OperationID, ExpectedOperationRevision: trustPlan.OperationRevision, RequesterIdentity: trustPlan.TargetOwnership.OwnerIdentity})
+		_, err := coordinator.PrepareTrust(ctx, NetworkDataPlaneSetupPrepareTrustRequest{
+			OperationID:               trustPlan.Operation.ID,
+			ExpectedOperationRevision: trustPlan.OperationRevision,
+			RequesterIdentity:         trustPlan.TargetOwnership.OwnerIdentity,
+		})
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("PrepareTrust(canceled) error = %v", err)
 		}
@@ -501,7 +594,17 @@ func TestNetworkDataPlaneSetupCanceledContextsHaveNoEffects(t *testing.T) {
 			t.Fatal("ConfirmTrust() advanced durable state for canceled context")
 			return state.OperationRecord{}, nil
 		}}}
-		_, err := coordinator.ConfirmTrust(ctx, NetworkDataPlaneSetupConfirmTrustRequest{OperationID: trustPlan.OperationID, ExpectedOperationRevision: trustPlan.OperationRevision, RequesterIdentity: trustPlan.TargetOwnership.OwnerIdentity, TrustEvidence: helper.TrustMutationEvidence{AuthorityFingerprint: trustPlan.Root.Fingerprint, Mechanism: trustPlan.Policy.Mechanisms.Trust, ObservationFingerprint: strings.Repeat("a", 64), Postcondition: helper.TrustPostconditionExact}})
+		_, err := coordinator.ConfirmTrust(ctx, NetworkDataPlaneSetupConfirmTrustRequest{
+			OperationID:               trustPlan.Operation.ID,
+			ExpectedOperationRevision: trustPlan.OperationRevision,
+			RequesterIdentity:         trustPlan.TargetOwnership.OwnerIdentity,
+			TrustEvidence: helper.TrustMutationEvidence{
+				AuthorityFingerprint:   trustPlan.Root.Fingerprint,
+				Mechanism:              trustPlan.Policy.Mechanisms.Trust,
+				ObservationFingerprint: strings.Repeat("a", 64),
+				Postcondition:          helper.TrustPostconditionExact,
+			},
+		})
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("ConfirmTrust(canceled) error = %v", err)
 		}
@@ -550,7 +653,18 @@ func TestNetworkDataPlaneSetupCanceledContextsHaveNoEffects(t *testing.T) {
 func TestNetworkDataPlaneSetupStartReplayAndConfirmTrustBoundary(t *testing.T) {
 	trustPlan, trustRequest := networkDataPlaneSetupTestTrustPlan(t)
 	startedAt := time.Now().UTC()
-	replayed := state.OperationRecord{Operation: domain.Operation{ID: trustPlan.OperationID, IntentID: "intent-data-plane", Kind: domain.OperationKindNetworkDataPlaneSetup, State: domain.OperationRequiresApproval, Phase: networkDataPlaneSetupTrustApprovalPhase, RequestedAt: startedAt, StartedAt: &startedAt}, Revision: trustPlan.OperationRevision}
+	replayed := state.OperationRecord{
+		Operation: domain.Operation{
+			ID:          trustPlan.Operation.ID,
+			IntentID:    "intent-data-plane",
+			Kind:        domain.OperationKindNetworkDataPlaneSetup,
+			State:       domain.OperationRequiresApproval,
+			Phase:       networkDataPlaneSetupTrustApprovalPhase,
+			RequestedAt: startedAt,
+			StartedAt:   &startedAt,
+		},
+		Revision: trustPlan.OperationRevision,
+	}
 	journal := &networkDataPlaneSetupLifecycleJournal{byIntent: func(_ context.Context, id domain.IntentID) (state.OperationRecord, error) {
 		if id != replayed.Operation.IntentID {
 			t.Fatalf("intent = %q", id)
@@ -576,11 +690,21 @@ func TestNetworkDataPlaneSetupStartReplayAndConfirmTrustBoundary(t *testing.T) {
 	coordinator.trust = networkDataPlaneSetupLifecycleTrust{observe: func(context.Context, trust.Request) (trust.Observation, error) {
 		return observation, nil
 	}}
-	_, err = coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{OperationID: trustPlan.OperationID, ExpectedOperationRevision: trustPlan.OperationRevision, RequesterIdentity: trustPlan.TargetOwnership.OwnerIdentity, TrustEvidence: helper.TrustMutationEvidence{AuthorityFingerprint: trustPlan.Root.Fingerprint, Mechanism: trustPlan.Policy.Mechanisms.Trust, ObservationFingerprint: fingerprint, Postcondition: helper.TrustPostconditionExact}})
+	_, err = coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{
+		OperationID:               trustPlan.Operation.ID,
+		ExpectedOperationRevision: trustPlan.OperationRevision,
+		RequesterIdentity:         trustPlan.TargetOwnership.OwnerIdentity,
+		TrustEvidence: helper.TrustMutationEvidence{
+			AuthorityFingerprint:   trustPlan.Root.Fingerprint,
+			Mechanism:              trustPlan.Policy.Mechanisms.Trust,
+			ObservationFingerprint: fingerprint,
+			Postcondition:          helper.TrustPostconditionExact,
+		},
+	})
 	if err != nil {
 		t.Fatalf("ConfirmTrust() error = %v", err)
 	}
-	if advanced.OperationID != trustPlan.OperationID || advanced.ExpectedOperationRevision != trustPlan.OperationRevision || advanced.RequesterIdentity != trustPlan.TargetOwnership.OwnerIdentity {
+	if advanced.OperationID != trustPlan.Operation.ID || advanced.ExpectedOperationRevision != trustPlan.OperationRevision || advanced.RequesterIdentity != trustPlan.TargetOwnership.OwnerIdentity {
 		t.Fatalf("AdvanceNetworkDataPlaneSetupTrust request = %#v", advanced)
 	}
 }
@@ -706,7 +830,11 @@ func TestNetworkDataPlaneSetupRejectsTypedNilIssuers(t *testing.T) {
 	lowPlan := networkDataPlaneSetupTestLowPortPlan(t)
 	var trustIssuer networkDataPlaneSetupTestNilTrustIssuer
 	trustCoordinator := &NetworkDataPlaneSetupCoordinator{trustPlans: networkDataPlaneSetupTestTrustPlans{trustPlan}, trustIssuers: func() (NetworkDataPlaneSetupTrustIssuer, error) { return trustIssuer, nil }, clock: networkDataPlaneSetupTestClock{time.Now()}}
-	if _, err := trustCoordinator.PrepareTrust(t.Context(), NetworkDataPlaneSetupPrepareTrustRequest{OperationID: trustPlan.OperationID, ExpectedOperationRevision: trustPlan.OperationRevision, RequesterIdentity: trustPlan.TargetOwnership.OwnerIdentity}); err == nil || !strings.Contains(err.Error(), "nil") {
+	if _, err := trustCoordinator.PrepareTrust(t.Context(), NetworkDataPlaneSetupPrepareTrustRequest{
+		OperationID:               trustPlan.Operation.ID,
+		ExpectedOperationRevision: trustPlan.OperationRevision,
+		RequesterIdentity:         trustPlan.TargetOwnership.OwnerIdentity,
+	}); err == nil || !strings.Contains(err.Error(), "nil") {
 		t.Fatalf("PrepareTrust(typed nil) error = %v", err)
 	}
 	var lowIssuer networkDataPlaneSetupTestNilLowPortIssuer

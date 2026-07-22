@@ -37,30 +37,65 @@ func (request TrustRequest) Validate() error {
 	return request.OperationID.Validate()
 }
 
+// TrustPlanPurpose identifies the lifecycle that granted a trust mutation.
+type TrustPlanPurpose string
+
+const (
+	// TrustPlanPurposeDataPlaneSetup permits the setup lifecycle to ensure public-root trust.
+	TrustPlanPurposeDataPlaneSetup TrustPlanPurpose = "network_data_plane_setup"
+	// TrustPlanPurposeGlobalNetworkRelease permits the global release lifecycle to remove public-root trust.
+	TrustPlanPurposeGlobalNetworkRelease TrustPlanPurpose = "global_network_release"
+)
+
+// TrustCheckpointPhase identifies the durable checkpoint that fences trust ticket publication.
+type TrustCheckpointPhase string
+
+const (
+	// TrustCheckpointPhaseSetupApproval identifies the setup approval checkpoint before trust installation.
+	TrustCheckpointPhaseSetupApproval TrustCheckpointPhase = "awaiting trust approval"
+	// TrustCheckpointPhaseGlobalRelease identifies the global release checkpoint after resolver retirement.
+	TrustCheckpointPhaseGlobalRelease TrustCheckpointPhase = "trust"
+)
+
+// Validate rejects lifecycle purposes that have no narrow trust admission contract.
+func (purpose TrustPlanPurpose) Validate() error {
+	switch purpose {
+	case TrustPlanPurposeDataPlaneSetup, TrustPlanPurposeGlobalNetworkRelease:
+		return nil
+	default:
+		return fmt.Errorf("trust approval purpose %q is unsupported", purpose)
+	}
+}
+
 // TrustPlan is the immutable public-CA trust authority approved by one durable operation.
 type TrustPlan struct {
-	OperationID       domain.OperationID
-	OperationRevision domain.Sequence
-	OperationState    domain.OperationState
-	Mutation          helper.Operation
-	TargetOwnership   ownership.Record
-	Policy            networkpolicy.Policy
-	Root              certificates.Root
+	Purpose            TrustPlanPurpose
+	Operation          domain.Operation
+	OperationRevision  domain.Sequence
+	CheckpointRevision domain.Sequence
+	CheckpointPhase    TrustCheckpointPhase
+	Mutation           helper.Operation
+	TargetOwnership    ownership.Record
+	Policy             networkpolicy.Policy
+	Root               certificates.Root
 }
 
 // Validate rejects plans that cannot describe one exact current-user trust mutation.
 func (plan TrustPlan) Validate() error {
-	if err := plan.OperationID.Validate(); err != nil {
-		return err
+	if err := plan.Operation.Validate(); err != nil {
+		return fmt.Errorf("trust approval operation: %w", err)
+	}
+	if plan.Operation.ProjectID != "" {
+		return errors.New("trust approval operation must be global")
 	}
 	if plan.OperationRevision == 0 || plan.OperationRevision > domain.MaximumSequence {
 		return fmt.Errorf("trust approval operation revision must be between 1 and %d", domain.MaximumSequence)
 	}
-	if plan.OperationState != domain.OperationRequiresApproval {
-		return fmt.Errorf("trust approval operation state is %q, want %q", plan.OperationState, domain.OperationRequiresApproval)
+	if err := plan.Purpose.Validate(); err != nil {
+		return err
 	}
-	if plan.Mutation != helper.OperationEnsureTrust {
-		return fmt.Errorf("trust approval mutation %q is not allowlisted", plan.Mutation)
+	if err := validateTrustPlanLifecycle(plan); err != nil {
+		return err
 	}
 	if err := plan.TargetOwnership.Validate(); err != nil {
 		return fmt.Errorf("trust approval target ownership: %w", err)
@@ -92,6 +127,51 @@ func (plan TrustPlan) Validate() error {
 	}
 	if plan.Root.Fingerprint != plan.Policy.AuthorityFingerprint {
 		return errors.New("trust approval public root does not match policy authority")
+	}
+	return nil
+}
+
+// validateTrustPlanLifecycle keeps setup and release authority disjoint despite sharing native trust validation.
+func validateTrustPlanLifecycle(plan TrustPlan) error {
+	switch plan.Purpose {
+	case TrustPlanPurposeDataPlaneSetup:
+		if plan.CheckpointRevision != 0 {
+			return fmt.Errorf("trust setup checkpoint revision is %d, want 0", plan.CheckpointRevision)
+		}
+		if plan.CheckpointPhase != TrustCheckpointPhaseSetupApproval {
+			return fmt.Errorf("trust setup checkpoint phase is %q, want %q", plan.CheckpointPhase, TrustCheckpointPhaseSetupApproval)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkDataPlaneSetup {
+			return fmt.Errorf("trust setup operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkDataPlaneSetup)
+		}
+		if plan.Operation.State != domain.OperationRequiresApproval {
+			return fmt.Errorf("trust setup operation state is %q, want %q", plan.Operation.State, domain.OperationRequiresApproval)
+		}
+		if plan.Operation.Phase != string(TrustCheckpointPhaseSetupApproval) {
+			return fmt.Errorf("trust setup operation phase is %q, want %q", plan.Operation.Phase, TrustCheckpointPhaseSetupApproval)
+		}
+		if plan.Mutation != helper.OperationEnsureTrust {
+			return fmt.Errorf("trust setup mutation is %q, want %q", plan.Mutation, helper.OperationEnsureTrust)
+		}
+	case TrustPlanPurposeGlobalNetworkRelease:
+		if plan.CheckpointRevision == 0 || plan.CheckpointRevision > domain.MaximumSequence {
+			return fmt.Errorf("trust release checkpoint revision must be between 1 and %d", domain.MaximumSequence)
+		}
+		if plan.CheckpointPhase != TrustCheckpointPhaseGlobalRelease {
+			return fmt.Errorf("trust release checkpoint phase is %q, want %q", plan.CheckpointPhase, TrustCheckpointPhaseGlobalRelease)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkRelease {
+			return fmt.Errorf("trust release operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkRelease)
+		}
+		if plan.Operation.State != domain.OperationRunning {
+			return fmt.Errorf("trust release operation state is %q, want %q", plan.Operation.State, domain.OperationRunning)
+		}
+		if plan.Operation.Phase != "releasing network runtime" {
+			return fmt.Errorf("trust release operation phase is %q, want %q", plan.Operation.Phase, "releasing network runtime")
+		}
+		if plan.Mutation != helper.OperationReleaseTrust {
+			return fmt.Errorf("trust release mutation is %q, want %q", plan.Mutation, helper.OperationReleaseTrust)
+		}
 	}
 	return nil
 }
@@ -128,7 +208,7 @@ func (result TrustResult) Validate(now time.Time) error {
 	if err := result.Reference.Validate(); err != nil {
 		return err
 	}
-	if result.Operation != helper.OperationEnsureTrust {
+	if result.Operation != helper.OperationEnsureTrust && result.Operation != helper.OperationReleaseTrust {
 		return fmt.Errorf("trust approval result operation %q is unsupported", result.Operation)
 	}
 	if !canonicalSHA256Fingerprint(result.PolicyFingerprint) {
@@ -324,7 +404,7 @@ func (service *TrustService) Issue(
 	if err != nil {
 		return TrustResult{}, fmt.Errorf("issue helper trust ticket: construct trust request: %w", err)
 	}
-	fingerprint, err := service.observeTrust(ctx, trustRequest)
+	fingerprint, err := service.observeTrust(ctx, trustRequest, plan.Purpose)
 	if err != nil {
 		return TrustResult{}, err
 	}
@@ -342,7 +422,7 @@ func (service *TrustService) Issue(
 	if err := service.observeOwnership(ctx, requesterIdentity, confirmed); err != nil {
 		return TrustResult{}, fmt.Errorf("issue helper trust ticket: revalidate ownership: %w", err)
 	}
-	confirmedFingerprint, err := service.observeTrust(ctx, trustRequest)
+	confirmedFingerprint, err := service.observeTrust(ctx, trustRequest, confirmed.Purpose)
 	if err != nil {
 		return TrustResult{}, fmt.Errorf("issue helper trust ticket: revalidate trust: %w", err)
 	}
@@ -355,7 +435,7 @@ func (service *TrustService) Issue(
 	}
 	reference, publishErr := service.publisher.Publish(ctx, ticket, privateKey)
 	result := TrustResult{
-		OperationID:          plan.OperationID,
+		OperationID:          plan.Operation.ID,
 		Reference:            reference,
 		Operation:            plan.Mutation,
 		PolicyFingerprint:    plan.TargetOwnership.NetworkPolicyFingerprint,
@@ -394,7 +474,7 @@ func (service *TrustService) resolvePlan(ctx context.Context, request TrustReque
 	if err := plan.Validate(); err != nil {
 		return TrustPlan{}, fmt.Errorf("issue helper trust ticket: invalid approval plan: %w", err)
 	}
-	if plan.OperationID != request.OperationID {
+	if plan.Operation.ID != request.OperationID {
 		return TrustPlan{}, errors.New("issue helper trust ticket: approval plan does not match requested operation")
 	}
 	return plan, nil
@@ -425,8 +505,8 @@ func (service *TrustService) observeOwnership(ctx context.Context, requesterIden
 	return nil
 }
 
-// observeTrust admits only complete trust states that an ensure operation may safely converge.
-func (service *TrustService) observeTrust(ctx context.Context, request platformtrust.Request) (string, error) {
+// observeTrust admits only native trust states that the selected lifecycle may safely mutate.
+func (service *TrustService) observeTrust(ctx context.Context, request platformtrust.Request, purpose TrustPlanPurpose) (string, error) {
 	observation, err := service.trust.Observe(ctx, request)
 	if err != nil {
 		return "", fmt.Errorf("issue helper trust ticket: observe trust: %w", err)
@@ -441,16 +521,25 @@ func (service *TrustService) observeTrust(ctx context.Context, request platformt
 	if err != nil {
 		return "", fmt.Errorf("issue helper trust ticket: classify trust observation: %w", err)
 	}
-	switch assessment.State {
-	case platformtrust.StateAbsent, platformtrust.StateExact, platformtrust.StateOwnedDrifted:
-	case platformtrust.StateForeign:
-		if assessment.Owned != platformtrust.OwnedStateAbsent || !onlyPreexistingIdenticalTrustEntries(observation) {
+	switch purpose {
+	case TrustPlanPurposeDataPlaneSetup:
+		switch assessment.State {
+		case platformtrust.StateAbsent, platformtrust.StateExact, platformtrust.StateOwnedDrifted:
+		case platformtrust.StateForeign:
+			if assessment.Owned != platformtrust.OwnedStateAbsent || !onlyPreexistingIdenticalTrustEntries(observation) {
+				return "", fmt.Errorf("issue helper trust ticket: trust state %q cannot be safely ensured", assessment.State)
+			}
+		case platformtrust.StateAmbiguous, platformtrust.StateIndeterminate:
 			return "", fmt.Errorf("issue helper trust ticket: trust state %q cannot be safely ensured", assessment.State)
+		default:
+			return "", fmt.Errorf("issue helper trust ticket: trust state %q is unsupported", assessment.State)
 		}
-	case platformtrust.StateAmbiguous, platformtrust.StateIndeterminate:
-		return "", fmt.Errorf("issue helper trust ticket: trust state %q cannot be safely ensured", assessment.State)
+	case TrustPlanPurposeGlobalNetworkRelease:
+		if assessment.State != platformtrust.StateExact || assessment.Owned != platformtrust.OwnedStateExact {
+			return "", fmt.Errorf("issue helper trust ticket: trust state %q cannot be safely released", assessment.State)
+		}
 	default:
-		return "", fmt.Errorf("issue helper trust ticket: trust state %q is unsupported", assessment.State)
+		return "", fmt.Errorf("issue helper trust ticket: trust purpose %q is unsupported", purpose)
 	}
 	fingerprint, err := observation.Fingerprint()
 	if err != nil {
@@ -521,9 +610,11 @@ func (service *TrustService) buildTicket(
 
 // sameTrustPlan compares all public authority, including copied certificate bytes.
 func sameTrustPlan(left TrustPlan, right TrustPlan) bool {
-	return left.OperationID == right.OperationID &&
+	return left.Purpose == right.Purpose &&
+		sameTrustOperation(left.Operation, right.Operation) &&
 		left.OperationRevision == right.OperationRevision &&
-		left.OperationState == right.OperationState &&
+		left.CheckpointRevision == right.CheckpointRevision &&
+		left.CheckpointPhase == right.CheckpointPhase &&
 		left.Mutation == right.Mutation &&
 		left.TargetOwnership == right.TargetOwnership &&
 		left.Policy == right.Policy &&
@@ -531,6 +622,36 @@ func sameTrustPlan(left TrustPlan, right TrustPlan) bool {
 		left.Root.NotBefore.Equal(right.Root.NotBefore) &&
 		left.Root.NotAfter.Equal(right.Root.NotAfter) &&
 		bytes.Equal(left.Root.CertificatePEM, right.Root.CertificatePEM)
+}
+
+// sameTrustOperation compares operation values without treating pointer allocation as authority.
+func sameTrustOperation(left domain.Operation, right domain.Operation) bool {
+	return left.ID == right.ID &&
+		left.IntentID == right.IntentID &&
+		left.Kind == right.Kind &&
+		left.ProjectID == right.ProjectID &&
+		left.State == right.State &&
+		left.Phase == right.Phase &&
+		left.RequestedAt.Equal(right.RequestedAt) &&
+		sameOptionalTrustTime(left.StartedAt, right.StartedAt) &&
+		sameOptionalTrustTime(left.FinishedAt, right.FinishedAt) &&
+		sameOptionalTrustProblem(left.Problem, right.Problem)
+}
+
+// sameOptionalTrustTime compares optional operation timestamps by value.
+func sameOptionalTrustTime(left *time.Time, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+// sameOptionalTrustProblem compares optional operation failures by value.
+func sameOptionalTrustProblem(left *domain.Problem, right *domain.Problem) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // cloneTrustPlan prevents mutable public certificate bytes from crossing a durable-read boundary.

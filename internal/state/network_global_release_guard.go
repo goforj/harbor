@@ -174,7 +174,12 @@ func requireNoGlobalNetworkReleasePlan(tx *gorm.DB, action string) error {
 		return err
 	}
 	plan.LowPortReceipt = lowPortReceipt
-	if _, err := validateGlobalNetworkReleaseResolverReceipt(tx, plan); err != nil {
+	resolverReceipt, err := validateGlobalNetworkReleaseResolverReceipt(tx, plan)
+	if err != nil {
+		return err
+	}
+	plan.ResolverReceipt = resolverReceipt
+	if _, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan); err != nil {
 		return err
 	}
 	return &GlobalNetworkReleaseActiveError{
@@ -233,7 +238,12 @@ func validateGlobalNetworkReleaseMutationOwner(
 		return err
 	}
 	plan.LowPortReceipt = lowPortReceipt
-	if _, err := validateGlobalNetworkReleaseResolverReceipt(tx, plan); err != nil {
+	resolverReceipt, err := validateGlobalNetworkReleaseResolverReceipt(tx, plan)
+	if err != nil {
+		return err
+	}
+	plan.ResolverReceipt = resolverReceipt
+	if _, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan); err != nil {
 		return err
 	}
 	if plan.Phase != phase {

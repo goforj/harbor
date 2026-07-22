@@ -39,6 +39,64 @@ func TestInvokeTrustWritesCanonicalRequestAndCorrelatesEvidence(t *testing.T) {
 	}
 }
 
+// TestInvokeTrustReleaseWritesCanonicalRequestAndCorrelatesOwnedAbsence proves release trust launch accepts only the requested destructive postcondition.
+func TestInvokeTrustReleaseWritesCanonicalRequestAndCorrelatesOwnedAbsence(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	issued, err := NewTrustLaunchTicket(
+		"operation-trust-release",
+		helper.TicketReference(strings.Repeat("e", 64)),
+		helper.OperationReleaseTrust,
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 64),
+		strings.Repeat("c", 64),
+		string(networkpolicy.DarwinCurrentUserTrust),
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("NewTrustLaunchTicket() error = %v", err)
+	}
+	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
+		decoded, err := helper.DecodeRequest(request)
+		if err != nil {
+			t.Fatalf("DecodeRequest() error = %v", err)
+		}
+		if decoded.TicketReference != issued.reference {
+			t.Fatalf("helper request = %#v", decoded)
+		}
+		if err := helper.WriteResponse(response, helper.Response{
+			Version: helper.ProtocolVersion,
+			OK:      true,
+			Result: &helper.OperationResult{
+				Operation: helper.OperationReleaseTrust,
+				TrustEvidence: &helper.TrustMutationEvidence{
+					AuthorityFingerprint:   issued.authorityFingerprint,
+					Mechanism:              networkpolicy.TrustMechanism(issued.trustMechanism),
+					ObservationFingerprint: strings.Repeat("d", 64),
+					Postcondition:          helper.TrustPostconditionOwnedAbsent,
+				},
+			},
+		}); err != nil {
+			t.Fatalf("WriteResponse() error = %v", err)
+		}
+		return TransportResult{
+			State:    TransportCompleted,
+			ExitCode: ExitCodeSucceeded,
+		}
+	})
+
+	outcome, err := New(transport, fixedClock{now: now}).InvokeTrust(t.Context(), issued)
+	if err != nil {
+		t.Fatalf("InvokeTrust() error = %v", err)
+	}
+	if outcome.State != Succeeded ||
+		outcome.Response.Result == nil ||
+		outcome.Response.Result.Operation != helper.OperationReleaseTrust ||
+		outcome.Response.Result.TrustEvidence == nil ||
+		outcome.Response.Result.TrustEvidence.Postcondition != helper.TrustPostconditionOwnedAbsent {
+		t.Fatalf("InvokeTrust() outcome = %#v", outcome)
+	}
+}
+
 // TestInvokeTrustRejectsUncorrelatedEvidence verifies an effect for another CA or trust mechanism is indeterminate.
 func TestInvokeTrustRejectsUncorrelatedEvidence(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
@@ -81,7 +139,18 @@ func TestNewTrustLaunchTicketValidatesMetadata(t *testing.T) {
 		{name: "valid", mutate: func(*trustLaunchTicketFixture) {}},
 		{name: "operation ID", mutate: func(value *trustLaunchTicketFixture) { value.operationID = "" }},
 		{name: "reference", mutate: func(value *trustLaunchTicketFixture) { value.reference = "bad" }},
-		{name: "operation", mutate: func(value *trustLaunchTicketFixture) { value.operation = helper.OperationReleaseTrust }},
+		{
+			name: "release operation",
+			mutate: func(value *trustLaunchTicketFixture) {
+				value.operation = helper.OperationReleaseTrust
+			},
+		},
+		{
+			name: "operation",
+			mutate: func(value *trustLaunchTicketFixture) {
+				value.operation = helper.OperationEnsureLowPorts
+			},
+		},
 		{name: "policy fingerprint", mutate: func(value *trustLaunchTicketFixture) { value.policyFingerprint = "bad" }},
 		{name: "policy uppercase", mutate: func(value *trustLaunchTicketFixture) { value.policyFingerprint = strings.Repeat("A", 64) }},
 		{name: "ownership fingerprint", mutate: func(value *trustLaunchTicketFixture) { value.ownershipFingerprint = "bad" }},
@@ -99,7 +168,7 @@ func TestNewTrustLaunchTicketValidatesMetadata(t *testing.T) {
 			value := valid
 			test.mutate(&value)
 			_, err := newTrustLaunchTicket(value)
-			if (err != nil) != (test.name != "valid") {
+			if (err != nil) != (test.name != "valid" && test.name != "release operation") {
 				t.Fatalf("newTrustLaunchTicket() error = %v", err)
 			}
 		})

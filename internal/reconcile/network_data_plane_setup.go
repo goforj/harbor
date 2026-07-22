@@ -532,7 +532,7 @@ func (c *NetworkDataPlaneSetupCoordinator) validateTrustPlan(plan ticketissuer.T
 	if err := plan.Validate(); err != nil {
 		return fmt.Errorf("trust plan: %w", err)
 	}
-	if plan.OperationID != operationID {
+	if plan.Operation.ID != operationID {
 		return fmt.Errorf("trust plan belongs to another operation")
 	}
 	if plan.OperationRevision != revision {

@@ -115,7 +115,7 @@ func TestTrustServiceIssueBindsExactTrustAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TargetOwnership.Fingerprint() error = %v", err)
 	}
-	if result.OperationID != fixture.plan.OperationID ||
+	if result.OperationID != fixture.plan.Operation.ID ||
 		result.Reference != fixture.publisher.reference ||
 		result.Operation != helper.OperationEnsureTrust ||
 		result.PolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint ||
@@ -196,11 +196,29 @@ func TestTrustRequestPlanAndResultValidation(t *testing.T) {
 		want   string
 		mutate func(*TrustPlan)
 	}{
-		{name: "operation ID", want: "operation", mutate: func(plan *TrustPlan) { plan.OperationID = "" }},
+		{
+			name: "operation ID",
+			want: "operation",
+			mutate: func(plan *TrustPlan) {
+				plan.Operation.ID = ""
+			},
+		},
 		{name: "zero revision", want: "revision", mutate: func(plan *TrustPlan) { plan.OperationRevision = 0 }},
 		{name: "large revision", want: "revision", mutate: func(plan *TrustPlan) { plan.OperationRevision = domain.MaximumSequence + 1 }},
-		{name: "state", want: "state", mutate: func(plan *TrustPlan) { plan.OperationState = domain.OperationRunning }},
-		{name: "mutation", want: "not allowlisted", mutate: func(plan *TrustPlan) { plan.Mutation = helper.OperationReleaseTrust }},
+		{
+			name: "state",
+			want: "state",
+			mutate: func(plan *TrustPlan) {
+				plan.Operation.State = domain.OperationRunning
+			},
+		},
+		{
+			name: "mutation",
+			want: "mutation",
+			mutate: func(plan *TrustPlan) {
+				plan.Mutation = helper.OperationReleaseTrust
+			},
+		},
 		{name: "target record", want: "target ownership", mutate: func(plan *TrustPlan) { plan.TargetOwnership.InstallationID = "" }},
 		{name: "target schema", want: "target ownership schema", mutate: func(plan *TrustPlan) {
 			plan.TargetOwnership.SchemaVersion = ownership.IdentitySchemaVersion
@@ -235,7 +253,7 @@ func TestTrustRequestPlanAndResultValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	validResult := TrustResult{
-		OperationID:          fixture.plan.OperationID,
+		OperationID:          fixture.plan.Operation.ID,
 		Reference:            helper.TicketReference(strings.Repeat("a", 64)),
 		Operation:            helper.OperationEnsureTrust,
 		PolicyFingerprint:    fixture.plan.TargetOwnership.NetworkPolicyFingerprint,
@@ -254,7 +272,13 @@ func TestTrustRequestPlanAndResultValidation(t *testing.T) {
 	}{
 		{name: "operation ID", want: "operation", mutate: func(result *TrustResult) { result.OperationID = "" }},
 		{name: "reference", want: "reference", mutate: func(result *TrustResult) { result.Reference = "bad" }},
-		{name: "operation", want: "unsupported", mutate: func(result *TrustResult) { result.Operation = helper.OperationReleaseTrust }},
+		{
+			name: "operation",
+			want: "unsupported",
+			mutate: func(result *TrustResult) {
+				result.Operation = helper.OperationEnsureLowPorts
+			},
+		},
 		{name: "policy fingerprint length", want: "policy fingerprint", mutate: func(result *TrustResult) { result.PolicyFingerprint = "bad" }},
 		{name: "policy fingerprint case", want: "policy fingerprint", mutate: func(result *TrustResult) { result.PolicyFingerprint = strings.Repeat("A", 64) }},
 		{name: "ownership fingerprint length", want: "ownership fingerprint", mutate: func(result *TrustResult) { result.OwnershipFingerprint = "bad" }},
@@ -295,7 +319,7 @@ func TestTrustServiceIssueRevalidatesEveryAuthority(t *testing.T) {
 		}},
 		{name: "invalid confirmed plan", want: "invalid approval plan", mutate: func(fixture *trustIssuerFixture) {
 			changed := cloneTrustPlan(fixture.plan)
-			changed.OperationState = domain.OperationRunning
+			changed.Operation.State = domain.OperationRunning
 			fixture.plans.plans = []TrustPlan{fixture.plan, changed}
 		}},
 		{name: "plan revision", want: "plan changed", mutate: func(fixture *trustIssuerFixture) {
@@ -342,6 +366,228 @@ func TestTrustServiceIssueRevalidatesEveryAuthority(t *testing.T) {
 	}
 }
 
+// TestSameTrustPlanAcceptsEquivalentOperationPointers proves revalidation compares durable operation values rather than pointer allocation.
+func TestSameTrustPlanAcceptsEquivalentOperationPointers(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	started := now.Add(time.Second)
+	finished := started.Add(time.Second)
+	problem := domain.Problem{
+		Code:      "failed",
+		Message:   "scripted failure",
+		Retryable: true,
+	}
+	left := TrustPlan{
+		Operation: domain.Operation{
+			ID:          "operation-trust",
+			IntentID:    "intent-trust",
+			Kind:        domain.OperationKindNetworkDataPlaneSetup,
+			State:       domain.OperationFailed,
+			Phase:       "failed",
+			RequestedAt: now,
+			StartedAt:   &started,
+			FinishedAt:  &finished,
+			Problem:     &problem,
+		},
+	}
+	secondStarted := started
+	secondFinished := finished
+	secondProblem := problem
+	right := TrustPlan{
+		Operation: domain.Operation{
+			ID:          "operation-trust",
+			IntentID:    "intent-trust",
+			Kind:        domain.OperationKindNetworkDataPlaneSetup,
+			State:       domain.OperationFailed,
+			Phase:       "failed",
+			RequestedAt: now,
+			StartedAt:   &secondStarted,
+			FinishedAt:  &secondFinished,
+			Problem:     &secondProblem,
+		},
+	}
+	if !sameTrustPlan(left, right) {
+		t.Fatal("sameTrustPlan() = false, want equivalent separately allocated operation values")
+	}
+}
+
+// TestTrustServiceReleaseObservationRequiresExactOwnedTrust prevents destructive release capability issuance after native trust drift.
+func TestTrustServiceReleaseObservationRequiresExactOwnedTrust(t *testing.T) {
+	fixture := newTrustIssuerFixture(t)
+	request := fixture.observation.Request
+	for _, test := range []struct {
+		name  string
+		state platformtrust.State
+		want  bool
+	}{
+		{
+			name:  "exact owned",
+			state: platformtrust.StateExact,
+			want:  true,
+		},
+		{
+			name:  "absent",
+			state: platformtrust.StateAbsent,
+		},
+		{
+			name:  "owned drifted",
+			state: platformtrust.StateOwnedDrifted,
+		},
+		{
+			name:  "foreign",
+			state: platformtrust.StateForeign,
+		},
+		{
+			name:  "ambiguous",
+			state: platformtrust.StateAmbiguous,
+		},
+		{
+			name:  "indeterminate",
+			state: platformtrust.StateIndeterminate,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture.observer.observations = []platformtrust.Observation{
+				trustObservationForState(t, request, test.state),
+			}
+			fingerprint, err := fixture.service.observeTrust(
+				t.Context(),
+				request,
+				TrustPlanPurposeGlobalNetworkRelease,
+			)
+			if test.want {
+				if err != nil || !canonicalSHA256Fingerprint(fingerprint) {
+					t.Fatalf("observeTrust() = %q, %v", fingerprint, err)
+				}
+				return
+			}
+			if err == nil || fingerprint != "" {
+				t.Fatalf("observeTrust() = %q, %v, want rejected release state", fingerprint, err)
+			}
+		})
+	}
+}
+
+// TestTrustPlanReleaseLifecycleValidation covers every release-only trust authority fence.
+func TestTrustPlanReleaseLifecycleValidation(t *testing.T) {
+	fixture := newTrustIssuerFixture(t)
+	plan := validGlobalReleaseTrustPlan(t, fixture.plan)
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("TrustPlan.Validate() error = %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*TrustPlan)
+	}{
+		{
+			name: "purpose",
+			mutate: func(plan *TrustPlan) {
+				plan.Purpose = "unsupported"
+			},
+		},
+		{
+			name: "checkpoint revision",
+			mutate: func(plan *TrustPlan) {
+				plan.CheckpointRevision = 0
+			},
+		},
+		{
+			name: "checkpoint phase",
+			mutate: func(plan *TrustPlan) {
+				plan.CheckpointPhase = TrustCheckpointPhaseSetupApproval
+			},
+		},
+		{
+			name: "operation kind",
+			mutate: func(plan *TrustPlan) {
+				plan.Operation.Kind = domain.OperationKindNetworkDataPlaneSetup
+			},
+		},
+		{
+			name: "operation state",
+			mutate: func(plan *TrustPlan) {
+				plan.Operation.State = domain.OperationRequiresApproval
+			},
+		},
+		{
+			name: "operation phase",
+			mutate: func(plan *TrustPlan) {
+				plan.Operation.Phase = "awaiting trust approval"
+			},
+		},
+		{
+			name: "project",
+			mutate: func(plan *TrustPlan) {
+				plan.Operation.ProjectID = "project-trust"
+			},
+		},
+		{
+			name: "mutation",
+			mutate: func(plan *TrustPlan) {
+				plan.Mutation = helper.OperationEnsureTrust
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := cloneTrustPlan(plan)
+			test.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("TrustPlan.Validate() unexpectedly succeeded")
+			}
+		})
+	}
+	result := TrustResult{
+		OperationID:          plan.Operation.ID,
+		Reference:            helper.TicketReference(strings.Repeat("a", 64)),
+		Operation:            helper.OperationReleaseTrust,
+		PolicyFingerprint:    plan.TargetOwnership.NetworkPolicyFingerprint,
+		OwnershipFingerprint: mustOwnershipFingerprint(t, plan.TargetOwnership),
+		AuthorityFingerprint: plan.Root.Fingerprint,
+		Mechanism:            plan.Policy.Mechanisms.Trust,
+		ExpiresAt:            fixture.now.Add(time.Minute),
+	}
+	if err := result.Validate(fixture.now); err != nil {
+		t.Fatalf("TrustResult.Validate() error = %v", err)
+	}
+}
+
+// TestTrustServiceIssuesGlobalReleaseTrust proves release capability publication remains bound to exact owned trust authority.
+func TestTrustServiceIssuesGlobalReleaseTrust(t *testing.T) {
+	fixture := newTrustIssuerFixture(t)
+	fixture.plan = validGlobalReleaseTrustPlan(t, fixture.plan)
+	fixture.request = TrustRequest{
+		OperationID: fixture.plan.Operation.ID,
+	}
+	fixture.plans.plans = []TrustPlan{
+		cloneTrustPlan(fixture.plan),
+		cloneTrustPlan(fixture.plan),
+	}
+	exact := trustObservationForState(t, fixture.observation.Request, platformtrust.StateExact)
+	fixture.observer.observations = []platformtrust.Observation{
+		exact,
+		exact,
+	}
+	result, err := fixture.service.Issue(
+		t.Context(),
+		fixture.plan.TargetOwnership.OwnerIdentity,
+		fixture.request,
+	)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if result.OperationID != fixture.plan.Operation.ID ||
+		result.Operation != helper.OperationReleaseTrust ||
+		result.PolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint ||
+		result.AuthorityFingerprint != fixture.plan.Root.Fingerprint {
+		t.Fatalf("Issue() result = %#v", result)
+	}
+	if fixture.publisher.ticket.Operation != helper.OperationReleaseTrust ||
+		fixture.publisher.ticket.NetworkPolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint ||
+		fixture.publisher.ticket.TrustRoot == nil ||
+		fixture.publisher.ticket.TrustRoot.Fingerprint != fixture.plan.Root.Fingerprint {
+		t.Fatalf("published release ticket = %#v", fixture.publisher.ticket)
+	}
+}
+
 // TestTrustServiceRejectsEveryAuthorityFailure keeps publication behind each independent trust boundary.
 func TestTrustServiceRejectsEveryAuthorityFailure(t *testing.T) {
 	cause := errors.New("scripted authority failure")
@@ -354,8 +600,20 @@ func TestTrustServiceRejectsEveryAuthorityFailure(t *testing.T) {
 		mutate        func(*trustIssuerFixture)
 	}{
 		{name: "plan read", want: "resolve approval plan", wantCause: true, mutate: func(fixture *trustIssuerFixture) { fixture.plans.errors = []error{cause} }},
-		{name: "invalid plan", want: "invalid approval plan", mutate: func(fixture *trustIssuerFixture) { fixture.plans.plans[0].OperationState = domain.OperationRunning }},
-		{name: "wrong plan operation", want: "does not match requested operation", mutate: func(fixture *trustIssuerFixture) { fixture.plans.plans[0].OperationID = "operation-other" }},
+		{
+			name: "invalid plan",
+			want: "invalid approval plan",
+			mutate: func(fixture *trustIssuerFixture) {
+				fixture.plans.plans[0].Operation.State = domain.OperationRunning
+			},
+		},
+		{
+			name: "wrong plan operation",
+			want: "does not match requested operation",
+			mutate: func(fixture *trustIssuerFixture) {
+				fixture.plans.plans[0].Operation.ID = "operation-other"
+			},
+		},
 		{name: "ownership read", want: "observe ownership projection", wantCause: true, mutate: func(fixture *trustIssuerFixture) { fixture.ownership.errors = []error{cause} }},
 		{name: "ownership absent", want: "ownership projection is absent", mutate: func(fixture *trustIssuerFixture) { fixture.ownership.observations = []ownership.Observation{{}} }},
 		{name: "ownership record", want: "differs from the approved target", mutate: func(fixture *trustIssuerFixture) {
@@ -484,7 +742,7 @@ func TestTrustServiceObserveTrustPinsCompleteRequestAndSafeStates(t *testing.T) 
 			if test.observeErr != nil {
 				fixture.observer.errors = []error{test.observeErr}
 			}
-			fingerprint, err := fixture.service.observeTrust(t.Context(), request)
+			fingerprint, err := fixture.service.observeTrust(t.Context(), request, TrustPlanPurposeDataPlaneSetup)
 			if test.want == "" {
 				if err != nil || !canonicalSHA256Fingerprint(fingerprint) {
 					t.Fatalf("observeTrust() = %q, %v", fingerprint, err)
@@ -580,7 +838,7 @@ func TestTrustServicePreservesOnlyCorrelatedDurabilityUncertainty(t *testing.T) 
 			!errors.Is(err, cause) {
 			t.Fatalf("Issue() error = %v, want trust and spool durability classifications", err)
 		}
-		if result.Reference != fixture.publisher.reference || result.OperationID != fixture.plan.OperationID {
+		if result.Reference != fixture.publisher.reference || result.OperationID != fixture.plan.Operation.ID {
 			t.Fatalf("Issue() result = %#v", result)
 		}
 		if err := result.Validate(fixture.now); err != nil {
@@ -1034,14 +1292,44 @@ func newTrustIssuerFixture(t *testing.T) *trustIssuerFixture {
 		NetworkPolicyFingerprint: policyFingerprint,
 		TicketVerifierKey:        base64.StdEncoding.EncodeToString(public),
 	}
+	queued, err := domain.NewOperation(
+		"operation-trust-setup",
+		"intent-trust-setup",
+		domain.OperationKindNetworkDataPlaneSetup,
+		"",
+		now,
+	)
+	if err != nil {
+		t.Fatalf("NewOperation() error = %v", err)
+	}
+	running, err := queued.Transition(
+		domain.OperationRunning,
+		"preparing trust",
+		now.Add(time.Second),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Transition(running) error = %v", err)
+	}
+	approval, err := running.Transition(
+		domain.OperationRequiresApproval,
+		string(TrustCheckpointPhaseSetupApproval),
+		now.Add(2*time.Second),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Transition(requires approval) error = %v", err)
+	}
 	plan := TrustPlan{
-		OperationID:       "operation-trust-setup",
-		OperationRevision: 4,
-		OperationState:    domain.OperationRequiresApproval,
-		Mutation:          helper.OperationEnsureTrust,
-		TargetOwnership:   target,
-		Policy:            policy,
-		Root:              root,
+		Purpose:            TrustPlanPurposeDataPlaneSetup,
+		Operation:          approval,
+		OperationRevision:  4,
+		CheckpointRevision: 0,
+		CheckpointPhase:    TrustCheckpointPhaseSetupApproval,
+		Mutation:           helper.OperationEnsureTrust,
+		TargetOwnership:    target,
+		Policy:             policy,
+		Root:               root,
 	}
 	request, err := platformtrust.NewRequestForRequester(target.InstallationID, target.OwnerIdentity, policy.Mechanisms.Trust, root)
 	if err != nil {
@@ -1067,9 +1355,11 @@ func newTrustIssuerFixture(t *testing.T) *trustIssuerFixture {
 		bytes.NewReader(bytes.Repeat([]byte{0x5a}, ticketNonceBytes*4)),
 	)
 	return &trustIssuerFixture{
-		now:         now,
-		plan:        cloneTrustPlan(plan),
-		request:     TrustRequest{OperationID: plan.OperationID},
+		now:  now,
+		plan: cloneTrustPlan(plan),
+		request: TrustRequest{
+			OperationID: plan.Operation.ID,
+		},
 		private:     private,
 		plans:       plans,
 		ownership:   ownershipObserver,
@@ -1078,6 +1368,41 @@ func newTrustIssuerFixture(t *testing.T) *trustIssuerFixture {
 		observer:    observer,
 		service:     service,
 		observation: observation,
+	}
+}
+
+// validGlobalReleaseTrustPlan derives one exact release-trust plan from setup-owned policy and root fixtures.
+func validGlobalReleaseTrustPlan(t *testing.T, setup TrustPlan) TrustPlan {
+	t.Helper()
+	queued, err := domain.NewOperation(
+		"operation-trust-release",
+		"intent-trust-release",
+		domain.OperationKindNetworkRelease,
+		"",
+		setup.Operation.RequestedAt,
+	)
+	if err != nil {
+		t.Fatalf("NewOperation() error = %v", err)
+	}
+	running, err := queued.Transition(
+		domain.OperationRunning,
+		"releasing network runtime",
+		setup.Operation.RequestedAt.Add(time.Second),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Transition(running) error = %v", err)
+	}
+	return TrustPlan{
+		Purpose:            TrustPlanPurposeGlobalNetworkRelease,
+		Operation:          running,
+		OperationRevision:  setup.OperationRevision,
+		CheckpointRevision: 7,
+		CheckpointPhase:    TrustCheckpointPhaseGlobalRelease,
+		Mutation:           helper.OperationReleaseTrust,
+		TargetOwnership:    setup.TargetOwnership,
+		Policy:             setup.Policy,
+		Root:               setup.Root,
 	}
 }
 

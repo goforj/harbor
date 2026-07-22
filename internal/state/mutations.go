@@ -71,6 +71,16 @@ func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseResolverAdvanc
 	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
 }
 
+// mutateGlobalNetworkReleaseTrustAdvance admits the sole receipt mutation that advances an active release beyond trust teardown.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseTrustAdvance(
+	ctx context.Context,
+	scope string,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
+	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
+}
+
 // mutateWithAdmission serializes a mutation and runs its admission proof in the same immediate transaction.
 func (coordinator *MutationCoordinator) mutateWithAdmission(
 	ctx context.Context,

@@ -175,7 +175,17 @@ func (source *NetworkDataPlaneTrustPlanSource) resolve(ctx context.Context, oper
 		if projection.Stage != NetworkStageResolver {
 			return corruptNetworkDataPlaneSetupPlan(operationID, fmt.Errorf("current network stage is %q, expected resolver", projection.Stage))
 		}
-		result = ticketissuer.TrustPlan{OperationID: operation.Operation.ID, OperationRevision: operation.Revision, OperationState: operation.Operation.State, Mutation: helper.OperationEnsureTrust, TargetOwnership: projection.ConfirmedOwnership.Record, Policy: policy, Root: root}
+		result = ticketissuer.TrustPlan{
+			Purpose:            ticketissuer.TrustPlanPurposeDataPlaneSetup,
+			Operation:          operation.Operation,
+			OperationRevision:  operation.Revision,
+			CheckpointRevision: 0,
+			CheckpointPhase:    ticketissuer.TrustCheckpointPhaseSetupApproval,
+			Mutation:           helper.OperationEnsureTrust,
+			TargetOwnership:    projection.ConfirmedOwnership.Record,
+			Policy:             policy,
+			Root:               root,
+		}
 		if err := result.Validate(); err != nil {
 			return corruptNetworkDataPlaneSetupPlan(operationID, err)
 		}

@@ -34,7 +34,14 @@ func TestNetworkDataPlanePlanSourcesResolveExactLifecycleAuthority(t *testing.T)
 	if err := trustPlan.Validate(); err != nil {
 		t.Fatalf("trust plan Validate(): %v", err)
 	}
-	if trustPlan.OperationID != fixture.stage.Operation.ID || trustPlan.OperationRevision == 0 || trustPlan.Mutation != helper.OperationEnsureTrust || trustPlan.TargetOwnership != fixture.stage.Projection.ConfirmedOwnership.Record || trustPlan.Policy != fixture.stage.Policy {
+	if trustPlan.Purpose != ticketissuer.TrustPlanPurposeDataPlaneSetup ||
+		trustPlan.Operation.ID != fixture.stage.Operation.ID ||
+		trustPlan.OperationRevision == 0 ||
+		trustPlan.CheckpointRevision != 0 ||
+		trustPlan.CheckpointPhase != ticketissuer.TrustCheckpointPhaseSetupApproval ||
+		trustPlan.Mutation != helper.OperationEnsureTrust ||
+		trustPlan.TargetOwnership != fixture.stage.Projection.ConfirmedOwnership.Record ||
+		trustPlan.Policy != fixture.stage.Policy {
 		t.Fatalf("trust plan = %#v, want exact current authority", trustPlan)
 	}
 	trustPlan.Root.CertificatePEM[0] ^= 1

@@ -368,7 +368,7 @@ func (ticket TrustLaunchTicket) validateStructure() error {
 	if err := ticket.reference.Validate(); err != nil {
 		return fmt.Errorf("trust launch ticket reference: %w", err)
 	}
-	if ticket.operation != helper.OperationEnsureTrust {
+	if ticket.operation != helper.OperationEnsureTrust && ticket.operation != helper.OperationReleaseTrust {
 		return fmt.Errorf("trust launch ticket helper operation %q is unsupported", ticket.operation)
 	}
 	for _, value := range []string{ticket.policyFingerprint, ticket.ownershipFingerprint, ticket.authorityFingerprint} {
