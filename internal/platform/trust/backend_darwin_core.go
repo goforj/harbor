@@ -11,14 +11,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
+var darwinAdministratorTrustMutationMutex sync.Mutex
+
 const (
-	darwinTrustNativeIDPrefix = "darwin-user-trust-"
-	darwinTrustOwnerPrefix    = "v1|"
+	darwinUserTrustNativeIDPrefix  = "darwin-user-trust-"
+	darwinAdminTrustNativeIDPrefix = "darwin-admin-trust-"
+	darwinTrustOwnerPrefix         = "v1|"
 )
 
 // darwinTrustEntry is the bounded native certificate fact used by the portable trust adapter.
@@ -27,9 +31,9 @@ type darwinTrustEntry struct {
 	NativeExact    bool
 }
 
-// darwinTrustNative confines Security.framework effects to the current user's trust domain.
+// darwinTrustNative confines Security.framework effects to the selected trust domain.
 type darwinTrustNative interface {
-	snapshot(context.Context) ([]darwinTrustEntry, error)
+	snapshot(context.Context, Request) ([]darwinTrustEntry, error)
 	ensure(context.Context, Request) error
 	release(context.Context, Request) error
 	ownerExists(context.Context, Request) (bool, error)
@@ -48,12 +52,12 @@ func newDarwinTrustBackend(native darwinTrustNative) backend {
 	return &darwinTrustBackend{native: native}
 }
 
-// observe converts one complete current-user trust snapshot into canonical facts.
+// observe converts one complete Darwin trust snapshot into canonical facts.
 func (backend *darwinTrustBackend) observe(ctx context.Context, request Request) (Observation, error) {
 	if err := validateDarwinTrustRequest(request); err != nil {
 		return Observation{}, err
 	}
-	entries, err := backend.native.snapshot(ctx)
+	entries, err := backend.native.snapshot(ctx, request)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -75,13 +79,13 @@ func (backend *darwinTrustBackend) observe(ctx context.Context, request Request)
 		}
 		fingerprint := sha256.Sum256(certificate)
 		fingerprintText := hex.EncodeToString(fingerprint[:])
-		nativeID := darwinTrustNativeIDPrefix + fingerprintText + "-" + strconv.Itoa(index)
+		nativeID := darwinTrustNativeIDPrefix(request.Mechanism()) + fingerprintText + "-" + strconv.Itoa(index)
 		fact := Entry{
 			Mechanism:              request.Mechanism(),
 			NativeID:               nativeID,
 			CertificateFingerprint: fingerprintText,
 			NativeExact:            entry.NativeExact,
-			NativeAttributesSHA256: darwinTrustAttributesFingerprint(entry.NativeExact),
+			NativeAttributesSHA256: darwinTrustAttributesFingerprint(request.Mechanism(), entry.NativeExact),
 		}
 		if owned && fingerprintText == request.AuthorityFingerprint() {
 			marker := request.OwnerMarker()
@@ -92,7 +96,7 @@ func (backend *darwinTrustBackend) observe(ctx context.Context, request Request)
 	return observation, nil
 }
 
-// ensure applies one exact current-user trust projection after the portable adapter admits the native observation.
+// ensure applies one exact Darwin trust projection after the portable adapter admits the native observation.
 func (backend *darwinTrustBackend) ensure(ctx context.Context, request Request, before Observation) error {
 	if err := validateDarwinTrustRequest(request); err != nil {
 		return err
@@ -103,10 +107,16 @@ func (backend *darwinTrustBackend) ensure(ctx context.Context, request Request, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
+		if !darwinAdministratorTrustMutationMutex.TryLock() {
+			return fmt.Errorf("administrator trust mutation is busy; retry the one-shot helper")
+		}
+		defer darwinAdministratorTrustMutationMutex.Unlock()
+	}
 	return backend.native.ensure(ctx, request)
 }
 
-// release removes only the exact current-user trust projection admitted by the portable adapter.
+// release removes only the exact Darwin trust projection admitted by the portable adapter.
 func (backend *darwinTrustBackend) release(ctx context.Context, request Request, before Observation) error {
 	if err := validateDarwinTrustRequest(request); err != nil {
 		return err
@@ -124,18 +134,26 @@ func (backend *darwinTrustBackend) release(ctx context.Context, request Request,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
+		if !darwinAdministratorTrustMutationMutex.TryLock() {
+			return fmt.Errorf("administrator trust mutation is busy; retry the one-shot helper")
+		}
+		defer darwinAdministratorTrustMutationMutex.Unlock()
+	}
 	return backend.native.release(ctx, request)
 }
 
-// validateDarwinTrustRequest keeps this backend on the user-scoped macOS trust mechanism.
+// validateDarwinTrustRequest confines this backend to the macOS trust mechanisms.
 func validateDarwinTrustRequest(request Request) error {
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	if request.Mechanism() != networkpolicy.DarwinCurrentUserTrust {
+	switch request.Mechanism() {
+	case networkpolicy.DarwinCurrentUserTrust, networkpolicy.DarwinAdministratorTrust:
+		return nil
+	default:
 		return fmt.Errorf("Darwin trust backend rejected mechanism %q", request.Mechanism())
 	}
-	return nil
 }
 
 // parseDarwinTrustCertificate bounds native certificate bytes before hashing the Security.framework representation.
@@ -156,18 +174,44 @@ func darwinRootDER(certificatePEM []byte) ([]byte, error) {
 }
 
 // darwinTrustAttributesFingerprint binds exactness to the reviewed Security.framework trust-settings shape.
-func darwinTrustAttributesFingerprint(exact bool) string {
+func darwinTrustAttributesFingerprint(mechanism networkpolicy.TrustMechanism, exact bool) string {
 	shape := "drifted"
 	if exact {
 		shape = "exact"
 	}
-	digest := sha256.Sum256([]byte("goforj.harbor.darwin-user-trust.v1|" + shape))
+	namespace := "goforj.harbor.darwin-user-trust.v1|"
+	if mechanism == networkpolicy.DarwinAdministratorTrust {
+		namespace = "goforj.harbor.darwin-admin-trust.v1|"
+	}
+	digest := sha256.Sum256([]byte(namespace + shape))
 	return hex.EncodeToString(digest[:])
+}
+
+// darwinTrustNativeIDPrefix keeps native facts from distinct Security.framework domains disjoint.
+func darwinTrustNativeIDPrefix(mechanism networkpolicy.TrustMechanism) string {
+	if mechanism == networkpolicy.DarwinAdministratorTrust {
+		return darwinAdminTrustNativeIDPrefix
+	}
+	return darwinUserTrustNativeIDPrefix
 }
 
 // darwinTrustOwnerAccount derives a bounded generic-keychain account without allowing caller-selected service names.
 func darwinTrustOwnerAccount(request Request) string {
+	if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
+		return darwinAdministratorTrustOwnerAccount(request)
+	}
 	return darwinTrustOwnerPrefix + request.InstallationID() + "|" + request.RequesterIdentity() + "|" + string(request.Mechanism()) + "|" + request.AuthorityFingerprint()
+}
+
+// darwinAdministratorTrustOwnerAccount makes one administrator marker unique to an authority instead of a requester.
+func darwinAdministratorTrustOwnerAccount(request Request) string {
+	return darwinTrustOwnerPrefix + string(request.Mechanism()) + "|" + request.AuthorityFingerprint()
+}
+
+// darwinAdministratorTrustOwnerAttribute preserves the complete canonical owner marker in an unencrypted keychain attribute.
+func darwinAdministratorTrustOwnerAttribute(request Request) string {
+	marker := request.OwnerMarker()
+	return strconv.FormatUint(uint64(marker.Version), 10) + "|" + marker.InstallationID + "|" + marker.RequesterIdentity + "|" + string(marker.Mechanism) + "|" + marker.AuthorityFingerprint
 }
 
 // validateDarwinTrustOwnerAccount keeps the marker identity within the native keychain API's bounded text shape.
@@ -179,6 +223,20 @@ func validateDarwinTrustOwnerAccount(request Request) error {
 	return nil
 }
 
+// validateDarwinAdministratorTrustOwnerAttribute keeps the administrator owner claim bounded before it reaches Security.framework.
+func validateDarwinAdministratorTrustOwnerAttribute(request Request) error {
+	attribute := darwinAdministratorTrustOwnerAttribute(request)
+	if len(attribute) == 0 || len(attribute) > maximumNativeIDLength || strings.TrimSpace(attribute) != attribute || !utf8.ValidString(attribute) {
+		return fmt.Errorf("Darwin administrator trust owner attribute is invalid")
+	}
+	return nil
+}
+
+// darwinAdministratorMarkerCleanupRequired preserves an already-owned marker when only this invocation's new claim can be rolled back safely.
+func darwinAdministratorMarkerCleanupRequired(createdMarker bool) bool {
+	return createdMarker
+}
+
 // currentDarwinRequesterUID returns the process identity used by the current-user trust domain.
 func currentDarwinRequesterUID() string {
 	return strconv.Itoa(os.Getuid())
@@ -186,6 +244,9 @@ func currentDarwinRequesterUID() string {
 
 // validateDarwinTrustRequester prevents an elevated helper from silently mutating the wrong user's keychain.
 func validateDarwinTrustRequester(request Request) error {
+	if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
+		return nil
+	}
 	if request.RequesterIdentity() == "" {
 		return nil
 	}
