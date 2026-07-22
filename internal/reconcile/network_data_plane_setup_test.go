@@ -239,7 +239,25 @@ func networkDataPlaneSetupTestLowPortPlan(t *testing.T) ticketissuer.LowPortPlan
 		t.Fatal(err)
 	}
 	started := time.Now().UTC()
-	return ticketissuer.LowPortPlan{Operation: domain.Operation{ID: "operation-data-plane", IntentID: "intent-data-plane", Kind: domain.OperationKindNetworkDataPlaneSetup, State: domain.OperationRequiresApproval, Phase: networkDataPlaneSetupLowPortApprovalPhase, RequestedAt: started, StartedAt: &started}, OperationRevision: 41, Mutation: helper.OperationEnsureLowPorts, TargetOwnership: trust.TargetOwnership, Policy: trust.Policy, NativeRequest: request}
+	return ticketissuer.LowPortPlan{
+		Purpose: ticketissuer.LowPortPlanPurposeDataPlaneSetup,
+		Operation: domain.Operation{
+			ID:          "operation-data-plane",
+			IntentID:    "intent-data-plane",
+			Kind:        domain.OperationKindNetworkDataPlaneSetup,
+			State:       domain.OperationRequiresApproval,
+			Phase:       networkDataPlaneSetupLowPortApprovalPhase,
+			RequestedAt: started,
+			StartedAt:   &started,
+		},
+		OperationRevision:  41,
+		CheckpointRevision: 0,
+		CheckpointPhase:    ticketissuer.LowPortCheckpointPhaseSetupApproval,
+		Mutation:           helper.OperationEnsureLowPorts,
+		TargetOwnership:    trust.TargetOwnership,
+		Policy:             trust.Policy,
+		NativeRequest:      request,
+	}
 }
 
 // mustAddrPort parses a fixture listener address.

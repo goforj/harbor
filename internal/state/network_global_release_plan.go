@@ -67,11 +67,16 @@ type GlobalNetworkReleasePlanRecord struct {
 	NetworkRevision    domain.Sequence
 	NetworkUpdatedAt   time.Time
 	Authority          GlobalNetworkReleaseAuthority
+	LowPortReceipt     *GlobalNetworkReleaseLowPortReceipt
 }
 
 // Clone returns a copy whose retained authority bytes and slices cannot be modified by the caller.
 func (record GlobalNetworkReleasePlanRecord) Clone() GlobalNetworkReleasePlanRecord {
 	record.Authority = record.Authority.Clone()
+	if record.LowPortReceipt != nil {
+		receipt := *record.LowPortReceipt
+		record.LowPortReceipt = &receipt
+	}
 	return record
 }
 
@@ -225,6 +230,11 @@ func validateActiveGlobalNetworkReleasePlan(
 	if err := validateGlobalNetworkReleaseCheckpoint(tx, plan, highWater); err != nil {
 		return GlobalNetworkReleasePlanRecord{}, err
 	}
+	receipt, err := validateGlobalNetworkReleaseLowPortReceipt(tx, plan)
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, err
+	}
+	plan.LowPortReceipt = receipt
 	if err := requireCurrentGlobalNetworkReleaseAuthority(tx, plan.Authority); err != nil {
 		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current network authority: %w", err))
 	}

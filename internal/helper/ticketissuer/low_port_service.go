@@ -36,35 +36,65 @@ func (request LowPortRequest) Validate() error {
 	return request.OperationID.Validate()
 }
 
-// LowPortPlan is the complete durable and native authority approved for one low-port mutation.
-type LowPortPlan struct {
-	Operation         domain.Operation
-	OperationRevision domain.Sequence
-	Mutation          helper.Operation
-	TargetOwnership   ownership.Record
-	Policy            networkpolicy.Policy
-	NativeRequest     lowport.Request
+// LowPortPlanPurpose identifies the lifecycle that granted a low-port mutation.
+type LowPortPlanPurpose string
+
+const (
+	// LowPortPlanPurposeDataPlaneSetup permits the setup lifecycle to ensure low-port integration.
+	LowPortPlanPurposeDataPlaneSetup LowPortPlanPurpose = "network_data_plane_setup"
+	// LowPortPlanPurposeGlobalNetworkRelease permits the global release lifecycle to remove low-port integration.
+	LowPortPlanPurposeGlobalNetworkRelease LowPortPlanPurpose = "global_network_release"
+)
+
+// LowPortCheckpointPhase identifies the durable checkpoint that fences low-port ticket publication.
+type LowPortCheckpointPhase string
+
+const (
+	// LowPortCheckpointPhaseSetupApproval identifies the setup approval checkpoint before low-port installation.
+	LowPortCheckpointPhaseSetupApproval LowPortCheckpointPhase = "awaiting low-port approval"
+	// LowPortCheckpointPhaseGlobalRelease identifies the global release checkpoint after runtime retirement.
+	LowPortCheckpointPhaseGlobalRelease LowPortCheckpointPhase = "low_ports"
+)
+
+// Validate rejects lifecycle purposes that have no narrow low-port admission contract.
+func (purpose LowPortPlanPurpose) Validate() error {
+	switch purpose {
+	case LowPortPlanPurposeDataPlaneSetup, LowPortPlanPurposeGlobalNetworkRelease:
+		return nil
+	default:
+		return fmt.Errorf("low-port approval purpose %q is unsupported", purpose)
+	}
 }
 
-// Validate rejects plans that do not describe one exact global data-plane approval.
+// LowPortPlan is the complete durable and native authority approved for one low-port mutation.
+type LowPortPlan struct {
+	Purpose            LowPortPlanPurpose
+	Operation          domain.Operation
+	OperationRevision  domain.Sequence
+	CheckpointRevision domain.Sequence
+	CheckpointPhase    LowPortCheckpointPhase
+	Mutation           helper.Operation
+	TargetOwnership    ownership.Record
+	Policy             networkpolicy.Policy
+	NativeRequest      lowport.Request
+}
+
+// Validate rejects plans that do not describe one exact low-port lifecycle authority.
 func (plan LowPortPlan) Validate() error {
 	if err := plan.Operation.Validate(); err != nil {
 		return fmt.Errorf("low-port approval operation: %w", err)
 	}
-	if plan.Operation.Kind != domain.OperationKindNetworkDataPlaneSetup {
-		return fmt.Errorf("low-port approval operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkDataPlaneSetup)
-	}
 	if plan.Operation.ProjectID != "" {
 		return errors.New("low-port approval operation must be global")
-	}
-	if plan.Operation.State != domain.OperationRequiresApproval {
-		return fmt.Errorf("low-port approval operation state is %q, want %q", plan.Operation.State, domain.OperationRequiresApproval)
 	}
 	if plan.OperationRevision == 0 || plan.OperationRevision > domain.MaximumSequence {
 		return fmt.Errorf("low-port approval operation revision must be between 1 and %d", domain.MaximumSequence)
 	}
-	if plan.Mutation != helper.OperationEnsureLowPorts && plan.Mutation != helper.OperationReleaseLowPorts {
-		return fmt.Errorf("low-port approval mutation %q is not allowlisted", plan.Mutation)
+	if err := plan.Purpose.Validate(); err != nil {
+		return err
+	}
+	if err := validateLowPortPlanLifecycle(plan); err != nil {
+		return err
 	}
 	if err := plan.TargetOwnership.Validate(); err != nil {
 		return fmt.Errorf("low-port approval target ownership: %w", err)
@@ -95,6 +125,51 @@ func (plan LowPortPlan) Validate() error {
 	}
 	if plan.NativeRequest != derived {
 		return errors.New("low-port approval native request does not match policy-bound ownership")
+	}
+	return nil
+}
+
+// validateLowPortPlanLifecycle keeps setup and release authority disjoint despite sharing native request validation.
+func validateLowPortPlanLifecycle(plan LowPortPlan) error {
+	switch plan.Purpose {
+	case LowPortPlanPurposeDataPlaneSetup:
+		if plan.CheckpointRevision != 0 {
+			return fmt.Errorf("low-port setup checkpoint revision is %d, want 0", plan.CheckpointRevision)
+		}
+		if plan.CheckpointPhase != LowPortCheckpointPhaseSetupApproval {
+			return fmt.Errorf("low-port setup checkpoint phase is %q, want %q", plan.CheckpointPhase, LowPortCheckpointPhaseSetupApproval)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkDataPlaneSetup {
+			return fmt.Errorf("low-port setup operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkDataPlaneSetup)
+		}
+		if plan.Operation.State != domain.OperationRequiresApproval {
+			return fmt.Errorf("low-port setup operation state is %q, want %q", plan.Operation.State, domain.OperationRequiresApproval)
+		}
+		if plan.Operation.Phase != string(LowPortCheckpointPhaseSetupApproval) {
+			return fmt.Errorf("low-port setup operation phase is %q, want %q", plan.Operation.Phase, LowPortCheckpointPhaseSetupApproval)
+		}
+		if plan.Mutation != helper.OperationEnsureLowPorts {
+			return fmt.Errorf("low-port setup mutation is %q, want %q", plan.Mutation, helper.OperationEnsureLowPorts)
+		}
+	case LowPortPlanPurposeGlobalNetworkRelease:
+		if plan.CheckpointRevision == 0 || plan.CheckpointRevision > domain.MaximumSequence {
+			return fmt.Errorf("low-port release checkpoint revision must be between 1 and %d", domain.MaximumSequence)
+		}
+		if plan.CheckpointPhase != LowPortCheckpointPhaseGlobalRelease {
+			return fmt.Errorf("low-port release checkpoint phase is %q, want %q", plan.CheckpointPhase, LowPortCheckpointPhaseGlobalRelease)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkRelease {
+			return fmt.Errorf("low-port release operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkRelease)
+		}
+		if plan.Operation.State != domain.OperationRunning {
+			return fmt.Errorf("low-port release operation state is %q, want %q", plan.Operation.State, domain.OperationRunning)
+		}
+		if plan.Operation.Phase != "releasing network runtime" {
+			return fmt.Errorf("low-port release operation phase is %q, want %q", plan.Operation.Phase, "releasing network runtime")
+		}
+		if plan.Mutation != helper.OperationReleaseLowPorts {
+			return fmt.Errorf("low-port release mutation is %q, want %q", plan.Mutation, helper.OperationReleaseLowPorts)
+		}
 	}
 	return nil
 }
@@ -572,7 +647,10 @@ func cloneLowPortOperation(operation domain.Operation) domain.Operation {
 // sameLowPortPlan compares every durable, policy, ownership, and native request field.
 func sameLowPortPlan(left LowPortPlan, right LowPortPlan) bool {
 	return sameLowPortOperation(left.Operation, right.Operation) &&
+		left.Purpose == right.Purpose &&
 		left.OperationRevision == right.OperationRevision &&
+		left.CheckpointRevision == right.CheckpointRevision &&
+		left.CheckpointPhase == right.CheckpointPhase &&
 		left.Mutation == right.Mutation &&
 		left.TargetOwnership == right.TargetOwnership &&
 		left.Policy == right.Policy &&

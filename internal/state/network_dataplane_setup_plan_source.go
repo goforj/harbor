@@ -97,7 +97,17 @@ func (source *NetworkDataPlaneLowPortPlanSource) Resolve(ctx context.Context, re
 		if err != nil {
 			return corruptNetworkDataPlaneSetupPlan(request.OperationID, fmt.Errorf("derive low-port request: %w", err))
 		}
-		result = ticketissuer.LowPortPlan{Operation: plan.Operation.Operation, OperationRevision: plan.Operation.Revision, Mutation: helper.OperationEnsureLowPorts, TargetOwnership: plan.Authority.Projection.ConfirmedOwnership.Record, Policy: plan.Authority.Policy, NativeRequest: native}
+		result = ticketissuer.LowPortPlan{
+			Purpose:            ticketissuer.LowPortPlanPurposeDataPlaneSetup,
+			Operation:          plan.Operation.Operation,
+			OperationRevision:  plan.Operation.Revision,
+			CheckpointRevision: 0,
+			CheckpointPhase:    ticketissuer.LowPortCheckpointPhaseSetupApproval,
+			Mutation:           helper.OperationEnsureLowPorts,
+			TargetOwnership:    plan.Authority.Projection.ConfirmedOwnership.Record,
+			Policy:             plan.Authority.Policy,
+			NativeRequest:      native,
+		}
 		if err := result.Validate(); err != nil {
 			return corruptNetworkDataPlaneSetupPlan(request.OperationID, err)
 		}

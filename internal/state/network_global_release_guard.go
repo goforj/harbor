@@ -169,6 +169,9 @@ func requireNoGlobalNetworkReleasePlan(tx *gorm.DB, action string) error {
 	if err := validateGlobalNetworkReleaseCheckpoint(tx, plan, highWater); err != nil {
 		return err
 	}
+	if _, err := validateGlobalNetworkReleaseLowPortReceipt(tx, plan); err != nil {
+		return err
+	}
 	return &GlobalNetworkReleaseActiveError{
 		OperationID: operation.Operation.ID,
 		State:       operation.Operation.State,
@@ -218,6 +221,9 @@ func validateGlobalNetworkReleaseMutationOwner(
 		return err
 	}
 	if err := validateGlobalNetworkReleaseCheckpoint(tx, plan, highWater); err != nil {
+		return err
+	}
+	if _, err := validateGlobalNetworkReleaseLowPortReceipt(tx, plan); err != nil {
 		return err
 	}
 	if plan.Phase != phase {

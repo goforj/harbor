@@ -51,6 +51,16 @@ func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseRuntimeAdvance
 	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
 }
 
+// mutateGlobalNetworkReleaseLowPortAdvance admits the sole receipt mutation that advances an active release beyond low ports.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseLowPortAdvance(
+	ctx context.Context,
+	scope string,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
+	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
+}
+
 // mutateWithAdmission serializes a mutation and runs its admission proof in the same immediate transaction.
 func (coordinator *MutationCoordinator) mutateWithAdmission(
 	ctx context.Context,

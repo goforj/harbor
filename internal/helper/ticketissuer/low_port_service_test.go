@@ -198,9 +198,36 @@ func TestLowPortPlanValidateRejectsEveryAuthorityDimension(t *testing.T) {
 		{name: "kind", want: "operation kind", mutate: func(plan *LowPortPlan) { plan.Operation.Kind = domain.OperationKindNetworkResolverSetup }},
 		{name: "project scope", want: "must not identify a project", mutate: func(plan *LowPortPlan) { plan.Operation.ProjectID = "project-low-port" }},
 		{name: "state", want: "operation state", mutate: func(plan *LowPortPlan) { plan.Operation.State = domain.OperationRunning }},
+		{
+			name: "purpose",
+			want: "purpose",
+			mutate: func(plan *LowPortPlan) {
+				plan.Purpose = "other"
+			},
+		},
+		{
+			name: "setup checkpoint",
+			want: "checkpoint revision",
+			mutate: func(plan *LowPortPlan) {
+				plan.CheckpointRevision = 1
+			},
+		},
+		{
+			name: "setup checkpoint phase",
+			want: "checkpoint phase",
+			mutate: func(plan *LowPortPlan) {
+				plan.CheckpointPhase = LowPortCheckpointPhaseGlobalRelease
+			},
+		},
 		{name: "revision zero", want: "operation revision", mutate: func(plan *LowPortPlan) { plan.OperationRevision = 0 }},
 		{name: "revision overflow", want: "operation revision", mutate: func(plan *LowPortPlan) { plan.OperationRevision = domain.MaximumSequence + 1 }},
-		{name: "mutation", want: "not allowlisted", mutate: func(plan *LowPortPlan) { plan.Mutation = helper.OperationEnsureResolver }},
+		{
+			name: "mutation",
+			want: "setup mutation",
+			mutate: func(plan *LowPortPlan) {
+				plan.Mutation = helper.OperationEnsureResolver
+			},
+		},
 		{name: "ownership", want: "target ownership", mutate: func(plan *LowPortPlan) { plan.TargetOwnership.InstallationID = "" }},
 		{name: "ownership schema", want: "schema is 1", mutate: func(plan *LowPortPlan) {
 			plan.TargetOwnership.SchemaVersion = ownership.IdentitySchemaVersion
@@ -232,6 +259,82 @@ func TestLowPortPlanValidateRejectsEveryAuthorityDimension(t *testing.T) {
 	}
 	if err := fixture.plan.Validate(); err != nil {
 		t.Fatalf("valid LowPortPlan.Validate() error = %v", err)
+	}
+}
+
+// TestLowPortPlanValidateSeparatesSetupAndReleaseAuthority prevents lifecycle records from exchanging mutations.
+func TestLowPortPlanValidateSeparatesSetupAndReleaseAuthority(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutation helper.Operation
+		mutate   func(*LowPortPlan)
+		want     string
+	}{
+		{
+			name:     "setup release mutation",
+			mutation: helper.OperationEnsureLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.Mutation = helper.OperationReleaseLowPorts
+			},
+			want: "setup mutation",
+		},
+		{
+			name:     "release ensure mutation",
+			mutation: helper.OperationReleaseLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.Mutation = helper.OperationEnsureLowPorts
+			},
+			want: "release mutation",
+		},
+		{
+			name:     "release operation kind",
+			mutation: helper.OperationReleaseLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.Operation.Kind = domain.OperationKindNetworkDataPlaneSetup
+			},
+			want: "release operation kind",
+		},
+		{
+			name:     "release operation state",
+			mutation: helper.OperationReleaseLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.Operation.State = domain.OperationRequiresApproval
+			},
+			want: "release operation state",
+		},
+		{
+			name:     "release checkpoint",
+			mutation: helper.OperationReleaseLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.CheckpointRevision = 0
+			},
+			want: "release checkpoint revision",
+		},
+		{
+			name:     "release checkpoint phase",
+			mutation: helper.OperationReleaseLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.CheckpointPhase = LowPortCheckpointPhaseSetupApproval
+			},
+			want: "release checkpoint phase",
+		},
+		{
+			name:     "release operation phase",
+			mutation: helper.OperationReleaseLowPorts,
+			mutate: func(plan *LowPortPlan) {
+				plan.Operation.Phase = "other"
+			},
+			want: "release operation phase",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := newLowPortIssuerFixture(t, test.mutation).plan
+			test.mutate(&plan)
+			if err := plan.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LowPortPlan.Validate() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -301,6 +404,9 @@ func TestSameLowPortPlanPinsEveryField(t *testing.T) {
 			plan.Operation.Problem = &domain.Problem{Code: "other", Message: "other", Retryable: true}
 		},
 		func(plan *LowPortPlan) { plan.OperationRevision++ },
+		func(plan *LowPortPlan) { plan.CheckpointRevision++ },
+		func(plan *LowPortPlan) { plan.CheckpointPhase = LowPortCheckpointPhaseGlobalRelease },
+		func(plan *LowPortPlan) { plan.Purpose = LowPortPlanPurposeGlobalNetworkRelease },
 		func(plan *LowPortPlan) { plan.Mutation = helper.OperationReleaseLowPorts },
 		func(plan *LowPortPlan) { plan.TargetOwnership.Generation++ },
 		func(plan *LowPortPlan) { plan.Policy.AuthorityFingerprint = strings.Repeat("b", 64) },
@@ -474,7 +580,7 @@ func TestLowPortServiceRevalidatesCompleteAuthority(t *testing.T) {
 		}},
 		{name: "plan changed", want: "approval plan changed", mutate: func(fixture *lowPortIssuerFixture) {
 			changed := cloneLowPortPlan(fixture.plan)
-			changed.Operation.Phase = "different approval phase"
+			changed.Operation.RequestedAt = changed.Operation.RequestedAt.Add(time.Second)
 			fixture.plans.plans = []LowPortPlan{fixture.plan, changed}
 		}},
 		{name: "ownership read", want: "second ownership failed", mutate: func(fixture *lowPortIssuerFixture) {
@@ -967,6 +1073,7 @@ func newLowPortIssuerFixture(t *testing.T, mutation helper.Operation) *lowPortIs
 	}
 	requestedAt := now.Add(-2 * time.Minute)
 	startedAt := now.Add(-time.Minute)
+	purpose := LowPortPlanPurposeDataPlaneSetup
 	operation := domain.Operation{
 		ID:          "operation-low-port-setup",
 		IntentID:    "intent-low-port-setup",
@@ -976,7 +1083,27 @@ func newLowPortIssuerFixture(t *testing.T, mutation helper.Operation) *lowPortIs
 		RequestedAt: requestedAt,
 		StartedAt:   &startedAt,
 	}
-	plan := LowPortPlan{Operation: operation, OperationRevision: 11, Mutation: mutation, TargetOwnership: target, Policy: policy, NativeRequest: nativeRequest}
+	checkpointRevision := domain.Sequence(0)
+	checkpointPhase := LowPortCheckpointPhaseSetupApproval
+	if mutation == helper.OperationReleaseLowPorts {
+		purpose = LowPortPlanPurposeGlobalNetworkRelease
+		operation.Kind = domain.OperationKindNetworkRelease
+		operation.State = domain.OperationRunning
+		operation.Phase = "releasing network runtime"
+		checkpointRevision = 12
+		checkpointPhase = LowPortCheckpointPhaseGlobalRelease
+	}
+	plan := LowPortPlan{
+		Purpose:            purpose,
+		Operation:          operation,
+		OperationRevision:  11,
+		CheckpointRevision: checkpointRevision,
+		CheckpointPhase:    checkpointPhase,
+		Mutation:           mutation,
+		TargetOwnership:    target,
+		Policy:             policy,
+		NativeRequest:      nativeRequest,
+	}
 	if err := plan.Validate(); err != nil {
 		t.Fatalf("valid plan error = %v", err)
 	}
