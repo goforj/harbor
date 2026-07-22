@@ -15,6 +15,302 @@ import (
 	"github.com/goforj/harbor/internal/network/httpingress"
 )
 
+// TestRuntimeActivateHTTPIngressPreservesResolverAndManagedNativeRoutes proves promotion changes only the shared web pair.
+func TestRuntimeActivateHTTPIngressPreservesResolverAndManagedNativeRoutes(t *testing.T) {
+	dns := reserveDNSPort(t)
+	shared := reserveTCPPorts(t, 3)
+	upstreams := reserveDistinctTCPPorts(t, 2, append([]netip.AddrPort{dns}, shared...)...)
+	resolver := mustDesiredState(t, ListenerPlan{DNS: dns}, nil, nil)
+	runtime := mustRuntime(t, Config{Desired: resolver, CertificateProvider: inertCertificateProvider()})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = runtime.Close(ctx)
+	})
+
+	native := NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   shared[2],
+		Upstream: upstreams[0],
+	}
+	if err := runtime.ReplaceNativeRoutes(context.Background(), []NativeRoute{native}); err != nil {
+		t.Fatalf("ReplaceNativeRoutes() error = %v", err)
+	}
+	before := runtime.Snapshot()
+	fullListeners := ListenerPlan{DNS: dns, HTTP: shared[0], HTTPS: shared[1]}
+	full := mustDesiredState(t, fullListeners, nil, nil)
+	if err := runtime.ActivateHTTPIngress(context.Background(), full); err != nil {
+		t.Fatalf("ActivateHTTPIngress() error = %v", err)
+	}
+
+	after := runtime.Snapshot()
+	if after.State != StateReady || !after.DNS.Running || !after.Ingress.Running || len(after.Relays) != 1 || !after.Relays[0].Running {
+		t.Fatalf("promoted Snapshot() = %#v", after)
+	}
+	if after.DNS.Address != before.DNS.Address || after.DNS.Records != before.DNS.Records ||
+		after.Relays[0].ID != native.ID || after.Relays[0].ListenAddress != native.Listen || after.Relays[0].Upstream != native.Upstream {
+		t.Fatalf("promotion changed resolver or native route: before %#v, after %#v", before, after)
+	}
+	if after.Ingress.HTTPAddress != fullListeners.HTTP || after.Ingress.HTTPSAddress != fullListeners.HTTPS || after.Ingress.Routes != 0 {
+		t.Fatalf("promoted ingress = %#v", after.Ingress)
+	}
+
+	routed := mustDesiredState(t, fullListeners, []HTTPRoute{{
+		ID:       "orders:app-http",
+		Host:     "orders.test",
+		Upstream: upstreams[1],
+	}}, nil)
+	if err := runtime.ReplaceHTTPRoutes(routed); err != nil {
+		t.Fatalf("ReplaceHTTPRoutes() after promotion error = %v", err)
+	}
+	routedSnapshot := runtime.Snapshot()
+	if routedSnapshot.DNS.Records != 2 || routedSnapshot.Ingress.Routes != 1 || len(routedSnapshot.Relays) != 1 || !routedSnapshot.Relays[0].Running {
+		t.Fatalf("routed promoted Snapshot() = %#v", routedSnapshot)
+	}
+	if err := routedSnapshot.Validate(); err != nil {
+		t.Fatalf("routed promoted Snapshot().Validate() error = %v", err)
+	}
+}
+
+// TestRuntimeActivateHTTPIngressRollsBackPairBindFailure leaves the resolver and native relay retryable.
+func TestRuntimeActivateHTTPIngressRollsBackPairBindFailure(t *testing.T) {
+	dns := reserveDNSPort(t)
+	shared := reserveTCPPorts(t, 3)
+	upstream := reserveDistinctTCPPorts(t, 1, append([]netip.AddrPort{dns}, shared...)...)[0]
+	runtime := mustRuntime(t, Config{
+		Desired:             mustDesiredState(t, ListenerPlan{DNS: dns}, nil, nil),
+		CertificateProvider: inertCertificateProvider(),
+	})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	native := NativeRoute{ID: "orders:mysql", Host: "mysql.orders.test", Listen: shared[2], Upstream: upstream}
+	if err := runtime.ReplaceNativeRoutes(context.Background(), []NativeRoute{native}); err != nil {
+		t.Fatalf("ReplaceNativeRoutes() error = %v", err)
+	}
+
+	conflict, err := net.Listen("tcp4", shared[1].String())
+	if err != nil {
+		t.Fatalf("reserve HTTPS conflict: %v", err)
+	}
+	full := mustDesiredState(t, ListenerPlan{DNS: dns, HTTP: shared[0], HTTPS: shared[1]}, nil, nil)
+	if err := runtime.ActivateHTTPIngress(context.Background(), full); err == nil || !strings.Contains(err.Error(), "bind HTTPS") {
+		t.Fatalf("ActivateHTTPIngress() error = %v, want HTTPS bind failure", err)
+	}
+	snapshot := runtime.Snapshot()
+	if snapshot.State != StateReady || !snapshot.DNS.Running || snapshot.Ingress.Configured || snapshot.DNS.Records != 1 ||
+		len(snapshot.Relays) != 1 || !snapshot.Relays[0].Running {
+		t.Fatalf("rolled-back bind Snapshot() = %#v", snapshot)
+	}
+	assertTCPRebindable(t, shared[0])
+	if err := conflict.Close(); err != nil {
+		t.Fatalf("close HTTPS conflict: %v", err)
+	}
+	if err := runtime.ActivateHTTPIngress(context.Background(), full); err != nil {
+		t.Fatalf("ActivateHTTPIngress() retry error = %v", err)
+	}
+}
+
+// TestRuntimeActivateHTTPIngressRollsBackCandidateExit keeps an unadmitted pair outside the shared failure domain.
+func TestRuntimeActivateHTTPIngressRollsBackCandidateExit(t *testing.T) {
+	dns := reserveDNSPort(t)
+	shared := reserveTCPPorts(t, 2)
+	factory := newTrackingListenerFactory()
+	injected := false
+	runtime, err := newRuntime(
+		Config{
+			Desired:             mustDesiredState(t, ListenerPlan{DNS: dns}, nil, nil),
+			CertificateProvider: inertCertificateProvider(),
+		},
+		runtimeDependencies{
+			listen: factory.listen,
+			beforeIngressActivationPublication: func(server *httpingress.Server) {
+				if injected {
+					return
+				}
+				injected = true
+				if closeErr := factory.close(shared[0]); closeErr != nil {
+					t.Errorf("close candidate HTTP listener: %v", closeErr)
+					return
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for server.Snapshot().Running && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("newRuntime() error = %v", err)
+	}
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	full := mustDesiredState(t, ListenerPlan{DNS: dns, HTTP: shared[0], HTTPS: shared[1]}, nil, nil)
+	if err := runtime.ActivateHTTPIngress(context.Background(), full); err == nil {
+		t.Fatal("ActivateHTTPIngress() candidate exit error = nil")
+	}
+	snapshot := runtime.Snapshot()
+	if snapshot.State != StateReady || !snapshot.DNS.Running || snapshot.Ingress.Configured {
+		t.Fatalf("candidate-exit rollback Snapshot() = %#v", snapshot)
+	}
+	assertTCPRebindable(t, shared[0])
+	assertTCPRebindable(t, shared[1])
+	if err := runtime.ActivateHTTPIngress(context.Background(), full); err != nil {
+		t.Fatalf("ActivateHTTPIngress() retry error = %v", err)
+	}
+}
+
+// TestRuntimeActivateHTTPIngressConcurrentCloseJoinsUnpublishedListeners guards the promotion ownership race.
+func TestRuntimeActivateHTTPIngressConcurrentCloseJoinsUnpublishedListeners(t *testing.T) {
+	dns := reserveDNSPort(t)
+	shared := reserveTCPPorts(t, 2)
+	secondBindEntered := make(chan struct{})
+	bindCalls := 0
+	listen := func(ctx context.Context, endpoint netip.AddrPort) (net.Listener, error) {
+		bindCalls++
+		if bindCalls == 2 {
+			close(secondBindEntered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return listenExactTCP(ctx, endpoint)
+	}
+	runtime, err := newRuntime(
+		Config{
+			Desired:             mustDesiredState(t, ListenerPlan{DNS: dns}, nil, nil),
+			CertificateProvider: inertCertificateProvider(),
+		},
+		runtimeDependencies{listen: listen},
+	)
+	if err != nil {
+		t.Fatalf("newRuntime() error = %v", err)
+	}
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	full := mustDesiredState(t, ListenerPlan{DNS: dns, HTTP: shared[0], HTTPS: shared[1]}, nil, nil)
+	activationResult := make(chan error, 1)
+	go func() { activationResult <- runtime.ActivateHTTPIngress(context.Background(), full) }()
+	select {
+	case <-secondBindEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP ingress activation did not reach the second bind")
+	}
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- runtime.Close(context.Background()) }()
+	select {
+	case err := <-activationResult:
+		if err == nil {
+			t.Fatal("ActivateHTTPIngress() during Close error = nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ActivateHTTPIngress() remained blocked during Close")
+	}
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close() did not join the in-flight activation")
+	}
+	if snapshot := runtime.Snapshot(); snapshot.State != StateStopped || snapshot.DNS.Running || snapshot.Ingress.Running {
+		t.Fatalf("concurrent Close Snapshot() = %#v", snapshot)
+	}
+	assertTCPRebindable(t, shared[0])
+	assertTCPRebindable(t, shared[1])
+}
+
+// TestRuntimeActivateHTTPIngressRejectsInvalidLifecycleAndTopology keeps failed admission side-effect free.
+func TestRuntimeActivateHTTPIngressRejectsInvalidLifecycleAndTopology(t *testing.T) {
+	dns := reserveDNSPort(t)
+	shared := reserveTCPPorts(t, 3)
+	resolver := mustDesiredState(t, ListenerPlan{DNS: dns}, nil, nil)
+	fullListeners := ListenerPlan{DNS: dns, HTTP: shared[0], HTTPS: shared[1]}
+	full := mustDesiredState(t, fullListeners, nil, nil)
+
+	var nilRuntime *Runtime
+	if err := nilRuntime.ActivateHTTPIngress(context.Background(), full); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("ActivateHTTPIngress(nil) error = %v, want %v", err, ErrNotReady)
+	}
+	notStarted := mustRuntime(t, Config{Desired: resolver, CertificateProvider: inertCertificateProvider()})
+	if err := notStarted.ActivateHTTPIngress(context.Background(), full); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("ActivateHTTPIngress(before Start) error = %v, want %v", err, ErrNotReady)
+	}
+	if err := notStarted.Close(context.Background()); err != nil {
+		t.Fatalf("Close(not started) error = %v", err)
+	}
+
+	withoutProvider := mustRuntime(t, Config{Desired: resolver})
+	if err := withoutProvider.Start(context.Background()); err != nil {
+		t.Fatalf("Start(without provider) error = %v", err)
+	}
+	if err := withoutProvider.ActivateHTTPIngress(context.Background(), full); err == nil || !strings.Contains(err.Error(), "certificate provider") {
+		t.Fatalf("ActivateHTTPIngress(without provider) error = %v", err)
+	}
+	if snapshot := withoutProvider.Snapshot(); snapshot.State != StateReady || !snapshot.DNS.Running || snapshot.Ingress.Configured {
+		t.Fatalf("provider rejection Snapshot() = %#v", snapshot)
+	}
+	if err := withoutProvider.Close(context.Background()); err != nil {
+		t.Fatalf("Close(without provider) error = %v", err)
+	}
+
+	runtime := mustRuntime(t, Config{Desired: resolver, CertificateProvider: inertCertificateProvider()})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	changedTTL, err := NewDesiredState(fullListeners, nil, nil, 3*time.Second)
+	if err != nil {
+		t.Fatalf("NewDesiredState(changed TTL) error = %v", err)
+	}
+	changedDNSListeners := fullListeners
+	changedDNSListeners.DNS = reserveDNSPort(t)
+	withRoute := mustDesiredState(t, fullListeners, []HTTPRoute{{
+		ID:       "orders:app-http",
+		Host:     "orders.test",
+		Upstream: testEndpoint("127.0.0.1:41006"),
+	}}, nil)
+	withNative := mustDesiredState(t, fullListeners, nil, []NativeRoute{{
+		ID:       "orders:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   shared[2],
+		Upstream: testEndpoint("127.0.0.1:41007"),
+	}})
+	tests := []struct {
+		name string
+		next DesiredState
+		want string
+	}{
+		{name: "forged desired state", next: DesiredState{}, want: "NewDesiredState"},
+		{name: "changed DNS", next: mustDesiredState(t, changedDNSListeners, nil, nil), want: "DNS listener"},
+		{name: "missing web pair", next: resolver, want: "HTTP and HTTPS"},
+		{name: "changed TTL", next: changedTTL, want: "TTL"},
+		{name: "premature HTTP routes", next: withRoute, want: "routes must remain empty"},
+		{name: "replacement native routes", next: withNative, want: "cannot replace managed native routes"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := runtime.ActivateHTTPIngress(context.Background(), test.next); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ActivateHTTPIngress() error = %v, want containing %q", err, test.want)
+			}
+			if snapshot := runtime.Snapshot(); snapshot.State != StateReady || !snapshot.DNS.Running || snapshot.Ingress.Configured {
+				t.Fatalf("rejected activation Snapshot() = %#v", snapshot)
+			}
+		})
+	}
+	if err := runtime.ActivateHTTPIngress(context.Background(), full); err != nil {
+		t.Fatalf("ActivateHTTPIngress() after rejections error = %v", err)
+	}
+}
+
 // TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays proves native publications can join a ready shared generation without rebinding its HTTP listeners.
 func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing.T) {
 	listeners := ListenerPlan{DNS: reserveDNSPort(t)}

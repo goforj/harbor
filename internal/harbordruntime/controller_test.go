@@ -197,6 +197,8 @@ type testDataPlane struct {
 	doneCalls    atomic.Int64
 	replacements []dataplane.DesiredState
 	replace      func(dataplane.DesiredState) error
+	activations  []dataplane.DesiredState
+	activate     func(context.Context, dataplane.DesiredState) error
 	events       *testEventLog
 }
 
@@ -244,6 +246,30 @@ func (runtime *testDataPlane) ReplaceHTTPRoutes(desired dataplane.DesiredState) 
 	if replace != nil {
 		return replace(desired)
 	}
+	return nil
+}
+
+// ActivateHTTPIngress records one in-place shared-listener promotion while preserving DNS and relay observations.
+func (runtime *testDataPlane) ActivateHTTPIngress(ctx context.Context, desired dataplane.DesiredState) error {
+	runtime.mutex.Lock()
+	runtime.activations = append(runtime.activations, desired)
+	activate := runtime.activate
+	runtime.mutex.Unlock()
+	if activate != nil {
+		if err := activate(ctx, desired); err != nil {
+			return err
+		}
+	}
+	listeners := desired.ListenerPlan()
+	runtime.mutex.Lock()
+	runtime.snapshot.Ingress = dataplane.IngressStatus{
+		Configured:   true,
+		HTTPAddress:  listeners.HTTP,
+		HTTPSAddress: listeners.HTTPS,
+		Running:      true,
+		Routes:       len(desired.HTTPRoutes()),
+	}
+	runtime.mutex.Unlock()
 	return nil
 }
 

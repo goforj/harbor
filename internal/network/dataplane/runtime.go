@@ -49,10 +49,11 @@ type Config struct {
 
 // Runtime owns one process-local generation of Harbor DNS, HTTP ingress, and native relays.
 type Runtime struct {
-	config                 Config
-	listen                 listenTCP
-	beforeReadyPublication func()
-	afterStopPublication   func()
+	config                             Config
+	listen                             listenTCP
+	beforeReadyPublication             func()
+	afterStopPublication               func()
+	beforeIngressActivationPublication func(*httpingress.Server)
 
 	dns            *dnsserver.Server
 	ingress        *httpingress.Server
@@ -70,6 +71,7 @@ type Runtime struct {
 	stopOnce           sync.Once
 	doneOnce           sync.Once
 	nativeReplaceMutex sync.Mutex
+	ingressActivation  chan struct{}
 	dynamicMutex       sync.Mutex
 	dynamicRelays      map[string]*dynamicNativeRelay
 }
@@ -112,9 +114,10 @@ type listenTCP func(context.Context, netip.AddrPort) (net.Listener, error)
 
 // runtimeDependencies keeps socket acquisition and lifecycle publication deterministic in tests.
 type runtimeDependencies struct {
-	listen                 listenTCP
-	beforeReadyPublication func()
-	afterStopPublication   func()
+	listen                             listenTCP
+	beforeReadyPublication             func()
+	afterStopPublication               func()
+	beforeIngressActivationPublication func(*httpingress.Server)
 }
 
 // NewRuntime validates all dependencies and constructs a one-shot data-plane generation without binding sockets.
@@ -136,16 +139,17 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 	}
 
 	runtime := &Runtime{
-		config:                 config,
-		listen:                 dependencies.listen,
-		beforeReadyPublication: dependencies.beforeReadyPublication,
-		afterStopPublication:   dependencies.afterStopPublication,
-		state:                  StateNew,
-		desired:                config.Desired,
-		stop:                   make(chan struct{}),
-		done:                   make(chan struct{}),
-		relays:                 make([]managedRelay, 0, len(config.Desired.nativeRoutes)),
-		dynamicRelays:          make(map[string]*dynamicNativeRelay),
+		config:                             config,
+		listen:                             dependencies.listen,
+		beforeReadyPublication:             dependencies.beforeReadyPublication,
+		afterStopPublication:               dependencies.afterStopPublication,
+		beforeIngressActivationPublication: dependencies.beforeIngressActivationPublication,
+		state:                              StateNew,
+		desired:                            config.Desired,
+		stop:                               make(chan struct{}),
+		done:                               make(chan struct{}),
+		relays:                             make([]managedRelay, 0, len(config.Desired.nativeRoutes)),
+		dynamicRelays:                      make(map[string]*dynamicNativeRelay),
 	}
 	if config.Desired.listeners.DNS != (netip.AddrPort{}) {
 		dnsConfig := dnsserver.DefaultConfig(config.Desired.listeners.DNS.Addr(), config.Desired.listeners.DNS.Port())
@@ -237,6 +241,303 @@ func (runtime *Runtime) Start(ctx context.Context) error {
 	}
 	go runtime.monitor(ctx, run)
 	return nil
+}
+
+// ActivateHTTPIngress adds the paired HTTP and HTTPS listeners to one ready DNS-only generation.
+//
+// The resolver listener and every managed native relay remain live throughout the transition. The
+// supplied state describes only the committed shared-listener foundation; routes are reconciled
+// separately after the listener pair is ready.
+func (runtime *Runtime) ActivateHTTPIngress(ctx context.Context, next DesiredState) error {
+	if runtime == nil {
+		return ErrNotReady
+	}
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return fmt.Errorf("activate data plane HTTP ingress: %w", err)
+	}
+
+	runtime.nativeReplaceMutex.Lock()
+	defer runtime.nativeReplaceMutex.Unlock()
+
+	current, run, activation, err := runtime.beginHTTPIngressActivation()
+	if err != nil {
+		return err
+	}
+	defer runtime.completeHTTPIngressActivation(activation)
+
+	promoted, err := prepareHTTPIngressActivation(current, next)
+	if err != nil {
+		return err
+	}
+	if runtime.config.CertificateProvider == nil {
+		return errors.New("activate data plane HTTP ingress: certificate provider is required")
+	}
+	if runtime.dns == nil || runtime.replaceDNS == nil {
+		return fmt.Errorf("activate data plane HTTP ingress: %w: DNS is not configured", ErrNotReady)
+	}
+	if _, running := runtime.dns.Address(); !running {
+		return fmt.Errorf("activate data plane HTTP ingress: %w: DNS is not running", ErrNotReady)
+	}
+
+	router, err := httpingress.NewRouter(httpingress.Config{}, promoted.ingressSnapshot)
+	if err != nil {
+		return fmt.Errorf("activate data plane HTTP ingress: construct router: %w", err)
+	}
+	server, err := httpingress.NewServer(
+		httpingress.ServerConfig{ShutdownTimeout: runtime.config.ShutdownTimeout},
+		router,
+		runtime.config.CertificateProvider,
+	)
+	if err != nil {
+		return fmt.Errorf("activate data plane HTTP ingress: construct server: %w", err)
+	}
+
+	httpListener, httpsListener, err := runtime.bindHTTPIngressActivationListeners(ctx, run, promoted.listeners)
+	if err != nil {
+		return err
+	}
+	ingressContext, cancelIngress := context.WithCancel(run.context)
+	result := make(chan childResult, 1)
+	go func() {
+		result <- childResult{name: "HTTP ingress", err: server.Serve(ingressContext, httpListener, httpsListener)}
+	}()
+	if err := runtime.awaitHTTPIngressActivation(ctx, run, server, cancelIngress, result); err != nil {
+		return err
+	}
+	if runtime.beforeIngressActivationPublication != nil {
+		runtime.beforeIngressActivationPublication(server)
+	}
+	if err := runtime.publishHTTPIngressActivation(ctx, run, server, router.Replace, promoted, result); err != nil {
+		return errors.Join(err, stopHTTPIngressActivation(cancelIngress, result))
+	}
+	return nil
+}
+
+// beginHTTPIngressActivation claims one transition so terminal publication cannot outrun candidate cleanup.
+func (runtime *Runtime) beginHTTPIngressActivation() (DesiredState, *runtimeRun, chan struct{}, error) {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	if runtime.state != StateReady {
+		return DesiredState{}, nil, nil, fmt.Errorf("activate data plane HTTP ingress: %w: lifecycle state is %q", ErrNotReady, runtime.state)
+	}
+	if runtime.run == nil || runtime.run.context == nil {
+		return DesiredState{}, nil, nil, fmt.Errorf("activate data plane HTTP ingress: %w: runtime context is unavailable", ErrNotReady)
+	}
+	if runtime.ingress != nil || runtime.replaceIngress != nil {
+		return DesiredState{}, nil, nil, errors.New("activate data plane HTTP ingress: HTTP ingress is already configured")
+	}
+	if runtime.ingressActivation != nil {
+		return DesiredState{}, nil, nil, errors.New("activate data plane HTTP ingress: another activation is already running")
+	}
+	activation := make(chan struct{})
+	runtime.ingressActivation = activation
+	return runtime.desired, runtime.run, activation, nil
+}
+
+// completeHTTPIngressActivation releases terminal publication after every candidate socket is published or retired.
+func (runtime *Runtime) completeHTTPIngressActivation(activation chan struct{}) {
+	runtime.mutex.Lock()
+	if runtime.ingressActivation == activation {
+		runtime.ingressActivation = nil
+		close(activation)
+	}
+	runtime.mutex.Unlock()
+}
+
+// prepareHTTPIngressActivation validates the only mutable listener transition and preserves managed native routes.
+func prepareHTTPIngressActivation(current DesiredState, next DesiredState) (DesiredState, error) {
+	currentListeners := current.ListenerPlan()
+	nextListeners := next.ListenerPlan()
+	if currentListeners.DNS == (netip.AddrPort{}) || currentListeners.HTTP != (netip.AddrPort{}) || currentListeners.HTTPS != (netip.AddrPort{}) {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: current generation must own only DNS")
+	}
+	if nextListeners.DNS != currentListeners.DNS {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: DNS listener must remain unchanged")
+	}
+	if nextListeners.HTTP == (netip.AddrPort{}) || nextListeners.HTTPS == (netip.AddrPort{}) {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: committed HTTP and HTTPS listeners are required")
+	}
+	if current.TTL() != next.TTL() {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: DNS TTL must remain unchanged")
+	}
+	if len(current.HTTPRoutes()) != 0 || len(next.HTTPRoutes()) != 0 {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: routes must remain empty until reconciliation")
+	}
+	if routes := next.NativeRoutes(); len(routes) != 0 && !slices.Equal(routes, current.NativeRoutes()) {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: committed state cannot replace managed native routes")
+	}
+	promoted, err := NewDesiredState(nextListeners, nil, current.NativeRoutes(), current.TTL())
+	if err != nil {
+		return DesiredState{}, fmt.Errorf("activate data plane HTTP ingress: construct promoted generation: %w", err)
+	}
+	if !sameDNSRecords(current.dnsSnapshot.Records(), promoted.dnsSnapshot.Records()) {
+		return DesiredState{}, errors.New("activate data plane HTTP ingress: promotion changed authoritative DNS records")
+	}
+	return promoted, nil
+}
+
+// bindHTTPIngressActivationListeners acquires the exact pair without disturbing the running resolver generation.
+func (runtime *Runtime) bindHTTPIngressActivationListeners(
+	ctx context.Context,
+	run *runtimeRun,
+	listeners ListenerPlan,
+) (net.Listener, net.Listener, error) {
+	startupContext, cancelStartup := context.WithCancel(run.context)
+	stopCallerCancellation := context.AfterFunc(ctx, cancelStartup)
+	defer cancelStartup()
+
+	bound := make([]net.Listener, 0, 2)
+	for _, candidate := range []struct {
+		name     string
+		endpoint netip.AddrPort
+	}{
+		{name: "HTTP", endpoint: listeners.HTTP},
+		{name: "HTTPS", endpoint: listeners.HTTPS},
+	} {
+		listener, err := runtime.listen(startupContext, candidate.endpoint)
+		if err != nil {
+			stopCallerCancellation()
+			closeListeners(bound)
+			if interruption := httpIngressActivationInterruption(ctx, run.context, runtime.stop); interruption != nil {
+				return nil, nil, interruption
+			}
+			return nil, nil, fmt.Errorf("activate data plane HTTP ingress: bind %s listener %s: %w", candidate.name, candidate.endpoint, err)
+		}
+		if listener == nil {
+			stopCallerCancellation()
+			closeListeners(bound)
+			return nil, nil, fmt.Errorf("activate data plane HTTP ingress: bind %s listener %s: listener factory returned nil", candidate.name, candidate.endpoint)
+		}
+		actual, err := exactListenerAddress(listener)
+		if err != nil || actual != candidate.endpoint {
+			_ = listener.Close()
+			stopCallerCancellation()
+			closeListeners(bound)
+			if err != nil {
+				return nil, nil, fmt.Errorf("activate data plane HTTP ingress: verify %s listener %s: %w", candidate.name, candidate.endpoint, err)
+			}
+			return nil, nil, fmt.Errorf("activate data plane HTTP ingress: %s listener acquired unexpected socket %s", candidate.name, actual)
+		}
+		bound = append(bound, listener)
+	}
+	callerStillActive := stopCallerCancellation()
+	if !callerStillActive {
+		closeListeners(bound)
+		return nil, nil, ctx.Err()
+	}
+	if interruption := httpIngressActivationInterruption(ctx, run.context, runtime.stop); interruption != nil {
+		closeListeners(bound)
+		return nil, nil, interruption
+	}
+	return bound[0], bound[1], nil
+}
+
+// httpIngressActivationInterruption gives caller cancellation precedence while recognizing runtime teardown.
+func httpIngressActivationInterruption(ctx context.Context, runContext context.Context, stop <-chan struct{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := runContext.Err(); err != nil {
+		return fmt.Errorf("activate data plane HTTP ingress: %w: runtime generation stopped", ErrNotReady)
+	}
+	select {
+	case <-stop:
+		return ErrClosed
+	default:
+		return nil
+	}
+}
+
+// awaitHTTPIngressActivation keeps candidate failures local until both listeners report ownership.
+func (runtime *Runtime) awaitHTTPIngressActivation(
+	ctx context.Context,
+	run *runtimeRun,
+	server *httpingress.Server,
+	cancel context.CancelFunc,
+	result <-chan childResult,
+) error {
+	deadline := time.NewTimer(runtime.config.StartupTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(startupPollInterval)
+	defer ticker.Stop()
+	for {
+		if server.Snapshot().Running {
+			select {
+			case terminal := <-result:
+				cancel()
+				return unexpectedChildError(terminal)
+			default:
+				return nil
+			}
+		}
+		select {
+		case terminal := <-result:
+			cancel()
+			return unexpectedChildError(terminal)
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), stopHTTPIngressActivation(cancel, result))
+		case <-run.context.Done():
+			return errors.Join(
+				fmt.Errorf("activate data plane HTTP ingress: %w: runtime generation stopped", ErrNotReady),
+				stopHTTPIngressActivation(cancel, result),
+			)
+		case <-runtime.stop:
+			return errors.Join(ErrClosed, stopHTTPIngressActivation(cancel, result))
+		case <-deadline.C:
+			return errors.Join(
+				fmt.Errorf("activate data plane HTTP ingress: listeners did not become ready within %s", runtime.config.StartupTimeout),
+				stopHTTPIngressActivation(cancel, result),
+			)
+		case <-ticker.C:
+		}
+	}
+}
+
+// publishHTTPIngressActivation admits one ready pair into the existing runtime monitor and desired state.
+func (runtime *Runtime) publishHTTPIngressActivation(
+	ctx context.Context,
+	run *runtimeRun,
+	server *httpingress.Server,
+	replace func(*httpingress.Snapshot) error,
+	promoted DesiredState,
+	result <-chan childResult,
+) error {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if runtime.state != StateReady || runtime.run != run || run.context.Err() != nil || runtime.stopRequested() {
+		return fmt.Errorf("activate data plane HTTP ingress: %w: runtime lifecycle changed during activation", ErrNotReady)
+	}
+	if runtime.ingress != nil || runtime.replaceIngress != nil {
+		return errors.New("activate data plane HTTP ingress: HTTP ingress was concurrently configured")
+	}
+	if !server.Snapshot().Running {
+		return errors.New("activate data plane HTTP ingress: candidate stopped before publication")
+	}
+	run.children++
+	runtime.ingress = server
+	runtime.replaceIngress = replace
+	runtime.desired = promoted
+	go func() {
+		run.results <- <-result
+	}()
+	return nil
+}
+
+// stopHTTPIngressActivation cancels and joins one unadmitted candidate before returning ownership.
+func stopHTTPIngressActivation(cancel context.CancelFunc, result <-chan childResult) error {
+	cancel()
+	terminal := <-result
+	if terminal.err == nil {
+		return nil
+	}
+	return fmt.Errorf("stop HTTP ingress activation candidate: %w", terminal.err)
 }
 
 // ReplaceHTTPRoutes publishes one validated HTTP route generation without changing owned listeners or native relays.
@@ -632,6 +933,7 @@ func (runtime *Runtime) Snapshot() Snapshot {
 	state := runtime.state
 	desired := runtime.desired
 	run := runtime.run
+	ingress := runtime.ingress
 	runtime.mutex.RUnlock()
 
 	snapshot := Snapshot{
@@ -651,8 +953,8 @@ func (runtime *Runtime) Snapshot() Snapshot {
 			Records:    len(desired.dnsSnapshot.Records()),
 		}
 	}
-	if runtime.ingress != nil {
-		server := runtime.ingress.Snapshot()
+	if ingress != nil {
+		server := ingress.Snapshot()
 		httpAddress := desired.listeners.HTTP
 		httpsAddress := desired.listeners.HTTPS
 		if server.HTTPAddress.IsValid() {
@@ -1074,6 +1376,13 @@ func (runtime *Runtime) finishExpectedStart() {
 
 // finish publishes terminal state only after every owned child and listener has been joined.
 func (runtime *Runtime) finish(terminal error, intentional bool) {
+	runtime.mutex.RLock()
+	ingressActivation := runtime.ingressActivation
+	runtime.mutex.RUnlock()
+	if ingressActivation != nil {
+		<-ingressActivation
+	}
+
 	runtime.mutex.Lock()
 	if runtime.terminalErr == nil {
 		runtime.terminalErr = terminal

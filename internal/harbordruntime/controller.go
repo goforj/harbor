@@ -65,6 +65,11 @@ type dataPlane interface {
 	Close(context.Context) error
 }
 
+// httpIngressActivationDataPlane promotes one live DNS-only generation without rebinding its resolver listener.
+type httpIngressActivationDataPlane interface {
+	ActivateHTTPIngress(context.Context, dataplane.DesiredState) error
+}
+
 // managedNativeRouteDataPlane is the narrow post-start publication seam used by managed sessions.
 type managedNativeRouteDataPlane interface {
 	ReplaceNativeRoutes(context.Context, []dataplane.NativeRoute) error

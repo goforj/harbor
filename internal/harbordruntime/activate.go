@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/state"
 )
 
-// ActivateNetwork replaces the ready empty generation after durable setup commits its exact full-stage revision.
+// ActivateNetwork publishes the exact full-stage listeners after durable setup commits their revision.
 func (controller *Controller) ActivateNetwork(ctx context.Context, expectedRevision domain.Sequence) error {
 	if controller == nil || !controller.initialized {
 		return ErrNotInitialized
@@ -34,6 +35,14 @@ func (controller *Controller) ActivateNetwork(ctx context.Context, expectedRevis
 	if activation.replayed {
 		controller.reconcileMutex.Unlock()
 		return nil
+	}
+	if activation.promoteResolver {
+		err := controller.promoteResolverGeneration(ctx, activation)
+		controller.reconcileMutex.Unlock()
+		if err != nil {
+			return err
+		}
+		return wrapNetworkActivationError("publish current project routes", controller.Reconcile(ctx))
 	}
 
 	candidate, candidateDone, err := controller.startNetworkActivationCandidate(ctx, activation)
@@ -67,9 +76,10 @@ type networkActivation struct {
 	authority         certificateAuthority
 	desired           dataplane.DesiredState
 	replayed          bool
+	promoteResolver   bool
 }
 
-// prepareNetworkActivation proves both the current empty runtime and the newly committed durable topology.
+// prepareNetworkActivation proves both the current runtime foundation and the newly committed durable topology.
 func (controller *Controller) prepareNetworkActivation(
 	ctx context.Context,
 	expectedRevision domain.Sequence,
@@ -122,11 +132,60 @@ func (controller *Controller) prepareNetworkActivation(
 		activation.replayed = true
 		return activation, nil
 	}
+	if resolverFoundationCanPromote(currentFoundation, desired) {
+		snapshot := activation.current.Snapshot()
+		if err := snapshot.Validate(); err != nil || snapshot.State != dataplane.StateReady ||
+			!snapshot.DNS.Configured || !snapshot.DNS.Running || snapshot.DNS.Address != currentFoundation.ListenerPlan().DNS ||
+			snapshot.Ingress.Configured {
+			return networkActivation{}, fmt.Errorf("activate Harbor network: existing resolver generation is not ready")
+		}
+		activation.promoteResolver = true
+		return activation, nil
+	}
 	if currentFoundation.ListenerPlan() != (dataplane.ListenerPlan{}) ||
 		len(currentFoundation.NativeRoutes()) != 0 {
 		return networkActivation{}, fmt.Errorf("activate Harbor network: live listener topology differs from the committed full stage")
 	}
 	return activation, nil
+}
+
+// resolverFoundationCanPromote admits only the DNS-only to full shared-listener transition.
+func resolverFoundationCanPromote(current dataplane.DesiredState, next dataplane.DesiredState) bool {
+	currentListeners := current.ListenerPlan()
+	nextListeners := next.ListenerPlan()
+	return currentListeners.DNS != (netip.AddrPort{}) &&
+		currentListeners.HTTP == (netip.AddrPort{}) &&
+		currentListeners.HTTPS == (netip.AddrPort{}) &&
+		nextListeners.DNS == currentListeners.DNS &&
+		nextListeners.HTTP != (netip.AddrPort{}) &&
+		nextListeners.HTTPS != (netip.AddrPort{}) &&
+		current.TTL() == next.TTL() &&
+		len(current.HTTPRoutes()) == 0 &&
+		len(current.NativeRoutes()) == 0 &&
+		len(next.HTTPRoutes()) == 0 &&
+		len(next.NativeRoutes()) == 0
+}
+
+// promoteResolverGeneration adds ingress to the current runtime before publishing its full foundation.
+func (controller *Controller) promoteResolverGeneration(ctx context.Context, activation networkActivation) error {
+	promoter, ok := activation.current.(httpIngressActivationDataPlane)
+	if !ok {
+		return errors.New("activate Harbor network: live resolver generation does not support HTTP ingress activation")
+	}
+	if err := promoter.ActivateHTTPIngress(ctx, activation.desired); err != nil {
+		return fmt.Errorf("activate Harbor network: promote resolver generation: %w", err)
+	}
+
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if controller.state != controllerStateReady ||
+		controller.runtimeGeneration != activation.currentGeneration ||
+		channelClosed(activation.currentDone) {
+		return errors.New("activate Harbor network: controller lifecycle changed during resolver promotion")
+	}
+	controller.httpFoundation = activation.desired
+	controller.publishedHTTPRoutes = activation.desired.HTTPRoutes()
+	return nil
 }
 
 // startNetworkActivationCandidate acquires the complete full-stage generation while the empty generation remains available for rollback.
