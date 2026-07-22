@@ -100,8 +100,8 @@ func TestObserveManagedPublicationsRepairsMissingServiceReservation(t *testing.T
 	}
 }
 
-// TestObserveManagedPublicationsWaitsForFullNetworkStage proves a pre-full barrier reports retryable readiness instead of a misleading reservation defect.
-func TestObserveManagedPublicationsWaitsForFullNetworkStage(t *testing.T) {
+// TestObserveManagedPublicationsRejectsIncompleteNetworkAuthority proves a pre-full barrier fails before publishing a misleading reservation.
+func TestObserveManagedPublicationsRejectsIncompleteNetworkAuthority(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.12")
 	fixture := newPrimaryLeaseTestFixture(t, address)
 	fixture.state.project.Project.State = domain.ProjectStarting
@@ -132,7 +132,7 @@ func TestObserveManagedPublicationsWaitsForFullNetworkStage(t *testing.T) {
 
 	_, err := coordinator.ObserveManagedPublicationsForPhase(t.Context(), fixture.state.project.Project.ID, session.ID, fence, true)
 	if err == nil {
-		t.Fatal("ObserveManagedPublicationsForPhase() error = nil, want retryable pre-full network error")
+		t.Fatal("ObserveManagedPublicationsForPhase() error = nil, want pre-full network authority error")
 	}
 	if !strings.Contains(err.Error(), "full stage is required") {
 		t.Fatalf("ObserveManagedPublicationsForPhase() error = %v, want full-stage explanation", err)

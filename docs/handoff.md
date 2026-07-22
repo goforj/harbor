@@ -390,3 +390,11 @@ The Linux resolver checkpoint also passed isolated root-module tests and vet, fo
 - Do not start tray, packaging, or updater work before the core restart loop is dependable.
 The managed-session transport now has a bounded, authenticated opt-in event sink on both Harbor and GoForj. Normal launch still leaves `managed-session.events.v1` unadvertised, and process/action producer hooks plus durable event projection remain open.
 The managed Compose barrier is bounded to 30 seconds, and its steady-state heartbeat now stops after two consecutive failed windows; a successful refresh resets the counter. A route/readiness outage therefore produces bounded diagnostics instead of an unending heartbeat loop, while the watcher process remains available for a fresh lifecycle attempt.
+
+## Managed publication admission and service environment
+
+The resolver-stage hang is closed by admission, not by extending another retry loop. If a project descriptor contains host-visible service publications while Harbor's network is below the full authority stage, `project.start` records `project.network.setup_required` and does not launch the child. If a child is already attached, the managed-session barrier returns a terminal conflict for the same condition, so GoForj stops immediately rather than leaving the UI in `Starting` indefinitely. The project can be retried after network setup reaches the full stage.
+
+The cross-repository runtime-plan slice now transports exact declared service environment assignments. GoForj descriptors emit only explicit, secret-free host/port metadata for MySQL and PostgreSQL; the overlay applies those assignments process-locally and rejects contradictory values. It does not guess DSNs, URLs, credentials, or other resource-specific shapes, and it never writes the checkout's `.env` files. The corresponding commits are Harbor `03f9ee3` and GoForj `c02c7cc9`.
+
+Focused package and race checks pass for the new admission, terminal-barrier, descriptor, and overlay paths. Full GoForj package tests remain environment-dependent here because the demo frontend `node_modules` fixture is absent and Docker is not a native macOS Desktop engine. Native macOS execution is still required before claiming resolver, Docker, or desktop lifecycle evidence.
