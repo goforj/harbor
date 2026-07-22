@@ -58,6 +58,44 @@ func (err *Error) Unwrap() error {
 	return err.cause
 }
 
+// AdministratorTrustDiagnostic returns the reviewed administrator ensure failure, when this error wraps one.
+func (err *Error) AdministratorTrustDiagnostic() (string, int, bool) {
+	if err == nil || err.Kind != ErrorKindMutationFailed || err.Operation != "ensure" {
+		return "", 0, false
+	}
+	var cause *administratorTrustStatusError
+	if !errors.As(err.cause, &cause) || !validAdministratorTrustStage(cause.stage) {
+		return "", 0, false
+	}
+	return cause.stage, cause.status, true
+}
+
+// administratorTrustStatusError retains only reviewed native status facts until the trust adapter classifies them.
+type administratorTrustStatusError struct {
+	stage  string
+	status int
+}
+
+// Error returns a fixed local summary so native detail remains available only through the typed accessor.
+func (err *administratorTrustStatusError) Error() string {
+	return "administrator trust native mutation failed"
+}
+
+// newAdministratorTrustStatusError binds a native status to one reviewed administrator ensure step.
+func newAdministratorTrustStatusError(stage string, status int) error {
+	return &administratorTrustStatusError{stage: stage, status: status}
+}
+
+// validAdministratorTrustStage rejects arbitrary native-operation labels from diagnostic propagation.
+func validAdministratorTrustStage(stage string) bool {
+	switch stage {
+	case "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
+		return true
+	default:
+		return false
+	}
+}
+
 // operationError constructs one typed failure while keeping its display representation bounded.
 func operationError(kind ErrorKind, operation string, observation Observation, assessment Assessment, cause error) error {
 	return &Error{

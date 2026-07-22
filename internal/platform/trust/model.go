@@ -11,8 +11,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/identitytext"
 	"github.com/goforj/harbor/internal/trust/certroot"
 )
 
@@ -58,11 +58,11 @@ func newRequest(
 	mechanism networkpolicy.TrustMechanism,
 	root certroot.Root,
 ) (Request, error) {
-	if err := helper.ValidateInstallationID(installationID); err != nil {
+	if err := identitytext.ValidateInstallationID(installationID); err != nil {
 		return Request{}, fmt.Errorf("trust request installation ID: %w", err)
 	}
 	if requesterIdentity != "" {
-		if err := helper.ValidateRequesterIdentity(requesterIdentity); err != nil {
+		if err := identitytext.ValidateRequesterIdentity(requesterIdentity); err != nil {
 			return Request{}, fmt.Errorf("trust request requester identity: %w", err)
 		}
 	}
@@ -87,11 +87,11 @@ func newRequest(
 
 // Validate rejects zero, corrupt, or internally inconsistent trust requests.
 func (request Request) Validate() error {
-	if err := helper.ValidateInstallationID(request.installationID); err != nil {
+	if err := identitytext.ValidateInstallationID(request.installationID); err != nil {
 		return fmt.Errorf("trust request installation ID: %w", err)
 	}
 	if request.requesterIdentity != "" {
-		if err := helper.ValidateRequesterIdentity(request.requesterIdentity); err != nil {
+		if err := identitytext.ValidateRequesterIdentity(request.requesterIdentity); err != nil {
 			return fmt.Errorf("trust request requester identity: %w", err)
 		}
 	}
@@ -157,11 +157,11 @@ func (marker OwnerMarker) Validate() error {
 	if len(marker.InstallationID) > maximumMarkerTextLength {
 		return fmt.Errorf("trust owner marker installation ID exceeds %d bytes", maximumMarkerTextLength)
 	}
-	if err := helper.ValidateInstallationID(marker.InstallationID); err != nil {
+	if err := identitytext.ValidateInstallationID(marker.InstallationID); err != nil {
 		return fmt.Errorf("trust owner marker installation ID: %w", err)
 	}
 	if marker.RequesterIdentity != "" {
-		if err := helper.ValidateRequesterIdentity(marker.RequesterIdentity); err != nil {
+		if err := identitytext.ValidateRequesterIdentity(marker.RequesterIdentity); err != nil {
 			return fmt.Errorf("trust owner marker requester identity: %w", err)
 		}
 	}

@@ -733,11 +733,11 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 			ownerAttributeLength,
 		)
 		if markerStatus != 0 && markerStatus != 1 {
-			return darwinTrustStatusError("recheck administrator trust ownership", markerStatus)
+			return newAdministratorTrustStatusError("owner-recheck", int(markerStatus))
 		}
 		trustStatus := C.harbor_trust_admin_root_is_exact((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)))
 		if trustStatus != 0 && trustStatus != 1 {
-			return darwinTrustStatusError("recheck administrator root trust", trustStatus)
+			return newAdministratorTrustStatusError("root-recheck", int(trustStatus))
 		}
 		if markerStatus == 0 && trustStatus == 1 {
 			return fmt.Errorf("administrator root trust became exact without this owner marker: %w", errNativeMutationConflict)
@@ -754,7 +754,7 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 				ownerAttributeLength,
 			)
 			if markerStatus != C.harborErrSecSuccess {
-				return darwinTrustStatusError("record administrator trust ownership", markerStatus)
+				return newAdministratorTrustStatusError("owner-record", int(markerStatus))
 			}
 			createdMarker = true
 			trustStatus = C.harbor_trust_admin_root_is_exact((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)))
@@ -765,7 +765,7 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 				if trustStatus == 1 {
 					return fmt.Errorf("administrator root trust changed before install: %w", errNativeMutationConflict)
 				}
-				return darwinTrustStatusError("recheck administrator root trust", trustStatus)
+				return newAdministratorTrustStatusError("root-recheck-after-marker", int(trustStatus))
 			}
 		}
 		status := C.harbor_trust_set_admin_root((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)))
@@ -773,7 +773,7 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 			if darwinAdministratorMarkerCleanupRequired(createdMarker) {
 				_ = deleteDarwinAdministratorOwner(account, ownerAttribute)
 			}
-			return darwinTrustStatusError("set administrator root trust", status)
+			return newAdministratorTrustStatusError("set-root", int(status))
 		}
 		return nil
 	}

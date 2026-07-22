@@ -176,6 +176,63 @@ func TestDispatcherTrustEvidenceFailsClosed(t *testing.T) {
 	}
 }
 
+// TestResponseForErrorRejectsSpoofedAdministratorTrustDiagnostics verifies structural lookalikes cannot bypass the concrete trust-error boundary.
+func TestResponseForErrorRejectsSpoofedAdministratorTrustDiagnostics(t *testing.T) {
+	diagnostic := testAdministratorTrustDiagnostic{stage: "set-root", status: -25299}
+	response := responseForError(diagnostic)
+	if response.Error == nil || response.Error.Code != ErrorCodeMutationFailed || response.Error.Message != "helper operation failed" {
+		t.Fatalf("spoofed diagnostic response = %#v", response)
+	}
+
+	for _, err := range []error{
+		errors.New("open /private/marker: certificate bytes"),
+		testAdministratorTrustDiagnostic{stage: "forged-stage", status: -25299},
+		testAdministratorTrustDiagnostic{stage: "set-root", status: 1 << 32},
+	} {
+		response = responseForError(err)
+		if response.Error == nil || response.Error.Code != ErrorCodeMutationFailed || response.Error.Message != "helper operation failed" {
+			t.Fatalf("unrecognized diagnostic response = %#v", response)
+		}
+	}
+}
+
+// TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues verifies formatter behavior separately from the concrete trust error boundary.
+func TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues(t *testing.T) {
+	message, ok := administratorTrustDiagnosticMessage("set-root", -25299)
+	if !ok || message != "helper operation failed: administrator trust set-root OSStatus -25299" {
+		t.Fatalf("administratorTrustDiagnosticMessage() = %q, %t", message, ok)
+	}
+
+	for _, diagnostic := range []struct {
+		stage  string
+		status int
+	}{
+		{stage: "forged-stage", status: -25299},
+		{stage: "set-root", status: -(1 << 31) - 1},
+		{stage: "set-root", status: 1 << 31},
+	} {
+		if message, ok := administratorTrustDiagnosticMessage(diagnostic.stage, diagnostic.status); ok {
+			t.Fatalf("administratorTrustDiagnosticMessage(%q, %d) = %q, true", diagnostic.stage, diagnostic.status, message)
+		}
+	}
+}
+
+// testAdministratorTrustDiagnostic mimics the former structural diagnostic shape without being a trust error.
+type testAdministratorTrustDiagnostic struct {
+	stage  string
+	status int
+}
+
+// Error keeps the test diagnostic distinct from the response text derived by dispatch.
+func (diagnostic testAdministratorTrustDiagnostic) Error() string {
+	return "native failure"
+}
+
+// AdministratorTrustDiagnostic supplies the structured test diagnostic without a native error string.
+func (diagnostic testAdministratorTrustDiagnostic) AdministratorTrustDiagnostic() (string, int, bool) {
+	return diagnostic.stage, diagnostic.status, true
+}
+
 // TestTrustResponseCodecRoundTrip pins strict trust evidence field names and postconditions.
 func TestTrustResponseCodecRoundTrip(t *testing.T) {
 	evidence := TrustMutationEvidence{

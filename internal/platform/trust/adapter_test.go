@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/identitytext"
 	"github.com/goforj/harbor/internal/trust/certificates"
 	"github.com/goforj/harbor/internal/trust/localca"
 )
@@ -175,7 +175,7 @@ func TestNewRequestForRequesterBindsCurrentUserScope(t *testing.T) {
 	if firstFingerprint == secondFingerprint {
 		t.Fatal("observation fingerprint ignored requester identity")
 	}
-	for _, invalid := range []string{"", " 501", "501/502", strings.Repeat("5", helper.MaximumRequesterIdentityLength+1)} {
+	for _, invalid := range []string{"", " 501", "501/502", strings.Repeat("5", identitytext.MaximumRequesterIdentityLength+1)} {
 		if invalid == "" {
 			continue
 		}

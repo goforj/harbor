@@ -134,6 +134,7 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 		"github.com/goforj/harbor/internal/helper/trusthandler":    {},
 		"github.com/goforj/harbor/internal/host/networkpolicy":     {},
 		"github.com/goforj/harbor/internal/host/ownership":         {},
+		"github.com/goforj/harbor/internal/identitytext":           {},
 		"github.com/goforj/harbor/internal/platform/hostconflict":  {},
 		"github.com/goforj/harbor/internal/platform/loopback":      {},
 		"github.com/goforj/harbor/internal/platform/machinepaths":  {},

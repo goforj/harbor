@@ -17,9 +17,6 @@ const MaxTicketLifetime = 5 * time.Minute
 // MaxTicketRedemptionDuration bounds how long the helper waits on its fixed authenticated ticket source.
 const MaxTicketRedemptionDuration = 15 * time.Second
 
-// MaximumRequesterIdentityLength is the byte limit shared by machine ownership and helper ticket admission.
-const MaximumRequesterIdentityLength = 256
-
 const (
 	minimumNonceLength                         = 32
 	maximumNonceLength                         = 128

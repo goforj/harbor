@@ -3,9 +3,11 @@ package helper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/platform/trust"
 )
 
 // MutationEvidence is the bounded postcondition returned by a loopback identity handler.
@@ -890,11 +892,33 @@ func responseForError(err error) Response {
 	case errors.Is(err, ErrMutationUnavailable):
 		responseError.Code = ErrorCodeMutationUnavailable
 		responseError.Message = "helper platform mutation is unavailable"
+	default:
+		var trustError *trust.Error
+		if errors.As(err, &trustError) {
+			if stage, status, ok := trustError.AdministratorTrustDiagnostic(); ok {
+				if message, ok := administratorTrustDiagnosticMessage(stage, status); ok {
+					responseError.Message = message
+				}
+			}
+		}
 	}
 
 	return Response{
 		Version: ProtocolVersion,
 		OK:      false,
 		Error:   responseError,
+	}
+}
+
+// administratorTrustDiagnosticMessage independently validates the only native facts safe to expose in a helper response.
+func administratorTrustDiagnosticMessage(stage string, status int) (string, bool) {
+	if status < -(1<<31) || status > (1<<31)-1 {
+		return "", false
+	}
+	switch stage {
+	case "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
+		return fmt.Sprintf("helper operation failed: administrator trust %s OSStatus %d", stage, status), true
+	default:
+		return "", false
 	}
 }
