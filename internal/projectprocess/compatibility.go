@@ -59,7 +59,7 @@ func verifyGoForjExecutable(path string, reader buildInformationReader) error {
 	}
 
 	version := strings.TrimSpace(information.Main.Version)
-	if version == compatibleGoForjVersion || cleanCompatibleRevisionProvesCompatibility(information) && developmentVersionMayUseRevision(version) {
+	if version == compatibleGoForjVersion || cleanCompatibleRevisionProvesCompatibility(information) {
 		return nil
 	}
 	return incompatibleGoForjError(path, fmt.Sprintf("version %q is not the supported managed-session build %q", version, compatibleGoForjVersion))
@@ -78,11 +78,6 @@ func cleanCompatibleRevisionProvesCompatibility(information *debug.BuildInfo) bo
 		}
 	}
 	return revision == compatibleGoForjRevision && modified == "false"
-}
-
-// developmentVersionMayUseRevision limits revision-based admission to Go's unversioned development metadata.
-func developmentVersionMayUseRevision(version string) bool {
-	return version == "" || version == "(devel)" || version == "devel" || version == "dev"
 }
 
 // incompatibleGoForjError keeps every preflight failure actionable without asking callers to interpret build metadata.

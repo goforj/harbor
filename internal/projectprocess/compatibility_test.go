@@ -76,6 +76,19 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			information: compatibleGoForjBuildInfo("", compatibleGoForjRevision, false),
 		},
 		{
+			name:        "shallow checkout pseudo version at exact pinned revision clean",
+			information: compatibleGoForjBuildInfo("v0.0.0-20260722203521-55a1e5759956", compatibleGoForjRevision, false),
+		},
+		{
+			name:        "shallow checkout pseudo version at exact pinned revision dirty",
+			information: compatibleGoForjBuildInfo("v0.0.0-20260722203521-55a1e5759956", compatibleGoForjRevision, true),
+			wantErr:     true,
+		},
+		{
+			name:        "version label at exact pinned revision clean",
+			information: compatibleGoForjBuildInfo("v9.9.9", compatibleGoForjRevision, false),
+		},
+		{
 			name:        "exact pinned pseudo version",
 			information: compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false),
 		},
