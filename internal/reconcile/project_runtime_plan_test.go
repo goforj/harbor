@@ -83,6 +83,37 @@ func TestManagedRuntimeServiceEndpointMaterializesDeclaredEnvironmentKeys(t *tes
 	}
 }
 
+// TestManagedRuntimeServiceEndpointMaterializesRedisEnvironment keeps shared Redis consumers on the project-local publication.
+func TestManagedRuntimeServiceEndpointMaterializesRedisEnvironment(t *testing.T) {
+	fence := harbordruntime.ManagedPublicationFence{ProjectID: "project-orders", SessionID: "session-orders", SessionGeneration: 2}
+	requirement := goforj.ServiceRequirement{ID: "requirement.redis.cache", Consumers: []string{"app"}}
+	declared := goforj.ServiceEndpoint{
+		ID: "requirement.redis.cache.endpoint.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 6379, Visibility: goforj.ServiceEndpointVisibilityHost,
+		Environment: []goforj.ServiceEndpointEnvironment{
+			{AppID: "app", Key: "REDIS_HOST", Kind: goforj.ServiceEndpointEnvironmentKindHost},
+			{AppID: "app", Key: "REDIS_PORT", Kind: goforj.ServiceEndpointEnvironmentKindPort},
+		},
+	}
+	publication := harbordruntime.ManagedEndpointPublication{
+		Fence: fence, EndpointID: "service:requirement.redis.cache.tcp", ReservationGeneration: 4, Upstream: netip.MustParseAddrPort("127.0.0.1:43179"),
+	}
+	reservation := state.EndpointReservation{
+		Key: state.EndpointReservationKey{ProjectID: fence.ProjectID, EndpointID: publication.EndpointID}, Protocol: state.EndpointProtocolTCP,
+		Host: "redis.orders.test", Public: netip.MustParseAddrPort("127.77.1.8:6379"), Generation: 4,
+	}
+	endpoint, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation)
+	if err != nil {
+		t.Fatalf("managedRuntimeServiceEndpoint() error = %v", err)
+	}
+	want := []managedsession.RuntimePlanServiceEnvironment{
+		{AppID: "app", Key: "REDIS_HOST", Value: "127.0.0.1"},
+		{AppID: "app", Key: "REDIS_PORT", Value: "43179"},
+	}
+	if !slices.Equal(endpoint.Environment, want) {
+		t.Fatalf("managed Redis environment = %#v, want %#v", endpoint.Environment, want)
+	}
+}
+
 // TestManagedRuntimePlanAppsUsesDurableLoopbackAndDescriptorIntent proves static defaults become private assignments only at a Harbor lease.
 func TestManagedRuntimePlanAppsUsesDurableLoopbackAndDescriptorIntent(t *testing.T) {
 	request := managedRuntimePlanTestRequest()
