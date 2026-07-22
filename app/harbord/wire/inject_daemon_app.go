@@ -50,6 +50,7 @@ type networkResolverSetupIssuerOpener func(
 type projectLifecycleRuntime struct {
 	daemon.Runtime
 	lifecycle           projectLifecycleAuthority
+	release             networkReleaseArmedReader
 	postRuntimeRecovery func(context.Context) error
 	done                chan struct{}
 	doneOnce            sync.Once
@@ -63,6 +64,16 @@ type projectLifecycleAuthority interface {
 	Close(context.Context) error
 	Done() <-chan struct{}
 	Err() error
+}
+
+// networkReleaseArmedReader reports whether startup is retaining only the release control anchor.
+type networkReleaseArmedReader interface {
+	NetworkReleaseArmed() bool
+}
+
+// networkReleaseRecoveryAuthority discovers and arms a durable global network release before startup recovery.
+type networkReleaseRecoveryAuthority interface {
+	ArmNetworkRelease(context.Context) (bool, error)
 }
 
 // projectUnregisterRecoveryAuthority limits daemon startup to interrupted project-removal reconciliation.
@@ -105,11 +116,25 @@ type networkDataPlaneSetupCapability struct {
 }
 
 // newProjectLifecycleRuntime creates one completion signal spanning both network and process authority.
-func newProjectLifecycleRuntime(runtime daemon.Runtime, lifecycle projectLifecycleAuthority, postRuntimeRecovery func(context.Context) error) *projectLifecycleRuntime {
+func newProjectLifecycleRuntime(
+	runtime daemon.Runtime,
+	lifecycle projectLifecycleAuthority,
+	release networkReleaseArmedReader,
+	postRuntimeRecovery func(context.Context) error,
+) *projectLifecycleRuntime {
+	if release == nil {
+		panic("wire.newProjectLifecycleRuntime requires network release state")
+	}
 	if postRuntimeRecovery == nil {
 		panic("wire.newProjectLifecycleRuntime requires post-runtime recovery")
 	}
-	return &projectLifecycleRuntime{Runtime: runtime, lifecycle: lifecycle, postRuntimeRecovery: postRuntimeRecovery, done: make(chan struct{})}
+	return &projectLifecycleRuntime{
+		Runtime:             runtime,
+		lifecycle:           lifecycle,
+		release:             release,
+		postRuntimeRecovery: postRuntimeRecovery,
+		done:                make(chan struct{}),
+	}
 }
 
 // Start publishes network authority before dispatching process launches retained during durable recovery.
@@ -118,6 +143,10 @@ func (runtime *projectLifecycleRuntime) Start(ctx context.Context) error {
 		closeErr := runtime.lifecycle.Close(context.Background())
 		runtime.finish(errors.Join(err, closeErr))
 		return errors.Join(err, closeErr)
+	}
+	if runtime.release.NetworkReleaseArmed() {
+		go runtime.joinUnexpectedNetworkStop()
+		return nil
 	}
 	if err := runtime.postRuntimeRecovery(ctx); err != nil {
 		closeErr := runtime.closeOwned(context.Background())
@@ -496,7 +525,7 @@ func provideDaemonRunner(
 		return nil, errors.New("create daemon runner: operation journal is required")
 	}
 	recovery := func(ctx context.Context) error {
-		return recoverDaemonState(ctx, coordinator, lifecycle)
+		return recoverDaemonState(ctx, runtimeController, coordinator, lifecycle)
 	}
 	postRuntimeRecovery := func(ctx context.Context) error {
 		return recoverDaemonRuntimeState(ctx, operations, networkDataPlaneSetup.recovery, lifecycle, runtimeController)
@@ -505,18 +534,26 @@ func provideDaemonRunner(
 		Server:              server,
 		Readiness:           readiness,
 		Recovery:            recovery,
-		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle, postRuntimeRecovery),
+		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle, runtimeController, postRuntimeRecovery),
 		ShutdownRequested:   shutdown.Requested(),
 		RuntimeCloseTimeout: daemonRuntimeCloseTimeout(runtimeController),
 	})
 }
 
-// recoverDaemonState settles pre-runtime project teardown and process lifecycle recovery.
+// recoverDaemonState arms durable global release recovery before ordinary project recovery.
 func recoverDaemonState(
 	ctx context.Context,
+	release networkReleaseRecoveryAuthority,
 	unregister projectUnregisterRecoveryAuthority,
 	lifecycle projectLifecycleRecoveryAuthority,
 ) error {
+	armed, err := release.ArmNetworkRelease(ctx)
+	if err != nil {
+		return fmt.Errorf("arm global network release during daemon recovery: %w", err)
+	}
+	if armed {
+		return nil
+	}
 	if err := unregister.Recover(ctx); err != nil {
 		return err
 	}

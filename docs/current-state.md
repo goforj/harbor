@@ -257,12 +257,14 @@ Implemented foundations include:
 - a portable trust-store ownership/CAS adapter that validates public CA identity, preserves unrelated and pre-existing roots, and removes only exact Harbor-owned entries;
 - resolver-stage activation of the authoritative DNS-only data-plane generation, including daemon restart reconstruction;
 - activation of the full process-local data plane after the later network and trust gates complete;
+- a controller-owned global-release checkpoint that discovers an active plan before ordinary runtime startup, retains a zero-listener control anchor across restart, proves and retires the exact full listener generation, and only then compare-and-swap advances `runtime_release` to `low_ports`;
 - project route replacement after lifecycle changes.
 
 Important incomplete work:
 
 - Windows NRPT portable tests and cross-compilation pass, and the daemon plus privileged helper now select the reviewed fixed-PowerShell backend. Its required elevated CI test exercises a fresh rule's observe, CAS add, bounded name-server Set repair, exact verification, and release; native workflow evidence and complete latent-field repair policy remain absent;
 - complete trusted-HTTPS product proof is absent; the macOS Security.framework current-user adapter and Darwin cgo build boundary now exist, while elevated-helper execution is deliberately rejected when its UID is not the signed requester and native install/cleanup evidence is still required;
+- the global-release runtime checkpoint is fail-closed and wired into daemon recovery, but no production control or coordinator path invokes it yet, so a staged release cannot progress automatically to low-port cleanup;
 - low-port mechanisms and native-port service relays are not complete product paths;
 - the required three-real-project, full-stack acceptance test has not been reached.
 

@@ -42,6 +42,12 @@ type runtimeStateSource interface {
 	RuntimeState(context.Context) (state.RuntimeState, error)
 }
 
+// globalNetworkReleasePlanStore supplies the durable release fence and its runtime checkpoint mutation.
+type globalNetworkReleasePlanStore interface {
+	ReadActiveGlobalNetworkReleasePlan(context.Context) (state.GlobalNetworkReleasePlanRecord, bool, error)
+	AdvanceGlobalNetworkReleaseRuntime(context.Context, state.AdvanceGlobalNetworkReleaseRuntimeRequest) (state.GlobalNetworkReleasePlanRecord, error)
+}
+
 // certificateMaterialStore joins the certificate manager's persistence contract with controller-owned closure.
 type certificateMaterialStore interface {
 	certificates.MaterialStore
@@ -89,12 +95,13 @@ type dataPlaneFactory func(dataplane.Config) (dataPlane, error)
 
 // dependencies retain deterministic I/O boundaries without making production collaborators optional.
 type dependencies struct {
-	openMaterial      materialStoreOpener
-	bootstrap         certificateBootstrapper
-	newDesiredState   desiredStateFactory
-	newDataPlane      dataPlaneFactory
-	certificateConfig certificates.Config
-	cleanupTimeout    time.Duration
+	globalNetworkReleasePlans globalNetworkReleasePlanStore
+	openMaterial              materialStoreOpener
+	bootstrap                 certificateBootstrapper
+	newDesiredState           desiredStateFactory
+	newDataPlane              dataPlaneFactory
+	certificateConfig         certificates.Config
+	cleanupTimeout            time.Duration
 }
 
 // controllerState records the one-shot lifecycle without exposing partially initialized collaborators.
@@ -118,33 +125,37 @@ type runtimeExit struct {
 
 // Controller owns certificate material and the exact current data-plane generation beneath daemon authority.
 type Controller struct {
-	mutex                 sync.RWMutex
-	reconcileMutex        sync.Mutex
-	initialized           bool
-	source                runtimeStateSource
-	dependencies          dependencies
-	state                 controllerState
-	parentContext         context.Context
-	cancel                context.CancelFunc
-	stopParentWatch       func() bool
-	stopCause             error
-	unexpectedRuntimeExit bool
-	runtimeContext        context.Context
-	runtimeGeneration     uint64
-	runtimeExits          chan runtimeExit
-	runtimeDone           <-chan struct{}
-	dataPlane             dataPlane
-	material              certificateMaterialStore
-	certificates          certificateAuthority
-	root                  certificates.Root
-	httpFoundation        dataplane.DesiredState
-	publishedHTTPRoutes   []dataplane.HTTPRoute
-	managedNativeRoutes   []dataplane.NativeRoute
-	terminalErr           error
-	stop                  chan struct{}
-	done                  chan struct{}
-	stopOnce              sync.Once
-	doneOnce              sync.Once
+	mutex                  sync.RWMutex
+	reconcileMutex         sync.Mutex
+	initialized            bool
+	source                 runtimeStateSource
+	dependencies           dependencies
+	state                  controllerState
+	parentContext          context.Context
+	cancel                 context.CancelFunc
+	stopParentWatch        func() bool
+	stopCause              error
+	unexpectedRuntimeExit  bool
+	runtimeContext         context.Context
+	runtimeGeneration      uint64
+	runtimeExits           chan runtimeExit
+	runtimeDone            <-chan struct{}
+	dataPlane              dataPlane
+	material               certificateMaterialStore
+	certificates           certificateAuthority
+	root                   certificates.Root
+	httpFoundation         dataplane.DesiredState
+	publishedHTTPRoutes    []dataplane.HTTPRoute
+	managedNativeRoutes    []dataplane.NativeRoute
+	terminalErr            error
+	releaseMode            bool
+	releaseFence           networkReleaseFence
+	releaseRuntimeRetired  bool
+	runtimeNetworkRevision domain.Sequence
+	stop                   chan struct{}
+	done                   chan struct{}
+	stopOnce               sync.Once
+	doneOnce               sync.Once
 }
 
 // closedDone gives invalid and zero-value controllers an immediately observable terminal signal.
@@ -155,17 +166,25 @@ var closedDone = func() <-chan struct{} {
 }()
 
 // NewController constructs the production harbord runtime without reading state or touching certificate storage.
-func NewController(source *state.Store) (*Controller, error) {
+func NewController(source *state.Store, journal *state.OperationJournal) (*Controller, error) {
 	if source == nil {
 		return nil, fmt.Errorf("create harbord runtime controller: durable state source is required")
 	}
-	return newController(source, productionDependencies())
+	if journal == nil {
+		return nil, fmt.Errorf("create harbord runtime controller: global network release plan store is required")
+	}
+	dependencies := productionDependencies()
+	dependencies.globalNetworkReleasePlans = journal
+	return newController(source, dependencies)
 }
 
 // newController validates every required boundary before retaining the side-effect-free assembly.
 func newController(source runtimeStateSource, dependencies dependencies) (*Controller, error) {
 	if requiredInterfaceIsNil(source) {
 		return nil, fmt.Errorf("create harbord runtime controller: durable state source is required")
+	}
+	if requiredInterfaceIsNil(dependencies.globalNetworkReleasePlans) {
+		return nil, fmt.Errorf("create harbord runtime controller: global network release plan store is required")
 	}
 	if dependencies.openMaterial == nil {
 		return nil, fmt.Errorf("create harbord runtime controller: material store opener is required")
@@ -199,6 +218,45 @@ func (controller *Controller) Start(ctx context.Context) error {
 	runContext, err := controller.beginStart(ctx)
 	if err != nil {
 		return err
+	}
+
+	plan, foundRelease, err := controller.dependencies.globalNetworkReleasePlans.ReadActiveGlobalNetworkReleasePlan(runContext)
+	if err != nil {
+		return controller.failStart(fmt.Errorf("start harbord runtime: read active network release plan: %w", err), nil, nil)
+	}
+	controller.mutex.Lock()
+	armedRelease := controller.releaseMode
+	fence := controller.releaseFence
+	if foundRelease {
+		observedFence := releaseFenceFromPlan(plan)
+		if armedRelease && !sameReleaseFence(fence, observedFence) {
+			controller.mutex.Unlock()
+			return controller.failStart(errors.New("start harbord runtime: active release plan no longer matches armed fence"), nil, nil)
+		}
+		controller.releaseMode = true
+		controller.releaseFence = observedFence
+		controller.runtimeNetworkRevision = plan.NetworkRevision
+		armedRelease = true
+	} else if armedRelease {
+		controller.mutex.Unlock()
+		return controller.failStart(errors.New("start harbord runtime: armed release plan is absent"), nil, nil)
+	}
+	controller.mutex.Unlock()
+	if armedRelease {
+		desired, err := releaseAnchorDesiredState()
+		if err != nil {
+			return controller.failStart(fmt.Errorf("start harbord runtime: construct release anchor: %w", err), nil, nil)
+		}
+		runtime, runtimeDone, err := controller.startReleaseAnchor(runContext, desired)
+		if err != nil {
+			return controller.failStart(err, nil, runtime)
+		}
+		if err := controller.publishReady(nil, nil, certificates.Root{}, runtime, runtimeDone); err != nil {
+			return controller.failStartWithDone(err, nil, runtime, runtimeDone)
+		}
+		controller.watchRuntimeExit(controller.runtimeGeneration, runtime, runtimeDone)
+		go controller.monitor(nil)
+		return nil
 	}
 
 	runtimeState, err := controller.source.RuntimeState(runContext)
@@ -286,6 +344,11 @@ func (controller *Controller) Start(ctx context.Context) error {
 	if err := controller.publishReady(material, authority, root, runtime, runtimeDone); err != nil {
 		return controller.failStartWithDone(err, material, runtime, runtimeDone)
 	}
+	controller.mutex.Lock()
+	if runtimeState.NetworkInitialized && runtimeState.Network.Stage == state.NetworkStageFull {
+		controller.runtimeNetworkRevision = runtimeState.Network.Revision
+	}
+	controller.mutex.Unlock()
 
 	controller.watchRuntimeExit(controller.runtimeGeneration, runtime, runtimeDone)
 	go controller.monitor(material)
@@ -393,7 +456,11 @@ func (controller *Controller) ReplaceManagedNativeRoutes(ctx context.Context, ro
 	controller.mutex.RLock()
 	lifecycle := controller.state
 	runtime := controller.dataPlane
+	releasing := controller.releaseMode
 	controller.mutex.RUnlock()
+	if releasing {
+		return errors.New("managed native route publication is unavailable while network release is armed")
+	}
 	if lifecycle != controllerStateReady || runtime == nil {
 		return ErrNotReady
 	}
@@ -427,8 +494,12 @@ func (controller *Controller) ManagedNativeRoutesLive(ctx context.Context, route
 	controller.mutex.RLock()
 	lifecycle := controller.state
 	runtime := controller.dataPlane
+	releasing := controller.releaseMode
 	managed := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
 	controller.mutex.RUnlock()
+	if releasing {
+		return errors.New("managed native route publication is unavailable while network release is armed")
+	}
 	routes = canonicalManagedNativeRoutes(routes)
 	if lifecycle != controllerStateReady || runtime == nil {
 		return ErrNotReady
@@ -699,6 +770,16 @@ func (controller *Controller) PublicRoot() (certificates.Root, error) {
 	return root, nil
 }
 
+// NetworkReleaseArmed reports whether this controller retains durable release-fence authority.
+func (controller *Controller) NetworkReleaseArmed() bool {
+	if controller == nil || !controller.initialized {
+		return false
+	}
+	controller.mutex.RLock()
+	defer controller.mutex.RUnlock()
+	return controller.releaseMode
+}
+
 // beginStart claims the one-shot lifecycle and installs ordered parent cancellation before any durable read.
 func (controller *Controller) beginStart(ctx context.Context) (context.Context, error) {
 	if controller == nil || !controller.initialized {
@@ -768,9 +849,13 @@ func (controller *Controller) publishReady(
 	}
 	controller.material = material
 	controller.dataPlane = runtime
+	controller.runtimeDone = runtimeDone
 	controller.certificates = authority
 	controller.root = cloneRoot(root)
 	controller.runtimeGeneration = 1
+	if controller.releaseMode {
+		controller.releaseRuntimeRetired = true
+	}
 	controller.state = controllerStateReady
 	return nil
 }
@@ -784,7 +869,11 @@ func (controller *Controller) watchRuntimeExit(generation uint64, runtime dataPl
 			return
 		}
 		select {
-		case controller.runtimeExits <- runtimeExit{generation: generation, runtime: runtime, done: runtimeDone}:
+		case controller.runtimeExits <- runtimeExit{
+			generation: generation,
+			runtime:    runtime,
+			done:       runtimeDone,
+		}:
 		case <-controller.done:
 		}
 	}()
@@ -811,7 +900,10 @@ func (controller *Controller) monitor(material certificateMaterialStore) {
 	if exit.runtime != nil {
 		runtimeErr = controller.closeDataPlane(exit.runtime, exit.done)
 	}
-	materialErr := material.Close()
+	var materialErr error
+	if material != nil {
+		materialErr = material.Close()
+	}
 	terminal := distinctRuntimeError(runtimeErr, materialErr)
 	if unsettledExit {
 		terminal = distinctRuntimeError(terminal, ErrRuntimeStoppedUnexpectedly)

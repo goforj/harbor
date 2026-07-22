@@ -31,6 +31,13 @@ func (controller *Controller) ActivateResolver(ctx context.Context, expectedRevi
 	}
 
 	controller.reconcileMutex.Lock()
+	controller.mutex.RLock()
+	releasing := controller.releaseMode
+	controller.mutex.RUnlock()
+	if releasing {
+		controller.reconcileMutex.Unlock()
+		return errors.New("activate Harbor resolver: network release is armed")
+	}
 	activation, err := controller.prepareResolverActivation(ctx, expectedRevision)
 	if err != nil {
 		controller.reconcileMutex.Unlock()
@@ -121,6 +128,7 @@ func (controller *Controller) prepareResolverActivation(
 		return networkActivation{}, fmt.Errorf("activate Harbor resolver: live listener topology differs from the resolver-stage generation")
 	}
 	activation.desired = desired
+	activation.networkRevision = expectedRevision
 	return activation, nil
 }
 

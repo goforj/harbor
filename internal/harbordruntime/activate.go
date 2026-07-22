@@ -27,6 +27,13 @@ func (controller *Controller) ActivateNetwork(ctx context.Context, expectedRevis
 	}
 
 	controller.reconcileMutex.Lock()
+	controller.mutex.RLock()
+	releasing := controller.releaseMode
+	controller.mutex.RUnlock()
+	if releasing {
+		controller.reconcileMutex.Unlock()
+		return errors.New("activate Harbor network: network release is armed")
+	}
 	activation, err := controller.prepareNetworkActivation(ctx, expectedRevision)
 	if err != nil {
 		controller.reconcileMutex.Unlock()
@@ -75,6 +82,7 @@ type networkActivation struct {
 	runtimeContext    context.Context
 	authority         certificateAuthority
 	desired           dataplane.DesiredState
+	networkRevision   domain.Sequence
 	replayed          bool
 	promoteResolver   bool
 }
@@ -124,6 +132,7 @@ func (controller *Controller) prepareNetworkActivation(
 		return networkActivation{}, fmt.Errorf("activate Harbor network: full-stage durable state produced no shared listeners")
 	}
 	activation.desired = desired
+	activation.networkRevision = expectedRevision
 	if sameHTTPFoundation(currentFoundation, desired) {
 		snapshot := activation.current.Snapshot()
 		if err := snapshot.Validate(); err != nil || snapshot.State != dataplane.StateReady {
@@ -185,6 +194,7 @@ func (controller *Controller) promoteResolverGeneration(ctx context.Context, act
 	}
 	controller.httpFoundation = activation.desired
 	controller.publishedHTTPRoutes = activation.desired.HTTPRoutes()
+	controller.runtimeNetworkRevision = activation.networkRevision
 	return nil
 }
 
@@ -259,6 +269,7 @@ func (controller *Controller) publishNetworkActivation(
 	controller.httpFoundation = activation.desired
 	controller.publishedHTTPRoutes = activation.desired.HTTPRoutes()
 	controller.managedNativeRoutes = nil
+	controller.runtimeNetworkRevision = activation.networkRevision
 	return controller.runtimeGeneration, nil
 }
 

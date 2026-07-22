@@ -46,7 +46,7 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	helperApprovalPlanSource := state.NewHelperApprovalPlanSource(helperApprovalPlanRepo)
 	machineOwnershipProjectionRepo := models.NewMachineOwnershipProjectionRepo(connections)
 	machineOwnershipProjectionSource := state.NewMachineOwnershipProjectionSource(machineOwnershipProjectionRepo)
-	controller, err := harbordruntime.NewController(store)
+	controller, err := harbordruntime.NewController(store, operationJournal)
 	if err != nil {
 		return App{}, err
 	}

@@ -202,6 +202,34 @@ type testDataPlane struct {
 	events       *testEventLog
 }
 
+// testGlobalNetworkReleasePlanStore supplies an intentionally absent plan unless a release test configures one.
+type testGlobalNetworkReleasePlanStore struct {
+	mutex        sync.Mutex
+	plan         state.GlobalNetworkReleasePlanRecord
+	found        bool
+	err          error
+	advance      func(state.AdvanceGlobalNetworkReleaseRuntimeRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	advanceCalls []state.AdvanceGlobalNetworkReleaseRuntimeRequest
+}
+
+// ReadActiveGlobalNetworkReleasePlan returns the configured plan without durable I/O.
+func (store *testGlobalNetworkReleasePlanStore) ReadActiveGlobalNetworkReleasePlan(context.Context) (state.GlobalNetworkReleasePlanRecord, bool, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	return store.plan, store.found, store.err
+}
+
+// AdvanceGlobalNetworkReleaseRuntime returns the configured result without durable I/O.
+func (store *testGlobalNetworkReleasePlanStore) AdvanceGlobalNetworkReleaseRuntime(_ context.Context, request state.AdvanceGlobalNetworkReleaseRuntimeRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	store.advanceCalls = append(store.advanceCalls, request)
+	if store.advance != nil {
+		return store.advance(request)
+	}
+	return store.plan, store.err
+}
+
 // testCloseMode selects one deliberately conforming or broken child shutdown behavior.
 type testCloseMode uint8
 
@@ -330,6 +358,11 @@ func (runtime *testDataPlane) complete(err error) {
 	if runtime.snapshot.State != dataplane.StateFailed {
 		runtime.terminalErr = err
 		runtime.snapshot.State = dataplane.StateStopped
+		runtime.snapshot.DNS.Running = false
+		runtime.snapshot.Ingress.Running = false
+		for index := range runtime.snapshot.Relays {
+			runtime.snapshot.Relays[index].Running = false
+		}
 	}
 	runtime.mutex.Unlock()
 	if runtime.done == nil {
@@ -425,6 +458,7 @@ func testControllerDependencies(
 	runtime dataPlane,
 ) dependencies {
 	return dependencies{
+		globalNetworkReleasePlans: &testGlobalNetworkReleasePlanStore{},
 		openMaterial: func() (certificateMaterialStore, error) {
 			return material, nil
 		},
@@ -490,7 +524,7 @@ func TestControllerConstructionIsSideEffectFree(t *testing.T) {
 
 // TestProductionControllerConstructionPublishesItsShutdownBudget verifies assembly remains inert and gives the outer daemon a stable bound.
 func TestProductionControllerConstructionPublishesItsShutdownBudget(t *testing.T) {
-	controller, err := NewController(state.NewStore(nil, nil, nil, nil, nil))
+	controller, err := NewController(state.NewStore(nil, nil, nil, nil, nil), state.NewOperationJournal(nil, nil, nil, nil, nil))
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}
@@ -506,6 +540,7 @@ func TestProductionControllerConstructionPublishesItsShutdownBudget(t *testing.T
 func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 	source := &testRuntimeStateSource{snapshot: validControllerSnapshot()}
 	var typedNilSource *testRuntimeStateSource
+	var typedNilReleasePlans *testGlobalNetworkReleasePlanStore
 	material := &testMaterialStore{}
 	authority := &testCertificateAuthority{root: validTestRoot()}
 	runtime := newTestDataPlane(nil)
@@ -516,13 +551,79 @@ func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 		source       runtimeStateSource
 		dependencies dependencies
 	}{
-		{name: "source", source: nil, dependencies: valid},
-		{name: "typed nil source", source: typedNilSource, dependencies: valid},
-		{name: "material opener", source: source, dependencies: func() dependencies { value := valid; value.openMaterial = nil; return value }()},
-		{name: "bootstrapper", source: source, dependencies: func() dependencies { value := valid; value.bootstrap = nil; return value }()},
-		{name: "desired factory", source: source, dependencies: func() dependencies { value := valid; value.newDesiredState = nil; return value }()},
-		{name: "runtime factory", source: source, dependencies: func() dependencies { value := valid; value.newDataPlane = nil; return value }()},
-		{name: "cleanup timeout", source: source, dependencies: func() dependencies { value := valid; value.cleanupTimeout = 0; return value }()},
+		{
+			name:         "source",
+			source:       nil,
+			dependencies: valid,
+		},
+		{
+			name:         "typed nil source",
+			source:       typedNilSource,
+			dependencies: valid,
+		},
+		{
+			name:   "release plan store",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.globalNetworkReleasePlans = nil
+				return value
+			}(),
+		},
+		{
+			name:   "typed nil release plan store",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.globalNetworkReleasePlans = typedNilReleasePlans
+				return value
+			}(),
+		},
+		{
+			name:   "material opener",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.openMaterial = nil
+				return value
+			}(),
+		},
+		{
+			name:   "bootstrapper",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.bootstrap = nil
+				return value
+			}(),
+		},
+		{
+			name:   "desired factory",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.newDesiredState = nil
+				return value
+			}(),
+		},
+		{
+			name:   "runtime factory",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.newDataPlane = nil
+				return value
+			}(),
+		},
+		{
+			name:   "cleanup timeout",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.cleanupTimeout = 0
+				return value
+			}(),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -532,8 +633,11 @@ func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 			}
 		})
 	}
-	if controller, err := NewController(nil); err == nil || controller != nil {
-		t.Fatalf("NewController(nil) = (%v, %v), want nil and wiring error", controller, err)
+	if controller, err := NewController(nil, nil); err == nil || controller != nil {
+		t.Fatalf("NewController(nil, nil) = (%v, %v), want nil and wiring error", controller, err)
+	}
+	if controller, err := NewController(new(state.Store), nil); err == nil || controller != nil {
+		t.Fatalf("NewController(store, nil) = (%v, %v), want nil and wiring error", controller, err)
 	}
 }
 
@@ -1908,6 +2012,7 @@ func TestControllerFailsClosedForCorruptAndExpiredAuthority(t *testing.T) {
 func realController(t *testing.T, directory string, config certificates.Config) *Controller {
 	t.Helper()
 	dependencies := productionDependencies()
+	dependencies.globalNetworkReleasePlans = &testGlobalNetworkReleasePlanStore{}
 	dependencies.certificateConfig = config
 	dependencies.openMaterial = func() (certificateMaterialStore, error) {
 		return materialstore.Open(directory)

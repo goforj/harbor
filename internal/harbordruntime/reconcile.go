@@ -23,6 +23,12 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 	if controller == nil || !controller.initialized {
 		return ErrNotInitialized
 	}
+	controller.mutex.RLock()
+	releasing := controller.releaseMode
+	controller.mutex.RUnlock()
+	if releasing {
+		return errors.New("reconcile Harbor runtime: network release is armed")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -178,7 +184,11 @@ func (controller *Controller) requireReconcileLifecycle(ctx context.Context, exp
 	controller.mutex.RLock()
 	lifecycle := controller.state
 	stopCause := controller.stopCause
+	releasing := controller.releaseMode
 	controller.mutex.RUnlock()
+	if releasing {
+		return errors.New("reconcile Harbor runtime: network release is armed")
+	}
 	if lifecycle != expected {
 		if expected == controllerStateStarting && stopCause != nil {
 			return stopCause

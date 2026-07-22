@@ -91,6 +91,29 @@ type recordingProjectUnregisterRecovery struct {
 	err    error
 }
 
+// recordingNetworkReleaseRecovery records release arming before any project recovery boundary.
+type recordingNetworkReleaseRecovery struct {
+	events *[]string
+	armed  bool
+	err    error
+}
+
+// ArmNetworkRelease returns the configured durable-release recovery outcome.
+func (recovery *recordingNetworkReleaseRecovery) ArmNetworkRelease(context.Context) (bool, error) {
+	*recovery.events = append(*recovery.events, "release.arm")
+	return recovery.armed, recovery.err
+}
+
+// recordingNetworkReleaseState reports whether the retained runtime is control-anchor-only.
+type recordingNetworkReleaseState struct {
+	armed bool
+}
+
+// NetworkReleaseArmed returns the configured retained runtime mode.
+func (state recordingNetworkReleaseState) NetworkReleaseArmed() bool {
+	return state.armed
+}
+
 // Recover records project-removal recovery before any lifecycle or endpoint work.
 func (recovery *recordingProjectUnregisterRecovery) Recover(context.Context) error {
 	*recovery.events = append(*recovery.events, "unregister.recover")
@@ -249,56 +272,114 @@ func TestProvideHarbordReadinessRejectsMissingConnections(t *testing.T) {
 // TestRecoverDaemonStateStopsBeforeRuntimeWork pins the pre-runtime recovery boundary.
 func TestRecoverDaemonStateStopsBeforeRuntimeWork(t *testing.T) {
 	events := []string{}
-	unregister := &recordingProjectUnregisterRecovery{events: &events}
-	lifecycle := &recordingProjectLifecycleRecovery{events: &events}
+	release := &recordingNetworkReleaseRecovery{
+		events: &events,
+	}
+	unregister := &recordingProjectUnregisterRecovery{
+		events: &events,
+	}
+	lifecycle := &recordingProjectLifecycleRecovery{
+		events: &events,
+	}
 
-	if err := recoverDaemonState(t.Context(), unregister, lifecycle); err != nil {
+	if err := recoverDaemonState(t.Context(), release, unregister, lifecycle); err != nil {
 		t.Fatalf("recoverDaemonState() error = %v", err)
 	}
-	if got, want := strings.Join(events, ","), "unregister.recover,lifecycle.recover"; got != want {
+	if got, want := strings.Join(events, ","), "release.arm,unregister.recover,lifecycle.recover"; got != want {
 		t.Fatalf("daemon recovery order = %q, want %q", got, want)
 	}
 }
 
 // TestRecoverDaemonStatePropagatesEachFailure prevents later recovery or runtime work from crossing a failed boundary.
 func TestRecoverDaemonStatePropagatesEachFailure(t *testing.T) {
+	releaseErr := errors.New("release recovery failed")
 	unregisterErr := errors.New("unregister recovery failed")
 	lifecycleErr := errors.New("lifecycle recovery failed")
 	tests := []struct {
 		name          string
+		releaseErr    error
 		unregisterErr error
 		lifecycleErr  error
 		want          error
 		wantEvents    string
 	}{
 		{
+			name:       "corrupt active release plan",
+			releaseErr: releaseErr,
+			want:       releaseErr,
+			wantEvents: "release.arm",
+		},
+		{
 			name:          "unregister",
 			unregisterErr: unregisterErr,
 			want:          unregisterErr,
-			wantEvents:    "unregister.recover",
+			wantEvents:    "release.arm,unregister.recover",
 		},
 		{
 			name:         "lifecycle",
 			lifecycleErr: lifecycleErr,
 			want:         lifecycleErr,
-			wantEvents:   "unregister.recover,lifecycle.recover",
+			wantEvents:   "release.arm,unregister.recover,lifecycle.recover",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			events := []string{}
-			unregister := &recordingProjectUnregisterRecovery{events: &events, err: test.unregisterErr}
+			release := &recordingNetworkReleaseRecovery{
+				events: &events,
+				err:    test.releaseErr,
+			}
+			unregister := &recordingProjectUnregisterRecovery{
+				events: &events,
+				err:    test.unregisterErr,
+			}
 			lifecycle := &recordingProjectLifecycleRecovery{
 				events:     &events,
 				recoverErr: test.lifecycleErr,
 			}
 
-			err := recoverDaemonState(t.Context(), unregister, lifecycle)
+			err := recoverDaemonState(t.Context(), release, unregister, lifecycle)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("recoverDaemonState() error = %v, want %v", err, test.want)
 			}
 			if got := strings.Join(events, ","); got != test.wantEvents {
 				t.Fatalf("recovery events = %q, want %q", got, test.wantEvents)
+			}
+		})
+	}
+}
+
+// TestRecoverDaemonStateSkipsProjectRecoveryForEveryActiveReleasePhase keeps global host cleanup isolated from project authority.
+func TestRecoverDaemonStateSkipsProjectRecoveryForEveryActiveReleasePhase(t *testing.T) {
+	phases := []state.GlobalNetworkReleasePlanPhase{
+		state.GlobalNetworkReleasePlanPhaseRuntimeRelease,
+		state.GlobalNetworkReleasePlanPhaseLowPorts,
+		state.GlobalNetworkReleasePlanPhaseResolver,
+		state.GlobalNetworkReleasePlanPhaseTrust,
+		state.GlobalNetworkReleasePlanPhaseLoopbacks,
+		state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+		state.GlobalNetworkReleasePlanPhaseOwnership,
+		state.GlobalNetworkReleasePlanPhaseProjection,
+	}
+	for _, phase := range phases {
+		t.Run(string(phase), func(t *testing.T) {
+			events := []string{}
+			release := &recordingNetworkReleaseRecovery{
+				events: &events,
+				armed:  true,
+			}
+			unregister := &recordingProjectUnregisterRecovery{
+				events: &events,
+			}
+			lifecycle := &recordingProjectLifecycleRecovery{
+				events: &events,
+			}
+
+			if err := recoverDaemonState(t.Context(), release, unregister, lifecycle); err != nil {
+				t.Fatalf("recoverDaemonState() error = %v", err)
+			}
+			if got, want := strings.Join(events, ","), "release.arm"; got != want {
+				t.Fatalf("recovery events = %q, want %q", got, want)
 			}
 		})
 	}
@@ -339,7 +420,7 @@ func TestProvideProjectUnregisterCoordinatorIsLazy(t *testing.T) {
 	operations := new(state.OperationJournal)
 	plans := new(state.HelperApprovalPlanSource)
 	ownership := new(state.MachineOwnershipProjectionSource)
-	runtimeController, err := harbordruntime.NewController(store)
+	runtimeController, err := harbordruntime.NewController(store, new(state.OperationJournal))
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}
@@ -398,7 +479,7 @@ func TestProvideNetworkSetupCoordinatorIsLazy(t *testing.T) {
 // TestProvideNetworkResolverSetupCoordinatorIsLazy proves assembly does not open capability stores or observe native policy.
 func TestProvideNetworkResolverSetupCoordinatorIsLazy(t *testing.T) {
 	store := new(state.Store)
-	runtimeController, err := harbordruntime.NewController(store)
+	runtimeController, err := harbordruntime.NewController(store, new(state.OperationJournal))
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}
@@ -584,7 +665,7 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	operations := new(state.OperationJournal)
 	plans := new(state.HelperApprovalPlanSource)
 	ownership := new(state.MachineOwnershipProjectionSource)
-	runtimeController, err := harbordruntime.NewController(store)
+	runtimeController, err := harbordruntime.NewController(store, new(state.OperationJournal))
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}
@@ -656,7 +737,7 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 
 // TestDaemonRuntimeCloseTimeoutExceedsControllerBudget keeps outer authority beyond nested cleanup.
 func TestDaemonRuntimeCloseTimeoutExceedsControllerBudget(t *testing.T) {
-	runtimeController, err := harbordruntime.NewController(new(state.Store))
+	runtimeController, err := harbordruntime.NewController(new(state.Store), new(state.OperationJournal))
 	if err != nil {
 		t.Fatalf("NewController() error = %v", err)
 	}
@@ -674,8 +755,20 @@ func TestDaemonRuntimeCloseTimeoutExceedsControllerBudget(t *testing.T) {
 func TestProjectLifecycleRuntimeClosesRecoveredProcessesWhenNetworkStartFails(t *testing.T) {
 	startErr := errors.New("network runtime rejected startup")
 	closeErr := errors.New("project process cleanup failed")
-	closer := &recordingLifecycleCloser{closeErr: closeErr, done: make(chan struct{})}
-	runtime := newProjectLifecycleRuntime(&recordingLifecycleNetworkRuntime{startErr: startErr, done: make(chan struct{})}, closer, func(context.Context) error { return nil })
+	closer := &recordingLifecycleCloser{
+		closeErr: closeErr,
+		done:     make(chan struct{}),
+	}
+	network := &recordingLifecycleNetworkRuntime{
+		startErr: startErr,
+		done:     make(chan struct{}),
+	}
+	runtime := newProjectLifecycleRuntime(
+		network,
+		closer,
+		recordingNetworkReleaseState{},
+		func(context.Context) error { return nil },
+	)
 
 	err := runtime.Start(t.Context())
 	if !closer.closed || !errors.Is(err, startErr) || !errors.Is(err, closeErr) {
@@ -698,7 +791,12 @@ func TestProjectLifecycleRuntimeResumesRecoveredStartsAfterNetworkStartup(t *tes
 			return nil
 		},
 	}
-	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error { return nil })
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		recordingNetworkReleaseState{},
+		func(context.Context) error { return nil },
+	)
 
 	if err := runtime.Start(t.Context()); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -716,13 +814,21 @@ func TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails(t *testing.T) {
 	resumeErr := errors.New("resume recovered starts failed")
 	lifecycleCloseErr := errors.New("project process cleanup failed")
 	networkCloseErr := errors.New("network cleanup failed")
-	network := &recordingLifecycleNetworkRuntime{closeErr: networkCloseErr, done: make(chan struct{})}
+	network := &recordingLifecycleNetworkRuntime{
+		closeErr: networkCloseErr,
+		done:     make(chan struct{}),
+	}
 	lifecycle := &recordingLifecycleCloser{
 		resumeErr: resumeErr,
 		closeErr:  lifecycleCloseErr,
 		done:      make(chan struct{}),
 	}
-	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error { return nil })
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		recordingNetworkReleaseState{},
+		func(context.Context) error { return nil },
+	)
 
 	err := runtime.Start(t.Context())
 	if !errors.Is(err, resumeErr) || !errors.Is(err, lifecycleCloseErr) || !errors.Is(err, networkCloseErr) {
@@ -742,12 +848,23 @@ func TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails(t *testing.T) {
 // TestProjectLifecycleRuntimeRunsPostRuntimeRecoveryBeforeResume preserves the only safe startup sequence for retained launches.
 func TestProjectLifecycleRuntimeRunsPostRuntimeRecoveryBeforeResume(t *testing.T) {
 	events := []string{}
-	network := &recordingLifecycleNetworkRuntime{events: &events, done: make(chan struct{})}
-	lifecycle := &recordingLifecycleCloser{events: &events, done: make(chan struct{})}
-	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error {
-		events = append(events, "post-runtime.recover")
-		return nil
-	})
+	network := &recordingLifecycleNetworkRuntime{
+		events: &events,
+		done:   make(chan struct{}),
+	}
+	lifecycle := &recordingLifecycleCloser{
+		events: &events,
+		done:   make(chan struct{}),
+	}
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		recordingNetworkReleaseState{},
+		func(context.Context) error {
+			events = append(events, "post-runtime.recover")
+			return nil
+		},
+	)
 
 	if err := runtime.Start(t.Context()); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -757,6 +874,54 @@ func TestProjectLifecycleRuntimeRunsPostRuntimeRecoveryBeforeResume(t *testing.T
 	}
 	if err := runtime.Close(t.Context()); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestProjectLifecycleRuntimeRetainsControlAnchorWithoutProjectRecovery keeps a recovered global release reachable for control-plane cleanup.
+func TestProjectLifecycleRuntimeRetainsControlAnchorWithoutProjectRecovery(t *testing.T) {
+	events := []string{}
+	network := &recordingLifecycleNetworkRuntime{
+		events: &events,
+		done:   make(chan struct{}),
+	}
+	lifecycle := &recordingLifecycleCloser{
+		events: &events,
+		done:   make(chan struct{}),
+	}
+	release := recordingNetworkReleaseState{
+		armed: true,
+	}
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		release,
+		func(context.Context) error {
+			events = append(events, "post-runtime.recover")
+			return nil
+		},
+	)
+
+	if err := runtime.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got, want := strings.Join(events, ","), "network.start"; got != want {
+		t.Fatalf("startup events = %q, want %q", got, want)
+	}
+	select {
+	case <-runtime.Done():
+		t.Fatal("Done() closed while the release control anchor remained live")
+	default:
+	}
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got, want := strings.Join(events, ","), "network.start,lifecycle.close,network.close"; got != want {
+		t.Fatalf("close events = %q, want %q", got, want)
+	}
+	select {
+	case <-runtime.Done():
+	default:
+		t.Fatal("Done() remained open after release control anchor close")
 	}
 }
 
@@ -770,7 +935,29 @@ func TestProjectLifecycleRuntimeFailsFastWithoutPostRuntimeRecovery(t *testing.T
 		}
 	}()
 
-	_ = newProjectLifecycleRuntime(network, lifecycle, nil)
+	_ = newProjectLifecycleRuntime(network, lifecycle, recordingNetworkReleaseState{}, nil)
+}
+
+// TestProjectLifecycleRuntimeFailsFastWithoutNetworkReleaseState prevents startup from silently bypassing release recovery.
+func TestProjectLifecycleRuntimeFailsFastWithoutNetworkReleaseState(t *testing.T) {
+	network := &recordingLifecycleNetworkRuntime{
+		done: make(chan struct{}),
+	}
+	lifecycle := &recordingLifecycleCloser{
+		done: make(chan struct{}),
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("newProjectLifecycleRuntime() with nil release state did not fail fast")
+		}
+	}()
+
+	_ = newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		nil,
+		func(context.Context) error { return nil },
+	)
 }
 
 // TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenPostRuntimeRecoveryFails preserves terminal ownership after partial startup.
@@ -779,12 +966,25 @@ func TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenPostRuntimeRecoveryFail
 	recoveryErr := errors.New("post-runtime recovery failed")
 	lifecycleCloseErr := errors.New("lifecycle close failed")
 	networkCloseErr := errors.New("network close failed")
-	network := &recordingLifecycleNetworkRuntime{events: &events, closeErr: networkCloseErr, done: make(chan struct{})}
-	lifecycle := &recordingLifecycleCloser{events: &events, closeErr: lifecycleCloseErr, done: make(chan struct{})}
-	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error {
-		events = append(events, "post-runtime.recover")
-		return recoveryErr
-	})
+	network := &recordingLifecycleNetworkRuntime{
+		events:   &events,
+		closeErr: networkCloseErr,
+		done:     make(chan struct{}),
+	}
+	lifecycle := &recordingLifecycleCloser{
+		events:   &events,
+		closeErr: lifecycleCloseErr,
+		done:     make(chan struct{}),
+	}
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		recordingNetworkReleaseState{},
+		func(context.Context) error {
+			events = append(events, "post-runtime.recover")
+			return recoveryErr
+		},
+	)
 
 	err := runtime.Start(t.Context())
 	if !errors.Is(err, recoveryErr) || !errors.Is(err, lifecycleCloseErr) || !errors.Is(err, networkCloseErr) {

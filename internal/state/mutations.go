@@ -41,6 +41,16 @@ func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseStage(
 	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
 }
 
+// mutateGlobalNetworkReleaseRuntimeAdvance admits the sole checkpoint mutation owned by a staged release operation.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseRuntimeAdvance(
+	ctx context.Context,
+	scope string,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
+	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
+}
+
 // mutateWithAdmission serializes a mutation and runs its admission proof in the same immediate transaction.
 func (coordinator *MutationCoordinator) mutateWithAdmission(
 	ctx context.Context,
