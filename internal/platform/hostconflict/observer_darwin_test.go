@@ -36,7 +36,7 @@ func TestObserveStableDarwinRequiresConsecutiveFingerprints(t *testing.T) {
 		{name: "change then stability", sequence: []darwinObservationResult{{observation: first}, {observation: second}, {observation: second}}, wantCalls: 3},
 		{name: "transient reset", sequence: []darwinObservationResult{{err: errDarwinPCBSnapshotChanged}, {observation: first}, {observation: first}}, wantCalls: 3},
 		{name: "route transient reset", sequence: []darwinObservationResult{{err: errDarwinRouteSnapshotChanged}, {observation: first}, {observation: first}}, wantCalls: 3},
-		{name: "never stable", sequence: []darwinObservationResult{{observation: first}, {observation: second}, {observation: first}, {observation: second}, {observation: first}, {observation: second}, {observation: first}, {observation: second}}, wantCalls: darwinObservationRetries + 1, wantErr: "did not stabilize"},
+		{name: "never stable", sequence: alternatingDarwinObservationResults(first, second, darwinObservationRetries+1), wantCalls: darwinObservationRetries + 1, wantErr: "did not stabilize"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -66,6 +66,18 @@ func TestObserveStableDarwinRequiresConsecutiveFingerprints(t *testing.T) {
 type darwinObservationResult struct {
 	observation Observation
 	err         error
+}
+
+// alternatingDarwinObservationResults supplies exactly count distinct consecutive fingerprints.
+func alternatingDarwinObservationResults(first, second Observation, count int) []darwinObservationResult {
+	results := make([]darwinObservationResult, count)
+	for index := range results {
+		results[index].observation = first
+		if index%2 != 0 {
+			results[index].observation = second
+		}
+	}
+	return results
 }
 
 // TestObserveStableDarwinPreservesErrorsAndCancellation proves only native generation races are retried.
