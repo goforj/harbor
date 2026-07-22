@@ -9,23 +9,18 @@ import (
 	"context"
 	"fmt"
 	"github.com/glebarez/sqlite"
-	"github.com/goforj/str/v2"
 	"gorm.io/gorm"
-	"strings"
 )
 
-var compiledDatabaseDrivers = []string{
-	"sqlite",
-}
-
-// ReadinessCheck gives health aggregation a stable label and deferred probe without exposing connection internals.
 type ReadinessCheck struct {
 	Name  string
 	Check func(context.Context) error
 }
 
-// ReadinessChecks exposes one stable probe per generated connection so health reporting stays independent of accessor names.
 func (c *Connections) ReadinessChecks() []ReadinessCheck {
+	if c == nil {
+		return nil
+	}
 	checks := []ReadinessCheck{
 		{
 			Name: "db_default",
@@ -43,7 +38,6 @@ func (c *Connections) ReadinessChecks() []ReadinessCheck {
 	return checks
 }
 
-// readinessCheck uses the shared connection lookup so default and named databases retain identical error behavior.
 func (c *Connections) readinessCheck(ctx context.Context, name string) error {
 	conn, err := c.Connection(name)
 	if err != nil {
@@ -56,12 +50,7 @@ func (c *Connections) readinessCheck(ctx context.Context, name string) error {
 	return sqlDB.PingContext(ctx)
 }
 
-// openDialector rejects drivers outside the generated manifest before GORM initializes a connection.
 func openDialector(driver, dsn string) (gorm.Dialector, error) {
-	driver = str.Of(driver).ToLower().Trim().String()
-	if !databaseDriverCompiled(driver) {
-		return nil, fmt.Errorf("database: active driver %q is not built in; compiled choices: %s; run forj generate --db after updating DB_SUPPORTED_DRIVERS", driver, strings.Join(compiledDatabaseDrivers, ", "))
-	}
 	switch driver {
 	case "sqlite", "sqlite3":
 		if err := ensureSQLitePath(dsn); err != nil {
@@ -71,24 +60,6 @@ func openDialector(driver, dsn string) (gorm.Dialector, error) {
 	default:
 		return nil, fmt.Errorf("unsupported driver %q", driver)
 	}
-}
-
-// databaseDriverCompiled reports whether driver is selectable in this generated artifact.
-func databaseDriverCompiled(driver string) bool {
-	switch driver {
-	case "mariadb":
-		driver = "mysql"
-	case "postgresql":
-		driver = "postgres"
-	case "sqlite3":
-		driver = "sqlite"
-	}
-	for _, compiled := range compiledDatabaseDrivers {
-		if driver == compiled {
-			return true
-		}
-	}
-	return false
 }
 
 // GetHarbord returns the "harbord" connection.

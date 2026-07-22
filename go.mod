@@ -12,6 +12,9 @@ require (
 	github.com/docker/go-sdk/context v0.1.0-alpha013
 	github.com/glebarez/sqlite v1.11.0
 	github.com/goforj/env/v2 v2.5.0
+	github.com/goforj/storage v0.5.0
+	github.com/goforj/storage/driver/localstorage v0.5.0
+	github.com/goforj/str v1.3.0
 	github.com/goforj/str/v2 v2.0.1
 	github.com/goforj/wire v1.2.0
 	github.com/joho/godotenv v1.5.1
@@ -39,6 +42,7 @@ require (
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/goforj/storage/storagecore v0.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
