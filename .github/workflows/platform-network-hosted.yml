@@ -48,11 +48,12 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: true
           cache-dependency-path: |
             go.sum
             .ci/goforj/go.sum
 
-      - name: Build pinned GoForj CLI on Unix
+      - name: Build pinned GoForj tools on Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -63,9 +64,11 @@ jobs:
             cd .ci/goforj
             go build -trimpath -o "$binary" ./cmd/forj
           )
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
 
-      - name: Build pinned GoForj CLI on Windows
+      - name: Build pinned GoForj tools on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -78,7 +81,14 @@ jobs:
           } finally {
             Pop-Location
           }
+          $env:GOBIN = $binaryDirectory
+          try {
+            go install github.com/goforj/wire/cmd/wire@v1.2.0
+          } finally {
+            Remove-Item Env:GOBIN
+          }
           "HARBOR_PROJECT_IDENTITY_FORJ_BINARY=$binary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $binaryDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build production loopback adapter proof
         shell: bash

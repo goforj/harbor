@@ -237,6 +237,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: true
           cache-dependency-path: |
             go.sum
             .ci/goforj/go.sum
@@ -250,7 +251,7 @@ jobs:
           printf 'HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE=%s\n' "$ImageOS" >> "$GITHUB_ENV"
           printf 'HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE_VERSION=%s\n' "$ImageVersion" >> "$GITHUB_ENV"
 
-      - name: Build pinned GoForj CLI
+      - name: Build pinned GoForj tools
         run: |
           binary_directory="${RUNNER_TEMP}/harbor-bin"
           binary="${binary_directory}/forj"
@@ -259,7 +260,9 @@ jobs:
             cd .ci/goforj
             go build -trimpath -o "$binary" ./cmd/forj
           )
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
 
       - name: Provision generated-project proof identities
         run: |
