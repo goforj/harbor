@@ -16,11 +16,18 @@ import (
 // TestParseArgumentsRequiresExplicitInputs proves no UID, GID, or helper source is inferred from ambient state.
 func TestParseArgumentsRequiresExplicitInputs(t *testing.T) {
 	helper := filepath.Join(string(filepath.Separator), "build", "harbor-helper")
-	configuration, err := parseArguments([]string{"--group-id", "0", "--helper", helper, "--user-id", "501"})
+	launchdRelay := filepath.Join(string(filepath.Separator), "build", "harbor-launchd-relay")
+	arguments := []string{"--group-id", "0", "--helper", helper, "--user-id", "501"}
+	if runtime.GOOS == "darwin" {
+		arguments = append(arguments, "--launchd-relay", launchdRelay)
+	} else {
+		launchdRelay = ""
+	}
+	configuration, err := parseArguments(arguments)
 	if err != nil {
 		t.Fatalf("parseArguments() error = %v", err)
 	}
-	if configuration.HelperSource != helper || configuration.UserID != 501 || configuration.GroupID != 0 {
+	if configuration.HelperSource != helper || configuration.LaunchdRelaySource != launchdRelay || configuration.UserID != 501 || configuration.GroupID != 0 {
 		t.Fatalf("parseArguments() = %#v", configuration)
 	}
 }
@@ -28,6 +35,7 @@ func TestParseArgumentsRequiresExplicitInputs(t *testing.T) {
 // TestParseArgumentsRejectsMissingMalformedAndPositionalInputs covers the complete narrow command grammar.
 func TestParseArgumentsRejectsMissingMalformedAndPositionalInputs(t *testing.T) {
 	helper := filepath.Join(string(filepath.Separator), "build", "harbor-helper")
+	launchdRelay := filepath.Join(string(filepath.Separator), "build", "harbor-launchd-relay")
 	valid := []string{"--helper", helper, "--user-id", "501", "--group-id", "20"}
 	tests := []struct {
 		name      string
@@ -47,6 +55,20 @@ func TestParseArgumentsRejectsMissingMalformedAndPositionalInputs(t *testing.T) 
 		{name: "unknown flag", arguments: append(append([]string(nil), valid...), "--destination", "/tmp/helper"), want: "flag provided but not defined"},
 		{name: "duplicate helper", arguments: append(append([]string(nil), valid...), "--helper", helper), want: "specified only once"},
 		{name: "positional", arguments: append(append([]string(nil), valid...), "repair"), want: "unexpected positional"},
+	}
+	if runtime.GOOS == "darwin" {
+		for index := range tests {
+			tests[index].arguments = append(tests[index].arguments, "--launchd-relay", launchdRelay)
+		}
+		tests = append(tests, struct {
+			name      string
+			arguments []string
+			want      string
+		}{
+			name:      "missing launchd relay",
+			arguments: valid,
+			want:      "--launchd-relay is required on darwin",
+		})
 	}
 	if runtime.GOOS != "darwin" {
 		tests = append(tests, struct {
@@ -69,6 +91,9 @@ func TestParseArgumentsRejectsMissingMalformedAndPositionalInputs(t *testing.T) 
 func TestRunCommandReportsOneConciseOutcome(t *testing.T) {
 	helper := filepath.Join(string(filepath.Separator), "build", "harbor-helper")
 	arguments := []string{"--helper", helper, "--user-id", "501", "--group-id", "20"}
+	if runtime.GOOS == "darwin" {
+		arguments = append(arguments, "--launchd-relay", filepath.Join(string(filepath.Separator), "build", "harbor-launchd-relay"))
+	}
 	t.Run("success", func(t *testing.T) {
 		var output bytes.Buffer
 		var diagnostics bytes.Buffer

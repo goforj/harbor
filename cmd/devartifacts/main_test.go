@@ -34,24 +34,24 @@ func TestRunBuildsOnlyFixedRootArtifacts(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 	artifactDirectory := filepath.Join(workingDirectory, "devtools", developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH))
-	wantCalls := [][]string{
-		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "helper"), "./cmd/helper"},
-		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "devbootstrap"), "./cmd/devbootstrap"},
-		{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, "outputbroker"), "./cmd/outputbroker"},
+	builds := artifactBuildsForPlatform(runtime.GOOS)
+	wantCalls := make([][]string, 0, len(builds))
+	for _, build := range builds {
+		wantCalls = append(wantCalls, []string{repositoryRoot, "go", "build", "-o", filepath.Join(artifactDirectory, build.outputName), build.packagePath})
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
 	}
-	for _, name := range []string{"helper", "devbootstrap", "outputbroker"} {
-		information, err := os.Stat(filepath.Join(artifactDirectory, name))
+	for _, build := range builds {
+		information, err := os.Stat(filepath.Join(artifactDirectory, build.outputName))
 		if err != nil {
-			t.Fatalf("stat %s: %v", name, err)
+			t.Fatalf("stat %s: %v", build.outputName, err)
 		}
 		if !information.Mode().IsRegular() {
-			t.Fatalf("%s mode = %v, want a regular file", name, information.Mode())
+			t.Fatalf("%s mode = %v, want a regular file", build.outputName, information.Mode())
 		}
 		if runtime.GOOS != "windows" && information.Mode() != artifactMode {
-			t.Fatalf("%s mode = %v, want %v", name, information.Mode(), artifactMode)
+			t.Fatalf("%s mode = %v, want %v", build.outputName, information.Mode(), artifactMode)
 		}
 	}
 }
@@ -62,8 +62,20 @@ func TestArtifactBuildsForPlatformAddsTheRelayOnlyForDarwin(t *testing.T) {
 		platform string
 		want     []buildInvocation
 	}{
-		{platform: "linux", want: baseArtifactBuilds},
-		{platform: "darwin", want: append(append([]buildInvocation(nil), baseArtifactBuilds...), buildInvocation{packagePath: "./cmd/launchdrelay", outputName: "launchdrelay"})},
+		{
+			platform: "linux",
+			want:     baseArtifactBuilds,
+		},
+		{
+			platform: "darwin",
+			want: append(
+				append([]buildInvocation(nil), baseArtifactBuilds...),
+				buildInvocation{
+					packagePath: "./cmd/launchdrelay",
+					outputName:  "launchdrelay",
+				},
+			),
+		},
 	} {
 		t.Run(test.platform, func(t *testing.T) {
 			if got := artifactBuildsForPlatform(test.platform); !reflect.DeepEqual(got, test.want) {
