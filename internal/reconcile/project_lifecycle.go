@@ -30,6 +30,7 @@ import (
 const (
 	defaultProjectStartupTimeout     = 2 * time.Minute
 	defaultProjectLaunchTimeout      = 30 * time.Second
+	defaultProjectResetTimeout       = 2 * time.Minute
 	defaultProjectProcessJoinTimeout = 15 * time.Second
 	defaultReadinessInterval         = 150 * time.Millisecond
 	defaultReadinessHTTPTimeout      = time.Second
@@ -129,6 +130,7 @@ type projectReadinessProber interface {
 // projectProcessSupervisor owns exact project process trees for the daemon lifetime.
 type projectProcessSupervisor interface {
 	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
+	Down(context.Context, projectprocess.DownRequest) error
 	Stop(context.Context, domain.ProjectID, domain.SessionID) error
 	ObserveServices(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.ServiceObservation, error)
 	ObserveFrameworkResources(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.FrameworkResourceObservation, error)
@@ -181,6 +183,7 @@ type ProjectLifecycleCoordinator struct {
 	newManagedLaunch   func(domain.ProjectID, string, time.Time) (domain.ProjectSession, string, error)
 	startupTimeout     time.Duration
 	launchTimeout      time.Duration
+	resetTimeout       time.Duration
 	processJoinTimeout time.Duration
 	readinessInterval  time.Duration
 	ctx                context.Context
@@ -262,6 +265,7 @@ func newProjectLifecycleCoordinator(
 		newSession:         newSession,
 		startupTimeout:     startupTimeout,
 		launchTimeout:      defaultProjectLaunchTimeout,
+		resetTimeout:       defaultProjectResetTimeout,
 		processJoinTimeout: defaultProjectProcessJoinTimeout,
 		readinessInterval:  readinessInterval,
 		ctx:                ctx,
@@ -473,6 +477,51 @@ func (coordinator *ProjectLifecycleCoordinator) withProjectLaunchTimeout() (cont
 	return context.WithTimeout(parent, timeout)
 }
 
+// withProjectResetTimeout bounds the idempotent teardown independently from development-process admission.
+func (coordinator *ProjectLifecycleCoordinator) withProjectResetTimeout() (context.Context, context.CancelFunc) {
+	timeout := coordinator.resetTimeout
+	if timeout <= 0 {
+		timeout = defaultProjectResetTimeout
+	}
+	parent := coordinator.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+// resetBeforeLaunch withdraws durable publication before one idempotent cleanup command can touch the selected checkout.
+func (coordinator *ProjectLifecycleCoordinator) resetBeforeLaunch(
+	mutation state.ProjectLifecycleMutation,
+	session domain.ProjectSession,
+	checkoutRoot string,
+	executable string,
+	code string,
+) bool {
+	if err := coordinator.reconcileProjectRoutes(context.Background(), "withdraw project routes before runtime reset"); err != nil {
+		coordinator.failStartWithoutProcess(mutation, session, code+".routes.failed", err)
+		return false
+	}
+	resetContext, cancelReset := coordinator.withProjectResetTimeout()
+	err := coordinator.supervisor.Down(resetContext, projectprocess.DownRequest{
+		CheckoutRoot:     checkoutRoot,
+		GoForjExecutable: executable,
+	})
+	cancelReset()
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, projectprocess.ErrCleanupUncertain) {
+		// Down never accepts a development-process identity. Retire this planned session so a
+		// subsequent Start can reach the supervisor's in-memory checkout fence, rather than
+		// persisting a process-scope quarantine that blocks every retry before Down runs again.
+		coordinator.failStartWithoutProcess(mutation, session, code+".uncertain", err)
+		return false
+	}
+	coordinator.failStartWithoutProcess(mutation, session, code+".failed", err)
+	return false
+}
+
 // withProjectJoinTimeout bounds process stop and durable attachment joins while retaining exact evidence on timeout.
 func (coordinator *ProjectLifecycleCoordinator) withProjectJoinTimeout() (context.Context, context.CancelFunc) {
 	timeout := coordinator.processJoinTimeout
@@ -671,6 +720,9 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	})
 	if err != nil {
 		coordinator.cancelQueued(record, err)
+		return
+	}
+	if !coordinator.resetBeforeLaunch(begun, session, project.Project.Path, descriptor.Executable, "project.reset") {
 		return
 	}
 
@@ -1721,6 +1773,9 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 	})
 	if err != nil {
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.state", err)
+		return
+	}
+	if !coordinator.resetBeforeLaunch(begun, session, admission.Project.Project.Path, descriptor.Executable, "project.restart.reset") {
 		return
 	}
 	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()

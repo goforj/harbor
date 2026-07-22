@@ -38,6 +38,11 @@ func (*projectLifecycleRecoverySupervisor) Start(
 	return nil, errors.New("unexpected process launch during project lifecycle recovery")
 }
 
+// Down rejects reset work because recovery fixtures never own a registered checkout runtime.
+func (*projectLifecycleRecoverySupervisor) Down(context.Context, projectprocess.DownRequest) error {
+	return errors.New("unexpected project reset during project lifecycle recovery")
+}
+
 // Stop rejects in-memory supervision because prior processes are observed without claiming authority over them.
 func (*projectLifecycleRecoverySupervisor) Stop(context.Context, domain.ProjectID, domain.SessionID) error {
 	return errors.New("unexpected supervised stop during project lifecycle recovery")

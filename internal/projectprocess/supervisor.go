@@ -51,6 +51,8 @@ var (
 	ErrSessionRunning = errors.New("project session process is already running")
 	// ErrNotRunning means no process matches both requested identities.
 	ErrNotRunning = errors.New("project process is not running")
+	// ErrResetInProgress means the canonical checkout still has an owned reset process being reaped.
+	ErrResetInProgress = errors.New("project reset is still in progress")
 	// ErrOutputBrokerAdoptionUnavailable means no reviewed live-broker adoption boundary is installed.
 	ErrOutputBrokerAdoptionUnavailable = errors.New("output broker adoption is unavailable")
 )
@@ -95,6 +97,12 @@ type StartRequest struct {
 	ManagedLaunch *ManagedLaunchContext
 	Stdout        io.Writer
 	Stderr        io.Writer
+}
+
+// DownRequest identifies the verified registered checkout whose leftover GoForj runtime must be withdrawn.
+type DownRequest struct {
+	CheckoutRoot     string
+	GoForjExecutable string
 }
 
 // Evidence binds later process actions to one exact executable birth instead of a reusable PID.
@@ -205,6 +213,8 @@ type Supervisor struct {
 	outputSpoolDirectory  string
 	outputBrokerLauncher  OutputBrokerLauncher
 	adoptedOutputs        map[outputBrokerKey]*adoptedOutput
+	resets                map[*resetProcess]struct{}
+	resetCheckouts        map[string]*resetProcess
 }
 
 // New constructs an empty project process supervisor.
@@ -260,6 +270,8 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 		outputSpoolDirectory:  outputSpoolDirectory,
 		outputBrokerLauncher:  options.OutputBrokerLauncher,
 		adoptedOutputs:        make(map[outputBrokerKey]*adoptedOutput),
+		resets:                make(map[*resetProcess]struct{}),
+		resetCheckouts:        make(map[string]*resetProcess),
 	}
 }
 
@@ -427,6 +439,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	defer supervisor.mu.Unlock()
 	if supervisor.closed {
 		return nil, ErrClosed
+	}
+	if _, resetting := supervisor.resetCheckouts[checkoutRoot]; resetting {
+		return nil, fmt.Errorf("%w: %s", ErrResetInProgress, checkoutRoot)
 	}
 	if _, exists := supervisor.projects[request.ProjectID]; exists {
 		return nil, fmt.Errorf("%w: %s", ErrProjectRunning, request.ProjectID)
@@ -713,6 +728,238 @@ func managedHostEnvironmentRollbackError(startErr error, cleanupErr error) error
 	return fmt.Errorf("%w: %w", ErrCleanupUncertain, errors.Join(startErr, fmt.Errorf("remove Harbor managed host environment: %w", cleanupErr)))
 }
 
+// resetProcess retains shutdown authority until the reset command has been reaped.
+type resetProcess struct {
+	command      *exec.Cmd
+	platform     *platformProcess
+	checkoutRoot string
+	done         chan struct{}
+	waitDone     chan struct{}
+
+	// The fields below are protected by Supervisor.mu. A reset remains fenced until
+	// its root has been reaped and one settlement attempt has proved its scope gone.
+	waitErr        error
+	rootReaped     bool
+	settling       bool
+	settlementDone chan struct{}
+	settlementErr  error
+	finished       bool
+}
+
+// Down withdraws any runtime left by a prior GoForj invocation before Harbor starts a new development session.
+func (supervisor *Supervisor) Down(ctx context.Context, request DownRequest) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.CheckoutRoot) == "" {
+		return fmt.Errorf("%w: checkout root must not be empty", ErrInvalidRequest)
+	}
+	checkoutRoot, err := canonicalDirectory(request.CheckoutRoot)
+	if err != nil {
+		return fmt.Errorf("canonicalize checkout root: %w", err)
+	}
+	supervisor.mu.Lock()
+	if supervisor.closed {
+		supervisor.mu.Unlock()
+		return ErrClosed
+	}
+	if reset := supervisor.resetCheckouts[checkoutRoot]; reset != nil {
+		supervisor.mu.Unlock()
+		return supervisor.settleReset(ctx, reset)
+	}
+	for _, process := range supervisor.projects {
+		if process.handle.info.CheckoutRoot == checkoutRoot {
+			supervisor.mu.Unlock()
+			return fmt.Errorf("%w: checkout %s", ErrProjectRunning, checkoutRoot)
+		}
+	}
+	executable, err := supervisor.acceptedGoForjExecutable(request.GoForjExecutable)
+	if err != nil {
+		supervisor.mu.Unlock()
+		return err
+	}
+	command := exec.Command(executable, "down")
+	command.Dir = checkoutRoot
+	// Reset must never inherit the one-use launch credential of a different session.
+	command.Env = withDevelopmentEnvironment(supervisor.environment, EnvironmentOverrides{})
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	platform, err := preparePlatformProcess(command)
+	if err != nil {
+		supervisor.mu.Unlock()
+		return fmt.Errorf("prepare forj reset ownership: %w", err)
+	}
+	reset := &resetProcess{
+		command:      command,
+		platform:     platform,
+		checkoutRoot: checkoutRoot,
+		done:         make(chan struct{}),
+		waitDone:     make(chan struct{}),
+	}
+	if err := command.Start(); err != nil {
+		supervisor.mu.Unlock()
+		platform.close()
+		return fmt.Errorf("start forj down: %w", err)
+	}
+	// Admit the fence before attaching or resuming. A partial Windows attachment can otherwise
+	// leave a launched process outside both the Job Object and the checkout admission boundary.
+	supervisor.resets[reset] = struct{}{}
+	supervisor.resetCheckouts[checkoutRoot] = reset
+	// Exactly one owner reaps every accepted reset, including reset commands whose caller times out.
+	go supervisor.waitReset(reset)
+	if _, err := platform.attach(command.Process); err != nil {
+		supervisor.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: attach forj reset ownership: %v", ErrCleanupUncertain, err), platform.force(command.Process.Pid))
+	}
+	if err := platform.resume(command.Process); err != nil {
+		supervisor.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: resume forj reset: %v", ErrCleanupUncertain, err), platform.force(command.Process.Pid))
+	}
+	supervisor.mu.Unlock()
+	return supervisor.settleReset(ctx, reset)
+}
+
+// waitReset is the sole Cmd.Wait owner for an accepted reset command.
+func (supervisor *Supervisor) waitReset(reset *resetProcess) {
+	err := reset.command.Wait()
+	supervisor.mu.Lock()
+	reset.waitErr = err
+	reset.rootReaped = true
+	close(reset.waitDone)
+	supervisor.mu.Unlock()
+	// The initiating caller may reach its deadline just before the operating system reports
+	// the reset root as waitable. The sole waiter performs one bounded settlement attempt so
+	// ordinary completion does not require a second user action; uncertainty remains fenced.
+	settlementContext, cancelSettlement := context.WithTimeout(context.Background(), forceSettlementPeriod)
+	defer cancelSettlement()
+	_ = supervisor.settleReset(settlementContext, reset)
+}
+
+// settleReset joins the root reaper and performs at most one serialized, caller-bounded scope settlement attempt.
+func (supervisor *Supervisor) settleReset(ctx context.Context, reset *resetProcess) error {
+	select {
+	case <-reset.waitDone:
+	case <-ctx.Done():
+		return errors.Join(ErrCleanupUncertain, ctx.Err(), reset.platform.force(reset.command.Process.Pid))
+	}
+
+	supervisor.mu.Lock()
+	if reset.finished {
+		waitErr := reset.waitErr
+		supervisor.mu.Unlock()
+		if waitErr != nil {
+			return fmt.Errorf("forj down: %w", waitErr)
+		}
+		return nil
+	}
+	if reset.settling {
+		done := reset.settlementDone
+		supervisor.mu.Unlock()
+		select {
+		case <-done:
+			supervisor.mu.Lock()
+			err := reset.settlementErr
+			waitErr := reset.waitErr
+			finished := reset.finished
+			supervisor.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			if finished && waitErr != nil {
+				return fmt.Errorf("forj down: %w", waitErr)
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	reset.settling = true
+	reset.settlementDone = make(chan struct{})
+	supervisor.mu.Unlock()
+
+	forceErr := reset.platform.force(reset.command.Process.Pid)
+	settled, observeErr := waitForPlatformSettlementContext(ctx, reset.platform, reset.command.Process.Pid)
+	settlementErr := errors.Join(forceErr, observeErr)
+	if !settled {
+		if settlementErr == nil {
+			settlementErr = fmt.Errorf("%w: forj reset process tree did not settle", ErrCleanupUncertain)
+		} else {
+			settlementErr = fmt.Errorf("%w: forj reset process tree did not settle: %w", ErrCleanupUncertain, settlementErr)
+		}
+	}
+
+	if !settled {
+		supervisor.mu.Lock()
+		reset.settling = false
+		reset.settlementErr = settlementErr
+		close(reset.settlementDone)
+		supervisor.mu.Unlock()
+		return settlementErr
+	}
+	supervisor.finishReset(reset)
+	supervisor.mu.Lock()
+	reset.settling = false
+	reset.settlementErr = nil
+	close(reset.settlementDone)
+	waitErr := reset.waitErr
+	supervisor.mu.Unlock()
+	if waitErr != nil {
+		return fmt.Errorf("forj down: %w", waitErr)
+	}
+	return nil
+}
+
+// finishReset releases one reset command only after its operating-system process has been reaped.
+func (supervisor *Supervisor) finishReset(reset *resetProcess) {
+	supervisor.mu.Lock()
+	if reset.finished || !reset.rootReaped {
+		supervisor.mu.Unlock()
+		return
+	}
+	reset.finished = true
+	delete(supervisor.resets, reset)
+	if supervisor.resetCheckouts[reset.checkoutRoot] == reset {
+		delete(supervisor.resetCheckouts, reset.checkoutRoot)
+	}
+	supervisor.mu.Unlock()
+	reset.platform.close()
+	close(reset.done)
+}
+
+// waitForPlatformSettlement proves the entire owned process scope is gone after the reset root exits.
+func waitForPlatformSettlement(platform *platformProcess, pid int) (bool, error) {
+	return waitForPlatformSettlementContext(context.Background(), platform, pid)
+}
+
+// waitForPlatformSettlementContext proves an owned process scope is absent without exceeding the caller's cleanup budget.
+func waitForPlatformSettlementContext(ctx context.Context, platform *platformProcess, pid int) (bool, error) {
+	deadline := time.Now().Add(forceSettlementPeriod)
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		alive, err := platform.treeAlive(pid)
+		if err != nil || !alive {
+			return !alive, err
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+		timer := time.NewTimer(forceSettlementPoll)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return false, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 // terminateStartedCommand keeps the unreaped root identity reserved while retiring every accepted descendant.
 func terminateStartedCommand(command *exec.Cmd, platform *platformProcess) error {
 	forceErr := platform.force(command.Process.Pid)
@@ -768,6 +1015,10 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 			process.requestStop()
 		}
 	}
+	resets := make([]*resetProcess, 0, len(supervisor.resets))
+	for reset := range supervisor.resets {
+		resets = append(resets, reset)
+	}
 	adoptedOutputs := make([]*adoptedOutput, 0, len(supervisor.adoptedOutputs))
 	for _, adopted := range supervisor.adoptedOutputs {
 		adoptedOutputs = append(adoptedOutputs, adopted)
@@ -775,6 +1026,18 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 	supervisor.mu.Unlock()
 
 	deadlineReached := make(chan struct{})
+	defer close(deadlineReached)
+	var closeErr error
+	// Reset commands have no durable session row to recover after shutdown. Close requests termination and
+	// settles within the caller's budget; the sole waiter retains ownership if the root becomes waitable later.
+	for _, reset := range resets {
+		if reset == nil || reset.command.Process == nil {
+			continue
+		}
+		if err := reset.platform.force(reset.command.Process.Pid); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("terminate forj reset: %w", err))
+		}
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -784,10 +1047,21 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 		case <-deadlineReached:
 		}
 	}()
-	var closeErr error
 	for _, process := range processes {
-		<-process.stopComplete
-		closeErr = errors.Join(closeErr, process.stopErr)
+		select {
+		case <-process.stopComplete:
+			closeErr = errors.Join(closeErr, process.stopErr)
+		case <-ctx.Done():
+			closeErr = errors.Join(closeErr, ctx.Err(), process.forceStop())
+		}
+	}
+	for _, reset := range resets {
+		if reset == nil {
+			continue
+		}
+		if err := supervisor.settleReset(ctx, reset); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("settle forj reset: %w", err))
+		}
 	}
 	for _, adopted := range adoptedOutputs {
 		if adopted == nil {
@@ -802,7 +1076,6 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 			closeErr = errors.Join(closeErr, ctx.Err())
 		}
 	}
-	close(deadlineReached)
 	supervisor.mu.Lock()
 	remainingServiceLogs := make([]*serviceLogStream, 0, len(supervisor.serviceLogs))
 	for _, stream := range supervisor.serviceLogs {

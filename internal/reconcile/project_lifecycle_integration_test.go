@@ -195,6 +195,11 @@ func (fixture *projectLifecycleRevisionRaceSupervisor) Start(
 	return nil, errors.New("unexpected process launch after project revision drift")
 }
 
+// Down rejects reset work because the revision-race fixture must fail before runtime effects begin.
+func (*projectLifecycleRevisionRaceSupervisor) Down(context.Context, projectprocess.DownRequest) error {
+	return errors.New("unexpected project reset after project revision drift")
+}
+
 // ReadOutput returns no transcript because the revision-race fixture never accepts a process launch.
 func (*projectLifecycleRevisionRaceSupervisor) ReadOutput(
 	domain.ProjectID,
@@ -331,6 +336,9 @@ func TestMain(m *testing.M) {
 
 // runProjectLifecycleHelper exposes the generated readiness shape until Harbor stops the owned process.
 func runProjectLifecycleHelper() {
+	if len(os.Args) == 2 && os.Args[1] == "down" {
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "project:describe" {
 		if len(os.Args) != 3 || os.Args[2] != "--json" {
 			_, _ = fmt.Fprintln(os.Stderr, "unexpected project descriptor arguments")
@@ -625,7 +633,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	if err != nil || startOperation.Operation.State != domain.OperationSucceeded {
 		t.Fatalf("start operation = %#v, %v", startOperation, err)
 	}
-	waitForProjectLifecycleRouteStates(t, routes, []domain.ProjectState{domain.ProjectReady})
+	waitForProjectLifecycleRouteStates(t, routes, []domain.ProjectState{domain.ProjectStarting, domain.ProjectReady})
 
 	restarting, err := coordinator.Restart(t.Context(), ProjectRestartRequest{
 		ProjectID: project.ID, OperationID: "operation-restart", IntentID: "intent-restart",
@@ -648,7 +656,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	waitForProjectLifecycleRouteStates(
 		t,
 		routes,
-		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectReady},
+		[]domain.ProjectState{domain.ProjectStarting, domain.ProjectReady, domain.ProjectStopping, domain.ProjectStarting, domain.ProjectReady},
 	)
 
 	stopping, err := coordinator.Stop(t.Context(), ProjectStopRequest{
@@ -671,7 +679,7 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 	waitForProjectLifecycleRouteStates(
 		t,
 		routes,
-		[]domain.ProjectState{domain.ProjectReady, domain.ProjectStopping, domain.ProjectReady, domain.ProjectStopping, domain.ProjectStopped},
+		[]domain.ProjectState{domain.ProjectStarting, domain.ProjectReady, domain.ProjectStopping, domain.ProjectStarting, domain.ProjectReady, domain.ProjectStopping, domain.ProjectStopped},
 	)
 }
 

@@ -28,6 +28,7 @@ const (
 	helperOverrideEnvironment    = "HARBOR_PROJECT_PROCESS_OVERRIDE"
 	helperEmptyEnvironment       = "HARBOR_PROJECT_PROCESS_EMPTY"
 	helperUnrelatedEnvironment   = "HARBOR_PROJECT_PROCESS_UNRELATED"
+	helperDownObservationFile    = "HARBOR_PROJECT_PROCESS_DOWN_OBSERVATION_FILE"
 )
 
 // init turns a copied test executable into the exact forj-dev subprocess exercised by integration-style unit tests.
@@ -40,8 +41,27 @@ func init() {
 			os.Exit(89)
 		}
 	}
-	if len(os.Args) != 2 || os.Args[1] != "dev" {
+	if len(os.Args) != 2 || (os.Args[1] != "dev" && os.Args[1] != "down") {
 		os.Exit(90)
+	}
+	if os.Args[1] == "down" {
+		if observationFile := os.Getenv(helperDownObservationFile); observationFile != "" {
+			workingDirectory, err := os.Getwd()
+			if err != nil {
+				os.Exit(91)
+			}
+			contents := strings.Join([]string{os.Args[1], workingDirectory, os.Getenv(ManagedLaunchContextEnvironment)}, "\n")
+			if err := os.WriteFile(observationFile, []byte(contents), 0o600); err != nil {
+				os.Exit(92)
+			}
+		}
+		switch os.Getenv(helperModeEnvironment) {
+		case "wait":
+			waitForTerminationSignal()
+		case "orphan":
+			runDownOrphanHelper()
+		}
+		os.Exit(0)
 	}
 	if err := godotenv.Overload(".env.host"); err != nil {
 		os.Exit(101)
@@ -97,6 +117,222 @@ func init() {
 		os.Exit(92)
 	}
 	os.Exit(0)
+}
+
+// TestDownUsesCanonicalCheckoutAndStripsManagedLaunchContext verifies reset cannot reuse a session credential.
+func TestDownUsesCanonicalCheckoutAndStripsManagedLaunchContext(t *testing.T) {
+	installForjHelper(t, "")
+	checkout := t.TempDir()
+	observation := filepath.Join(t.TempDir(), "down-observation")
+	t.Setenv(helperDownObservationFile, observation)
+	supervisor := newTestSupervisor(Options{Environment: append(os.Environ(), ManagedLaunchContextEnvironment+"=stale-ticket")})
+	if err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: checkout}); err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+	contents, err := os.ReadFile(observation)
+	if err != nil {
+		t.Fatalf("read reset observation: %v", err)
+	}
+	if got, want := string(contents), "down\n"+checkout+"\n"; got != want {
+		t.Fatalf("reset command observation = %q, want %q", got, want)
+	}
+}
+
+// TestCloseJoinsActiveDown verifies daemon shutdown owns a reset command until it has exited.
+func TestCloseJoinsActiveDown(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "down-started")
+	t.Setenv(helperStartedFileEnvironment, started)
+	installForjHelper(t, "wait")
+	supervisor := newTestSupervisor(Options{})
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Down(context.Background(), DownRequest{CheckoutRoot: t.TempDir()}) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("down command did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := supervisor.Close(t.Context()); err != nil {
+		if !strings.Contains(err.Error(), "forj down") {
+			t.Fatalf("Close() error = %v, want interrupted reset command", err)
+		}
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Down() error = nil after Close()")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Down() did not join after Close()")
+	}
+}
+
+// TestDownTimeoutStopsTheOwnedResetProcess verifies a caller deadline cannot leave the reset root running.
+func TestDownTimeoutStopsTheOwnedResetProcess(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "down-started")
+	t.Setenv(helperStartedFileEnvironment, started)
+	installForjHelper(t, "wait")
+	supervisor := newTestSupervisor(Options{})
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	err := supervisor.Down(ctx, DownRequest{CheckoutRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("Down() error = nil, want deadline failure")
+	}
+	waitForResetRelease(t, supervisor)
+	if closeErr := supervisor.Close(t.Context()); closeErr != nil {
+		t.Fatalf("Close() after reset reap = %v", closeErr)
+	}
+}
+
+// TestCloseWithExpiredContextRetainsActiveDownUntilReaped preserves reset ownership after bounded shutdown returns.
+func TestCloseWithExpiredContextRetainsActiveDownUntilReaped(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "down-started")
+	t.Setenv(helperStartedFileEnvironment, started)
+	installForjHelper(t, "wait")
+	supervisor := newTestSupervisor(Options{})
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Down(context.Background(), DownRequest{CheckoutRoot: t.TempDir()}) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("down command did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := supervisor.Close(ctx); err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close() error = %v, want context cancellation", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("active Down() was not reaped after bounded Close() returned")
+	}
+	waitForResetRelease(t, supervisor)
+}
+
+// waitForResetRelease waits only for the bounded post-reap settlement promised by the supervisor.
+func waitForResetRelease(t *testing.T, supervisor *Supervisor) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		supervisor.mu.Lock()
+		resets := len(supervisor.resets)
+		checkouts := len(supervisor.resetCheckouts)
+		supervisor.mu.Unlock()
+		if resets == 0 && checkouts == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reset ownership after reap = resets:%d checkouts:%d, want released", resets, checkouts)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestDownFencesCanonicalCheckoutUntilSettlement prevents a second reset or dev launch from overlapping one reset tree.
+func TestDownFencesCanonicalCheckoutUntilSettlement(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "down-started")
+	t.Setenv(helperStartedFileEnvironment, started)
+	installForjHelper(t, "wait")
+	checkout := t.TempDir()
+	supervisor := newTestSupervisor(Options{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Down(ctx, DownRequest{CheckoutRoot: checkout}) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first down command did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	retryContext, cancelRetry := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancelRetry()
+	if err := supervisor.Down(retryContext, DownRequest{CheckoutRoot: checkout}); !errors.Is(err, ErrCleanupUncertain) {
+		t.Fatalf("second Down() error = %v, want bounded cleanup uncertainty", err)
+	}
+	if _, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "reset-fenced-project",
+		SessionID:            "reset-fenced-session",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	}); !errors.Is(err, ErrResetInProgress) {
+		t.Fatalf("Start() error = %v, want ErrResetInProgress", err)
+	}
+	<-done
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "reset-fenced-project",
+		SessionID:            "reset-fenced-session",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() after reset settlement error = %v", err)
+	}
+	if err := supervisor.Stop(t.Context(), "reset-fenced-project", "reset-fenced-session"); err != nil {
+		t.Fatalf("Stop() after reset settlement error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("wait settled start: %v", err)
+	}
+}
+
+// TestDownSettlesDescendantsBeforeReleasingCheckoutFence prevents a start from overlapping
+// descendants left behind by a reset command whose root has already exited.
+func TestDownSettlesDescendantsBeforeReleasingCheckoutFence(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "down-child-pid")
+	t.Setenv(helperPIDFileEnvironment, pidFile)
+	installForjHelper(t, "orphan")
+	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, ".env.host"), nil, 0o600); err != nil {
+		t.Fatalf("write helper environment: %v", err)
+	}
+	supervisor := newTestSupervisor(Options{})
+	err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: checkout})
+	if err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "orphan-fenced-project",
+		SessionID:            "orphan-fenced-session",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() after reset retry error = %v", err)
+	}
+	if err := supervisor.Stop(t.Context(), "orphan-fenced-project", "orphan-fenced-session"); err != nil {
+		t.Fatalf("Stop() after reset settlement error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() after reset settlement error = %v", err)
+	}
+}
+
+// runDownOrphanHelper exits the down root after placing a signal-ignoring child in its inherited ownership scope.
+func runDownOrphanHelper() {
+	command := exec.Command(os.Args[0], "dev")
+	command.Env = replaceEnvironment(os.Environ(), helperModeEnvironment, "grandchild-ignore")
+	if err := command.Start(); err != nil {
+		os.Exit(104)
+	}
+	if !waitForPublishedHelperPID(os.Getenv(helperPIDFileEnvironment)) {
+		os.Exit(105)
+	}
 }
 
 // runTreeParentHelper creates a descendant in the inherited ownership boundary before waiting for shutdown.
