@@ -282,6 +282,18 @@ func sequenceToModelInt(name string, value domain.Sequence, allowZero bool) (int
 	return unsignedToModelInt(name, uint64(value), allowZero)
 }
 
+// modelIntToSequence validates a generated integer before exposing it as a public sequence.
+func modelIntToSequence(name string, value int) (domain.Sequence, error) {
+	if value <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	sequence := domain.Sequence(value)
+	if sequence > domain.MaximumSequence {
+		return 0, fmt.Errorf("%s exceeds the cross-client ordering range", name)
+	}
+	return sequence, nil
+}
+
 // unsignedToModelInt safely narrows public counters into generated model fields.
 func unsignedToModelInt(name string, value uint64, allowZero bool) (int, error) {
 	if !allowZero && value == 0 {
