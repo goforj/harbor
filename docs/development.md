@@ -7,9 +7,9 @@ The current checkout requires:
 - Go 1.26.1 for both Go modules;
 - Node.js 22 for the frontend;
 - Wails v2.13 and its native platform prerequisites;
-- a canonical GoForj CLI at or above `v0.20.1-0.20260719152622-bf5f5e65ab64`, or the exact clean development revision `d8a462840ca2c92a61a105f06408c464fcf53391`.
+- a canonical GoForj CLI at or above `v0.20.1-0.20260722020216-d64c2fe24eb2`, or the exact clean development revision `d64c2fe24eb29531177966f9b99841f41193042e`.
 
-The development-build rule is deliberately exact today: an unversioned binary from a newer revision is rejected. Harbor admits a released GoForj `v0.20.1+` build or the exact clean development revision `d8a462840ca2c92a61a105f06408c464fcf53391`; the compatibility error reports those same choices. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
+The development-build rule is deliberately exact today: an unversioned binary from a newer revision is rejected. Harbor admits a canonical versioned GoForj build at or above `v0.20.1-0.20260722020216-d64c2fe24eb2`, or the exact clean development revision `d64c2fe24eb29531177966f9b99841f41193042e`. No released tag currently contains the combined descriptor and managed-session contract, so development uses the exact revision. The compatibility error reports those same choices. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
 
 Run the complete development graph from the repository root:
 

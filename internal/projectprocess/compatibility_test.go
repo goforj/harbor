@@ -50,7 +50,7 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 		},
 		{
 			name:        "exact minimum source pseudo version",
-			information: compatibleGoForjBuildInfo("v0.0.0-20260719152622-bf5f5e65ab64", minimumGoForjRevision, false),
+			information: compatibleGoForjBuildInfo("v0.20.1-0.20260722020216-d64c2fe24eb2", minimumGoForjRevision, false),
 		},
 		{
 			name:        "development without revision",
@@ -112,7 +112,7 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			if !errors.Is(err, errIncompatibleGoForj) {
 				t.Fatalf("verifier error = %v, want errIncompatibleGoForj", err)
 			}
-			for _, text := range []string{"v0.20.1+", "d8a462840ca2c92a61a105f06408c464fcf53391", "forj render"} {
+			for _, text := range []string{minimumGoForjVersion, "d64c2fe24eb29531177966f9b99841f41193042e", "forj render"} {
 				if !strings.Contains(err.Error(), text) {
 					t.Fatalf("verifier error = %q, want actionable text %q", err, text)
 				}
