@@ -277,6 +277,18 @@ No delivery phase has met its complete exit gate.
 
 ## Immediate next goal
 
+The active goal is now the three-project trusted-HTTPS happy path recorded in [Current implementation state](./current-state.md#active-happy-path-goal). The critical order is:
+
+1. complete one macOS setup flow that proves resolver ownership, current-user CA trust, and Harbor ingress on public ports 80 and 443;
+2. promote the live resolver-only data plane to full HTTP/TLS authority and backfill exact `app-http` reservations for already admitted projects;
+3. run three generated GoForj projects concurrently on their unchanged configured App port and verify their distinct literal `https://<project>.test` URLs through system DNS and default trust;
+4. stop them, prove their checkouts are byte-for-byte unchanged, and remove only Harbor-owned host state;
+5. freeze feature work after the macOS gate passes, then move that same acceptance test into the claimed GitHub Actions platform matrix.
+
+Do not substitute direct-IP requests, custom root pools, TLS bypasses, explicit resolver sockets, translated public ports, synthetic Store setup, or a second platform-specific test. A pinned mkcert-backed trust adapter is allowed only if it is the shortest safe way to produce the required observable trust behavior.
+
+The remainder of this section records the previous continuation context. It is useful implementation history, but it does not supersede the active happy-path order above.
+
 The current project activity path now exposes the owner-private output spool as explicitly historical output when the live supervisor is unavailable. This is a diagnostic continuity improvement only: it does not reattach pipes or grant process authority, and the broker path preserves a fresh cursor boundary when live output returns.
 
 `OutputBrokerJournal` now supplies the transport-neutral append-before-notify core over the existing checksummed spool: exact replay, idempotent cursor retries, bounded subscriber queues with explicit gaps, and monotonic acknowledgements are covered directly. The standalone `cmd/outputbroker` now owns that spool while it adopts inherited stdout/stderr pipes and serves an authenticated local replay/live connection; the broker remains separate from GoForj process stop/reap authority.
@@ -307,9 +319,9 @@ The production lifecycle path now invokes the exact registered GoForj executable
 
 1. Read `AGENTS.md`, [Current implementation state](./current-state.md), and this handoff before changing code.
 2. Run `git status -sb`, inspect `origin/main...HEAD`, and preserve unexplained local artifacts rather than sweeping them into a commit.
-3. Re-observe the macOS host and Ditracker runtime; paths, PIDs, listeners, leases, and database rows in this document are historical evidence until confirmed.
-4. Reproduce a normal Start, abrupt daemon restart, automatic exact-scope recovery, replacement Start from both exact and receipt-free quarantine, explicit retained-session repair, Stop, and second Start before claiming native recovery complete.
-5. Prove the direct Docker service/log slice plus event-driven topology refresh on native macOS before adding publication routing.
+3. Treat paths, PIDs, listeners, leases, and database rows in this document as historical evidence until re-observed.
+4. Work only on a blocker named by the active three-project trusted-HTTPS acceptance goal.
+5. Run the macOS acceptance gate before opening cross-platform adapters or another product front.
 6. Validate both Go modules and any affected frontend or native OS surface.
 7. Commit explicit paths as `Chris Miles <chris.miles.e@gmail.com>` and update `current-state.md` plus this handoff when the continuation point changes.
 

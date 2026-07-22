@@ -4,6 +4,14 @@ Status: active development
 
 Last updated: 2026-07-22
 
+## Active happy-path goal
+
+Deliver and prove Harbor's three-project trusted-HTTPS happy path before opening another product front. On macOS, one setup flow starting from clean Harbor-owned state must allow three unmodified generated GoForj projects that retain the same configured App port to run concurrently at three distinct stable `https://<project>.test` URLs on standard port 443. Normal system DNS resolution and trust must work without caller-supplied port suffixes, `--resolve`, custom CA flags, or TLS bypasses. Harbor owns the `.test` DNS projection, terminates TLS, and routes each exact Host/SNI name to the correct project.
+
+The gate is one repeatable end-to-end acceptance test that proves distinct project responses, stops the projects, removes only Harbor-owned host state, and leaves all three checkouts byte-for-byte unchanged. After that macOS gate passes, feature work freezes until the same behavioral acceptance test passes in GitHub Actions on every claimed platform. A pinned mkcert-backed trust adapter is acceptable, but trusted HTTPS is the requirement; mkcert is not itself the goal.
+
+Side work is in scope only when it directly unblocks this acceptance path. Native service ports, broad Docker tooling, tray and desktop polish, installers and updaters, public exposure, and unrelated recovery work are deferred.
+
 The managed barrier now also repairs missing descriptor-declared host service reservations before it joins fresh Compose port observations. This closes the daemon-restart path for an already-attached GoForj process; commit `bd54830` has a focused regression and passes the full root test suite. Native Docker Desktop execution is still required for product evidence.
 
 Managed publication observation now distinguishes a retryable pre-full network stage from a genuinely missing durable reservation, so a resolver-stage daemon no longer reports a misleading endpoint defect. GoForj commit `a4b35cd5` bounds each temporary managed Compose barrier wait to 30 seconds when no caller deadline exists; a stuck barrier therefore fails fast while Harbor still has time to settle the child. Harbor launch, attach, stop, and process-join paths also use bounded contexts and quarantine unresolved process scope instead of leaving a project in `starting` indefinitely.
