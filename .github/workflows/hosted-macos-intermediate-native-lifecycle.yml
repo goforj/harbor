@@ -166,6 +166,18 @@ jobs:
           ' harbor-authorization-capture "$authorization_rule" "$authorization_digest" "$authorization_marker"
           sudo -n security authorizationdb write system.privilege.admin allow
 
+      - name: Run Darwin Authorization Services preflight diagnostic
+        shell: bash
+        env:
+          HARBOR_DARWIN_AUTHORIZATION_PREFLIGHT: "1"
+        run: |
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=30s \
+            -run '^TestDarwinAuthorizationPreflight$' \
+            ./internal/helper/launcher
+
       - name: Run intermediate native lifecycle test
         shell: bash
         env:
@@ -183,6 +195,42 @@ jobs:
             -run '^TestDarwinTrustedHTTPSIntermediateNativeLifecycle$' \
             ./internal/acceptance
 
+      - name: Report bounded Harbor host state before cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /bin/sh -ceu '
+            count_children() {
+              if [ ! -d "$1" ]; then
+                printf "host-state %s=absent\\n" "$2"
+                return
+              fi
+              count=$(/bin/ls -1A "$1" | /usr/bin/head -n 33 | /usr/bin/wc -l | /usr/bin/tr -d " ")
+              if [ "$count" -eq 33 ]; then
+                printf "host-state %s=33+\\n" "$2"
+                return
+              fi
+              printf "host-state %s=%s\\n" "$2" "$count"
+            }
+            report_presence() {
+              if [ -e "$1" ] || [ -L "$1" ]; then
+                printf "host-state %s=present\\n" "$2"
+              else
+                printf "host-state %s=absent\\n" "$2"
+              fi
+            }
+            root="/Library/Application Support/GoForj/Harbor/Privileged"
+            count_children "$root/tickets/pending" pending-tickets
+            count_children "$root/tickets/claims" claims
+            count_children "$root/state/replay" replay-tombstones
+            report_presence "$root/state/ownership.json" ownership
+            report_presence "/Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist" low-port-plist
+            report_presence "/etc/resolver/test" resolver-file
+            report_presence "/Library/PrivilegedHelperTools/com.goforj.harbor.helper" helper
+            report_presence "/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay" relay
+          ' harbor-host-state
+
       - name: Restore system.privilege.admin authorization rule
         if: always()
         shell: bash
@@ -193,23 +241,49 @@ jobs:
           authorization_digest="${authorization_directory}/original.sha256"
           authorization_marker="${authorization_directory}/capture-complete"
           authorization_restored="${authorization_directory}/restored.plist"
+          authorization_normalized_original="${authorization_directory}/original.normalized.json"
+          authorization_normalized_restored="${authorization_directory}/restored.normalized.json"
           if ! sudo -n test -e "$authorization_directory"; then
             exit 0
           fi
           if ! sudo -n test -f "$authorization_marker"; then
-            sudo -n rm -f "$authorization_rule" "$authorization_digest"
+            sudo -n rm -f \
+              "$authorization_rule" \
+              "$authorization_digest" \
+              "$authorization_restored" \
+              "$authorization_normalized_original" \
+              "$authorization_normalized_restored"
             sudo -n rmdir "$authorization_directory"
             exit 0
           fi
           sudo -n /bin/sh -ceu '
+            normalize_authorization_policy() {
+              /bin/cp "$1" "$2"
+              for metadata in created modified; do
+                if /usr/bin/plutil -type "$metadata" "$2" >/dev/null 2>&1; then
+                  /usr/bin/plutil -remove "$metadata" "$2"
+                fi
+              done
+              /usr/bin/plutil -convert json -r "$2"
+            }
             /usr/bin/shasum -a 256 -c "$2"
             /usr/bin/security authorizationdb write system.privilege.admin < "$1"
             umask 077
             /usr/bin/security authorizationdb read system.privilege.admin > "$4"
-            /usr/bin/cmp -s "$1" "$4"
-            /bin/rm -f "$4" "$3" "$2" "$1"
-            /bin/rmdir "$5"
-          ' harbor-authorization-restore "$authorization_rule" "$authorization_digest" "$authorization_marker" "$authorization_restored" "$authorization_directory"
+            # AuthorizationDB refreshes timestamps on write; every policy field remains compared.
+            normalize_authorization_policy "$1" "$5"
+            normalize_authorization_policy "$4" "$6"
+            /usr/bin/cmp -s "$5" "$6"
+            /bin/rm -f "$6" "$5" "$4" "$3" "$2" "$1"
+            /bin/rmdir "$7"
+          ' harbor-authorization-restore \
+            "$authorization_rule" \
+            "$authorization_digest" \
+            "$authorization_marker" \
+            "$authorization_restored" \
+            "$authorization_normalized_original" \
+            "$authorization_normalized_restored" \
+            "$authorization_directory"
 
       - name: Remove development bootstrap artifacts
         if: always()
