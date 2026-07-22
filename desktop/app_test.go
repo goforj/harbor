@@ -14,6 +14,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/networkdataplaneapproval"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/projectapproval"
@@ -24,70 +25,86 @@ import (
 
 // fakeControlClient keeps lifecycle and response behavior explicit in desktop adapter tests.
 type fakeControlClient struct {
-	mu                   sync.Mutex
-	status               control.DaemonStatus
-	statusErr            error
-	snapshot             domain.Snapshot
-	snapshotErr          error
-	snapshotHook         func()
-	registration         control.ProjectRegistration
-	registerErr          error
-	registerPath         string
-	networkSetup         control.NetworkSetupOperation
-	networkSetupErr      error
-	networkSetupReq      control.StartNetworkSetupRequest
-	networkSetupHook     func(control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
-	setupPreparation     control.NetworkSetupApprovalPreparation
-	setupPrepareErr      error
-	setupPrepareReq      control.PrepareNetworkSetupApprovalRequest
-	setupConfirmation    control.NetworkSetupApprovalConfirmation
-	setupConfirmErr      error
-	setupConfirmReq      control.ConfirmNetworkSetupApprovalRequest
-	resolverSetup        control.NetworkResolverSetupOperation
-	resolverSetupErr     error
-	resolverSetupReq     control.StartNetworkResolverSetupRequest
-	resolverSetupHook    func(control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
-	resolverPreparation  control.NetworkResolverSetupApprovalPreparation
-	resolverPrepareErr   error
-	resolverPrepareReq   control.PrepareNetworkResolverSetupApprovalRequest
-	resolverConfirmation control.NetworkResolverSetupApprovalConfirmation
-	resolverConfirmErr   error
-	resolverConfirmReq   control.ConfirmNetworkResolverSetupApprovalRequest
-	activity             control.ProjectActivity
-	activityErr          error
-	activityRequest      control.ProjectActivityRequest
-	activityHook         func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
-	serviceLogs          control.ServiceLogs
-	serviceLogsErr       error
-	serviceLogsRequest   control.ServiceLogsRequest
-	serviceLogsHook      func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
-	repairInspection     control.ProjectRuntimeRepairInspection
-	repairInspectionErr  error
-	repairInspectRequest control.InspectProjectRuntimeRepairRequest
-	repairConfirmation   control.ProjectRuntimeRepairConfirmation
-	repairConfirmErr     error
-	repairConfirmRequest control.ConfirmProjectRuntimeRepairRequest
-	startLifecycle       control.ProjectLifecycleOperation
-	startErr             error
-	startRequest         control.StartProjectRequest
-	stopLifecycle        control.ProjectLifecycleOperation
-	stopErr              error
-	stopRequest          control.StopProjectRequest
-	restartLifecycle     control.ProjectLifecycleOperation
-	restartErr           error
-	restartRequest       control.RestartProjectRequest
-	unregistration       control.ProjectUnregistration
-	unregisterErr        error
-	unregisterRequest    control.UnregisterProjectRequest
-	projectPreparation   control.ProjectUnregisterApprovalPreparation
-	projectPrepareErr    error
-	projectPrepareReq    control.PrepareProjectUnregisterApprovalRequest
-	projectConfirmation  control.ProjectUnregisterApprovalConfirmation
-	projectConfirmErr    error
-	projectConfirmReq    control.ConfirmProjectUnregisterApprovalRequest
-	done                 chan struct{}
-	closeOnce            sync.Once
-	closeCount           atomic.Int32
+	mu                           sync.Mutex
+	status                       control.DaemonStatus
+	statusErr                    error
+	snapshot                     domain.Snapshot
+	snapshotErr                  error
+	snapshotHook                 func()
+	registration                 control.ProjectRegistration
+	registerErr                  error
+	registerPath                 string
+	networkSetup                 control.NetworkSetupOperation
+	networkSetupErr              error
+	networkSetupReq              control.StartNetworkSetupRequest
+	networkSetupHook             func(control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
+	setupPreparation             control.NetworkSetupApprovalPreparation
+	setupPrepareErr              error
+	setupPrepareReq              control.PrepareNetworkSetupApprovalRequest
+	setupConfirmation            control.NetworkSetupApprovalConfirmation
+	setupConfirmErr              error
+	setupConfirmReq              control.ConfirmNetworkSetupApprovalRequest
+	resolverSetup                control.NetworkResolverSetupOperation
+	resolverSetupErr             error
+	resolverSetupReq             control.StartNetworkResolverSetupRequest
+	resolverSetupHook            func(control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
+	resolverPreparation          control.NetworkResolverSetupApprovalPreparation
+	resolverPrepareErr           error
+	resolverPrepareReq           control.PrepareNetworkResolverSetupApprovalRequest
+	resolverConfirmation         control.NetworkResolverSetupApprovalConfirmation
+	resolverConfirmErr           error
+	resolverConfirmReq           control.ConfirmNetworkResolverSetupApprovalRequest
+	dataPlaneSetup               control.NetworkDataPlaneSetupOperation
+	dataPlaneSetupErr            error
+	dataPlaneSetupReq            control.StartNetworkDataPlaneSetupRequest
+	dataPlaneSetupHook           func(control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
+	dataPlaneTrustPreparation    control.NetworkDataPlaneTrustApprovalPreparation
+	dataPlaneTrustPrepareErr     error
+	dataPlaneTrustPrepareReq     control.PrepareNetworkDataPlaneTrustApprovalRequest
+	dataPlaneTrustConfirmation   control.NetworkDataPlaneSetupOperation
+	dataPlaneTrustConfirmErr     error
+	dataPlaneTrustConfirmReq     control.ConfirmNetworkDataPlaneTrustApprovalRequest
+	dataPlaneLowPortPreparation  control.NetworkDataPlaneLowPortApprovalPreparation
+	dataPlaneLowPortPrepareErr   error
+	dataPlaneLowPortPrepareReq   control.PrepareNetworkDataPlaneLowPortApprovalRequest
+	dataPlaneLowPortConfirmation control.NetworkDataPlaneSetupConfirmation
+	dataPlaneLowPortConfirmErr   error
+	dataPlaneLowPortConfirmReq   control.ConfirmNetworkDataPlaneLowPortApprovalRequest
+	activity                     control.ProjectActivity
+	activityErr                  error
+	activityRequest              control.ProjectActivityRequest
+	activityHook                 func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	serviceLogs                  control.ServiceLogs
+	serviceLogsErr               error
+	serviceLogsRequest           control.ServiceLogsRequest
+	serviceLogsHook              func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
+	repairInspection             control.ProjectRuntimeRepairInspection
+	repairInspectionErr          error
+	repairInspectRequest         control.InspectProjectRuntimeRepairRequest
+	repairConfirmation           control.ProjectRuntimeRepairConfirmation
+	repairConfirmErr             error
+	repairConfirmRequest         control.ConfirmProjectRuntimeRepairRequest
+	startLifecycle               control.ProjectLifecycleOperation
+	startErr                     error
+	startRequest                 control.StartProjectRequest
+	stopLifecycle                control.ProjectLifecycleOperation
+	stopErr                      error
+	stopRequest                  control.StopProjectRequest
+	restartLifecycle             control.ProjectLifecycleOperation
+	restartErr                   error
+	restartRequest               control.RestartProjectRequest
+	unregistration               control.ProjectUnregistration
+	unregisterErr                error
+	unregisterRequest            control.UnregisterProjectRequest
+	projectPreparation           control.ProjectUnregisterApprovalPreparation
+	projectPrepareErr            error
+	projectPrepareReq            control.PrepareProjectUnregisterApprovalRequest
+	projectConfirmation          control.ProjectUnregisterApprovalConfirmation
+	projectConfirmErr            error
+	projectConfirmReq            control.ConfirmProjectUnregisterApprovalRequest
+	done                         chan struct{}
+	closeOnce                    sync.Once
+	closeCount                   atomic.Int32
 }
 
 // fakeNetworkSetupApprovalRunner records one exact setup selection and returns its configured bounded outcome.
@@ -104,6 +121,18 @@ type fakeNetworkResolverSetupApprovalRunner struct {
 	outcome  networkresolverapproval.Outcome
 	err      error
 	execute  func(context.Context, int, networkresolverapproval.Request) (networkresolverapproval.Outcome, error)
+}
+
+// fakeNetworkDataPlaneApprovalRunner records exact trust and low-port selections without opening native consent.
+type fakeNetworkDataPlaneApprovalRunner struct {
+	trustRequests   []networkdataplaneapproval.Request
+	lowPortRequests []networkdataplaneapproval.Request
+	trustOutcome    networkdataplaneapproval.TrustOutcome
+	lowPortOutcome  networkdataplaneapproval.LowPortOutcome
+	trustErr        error
+	lowPortErr      error
+	trustExecute    func(context.Context, int, networkdataplaneapproval.Request) (networkdataplaneapproval.TrustOutcome, error)
+	lowPortExecute  func(context.Context, int, networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error)
 }
 
 // fakeProjectRemovalApprovalRunner records one exact unregister selection without opening native consent.
@@ -130,6 +159,24 @@ func (runner *fakeNetworkResolverSetupApprovalRunner) Execute(ctx context.Contex
 		return runner.execute(ctx, len(runner.requests), request)
 	}
 	return runner.outcome, runner.err
+}
+
+// ExecuteTrust records the exact trust selection and returns its configured bounded outcome.
+func (runner *fakeNetworkDataPlaneApprovalRunner) ExecuteTrust(ctx context.Context, request networkdataplaneapproval.Request) (networkdataplaneapproval.TrustOutcome, error) {
+	runner.trustRequests = append(runner.trustRequests, request)
+	if runner.trustExecute != nil {
+		return runner.trustExecute(ctx, len(runner.trustRequests), request)
+	}
+	return runner.trustOutcome, runner.trustErr
+}
+
+// ExecuteLowPorts records the exact low-port selection and returns its configured bounded outcome.
+func (runner *fakeNetworkDataPlaneApprovalRunner) ExecuteLowPorts(ctx context.Context, request networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error) {
+	runner.lowPortRequests = append(runner.lowPortRequests, request)
+	if runner.lowPortExecute != nil {
+		return runner.lowPortExecute(ctx, len(runner.lowPortRequests), request)
+	}
+	return runner.lowPortOutcome, runner.lowPortErr
 }
 
 // Execute records the selected unregister revision without opening native consent.
@@ -168,6 +215,7 @@ func newFakeControlClient() *fakeControlClient {
 		registration:       testRegistration(),
 		networkSetup:       testNetworkSetupOperation(domain.OperationSucceeded, 10),
 		resolverSetup:      testNetworkResolverSetupOperation(domain.OperationSucceeded, 13),
+		dataPlaneSetup:     testNetworkDataPlaneSetupOperation(domain.OperationSucceeded, "completed", 17),
 		activity:           testProjectActivity(),
 		serviceLogs:        testServiceLogs(),
 		repairInspection:   testProjectRuntimeRepairInspection(),
@@ -225,6 +273,49 @@ func (client *fakeControlClient) StartNetworkResolverSetup(_ context.Context, re
 		return client.resolverSetupHook(request)
 	}
 	return client.resolverSetup, client.resolverSetupErr
+}
+
+// StartNetworkDataPlaneSetup records the stable trusted-ingress identity and returns its scripted durable operation.
+func (client *fakeControlClient) StartNetworkDataPlaneSetup(_ context.Context, request control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.dataPlaneSetupReq = request
+	if client.dataPlaneSetupHook != nil {
+		return client.dataPlaneSetupHook(request)
+	}
+	return client.dataPlaneSetup, client.dataPlaneSetupErr
+}
+
+// PrepareNetworkDataPlaneTrustApproval records the exact trust operation boundary.
+func (client *fakeControlClient) PrepareNetworkDataPlaneTrustApproval(_ context.Context, request control.PrepareNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneTrustApprovalPreparation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.dataPlaneTrustPrepareReq = request
+	return client.dataPlaneTrustPreparation, client.dataPlaneTrustPrepareErr
+}
+
+// ConfirmNetworkDataPlaneTrustApproval records the trust evidence selected for durable phase advancement.
+func (client *fakeControlClient) ConfirmNetworkDataPlaneTrustApproval(_ context.Context, request control.ConfirmNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneSetupOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.dataPlaneTrustConfirmReq = request
+	return client.dataPlaneTrustConfirmation, client.dataPlaneTrustConfirmErr
+}
+
+// PrepareNetworkDataPlaneLowPortApproval records the exact low-port operation boundary.
+func (client *fakeControlClient) PrepareNetworkDataPlaneLowPortApproval(_ context.Context, request control.PrepareNetworkDataPlaneLowPortApprovalRequest) (control.NetworkDataPlaneLowPortApprovalPreparation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.dataPlaneLowPortPrepareReq = request
+	return client.dataPlaneLowPortPreparation, client.dataPlaneLowPortPrepareErr
+}
+
+// ConfirmNetworkDataPlaneLowPortApproval records the low-port evidence selected for durable completion.
+func (client *fakeControlClient) ConfirmNetworkDataPlaneLowPortApproval(_ context.Context, request control.ConfirmNetworkDataPlaneLowPortApprovalRequest) (control.NetworkDataPlaneSetupConfirmation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.dataPlaneLowPortConfirmReq = request
+	return client.dataPlaneLowPortConfirmation, client.dataPlaneLowPortConfirmErr
 }
 
 // PrepareNetworkResolverSetupApproval records the selected resolver operation revision for executor-backed tests.
@@ -404,9 +495,328 @@ func TestNewAppWiresProductionDependencies(t *testing.T) {
 	t.Parallel()
 
 	app := NewApp()
-	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.resolverApproval == nil || app.projectApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.resolverIntent == nil || app.presentation == nil || app.wait == nil {
+	if app.clientFactory == nil || app.open == nil || app.choose == nil || app.setupApproval == nil || app.resolverApproval == nil || app.dataPlaneApproval == nil || app.projectApproval == nil || app.setupPrerequisite == nil || app.setupIntent == nil || app.resolverIntent == nil || app.dataPlaneIntent == nil || app.presentation == nil || app.wait == nil {
 		t.Fatal("NewApp() left a production dependency unwired")
 	}
+}
+
+// TestSetupNetworkDataPlaneFlow keeps the three durable setup intents ordered through trusted ingress.
+func TestSetupNetworkDataPlaneFlow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("completed replay remains unprivileged", func(t *testing.T) {
+		app, client := connectedTestApp()
+		app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+			t.Fatal("pool approval constructed")
+			return nil
+		}
+		app.resolverApproval = func(networkresolverapproval.Client) networkResolverSetupApprovalRunner {
+			t.Fatal("resolver approval constructed")
+			return nil
+		}
+		app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner {
+			t.Fatal("data-plane approval constructed")
+			return nil
+		}
+		result, err := app.SetupNetwork()
+		if err != nil || result != client.networkSetup {
+			t.Fatalf("SetupNetwork() = (%#v, %v), want original pool operation", result, err)
+		}
+		if client.networkSetupReq.IntentID != networkSetupIntentID || client.resolverSetupReq.IntentID != networkResolverSetupIntentID || client.dataPlaneSetupReq.IntentID != networkDataPlaneSetupIntentID {
+			t.Fatalf("stable intents = %q/%q/%q", client.networkSetupReq.IntentID, client.resolverSetupReq.IntentID, client.dataPlaneSetupReq.IntentID)
+		}
+	})
+
+	t.Run("first run orders all approvals on one client", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+		poolConfirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+		client.resolverSetup = testNetworkResolverSetupOperation(domain.OperationRequiresApproval, 11)
+		resolverConfirmation := testNetworkResolverSetupConfirmation(client.resolverSetup, 13, 14)
+		client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15)
+		trusted := testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16)
+		lowPortConfirmation := testNetworkDataPlaneSetupConfirmation(trusted, 17, 18)
+		pool := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &poolConfirmation}}
+		resolver := &fakeNetworkResolverSetupApprovalRunner{outcome: networkresolverapproval.Outcome{State: networkresolverapproval.Succeeded, Confirmation: &resolverConfirmation}}
+		dataPlane := &fakeNetworkDataPlaneApprovalRunner{trustOutcome: networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Succeeded, Setup: &trusted}, lowPortOutcome: networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: &lowPortConfirmation}}
+		app.setupApproval = func(got networksetupapproval.Client) networkSetupApprovalRunner {
+			if got != client {
+				t.Fatal("pool used another client")
+			}
+			return pool
+		}
+		app.resolverApproval = func(got networkresolverapproval.Client) networkResolverSetupApprovalRunner {
+			if got != client || len(pool.requests) != 1 {
+				t.Fatal("resolver order/client")
+			}
+			return resolver
+		}
+		app.dataPlaneApproval = func(got networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner {
+			if got != client || len(resolver.requests) != 1 {
+				t.Fatal("data-plane order/client")
+			}
+			return dataPlane
+		}
+		result, err := app.SetupNetwork()
+		if err != nil || result.Operation.ID != poolConfirmation.Operation.ID || result.Revision != poolConfirmation.Revision {
+			t.Fatalf("SetupNetwork() = (%#v, %v)", result, err)
+		}
+		if got, want := pool.requests, []networksetupapproval.Request{{OperationID: client.networkSetup.Operation.ID, ExpectedOperationRevision: 7}}; fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("pool requests = %#v, want %#v", got, want)
+		}
+		if got, want := resolver.requests, []networkresolverapproval.Request{{OperationID: client.resolverSetup.Operation.ID, ExpectedOperationRevision: 11}}; fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("resolver requests = %#v, want %#v", got, want)
+		}
+		if len(dataPlane.trustRequests) != 1 || dataPlane.trustRequests[0].ExpectedOperationRevision != 15 || len(dataPlane.lowPortRequests) != 1 || dataPlane.lowPortRequests[0].ExpectedOperationRevision != 16 {
+			t.Fatalf("data-plane requests = %#v/%#v", dataPlane.trustRequests, dataPlane.lowPortRequests)
+		}
+	})
+
+	t.Run("low-port replay skips trust", func(t *testing.T) {
+		app, client := connectedTestApp()
+		client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16)
+		confirmation := testNetworkDataPlaneSetupConfirmation(client.dataPlaneSetup, 17, 18)
+		runner := &fakeNetworkDataPlaneApprovalRunner{lowPortOutcome: networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: &confirmation}}
+		app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner { return runner }
+		if _, err := app.SetupNetwork(); err != nil || len(runner.trustRequests) != 0 || len(runner.lowPortRequests) != 1 {
+			t.Fatalf("SetupNetwork() = %v; trust/low = %d/%d", err, len(runner.trustRequests), len(runner.lowPortRequests))
+		}
+	})
+}
+
+// TestSetupNetworkDataPlaneReplaysIndeterminateApprovals keeps lost results behind the same durable intent.
+func TestSetupNetworkDataPlaneReplaysIndeterminateApprovals(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, phase string }{{"trust", "awaiting trust approval"}, {"low port", "awaiting low-port approval"}} {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			first := testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, test.phase, 15)
+			completed := testNetworkDataPlaneSetupOperation(domain.OperationSucceeded, "completed", 17)
+			var requests []control.StartNetworkDataPlaneSetupRequest
+			client.dataPlaneSetupHook = func(request control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error) {
+				requests = append(requests, request)
+				if len(requests) == 1 {
+					return first, nil
+				}
+				return completed, nil
+			}
+			runner := &fakeNetworkDataPlaneApprovalRunner{}
+			if test.phase == "awaiting trust approval" {
+				runner.trustOutcome, runner.trustErr = networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Indeterminate}, errors.New("trust response was lost")
+			} else {
+				runner.lowPortOutcome, runner.lowPortErr = networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Indeterminate}, errors.New("low-port response was lost")
+			}
+			app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner { return runner }
+			if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), "response was lost") {
+				t.Fatalf("first SetupNetwork() error = %v", err)
+			}
+			if _, err := app.SetupNetwork(); err != nil {
+				t.Fatalf("replayed SetupNetwork() error = %v", err)
+			}
+			if len(requests) != 2 || requests[0].IntentID != networkDataPlaneSetupIntentID || requests[1].IntentID != networkDataPlaneSetupIntentID {
+				t.Fatalf("replay intents = %#v", requests)
+			}
+			if test.phase == "awaiting trust approval" && len(runner.trustRequests) != 1 || test.phase == "awaiting low-port approval" && len(runner.lowPortRequests) != 1 {
+				t.Fatalf("approval replayed after lost %s response", test.name)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkDataPlaneRetryIntentBoundsFreshIdentities limits new identities to cancelled, retryable, and opaque fixed-intent failures.
+func TestSetupNetworkDataPlaneRetryIntentBoundsFreshIdentities(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		terminal control.NetworkDataPlaneSetupOperation
+		startErr error
+		wantMint bool
+	}{
+		{"cancelled", testNetworkDataPlaneSetupOperation(domain.OperationCancelled, string(domain.OperationCancelled), 15), nil, true},
+		{"retryable failed", testNetworkDataPlaneSetupOperation(domain.OperationFailed, string(domain.OperationFailed), 15), nil, true},
+		{"internal", control.NetworkDataPlaneSetupOperation{}, rpc.WireError{Code: rpc.ErrorCodeInternal}, true},
+		{"nonretryable failed", nonRetryableDataPlaneOperation(), nil, false},
+		{"unsupported state", testNetworkDataPlaneSetupOperation(domain.OperationState("unsupported"), "unsupported", 15), nil, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			minted := 0
+			app.dataPlaneIntent = func() (domain.IntentID, error) { minted++; return "intent-network-data-plane-setup-retry", nil }
+			calls := 0
+			client.dataPlaneSetupHook = func(request control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error) {
+				calls++
+				if calls == 1 {
+					return test.terminal, test.startErr
+				}
+				result := testNetworkDataPlaneSetupOperation(domain.OperationSucceeded, "completed", 17)
+				result.Operation.IntentID = request.IntentID
+				return result, nil
+			}
+			_, err := app.SetupNetwork()
+			if test.wantMint && (err != nil || minted != 1 || calls != 2) {
+				t.Fatalf("retry = err %v, mint/calls %d/%d", err, minted, calls)
+			}
+			if !test.wantMint && (err == nil || minted != 0 || calls != 1) {
+				t.Fatalf("nonretryable = err %v, mint/calls %d/%d", err, minted, calls)
+			}
+		})
+	}
+	app, client := connectedTestApp()
+	client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationCancelled, string(domain.OperationCancelled), 15)
+	app.dataPlaneIntent = func() (domain.IntentID, error) { return "", errors.New("entropy unavailable") }
+	if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), "create Harbor network data-plane setup retry: entropy unavailable") {
+		t.Fatalf("entropy failure = %v", err)
+	}
+}
+
+// TestSetupNetworkDataPlaneRejectsUntrustedTerminalRetriesBeforeMinting keeps malformed and crossed terminal responses outside retry authority.
+func TestSetupNetworkDataPlaneRejectsUntrustedTerminalRetriesBeforeMinting(t *testing.T) {
+	t.Parallel()
+
+	malformedCancelled := testNetworkDataPlaneSetupOperation(domain.OperationCancelled, string(domain.OperationCancelled), 15)
+	malformedCancelled.Operation.FinishedAt = nil
+	malformedFailed := testNetworkDataPlaneSetupOperation(domain.OperationFailed, string(domain.OperationFailed), 15)
+	malformedFailed.Operation.Problem.Code = ""
+	crossCancelled := testNetworkDataPlaneSetupOperation(domain.OperationCancelled, string(domain.OperationCancelled), 15)
+	crossCancelled.Operation.IntentID = "intent-other"
+	crossFailed := testNetworkDataPlaneSetupOperation(domain.OperationFailed, string(domain.OperationFailed), 15)
+	crossFailed.Operation.IntentID = "intent-other"
+
+	for _, test := range []struct {
+		name  string
+		setup control.NetworkDataPlaneSetupOperation
+	}{
+		{name: "malformed cancelled", setup: malformedCancelled},
+		{name: "malformed retryable failed", setup: malformedFailed},
+		{name: "cross-intent cancelled", setup: crossCancelled},
+		{name: "cross-intent retryable failed", setup: crossFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			minted := 0
+			starts := 0
+			app.dataPlaneIntent = func() (domain.IntentID, error) { minted++; return "intent-network-data-plane-setup-retry", nil }
+			client.dataPlaneSetupHook = func(control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error) {
+				starts++
+				return test.setup, nil
+			}
+			app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner {
+				t.Fatal("approval runner constructed")
+				return nil
+			}
+			if _, err := app.SetupNetwork(); err == nil || minted != 0 || starts != 1 {
+				t.Fatalf("SetupNetwork() error/mints/starts = %v/%d/%d, want validation error, zero mints, and one start", err, minted, starts)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkDataPlaneRejectsUnsupportedSuccessAndApprovalPhases keeps daemon phases from selecting the wrong native boundary.
+func TestSetupNetworkDataPlaneRejectsUnsupportedSuccessAndApprovalPhases(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		setup control.NetworkDataPlaneSetupOperation
+	}{
+		{name: "succeeded before completion", setup: testNetworkDataPlaneSetupOperation(domain.OperationSucceeded, "awaiting low-port approval", 17)},
+		{name: "unknown approval phase", setup: testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting another approval", 15)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			client.dataPlaneSetup = test.setup
+			app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner {
+				t.Fatal("approval runner constructed for unsupported phase")
+				return nil
+			}
+			if _, err := app.SetupNetwork(); err == nil {
+				t.Fatal("SetupNetwork() error = nil for unsupported data-plane phase")
+			}
+			if client.dataPlaneSetupReq.IntentID != networkDataPlaneSetupIntentID {
+				t.Fatalf("StartNetworkDataPlaneSetup() intent = %q", client.dataPlaneSetupReq.IntentID)
+			}
+		})
+	}
+}
+
+// nonRetryableDataPlaneOperation returns a terminal operation that must not mint another idempotency boundary.
+func nonRetryableDataPlaneOperation() control.NetworkDataPlaneSetupOperation {
+	operation := testNetworkDataPlaneSetupOperation(domain.OperationFailed, string(domain.OperationFailed), 15)
+	operation.Operation.Problem.Retryable = false
+	return operation
+}
+
+// TestNetworkDataPlaneApprovalValidationRejectsCrossedResponses keeps every phase and revision boundary fail-closed.
+func TestNetworkDataPlaneApprovalValidationRejectsCrossedResponses(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		setup control.NetworkDataPlaneSetupOperation
+		trust networkdataplaneapproval.TrustOutcome
+		low   networkdataplaneapproval.LowPortOutcome
+		want  string
+	}{
+		{"wrong start intent", wrongIntentDataPlaneOperation(), networkdataplaneapproval.TrustOutcome{}, networkdataplaneapproval.LowPortOutcome{}, "another intent"},
+		{"trust operation", testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15), networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Succeeded, Setup: ptrDataPlane(testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16))}, networkdataplaneapproval.LowPortOutcome{}, "selected operation revision"},
+		{"trust nonadvancing revision", testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15), networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Succeeded, Setup: ptrDataPlane(testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 15))}, networkdataplaneapproval.LowPortOutcome{}, "selected operation revision"},
+		{"trust wrong phase", testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15), networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Succeeded, Setup: ptrDataPlane(testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 16))}, networkdataplaneapproval.LowPortOutcome{}, "selected operation revision"},
+		{"low-port operation", testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16), networkdataplaneapproval.TrustOutcome{}, networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: ptrDataPlaneConfirmation(testNetworkDataPlaneSetupConfirmation(testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16), 17, 18))}, "selected operation revision"},
+		{"low-port nonadvancing revision", testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16), networkdataplaneapproval.TrustOutcome{}, networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: ptrDataPlaneConfirmation(testNetworkDataPlaneSetupConfirmation(testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16), 15, 16))}, "selected operation revision"},
+		{"inconsistent success", testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15), networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Succeeded}, networkdataplaneapproval.LowPortOutcome{}, "inconsistent evidence"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, client := connectedTestApp()
+			client.dataPlaneSetup = test.setup
+			if test.name == "trust operation" {
+				test.trust.Setup.Operation.ID = "other-operation"
+			}
+			if test.name == "low-port operation" {
+				test.low.Confirmation.Operation.ID = "other-operation"
+			}
+			app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner {
+				return &fakeNetworkDataPlaneApprovalRunner{trustOutcome: test.trust, lowPortOutcome: test.low}
+			}
+			if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("SetupNetwork() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestNetworkDataPlaneApprovalOutcomeGuidance preserves safe retry and refresh wording for every bounded outcome.
+func TestNetworkDataPlaneApprovalOutcomeGuidance(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, want string
+		state      networkdataplaneapproval.State
+	}{
+		{"declined", "safe to retry", networkdataplaneapproval.Declined}, {"unavailable", "unavailable", networkdataplaneapproval.Unavailable}, {"failed", "without a problem description", networkdataplaneapproval.HelperFailed}, {"indeterminate", "refresh before retrying", networkdataplaneapproval.Indeterminate}, {"unsupported", "unsupported state", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := networkDataPlaneTrustApprovalError(networkdataplaneapproval.TrustOutcome{State: test.state}); !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("trust error = %v", err)
+			}
+			if err := networkDataPlaneLowPortApprovalError(networkdataplaneapproval.LowPortOutcome{State: test.state}); !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("low-port error = %v", err)
+			}
+		})
+	}
+}
+
+// wrongIntentDataPlaneOperation returns an otherwise valid daemon reply for a different stable intent.
+func wrongIntentDataPlaneOperation() control.NetworkDataPlaneSetupOperation {
+	operation := testNetworkDataPlaneSetupOperation(domain.OperationSucceeded, "completed", 17)
+	operation.Operation.IntentID = "intent-other"
+	return operation
+}
+
+// ptrDataPlane keeps table fixtures readable without sharing mutable operation values.
+func ptrDataPlane(value control.NetworkDataPlaneSetupOperation) *control.NetworkDataPlaneSetupOperation {
+	return &value
+}
+
+// ptrDataPlaneConfirmation keeps table fixtures readable without sharing mutable confirmation values.
+func ptrDataPlaneConfirmation(value control.NetworkDataPlaneSetupConfirmation) *control.NetworkDataPlaneSetupConfirmation {
+	return &value
 }
 
 // TestNewDesktopClientHonorsCancellation verifies the concrete adapter forwards the desktop request context.
@@ -3521,6 +3931,46 @@ func testNetworkResolverSetupConfirmation(
 		Revision:        revision,
 		NetworkRevision: networkRevision,
 	}
+}
+
+// testNetworkDataPlaneSetupOperation returns one valid trusted-ingress operation at the requested lifecycle state and phase.
+func testNetworkDataPlaneSetupOperation(state domain.OperationState, phase string, revision domain.Sequence) control.NetworkDataPlaneSetupOperation {
+	requestedAt := time.Date(2026, time.July, 18, 12, 12, 0, 0, time.UTC)
+	startedAt := requestedAt.Add(time.Second)
+	finishedAt := requestedAt.Add(2 * time.Second)
+	operation := domain.Operation{
+		ID:          "operation-network-data-plane-setup",
+		IntentID:    networkDataPlaneSetupIntentID,
+		Kind:        domain.OperationKindNetworkDataPlaneSetup,
+		State:       state,
+		Phase:       phase,
+		RequestedAt: requestedAt,
+	}
+	switch state {
+	case domain.OperationRunning, domain.OperationRequiresApproval:
+		operation.StartedAt = &startedAt
+	case domain.OperationSucceeded:
+		operation.StartedAt = &startedAt
+		operation.FinishedAt = &finishedAt
+	case domain.OperationFailed:
+		operation.StartedAt = &startedAt
+		operation.FinishedAt = &finishedAt
+		operation.Problem = &domain.Problem{Code: "data_plane_failed", Message: "data plane failed", Retryable: true}
+	case domain.OperationCancelled:
+		operation.FinishedAt = &finishedAt
+	}
+	return control.NetworkDataPlaneSetupOperation{Operation: operation, Revision: revision}
+}
+
+// testNetworkDataPlaneSetupConfirmation completes one exact low-port approval replay.
+func testNetworkDataPlaneSetupConfirmation(setup control.NetworkDataPlaneSetupOperation, networkRevision domain.Sequence, revision domain.Sequence) control.NetworkDataPlaneSetupConfirmation {
+	operation := setup.Operation
+	finishedAt := operation.RequestedAt.Add(3 * time.Second)
+	operation.State = domain.OperationSucceeded
+	operation.Phase = "completed"
+	operation.FinishedAt = &finishedAt
+	operation.Problem = nil
+	return control.NetworkDataPlaneSetupConfirmation{Operation: operation, Revision: revision, NetworkRevision: networkRevision}
 }
 
 // testRegistration returns a valid inert registration without claiming network-backed resources.

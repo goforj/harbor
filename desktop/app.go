@@ -18,6 +18,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/launcher"
+	"github.com/goforj/harbor/internal/networkdataplaneapproval"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/projectapproval"
@@ -34,6 +35,8 @@ const (
 	snapshotEventName            = desktopwire.SnapshotEventName
 	networkSetupIntentID         = domain.IntentID("intent-network-setup")
 	networkResolverSetupIntentID = domain.IntentID("intent-network-resolver-setup")
+	// networkDataPlaneSetupIntentID is the stable replay identity for trusted-ingress setup.
+	networkDataPlaneSetupIntentID = domain.IntentID("intent-network-data-plane-setup")
 )
 
 var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
@@ -49,6 +52,11 @@ type controlClient interface {
 	StartNetworkResolverSetup(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
 	PrepareNetworkResolverSetupApproval(context.Context, control.PrepareNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalPreparation, error)
 	ConfirmNetworkResolverSetupApproval(context.Context, control.ConfirmNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalConfirmation, error)
+	StartNetworkDataPlaneSetup(context.Context, control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
+	PrepareNetworkDataPlaneTrustApproval(context.Context, control.PrepareNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneTrustApprovalPreparation, error)
+	ConfirmNetworkDataPlaneTrustApproval(context.Context, control.ConfirmNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneSetupOperation, error)
+	PrepareNetworkDataPlaneLowPortApproval(context.Context, control.PrepareNetworkDataPlaneLowPortApprovalRequest) (control.NetworkDataPlaneLowPortApprovalPreparation, error)
+	ConfirmNetworkDataPlaneLowPortApproval(context.Context, control.ConfirmNetworkDataPlaneLowPortApprovalRequest) (control.NetworkDataPlaneSetupConfirmation, error)
 	InspectProjectRuntimeRepair(context.Context, control.InspectProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairInspection, error)
 	ConfirmProjectRuntimeRepair(context.Context, control.ConfirmProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairConfirmation, error)
 	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
@@ -97,6 +105,15 @@ type networkResolverSetupApprovalRunner interface {
 // networkResolverSetupApprovalFactory binds resolver approval to the same authenticated session that selected the operation.
 type networkResolverSetupApprovalFactory func(networkresolverapproval.Client) networkResolverSetupApprovalRunner
 
+// networkDataPlaneSetupApprovalRunner performs the exact trust and low-port helper attempts selected by the daemon.
+type networkDataPlaneSetupApprovalRunner interface {
+	ExecuteTrust(context.Context, networkdataplaneapproval.Request) (networkdataplaneapproval.TrustOutcome, error)
+	ExecuteLowPorts(context.Context, networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error)
+}
+
+// networkDataPlaneSetupApprovalFactory binds trusted-ingress approval to the authenticated session that selected it.
+type networkDataPlaneSetupApprovalFactory func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner
+
 // projectRemovalApprovalRunner performs one bounded interactive release workflow for an exact unregister revision.
 type projectRemovalApprovalRunner interface {
 	Execute(context.Context, projectapproval.Request) (projectapproval.Outcome, error)
@@ -107,6 +124,9 @@ type projectRemovalApprovalFactory func(projectapproval.Client) projectRemovalAp
 
 // networkResolverSetupIntentFactory creates a fresh retry identity after a recoverable resolver setup terminal state.
 type networkResolverSetupIntentFactory func() (domain.IntentID, error)
+
+// networkDataPlaneSetupIntentFactory creates a fresh retry identity after a recoverable trusted-ingress terminal state.
+type networkDataPlaneSetupIntentFactory func() (domain.IntentID, error)
 
 // ConnectionState identifies the desktop backend's current relationship to harbord.
 type ConnectionState = desktopwire.ConnectionState
@@ -150,10 +170,12 @@ type App struct {
 	choose                directoryChooser
 	setupApproval         networkSetupApprovalFactory
 	resolverApproval      networkResolverSetupApprovalFactory
+	dataPlaneApproval     networkDataPlaneSetupApprovalFactory
 	projectApproval       projectRemovalApprovalFactory
 	setupPrerequisite     networkprerequisite.Ensurer
 	setupIntent           networkSetupIntentFactory
 	resolverIntent        networkResolverSetupIntentFactory
+	dataPlaneIntent       networkDataPlaneSetupIntentFactory
 	presentation          *presentationController
 	wait                  waitFunc
 	reconnectDelay        time.Duration
@@ -188,6 +210,12 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
 			)
 		},
+		dataPlaneApproval: func(client networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner {
+			return networkdataplaneapproval.New(
+				client,
+				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
+			)
+		},
 		projectApproval: func(client projectapproval.Client) projectRemovalApprovalRunner {
 			return projectapproval.New(
 				client,
@@ -197,6 +225,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		setupPrerequisite:  networkprerequisite.New(),
 		setupIntent:        newNetworkSetupIntent,
 		resolverIntent:     newNetworkResolverSetupIntent,
+		dataPlaneIntent:    newNetworkDataPlaneSetupIntent,
 		presentation:       newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
 		wait:               wait,
 		reconnectDelay:     desktopReconnectDelay,
@@ -205,7 +234,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 	}
 }
 
-// SetupNetwork completes the address and resolver foundations before reporting Harbor networking ready.
+// SetupNetwork completes the address, resolver, and trusted-ingress foundations before reporting Harbor networking ready.
 func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 	ctx, client, release, err := a.leaseCurrentConnection()
 	if err != nil {
@@ -218,6 +247,9 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 		return control.NetworkSetupOperation{}, err
 	}
 	if err := a.completeNetworkResolverSetup(ctx, client); err != nil {
+		return control.NetworkSetupOperation{}, err
+	}
+	if err := a.completeNetworkDataPlaneSetup(ctx, client); err != nil {
 		return control.NetworkSetupOperation{}, err
 	}
 	return setup, nil
@@ -285,6 +317,55 @@ func (a *App) completeNetworkResolverSetup(ctx context.Context, client controlCl
 	}
 }
 
+// completeNetworkDataPlaneSetup starts or replays trusted-ingress setup after its pool and resolver prerequisites are complete.
+func (a *App) completeNetworkDataPlaneSetup(ctx context.Context, client controlClient) error {
+	intentID := networkDataPlaneSetupIntentID
+	setup, err := client.StartNetworkDataPlaneSetup(ctx, control.StartNetworkDataPlaneSetupRequest{IntentID: intentID})
+	if err == nil {
+		if err := validateNetworkDataPlaneSetupResult(setup, intentID); err != nil {
+			return err
+		}
+	}
+	if networkDataPlaneSetupNeedsFreshIntent(setup, err) {
+		intentID, err = a.dataPlaneIntent()
+		if err != nil {
+			return fmt.Errorf("create Harbor network data-plane setup retry: %w", err)
+		}
+		setup, err = client.StartNetworkDataPlaneSetup(ctx, control.StartNetworkDataPlaneSetupRequest{IntentID: intentID})
+		if err == nil {
+			if err := validateNetworkDataPlaneSetupResult(setup, intentID); err != nil {
+				return err
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("start Harbor network data-plane setup: %w", err)
+	}
+
+	switch setup.Operation.State {
+	case domain.OperationSucceeded:
+		if setup.Operation.Phase != "completed" {
+			return fmt.Errorf("Harbor network data-plane setup succeeded in unsupported phase %q", setup.Operation.Phase)
+		}
+		return nil
+	case domain.OperationRequiresApproval:
+		return a.approveNetworkDataPlaneSetup(ctx, client, setup)
+	default:
+		return fmt.Errorf("Harbor network data-plane setup is %s", setup.Operation.State)
+	}
+}
+
+// validateNetworkDataPlaneSetupResult rejects malformed or misbound setup responses before their state controls retry behavior.
+func validateNetworkDataPlaneSetupResult(setup control.NetworkDataPlaneSetupOperation, intentID domain.IntentID) error {
+	if err := setup.Validate(); err != nil {
+		return fmt.Errorf("validate Harbor network data-plane setup: %w", err)
+	}
+	if setup.Operation.IntentID != intentID {
+		return errors.New("validate Harbor network data-plane setup: daemon result belongs to another intent")
+	}
+	return nil
+}
+
 // networkSetupNeedsFreshIntent recovers only a poisoned singleton retry or an opaque fixed-intent replay failure.
 func networkSetupNeedsFreshIntent(setup control.NetworkSetupOperation, err error) bool {
 	if err != nil {
@@ -301,6 +382,20 @@ func networkSetupNeedsFreshIntent(setup control.NetworkSetupOperation, err error
 
 // networkResolverSetupNeedsFreshIntent recovers only a poisoned stable replay or a retryable terminal resolver operation.
 func networkResolverSetupNeedsFreshIntent(setup control.NetworkResolverSetupOperation, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodeInternal
+	}
+	if setup.Operation.State == domain.OperationCancelled {
+		return true
+	}
+	return setup.Operation.State == domain.OperationFailed &&
+		setup.Operation.Problem != nil &&
+		setup.Operation.Problem.Retryable
+}
+
+// networkDataPlaneSetupNeedsFreshIntent recovers only a poisoned stable replay or retryable terminal trusted-ingress operation.
+func networkDataPlaneSetupNeedsFreshIntent(setup control.NetworkDataPlaneSetupOperation, err error) bool {
 	if err != nil {
 		var wireError rpc.WireError
 		return errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodeInternal
@@ -345,6 +440,24 @@ func newNetworkResolverSetupIntentFrom(reader io.Reader) (domain.IntentID, error
 	intentID := domain.IntentID("intent-network-resolver-setup-" + hex.EncodeToString(random))
 	if err := intentID.Validate(); err != nil {
 		return "", fmt.Errorf("validate network resolver setup intent: %w", err)
+	}
+	return intentID, nil
+}
+
+// newNetworkDataPlaneSetupIntent creates an independently retryable trusted-ingress setup identity from operating-system entropy.
+func newNetworkDataPlaneSetupIntent() (domain.IntentID, error) {
+	return newNetworkDataPlaneSetupIntentFrom(rand.Reader)
+}
+
+// newNetworkDataPlaneSetupIntentFrom keeps trusted-ingress retry entropy failure visible to the desktop action.
+func newNetworkDataPlaneSetupIntentFrom(reader io.Reader) (domain.IntentID, error) {
+	random := make([]byte, networkSetupIntentBytes)
+	if _, err := io.ReadFull(reader, random); err != nil {
+		return "", fmt.Errorf("read network data-plane setup intent entropy: %w", err)
+	}
+	intentID := domain.IntentID("intent-network-data-plane-setup-" + hex.EncodeToString(random))
+	if err := intentID.Validate(); err != nil {
+		return "", fmt.Errorf("validate network data-plane setup intent: %w", err)
 	}
 	return intentID, nil
 }
@@ -547,6 +660,122 @@ func networkResolverSetupApprovalError(outcome networkresolverapproval.Outcome) 
 		return errors.New("Harbor network resolver setup may have changed the host; refresh before retrying")
 	default:
 		return fmt.Errorf("Harbor network resolver setup approval returned unsupported state %q", outcome.State)
+	}
+}
+
+// approveNetworkDataPlaneSetup advances the selected operation through any required trust and low-port approvals.
+func (a *App) approveNetworkDataPlaneSetup(
+	ctx context.Context,
+	client controlClient,
+	setup control.NetworkDataPlaneSetupOperation,
+) error {
+	var runner networkDataPlaneSetupApprovalRunner
+	switch setup.Operation.Phase {
+	case "awaiting low-port approval":
+		runner = a.dataPlaneApproval(client)
+		return a.approveNetworkDataPlaneLowPorts(ctx, runner, setup)
+	case "awaiting trust approval":
+		runner = a.dataPlaneApproval(client)
+	default:
+		return fmt.Errorf("Harbor network data-plane setup requires approval in unsupported phase %q", setup.Operation.Phase)
+	}
+
+	request := networkdataplaneapproval.Request{
+		OperationID:               setup.Operation.ID,
+		ExpectedOperationRevision: setup.Revision,
+	}
+	outcome, err := runner.ExecuteTrust(ctx, request)
+	if err != nil {
+		return fmt.Errorf("approve Harbor network data-plane trust: %w", err)
+	}
+	if outcome.State != networkdataplaneapproval.Succeeded {
+		return networkDataPlaneTrustApprovalError(outcome)
+	}
+	if outcome.Setup == nil || outcome.HelperFailure != nil {
+		return errors.New("approve Harbor network data-plane trust: successful approval returned inconsistent evidence")
+	}
+
+	trusted := *outcome.Setup
+	if err := trusted.Validate(); err != nil {
+		return fmt.Errorf("validate Harbor network data-plane trust confirmation: %w", err)
+	}
+	if trusted.Operation.ID != setup.Operation.ID ||
+		trusted.Operation.IntentID != setup.Operation.IntentID ||
+		trusted.Revision <= setup.Revision ||
+		!control.RequiresNetworkDataPlaneLowPortApproval(trusted) {
+		return errors.New("validate Harbor network data-plane trust confirmation: result crossed the selected operation revision")
+	}
+	return a.approveNetworkDataPlaneLowPorts(ctx, runner, trusted)
+}
+
+// approveNetworkDataPlaneLowPorts completes the final paired low-port approval for the selected operation revision.
+func (a *App) approveNetworkDataPlaneLowPorts(
+	ctx context.Context,
+	runner networkDataPlaneSetupApprovalRunner,
+	setup control.NetworkDataPlaneSetupOperation,
+) error {
+	request := networkdataplaneapproval.Request{
+		OperationID:               setup.Operation.ID,
+		ExpectedOperationRevision: setup.Revision,
+	}
+	outcome, err := runner.ExecuteLowPorts(ctx, request)
+	if err != nil {
+		return fmt.Errorf("approve Harbor network data-plane low-port setup: %w", err)
+	}
+	if outcome.State != networkdataplaneapproval.Succeeded {
+		return networkDataPlaneLowPortApprovalError(outcome)
+	}
+	if outcome.Confirmation == nil || outcome.HelperFailure != nil {
+		return errors.New("approve Harbor network data-plane low-port setup: successful approval returned inconsistent evidence")
+	}
+
+	confirmation := *outcome.Confirmation
+	if err := confirmation.Validate(); err != nil {
+		return fmt.Errorf("validate Harbor network data-plane low-port confirmation: %w", err)
+	}
+	if confirmation.Operation.ID != setup.Operation.ID ||
+		confirmation.Operation.IntentID != setup.Operation.IntentID ||
+		confirmation.NetworkRevision <= setup.Revision {
+		return errors.New("validate Harbor network data-plane low-port confirmation: result crossed the selected operation revision")
+	}
+	return nil
+}
+
+// networkDataPlaneTrustApprovalError preserves phase-specific retry guidance without exposing helper capabilities or privileged details.
+func networkDataPlaneTrustApprovalError(outcome networkdataplaneapproval.TrustOutcome) error {
+	switch outcome.State {
+	case networkdataplaneapproval.Declined:
+		return errors.New("Harbor network data-plane trust approval was declined; setup is safe to retry")
+	case networkdataplaneapproval.Unavailable:
+		return errors.New("Harbor network data-plane trust approval is unavailable on this installation")
+	case networkdataplaneapproval.HelperFailed:
+		if outcome.HelperFailure == nil {
+			return errors.New("Harbor network data-plane trust helper failed without a problem description")
+		}
+		return fmt.Errorf("Harbor network data-plane trust helper failed (%s): %s", outcome.HelperFailure.Code, outcome.HelperFailure.Message)
+	case networkdataplaneapproval.Indeterminate:
+		return errors.New("Harbor network data-plane trust approval may have changed the host; refresh before retrying")
+	default:
+		return fmt.Errorf("Harbor network data-plane trust approval returned unsupported state %q", outcome.State)
+	}
+}
+
+// networkDataPlaneLowPortApprovalError preserves phase-specific retry guidance without exposing helper capabilities or privileged details.
+func networkDataPlaneLowPortApprovalError(outcome networkdataplaneapproval.LowPortOutcome) error {
+	switch outcome.State {
+	case networkdataplaneapproval.Declined:
+		return errors.New("Harbor network data-plane low-port approval was declined; setup is safe to retry")
+	case networkdataplaneapproval.Unavailable:
+		return errors.New("Harbor network data-plane low-port approval is unavailable on this installation")
+	case networkdataplaneapproval.HelperFailed:
+		if outcome.HelperFailure == nil {
+			return errors.New("Harbor network data-plane low-port helper failed without a problem description")
+		}
+		return fmt.Errorf("Harbor network data-plane low-port helper failed (%s): %s", outcome.HelperFailure.Code, outcome.HelperFailure.Message)
+	case networkdataplaneapproval.Indeterminate:
+		return errors.New("Harbor network data-plane low-port approval may have changed the host; refresh before retrying")
+	default:
+		return fmt.Errorf("Harbor network data-plane low-port approval returned unsupported state %q", outcome.State)
 	}
 }
 
