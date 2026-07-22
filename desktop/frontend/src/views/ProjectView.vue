@@ -336,10 +336,20 @@ async function approveProjectRemoval() {
 async function changeProjectLifecycle() {
   if (!project.value) return
   if (lifecycleAction.value === 'start') {
-    await store.startProject(project.value.id)
+    await startProject(project.value.id)
     return
   }
   await store.stopProject(project.value.id)
+}
+
+async function startProject(requestedProjectId: string) {
+  const result = await store.startProject(requestedProjectId)
+  if (result?.operation.kind === 'project.start'
+    && projectId.value === requestedProjectId
+    && project.value?.id === requestedProjectId
+    && selectedDetailTab.value === 'overview') {
+    selectedDetailTab.value = 'output'
+  }
 }
 
 async function restartProject() {
@@ -357,7 +367,7 @@ async function setupNetworkAndStartProject() {
     || store.snapshotStale
     || store.connectionState !== 'connected'
     || store.projectLifecycleBusy) return
-  await store.startProject(requestedProjectId)
+  await startProject(requestedProjectId)
 }
 
 async function inspectStaleRuntime() {

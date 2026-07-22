@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot } from '@/bridge/mock'
-import type { ProjectRuntimeRepairInspection } from '@/domain/harbor'
+import type { ProjectLifecycleOperation, ProjectRuntimeRepairInspection } from '@/domain/harbor'
 import { useHarborStore } from '@/stores/harbor'
 import ProjectView from './ProjectView.vue'
 
@@ -14,6 +14,14 @@ interface MountedProjectView {
   router: Router
   store: ReturnType<typeof useHarborStore>
   wrapper: VueWrapper
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
 
 async function mountRecoveryProject(): Promise<MountedProjectView> {
@@ -111,6 +119,83 @@ function bodyButton(label: string): HTMLButtonElement {
   if (!(button instanceof HTMLButtonElement)) throw new Error(`Button not found: ${label}`)
   return button
 }
+
+function detailTab(wrapper: VueWrapper, label: string) {
+  const tab = wrapper.findAll('[role="tab"]').find((candidate) => candidate.text().startsWith(label))
+  if (!tab) throw new Error(`Detail tab not found: ${label}`)
+  return tab
+}
+
+function activeDetailTab(wrapper: VueWrapper) {
+  const tab = wrapper.findAll('[role="tab"]').find((candidate) => candidate.attributes('data-state') === 'active')
+  if (!tab) throw new Error('Active detail tab not found')
+  return tab.text()
+}
+
+function admittedStart(projectId: string, intentId: string): ProjectLifecycleOperation {
+  const result = structuredClone(harborWireFixture.start_project)
+  result.operation.project_id = projectId
+  result.operation.intent_id = intentId
+  return result
+}
+
+describe('ProjectView project start output', () => {
+  it('switches from Overview to Development output when the selected project start is admitted', async () => {
+    vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => admittedStart(projectId, intentId))
+    const { wrapper } = await mountProject('reports')
+
+    expect(activeDetailTab(wrapper)).toBe('Overview')
+    await bodyButton('Start project').click()
+    await flushPromises()
+
+    expect(activeDetailTab(wrapper)).toBe('Development output')
+    wrapper.unmount()
+  })
+
+  it.each(['Development output', 'Services', 'Resources'])('preserves the %s tab when the selected project starts', async (tabLabel) => {
+    vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => admittedStart(projectId, intentId))
+    const { wrapper } = await mountProject('reports')
+    await detailTab(wrapper, tabLabel).trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+    expect(activeDetailTab(wrapper)).toContain(tabLabel)
+
+    await bodyButton('Start project').click()
+    await flushPromises()
+
+    expect(activeDetailTab(wrapper)).toContain(tabLabel)
+    wrapper.unmount()
+  })
+
+  it('does not change tabs when start admission fails', async () => {
+    const startProject = vi.spyOn(harborBridge, 'startProject').mockRejectedValueOnce(new Error('Admission denied'))
+    const { wrapper } = await mountProject('reports')
+
+    await bodyButton('Start project').click()
+    await flushPromises()
+
+    expect(startProject).toHaveBeenCalledOnce()
+    expect(activeDetailTab(wrapper)).toBe('Overview')
+    wrapper.unmount()
+  })
+
+  it('does not change the newly selected project tab when an earlier start completes', async () => {
+    const pending = deferred<ProjectLifecycleOperation>()
+    vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
+    const { router, wrapper } = await mountProject('reports')
+
+    const starting = bodyButton('Start project').click()
+    await router.push('/projects/billing')
+    await flushPromises()
+
+    pending.resolve(admittedStart('reports', 'reports-start'))
+    await starting
+    await flushPromises()
+
+    expect(router.currentRoute.value.params.projectId).toBe('billing')
+    expect(activeDetailTab(wrapper)).toBe('Overview')
+    wrapper.unmount()
+  })
+})
 
 describe('ProjectView stale runtime recovery', () => {
   it('keeps project detail content in compact, task-focused tabs', async () => {
