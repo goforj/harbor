@@ -343,13 +343,12 @@ async function changeProjectLifecycle() {
 }
 
 async function startProject(requestedProjectId: string) {
-  const result = await store.startProject(requestedProjectId)
-  if (result?.operation.kind === 'project.start'
-    && projectId.value === requestedProjectId
+  if (projectId.value === requestedProjectId
     && project.value?.id === requestedProjectId
     && selectedDetailTab.value === 'overview') {
     selectedDetailTab.value = 'output'
   }
+  await store.startProject(requestedProjectId)
 }
 
 async function restartProject() {

@@ -140,12 +140,18 @@ function admittedStart(projectId: string, intentId: string): ProjectLifecycleOpe
 }
 
 describe('ProjectView project start output', () => {
-  it('switches from Overview to Development output when the selected project start is admitted', async () => {
-    vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => admittedStart(projectId, intentId))
+  it('switches from Overview to Development output before the selected project start is admitted', async () => {
+    const pending = deferred<ProjectLifecycleOperation>()
+    vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
     const { wrapper } = await mountProject('reports')
 
     expect(activeDetailTab(wrapper)).toBe('Overview')
-    await bodyButton('Start project').click()
+    const starting = bodyButton('Start project').click()
+    await flushPromises()
+
+    expect(activeDetailTab(wrapper)).toBe('Development output')
+    pending.resolve(admittedStart('reports', 'reports-start'))
+    await starting
     await flushPromises()
 
     expect(activeDetailTab(wrapper)).toBe('Development output')
@@ -166,7 +172,7 @@ describe('ProjectView project start output', () => {
     wrapper.unmount()
   })
 
-  it('does not change tabs when start admission fails', async () => {
+  it('keeps Development output selected when start admission fails', async () => {
     const startProject = vi.spyOn(harborBridge, 'startProject').mockRejectedValueOnce(new Error('Admission denied'))
     const { wrapper } = await mountProject('reports')
 
@@ -174,7 +180,26 @@ describe('ProjectView project start output', () => {
     await flushPromises()
 
     expect(startProject).toHaveBeenCalledOnce()
-    expect(activeDetailTab(wrapper)).toBe('Overview')
+    expect(activeDetailTab(wrapper)).toBe('Development output')
+    wrapper.unmount()
+  })
+
+  it('does not override a tab selected while start is pending', async () => {
+    const pending = deferred<ProjectLifecycleOperation>()
+    vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
+    const { wrapper } = await mountProject('reports')
+
+    const starting = bodyButton('Start project').click()
+    await flushPromises()
+    expect(activeDetailTab(wrapper)).toBe('Development output')
+
+    await detailTab(wrapper, 'Services').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+    pending.resolve(admittedStart('reports', 'reports-start'))
+    await starting
+    await flushPromises()
+
+    expect(activeDetailTab(wrapper)).toContain('Services')
     wrapper.unmount()
   })
 
