@@ -260,11 +260,6 @@ func TestDownFencesCanonicalCheckoutUntilSettlement(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	retryContext, cancelRetry := context.WithTimeout(t.Context(), 20*time.Millisecond)
-	defer cancelRetry()
-	if err := supervisor.Down(retryContext, DownRequest{CheckoutRoot: checkout}); !errors.Is(err, ErrCleanupUncertain) {
-		t.Fatalf("second Down() error = %v, want bounded cleanup uncertainty", err)
-	}
 	if _, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "reset-fenced-project",
 		SessionID:            "reset-fenced-session",
@@ -272,6 +267,11 @@ func TestDownFencesCanonicalCheckoutUntilSettlement(t *testing.T) {
 		EnvironmentOverrides: projectProcessTestEnvironment(),
 	}); !errors.Is(err, ErrResetInProgress) {
 		t.Fatalf("Start() error = %v, want ErrResetInProgress", err)
+	}
+	retryContext, cancelRetry := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancelRetry()
+	if err := supervisor.Down(retryContext, DownRequest{CheckoutRoot: checkout}); !errors.Is(err, ErrCleanupUncertain) {
+		t.Fatalf("second Down() error = %v, want bounded cleanup uncertainty", err)
 	}
 	<-done
 	handle, err := supervisor.Start(t.Context(), StartRequest{
