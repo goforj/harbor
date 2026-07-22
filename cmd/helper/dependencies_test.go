@@ -131,11 +131,14 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 		"github.com/goforj/harbor/internal/helper/replaystore":     {},
 		"github.com/goforj/harbor/internal/helper/ticketauth":      {},
 		"github.com/goforj/harbor/internal/helper/ticketredeemer":  {},
+		"github.com/goforj/harbor/internal/helper/trusthandler":    {},
 		"github.com/goforj/harbor/internal/host/networkpolicy":     {},
 		"github.com/goforj/harbor/internal/host/ownership":         {},
 		"github.com/goforj/harbor/internal/platform/hostconflict":  {},
 		"github.com/goforj/harbor/internal/platform/loopback":      {},
 		"github.com/goforj/harbor/internal/platform/machinepaths":  {},
+		"github.com/goforj/harbor/internal/platform/trust":         {},
+		"github.com/goforj/harbor/internal/trust/certroot":         {},
 	}
 	platformDependencies := map[string][]string{
 		"darwin": {

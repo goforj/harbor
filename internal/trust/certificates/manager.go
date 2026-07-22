@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goforj/harbor/internal/trust/certroot"
 	"github.com/goforj/harbor/internal/trust/localca"
 	"github.com/goforj/harbor/internal/trust/materialstore"
 )
@@ -72,16 +73,7 @@ type LeafResult struct {
 }
 
 // Root is the public-only representation passed to platform trust installation.
-type Root struct {
-	// CertificatePEM contains one CA certificate and no private key.
-	CertificatePEM []byte
-	// Fingerprint is the lowercase SHA-256 digest of the CA certificate.
-	Fingerprint string
-	// NotBefore is the CA certificate's UTC activation time.
-	NotBefore time.Time
-	// NotAfter is the CA certificate's UTC expiration time.
-	NotAfter time.Time
-}
+type Root = certroot.Root
 
 // Manager serializes certificate mutations and serves immutable ready snapshots.
 type Manager struct {

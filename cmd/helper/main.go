@@ -32,6 +32,12 @@ type closingResolverHandler interface {
 	Close() error
 }
 
+// closingTrustHandler retains the authenticated trust mutation boundary for one helper invocation.
+type closingTrustHandler interface {
+	helper.TrustHandler
+	Close() error
+}
+
 // runtimeDependencies keeps fixed production authority replaceable without redirectable path arguments.
 type runtimeDependencies struct {
 	authorizeInvocation        func() error
@@ -39,6 +45,7 @@ type runtimeDependencies struct {
 	openReplayGuard            func() (closingReplayGuard, error)
 	newLoopbackIdentityHandler func() helper.LoopbackIdentityHandler
 	openResolverHandler        func() (closingResolverHandler, error)
+	openTrustHandler           func() (closingTrustHandler, error)
 }
 
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
@@ -69,6 +76,7 @@ func productionDependencies() runtimeDependencies {
 			return loopbackhandler.New()
 		},
 		openResolverHandler: openPlatformResolverHandler,
+		openTrustHandler:    openPlatformTrustHandler,
 	}
 }
 
@@ -108,13 +116,29 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 		}
 	}()
 
+	trustHandler := closingTrustHandler(helper.UnavailableTrustHandler{})
+	if dependencies.openTrustHandler != nil {
+		trustHandler, err = dependencies.openTrustHandler()
+		if err != nil {
+			return fmt.Errorf("open helper trust handler: %w", err)
+		}
+		if trustHandler == nil {
+			return errors.New("open helper trust handler: handler is nil")
+		}
+		defer func() {
+			if err := trustHandler.Close(); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("close helper trust handler: %w", err))
+			}
+		}()
+	}
+
 	dispatcher := helper.NewDispatcherWithResolverAndTrust(
 		redeemer,
 		clock,
 		replayGuard,
 		dependencies.newLoopbackIdentityHandler(),
 		resolverHandler,
-		helper.UnavailableTrustHandler{},
+		trustHandler,
 	)
 	return helper.ServeOnce(ctx, reader, writer, dispatcher)
 }

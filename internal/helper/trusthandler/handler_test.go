@@ -335,7 +335,7 @@ func trustHandlerTestRequest(t *testing.T) (trust.Request, networkpolicy.Policy,
 	if err != nil {
 		t.Fatalf("networkpolicy.New() fixture error = %v", err)
 	}
-	request, err := trust.NewRequest("trust-handler-test", policy.Mechanisms.Trust, root)
+	request, err := trust.NewRequestForRequester("trust-handler-test", "501", policy.Mechanisms.Trust, root)
 	if err != nil {
 		t.Fatalf("trust.NewRequest() fixture error = %v", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/trust/certificates"
 	"github.com/goforj/harbor/internal/trust/localca"
@@ -131,7 +132,7 @@ func TestNewRequestValidatesRootAndTrustScope(t *testing.T) {
 			value.CertificatePEM = append(value.CertificatePEM, []byte("PRIVATE KEY")...)
 		}},
 		{name: "fingerprint drift", id: "installation-test", mode: networkpolicy.DarwinCurrentUserTrust, mutate: func(value *certificates.Root) { value.Fingerprint = strings.Repeat("b", canonicalFingerprintLength) }},
-		{name: "validity drift", id: "installation-test", mode: networkpolicy.DarwinCurrentUserTrust, mutate: func(value *certificates.Root) { value.NotAfter = value.NotAfter.Add(time.Minute) }},
+		{name: "non-positive validity", id: "installation-test", mode: networkpolicy.DarwinCurrentUserTrust, mutate: func(value *certificates.Root) { value.NotAfter = value.NotBefore }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -144,6 +145,43 @@ func TestNewRequestValidatesRootAndTrustScope(t *testing.T) {
 				t.Fatal("NewRequest() accepted invalid authority")
 			}
 		})
+	}
+}
+
+// TestNewRequestForRequesterBindsCurrentUserScope proves current-user trust authority cannot silently cross identities.
+func TestNewRequestForRequesterBindsCurrentUserScope(t *testing.T) {
+	root := trustTestRoot(t)
+	request, err := NewRequestForRequester("installation-test", "501", networkpolicy.DarwinCurrentUserTrust, root)
+	if err != nil {
+		t.Fatalf("NewRequestForRequester() error = %v", err)
+	}
+	if request.RequesterIdentity() != "501" || request.OwnerMarker().RequesterIdentity != "501" {
+		t.Fatalf("request identity = %q, marker identity = %q", request.RequesterIdentity(), request.OwnerMarker().RequesterIdentity)
+	}
+	other, err := NewRequestForRequester("installation-test", "502", networkpolicy.DarwinCurrentUserTrust, root)
+	if err != nil {
+		t.Fatalf("NewRequestForRequester(other) error = %v", err)
+	}
+	firstObservation := Observation{Request: request, Complete: true}
+	secondObservation := Observation{Request: other, Complete: true}
+	firstFingerprint, err := firstObservation.Fingerprint()
+	if err != nil {
+		t.Fatalf("first observation fingerprint error = %v", err)
+	}
+	secondFingerprint, err := secondObservation.Fingerprint()
+	if err != nil {
+		t.Fatalf("second observation fingerprint error = %v", err)
+	}
+	if firstFingerprint == secondFingerprint {
+		t.Fatal("observation fingerprint ignored requester identity")
+	}
+	for _, invalid := range []string{"", " 501", "501/502", strings.Repeat("5", helper.MaximumRequesterIdentityLength+1)} {
+		if invalid == "" {
+			continue
+		}
+		if _, err := NewRequestForRequester("installation-test", invalid, networkpolicy.DarwinCurrentUserTrust, root); err == nil {
+			t.Fatalf("NewRequestForRequester(%q) accepted invalid identity", invalid)
+		}
 	}
 }
 

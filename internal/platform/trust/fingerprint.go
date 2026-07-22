@@ -48,6 +48,7 @@ func fingerprintValidated(observation Observation) string {
 // appendRequest binds the complete immutable trust authority to native observation facts.
 func appendRequest(destination []byte, request Request) []byte {
 	destination = appendString(destination, request.installationID)
+	destination = appendString(destination, request.requesterIdentity)
 	destination = appendString(destination, string(request.mechanism))
 	destination = appendString(destination, request.root.Fingerprint)
 	destination = appendString(destination, request.root.NotBefore.UTC().Round(0).String())
@@ -66,6 +67,7 @@ func encodeEntry(entry Entry) []byte {
 	if entry.Owner != nil {
 		encoded = binary.AppendUvarint(encoded, uint64(entry.Owner.Version))
 		encoded = appendString(encoded, entry.Owner.InstallationID)
+		encoded = appendString(encoded, entry.Owner.RequesterIdentity)
 		encoded = appendString(encoded, string(entry.Owner.Mechanism))
 		encoded = appendString(encoded, entry.Owner.AuthorityFingerprint)
 	}

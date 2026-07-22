@@ -26,6 +26,27 @@ func ValidateInstallationID(value string) error {
 	return nil
 }
 
+// ValidateRequesterIdentity rejects identities that cannot cross the helper boundary canonically.
+func ValidateRequesterIdentity(value string) error {
+	if value == "" {
+		return fmt.Errorf("requester identity is required")
+	}
+	if len(value) > MaximumRequesterIdentityLength {
+		return fmt.Errorf("requester identity exceeds %d bytes", MaximumRequesterIdentityLength)
+	}
+	if !installationIDAlphanumeric(value[0]) || !installationIDAlphanumeric(value[len(value)-1]) {
+		return fmt.Errorf("requester identity must start and end with an ASCII letter or digit")
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if installationIDAlphanumeric(character) || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return fmt.Errorf("requester identity contains a character outside ASCII letters, digits, dots, underscores, and hyphens")
+	}
+	return nil
+}
+
 // installationIDAlphanumeric keeps installation identity boundaries independent from path-like punctuation.
 func installationIDAlphanumeric(character byte) bool {
 	return (character >= 'a' && character <= 'z') ||

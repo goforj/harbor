@@ -1,6 +1,14 @@
 package trust
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+var (
+	// ErrUnavailable reports that the current build has no reviewed native trust-store adapter.
+	ErrUnavailable = errors.New("native trust-store adapter is unavailable")
+)
 
 // ErrorKind classifies a trust failure without exposing unbounded native diagnostics.
 type ErrorKind string

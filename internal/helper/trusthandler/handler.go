@@ -8,7 +8,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/platform/trust"
-	"github.com/goforj/harbor/internal/trust/certificates"
+	"github.com/goforj/harbor/internal/trust/certroot"
 )
 
 // conditionalAdapter is the only observation-bound trust surface available to the privileged handler.
@@ -41,6 +41,14 @@ func newHandler(adapter conditionalAdapter) *Handler {
 		panic("trusthandler.newHandler requires a non-nil trust adapter")
 	}
 	return &Handler{adapter: adapter}
+}
+
+// Close releases no resources because the trust adapter owns only per-call native handles.
+func (handler *Handler) Close() error {
+	if handler == nil {
+		return nil
+	}
+	return nil
 }
 
 // EnsureTrust ensures only the public CA and trust scope described by the ticket's complete signed policy.
@@ -121,13 +129,18 @@ func trustRequestFromTicket(
 		ticket.ExpectedPreAssignment != nil || ticket.ExpectedLoopbackPool != nil || ticket.ExpectedResolverObservation != nil {
 		return trust.Request{}, helper.ExpectedTrustObservation{}, fmt.Errorf("trust ticket contains loopback or resolver mutation authority")
 	}
-	root := certificates.Root{
+	root := certroot.Root{
 		CertificatePEM: append([]byte(nil), ticket.TrustRoot.CertificatePEM...),
 		Fingerprint:    ticket.TrustRoot.Fingerprint,
 		NotBefore:      ticket.TrustRoot.NotBefore,
 		NotAfter:       ticket.TrustRoot.NotAfter,
 	}
-	request, err := trust.NewRequest(ticket.InstallationID, policy.Mechanisms.Trust, root)
+	request, err := trust.NewRequestForRequester(
+		ticket.InstallationID,
+		ticket.RequesterIdentity,
+		policy.Mechanisms.Trust,
+		root,
+	)
 	if err != nil {
 		return trust.Request{}, helper.ExpectedTrustObservation{}, err
 	}
@@ -228,6 +241,7 @@ func sameRequest(left trust.Request, right trust.Request) bool {
 	leftRoot := left.Root()
 	rightRoot := right.Root()
 	return left.InstallationID() == right.InstallationID() &&
+		left.RequesterIdentity() == right.RequesterIdentity() &&
 		left.Mechanism() == right.Mechanism() &&
 		left.AuthorityFingerprint() == right.AuthorityFingerprint() &&
 		leftRoot.NotBefore.Equal(rightRoot.NotBefore) &&

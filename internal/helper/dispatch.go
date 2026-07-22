@@ -118,6 +118,11 @@ func (UnavailableTrustHandler) ReleaseTrust(context.Context, Ticket) (TrustMutat
 	return TrustMutationEvidence{}, ErrMutationUnavailable
 }
 
+// Close releases no resources because the unavailable trust handler opens no native authority.
+func (UnavailableTrustHandler) Close() error {
+	return nil
+}
+
 // UnavailableResolverHandler fails closed on platforms without an installed resolver adapter.
 type UnavailableResolverHandler struct{}
 

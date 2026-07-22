@@ -3,7 +3,6 @@ package trust
 import (
 	"bytes"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -14,7 +13,7 @@ import (
 
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
-	"github.com/goforj/harbor/internal/trust/certificates"
+	"github.com/goforj/harbor/internal/trust/certroot"
 )
 
 const (
@@ -31,15 +30,41 @@ const observationFingerprintDomain = "goforj.harbor.trust-observation.v1\x00"
 
 // Request is the immutable trust authority derived from one installation and public CA.
 type Request struct {
-	installationID string
-	mechanism      networkpolicy.TrustMechanism
-	root           certificates.Root
+	installationID    string
+	requesterIdentity string
+	mechanism         networkpolicy.TrustMechanism
+	root              certroot.Root
 }
 
 // NewRequest validates one installation, trust scope, and public CA before deriving its exact trust authority.
-func NewRequest(installationID string, mechanism networkpolicy.TrustMechanism, root certificates.Root) (Request, error) {
+func NewRequest(installationID string, mechanism networkpolicy.TrustMechanism, root certroot.Root) (Request, error) {
+	return newRequest(installationID, "", mechanism, root)
+}
+
+// NewRequestForRequester binds trust authority to the interactive identity whose current-user store may be changed.
+func NewRequestForRequester(
+	installationID string,
+	requesterIdentity string,
+	mechanism networkpolicy.TrustMechanism,
+	root certroot.Root,
+) (Request, error) {
+	return newRequest(installationID, requesterIdentity, mechanism, root)
+}
+
+// newRequest validates one trust authority while preserving the legacy constructor for platform-neutral callers.
+func newRequest(
+	installationID string,
+	requesterIdentity string,
+	mechanism networkpolicy.TrustMechanism,
+	root certroot.Root,
+) (Request, error) {
 	if err := helper.ValidateInstallationID(installationID); err != nil {
 		return Request{}, fmt.Errorf("trust request installation ID: %w", err)
+	}
+	if requesterIdentity != "" {
+		if err := helper.ValidateRequesterIdentity(requesterIdentity); err != nil {
+			return Request{}, fmt.Errorf("trust request requester identity: %w", err)
+		}
 	}
 	if err := validateMechanism(mechanism); err != nil {
 		return Request{}, err
@@ -48,7 +73,12 @@ func NewRequest(installationID string, mechanism networkpolicy.TrustMechanism, r
 	if err := validateRoot(root); err != nil {
 		return Request{}, fmt.Errorf("trust request root: %w", err)
 	}
-	request := Request{installationID: installationID, mechanism: mechanism, root: root}
+	request := Request{
+		installationID:    installationID,
+		requesterIdentity: requesterIdentity,
+		mechanism:         mechanism,
+		root:              root,
+	}
 	if err := request.Validate(); err != nil {
 		return Request{}, err
 	}
@@ -59,6 +89,11 @@ func NewRequest(installationID string, mechanism networkpolicy.TrustMechanism, r
 func (request Request) Validate() error {
 	if err := helper.ValidateInstallationID(request.installationID); err != nil {
 		return fmt.Errorf("trust request installation ID: %w", err)
+	}
+	if request.requesterIdentity != "" {
+		if err := helper.ValidateRequesterIdentity(request.requesterIdentity); err != nil {
+			return fmt.Errorf("trust request requester identity: %w", err)
+		}
 	}
 	if err := validateMechanism(request.mechanism); err != nil {
 		return err
@@ -74,13 +109,18 @@ func (request Request) InstallationID() string {
 	return request.installationID
 }
 
+// RequesterIdentity returns the optional interactive identity bound to a current-user trust store.
+func (request Request) RequesterIdentity() string {
+	return request.requesterIdentity
+}
+
 // Mechanism returns the supported operating-system trust scope selected for this request.
 func (request Request) Mechanism() networkpolicy.TrustMechanism {
 	return request.mechanism
 }
 
 // Root returns a defensive public-only copy of the authority bound to this request.
-func (request Request) Root() certificates.Root {
+func (request Request) Root() certroot.Root {
 	return cloneRoot(request.root)
 }
 
@@ -94,6 +134,7 @@ func (request Request) OwnerMarker() OwnerMarker {
 	return OwnerMarker{
 		Version:              ownerMarkerVersion,
 		InstallationID:       request.installationID,
+		RequesterIdentity:    request.requesterIdentity,
 		Mechanism:            request.mechanism,
 		AuthorityFingerprint: request.root.Fingerprint,
 	}
@@ -103,6 +144,7 @@ func (request Request) OwnerMarker() OwnerMarker {
 type OwnerMarker struct {
 	Version              uint16
 	InstallationID       string
+	RequesterIdentity    string
 	Mechanism            networkpolicy.TrustMechanism
 	AuthorityFingerprint string
 }
@@ -117,6 +159,11 @@ func (marker OwnerMarker) Validate() error {
 	}
 	if err := helper.ValidateInstallationID(marker.InstallationID); err != nil {
 		return fmt.Errorf("trust owner marker installation ID: %w", err)
+	}
+	if marker.RequesterIdentity != "" {
+		if err := helper.ValidateRequesterIdentity(marker.RequesterIdentity); err != nil {
+			return fmt.Errorf("trust owner marker requester identity: %w", err)
+		}
 	}
 	if err := validateMechanism(marker.Mechanism); err != nil {
 		return fmt.Errorf("trust owner marker mechanism: %w", err)
@@ -210,13 +257,13 @@ type Change struct {
 }
 
 // cloneRoot gives each request and observation independent ownership of public certificate bytes.
-func cloneRoot(root certificates.Root) certificates.Root {
+func cloneRoot(root certroot.Root) certroot.Root {
 	root.CertificatePEM = append([]byte(nil), root.CertificatePEM...)
 	return root
 }
 
 // normalizeRoot canonicalizes certificate instants before they become part of immutable request identity.
-func normalizeRoot(root certificates.Root) certificates.Root {
+func normalizeRoot(root certroot.Root) certroot.Root {
 	root = cloneRoot(root)
 	root.NotBefore = root.NotBefore.UTC().Round(0)
 	root.NotAfter = root.NotAfter.UTC().Round(0)
@@ -253,6 +300,7 @@ func cloneObservation(observation Observation) Observation {
 // sameRequest compares private canonical authority without exposing mutable construction fields.
 func sameRequest(left Request, right Request) bool {
 	return left.installationID == right.installationID &&
+		left.requesterIdentity == right.requesterIdentity &&
 		left.mechanism == right.mechanism &&
 		left.root.Fingerprint == right.root.Fingerprint &&
 		left.root.NotBefore.Equal(right.root.NotBefore) &&
@@ -272,8 +320,12 @@ func validateMechanism(mechanism networkpolicy.TrustMechanism) error {
 	}
 }
 
-// validateRoot proves public CA material is canonical, self-signed, and free of private key data.
-func validateRoot(root certificates.Root) error {
+// validateRoot validates the canonical public CA shape before a native adapter mutates its store.
+//
+// Certificate semantics are deliberately not parsed here: the helper must not
+// gain a network-capable dependency through crypto/x509, and the selected
+// native trust API validates the DER certificate at the mutation boundary.
+func validateRoot(root certroot.Root) error {
 	if len(root.CertificatePEM) == 0 {
 		return fmt.Errorf("root certificate PEM is required")
 	}
@@ -314,47 +366,9 @@ func validateRoot(root certificates.Root) error {
 	if !bytes.Equal(canonicalPEM, root.CertificatePEM) {
 		return fmt.Errorf("root certificate PEM is not canonical")
 	}
-	certificate, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse root certificate: %w", err)
-	}
-	digest := sha256.Sum256(certificate.Raw)
+	digest := sha256.Sum256(block.Bytes)
 	if hex.EncodeToString(digest[:]) != root.Fingerprint {
 		return fmt.Errorf("root certificate fingerprint does not match certificate material")
-	}
-	if certificate.NotBefore.UTC().Round(0) != root.NotBefore || certificate.NotAfter.UTC().Round(0) != root.NotAfter {
-		return fmt.Errorf("root certificate validity does not match public root metadata")
-	}
-	if certificate.SerialNumber == nil || certificate.SerialNumber.Sign() <= 0 {
-		return fmt.Errorf("root certificate must have a positive serial number")
-	}
-	if !certificate.IsCA || !certificate.BasicConstraintsValid {
-		return fmt.Errorf("root certificate is not a constrained CA")
-	}
-	if !certificate.MaxPathLenZero || certificate.MaxPathLen != 0 {
-		return fmt.Errorf("root certificate must prohibit subordinate CAs")
-	}
-	if certificate.KeyUsage != x509.KeyUsageCertSign|x509.KeyUsageCRLSign {
-		return fmt.Errorf("root certificate lacks exact CA signing key usage")
-	}
-	if len(certificate.ExtKeyUsage) != 0 || len(certificate.UnknownExtKeyUsage) != 0 ||
-		len(certificate.DNSNames) != 0 || len(certificate.IPAddresses) != 0 ||
-		len(certificate.EmailAddresses) != 0 || len(certificate.URIs) != 0 {
-		return fmt.Errorf("root certificate contains leaf usages or names")
-	}
-	if certificate.PermittedDNSDomainsCritical || len(certificate.PermittedDNSDomains) != 0 ||
-		len(certificate.ExcludedDNSDomains) != 0 || len(certificate.PermittedIPRanges) != 0 ||
-		len(certificate.ExcludedIPRanges) != 0 || len(certificate.PermittedEmailAddresses) != 0 ||
-		len(certificate.ExcludedEmailAddresses) != 0 || len(certificate.PermittedURIDomains) != 0 ||
-		len(certificate.ExcludedURIDomains) != 0 {
-		return fmt.Errorf("root certificate contains name constraints")
-	}
-	if len(certificate.OCSPServer) != 0 || len(certificate.IssuingCertificateURL) != 0 ||
-		len(certificate.CRLDistributionPoints) != 0 {
-		return fmt.Errorf("root certificate contains authority information locations")
-	}
-	if err := certificate.CheckSignatureFrom(certificate); err != nil {
-		return fmt.Errorf("root certificate is not self-signed: %w", err)
 	}
 	return nil
 }
