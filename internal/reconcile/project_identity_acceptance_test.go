@@ -82,9 +82,6 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		Environment:          projectEnvironment,
 	})
 	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
-	// This direct coordinator fixture proves only loopback isolation; managed-session endpoint behavior
-	// remains required in the production-daemon trusted-HTTPS acceptance gate.
-	coordinator.newManagedLaunch = nil
 	t.Cleanup(func() {
 		closeContext, closeCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer closeCancel()

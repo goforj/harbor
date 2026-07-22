@@ -199,7 +199,7 @@ type ProjectLifecycleCoordinator struct {
 	wait               sync.WaitGroup
 }
 
-// NewProjectLifecycleCoordinator creates the production managed-process reconciler.
+// NewProjectLifecycleCoordinator creates the production project-process reconciler.
 func NewProjectLifecycleCoordinator(
 	projectState *state.Store,
 	operations *state.OperationJournal,
@@ -224,7 +224,6 @@ func NewProjectLifecycleCoordinator(
 		defaultProjectStartupTimeout,
 		defaultReadinessInterval,
 	)
-	coordinator.newManagedLaunch = newHarborProjectSessionWithTicket
 	return coordinator
 }
 
@@ -818,7 +817,7 @@ func outputBrokerSession(peer *projectprocess.OutputBrokerPeer) *domain.OutputBr
 	}
 }
 
-// prepareLaunchSession creates the durable session and, in production, the exact one-use context used by its child.
+// prepareLaunchSession creates the durable process session and includes a child context only when an explicit managed-launch factory is configured.
 func (coordinator *ProjectLifecycleCoordinator) prepareLaunchSession(
 	projectID domain.ProjectID,
 	checkoutRoot string,

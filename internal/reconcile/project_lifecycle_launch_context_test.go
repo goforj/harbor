@@ -9,7 +9,23 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/state"
 )
+
+// TestNewProjectLifecycleCoordinatorLeavesManagedLaunchDisabled keeps the ordinary GoForj development launch as the production default.
+func TestNewProjectLifecycleCoordinatorLeavesManagedLaunchDisabled(t *testing.T) {
+	coordinator := NewProjectLifecycleCoordinator(
+		&state.Store{},
+		&state.OperationJournal{},
+		projectprocess.New(projectprocess.Options{}),
+		projectLifecycleTestRouteReconciler{},
+	)
+	t.Cleanup(coordinator.cancel)
+
+	if coordinator.newManagedLaunch != nil {
+		t.Fatal("NewProjectLifecycleCoordinator() configured a managed launch context")
+	}
+}
 
 // TestNewHarborProjectSessionWithTicketHashesTheExactEncodedProof prevents a raw-byte/hex-string credential mismatch.
 func TestNewHarborProjectSessionWithTicketHashesTheExactEncodedProof(t *testing.T) {
