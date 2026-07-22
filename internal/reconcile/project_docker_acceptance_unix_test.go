@@ -138,7 +138,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 
 	ready := make([]state.ProjectRecord, 0, len(projects))
 	for _, project := range projects {
-		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady))
+		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, project.intent, domain.ProjectReady))
 	}
 	before := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 	observations := make(map[domain.ProjectID]projectprocess.ServiceObservation, len(projects))
@@ -165,7 +165,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	if stopErr != nil || queued.Operation.State != domain.OperationQueued {
 		t.Fatalf("stop generated Compose project %q = %#v, %v", stopped.id, queued, stopErr)
 	}
-	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, stopped.id, stopIntent, domain.ProjectStopped)
+	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, stopped.id, stopIntent, domain.ProjectStopped)
 	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], configuration.addresses[1:])
 
@@ -178,7 +178,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	if restartErr != nil || queued.Operation.State != domain.OperationQueued {
 		t.Fatalf("restart generated Compose project %q = %#v, %v", stopped.id, queued, restartErr)
 	}
-	ready[0] = waitForProjectIdentityAcceptanceState(t, ctx, store, journal, stopped.id, restartIntent, domain.ProjectReady)
+	ready[0] = waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, stopped.id, restartIntent, domain.ProjectReady)
 	assertGeneratedComposeServices(t, ctx, store, supervisor, stopped)
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
 	if productEvidenceDirectory != "" {

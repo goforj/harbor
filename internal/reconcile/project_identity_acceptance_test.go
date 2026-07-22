@@ -76,10 +76,15 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 	initializeProjectIdentityAcceptanceNetwork(t, store, configuration.prefix, configuration.addresses, projects)
 
 	supervisor := projectprocess.New(projectprocess.Options{
-		GracePeriod: 3 * time.Second,
-		Environment: projectEnvironment,
+		GracePeriod:          3 * time.Second,
+		OutputBufferLines:    256,
+		OutputSpoolDirectory: filepath.Join(t.TempDir(), "project-output"),
+		Environment:          projectEnvironment,
 	})
 	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
+	// This direct coordinator fixture proves only loopback isolation; managed-session endpoint behavior
+	// remains required in the production-daemon trusted-HTTPS acceptance gate.
+	coordinator.newManagedLaunch = nil
 	t.Cleanup(func() {
 		closeContext, closeCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer closeCancel()
@@ -102,7 +107,7 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 
 	ready := make([]state.ProjectRecord, 0, len(projects))
 	for _, project := range projects {
-		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, project.intent, domain.ProjectReady))
+		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, project.intent, domain.ProjectReady))
 	}
 
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
@@ -118,7 +123,7 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		if err != nil || queued.Operation.State != domain.OperationQueued {
 			t.Fatalf("stop generated project %q = %#v, %v", project.id, queued, err)
 		}
-		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, project.id, stopIntent, domain.ProjectStopped)
+		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, stopIntent, domain.ProjectStopped)
 	}
 }
 
@@ -305,6 +310,7 @@ func waitForProjectIdentityAcceptanceState(
 	ctx context.Context,
 	store *state.Store,
 	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
 	projectID domain.ProjectID,
 	intentID domain.IntentID,
 	want domain.ProjectState,
@@ -312,16 +318,21 @@ func waitForProjectIdentityAcceptanceState(
 	t.Helper()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	var sessionID domain.SessionID
 	for {
 		record, projectErr := store.Project(ctx, projectID)
+		if session, sessionErr := store.ActiveProjectSession(ctx, projectID); sessionErr == nil {
+			sessionID = session.ID
+		}
 		if projectErr == nil && record.Project.State == want {
 			return record
 		}
 		operation, operationErr := journal.OperationByIntent(ctx, intentID)
 		if operationErr == nil && (operation.Operation.State == domain.OperationFailed || operation.Operation.State == domain.OperationCancelled) {
+			diagnostics := projectIdentityAcceptanceOutputDiagnostics(supervisor, projectID, sessionID)
 			if operation.Operation.Problem != nil {
 				t.Fatalf(
-					"project %q reached %q while waiting for %q: operation %q phase %q problem %q: %s",
+					"project %q reached %q while waiting for %q: operation %q phase %q problem %q: %s%s",
 					projectID,
 					operation.Operation.State,
 					want,
@@ -329,23 +340,56 @@ func waitForProjectIdentityAcceptanceState(
 					operation.Operation.Phase,
 					operation.Operation.Problem.Code,
 					operation.Operation.Problem.Message,
+					diagnostics,
 				)
 			}
 			t.Fatalf(
-				"project %q reached %q while waiting for %q: operation %q phase %q without a problem",
+				"project %q reached %q while waiting for %q: operation %q phase %q without a problem%s",
 				projectID,
 				operation.Operation.State,
 				want,
 				operation.Operation.ID,
 				operation.Operation.Phase,
+				diagnostics,
 			)
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("wait for project %q state %q: %v (last project error: %v, last operation error: %v)", projectID, want, ctx.Err(), projectErr, operationErr)
+			t.Fatalf(
+				"wait for project %q state %q: %v (last project error: %v, last operation error: %v)%s",
+				projectID,
+				want,
+				ctx.Err(),
+				projectErr,
+				operationErr,
+				projectIdentityAcceptanceOutputDiagnostics(supervisor, projectID, sessionID),
+			)
 		case <-ticker.C:
 		}
 	}
+}
+
+// projectIdentityAcceptanceOutputDiagnostics retains bounded historical child stdout and stderr when a lifecycle assertion fails.
+func projectIdentityAcceptanceOutputDiagnostics(
+	supervisor *projectprocess.Supervisor,
+	projectID domain.ProjectID,
+	sessionID domain.SessionID,
+) string {
+	if sessionID == "" {
+		return ""
+	}
+	output, err := supervisor.ReadOutputHistory(projectID, sessionID, 0)
+	if err != nil {
+		return fmt.Sprintf(" (read child stdout/stderr history: %v)", err)
+	}
+	if output.Text == "" {
+		return ""
+	}
+	omitted := ""
+	if output.Truncated || output.HasMore {
+		omitted = "\n[additional child output omitted]"
+	}
+	return fmt.Sprintf("\nchild stdout/stderr (bounded historical output):\n%s%s", output.Text, omitted)
 }
 
 // assertProjectIdentityAcceptanceEndpoints proves each durable resource and live readiness endpoint uses its exact lease.
