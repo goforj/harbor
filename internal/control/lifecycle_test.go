@@ -108,6 +108,7 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 		CapabilityNetworkReleaseV1,
 		CapabilityNetworkReleaseApprovalV1,
 		CapabilityNetworkReleaseResolverApprovalV1,
+		CapabilityNetworkReleaseTrustApprovalV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,

@@ -191,6 +191,8 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		handlers[methodNetworkReleaseLowPortConfirm] = server.networkReleaseLowPortConfirmHandler(transportPeer)
 		handlers[methodNetworkReleaseResolverPrepare] = server.networkReleaseResolverPrepareHandler(transportPeer)
 		handlers[methodNetworkReleaseResolverConfirm] = server.networkReleaseResolverConfirmHandler(transportPeer)
+		handlers[methodNetworkReleaseTrustPrepare] = server.networkReleaseTrustPrepareHandler(transportPeer)
+		handlers[methodNetworkReleaseTrustConfirm] = server.networkReleaseTrustConfirmHandler(transportPeer)
 	}
 
 	controlSession, err := session.NewServer(session.ServerConfig{

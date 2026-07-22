@@ -7,6 +7,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 // PrepareNetworkReleaseApprovalRequest selects the exact release checkpoint that may issue low-port authority.
@@ -267,6 +268,208 @@ func validateNetworkReleaseResolverEvidence(evidence helper.ResolverMutationEvid
 		if !validNetworkDataPlaneSetupFingerprint(fingerprint) {
 			return fmt.Errorf("network release resolver evidence %s fingerprint is invalid", name)
 		}
+	}
+	return nil
+}
+
+// PrepareNetworkReleaseTrustApprovalRequest selects the exact release checkpoint that may issue trust-release authority.
+type PrepareNetworkReleaseTrustApprovalRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// ExpectedCheckpointRevision fences preparation to one retained release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+}
+
+// Validate reports whether the request identifies one bounded release checkpoint.
+func (request PrepareNetworkReleaseTrustApprovalRequest) Validate() error {
+	return validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision)
+}
+
+// NetworkReleaseTrustDisposition identifies whether Harbor owns the trust entry being released.
+type NetworkReleaseTrustDisposition string
+
+const (
+	// NetworkReleaseTrustOwned means Harbor owns the trust entry and must remove it.
+	NetworkReleaseTrustOwned NetworkReleaseTrustDisposition = "owned"
+	// NetworkReleaseTrustPreexistingUnowned means a matching unowned trust entry must be preserved.
+	NetworkReleaseTrustPreexistingUnowned NetworkReleaseTrustDisposition = "preexisting_unowned"
+)
+
+// Validate rejects trust ownership states that could blur removal with preservation.
+func (disposition NetworkReleaseTrustDisposition) Validate() error {
+	switch disposition {
+	case NetworkReleaseTrustOwned, NetworkReleaseTrustPreexistingUnowned:
+		return nil
+	default:
+		return fmt.Errorf("network release trust disposition %q is unsupported", disposition)
+	}
+}
+
+// NetworkReleaseTrustPublicationDisposition identifies whether trust capability publication completed durably.
+type NetworkReleaseTrustPublicationDisposition string
+
+const (
+	// NetworkReleaseTrustPublicationNotRequired means preservation does not issue a helper capability.
+	NetworkReleaseTrustPublicationNotRequired NetworkReleaseTrustPublicationDisposition = "not_required"
+	// NetworkReleaseTrustPublicationDurable means the capability publisher confirmed durable storage.
+	NetworkReleaseTrustPublicationDurable NetworkReleaseTrustPublicationDisposition = "durable"
+	// NetworkReleaseTrustPublicationIndeterminate means the returned reference is the only capability that may be reconciled.
+	NetworkReleaseTrustPublicationIndeterminate NetworkReleaseTrustPublicationDisposition = "indeterminate"
+)
+
+// Validate rejects publication states that would let callers infer unsafe retry behavior.
+func (disposition NetworkReleaseTrustPublicationDisposition) Validate() error {
+	switch disposition {
+	case NetworkReleaseTrustPublicationNotRequired,
+		NetworkReleaseTrustPublicationDurable,
+		NetworkReleaseTrustPublicationIndeterminate:
+		return nil
+	default:
+		return fmt.Errorf("network release trust publication disposition %q is unsupported", disposition)
+	}
+}
+
+// NetworkReleaseTrustApprovalTicket is non-secret launch metadata for one trust release.
+type NetworkReleaseTrustApprovalTicket struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// Reference identifies the opaque helper capability.
+	Reference helper.TicketReference `json:"reference"`
+	// Operation fixes the helper action to trust release.
+	Operation helper.Operation `json:"operation"`
+	// PolicyFingerprint binds the ticket to the retained network policy.
+	PolicyFingerprint string `json:"policy_fingerprint"`
+	// TargetOwnershipFingerprint binds the ticket to the retained ownership target.
+	TargetOwnershipFingerprint string `json:"target_ownership_fingerprint"`
+	// AuthorityFingerprint binds the ticket to the public trust authority being released.
+	AuthorityFingerprint string `json:"authority_fingerprint"`
+	// Mechanism identifies the supported platform trust mechanism.
+	Mechanism networkpolicy.TrustMechanism `json:"mechanism"`
+	// ExpiresAt limits the lifetime of the helper capability.
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Validate reports whether ticket metadata can launch only the selected trust release.
+func (ticket NetworkReleaseTrustApprovalTicket) Validate() error {
+	if err := ticket.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := ticket.Reference.Validate(); err != nil {
+		return err
+	}
+	if ticket.Operation != helper.OperationReleaseTrust {
+		return fmt.Errorf("network release trust operation is %q, expected %q", ticket.Operation, helper.OperationReleaseTrust)
+	}
+	for name, fingerprint := range map[string]string{
+		"authority":        ticket.AuthorityFingerprint,
+		"policy":           ticket.PolicyFingerprint,
+		"target ownership": ticket.TargetOwnershipFingerprint,
+	} {
+		if !validNetworkDataPlaneSetupFingerprint(fingerprint) {
+			return fmt.Errorf("network release trust %s fingerprint is invalid", name)
+		}
+	}
+	if !validNetworkDataPlaneTrustMechanism(ticket.Mechanism) {
+		return fmt.Errorf("network release trust mechanism %q is unsupported", ticket.Mechanism)
+	}
+	return validateNetworkReleaseTrustExpiry(ticket.ExpiresAt)
+}
+
+// validateNetworkReleaseTrustExpiry rejects ambiguous helper ticket lifetimes before callers redeem them.
+func validateNetworkReleaseTrustExpiry(expiresAt time.Time) error {
+	if expiresAt.IsZero() || expiresAt.Location() != time.UTC {
+		return errors.New("network release trust expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
+// NetworkReleaseTrustApprovalPreparation reports whether one trust capability is required for an exact release checkpoint.
+type NetworkReleaseTrustApprovalPreparation struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// CheckpointRevision identifies the retained release checkpoint.
+	CheckpointRevision domain.Sequence `json:"checkpoint_revision"`
+	// Disposition identifies whether Harbor owns the trust entry.
+	Disposition NetworkReleaseTrustDisposition `json:"disposition"`
+	// PublicationDisposition tells the caller whether to redeem or reconcile the returned reference without reissuing.
+	PublicationDisposition NetworkReleaseTrustPublicationDisposition `json:"publication_disposition"`
+	// Ticket supplies trust-release helper capability only for owned trust entries.
+	Ticket *NetworkReleaseTrustApprovalTicket `json:"ticket"`
+}
+
+// Validate reports whether preparation honors the retained ownership and publication invariants.
+func (preparation NetworkReleaseTrustApprovalPreparation) Validate() error {
+	if err := validateNetworkReleaseApprovalSelection(preparation.OperationID, preparation.CheckpointRevision); err != nil {
+		return err
+	}
+	if err := preparation.Disposition.Validate(); err != nil {
+		return err
+	}
+	if err := preparation.PublicationDisposition.Validate(); err != nil {
+		return err
+	}
+	switch preparation.Disposition {
+	case NetworkReleaseTrustOwned:
+		if preparation.PublicationDisposition != NetworkReleaseTrustPublicationDurable &&
+			preparation.PublicationDisposition != NetworkReleaseTrustPublicationIndeterminate {
+			return errors.New("owned network release trust preparation must publish a ticket")
+		}
+		if preparation.Ticket == nil {
+			return errors.New("owned network release trust preparation has no ticket")
+		}
+		if err := preparation.Ticket.Validate(); err != nil {
+			return err
+		}
+		if preparation.Ticket.OperationID != preparation.OperationID {
+			return errors.New("network release trust ticket belongs to another operation")
+		}
+	case NetworkReleaseTrustPreexistingUnowned:
+		if preparation.PublicationDisposition != NetworkReleaseTrustPublicationNotRequired {
+			return errors.New("preexisting network release trust preparation must not publish a ticket")
+		}
+		if preparation.Ticket != nil {
+			return errors.New("preexisting network release trust preparation has a ticket")
+		}
+	}
+	return nil
+}
+
+// ConfirmNetworkReleaseTrustApprovalRequest selects one release checkpoint and optionally supplies trust-release evidence.
+type ConfirmNetworkReleaseTrustApprovalRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// ExpectedCheckpointRevision fences confirmation to one retained release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+	// TrustEvidence proves owned trust absence when a helper mutation was required.
+	TrustEvidence *helper.TrustMutationEvidence `json:"trust_evidence"`
+}
+
+// Validate reports whether confirmation carries an optional owned-absent trust-release postcondition.
+func (request ConfirmNetworkReleaseTrustApprovalRequest) Validate() error {
+	if err := validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	if request.TrustEvidence == nil {
+		return nil
+	}
+	return validateNetworkReleaseTrustEvidence(*request.TrustEvidence)
+}
+
+// validateNetworkReleaseTrustEvidence confines confirmation to a completed owned-absent trust release.
+func validateNetworkReleaseTrustEvidence(evidence helper.TrustMutationEvidence) error {
+	for name, fingerprint := range map[string]string{
+		"authority":   evidence.AuthorityFingerprint,
+		"observation": evidence.ObservationFingerprint,
+	} {
+		if !validNetworkDataPlaneSetupFingerprint(fingerprint) {
+			return fmt.Errorf("network release trust evidence %s fingerprint is invalid", name)
+		}
+	}
+	if !validNetworkDataPlaneTrustMechanism(evidence.Mechanism) {
+		return fmt.Errorf("network release trust evidence mechanism %q is unsupported", evidence.Mechanism)
+	}
+	if evidence.Postcondition != helper.TrustPostconditionOwnedAbsent {
+		return errors.New("network release trust evidence must prove owned absence")
 	}
 	return nil
 }

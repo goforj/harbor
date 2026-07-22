@@ -12,6 +12,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
@@ -26,11 +27,15 @@ type recordingNetworkReleaseCoordinator struct {
 	confirmRequest         reconcile.GlobalNetworkReleaseConfirmLowPortsRequest
 	prepareResolverRequest reconcile.GlobalNetworkReleasePrepareResolverRequest
 	confirmResolverRequest reconcile.GlobalNetworkReleaseConfirmResolverRequest
+	prepareTrustRequest    reconcile.GlobalNetworkReleasePrepareTrustRequest
+	confirmTrustRequest    reconcile.GlobalNetworkReleaseConfirmTrustRequest
 	record                 state.OperationRecord
 	prepareResult          ticketissuer.LowPortResult
 	confirmResult          state.GlobalNetworkReleasePlanRecord
 	prepareResolverResult  ticketissuer.ResolverResult
 	confirmResolverResult  state.GlobalNetworkReleasePlanRecord
+	prepareTrustResult     reconcile.GlobalNetworkReleaseTrustPreparation
+	confirmTrustResult     state.GlobalNetworkReleasePlanRecord
 	err                    error
 }
 
@@ -62,6 +67,18 @@ func (c *recordingNetworkReleaseCoordinator) PrepareResolver(_ context.Context, 
 func (c *recordingNetworkReleaseCoordinator) ConfirmResolver(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	c.confirmResolverRequest = request
 	return c.confirmResolverResult, c.err
+}
+
+// PrepareTrust records one authenticated trust capability request.
+func (c *recordingNetworkReleaseCoordinator) PrepareTrust(_ context.Context, request reconcile.GlobalNetworkReleasePrepareTrustRequest) (reconcile.GlobalNetworkReleaseTrustPreparation, error) {
+	c.prepareTrustRequest = request
+	return c.prepareTrustResult, c.err
+}
+
+// ConfirmTrust records one authenticated trust release acknowledgement.
+func (c *recordingNetworkReleaseCoordinator) ConfirmTrust(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	c.confirmTrustRequest = request
+	return c.confirmTrustResult, c.err
 }
 
 // recordingNetworkReleasePlans records an exact durable plan selection before returning its scripted result.
@@ -501,7 +518,9 @@ func TestNetworkReleaseAuthorityHidesPlansFromOtherUsers(t *testing.T) {
 	authority := newNetworkReleaseAuthority(
 		plans,
 		&recordingNetworkReleaseCoordinator{},
-		func() (domain.OperationID, error) { return "operation-generated", nil },
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
 	)
 
 	_, err := authority.ReadNetworkRelease(
@@ -531,7 +550,9 @@ func TestNetworkReleaseAuthorityBindsCallerToLowPortApproval(t *testing.T) {
 	authority := newNetworkReleaseAuthority(
 		&recordingNetworkReleasePlans{},
 		coordinator,
-		func() (domain.OperationID, error) { return "operation-generated", nil },
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
 	)
 	prepare := control.PrepareNetworkReleaseApprovalRequest{
 		OperationID:                "operation-release",
@@ -725,7 +746,9 @@ func TestNetworkReleaseAuthorityBindsCallerToResolverApproval(t *testing.T) {
 	authority := newNetworkReleaseAuthority(
 		&recordingNetworkReleasePlans{},
 		coordinator,
-		func() (domain.OperationID, error) { return "operation-generated", nil },
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
 	)
 	prepare := control.PrepareNetworkReleaseResolverApprovalRequest{
 		OperationID:                "operation-release",
@@ -951,6 +974,406 @@ func TestClassifyNetworkReleaseErrorMapsResolverPublicationIndeterminate(t *test
 	}
 }
 
+// TestNetworkReleaseAuthorityBindsCallerAndProjectsTrustApproval proves trust authority is scoped to the authenticated user and selected checkpoint.
+func TestNetworkReleaseAuthorityBindsCallerAndProjectsTrustApproval(t *testing.T) {
+	caller := control.Caller{
+		Transport: local.PeerIdentity{
+			UserID: "authenticated-user",
+		},
+	}
+	evidence := validNetworkReleaseTrustEvidence()
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareTrustResult: reconcile.GlobalNetworkReleaseTrustPreparation{
+			Disposition: state.GlobalNetworkReleaseTrustOwned,
+			Ticket:      trustTicket(validNetworkReleaseTrustResult("operation-release")),
+		},
+		confirmTrustResult: validNetworkReleasePlan(
+			"operation-release",
+			"intent-release",
+			state.GlobalNetworkReleasePlanPhaseLoopbacks,
+		),
+	}
+	coordinator.confirmTrustResult.CheckpointRevision = 13
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseTrustApproval(
+		t.Context(),
+		caller,
+		control.PrepareNetworkReleaseTrustApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseTrustApproval() error = %v", err)
+	}
+	result, err := authority.ConfirmNetworkReleaseTrustApproval(
+		t.Context(),
+		caller,
+		control.ConfirmNetworkReleaseTrustApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+			TrustEvidence:              &evidence,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkReleaseTrustApproval() error = %v", err)
+	}
+	if coordinator.prepareTrustRequest.RequesterIdentity != caller.Transport.UserID ||
+		coordinator.confirmTrustRequest.RequesterIdentity != caller.Transport.UserID {
+		t.Fatalf("trust approval requester identities = %q, %q", coordinator.prepareTrustRequest.RequesterIdentity, coordinator.confirmTrustRequest.RequesterIdentity)
+	}
+	if coordinator.prepareTrustRequest.OperationID != "operation-release" ||
+		coordinator.prepareTrustRequest.ExpectedCheckpointRevision != 12 ||
+		coordinator.confirmTrustRequest.OperationID != "operation-release" ||
+		coordinator.confirmTrustRequest.ExpectedCheckpointRevision != 12 {
+		t.Fatalf("trust approval requests = %#v, %#v", coordinator.prepareTrustRequest, coordinator.confirmTrustRequest)
+	}
+	if preparation.Disposition != control.NetworkReleaseTrustOwned ||
+		preparation.PublicationDisposition != control.NetworkReleaseTrustPublicationDurable ||
+		preparation.Ticket == nil {
+		t.Fatalf("trust preparation = %#v", preparation)
+	}
+	if preparation.Ticket.OperationID != coordinator.prepareTrustResult.Ticket.OperationID ||
+		preparation.Ticket.Reference != coordinator.prepareTrustResult.Ticket.Reference ||
+		preparation.Ticket.Operation != coordinator.prepareTrustResult.Ticket.Operation ||
+		preparation.Ticket.PolicyFingerprint != coordinator.prepareTrustResult.Ticket.PolicyFingerprint ||
+		preparation.Ticket.TargetOwnershipFingerprint != coordinator.prepareTrustResult.Ticket.OwnershipFingerprint ||
+		preparation.Ticket.AuthorityFingerprint != coordinator.prepareTrustResult.Ticket.AuthorityFingerprint ||
+		preparation.Ticket.Mechanism != coordinator.prepareTrustResult.Ticket.Mechanism ||
+		!preparation.Ticket.ExpiresAt.Equal(coordinator.prepareTrustResult.Ticket.ExpiresAt) {
+		t.Fatalf("projected trust ticket = %#v, want %#v", preparation.Ticket, coordinator.prepareTrustResult.Ticket)
+	}
+	if coordinator.confirmTrustRequest.TrustEvidence != evidence {
+		t.Fatalf("trust evidence = %#v, want %#v", coordinator.confirmTrustRequest.TrustEvidence, evidence)
+	}
+	if result.Phase != control.NetworkReleasePhaseLoopbacks || result.CheckpointRevision != 13 {
+		t.Fatalf("trust confirmation result = %#v", result)
+	}
+}
+
+// TestNetworkReleaseAuthorityReturnsIndeterminateTrustReference preserves the sole reference available after uncertain publication.
+func TestNetworkReleaseAuthorityReturnsIndeterminateTrustReference(t *testing.T) {
+	result := validNetworkReleaseTrustResult("operation-release")
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareTrustResult: reconcile.GlobalNetworkReleaseTrustPreparation{
+			Disposition: state.GlobalNetworkReleaseTrustOwned,
+			Ticket:      trustTicket(result),
+		},
+		err: ticketissuer.ErrTrustPublicationIndeterminate,
+	}
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseTrustApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.PrepareNetworkReleaseTrustApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseTrustApproval() error = %v", err)
+	}
+	if preparation.PublicationDisposition != control.NetworkReleaseTrustPublicationIndeterminate ||
+		preparation.Ticket == nil ||
+		preparation.Ticket.Reference != result.Reference {
+		t.Fatalf("trust preparation = %#v", preparation)
+	}
+}
+
+// TestNetworkReleaseAuthorityProjectsPreexistingTrustWithoutTicket preserves unowned native trust without issuing removal authority.
+func TestNetworkReleaseAuthorityProjectsPreexistingTrustWithoutTicket(t *testing.T) {
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		&recordingNetworkReleaseCoordinator{
+			prepareTrustResult: reconcile.GlobalNetworkReleaseTrustPreparation{
+				Disposition: state.GlobalNetworkReleaseTrustPreexistingUnowned,
+			},
+		},
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseTrustApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.PrepareNetworkReleaseTrustApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseTrustApproval() error = %v", err)
+	}
+	if preparation.Disposition != control.NetworkReleaseTrustPreexistingUnowned ||
+		preparation.PublicationDisposition != control.NetworkReleaseTrustPublicationNotRequired ||
+		preparation.Ticket != nil {
+		t.Fatalf("trust preparation = %#v", preparation)
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsIndeterminatePreexistingTrust prevents uncertain publication from being normalized into preservation.
+func TestNetworkReleaseAuthorityRejectsIndeterminatePreexistingTrust(t *testing.T) {
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		&recordingNetworkReleaseCoordinator{
+			prepareTrustResult: reconcile.GlobalNetworkReleaseTrustPreparation{
+				Disposition: state.GlobalNetworkReleaseTrustPreexistingUnowned,
+			},
+			err: ticketissuer.ErrTrustPublicationIndeterminate,
+		},
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	_, err := authority.PrepareNetworkReleaseTrustApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.PrepareNetworkReleaseTrustApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err == nil {
+		t.Fatal("PrepareNetworkReleaseTrustApproval() unexpectedly succeeded")
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsUncorrelatedOrExpiredTrustTickets keeps opaque helper output scoped to the selected operation and lifetime.
+func TestNetworkReleaseAuthorityRejectsUncorrelatedOrExpiredTrustTickets(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*ticketissuer.TrustResult)
+	}{
+		{
+			name: "other operation",
+			mutate: func(result *ticketissuer.TrustResult) {
+				result.OperationID = "operation-other"
+			},
+		},
+		{
+			name: "expired",
+			mutate: func(result *ticketissuer.TrustResult) {
+				result.ExpiresAt = time.Now().UTC().Add(-time.Second)
+			},
+		},
+		{
+			name: "malformed",
+			mutate: func(result *ticketissuer.TrustResult) {
+				result.AuthorityFingerprint = "invalid"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := validNetworkReleaseTrustResult("operation-release")
+			test.mutate(&result)
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{
+					prepareTrustResult: reconcile.GlobalNetworkReleaseTrustPreparation{
+						Disposition: state.GlobalNetworkReleaseTrustOwned,
+						Ticket:      trustTicket(result),
+					},
+				},
+				func() (domain.OperationID, error) {
+					return "operation-generated", nil
+				},
+			)
+			_, err := authority.PrepareNetworkReleaseTrustApproval(
+				t.Context(),
+				control.Caller{
+					Transport: local.PeerIdentity{
+						UserID: "authenticated-user",
+					},
+				},
+				control.PrepareNetworkReleaseTrustApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+				},
+			)
+			if err == nil {
+				t.Fatal("PrepareNetworkReleaseTrustApproval() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityForwardsNilTrustEvidenceAsZero keeps the optional control field compatible with reconciliation input.
+func TestNetworkReleaseAuthorityForwardsNilTrustEvidenceAsZero(t *testing.T) {
+	plan := validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseLoopbacks)
+	plan.CheckpointRevision = 13
+	coordinator := &recordingNetworkReleaseCoordinator{
+		confirmTrustResult: plan,
+	}
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	_, err := authority.ConfirmNetworkReleaseTrustApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.ConfirmNetworkReleaseTrustApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkReleaseTrustApproval() error = %v", err)
+	}
+	if coordinator.confirmTrustRequest.TrustEvidence != (helper.TrustMutationEvidence{}) {
+		t.Fatalf("trust evidence = %#v, want zero evidence", coordinator.confirmTrustRequest.TrustEvidence)
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsUnadvancedTrustConfirmation ensures confirmation cannot claim loopback release without advancing its exact checkpoint.
+func TestNetworkReleaseAuthorityRejectsUnadvancedTrustConfirmation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		plan state.GlobalNetworkReleasePlanRecord
+	}{
+		{
+			name: "operation",
+			plan: validNetworkReleasePlan("operation-other", "intent-release", state.GlobalNetworkReleasePlanPhaseLoopbacks),
+		},
+		{
+			name: "checkpoint",
+			plan: validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseLoopbacks),
+		},
+		{
+			name: "phase",
+			plan: validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseTrust),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name != "checkpoint" {
+				test.plan.CheckpointRevision = 13
+			}
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{
+					confirmTrustResult: test.plan,
+				},
+				func() (domain.OperationID, error) {
+					return "operation-generated", nil
+				},
+			)
+			_, err := authority.ConfirmNetworkReleaseTrustApproval(
+				t.Context(),
+				control.Caller{
+					Transport: local.PeerIdentity{
+						UserID: "authenticated-user",
+					},
+				},
+				control.ConfirmNetworkReleaseTrustApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+				},
+			)
+			if err == nil {
+				t.Fatal("ConfirmNetworkReleaseTrustApproval() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityMapsTrustCheckpointConflicts preserves stale checkpoint semantics at both trust approval boundaries.
+func TestNetworkReleaseAuthorityMapsTrustCheckpointConflicts(t *testing.T) {
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		&recordingNetworkReleaseCoordinator{
+			err: &state.StaleRevisionError{},
+		},
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	caller := control.Caller{
+		Transport: local.PeerIdentity{
+			UserID: "authenticated-user",
+		},
+	}
+	for _, call := range []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "prepare",
+			call: func() error {
+				_, err := authority.PrepareNetworkReleaseTrustApproval(
+					t.Context(),
+					caller,
+					control.PrepareNetworkReleaseTrustApprovalRequest{
+						OperationID:                "operation-release",
+						ExpectedCheckpointRevision: 12,
+					},
+				)
+				return err
+			},
+		},
+		{
+			name: "confirm",
+			call: func() error {
+				_, err := authority.ConfirmNetworkReleaseTrustApproval(
+					t.Context(),
+					caller,
+					control.ConfirmNetworkReleaseTrustApprovalRequest{
+						OperationID:                "operation-release",
+						ExpectedCheckpointRevision: 12,
+					},
+				)
+				return err
+			},
+		},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			err := call.call()
+			var handlerError *session.HandlerError
+			if err == nil || !errors.As(err, &handlerError) || handlerError.Code() != rpc.ErrorCodeConflict {
+				t.Fatalf("trust approval error = %#v, want conflict", err)
+			}
+		})
+	}
+}
+
+// TestClassifyNetworkReleaseErrorMapsTrustPublicationIndeterminate preserves a retriable conflict when trust capability publication has an unknown outcome.
+func TestClassifyNetworkReleaseErrorMapsTrustPublicationIndeterminate(t *testing.T) {
+	classified := classifyNetworkReleaseError(ticketissuer.ErrTrustPublicationIndeterminate)
+	var handlerError *session.HandlerError
+	if !errors.As(classified, &handlerError) || handlerError.Code() != rpc.ErrorCodeConflict {
+		t.Fatalf("classifyNetworkReleaseError() = %#v, want conflict", classified)
+	}
+}
+
 // validNetworkReleasePlan constructs the smallest complete durable release plan needed by adapter tests.
 func validNetworkReleasePlan(operationID domain.OperationID, intentID domain.IntentID, phase state.GlobalNetworkReleasePlanPhase) state.GlobalNetworkReleasePlanRecord {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
@@ -1004,6 +1427,25 @@ func validNetworkReleaseResolverResult(operationID domain.OperationID) ticketiss
 	}
 }
 
+// validNetworkReleaseTrustResult constructs one unexpired release-trust ticket result.
+func validNetworkReleaseTrustResult(operationID domain.OperationID) ticketissuer.TrustResult {
+	return ticketissuer.TrustResult{
+		OperationID:          operationID,
+		Reference:            helper.TicketReference(strings.Repeat("f", 64)),
+		Operation:            helper.OperationReleaseTrust,
+		PolicyFingerprint:    strings.Repeat("b", 64),
+		OwnershipFingerprint: strings.Repeat("c", 64),
+		AuthorityFingerprint: strings.Repeat("d", 64),
+		Mechanism:            networkpolicy.UbuntuSystemTrust,
+		ExpiresAt:            time.Now().UTC().Add(time.Minute),
+	}
+}
+
+// trustTicket returns a distinct ticket pointer so coordinator fixtures retain the exact scripted result.
+func trustTicket(result ticketissuer.TrustResult) *ticketissuer.TrustResult {
+	return &result
+}
+
 // validNetworkReleaseLowPortEvidence constructs one exact owned-absent release receipt.
 func validNetworkReleaseLowPortEvidence() helper.LowPortMutationEvidence {
 	return helper.LowPortMutationEvidence{
@@ -1021,5 +1463,15 @@ func validNetworkReleaseResolverEvidence() helper.ResolverMutationEvidence {
 		OwnershipFingerprint:   strings.Repeat("c", 64),
 		ObservationFingerprint: strings.Repeat("d", 64),
 		Postcondition:          helper.ResolverPostconditionOwnedAbsent,
+	}
+}
+
+// validNetworkReleaseTrustEvidence constructs one exact owned-absent release receipt.
+func validNetworkReleaseTrustEvidence() helper.TrustMutationEvidence {
+	return helper.TrustMutationEvidence{
+		AuthorityFingerprint:   strings.Repeat("d", 64),
+		ObservationFingerprint: strings.Repeat("e", 64),
+		Mechanism:              networkpolicy.UbuntuSystemTrust,
+		Postcondition:          helper.TrustPostconditionOwnedAbsent,
 	}
 }

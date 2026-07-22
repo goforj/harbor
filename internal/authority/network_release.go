@@ -9,6 +9,7 @@ import (
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/state"
@@ -32,6 +33,10 @@ type networkReleaseCoordinator interface {
 	PrepareResolver(context.Context, reconcile.GlobalNetworkReleasePrepareResolverRequest) (ticketissuer.ResolverResult, error)
 	// ConfirmResolver verifies resolver removal and advances the retained release plan.
 	ConfirmResolver(context.Context, reconcile.GlobalNetworkReleaseConfirmResolverRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// PrepareTrust publishes or preserves one bounded trust release capability.
+	PrepareTrust(context.Context, reconcile.GlobalNetworkReleasePrepareTrustRequest) (reconcile.GlobalNetworkReleaseTrustPreparation, error)
+	// ConfirmTrust verifies trust removal or preservation and advances the retained release plan.
+	ConfirmTrust(context.Context, reconcile.GlobalNetworkReleaseConfirmTrustRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // NetworkReleaseAuthority adapts the durable global release lifecycle to its optional control surface.
@@ -249,6 +254,105 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseResolverApproval(
 	return result, nil
 }
 
+// PrepareNetworkReleaseTrustApproval binds release-trust helper authority to the authenticated transport user.
+func (authority *NetworkReleaseAuthority) PrepareNetworkReleaseTrustApproval(ctx context.Context, caller control.Caller, request control.PrepareNetworkReleaseTrustApprovalRequest) (control.NetworkReleaseTrustApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseTrustApprovalPreparation{}, err
+	}
+	result, err := authority.coordinator.PrepareTrust(ctx, reconcile.GlobalNetworkReleasePrepareTrustRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+	})
+	publicationDisposition := control.NetworkReleaseTrustPublicationDurable
+	if errors.Is(err, ticketissuer.ErrTrustPublicationIndeterminate) {
+		publicationDisposition = control.NetworkReleaseTrustPublicationIndeterminate
+	} else if err != nil {
+		return control.NetworkReleaseTrustApprovalPreparation{}, classifyNetworkReleaseError(err)
+	}
+	if err := result.Validate(time.Now().UTC()); err != nil {
+		return control.NetworkReleaseTrustApprovalPreparation{}, fmt.Errorf("network release trust preparation result: %w", err)
+	}
+	preparation, err := networkReleaseTrustApprovalPreparation(request, result, publicationDisposition)
+	if err != nil {
+		return control.NetworkReleaseTrustApprovalPreparation{}, err
+	}
+	return preparation, nil
+}
+
+// ConfirmNetworkReleaseTrustApproval independently verifies trust removal or preservation and advances the release to loopback retirement.
+func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseTrustApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseTrustApprovalRequest) (control.NetworkReleaseOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	evidence := helper.TrustMutationEvidence{}
+	if request.TrustEvidence != nil {
+		evidence = *request.TrustEvidence
+	}
+	plan, err := authority.coordinator.ConfirmTrust(ctx, reconcile.GlobalNetworkReleaseConfirmTrustRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+		TrustEvidence:              evidence,
+	})
+	if err != nil {
+		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
+	}
+	result, err := networkReleaseOperation(plan)
+	if err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.CheckpointRevision <= request.ExpectedCheckpointRevision ||
+		result.Phase != control.NetworkReleasePhaseLoopbacks {
+		return control.NetworkReleaseOperation{}, errors.New("network release trust confirmation did not advance the requested checkpoint to loopback release")
+	}
+	return result, nil
+}
+
+// networkReleaseTrustApprovalPreparation projects trusted issuer metadata while preserving ownership and publication invariants.
+func networkReleaseTrustApprovalPreparation(request control.PrepareNetworkReleaseTrustApprovalRequest, result reconcile.GlobalNetworkReleaseTrustPreparation, publicationDisposition control.NetworkReleaseTrustPublicationDisposition) (control.NetworkReleaseTrustApprovalPreparation, error) {
+	preparation := control.NetworkReleaseTrustApprovalPreparation{
+		OperationID:            request.OperationID,
+		CheckpointRevision:     request.ExpectedCheckpointRevision,
+		PublicationDisposition: publicationDisposition,
+	}
+	switch result.Disposition {
+	case state.GlobalNetworkReleaseTrustOwned:
+		if result.Ticket == nil {
+			return control.NetworkReleaseTrustApprovalPreparation{}, errors.New("owned network release trust preparation has no ticket")
+		}
+		preparation.Disposition = control.NetworkReleaseTrustOwned
+		preparation.Ticket = &control.NetworkReleaseTrustApprovalTicket{
+			OperationID:                result.Ticket.OperationID,
+			Reference:                  result.Ticket.Reference,
+			Operation:                  result.Ticket.Operation,
+			PolicyFingerprint:          result.Ticket.PolicyFingerprint,
+			TargetOwnershipFingerprint: result.Ticket.OwnershipFingerprint,
+			AuthorityFingerprint:       result.Ticket.AuthorityFingerprint,
+			Mechanism:                  result.Ticket.Mechanism,
+			ExpiresAt:                  result.Ticket.ExpiresAt,
+		}
+	case state.GlobalNetworkReleaseTrustPreexistingUnowned:
+		if publicationDisposition != control.NetworkReleaseTrustPublicationDurable {
+			return control.NetworkReleaseTrustApprovalPreparation{}, errors.New("preexisting network release trust preparation cannot have indeterminate publication")
+		}
+		preparation.Disposition = control.NetworkReleaseTrustPreexistingUnowned
+		preparation.PublicationDisposition = control.NetworkReleaseTrustPublicationNotRequired
+	default:
+		return control.NetworkReleaseTrustApprovalPreparation{}, fmt.Errorf("network release trust disposition %q is unsupported", result.Disposition)
+	}
+	if err := preparation.Validate(); err != nil {
+		return control.NetworkReleaseTrustApprovalPreparation{}, fmt.Errorf("network release trust preparation: %w", err)
+	}
+	if preparation.OperationID != request.OperationID || preparation.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return control.NetworkReleaseTrustApprovalPreparation{}, errors.New("network release trust preparation differs from the requested checkpoint")
+	}
+	return preparation, nil
+}
+
 // readNetworkRelease reads and projects the exact durable plan without returning retained host authority.
 func (authority *NetworkReleaseAuthority) readNetworkRelease(ctx context.Context, requesterIdentity string, operationID domain.OperationID) (control.NetworkReleaseOperation, error) {
 	plan, found, err := authority.plans.ReadGlobalNetworkReleasePlan(ctx, operationID)
@@ -343,7 +447,8 @@ func classifyNetworkReleaseError(err error) error {
 		errors.As(err, &operationConflict) ||
 		errors.As(err, &active) ||
 		errors.As(err, &stale) ||
-		errors.Is(err, ticketissuer.ErrResolverPublicationIndeterminate) {
+		errors.Is(err, ticketissuer.ErrResolverPublicationIndeterminate) ||
+		errors.Is(err, ticketissuer.ErrTrustPublicationIndeterminate) {
 		return control.NewNetworkReleaseConflictError(err)
 	}
 	return err
