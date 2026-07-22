@@ -267,6 +267,224 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	}
 }
 
+// TestStartRollsBackManagedHostEnvironmentBeforeAcceptingProcess preserves project-owned dotenv content when launch validation fails.
+func TestStartRollsBackManagedHostEnvironmentBeforeAcceptingProcess(t *testing.T) {
+	checkout := t.TempDir()
+	path := filepath.Join(checkout, ".env.host")
+	contents := []byte("DB_HOST=127.0.0.1\n")
+	if err := os.WriteFile(path, contents, 0o640); err != nil {
+		t.Fatalf("write project host environment: %v", err)
+	}
+	installForjHelper(t, "exit")
+	managedContext := validManagedLaunchContext(t)
+	managedContext.ProjectID = "project-rollback"
+	managedContext.SessionID = "session-rollback"
+	managedContext.ProjectRoot = canonicalTestPath(t, t.TempDir())
+	supervisor := newTestSupervisor(Options{})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	_, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            managedContext.ProjectID,
+		SessionID:            managedContext.SessionID,
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		ManagedLaunch:        &managedContext,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Start() error = %v, want ErrInvalidRequest", err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read project host environment: %v", err)
+	}
+	if !bytes.Equal(actual, append(contents, '\n')) {
+		t.Fatalf("project host environment = %q, want preserved assignment and separator", actual)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat project host environment: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("project host environment mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
+// TestStartReportsManagedHostEnvironmentRollbackFailure preserves both launch and cleanup failures when Harbor cannot retire its block.
+func TestStartReportsManagedHostEnvironmentRollbackFailure(t *testing.T) {
+	checkout := t.TempDir()
+	installForjHelper(t, "exit")
+	managedContext := validManagedLaunchContext(t)
+	managedContext.ProjectID = "project-rollback-failure"
+	managedContext.SessionID = "session-rollback-failure"
+	managedContext.ProjectRoot = canonicalTestPath(t, t.TempDir())
+	rollbackErr := errors.New("host environment remains unavailable")
+	supervisor := newTestSupervisor(Options{})
+	supervisor.removeHostEnvironment = func(string) error { return rollbackErr }
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	_, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            managedContext.ProjectID,
+		SessionID:            managedContext.SessionID,
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		ManagedLaunch:        &managedContext,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Start() error = %v, want ErrInvalidRequest", err)
+	}
+	if !errors.Is(err, ErrCleanupUncertain) {
+		t.Fatalf("Start() error = %v, want ErrCleanupUncertain", err)
+	}
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("Start() error = %v, want rollback error", err)
+	}
+	contents, readErr := os.ReadFile(filepath.Join(checkout, ".env.host"))
+	if readErr != nil {
+		t.Fatalf("read managed host environment: %v", readErr)
+	}
+	if !strings.Contains(string(contents), managedHostEnvironmentBegin) {
+		t.Fatalf("managed host environment was unexpectedly removed: %q", contents)
+	}
+}
+
+// TestStartRejectsDifferentLifecycleForSameCheckout prevents two lifecycle identities from sharing Harbor's host environment block.
+func TestStartRejectsDifferentLifecycleForSameCheckout(t *testing.T) {
+	checkout := t.TempDir()
+	installForjHelper(t, "wait")
+	output := &synchronizedBuffer{}
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-checkout-one",
+		SessionID:            "session-checkout-one",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+		Stdout:               output,
+		Stderr:               output,
+	})
+	if err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	waitForOutput(t, output, "ready")
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-checkout-two",
+		SessionID:            "session-checkout-two",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if !errors.Is(err, ErrProjectRunning) {
+		t.Fatalf("second Start() error = %v, want ErrProjectRunning", err)
+	}
+	if err := supervisor.Stop(t.Context(), "project-checkout-one", "session-checkout-one"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+}
+
+// TestCheckoutReservationOutlastsExitUntilManagedHostEnvironmentCleanup finishes cleanup before allowing a new lifecycle for the same checkout.
+func TestCheckoutReservationOutlastsExitUntilManagedHostEnvironmentCleanup(t *testing.T) {
+	checkout := t.TempDir()
+	installForjHelper(t, "exit")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	removeHostEnvironment := supervisor.removeHostEnvironment
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	var cleanupStartOnce sync.Once
+	var releaseCleanupOnce sync.Once
+	release := func() { releaseCleanupOnce.Do(func() { close(releaseCleanup) }) }
+	supervisor.removeHostEnvironment = func(root string) error {
+		cleanupStartOnce.Do(func() { close(cleanupStarted) })
+		<-releaseCleanup
+		return removeHostEnvironment(root)
+	}
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	defer release()
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-exit-one",
+		SessionID:            "session-exit-one",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed host environment cleanup did not start")
+	}
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-exit-two",
+		SessionID:            "session-exit-two",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if !errors.Is(err, ErrProjectRunning) {
+		t.Fatalf("Start() during cleanup error = %v, want ErrProjectRunning", err)
+	}
+	release()
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-exit-two",
+		SessionID:            "session-exit-two",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() after cleanup error = %v", err)
+	}
+}
+
+// TestUnexpectedSettledExitRemovesManagedHostEnvironment removes Harbor's block after an owned child exits without a stop request.
+func TestUnexpectedSettledExitRemovesManagedHostEnvironment(t *testing.T) {
+	checkout := t.TempDir()
+	path := filepath.Join(checkout, ".env.host")
+	contents := []byte("DB_HOST=127.0.0.1\n")
+	if err := os.WriteFile(path, contents, 0o640); err != nil {
+		t.Fatalf("write project host environment: %v", err)
+	}
+	installForjHelper(t, "exit")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-unexpected-exit",
+		SessionID:            "session-unexpected-exit",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	result, err := handle.Wait(t.Context())
+	if err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if result.StopRequested {
+		t.Fatalf("Wait() result = %#v, want unexpected exit", result)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read project host environment: %v", err)
+	}
+	if !bytes.Equal(actual, append(contents, '\n')) {
+		t.Fatalf("project host environment = %q, want preserved assignment and separator", actual)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat project host environment: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("project host environment mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
 // TestStartCarriesOwnerOnlyManagedContextWithoutChangingArgv verifies the context crosses only through the reserved file reference.
 func TestStartCarriesOwnerOnlyManagedContextWithoutChangingArgv(t *testing.T) {
 	checkout := t.TempDir()
@@ -405,10 +623,16 @@ func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	installForjHelper(t, "wait")
 	output := &synchronizedBuffer{}
 	supervisor := newTestSupervisor(Options{GracePeriod: 500 * time.Millisecond})
+	checkout := t.TempDir()
+	path := filepath.Join(checkout, ".env.host")
+	contents := []byte("DB_HOST=127.0.0.1\n")
+	if err := os.WriteFile(path, contents, 0o640); err != nil {
+		t.Fatalf("write project host environment: %v", err)
+	}
 	handle, err := supervisor.Start(t.Context(), StartRequest{
 		ProjectID:            "project-stop",
 		SessionID:            "session-stop",
-		CheckoutRoot:         t.TempDir(),
+		CheckoutRoot:         checkout,
 		EnvironmentOverrides: projectProcessTestEnvironment(),
 		Stdout:               output,
 		Stderr:               output,
@@ -423,6 +647,20 @@ func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	result, ok := handle.Result()
 	if !ok || !result.StopRequested {
 		t.Fatalf("Result() = %#v, %t", result, ok)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read project host environment: %v", err)
+	}
+	if !bytes.Equal(actual, append(contents, '\n')) {
+		t.Fatalf("project host environment = %q, want preserved assignment and separator", actual)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat project host environment: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("project host environment mode = %o, want 640", info.Mode().Perm())
 	}
 	if err := supervisor.Stop(t.Context(), "project-stop", "session-stop"); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("second Stop() error = %v, want ErrNotRunning", err)

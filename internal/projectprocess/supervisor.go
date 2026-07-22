@@ -187,22 +187,24 @@ func (handle *Handle) complete(result Exit) {
 
 // Supervisor owns every process tree it launches until exit or shutdown.
 type Supervisor struct {
-	mu                   sync.Mutex
-	closed               bool
-	gracePeriod          time.Duration
-	outputLines          int
-	environment          Environment
-	verifyExecutable     ExecutableVerifier
-	projects             map[domain.ProjectID]*managedProcess
-	sessions             map[domain.SessionID]*managedProcess
-	containerRuntime     containerruntime.Runtime
-	runtimeCloseOnce     sync.Once
-	runtimeCloseErr      error
-	serviceLogIdle       time.Duration
-	serviceLogs          map[serviceLogKey]*serviceLogStream
-	outputSpoolDirectory string
-	outputBrokerLauncher OutputBrokerLauncher
-	adoptedOutputs       map[outputBrokerKey]*adoptedOutput
+	mu                    sync.Mutex
+	closed                bool
+	gracePeriod           time.Duration
+	outputLines           int
+	environment           Environment
+	verifyExecutable      ExecutableVerifier
+	projects              map[domain.ProjectID]*managedProcess
+	sessions              map[domain.SessionID]*managedProcess
+	checkouts             map[string]*managedProcess
+	removeHostEnvironment func(string) error
+	containerRuntime      containerruntime.Runtime
+	runtimeCloseOnce      sync.Once
+	runtimeCloseErr       error
+	serviceLogIdle        time.Duration
+	serviceLogs           map[serviceLogKey]*serviceLogStream
+	outputSpoolDirectory  string
+	outputBrokerLauncher  OutputBrokerLauncher
+	adoptedOutputs        map[outputBrokerKey]*adoptedOutput
 }
 
 // New constructs an empty project process supervisor.
@@ -244,18 +246,20 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 	}
 	outputSpoolDirectory := resolveOutputSpoolDirectory(options.OutputSpoolDirectory)
 	return &Supervisor{
-		gracePeriod:          gracePeriod,
-		outputLines:          outputLines,
-		environment:          environment,
-		verifyExecutable:     verifier,
-		projects:             make(map[domain.ProjectID]*managedProcess),
-		sessions:             make(map[domain.SessionID]*managedProcess),
-		containerRuntime:     containerRuntime,
-		serviceLogIdle:       serviceLogIdle,
-		serviceLogs:          make(map[serviceLogKey]*serviceLogStream),
-		outputSpoolDirectory: outputSpoolDirectory,
-		outputBrokerLauncher: options.OutputBrokerLauncher,
-		adoptedOutputs:       make(map[outputBrokerKey]*adoptedOutput),
+		gracePeriod:           gracePeriod,
+		outputLines:           outputLines,
+		environment:           environment,
+		verifyExecutable:      verifier,
+		projects:              make(map[domain.ProjectID]*managedProcess),
+		sessions:              make(map[domain.SessionID]*managedProcess),
+		checkouts:             make(map[string]*managedProcess),
+		removeHostEnvironment: removeManagedHostEnvironment,
+		containerRuntime:      containerRuntime,
+		serviceLogIdle:        serviceLogIdle,
+		serviceLogs:           make(map[serviceLogKey]*serviceLogStream),
+		outputSpoolDirectory:  outputSpoolDirectory,
+		outputBrokerLauncher:  options.OutputBrokerLauncher,
+		adoptedOutputs:        make(map[outputBrokerKey]*adoptedOutput),
 	}
 }
 
@@ -394,7 +398,7 @@ func (supervisor *Supervisor) readAdoptedOutput(key outputBrokerKey, adopted *ad
 }
 
 // Start launches the checkout's current GoForj development command without a shell or terminal.
-func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (*Handle, error) {
+func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (handle *Handle, startErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -430,6 +434,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if _, exists := supervisor.sessions[request.SessionID]; exists {
 		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
 	}
+	if _, exists := supervisor.checkouts[checkoutRoot]; exists {
+		return nil, fmt.Errorf("%w: checkout %s", ErrProjectRunning, checkoutRoot)
+	}
 	brokerLauncher := supervisor.outputBrokerLauncher
 	if brokerLauncher != nil {
 		// Probe the broker's journal before child start so a corrupt diagnostic spool disables only the
@@ -460,6 +467,15 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("apply Harbor managed host environment: %w", err)
 	}
+	managedHostEnvironmentCleanup := len(managedOverrides) > 0
+	defer func() {
+		if managedHostEnvironmentCleanup {
+			cleanupErr := supervisor.removeHostEnvironment(checkoutRoot)
+			if cleanupErr != nil {
+				startErr = managedHostEnvironmentRollbackError(startErr, cleanupErr)
+			}
+		}
+	}()
 	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
@@ -529,6 +545,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		relay.finish()
 		return nil, fmt.Errorf("start forj dev: %w", err)
 	}
+	managedHostEnvironmentCleanup = false
 
 	var brokerAttachment OutputBrokerAttachment
 	var brokerPeer *OutputBrokerPeer
@@ -580,6 +597,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
+		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -595,6 +613,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
+		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -609,6 +628,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
+		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -623,6 +643,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
+		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -634,7 +655,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 
 	arguments := append([]string(nil), command.Args...)
-	handle := &Handle{
+	handle = &Handle{
 		info: Info{
 			ProjectID:    request.ProjectID,
 			SessionID:    request.SessionID,
@@ -668,6 +689,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 	supervisor.projects[request.ProjectID] = process
 	supervisor.sessions[request.SessionID] = process
+	supervisor.checkouts[checkoutRoot] = process
 	if brokerAttachment != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
@@ -684,6 +706,11 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	managedLaunchCleanup = false
 	go supervisor.wait(process)
 	return handle, nil
+}
+
+// managedHostEnvironmentRollbackError retains the launch failure while marking failed cleanup as unsafe ownership release.
+func managedHostEnvironmentRollbackError(startErr error, cleanupErr error) error {
+	return fmt.Errorf("%w: %w", ErrCleanupUncertain, errors.Join(startErr, fmt.Errorf("remove Harbor managed host environment: %w", cleanupErr)))
 }
 
 // terminateStartedCommand keeps the unreaped root identity reserved while retiring every accepted descendant.
@@ -802,7 +829,8 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	process.acceptingStop = false
 	stopRequested := process.stopRequested.Load()
 	supervisor.mu.Unlock()
-	cleanupErr := process.settleTree(stopRequested)
+	treeSettlementErr := process.settleTree(stopRequested)
+	cleanupErr := treeSettlementErr
 	if cleanupErr != nil {
 		_ = process.stdout.Close()
 		_ = process.stderr.Close()
@@ -817,12 +845,6 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	info := process.handle.info
 	process.handle.mu.RUnlock()
 	supervisor.mu.Lock()
-	if supervisor.projects[info.ProjectID] == process {
-		delete(supervisor.projects, info.ProjectID)
-	}
-	if supervisor.sessions[info.SessionID] == process {
-		delete(supervisor.sessions, info.SessionID)
-	}
 	serviceLogs := supervisor.detachServiceLogsLocked(info.ProjectID, info.SessionID)
 	supervisor.mu.Unlock()
 	for _, stream := range serviceLogs {
@@ -832,10 +854,22 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 			supervisor.removeSettledServiceLogStream(stream.key, stream)
 		}
 	}
-	if stopRequested && cleanupErr == nil {
-		cleanupErr = removeManagedHostEnvironment(info.CheckoutRoot)
+	if treeSettlementErr == nil {
+		cleanupErr = errors.Join(cleanupErr, supervisor.removeHostEnvironment(info.CheckoutRoot))
 	}
 	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))
+
+	supervisor.mu.Lock()
+	if supervisor.projects[info.ProjectID] == process {
+		delete(supervisor.projects, info.ProjectID)
+	}
+	if supervisor.sessions[info.SessionID] == process {
+		delete(supervisor.sessions, info.SessionID)
+	}
+	if supervisor.checkouts[info.CheckoutRoot] == process {
+		delete(supervisor.checkouts, info.CheckoutRoot)
+	}
+	supervisor.mu.Unlock()
 
 	exitCode := 0
 	if process.command.ProcessState != nil {
