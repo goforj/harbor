@@ -236,6 +236,12 @@ func (controller *Controller) Start(ctx context.Context) error {
 	if err := controller.startupInterruption(runContext); err != nil {
 		return controller.failStart(err, material, nil)
 	}
+	if runtimeState.NetworkInitialized && runtimeState.Network.Stage == state.NetworkStageResolver {
+		desired, err = resolverDesiredState(runtimeState, root.Fingerprint)
+		if err != nil {
+			return controller.failStart(fmt.Errorf("start harbord runtime: construct resolver generation: %w", err), material, nil)
+		}
+	}
 
 	runtime, err := controller.dependencies.newDataPlane(dataplane.Config{
 		Desired:             desired,

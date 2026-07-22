@@ -39,6 +39,23 @@ type recordingNetworkResolverSetupCoordinator struct {
 	nilContexts     int
 }
 
+// recordingResolverActivator captures the exact durable revision handed to the live DNS generation.
+type recordingResolverActivator struct {
+	revisions []domain.Sequence
+	err       error
+}
+
+// HTTPRouteLive keeps the fake compatible with the required route observer while this test targets DNS activation.
+func (activator *recordingResolverActivator) HTTPRouteLive(string, netip.AddrPort) bool {
+	return false
+}
+
+// ActivateResolver records one resolver generation activation request.
+func (activator *recordingResolverActivator) ActivateResolver(_ context.Context, revision domain.Sequence) error {
+	activator.revisions = append(activator.revisions, revision)
+	return activator.err
+}
+
 // Start records one authenticated resolver initiation before returning its scripted operation.
 func (coordinator *recordingNetworkResolverSetupCoordinator) Start(
 	ctx context.Context,
@@ -384,6 +401,81 @@ func TestAuthorityConfirmNetworkResolverSetupApprovalPreservesHistoricalRevision
 	}
 	if !reflect.DeepEqual(confirms, []reconcile.NetworkResolverSetupConfirmRequest{wantRequest}) || nilContexts != 0 {
 		t.Fatalf("resolver coordinator confirm requests = %#v, want %#v; nil contexts = %d", confirms, wantRequest, nilContexts)
+	}
+}
+
+// TestAuthorityConfirmNetworkResolverSetupApprovalActivatesDNSAfterDurableCompletion keeps DNS live without claiming HTTPS.
+func TestAuthorityConfirmNetworkResolverSetupApprovalActivatesDNSAfterDurableCompletion(t *testing.T) {
+	at := time.Date(2026, time.July, 20, 10, 0, 0, 0, time.UTC)
+	completed := authorityNetworkResolverSetupCompletion(
+		t,
+		"operation-network-resolver-setup",
+		"intent-network-resolver-setup",
+		state.NetworkStageResolver,
+		8,
+		at,
+	)
+	coordinator := &recordingNetworkResolverSetupCoordinator{confirmResult: completed}
+	authority := newAuthorityForNetworkResolverSetupTest(
+		coordinator,
+		at,
+		func() (domain.OperationID, error) { return "operation-unused", nil },
+	)
+	activator := new(recordingResolverActivator)
+	authority.resolverRuntime = activator
+	request := control.ConfirmNetworkResolverSetupApprovalRequest{
+		OperationID:               completed.Operation.Operation.ID,
+		ExpectedOperationRevision: 3,
+		ResolverEvidence:          authorityNetworkResolverSetupEvidence(),
+	}
+
+	result, err := authority.ConfirmNetworkResolverSetupApproval(t.Context(), control.Caller{}, request)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkResolverSetupApproval() error = %v", err)
+	}
+	if len(activator.revisions) != 1 || activator.revisions[0] != completed.NetworkRevision {
+		t.Fatalf("resolver activations = %#v, want [%d]", activator.revisions, completed.NetworkRevision)
+	}
+	want := control.NetworkResolverSetupApprovalConfirmation{
+		Operation:       completed.Operation.Operation,
+		Revision:        completed.Operation.Revision,
+		NetworkRevision: completed.NetworkRevision,
+	}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("ConfirmNetworkResolverSetupApproval() = %#v, want %#v", result, want)
+	}
+}
+
+// TestAuthorityConfirmNetworkResolverSetupApprovalReturnsDNSActivationFailure keeps a failed listener transition retryable.
+func TestAuthorityConfirmNetworkResolverSetupApprovalReturnsDNSActivationFailure(t *testing.T) {
+	at := time.Date(2026, time.July, 20, 10, 0, 0, 0, time.UTC)
+	completed := authorityNetworkResolverSetupCompletion(
+		t,
+		"operation-network-resolver-setup",
+		"intent-network-resolver-setup",
+		state.NetworkStageResolver,
+		8,
+		at,
+	)
+	coordinator := &recordingNetworkResolverSetupCoordinator{confirmResult: completed}
+	authority := newAuthorityForNetworkResolverSetupTest(
+		coordinator,
+		at,
+		func() (domain.OperationID, error) { return "operation-unused", nil },
+	)
+	wantErr := errors.New("dns listener unavailable")
+	activator := &recordingResolverActivator{err: wantErr}
+	authority.resolverRuntime = activator
+	_, err := authority.ConfirmNetworkResolverSetupApproval(t.Context(), control.Caller{}, control.ConfirmNetworkResolverSetupApprovalRequest{
+		OperationID:               completed.Operation.Operation.ID,
+		ExpectedOperationRevision: 3,
+		ResolverEvidence:          authorityNetworkResolverSetupEvidence(),
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ConfirmNetworkResolverSetupApproval() error = %v, want %v", err, wantErr)
+	}
+	if len(activator.revisions) != 1 {
+		t.Fatalf("resolver activations = %#v, want one attempt", activator.revisions)
 	}
 }
 

@@ -91,7 +91,7 @@ func (controller *Controller) reconcileHTTPRoutes(
 		if err != nil {
 			return controller.failClosedHTTPRoutes(ctx, expected, runtime, fmt.Errorf("read durable state: %w", err))
 		}
-		desired, err := desiredHTTPStateFromRuntimeState(runtimeState)
+		desired, err := controller.desiredHTTPStateFromRuntimeState(runtimeState)
 		if err != nil {
 			return controller.failClosedHTTPRoutes(ctx, expected, runtime, err)
 		}
@@ -124,7 +124,7 @@ func (controller *Controller) reconcileHTTPRoutes(
 		if err != nil {
 			return controller.failClosedHTTPRoutes(ctx, expected, runtime, fmt.Errorf("confirm durable state: %w", err))
 		}
-		confirmed, err := desiredHTTPStateFromRuntimeState(confirmedState)
+		confirmed, err := controller.desiredHTTPStateFromRuntimeState(confirmedState)
 		if err != nil {
 			return controller.failClosedHTTPRoutes(ctx, expected, runtime, err)
 		}
@@ -151,6 +151,23 @@ func (controller *Controller) reconcileHTTPRoutes(
 		runtime,
 		fmt.Errorf("reconcile HTTP routes: durable state changed across %d attempts", maximumHTTPReconcileAttempts),
 	)
+}
+
+// desiredHTTPStateFromRuntimeState retains the DNS-only resolver foundation while HTTP remains gated by full setup.
+func (controller *Controller) desiredHTTPStateFromRuntimeState(runtimeState state.RuntimeState) (dataplane.DesiredState, error) {
+	desired, err := desiredHTTPStateFromRuntimeState(runtimeState)
+	if err != nil {
+		return dataplane.DesiredState{}, err
+	}
+	if !runtimeState.NetworkInitialized || runtimeState.Network.Stage != state.NetworkStageResolver {
+		return desired, nil
+	}
+	foundation := controller.httpFoundation
+	plan := foundation.ListenerPlan()
+	if plan.DNS == (netip.AddrPort{}) || plan.HTTP != (netip.AddrPort{}) || plan.HTTPS != (netip.AddrPort{}) || len(foundation.NativeRoutes()) != 0 {
+		return desired, nil
+	}
+	return desiredWithHTTPRoutes(foundation, nil)
 }
 
 // requireReconcileLifecycle verifies permission without retaining the lifecycle lock across external I/O.

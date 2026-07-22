@@ -51,6 +51,12 @@ type httpRouteObserver interface {
 	HTTPRouteLive(string, netip.AddrPort) bool
 }
 
+// networkResolverActivator starts the DNS-only generation after durable resolver setup completes.
+type networkResolverActivator interface {
+	// ActivateResolver publishes the authoritative DNS listener for one exact resolver revision.
+	ActivateResolver(context.Context, domain.Sequence) error
+}
+
 // managedNativeRouteActivator is the optional live-data-plane seam for authenticated managed publications.
 type managedNativeRouteActivator interface {
 	ReplaceManagedNativeRoutes(context.Context, []dataplane.NativeRoute) error
@@ -143,6 +149,7 @@ type Authority struct {
 	managedObserver   managedPublicationObserver
 	managedMu         sync.Mutex
 	managedSessions   map[domain.ProjectID]managedSessionAttachment
+	resolverRuntime   networkResolverActivator
 }
 
 var _ control.Authority = (*Authority)(nil)
@@ -161,6 +168,7 @@ func NewAuthority(
 		panic("authority.NewAuthority requires non-nil state, unregister, lifecycle, network setup, resolver setup, and HTTP route dependencies")
 	}
 	authority := newAuthority(store, unregister, buildinfo.Current(), lifecycle, networkSetup, resolverSetup, routes)
+	authority.resolverRuntime = routes
 	authority.runtimeRepair = reconcile.NewProjectRuntimeRepairCoordinator(store)
 	return authority
 }
@@ -647,6 +655,11 @@ func (authority *Authority) ConfirmNetworkResolverSetupApproval(
 		result.NetworkRevision <= request.ExpectedOperationRevision+1 ||
 		result.Revision != result.NetworkRevision+1 {
 		return control.NetworkResolverSetupApprovalConfirmation{}, errors.New("network resolver setup approval confirmation differs from its requested operation revision")
+	}
+	if confirmed.Network.Record.Stage == state.NetworkStageResolver && authority.resolverRuntime != nil {
+		if err := authority.resolverRuntime.ActivateResolver(ctx, confirmed.NetworkRevision); err != nil {
+			return control.NetworkResolverSetupApprovalConfirmation{}, fmt.Errorf("activate Harbor DNS generation: %w", err)
+		}
 	}
 	return result, nil
 }
