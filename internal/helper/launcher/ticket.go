@@ -40,6 +40,88 @@ type ResolverLaunchTicket struct {
 	expiresAt            time.Time
 }
 
+// TrustLaunchTicket is the immutable non-secret metadata needed to launch one public-CA trust capability.
+type TrustLaunchTicket struct {
+	operationID          domain.OperationID
+	reference            helper.TicketReference
+	operation            helper.Operation
+	policyFingerprint    string
+	ownershipFingerprint string
+	authorityFingerprint string
+	trustMechanism       string
+	expiresAt            time.Time
+}
+
+// LowPortLaunchTicket is immutable non-secret metadata for one policy-bound low-port capability.
+type LowPortLaunchTicket struct {
+	operationID            domain.OperationID
+	reference              helper.TicketReference
+	operation              helper.Operation
+	policyFingerprint      string
+	ownershipFingerprint   string
+	observationFingerprint string
+	expiresAt              time.Time
+}
+
+// NewLowPortLaunchTicket validates metadata from an authenticated low-port approval response.
+func NewLowPortLaunchTicket(
+	operationID domain.OperationID,
+	reference helper.TicketReference,
+	operation helper.Operation,
+	policyFingerprint string,
+	ownershipFingerprint string,
+	observationFingerprint string,
+	expiresAt time.Time,
+) (LowPortLaunchTicket, error) {
+	ticket := LowPortLaunchTicket{
+		operationID:            operationID,
+		reference:              reference,
+		operation:              operation,
+		policyFingerprint:      policyFingerprint,
+		ownershipFingerprint:   ownershipFingerprint,
+		observationFingerprint: observationFingerprint,
+		expiresAt:              expiresAt,
+	}
+	if err := ticket.validateStructure(); err != nil {
+		return LowPortLaunchTicket{}, err
+	}
+	return ticket, nil
+}
+
+// validateAt rejects stale low-port launch metadata.
+func (ticket LowPortLaunchTicket) validateAt(now time.Time) error {
+	if err := ticket.validateStructure(); err != nil {
+		return err
+	}
+	if !ticket.expiresAt.After(now) || ticket.expiresAt.After(now.Add(helper.MaxTicketLifetime)) {
+		return fmt.Errorf("low-port launch ticket expiry is invalid")
+	}
+	return nil
+}
+
+// validateStructure confines consent to exact low-port operations and canonical evidence.
+func (ticket LowPortLaunchTicket) validateStructure() error {
+	if err := ticket.operationID.Validate(); err != nil {
+		return err
+	}
+	if err := ticket.reference.Validate(); err != nil {
+		return err
+	}
+	if ticket.operation != helper.OperationEnsureLowPorts && ticket.operation != helper.OperationReleaseLowPorts {
+		return fmt.Errorf("low-port launch ticket operation is unsupported")
+	}
+	for _, value := range []string{ticket.policyFingerprint, ticket.ownershipFingerprint, ticket.observationFingerprint} {
+		decoded, err := hex.DecodeString(value)
+		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != value {
+			return fmt.Errorf("low-port launch ticket fingerprint is invalid")
+		}
+	}
+	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
+		return fmt.Errorf("low-port launch ticket expiry must be UTC")
+	}
+	return nil
+}
+
 // NewLaunchTicket validates and captures metadata from an already authenticated approval response.
 // Launcher.Invoke independently applies the trusted-clock lifetime checks immediately before native consent.
 func NewLaunchTicket(
@@ -116,6 +198,34 @@ func NewResolverLaunchTicket(
 	}
 	if err := ticket.validateStructure(); err != nil {
 		return ResolverLaunchTicket{}, err
+	}
+	return ticket, nil
+}
+
+// NewTrustLaunchTicket validates metadata from an authenticated trust approval response.
+// Launcher.InvokeTrust independently applies trusted-clock lifetime checks before native consent.
+func NewTrustLaunchTicket(
+	operationID domain.OperationID,
+	reference helper.TicketReference,
+	operation helper.Operation,
+	policyFingerprint string,
+	ownershipFingerprint string,
+	authorityFingerprint string,
+	trustMechanism string,
+	expiresAt time.Time,
+) (TrustLaunchTicket, error) {
+	ticket := TrustLaunchTicket{
+		operationID:          operationID,
+		reference:            reference,
+		operation:            operation,
+		policyFingerprint:    policyFingerprint,
+		ownershipFingerprint: ownershipFingerprint,
+		authorityFingerprint: authorityFingerprint,
+		trustMechanism:       trustMechanism,
+		expiresAt:            expiresAt,
+	}
+	if err := ticket.validateStructure(); err != nil {
+		return TrustLaunchTicket{}, err
 	}
 	return ticket, nil
 }
@@ -232,6 +342,48 @@ func (ticket ResolverLaunchTicket) validateStructure() error {
 	}
 	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
 		return fmt.Errorf("resolver launch ticket expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
+// validateAt rejects stale or excessively long-lived trust launch metadata.
+func (ticket TrustLaunchTicket) validateAt(now time.Time) error {
+	if err := ticket.validateStructure(); err != nil {
+		return err
+	}
+	if !ticket.expiresAt.After(now) {
+		return fmt.Errorf("trust launch ticket expiry is not in the future")
+	}
+	if ticket.expiresAt.After(now.Add(helper.MaxTicketLifetime)) {
+		return fmt.Errorf("trust launch ticket expiry exceeds the protocol bound")
+	}
+	return nil
+}
+
+// validateStructure confines trust consent to an exact approved CA and platform trust mechanism.
+func (ticket TrustLaunchTicket) validateStructure() error {
+	if err := ticket.operationID.Validate(); err != nil {
+		return fmt.Errorf("trust launch ticket operation ID: %w", err)
+	}
+	if err := ticket.reference.Validate(); err != nil {
+		return fmt.Errorf("trust launch ticket reference: %w", err)
+	}
+	if ticket.operation != helper.OperationEnsureTrust {
+		return fmt.Errorf("trust launch ticket helper operation %q is unsupported", ticket.operation)
+	}
+	for _, value := range []string{ticket.policyFingerprint, ticket.ownershipFingerprint, ticket.authorityFingerprint} {
+		decoded, err := hex.DecodeString(value)
+		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != value {
+			return fmt.Errorf("trust launch ticket fingerprint is invalid")
+		}
+	}
+	switch ticket.trustMechanism {
+	case "darwin-current-user-trust-v1", "ubuntu-system-trust-v1", "windows-current-user-trust-v1":
+	default:
+		return fmt.Errorf("trust launch ticket mechanism %q is unsupported", ticket.trustMechanism)
+	}
+	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
+		return fmt.Errorf("trust launch ticket expiry must be a nonzero UTC time")
 	}
 	return nil
 }

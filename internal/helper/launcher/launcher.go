@@ -154,6 +154,34 @@ func (launcher *Launcher) InvokeResolver(ctx context.Context, ticket ResolverLau
 	return launcher.invoke(ctx, ticket.reference, matchResolverLaunchTicket(ticket))
 }
 
+// InvokeTrust performs exactly one transport attempt for valid public-CA trust launch metadata.
+func (launcher *Launcher) InvokeTrust(ctx context.Context, ticket TrustLaunchTicket) (Outcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, err
+	}
+	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
+		return Outcome{}, fmt.Errorf("validate helper trust launch ticket: %w", err)
+	}
+	return launcher.invoke(ctx, ticket.reference, matchTrustLaunchTicket(ticket))
+}
+
+// InvokeLowPorts performs one transport attempt for valid low-port launch metadata.
+func (launcher *Launcher) InvokeLowPorts(ctx context.Context, ticket LowPortLaunchTicket) (Outcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, err
+	}
+	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
+		return Outcome{}, fmt.Errorf("validate helper low-port launch ticket: %w", err)
+	}
+	return launcher.invoke(ctx, ticket.reference, matchLowPortLaunchTicket(ticket))
+}
+
 // invoke owns the shared bounded request and response exchange after launch metadata has been validated.
 func (launcher *Launcher) invoke(
 	ctx context.Context,
@@ -253,6 +281,32 @@ func matchResolverLaunchTicket(ticket ResolverLaunchTicket) resultMatcher {
 			result.ResolverEvidence != nil &&
 			result.ResolverEvidence.PolicyFingerprint == ticket.policyFingerprint &&
 			result.ResolverEvidence.OwnershipFingerprint == ticket.ownershipFingerprint
+	}
+}
+
+// matchTrustLaunchTicket binds success to the prepared ensure-trust CA and platform mechanism.
+func matchTrustLaunchTicket(ticket TrustLaunchTicket) resultMatcher {
+	return func(result *helper.OperationResult) bool {
+		return result != nil &&
+			result.Operation == ticket.operation &&
+			result.TrustEvidence != nil &&
+			result.TrustEvidence.AuthorityFingerprint == ticket.authorityFingerprint &&
+			string(result.TrustEvidence.Mechanism) == ticket.trustMechanism
+	}
+}
+
+// matchLowPortLaunchTicket binds the helper result to the prepared effect while allowing mutation to change native evidence.
+func matchLowPortLaunchTicket(ticket LowPortLaunchTicket) resultMatcher {
+	return func(result *helper.OperationResult) bool {
+		if result == nil || result.Operation != ticket.operation || result.LowPortEvidence == nil ||
+			result.LowPortEvidence.PolicyFingerprint != ticket.policyFingerprint ||
+			result.LowPortEvidence.OwnershipFingerprint != ticket.ownershipFingerprint {
+			return false
+		}
+		if ticket.operation == helper.OperationEnsureLowPorts {
+			return result.LowPortEvidence.Postcondition == helper.LowPortPostconditionExact
+		}
+		return result.LowPortEvidence.Postcondition == helper.LowPortPostconditionOwnedAbsent
 	}
 }
 
