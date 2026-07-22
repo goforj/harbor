@@ -2082,6 +2082,19 @@ func (coordinator *ProjectLifecycleCoordinator) Recover(ctx context.Context) err
 	return nil
 }
 
+// ReconcileFullStageDefaultHTTPEndpoints backfills endpoint authority for projects admitted before full networking.
+//
+// Setup activation and daemon recovery share this boundary so both paths use the same endpoint-only optimistic
+// writes and return the exact final network revision that a subsequent runtime activation must consume.
+func (coordinator *ProjectLifecycleCoordinator) ReconcileFullStageDefaultHTTPEndpoints(
+	ctx context.Context,
+) (state.NetworkRecord, error) {
+	if coordinator == nil {
+		panic("reconcile.ProjectLifecycleCoordinator.ReconcileFullStageDefaultHTTPEndpoints requires a non-nil receiver")
+	}
+	return coordinator.primaryLeases.reconcileFullStageDefaultHTTPEndpoints(ctx)
+}
+
 // Resume dispatches starts proven effect-free during recovery after Harbor's routes can serve their ready edge.
 func (coordinator *ProjectLifecycleCoordinator) Resume(ctx context.Context) error {
 	ctx = normalizeLifecycleContext(ctx)

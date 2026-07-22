@@ -76,6 +76,40 @@ type recordingLifecycleCloser struct {
 	closeOnce sync.Once
 }
 
+// recordingProjectUnregisterRecovery records the first daemon recovery boundary and returns its configured failure.
+type recordingProjectUnregisterRecovery struct {
+	events *[]string
+	err    error
+}
+
+// Recover records project-removal recovery before any lifecycle or endpoint work.
+func (recovery *recordingProjectUnregisterRecovery) Recover(context.Context) error {
+	*recovery.events = append(*recovery.events, "unregister.recover")
+	return recovery.err
+}
+
+// recordingProjectLifecycleRecovery records process recovery and the subsequent full-stage endpoint backfill.
+type recordingProjectLifecycleRecovery struct {
+	events        *[]string
+	recoverErr    error
+	endpointErr   error
+	endpointState state.NetworkRecord
+}
+
+// Recover records durable process-lifecycle recovery before endpoint authority can advance.
+func (recovery *recordingProjectLifecycleRecovery) Recover(context.Context) error {
+	*recovery.events = append(*recovery.events, "lifecycle.recover")
+	return recovery.recoverErr
+}
+
+// ReconcileFullStageDefaultHTTPEndpoints records the last durable recovery step before runtime reconciliation.
+func (recovery *recordingProjectLifecycleRecovery) ReconcileFullStageDefaultHTTPEndpoints(
+	context.Context,
+) (state.NetworkRecord, error) {
+	*recovery.events = append(*recovery.events, "endpoints.reconcile")
+	return recovery.endpointState, recovery.endpointErr
+}
+
 // recordingNetworkResolverObserver fails any native read because coordinator assembly must remain side-effect free.
 type recordingNetworkResolverObserver struct {
 	calls int
@@ -152,6 +186,78 @@ func TestProvideHarbordReadinessRejectsMissingConnections(t *testing.T) {
 	readiness, err := provideHarbordReadiness(nil)
 	if err == nil || readiness != nil {
 		t.Fatalf("provideHarbordReadiness(nil) = (%v, %v), want nil readiness and construction error", readiness, err)
+	}
+}
+
+// TestRecoverDaemonStateBackfillsFullEndpointsBeforeRuntimeReconciliation pins the complete startup recovery order.
+func TestRecoverDaemonStateBackfillsFullEndpointsBeforeRuntimeReconciliation(t *testing.T) {
+	events := []string{}
+	unregister := &recordingProjectUnregisterRecovery{events: &events}
+	lifecycle := &recordingProjectLifecycleRecovery{
+		events:        &events,
+		endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 42},
+	}
+
+	if err := recoverDaemonState(t.Context(), unregister, lifecycle); err != nil {
+		t.Fatalf("recoverDaemonState() error = %v", err)
+	}
+	// daemon.Runner invokes Runtime.Start only after this recovery callback returns.
+	events = append(events, "runtime.reconcile")
+	if got, want := strings.Join(events, ","), "unregister.recover,lifecycle.recover,endpoints.reconcile,runtime.reconcile"; got != want {
+		t.Fatalf("daemon recovery order = %q, want %q", got, want)
+	}
+}
+
+// TestRecoverDaemonStatePropagatesEachFailure prevents later recovery or runtime work from crossing a failed boundary.
+func TestRecoverDaemonStatePropagatesEachFailure(t *testing.T) {
+	unregisterErr := errors.New("unregister recovery failed")
+	lifecycleErr := errors.New("lifecycle recovery failed")
+	endpointErr := errors.New("endpoint backfill failed")
+	tests := []struct {
+		name          string
+		unregisterErr error
+		lifecycleErr  error
+		endpointErr   error
+		want          error
+		wantEvents    string
+	}{
+		{
+			name:          "unregister",
+			unregisterErr: unregisterErr,
+			want:          unregisterErr,
+			wantEvents:    "unregister.recover",
+		},
+		{
+			name:         "lifecycle",
+			lifecycleErr: lifecycleErr,
+			want:         lifecycleErr,
+			wantEvents:   "unregister.recover,lifecycle.recover",
+		},
+		{
+			name:        "endpoint",
+			endpointErr: endpointErr,
+			want:        endpointErr,
+			wantEvents:  "unregister.recover,lifecycle.recover,endpoints.reconcile",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := []string{}
+			unregister := &recordingProjectUnregisterRecovery{events: &events, err: test.unregisterErr}
+			lifecycle := &recordingProjectLifecycleRecovery{
+				events:      &events,
+				recoverErr:  test.lifecycleErr,
+				endpointErr: test.endpointErr,
+			}
+
+			err := recoverDaemonState(t.Context(), unregister, lifecycle)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("recoverDaemonState() error = %v, want %v", err, test.want)
+			}
+			if got := strings.Join(events, ","); got != test.wantEvents {
+				t.Fatalf("recovery events = %q, want %q", got, test.wantEvents)
+			}
+		})
 	}
 }
 

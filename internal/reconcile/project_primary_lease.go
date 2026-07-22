@@ -196,6 +196,151 @@ func (coordinator *projectPrimaryLeaseCoordinator) Ensure(
 	)
 }
 
+// reconcileFullStageDefaultHTTPEndpoints adds missing default HTTP reservations for every admitted project.
+//
+// Resolver-stage admission has already proved each retained primary identity. Promotion to full networking
+// therefore needs only durable endpoint authority; repeating host discovery or port probes here could mistake
+// a healthy running App for an admission conflict. The returned record contains the final network revision after
+// every project-scoped replacement has converged.
+func (coordinator *projectPrimaryLeaseCoordinator) reconcileFullStageDefaultHTTPEndpoints(
+	ctx context.Context,
+) (state.NetworkRecord, error) {
+	if coordinator == nil {
+		panic("reconcile.projectPrimaryLeaseCoordinator.reconcileFullStageDefaultHTTPEndpoints requires a non-nil receiver")
+	}
+	ctx = normalizeLifecycleContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return state.NetworkRecord{}, err
+	}
+
+	network, initialized, err := coordinator.state.Network(ctx)
+	if err != nil {
+		return state.NetworkRecord{}, fmt.Errorf("read network before default HTTP endpoint reconciliation: %w", err)
+	}
+	if !initialized {
+		return state.NetworkRecord{}, nil
+	}
+	if err := network.Validate(); err != nil {
+		return state.NetworkRecord{}, fmt.Errorf("reconcile default HTTP endpoints: invalid network authority: %w", err)
+	}
+	if network.Stage != state.NetworkStageFull {
+		return network, nil
+	}
+
+	suppressed := make(map[domain.ProjectID]struct{}, len(network.Reservations.SuppressedProjectIDs))
+	for _, projectID := range network.Reservations.SuppressedProjectIDs {
+		suppressed[projectID] = struct{}{}
+	}
+	projectIDs := make([]domain.ProjectID, 0, len(network.Leases))
+	for _, lease := range network.Leases {
+		if lease.Key.Kind() != identity.LeaseKindPrimary {
+			continue
+		}
+		if _, excluded := suppressed[lease.Key.ProjectID]; excluded {
+			continue
+		}
+		projectIDs = append(projectIDs, lease.Key.ProjectID)
+	}
+
+	final := network
+	for _, projectID := range projectIDs {
+		final, err = coordinator.reconcileFullStageDefaultHTTPEndpoint(ctx, projectID)
+		if err != nil {
+			return state.NetworkRecord{}, err
+		}
+	}
+	return final, nil
+}
+
+// reconcileFullStageDefaultHTTPEndpoint converges one admitted project's endpoint-only optimistic replacement.
+func (coordinator *projectPrimaryLeaseCoordinator) reconcileFullStageDefaultHTTPEndpoint(
+	ctx context.Context,
+	projectID domain.ProjectID,
+) (state.NetworkRecord, error) {
+	var lastConflict error
+	for attempt := 0; attempt < primaryLeasePersistenceAttempts; attempt++ {
+		project, err := coordinator.state.Project(ctx, projectID)
+		if err != nil {
+			return state.NetworkRecord{}, fmt.Errorf("read project before default HTTP endpoint reconciliation: %w", err)
+		}
+		network, initialized, err := coordinator.state.Network(ctx)
+		if err != nil {
+			return state.NetworkRecord{}, fmt.Errorf("read network before default HTTP endpoint reconciliation: %w", err)
+		}
+		if !initialized {
+			return state.NetworkRecord{}, errors.New("reconcile default HTTP endpoint: network identity is not initialized")
+		}
+		if err := network.Validate(); err != nil {
+			return state.NetworkRecord{}, fmt.Errorf("reconcile default HTTP endpoint: invalid network authority: %w", err)
+		}
+		if network.Stage != state.NetworkStageFull || projectNetworkSuppressed(network, projectID) {
+			return network, nil
+		}
+		primary, found := primaryLeaseForKey(network.Leases, identity.LeaseKey{ProjectID: projectID})
+		if !found {
+			return network, nil
+		}
+		desired, changed, err := primaryLeaseProjectEndpoints(network, project.Project)
+		if err != nil {
+			return state.NetworkRecord{}, err
+		}
+		if !changed {
+			return network, nil
+		}
+
+		at := lifecycleTime(coordinator.now())
+		if at.Before(project.Project.UpdatedAt) {
+			at = project.Project.UpdatedAt
+		}
+		if at.Before(network.UpdatedAt) {
+			at = network.UpdatedAt
+		}
+		result, err := coordinator.state.ReplaceProjectNetwork(ctx, state.ReplaceProjectNetworkRequest{
+			ProjectID:               projectID,
+			ExpectedNetworkRevision: network.Revision,
+			ExpectedProjectRevision: project.Revision,
+			Ensures:                 []state.NetworkLeaseEnsure{},
+			Releases:                []state.NetworkLeaseRelease{},
+			Endpoints:               desired,
+			At:                      at,
+		})
+		if err != nil {
+			if primaryLeaseRevisionConflict(err) {
+				lastConflict = err
+				continue
+			}
+			return state.NetworkRecord{}, fmt.Errorf("persist default HTTP endpoint for project %q: %w", projectID, err)
+		}
+		if err := result.Validate(); err != nil {
+			return state.NetworkRecord{}, fmt.Errorf("validate persisted default HTTP endpoint for project %q: %w", projectID, err)
+		}
+		persisted, found := primaryLeaseForKey(result.Record.Leases, primary.Key)
+		if !found || persisted != primary {
+			return state.NetworkRecord{}, fmt.Errorf("persisted primary lease for project %q differs from its retained identity", projectID)
+		}
+		if err := validatePrimaryLeaseProjectEndpoints(result.Record, project.Project, desired); err != nil {
+			return state.NetworkRecord{}, fmt.Errorf("validate persisted default HTTP endpoint for project %q: %w", projectID, err)
+		}
+		return result.Record, nil
+	}
+	return state.NetworkRecord{}, fmt.Errorf(
+		"reconcile default HTTP endpoint for project %q did not converge after %d revisions: %w",
+		projectID,
+		primaryLeasePersistenceAttempts,
+		lastConflict,
+	)
+}
+
+// projectNetworkSuppressed reports whether teardown has withdrawn one project's endpoint authority.
+func projectNetworkSuppressed(network state.NetworkRecord, projectID domain.ProjectID) bool {
+	for _, suppressedProjectID := range network.Reservations.SuppressedProjectIDs {
+		if suppressedProjectID == projectID {
+			return true
+		}
+	}
+	return false
+}
+
 // assignHTTPResourceEndpoints replaces optional HTTP reservations with the exact ready resources admitted from one descriptor.
 func (coordinator *projectPrimaryLeaseCoordinator) assignHTTPResourceEndpoints(
 	ctx context.Context,

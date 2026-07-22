@@ -62,6 +62,20 @@ type projectLifecycleAuthority interface {
 	Err() error
 }
 
+// projectUnregisterRecoveryAuthority limits daemon startup to interrupted project-removal reconciliation.
+type projectUnregisterRecoveryAuthority interface {
+	// Recover settles interrupted project-removal authority before other startup work.
+	Recover(context.Context) error
+}
+
+// projectLifecycleRecoveryAuthority joins process recovery with the endpoint backfill required before runtime startup.
+type projectLifecycleRecoveryAuthority interface {
+	// Recover settles durable process-lifecycle work without dispatching queued starts.
+	Recover(context.Context) error
+	// ReconcileFullStageDefaultHTTPEndpoints backfills publishable routes after process recovery is safe.
+	ReconcileFullStageDefaultHTTPEndpoints(context.Context) (state.NetworkRecord, error)
+}
+
 // newProjectLifecycleRuntime creates one completion signal spanning both network and process authority.
 func newProjectLifecycleRuntime(runtime daemon.Runtime, lifecycle projectLifecycleAuthority) *projectLifecycleRuntime {
 	return &projectLifecycleRuntime{Runtime: runtime, lifecycle: lifecycle, done: make(chan struct{})}
@@ -438,10 +452,7 @@ func provideDaemonRunner(
 		return nil, errors.New("create daemon runner: project lifecycle coordinator is required")
 	}
 	recovery := func(ctx context.Context) error {
-		if err := coordinator.Recover(ctx); err != nil {
-			return err
-		}
-		return lifecycle.Recover(ctx)
+		return recoverDaemonState(ctx, coordinator, lifecycle)
 	}
 	return daemon.NewRunner(daemon.RunnerConfig{
 		Server:              server,
@@ -451,6 +462,24 @@ func provideDaemonRunner(
 		ShutdownRequested:   shutdown.Requested(),
 		RuntimeCloseTimeout: daemonRuntimeCloseTimeout(runtimeController),
 	})
+}
+
+// recoverDaemonState preserves teardown and process recovery ordering before adding publishable endpoint authority.
+func recoverDaemonState(
+	ctx context.Context,
+	unregister projectUnregisterRecoveryAuthority,
+	lifecycle projectLifecycleRecoveryAuthority,
+) error {
+	if err := unregister.Recover(ctx); err != nil {
+		return err
+	}
+	if err := lifecycle.Recover(ctx); err != nil {
+		return err
+	}
+	if _, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(ctx); err != nil {
+		return fmt.Errorf("reconcile full-stage default HTTP endpoints during daemon recovery: %w", err)
+	}
+	return nil
 }
 
 // daemonRuntimeCloseTimeout leaves scheduling and certificate-store closure outside the controller's child budget.

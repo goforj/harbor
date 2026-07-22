@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 // primaryLeaseTestState keeps optimistic project and network revisions observable without replacing persistence semantics.
 type primaryLeaseTestState struct {
 	project      state.ProjectRecord
+	projects     map[domain.ProjectID]state.ProjectRecord
 	network      state.NetworkRecord
 	initialized  bool
 	projectErr   error
@@ -30,9 +32,16 @@ type primaryLeaseTestState struct {
 }
 
 // Project returns the fixture's exact registered project revision.
-func (fixture *primaryLeaseTestState) Project(context.Context, domain.ProjectID) (state.ProjectRecord, error) {
+func (fixture *primaryLeaseTestState) Project(_ context.Context, projectID domain.ProjectID) (state.ProjectRecord, error) {
 	if fixture.projectErr != nil {
 		return state.ProjectRecord{}, fixture.projectErr
+	}
+	if fixture.projects != nil {
+		project, found := fixture.projects[projectID]
+		if !found {
+			return state.ProjectRecord{}, &state.ProjectNotFoundError{ProjectID: projectID}
+		}
+		return project, nil
 	}
 	return fixture.project, nil
 }
@@ -63,11 +72,15 @@ func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 			Actual:   fixture.network.Revision,
 		}
 	}
-	if request.ExpectedProjectRevision != fixture.project.Revision {
+	project := fixture.project
+	if fixture.projects != nil {
+		project = fixture.projects[request.ProjectID]
+	}
+	if request.ExpectedProjectRevision != project.Revision {
 		return state.NetworkMutationResult{}, &state.ProjectRevisionConflictError{
 			ProjectID: request.ProjectID,
 			Expected:  request.ExpectedProjectRevision,
-			Actual:    fixture.project.Revision,
+			Actual:    project.Revision,
 		}
 	}
 	for _, ensure := range request.Ensures {
@@ -790,6 +803,194 @@ func TestProjectPrimaryLeaseCoordinatorAddsAndRetainsDefaultHTTPForRetainedLease
 	}
 }
 
+// TestProjectPrimaryLeaseCoordinatorReconcilesThreeDefaultHTTPReservationsWithoutHostObservation proves promotion is endpoint-only and idempotent.
+func TestProjectPrimaryLeaseCoordinatorReconcilesThreeDefaultHTTPReservationsWithoutHostObservation(t *testing.T) {
+	addresses := []netip.Addr{
+		netip.MustParseAddr("127.77.0.11"),
+		netip.MustParseAddr("127.77.0.12"),
+		netip.MustParseAddr("127.77.0.13"),
+	}
+	fixture := newPrimaryLeaseTestFixture(t, addresses...)
+	projects := []state.ProjectRecord{
+		{Project: fixture.state.project.Project, Revision: 10},
+		{Project: fixture.state.project.Project, Revision: 11},
+		{Project: fixture.state.project.Project, Revision: 12},
+	}
+	identities := []struct {
+		id   domain.ProjectID
+		name string
+		slug string
+		path string
+	}{
+		{id: "project-alpha", name: "Alpha", slug: "alpha", path: "/test/alpha"},
+		{id: "project-bravo", name: "Bravo", slug: "bravo", path: "/test/bravo"},
+		{id: "project-charlie", name: "Charlie", slug: "charlie", path: "/test/charlie"},
+	}
+	fixture.state.projects = make(map[domain.ProjectID]state.ProjectRecord, len(projects))
+	fixture.state.network.Leases = make([]identity.Lease, 0, len(projects))
+	for index := range projects {
+		projects[index].Project.ID = identities[index].id
+		projects[index].Project.Name = identities[index].name
+		projects[index].Project.Slug = identities[index].slug
+		projects[index].Project.Path = identities[index].path
+		fixture.state.projects[identities[index].id] = projects[index]
+		fixture.state.network.Leases = append(
+			fixture.state.network.Leases,
+			primaryLeaseTestLease(t, identities[index].id, addresses[index], fixture.state.network.Ownership),
+		)
+	}
+	slices.SortFunc(fixture.state.network.Leases, primaryLeaseTestLeaseCompare)
+	primaryLeaseTestEnableFullStage(t, fixture)
+
+	tcpEndpoints := make([]state.EndpointReservation, 0, len(projects))
+	for index, lease := range fixture.state.network.Leases {
+		leaseKey := lease.Key
+		tcpEndpoints = append(tcpEndpoints, state.EndpointReservation{
+			Key: state.EndpointReservationKey{
+				ProjectID:  lease.Key.ProjectID,
+				EndpointID: primaryLeaseServiceEndpointIDPrefix + "mysql",
+			},
+			Protocol:   state.EndpointProtocolTCP,
+			Host:       "mysql." + projects[index].Project.Slug + ".test",
+			Public:     netip.AddrPortFrom(lease.Address, 3306),
+			Identity:   &leaseKey,
+			Generation: uint64(index + 4),
+		})
+	}
+	slices.SortFunc(tcpEndpoints, primaryLeaseEndpointCompare)
+	fixture.state.network.Reservations.Endpoints = slices.Clone(tcpEndpoints)
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("three-project full-stage fixture Validate() error = %v", err)
+	}
+
+	observationFailure := errors.New("endpoint-only reconciliation reached a host observation")
+	fixture.discoverer.err = observationFailure
+	for _, address := range addresses {
+		fixture.loopback.errs[address] = observationFailure
+		fixture.ports.errs[address] = observationFailure
+	}
+	repairer := &primaryLeaseTestRuntimeRepairer{inspectErr: observationFailure, confirmErr: observationFailure}
+	fixture.coordinator.runtimeRepairer = repairer
+	lifecycle := &ProjectLifecycleCoordinator{primaryLeases: fixture.coordinator}
+
+	final, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
+	if err != nil {
+		t.Fatalf("ReconcileFullStageDefaultHTTPEndpoints() error = %v", err)
+	}
+	if final.Revision != 23 || fixture.state.network.Revision != 23 {
+		t.Fatalf("final network revisions = returned %d, durable %d; want 23", final.Revision, fixture.state.network.Revision)
+	}
+	if len(fixture.state.replaceCalls) != len(projects) {
+		t.Fatalf("endpoint replacement calls = %d, want %d", len(fixture.state.replaceCalls), len(projects))
+	}
+	if len(final.Reservations.Endpoints) != len(projects)*2 {
+		t.Fatalf("final endpoints = %#v, want one TCP and one HTTP reservation per project", final.Reservations.Endpoints)
+	}
+	for index, project := range projects {
+		request := fixture.state.replaceCalls[index]
+		if request.ProjectID != project.Project.ID || request.ExpectedNetworkRevision != domain.Sequence(20+index) ||
+			len(request.Ensures) != 0 || len(request.Releases) != 0 {
+			t.Fatalf("endpoint-only replacement %d = %#v", index, request)
+		}
+		var gotTCP *state.EndpointReservation
+		var gotHTTP *state.EndpointReservation
+		for endpointIndex := range final.Reservations.Endpoints {
+			endpoint := &final.Reservations.Endpoints[endpointIndex]
+			if endpoint.Key.ProjectID != project.Project.ID {
+				continue
+			}
+			switch endpoint.Key.EndpointID {
+			case primaryLeaseServiceEndpointIDPrefix + "mysql":
+				gotTCP = endpoint
+			case primaryLeaseDefaultHTTPEndpointID:
+				gotHTTP = endpoint
+			}
+		}
+		wantTCP := tcpEndpoints[index]
+		if gotTCP == nil || !reflect.DeepEqual(*gotTCP, wantTCP) {
+			t.Fatalf("project %q TCP endpoint = %#v, want unchanged %#v", project.Project.ID, gotTCP, wantTCP)
+		}
+		if gotHTTP == nil || gotHTTP.Protocol != state.EndpointProtocolHTTP ||
+			gotHTTP.Host != project.Project.Slug+".test" ||
+			gotHTTP.Public != fixture.state.network.Reservations.Listeners.HTTPS.Advertised ||
+			gotHTTP.Generation != primaryLeaseDefaultHTTPEndpointInitialGeneration {
+			t.Fatalf("project %q default HTTP endpoint = %#v", project.Project.ID, gotHTTP)
+		}
+	}
+
+	replayed, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
+	if err != nil {
+		t.Fatalf("replayed ReconcileFullStageDefaultHTTPEndpoints() error = %v", err)
+	}
+	if replayed.Revision != final.Revision || len(fixture.state.replaceCalls) != len(projects) {
+		t.Fatalf("replayed reconciliation = revision %d and %d writes, want revision %d and %d writes", replayed.Revision, len(fixture.state.replaceCalls), final.Revision, len(projects))
+	}
+	if len(fixture.discoverer.calls) != 0 || len(fixture.loopback.calls) != 0 || len(fixture.ports.calls) != 0 ||
+		len(repairer.inspectTargets) != 0 || len(repairer.candidates) != 0 {
+		t.Fatalf(
+			"endpoint reconciliation observations = discovery %v, loopback %v, ports %#v, repair inspect %#v, repair confirm %#v",
+			fixture.discoverer.calls,
+			fixture.loopback.calls,
+			fixture.ports.calls,
+			repairer.inspectTargets,
+			repairer.candidates,
+		)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorDefaultHTTPReconciliationSkipsNonPublishableProjects covers pre-full and teardown boundaries.
+func TestProjectPrimaryLeaseCoordinatorDefaultHTTPReconciliationSkipsNonPublishableProjects(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	lifecycle := &ProjectLifecycleCoordinator{primaryLeases: fixture.coordinator}
+
+	identityRecord, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
+	if err != nil || identityRecord.Revision != fixture.state.network.Revision || len(fixture.state.replaceCalls) != 0 {
+		t.Fatalf("identity-stage reconciliation = %#v, %v, writes %d", identityRecord, err, len(fixture.state.replaceCalls))
+	}
+
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.network.Reservations.SuppressedProjectIDs = []domain.ProjectID{fixture.state.project.Project.ID}
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("suppressed full-stage fixture Validate() error = %v", err)
+	}
+	suppressedRecord, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
+	if err != nil || suppressedRecord.Revision != fixture.state.network.Revision || len(fixture.state.replaceCalls) != 0 {
+		t.Fatalf("suppressed reconciliation = %#v, %v, writes %d", suppressedRecord, err, len(fixture.state.replaceCalls))
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorBoundsDefaultHTTPReconciliationRaces proves endpoint-only retries cannot spin indefinitely.
+func TestProjectPrimaryLeaseCoordinatorBoundsDefaultHTTPReconciliationRaces(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.replace = func(request state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error) {
+		return state.NetworkMutationResult{}, &state.NetworkRevisionConflictError{
+			Expected: request.ExpectedNetworkRevision,
+			Actual:   request.ExpectedNetworkRevision + 1,
+		}
+	}
+	lifecycle := &ProjectLifecycleCoordinator{primaryLeases: fixture.coordinator}
+
+	_, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "did not converge after 4 revisions") {
+		t.Fatalf("revision-raced reconciliation error = %v", err)
+	}
+	if len(fixture.state.replaceCalls) != primaryLeasePersistenceAttempts {
+		t.Fatalf("revision-raced replacement calls = %d, want %d", len(fixture.state.replaceCalls), primaryLeasePersistenceAttempts)
+	}
+	if len(fixture.discoverer.calls) != 0 || len(fixture.loopback.calls) != 0 || len(fixture.ports.calls) != 0 {
+		t.Fatalf("revision-raced host observations = discovery %v, loopback %v, ports %#v", fixture.discoverer.calls, fixture.loopback.calls, fixture.ports.calls)
+	}
+}
+
 // TestProjectPrimaryLeaseCoordinatorAssignsDescriptorResources proves ready resource facts become exact loopback HTTP reservations.
 func TestProjectPrimaryLeaseCoordinatorAssignsDescriptorResources(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
@@ -1285,6 +1486,7 @@ func TestProjectPrimaryLeaseCoordinatorClassifiesInvalidRuntimeConfiguration(t *
 func TestProjectPrimaryLeaseCoordinatorValidatesCallsAndDependencies(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
 	fixture := newPrimaryLeaseTestFixture(t, address)
+	lifecycle := &ProjectLifecycleCoordinator{primaryLeases: fixture.coordinator}
 	if _, err := fixture.coordinator.Ensure(t.Context(), " bad "); err == nil {
 		t.Fatal("Ensure() accepted invalid project ID")
 	}
@@ -1293,9 +1495,21 @@ func TestProjectPrimaryLeaseCoordinatorValidatesCallsAndDependencies(t *testing.
 	if _, err := fixture.coordinator.Ensure(ctx, fixture.state.project.Project.ID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Ensure(cancelled) error = %v", err)
 	}
+	if _, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReconcileFullStageDefaultHTTPEndpoints(cancelled) error = %v", err)
+	}
+	fixture.state.initialized = false
+	uninitialized, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
+	if err != nil || uninitialized.Revision != 0 {
+		t.Fatalf("ReconcileFullStageDefaultHTTPEndpoints(uninitialized) = %#v, %v", uninitialized, err)
+	}
 	assertPrimaryLeaseTestPanic(t, func() {
 		var coordinator *projectPrimaryLeaseCoordinator
 		_, _ = coordinator.Ensure(t.Context(), "project-orders")
+	})
+	assertPrimaryLeaseTestPanic(t, func() {
+		var coordinator *ProjectLifecycleCoordinator
+		_, _ = coordinator.ReconcileFullStageDefaultHTTPEndpoints(t.Context())
 	})
 	assertPrimaryLeaseTestPanic(t, func() {
 		newProjectPrimaryLeaseCoordinator(nil, fixture.discoverer, fixture.loopback, fixture.ports, time.Now)
