@@ -257,6 +257,7 @@ func globalNetworkReleaseStageApplyPlanMigration(t *testing.T, connection *gorm.
 		"2026_07_22_044000_create_network_global_release_trust_receipts",
 		"2026_07_22_045000_create_network_global_release_loopback_receipts",
 		"2026_07_22_046000_create_network_global_release_effects_receipts",
+		"2026_07_22_047000_create_network_global_release_ownership_receipts",
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {
@@ -298,6 +299,7 @@ func globalNetworkReleaseStageSnapshot(t *testing.T, connection *gorm.DB) map[st
 		"network_global_release_trust_receipts",
 		"network_global_release_loopback_receipts",
 		"network_global_release_effects_receipts",
+		"network_global_release_ownership_receipts",
 	} {
 		var rows []map[string]any
 		if err := connection.Table(table).Order("rowid ASC").Find(&rows).Error; err != nil {

@@ -272,17 +272,11 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 					}
 				}
 				if test.phase == GlobalNetworkReleasePlanPhaseProjection {
-					globalNetworkReleaseStageExec(
-						t,
-						connection,
-						"UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1",
-					)
-					globalNetworkReleaseStageExec(
-						t,
-						connection,
-						"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
-						test.phase,
-					)
+					ownershipRequest := validAdvanceGlobalNetworkReleaseOwnershipRequest(stage, advanced)
+					advanced, err = journal.AdvanceGlobalNetworkReleaseOwnership(t.Context(), ownershipRequest)
+					if err != nil {
+						t.Fatalf("advance ownership: %v", err)
+					}
 				}
 			} else {
 				globalNetworkReleaseStageExec(
@@ -303,9 +297,6 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 				t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
 			}
 			expectedCheckpoint := advanced.CheckpointRevision
-			if test.phase == GlobalNetworkReleasePlanPhaseProjection {
-				expectedCheckpoint++
-			}
 			if plan.Phase != test.phase ||
 				plan.CheckpointRevision != expectedCheckpoint ||
 				plan.TrustReceipt == nil ||
@@ -313,7 +304,8 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 				plan.LoopbackReceipt == nil ||
 				*plan.LoopbackReceipt != loopbackRequest.Receipt ||
 				(test.phase != GlobalNetworkReleasePlanPhaseVerifyEffects &&
-					(plan.EffectsReceipt == nil || *plan.EffectsReceipt != effectsRequest.Receipt)) {
+					(plan.EffectsReceipt == nil || *plan.EffectsReceipt != effectsRequest.Receipt)) ||
+				(test.phase == GlobalNetworkReleasePlanPhaseProjection && plan.OwnershipReceipt == nil) {
 				t.Fatalf("later release plan = %#v", plan)
 			}
 		})

@@ -293,7 +293,7 @@ func TestGlobalNetworkReleaseLoopbackReceiptFencesLaterPhases(t *testing.T) {
 		GlobalNetworkReleasePlanPhaseProjection,
 	} {
 		t.Run(string(phase), func(t *testing.T) {
-			journal, connection, stage, loopbacks := advanceGlobalNetworkReleaseLoopbackFixture(t)
+			journal, _, stage, loopbacks := advanceGlobalNetworkReleaseLoopbackFixture(t)
 			request := validAdvanceGlobalNetworkReleaseLoopbacksRequest(stage, loopbacks)
 			advanced, err := journal.AdvanceGlobalNetworkReleaseLoopbacks(t.Context(), request)
 			if err != nil {
@@ -305,17 +305,11 @@ func TestGlobalNetworkReleaseLoopbackReceiptFencesLaterPhases(t *testing.T) {
 				t.Fatalf("advance effects: %v", err)
 			}
 			if phase == GlobalNetworkReleasePlanPhaseProjection {
-				globalNetworkReleaseStageExec(
-					t,
-					connection,
-					"UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1",
-				)
-				globalNetworkReleaseStageExec(
-					t,
-					connection,
-					"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
-					phase,
-				)
+				ownershipRequest := validAdvanceGlobalNetworkReleaseOwnershipRequest(stage, advanced)
+				advanced, err = journal.AdvanceGlobalNetworkReleaseOwnership(t.Context(), ownershipRequest)
+				if err != nil {
+					t.Fatalf("advance ownership: %v", err)
+				}
 			}
 			plan, found, err := journal.ReadGlobalNetworkReleasePlan(t.Context(), stage.Operation.ID)
 			if err != nil ||
@@ -324,7 +318,8 @@ func TestGlobalNetworkReleaseLoopbackReceiptFencesLaterPhases(t *testing.T) {
 				*plan.LoopbackReceipt != request.Receipt ||
 				plan.EffectsReceipt == nil ||
 				*plan.EffectsReceipt != effectsRequest.Receipt ||
-				(plan.Phase == GlobalNetworkReleasePlanPhaseProjection && plan.CheckpointRevision != advanced.CheckpointRevision+1) ||
+				(plan.Phase == GlobalNetworkReleasePlanPhaseProjection && plan.OwnershipReceipt == nil) ||
+				(plan.Phase == GlobalNetworkReleasePlanPhaseProjection && plan.CheckpointRevision != advanced.CheckpointRevision) ||
 				(plan.Phase == GlobalNetworkReleasePlanPhaseOwnership && plan.CheckpointRevision != advanced.CheckpointRevision) {
 				t.Fatalf("later release plan = %#v, %t, %v", plan, found, err)
 			}

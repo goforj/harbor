@@ -338,25 +338,25 @@ func TestAdvanceGlobalNetworkReleaseEffectsRejectsWrongPhaseAndPredecessorCorrup
 
 // TestGlobalNetworkReleaseEffectsReceiptFencesLaterPhases proves later projection work retains an ordered effect-verification receipt.
 func TestGlobalNetworkReleaseEffectsReceiptFencesLaterPhases(t *testing.T) {
-	journal, connection, stage, effects := advanceGlobalNetworkReleaseEffectsFixture(t)
+	journal, _, stage, effects := advanceGlobalNetworkReleaseEffectsFixture(t)
 	request := validAdvanceGlobalNetworkReleaseEffectsRequest(stage, effects)
 	advanced, err := journal.AdvanceGlobalNetworkReleaseEffects(t.Context(), request)
 	if err != nil {
 		t.Fatalf("advance effects: %v", err)
 	}
-	globalNetworkReleaseStageExec(t, connection, "UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1")
-	globalNetworkReleaseStageExec(
-		t,
-		connection,
-		"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
-		GlobalNetworkReleasePlanPhaseProjection,
-	)
+	ownershipRequest := validAdvanceGlobalNetworkReleaseOwnershipRequest(stage, advanced)
+	advanced, err = journal.AdvanceGlobalNetworkReleaseOwnership(t.Context(), ownershipRequest)
+	if err != nil {
+		t.Fatalf("advance ownership: %v", err)
+	}
 	plan, found, err := journal.ReadGlobalNetworkReleasePlan(t.Context(), stage.Operation.ID)
 	if err != nil ||
 		!found ||
 		plan.EffectsReceipt == nil ||
 		*plan.EffectsReceipt != request.Receipt ||
-		plan.CheckpointRevision != advanced.CheckpointRevision+1 {
+		plan.OwnershipReceipt == nil ||
+		*plan.OwnershipReceipt != ownershipRequest.Receipt ||
+		plan.CheckpointRevision != advanced.CheckpointRevision {
 		t.Fatalf("later release plan = %#v, %t, %v", plan, found, err)
 	}
 }

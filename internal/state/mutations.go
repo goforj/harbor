@@ -101,6 +101,16 @@ func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseEffectsAdvance
 	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
 }
 
+// mutateGlobalNetworkReleaseOwnershipAdvance admits the sole receipt mutation that advances an active release beyond machine ownership.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseOwnershipAdvance(
+	ctx context.Context,
+	scope string,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
+	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
+}
+
 // mutateWithAdmission serializes a mutation and runs its admission proof in the same immediate transaction.
 func (coordinator *MutationCoordinator) mutateWithAdmission(
 	ctx context.Context,
