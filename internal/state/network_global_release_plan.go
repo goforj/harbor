@@ -74,6 +74,8 @@ type GlobalNetworkReleasePlanRecord struct {
 	TrustReceipt *GlobalNetworkReleaseTrustReceipt
 	// LoopbackReceipt retains the proof required before effect verification can run.
 	LoopbackReceipt *GlobalNetworkReleaseLoopbackReceipt
+	// EffectsReceipt retains the proof required before ownership release can run.
+	EffectsReceipt *GlobalNetworkReleaseEffectsReceipt
 }
 
 // Clone returns a copy whose retained authority bytes and slices cannot be modified by the caller.
@@ -94,6 +96,10 @@ func (record GlobalNetworkReleasePlanRecord) Clone() GlobalNetworkReleasePlanRec
 	if record.LoopbackReceipt != nil {
 		receipt := *record.LoopbackReceipt
 		record.LoopbackReceipt = &receipt
+	}
+	if record.EffectsReceipt != nil {
+		receipt := *record.EffectsReceipt
+		record.EffectsReceipt = &receipt
 	}
 	return record
 }
@@ -268,6 +274,11 @@ func validateActiveGlobalNetworkReleasePlan(
 		return GlobalNetworkReleasePlanRecord{}, err
 	}
 	plan.LoopbackReceipt = loopbackReceipt
+	effectsReceipt, err := validateGlobalNetworkReleaseEffectsReceipt(tx, plan)
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, err
+	}
+	plan.EffectsReceipt = effectsReceipt
 	if err := requireCurrentGlobalNetworkReleaseAuthority(tx, plan.Authority); err != nil {
 		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current network authority: %w", err))
 	}

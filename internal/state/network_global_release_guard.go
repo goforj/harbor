@@ -184,9 +184,16 @@ func requireNoGlobalNetworkReleasePlan(tx *gorm.DB, action string) error {
 		return err
 	}
 	plan.TrustReceipt = trustReceipt
-	if _, err := validateGlobalNetworkReleaseLoopbackReceipt(tx, plan); err != nil {
+	loopbackReceipt, err := validateGlobalNetworkReleaseLoopbackReceipt(tx, plan)
+	if err != nil {
 		return err
 	}
+	plan.LoopbackReceipt = loopbackReceipt
+	effectsReceipt, err := validateGlobalNetworkReleaseEffectsReceipt(tx, plan)
+	if err != nil {
+		return err
+	}
+	plan.EffectsReceipt = effectsReceipt
 	return &GlobalNetworkReleaseActiveError{
 		OperationID: operation.Operation.ID,
 		State:       operation.Operation.State,
@@ -253,9 +260,16 @@ func validateGlobalNetworkReleaseMutationOwner(
 		return err
 	}
 	plan.TrustReceipt = trustReceipt
-	if _, err := validateGlobalNetworkReleaseLoopbackReceipt(tx, plan); err != nil {
+	loopbackReceipt, err := validateGlobalNetworkReleaseLoopbackReceipt(tx, plan)
+	if err != nil {
 		return err
 	}
+	plan.LoopbackReceipt = loopbackReceipt
+	effectsReceipt, err := validateGlobalNetworkReleaseEffectsReceipt(tx, plan)
+	if err != nil {
+		return err
+	}
+	plan.EffectsReceipt = effectsReceipt
 	if plan.Phase != phase {
 		return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("plan phase is %q, expected %q", plan.Phase, phase))
 	}

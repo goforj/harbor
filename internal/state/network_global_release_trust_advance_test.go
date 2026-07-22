@@ -256,6 +256,7 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 			if err != nil {
 				t.Fatalf("advance loopbacks: %v", err)
 			}
+			effectsRequest := validAdvanceGlobalNetworkReleaseEffectsRequest(stage, advanced)
 			if test.deleteReceipt {
 				globalNetworkReleaseStageExec(
 					t,
@@ -265,6 +266,12 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 			}
 			if test.advance {
 				if test.phase != GlobalNetworkReleasePlanPhaseVerifyEffects {
+					advanced, err = journal.AdvanceGlobalNetworkReleaseEffects(t.Context(), effectsRequest)
+					if err != nil {
+						t.Fatalf("advance effects: %v", err)
+					}
+				}
+				if test.phase == GlobalNetworkReleasePlanPhaseProjection {
 					globalNetworkReleaseStageExec(
 						t,
 						connection,
@@ -296,7 +303,7 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 				t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
 			}
 			expectedCheckpoint := advanced.CheckpointRevision
-			if test.phase != GlobalNetworkReleasePlanPhaseVerifyEffects {
+			if test.phase == GlobalNetworkReleasePlanPhaseProjection {
 				expectedCheckpoint++
 			}
 			if plan.Phase != test.phase ||
@@ -304,7 +311,9 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 				plan.TrustReceipt == nil ||
 				*plan.TrustReceipt != request.Receipt ||
 				plan.LoopbackReceipt == nil ||
-				*plan.LoopbackReceipt != loopbackRequest.Receipt {
+				*plan.LoopbackReceipt != loopbackRequest.Receipt ||
+				(test.phase != GlobalNetworkReleasePlanPhaseVerifyEffects &&
+					(plan.EffectsReceipt == nil || *plan.EffectsReceipt != effectsRequest.Receipt)) {
 				t.Fatalf("later release plan = %#v", plan)
 			}
 		})
