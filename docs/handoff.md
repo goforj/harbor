@@ -397,4 +397,6 @@ The resolver-stage hang is closed by admission, not by extending another retry l
 
 The cross-repository runtime-plan slice now transports exact declared service environment assignments. GoForj descriptors emit only explicit, secret-free host/port metadata for MySQL and PostgreSQL; the overlay applies those assignments process-locally and rejects contradictory values. It does not guess DSNs, URLs, credentials, or other resource-specific shapes, and it never writes the checkout's `.env` files. The corresponding commits are Harbor `03f9ee3` and GoForj `c02c7cc9`.
 
+The same explicit contract now covers every shared Redis driver (cache, queue, events, and storage). A generated descriptor emits `REDIS_HOST` and `REDIS_PORT` metadata, and Harbor's runtime plan supplies the observed loopback/private-port pair to the App overlay. The Redis slice is committed as GoForj `3e36cb1b` with Harbor planner coverage in `ea973b9`.
+
 Focused package and race checks pass for the new admission, terminal-barrier, descriptor, and overlay paths. Full GoForj package tests remain environment-dependent here because the demo frontend `node_modules` fixture is absent and Docker is not a native macOS Desktop engine. Native macOS execution is still required before claiming resolver, Docker, or desktop lifecycle evidence.

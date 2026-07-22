@@ -334,4 +334,6 @@ Managed Compose route heartbeats now stop after two consecutive bounded barrier 
 
 Managed starts now fail closed before process launch when a descriptor includes host-visible service publications but Harbor's network is still at the resolver stage. An already-attached managed barrier classifies that incomplete authority as a terminal conflict, so GoForj exits instead of polling an impossible readiness condition. Managed runtime plans also carry exact, declared service environment assignments: the descriptor projects only secret-free `DB_HOST`/`DB_PORT` metadata for the cataloged MySQL and PostgreSQL drivers, and GoForj applies those values in the child process without mutating checkout files. Resource-specific DSNs, URLs, credentials, and inferred environment shapes remain intentionally unsupported.
 
+The shared Redis driver now follows the same contract across cache, queue, events, and storage: descriptors emit only `REDIS_HOST` and `REDIS_PORT`, and Harbor fills them from the observed project-private publication rather than the Compose-internal hostname.
+
 The focused Harbor and GoForj unit and race checks for this slice pass. Full GoForj package validation still depends on a local `templates/demo/frontend/node_modules` fixture and a native Docker environment; cross-compilation or a remote Docker endpoint is not macOS product evidence.
