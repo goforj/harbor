@@ -10,6 +10,9 @@ package trust
 #include <stdlib.h>
 #include <string.h>
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 enum { harborErrSecSuccess = errSecSuccess };
 
 static const char harbor_trust_owner_service[] = "com.goforj.harbor.trust-owner.v1";
@@ -278,6 +281,8 @@ static int harbor_trust_remove_user_root(const uint8_t *der, size_t der_length) 
 	CFRelease(certificate);
 	return status == errSecItemNotFound ? errSecSuccess : status;
 }
+
+#pragma clang diagnostic pop
 */
 import "C"
 
