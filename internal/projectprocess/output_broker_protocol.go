@@ -17,11 +17,12 @@ import (
 
 const (
 	// OutputBrokerProtocolVersion identifies the first framed broker handshake.
-	OutputBrokerProtocolVersion   uint16 = 1
-	maximumOutputBrokerTokenBytes        = 512
-	maximumOutputBrokerErrorBytes        = 512
-	maximumOutputBrokerFrameBytes        = 1 << 20
-	outputBrokerChallengeBytes           = 32
+	OutputBrokerProtocolVersion    uint16 = 1
+	maximumOutputBrokerTokenBytes         = 512
+	maximumOutputBrokerErrorBytes         = 512
+	maximumOutputBrokerFrameBytes         = 1 << 20
+	outputBrokerChallengeBytes            = 32
+	outputBrokerEndpointTokenBytes        = 16
 )
 
 // OutputBrokerEnvelopeKind identifies the one message carried by a framed broker envelope.
@@ -451,9 +452,19 @@ func ReadOutputBrokerEnvelope(reader *rpc.FrameReader) (OutputBrokerEnvelope, er
 
 // newOutputBrokerChallenge returns one fresh canonical challenge token.
 func newOutputBrokerChallenge() (string, error) {
-	bytes := make([]byte, outputBrokerChallengeBytes)
+	return newOutputBrokerToken(outputBrokerChallengeBytes)
+}
+
+// newOutputBrokerEndpointToken returns one fresh compact endpoint-name token.
+func newOutputBrokerEndpointToken() (string, error) {
+	return newOutputBrokerToken(outputBrokerEndpointTokenBytes)
+}
+
+// newOutputBrokerToken returns one fresh canonical hexadecimal token with the requested entropy length.
+func newOutputBrokerToken(size int) (string, error) {
+	bytes := make([]byte, size)
 	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate output broker challenge: %w", err)
+		return "", fmt.Errorf("generate output broker token: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
 }

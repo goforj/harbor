@@ -19,3 +19,8 @@ type temporaryDirectoryLookup func() string
 func Directory() (string, error) {
 	return platformDirectory(os.LookupEnv, userpaths.DataDirectory, os.TempDir)
 }
+
+// OutputBrokerDirectory returns Harbor's per-user runtime directory for output-broker endpoints.
+func OutputBrokerDirectory() (string, error) {
+	return outputBrokerDirectory(os.TempDir)
+}

@@ -22,7 +22,7 @@ func TestAttachOutputBrokerCompletesChallengeAndAcksLiveRecords(t *testing.T) {
 		t.Fatalf("CaptureCurrentProcessEvidence() error = %v", err)
 	}
 	outputRoot := t.TempDir()
-	endpoint := filepath.Join(t.TempDir(), "output-broker-client.sock")
+	endpoint := filepath.Join(outputBrokerTestEndpointDirectory(t), "output-broker-client.sock")
 	projectID := domain.ProjectID("project-client-broker")
 	sessionID := domain.SessionID("session-client-broker")
 	peer := OutputBrokerPeer{ProjectID: projectID, SessionID: sessionID, EndpointReference: endpoint, Process: evidence}
@@ -108,7 +108,7 @@ func TestRunOutputBrokerOwnsInheritedPipesAndServesLiveOutput(t *testing.T) {
 		t.Fatalf("CaptureCurrentProcessEvidence() error = %v", err)
 	}
 	outputRoot := t.TempDir()
-	endpoint := filepath.Join(t.TempDir(), "output-broker.sock")
+	endpoint := filepath.Join(outputBrokerTestEndpointDirectory(t), "output-broker.sock")
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

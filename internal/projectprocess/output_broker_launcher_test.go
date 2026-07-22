@@ -2,6 +2,7 @@ package projectprocess
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,49 @@ import (
 	"testing"
 	"time"
 )
+
+// TestNewOutputBrokerEndpointReferenceUsesCompactEndpointToken keeps the path-safe endpoint token independent from attachment credentials.
+func TestNewOutputBrokerEndpointReferenceUsesCompactEndpointToken(t *testing.T) {
+	endpoint, err := newOutputBrokerEndpointReference()
+	if err != nil {
+		t.Fatalf("newOutputBrokerEndpointReference() error = %v", err)
+	}
+	prefix := "output-"
+	suffix := ".sock"
+	name := filepath.Base(endpoint)
+	if runtime.GOOS == "windows" {
+		prefix = `\\.\pipe\goforj-harbor-output-`
+		suffix = ""
+		name = endpoint
+	}
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		t.Fatalf("endpoint name = %q, want %q token %q", name, prefix, suffix)
+	}
+	token := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+	if len(token) != hex.EncodedLen(outputBrokerEndpointTokenBytes) {
+		t.Fatalf("endpoint token length = %d, want %d", len(token), hex.EncodedLen(outputBrokerEndpointTokenBytes))
+	}
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Fatalf("decode endpoint token: %v", err)
+	}
+}
+
+// TestOutputBrokerLaunchConfigAcceptsLegacyEndpointTokenLength keeps restart adoption compatible with persisted endpoints from earlier brokers.
+func TestOutputBrokerLaunchConfigAcceptsLegacyEndpointTokenLength(t *testing.T) {
+	directory := t.TempDir()
+	endpoint := filepath.Join(directory, "output-"+strings.Repeat("a", hex.EncodedLen(outputBrokerChallengeBytes))+".sock")
+	config := OutputBrokerLaunchConfig{
+		Version:           OutputBrokerProtocolVersion,
+		ProjectID:         "project-legacy-endpoint",
+		SessionID:         "session-legacy-endpoint",
+		OutputDirectory:   directory,
+		EndpointReference: endpoint,
+		AttachmentTicket:  "legacy-endpoint-ticket",
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("OutputBrokerLaunchConfig.Validate() error = %v", err)
+	}
+}
 
 // TestNewOutputBrokerProcessLauncherRejectsUntrustedExecutablePaths keeps production discovery out of PATH and cwd semantics.
 func TestNewOutputBrokerProcessLauncherRejectsUntrustedExecutablePaths(t *testing.T) {

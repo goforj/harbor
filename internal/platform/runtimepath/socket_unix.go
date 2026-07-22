@@ -9,6 +9,7 @@ import (
 
 const (
 	socketFilename                 = "harbord.sock"
+	maximumUnixSocketFilenameBytes = len("output-") + 32 + len(".sock")
 	maxPortableUnixSocketPathBytes = 103
 )
 
@@ -30,4 +31,9 @@ func SocketPath() (string, error) {
 // unixSocketPathFits reserves the terminating byte required by macOS's smallest supported sockaddr layout.
 func unixSocketPathFits(directory string) bool {
 	return len([]byte(filepath.Join(directory, socketFilename))) <= maxPortableUnixSocketPathBytes
+}
+
+// outputBrokerUnixSocketPathFits reserves space for the broker's per-session endpoint name.
+func outputBrokerUnixSocketPathFits(directory string) bool {
+	return len([]byte(directory))+1+maximumUnixSocketFilenameBytes <= maxPortableUnixSocketPathBytes
 }

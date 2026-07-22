@@ -243,14 +243,14 @@ func writeOutputBrokerLaunchConfig(directory string, config OutputBrokerLaunchCo
 
 // newOutputBrokerEndpointReference creates a short per-user local endpoint without using a checkout path.
 func newOutputBrokerEndpointReference() (string, error) {
-	token, err := newOutputBrokerChallenge()
+	token, err := newOutputBrokerEndpointToken()
 	if err != nil {
 		return "", fmt.Errorf("create output broker endpoint name: %w", err)
 	}
 	if runtime.GOOS == "windows" {
 		return `\\.\pipe\goforj-harbor-output-` + token, nil
 	}
-	directory, err := runtimepath.Directory()
+	directory, err := runtimepath.OutputBrokerDirectory()
 	if err != nil {
 		return "", fmt.Errorf("resolve output broker runtime directory: %w", err)
 	}
