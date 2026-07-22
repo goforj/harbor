@@ -272,12 +272,57 @@ describe('ProjectView stale runtime recovery', () => {
 })
 
 describe('ProjectView network admission', () => {
-  it('does not offer the resolver-only setup action when full ingress authority is missing', async () => {
+  it('offers the same trusted-ingress setup action when full network authority is missing', async () => {
     const { wrapper } = await mountFullNetworkBlockedProject()
+    const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork').mockResolvedValue(structuredClone(harborWireFixture.setup_network))
+    const startProject = vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => {
+      const result = structuredClone(harborWireFixture.start_project)
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
 
     expect(wrapper.text()).toContain('Secure networking is not ready')
     expect(wrapper.text()).toContain('Harbor\'s DNS foundation is active')
-    expect(wrapper.text()).not.toContain('Set up networking and start')
+    expect(wrapper.text()).toContain('secure, trusted local ingress')
+    const setup = bodyButton('Set up secure networking and start')
+    expect(setup.disabled).toBe(false)
+    await setup.click()
+    await flushPromises()
+
+    expect(setupNetwork).toHaveBeenCalledOnce()
+    expect(startProject).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-start-/))
+
+    wrapper.unmount()
+  })
+
+  it('offers the trusted-ingress setup action when initial network setup is required', async () => {
+    const { store, wrapper } = await mountProject()
+    const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork').mockResolvedValue(structuredClone(harborWireFixture.setup_network))
+    const startProject = vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => {
+      const result = structuredClone(harborWireFixture.start_project)
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+    store.$patch({
+      projectLifecycleErrors: {
+        'orders-api': 'Network setup is required.',
+      },
+      projectLifecycleProblemCodes: {
+        'orders-api': 'project.network.setup_required',
+      },
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('secure, trusted local DNS, HTTPS, and ingress')
+    const setup = bodyButton('Set up secure networking and start')
+    expect(setup.disabled).toBe(false)
+    await setup.click()
+    await flushPromises()
+
+    expect(setupNetwork).toHaveBeenCalledOnce()
+    expect(startProject).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-start-/))
 
     wrapper.unmount()
   })
