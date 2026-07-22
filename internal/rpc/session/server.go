@@ -161,25 +161,27 @@ func (s *Server) negotiate(
 
 // serverConnection owns request accounting and terminal state for one peer.
 type serverConnection struct {
-	server      *Server
-	connection  net.Conn
-	reader      *rpc.FrameReader
-	writes      *sessionWriter
-	peer        Peer
-	context     context.Context
-	cancel      context.CancelFunc
-	workers     chan struct{}
-	slots       chan struct{}
-	requestsMu  sync.Mutex
-	requests    map[string]context.CancelFunc
-	idleTimer   *time.Timer
-	idleCycle   uint64
-	idleExpired bool
-	work        sync.WaitGroup
-	terminal    chan struct{}
-	termOnce    sync.Once
-	termMu      sync.Mutex
-	termErr     error
+	server            *Server
+	connection        net.Conn
+	reader            *rpc.FrameReader
+	writes            *sessionWriter
+	peer              Peer
+	context           context.Context
+	cancel            context.CancelFunc
+	workers           chan struct{}
+	slots             chan struct{}
+	eventSlots        chan struct{}
+	lastEventSequence uint64
+	requestsMu        sync.Mutex
+	requests          map[string]context.CancelFunc
+	idleTimer         *time.Timer
+	idleCycle         uint64
+	idleExpired       bool
+	work              sync.WaitGroup
+	terminal          chan struct{}
+	termOnce          sync.Once
+	termMu            sync.Mutex
+	termErr           error
 }
 
 // newServerConnection initializes fixed-capacity accounting before peer input is read.
@@ -201,6 +203,7 @@ func newServerConnection(
 		cancel:     cancel,
 		workers:    make(chan struct{}, server.config.MaxConcurrentRequests),
 		slots:      make(chan struct{}, server.config.MaxConcurrentRequests+server.config.MaxQueuedRequests),
+		eventSlots: make(chan struct{}, server.config.MaxConcurrentRequests+server.config.MaxQueuedRequests),
 		requests:   make(map[string]context.CancelFunc),
 		terminal:   make(chan struct{}),
 	}
@@ -257,9 +260,64 @@ func (s *serverConnection) readLoop() error {
 			}
 		case rpc.KindCancel:
 			s.cancelRequest(envelope.RequestID)
+		case rpc.KindEvent:
+			if err := s.acceptEvent(envelope); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("%w: unexpected %s envelope from client", ErrProtocolViolation, envelope.Kind)
 		}
+	}
+}
+
+// acceptEvent reserves bounded event capacity before handing one event to the
+// optional role-specific sink. Sequence validation stays on the read loop so
+// concurrent handlers cannot hide reordering or replay.
+func (s *serverConnection) acceptEvent(envelope rpc.Envelope) error {
+	if s.server.config.EventHandler == nil {
+		return fmt.Errorf("%w: event delivery is not enabled", ErrProtocolViolation)
+	}
+	if envelope.Sequence == nil || *envelope.Sequence <= s.lastEventSequence {
+		return fmt.Errorf("%w: event sequence is not strictly increasing", ErrProtocolViolation)
+	}
+	s.lastEventSequence = *envelope.Sequence
+	select {
+	case s.eventSlots <- struct{}{}:
+	default:
+		return fmt.Errorf("%w: event delivery capacity is exhausted", ErrBusy)
+	}
+
+	event := Event{
+		Name:     envelope.Name,
+		Sequence: *envelope.Sequence,
+		Payload:  append([]byte(nil), envelope.Payload...),
+		Peer:     copyPeer(s.peer),
+	}
+	s.work.Add(1)
+	go s.serveEvent(event)
+
+	return nil
+}
+
+// serveEvent invokes the optional sink with the same bounded worker pool used
+// by requests. A sink failure is terminal because there is no event response
+// to carry a reviewed failure back to the producer.
+func (s *serverConnection) serveEvent(event Event) {
+	defer s.work.Done()
+	defer func() { <-s.eventSlots }()
+
+	select {
+	case s.workers <- struct{}{}:
+		defer func() { <-s.workers }()
+	case <-s.context.Done():
+		return
+	}
+	if err := invokeEventHandler(s.server.config.EventHandler, s.context, event); err != nil {
+		s.observeError(Request{
+			Method: "event." + event.Name,
+			Peer:   copyPeer(event.Peer),
+		}, err)
+		s.terminate(fmt.Errorf("handle event %q: %w", event.Name, err))
 	}
 }
 
@@ -595,6 +653,18 @@ func invokeHandler(handler Handler, ctx context.Context, request Request) (paylo
 	}()
 
 	return handler(ctx, request)
+}
+
+// invokeEventHandler contains a sink panic so one faulty event consumer cannot
+// escape the session's terminal boundary.
+func invokeEventHandler(handler EventHandler, ctx context.Context, event Event) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = &HandlerPanicError{value: recovered, stack: debug.Stack()}
+		}
+	}()
+
+	return handler(ctx, event)
 }
 
 // unwrapResponseCompletion separates transport lifecycle work before payload encoding.

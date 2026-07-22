@@ -28,6 +28,21 @@ type recordingManagedAuthority struct {
 	err                 error
 }
 
+// recordingManagedEventAuthority adds the optional ordered event sink without changing the base fixture's capability set.
+type recordingManagedEventAuthority struct {
+	recordingManagedAuthority
+	event      Event
+	eventCalls int
+	eventErr   error
+}
+
+// PublishManagedEvent records one event after the generic session boundary has validated its envelope.
+func (authority *recordingManagedEventAuthority) PublishManagedEvent(_ context.Context, _ local.PeerIdentity, event Event) error {
+	authority.event = event
+	authority.eventCalls++
+	return authority.eventErr
+}
+
 // RegisterManagedSession records and returns the configured registration response.
 func (authority *recordingManagedAuthority) RegisterManagedSession(_ context.Context, peer local.PeerIdentity, request RegisterRequest) (RegisterResponse, error) {
 	authority.peer = peer
@@ -135,6 +150,69 @@ func TestManagedSessionHandlerSetDispatchesTypedRequests(t *testing.T) {
 	}
 	if authority.peer != managedSessionHandlerTestPeer() {
 		t.Fatalf("authority peer = %#v, want %#v", authority.peer, managedSessionHandlerTestPeer())
+	}
+}
+
+// TestManagedSessionEventHandlerDispatchesOnlyNegotiatedEvents proves events
+// use the same role and capability fence as request methods.
+func TestManagedSessionEventHandlerDispatchesOnlyNegotiatedEvents(t *testing.T) {
+	authority := &recordingManagedEventAuthority{recordingManagedAuthority: *managedSessionHandlerTestAuthority()}
+	set, err := NewHandlerSet(managedSessionHandlerTestPeer(), authority)
+	if err != nil {
+		t.Fatalf("NewHandlerSet() error = %v", err)
+	}
+	if !reflect.DeepEqual(set.Capabilities(), []rpc.Capability{CapabilityEventsV1}) {
+		t.Fatalf("Capabilities() = %#v, want events capability", set.Capabilities())
+	}
+	event := Event{
+		SchemaVersion: SchemaVersion,
+		ProjectID:     "orders",
+		SessionID:     "session-orders",
+		Sequence:      1,
+		Timestamp:     "2026-07-21T18:00:00Z",
+		Kind:          EventKindLogChunk,
+		AppID:         "api",
+		Stream:        EventStreamStdout,
+		Text:          "ready",
+	}
+	payload, err := MarshalEvent(event)
+	if err != nil {
+		t.Fatalf("MarshalEvent() error = %v", err)
+	}
+	peer := managedSessionHandlerTestSessionPeer()
+	peer.Capabilities = append(peer.Capabilities, CapabilityEventsV1)
+	if err := set.EventHandler()(t.Context(), session.Event{
+		Name:     string(EventKindLogChunk),
+		Sequence: event.Sequence,
+		Payload:  payload,
+		Peer:     peer,
+	}); err != nil {
+		t.Fatalf("EventHandler() error = %v", err)
+	}
+	if authority.eventCalls != 1 || !reflect.DeepEqual(authority.event, event) {
+		t.Fatalf("event dispatch = %#v / %d, want %#v / 1", authority.event, authority.eventCalls, event)
+	}
+	if err := set.EventHandler()(t.Context(), session.Event{
+		Name:     string(EventKindLogChunk),
+		Sequence: event.Sequence + 1,
+		Payload:  payload,
+		Peer:     peer,
+	}); err == nil {
+		t.Fatal("EventHandler accepted an envelope sequence mismatch")
+	}
+	if authority.eventCalls != 1 {
+		t.Fatalf("event calls after mismatch = %d, want 1", authority.eventCalls)
+	}
+	if err := set.EventHandler()(t.Context(), session.Event{
+		Name:     string(EventKindOutputGap),
+		Sequence: event.Sequence,
+		Payload:  payload,
+		Peer:     peer,
+	}); err == nil {
+		t.Fatal("EventHandler accepted an event name that disagreed with its kind")
+	}
+	if authority.eventCalls != 1 {
+		t.Fatalf("event calls after name mismatch = %d, want 1", authority.eventCalls)
 	}
 }
 

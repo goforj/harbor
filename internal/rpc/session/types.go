@@ -61,6 +61,23 @@ type Request struct {
 // Handler processes one request and must stop promptly when its context is cancelled.
 type Handler func(context.Context, Request) (any, error)
 
+// Event is one authenticated, ordered event received after session negotiation.
+// The payload remains raw so the role-specific handler can apply its own strict schema.
+type Event struct {
+	// Name identifies the event family selected by the negotiated protocol.
+	Name string
+	// Sequence is the connection-scoped monotonic event sequence.
+	Sequence uint64
+	// Payload contains one complete JSON value owned by the event schema.
+	Payload json.RawMessage
+	// Peer carries the negotiated client identity used for event authorization.
+	Peer Peer
+}
+
+// EventHandler processes one authenticated event. Returning an error terminates
+// the session because an event has no response channel on which to report failure.
+type EventHandler func(context.Context, Event) error
+
 // responseCompletion keeps post-write work out of the encoded response payload.
 type responseCompletion struct {
 	payload    any
@@ -96,6 +113,9 @@ type ServerConfig struct {
 	Capabilities []rpc.Capability
 	// Handlers maps bounded method names to their implementation.
 	Handlers map[string]Handler
+	// EventHandler optionally accepts client-originated ordered events. Events
+	// remain disabled when this callback is nil.
+	EventHandler EventHandler
 	// RoleHandlers optionally maps one negotiated client role to its complete method set.
 	// When a role is present, its nested map is exclusive and the default Handlers map is not used for that role.
 	RoleHandlers map[rpc.Role]map[string]Handler

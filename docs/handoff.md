@@ -388,3 +388,4 @@ The Linux resolver checkpoint also passed isolated root-module tests and vet, fo
 - Do not stage `.tmp/` or an unexplained lockfile with unrelated work.
 - Do not claim Linux/Windows resolver support from cross-compilation alone.
 - Do not start tray, packaging, or updater work before the core restart loop is dependable.
+The managed-session transport now has a bounded, authenticated opt-in event sink on both Harbor and GoForj. Normal launch still leaves `managed-session.events.v1` unadvertised, and process/action producer hooks plus durable event projection remain open.

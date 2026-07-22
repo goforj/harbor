@@ -342,6 +342,53 @@ func TestConcurrentCallsCorrelateResponses(t *testing.T) {
 	}
 }
 
+// TestClientPublishEventDispatchesBoundedEvents proves the optional event path
+// carries ordered metadata without creating a request/response backlog.
+func TestClientPublishEventDispatchesBoundedEvents(t *testing.T) {
+	events := make(chan Event, 2)
+	serverConfig := testServerConfig(nil)
+	serverConfig.EventHandler = func(_ context.Context, event Event) error {
+		events <- event
+		return nil
+	}
+	clientConfig := testClientConfig()
+	clientConfig.Capabilities = append(clientConfig.Capabilities, rpc.Capability("events.v1"))
+	pair := newTestPair(t, serverConfig, clientConfig)
+
+	if err := pair.client.PublishEvent(t.Context(), "managed-session.event", map[string]string{"state": "ready"}); err != nil {
+		t.Fatalf("PublishEvent() error = %v", err)
+	}
+	select {
+	case event := <-events:
+		if event.Name != "managed-session.event" || event.Sequence != 1 {
+			t.Fatalf("event metadata = %#v, want name and sequence 1", event)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode event payload: %v", err)
+		}
+		if payload["state"] != "ready" {
+			t.Fatalf("event payload = %#v, want ready state", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event handler did not receive the published event")
+	}
+}
+
+// TestServerRejectsEventsWhenDeliveryIsDisabled keeps the opt-in event surface
+// from silently accepting data that no authority can consume.
+func TestServerRejectsEventsWhenDeliveryIsDisabled(t *testing.T) {
+	clientConfig := testClientConfig()
+	clientConfig.Capabilities = append(clientConfig.Capabilities, rpc.Capability("events.v1"))
+	pair := newTestPair(t, testServerConfig(nil), clientConfig)
+	_ = pair.client.PublishEvent(t.Context(), "managed-session.event", struct{}{})
+	select {
+	case <-pair.client.Done():
+	case <-time.After(time.Second):
+		t.Fatal("server did not terminate an event-disabled session")
+	}
+}
+
 // TestServerQueueRejectsBeyondCapacity verifies accepted work remains bounded
 // without stalling the reader needed for cancellation and other responses.
 func TestServerQueueRejectsBeyondCapacity(t *testing.T) {

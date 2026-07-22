@@ -26,6 +26,7 @@ type Client struct {
 	writes     *sessionWriter
 	peer       Peer
 	nextID     atomic.Uint64
+	nextEvent  atomic.Uint64
 	pendingMu  sync.Mutex
 	pending    map[string]*pendingCall
 	terminal   chan struct{}
@@ -143,6 +144,27 @@ func (c *Client) Call(ctx context.Context, method string, payload any) (json.Raw
 
 		return nil, ctx.Err()
 	}
+}
+
+// PublishEvent sends one ordered client-originated event without creating a
+// response correlation. The server must have explicitly enabled event delivery.
+func (c *Client) PublishEvent(ctx context.Context, name string, payload any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sequence := c.nextEvent.Add(1)
+	envelope, err := rpc.NewEventEnvelope(c.peer.Protocol, name, sequence, payload)
+	if err != nil {
+		return fmt.Errorf("create event: %w", err)
+	}
+	if err := c.writes.writeEnvelope(envelope); err != nil {
+		c.terminate(fmt.Errorf("write event: %w", err))
+		return c.closedError()
+	}
+	return nil
 }
 
 // Close terminates the connection and wakes every pending caller.

@@ -31,6 +31,14 @@ type RuntimePlanAuthority interface {
 	PlanManagedRuntime(context.Context, local.PeerIdentity, RuntimePlanRequest) (RuntimePlanResponse, error)
 }
 
+// EventAuthority optionally receives ordered process and watcher events from a
+// negotiated managed session. It is intentionally separate from the durable
+// registration authority so event adoption can remain capability-gated.
+type EventAuthority interface {
+	// PublishManagedEvent applies one validated event to the exact attached session.
+	PublishManagedEvent(context.Context, local.PeerIdentity, Event) error
+}
+
 // HandlerSet exposes the bounded managed-session methods to the generic RPC session server.
 type HandlerSet struct {
 	authority Authority
@@ -64,15 +72,52 @@ func (set *HandlerSet) Handlers() map[string]session.Handler {
 	return handlers
 }
 
+// EventHandler returns the optional inbound event sink for the generic RPC server.
+func (set *HandlerSet) EventHandler() session.EventHandler {
+	if set == nil {
+		return nil
+	}
+	authority, supported := set.authority.(EventAuthority)
+	if !supported {
+		return nil
+	}
+	return func(ctx context.Context, event session.Event) error {
+		if err := validateManagedSessionEventPeer(event.Peer); err != nil {
+			return session.NewHandlerError(rpc.ErrorCodePermissionDenied, err)
+		}
+		if !containsManagedSessionCapability(event.Peer.Capabilities, CapabilityEventsV1) {
+			return session.NewHandlerError(rpc.ErrorCodePermissionDenied, errors.New("managed session events capability was not negotiated"))
+		}
+		managedEvent, err := DecodeEvent(event.Payload)
+		if err != nil {
+			return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
+		}
+		if managedEvent.Sequence != event.Sequence {
+			return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, errors.New("managed session event sequence does not match its envelope"))
+		}
+		if event.Name != string(managedEvent.Kind) {
+			return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, errors.New("managed session event name does not match its kind"))
+		}
+		if err := authority.PublishManagedEvent(ctx, set.peer, managedEvent); err != nil {
+			return session.NewHandlerError(rpc.ErrorCodeInternal, err)
+		}
+		return nil
+	}
+}
+
 // Capabilities reports optional managed-session features implemented by the bound authority.
 func (set *HandlerSet) Capabilities() []rpc.Capability {
 	if set == nil {
 		return nil
 	}
+	capabilities := make([]rpc.Capability, 0, 2)
 	if _, supported := set.authority.(RuntimePlanAuthority); supported {
-		return []rpc.Capability{CapabilityRuntimePlanV1}
+		capabilities = append(capabilities, CapabilityRuntimePlanV1)
 	}
-	return nil
+	if _, supported := set.authority.(EventAuthority); supported {
+		capabilities = append(capabilities, CapabilityEventsV1)
+	}
+	return capabilities
 }
 
 // registerHandler admits only a negotiated GoForj session and validates the authority response before writing it.
@@ -192,6 +237,20 @@ func validateManagedSessionRequestPeer(request session.Request) error {
 		}
 	}
 	return errors.New("managed-session.v1 was not negotiated")
+}
+
+// validateManagedSessionEventPeer keeps event authorization aligned with request authorization.
+func validateManagedSessionEventPeer(peer session.Peer) error {
+	if peer.Role != rpc.RoleGoForjSession {
+		return fmt.Errorf("role %q cannot use the managed-session API", peer.Role)
+	}
+	if peer.Protocol.Compare(managedSessionProtocolV1) != 0 {
+		return fmt.Errorf("protocol %s cannot use managed-session.v1", peer.Protocol)
+	}
+	if !containsManagedSessionCapability(peer.Capabilities, CapabilityV1) {
+		return errors.New("managed-session.v1 was not negotiated")
+	}
+	return nil
 }
 
 // validateManagedSessionPeer rejects impossible transport identities before a handler set can be reused.

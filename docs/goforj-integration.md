@@ -377,14 +377,17 @@ Harbor joins those GoForj facts with its own Docker, DNS, route, relay, TLS, and
 
 ## Events
 
-The additive `managed-session.events.v1` capability currently defines only the bounded event shape; it is not
-advertised by default and has no handler or writer integration yet. Its first records are `log.chunk` and
+The additive `managed-session.events.v1` capability defines the bounded event shape and now has an authenticated,
+bounded transport path on both sides of the managed session. It remains capability-off by default: Harbor advertises
+it only when its authority supplies an explicit event sink, and GoForj does not request it from the normal launch
+adapter yet. Its first records are `log.chunk` and
 `output.gap`: each carries stable project/session identity, a producer-assigned session sequence, an RFC3339 UTC
 timestamp, App or watcher source identity, an honest `stdout`, `stderr`, or `pty/combined` stream, and normalized
 valid-UTF-8 text. A gap names its inclusive dropped sequence range and count instead of silently claiming continuity.
 Attachment generation remains a future batch/append fence, so events can retain their sequence across a Harbor
-reconnect. This schema does not make the current supervisor pipe or diagnostic spool re-adoptable and does not claim
-durable event replay.
+reconnect. The transport rejects disabled delivery, non-monotonic envelope sequences, and payload/envelope sequence
+mismatches. This schema does not make the current supervisor pipe or diagnostic spool re-adoptable and does not claim
+durable event replay; producer hooks and process/action state projection remain the next slice.
 
 The event envelope includes at least:
 

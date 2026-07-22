@@ -108,6 +108,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	serverCapabilities := capabilities()
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
+	var managedEventHandler session.EventHandler
 	if server.config.ManagedAuthority != nil {
 		serverCapabilities = append(serverCapabilities, managedsession.CapabilityLaunchContextV1, managedsession.CapabilityV1)
 		serverAuthorize = func(ctx context.Context, hello rpc.Hello) error {
@@ -131,6 +132,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		roleHandlers = map[rpc.Role]map[string]session.Handler{
 			rpc.RoleGoForjSession: managedHandlers.Handlers(),
 		}
+		managedEventHandler = managedHandlers.EventHandler()
 	}
 	controlSession, err := session.NewServer(session.ServerConfig{
 		DaemonVersion:  server.build.Version,
@@ -138,6 +140,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		Capabilities:   serverCapabilities,
 		Authorize:      serverAuthorize,
 		RoleHandlers:   roleHandlers,
+		EventHandler:   managedEventHandler,
 		Handlers: map[string]session.Handler{
 			methodDaemonStatus: server.statusHandler(transportPeer),
 			methodDaemonStop: server.stopHandler(transportPeer, func(caller Caller) {
