@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -639,6 +641,511 @@ func TestControllerReleaseModeGuardsMutationEntrypoints(t *testing.T) {
 				t.Fatalf("source calls = %d, anchor replacements = %#v", source.calls.Load(), anchor.replacements)
 			}
 		})
+	}
+}
+
+// TestControllerVerifyNetworkRuntimeReleasedBindsStableAnchorProof proves the durable effects checkpoint, rather than process-local generation, determines the proof.
+func TestControllerVerifyNetworkRuntimeReleasedBindsStableAnchorProof(t *testing.T) {
+	controller, store, anchor := readyReleasedVerificationController(t)
+	before := captureReleaseVerificationState(controller, anchor)
+	first, err := controller.VerifyNetworkRuntimeReleased(
+		context.Background(),
+		"operation-global-release",
+		11,
+		7,
+	)
+	if err != nil {
+		t.Fatalf("VerifyNetworkRuntimeReleased() error = %v", err)
+	}
+	second, err := controller.VerifyNetworkRuntimeReleased(
+		context.Background(),
+		"operation-global-release",
+		11,
+		7,
+	)
+	if err != nil {
+		t.Fatalf("second VerifyNetworkRuntimeReleased() error = %v", err)
+	}
+	const want = "fcf44778ba8dbb8344bd63eb3201c1fd72fad36d4421f165b700053f261aa4c7"
+	if first != want || second != want {
+		t.Fatalf("release proofs = %q, %q, want stable %q", first, second, want)
+	}
+	if first == releaseRuntimeObservationDigest("operation-other-release", 11, 7) ||
+		first == releaseRuntimeObservationDigest("operation-global-release", 12, 7) ||
+		first == releaseRuntimeObservationDigest("operation-global-release", 11, 8) {
+		t.Fatalf("release proof %q is not bound to operation, checkpoint, and network", first)
+	}
+	independent, independentStore, independentAnchor := readyReleasedVerificationController(t)
+	independent.runtimeGeneration = 99
+	independentBefore := captureReleaseVerificationState(independent, independentAnchor)
+	proof, err := independent.VerifyNetworkRuntimeReleased(
+		context.Background(),
+		"operation-global-release",
+		11,
+		7,
+	)
+	if err != nil || proof != first {
+		t.Fatalf("independent release proof = %q, %v; want %q, nil", proof, err, first)
+	}
+	assertReleaseVerificationUnchanged(t, before, controller, store, anchor)
+	assertReleaseVerificationUnchanged(
+		t,
+		independentBefore,
+		independent,
+		independentStore,
+		independentAnchor,
+	)
+}
+
+// TestControllerVerifyNetworkRuntimeReleasedRejectsUnprovenStateWithoutMutation proves verification is read-only and fails closed for every missing anchor or durable proof.
+func TestControllerVerifyNetworkRuntimeReleasedRejectsUnprovenStateWithoutMutation(t *testing.T) {
+	proof, err := (*Controller)(nil).VerifyNetworkRuntimeReleased(
+		context.Background(),
+		"operation-global-release",
+		11,
+		7,
+	)
+	if proof != "" || !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("nil VerifyNetworkRuntimeReleased() = %q, %v", proof, err)
+	}
+	proof, err = (&Controller{}).VerifyNetworkRuntimeReleased(
+		context.Background(),
+		"operation-global-release",
+		11,
+		7,
+	)
+	if proof != "" || !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("zero VerifyNetworkRuntimeReleased() = %q, %v", proof, err)
+	}
+
+	tests := []struct {
+		name   string
+		ctx    func() context.Context
+		id     domain.OperationID
+		check  domain.Sequence
+		rev    domain.Sequence
+		mutate func(*Controller, *testGlobalNetworkReleasePlanStore, *testDataPlane)
+		want   string
+	}{
+		{
+			name:  "malformed operation",
+			ctx:   context.Background,
+			check: 11,
+			rev:   7,
+			want:  "operation ID",
+		},
+		{
+			name: "zero checkpoint",
+			ctx:  context.Background,
+			id:   "operation-global-release",
+			rev:  7,
+			want: "checkpoint revision",
+		},
+		{
+			name:  "oversized checkpoint",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: domain.MaximumSequence + 1,
+			rev:   7,
+			want:  "checkpoint revision",
+		},
+		{
+			name:  "zero network revision",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			want:  "network revision",
+		},
+		{
+			name:  "oversized network revision",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   domain.MaximumSequence + 1,
+			want:  "network revision",
+		},
+		{
+			name:  "canceled context",
+			ctx:   canceledReleaseVerificationContext,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			want:  context.Canceled.Error(),
+		},
+		{
+			name:  "absent plan",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				store *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				store.found = false
+			},
+			want: "active durable plan",
+		},
+		{
+			name:  "plan read error",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				store *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				store.err = errors.New("read release plan")
+			},
+			want: "read release plan",
+		},
+		{
+			name:  "wrong durable phase",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				store *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				store.plan.Phase = state.GlobalNetworkReleasePlanPhaseRuntimeRelease
+			},
+			want: "active durable plan",
+		},
+		{
+			name:  "durable checkpoint drift",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				store *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				store.plan.CheckpointRevision = 12
+			},
+			want: "active durable plan",
+		},
+		{
+			name:  "new lifecycle",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.state = controllerStateNew
+			},
+			want: "does not own",
+		},
+		{
+			name:  "release mode absent",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.releaseMode = false
+			},
+			want: "does not own",
+		},
+		{
+			name:  "retirement absent",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.releaseRuntimeRetired = false
+			},
+			want: "does not own",
+		},
+		{
+			name:  "zero generation",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.runtimeGeneration = 0
+			},
+			want: "does not own",
+		},
+		{
+			name:  "operation fence drift",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.releaseFence.operationID = "operation-other-release"
+			},
+			want: "retained release fence",
+		},
+		{
+			name:  "network fence drift",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.releaseFence.networkRevision = 8
+			},
+			want: "retained release fence",
+		},
+		{
+			name:  "runtime revision drift",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				controller *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				_ *testDataPlane,
+			) {
+				controller.runtimeNetworkRevision = 8
+			},
+			want: "retained release fence",
+		},
+		{
+			name:  "dead anchor",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				anchor *testDataPlane,
+			) {
+				close(anchor.done)
+			},
+			want: "anchor is not alive",
+		},
+		{
+			name:  "configured anchor",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				anchor *testDataPlane,
+			) {
+				anchor.snapshot.DNS = dataplane.DNSStatus{
+					Configured: true,
+				}
+			},
+			want: "ready zero-listener anchor",
+		},
+		{
+			name:  "non-ready anchor",
+			ctx:   context.Background,
+			id:    "operation-global-release",
+			check: 11,
+			rev:   7,
+			mutate: func(
+				_ *Controller,
+				_ *testGlobalNetworkReleasePlanStore,
+				anchor *testDataPlane,
+			) {
+				anchor.snapshot.State = dataplane.StateStopped
+			},
+			want: "ready zero-listener anchor",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			controller, store, anchor := readyReleasedVerificationController(t)
+			if test.mutate != nil {
+				test.mutate(controller, store, anchor)
+			}
+			before := captureReleaseVerificationState(controller, anchor)
+			proof, err := controller.VerifyNetworkRuntimeReleased(
+				test.ctx(),
+				test.id,
+				test.check,
+				test.rev,
+			)
+			if proof != "" || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf(
+					"VerifyNetworkRuntimeReleased() = %q, %v, want empty proof and error containing %q",
+					proof,
+					err,
+					test.want,
+				)
+			}
+			assertReleaseVerificationUnchanged(t, before, controller, store, anchor)
+		})
+	}
+}
+
+// TestControllerVerifyNetworkRuntimeReleasedRejectsCloseDuringSnapshot proves a snapshot cannot authorize after Close claims lifecycle ownership.
+func TestControllerVerifyNetworkRuntimeReleasedRejectsCloseDuringSnapshot(t *testing.T) {
+	controller, _, anchor := readyReleasedVerificationController(t)
+	blocked := &blockedSnapshotDataPlane{
+		dataPlane:       anchor,
+		snapshotEntered: make(chan struct{}),
+		snapshotRelease: make(chan struct{}),
+	}
+	controller.dataPlane = blocked
+	go controller.monitor(&testMaterialStore{})
+
+	verification := make(chan struct {
+		proof string
+		err   error
+	}, 1)
+	go func() {
+		proof, err := controller.VerifyNetworkRuntimeReleased(
+			context.Background(),
+			"operation-global-release",
+			11,
+			7,
+		)
+		verification <- struct {
+			proof string
+			err   error
+		}{
+			proof: proof,
+			err:   err,
+		}
+	}()
+	waitControllerSignal(t, blocked.snapshotEntered, "release verification snapshot")
+	closed := make(chan error, 1)
+	go func() { closed <- controller.Close(context.Background()) }()
+	waitControllerSignal(t, controller.stop, "release verification shutdown")
+	close(blocked.snapshotRelease)
+	result := <-verification
+	if result.proof != "" || result.err == nil || !strings.Contains(result.err.Error(), "changed during anchor observation") {
+		t.Fatalf("VerifyNetworkRuntimeReleased() = %q, %v", result.proof, result.err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// releaseVerificationState captures all process-local fields that verification must only observe.
+type releaseVerificationState struct {
+	state           controllerState
+	runtime         dataPlane
+	done            <-chan struct{}
+	generation      uint64
+	mode            bool
+	retired         bool
+	fence           networkReleaseFence
+	runtimeRevision domain.Sequence
+	snapshot        dataplane.Snapshot
+}
+
+// blockedSnapshotDataPlane pauses one snapshot so shutdown can claim lifecycle ownership between observation checks.
+type blockedSnapshotDataPlane struct {
+	dataPlane
+	snapshotEntered chan struct{}
+	snapshotRelease chan struct{}
+	snapshotOnce    sync.Once
+}
+
+// Snapshot blocks exactly one observation at the boundary required to reproduce a concurrent Close.
+func (runtime *blockedSnapshotDataPlane) Snapshot() dataplane.Snapshot {
+	runtime.snapshotOnce.Do(func() {
+		close(runtime.snapshotEntered)
+		<-runtime.snapshotRelease
+	})
+	return runtime.dataPlane.Snapshot()
+}
+
+// readyReleasedVerificationController creates one exact, durable effects-authorized release anchor.
+func readyReleasedVerificationController(t *testing.T) (*Controller, *testGlobalNetworkReleasePlanStore, *testDataPlane) {
+	t.Helper()
+	controller, store, _, anchor := readyReleaseController(t)
+	anchor.snapshot = dataplane.Snapshot{
+		State:  dataplane.StateReady,
+		Relays: []dataplane.RelayStatus{},
+	}
+	store.plan.Phase = state.GlobalNetworkReleasePlanPhaseVerifyEffects
+	controller.dataPlane = anchor
+	controller.runtimeDone = anchor.done
+	controller.runtimeGeneration = 2
+	controller.releaseMode = true
+	controller.releaseRuntimeRetired = true
+	controller.releaseFence = releaseFenceFromPlan(store.plan)
+	return controller, store, anchor
+}
+
+// canceledReleaseVerificationContext supplies a caller cancellation before any durable observation.
+func canceledReleaseVerificationContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// captureReleaseVerificationState records every local field that successful and failed proofs must leave unchanged.
+func captureReleaseVerificationState(controller *Controller, anchor *testDataPlane) releaseVerificationState {
+	return releaseVerificationState{
+		state:           controller.state,
+		runtime:         controller.dataPlane,
+		done:            controller.runtimeDone,
+		generation:      controller.runtimeGeneration,
+		mode:            controller.releaseMode,
+		retired:         controller.releaseRuntimeRetired,
+		fence:           controller.releaseFence,
+		runtimeRevision: controller.runtimeNetworkRevision,
+		snapshot:        anchor.snapshot,
+	}
+}
+
+// assertReleaseVerificationUnchanged rejects hidden runtime or durable mutations by a proof attempt.
+func assertReleaseVerificationUnchanged(t *testing.T, before releaseVerificationState, controller *Controller, store *testGlobalNetworkReleasePlanStore, anchor *testDataPlane) {
+	t.Helper()
+	unchanged := controller.state == before.state &&
+		controller.dataPlane == before.runtime &&
+		controller.runtimeDone == before.done &&
+		controller.runtimeGeneration == before.generation &&
+		controller.releaseMode == before.mode &&
+		controller.releaseRuntimeRetired == before.retired &&
+		controller.releaseFence == before.fence &&
+		controller.runtimeNetworkRevision == before.runtimeRevision &&
+		reflect.DeepEqual(anchor.snapshot, before.snapshot)
+	if !unchanged {
+		t.Fatal("verification mutated controller or runtime state")
+	}
+	store.mutex.Lock()
+	advanceCalls := len(store.advanceCalls)
+	store.mutex.Unlock()
+	if advanceCalls != 0 || anchor.starts.Load() != 0 || anchor.closes.Load() != 0 {
+		t.Fatalf("verification mutated durable or runtime state: advances %d, starts %d, closes %d", advanceCalls, anchor.starts.Load(), anchor.closes.Load())
 	}
 }
 

@@ -2,8 +2,11 @@ package harbordruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
@@ -101,6 +104,114 @@ func (controller *Controller) ReleaseNetworkRuntime(ctx context.Context, operati
 	controller.releaseFence = releaseFenceFromPlan(advanced)
 	controller.mutex.Unlock()
 	return advanced, nil
+}
+
+// VerifyNetworkRuntimeReleased proves this process retains the exact ready release anchor for one durable effects checkpoint.
+func (controller *Controller) VerifyNetworkRuntimeReleased(
+	ctx context.Context,
+	operationID domain.OperationID,
+	checkpointRevision domain.Sequence,
+	networkRevision domain.Sequence,
+) (string, error) {
+	if controller == nil || !controller.initialized {
+		return "", ErrNotInitialized
+	}
+	if err := operationID.Validate(); err != nil {
+		return "", fmt.Errorf("verify released Harbor network runtime: %w", err)
+	}
+	if checkpointRevision == 0 || checkpointRevision > domain.MaximumSequence {
+		return "", fmt.Errorf(
+			"verify released Harbor network runtime: checkpoint revision must be between 1 and %d",
+			domain.MaximumSequence,
+		)
+	}
+	if networkRevision == 0 || networkRevision > domain.MaximumSequence {
+		return "", fmt.Errorf(
+			"verify released Harbor network runtime: network revision must be between 1 and %d",
+			domain.MaximumSequence,
+		)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	controller.reconcileMutex.Lock()
+	defer controller.reconcileMutex.Unlock()
+
+	plan, found, err := controller.dependencies.globalNetworkReleasePlans.ReadActiveGlobalNetworkReleasePlan(ctx)
+	if err != nil {
+		return "", fmt.Errorf("verify released Harbor network runtime: read active durable plan: %w", err)
+	}
+	if !found ||
+		plan.Operation.Operation.ID != operationID ||
+		plan.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects ||
+		plan.CheckpointRevision != checkpointRevision ||
+		plan.NetworkRevision != networkRevision {
+		return "", errors.New("verify released Harbor network runtime: active durable plan does not match effects checkpoint")
+	}
+
+	controller.mutex.RLock()
+	lifecycle := controller.state
+	mode := controller.releaseMode
+	retired := controller.releaseRuntimeRetired
+	fence := controller.releaseFence
+	runtime := controller.dataPlane
+	done := controller.runtimeDone
+	generation := controller.runtimeGeneration
+	runtimeRevision := controller.runtimeNetworkRevision
+	controller.mutex.RUnlock()
+
+	if lifecycle != controllerStateReady || !mode || !retired || generation == 0 {
+		return "", errors.New("verify released Harbor network runtime: controller does not own a ready retired release anchor")
+	}
+	if fence.operationID != operationID || fence.networkRevision != networkRevision || runtimeRevision != networkRevision {
+		return "", errors.New("verify released Harbor network runtime: retained release fence does not match requested network")
+	}
+	if err := validateReleaseAnchor(runtime, done); err != nil {
+		return "", fmt.Errorf("verify released Harbor network runtime: %w", err)
+	}
+
+	controller.mutex.RLock()
+	unchanged := controller.state == controllerStateReady &&
+		controller.releaseMode == mode &&
+		controller.releaseRuntimeRetired == retired &&
+		controller.releaseFence == fence &&
+		controller.runtimeDone == done &&
+		controller.runtimeGeneration == generation &&
+		controller.runtimeNetworkRevision == runtimeRevision &&
+		!channelClosed(controller.runtimeDone)
+	controller.mutex.RUnlock()
+	if !unchanged {
+		return "", errors.New("verify released Harbor network runtime: controller changed during anchor observation")
+	}
+	return releaseRuntimeObservationDigest(operationID, checkpointRevision, networkRevision), nil
+}
+
+// releaseRuntimeObservationDigest fingerprints the exact non-secret durable effects checkpoint that admitted an anchor observation.
+func releaseRuntimeObservationDigest(
+	operationID domain.OperationID,
+	checkpointRevision domain.Sequence,
+	networkRevision domain.Sequence,
+) string {
+	payload := make([]byte, 0, len(operationID)+96)
+	payload = append(payload, "harbor.network-release-runtime-observation.v1\x00"...)
+	payload = append(payload, "operation-id\x00"...)
+	payload = append(payload, string(operationID)...)
+	payload = append(payload, '\x00')
+	payload = append(payload, "phase\x00"...)
+	payload = append(payload, string(state.GlobalNetworkReleasePlanPhaseVerifyEffects)...)
+	payload = append(payload, '\x00')
+	payload = append(payload, "checkpoint-revision\x00"...)
+	payload = strconv.AppendUint(payload, uint64(checkpointRevision), 10)
+	payload = append(payload, '\x00')
+	payload = append(payload, "network-revision\x00"...)
+	payload = strconv.AppendUint(payload, uint64(networkRevision), 10)
+	payload = append(payload, '\x00')
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
 
 // ensureReleaseAnchor either verifies the existing zero-listener generation or atomically replaces a proven full generation.
