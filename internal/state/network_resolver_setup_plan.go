@@ -111,9 +111,11 @@ func networkResolverSetupPlanFromModel(
 		return ticketissuer.ResolverPlan{}, 0, corruptNetworkResolverSetupPlan(key, err)
 	}
 	plan := ticketissuer.ResolverPlan{
-		OperationID:                        operation.Operation.ID,
+		Purpose:                            ticketissuer.ResolverPlanPurposeSetup,
+		Operation:                          operation.Operation,
 		OperationRevision:                  operation.Revision,
-		OperationState:                     operation.Operation.State,
+		CheckpointRevision:                 0,
+		CheckpointPhase:                    ticketissuer.ResolverCheckpointPhaseSetupApproval,
 		Mutation:                           helper.OperationEnsureResolver,
 		ExpectedSourceOwnershipFingerprint: row.SourceOwnershipFingerprint,
 		TargetOwnership:                    target,

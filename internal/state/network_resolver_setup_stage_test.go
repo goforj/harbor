@@ -177,8 +177,9 @@ func TestNetworkResolverSetupPlanSourceResolvesAllAuthorityInOneTransaction(t *t
 	if err := plan.Validate(); err != nil {
 		t.Fatalf("Resolve().Validate() error = %v", err)
 	}
-	if plan.OperationID != staged.Operation.ID || plan.OperationRevision != staged.Revision ||
-		plan.OperationState != domain.OperationRequiresApproval ||
+	if plan.Purpose != ticketissuer.ResolverPlanPurposeSetup || !reflect.DeepEqual(plan.Operation, staged.Operation) ||
+		plan.OperationRevision != staged.Revision || plan.CheckpointRevision != 0 ||
+		plan.CheckpointPhase != ticketissuer.ResolverCheckpointPhaseSetupApproval ||
 		plan.ExpectedSourceOwnershipFingerprint != fixture.request.ExpectedSourceOwnershipFingerprint ||
 		plan.TargetOwnership != fixture.request.TargetOwnership || plan.Policy != fixture.request.Policy {
 		t.Fatalf("Resolve() = %#v, want exact durable resolver authority", plan)

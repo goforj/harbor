@@ -94,7 +94,7 @@ func TestResolverServiceIssueBindsTargetOwnershipAndNativeObservation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID != fixture.plan.OperationID ||
+	if result.OperationID != fixture.plan.Operation.ID ||
 		result.Operation != helper.OperationEnsureResolver ||
 		result.PolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint ||
 		result.OwnershipFingerprint != targetOwnershipFingerprint {
@@ -143,9 +143,10 @@ func TestResolverServiceIssueBindsTargetOwnershipAndNativeObservation(t *testing
 // TestResolverServiceIssueRevalidatesEveryAuthority prevents publication across durable or native drift.
 func TestResolverServiceIssueRevalidatesEveryAuthority(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*resolverIssuerFixture)
-		want   string
+		requester string
+		name      string
+		mutate    func(*resolverIssuerFixture)
+		want      string
 	}{
 		{
 			name: "plan",
@@ -176,8 +177,14 @@ func TestResolverServiceIssueRevalidatesEveryAuthority(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newResolverIssuerFixture(t)
-			test.mutate(fixture)
-			_, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+			if test.mutate != nil {
+				test.mutate(fixture)
+			}
+			requester := test.requester
+			if requester == "" {
+				requester = fixture.plan.TargetOwnership.OwnerIdentity
+			}
+			_, err := fixture.service.Issue(t.Context(), requester, fixture.request)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Issue() error = %v, want containing %q", err, test.want)
 			}
@@ -197,21 +204,27 @@ func TestResolverServiceRejectsInvalidAuthorityBeforePublication(t *testing.T) {
 		want      string
 	}{
 		{name: "requester", requester: "502", want: "does not own"},
-		{name: "source fingerprint", mutate: func(fixture *resolverIssuerFixture) {
-			fixture.plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("b", 64)
-			fixture.plans.plans = []ResolverPlan{fixture.plan}
-		}, want: "source ownership fingerprint"},
-		{name: "resolver incomplete", mutate: func(fixture *resolverIssuerFixture) {
-			fixture.observation.Complete = false
-			fixture.resolver.observations = []resolver.Observation{fixture.observation}
-		}, want: "cannot be safely ensured"},
-		{name: "signing key", mutate: func(fixture *resolverIssuerFixture) {
-			_, other, err := ed25519.GenerateKey(nil)
-			if err != nil {
-				t.Fatalf("GenerateKey() error = %v", err)
-			}
-			fixture.keys.key = other
-		}, want: "does not match machine ownership"},
+		{
+			name: "source fingerprint",
+			mutate: func(fixture *resolverIssuerFixture) {
+				fixture.plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("b", 64)
+				fixture.plans.plans = []ResolverPlan{fixture.plan}
+			}, want: "source ownership fingerprint"},
+		{
+			name: "resolver incomplete",
+			mutate: func(fixture *resolverIssuerFixture) {
+				fixture.observation.Complete = false
+				fixture.resolver.observations = []resolver.Observation{fixture.observation}
+			}, want: "cannot be safely ensured"},
+		{
+			name: "signing key",
+			mutate: func(fixture *resolverIssuerFixture) {
+				_, other, err := ed25519.GenerateKey(nil)
+				if err != nil {
+					t.Fatalf("GenerateKey() error = %v", err)
+				}
+				fixture.keys.key = other
+			}, want: "does not match machine ownership"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -241,18 +254,77 @@ func TestResolverPlanValidationPinsOneSchemaTransition(t *testing.T) {
 		name   string
 		mutate func(*ResolverPlan)
 	}{
-		{name: "operation", mutate: func(plan *ResolverPlan) { plan.OperationID = "" }},
-		{name: "revision", mutate: func(plan *ResolverPlan) { plan.OperationRevision = 0 }},
-		{name: "state", mutate: func(plan *ResolverPlan) { plan.OperationState = domain.OperationRunning }},
-		{name: "mutation", mutate: func(plan *ResolverPlan) { plan.Mutation = helper.OperationReleaseResolver }},
-		{name: "target schema", mutate: func(plan *ResolverPlan) {
-			plan.TargetOwnership.SchemaVersion = ownership.IdentitySchemaVersion
-			plan.TargetOwnership.NetworkPolicyFingerprint = ""
-		}},
-		{name: "target record", mutate: func(plan *ResolverPlan) { plan.TargetOwnership.InstallationID = "" }},
-		{name: "policy", mutate: func(plan *ResolverPlan) { plan.Policy.Suffix = ".invalid" }},
-		{name: "target policy", mutate: func(plan *ResolverPlan) { plan.TargetOwnership.NetworkPolicyFingerprint = strings.Repeat("b", 64) }},
-		{name: "source", mutate: func(plan *ResolverPlan) { plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("b", 64) }},
+		{
+			name: "operation",
+			mutate: func(plan *ResolverPlan) {
+				plan.Operation.ID = ""
+			}},
+		{
+			name: "purpose",
+			mutate: func(plan *ResolverPlan) {
+				plan.Purpose = "bad"
+			}},
+		{
+			name: "revision",
+			mutate: func(plan *ResolverPlan) {
+				plan.OperationRevision = 0
+			}},
+		{
+			name: "checkpoint revision",
+			mutate: func(plan *ResolverPlan) {
+				plan.CheckpointRevision = 1
+			}},
+		{
+			name: "checkpoint phase",
+			mutate: func(plan *ResolverPlan) {
+				plan.CheckpointPhase = "bad"
+			}},
+		{
+			name: "operation kind",
+			mutate: func(plan *ResolverPlan) {
+				plan.Operation.Kind = domain.OperationKindNetworkRelease
+			}},
+		{
+			name: "operation phase",
+			mutate: func(plan *ResolverPlan) {
+				plan.Operation.Phase = "bad"
+			}},
+		{
+			name: "state",
+			mutate: func(plan *ResolverPlan) {
+				plan.Operation.State = domain.OperationRunning
+			}},
+		{
+			name: "mutation",
+			mutate: func(plan *ResolverPlan) {
+				plan.Mutation = helper.OperationReleaseResolver
+			}},
+		{
+			name: "target schema",
+			mutate: func(plan *ResolverPlan) {
+				plan.TargetOwnership.SchemaVersion = ownership.IdentitySchemaVersion
+				plan.TargetOwnership.NetworkPolicyFingerprint = ""
+			}},
+		{
+			name: "target record",
+			mutate: func(plan *ResolverPlan) {
+				plan.TargetOwnership.InstallationID = ""
+			}},
+		{
+			name: "policy",
+			mutate: func(plan *ResolverPlan) {
+				plan.Policy.Suffix = ".invalid"
+			}},
+		{
+			name: "target policy",
+			mutate: func(plan *ResolverPlan) {
+				plan.TargetOwnership.NetworkPolicyFingerprint = strings.Repeat("b", 64)
+			}},
+		{
+			name: "source",
+			mutate: func(plan *ResolverPlan) {
+				plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("b", 64)
+			}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -260,6 +332,233 @@ func TestResolverPlanValidationPinsOneSchemaTransition(t *testing.T) {
 			test.mutate(&plan)
 			if err := plan.Validate(); err == nil {
 				t.Fatal("ResolverPlan.Validate() error = nil")
+			}
+		})
+	}
+}
+
+// TestResolverPlanValidationSeparatesSetupAndReleaseAuthority prevents lifecycle records from exchanging mutations.
+func TestResolverPlanValidationSeparatesSetupAndReleaseAuthority(t *testing.T) {
+	setup := newResolverIssuerFixture(t).plan
+	release := newReleaseResolverIssuerFixture(t).plan
+	tests := []struct {
+		name   string
+		plan   ResolverPlan
+		mutate func(*ResolverPlan)
+	}{
+		{
+			name: "setup purpose on release",
+			plan: release,
+			mutate: func(plan *ResolverPlan) {
+				plan.Purpose = ResolverPlanPurposeSetup
+			}},
+		{
+			name: "release purpose on setup",
+			plan: setup,
+			mutate: func(plan *ResolverPlan) {
+				plan.Purpose = ResolverPlanPurposeGlobalRelease
+			}},
+		{
+			name: "release mutation on setup",
+			plan: setup,
+			mutate: func(plan *ResolverPlan) {
+				plan.Mutation = helper.OperationReleaseResolver
+			}},
+		{
+			name: "ensure mutation on release",
+			plan: release,
+			mutate: func(plan *ResolverPlan) {
+				plan.Mutation = helper.OperationEnsureResolver
+			}},
+		{
+			name: "release source fingerprint",
+			plan: release,
+			mutate: func(plan *ResolverPlan) {
+				plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("a", 64)
+			}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := test.plan
+			test.mutate(&plan)
+			if err := plan.Validate(); err == nil {
+				t.Fatal("ResolverPlan.Validate() error = nil")
+			}
+		})
+	}
+}
+
+// TestSameResolverPlanPinsEveryField verifies revalidation cannot omit durable lifecycle authority.
+func TestSameResolverPlanPinsEveryField(t *testing.T) {
+	fixture := newResolverIssuerFixture(t)
+	left := fixture.plan
+	right := fixture.plan
+	leftStartedAt := *fixture.plan.Operation.StartedAt
+	leftFinishedAt := leftStartedAt.Add(time.Minute)
+	leftProblem := domain.Problem{
+		Code:      "test.problem",
+		Message:   "test problem",
+		Retryable: true,
+	}
+	rightStartedAt := leftStartedAt
+	rightFinishedAt := leftFinishedAt
+	rightProblem := leftProblem
+	left.Operation.StartedAt = &leftStartedAt
+	left.Operation.FinishedAt = &leftFinishedAt
+	left.Operation.Problem = &leftProblem
+	right.Operation.StartedAt = &rightStartedAt
+	right.Operation.FinishedAt = &rightFinishedAt
+	right.Operation.Problem = &rightProblem
+	if !sameResolverPlan(left, right) {
+		t.Fatal("sameResolverPlan() rejected equal operation values with separately allocated pointers")
+	}
+	mutations := []func(*ResolverPlan){
+		func(plan *ResolverPlan) { plan.Purpose = ResolverPlanPurposeGlobalRelease },
+		func(plan *ResolverPlan) { plan.Operation.ID = "operation-other" },
+		func(plan *ResolverPlan) { plan.Operation.IntentID = "intent-other" },
+		func(plan *ResolverPlan) { plan.Operation.Kind = domain.OperationKindNetworkRelease },
+		func(plan *ResolverPlan) { plan.Operation.ProjectID = "project-other" },
+		func(plan *ResolverPlan) { plan.Operation.State = domain.OperationRunning },
+		func(plan *ResolverPlan) { plan.Operation.Phase = "other phase" },
+		func(plan *ResolverPlan) { plan.Operation.RequestedAt = plan.Operation.RequestedAt.Add(time.Minute) },
+		func(plan *ResolverPlan) { plan.Operation.StartedAt = nil },
+		func(plan *ResolverPlan) { plan.Operation.FinishedAt = nil },
+		func(plan *ResolverPlan) { plan.Operation.Problem = nil },
+		func(plan *ResolverPlan) { plan.Operation.Problem.Code = "other.problem" },
+		func(plan *ResolverPlan) { plan.OperationRevision++ },
+		func(plan *ResolverPlan) { plan.CheckpointRevision++ },
+		func(plan *ResolverPlan) { plan.CheckpointPhase = ResolverCheckpointPhaseGlobalRelease },
+		func(plan *ResolverPlan) { plan.Mutation = helper.OperationReleaseResolver },
+		func(plan *ResolverPlan) { plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("b", 64) },
+		func(plan *ResolverPlan) { plan.TargetOwnership.Generation++ },
+		func(plan *ResolverPlan) { plan.Policy.AuthorityFingerprint = strings.Repeat("b", 64) },
+	}
+	for _, mutate := range mutations {
+		candidate := left
+		candidate.Operation = cloneLowPortOperation(left.Operation)
+		mutate(&candidate)
+		if sameResolverPlan(left, candidate) {
+			t.Fatalf("sameResolverPlan() accepted changed plan %#v", candidate)
+		}
+	}
+}
+
+// TestResolverServiceIssuesReleaseForEverySafeOwnershipShape preserves foreign rules while admitting release-safe observations.
+func TestResolverServiceIssuesReleaseForEverySafeOwnershipShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		rules func(resolver.Request) []resolver.RuleFact
+	}{
+		{
+			name: "owned absent",
+			rules: func(resolver.Request) []resolver.RuleFact {
+				return nil
+			},
+		},
+		{
+			name: "owned exact",
+			rules: func(request resolver.Request) []resolver.RuleFact {
+				return []resolver.RuleFact{resolverRuleFor(request, "owned", true, false)}
+			}},
+		{
+			name: "owned drifted",
+			rules: func(request resolver.Request) []resolver.RuleFact {
+				return []resolver.RuleFact{resolverRuleFor(request, "owned", true, true)}
+			}},
+		{
+			name: "foreign only",
+			rules: func(request resolver.Request) []resolver.RuleFact {
+				return []resolver.RuleFact{resolverRuleFor(request, "foreign", false, false)}
+			}},
+		{
+			name: "foreign plus owned",
+			rules: func(request resolver.Request) []resolver.RuleFact {
+				return []resolver.RuleFact{resolverRuleFor(request, "owned", true, false), resolverRuleFor(request, "foreign", false, false)}
+			}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newReleaseResolverIssuerFixture(t)
+			observation := fixture.observation
+			observation.Rules = test.rules(observation.Request)
+			fixture.resolver.observations = []resolver.Observation{
+				observation,
+				observation,
+			}
+			result, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+			if err != nil {
+				t.Fatalf("Issue() error = %v", err)
+			}
+			if result.Operation != helper.OperationReleaseResolver || fixture.publisher.ticket.Operation != helper.OperationReleaseResolver {
+				t.Fatalf("release ticket = %#v, result = %#v", fixture.publisher.ticket, result)
+			}
+		})
+	}
+}
+
+// TestResolverServiceRejectsUnsafeReleaseAuthority keeps cleanup behind exact ownership and complete native facts.
+func TestResolverServiceRejectsUnsafeReleaseAuthority(t *testing.T) {
+	tests := []struct {
+		requester string
+		name      string
+		mutate    func(*resolverIssuerFixture)
+		want      string
+	}{
+		{
+			name:      "unauthenticated owner",
+			requester: "502",
+			want:      "does not own",
+		},
+		{
+			name: "ambiguous owned",
+			mutate: func(fixture *resolverIssuerFixture) {
+				observation := fixture.observation
+				rule := resolverRuleFor(observation.Request, "owned", true, false)
+				observation.Rules = []resolver.RuleFact{
+					rule,
+					rule,
+				}
+				fixture.resolver.observations = []resolver.Observation{
+					observation,
+				}
+			}, want: "cannot be safely released"},
+		{
+			name: "indeterminate",
+			mutate: func(fixture *resolverIssuerFixture) {
+				observation := fixture.observation
+				observation.Complete = false
+				fixture.resolver.observations = []resolver.Observation{
+					observation,
+				}
+			}, want: "cannot be safely released"},
+		{
+			name: "ownership drift",
+			mutate: func(fixture *resolverIssuerFixture) {
+				drifted := fixture.ownership.observations[0]
+				drifted.Record.Generation++
+				fingerprint, err := drifted.Record.Fingerprint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				drifted.Fingerprint = fingerprint
+				fixture.ownership.observations = []ownership.Observation{
+					drifted,
+				}
+			}, want: "does not match the approved ownership"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newReleaseResolverIssuerFixture(t)
+			if test.mutate != nil {
+				test.mutate(fixture)
+			}
+			requester := test.requester
+			if requester == "" {
+				requester = fixture.plan.TargetOwnership.OwnerIdentity
+			}
+			_, err := fixture.service.Issue(t.Context(), requester, fixture.request)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Issue() error = %v, want containing %q", err, test.want)
 			}
 		})
 	}
@@ -273,7 +572,7 @@ func TestResolverResultValidationRejectsUncorrelatedMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid := ResolverResult{
-		OperationID:          fixture.plan.OperationID,
+		OperationID:          fixture.plan.Operation.ID,
 		Reference:            helper.TicketReference(strings.Repeat("a", 64)),
 		Operation:            helper.OperationEnsureResolver,
 		PolicyFingerprint:    fixture.plan.TargetOwnership.NetworkPolicyFingerprint,
@@ -287,21 +586,45 @@ func TestResolverResultValidationRejectsUncorrelatedMetadata(t *testing.T) {
 		name   string
 		mutate func(*ResolverResult)
 	}{
-		{name: "operation ID", mutate: func(result *ResolverResult) { result.OperationID = "" }},
-		{name: "reference", mutate: func(result *ResolverResult) { result.Reference = "bad" }},
-		{name: "operation", mutate: func(result *ResolverResult) { result.Operation = helper.OperationReleaseResolver }},
-		{name: "fingerprint length", mutate: func(result *ResolverResult) { result.PolicyFingerprint = "bad" }},
-		{name: "fingerprint case", mutate: func(result *ResolverResult) { result.PolicyFingerprint = strings.Repeat("A", 64) }},
-		{name: "ownership fingerprint length", mutate: func(result *ResolverResult) { result.OwnershipFingerprint = "bad" }},
-		{name: "ownership fingerprint case", mutate: func(result *ResolverResult) { result.OwnershipFingerprint = strings.Repeat("A", 64) }},
-		{name: "expiry zero", mutate: func(result *ResolverResult) { result.ExpiresAt = time.Time{} }},
-		{name: "expiry local", mutate: func(result *ResolverResult) {
-			result.ExpiresAt = fixture.now.In(time.FixedZone("test", 60)).Add(time.Minute)
-		}},
-		{name: "expiry past", mutate: func(result *ResolverResult) { result.ExpiresAt = fixture.now }},
-		{name: "expiry excessive", mutate: func(result *ResolverResult) {
-			result.ExpiresAt = fixture.now.Add(helper.MaxTicketLifetime + time.Nanosecond)
-		}},
+		{
+			name:   "operation ID",
+			mutate: func(result *ResolverResult) { result.OperationID = "" }},
+		{
+			name:   "reference",
+			mutate: func(result *ResolverResult) { result.Reference = "bad" }},
+		{
+			name: "operation",
+			mutate: func(result *ResolverResult) {
+				result.Operation = "bad"
+			}},
+		{
+			name:   "fingerprint length",
+			mutate: func(result *ResolverResult) { result.PolicyFingerprint = "bad" }},
+		{
+			name:   "fingerprint case",
+			mutate: func(result *ResolverResult) { result.PolicyFingerprint = strings.Repeat("A", 64) }},
+		{
+			name:   "ownership fingerprint length",
+			mutate: func(result *ResolverResult) { result.OwnershipFingerprint = "bad" }},
+		{
+			name:   "ownership fingerprint case",
+			mutate: func(result *ResolverResult) { result.OwnershipFingerprint = strings.Repeat("A", 64) }},
+		{
+			name:   "expiry zero",
+			mutate: func(result *ResolverResult) { result.ExpiresAt = time.Time{} }},
+		{
+			name: "expiry local",
+			mutate: func(result *ResolverResult) {
+				result.ExpiresAt = fixture.now.In(time.FixedZone("test", 60)).Add(time.Minute)
+			}},
+		{
+			name:   "expiry past",
+			mutate: func(result *ResolverResult) { result.ExpiresAt = fixture.now }},
+		{
+			name: "expiry excessive",
+			mutate: func(result *ResolverResult) {
+				result.ExpiresAt = fixture.now.Add(helper.MaxTicketLifetime + time.Nanosecond)
+			}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -321,11 +644,21 @@ func TestResolverServicePropagatesAuthorityFailures(t *testing.T) {
 		name   string
 		mutate func(*resolverIssuerFixture)
 	}{
-		{name: "plan", mutate: func(fixture *resolverIssuerFixture) { fixture.plans.errors = []error{cause} }},
-		{name: "ownership", mutate: func(fixture *resolverIssuerFixture) { fixture.ownership.errors = []error{cause} }},
-		{name: "key", mutate: func(fixture *resolverIssuerFixture) { fixture.keys.err = cause }},
-		{name: "resolver", mutate: func(fixture *resolverIssuerFixture) { fixture.resolver.errors = []error{cause} }},
-		{name: "publisher", mutate: func(fixture *resolverIssuerFixture) { fixture.publisher.err = cause }},
+		{
+			name:   "plan",
+			mutate: func(fixture *resolverIssuerFixture) { fixture.plans.errors = []error{cause} }},
+		{
+			name:   "ownership",
+			mutate: func(fixture *resolverIssuerFixture) { fixture.ownership.errors = []error{cause} }},
+		{
+			name:   "key",
+			mutate: func(fixture *resolverIssuerFixture) { fixture.keys.err = cause }},
+		{
+			name:   "resolver",
+			mutate: func(fixture *resolverIssuerFixture) { fixture.resolver.errors = []error{cause} }},
+		{
+			name:   "publisher",
+			mutate: func(fixture *resolverIssuerFixture) { fixture.publisher.err = cause }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -340,7 +673,12 @@ func TestResolverServicePropagatesAuthorityFailures(t *testing.T) {
 
 	fixture := newResolverIssuerFixture(t)
 	fixture.service.entropy = bytes.NewReader(nil)
-	if _, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request); err == nil || !strings.Contains(err.Error(), "generate nonce") {
+	_, err := fixture.service.Issue(
+		t.Context(),
+		fixture.plan.TargetOwnership.OwnerIdentity,
+		fixture.request,
+	)
+	if err == nil || !strings.Contains(err.Error(), "generate nonce") {
 		t.Fatalf("Issue(short entropy) error = %v", err)
 	}
 }
@@ -357,8 +695,8 @@ func TestResolverServicePreservesDurabilityUncertainPublication(t *testing.T) {
 		!errors.Is(err, cause) {
 		t.Fatalf("Issue() error = %v, want resolver and spool durability classifications", err)
 	}
-	if result.Reference != fixture.publisher.reference || result.OperationID != fixture.plan.OperationID {
-		t.Fatalf("Issue() result = %#v, want reference %q for operation %q", result, fixture.publisher.reference, fixture.plan.OperationID)
+	if result.Reference != fixture.publisher.reference || result.OperationID != fixture.plan.Operation.ID {
+		t.Fatalf("Issue() result = %#v, want reference %q for operation %q", result, fixture.publisher.reference, fixture.plan.Operation.ID)
 	}
 	if err := result.Validate(fixture.now); err != nil {
 		t.Fatalf("ResolverResult.Validate() error = %v", err)
@@ -490,7 +828,12 @@ func TestResolverServiceLifecycleAndInputValidation(t *testing.T) {
 	if err := fixture.service.Close(); err != nil {
 		t.Fatalf("second Close() error = %v", err)
 	}
-	if _, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request); err == nil || !strings.Contains(err.Error(), "closed") {
+	_, err := fixture.service.Issue(
+		t.Context(),
+		fixture.plan.TargetOwnership.OwnerIdentity,
+		fixture.request,
+	)
+	if err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Issue(closed) error = %v", err)
 	}
 }
@@ -539,10 +882,22 @@ func newResolverIssuerFixture(t *testing.T) *resolverIssuerFixture {
 	if err != nil {
 		t.Fatalf("resolverPlanSourceOwnership() error = %v", err)
 	}
+	requestedAt := now.Add(-2 * time.Minute)
+	startedAt := now.Add(-time.Minute)
 	plan := ResolverPlan{
-		OperationID:                        "operation-resolver-setup",
+		Purpose: ResolverPlanPurposeSetup,
+		Operation: domain.Operation{
+			ID:          "operation-resolver-setup",
+			IntentID:    "intent-resolver-setup",
+			Kind:        domain.OperationKindNetworkResolverSetup,
+			State:       domain.OperationRequiresApproval,
+			Phase:       string(ResolverCheckpointPhaseSetupApproval),
+			RequestedAt: requestedAt,
+			StartedAt:   &startedAt,
+		},
 		OperationRevision:                  4,
-		OperationState:                     domain.OperationRequiresApproval,
+		CheckpointRevision:                 0,
+		CheckpointPhase:                    ResolverCheckpointPhaseSetupApproval,
 		Mutation:                           helper.OperationEnsureResolver,
 		ExpectedSourceOwnershipFingerprint: sourceFingerprint,
 		TargetOwnership:                    target,
@@ -572,8 +927,10 @@ func newResolverIssuerFixture(t *testing.T) *resolverIssuerFixture {
 		bytes.NewReader(bytes.Repeat([]byte{0x5a}, ticketNonceBytes*4)),
 	)
 	return &resolverIssuerFixture{
-		now:         now,
-		request:     ResolverRequest{OperationID: plan.OperationID},
+		now: now,
+		request: ResolverRequest{
+			OperationID: plan.Operation.ID,
+		},
 		plan:        plan,
 		private:     private,
 		plans:       plans,
@@ -584,4 +941,65 @@ func newResolverIssuerFixture(t *testing.T) *resolverIssuerFixture {
 		service:     service,
 		observation: observation,
 	}
+}
+
+// newReleaseResolverIssuerFixture creates one valid global-release capability from exact schema-two ownership.
+func newReleaseResolverIssuerFixture(t *testing.T) *resolverIssuerFixture {
+	fixture := newResolverIssuerFixture(t)
+	plan := fixture.plan
+	plan.Purpose = ResolverPlanPurposeGlobalRelease
+	plan.Operation.ID = "operation-network-release"
+	plan.Operation.IntentID = "intent-network-release"
+	plan.Operation.Kind = domain.OperationKindNetworkRelease
+	plan.Operation.State = domain.OperationRunning
+	plan.Operation.Phase = "releasing network runtime"
+	plan.CheckpointRevision = 9
+	plan.CheckpointPhase = ResolverCheckpointPhaseGlobalRelease
+	plan.Mutation = helper.OperationReleaseResolver
+	fingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ExpectedSourceOwnershipFingerprint = fingerprint
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("release ResolverPlan.Validate() error = %v", err)
+	}
+	owned := ownership.Observation{
+		Exists:      true,
+		Record:      plan.TargetOwnership,
+		Fingerprint: fingerprint,
+	}
+	fixture.plan = plan
+	fixture.request = ResolverRequest{
+		OperationID: plan.Operation.ID,
+	}
+	fixture.plans.plans = []ResolverPlan{
+		plan,
+		plan,
+	}
+	fixture.ownership.observations = []ownership.Observation{
+		owned,
+		owned,
+	}
+	return fixture
+}
+
+// resolverRuleFor creates one complete native fact for release-admission coverage.
+func resolverRuleFor(request resolver.Request, nativeID string, owned bool, drifted bool) resolver.RuleFact {
+	rule := resolver.RuleFact{
+		Mechanism: request.Mechanism(),
+		NativeID:  nativeID,
+		Namespace: request.Suffix(),
+		Servers: []netip.AddrPort{
+			request.Endpoint(),
+		},
+		RouteOnly:              true,
+		NativeExact:            !drifted,
+		NativeAttributesSHA256: strings.Repeat("a", 64),
+	}
+	if owned {
+		marker := request.OwnerMarker()
+		rule.Owner = &marker
+	}
+	return rule
 }

@@ -380,7 +380,7 @@ func TestNetworkResolverSetupPrepareIssuesExactCapabilityAndCloses(t *testing.T)
 	fixture := newNetworkResolverSetupTestFixture(t)
 	plan := fixture.resolverPlan(t, 3)
 	fixture.plans.resolve = func(_ context.Context, request ticketissuer.ResolverRequest) (ticketissuer.ResolverPlan, error) {
-		if request.OperationID != plan.OperationID {
+		if request.OperationID != plan.Operation.ID {
 			t.Fatalf("Resolve() operation = %q", request.OperationID)
 		}
 		return plan, nil
@@ -391,7 +391,7 @@ func TestNetworkResolverSetupPrepareIssuesExactCapabilityAndCloses(t *testing.T)
 		requester string,
 		request ticketissuer.ResolverRequest,
 	) (ticketissuer.ResolverResult, error) {
-		if requester != plan.TargetOwnership.OwnerIdentity || request.OperationID != plan.OperationID {
+		if requester != plan.TargetOwnership.OwnerIdentity || request.OperationID != plan.Operation.ID {
 			t.Fatalf("Issue() authority = %q/%q", requester, request.OperationID)
 		}
 		return want, nil
@@ -399,7 +399,7 @@ func TestNetworkResolverSetupPrepareIssuesExactCapabilityAndCloses(t *testing.T)
 	fixture.coordinator.issuers = func() (NetworkResolverSetupIssuer, error) { return issuer, nil }
 
 	got, err := fixture.coordinator.Prepare(t.Context(), NetworkResolverSetupPrepareRequest{
-		OperationID:               plan.OperationID,
+		OperationID:               plan.Operation.ID,
 		ExpectedOperationRevision: plan.OperationRevision,
 		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
 	})
@@ -416,7 +416,7 @@ func TestNetworkResolverSetupPrepareIssuesExactCapabilityAndCloses(t *testing.T)
 		return issuer, nil
 	}
 	_, err = fixture.coordinator.Prepare(t.Context(), NetworkResolverSetupPrepareRequest{
-		OperationID:               plan.OperationID,
+		OperationID:               plan.Operation.ID,
 		ExpectedOperationRevision: plan.OperationRevision,
 		RequesterIdentity:         "502",
 	})
@@ -441,7 +441,7 @@ func TestNetworkResolverSetupPreparePreservesIndeterminateReference(t *testing.T
 	}
 	fixture.coordinator.issuers = func() (NetworkResolverSetupIssuer, error) { return issuer, nil }
 	got, err := fixture.coordinator.Prepare(t.Context(), NetworkResolverSetupPrepareRequest{
-		OperationID:               plan.OperationID,
+		OperationID:               plan.Operation.ID,
 		ExpectedOperationRevision: plan.OperationRevision,
 		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
 	})
@@ -508,7 +508,7 @@ func TestNetworkResolverSetupPrepareRejectsPublicationDivergence(t *testing.T) {
 			fixture.coordinator.issuers = func() (NetworkResolverSetupIssuer, error) { return issuer, nil }
 			test.mutate(fixture, plan, issuer)
 			_, err := fixture.coordinator.Prepare(t.Context(), NetworkResolverSetupPrepareRequest{
-				OperationID:               plan.OperationID,
+				OperationID:               plan.Operation.ID,
 				ExpectedOperationRevision: plan.OperationRevision,
 				RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
 			})
@@ -798,7 +798,7 @@ func TestNetworkResolverSetupConfirmRejectsDurableDivergence(t *testing.T) {
 			}
 		}},
 		{name: "plan crossed", mutate: func(fixture *networkResolverSetupTestFixture, _ state.OperationRecord, plan ticketissuer.ResolverPlan) {
-			plan.OperationID = "operation-other"
+			plan.Operation.ID = "operation-other"
 			fixture.plans.resolve = func(context.Context, ticketissuer.ResolverRequest) (ticketissuer.ResolverPlan, error) {
 				return plan, nil
 			}
@@ -985,25 +985,99 @@ func TestNetworkResolverSetupValidationRejectsCrossedAuthority(t *testing.T) {
 func TestNetworkResolverSetupPlanAndResultValidationRejectDivergence(t *testing.T) {
 	fixture := newNetworkResolverSetupTestFixture(t)
 	plan := fixture.resolverPlan(t, 3)
-	if err := validateNetworkResolverSetupPlan(plan, plan.OperationID, plan.OperationRevision); err != nil {
+	if err := validateNetworkResolverSetupPlan(plan, plan.Operation.ID, plan.OperationRevision); err != nil {
 		t.Fatalf("validateNetworkResolverSetupPlan(valid) error = %v", err)
 	}
-	invalidPlan := plan
-	invalidPlan.OperationState = domain.OperationRunning
-	wrongOperationPlan := plan
-	wrongOperationPlan.OperationID = "operation-other"
 	for _, test := range []struct {
 		name     string
-		plan     ticketissuer.ResolverPlan
+		mutate   func(*ticketissuer.ResolverPlan)
 		selected domain.OperationID
 		revision domain.Sequence
 	}{
-		{name: "invalid", plan: invalidPlan, selected: plan.OperationID, revision: plan.OperationRevision},
-		{name: "operation", plan: wrongOperationPlan, selected: plan.OperationID, revision: plan.OperationRevision},
-		{name: "revision", plan: plan, selected: plan.OperationID, revision: plan.OperationRevision + 1},
+		{
+			name: "purpose",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.Purpose = ticketissuer.ResolverPlanPurposeGlobalRelease
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "checkpoint revision",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.CheckpointRevision = 1
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "checkpoint phase",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.CheckpointPhase = ticketissuer.ResolverCheckpointPhaseGlobalRelease
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "kind",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.Operation.Kind = domain.OperationKindNetworkRelease
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "state",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.Operation.State = domain.OperationRunning
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "phase",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.Operation.Phase = "resolver"
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "mutation",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.Mutation = helper.OperationReleaseResolver
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "source fingerprint",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.ExpectedSourceOwnershipFingerprint = strings.Repeat("f", 64)
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name: "operation",
+			mutate: func(candidate *ticketissuer.ResolverPlan) {
+				candidate.Operation.ID = "operation-other"
+			},
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision,
+		},
+		{
+			name:     "revision",
+			selected: plan.Operation.ID,
+			revision: plan.OperationRevision + 1,
+		},
 	} {
 		t.Run("plan "+test.name, func(t *testing.T) {
-			if err := validateNetworkResolverSetupPlan(test.plan, test.selected, test.revision); err == nil {
+			candidate := plan
+			if test.mutate != nil {
+				test.mutate(&candidate)
+			}
+			if err := validateNetworkResolverSetupPlan(candidate, test.selected, test.revision); err == nil {
 				t.Fatal("validateNetworkResolverSetupPlan() error = nil")
 			}
 		})
@@ -1376,10 +1450,21 @@ func (fixture *networkResolverSetupTestFixture) resolverPlan(
 	target := fixture.source.Record
 	target.SchemaVersion = ownership.NetworkPolicySchemaVersion
 	target.NetworkPolicyFingerprint = policyFingerprint
+	startedAt := fixture.now.Add(-time.Minute)
 	return ticketissuer.ResolverPlan{
-		OperationID:                        "operation-resolver",
+		Purpose: ticketissuer.ResolverPlanPurposeSetup,
+		Operation: domain.Operation{
+			ID:          "operation-resolver",
+			IntentID:    "intent-resolver",
+			Kind:        domain.OperationKindNetworkResolverSetup,
+			State:       domain.OperationRequiresApproval,
+			Phase:       string(ticketissuer.ResolverCheckpointPhaseSetupApproval),
+			RequestedAt: fixture.now.Add(-2 * time.Minute),
+			StartedAt:   &startedAt,
+		},
 		OperationRevision:                  revision,
-		OperationState:                     domain.OperationRequiresApproval,
+		CheckpointRevision:                 0,
+		CheckpointPhase:                    ticketissuer.ResolverCheckpointPhaseSetupApproval,
 		Mutation:                           helper.OperationEnsureResolver,
 		ExpectedSourceOwnershipFingerprint: fixture.source.Fingerprint,
 		TargetOwnership:                    target,
@@ -1399,7 +1484,7 @@ func (fixture *networkResolverSetupTestFixture) resolverResult(
 	}
 	ownershipFingerprint := networkResolverSetupTestOwnershipFingerprint(t, plan.TargetOwnership)
 	return ticketissuer.ResolverResult{
-		OperationID:          plan.OperationID,
+		OperationID:          plan.Operation.ID,
 		Reference:            helper.TicketReference(strings.Repeat("1", 64)),
 		Operation:            helper.OperationEnsureResolver,
 		PolicyFingerprint:    policyFingerprint,

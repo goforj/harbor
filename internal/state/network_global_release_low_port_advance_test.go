@@ -182,13 +182,18 @@ func TestGlobalNetworkReleaseLowPortReceiptFencesLaterPhases(t *testing.T) {
 			if _, err := journal.AdvanceGlobalNetworkReleaseLowPorts(context.Background(), request); err != nil {
 				t.Fatalf("advance low ports: %v", err)
 			}
+			resolverRequest := AdvanceGlobalNetworkReleaseResolverRequest{}
 			if test.advanceCheckpoint {
+				resolverRequest = validAdvanceGlobalNetworkReleaseResolverRequest(stage, request.CheckpointRevision+1)
+				if _, err := journal.AdvanceGlobalNetworkReleaseResolver(context.Background(), resolverRequest); err != nil {
+					t.Fatalf("advance resolver: %v", err)
+				}
 				globalNetworkReleaseStageExec(t, connection, "UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1")
 				globalNetworkReleaseStageExec(
 					t,
 					connection,
 					"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
-					GlobalNetworkReleasePlanPhaseTrust,
+					GlobalNetworkReleasePlanPhaseLoopbacks,
 				)
 			} else {
 				globalNetworkReleaseStageExec(
@@ -209,9 +214,11 @@ func TestGlobalNetworkReleaseLowPortReceiptFencesLaterPhases(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
 			}
-			if plan.Phase != GlobalNetworkReleasePlanPhaseTrust ||
+			if plan.Phase != GlobalNetworkReleasePlanPhaseLoopbacks ||
 				plan.LowPortReceipt == nil ||
-				*plan.LowPortReceipt != request.Receipt {
+				*plan.LowPortReceipt != request.Receipt ||
+				plan.ResolverReceipt == nil ||
+				*plan.ResolverReceipt != resolverRequest.Receipt {
 				t.Fatalf("later release plan = %#v", plan)
 			}
 		})

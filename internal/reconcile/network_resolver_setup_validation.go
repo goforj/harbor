@@ -72,16 +72,55 @@ func validateNetworkResolverSetupPlan(
 	operationID domain.OperationID,
 	revision domain.Sequence,
 ) error {
+	if plan.Purpose != ticketissuer.ResolverPlanPurposeSetup {
+		return fmt.Errorf("network resolver setup plan purpose is %q, want %q", plan.Purpose, ticketissuer.ResolverPlanPurposeSetup)
+	}
+	if plan.CheckpointRevision != 0 {
+		return fmt.Errorf("network resolver setup plan checkpoint revision is %d, want 0", plan.CheckpointRevision)
+	}
+	if plan.CheckpointPhase != ticketissuer.ResolverCheckpointPhaseSetupApproval {
+		return fmt.Errorf("network resolver setup plan checkpoint phase is %q, want %q", plan.CheckpointPhase, ticketissuer.ResolverCheckpointPhaseSetupApproval)
+	}
+	if plan.Operation.Kind != domain.OperationKindNetworkResolverSetup {
+		return fmt.Errorf("network resolver setup plan operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkResolverSetup)
+	}
+	if plan.Operation.State != domain.OperationRequiresApproval {
+		return fmt.Errorf("network resolver setup plan operation state is %q, want %q", plan.Operation.State, domain.OperationRequiresApproval)
+	}
+	if plan.Operation.Phase != string(ticketissuer.ResolverCheckpointPhaseSetupApproval) {
+		return fmt.Errorf("network resolver setup plan operation phase is %q, want %q", plan.Operation.Phase, ticketissuer.ResolverCheckpointPhaseSetupApproval)
+	}
+	if plan.Mutation != helper.OperationEnsureResolver {
+		return fmt.Errorf("network resolver setup plan mutation is %q, want %q", plan.Mutation, helper.OperationEnsureResolver)
+	}
+	sourceFingerprint, err := networkResolverSetupPlanSourceFingerprint(plan.TargetOwnership)
+	if err != nil {
+		return fmt.Errorf("derive network resolver setup source ownership fingerprint: %w", err)
+	}
+	if plan.ExpectedSourceOwnershipFingerprint != sourceFingerprint {
+		return fmt.Errorf("network resolver setup plan source ownership fingerprint does not match its target-derived schema-1 record")
+	}
 	if err := plan.Validate(); err != nil {
 		return fmt.Errorf("network resolver setup plan is invalid: %w", err)
 	}
-	if plan.OperationID != operationID {
+	if plan.Operation.ID != operationID {
 		return fmt.Errorf("network resolver setup plan belongs to another operation")
 	}
 	if plan.OperationRevision != revision {
 		return &state.StaleRevisionError{OperationID: operationID, Expected: revision, Actual: plan.OperationRevision}
 	}
 	return nil
+}
+
+// networkResolverSetupPlanSourceFingerprint derives the schema-one ownership fingerprint that setup must transition from.
+func networkResolverSetupPlanSourceFingerprint(target ownership.Record) (string, error) {
+	source := target
+	source.SchemaVersion = ownership.IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	if err := source.Validate(); err != nil {
+		return "", err
+	}
+	return source.Fingerprint()
 }
 
 // validateNetworkResolverSetupResult binds helper launch metadata to the exact durable policy and target.
@@ -101,7 +140,7 @@ func validateNetworkResolverSetupResult(
 	if err != nil {
 		return fmt.Errorf("fingerprint approved resolver ownership: %w", err)
 	}
-	if result.OperationID != plan.OperationID ||
+	if result.OperationID != plan.Operation.ID ||
 		result.Operation != helper.OperationEnsureResolver ||
 		result.PolicyFingerprint != policyFingerprint ||
 		result.OwnershipFingerprint != ownershipFingerprint {

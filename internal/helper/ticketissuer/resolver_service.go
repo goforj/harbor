@@ -35,30 +35,74 @@ func (request ResolverRequest) Validate() error {
 	return request.OperationID.Validate()
 }
 
-// ResolverPlan is the immutable schema transition and resolver authority approved by one durable operation.
-type ResolverPlan struct {
-	OperationID                        domain.OperationID
-	OperationRevision                  domain.Sequence
-	OperationState                     domain.OperationState
-	Mutation                           helper.Operation
-	ExpectedSourceOwnershipFingerprint string
-	TargetOwnership                    ownership.Record
-	Policy                             networkpolicy.Policy
+// ResolverPlanPurpose identifies the lifecycle that granted a resolver mutation.
+type ResolverPlanPurpose string
+
+const (
+	// ResolverPlanPurposeSetup permits resolver setup to ensure the resolver route.
+	ResolverPlanPurposeSetup ResolverPlanPurpose = "network_resolver_setup"
+	// ResolverPlanPurposeGlobalRelease permits global release to remove the resolver route.
+	ResolverPlanPurposeGlobalRelease ResolverPlanPurpose = "global_network_release"
+)
+
+// ResolverCheckpointPhase identifies the durable checkpoint that fences resolver ticket publication.
+type ResolverCheckpointPhase string
+
+const (
+	// ResolverCheckpointPhaseSetupApproval identifies the setup approval checkpoint before resolver installation.
+	ResolverCheckpointPhaseSetupApproval ResolverCheckpointPhase = "awaiting resolver approval"
+	// ResolverCheckpointPhaseGlobalRelease identifies the global release checkpoint after low-port release.
+	ResolverCheckpointPhaseGlobalRelease ResolverCheckpointPhase = "resolver"
+)
+
+// Validate rejects lifecycle purposes that have no narrow resolver admission contract.
+func (purpose ResolverPlanPurpose) Validate() error {
+	switch purpose {
+	case ResolverPlanPurposeSetup, ResolverPlanPurposeGlobalRelease:
+		return nil
+	default:
+		return fmt.Errorf("resolver approval purpose %q is unsupported", purpose)
+	}
 }
 
-// Validate rejects plans whose source, target, and policy cannot describe one exact ownership upgrade.
+// ResolverPlan is the complete durable and native authority approved for one resolver mutation.
+type ResolverPlan struct {
+	// Purpose separates setup installation from global-release removal authority.
+	Purpose ResolverPlanPurpose
+	// Operation carries the durable lifecycle identity that owns this capability.
+	Operation domain.Operation
+	// OperationRevision fences the durable operation snapshot read by the issuer.
+	OperationRevision domain.Sequence
+	// CheckpointRevision fences release issuance after the preceding durable phase.
+	CheckpointRevision domain.Sequence
+	// CheckpointPhase names the lifecycle point that permits the selected mutation.
+	CheckpointPhase ResolverCheckpointPhase
+	// Mutation fixes the helper action so a lifecycle cannot substitute another resolver change.
+	Mutation helper.Operation
+	// ExpectedSourceOwnershipFingerprint binds the admission record before ticket publication.
+	ExpectedSourceOwnershipFingerprint string
+	// TargetOwnership supplies the schema and installation identity for native admission.
+	TargetOwnership ownership.Record
+	// Policy supplies the exact resolver policy that native observation must classify.
+	Policy networkpolicy.Policy
+}
+
+// Validate rejects plans that do not describe one exact resolver lifecycle authority.
 func (plan ResolverPlan) Validate() error {
-	if err := plan.OperationID.Validate(); err != nil {
-		return err
+	if err := plan.Operation.Validate(); err != nil {
+		return fmt.Errorf("resolver approval operation: %w", err)
+	}
+	if plan.Operation.ProjectID != "" {
+		return errors.New("resolver approval operation must be global")
 	}
 	if plan.OperationRevision == 0 || plan.OperationRevision > domain.MaximumSequence {
 		return fmt.Errorf("resolver approval operation revision must be between 1 and %d", domain.MaximumSequence)
 	}
-	if plan.OperationState != domain.OperationRequiresApproval {
-		return fmt.Errorf("resolver approval operation state is %q, want %q", plan.OperationState, domain.OperationRequiresApproval)
+	if err := plan.Purpose.Validate(); err != nil {
+		return err
 	}
-	if plan.Mutation != helper.OperationEnsureResolver {
-		return fmt.Errorf("resolver approval mutation %q is not allowlisted", plan.Mutation)
+	if err := validateResolverPlanLifecycle(plan); err != nil {
+		return err
 	}
 	if err := plan.TargetOwnership.Validate(); err != nil {
 		return fmt.Errorf("resolver approval target ownership: %w", err)
@@ -80,12 +124,64 @@ func (plan ResolverPlan) Validate() error {
 	if policyFingerprint != plan.TargetOwnership.NetworkPolicyFingerprint {
 		return fmt.Errorf("resolver approval policy does not match target ownership")
 	}
-	_, sourceFingerprint, err := resolverPlanSourceOwnership(plan.TargetOwnership)
-	if err != nil {
-		return err
-	}
-	if plan.ExpectedSourceOwnershipFingerprint != sourceFingerprint {
-		return fmt.Errorf("resolver approval source ownership fingerprint does not match its target-derived schema-1 record")
+	return nil
+}
+
+// validateResolverPlanLifecycle keeps setup and release authority disjoint despite sharing resolver request validation.
+func validateResolverPlanLifecycle(plan ResolverPlan) error {
+	switch plan.Purpose {
+	case ResolverPlanPurposeSetup:
+		if plan.CheckpointRevision != 0 {
+			return fmt.Errorf("resolver setup checkpoint revision is %d, want 0", plan.CheckpointRevision)
+		}
+		if plan.CheckpointPhase != ResolverCheckpointPhaseSetupApproval {
+			return fmt.Errorf("resolver setup checkpoint phase is %q, want %q", plan.CheckpointPhase, ResolverCheckpointPhaseSetupApproval)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkResolverSetup {
+			return fmt.Errorf("resolver setup operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkResolverSetup)
+		}
+		if plan.Operation.State != domain.OperationRequiresApproval {
+			return fmt.Errorf("resolver setup operation state is %q, want %q", plan.Operation.State, domain.OperationRequiresApproval)
+		}
+		if plan.Operation.Phase != string(ResolverCheckpointPhaseSetupApproval) {
+			return fmt.Errorf("resolver setup operation phase is %q, want %q", plan.Operation.Phase, ResolverCheckpointPhaseSetupApproval)
+		}
+		if plan.Mutation != helper.OperationEnsureResolver {
+			return fmt.Errorf("resolver setup mutation is %q, want %q", plan.Mutation, helper.OperationEnsureResolver)
+		}
+		_, sourceFingerprint, err := resolverPlanSourceOwnership(plan.TargetOwnership)
+		if err != nil {
+			return err
+		}
+		if plan.ExpectedSourceOwnershipFingerprint != sourceFingerprint {
+			return errors.New("resolver approval source ownership fingerprint does not match its target-derived schema-1 record")
+		}
+	case ResolverPlanPurposeGlobalRelease:
+		if plan.CheckpointRevision == 0 || plan.CheckpointRevision > domain.MaximumSequence {
+			return fmt.Errorf("resolver release checkpoint revision must be between 1 and %d", domain.MaximumSequence)
+		}
+		if plan.CheckpointPhase != ResolverCheckpointPhaseGlobalRelease {
+			return fmt.Errorf("resolver release checkpoint phase is %q, want %q", plan.CheckpointPhase, ResolverCheckpointPhaseGlobalRelease)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkRelease {
+			return fmt.Errorf("resolver release operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkRelease)
+		}
+		if plan.Operation.State != domain.OperationRunning {
+			return fmt.Errorf("resolver release operation state is %q, want %q", plan.Operation.State, domain.OperationRunning)
+		}
+		if plan.Operation.Phase != "releasing network runtime" {
+			return fmt.Errorf("resolver release operation phase is %q, want %q", plan.Operation.Phase, "releasing network runtime")
+		}
+		if plan.Mutation != helper.OperationReleaseResolver {
+			return fmt.Errorf("resolver release mutation is %q, want %q", plan.Mutation, helper.OperationReleaseResolver)
+		}
+		targetFingerprint, err := plan.TargetOwnership.Fingerprint()
+		if err != nil {
+			return fmt.Errorf("resolver release target ownership fingerprint: %w", err)
+		}
+		if plan.ExpectedSourceOwnershipFingerprint != targetFingerprint {
+			return errors.New("resolver release source ownership fingerprint does not match its target record")
+		}
 	}
 	return nil
 }
@@ -120,7 +216,7 @@ func (result ResolverResult) Validate(now time.Time) error {
 	if err := result.Reference.Validate(); err != nil {
 		return err
 	}
-	if result.Operation != helper.OperationEnsureResolver {
+	if result.Operation != helper.OperationEnsureResolver && result.Operation != helper.OperationReleaseResolver {
 		return fmt.Errorf("resolver approval result operation %q is unsupported", result.Operation)
 	}
 	if !canonicalSHA256Fingerprint(result.PolicyFingerprint) {
@@ -305,7 +401,7 @@ func (service *ResolverService) Issue(
 	if err != nil {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: construct resolver request: %w", err)
 	}
-	observationFingerprint, err := service.observeResolver(ctx, resolverRequest)
+	observationFingerprint, err := service.observeResolver(ctx, plan, resolverRequest)
 	if err != nil {
 		return ResolverResult{}, err
 	}
@@ -318,13 +414,13 @@ func (service *ResolverService) Issue(
 	if err != nil {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: revalidate approval plan: %w", err)
 	}
-	if confirmedPlan != plan {
+	if !sameResolverPlan(plan, confirmedPlan) {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: durable approval plan changed before publication")
 	}
 	if _, err := service.observeSourceOwnership(ctx, requesterIdentity, confirmedPlan); err != nil {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: revalidate ownership: %w", err)
 	}
-	confirmedResolverFingerprint, err := service.observeResolver(ctx, resolverRequest)
+	confirmedResolverFingerprint, err := service.observeResolver(ctx, confirmedPlan, resolverRequest)
 	if err != nil {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: revalidate resolver: %w", err)
 	}
@@ -338,7 +434,7 @@ func (service *ResolverService) Issue(
 
 	reference, publishErr := service.publisher.Publish(ctx, ticket, privateKey)
 	result := ResolverResult{
-		OperationID:          plan.OperationID,
+		OperationID:          plan.Operation.ID,
 		Reference:            reference,
 		Operation:            plan.Mutation,
 		PolicyFingerprint:    plan.TargetOwnership.NetworkPolicyFingerprint,
@@ -374,13 +470,13 @@ func (service *ResolverService) resolvePlan(ctx context.Context, request Resolve
 	if err := plan.Validate(); err != nil {
 		return ResolverPlan{}, fmt.Errorf("issue helper resolver ticket: invalid approval plan: %w", err)
 	}
-	if plan.OperationID != request.OperationID {
+	if plan.Operation.ID != request.OperationID {
 		return ResolverPlan{}, fmt.Errorf("issue helper resolver ticket: approval plan does not match its requested operation")
 	}
 	return plan, nil
 }
 
-// observeSourceOwnership requires the daemon projection to remain the exact schema-1 source until confirmation commits.
+// observeSourceOwnership applies the ownership admission contract for the selected lifecycle.
 func (service *ResolverService) observeSourceOwnership(
 	ctx context.Context,
 	requesterIdentity string,
@@ -400,24 +496,36 @@ func (service *ResolverService) observeSourceOwnership(
 	if err != nil {
 		return ownership.Observation{}, err
 	}
-	if observation.Fingerprint != fingerprint || fingerprint != plan.ExpectedSourceOwnershipFingerprint {
-		return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: ownership projection does not match the approved schema-1 source")
+	if observation.Fingerprint != fingerprint {
+		return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: ownership projection fingerprint is invalid")
 	}
-	source, _, err := resolverPlanSourceOwnership(plan.TargetOwnership)
+	want := plan.TargetOwnership
+	wantFingerprint, err := want.Fingerprint()
 	if err != nil {
 		return ownership.Observation{}, err
 	}
-	if observation.Record != source {
-		return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: ownership projection differs from the approved schema-1 source")
+	if plan.Purpose == ResolverPlanPurposeSetup {
+		want, wantFingerprint, err = resolverPlanSourceOwnership(plan.TargetOwnership)
+		if err != nil {
+			return ownership.Observation{}, err
+		}
+		if wantFingerprint != plan.ExpectedSourceOwnershipFingerprint {
+			return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: approved schema-1 source is invalid")
+		}
+	} else if wantFingerprint != plan.ExpectedSourceOwnershipFingerprint {
+		return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: approved schema-2 ownership is invalid")
 	}
-	if requesterIdentity != source.OwnerIdentity {
+	if fingerprint != wantFingerprint || observation.Record != want {
+		return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: ownership projection does not match the approved ownership")
+	}
+	if requesterIdentity != want.OwnerIdentity {
 		return ownership.Observation{}, fmt.Errorf("issue helper resolver ticket: authenticated requester does not own the machine claim")
 	}
 	return observation, nil
 }
 
-// observeResolver admits only complete, nonforeign resolver states that an ensure operation may safely converge.
-func (service *ResolverService) observeResolver(ctx context.Context, request resolver.Request) (string, error) {
+// observeResolver admits native resolver state only when the selected mutation can safely consume it.
+func (service *ResolverService) observeResolver(ctx context.Context, plan ResolverPlan, request resolver.Request) (string, error) {
 	observation, err := service.resolver.Observe(ctx, request)
 	if err != nil {
 		return "", fmt.Errorf("issue helper resolver ticket: observe resolver: %w", err)
@@ -434,12 +542,26 @@ func (service *ResolverService) observeResolver(ctx context.Context, request res
 	if err != nil {
 		return "", fmt.Errorf("issue helper resolver ticket: classify resolver observation: %w", err)
 	}
-	switch assessment.State {
-	case resolver.StateAbsent, resolver.StateExact, resolver.StateOwnedDrifted:
-	case resolver.StateForeign, resolver.StateAmbiguous, resolver.StateIndeterminate:
-		return "", fmt.Errorf("issue helper resolver ticket: resolver state %q cannot be safely ensured", assessment.State)
+	switch plan.Purpose {
+	case ResolverPlanPurposeSetup:
+		switch assessment.State {
+		case resolver.StateAbsent, resolver.StateExact, resolver.StateOwnedDrifted:
+		case resolver.StateForeign, resolver.StateAmbiguous, resolver.StateIndeterminate:
+			return "", fmt.Errorf("issue helper resolver ticket: resolver state %q cannot be safely ensured", assessment.State)
+		default:
+			return "", fmt.Errorf("issue helper resolver ticket: resolver state %q is unsupported", assessment.State)
+		}
+	case ResolverPlanPurposeGlobalRelease:
+		if assessment.State == resolver.StateIndeterminate || assessment.Owned == resolver.OwnedStateAmbiguous {
+			return "", fmt.Errorf("issue helper resolver ticket: resolver ownership state %q cannot be safely released", assessment.Owned)
+		}
+		switch assessment.Owned {
+		case resolver.OwnedStateAbsent, resolver.OwnedStateExact, resolver.OwnedStateDrifted:
+		default:
+			return "", fmt.Errorf("issue helper resolver ticket: resolver ownership state %q is unsupported", assessment.Owned)
+		}
 	default:
-		return "", fmt.Errorf("issue helper resolver ticket: resolver state %q is unsupported", assessment.State)
+		return "", fmt.Errorf("issue helper resolver ticket: resolver purpose %q is unsupported", plan.Purpose)
 	}
 	fingerprint, err := observation.Fingerprint()
 	if err != nil {
@@ -506,4 +628,17 @@ func canonicalSHA256Fingerprint(value string) bool {
 	}
 	decoded, err := hex.DecodeString(value)
 	return err == nil && hex.EncodeToString(decoded) == value
+}
+
+// sameResolverPlan compares every durable resolver authority dimension before publication.
+func sameResolverPlan(left ResolverPlan, right ResolverPlan) bool {
+	return sameLowPortOperation(left.Operation, right.Operation) &&
+		left.Purpose == right.Purpose &&
+		left.OperationRevision == right.OperationRevision &&
+		left.CheckpointRevision == right.CheckpointRevision &&
+		left.CheckpointPhase == right.CheckpointPhase &&
+		left.Mutation == right.Mutation &&
+		left.ExpectedSourceOwnershipFingerprint == right.ExpectedSourceOwnershipFingerprint &&
+		left.TargetOwnership == right.TargetOwnership &&
+		left.Policy == right.Policy
 }
