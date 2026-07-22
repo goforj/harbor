@@ -145,7 +145,7 @@ func TestCallerFromRequestRequiresNegotiatedProductBoundary(t *testing.T) {
 	valid := session.Request{Peer: session.Peer{
 		Role:         rpc.RoleDesktop,
 		Protocol:     protocolV1,
-		Capabilities: daemonCapabilities(false),
+		Capabilities: daemonCapabilities(false, false),
 	}}
 	caller, err := callerFromRequest(testClientPeer, valid)
 	if err != nil || caller.Transport != testClientPeer {
@@ -284,7 +284,7 @@ func TestContextualStatusValidationRejectsContradictions(t *testing.T) {
 		Role:         rpc.RoleCLI,
 		BuildVersion: "client-build",
 		Protocol:     protocolV1,
-		Capabilities: daemonCapabilities(false),
+		Capabilities: daemonCapabilities(false, false),
 	}
 	if err := validateServingStatus(status, testBuild, clientPeer); err != nil {
 		t.Fatalf("validate serving status: %v", err)
@@ -293,7 +293,7 @@ func TestContextualStatusValidationRejectsContradictions(t *testing.T) {
 		Role:         rpc.RoleDaemon,
 		BuildVersion: testBuild.Version,
 		Protocol:     protocolV1,
-		Capabilities: daemonCapabilities(false),
+		Capabilities: daemonCapabilities(false, false),
 	}
 	if err := validateReceivedStatus(status, daemonPeer); err != nil {
 		t.Fatalf("validate received status: %v", err)

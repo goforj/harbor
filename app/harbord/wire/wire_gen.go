@@ -74,8 +74,12 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	if err != nil {
 		return App{}, err
 	}
+	wireNetworkReleaseCapability, err := provideNetworkReleaseCapability(networkStateRepo, operationJournal, store, machineOwnershipProjectionSource, controller, networkResolverSetupResolverObserver)
+	if err != nil {
+		return App{}, err
+	}
 	shutdown := daemon.NewShutdown()
-	server, err := provideControlServer(authorityAuthority, wireNetworkDataPlaneSetupCapability, shutdown, appLogger)
+	server, err := provideControlServer(authorityAuthority, wireNetworkDataPlaneSetupCapability, wireNetworkReleaseCapability, shutdown, appLogger)
 	if err != nil {
 		return App{}, err
 	}
@@ -83,7 +87,7 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	if err != nil {
 		return App{}, err
 	}
-	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, operationJournal, wireNetworkDataPlaneSetupCapability, shutdown)
+	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, operationJournal, wireNetworkDataPlaneSetupCapability, wireNetworkReleaseCapability, shutdown)
 	if err != nil {
 		return App{}, err
 	}

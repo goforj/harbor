@@ -189,6 +189,16 @@ func NewNetworkDataPlaneSetupNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 
+// NewNetworkReleaseConflictError classifies durable state that prevents global network release progress.
+func NewNetworkReleaseConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewNetworkReleaseNotFoundError classifies a global network release operation that is no longer durable.
+func NewNetworkReleaseNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
 // NewNetworkResolverSetupPrivilegedHelperRequiredError reports an absent resolver helper boundary without exposing its path.
 func NewNetworkResolverSetupPrivilegedHelperRequiredError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)

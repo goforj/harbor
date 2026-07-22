@@ -51,6 +51,7 @@ type projectLifecycleRuntime struct {
 	daemon.Runtime
 	lifecycle           projectLifecycleAuthority
 	release             networkReleaseArmedReader
+	networkRelease      networkReleaseCapability
 	postRuntimeRecovery func(context.Context) error
 	done                chan struct{}
 	doneOnce            sync.Once
@@ -115,11 +116,23 @@ type networkDataPlaneSetupCapability struct {
 	recovery  networkDataPlaneSetupRecoveryAuthority
 }
 
+// networkReleaseRecoveryCoordinator resumes a staged global network release after the cold anchor starts.
+type networkReleaseRecoveryCoordinator interface {
+	Recover(context.Context) error
+}
+
+// networkReleaseCapability retains optional control and restart-recovery authority together.
+type networkReleaseCapability struct {
+	authority *authority.NetworkReleaseAuthority
+	recovery  networkReleaseRecoveryCoordinator
+}
+
 // newProjectLifecycleRuntime creates one completion signal spanning both network and process authority.
 func newProjectLifecycleRuntime(
 	runtime daemon.Runtime,
 	lifecycle projectLifecycleAuthority,
 	release networkReleaseArmedReader,
+	networkRelease networkReleaseCapability,
 	postRuntimeRecovery func(context.Context) error,
 ) *projectLifecycleRuntime {
 	if release == nil {
@@ -132,6 +145,7 @@ func newProjectLifecycleRuntime(
 		Runtime:             runtime,
 		lifecycle:           lifecycle,
 		release:             release,
+		networkRelease:      networkRelease,
 		postRuntimeRecovery: postRuntimeRecovery,
 		done:                make(chan struct{}),
 	}
@@ -145,6 +159,19 @@ func (runtime *projectLifecycleRuntime) Start(ctx context.Context) error {
 		return errors.Join(err, closeErr)
 	}
 	if runtime.release.NetworkReleaseArmed() {
+		if runtime.networkRelease.recovery == nil {
+			err := errors.New("recover global network release: platform recovery authority is unavailable")
+			closeErr := runtime.closeOwned(context.Background())
+			joined := errors.Join(err, closeErr)
+			runtime.finish(joined)
+			return joined
+		}
+		if err := runtime.networkRelease.recovery.Recover(ctx); err != nil {
+			closeErr := runtime.closeOwned(context.Background())
+			joined := errors.Join(err, closeErr)
+			runtime.finish(joined)
+			return joined
+		}
 		go runtime.joinUnexpectedNetworkStop()
 		return nil
 	}
@@ -223,6 +250,7 @@ func signalClosed(done <-chan struct{}) bool {
 func provideControlServer(
 	controlAuthority *authority.Authority,
 	networkDataPlaneSetup networkDataPlaneSetupCapability,
+	networkRelease networkReleaseCapability,
 	shutdown *daemon.Shutdown,
 	appLogger *logger.AppLogger,
 ) (*control.Server, error) {
@@ -238,6 +266,7 @@ func provideControlServer(
 		ObserveError:                   newControlErrorObserver(appLogger),
 		ManagedAuthority:               controlAuthority,
 		NetworkDataPlaneSetupAuthority: networkDataPlaneSetup.authority,
+		NetworkReleaseAuthority:        networkRelease.authority,
 	})
 }
 
@@ -507,6 +536,7 @@ func provideDaemonRunner(
 	lifecycle *reconcile.ProjectLifecycleCoordinator,
 	operations *state.OperationJournal,
 	networkDataPlaneSetup networkDataPlaneSetupCapability,
+	networkRelease networkReleaseCapability,
 	shutdown *daemon.Shutdown,
 ) (*daemon.Runner, error) {
 	if runtimeController == nil {
@@ -534,7 +564,7 @@ func provideDaemonRunner(
 		Server:              server,
 		Readiness:           readiness,
 		Recovery:            recovery,
-		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle, runtimeController, postRuntimeRecovery),
+		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle, runtimeController, networkRelease, postRuntimeRecovery),
 		ShutdownRequested:   shutdown.Requested(),
 		RuntimeCloseTimeout: daemonRuntimeCloseTimeout(runtimeController),
 	})

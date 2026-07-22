@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -20,6 +21,56 @@ type Store struct {
 	networkState *models.NetworkStateRepo
 	mutations    *MutationCoordinator
 	now          func() time.Time
+}
+
+// GlobalNetworkReleaseProjectRevisions returns the complete canonical project revision set at one expected durable high-water mark.
+func (store *Store) GlobalNetworkReleaseProjectRevisions(
+	ctx context.Context,
+	expectedSnapshotSequence domain.Sequence,
+) ([]NetworkProjectRevision, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := sequenceToModelInt("expected global network release snapshot", expectedSnapshotSequence, false); err != nil {
+		return nil, err
+	}
+	builder, err := store.projects.WithContext(ctx).Builder()
+	if err != nil {
+		return nil, fmt.Errorf("open global network release project revisions: %w", err)
+	}
+	var result []NetworkProjectRevision
+	err = builder.Transaction(func(tx *gorm.DB) error {
+		sequence, err := readSnapshotSequence(tx)
+		if err != nil {
+			return err
+		}
+		if sequence != expectedSnapshotSequence {
+			return fmt.Errorf("global network release snapshot sequence %d differs from expected %d", sequence, expectedSnapshotSequence)
+		}
+		projects, err := readProjectRecords(tx)
+		if err != nil {
+			return err
+		}
+		if err := validateVisibleSequences(sequence, projects, nil, nil); err != nil {
+			return err
+		}
+		result = make([]NetworkProjectRevision, 0, len(projects))
+		for _, project := range projects {
+			result = append(result, NetworkProjectRevision{
+				ProjectID: project.Project.ID,
+				Revision:  project.Revision,
+			})
+		}
+		if _, err := validateNetworkProjectRevisions(result); err != nil {
+			return corruptStateError("global network release project revisions", "aggregate", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read global network release project revisions: %w", err)
+	}
+	return slices.Clone(result), nil
 }
 
 // NewStore creates the aggregate store from generated named-database repositories and the shared writer coordinator.

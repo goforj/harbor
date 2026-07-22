@@ -50,6 +50,8 @@ type ServerConfig struct {
 	ManagedAuthority managedsession.Authority
 	// NetworkDataPlaneSetupAuthority optionally enables trusted-ingress setup when every narrow dependency is available.
 	NetworkDataPlaneSetupAuthority NetworkDataPlaneSetupAuthority
+	// NetworkReleaseAuthority optionally enables machine-global network release control.
+	NetworkReleaseAuthority NetworkReleaseAuthority
 }
 
 // Server adapts authenticated local connections to the typed Harbor control API.
@@ -108,7 +110,11 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	var acceptShutdown sync.Once
 	var shutdownCaller Caller
 	dataPlaneSetupEnabled := !networkDataPlaneSetupAuthorityIsNil(server.config.NetworkDataPlaneSetupAuthority)
-	serverCapabilities := daemonCapabilities(dataPlaneSetupEnabled)
+	networkReleaseEnabled := !networkReleaseAuthorityIsNil(server.config.NetworkReleaseAuthority)
+	serverCapabilities := daemonCapabilities(
+		dataPlaneSetupEnabled,
+		networkReleaseEnabled,
+	)
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
 	var managedEventHandler session.EventHandler
@@ -171,6 +177,10 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		handlers[methodNetworkDataPlaneTrustConfirm] = server.networkDataPlaneTrustConfirmHandler(transportPeer)
 		handlers[methodNetworkDataPlaneLowPortPrepare] = server.networkDataPlaneLowPortPrepareHandler(transportPeer)
 		handlers[methodNetworkDataPlaneLowPortConfirm] = server.networkDataPlaneLowPortConfirmHandler(transportPeer)
+	}
+	if networkReleaseEnabled {
+		handlers[methodNetworkReleaseStart] = server.networkReleaseStartHandler(transportPeer)
+		handlers[methodNetworkReleaseRead] = server.networkReleaseReadHandler(transportPeer)
 	}
 
 	controlSession, err := session.NewServer(session.ServerConfig{

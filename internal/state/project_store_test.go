@@ -956,6 +956,119 @@ func seedSingleProjectStoreReadState(t *testing.T, connection *gorm.DB, projectI
 	mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = ? WHERE id = 1", revision)
 }
 
+// TestStoreGlobalNetworkReleaseProjectRevisionsReturnsCanonicalDefensiveFacts proves release staging cannot retain caller-mutated project revisions.
+func TestStoreGlobalNetworkReleaseProjectRevisionsReturnsCanonicalDefensiveFacts(t *testing.T) {
+	store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+	seedSingleProjectStoreReadState(t, connection, "project-release", 1)
+	first, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 1)
+	if err != nil {
+		t.Fatalf("GlobalNetworkReleaseProjectRevisions() error = %v", err)
+	}
+	if len(first) != 1 || first[0].ProjectID != "project-release" || first[0].Revision != 1 {
+		t.Fatalf("GlobalNetworkReleaseProjectRevisions() = %#v", first)
+	}
+	first[0].Revision = 99
+	second, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 1)
+	if err != nil {
+		t.Fatalf("second GlobalNetworkReleaseProjectRevisions() error = %v", err)
+	}
+	if second[0].Revision != 1 {
+		t.Fatalf("second revisions = %#v, want defensive result", second)
+	}
+}
+
+// TestStoreGlobalNetworkReleaseProjectRevisionsReturnsInitializedCanonicalOrder proves an empty set remains explicit and project insertion order never becomes release authority.
+func TestStoreGlobalNetworkReleaseProjectRevisionsReturnsInitializedCanonicalOrder(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+		mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 1 WHERE id = 1")
+
+		revisions, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 1)
+		if err != nil {
+			t.Fatalf("GlobalNetworkReleaseProjectRevisions() error = %v", err)
+		}
+		if revisions == nil || len(revisions) != 0 {
+			t.Fatalf("GlobalNetworkReleaseProjectRevisions() = %#v, want initialized empty set", revisions)
+		}
+	})
+
+	t.Run("canonical order", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+		insertEmptyProjectStoreReadProject(t, connection, "project-beta", "/work/beta", "beta", 1)
+		insertEmptyProjectStoreReadProject(t, connection, "project-alpha", "/work/alpha", "alpha", 2)
+		mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 2 WHERE id = 1")
+
+		revisions, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 2)
+		if err != nil {
+			t.Fatalf("GlobalNetworkReleaseProjectRevisions() error = %v", err)
+		}
+		want := []NetworkProjectRevision{
+			{
+				ProjectID: "project-alpha",
+				Revision:  2,
+			},
+			{
+				ProjectID: "project-beta",
+				Revision:  1,
+			},
+		}
+		if !reflect.DeepEqual(revisions, want) {
+			t.Fatalf("GlobalNetworkReleaseProjectRevisions() = %#v, want %#v", revisions, want)
+		}
+	})
+}
+
+// TestStoreGlobalNetworkReleaseProjectRevisionsRejectsSnapshotDrift proves a release cannot combine facts from different durable instants.
+func TestStoreGlobalNetworkReleaseProjectRevisionsRejectsSnapshotDrift(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+	if _, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 2); err == nil {
+		t.Fatal("GlobalNetworkReleaseProjectRevisions() unexpectedly accepted a stale snapshot sequence")
+	}
+}
+
+// TestStoreGlobalNetworkReleaseProjectRevisionsHonorsCancellation proves no database read starts after cancellation.
+func TestStoreGlobalNetworkReleaseProjectRevisionsHonorsCancellation(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := store.GlobalNetworkReleaseProjectRevisions(ctx, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GlobalNetworkReleaseProjectRevisions() error = %v, want context cancellation", err)
+	}
+}
+
+// TestStoreGlobalNetworkReleaseProjectRevisionsRejectsStorageAndAggregateCorruption keeps missing or contradictory project facts out of release authority.
+func TestStoreGlobalNetworkReleaseProjectRevisionsRejectsStorageAndAggregateCorruption(t *testing.T) {
+	t.Run("storage", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+		mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 1 WHERE id = 1")
+		mustProjectStoreReadExec(t, connection, "DROP TABLE projects")
+
+		if _, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 1); err == nil {
+			t.Fatal("GlobalNetworkReleaseProjectRevisions() unexpectedly accepted missing project storage")
+		}
+	})
+
+	t.Run("shared revision", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+		weakenProjectStoreReadProjectsTable(t, connection)
+		insertEmptyProjectStoreReadProject(t, connection, "project-alpha", "/work/alpha", "alpha", 1)
+		insertEmptyProjectStoreReadProject(t, connection, "project-beta", "/work/beta", "beta", 1)
+		mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 1 WHERE id = 1")
+
+		_, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 1)
+		assertProjectStoreReadCorruption(t, err, "Harbor sequence", "reuses revision owned by")
+	})
+
+	t.Run("future revision", func(t *testing.T) {
+		store, connection := newProjectStoreReadTestHarness(t, 1, projectStoreReadTestClock)
+		insertEmptyProjectStoreReadProject(t, connection, "project-alpha", "/work/alpha", "alpha", 2)
+		mustProjectStoreReadExec(t, connection, "UPDATE harbor_state SET sequence = 1 WHERE id = 1")
+
+		_, err := store.GlobalNetworkReleaseProjectRevisions(t.Context(), 1)
+		assertProjectStoreReadCorruption(t, err, "Harbor sequence", "revision exceeds captured sequence 1")
+	})
+}
+
 // seedPopulatedProjectStoreReadState inserts rows out of presentation order to exercise every canonical sort.
 func seedPopulatedProjectStoreReadState(t *testing.T, connection *gorm.DB) {
 	t.Helper()

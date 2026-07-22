@@ -114,6 +114,18 @@ func (state recordingNetworkReleaseState) NetworkReleaseArmed() bool {
 	return state.armed
 }
 
+// recordingNetworkReleaseCoordinator records release recovery after cold-anchor startup.
+type recordingNetworkReleaseCoordinator struct {
+	events *[]string
+	err    error
+}
+
+// Recover records the release recovery boundary after the runtime control anchor starts.
+func (coordinator *recordingNetworkReleaseCoordinator) Recover(context.Context) error {
+	*coordinator.events = append(*coordinator.events, "release.recover")
+	return coordinator.err
+}
+
 // Recover records project-removal recovery before any lifecycle or endpoint work.
 func (recovery *recordingProjectUnregisterRecovery) Recover(context.Context) error {
 	*recovery.events = append(*recovery.events, "unregister.recover")
@@ -685,13 +697,13 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	}
 	shutdown := daemon.NewShutdown()
 	appLogger := logger.NewSilentLogger()
-	if _, err := provideControlServer(nil, networkDataPlaneSetupCapability{}, shutdown, appLogger); err == nil {
+	if _, err := provideControlServer(nil, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil) error = nil, want required authority error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, nil, appLogger); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, networkReleaseCapability{}, nil, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, shutdown, nil); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown, nil); err == nil {
 		t.Fatal("provideControlServer(nil logger) error = nil, want required application logger error")
 	}
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, ownership, runtimeController, openIssuer); err == nil {
@@ -712,25 +724,25 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, ownership, runtimeController, nil); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
 	}
-	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil server) error = nil, want required server error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil readiness) error = nil, want required readiness error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil runtime) error = nil, want required runtime error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil coordinator) error = nil, want required coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, nil); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, nil); err == nil {
 		t.Fatal("provideDaemonRunner(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil, operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil, operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil lifecycle) error = nil, want required project lifecycle coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil operations) error = nil, want required operation journal error")
 	}
 }
@@ -767,6 +779,7 @@ func TestProjectLifecycleRuntimeClosesRecoveredProcessesWhenNetworkStartFails(t 
 		network,
 		closer,
 		recordingNetworkReleaseState{},
+		networkReleaseCapability{},
 		func(context.Context) error { return nil },
 	)
 
@@ -795,6 +808,7 @@ func TestProjectLifecycleRuntimeResumesRecoveredStartsAfterNetworkStartup(t *tes
 		network,
 		lifecycle,
 		recordingNetworkReleaseState{},
+		networkReleaseCapability{},
 		func(context.Context) error { return nil },
 	)
 
@@ -827,6 +841,7 @@ func TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails(t *testing.T) {
 		network,
 		lifecycle,
 		recordingNetworkReleaseState{},
+		networkReleaseCapability{},
 		func(context.Context) error { return nil },
 	)
 
@@ -860,6 +875,7 @@ func TestProjectLifecycleRuntimeRunsPostRuntimeRecoveryBeforeResume(t *testing.T
 		network,
 		lifecycle,
 		recordingNetworkReleaseState{},
+		networkReleaseCapability{},
 		func(context.Context) error {
 			events = append(events, "post-runtime.recover")
 			return nil
@@ -895,6 +911,7 @@ func TestProjectLifecycleRuntimeRetainsControlAnchorWithoutProjectRecovery(t *te
 		network,
 		lifecycle,
 		release,
+		networkReleaseCapability{recovery: &recordingNetworkReleaseCoordinator{events: &events}},
 		func(context.Context) error {
 			events = append(events, "post-runtime.recover")
 			return nil
@@ -904,7 +921,7 @@ func TestProjectLifecycleRuntimeRetainsControlAnchorWithoutProjectRecovery(t *te
 	if err := runtime.Start(t.Context()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if got, want := strings.Join(events, ","), "network.start"; got != want {
+	if got, want := strings.Join(events, ","), "network.start,release.recover"; got != want {
 		t.Fatalf("startup events = %q, want %q", got, want)
 	}
 	select {
@@ -915,13 +932,94 @@ func TestProjectLifecycleRuntimeRetainsControlAnchorWithoutProjectRecovery(t *te
 	if err := runtime.Close(t.Context()); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if got, want := strings.Join(events, ","), "network.start,lifecycle.close,network.close"; got != want {
+	if got, want := strings.Join(events, ","), "network.start,release.recover,lifecycle.close,network.close"; got != want {
 		t.Fatalf("close events = %q, want %q", got, want)
 	}
 	select {
 	case <-runtime.Done():
 	default:
 		t.Fatal("Done() remained open after release control anchor close")
+	}
+}
+
+// TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenNetworkReleaseRecoveryFails prevents an armed release from leaving its cold anchor live.
+func TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenNetworkReleaseRecoveryFails(t *testing.T) {
+	events := []string{}
+	recoveryErr := errors.New("network release recovery failed")
+	lifecycleCloseErr := errors.New("lifecycle close failed")
+	networkCloseErr := errors.New("network close failed")
+	network := &recordingLifecycleNetworkRuntime{
+		events:   &events,
+		closeErr: networkCloseErr,
+		done:     make(chan struct{}),
+	}
+	lifecycle := &recordingLifecycleCloser{
+		events:   &events,
+		closeErr: lifecycleCloseErr,
+		done:     make(chan struct{}),
+	}
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		recordingNetworkReleaseState{armed: true},
+		networkReleaseCapability{recovery: &recordingNetworkReleaseCoordinator{
+			events: &events,
+			err:    recoveryErr,
+		}},
+		func(context.Context) error {
+			t.Fatal("post-runtime recovery ran while global release remained armed")
+			return nil
+		},
+	)
+
+	err := runtime.Start(t.Context())
+	if !errors.Is(err, recoveryErr) || !errors.Is(err, lifecycleCloseErr) || !errors.Is(err, networkCloseErr) {
+		t.Fatalf("Start() error = %v, want joined recovery and cleanup failures", err)
+	}
+	if lifecycle.resumed {
+		t.Fatal("Start() resumed lifecycle work after network release recovery failed")
+	}
+	if got, want := strings.Join(events, ","), "network.start,release.recover,lifecycle.close,network.close"; got != want {
+		t.Fatalf("failure cleanup order = %q, want %q", got, want)
+	}
+	select {
+	case <-runtime.Done():
+	default:
+		t.Fatal("Done() remained open after network release recovery failure")
+	}
+}
+
+// TestProjectLifecycleRuntimeFailsClosedWithoutNetworkReleaseRecovery prevents an unsupported binary from retaining an armed release anchor.
+func TestProjectLifecycleRuntimeFailsClosedWithoutNetworkReleaseRecovery(t *testing.T) {
+	events := []string{}
+	network := &recordingLifecycleNetworkRuntime{
+		events: &events,
+		done:   make(chan struct{}),
+	}
+	lifecycle := &recordingLifecycleCloser{
+		events: &events,
+		done:   make(chan struct{}),
+	}
+	runtime := newProjectLifecycleRuntime(
+		network,
+		lifecycle,
+		recordingNetworkReleaseState{armed: true},
+		networkReleaseCapability{},
+		func(context.Context) error {
+			t.Fatal("post-runtime recovery ran without network release recovery authority")
+			return nil
+		},
+	)
+
+	err := runtime.Start(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "platform recovery authority is unavailable") {
+		t.Fatalf("Start() error = %v, want unavailable release recovery authority", err)
+	}
+	if lifecycle.resumed {
+		t.Fatal("Start() resumed lifecycle work without network release recovery authority")
+	}
+	if got, want := strings.Join(events, ","), "network.start,lifecycle.close,network.close"; got != want {
+		t.Fatalf("failure cleanup order = %q, want %q", got, want)
 	}
 }
 
@@ -935,7 +1033,7 @@ func TestProjectLifecycleRuntimeFailsFastWithoutPostRuntimeRecovery(t *testing.T
 		}
 	}()
 
-	_ = newProjectLifecycleRuntime(network, lifecycle, recordingNetworkReleaseState{}, nil)
+	_ = newProjectLifecycleRuntime(network, lifecycle, recordingNetworkReleaseState{}, networkReleaseCapability{}, nil)
 }
 
 // TestProjectLifecycleRuntimeFailsFastWithoutNetworkReleaseState prevents startup from silently bypassing release recovery.
@@ -956,6 +1054,7 @@ func TestProjectLifecycleRuntimeFailsFastWithoutNetworkReleaseState(t *testing.T
 		network,
 		lifecycle,
 		nil,
+		networkReleaseCapability{},
 		func(context.Context) error { return nil },
 	)
 }
@@ -980,6 +1079,7 @@ func TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenPostRuntimeRecoveryFail
 		network,
 		lifecycle,
 		recordingNetworkReleaseState{},
+		networkReleaseCapability{},
 		func(context.Context) error {
 			events = append(events, "post-runtime.recover")
 			return recoveryErr
