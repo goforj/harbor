@@ -15,12 +15,13 @@ import (
 )
 
 const darwinDevelopmentBootstrapScript = `on run arguments
-	if (count of arguments) is not 4 then error "invalid Harbor development bootstrap invocation"
+	if (count of arguments) is not 5 then error "invalid Harbor development bootstrap invocation"
 	set bootstrapPath to item 1 of arguments
 	set helperPath to item 2 of arguments
-	set userID to item 3 of arguments
-	set groupID to item 4 of arguments
-	set commandLine to quoted form of bootstrapPath & " --helper " & quoted form of helperPath & " --user-id " & quoted form of userID & " --group-id " & quoted form of groupID
+	set launchdRelayPath to item 3 of arguments
+	set userID to item 4 of arguments
+	set groupID to item 5 of arguments
+	set commandLine to quoted form of bootstrapPath & " --helper " & quoted form of helperPath & " --launchd-relay " & quoted form of launchdRelayPath & " --user-id " & quoted form of userID & " --group-id " & quoted form of groupID
 	try
 		do shell script commandLine with administrator privileges
 		return "succeeded"
@@ -117,6 +118,7 @@ func elevateDarwinDevelopmentBootstrap(ctx context.Context, request sourceBootst
 		darwinDevelopmentBootstrapScript,
 		request.bootstrapPath,
 		request.helperPath,
+		request.launchdRelayPath,
 		strconv.FormatUint(uint64(request.userID), 10),
 		strconv.FormatUint(uint64(request.groupID), 10),
 	)

@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
 	"strconv"
 
 	"github.com/goforj/harbor/internal/devbootstrap"
@@ -63,9 +64,11 @@ func parseArguments(arguments []string) (devbootstrap.Config, error) {
 	flags := flag.NewFlagSet("harbor-devbootstrap", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var helper explicitFlag
+	var launchdRelay explicitFlag
 	var userID explicitFlag
 	var groupID explicitFlag
 	flags.Var(&helper, "helper", "absolute path to an already-built harbor-helper")
+	flags.Var(&launchdRelay, "launchd-relay", "absolute path to an already-built Harbor launchd relay")
 	flags.Var(&userID, "user-id", "non-root pending-ticket owner UID")
 	flags.Var(&groupID, "group-id", "pending-ticket owner GID")
 	if err := flags.Parse(arguments); err != nil {
@@ -89,6 +92,12 @@ func parseArguments(arguments []string) (devbootstrap.Config, error) {
 	if helper.value == "" {
 		return devbootstrap.Config{}, fmt.Errorf("--helper must not be empty")
 	}
+	if runtime.GOOS == "darwin" && (launchdRelay.uses == 0 || launchdRelay.value == "") {
+		return devbootstrap.Config{}, fmt.Errorf("--launchd-relay is required on darwin")
+	}
+	if runtime.GOOS != "darwin" && launchdRelay.uses != 0 {
+		return devbootstrap.Config{}, fmt.Errorf("--launchd-relay is supported only on darwin")
+	}
 	parsedUserID, err := parseID("user-id", userID.value)
 	if err != nil {
 		return devbootstrap.Config{}, err
@@ -97,7 +106,7 @@ func parseArguments(arguments []string) (devbootstrap.Config, error) {
 	if err != nil {
 		return devbootstrap.Config{}, err
 	}
-	return devbootstrap.Config{HelperSource: helper.value, UserID: parsedUserID, GroupID: parsedGroupID}, nil
+	return devbootstrap.Config{HelperSource: helper.value, LaunchdRelaySource: launchdRelay.value, UserID: parsedUserID, GroupID: parsedGroupID}, nil
 }
 
 // parseID accepts one explicit unsigned decimal identity without platform-dependent integer width.

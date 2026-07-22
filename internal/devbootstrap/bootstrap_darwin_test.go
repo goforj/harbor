@@ -113,11 +113,14 @@ func TestApplyPlatformPlanTraversesDarwinLibraryAncestors(t *testing.T) {
 	parentState := prepareDarwinTestHelperParent(t)
 	assertDarwinTestHelperParent(t, parentState)
 	helperDestination := newDarwinTestHelperDestination(t)
+	relayDestination := helperDestination + "-launchdrelay"
 	if helperDestination == helperpath.Executable() {
 		t.Fatalf("test helper destination unexpectedly equals production helper %q", helperDestination)
 	}
 	var installedIdentity os.FileInfo
+	var installedRelayIdentity os.FileInfo
 	t.Cleanup(func() {
+		cleanupDarwinTestHelper(t, relayDestination, installedRelayIdentity)
 		cleanupDarwinTestHelper(t, helperDestination, installedIdentity)
 	})
 
@@ -135,9 +138,10 @@ func TestApplyPlatformPlanTraversesDarwinLibraryAncestors(t *testing.T) {
 	writeExecutableTestFile(t, sourcePath, darwinTestHelperContent)
 	paths := testMachinePaths(filepath.Join(base, "machine"))
 	prepared, err := buildPlan(
-		Config{HelperSource: sourcePath, UserID: 1, GroupID: 0},
+		Config{HelperSource: sourcePath, LaunchdRelaySource: sourcePath, UserID: 1, GroupID: 0},
 		paths,
 		helperDestination,
+		relayDestination,
 		"darwin",
 	)
 	if err != nil {
@@ -158,6 +162,17 @@ func TestApplyPlatformPlanTraversesDarwinLibraryAncestors(t *testing.T) {
 	if !exists {
 		t.Fatal("installed Darwin test helper is absent")
 	}
+	relayPlan := prepared
+	relayPlan.helperDestination = prepared.launchdRelayDestination
+	relayPlan.helperMode = prepared.launchdRelayMode
+	relayIdentity, relayExists, relayInspectErr := inspectDarwinInstalledTestHelper(relayDestination, relayPlan)
+	if relayInspectErr != nil {
+		t.Fatalf("inspect installed Darwin test relay: %v", relayInspectErr)
+	}
+	if !relayExists {
+		t.Fatal("installed Darwin test relay is absent")
+	}
+	installedRelayIdentity = relayIdentity
 	assertPlannedFilesystemPolicy(t, prepared)
 	assertDarwinTestHelperParent(t, parentState)
 }

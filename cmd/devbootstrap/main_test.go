@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -46,6 +47,13 @@ func TestParseArgumentsRejectsMissingMalformedAndPositionalInputs(t *testing.T) 
 		{name: "unknown flag", arguments: append(append([]string(nil), valid...), "--destination", "/tmp/helper"), want: "flag provided but not defined"},
 		{name: "duplicate helper", arguments: append(append([]string(nil), valid...), "--helper", helper), want: "specified only once"},
 		{name: "positional", arguments: append(append([]string(nil), valid...), "repair"), want: "unexpected positional"},
+	}
+	if runtime.GOOS != "darwin" {
+		tests = append(tests, struct {
+			name      string
+			arguments []string
+			want      string
+		}{name: "linux relay", arguments: append(append([]string(nil), valid...), "--launchd-relay", helper), want: "supported only on darwin"})
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

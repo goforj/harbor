@@ -23,6 +23,7 @@ const (
 	developmentArtifactDirectory = "devtools"
 	developmentBootstrapName     = "devbootstrap"
 	developmentHelperName        = "helper"
+	developmentLaunchdRelayName  = "launchdrelay"
 )
 
 // Ensurer establishes the fixed privileged networking prerequisite after the daemon reports that it is missing.
@@ -48,10 +49,11 @@ type sourceEnsurer struct {
 
 // sourceBootstrapRequest contains only paths derived from the running development binary and its native user identity.
 type sourceBootstrapRequest struct {
-	bootstrapPath string
-	helperPath    string
-	userID        uint32
-	groupID       uint32
+	bootstrapPath    string
+	helperPath       string
+	launchdRelayPath string
+	userID           uint32
+	groupID          uint32
 }
 
 // unavailableEnsurer preserves the packaged-app installer boundary instead of discovering executable content at runtime.
@@ -118,7 +120,12 @@ func (ensurer *sourceEnsurer) Ensure(ctx context.Context) error {
 		userID:        userID,
 		groupID:       groupID,
 	}
-	for _, artifact := range []string{request.bootstrapPath, request.helperPath} {
+	artifacts := []string{request.bootstrapPath, request.helperPath}
+	if runtime.GOOS == "darwin" {
+		request.launchdRelayPath = filepath.Join(artifactDirectory, developmentLaunchdRelayName)
+		artifacts = append(artifacts, request.launchdRelayPath)
+	}
+	for _, artifact := range artifacts {
 		if err := ensurer.dependencies.inspect(artifact, userID, groupID); err != nil {
 			return fmt.Errorf("admit Harbor development networking artifact: %w", err)
 		}

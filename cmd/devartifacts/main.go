@@ -22,7 +22,7 @@ type buildInvocation struct {
 // commandRunner executes one Go build from the repository root.
 type commandRunner func(context.Context, string, string, ...string) error
 
-var artifactBuilds = []buildInvocation{
+var baseArtifactBuilds = []buildInvocation{
 	{packagePath: "./cmd/helper", outputName: "helper"},
 	{packagePath: "./cmd/devbootstrap", outputName: "devbootstrap"},
 	{packagePath: "./cmd/outputbroker", outputName: "outputbroker"},
@@ -57,7 +57,7 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		return fmt.Errorf("create development artifact directory: %w", err)
 	}
 
-	for _, build := range artifactBuilds {
+	for _, build := range artifactBuildsForPlatform(runtime.GOOS) {
 		outputPath := filepath.Join(outputDirectory, build.outputName)
 		if err := runner(ctx, repositoryRoot, "go", "build", "-o", outputPath, build.packagePath); err != nil {
 			return fmt.Errorf("build %s: %w", build.outputName, err)
@@ -67,6 +67,15 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		}
 	}
 	return nil
+}
+
+// artifactBuildsForPlatform keeps the launchd relay out of non-Darwin source-development artifacts.
+func artifactBuildsForPlatform(goos string) []buildInvocation {
+	builds := append([]buildInvocation(nil), baseArtifactBuilds...)
+	if goos == "darwin" {
+		builds = append(builds, buildInvocation{packagePath: "./cmd/launchdrelay", outputName: "launchdrelay"})
+	}
+	return builds
 }
 
 // developmentPaths recognizes Wails' project and hook directories while keeping the output location fixed.

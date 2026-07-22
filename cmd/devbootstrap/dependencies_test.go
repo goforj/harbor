@@ -49,12 +49,13 @@ func TestDevBootstrapDependencyBoundary(t *testing.T) {
 // TestDevBootstrapHasOnlyReviewedRuntimeDependencies pins every non-standard package in both supported builds.
 func TestDevBootstrapHasOnlyReviewedRuntimeDependencies(t *testing.T) {
 	allowed := map[string]struct{}{
-		"github.com/goforj/harbor/cmd/devbootstrap":               {},
-		"github.com/goforj/harbor/internal/devbootstrap":          {},
-		"github.com/goforj/harbor/internal/platform/darwinacl":     {},
-		"github.com/goforj/harbor/internal/platform/helperpath":   {},
-		"github.com/goforj/harbor/internal/platform/machinepaths": {},
-		"golang.org/x/sys/unix":                                   {},
+		"github.com/goforj/harbor/cmd/devbootstrap":                   {},
+		"github.com/goforj/harbor/internal/devbootstrap":              {},
+		"github.com/goforj/harbor/internal/platform/darwinacl":        {},
+		"github.com/goforj/harbor/internal/platform/helperpath":       {},
+		"github.com/goforj/harbor/internal/platform/launchdrelaypath": {},
+		"github.com/goforj/harbor/internal/platform/machinepaths":     {},
+		"golang.org/x/sys/unix":                                       {},
 	}
 	for _, target := range []string{"darwin", "linux"} {
 		dependencies := runGoListForDevBootstrapTarget(t, target, "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", ".")

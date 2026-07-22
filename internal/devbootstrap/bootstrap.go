@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/goforj/harbor/internal/platform/helperpath"
+	"github.com/goforj/harbor/internal/platform/launchdrelaypath"
 	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
 
@@ -28,9 +29,10 @@ var (
 
 // Config contains the only caller-selected inputs accepted by the development bootstrap.
 type Config struct {
-	HelperSource string
-	UserID       uint32
-	GroupID      uint32
+	HelperSource       string
+	LaunchdRelaySource string
+	UserID             uint32
+	GroupID            uint32
 }
 
 // directoryPlan describes one exact installer-style directory without granting callers destination authority.
@@ -43,20 +45,24 @@ type directoryPlan struct {
 
 // plan freezes every fixed destination and platform policy before privileged filesystem access begins.
 type plan struct {
-	helperSource      string
-	helperDestination string
-	helperMode        uint32
-	helperUID         uint32
-	helperGID         uint32
-	directories       []directoryPlan
+	helperSource            string
+	helperDestination       string
+	helperMode              uint32
+	helperUID               uint32
+	helperGID               uint32
+	launchdRelaySource      string
+	launchdRelayDestination string
+	launchdRelayMode        uint32
+	directories             []directoryPlan
 }
 
 // dependencies keeps root admission and compiled destination lookup directly testable.
 type dependencies struct {
-	effectiveUID      func() int
-	resolvePaths      func() (machinepaths.Paths, error)
-	helperDestination func() string
-	apply             func(plan) error
+	effectiveUID            func() int
+	resolvePaths            func() (machinepaths.Paths, error)
+	helperDestination       func() string
+	launchdRelayDestination func() string
+	apply                   func(plan) error
 }
 
 // Bootstrap provisions the fixed machine topology and installs one already-built helper for source development.
@@ -73,7 +79,7 @@ func bootstrap(config Config, dependencies dependencies) error {
 	if err != nil {
 		return fmt.Errorf("resolve development bootstrap topology: %w", err)
 	}
-	prepared, err := buildPlan(config, paths, dependencies.helperDestination(), runtime.GOOS)
+	prepared, err := buildPlan(config, paths, dependencies.helperDestination(), dependencies.launchdRelayDestination(), runtime.GOOS)
 	if err != nil {
 		return err
 	}
@@ -86,15 +92,16 @@ func bootstrap(config Config, dependencies dependencies) error {
 // productionDependencies binds privileged writes only to compiled platform destinations and native operations.
 func productionDependencies() dependencies {
 	return dependencies{
-		effectiveUID:      platformEffectiveUID,
-		resolvePaths:      machinepaths.Resolve,
-		helperDestination: helperpath.Executable,
-		apply:             applyPlatformPlan,
+		effectiveUID:            platformEffectiveUID,
+		resolvePaths:            machinepaths.Resolve,
+		helperDestination:       helperpath.Executable,
+		launchdRelayDestination: launchdrelaypath.Executable,
+		apply:                   applyPlatformPlan,
 	}
 }
 
 // buildPlan validates caller identities and derives the complete exact filesystem policy as pure data.
-func buildPlan(config Config, paths machinepaths.Paths, destination string, platform string) (plan, error) {
+func buildPlan(config Config, paths machinepaths.Paths, destination string, launchdRelayDestination string, platform string) (plan, error) {
 	if err := validateAbsoluteCleanPath("helper source", config.HelperSource); err != nil {
 		return plan{}, err
 	}
@@ -117,19 +124,31 @@ func buildPlan(config Config, paths machinepaths.Paths, destination string, plat
 	helperMode := uint32(0)
 	switch platform {
 	case "linux":
+		if config.LaunchdRelaySource != "" {
+			return plan{}, errors.New("development bootstrap launchd relay is unsupported on linux")
+		}
 		helperMode = 0o755
 	case "darwin":
+		if err := validateAbsoluteCleanPath("launchd relay source", config.LaunchdRelaySource); err != nil {
+			return plan{}, err
+		}
+		if err := validateAbsoluteCleanPath("launchd relay destination", launchdRelayDestination); err != nil {
+			return plan{}, err
+		}
 		helperMode = 0o4755
 	default:
 		return plan{}, fmt.Errorf("development bootstrap is unsupported on %s", platform)
 	}
 
 	return plan{
-		helperSource:      config.HelperSource,
-		helperDestination: destination,
-		helperMode:        helperMode,
-		helperUID:         0,
-		helperGID:         0,
+		helperSource:            config.HelperSource,
+		helperDestination:       destination,
+		helperMode:              helperMode,
+		helperUID:               0,
+		helperGID:               0,
+		launchdRelaySource:      config.LaunchdRelaySource,
+		launchdRelayDestination: launchdRelayDestination,
+		launchdRelayMode:        0o755,
 		directories: []directoryPlan{
 			{path: paths.Root, mode: gatewayDirectoryMode, uid: 0, gid: 0},
 			{path: paths.TicketsDirectory, mode: gatewayDirectoryMode, uid: 0, gid: 0},

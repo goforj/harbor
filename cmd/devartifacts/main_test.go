@@ -56,6 +56,23 @@ func TestRunBuildsOnlyFixedRootArtifacts(t *testing.T) {
 	}
 }
 
+// TestArtifactBuildsForPlatformAddsTheRelayOnlyForDarwin pins the source-development artifact contract.
+func TestArtifactBuildsForPlatformAddsTheRelayOnlyForDarwin(t *testing.T) {
+	for _, test := range []struct {
+		platform string
+		want     []buildInvocation
+	}{
+		{platform: "linux", want: baseArtifactBuilds},
+		{platform: "darwin", want: append(append([]buildInvocation(nil), baseArtifactBuilds...), buildInvocation{packagePath: "./cmd/launchdrelay", outputName: "launchdrelay"})},
+	} {
+		t.Run(test.platform, func(t *testing.T) {
+			if got := artifactBuildsForPlatform(test.platform); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("artifactBuildsForPlatform(%q) = %#v, want %#v", test.platform, got, test.want)
+			}
+		})
+	}
+}
+
 // TestDevelopmentPathsAcceptsWailsWorkingDirectories keeps the hook independent of Wails' internal execution directory.
 func TestDevelopmentPathsAcceptsWailsWorkingDirectories(t *testing.T) {
 	t.Parallel()

@@ -41,12 +41,18 @@ func TestSourceEnsurerDerivesExactSiblingArtifacts(t *testing.T) {
 		"/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/devbootstrap",
 		"/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/helper",
 	}
+	if runtime.GOOS == "darwin" {
+		wantPaths = append(wantPaths, "/workspace/harbor/desktop/build/bin/devtools/"+runtimeDirectory+"/launchdrelay")
+	}
 	if !reflect.DeepEqual(inspected, wantPaths) {
 		t.Fatalf("inspected paths = %#v, want %#v", inspected, wantPaths)
 	}
 	if elevated.bootstrapPath != wantPaths[0] || elevated.helperPath != wantPaths[1] ||
 		elevated.userID != 501 || elevated.groupID != 20 {
 		t.Fatalf("elevated request = %#v", elevated)
+	}
+	if runtime.GOOS == "darwin" && elevated.launchdRelayPath != wantPaths[2] {
+		t.Fatalf("elevated launchd relay = %q, want %q", elevated.launchdRelayPath, wantPaths[2])
 	}
 }
 
@@ -125,10 +131,14 @@ func TestSourceEnsurerFallsBackOnlyWhenThePlatformDirectoryIsAbsent(t *testing.T
 		"/workspace/harbor/desktop/build/bin/devtools/devbootstrap",
 		"/workspace/harbor/desktop/build/bin/devtools/helper",
 	}
+	if runtime.GOOS == "darwin" {
+		wantPaths = append(wantPaths, "/workspace/harbor/desktop/build/bin/devtools/launchdrelay")
+	}
 	if !reflect.DeepEqual(inspected, wantPaths) {
 		t.Fatalf("inspected paths = %#v, want %#v", inspected, wantPaths)
 	}
-	if elevated.bootstrapPath != wantPaths[0] || elevated.helperPath != wantPaths[1] {
+	if elevated.bootstrapPath != wantPaths[0] || elevated.helperPath != wantPaths[1] ||
+		(runtime.GOOS == "darwin" && elevated.launchdRelayPath != wantPaths[2]) {
 		t.Fatalf("elevated request = %#v", elevated)
 	}
 }

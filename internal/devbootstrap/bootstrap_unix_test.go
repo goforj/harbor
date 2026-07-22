@@ -38,10 +38,17 @@ func TestApplyPlatformPlanIsIdempotentAndPreservesRuntimeData(t *testing.T) {
 	sourcePath := filepath.Join(base, "built-harbor-helper")
 	writeExecutableTestFile(t, sourcePath, "first helper")
 	paths := testMachinePaths(filepath.Join(base, "machine"))
+	relaySource := ""
+	relayDestination := ""
+	if runtime.GOOS == "darwin" {
+		relaySource = sourcePath
+		relayDestination = filepath.Join(base, "libexec", "launchdrelay")
+	}
 	prepared, err := buildPlan(
-		Config{HelperSource: sourcePath, UserID: 1, GroupID: 0},
+		Config{HelperSource: sourcePath, LaunchdRelaySource: relaySource, UserID: 1, GroupID: 0},
 		paths,
 		filepath.Join(base, "libexec", "harbor-helper"),
+		relayDestination,
 		runtime.GOOS,
 	)
 	if err != nil {
@@ -364,16 +371,18 @@ func assertPlannedFilesystemPolicy(t *testing.T, prepared plan) {
 			t.Fatalf("planned directory %q metadata = %#v / %#v, want mode %04o owner %d:%d", directory.path, information, status, directory.mode, directory.uid, directory.gid)
 		}
 	}
-	information, err := os.Lstat(prepared.helperDestination)
-	if err != nil {
-		t.Fatalf("stat planned helper: %v", err)
-	}
-	var status unix.Stat_t
-	if err := unix.Lstat(prepared.helperDestination, &status); err != nil {
-		t.Fatalf("read planned helper native metadata: %v", err)
-	}
-	if !information.Mode().IsRegular() || statusModeSecurity(status) != prepared.helperMode || uint32(status.Uid) != prepared.helperUID || uint64(status.Nlink) != 1 {
-		t.Fatalf("planned helper metadata = %#v / %#v", information, status)
+	for _, artifact := range platformArtifacts(prepared) {
+		information, err := os.Lstat(artifact.helperDestination)
+		if err != nil {
+			t.Fatalf("stat planned artifact: %v", err)
+		}
+		var status unix.Stat_t
+		if err := unix.Lstat(artifact.helperDestination, &status); err != nil {
+			t.Fatalf("read planned artifact native metadata: %v", err)
+		}
+		if !information.Mode().IsRegular() || statusModeSecurity(status) != artifact.helperMode || uint32(status.Uid) != artifact.helperUID || uint32(status.Gid) != artifact.helperGID || uint64(status.Nlink) != 1 {
+			t.Fatalf("planned artifact metadata = %#v / %#v", information, status)
+		}
 	}
 }
 

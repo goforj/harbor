@@ -14,10 +14,13 @@ import (
 // TestBuildPlanPinsExactPlatformPolicies proves caller inputs cannot redirect destinations or broaden installed modes.
 func TestBuildPlanPinsExactPlatformPolicies(t *testing.T) {
 	paths := testMachinePaths(testAbsolutePath("fixed", "harbor"))
-	configuration := Config{HelperSource: testAbsolutePath("build", "harbor-helper"), UserID: 501, GroupID: 20}
+	configuration := Config{HelperSource: testAbsolutePath("build", "harbor-helper"), LaunchdRelaySource: testAbsolutePath("build", "launchdrelay"), UserID: 501, GroupID: 20}
 	destination := testAbsolutePath("fixed", "harbor-helper")
+	relayDestination := testAbsolutePath("fixed", "launchdrelay")
 
-	linux, err := buildPlan(configuration, paths, destination, "linux")
+	linuxConfiguration := configuration
+	linuxConfiguration.LaunchdRelaySource = ""
+	linux, err := buildPlan(linuxConfiguration, paths, destination, "", "linux")
 	if err != nil {
 		t.Fatalf("buildPlan(linux) error = %v", err)
 	}
@@ -26,12 +29,19 @@ func TestBuildPlanPinsExactPlatformPolicies(t *testing.T) {
 		t.Fatalf("buildPlan(linux) helper policy = %#v", linux)
 	}
 
-	darwin, err := buildPlan(configuration, paths, destination, "darwin")
+	darwin, err := buildPlan(configuration, paths, destination, relayDestination, "darwin")
 	if err != nil {
 		t.Fatalf("buildPlan(darwin) error = %v", err)
 	}
 	if darwin.helperMode != 0o4755 || darwin.helperUID != 0 || darwin.helperGID != 0 {
 		t.Fatalf("buildPlan(darwin) helper policy = %#v", darwin)
+	}
+	if darwin.launchdRelaySource != configuration.LaunchdRelaySource || darwin.launchdRelayDestination != relayDestination || darwin.launchdRelayMode != 0o755 {
+		t.Fatalf("buildPlan(darwin) relay policy = %#v", darwin)
+	}
+	artifacts := platformArtifacts(darwin)
+	if len(artifacts) != 2 || artifacts[1].helperDestination != relayDestination || artifacts[1].helperMode != 0o755 || artifacts[1].helperUID != 0 || artifacts[1].helperGID != 0 {
+		t.Fatalf("platformArtifacts(darwin) = %#v", artifacts)
 	}
 
 	wantDirectories := []directoryPlan{
@@ -54,6 +64,7 @@ func TestBuildPlanAllowsRootPrimaryGroup(t *testing.T) {
 		Config{HelperSource: testAbsolutePath("build", "harbor-helper"), UserID: 501, GroupID: 0},
 		paths,
 		testAbsolutePath("fixed", "harbor-helper"),
+		"",
 		"linux",
 	)
 	if err != nil {
@@ -68,7 +79,7 @@ func TestBuildPlanAllowsRootPrimaryGroup(t *testing.T) {
 func TestBuildPlanRejectsRedirectedOrUnsupportedInputs(t *testing.T) {
 	root := testAbsolutePath("fixed", "harbor")
 	validPaths := testMachinePaths(root)
-	valid := Config{HelperSource: testAbsolutePath("build", "harbor-helper"), UserID: 501, GroupID: 20}
+	valid := Config{HelperSource: testAbsolutePath("build", "harbor-helper"), LaunchdRelaySource: testAbsolutePath("build", "launchdrelay"), UserID: 501, GroupID: 20}
 	destination := testAbsolutePath("fixed", "harbor-helper")
 	uncleanSource := testAbsolutePath("build") + string(filepath.Separator) + ".." + string(filepath.Separator) + "build" + string(filepath.Separator) + "harbor-helper"
 	tests := []struct {
@@ -86,11 +97,17 @@ func TestBuildPlanRejectsRedirectedOrUnsupportedInputs(t *testing.T) {
 		{name: "redirected host projection", configuration: valid, paths: func() machinepaths.Paths { value := validPaths; value.HostProjectionPath += "-other"; return value }(), destination: destination, platform: "linux"},
 		{name: "redirected replay", configuration: valid, paths: func() machinepaths.Paths { value := validPaths; value.ReplayDirectory += "-other"; return value }(), destination: destination, platform: "linux"},
 		{name: "relative destination", configuration: valid, paths: validPaths, destination: "harbor-helper", platform: "linux"},
+		{name: "linux relay", configuration: valid, paths: validPaths, destination: destination, platform: "linux"},
+		{name: "darwin missing relay", configuration: Config{HelperSource: valid.HelperSource, UserID: 501, GroupID: 20}, paths: validPaths, destination: destination, platform: "darwin"},
 		{name: "unsupported platform", configuration: valid, paths: validPaths, destination: destination, platform: "plan9"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := buildPlan(test.configuration, test.paths, test.destination, test.platform); err == nil {
+			relayDestination := testAbsolutePath("fixed", "launchdrelay")
+			if test.name == "darwin missing relay" {
+				relayDestination = ""
+			}
+			if _, err := buildPlan(test.configuration, test.paths, test.destination, relayDestination, test.platform); err == nil {
 				t.Fatal("buildPlan() accepted invalid privileged input")
 			}
 		})
@@ -110,6 +127,7 @@ func TestBootstrapRejectsNonRootBeforeLookups(t *testing.T) {
 			lookups++
 			return ""
 		},
+		launchdRelayDestination: func() string { lookups++; return "" },
 		apply: func(plan) error {
 			lookups++
 			return nil
@@ -129,13 +147,22 @@ func TestBootstrapPassesOnlyPreparedFixedPlan(t *testing.T) {
 		t.Skip("workflow is supported only on Unix development hosts")
 	}
 	paths := testMachinePaths(testAbsolutePath("fixed", "harbor"))
-	configuration := Config{HelperSource: testAbsolutePath("build", "harbor-helper"), UserID: 501, GroupID: 20}
+	configuration := Config{HelperSource: testAbsolutePath("build", "harbor-helper"), LaunchdRelaySource: testAbsolutePath("build", "launchdrelay"), UserID: 501, GroupID: 20}
+	if runtime.GOOS != "darwin" {
+		configuration.LaunchdRelaySource = ""
+	}
 	destination := testAbsolutePath("fixed", "harbor-helper")
 	var applied plan
 	dependencies := dependencies{
 		effectiveUID:      func() int { return 0 },
 		resolvePaths:      func() (machinepaths.Paths, error) { return paths, nil },
 		helperDestination: func() string { return destination },
+		launchdRelayDestination: func() string {
+			if runtime.GOOS == "darwin" {
+				return testAbsolutePath("fixed", "launchdrelay")
+			}
+			return ""
+		},
 		apply: func(prepared plan) error {
 			applied = prepared
 			return nil

@@ -59,12 +59,22 @@ func platformEffectiveUID() int {
 
 // applyPlatformPlan validates the complete existing graph before creating directories and publishing the helper last.
 func applyPlatformPlan(prepared plan) (applyErr error) {
-	source, snapshot, err := openHelperSource(prepared.helperSource)
-	if err != nil {
-		return err
+	artifacts := platformArtifacts(prepared)
+	opened := make([]openedArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		source, snapshot, err := openHelperSource(artifact.helperSource)
+		if err != nil {
+			for _, openedArtifact := range opened {
+				_ = openedArtifact.source.Close()
+			}
+			return err
+		}
+		opened = append(opened, openedArtifact{plan: artifact, source: source, snapshot: snapshot})
 	}
 	defer func() {
-		applyErr = errors.Join(applyErr, source.Close())
+		for _, artifact := range opened {
+			applyErr = errors.Join(applyErr, artifact.source.Close())
+		}
 	}()
 
 	if err := preflightPlatformPlan(prepared); err != nil {
@@ -88,38 +98,68 @@ func applyPlatformPlan(prepared plan) (applyErr error) {
 		retainedDirectories = append(retainedDirectories, retainedDirectory{file: handle, requirement: directory})
 	}
 
-	helperParentPath := filepath.Dir(prepared.helperDestination)
-	helperParent, _, err := transaction.walkDirectory(helperParentPath, nil, true)
-	if err != nil {
-		return err
-	}
-	initial, err := inspectHelperDestination(helperParent, prepared)
-	if err != nil {
-		return err
-	}
-	published, err := installHelper(source, snapshot, helperParent, initial, prepared)
-	if published {
-		// Once a name transition has applied, removing any surrounding topology could strand a valid helper or erase concurrent runtime data.
-		transaction.preserveNew = true
-	}
-	if err != nil {
-		if published {
-			return errors.Join(ErrDurabilityUncertain, err)
+	artifactParents := make([]*os.File, 0, len(opened))
+	initialArtifacts := make([]helperIdentity, 0, len(opened))
+	for _, artifact := range opened {
+		parent, _, err := transaction.walkDirectory(filepath.Dir(artifact.plan.helperDestination), nil, true)
+		if err != nil {
+			return err
 		}
-		return err
+		initial, err := inspectHelperDestination(parent, artifact.plan)
+		if err != nil {
+			return err
+		}
+		artifactParents = append(artifactParents, parent)
+		initialArtifacts = append(initialArtifacts, initial)
 	}
-	if err := transaction.revalidateInstalledPlan(prepared, retainedDirectories, helperParent); err != nil {
+	publishedAny := false
+	for index, artifact := range opened {
+		published, err := installHelper(artifact.source, artifact.snapshot, artifactParents[index], initialArtifacts[index], artifact.plan)
+		if published {
+			// Once any name transition has applied, rollback could erase a valid artifact or concurrent runtime data.
+			transaction.preserveNew = true
+			publishedAny = true
+		}
+		if err != nil {
+			if publishedAny {
+				return errors.Join(ErrDurabilityUncertain, err)
+			}
+			return err
+		}
+	}
+	if err := transaction.revalidateInstalledPlan(prepared, retainedDirectories, opened, artifactParents); err != nil {
 		return errors.Join(ErrDurabilityUncertain, err)
 	}
 	transaction.preserveNew = true
 	return nil
 }
 
+// openedArtifact retains one verified source through the complete staged publication interval.
+type openedArtifact struct {
+	plan     plan
+	source   *os.File
+	snapshot sourceSnapshot
+}
+
+// platformArtifacts derives the exact fixed artifact set after platform-specific plan validation.
+func platformArtifacts(prepared plan) []plan {
+	artifacts := []plan{prepared}
+	if prepared.launchdRelayDestination != "" {
+		relay := prepared
+		relay.helperSource = prepared.launchdRelaySource
+		relay.helperDestination = prepared.launchdRelayDestination
+		relay.helperMode = prepared.launchdRelayMode
+		artifacts = append(artifacts, relay)
+	}
+	return artifacts
+}
+
 // revalidateInstalledPlan proves retained metadata and every fixed direct name still describe the complete installed graph.
 func (transaction *unixTransaction) revalidateInstalledPlan(
 	prepared plan,
 	retained []retainedDirectory,
-	helperParent *os.File,
+	artifacts []openedArtifact,
+	artifactParents []*os.File,
 ) error {
 	for _, directory := range retained {
 		if err := validateExactDirectory(directory.file, directory.requirement.path, directory.requirement); err != nil {
@@ -136,22 +176,24 @@ func (transaction *unixTransaction) revalidateInstalledPlan(
 			return err
 		}
 	}
-	reopenedParent, exists, err := transaction.walkDirectory(filepath.Dir(prepared.helperDestination), nil, false)
-	if err != nil {
-		return fmt.Errorf("revalidate development helper parent: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("development helper parent %q disappeared after installation", filepath.Dir(prepared.helperDestination))
-	}
-	if err := requireSameFileIdentity(helperParent, reopenedParent, filepath.Dir(prepared.helperDestination)); err != nil {
-		return err
-	}
-	installed, err := inspectHelperDestination(reopenedParent, prepared)
-	if err != nil {
-		return fmt.Errorf("revalidate installed development helper: %w", err)
-	}
-	if !installed.exists {
-		return fmt.Errorf("installed development helper %q disappeared during final validation", prepared.helperDestination)
+	for index, artifact := range artifacts {
+		reopenedParent, exists, err := transaction.walkDirectory(filepath.Dir(artifact.plan.helperDestination), nil, false)
+		if err != nil {
+			return fmt.Errorf("revalidate development artifact parent: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("development artifact parent %q disappeared after installation", filepath.Dir(artifact.plan.helperDestination))
+		}
+		if err := requireSameFileIdentity(artifactParents[index], reopenedParent, filepath.Dir(artifact.plan.helperDestination)); err != nil {
+			return err
+		}
+		installed, err := inspectHelperDestination(reopenedParent, artifact.plan)
+		if err != nil {
+			return fmt.Errorf("revalidate installed development artifact: %w", err)
+		}
+		if !installed.exists {
+			return fmt.Errorf("installed development artifact %q disappeared during final validation", artifact.plan.helperDestination)
+		}
 	}
 	return nil
 }
@@ -170,13 +212,15 @@ func preflightPlatformPlan(prepared plan) (preflightErr error) {
 		}
 	}
 
-	helperParent, exists, err := transaction.walkDirectory(filepath.Dir(prepared.helperDestination), nil, false)
-	if err != nil {
-		return err
-	}
-	if exists {
-		if _, err := inspectHelperDestination(helperParent, prepared); err != nil {
+	for _, artifact := range platformArtifacts(prepared) {
+		helperParent, exists, err := transaction.walkDirectory(filepath.Dir(artifact.helperDestination), nil, false)
+		if err != nil {
 			return err
+		}
+		if exists {
+			if _, err := inspectHelperDestination(helperParent, artifact); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
