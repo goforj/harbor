@@ -19,7 +19,8 @@ func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	dependencies := productionDependencies()
 	if dependencies.authorizeInvocation == nil || dependencies.openTicketRedeemer == nil ||
 		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil ||
-		dependencies.openResolverHandler == nil {
+		dependencies.openResolverHandler == nil || dependencies.openTrustHandler == nil ||
+		dependencies.openLowPortHandler == nil || dependencies.transitionTrustIdentity == nil {
 		t.Fatal("production dependencies are incomplete")
 	}
 	if handler := dependencies.newLoopbackIdentityHandler(); handler == nil {
@@ -27,18 +28,24 @@ func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	}
 }
 
-// TestRunOpensCompleteAuthorityBeforeReading proves one request cannot be consumed under partial durable composition.
-func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
+// TestRunOpensAdmissionAuthorityBeforeReading proves one request cannot be consumed before durable admission is ready.
+func TestRunOpensAdmissionAuthorityBeforeReading(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 	reference, redemption := testRedemption(now)
-	request := helper.Request{Version: helper.ProtocolVersion, TicketReference: reference}
+	request := helper.Request{
+		Version:         helper.ProtocolVersion,
+		TicketReference: reference,
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
 
 	events := make([]string, 0, 10)
-	reader := &recordingReader{reader: bytes.NewReader(body), events: &events}
+	reader := &recordingReader{
+		reader: bytes.NewReader(body),
+		events: &events,
+	}
 	dependencies := successfulTestDependencies(&events, redemption)
 	var output bytes.Buffer
 	if err := run(context.Background(), reader, &output, fixedClock{now: now}, dependencies); err != nil {
@@ -56,13 +63,11 @@ func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
 		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
-		"open resolver handler",
-		"new loopback handler",
 		"read request",
 		"redeem ticket",
 		"consume replay claim",
+		"new loopback handler",
 		"ensure loopback identity",
-		"close resolver handler",
 		"close replay guard",
 		"close ticket redeemer",
 	}
@@ -71,43 +76,115 @@ func TestRunOpensCompleteAuthorityBeforeReading(t *testing.T) {
 	}
 }
 
-// TestRunFailsFastWithoutAdmissionDependency verifies incomplete production assembly cannot fall through to durable authority.
-func TestRunFailsFastWithoutAdmissionDependency(t *testing.T) {
-	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &[]string{}}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("run() did not panic without its wired admission dependency")
-		}
-		if reader.recorded {
-			t.Fatal("request was read without an admission dependency")
-		}
-	}()
-	_ = run(context.Background(), reader, io.Discard, fixedClock{now: time.Now().UTC()}, runtimeDependencies{})
+// TestRunFailsFastWithoutRequiredDependency verifies incomplete assembly reaches no authority or caller input.
+func TestRunFailsFastWithoutRequiredDependency(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		clock  helper.Clock
+		mutate func(*runtimeDependencies)
+	}{
+		{
+			name: "clock",
+			mutate: func(*runtimeDependencies) {
+			},
+		},
+		{
+			name:  "invocation authorizer",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.authorizeInvocation = nil
+			},
+		},
+		{
+			name:  "ticket redeemer factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.openTicketRedeemer = nil
+			},
+		},
+		{
+			name:  "replay guard factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.openReplayGuard = nil
+			},
+		},
+		{
+			name:  "loopback handler factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.newLoopbackIdentityHandler = nil
+			},
+		},
+		{
+			name:  "resolver handler factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.openResolverHandler = nil
+			},
+		},
+		{
+			name:  "trust handler factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.openTrustHandler = nil
+			},
+		},
+		{
+			name:  "low-port handler factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.openLowPortHandler = nil
+			},
+		},
+		{
+			name:  "trust identity transition",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.transitionTrustIdentity = nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			_, redemption := testRedemption(now)
+			events := make([]string, 0, 1)
+			dependencies := successfulTestDependencies(&events, redemption)
+			test.mutate(&dependencies)
+			reader := &recordingReader{
+				reader: bytes.NewReader([]byte("{}")),
+				events: &events,
+			}
+			var recovered any
+			func() {
+				defer func() {
+					recovered = recover()
+				}()
+				_ = run(context.Background(), reader, io.Discard, test.clock, dependencies)
+			}()
+			if recovered == nil {
+				t.Fatal("run() did not panic without its wired dependency")
+			}
+			if reader.recorded || len(events) != 0 {
+				t.Fatalf("request recorded = %t, events = %#v, want neither", reader.recorded, events)
+			}
+		})
+	}
 }
 
 // TestRunStopsBeforeDurableAuthorityWhenInvocationAdmissionFails proves invalid native consent reaches no request authority.
 func TestRunStopsBeforeDurableAuthorityWhenInvocationAdmissionFails(t *testing.T) {
 	authorizationErr := errors.New("authorization denied")
 	events := make([]string, 0, 1)
-	dependencies := runtimeDependencies{
-		authorizeInvocation: func() error {
-			events = append(events, "authorize invocation")
-			return authorizationErr
-		},
-		openTicketRedeemer: func() (closingTicketRedeemer, error) {
-			t.Fatal("ticket redeemer opened after invocation admission failed")
-			return nil, nil
-		},
-		openReplayGuard: func() (closingReplayGuard, error) {
-			t.Fatal("replay guard opened after invocation admission failed")
-			return nil, nil
-		},
-		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
-			t.Fatal("loopback handler constructed after invocation admission failed")
-			return nil
-		},
+	dependencies := unusedRuntimeDependencies(t)
+	dependencies.authorizeInvocation = func() error {
+		events = append(events, "authorize invocation")
+		return authorizationErr
 	}
-	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	reader := &recordingReader{
+		reader: bytes.NewReader([]byte("{}")),
+		events: &events,
+	}
 	var output bytes.Buffer
 	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
 	if !errors.Is(err, authorizationErr) {
@@ -125,25 +202,19 @@ func TestRunStopsBeforeDurableAuthorityWhenInvocationAdmissionFails(t *testing.T
 func TestRunStopsBeforeReadingWhenRedeemerOpenFails(t *testing.T) {
 	openErr := errors.New("ticket redeemer open failed")
 	events := make([]string, 0, 1)
-	dependencies := runtimeDependencies{
-		authorizeInvocation: func() error {
-			events = append(events, "authorize invocation")
-			return nil
-		},
-		openTicketRedeemer: func() (closingTicketRedeemer, error) {
-			events = append(events, "open ticket redeemer")
-			return nil, openErr
-		},
-		openReplayGuard: func() (closingReplayGuard, error) {
-			t.Fatal("replay guard was opened without authentication authority")
-			return nil, nil
-		},
-		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
-			t.Fatal("loopback handler was constructed without authentication authority")
-			return nil
-		},
+	dependencies := unusedRuntimeDependencies(t)
+	dependencies.authorizeInvocation = func() error {
+		events = append(events, "authorize invocation")
+		return nil
 	}
-	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	dependencies.openTicketRedeemer = func() (closingTicketRedeemer, error) {
+		events = append(events, "open ticket redeemer")
+		return nil, openErr
+	}
+	reader := &recordingReader{
+		reader: bytes.NewReader([]byte("{}")),
+		events: &events,
+	}
 	var output bytes.Buffer
 	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
 	if !errors.Is(err, openErr) {
@@ -163,25 +234,26 @@ func TestRunClosesRedeemerWhenReplayOpenFails(t *testing.T) {
 	openErr := errors.New("replay open failed")
 	closeErr := errors.New("redeemer close failed")
 	events := make([]string, 0, 3)
-	dependencies := runtimeDependencies{
-		authorizeInvocation: func() error {
-			events = append(events, "authorize invocation")
-			return nil
-		},
-		openTicketRedeemer: func() (closingTicketRedeemer, error) {
-			events = append(events, "open ticket redeemer")
-			return &testTicketRedeemer{events: &events, closeErr: closeErr}, nil
-		},
-		openReplayGuard: func() (closingReplayGuard, error) {
-			events = append(events, "open replay guard")
-			return nil, openErr
-		},
-		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
-			t.Fatal("loopback handler was constructed after replay composition failed")
-			return nil
-		},
+	dependencies := unusedRuntimeDependencies(t)
+	dependencies.authorizeInvocation = func() error {
+		events = append(events, "authorize invocation")
+		return nil
 	}
-	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	dependencies.openTicketRedeemer = func() (closingTicketRedeemer, error) {
+		events = append(events, "open ticket redeemer")
+		return &testTicketRedeemer{
+			events:   &events,
+			closeErr: closeErr,
+		}, nil
+	}
+	dependencies.openReplayGuard = func() (closingReplayGuard, error) {
+		events = append(events, "open replay guard")
+		return nil, openErr
+	}
+	reader := &recordingReader{
+		reader: bytes.NewReader([]byte("{}")),
+		events: &events,
+	}
 	var output bytes.Buffer
 	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
 	if !errors.Is(err, openErr) || !errors.Is(err, closeErr) {
@@ -196,53 +268,44 @@ func TestRunClosesRedeemerWhenReplayOpenFails(t *testing.T) {
 	}
 }
 
-// TestRunClosesPriorAuthoritiesWhenResolverOpenFails keeps caller bytes unread under partial ownership composition.
-func TestRunClosesPriorAuthoritiesWhenResolverOpenFails(t *testing.T) {
-	openErr := errors.New("resolver handler open failed")
-	replayCloseErr := errors.New("replay close failed")
-	redeemerCloseErr := errors.New("redeemer close failed")
-	events := make([]string, 0, 6)
-	dependencies := runtimeDependencies{
-		authorizeInvocation: func() error {
-			events = append(events, "authorize invocation")
-			return nil
-		},
-		openTicketRedeemer: func() (closingTicketRedeemer, error) {
-			events = append(events, "open ticket redeemer")
-			return &testTicketRedeemer{events: &events, closeErr: redeemerCloseErr}, nil
-		},
-		openReplayGuard: func() (closingReplayGuard, error) {
-			events = append(events, "open replay guard")
-			return &testReplayGuard{events: &events, closeErr: replayCloseErr}, nil
-		},
-		openResolverHandler: func() (closingResolverHandler, error) {
-			events = append(events, "open resolver handler")
-			return nil, openErr
-		},
-		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
-			t.Fatal("loopback handler was constructed after resolver composition failed")
-			return nil
-		},
+// TestRunLeavesLazyResolverClosedWhenRequestDecodingFails proves malformed requests do not construct unselected native handlers.
+func TestRunLeavesLazyResolverClosedWhenRequestDecodingFails(t *testing.T) {
+	events := make([]string, 0, 4)
+	dependencies := unusedRuntimeDependencies(t)
+	dependencies.authorizeInvocation = func() error {
+		events = append(events, "authorize invocation")
+		return nil
 	}
-	reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
+	dependencies.openTicketRedeemer = func() (closingTicketRedeemer, error) {
+		events = append(events, "open ticket redeemer")
+		return &testTicketRedeemer{events: &events}, nil
+	}
+	dependencies.openReplayGuard = func() (closingReplayGuard, error) {
+		events = append(events, "open replay guard")
+		return &testReplayGuard{events: &events}, nil
+	}
+	reader := &recordingReader{
+		reader: bytes.NewReader([]byte("{}")),
+		events: &events,
+	}
 	var output bytes.Buffer
 	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
-	if !errors.Is(err, openErr) || !errors.Is(err, replayCloseErr) || !errors.Is(err, redeemerCloseErr) {
-		t.Fatalf("run error = %v, want open and prior close failures", err)
+	if err == nil {
+		t.Fatal("run() error = nil")
 	}
 	wantEvents := []string{
 		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
-		"open resolver handler",
+		"read request",
 		"close replay guard",
 		"close ticket redeemer",
 	}
 	if !slices.Equal(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
 	}
-	if reader.recorded || output.Len() != 0 {
-		t.Fatalf("request recorded = %t, output = %q, want neither", reader.recorded, output.String())
+	if !reader.recorded || output.Len() == 0 {
+		t.Fatalf("request recorded = %t, output = %q, want response", reader.recorded, output.String())
 	}
 }
 
@@ -251,29 +314,29 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 	redeemerCloseErr := errors.New("redeemer close failed")
 	replayCloseErr := errors.New("replay close failed")
 	events := make([]string, 0, 6)
-	dependencies := runtimeDependencies{
-		authorizeInvocation: func() error {
-			events = append(events, "authorize invocation")
-			return nil
-		},
-		openTicketRedeemer: func() (closingTicketRedeemer, error) {
-			events = append(events, "open ticket redeemer")
-			return &testTicketRedeemer{events: &events, closeErr: redeemerCloseErr}, nil
-		},
-		openReplayGuard: func() (closingReplayGuard, error) {
-			events = append(events, "open replay guard")
-			return &testReplayGuard{events: &events, closeErr: replayCloseErr}, nil
-		},
-		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
-			events = append(events, "new loopback handler")
-			return &testLoopbackHandler{events: &events}
-		},
-		openResolverHandler: func() (closingResolverHandler, error) {
-			events = append(events, "open resolver handler")
-			return &testResolverHandler{events: &events}, nil
-		},
+	dependencies := unusedRuntimeDependencies(t)
+	dependencies.authorizeInvocation = func() error {
+		events = append(events, "authorize invocation")
+		return nil
 	}
-	reader := &recordingReader{reader: bytes.NewReader(nil), events: &events}
+	dependencies.openTicketRedeemer = func() (closingTicketRedeemer, error) {
+		events = append(events, "open ticket redeemer")
+		return &testTicketRedeemer{
+			events:   &events,
+			closeErr: redeemerCloseErr,
+		}, nil
+	}
+	dependencies.openReplayGuard = func() (closingReplayGuard, error) {
+		events = append(events, "open replay guard")
+		return &testReplayGuard{
+			events:   &events,
+			closeErr: replayCloseErr,
+		}, nil
+	}
+	reader := &recordingReader{
+		reader: bytes.NewReader(nil),
+		events: &events,
+	}
 	var output bytes.Buffer
 	err := run(context.Background(), reader, &output, fixedClock{now: time.Now().UTC()}, dependencies)
 	if err == nil || !errors.Is(err, redeemerCloseErr) || !errors.Is(err, replayCloseErr) {
@@ -283,10 +346,7 @@ func TestRunClosesEveryAuthorityAfterServeFailure(t *testing.T) {
 		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
-		"open resolver handler",
-		"new loopback handler",
 		"read request",
-		"close resolver handler",
 		"close replay guard",
 		"close ticket redeemer",
 	}
@@ -333,12 +393,13 @@ type testTicketRedeemer struct {
 	redemption helper.TicketRedemption
 	events     *[]string
 	closeErr   error
+	redeemErr  error
 }
 
 // Redeem returns the independently bound test authority.
 func (redeemer *testTicketRedeemer) Redeem(_ context.Context, _ helper.TicketReference) (helper.TicketRedemption, error) {
 	*redeemer.events = append(*redeemer.events, "redeem ticket")
-	return redeemer.redemption, nil
+	return redeemer.redemption, redeemer.redeemErr
 }
 
 // Close records release of the retained ticket topology.
@@ -349,14 +410,15 @@ func (redeemer *testTicketRedeemer) Close() error {
 
 // testReplayGuard records durable replay admission and lifecycle ordering.
 type testReplayGuard struct {
-	events   *[]string
-	closeErr error
+	events     *[]string
+	closeErr   error
+	consumeErr error
 }
 
 // Consume records the single-use admission boundary.
 func (guard *testReplayGuard) Consume(_ context.Context, _ helper.ReplayClaim) error {
 	*guard.events = append(*guard.events, "consume replay claim")
-	return nil
+	return guard.consumeErr
 }
 
 // Close records release of the retained replay directory.
@@ -429,6 +491,45 @@ func (handler *testLoopbackHandler) ReleaseLoopbackIdentity(_ context.Context, t
 	}, nil
 }
 
+// unusedRuntimeDependencies returns complete wiring whose callbacks fail if a test reaches an unconfigured boundary.
+func unusedRuntimeDependencies(t *testing.T) runtimeDependencies {
+	t.Helper()
+	return runtimeDependencies{
+		authorizeInvocation: func() error {
+			t.Fatal("invocation authorizer was not configured for this test")
+			return nil
+		},
+		openTicketRedeemer: func() (closingTicketRedeemer, error) {
+			t.Fatal("ticket redeemer factory was not configured for this test")
+			return nil, nil
+		},
+		openReplayGuard: func() (closingReplayGuard, error) {
+			t.Fatal("replay guard factory was not configured for this test")
+			return nil, nil
+		},
+		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
+			t.Fatal("loopback handler factory was not configured for this test")
+			return nil
+		},
+		openResolverHandler: func() (closingResolverHandler, error) {
+			t.Fatal("resolver handler factory was not configured for this test")
+			return nil, nil
+		},
+		openTrustHandler: func() (closingTrustHandler, error) {
+			t.Fatal("trust handler factory was not configured for this test")
+			return nil, nil
+		},
+		openLowPortHandler: func() (closingLowPortHandler, error) {
+			t.Fatal("low-port handler factory was not configured for this test")
+			return nil, nil
+		},
+		transitionTrustIdentity: func(string) error {
+			t.Fatal("trust identity transition was not configured for this test")
+			return nil
+		},
+	}
+}
+
 // successfulTestDependencies creates the complete in-memory authority graph used by the entrypoint test.
 func successfulTestDependencies(events *[]string, redemption helper.TicketRedemption) runtimeDependencies {
 	return runtimeDependencies{
@@ -438,7 +539,10 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 		},
 		openTicketRedeemer: func() (closingTicketRedeemer, error) {
 			*events = append(*events, "open ticket redeemer")
-			return &testTicketRedeemer{redemption: redemption, events: events}, nil
+			return &testTicketRedeemer{
+				redemption: redemption,
+				events:     events,
+			}, nil
 		},
 		openReplayGuard: func() (closingReplayGuard, error) {
 			*events = append(*events, "open replay guard")
@@ -451,6 +555,15 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 		openResolverHandler: func() (closingResolverHandler, error) {
 			*events = append(*events, "open resolver handler")
 			return &testResolverHandler{events: events}, nil
+		},
+		openTrustHandler: func() (closingTrustHandler, error) {
+			return helper.UnavailableTrustHandler{}, nil
+		},
+		openLowPortHandler: func() (closingLowPortHandler, error) {
+			return unavailableClosingLowPortHandler{}, nil
+		},
+		transitionTrustIdentity: func(string) error {
+			return errors.New("test trust identity transition is not configured")
 		},
 	}
 }

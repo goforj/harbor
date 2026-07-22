@@ -216,15 +216,259 @@ type Response struct {
 	Error   *ResponseError   `json:"error,omitempty"`
 }
 
+// AdmittedTrustOperation is one trust ticket operation that passed redemption, clock, and replay admission.
+type AdmittedTrustOperation struct {
+	ticket Ticket
+}
+
+// RequesterIdentity returns the authenticated requester identity bound to the admitted trust ticket.
+func (admitted AdmittedTrustOperation) RequesterIdentity() string {
+	return admitted.ticket.RequesterIdentity
+}
+
+// ExecuteTrust invokes exactly the trust handler selected by the already-admitted trust operation.
+func (admitted AdmittedTrustOperation) ExecuteTrust(ctx context.Context, handler TrustHandler) (OperationResult, error) {
+	if handler == nil {
+		return OperationResult{}, ErrMutationUnavailable
+	}
+	result := OperationResult{Operation: admitted.ticket.Operation}
+	var evidence TrustMutationEvidence
+	var err error
+	switch admitted.ticket.Operation {
+	case OperationEnsureTrust:
+		evidence, err = handler.EnsureTrust(ctx, admitted.ticket)
+	case OperationReleaseTrust:
+		evidence, err = handler.ReleaseTrust(ctx, admitted.ticket)
+	default:
+		return OperationResult{}, newRequestError(ErrorCodeInvalidTicket, "admitted operation is not a trust operation")
+	}
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if err := evidence.validate(admitted.ticket); err != nil {
+		return OperationResult{}, err
+	}
+	result.TrustEvidence = &evidence
+	return result, nil
+}
+
+// AdmittedResolverOperation is one resolver ticket operation that passed redemption, clock, and replay admission.
+type AdmittedResolverOperation struct {
+	ticket    Ticket
+	admission TicketAdmission
+}
+
+// RequesterIdentity returns the authenticated requester identity bound to the admitted resolver ticket.
+func (admitted AdmittedResolverOperation) RequesterIdentity() string {
+	return admitted.ticket.RequesterIdentity
+}
+
+// ExecuteResolver invokes exactly the resolver handler selected by the already-admitted resolver operation.
+func (admitted AdmittedResolverOperation) ExecuteResolver(ctx context.Context, handler ResolverHandler) (OperationResult, error) {
+	if handler == nil {
+		return OperationResult{}, ErrMutationUnavailable
+	}
+	result := OperationResult{Operation: admitted.ticket.Operation}
+	var evidence ResolverMutationEvidence
+	var err error
+	switch admitted.ticket.Operation {
+	case OperationEnsureResolver:
+		evidence, err = handler.EnsureResolver(ctx, admitted.ticket, admitted.admission)
+	case OperationReleaseResolver:
+		evidence, err = handler.ReleaseResolver(ctx, admitted.ticket, admitted.admission)
+	default:
+		return OperationResult{}, newRequestError(ErrorCodeInvalidTicket, "admitted operation is not a resolver operation")
+	}
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if err := evidence.validate(admitted.ticket, admitted.admission); err != nil {
+		return OperationResult{}, err
+	}
+	result.ResolverEvidence = &evidence
+	return result, nil
+}
+
+// AdmittedLowPortOperation is one low-port ticket operation that passed redemption, clock, and replay admission.
+type AdmittedLowPortOperation struct {
+	ticket    Ticket
+	admission TicketAdmission
+}
+
+// RequesterIdentity returns the authenticated requester identity bound to the admitted low-port ticket.
+func (admitted AdmittedLowPortOperation) RequesterIdentity() string {
+	return admitted.ticket.RequesterIdentity
+}
+
+// ExecuteLowPorts invokes exactly the low-port handler selected by the already-admitted low-port operation.
+func (admitted AdmittedLowPortOperation) ExecuteLowPorts(ctx context.Context, handler LowPortHandler) (OperationResult, error) {
+	if handler == nil {
+		return OperationResult{}, ErrMutationUnavailable
+	}
+	result := OperationResult{Operation: admitted.ticket.Operation}
+	var evidence LowPortMutationEvidence
+	var err error
+	switch admitted.ticket.Operation {
+	case OperationEnsureLowPorts:
+		evidence, err = handler.EnsureLowPorts(ctx, admitted.ticket, admitted.admission)
+	case OperationReleaseLowPorts:
+		evidence, err = handler.ReleaseLowPorts(ctx, admitted.ticket, admitted.admission)
+	default:
+		return OperationResult{}, newRequestError(ErrorCodeInvalidTicket, "admitted operation is not a low-port operation")
+	}
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if err := evidence.validate(admitted.ticket, admitted.admission); err != nil {
+		return OperationResult{}, err
+	}
+	result.LowPortEvidence = &evidence
+	return result, nil
+}
+
+// AdmittedLoopbackOperation is one loopback ticket operation that passed redemption, clock, and replay admission.
+type AdmittedLoopbackOperation struct {
+	ticket Ticket
+}
+
+// RequesterIdentity returns the authenticated requester identity bound to the admitted loopback ticket.
+func (admitted AdmittedLoopbackOperation) RequesterIdentity() string {
+	return admitted.ticket.RequesterIdentity
+}
+
+// ExecuteLoopback invokes exactly the loopback handler selected by the already-admitted loopback operation.
+func (admitted AdmittedLoopbackOperation) ExecuteLoopback(ctx context.Context, handler LoopbackIdentityHandler) (OperationResult, error) {
+	if handler == nil {
+		return OperationResult{}, ErrMutationUnavailable
+	}
+	result := OperationResult{Operation: admitted.ticket.Operation}
+	switch admitted.ticket.Operation {
+	case OperationEnsureLoopbackIdentity:
+		evidence, err := handler.EnsureLoopbackIdentity(ctx, admitted.ticket)
+		if err != nil {
+			return OperationResult{}, err
+		}
+		if err := evidence.validate(admitted.ticket); err != nil {
+			return OperationResult{}, err
+		}
+		result.Evidence = evidence
+	case OperationReleaseLoopbackIdentity:
+		evidence, err := handler.ReleaseLoopbackIdentity(ctx, admitted.ticket)
+		if err != nil {
+			return OperationResult{}, err
+		}
+		if err := evidence.validate(admitted.ticket); err != nil {
+			return OperationResult{}, err
+		}
+		result.Evidence = evidence
+	case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
+		poolHandler, supported := handler.(LoopbackPoolReleaseHandler)
+		if admitted.ticket.Operation == OperationEnsureLoopbackPool {
+			evidence, err := handler.EnsureLoopbackPool(ctx, admitted.ticket)
+			if err != nil {
+				return OperationResult{}, err
+			}
+			if err := evidence.validate(admitted.ticket); err != nil {
+				return OperationResult{}, err
+			}
+			result.PoolEvidence = &evidence
+			return result, nil
+		}
+		if !supported {
+			return OperationResult{}, ErrMutationUnavailable
+		}
+		evidence, err := poolHandler.ReleaseLoopbackPool(ctx, admitted.ticket)
+		if err != nil {
+			return OperationResult{}, err
+		}
+		if err := evidence.validate(admitted.ticket); err != nil {
+			return OperationResult{}, err
+		}
+		result.PoolEvidence = &evidence
+	default:
+		return OperationResult{}, newRequestError(ErrorCodeInvalidTicket, "admitted operation is not a loopback operation")
+	}
+	return result, nil
+}
+
+// AdmittedTrustExecutor executes one already-admitted trust operation.
+type AdmittedTrustExecutor func(context.Context, AdmittedTrustOperation) (OperationResult, error)
+
+// AdmittedResolverExecutor executes one already-admitted resolver operation.
+type AdmittedResolverExecutor func(context.Context, AdmittedResolverOperation) (OperationResult, error)
+
+// AdmittedLowPortExecutor executes one already-admitted low-port operation.
+type AdmittedLowPortExecutor func(context.Context, AdmittedLowPortOperation) (OperationResult, error)
+
+// AdmittedLoopbackExecutor executes one already-admitted loopback operation.
+type AdmittedLoopbackExecutor func(context.Context, AdmittedLoopbackOperation) (OperationResult, error)
+
+// AdmittedOperationExecutors supplies the operation-family callbacks reached only after admission.
+type AdmittedOperationExecutors struct {
+	// Trust executes authenticated trust ticket operations.
+	Trust AdmittedTrustExecutor
+	// Resolver executes authenticated resolver ticket operations.
+	Resolver AdmittedResolverExecutor
+	// LowPorts executes authenticated low-port ticket operations.
+	LowPorts AdmittedLowPortExecutor
+	// Loopback executes authenticated loopback ticket operations.
+	Loopback AdmittedLoopbackExecutor
+}
+
+// handlerAdmittedOperationExecutors retains the established handler graph behind the admitted-operation boundary.
+type handlerAdmittedOperationExecutors struct {
+	loopback LoopbackIdentityHandler
+	resolver ResolverHandler
+	trust    TrustHandler
+	lowPorts LowPortHandler
+}
+
+// NewAdmittedOperationExecutors constructs the production callbacks from the reviewed operation-family handlers.
+func NewAdmittedOperationExecutors(loopback LoopbackIdentityHandler, resolver ResolverHandler, trust TrustHandler, lowPorts LowPortHandler) AdmittedOperationExecutors {
+	if loopback == nil || resolver == nil || trust == nil || lowPorts == nil {
+		panic("helper.NewAdmittedOperationExecutors requires non-nil handlers")
+	}
+	handlers := handlerAdmittedOperationExecutors{
+		loopback: loopback,
+		resolver: resolver,
+		trust:    trust,
+		lowPorts: lowPorts,
+	}
+	return AdmittedOperationExecutors{
+		Trust:    handlers.executeTrust,
+		Resolver: handlers.executeResolver,
+		LowPorts: handlers.executeLowPorts,
+		Loopback: handlers.executeLoopback,
+	}
+}
+
+// executeTrust executes one admitted trust operation through the configured handler.
+func (executor handlerAdmittedOperationExecutors) executeTrust(ctx context.Context, admitted AdmittedTrustOperation) (OperationResult, error) {
+	return admitted.ExecuteTrust(ctx, executor.trust)
+}
+
+// executeResolver executes one admitted resolver operation through the configured handler.
+func (executor handlerAdmittedOperationExecutors) executeResolver(ctx context.Context, admitted AdmittedResolverOperation) (OperationResult, error) {
+	return admitted.ExecuteResolver(ctx, executor.resolver)
+}
+
+// executeLowPorts executes one admitted low-port operation through the configured handler.
+func (executor handlerAdmittedOperationExecutors) executeLowPorts(ctx context.Context, admitted AdmittedLowPortOperation) (OperationResult, error) {
+	return admitted.ExecuteLowPorts(ctx, executor.lowPorts)
+}
+
+// executeLoopback executes one admitted loopback operation through the configured handler.
+func (executor handlerAdmittedOperationExecutors) executeLoopback(ctx context.Context, admitted AdmittedLoopbackOperation) (OperationResult, error) {
+	return admitted.ExecuteLoopback(ctx, executor.loopback)
+}
+
 // Dispatcher validates, consumes, and dispatches one helper ticket.
 type Dispatcher struct {
-	redeemer    TicketRedeemer
-	clock       Clock
-	replayGuard ReplayGuard
-	loopback    LoopbackIdentityHandler
-	resolver    ResolverHandler
-	trust       TrustHandler
-	lowPorts    LowPortHandler
+	redeemer             TicketRedeemer
+	clock                Clock
+	replayGuard          ReplayGuard
+	executors            AdmittedOperationExecutors
+	detachTrustAdmission bool
 }
 
 // NewDispatcher constructs a dispatcher with resolver, trust, and low-port effects intentionally unavailable.
@@ -293,21 +537,47 @@ func NewDispatcherWithResolverTrustAndLowPorts(
 	if redeemer == nil || clock == nil || replayGuard == nil || loopbackHandler == nil || resolverHandler == nil || trustHandler == nil || lowPortHandler == nil {
 		panic("helper.NewDispatcherWithResolverTrustAndLowPorts requires non-nil dependencies")
 	}
+	return NewDispatcherWithAdmittedOperationExecutors(
+		redeemer,
+		clock,
+		replayGuard,
+		NewAdmittedOperationExecutors(
+			loopbackHandler,
+			resolverHandler,
+			trustHandler,
+			lowPortHandler,
+		),
+	)
+}
+
+// NewDispatcherWithAdmittedOperationExecutors constructs a dispatcher that delegates only after ticket admission is complete.
+func NewDispatcherWithAdmittedOperationExecutors(redeemer TicketRedeemer, clock Clock, replayGuard ReplayGuard, executors AdmittedOperationExecutors) *Dispatcher {
+	if redeemer == nil || clock == nil || replayGuard == nil || executors.Trust == nil || executors.Resolver == nil || executors.LowPorts == nil || executors.Loopback == nil {
+		panic("helper.NewDispatcherWithAdmittedOperationExecutors requires non-nil dependencies")
+	}
 	return &Dispatcher{
 		redeemer:    redeemer,
 		clock:       clock,
 		replayGuard: replayGuard,
-		loopback:    loopbackHandler,
-		resolver:    resolverHandler,
-		trust:       trustHandler,
-		lowPorts:    lowPortHandler,
+		executors:   executors,
 	}
+}
+
+// NewOneShotDispatcherWithAdmittedOperationExecutors constructs a single-request dispatcher that detaches root admission references before trust execution.
+func NewOneShotDispatcherWithAdmittedOperationExecutors(redeemer TicketRedeemer, clock Clock, replayGuard ReplayGuard, executors AdmittedOperationExecutors) *Dispatcher {
+	dispatcher := NewDispatcherWithAdmittedOperationExecutors(redeemer, clock, replayGuard, executors)
+	dispatcher.detachTrustAdmission = true
+	return dispatcher
 }
 
 // Dispatch admits at most one use of a valid ticket before invoking its operation handler.
 func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if d.redeemer == nil || d.replayGuard == nil {
+		err := newRequestError(ErrorCodeAuthenticationFailed, "helper admission authority is no longer available")
+		return responseForError(err), err
 	}
 	if err := request.Validate(); err != nil {
 		return responseForError(err), err
@@ -344,82 +614,35 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 		return responseForError(err), err
 	}
 
-	result := &OperationResult{Operation: ticket.Operation}
+	var result OperationResult
 	var err error
 	switch ticket.Operation {
-	case OperationEnsureLoopbackIdentity:
-		result.Evidence, err = d.loopback.EnsureLoopbackIdentity(operationContext, ticket)
-		if err == nil {
-			err = result.Evidence.validate(ticket)
+	case OperationEnsureTrust, OperationReleaseTrust:
+		if d.detachTrustAdmission {
+			d.redeemer = nil
+			d.replayGuard = nil
 		}
-	case OperationEnsureLoopbackPool:
-		poolEvidence, poolErr := d.loopback.EnsureLoopbackPool(operationContext, ticket)
-		err = poolErr
-		if err == nil {
-			err = poolEvidence.validate(ticket)
-		}
-		result.PoolEvidence = &poolEvidence
-	case OperationReleaseLoopbackPool:
-		releaseHandler, supported := d.loopback.(LoopbackPoolReleaseHandler)
-		if !supported {
-			err = ErrMutationUnavailable
-			break
-		}
-		poolEvidence, poolErr := releaseHandler.ReleaseLoopbackPool(operationContext, ticket)
-		err = poolErr
-		if err == nil {
-			err = poolEvidence.validate(ticket)
-		}
-		result.PoolEvidence = &poolEvidence
-	case OperationReleaseLoopbackIdentity:
-		result.Evidence, err = d.loopback.ReleaseLoopbackIdentity(operationContext, ticket)
-		if err == nil {
-			err = result.Evidence.validate(ticket)
-		}
-	case OperationEnsureResolver:
-		resolverEvidence, resolverErr := d.resolver.EnsureResolver(operationContext, ticket, redemption.Admission)
-		err = resolverErr
-		if err == nil {
-			err = resolverEvidence.validate(ticket, redemption.Admission)
-		}
-		result.ResolverEvidence = &resolverEvidence
-	case OperationReleaseResolver:
-		resolverEvidence, resolverErr := d.resolver.ReleaseResolver(operationContext, ticket, redemption.Admission)
-		err = resolverErr
-		if err == nil {
-			err = resolverEvidence.validate(ticket, redemption.Admission)
-		}
-		result.ResolverEvidence = &resolverEvidence
-	case OperationEnsureTrust:
-		trustEvidence, trustErr := d.trust.EnsureTrust(operationContext, ticket)
-		err = trustErr
-		if err == nil {
-			err = trustEvidence.validate(ticket)
-		}
-		result.TrustEvidence = &trustEvidence
-	case OperationReleaseTrust:
-		trustEvidence, trustErr := d.trust.ReleaseTrust(operationContext, ticket)
-		err = trustErr
-		if err == nil {
-			err = trustEvidence.validate(ticket)
-		}
-		result.TrustEvidence = &trustEvidence
-	case OperationEnsureLowPorts:
-		lowPortEvidence, lowPortErr := d.lowPorts.EnsureLowPorts(operationContext, ticket, redemption.Admission)
-		err = lowPortErr
-		if err == nil {
-			err = lowPortEvidence.validate(ticket, redemption.Admission)
-		}
-		result.LowPortEvidence = &lowPortEvidence
-	case OperationReleaseLowPorts:
-		lowPortEvidence, lowPortErr := d.lowPorts.ReleaseLowPorts(operationContext, ticket, redemption.Admission)
-		err = lowPortErr
-		if err == nil {
-			err = lowPortEvidence.validate(ticket, redemption.Admission)
-		}
-		result.LowPortEvidence = &lowPortEvidence
+		result, err = d.executors.Trust(operationContext, AdmittedTrustOperation{ticket: ticket})
+	case OperationEnsureResolver, OperationReleaseResolver:
+		result, err = d.executors.Resolver(operationContext, AdmittedResolverOperation{
+			ticket:    ticket,
+			admission: redemption.Admission,
+		})
+	case OperationEnsureLowPorts, OperationReleaseLowPorts:
+		result, err = d.executors.LowPorts(operationContext, AdmittedLowPortOperation{
+			ticket:    ticket,
+			admission: redemption.Admission,
+		})
+	case OperationEnsureLoopbackIdentity,
+		OperationEnsureLoopbackPool,
+		OperationReleaseLoopbackPool,
+		OperationReleaseLoopbackIdentity:
+		result, err = d.executors.Loopback(operationContext, AdmittedLoopbackOperation{ticket: ticket})
 	default:
 		err = newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
+	}
+	if err == nil {
+		err = validateAdmittedOperationResult(ticket, redemption.Admission, result)
 	}
 	if err != nil {
 		return responseForError(err), err
@@ -428,8 +651,32 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 	return Response{
 		Version: ProtocolVersion,
 		OK:      true,
-		Result:  result,
+		Result:  &result,
 	}, nil
+}
+
+// validateAdmittedOperationResult preserves ticket-to-result correlation for injected family callbacks.
+func validateAdmittedOperationResult(ticket Ticket, admission TicketAdmission, result OperationResult) error {
+	if result.Operation != ticket.Operation {
+		return newRequestError(ErrorCodeMutationFailed, "admitted operation result does not match the ticket operation")
+	}
+	if err := validateOperationResult(result); err != nil {
+		return newRequestError(ErrorCodeMutationFailed, "admitted operation result is invalid")
+	}
+	switch ticket.Operation {
+	case OperationEnsureLoopbackIdentity, OperationReleaseLoopbackIdentity:
+		return result.Evidence.validate(ticket)
+	case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
+		return result.PoolEvidence.validate(ticket)
+	case OperationEnsureResolver, OperationReleaseResolver:
+		return result.ResolverEvidence.validate(ticket, admission)
+	case OperationEnsureTrust, OperationReleaseTrust:
+		return result.TrustEvidence.validate(ticket)
+	case OperationEnsureLowPorts, OperationReleaseLowPorts:
+		return result.LowPortEvidence.validate(ticket, admission)
+	default:
+		return newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
+	}
 }
 
 // validate prevents a resolver adapter from returning evidence for another policy or postcondition.

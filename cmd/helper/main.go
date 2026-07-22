@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/loopbackhandler"
@@ -63,6 +64,16 @@ type runtimeDependencies struct {
 	openResolverHandler        func() (closingResolverHandler, error)
 	openTrustHandler           func() (closingTrustHandler, error)
 	openLowPortHandler         func() (closingLowPortHandler, error)
+	transitionTrustIdentity    func(string) error
+}
+
+// runtimeAuthorities retains only resources opened for the single admitted helper operation.
+type runtimeAuthorities struct {
+	redeemer        closingTicketRedeemer
+	replayGuard     closingReplayGuard
+	resolverHandler closingResolverHandler
+	trustHandler    closingTrustHandler
+	lowPortHandler  closingLowPortHandler
 }
 
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
@@ -92,14 +103,16 @@ func productionDependencies() runtimeDependencies {
 		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
 			return loopbackhandler.New()
 		},
-		openResolverHandler: openPlatformResolverHandler,
-		openTrustHandler:    openPlatformTrustHandler,
-		openLowPortHandler:  openPlatformLowPortHandler,
+		openResolverHandler:     openPlatformResolverHandler,
+		openTrustHandler:        openPlatformTrustHandler,
+		openLowPortHandler:      openPlatformLowPortHandler,
+		transitionTrustIdentity: irreversiblyDropTrustIdentity,
 	}
 }
 
-// run opens every durable authority boundary before accepting one request from the caller.
+// run opens authentication and replay authority before admitting exactly one lazily selected effect.
 func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.Clock, dependencies runtimeDependencies) (runErr error) {
+	validateRuntimeComposition(clock, dependencies)
 	if err := dependencies.authorizeInvocation(); err != nil {
 		return fmt.Errorf("authorize helper invocation: %w", err)
 	}
@@ -108,72 +121,230 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 	if err != nil {
 		return fmt.Errorf("open helper ticket redeemer: %w", err)
 	}
+	authorities := &runtimeAuthorities{
+		redeemer: redeemer,
+	}
 	defer func() {
-		if err := redeemer.Close(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("close helper ticket redeemer: %w", err))
-		}
+		runErr = errors.Join(runErr, authorities.close())
 	}()
 
 	replayGuard, err := dependencies.openReplayGuard()
 	if err != nil {
 		return fmt.Errorf("open helper replay guard: %w", err)
 	}
-	defer func() {
-		if err := replayGuard.Close(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("close helper replay guard: %w", err))
-		}
-	}()
+	authorities.replayGuard = replayGuard
 
-	resolverHandler, err := dependencies.openResolverHandler()
-	if err != nil {
-		return fmt.Errorf("open helper resolver handler: %w", err)
-	}
-	defer func() {
-		if err := resolverHandler.Close(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("close helper resolver handler: %w", err))
-		}
-	}()
-
-	trustHandler := closingTrustHandler(helper.UnavailableTrustHandler{})
-	if dependencies.openTrustHandler != nil {
-		trustHandler, err = dependencies.openTrustHandler()
-		if err != nil {
-			return fmt.Errorf("open helper trust handler: %w", err)
-		}
-		if trustHandler == nil {
-			return errors.New("open helper trust handler: handler is nil")
-		}
-		defer func() {
-			if err := trustHandler.Close(); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("close helper trust handler: %w", err))
-			}
-		}()
-	}
-
-	lowPortHandler := closingLowPortHandler(unavailableClosingLowPortHandler{})
-	if dependencies.openLowPortHandler != nil {
-		lowPortHandler, err = dependencies.openLowPortHandler()
-		if err != nil {
-			return fmt.Errorf("open helper low-port handler: %w", err)
-		}
-		if lowPortHandler == nil {
-			return errors.New("open helper low-port handler: handler is nil")
-		}
-		defer func() {
-			if err := lowPortHandler.Close(); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("close helper low-port handler: %w", err))
-			}
-		}()
-	}
-
-	dispatcher := helper.NewDispatcherWithResolverTrustAndLowPorts(
+	dispatcher := helper.NewOneShotDispatcherWithAdmittedOperationExecutors(
 		redeemer,
 		clock,
 		replayGuard,
-		dependencies.newLoopbackIdentityHandler(),
-		resolverHandler,
-		trustHandler,
-		lowPortHandler,
+		helper.AdmittedOperationExecutors{
+			Trust: func(ctx context.Context, admitted helper.AdmittedTrustOperation) (helper.OperationResult, error) {
+				return executeAdmittedTrust(ctx, admitted, dependencies, authorities)
+			},
+			Resolver: func(ctx context.Context, admitted helper.AdmittedResolverOperation) (helper.OperationResult, error) {
+				return executeAdmittedResolver(ctx, admitted, dependencies, authorities)
+			},
+			LowPorts: func(ctx context.Context, admitted helper.AdmittedLowPortOperation) (helper.OperationResult, error) {
+				return executeAdmittedLowPorts(ctx, admitted, dependencies, authorities)
+			},
+			Loopback: func(ctx context.Context, admitted helper.AdmittedLoopbackOperation) (helper.OperationResult, error) {
+				return executeAdmittedLoopback(ctx, admitted, dependencies)
+			},
+		},
 	)
 	return helper.ServeOnce(ctx, reader, writer, dispatcher)
+}
+
+// validateRuntimeComposition rejects incomplete helper wiring before any authority or caller input is reached.
+func validateRuntimeComposition(clock helper.Clock, dependencies runtimeDependencies) {
+	if clock == nil {
+		panic("helper runtime clock is required")
+	}
+	if dependencies.authorizeInvocation == nil {
+		panic("helper invocation authorizer is required")
+	}
+	if dependencies.openTicketRedeemer == nil {
+		panic("helper ticket redeemer factory is required")
+	}
+	if dependencies.openReplayGuard == nil {
+		panic("helper replay guard factory is required")
+	}
+	if dependencies.newLoopbackIdentityHandler == nil {
+		panic("helper loopback handler factory is required")
+	}
+	if dependencies.openResolverHandler == nil {
+		panic("helper resolver handler factory is required")
+	}
+	if dependencies.openTrustHandler == nil {
+		panic("helper trust handler factory is required")
+	}
+	if dependencies.openLowPortHandler == nil {
+		panic("helper low-port handler factory is required")
+	}
+	if dependencies.transitionTrustIdentity == nil {
+		panic("helper trust identity transition is required")
+	}
+}
+
+// executeAdmittedTrust tears down every privileged resource before entering the one-way current-user trust path.
+func executeAdmittedTrust(
+	ctx context.Context,
+	admitted helper.AdmittedTrustOperation,
+	dependencies runtimeDependencies,
+	authorities *runtimeAuthorities,
+) (helper.OperationResult, error) {
+	if err := authorities.closePrivileged(); err != nil {
+		return helper.OperationResult{}, err
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := dependencies.transitionTrustIdentity(admitted.RequesterIdentity()); err != nil {
+		return helper.OperationResult{}, fmt.Errorf("enter helper trust identity: %w", err)
+	}
+	trustHandler, err := dependencies.openTrustHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper trust handler: %w", err)
+	}
+	if trustHandler == nil {
+		panic("helper trust handler factory returned nil")
+	}
+	authorities.trustHandler = trustHandler
+	return admitted.ExecuteTrust(ctx, trustHandler)
+}
+
+// executeAdmittedResolver opens only the resolver authority selected by the authenticated ticket.
+func executeAdmittedResolver(
+	ctx context.Context,
+	admitted helper.AdmittedResolverOperation,
+	dependencies runtimeDependencies,
+	authorities *runtimeAuthorities,
+) (helper.OperationResult, error) {
+	resolverHandler, err := dependencies.openResolverHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper resolver handler: %w", err)
+	}
+	if resolverHandler == nil {
+		panic("helper resolver handler factory returned nil")
+	}
+	authorities.resolverHandler = resolverHandler
+	return admitted.ExecuteResolver(ctx, resolverHandler)
+}
+
+// executeAdmittedLowPorts opens only the low-port authority selected by the authenticated ticket.
+func executeAdmittedLowPorts(
+	ctx context.Context,
+	admitted helper.AdmittedLowPortOperation,
+	dependencies runtimeDependencies,
+	authorities *runtimeAuthorities,
+) (helper.OperationResult, error) {
+	lowPortHandler, err := dependencies.openLowPortHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper low-port handler: %w", err)
+	}
+	if lowPortHandler == nil {
+		panic("helper low-port handler factory returned nil")
+	}
+	authorities.lowPortHandler = lowPortHandler
+	return admitted.ExecuteLowPorts(ctx, lowPortHandler)
+}
+
+// executeAdmittedLoopback constructs only the stateless loopback authority selected by the authenticated ticket.
+func executeAdmittedLoopback(
+	ctx context.Context,
+	admitted helper.AdmittedLoopbackOperation,
+	dependencies runtimeDependencies,
+) (helper.OperationResult, error) {
+	handler := dependencies.newLoopbackIdentityHandler()
+	if handler == nil {
+		panic("helper loopback handler factory returned nil")
+	}
+	return admitted.ExecuteLoopback(ctx, handler)
+}
+
+// close releases every retained authority in reverse construction order and disarms later cleanup.
+func (authorities *runtimeAuthorities) close() error {
+	return errors.Join(
+		authorities.closeTrustHandler(),
+		authorities.closeLowPortHandler(),
+		authorities.closeResolverHandler(),
+		authorities.closeReplayGuard(),
+		authorities.closeTicketRedeemer(),
+	)
+}
+
+// closePrivileged releases every root-opened authority before the trust path drops its process identity.
+func (authorities *runtimeAuthorities) closePrivileged() error {
+	return errors.Join(
+		authorities.closeLowPortHandler(),
+		authorities.closeResolverHandler(),
+		authorities.closeReplayGuard(),
+		authorities.closeTicketRedeemer(),
+	)
+}
+
+// closeTicketRedeemer closes and forgets the root-owned ticket topology.
+func (authorities *runtimeAuthorities) closeTicketRedeemer() error {
+	if authorities.redeemer == nil {
+		return nil
+	}
+	redeemer := authorities.redeemer
+	authorities.redeemer = nil
+	if err := redeemer.Close(); err != nil {
+		return fmt.Errorf("close helper ticket redeemer: %w", err)
+	}
+	return nil
+}
+
+// closeReplayGuard closes and forgets the root-owned replay directory.
+func (authorities *runtimeAuthorities) closeReplayGuard() error {
+	if authorities.replayGuard == nil {
+		return nil
+	}
+	replayGuard := authorities.replayGuard
+	authorities.replayGuard = nil
+	if err := replayGuard.Close(); err != nil {
+		return fmt.Errorf("close helper replay guard: %w", err)
+	}
+	return nil
+}
+
+// closeResolverHandler closes and forgets the root-owned resolver boundary.
+func (authorities *runtimeAuthorities) closeResolverHandler() error {
+	if authorities.resolverHandler == nil {
+		return nil
+	}
+	handler := authorities.resolverHandler
+	authorities.resolverHandler = nil
+	if err := handler.Close(); err != nil {
+		return fmt.Errorf("close helper resolver handler: %w", err)
+	}
+	return nil
+}
+
+// closeTrustHandler closes and forgets the user-scoped trust boundary.
+func (authorities *runtimeAuthorities) closeTrustHandler() error {
+	if authorities.trustHandler == nil {
+		return nil
+	}
+	handler := authorities.trustHandler
+	authorities.trustHandler = nil
+	if err := handler.Close(); err != nil {
+		return fmt.Errorf("close helper trust handler: %w", err)
+	}
+	return nil
+}
+
+// closeLowPortHandler closes and forgets the root-owned low-port boundary.
+func (authorities *runtimeAuthorities) closeLowPortHandler() error {
+	if authorities.lowPortHandler == nil {
+		return nil
+	}
+	handler := authorities.lowPortHandler
+	authorities.lowPortHandler = nil
+	if err := handler.Close(); err != nil {
+		return fmt.Errorf("close helper low-port handler: %w", err)
+	}
+	return nil
 }

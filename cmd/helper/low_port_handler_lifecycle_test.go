@@ -6,20 +6,52 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goforj/harbor/internal/helper"
 )
 
-// lifecycleLowPortHandler records when the helper releases its low-port authority.
+// lifecycleLowPortHandler records one selected low-port mutation and its cleanup.
 type lifecycleLowPortHandler struct {
-	helper.UnavailableLowPortHandler
 	events   *[]string
 	closeErr error
 }
 
-// Close records release of the reviewed native low-port boundary.
+// EnsureLowPorts returns evidence bound to the admitted policy and ownership target.
+func (handler *lifecycleLowPortHandler) EnsureLowPorts(
+	_ context.Context,
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (helper.LowPortMutationEvidence, error) {
+	*handler.events = append(*handler.events, "ensure low ports")
+	return helper.LowPortMutationEvidence{
+		Changed:                true,
+		PolicyFingerprint:      ticket.NetworkPolicyFingerprint,
+		OwnershipFingerprint:   admission.TargetOwnershipFingerprint,
+		ObservationFingerprint: strings.Repeat("e", 64),
+		Postcondition:          helper.LowPortPostconditionExact,
+	}, nil
+}
+
+// ReleaseLowPorts returns absent evidence bound to the admitted policy and ownership target.
+func (handler *lifecycleLowPortHandler) ReleaseLowPorts(
+	_ context.Context,
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (helper.LowPortMutationEvidence, error) {
+	*handler.events = append(*handler.events, "release low ports")
+	return helper.LowPortMutationEvidence{
+		Changed:                true,
+		PolicyFingerprint:      ticket.NetworkPolicyFingerprint,
+		OwnershipFingerprint:   admission.TargetOwnershipFingerprint,
+		ObservationFingerprint: strings.Repeat("e", 64),
+		Postcondition:          helper.LowPortPostconditionOwnedAbsent,
+	}, nil
+}
+
+// Close records release of the selected native low-port boundary.
 func (handler *lifecycleLowPortHandler) Close() error {
 	*handler.events = append(*handler.events, "close low-port handler")
 	return handler.closeErr
@@ -28,9 +60,6 @@ func (handler *lifecycleLowPortHandler) Close() error {
 // TestProductionDependenciesIncludeLowPortComposition proves every platform makes availability an explicit choice.
 func TestProductionDependenciesIncludeLowPortComposition(t *testing.T) {
 	dependencies := productionDependencies()
-	if dependencies.openLowPortHandler == nil {
-		t.Fatal("production low-port dependency is nil")
-	}
 	handler, err := dependencies.openLowPortHandler()
 	if err != nil {
 		t.Fatalf("openLowPortHandler() error = %v", err)
@@ -43,39 +72,77 @@ func TestProductionDependenciesIncludeLowPortComposition(t *testing.T) {
 	}
 }
 
-// TestRunOpensLowPortAuthorityBeforeReadingAndClosesItFirst pins complete composition and reverse-order cleanup.
-func TestRunOpensLowPortAuthorityBeforeReadingAndClosesItFirst(t *testing.T) {
+// TestRunKeepsLowPortAuthorityLazy proves an admitted loopback ticket never opens an unrelated low-port handler.
+func TestRunKeepsLowPortAuthorityLazy(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	reference, redemption := testRedemption(now)
-	body, err := json.Marshal(helper.Request{Version: helper.ProtocolVersion, TicketReference: reference})
+	body, err := json.Marshal(helper.Request{
+		Version:         helper.ProtocolVersion,
+		TicketReference: reference,
+	})
 	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
+		t.Fatal(err)
 	}
-	events := make([]string, 0, 14)
+	events := make([]string, 0, 10)
+	dependencies := successfulTestDependencies(&events, redemption)
+	dependencies.openLowPortHandler = func() (closingLowPortHandler, error) {
+		t.Fatal("low-port handler opened for loopback ticket")
+		return nil, nil
+	}
+	dependencies.openResolverHandler = func() (closingResolverHandler, error) {
+		t.Fatal("resolver handler opened for loopback ticket")
+		return nil, nil
+	}
+	var output bytes.Buffer
+	if err := run(context.Background(), bytes.NewReader(body), &output, fixedClock{now: now}, dependencies); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !slices.Contains(events, "ensure loopback identity") || slices.Contains(events, "open low-port handler") {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+// TestRunOpensOnlyAdmittedLowPortAuthorityAndClosesIt proves lazy selection retains cleanup ordering.
+func TestRunOpensOnlyAdmittedLowPortAuthorityAndClosesIt(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := operationLifecycleRedemption(t, now, helper.OperationEnsureLowPorts)
+	events := make([]string, 0, 12)
 	dependencies := successfulTestDependencies(&events, redemption)
 	dependencies.openLowPortHandler = func() (closingLowPortHandler, error) {
 		events = append(events, "open low-port handler")
-		return &lifecycleLowPortHandler{events: &events}, nil
+		return &lifecycleLowPortHandler{
+			events: &events,
+		}, nil
 	}
-	reader := &recordingReader{reader: bytes.NewReader(body), events: &events}
-	var output bytes.Buffer
+	dependencies.openResolverHandler = func() (closingResolverHandler, error) {
+		t.Fatal("resolver handler opened for low-port ticket")
+		return nil, nil
+	}
+	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+		t.Fatal("trust handler opened for low-port ticket")
+		return nil, nil
+	}
+	dependencies.newLoopbackIdentityHandler = func() helper.LoopbackIdentityHandler {
+		t.Fatal("loopback handler constructed for low-port ticket")
+		return nil
+	}
 
-	if err := run(context.Background(), reader, &output, fixedClock{now: now}, dependencies); err != nil {
+	response, err := runTrustLifecycle(t, now, reference, dependencies)
+	if err != nil {
 		t.Fatalf("run() error = %v", err)
+	}
+	if !response.OK || response.Result == nil || response.Result.LowPortEvidence == nil {
+		t.Fatalf("response = %#v", response)
 	}
 	wantEvents := []string{
 		"authorize invocation",
 		"open ticket redeemer",
 		"open replay guard",
-		"open resolver handler",
-		"open low-port handler",
-		"new loopback handler",
-		"read request",
 		"redeem ticket",
 		"consume replay claim",
-		"ensure loopback identity",
+		"open low-port handler",
+		"ensure low ports",
 		"close low-port handler",
-		"close resolver handler",
 		"close replay guard",
 		"close ticket redeemer",
 	}
@@ -84,95 +151,26 @@ func TestRunOpensLowPortAuthorityBeforeReadingAndClosesItFirst(t *testing.T) {
 	}
 }
 
-// TestRunLowPortOpenFailuresLeaveInputUnreadAndReleasePriorAuthority covers errors and invalid nil wiring.
-func TestRunLowPortOpenFailuresLeaveInputUnreadAndReleasePriorAuthority(t *testing.T) {
-	tests := []struct {
-		name      string
-		open      func(*[]string) func() (closingLowPortHandler, error)
-		wantError string
-	}{
-		{
-			name: "open error",
-			open: func(events *[]string) func() (closingLowPortHandler, error) {
-				return func() (closingLowPortHandler, error) {
-					*events = append(*events, "open low-port handler")
-					return nil, errors.New("low-port open failed")
-				}
-			},
-			wantError: "low-port open failed",
-		},
-		{
-			name: "nil handler",
-			open: func(events *[]string) func() (closingLowPortHandler, error) {
-				return func() (closingLowPortHandler, error) {
-					*events = append(*events, "open low-port handler")
-					return nil, nil
-				}
-			},
-			wantError: "handler is nil",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
-			_, redemption := testRedemption(now)
-			events := make([]string, 0, 8)
-			dependencies := successfulTestDependencies(&events, redemption)
-			dependencies.openLowPortHandler = test.open(&events)
-			reader := &recordingReader{reader: bytes.NewReader([]byte("{}")), events: &events}
-			var output bytes.Buffer
-
-			err := run(context.Background(), reader, &output, fixedClock{now: now}, dependencies)
-			if err == nil || !bytes.Contains([]byte(err.Error()), []byte(test.wantError)) {
-				t.Fatalf("run() error = %v, want text %q", err, test.wantError)
-			}
-			wantEvents := []string{
-				"authorize invocation",
-				"open ticket redeemer",
-				"open replay guard",
-				"open resolver handler",
-				"open low-port handler",
-				"close resolver handler",
-				"close replay guard",
-				"close ticket redeemer",
-			}
-			if !slices.Equal(events, wantEvents) {
-				t.Fatalf("events = %#v, want %#v", events, wantEvents)
-			}
-			if reader.recorded || output.Len() != 0 {
-				t.Fatalf("request recorded = %t, output = %q, want neither", reader.recorded, output.String())
-			}
-		})
-	}
-}
-
-// TestRunJoinsLowPortCloseFailure proves cleanup failure remains visible after a successful served request.
-func TestRunJoinsLowPortCloseFailure(t *testing.T) {
+// TestRunJoinsLazyLowPortCloseFailureAfterWritingSuccess preserves response and cleanup error semantics.
+func TestRunJoinsLazyLowPortCloseFailureAfterWritingSuccess(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
-	reference, redemption := testRedemption(now)
-	body, err := json.Marshal(helper.Request{Version: helper.ProtocolVersion, TicketReference: reference})
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-	wantErr := errors.New("low-port close failed")
-	events := make([]string, 0, 14)
+	reference, redemption := operationLifecycleRedemption(t, now, helper.OperationEnsureLowPorts)
+	events := make([]string, 0, 12)
+	closeErr := errors.New("low-port close failed")
 	dependencies := successfulTestDependencies(&events, redemption)
 	dependencies.openLowPortHandler = func() (closingLowPortHandler, error) {
-		events = append(events, "open low-port handler")
-		return &lifecycleLowPortHandler{events: &events, closeErr: wantErr}, nil
+		return &lifecycleLowPortHandler{
+			events:   &events,
+			closeErr: closeErr,
+		}, nil
 	}
-	var output bytes.Buffer
 
-	err = run(context.Background(), bytes.NewReader(body), &output, fixedClock{now: now}, dependencies)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("run() error = %v, want %v", err, wantErr)
+	response, err := runTrustLifecycle(t, now, reference, dependencies)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("run() error = %v, want %v", err, closeErr)
 	}
-	var response helper.Response
-	if decodeErr := json.Unmarshal(output.Bytes(), &response); decodeErr != nil {
-		t.Fatalf("json.Unmarshal() error = %v", decodeErr)
-	}
-	if !response.OK {
-		t.Fatalf("response = %#v, want successful served request", response)
+	if !response.OK || response.Result == nil || response.Result.LowPortEvidence == nil {
+		t.Fatalf("response = %#v, want successful low-port result", response)
 	}
 }
 
