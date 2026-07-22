@@ -24,7 +24,95 @@ type daemonControlClient interface {
 	StartNetworkSetup(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
 	PrepareNetworkSetupApproval(context.Context, control.PrepareNetworkSetupApprovalRequest) (control.NetworkSetupApprovalPreparation, error)
 	ConfirmNetworkSetupApproval(context.Context, control.ConfirmNetworkSetupApprovalRequest) (control.NetworkSetupApprovalConfirmation, error)
+	StartNetworkResolverSetup(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
+	PrepareNetworkResolverSetupApproval(context.Context, control.PrepareNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalPreparation, error)
+	ConfirmNetworkResolverSetupApproval(context.Context, control.ConfirmNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalConfirmation, error)
+	StartNetworkDataPlaneSetup(context.Context, control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
+	PrepareNetworkDataPlaneTrustApproval(context.Context, control.PrepareNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneTrustApprovalPreparation, error)
+	ConfirmNetworkDataPlaneTrustApproval(context.Context, control.ConfirmNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneSetupOperation, error)
+	PrepareNetworkDataPlaneLowPortApproval(context.Context, control.PrepareNetworkDataPlaneLowPortApprovalRequest) (control.NetworkDataPlaneLowPortApprovalPreparation, error)
+	ConfirmNetworkDataPlaneLowPortApproval(context.Context, control.ConfirmNetworkDataPlaneLowPortApprovalRequest) (control.NetworkDataPlaneSetupConfirmation, error)
 	Close() error
+}
+
+// StartNetworkResolverSetup starts or replays one resolver setup intent.
+func (client *DaemonClient) StartNetworkResolverSetup(
+	ctx context.Context,
+	request control.StartNetworkResolverSetupRequest,
+) (control.NetworkResolverSetupOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkResolverSetupOperation, error) {
+		return connection.StartNetworkResolverSetup(ctx, request)
+	})
+}
+
+// PrepareNetworkResolverSetupApproval prepares one exact resolver approval revision.
+func (client *DaemonClient) PrepareNetworkResolverSetupApproval(
+	ctx context.Context,
+	request control.PrepareNetworkResolverSetupApprovalRequest,
+) (control.NetworkResolverSetupApprovalPreparation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkResolverSetupApprovalPreparation, error) {
+		return connection.PrepareNetworkResolverSetupApproval(ctx, request)
+	})
+}
+
+// ConfirmNetworkResolverSetupApproval confirms one resolver approval result.
+func (client *DaemonClient) ConfirmNetworkResolverSetupApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkResolverSetupApprovalRequest,
+) (control.NetworkResolverSetupApprovalConfirmation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkResolverSetupApprovalConfirmation, error) {
+		return connection.ConfirmNetworkResolverSetupApproval(ctx, request)
+	})
+}
+
+// StartNetworkDataPlaneSetup starts or replays one trusted-ingress setup intent.
+func (client *DaemonClient) StartNetworkDataPlaneSetup(
+	ctx context.Context,
+	request control.StartNetworkDataPlaneSetupRequest,
+) (control.NetworkDataPlaneSetupOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkDataPlaneSetupOperation, error) {
+		return connection.StartNetworkDataPlaneSetup(ctx, request)
+	})
+}
+
+// PrepareNetworkDataPlaneTrustApproval prepares one exact trust approval revision.
+func (client *DaemonClient) PrepareNetworkDataPlaneTrustApproval(
+	ctx context.Context,
+	request control.PrepareNetworkDataPlaneTrustApprovalRequest,
+) (control.NetworkDataPlaneTrustApprovalPreparation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkDataPlaneTrustApprovalPreparation, error) {
+		return connection.PrepareNetworkDataPlaneTrustApproval(ctx, request)
+	})
+}
+
+// ConfirmNetworkDataPlaneTrustApproval confirms one trust approval result.
+func (client *DaemonClient) ConfirmNetworkDataPlaneTrustApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkDataPlaneTrustApprovalRequest,
+) (control.NetworkDataPlaneSetupOperation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkDataPlaneSetupOperation, error) {
+		return connection.ConfirmNetworkDataPlaneTrustApproval(ctx, request)
+	})
+}
+
+// PrepareNetworkDataPlaneLowPortApproval prepares one exact low-port approval revision.
+func (client *DaemonClient) PrepareNetworkDataPlaneLowPortApproval(
+	ctx context.Context,
+	request control.PrepareNetworkDataPlaneLowPortApprovalRequest,
+) (control.NetworkDataPlaneLowPortApprovalPreparation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkDataPlaneLowPortApprovalPreparation, error) {
+		return connection.PrepareNetworkDataPlaneLowPortApproval(ctx, request)
+	})
+}
+
+// ConfirmNetworkDataPlaneLowPortApproval confirms one low-port approval result.
+func (client *DaemonClient) ConfirmNetworkDataPlaneLowPortApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkDataPlaneLowPortApprovalRequest,
+) (control.NetworkDataPlaneSetupConfirmation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkDataPlaneSetupConfirmation, error) {
+		return connection.ConfirmNetworkDataPlaneLowPortApproval(ctx, request)
+	})
 }
 
 // daemonConnect opens one authenticated control connection when a command runs.

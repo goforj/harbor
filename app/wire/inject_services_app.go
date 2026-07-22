@@ -14,4 +14,7 @@ import (
 var appSet = wire.NewSet(
 	app.NewLifecycleRegistry,
 	runtime.NewTimeouts,
+	provideNetworkSetupApprovalRunner,
+	provideNetworkResolverSetupApprovalRunner,
+	provideNetworkDataPlaneSetupApprovalRunner,
 )

@@ -12,61 +12,198 @@ import (
 
 // fakeDaemonControlClient records one-shot control calls and their cleanup.
 type fakeDaemonControlClient struct {
-	status                           control.DaemonStatus
-	snapshot                         domain.Snapshot
-	projectActivity                  control.ProjectActivity
-	serviceLogs                      control.ServiceLogs
-	registration                     control.ProjectRegistration
-	unregistration                   control.ProjectUnregistration
-	startLifecycle                   control.ProjectLifecycleOperation
-	stopLifecycle                    control.ProjectLifecycleOperation
-	restartLifecycle                 control.ProjectLifecycleOperation
-	networkSetup                     control.NetworkSetupOperation
-	networkSetupPreparation          control.NetworkSetupApprovalPreparation
-	networkSetupConfirmation         control.NetworkSetupApprovalConfirmation
-	statusErr                        error
-	stopErr                          error
-	snapshotErr                      error
-	projectActivityErr               error
-	serviceLogsErr                   error
-	registrationErr                  error
-	unregistrationErr                error
-	startLifecycleErr                error
-	stopLifecycleErr                 error
-	restartLifecycleErr              error
-	networkSetupErr                  error
-	networkSetupPreparationErr       error
-	networkSetupConfirmationErr      error
-	closeErr                         error
-	statusCalls                      int
-	stopCalls                        int
-	snapshotCalls                    int
-	projectActivityCalls             int
-	serviceLogsCalls                 int
-	projectActivityRequests          []control.ProjectActivityRequest
-	serviceLogsRequests              []control.ServiceLogsRequest
-	projectActivityHook              func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
-	serviceLogsHook                  func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
-	registrationCalls                int
-	unregistrationCalls              int
-	startLifecycleCalls              int
-	stopLifecycleCalls               int
-	restartLifecycleCalls            int
-	networkSetupCalls                int
-	networkSetupPreparationCalls     int
-	networkSetupConfirmationCalls    int
-	registrationRequests             []control.RegisterProjectRequest
-	unregistrationRequests           []control.UnregisterProjectRequest
-	startLifecycleRequests           []control.StartProjectRequest
-	stopLifecycleRequests            []control.StopProjectRequest
-	restartLifecycleRequests         []control.RestartProjectRequest
-	networkSetupRequests             []control.StartNetworkSetupRequest
-	networkSetupPreparationRequests  []control.PrepareNetworkSetupApprovalRequest
-	networkSetupConfirmationRequests []control.ConfirmNetworkSetupApprovalRequest
-	networkSetupContexts             []context.Context
-	networkSetupPreparationContexts  []context.Context
-	networkSetupConfirmationContexts []context.Context
-	closeCalls                       int
+	status                               control.DaemonStatus
+	snapshot                             domain.Snapshot
+	projectActivity                      control.ProjectActivity
+	serviceLogs                          control.ServiceLogs
+	registration                         control.ProjectRegistration
+	unregistration                       control.ProjectUnregistration
+	startLifecycle                       control.ProjectLifecycleOperation
+	stopLifecycle                        control.ProjectLifecycleOperation
+	restartLifecycle                     control.ProjectLifecycleOperation
+	networkSetup                         control.NetworkSetupOperation
+	networkSetupPreparation              control.NetworkSetupApprovalPreparation
+	networkSetupConfirmation             control.NetworkSetupApprovalConfirmation
+	resolverSetup                        control.NetworkResolverSetupOperation
+	resolverPreparation                  control.NetworkResolverSetupApprovalPreparation
+	resolverConfirmation                 control.NetworkResolverSetupApprovalConfirmation
+	dataPlaneSetup                       control.NetworkDataPlaneSetupOperation
+	dataPlaneTrustPreparation            control.NetworkDataPlaneTrustApprovalPreparation
+	dataPlaneTrustConfirmation           control.NetworkDataPlaneSetupOperation
+	dataPlaneLowPortPreparation          control.NetworkDataPlaneLowPortApprovalPreparation
+	dataPlaneLowPortConfirmation         control.NetworkDataPlaneSetupConfirmation
+	statusErr                            error
+	stopErr                              error
+	snapshotErr                          error
+	projectActivityErr                   error
+	serviceLogsErr                       error
+	registrationErr                      error
+	unregistrationErr                    error
+	startLifecycleErr                    error
+	stopLifecycleErr                     error
+	restartLifecycleErr                  error
+	networkSetupErr                      error
+	networkSetupPreparationErr           error
+	networkSetupConfirmationErr          error
+	resolverSetupErr                     error
+	resolverPreparationErr               error
+	resolverConfirmationErr              error
+	dataPlaneSetupErr                    error
+	dataPlaneTrustPreparationErr         error
+	dataPlaneTrustConfirmationErr        error
+	dataPlaneLowPortPreparationErr       error
+	dataPlaneLowPortConfirmationErr      error
+	closeErr                             error
+	statusCalls                          int
+	stopCalls                            int
+	snapshotCalls                        int
+	projectActivityCalls                 int
+	serviceLogsCalls                     int
+	projectActivityRequests              []control.ProjectActivityRequest
+	serviceLogsRequests                  []control.ServiceLogsRequest
+	projectActivityHook                  func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	serviceLogsHook                      func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
+	registrationCalls                    int
+	unregistrationCalls                  int
+	startLifecycleCalls                  int
+	stopLifecycleCalls                   int
+	restartLifecycleCalls                int
+	networkSetupCalls                    int
+	networkSetupPreparationCalls         int
+	networkSetupConfirmationCalls        int
+	resolverSetupCalls                   int
+	resolverPreparationCalls             int
+	resolverConfirmationCalls            int
+	dataPlaneSetupCalls                  int
+	dataPlaneTrustPreparationCalls       int
+	dataPlaneTrustConfirmationCalls      int
+	dataPlaneLowPortPreparationCalls     int
+	dataPlaneLowPortConfirmationCalls    int
+	registrationRequests                 []control.RegisterProjectRequest
+	unregistrationRequests               []control.UnregisterProjectRequest
+	startLifecycleRequests               []control.StartProjectRequest
+	stopLifecycleRequests                []control.StopProjectRequest
+	restartLifecycleRequests             []control.RestartProjectRequest
+	networkSetupRequests                 []control.StartNetworkSetupRequest
+	networkSetupPreparationRequests      []control.PrepareNetworkSetupApprovalRequest
+	networkSetupConfirmationRequests     []control.ConfirmNetworkSetupApprovalRequest
+	resolverSetupRequests                []control.StartNetworkResolverSetupRequest
+	resolverPreparationRequests          []control.PrepareNetworkResolverSetupApprovalRequest
+	resolverConfirmationRequests         []control.ConfirmNetworkResolverSetupApprovalRequest
+	dataPlaneSetupRequests               []control.StartNetworkDataPlaneSetupRequest
+	dataPlaneTrustPreparationRequests    []control.PrepareNetworkDataPlaneTrustApprovalRequest
+	dataPlaneTrustConfirmationRequests   []control.ConfirmNetworkDataPlaneTrustApprovalRequest
+	dataPlaneLowPortPreparationRequests  []control.PrepareNetworkDataPlaneLowPortApprovalRequest
+	dataPlaneLowPortConfirmationRequests []control.ConfirmNetworkDataPlaneLowPortApprovalRequest
+	networkSetupContexts                 []context.Context
+	networkSetupPreparationContexts      []context.Context
+	networkSetupConfirmationContexts     []context.Context
+	resolverSetupContexts                []context.Context
+	resolverPreparationContexts          []context.Context
+	resolverConfirmationContexts         []context.Context
+	dataPlaneSetupContexts               []context.Context
+	dataPlaneTrustPreparationContexts    []context.Context
+	dataPlaneTrustConfirmationContexts   []context.Context
+	dataPlaneLowPortPreparationContexts  []context.Context
+	dataPlaneLowPortConfirmationContexts []context.Context
+	networkSetupHook                     func(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
+	resolverSetupHook                    func(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
+	dataPlaneSetupHook                   func(context.Context, control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
+	closeCalls                           int
+}
+
+// StartNetworkResolverSetup returns configured resolver progress and records the selected intent.
+func (client *fakeDaemonControlClient) StartNetworkResolverSetup(
+	ctx context.Context,
+	request control.StartNetworkResolverSetupRequest,
+) (control.NetworkResolverSetupOperation, error) {
+	client.resolverSetupCalls++
+	client.resolverSetupRequests = append(client.resolverSetupRequests, request)
+	client.resolverSetupContexts = append(client.resolverSetupContexts, ctx)
+	if client.resolverSetupHook != nil {
+		return client.resolverSetupHook(ctx, request)
+	}
+	return client.resolverSetup, client.resolverSetupErr
+}
+
+// PrepareNetworkResolverSetupApproval returns configured resolver approval preparation and records its selection.
+func (client *fakeDaemonControlClient) PrepareNetworkResolverSetupApproval(
+	ctx context.Context,
+	request control.PrepareNetworkResolverSetupApprovalRequest,
+) (control.NetworkResolverSetupApprovalPreparation, error) {
+	client.resolverPreparationCalls++
+	client.resolverPreparationRequests = append(client.resolverPreparationRequests, request)
+	client.resolverPreparationContexts = append(client.resolverPreparationContexts, ctx)
+	return client.resolverPreparation, client.resolverPreparationErr
+}
+
+// ConfirmNetworkResolverSetupApproval returns configured resolver approval confirmation and records its evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkResolverSetupApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkResolverSetupApprovalRequest,
+) (control.NetworkResolverSetupApprovalConfirmation, error) {
+	client.resolverConfirmationCalls++
+	client.resolverConfirmationRequests = append(client.resolverConfirmationRequests, request)
+	client.resolverConfirmationContexts = append(client.resolverConfirmationContexts, ctx)
+	return client.resolverConfirmation, client.resolverConfirmationErr
+}
+
+// StartNetworkDataPlaneSetup returns configured data-plane progress and records the selected intent.
+func (client *fakeDaemonControlClient) StartNetworkDataPlaneSetup(
+	ctx context.Context,
+	request control.StartNetworkDataPlaneSetupRequest,
+) (control.NetworkDataPlaneSetupOperation, error) {
+	client.dataPlaneSetupCalls++
+	client.dataPlaneSetupRequests = append(client.dataPlaneSetupRequests, request)
+	client.dataPlaneSetupContexts = append(client.dataPlaneSetupContexts, ctx)
+	if client.dataPlaneSetupHook != nil {
+		return client.dataPlaneSetupHook(ctx, request)
+	}
+	return client.dataPlaneSetup, client.dataPlaneSetupErr
+}
+
+// PrepareNetworkDataPlaneTrustApproval returns configured trust approval preparation and records its selection.
+func (client *fakeDaemonControlClient) PrepareNetworkDataPlaneTrustApproval(
+	ctx context.Context,
+	request control.PrepareNetworkDataPlaneTrustApprovalRequest,
+) (control.NetworkDataPlaneTrustApprovalPreparation, error) {
+	client.dataPlaneTrustPreparationCalls++
+	client.dataPlaneTrustPreparationRequests = append(client.dataPlaneTrustPreparationRequests, request)
+	client.dataPlaneTrustPreparationContexts = append(client.dataPlaneTrustPreparationContexts, ctx)
+	return client.dataPlaneTrustPreparation, client.dataPlaneTrustPreparationErr
+}
+
+// ConfirmNetworkDataPlaneTrustApproval returns configured trust approval progress and records its evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkDataPlaneTrustApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkDataPlaneTrustApprovalRequest,
+) (control.NetworkDataPlaneSetupOperation, error) {
+	client.dataPlaneTrustConfirmationCalls++
+	client.dataPlaneTrustConfirmationRequests = append(client.dataPlaneTrustConfirmationRequests, request)
+	client.dataPlaneTrustConfirmationContexts = append(client.dataPlaneTrustConfirmationContexts, ctx)
+	return client.dataPlaneTrustConfirmation, client.dataPlaneTrustConfirmationErr
+}
+
+// PrepareNetworkDataPlaneLowPortApproval returns configured low-port approval preparation and records its selection.
+func (client *fakeDaemonControlClient) PrepareNetworkDataPlaneLowPortApproval(
+	ctx context.Context,
+	request control.PrepareNetworkDataPlaneLowPortApprovalRequest,
+) (control.NetworkDataPlaneLowPortApprovalPreparation, error) {
+	client.dataPlaneLowPortPreparationCalls++
+	client.dataPlaneLowPortPreparationRequests = append(client.dataPlaneLowPortPreparationRequests, request)
+	client.dataPlaneLowPortPreparationContexts = append(client.dataPlaneLowPortPreparationContexts, ctx)
+	return client.dataPlaneLowPortPreparation, client.dataPlaneLowPortPreparationErr
+}
+
+// ConfirmNetworkDataPlaneLowPortApproval returns configured low-port approval confirmation and records its evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkDataPlaneLowPortApproval(
+	ctx context.Context,
+	request control.ConfirmNetworkDataPlaneLowPortApprovalRequest,
+) (control.NetworkDataPlaneSetupConfirmation, error) {
+	client.dataPlaneLowPortConfirmationCalls++
+	client.dataPlaneLowPortConfirmationRequests = append(client.dataPlaneLowPortConfirmationRequests, request)
+	client.dataPlaneLowPortConfirmationContexts = append(client.dataPlaneLowPortConfirmationContexts, ctx)
+	return client.dataPlaneLowPortConfirmation, client.dataPlaneLowPortConfirmationErr
 }
 
 // StartProject returns configured lifecycle progress and records the client-owned start intent.
@@ -107,6 +244,9 @@ func (client *fakeDaemonControlClient) StartNetworkSetup(
 	client.networkSetupCalls++
 	client.networkSetupRequests = append(client.networkSetupRequests, request)
 	client.networkSetupContexts = append(client.networkSetupContexts, ctx)
+	if client.networkSetupHook != nil {
+		return client.networkSetupHook(ctx, request)
+	}
 	return client.networkSetup, client.networkSetupErr
 }
 
@@ -228,7 +368,10 @@ func TestDaemonClientConnectsOnlyWhenRequested(t *testing.T) {
 // TestDaemonClientReturnsCloseFailureAfterSuccessfulRequest verifies cleanup errors remain visible without a request failure.
 func TestDaemonClientReturnsCloseFailureAfterSuccessfulRequest(t *testing.T) {
 	closeErr := errors.New("close failed")
-	connection := &fakeDaemonControlClient{status: daemonTestStatus(), closeErr: closeErr}
+	connection := &fakeDaemonControlClient{
+		status:   daemonTestStatus(),
+		closeErr: closeErr,
+	}
 	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
 		return connection, nil
 	})
@@ -271,7 +414,9 @@ func TestDaemonClientSnapshotUsesASeparateOneShotConnection(t *testing.T) {
 // TestDaemonClientStopUsesOneAcknowledgedConnection verifies shutdown acknowledgement and cleanup share one transport lifetime.
 func TestDaemonClientStopUsesOneAcknowledgedConnection(t *testing.T) {
 	connection := &fakeDaemonControlClient{}
-	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+		return connection, nil
+	})
 
 	if err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("stop daemon: %v", err)
@@ -285,7 +430,9 @@ func TestDaemonClientStopUsesOneAcknowledgedConnection(t *testing.T) {
 func TestDaemonClientRegistrationUsesASeparateOneShotConnection(t *testing.T) {
 	registration := addTestRegistration(t.TempDir(), true)
 	connection := &fakeDaemonControlClient{registration: registration}
-	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+		return connection, nil
+	})
 	request := control.RegisterProjectRequest{Path: registration.Project.Path}
 
 	got, err := client.RegisterProject(t.Context(), request)
@@ -304,7 +451,9 @@ func TestDaemonClientRegistrationUsesASeparateOneShotConnection(t *testing.T) {
 func TestDaemonClientUnregistrationUsesASeparateOneShotConnection(t *testing.T) {
 	unregistration := removeTestUnregistration(t, domain.OperationSucceeded)
 	connection := &fakeDaemonControlClient{unregistration: unregistration}
-	client := newDaemonClient(func(context.Context) (daemonControlClient, error) { return connection, nil })
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+		return connection, nil
+	})
 	request := control.UnregisterProjectRequest{
 		ProjectID: unregistration.Operation.ProjectID,
 		IntentID:  unregistration.Operation.IntentID,
@@ -325,10 +474,15 @@ func TestDaemonClientUnregistrationUsesASeparateOneShotConnection(t *testing.T) 
 // TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup verifies each setup phase keeps its exact DTO and one-shot lifetime.
 func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) {
 	closeErr := errors.New("close failed")
-	startRequest := control.StartNetworkSetupRequest{IntentID: "intent-network-setup"}
+	startRequest := control.StartNetworkSetupRequest{
+		IntentID: "intent-network-setup",
+	}
 	startResult := control.NetworkSetupOperation{
-		Operation: domain.Operation{ID: "operation-network-setup", IntentID: startRequest.IntentID},
-		Revision:  7,
+		Operation: domain.Operation{
+			ID:       "operation-network-setup",
+			IntentID: startRequest.IntentID,
+		},
+		Revision: 7,
 	}
 	prepareRequest := control.PrepareNetworkSetupApprovalRequest{
 		OperationID:               startResult.Operation.ID,
@@ -337,7 +491,9 @@ func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) 
 	prepareResult := control.NetworkSetupApprovalPreparation{
 		OperationID:       prepareRequest.OperationID,
 		OperationRevision: prepareRequest.ExpectedOperationRevision,
-		Ticket:            control.NetworkSetupApprovalTicket{OperationID: prepareRequest.OperationID},
+		Ticket: control.NetworkSetupApprovalTicket{
+			OperationID: prepareRequest.OperationID,
+		},
 	}
 	confirmRequest := control.ConfirmNetworkSetupApprovalRequest{
 		OperationID:               prepareResult.OperationID,
@@ -345,7 +501,9 @@ func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) 
 	}
 	confirmRequest.PoolEvidence.Pool = "127.42.0.0/29"
 	confirmResult := control.NetworkSetupApprovalConfirmation{
-		Operation:       domain.Operation{ID: confirmRequest.OperationID},
+		Operation: domain.Operation{
+			ID: confirmRequest.OperationID,
+		},
 		Revision:        8,
 		NetworkRevision: 7,
 		Pool:            confirmRequest.PoolEvidence.Pool,
@@ -359,8 +517,11 @@ func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) 
 		assertCall func(*testing.T, *fakeDaemonControlClient)
 	}{
 		{
-			name:       "start",
-			connection: &fakeDaemonControlClient{networkSetup: startResult, closeErr: closeErr},
+			name: "start",
+			connection: &fakeDaemonControlClient{
+				networkSetup: startResult,
+				closeErr:     closeErr,
+			},
 			call: func(client *DaemonClient) (any, error) {
 				result, err := client.StartNetworkSetup(nil, startRequest)
 				return result, err
@@ -376,8 +537,11 @@ func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) 
 			},
 		},
 		{
-			name:       "prepare approval",
-			connection: &fakeDaemonControlClient{networkSetupPreparation: prepareResult, closeErr: closeErr},
+			name: "prepare approval",
+			connection: &fakeDaemonControlClient{
+				networkSetupPreparation: prepareResult,
+				closeErr:                closeErr,
+			},
 			call: func(client *DaemonClient) (any, error) {
 				result, err := client.PrepareNetworkSetupApproval(nil, prepareRequest)
 				return result, err
@@ -393,8 +557,11 @@ func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) 
 			},
 		},
 		{
-			name:       "confirm approval",
-			connection: &fakeDaemonControlClient{networkSetupConfirmation: confirmResult, closeErr: closeErr},
+			name: "confirm approval",
+			connection: &fakeDaemonControlClient{
+				networkSetupConfirmation: confirmResult,
+				closeErr:                 closeErr,
+			},
 			call: func(client *DaemonClient) (any, error) {
 				result, err := client.ConfirmNetworkSetupApproval(nil, confirmRequest)
 				return result, err
@@ -435,6 +602,322 @@ func TestDaemonClientNetworkSetupMethodsForwardRequestsAndCleanup(t *testing.T) 
 	}
 }
 
+// TestDaemonClientTrustedIngressMethodsForwardRequestsAndCleanup covers the resolver and data-plane client surfaces.
+func TestDaemonClientTrustedIngressMethodsForwardRequestsAndCleanup(t *testing.T) {
+	closeErr := errors.New("close failed")
+	resolverStartRequest := control.StartNetworkResolverSetupRequest{
+		IntentID: "intent-network-resolver-setup",
+	}
+	resolverStartResult := control.NetworkResolverSetupOperation{
+		Operation: domain.Operation{
+			ID:       "operation-network-resolver",
+			IntentID: resolverStartRequest.IntentID,
+		},
+		Revision: 7,
+	}
+	resolverPrepareRequest := control.PrepareNetworkResolverSetupApprovalRequest{
+		OperationID:               resolverStartResult.Operation.ID,
+		ExpectedOperationRevision: resolverStartResult.Revision,
+	}
+	resolverPrepareResult := control.NetworkResolverSetupApprovalPreparation{
+		OperationID:       resolverPrepareRequest.OperationID,
+		OperationRevision: resolverPrepareRequest.ExpectedOperationRevision,
+		Ticket: control.NetworkResolverSetupApprovalTicket{
+			OperationID: resolverPrepareRequest.OperationID,
+		},
+	}
+	resolverConfirmRequest := control.ConfirmNetworkResolverSetupApprovalRequest{
+		OperationID:               resolverPrepareResult.OperationID,
+		ExpectedOperationRevision: resolverPrepareResult.OperationRevision,
+	}
+	resolverConfirmResult := control.NetworkResolverSetupApprovalConfirmation{
+		Operation: domain.Operation{
+			ID: resolverConfirmRequest.OperationID,
+		},
+		NetworkRevision: 8,
+		Revision:        9,
+	}
+	dataPlaneStartRequest := control.StartNetworkDataPlaneSetupRequest{
+		IntentID: "intent-network-data-plane-setup",
+	}
+	dataPlaneStartResult := control.NetworkDataPlaneSetupOperation{
+		Operation: domain.Operation{
+			ID:       "operation-network-data-plane",
+			IntentID: dataPlaneStartRequest.IntentID,
+		},
+		Revision: 10,
+	}
+	trustPrepareRequest := control.PrepareNetworkDataPlaneTrustApprovalRequest{
+		OperationID:               dataPlaneStartResult.Operation.ID,
+		ExpectedOperationRevision: dataPlaneStartResult.Revision,
+	}
+	trustPrepareResult := control.NetworkDataPlaneTrustApprovalPreparation{
+		OperationID:       trustPrepareRequest.OperationID,
+		OperationRevision: trustPrepareRequest.ExpectedOperationRevision,
+		Ticket: control.NetworkDataPlaneTrustApprovalTicket{
+			OperationID: trustPrepareRequest.OperationID,
+		},
+	}
+	trustConfirmRequest := control.ConfirmNetworkDataPlaneTrustApprovalRequest{
+		OperationID:               trustPrepareResult.OperationID,
+		ExpectedOperationRevision: trustPrepareResult.OperationRevision,
+	}
+	trustConfirmResult := control.NetworkDataPlaneSetupOperation{
+		Operation: domain.Operation{
+			ID: trustConfirmRequest.OperationID,
+		},
+		Revision: 11,
+	}
+	lowPortPrepareRequest := control.PrepareNetworkDataPlaneLowPortApprovalRequest{
+		OperationID:               trustConfirmResult.Operation.ID,
+		ExpectedOperationRevision: trustConfirmResult.Revision,
+	}
+	lowPortPrepareResult := control.NetworkDataPlaneLowPortApprovalPreparation{
+		OperationID:       lowPortPrepareRequest.OperationID,
+		OperationRevision: lowPortPrepareRequest.ExpectedOperationRevision,
+		Ticket: control.NetworkDataPlaneLowPortApprovalTicket{
+			OperationID: lowPortPrepareRequest.OperationID,
+		},
+	}
+	lowPortConfirmRequest := control.ConfirmNetworkDataPlaneLowPortApprovalRequest{
+		OperationID:               lowPortPrepareResult.OperationID,
+		ExpectedOperationRevision: lowPortPrepareResult.OperationRevision,
+	}
+	lowPortConfirmResult := control.NetworkDataPlaneSetupConfirmation{
+		Operation: domain.Operation{
+			ID: lowPortConfirmRequest.OperationID,
+		},
+		NetworkRevision: 12,
+		Revision:        13,
+	}
+
+	tests := []struct {
+		name        string
+		connection  *fakeDaemonControlClient
+		call        func(*DaemonClient) (any, error)
+		want        any
+		calls       func(*fakeDaemonControlClient) int
+		requests    func(*fakeDaemonControlClient) any
+		wantRequest any
+		contexts    func(*fakeDaemonControlClient) []context.Context
+	}{
+		{
+			name: "start resolver",
+			connection: &fakeDaemonControlClient{
+				resolverSetup: resolverStartResult,
+				closeErr:      closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.StartNetworkResolverSetup(nil, resolverStartRequest)
+			},
+			want: resolverStartResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.resolverSetupCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.resolverSetupRequests
+			},
+			wantRequest: []control.StartNetworkResolverSetupRequest{
+				resolverStartRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.resolverSetupContexts
+			},
+		},
+		{
+			name: "prepare resolver",
+			connection: &fakeDaemonControlClient{
+				resolverPreparation: resolverPrepareResult,
+				closeErr:            closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.PrepareNetworkResolverSetupApproval(nil, resolverPrepareRequest)
+			},
+			want: resolverPrepareResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.resolverPreparationCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.resolverPreparationRequests
+			},
+			wantRequest: []control.PrepareNetworkResolverSetupApprovalRequest{
+				resolverPrepareRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.resolverPreparationContexts
+			},
+		},
+		{
+			name: "confirm resolver",
+			connection: &fakeDaemonControlClient{
+				resolverConfirmation: resolverConfirmResult,
+				closeErr:             closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.ConfirmNetworkResolverSetupApproval(nil, resolverConfirmRequest)
+			},
+			want: resolverConfirmResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.resolverConfirmationCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.resolverConfirmationRequests
+			},
+			wantRequest: []control.ConfirmNetworkResolverSetupApprovalRequest{
+				resolverConfirmRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.resolverConfirmationContexts
+			},
+		},
+		{
+			name: "start data plane",
+			connection: &fakeDaemonControlClient{
+				dataPlaneSetup: dataPlaneStartResult,
+				closeErr:       closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.StartNetworkDataPlaneSetup(nil, dataPlaneStartRequest)
+			},
+			want: dataPlaneStartResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.dataPlaneSetupCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.dataPlaneSetupRequests
+			},
+			wantRequest: []control.StartNetworkDataPlaneSetupRequest{
+				dataPlaneStartRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.dataPlaneSetupContexts
+			},
+		},
+		{
+			name: "prepare trust",
+			connection: &fakeDaemonControlClient{
+				dataPlaneTrustPreparation: trustPrepareResult,
+				closeErr:                  closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.PrepareNetworkDataPlaneTrustApproval(nil, trustPrepareRequest)
+			},
+			want: trustPrepareResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.dataPlaneTrustPreparationCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.dataPlaneTrustPreparationRequests
+			},
+			wantRequest: []control.PrepareNetworkDataPlaneTrustApprovalRequest{
+				trustPrepareRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.dataPlaneTrustPreparationContexts
+			},
+		},
+		{
+			name: "confirm trust",
+			connection: &fakeDaemonControlClient{
+				dataPlaneTrustConfirmation: trustConfirmResult,
+				closeErr:                   closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.ConfirmNetworkDataPlaneTrustApproval(nil, trustConfirmRequest)
+			},
+			want: trustConfirmResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.dataPlaneTrustConfirmationCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.dataPlaneTrustConfirmationRequests
+			},
+			wantRequest: []control.ConfirmNetworkDataPlaneTrustApprovalRequest{
+				trustConfirmRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.dataPlaneTrustConfirmationContexts
+			},
+		},
+		{
+			name: "prepare low ports",
+			connection: &fakeDaemonControlClient{
+				dataPlaneLowPortPreparation: lowPortPrepareResult,
+				closeErr:                    closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.PrepareNetworkDataPlaneLowPortApproval(nil, lowPortPrepareRequest)
+			},
+			want: lowPortPrepareResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.dataPlaneLowPortPreparationCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.dataPlaneLowPortPreparationRequests
+			},
+			wantRequest: []control.PrepareNetworkDataPlaneLowPortApprovalRequest{
+				lowPortPrepareRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.dataPlaneLowPortPreparationContexts
+			},
+		},
+		{
+			name: "confirm low ports",
+			connection: &fakeDaemonControlClient{
+				dataPlaneLowPortConfirmation: lowPortConfirmResult,
+				closeErr:                     closeErr,
+			},
+			call: func(client *DaemonClient) (any, error) {
+				return client.ConfirmNetworkDataPlaneLowPortApproval(nil, lowPortConfirmRequest)
+			},
+			want: lowPortConfirmResult,
+			calls: func(connection *fakeDaemonControlClient) int {
+				return connection.dataPlaneLowPortConfirmationCalls
+			},
+			requests: func(connection *fakeDaemonControlClient) any {
+				return connection.dataPlaneLowPortConfirmationRequests
+			},
+			wantRequest: []control.ConfirmNetworkDataPlaneLowPortApprovalRequest{
+				lowPortConfirmRequest,
+			},
+			contexts: func(connection *fakeDaemonControlClient) []context.Context {
+				return connection.dataPlaneLowPortConfirmationContexts
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+				return test.connection, nil
+			})
+
+			got, err := test.call(client)
+			if !errors.Is(err, closeErr) {
+				t.Fatalf("error = %v, want %v", err, closeErr)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("result = %#v, want %#v", got, test.want)
+			}
+			if test.calls(test.connection) != 1 || test.connection.closeCalls != 1 {
+				t.Fatalf(
+					"request calls = %d, close calls = %d",
+					test.calls(test.connection),
+					test.connection.closeCalls,
+				)
+			}
+			if gotRequests := test.requests(test.connection); !reflect.DeepEqual(gotRequests, test.wantRequest) {
+				t.Fatalf("requests = %#v, want %#v", gotRequests, test.wantRequest)
+			}
+			contexts := test.contexts(test.connection)
+			if len(contexts) != 1 || contexts[0] != nil {
+				t.Fatalf("contexts = %#v, want one nil context", contexts)
+			}
+		})
+	}
+}
+
 // TestDaemonClientPreservesRequestAndCloseFailures verifies cleanup never hides the actionable request cause.
 func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 	requestErr := errors.New("request failed")
@@ -452,7 +935,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return err
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{statusErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					statusErr: requestErr,
+					closeErr:  closeErr,
+				}
 			},
 		},
 		{
@@ -461,7 +947,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return client.Stop(t.Context())
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{stopErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					stopErr:  requestErr,
+					closeErr: closeErr,
+				}
 			},
 		},
 		{
@@ -471,7 +960,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return err
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{snapshotErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					snapshotErr: requestErr,
+					closeErr:    closeErr,
+				}
 			},
 		},
 		{
@@ -484,7 +976,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return err
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{unregistrationErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					unregistrationErr: requestErr,
+					closeErr:          closeErr,
+				}
 			},
 		},
 		{
@@ -494,7 +989,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return err
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{networkSetupErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					networkSetupErr: requestErr,
+					closeErr:        closeErr,
+				}
 			},
 		},
 		{
@@ -507,7 +1005,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return err
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{networkSetupPreparationErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					networkSetupPreparationErr: requestErr,
+					closeErr:                   closeErr,
+				}
 			},
 		},
 		{
@@ -520,7 +1021,10 @@ func TestDaemonClientPreservesRequestAndCloseFailures(t *testing.T) {
 				return err
 			},
 			makeConnection: func() *fakeDaemonControlClient {
-				return &fakeDaemonControlClient{networkSetupConfirmationErr: requestErr, closeErr: closeErr}
+				return &fakeDaemonControlClient{
+					networkSetupConfirmationErr: requestErr,
+					closeErr:                    closeErr,
+				}
 			},
 		},
 	} {
