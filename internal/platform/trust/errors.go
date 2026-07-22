@@ -58,9 +58,9 @@ func (err *Error) Unwrap() error {
 	return err.cause
 }
 
-// AdministratorTrustDiagnostic returns the reviewed administrator ensure failure, when this error wraps one.
+// AdministratorTrustDiagnostic returns a reviewed administrator observation or ensure failure, when this error wraps one.
 func (err *Error) AdministratorTrustDiagnostic() (string, int, bool) {
-	if err == nil || err.Kind != ErrorKindMutationFailed || err.Operation != "ensure" {
+	if err == nil || !administratorTrustDiagnosticBoundary(err.Kind, err.Operation) {
 		return "", 0, false
 	}
 	var cause *administratorTrustStatusError
@@ -68,6 +68,18 @@ func (err *Error) AdministratorTrustDiagnostic() (string, int, bool) {
 		return "", 0, false
 	}
 	return cause.stage, cause.status, true
+}
+
+// administratorTrustDiagnosticBoundary limits native diagnostics to trust observations and the ensure path that consumes them.
+func administratorTrustDiagnosticBoundary(kind ErrorKind, operation string) bool {
+	switch operation {
+	case "observe":
+		return kind == ErrorKindObserveFailed
+	case "ensure":
+		return kind == ErrorKindMutationFailed || kind == ErrorKindVerificationFailed
+	default:
+		return false
+	}
 }
 
 // administratorTrustStatusError retains only reviewed native status facts until the trust adapter classifies them.
@@ -89,7 +101,7 @@ func newAdministratorTrustStatusError(stage string, status int) error {
 // validAdministratorTrustStage rejects arbitrary native-operation labels from diagnostic propagation.
 func validAdministratorTrustStage(stage string) bool {
 	switch stage {
-	case "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
+	case "snapshot", "owner-observe", "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
 		return true
 	default:
 		return false

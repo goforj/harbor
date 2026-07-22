@@ -666,6 +666,9 @@ func (darwinNativeTrustStore) snapshot(ctx context.Context, request Request) ([]
 		defer C.free(unsafe.Pointer(native))
 	}
 	if status != C.harborErrSecSuccess {
+		if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
+			return nil, newAdministratorTrustStatusError("snapshot", int(status))
+		}
 		return nil, darwinTrustStatusError("copy current-user trust settings", status)
 	}
 	if uint64(nativeLength) > maximumDarwinTrustSnapshotBytes {
@@ -907,7 +910,7 @@ func (darwinNativeTrustStore) ownerExists(ctx context.Context, request Request) 
 		case 1:
 			return true, nil
 		default:
-			return false, darwinTrustStatusError("observe administrator trust ownership", status)
+			return false, newAdministratorTrustStatusError("owner-observe", int(status))
 		}
 	}
 	status := C.harbor_trust_find_owner(

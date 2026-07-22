@@ -916,7 +916,7 @@ func administratorTrustDiagnosticMessage(stage string, status int) (string, bool
 		return "", false
 	}
 	switch stage {
-	case "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
+	case "snapshot", "owner-observe", "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
 		return fmt.Sprintf("helper operation failed: administrator trust %s OSStatus %d", stage, status), true
 	default:
 		return "", false

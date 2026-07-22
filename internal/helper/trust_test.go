@@ -198,8 +198,8 @@ func TestResponseForErrorRejectsSpoofedAdministratorTrustDiagnostics(t *testing.
 
 // TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues verifies formatter behavior separately from the concrete trust error boundary.
 func TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues(t *testing.T) {
-	message, ok := administratorTrustDiagnosticMessage("set-root", -25299)
-	if !ok || message != "helper operation failed: administrator trust set-root OSStatus -25299" {
+	message, ok := administratorTrustDiagnosticMessage("snapshot", -25291)
+	if !ok || message != "helper operation failed: administrator trust snapshot OSStatus -25291" {
 		t.Fatalf("administratorTrustDiagnosticMessage() = %q, %t", message, ok)
 	}
 
