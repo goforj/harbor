@@ -57,6 +57,22 @@ func TestPlanManagedNativeRoutesWithholdsUnobservedReservations(t *testing.T) {
 	}
 }
 
+// TestPlanManagedNativePublicationsMarksExactOwnedBindDirect keeps an authenticated exact public socket out of relay creation.
+func TestPlanManagedNativePublicationsMarksExactOwnedBindDirect(t *testing.T) {
+	fence := managedPublicationTestFence()
+	plan, err := PlanManagedNativePublications(ManagedPublicationPlanInput{
+		Fence:        fence,
+		Reservations: []state.EndpointReservation{managedPublicationReservation("service:mysql", "mysql.orders.test", "127.77.59.75:3306", 1)},
+		Publications: []ManagedEndpointPublication{managedEndpointPublication(fence, "service:mysql", 1, netip.MustParseAddrPort("127.77.59.75:3306"))},
+	})
+	if err != nil {
+		t.Fatalf("PlanManagedNativePublications() error = %v", err)
+	}
+	if len(plan.RelayRoutes) != 0 || !reflect.DeepEqual(plan.DirectPublications, []ManagedDirectPublication{{ID: "orders:service:mysql", Host: "mysql.orders.test", Listen: netip.MustParseAddrPort("127.77.59.75:3306")}}) {
+		t.Fatalf("plan = %#v, want one direct publication and no relay", plan)
+	}
+}
+
 // TestPlanManagedNativeRoutesRejectsSessionAndReservationFenceDrift keeps stale publications out of native authority.
 func TestPlanManagedNativeRoutesRejectsSessionAndReservationFenceDrift(t *testing.T) {
 	fence := managedPublicationTestFence()
@@ -225,6 +241,22 @@ func TestPlanManagedNativeRoutesRejectsAmbiguousEndpointCollisions(t *testing.T)
 				t.Fatalf("PlanManagedNativeRoutes() error = %v, want containing %q", err, test.want)
 			}
 		})
+	}
+}
+
+// TestPlanManagedNativePublicationsRejectsDirectSocketCollisions keeps a direct bind from masking another project route.
+func TestPlanManagedNativePublicationsRejectsDirectSocketCollisions(t *testing.T) {
+	fence := managedPublicationTestFence()
+	_, err := MergeManagedNativePublicationPlans([]ManagedNativePublicationPlan{
+		{DirectPublications: []ManagedDirectPublication{{ID: "orders:service:mysql", Host: "mysql.orders.test", Listen: netip.MustParseAddrPort("127.77.59.75:3306")}}},
+		{RelayRoutes: []dataplane.NativeRoute{{ID: "other:service:mysql", Host: "mysql.other.test", Listen: netip.MustParseAddrPort("127.77.59.75:3306"), Upstream: netip.MustParseAddrPort("127.0.0.1:43106")}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "listener") {
+		t.Fatalf("MergeManagedNativePublicationPlans() error = %v, want listener collision", err)
+	}
+	_, err = PlanManagedNativePublications(ManagedPublicationPlanInput{Fence: fence, Reservations: []state.EndpointReservation{managedPublicationReservation("service:mysql", "mysql.orders.test", "127.77.59.75:3306", 1)}, Publications: []ManagedEndpointPublication{managedEndpointPublication(fence, "service:mysql", 2, netip.MustParseAddrPort("127.77.59.75:3306"))}})
+	if err == nil || !strings.Contains(err.Error(), "reservation generation") {
+		t.Fatalf("PlanManagedNativePublications() error = %v, want reservation fence rejection", err)
 	}
 }
 

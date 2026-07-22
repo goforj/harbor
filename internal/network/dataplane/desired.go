@@ -75,6 +75,8 @@ type NativeRoute struct {
 	Listen netip.AddrPort
 	// Upstream is the private loopback publication that receives unmodified TCP bytes.
 	Upstream netip.AddrPort
+	// Direct reports that another owner serves Listen directly, so Harbor publishes only DNS for this route.
+	Direct bool
 }
 
 // DesiredState is one immutable, validated network generation.
@@ -326,6 +328,9 @@ func canonicalNativeRoutes(routes []NativeRoute) ([]NativeRoute, error) {
 		if err := validateLoopbackEndpoint("native route upstream", route.Upstream); err != nil {
 			return nil, fmt.Errorf("data plane desired state: native route %d: %w", index, err)
 		}
+		if route.Direct && route.Listen != route.Upstream {
+			return nil, fmt.Errorf("data plane desired state: native route %d direct listener %s must equal upstream %s", index, route.Listen, route.Upstream)
+		}
 		canonical = append(canonical, route)
 	}
 	sort.Slice(canonical, func(left int, right int) bool {
@@ -433,6 +438,9 @@ func validateNoSelfRouting(plan ListenerPlan, httpRoutes []HTTPRoute, nativeRout
 		}
 	}
 	for _, route := range nativeRoutes {
+		if route.Direct && route.Listen == route.Upstream {
+			continue
+		}
 		if owner, found := public[route.Upstream]; found {
 			return fmt.Errorf("data plane desired state: native route %q upstream %s points to public %s listener", route.ID, route.Upstream, owner)
 		}

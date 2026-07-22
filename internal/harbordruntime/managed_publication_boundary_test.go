@@ -28,7 +28,7 @@ func TestPlanVerifiedManagedNativeRoutesUsesHarborOwnedReservations(t *testing.T
 		Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
 		Upstream: netip.MustParseAddrPort("127.0.0.1:43106"),
 	}}
-	if !reflect.DeepEqual(routes, want) {
+	if !reflect.DeepEqual(routes.RelayRoutes, want) || len(routes.DirectPublications) != 0 {
 		t.Fatalf("routes = %#v, want %#v", routes, want)
 	}
 	if source.runtimeCalls != 2 || source.sessionCalls != 2 {
@@ -107,7 +107,7 @@ func TestPlanVerifiedManagedNativeRoutesAllowsResolverNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanVerifiedManagedNativeRoutes() resolver error = %v", err)
 	}
-	if len(routes) != 1 || routes[0].Listen != netip.MustParseAddrPort("127.77.0.10:3306") {
+	if len(routes.RelayRoutes) != 1 || routes.RelayRoutes[0].Listen != netip.MustParseAddrPort("127.77.0.10:3306") {
 		t.Fatalf("resolver routes = %#v, want one native route", routes)
 	}
 }
@@ -134,7 +134,7 @@ func TestPlanVerifiedManagedNativeRoutesAllowsComposeStarting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v", err)
 	}
-	if len(routes) != 1 || routes[0].ID != "orders:service:mysql" {
+	if len(routes.RelayRoutes) != 1 || routes.RelayRoutes[0].ID != "orders:service:mysql" {
 		t.Fatalf("routes = %#v, want one mysql route", routes)
 	}
 }

@@ -9,12 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/managedsession"
-	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/state"
@@ -324,9 +322,9 @@ func (source managedPublicationStateSource) ActiveProjectSession(ctx context.Con
 }
 
 // currentManagedNativeRoutes plans every attached managed session from its latest complete observation.
-func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allowProjectStarting bool, startingFence harbordruntime.ManagedPublicationFence) ([]dataplane.NativeRoute, error) {
+func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allowProjectStarting bool, startingFence harbordruntime.ManagedPublicationFence) (harbordruntime.ManagedNativePublicationPlan, error) {
 	if authority.managedStore == nil || authority.managedRegistry == nil {
-		return nil, errors.New("managed session route authority is unavailable")
+		return harbordruntime.ManagedNativePublicationPlan{}, errors.New("managed session route authority is unavailable")
 	}
 	authority.managedMu.Lock()
 	attachments := make([]managedSessionAttachment, 0, len(authority.managedSessions))
@@ -334,14 +332,14 @@ func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allo
 		attachments = append(attachments, attachment)
 	}
 	authority.managedMu.Unlock()
-	routes := make([]dataplane.NativeRoute, 0)
+	plans := make([]harbordruntime.ManagedNativePublicationPlan, 0, len(attachments))
 	source := managedPublicationStateSource{runtime: authority.store, sessions: authority.managedStore}
 	for _, attachment := range attachments {
 		fence := attachment.response.Fence
 		allowStartingForAttachment := allowProjectStarting && fence == startingFence
 		publications, err := authority.managedRegistry.Snapshot(fence)
 		if err != nil {
-			return nil, err
+			return harbordruntime.ManagedNativePublicationPlan{}, err
 		}
 		planned, err := harbordruntime.PlanVerifiedManagedNativeRoutes(ctx, source, harbordruntime.ManagedNativeRoutePlanRequest{
 			Fence:                fence,
@@ -349,26 +347,11 @@ func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allo
 			AllowProjectStarting: allowStartingForAttachment,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("plan managed native routes for project %q: %w", fence.ProjectID, err)
+			return harbordruntime.ManagedNativePublicationPlan{}, fmt.Errorf("plan managed native routes for project %q: %w", fence.ProjectID, err)
 		}
-		routes = append(routes, planned...)
+		plans = append(plans, planned)
 	}
-	slices.SortFunc(routes, func(left, right dataplane.NativeRoute) int {
-		if left.Host < right.Host {
-			return -1
-		}
-		if left.Host > right.Host {
-			return 1
-		}
-		if left.ID < right.ID {
-			return -1
-		}
-		if left.ID > right.ID {
-			return 1
-		}
-		return 0
-	})
-	return routes, nil
+	return harbordruntime.MergeManagedNativePublicationPlans(plans)
 }
 
 // AcknowledgeManagedBarrier reports the route barrier only after a future native activation owner proves it.
@@ -412,11 +395,12 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 				return managedsession.BarrierResponse{}, err
 			}
 		}
-		routes, err := authority.currentManagedNativeRoutes(normalizeContext(ctx), allowProjectStarting, request.Fence)
+		plan, err := authority.currentManagedNativeRoutes(normalizeContext(ctx), allowProjectStarting, request.Fence)
 		if err != nil {
 			return managedsession.BarrierResponse{}, fmt.Errorf("%w: plan managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
-		if err := authority.managedRoutes.ReplaceManagedNativeRoutes(normalizeContext(ctx), routes); err != nil {
+		routes := plan.Routes()
+		if err := authority.managedRoutes.ReconcileManagedNativeRoutes(normalizeContext(ctx), routes); err != nil {
 			return managedsession.BarrierResponse{}, fmt.Errorf("%w: replace managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
 		if err := authority.managedRoutes.ManagedNativeRoutesLive(normalizeContext(ctx), routes); err != nil {

@@ -8,7 +8,6 @@ import (
 	"slices"
 
 	"github.com/goforj/harbor/internal/domain"
-	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -43,52 +42,53 @@ func PlanVerifiedManagedNativeRoutes(
 	ctx context.Context,
 	source ManagedPublicationStateSource,
 	request ManagedNativeRoutePlanRequest,
-) ([]dataplane.NativeRoute, error) {
+) (ManagedNativePublicationPlan, error) {
 	ctx = normalizeManagedPublicationContext(ctx)
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return ManagedNativePublicationPlan{}, err
 	}
 	if source == nil {
-		return nil, errors.New("managed publication state source is required")
+		return ManagedNativePublicationPlan{}, errors.New("managed publication state source is required")
 	}
 	if err := request.Validate(); err != nil {
-		return nil, err
+		return ManagedNativePublicationPlan{}, err
 	}
 
 	first, err := readVerifiedManagedPublicationAuthority(ctx, source, request.Fence, request.AllowProjectStarting)
 	if err != nil {
-		return nil, err
+		return ManagedNativePublicationPlan{}, err
 	}
-	firstRoutes, err := PlanManagedNativeRoutes(ManagedPublicationPlanInput{
+	firstPlan, err := PlanManagedNativePublications(ManagedPublicationPlanInput{
 		Fence:        request.Fence,
 		Reservations: first.Reservations,
 		Publications: request.Publications,
 	})
 	if err != nil {
-		return nil, err
+		return ManagedNativePublicationPlan{}, err
 	}
 
 	second, err := readVerifiedManagedPublicationAuthority(ctx, source, request.Fence, request.AllowProjectStarting)
 	if err != nil {
-		return nil, errors.Join(managedPublicationAuthorityChanged, err)
+		return ManagedNativePublicationPlan{}, errors.Join(managedPublicationAuthorityChanged, err)
 	}
-	secondRoutes, err := PlanManagedNativeRoutes(ManagedPublicationPlanInput{
+	secondPlan, err := PlanManagedNativePublications(ManagedPublicationPlanInput{
 		Fence:        request.Fence,
 		Reservations: second.Reservations,
 		Publications: request.Publications,
 	})
 	if err != nil {
-		return nil, errors.Join(managedPublicationAuthorityChanged, err)
+		return ManagedNativePublicationPlan{}, errors.Join(managedPublicationAuthorityChanged, err)
 	}
 	if !reflect.DeepEqual(first.Session, second.Session) ||
 		!reflect.DeepEqual(first.Reservations, second.Reservations) ||
-		!slices.Equal(firstRoutes, secondRoutes) {
-		return nil, managedPublicationAuthorityChanged
+		!slices.Equal(firstPlan.RelayRoutes, secondPlan.RelayRoutes) ||
+		!slices.Equal(firstPlan.DirectPublications, secondPlan.DirectPublications) {
+		return ManagedNativePublicationPlan{}, managedPublicationAuthorityChanged
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return ManagedNativePublicationPlan{}, err
 	}
-	return firstRoutes, nil
+	return firstPlan, nil
 }
 
 // managedPublicationAuthorityChanged marks a durable fence that moved while a pure plan was being assembled.

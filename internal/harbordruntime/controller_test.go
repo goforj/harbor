@@ -202,6 +202,33 @@ type testDataPlane struct {
 	events       *testEventLog
 }
 
+// directPublicationDataPlane records direct-route replacements without acquiring a test relay listener.
+type directPublicationDataPlane struct {
+	*testDataPlane
+	nativeReplacements [][]dataplane.NativeRoute
+}
+
+// ReplaceNativeRoutes models the DNS-only replacement surface used to verify direct liveness withdrawal.
+func (runtime *directPublicationDataPlane) ReplaceNativeRoutes(_ context.Context, routes []dataplane.NativeRoute) error {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	copyRoutes := append([]dataplane.NativeRoute(nil), routes...)
+	runtime.nativeReplacements = append(runtime.nativeReplacements, copyRoutes)
+	runtime.snapshot.Relays = []dataplane.RelayStatus{}
+	runtime.snapshot.Directs = make([]dataplane.DirectStatus, 0, len(routes))
+	for _, route := range routes {
+		if route.Direct {
+			runtime.snapshot.Directs = append(runtime.snapshot.Directs, dataplane.DirectStatus{
+				ID:            route.ID,
+				Host:          route.Host,
+				ListenAddress: route.Listen,
+			})
+		}
+	}
+	runtime.snapshot.DNS.Records = len(routes)
+	return nil
+}
+
 // testGlobalNetworkReleasePlanStore supplies an intentionally absent plan unless a release test configures one.
 type testGlobalNetworkReleasePlanStore struct {
 	mutex        sync.Mutex
@@ -471,7 +498,8 @@ func testControllerDependencies(
 		newDataPlane: func(dataplane.Config) (dataPlane, error) {
 			return runtime, nil
 		},
-		cleanupTimeout: 50 * time.Millisecond,
+		nativeSocketProbe: func(context.Context, netip.AddrPort) error { return nil },
+		cleanupTimeout:    50 * time.Millisecond,
 	}
 }
 
@@ -612,6 +640,15 @@ func TestNewControllerRejectsIncompleteDependencies(t *testing.T) {
 			dependencies: func() dependencies {
 				value := valid
 				value.newDataPlane = nil
+				return value
+			}(),
+		},
+		{
+			name:   "native socket probe",
+			source: source,
+			dependencies: func() dependencies {
+				value := valid
+				value.nativeSocketProbe = nil
 				return value
 			}(),
 		},
@@ -2055,4 +2092,65 @@ func authorityGenerationDirectories(t *testing.T, directory string) []string {
 		t.Fatal("no authority generation was persisted")
 	}
 	return generations
+}
+
+// TestControllerManagedNativeRoutesLiveProbesDirectPublication keeps DNS authority separate from socket liveness.
+func TestControllerManagedNativeRoutesLiveProbesDirectPublication(t *testing.T) {
+	route := dataplane.NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
+		Upstream: netip.MustParseAddrPort("127.77.0.10:3306"),
+		Direct:   true,
+	}
+	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
+		snapshot: dataplane.Snapshot{
+			State: dataplane.StateReady,
+			DNS: dataplane.DNSStatus{
+				Records: 1,
+			},
+			Relays: []dataplane.RelayStatus{},
+			Directs: []dataplane.DirectStatus{{
+				ID:            route.ID,
+				Host:          route.Host,
+				ListenAddress: route.Listen,
+			}},
+		},
+	}}
+	controller := &Controller{
+		initialized:         true,
+		state:               controllerStateReady,
+		dataPlane:           runtime,
+		managedNativeRoutes: []dataplane.NativeRoute{route},
+		dependencies: dependencies{nativeSocketProbe: func(context.Context, netip.AddrPort) error {
+			return errors.New("connection refused")
+		}},
+	}
+	if err := controller.ManagedNativeRoutesLive(t.Context(), []dataplane.NativeRoute{route}); err == nil || !strings.Contains(err.Error(), "direct native route") {
+		t.Fatalf("ManagedNativeRoutesLive() error = %v, want failed direct socket probe", err)
+	}
+	if len(runtime.nativeReplacements) != 1 || len(runtime.nativeReplacements[0]) != 0 || runtime.Snapshot().DNS.Records != 0 {
+		t.Fatalf("failed direct liveness retained DNS publication: %#v, %#v", runtime.nativeReplacements, runtime.Snapshot())
+	}
+	controller.managedNativeRoutes = []dataplane.NativeRoute{route}
+	runtime.snapshot.DNS.Records = 1
+	runtime.snapshot.Directs = []dataplane.DirectStatus{{
+		ID:            route.ID,
+		Host:          route.Host,
+		ListenAddress: route.Listen,
+	}}
+	if err := controller.ReconcileManagedNativeRoutes(t.Context(), []dataplane.NativeRoute{route}); err == nil || runtime.Snapshot().DNS.Records != 0 {
+		t.Fatalf("ReconcileManagedNativeRoutes() error = %v, snapshot = %#v; want failed probe and withdrawn DNS", err, runtime.Snapshot())
+	}
+	controller.managedNativeRoutes = []dataplane.NativeRoute{route}
+	runtime.snapshot.DNS.Records = 1
+	runtime.snapshot.Directs = []dataplane.DirectStatus{{
+		ID:            route.ID,
+		Host:          route.Host,
+		ListenAddress: route.Listen,
+	}}
+	controller.dependencies.nativeSocketProbe = func(context.Context, netip.AddrPort) error { return nil }
+	if err := controller.ManagedNativeRoutesLive(t.Context(), []dataplane.NativeRoute{route}); err != nil {
+		t.Fatalf("ManagedNativeRoutesLive() error = %v, want live direct publication", err)
+	}
 }

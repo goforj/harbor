@@ -59,6 +59,7 @@ type networkResolverActivator interface {
 
 // managedNativeRouteActivator is the optional live-data-plane seam for authenticated managed publications.
 type managedNativeRouteActivator interface {
+	ReconcileManagedNativeRoutes(context.Context, []dataplane.NativeRoute) error
 	ReplaceManagedNativeRoutes(context.Context, []dataplane.NativeRoute) error
 	ManagedNativeRoutesLive(context.Context, []dataplane.NativeRoute) error
 }

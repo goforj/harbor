@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
@@ -93,6 +95,9 @@ type desiredStateFactory func(state.RuntimeState) (dataplane.DesiredState, error
 // dataPlaneFactory constructs a listener generation without starting it.
 type dataPlaneFactory func(dataplane.Config) (dataPlane, error)
 
+// nativeSocketProbe confirms that a direct native publication is actually accepting TCP connections.
+type nativeSocketProbe func(context.Context, netip.AddrPort) error
+
 // dependencies retain deterministic I/O boundaries without making production collaborators optional.
 type dependencies struct {
 	globalNetworkReleasePlans globalNetworkReleasePlanStore
@@ -102,6 +107,7 @@ type dependencies struct {
 	newDataPlane              dataPlaneFactory
 	certificateConfig         certificates.Config
 	cleanupTimeout            time.Duration
+	nativeSocketProbe         nativeSocketProbe
 }
 
 // controllerState records the one-shot lifecycle without exposing partially initialized collaborators.
@@ -197,6 +203,9 @@ func newController(source runtimeStateSource, dependencies dependencies) (*Contr
 	}
 	if dependencies.newDataPlane == nil {
 		return nil, fmt.Errorf("create harbord runtime controller: data plane factory is required")
+	}
+	if dependencies.nativeSocketProbe == nil {
+		return nil, fmt.Errorf("create harbord runtime controller: native socket probe is required")
 	}
 	if dependencies.cleanupTimeout <= 0 {
 		return nil, fmt.Errorf("create harbord runtime controller: cleanup timeout must be positive")
@@ -451,6 +460,10 @@ func (controller *Controller) ReplaceManagedNativeRoutes(ctx context.Context, ro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	routes = canonicalManagedNativeRoutes(routes)
+	if err := controller.probeManagedDirectRoutes(ctx, routes); err != nil {
+		return err
+	}
 	controller.reconcileMutex.Lock()
 	defer controller.reconcileMutex.Unlock()
 	controller.mutex.RLock()
@@ -468,7 +481,6 @@ func (controller *Controller) ReplaceManagedNativeRoutes(ctx context.Context, ro
 	if !ok {
 		return errors.New("managed native route publication is unavailable")
 	}
-	routes = canonicalManagedNativeRoutes(routes)
 	if err := managedRuntime.ReplaceNativeRoutes(ctx, routes); err != nil {
 		return err
 	}
@@ -476,6 +488,46 @@ func (controller *Controller) ReplaceManagedNativeRoutes(ctx context.Context, ro
 	controller.managedNativeRoutes = append([]dataplane.NativeRoute(nil), routes...)
 	controller.mutex.Unlock()
 	return nil
+}
+
+// ReconcileManagedNativeRoutes publishes a changed managed route set and leaves an already-live matching set untouched.
+//
+// Direct native publications intentionally have no relay route. Avoiding an empty replacement when the controller
+// already serves no managed relays lets their barrier acknowledge the proven direct socket without mutating the relay
+// generation, while a previous relay is still withdrawn when the desired set changes.
+func (controller *Controller) ReconcileManagedNativeRoutes(ctx context.Context, routes []dataplane.NativeRoute) error {
+	if controller == nil || !controller.initialized {
+		return ErrNotInitialized
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	canonical := canonicalManagedNativeRoutes(routes)
+	controller.mutex.RLock()
+	current := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
+	controller.mutex.RUnlock()
+	if err := controller.probeManagedDirectRoutes(ctx, canonical); err != nil {
+		retained := managedRelayRoutes(current)
+		if len(retained) != len(current) {
+			err = errors.Join(err, controller.ReplaceManagedNativeRoutes(ctx, retained))
+		}
+		return err
+	}
+	if len(current) == 0 && len(canonical) == 0 || slices.Equal(current, canonical) {
+		return nil
+	}
+	return controller.ReplaceManagedNativeRoutes(ctx, canonical)
+}
+
+// managedRelayRoutes removes DNS-only direct publications while retaining the relay generation.
+func managedRelayRoutes(routes []dataplane.NativeRoute) []dataplane.NativeRoute {
+	retained := make([]dataplane.NativeRoute, 0, len(routes))
+	for _, route := range routes {
+		if !route.Direct {
+			retained = append(retained, route)
+		}
+	}
+	return retained
 }
 
 // ManagedNativeRoutesLive proves that every requested managed route is currently served by the controller generation.
@@ -496,6 +548,7 @@ func (controller *Controller) ManagedNativeRoutesLive(ctx context.Context, route
 	runtime := controller.dataPlane
 	releasing := controller.releaseMode
 	managed := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
+	httpRoutes := append([]dataplane.HTTPRoute(nil), controller.publishedHTTPRoutes...)
 	controller.mutex.RUnlock()
 	if releasing {
 		return errors.New("managed native route publication is unavailable while network release is armed")
@@ -511,16 +564,86 @@ func (controller *Controller) ManagedNativeRoutesLive(ctx context.Context, route
 	if snapshot.State != dataplane.StateReady {
 		return fmt.Errorf("managed native route publication data plane is %q", snapshot.State)
 	}
-	if len(snapshot.Relays) != len(routes) {
-		return fmt.Errorf("managed native route publication has %d relays, want %d", len(snapshot.Relays), len(routes))
+	if snapshot.DNS.Records != len(httpRoutes)+len(routes) {
+		return fmt.Errorf("managed native route publication DNS has %d records, want %d managed and HTTP records", snapshot.DNS.Records, len(httpRoutes)+len(routes))
 	}
-	for index, route := range routes {
+	relayRoutes := make([]dataplane.NativeRoute, 0, len(routes))
+	directRoutes := make([]dataplane.NativeRoute, 0, len(routes))
+	for _, route := range routes {
+		if route.Direct {
+			directRoutes = append(directRoutes, route)
+			continue
+		}
+		relayRoutes = append(relayRoutes, route)
+	}
+	if err := controller.probeManagedDirectRoutes(ctx, directRoutes); err != nil {
+		withdrawErr := controller.withdrawManagedDirectRoutes(ctx, runtime, relayRoutes)
+		return errors.Join(err, withdrawErr)
+	}
+	if len(snapshot.Directs) != len(directRoutes) {
+		return fmt.Errorf("managed native route publication has %d direct entries, want %d", len(snapshot.Directs), len(directRoutes))
+	}
+	for index, route := range directRoutes {
+		direct := snapshot.Directs[index]
+		if direct.ID != route.ID || direct.Host != route.Host || direct.ListenAddress != route.Listen {
+			return fmt.Errorf("managed direct native route %q differs from the controller generation", route.ID)
+		}
+	}
+	if len(snapshot.Relays) != len(relayRoutes) {
+		return fmt.Errorf("managed native route publication has %d relays, want %d", len(snapshot.Relays), len(relayRoutes))
+	}
+	for index, route := range relayRoutes {
 		relay := snapshot.Relays[index]
 		if relay.ID != route.ID || relay.Host != route.Host || relay.ListenAddress != route.Listen || relay.Upstream != route.Upstream || !relay.Running {
 			return fmt.Errorf("managed native route %q is not live", route.ID)
 		}
 	}
 	return nil
+}
+
+// withdrawManagedDirectRoutes removes direct DNS authority after a post-publication liveness failure.
+func (controller *Controller) withdrawManagedDirectRoutes(ctx context.Context, runtime dataPlane, relayRoutes []dataplane.NativeRoute) error {
+	managedRuntime, ok := runtime.(managedNativeRouteDataPlane)
+	if !ok {
+		return errors.New("managed native route withdrawal is unavailable")
+	}
+	if err := managedRuntime.ReplaceNativeRoutes(ctx, relayRoutes); err != nil {
+		return fmt.Errorf("withdraw failed direct native routes: %w", err)
+	}
+	controller.mutex.Lock()
+	controller.managedNativeRoutes = append([]dataplane.NativeRoute(nil), relayRoutes...)
+	controller.mutex.Unlock()
+	return nil
+}
+
+// probeManagedDirectRoutes proves direct service-owned listeners before their DNS names can be published.
+func (controller *Controller) probeManagedDirectRoutes(ctx context.Context, routes []dataplane.NativeRoute) error {
+	for _, route := range routes {
+		if !route.Direct {
+			continue
+		}
+		if err := controller.probeNativeSocket(ctx, route.Listen); err != nil {
+			return fmt.Errorf("managed direct native route %q is not live: %w", route.ID, err)
+		}
+	}
+	return nil
+}
+
+// probeNativeSocket uses the injected bounded probe so direct DNS authority never treats an observation tuple as liveness.
+func (controller *Controller) probeNativeSocket(ctx context.Context, address netip.AddrPort) error {
+	probe := controller.dependencies.nativeSocketProbe
+	probeContext, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return probe(probeContext, address)
+}
+
+// probeNativeTCP opens and closes one TCP connection to prove a direct listener is accepting connections.
+func probeNativeTCP(ctx context.Context, address netip.AddrPort) error {
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address.String())
+	if err != nil {
+		return err
+	}
+	return connection.Close()
 }
 
 // VerifyProjectWithdrawn proves the current process generation cannot route traffic for a project before host identity release.
@@ -691,10 +814,16 @@ func verifyPublishedRouteObservation(
 	if len(foundation.NativeRoutes()) != 0 {
 		return fmt.Errorf("native route ownership is unavailable")
 	}
-	if len(snapshot.Relays) != len(managedNativeRoutes) {
+	managedRelays := make([]dataplane.NativeRoute, 0, len(managedNativeRoutes))
+	for _, route := range managedNativeRoutes {
+		if !route.Direct {
+			managedRelays = append(managedRelays, route)
+		}
+	}
+	if len(snapshot.Relays) != len(managedRelays) {
 		return fmt.Errorf("data-plane native routes differ from controller-owned managed routes")
 	}
-	for index, route := range managedNativeRoutes {
+	for index, route := range managedRelays {
 		relay := snapshot.Relays[index]
 		if relay.ID != route.ID || relay.Host != route.Host || relay.ListenAddress != route.Listen || relay.Upstream != route.Upstream || !relay.Running {
 			return fmt.Errorf("data-plane native route %q differs from controller-owned route", route.ID)
@@ -1270,6 +1399,9 @@ func productionDependencies() dependencies {
 		newDesiredState: desiredStateFromRuntimeState,
 		newDataPlane: func(config dataplane.Config) (dataPlane, error) {
 			return dataplane.NewRuntime(config)
+		},
+		nativeSocketProbe: func(ctx context.Context, address netip.AddrPort) error {
+			return probeNativeTCP(ctx, address)
 		},
 		cleanupTimeout: cleanupTimeout,
 	}

@@ -89,6 +89,16 @@ type RelayStatus struct {
 	DroppedDiagnostics uint64
 }
 
+// DirectStatus reports a DNS-only native publication whose listener is owned by its managed service.
+type DirectStatus struct {
+	// ID is the stable opaque endpoint identity from desired state.
+	ID string
+	// Host is the exact DNS name derived for the public native listener.
+	Host string
+	// ListenAddress is the exact service-owned loopback socket.
+	ListenAddress netip.AddrPort
+}
+
 // Snapshot is a concurrency-safe, payload-free observation of one data-plane runtime.
 type Snapshot struct {
 	// State is the process-local lifecycle state represented by this observation.
@@ -99,6 +109,8 @@ type Snapshot struct {
 	Ingress IngressStatus
 	// Relays reports native endpoints in canonical host and identity order.
 	Relays []RelayStatus
+	// Directs reports DNS-only native publications in canonical host and identity order.
+	Directs []DirectStatus
 }
 
 // configuredChildrenRunning reports one coherent readiness predicate across every child class.
@@ -169,7 +181,29 @@ func (snapshot Snapshot) Validate() error {
 		allRunning = allRunning && relay.Running
 		anyRunning = anyRunning || relay.Running
 	}
-	routes := len(snapshot.Relays)
+	for index, direct := range snapshot.Directs {
+		if err := validateEndpointID(direct.ID); err != nil {
+			return fmt.Errorf("data plane direct snapshot %d: %w", index, err)
+		}
+		if _, duplicate := ids[direct.ID]; duplicate {
+			return fmt.Errorf("data plane snapshot contains duplicate direct ID %q", direct.ID)
+		}
+		ids[direct.ID] = struct{}{}
+		if err := validateLoopbackEndpoint("data plane direct listener", direct.ListenAddress); err != nil {
+			return err
+		}
+		if err := validateRelayHost(direct.Host, direct.ListenAddress.Addr()); err != nil {
+			return fmt.Errorf("data plane direct snapshot %q host: %w", direct.ID, err)
+		}
+		if _, duplicate := hosts[direct.Host]; duplicate {
+			return fmt.Errorf("data plane snapshot contains duplicate direct host %q", direct.Host)
+		}
+		hosts[direct.Host] = struct{}{}
+		if index > 0 && directStatusLess(direct, snapshot.Directs[index-1]) {
+			return fmt.Errorf("data plane snapshot directs must be ordered by host and endpoint ID")
+		}
+	}
+	routes := len(snapshot.Relays) + len(snapshot.Directs)
 	if snapshot.Ingress.Configured {
 		routes += snapshot.Ingress.Routes
 	}
@@ -189,6 +223,14 @@ func (snapshot Snapshot) Validate() error {
 		return fmt.Errorf("%s data plane snapshot contains a running child", snapshot.State)
 	}
 	return nil
+}
+
+// directStatusLess defines the stable order promised by Snapshot.Directs.
+func directStatusLess(left, right DirectStatus) bool {
+	if left.Host != right.Host {
+		return left.Host < right.Host
+	}
+	return left.ID < right.ID
 }
 
 // validateSnapshotSockets repeats public collision and cycle checks without exposing route payloads.
@@ -215,6 +257,12 @@ func validateSnapshotSockets(snapshot Snapshot) error {
 			return fmt.Errorf("data plane snapshot relay %q listener %s collides with %s", relay.ID, relay.ListenAddress, owner)
 		}
 		public[relay.ListenAddress] = "relay " + relay.ID
+	}
+	for _, direct := range snapshot.Directs {
+		if owner, duplicate := public[direct.ListenAddress]; duplicate {
+			return fmt.Errorf("data plane snapshot direct %q listener %s collides with %s", direct.ID, direct.ListenAddress, owner)
+		}
+		public[direct.ListenAddress] = "direct " + direct.ID
 	}
 	for _, relay := range snapshot.Relays {
 		if owner, found := public[relay.Upstream]; found {

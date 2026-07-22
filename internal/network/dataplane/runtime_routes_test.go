@@ -313,7 +313,9 @@ func TestRuntimeActivateHTTPIngressRejectsInvalidLifecycleAndTopology(t *testing
 
 // TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays proves native publications can join a ready shared generation without rebinding its HTTP listeners.
 func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing.T) {
-	listeners := ListenerPlan{DNS: reserveDNSPort(t)}
+	listeners := ListenerPlan{
+		DNS: reserveDNSPort(t),
+	}
 	shared := reserveTCPPorts(t, 2)
 	listeners.HTTP = shared[0]
 	listeners.HTTPS = shared[1]
@@ -360,6 +362,65 @@ func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing
 	snapshot = runtime.Snapshot()
 	if snapshot.State != StateReady || len(snapshot.Relays) != 0 || snapshot.DNS.Records != 1 {
 		t.Fatalf("withdrawn managed route snapshot = %#v", snapshot)
+	}
+}
+
+// TestRuntimeReplaceNativeRoutesPublishesDirectDNSWithoutBindingRelay keeps a service-owned socket out of relay lifecycle.
+func TestRuntimeReplaceNativeRoutesPublishesDirectDNSWithoutBindingRelay(t *testing.T) {
+	listeners := ListenerPlan{DNS: reserveDNSPort(t)}
+	desired := mustDesiredState(t, listeners, nil, nil)
+	directAddress := reserveTCPPorts(t, 1)[0]
+	service, err := net.Listen("tcp", directAddress.String())
+	if err != nil {
+		t.Fatalf("listen direct service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	direct := NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   directAddress,
+		Upstream: directAddress,
+		Direct:   true,
+	}
+	runtime, err := newRuntime(
+		Config{
+			Desired: desired,
+		},
+		runtimeDependencies{
+			listen: func(ctx context.Context, address netip.AddrPort) (net.Listener, error) {
+				if address == directAddress {
+					t.Fatalf("runtime attempted to bind direct service socket %s", address)
+				}
+				return listenExactTCP(ctx, address)
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("newRuntime() error = %v", err)
+	}
+	if err := runtime.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	if err := runtime.ReplaceNativeRoutes(t.Context(), []NativeRoute{direct}); err != nil {
+		t.Fatalf("ReplaceNativeRoutes() direct error = %v", err)
+	}
+	snapshot := runtime.Snapshot()
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("direct Snapshot().Validate() error = %v", err)
+	}
+	if snapshot.DNS.Records != 1 || len(snapshot.Relays) != 0 || len(snapshot.Directs) != 1 || snapshot.Directs[0].ListenAddress != directAddress {
+		t.Fatalf("direct snapshot = %#v", snapshot)
+	}
+	if err := runtime.ReplaceNativeRoutes(t.Context(), []NativeRoute{direct}); err != nil {
+		t.Fatalf("repeat direct ReplaceNativeRoutes() error = %v", err)
+	}
+	if err := runtime.ReplaceNativeRoutes(t.Context(), []NativeRoute{}); err != nil {
+		t.Fatalf("withdraw direct ReplaceNativeRoutes() error = %v", err)
+	}
+	snapshot = runtime.Snapshot()
+	if snapshot.DNS.Records != 0 || len(snapshot.Relays) != 0 || len(snapshot.Directs) != 0 {
+		t.Fatalf("withdrawn direct snapshot = %#v", snapshot)
 	}
 }
 

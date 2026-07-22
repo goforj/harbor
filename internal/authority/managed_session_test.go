@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,18 @@ type managedSessionAuthorityStore struct {
 type recordingManagedNativeRoutes struct {
 	replacements [][]dataplane.NativeRoute
 	live         bool
+}
+
+// ReconcileManagedNativeRoutes records only actual relay generation changes.
+func (routes *recordingManagedNativeRoutes) ReconcileManagedNativeRoutes(ctx context.Context, replacement []dataplane.NativeRoute) error {
+	if len(replacement) == 0 && len(routes.replacements) == 0 {
+		routes.live = true
+		return nil
+	}
+	if routes.live && len(routes.replacements) > 0 && reflect.DeepEqual(routes.replacements[len(routes.replacements)-1], replacement) {
+		return nil
+	}
+	return routes.ReplaceManagedNativeRoutes(ctx, replacement)
 }
 
 // recordingManagedPublicationObserver returns the Harbor-owned replacement used by barrier activation assertions.
@@ -367,6 +380,51 @@ func TestAuthorityManagedBarrierRequiresLiveRouteActivator(t *testing.T) {
 	}
 	if !observer.allowProjectStarting {
 		t.Fatal("publication observer did not receive the Compose pre-ready allowance")
+	}
+}
+
+// TestAuthorityManagedBarrierAcceptsDirectNativePublication proves a Compose-owned exact public bind satisfies the
+// barrier without creating the self-relay that would otherwise connect the listener back to itself.
+func TestAuthorityManagedBarrierAcceptsDirectNativePublication(t *testing.T) {
+	store := managedSessionAuthorityFixture()
+	store.recordingStore.runtimeState = authorityRouteRuntimeState()
+	runtimeState := &store.recordingStore.runtimeState
+	runtimeState.Network.Revision = runtimeState.Snapshot.Sequence
+	runtimeState.Network.CreatedAt = runtimeState.Snapshot.CapturedAt
+	runtimeState.Network.UpdatedAt = runtimeState.Snapshot.CapturedAt
+	runtimeState.Network.Ownership = identity.Ownership{InstallationID: "harbor-installation", Generation: 1}
+	runtimeState.Network.Pool, _ = identity.NewPool(netip.MustParsePrefix("127.77.0.0/24"), []netip.Addr{netip.MustParseAddr("127.77.0.10")})
+	runtimeState.Network.Leases = []identity.Lease{{Key: identity.LeaseKey{ProjectID: "project-orders"}, Address: netip.MustParseAddr("127.77.0.10"), Ownership: identity.Ownership{InstallationID: "harbor-installation", Generation: 1}}}
+	runtimeState.Network.Quarantines = []identity.Quarantine{}
+	runtimeState.Network.Reservations.Listeners = state.SharedListenerReservations{
+		DNS:   state.ListenerReservation{Mode: state.ListenerModeDirect, Advertised: netip.MustParseAddrPort("127.0.0.2:53"), Bind: netip.MustParseAddrPort("127.0.0.2:53"), Generation: 1, VerifiedAt: runtimeState.Snapshot.CapturedAt},
+		HTTP:  state.ListenerReservation{Mode: state.ListenerModeDirect, Advertised: netip.MustParseAddrPort("127.0.0.2:80"), Bind: netip.MustParseAddrPort("127.0.0.2:80"), Generation: 1, VerifiedAt: runtimeState.Snapshot.CapturedAt},
+		HTTPS: state.ListenerReservation{Mode: state.ListenerModeDirect, Advertised: netip.MustParseAddrPort("127.0.0.2:443"), Bind: netip.MustParseAddrPort("127.0.0.2:443"), Generation: 1, VerifiedAt: runtimeState.Snapshot.CapturedAt},
+	}
+	runtimeState.Network.Reservations.Endpoints[0].Public = netip.MustParseAddrPort("127.0.0.2:443")
+	runtimeState.Network.Reservations.Endpoints = append([]state.EndpointReservation{{Key: state.EndpointReservationKey{ProjectID: "project-orders", EndpointID: "service:mysql"}, Protocol: state.EndpointProtocolTCP, Host: "mysql.orders.test", Public: netip.MustParseAddrPort("127.77.0.10:3306"), Identity: &identity.LeaseKey{ProjectID: "project-orders"}, Generation: 1}}, runtimeState.Network.Reservations.Endpoints...)
+	runtimeState.Network.Reservations.SuppressedProjectIDs = []domain.ProjectID{}
+	activator := new(recordingManagedNativeRoutes)
+	observer := &recordingManagedPublicationObserver{publications: []harbordruntime.ManagedEndpointPublication{{
+		Fence:                 harbordruntime.ManagedPublicationFence{ProjectID: "project-orders", SessionID: "session-orders", SessionGeneration: 3},
+		EndpointID:            "service:mysql",
+		ReservationGeneration: 1,
+		Upstream:              netip.MustParseAddrPort("127.77.0.10:3306"),
+	}}}
+	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "dev"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	authority.managedRoutes = activator
+	authority.managedObserver = observer
+	peer := local.PeerIdentity{UserID: "501", ProcessID: 321}
+	response, err := authority.RegisterManagedSession(t.Context(), peer, managedSessionAuthorityRequest())
+	if err != nil {
+		t.Fatalf("RegisterManagedSession() error = %v", err)
+	}
+	barrier, err := authority.AcknowledgeManagedBarrier(t.Context(), peer, managedsession.BarrierRequest{SchemaVersion: managedsession.SchemaVersion, Fence: response.Fence, Phase: managedsession.BarrierPhaseCompose, AcceptedProjectIdentity: "orders"})
+	if err != nil {
+		t.Fatalf("AcknowledgeManagedBarrier() error = %v", err)
+	}
+	if !barrier.Acknowledged || len(activator.replacements) != 1 || !activator.replacements[0][0].Direct {
+		t.Fatalf("barrier = %#v, publications = %#v; want acknowledged direct DNS publication", barrier, activator.replacements)
 	}
 }
 

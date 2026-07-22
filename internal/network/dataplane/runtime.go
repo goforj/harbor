@@ -178,6 +178,9 @@ func newRuntime(config Config, dependencies runtimeDependencies) (*Runtime, erro
 		runtime.replaceIngress = router.Replace
 	}
 	for _, route := range config.Desired.nativeRoutes {
+		if route.Direct {
+			continue
+		}
 		relay, err := tcprelay.New(tcprelay.Config{Upstream: route.Upstream, ShutdownTimeout: config.ShutdownTimeout})
 		if err != nil {
 			return nil, fmt.Errorf("create data plane native route %q: %w", route.ID, err)
@@ -710,6 +713,9 @@ func (runtime *Runtime) ReplaceNativeRoutes(ctx context.Context, routes []Native
 	runtime.mutex.Unlock()
 
 	for _, route := range next.nativeRoutes {
+		if route.Direct {
+			continue
+		}
 		entry, startErr := runtime.startDynamicNativeRelay(run.context, route)
 		if startErr != nil {
 			cleanupErr := runtime.stopDynamicRoutes(context.Background())
@@ -735,10 +741,19 @@ func (runtime *Runtime) ReplaceNativeRoutes(ctx context.Context, routes []Native
 func (runtime *Runtime) validateDynamicRouteOwnership(routes []NativeRoute) error {
 	runtime.dynamicMutex.Lock()
 	defer runtime.dynamicMutex.Unlock()
-	if len(routes) != len(runtime.dynamicRelays) {
+	relayCount := 0
+	for _, route := range routes {
+		if !route.Direct {
+			relayCount++
+		}
+	}
+	if relayCount != len(runtime.dynamicRelays) {
 		return fmt.Errorf("replace data plane native routes: dynamic relay ownership does not match the current topology")
 	}
 	for _, route := range routes {
+		if route.Direct {
+			continue
+		}
 		entry, found := runtime.dynamicRelays[route.ID]
 		if !found || entry.route != route {
 			return fmt.Errorf("replace data plane native routes: relay %q ownership is not provable", route.ID)
@@ -937,8 +952,9 @@ func (runtime *Runtime) Snapshot() Snapshot {
 	runtime.mutex.RUnlock()
 
 	snapshot := Snapshot{
-		State:  state,
-		Relays: make([]RelayStatus, 0, len(runtime.relays)),
+		State:   state,
+		Relays:  make([]RelayStatus, 0, len(runtime.relays)),
+		Directs: make([]DirectStatus, 0, len(desired.nativeRoutes)),
 	}
 	if runtime.dns != nil {
 		address := desired.listeners.DNS
@@ -1018,7 +1034,25 @@ func (runtime *Runtime) Snapshot() Snapshot {
 			DroppedDiagnostics:   relay.DroppedDiagnostics,
 		})
 	}
+	for _, route := range desired.nativeRoutes {
+		if route.Direct {
+			snapshot.Directs = append(snapshot.Directs, DirectStatus{
+				ID:            route.ID,
+				Host:          route.Host,
+				ListenAddress: route.Listen,
+			})
+		}
+	}
 	slices.SortFunc(snapshot.Relays, compareRelayStatuses)
+	slices.SortFunc(snapshot.Directs, func(left, right DirectStatus) int {
+		if directStatusLess(left, right) {
+			return -1
+		}
+		if directStatusLess(right, left) {
+			return 1
+		}
+		return 0
+	})
 	if snapshot.State == StateReady && !snapshot.configuredChildrenRunning() {
 		if runtime.stopRequested() || run != nil && run.context.Err() != nil {
 			snapshot.State = StateStopping
