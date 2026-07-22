@@ -114,6 +114,25 @@ func TestManagedRuntimeServiceEndpointMaterializesRedisEnvironment(t *testing.T)
 	}
 }
 
+// TestManagedRuntimeServiceEnvironmentMaterializesAddressValues keeps address-list consumers on the exact private publication.
+func TestManagedRuntimeServiceEnvironmentMaterializesAddressValues(t *testing.T) {
+	metadata := []goforj.ServiceEndpointEnvironment{
+		{AppID: "app", Key: "CACHE_ADDRESSES", Kind: goforj.ServiceEndpointEnvironmentKindAddress},
+		{AppID: "app", Key: "EVENTS_BROKERS", Kind: goforj.ServiceEndpointEnvironmentKindAddress},
+	}
+	got, err := managedRuntimeServiceEnvironment(metadata, []string{"app"}, netip.MustParseAddrPort("127.0.0.1:43112"))
+	if err != nil {
+		t.Fatalf("managedRuntimeServiceEnvironment() error = %v", err)
+	}
+	want := []managedsession.RuntimePlanServiceEnvironment{
+		{AppID: "app", Key: "CACHE_ADDRESSES", Value: "127.0.0.1:43112"},
+		{AppID: "app", Key: "EVENTS_BROKERS", Value: "127.0.0.1:43112"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("managed address environment = %#v, want %#v", got, want)
+	}
+}
+
 // TestManagedRuntimePlanAppsUsesDurableLoopbackAndDescriptorIntent proves static defaults become private assignments only at a Harbor lease.
 func TestManagedRuntimePlanAppsUsesDurableLoopbackAndDescriptorIntent(t *testing.T) {
 	request := managedRuntimePlanTestRequest()
