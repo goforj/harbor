@@ -17,6 +17,7 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 		{name: "network setup", kind: OperationKindNetworkSetup, want: "network.setup"},
 		{name: "network resolver setup", kind: OperationKindNetworkResolverSetup, want: "network.resolver.setup"},
 		{name: "network data-plane setup", kind: OperationKindNetworkDataPlaneSetup, want: "network.data-plane.setup"},
+		{name: "network release", kind: OperationKindNetworkRelease, want: "network.release"},
 		{name: "start", kind: OperationKindProjectStart, want: "project.start"},
 		{name: "stop", kind: OperationKindProjectStop, want: "project.stop"},
 		{name: "unregister", kind: OperationKindProjectUnregister, want: "project.unregister"},
@@ -32,18 +33,28 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 	}
 }
 
-// TestNetworkSetupOperationsRequireGlobalScope keeps every machine setup phase outside project aggregates.
-func TestNetworkSetupOperationsRequireGlobalScope(t *testing.T) {
+// TestGlobalNetworkOperationsRequireGlobalScope keeps machine setup and release outside project aggregates.
+func TestGlobalNetworkOperationsRequireGlobalScope(t *testing.T) {
 	t.Parallel()
 	requestedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
-	for _, kind := range []OperationKind{OperationKindNetworkSetup, OperationKindNetworkResolverSetup, OperationKindNetworkDataPlaneSetup} {
+	tests := []struct {
+		kind OperationKind
+		want string
+	}{
+		{kind: OperationKindNetworkSetup, want: "network setup operation"},
+		{kind: OperationKindNetworkResolverSetup, want: "network setup operation"},
+		{kind: OperationKindNetworkDataPlaneSetup, want: "network setup operation"},
+		{kind: OperationKindNetworkRelease, want: "network release operation"},
+	}
+	for _, test := range tests {
+		kind := test.kind
 		if _, err := NewOperation(
 			"operation-network-setup",
 			"intent-network-setup",
 			kind,
 			"project-01",
 			requestedAt,
-		); err == nil || !strings.Contains(err.Error(), "must not identify a project") {
+		); err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "must not identify a project") {
 			t.Fatalf("NewOperation(%s with project) error = %v", kind, err)
 		}
 		if _, err := NewOperation(

@@ -16,6 +16,8 @@ const (
 	OperationKindNetworkResolverSetup OperationKind = "network.resolver.setup"
 	// OperationKindNetworkDataPlaneSetup identifies trusted shared-ingress setup after resolver policy exists.
 	OperationKindNetworkDataPlaneSetup OperationKind = "network.data-plane.setup"
+	// OperationKindNetworkRelease identifies the machine-global network foundation teardown.
+	OperationKindNetworkRelease OperationKind = "network.release"
 	// OperationKindProjectStart identifies the creation of one managed project session.
 	OperationKindProjectStart OperationKind = "project.start"
 	// OperationKindProjectStop identifies the graceful shutdown of one managed project session.
@@ -77,6 +79,10 @@ func (operation Operation) Validate() error {
 	case OperationKindNetworkSetup, OperationKindNetworkResolverSetup, OperationKindNetworkDataPlaneSetup:
 		if operation.ProjectID != "" {
 			return fmt.Errorf("network setup operation %q must not identify a project", operation.Kind)
+		}
+	case OperationKindNetworkRelease:
+		if operation.ProjectID != "" {
+			return fmt.Errorf("network release operation %q must not identify a project", operation.Kind)
 		}
 	case OperationKindProjectStart, OperationKindProjectStop, OperationKindProjectRestart, OperationKindProjectUnregister:
 		if operation.ProjectID == "" {
