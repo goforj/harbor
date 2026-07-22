@@ -389,3 +389,4 @@ The Linux resolver checkpoint also passed isolated root-module tests and vet, fo
 - Do not claim Linux/Windows resolver support from cross-compilation alone.
 - Do not start tray, packaging, or updater work before the core restart loop is dependable.
 The managed-session transport now has a bounded, authenticated opt-in event sink on both Harbor and GoForj. Normal launch still leaves `managed-session.events.v1` unadvertised, and process/action producer hooks plus durable event projection remain open.
+The managed Compose barrier is bounded to 30 seconds, and its steady-state heartbeat now stops after two consecutive failed windows; a successful refresh resets the counter. A route/readiness outage therefore produces bounded diagnostics instead of an unending heartbeat loop, while the watcher process remains available for a fresh lifecycle attempt.

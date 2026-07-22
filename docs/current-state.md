@@ -330,3 +330,4 @@ The main CI workflow runs root, control, loopback, frontend, and desktop checks 
 
 That hosted workflow is pre-provisioned API proof. It does not prove the shipping helper/consent flow, resolver installation, trusted TLS, Compose, reboot recovery, or the three-project product gate. Release support requires the stronger product environments described in [Cross-platform testing](./testing.md).
 The managed-session event transport now has an authenticated, bounded opt-in sink; normal launch remains capability-off and no durable event projection or producer hook is enabled yet.
+Managed Compose route heartbeats now stop after two consecutive bounded barrier failures (a successful refresh resets the budget), so an unavailable Harbor route cannot leave a live GoForj watcher issuing IPC requests forever.
