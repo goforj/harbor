@@ -13,6 +13,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
@@ -26,6 +27,7 @@ import (
 	"github.com/goforj/harbor/migrations"
 )
 
+// runtimeCloseCoordinationMargin reserves outer-runner time for scheduling and certificate-store cleanup.
 const runtimeCloseCoordinationMargin = 5 * time.Second
 
 // projectUnregisterIssuerOpener isolates default issuer stores while retaining daemon-owned ownership authority.
@@ -47,11 +49,12 @@ type networkResolverSetupIssuerOpener func(
 // projectLifecycleRuntime joins managed project processes before releasing shared network infrastructure.
 type projectLifecycleRuntime struct {
 	daemon.Runtime
-	lifecycle projectLifecycleAuthority
-	done      chan struct{}
-	doneOnce  sync.Once
-	mutex     sync.Mutex
-	err       error
+	lifecycle           projectLifecycleAuthority
+	postRuntimeRecovery func(context.Context) error
+	done                chan struct{}
+	doneOnce            sync.Once
+	mutex               sync.Mutex
+	err                 error
 }
 
 // projectLifecycleAuthority is the process lifetime composed into daemon runtime ownership.
@@ -68,17 +71,45 @@ type projectUnregisterRecoveryAuthority interface {
 	Recover(context.Context) error
 }
 
-// projectLifecycleRecoveryAuthority joins process recovery with the endpoint backfill required before runtime startup.
+// projectLifecycleRecoveryAuthority settles durable process lifecycle work before runtime startup.
 type projectLifecycleRecoveryAuthority interface {
 	// Recover settles durable process-lifecycle work without dispatching queued starts.
 	Recover(context.Context) error
+}
+
+// projectLifecycleEndpointReconciler backfills full-stage endpoints after network runtime startup.
+type projectLifecycleEndpointReconciler interface {
 	// ReconcileFullStageDefaultHTTPEndpoints backfills publishable routes after process recovery is safe.
 	ReconcileFullStageDefaultHTTPEndpoints(context.Context) (state.NetworkRecord, error)
 }
 
+// networkDataPlaneSetupRecoveryAuthority resumes only a durably staged trusted-ingress activation.
+type networkDataPlaneSetupRecoveryAuthority interface {
+	Recover(context.Context, domain.OperationID) (state.OperationRecord, error)
+}
+
+// activeNetworkDataPlaneSetupOperationReader reads the one trusted-ingress setup operation eligible for recovery.
+type activeNetworkDataPlaneSetupOperationReader interface {
+	ActiveNetworkDataPlaneSetupOperation(context.Context) (state.NetworkDataPlaneSetupActiveOperation, bool, error)
+}
+
+// networkRuntimeActivator publishes a durable full network revision into the running network runtime.
+type networkRuntimeActivator interface {
+	ActivateNetwork(context.Context, domain.Sequence) error
+}
+
+// networkDataPlaneSetupCapability retains optional control and restart-recovery authority together.
+type networkDataPlaneSetupCapability struct {
+	authority *authority.NetworkDataPlaneSetupAuthority
+	recovery  networkDataPlaneSetupRecoveryAuthority
+}
+
 // newProjectLifecycleRuntime creates one completion signal spanning both network and process authority.
-func newProjectLifecycleRuntime(runtime daemon.Runtime, lifecycle projectLifecycleAuthority) *projectLifecycleRuntime {
-	return &projectLifecycleRuntime{Runtime: runtime, lifecycle: lifecycle, done: make(chan struct{})}
+func newProjectLifecycleRuntime(runtime daemon.Runtime, lifecycle projectLifecycleAuthority, postRuntimeRecovery func(context.Context) error) *projectLifecycleRuntime {
+	if postRuntimeRecovery == nil {
+		panic("wire.newProjectLifecycleRuntime requires post-runtime recovery")
+	}
+	return &projectLifecycleRuntime{Runtime: runtime, lifecycle: lifecycle, postRuntimeRecovery: postRuntimeRecovery, done: make(chan struct{})}
 }
 
 // Start publishes network authority before dispatching process launches retained during durable recovery.
@@ -87,6 +118,12 @@ func (runtime *projectLifecycleRuntime) Start(ctx context.Context) error {
 		closeErr := runtime.lifecycle.Close(context.Background())
 		runtime.finish(errors.Join(err, closeErr))
 		return errors.Join(err, closeErr)
+	}
+	if err := runtime.postRuntimeRecovery(ctx); err != nil {
+		closeErr := runtime.closeOwned(context.Background())
+		joined := errors.Join(err, closeErr)
+		runtime.finish(joined)
+		return joined
 	}
 	if err := runtime.lifecycle.Resume(ctx); err != nil {
 		closeErr := runtime.closeOwned(context.Background())
@@ -156,6 +193,7 @@ func signalClosed(done <-chan struct{}) bool {
 // provideControlServer binds durable Harbor authority to the authenticated product protocol.
 func provideControlServer(
 	controlAuthority *authority.Authority,
+	networkDataPlaneSetup networkDataPlaneSetupCapability,
 	shutdown *daemon.Shutdown,
 	appLogger *logger.AppLogger,
 ) (*control.Server, error) {
@@ -166,10 +204,11 @@ func provideControlServer(
 		return nil, errors.New("create control server: application logger is required")
 	}
 	return control.NewServer(control.ServerConfig{
-		Authority:        controlAuthority,
-		RequestShutdown:  shutdown.Request,
-		ObserveError:     newControlErrorObserver(appLogger),
-		ManagedAuthority: controlAuthority,
+		Authority:                      controlAuthority,
+		RequestShutdown:                shutdown.Request,
+		ObserveError:                   newControlErrorObserver(appLogger),
+		ManagedAuthority:               controlAuthority,
+		NetworkDataPlaneSetupAuthority: networkDataPlaneSetup.authority,
 	})
 }
 
@@ -437,6 +476,8 @@ func provideDaemonRunner(
 	runtimeController *harbordruntime.Controller,
 	coordinator *reconcile.ProjectUnregisterCoordinator,
 	lifecycle *reconcile.ProjectLifecycleCoordinator,
+	operations *state.OperationJournal,
+	networkDataPlaneSetup networkDataPlaneSetupCapability,
 	shutdown *daemon.Shutdown,
 ) (*daemon.Runner, error) {
 	if runtimeController == nil {
@@ -451,20 +492,26 @@ func provideDaemonRunner(
 	if lifecycle == nil {
 		return nil, errors.New("create daemon runner: project lifecycle coordinator is required")
 	}
+	if operations == nil {
+		return nil, errors.New("create daemon runner: operation journal is required")
+	}
 	recovery := func(ctx context.Context) error {
 		return recoverDaemonState(ctx, coordinator, lifecycle)
+	}
+	postRuntimeRecovery := func(ctx context.Context) error {
+		return recoverDaemonRuntimeState(ctx, operations, networkDataPlaneSetup.recovery, lifecycle, runtimeController)
 	}
 	return daemon.NewRunner(daemon.RunnerConfig{
 		Server:              server,
 		Readiness:           readiness,
 		Recovery:            recovery,
-		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle),
+		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle, postRuntimeRecovery),
 		ShutdownRequested:   shutdown.Requested(),
 		RuntimeCloseTimeout: daemonRuntimeCloseTimeout(runtimeController),
 	})
 }
 
-// recoverDaemonState preserves teardown and process recovery ordering before adding publishable endpoint authority.
+// recoverDaemonState settles pre-runtime project teardown and process lifecycle recovery.
 func recoverDaemonState(
 	ctx context.Context,
 	unregister projectUnregisterRecoveryAuthority,
@@ -476,8 +523,44 @@ func recoverDaemonState(
 	if err := lifecycle.Recover(ctx); err != nil {
 		return err
 	}
-	if _, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(ctx); err != nil {
+	return nil
+}
+
+// recoverDaemonRuntimeState resumes staged trusted-ingress activation and publishes post-start endpoint changes.
+func recoverDaemonRuntimeState(
+	ctx context.Context,
+	operations activeNetworkDataPlaneSetupOperationReader,
+	setup networkDataPlaneSetupRecoveryAuthority,
+	lifecycle projectLifecycleEndpointReconciler,
+	runtime networkRuntimeActivator,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	active, found, err := operations.ActiveNetworkDataPlaneSetupOperation(ctx)
+	if err != nil {
+		return fmt.Errorf("read active network data-plane setup during daemon recovery: %w", err)
+	}
+	if found && active.Phase == state.NetworkDataPlaneSetupPhaseActivation {
+		if setup == nil {
+			// Non-Darwin daemon startup remains available until an interrupted Darwin activation needs its native authority.
+			return errors.New("recover active network data-plane setup: platform recovery authority is unavailable")
+		}
+		if _, err := setup.Recover(ctx, active.Operation.Operation.ID); err != nil {
+			return fmt.Errorf("recover active network data-plane setup: %w", err)
+		}
+	}
+	final, err := lifecycle.ReconcileFullStageDefaultHTTPEndpoints(ctx)
+	if err != nil {
 		return fmt.Errorf("reconcile full-stage default HTTP endpoints during daemon recovery: %w", err)
+	}
+	if final.Stage == state.NetworkStageFull {
+		if err := runtime.ActivateNetwork(ctx, final.Revision); err != nil {
+			return fmt.Errorf("activate full network after daemon recovery: %w", err)
+		}
 	}
 	return nil
 }

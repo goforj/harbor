@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/database"
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/networkplan"
@@ -32,6 +33,7 @@ import (
 
 // recordingLifecycleNetworkRuntime captures composite startup and cleanup without opening network listeners.
 type recordingLifecycleNetworkRuntime struct {
+	events    *[]string
 	startErr  error
 	closeErr  error
 	started   bool
@@ -42,6 +44,9 @@ type recordingLifecycleNetworkRuntime struct {
 
 // Start returns the configured startup failure.
 func (runtime *recordingLifecycleNetworkRuntime) Start(context.Context) error {
+	if runtime.events != nil {
+		*runtime.events = append(*runtime.events, "network.start")
+	}
 	runtime.started = true
 	return runtime.startErr
 }
@@ -59,6 +64,9 @@ func (runtime *recordingLifecycleNetworkRuntime) Err() error {
 // Close records joined network cleanup after a post-start lifecycle failure.
 func (runtime *recordingLifecycleNetworkRuntime) Close(context.Context) error {
 	runtime.closeOnce.Do(func() {
+		if runtime.events != nil {
+			*runtime.events = append(*runtime.events, "network.close")
+		}
 		runtime.closed = true
 		close(runtime.done)
 	})
@@ -67,6 +75,7 @@ func (runtime *recordingLifecycleNetworkRuntime) Close(context.Context) error {
 
 // recordingLifecycleCloser proves a recovered process coordinator is joined after network startup rejection.
 type recordingLifecycleCloser struct {
+	events    *[]string
 	resumed   bool
 	resumeErr error
 	onResume  func() error
@@ -126,6 +135,9 @@ func (observer *recordingNetworkResolverObserver) Observe(
 
 // Resume records recovered-operation dispatch after network startup and returns its configured result.
 func (closer *recordingLifecycleCloser) Resume(context.Context) error {
+	if closer.events != nil {
+		*closer.events = append(*closer.events, "lifecycle.resume")
+	}
 	closer.resumed = true
 	if closer.onResume != nil {
 		return errors.Join(closer.resumeErr, closer.onResume())
@@ -136,10 +148,55 @@ func (closer *recordingLifecycleCloser) Resume(context.Context) error {
 // Close records joined lifecycle cleanup and returns its configured result.
 func (closer *recordingLifecycleCloser) Close(context.Context) error {
 	closer.closeOnce.Do(func() {
+		if closer.events != nil {
+			*closer.events = append(*closer.events, "lifecycle.close")
+		}
 		closer.closed = true
 		close(closer.done)
 	})
 	return closer.closeErr
+}
+
+// recordingActiveNetworkDataPlaneSetupOperationReader records startup selection of an interrupted setup operation.
+type recordingActiveNetworkDataPlaneSetupOperationReader struct {
+	events *[]string
+	active state.NetworkDataPlaneSetupActiveOperation
+	found  bool
+	err    error
+}
+
+// ActiveNetworkDataPlaneSetupOperation returns the configured startup operation without durable state access.
+func (reader *recordingActiveNetworkDataPlaneSetupOperationReader) ActiveNetworkDataPlaneSetupOperation(context.Context) (state.NetworkDataPlaneSetupActiveOperation, bool, error) {
+	*reader.events = append(*reader.events, "operations.read")
+	return reader.active, reader.found, reader.err
+}
+
+// recordingNetworkDataPlaneSetupRecovery records recovery only after an activation-phase operation was selected.
+type recordingNetworkDataPlaneSetupRecovery struct {
+	events *[]string
+	err    error
+	gotID  domain.OperationID
+}
+
+// Recover records the exact selected operation and returns its configured recovery outcome.
+func (recovery *recordingNetworkDataPlaneSetupRecovery) Recover(_ context.Context, operationID domain.OperationID) (state.OperationRecord, error) {
+	*recovery.events = append(*recovery.events, "setup.recover")
+	recovery.gotID = operationID
+	return state.OperationRecord{}, recovery.err
+}
+
+// recordingNetworkRuntimeActivator records full-stage runtime publication without opening listeners.
+type recordingNetworkRuntimeActivator struct {
+	events   *[]string
+	err      error
+	revision domain.Sequence
+}
+
+// ActivateNetwork records the requested durable full-network revision.
+func (activator *recordingNetworkRuntimeActivator) ActivateNetwork(_ context.Context, revision domain.Sequence) error {
+	*activator.events = append(*activator.events, "runtime.activate")
+	activator.revision = revision
+	return activator.err
 }
 
 // Done closes after the recording lifecycle has joined cleanup.
@@ -189,21 +246,16 @@ func TestProvideHarbordReadinessRejectsMissingConnections(t *testing.T) {
 	}
 }
 
-// TestRecoverDaemonStateBackfillsFullEndpointsBeforeRuntimeReconciliation pins the complete startup recovery order.
-func TestRecoverDaemonStateBackfillsFullEndpointsBeforeRuntimeReconciliation(t *testing.T) {
+// TestRecoverDaemonStateStopsBeforeRuntimeWork pins the pre-runtime recovery boundary.
+func TestRecoverDaemonStateStopsBeforeRuntimeWork(t *testing.T) {
 	events := []string{}
 	unregister := &recordingProjectUnregisterRecovery{events: &events}
-	lifecycle := &recordingProjectLifecycleRecovery{
-		events:        &events,
-		endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 42},
-	}
+	lifecycle := &recordingProjectLifecycleRecovery{events: &events}
 
 	if err := recoverDaemonState(t.Context(), unregister, lifecycle); err != nil {
 		t.Fatalf("recoverDaemonState() error = %v", err)
 	}
-	// daemon.Runner invokes Runtime.Start only after this recovery callback returns.
-	events = append(events, "runtime.reconcile")
-	if got, want := strings.Join(events, ","), "unregister.recover,lifecycle.recover,endpoints.reconcile,runtime.reconcile"; got != want {
+	if got, want := strings.Join(events, ","), "unregister.recover,lifecycle.recover"; got != want {
 		t.Fatalf("daemon recovery order = %q, want %q", got, want)
 	}
 }
@@ -212,12 +264,10 @@ func TestRecoverDaemonStateBackfillsFullEndpointsBeforeRuntimeReconciliation(t *
 func TestRecoverDaemonStatePropagatesEachFailure(t *testing.T) {
 	unregisterErr := errors.New("unregister recovery failed")
 	lifecycleErr := errors.New("lifecycle recovery failed")
-	endpointErr := errors.New("endpoint backfill failed")
 	tests := []struct {
 		name          string
 		unregisterErr error
 		lifecycleErr  error
-		endpointErr   error
 		want          error
 		wantEvents    string
 	}{
@@ -233,21 +283,14 @@ func TestRecoverDaemonStatePropagatesEachFailure(t *testing.T) {
 			want:         lifecycleErr,
 			wantEvents:   "unregister.recover,lifecycle.recover",
 		},
-		{
-			name:        "endpoint",
-			endpointErr: endpointErr,
-			want:        endpointErr,
-			wantEvents:  "unregister.recover,lifecycle.recover,endpoints.reconcile",
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			events := []string{}
 			unregister := &recordingProjectUnregisterRecovery{events: &events, err: test.unregisterErr}
 			lifecycle := &recordingProjectLifecycleRecovery{
-				events:      &events,
-				recoverErr:  test.lifecycleErr,
-				endpointErr: test.endpointErr,
+				events:     &events,
+				recoverErr: test.lifecycleErr,
 			}
 
 			err := recoverDaemonState(t.Context(), unregister, lifecycle)
@@ -561,13 +604,13 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	}
 	shutdown := daemon.NewShutdown()
 	appLogger := logger.NewSilentLogger()
-	if _, err := provideControlServer(nil, shutdown, appLogger); err == nil {
+	if _, err := provideControlServer(nil, networkDataPlaneSetupCapability{}, shutdown, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil) error = nil, want required authority error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), nil, appLogger); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, nil, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), shutdown, nil); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, shutdown, nil); err == nil {
 		t.Fatal("provideControlServer(nil logger) error = nil, want required application logger error")
 	}
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, ownership, runtimeController, openIssuer); err == nil {
@@ -588,23 +631,26 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, ownership, runtimeController, nil); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
 	}
-	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
+	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil server) error = nil, want required server error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil readiness) error = nil, want required readiness error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil runtime) error = nil, want required runtime error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, new(reconcile.ProjectLifecycleCoordinator), shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil coordinator) error = nil, want required coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, nil); err == nil {
 		t.Fatal("provideDaemonRunner(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil, shutdown); err == nil {
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil, operations, networkDataPlaneSetupCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil lifecycle) error = nil, want required project lifecycle coordinator error")
+	}
+	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil, networkDataPlaneSetupCapability{}, shutdown); err == nil {
+		t.Fatal("provideDaemonRunner(nil operations) error = nil, want required operation journal error")
 	}
 }
 
@@ -629,7 +675,7 @@ func TestProjectLifecycleRuntimeClosesRecoveredProcessesWhenNetworkStartFails(t 
 	startErr := errors.New("network runtime rejected startup")
 	closeErr := errors.New("project process cleanup failed")
 	closer := &recordingLifecycleCloser{closeErr: closeErr, done: make(chan struct{})}
-	runtime := newProjectLifecycleRuntime(&recordingLifecycleNetworkRuntime{startErr: startErr, done: make(chan struct{})}, closer)
+	runtime := newProjectLifecycleRuntime(&recordingLifecycleNetworkRuntime{startErr: startErr, done: make(chan struct{})}, closer, func(context.Context) error { return nil })
 
 	err := runtime.Start(t.Context())
 	if !closer.closed || !errors.Is(err, startErr) || !errors.Is(err, closeErr) {
@@ -652,7 +698,7 @@ func TestProjectLifecycleRuntimeResumesRecoveredStartsAfterNetworkStartup(t *tes
 			return nil
 		},
 	}
-	runtime := newProjectLifecycleRuntime(network, lifecycle)
+	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error { return nil })
 
 	if err := runtime.Start(t.Context()); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -676,7 +722,7 @@ func TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails(t *testing.T) {
 		closeErr:  lifecycleCloseErr,
 		done:      make(chan struct{}),
 	}
-	runtime := newProjectLifecycleRuntime(network, lifecycle)
+	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error { return nil })
 
 	err := runtime.Start(t.Context())
 	if !errors.Is(err, resumeErr) || !errors.Is(err, lifecycleCloseErr) || !errors.Is(err, networkCloseErr) {
@@ -690,5 +736,157 @@ func TestProjectLifecycleRuntimeJoinsCleanupWhenResumeFails(t *testing.T) {
 			lifecycle.resumed,
 			lifecycle.closed,
 		)
+	}
+}
+
+// TestProjectLifecycleRuntimeRunsPostRuntimeRecoveryBeforeResume preserves the only safe startup sequence for retained launches.
+func TestProjectLifecycleRuntimeRunsPostRuntimeRecoveryBeforeResume(t *testing.T) {
+	events := []string{}
+	network := &recordingLifecycleNetworkRuntime{events: &events, done: make(chan struct{})}
+	lifecycle := &recordingLifecycleCloser{events: &events, done: make(chan struct{})}
+	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error {
+		events = append(events, "post-runtime.recover")
+		return nil
+	})
+
+	if err := runtime.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got, want := strings.Join(events, ","), "network.start,post-runtime.recover,lifecycle.resume"; got != want {
+		t.Fatalf("startup order = %q, want %q", got, want)
+	}
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestProjectLifecycleRuntimeFailsFastWithoutPostRuntimeRecovery prevents retained launches from proceeding without the required boundary.
+func TestProjectLifecycleRuntimeFailsFastWithoutPostRuntimeRecovery(t *testing.T) {
+	network := &recordingLifecycleNetworkRuntime{done: make(chan struct{})}
+	lifecycle := &recordingLifecycleCloser{done: make(chan struct{})}
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("newProjectLifecycleRuntime() with nil post-runtime recovery did not fail fast")
+		}
+	}()
+
+	_ = newProjectLifecycleRuntime(network, lifecycle, nil)
+}
+
+// TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenPostRuntimeRecoveryFails preserves terminal ownership after partial startup.
+func TestProjectLifecycleRuntimeClosesBothAuthoritiesWhenPostRuntimeRecoveryFails(t *testing.T) {
+	events := []string{}
+	recoveryErr := errors.New("post-runtime recovery failed")
+	lifecycleCloseErr := errors.New("lifecycle close failed")
+	networkCloseErr := errors.New("network close failed")
+	network := &recordingLifecycleNetworkRuntime{events: &events, closeErr: networkCloseErr, done: make(chan struct{})}
+	lifecycle := &recordingLifecycleCloser{events: &events, closeErr: lifecycleCloseErr, done: make(chan struct{})}
+	runtime := newProjectLifecycleRuntime(network, lifecycle, func(context.Context) error {
+		events = append(events, "post-runtime.recover")
+		return recoveryErr
+	})
+
+	err := runtime.Start(t.Context())
+	if !errors.Is(err, recoveryErr) || !errors.Is(err, lifecycleCloseErr) || !errors.Is(err, networkCloseErr) {
+		t.Fatalf("Start() error = %v, want joined recovery and cleanup failures", err)
+	}
+	if lifecycle.resumed {
+		t.Fatal("Start() resumed lifecycle work after post-runtime recovery failed")
+	}
+	if got, want := strings.Join(events, ","), "network.start,post-runtime.recover,lifecycle.close,network.close"; got != want {
+		t.Fatalf("failure cleanup order = %q, want %q", got, want)
+	}
+	select {
+	case <-runtime.Done():
+	default:
+		t.Fatal("Done() remained open after post-runtime recovery failure")
+	}
+	if terminal := runtime.Err(); !errors.Is(terminal, recoveryErr) || !errors.Is(terminal, lifecycleCloseErr) || !errors.Is(terminal, networkCloseErr) {
+		t.Fatalf("Err() = %v, want joined recovery and cleanup failures", terminal)
+	}
+}
+
+// TestRecoverDaemonRuntimeStateGuardsSetupRecovery pins every durable recovery boundary before endpoint and runtime work.
+func TestRecoverDaemonRuntimeStateGuardsSetupRecovery(t *testing.T) {
+	readErr := errors.New("read active setup failed")
+	setupErr := errors.New("setup recovery failed")
+	endpointErr := errors.New("endpoint reconciliation failed")
+	activateErr := errors.New("runtime activation failed")
+	operationID := domain.OperationID("operation-1")
+	tests := []struct {
+		name          string
+		active        state.NetworkDataPlaneSetupActiveOperation
+		found         bool
+		readErr       error
+		setupErr      error
+		endpointState state.NetworkRecord
+		endpointErr   error
+		activateErr   error
+		setup         bool
+		want          error
+		wantFailure   bool
+		wantEvents    string
+		wantRevision  domain.Sequence
+	}{
+		{name: "no active operation", endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 7}, wantEvents: "operations.read,endpoints.reconcile,runtime.activate", wantRevision: 7},
+		{name: "trust approval", active: state.NetworkDataPlaneSetupActiveOperation{Phase: state.NetworkDataPlaneSetupPhaseTrustApproval}, found: true, endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 8}, wantEvents: "operations.read,endpoints.reconcile,runtime.activate", wantRevision: 8},
+		{name: "low port approval", active: state.NetworkDataPlaneSetupActiveOperation{Phase: state.NetworkDataPlaneSetupPhaseLowPortApproval}, found: true, endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 9}, wantEvents: "operations.read,endpoints.reconcile,runtime.activate", wantRevision: 9},
+		{name: "activation", active: state.NetworkDataPlaneSetupActiveOperation{Operation: state.OperationRecord{Operation: domain.Operation{ID: operationID}}, Phase: state.NetworkDataPlaneSetupPhaseActivation}, found: true, setup: true, endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 10}, wantEvents: "operations.read,setup.recover,endpoints.reconcile,runtime.activate", wantRevision: 10},
+		{name: "activation without optional recovery", active: state.NetworkDataPlaneSetupActiveOperation{Phase: state.NetworkDataPlaneSetupPhaseActivation}, found: true, wantFailure: true, wantEvents: "operations.read"},
+		{name: "resolver record", endpointState: state.NetworkRecord{Stage: state.NetworkStageResolver, Revision: 11}, wantEvents: "operations.read,endpoints.reconcile"},
+		{name: "uninitialized record", endpointState: state.NetworkRecord{}, wantEvents: "operations.read,endpoints.reconcile"},
+		{name: "operation read failure", readErr: readErr, want: readErr, wantEvents: "operations.read"},
+		{name: "setup failure", active: state.NetworkDataPlaneSetupActiveOperation{Operation: state.OperationRecord{Operation: domain.Operation{ID: operationID}}, Phase: state.NetworkDataPlaneSetupPhaseActivation}, found: true, setup: true, setupErr: setupErr, want: setupErr, wantEvents: "operations.read,setup.recover"},
+		{name: "endpoint failure", endpointErr: endpointErr, want: endpointErr, wantEvents: "operations.read,endpoints.reconcile"},
+		{name: "runtime activation failure", endpointState: state.NetworkRecord{Stage: state.NetworkStageFull, Revision: 12}, activateErr: activateErr, want: activateErr, wantEvents: "operations.read,endpoints.reconcile,runtime.activate", wantRevision: 12},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := []string{}
+			reader := &recordingActiveNetworkDataPlaneSetupOperationReader{events: &events, active: test.active, found: test.found, err: test.readErr}
+			setup := &recordingNetworkDataPlaneSetupRecovery{events: &events, err: test.setupErr}
+			lifecycle := &recordingProjectLifecycleRecovery{events: &events, endpointState: test.endpointState, endpointErr: test.endpointErr}
+			activator := &recordingNetworkRuntimeActivator{events: &events, err: test.activateErr}
+			var recovery networkDataPlaneSetupRecoveryAuthority
+			if test.setup {
+				recovery = setup
+			}
+
+			err := recoverDaemonRuntimeState(t.Context(), reader, recovery, lifecycle, activator)
+			if test.wantFailure && err == nil {
+				t.Fatal("recoverDaemonRuntimeState() error = nil, want failed-closed optional recovery error")
+			}
+			if !test.wantFailure && !errors.Is(err, test.want) {
+				t.Fatalf("recoverDaemonRuntimeState() error = %v, want %v", err, test.want)
+			}
+			if got := strings.Join(events, ","); got != test.wantEvents {
+				t.Fatalf("recovery events = %q, want %q", got, test.wantEvents)
+			}
+			if activator.revision != test.wantRevision {
+				t.Fatalf("activated revision = %d, want %d", activator.revision, test.wantRevision)
+			}
+			if test.name == "activation" && setup.gotID != operationID {
+				t.Fatalf("recovered operation = %q, want %q", setup.gotID, operationID)
+			}
+		})
+	}
+}
+
+// TestRecoverDaemonRuntimeStateRejectsCanceledContextBeforeAnyCall prevents cancellation from mutating startup state.
+func TestRecoverDaemonRuntimeStateRejectsCanceledContextBeforeAnyCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	events := []string{}
+	reader := &recordingActiveNetworkDataPlaneSetupOperationReader{events: &events}
+	setup := &recordingNetworkDataPlaneSetupRecovery{events: &events}
+	lifecycle := &recordingProjectLifecycleRecovery{events: &events}
+	activator := &recordingNetworkRuntimeActivator{events: &events}
+
+	err := recoverDaemonRuntimeState(ctx, reader, setup, lifecycle, activator)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("recoverDaemonRuntimeState() error = %v, want context cancellation", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("canceled recovery calls = %q, want none", strings.Join(events, ","))
 	}
 }

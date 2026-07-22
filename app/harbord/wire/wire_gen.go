@@ -70,8 +70,12 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 		return App{}, err
 	}
 	authorityAuthority := authority.NewAuthority(store, projectUnregisterCoordinator, projectLifecycleCoordinator, networkSetupCoordinator, networkResolverSetupCoordinator, controller)
+	wireNetworkDataPlaneSetupCapability, err := provideNetworkDataPlaneSetupCapability(networkStateRepo, operationJournal, store, machineOwnershipProjectionSource, controller, projectLifecycleCoordinator)
+	if err != nil {
+		return App{}, err
+	}
 	shutdown := daemon.NewShutdown()
-	server, err := provideControlServer(authorityAuthority, shutdown, appLogger)
+	server, err := provideControlServer(authorityAuthority, wireNetworkDataPlaneSetupCapability, shutdown, appLogger)
 	if err != nil {
 		return App{}, err
 	}
@@ -79,7 +83,7 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	if err != nil {
 		return App{}, err
 	}
-	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, shutdown)
+	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, operationJournal, wireNetworkDataPlaneSetupCapability, shutdown)
 	if err != nil {
 		return App{}, err
 	}

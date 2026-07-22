@@ -35,6 +35,7 @@ var appSet = wire.NewSet(
 	provideNetworkSetupCoordinator,
 	provideNetworkResolverObserver,
 	provideNetworkResolverSetupCoordinator,
+	provideNetworkDataPlaneSetupCapability,
 	authority.NewAuthority,
 	provideControlServer,
 	provideHarbordReadiness,
