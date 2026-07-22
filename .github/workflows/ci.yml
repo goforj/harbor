@@ -218,7 +218,7 @@ jobs:
       # hosted runner's Unix socket even when the runner image exports a Docker-in-Docker TCP override.
       DOCKER_HOST: unix:///var/run/docker.sock
       DOCKER_CONTEXT: default
-      HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-docker-product-evidence
+      HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-docker-product-evidence
       HARBOR_DOCKER_PRODUCT_COMMIT: ${{ github.sha }}
       HARBOR_DOCKER_PRODUCT_ENGINE_KIND: docker-engine
     steps:
