@@ -8,3 +8,8 @@ import "github.com/goforj/harbor/internal/helper"
 func openPlatformTrustHandler() (closingTrustHandler, error) {
 	return helper.UnavailableTrustHandler{}, nil
 }
+
+// openPlatformAdministratorTrustHandler keeps administrator trust effects unavailable outside the reviewed platform set.
+func openPlatformAdministratorTrustHandler() (closingTrustHandler, error) {
+	return helper.UnavailableTrustHandler{}, nil
+}

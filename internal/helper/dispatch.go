@@ -226,6 +226,11 @@ func (admitted AdmittedTrustOperation) RequesterIdentity() string {
 	return admitted.ticket.RequesterIdentity
 }
 
+// TrustMechanism returns the trust scope authenticated by the admitted ticket policy.
+func (admitted AdmittedTrustOperation) TrustMechanism() networkpolicy.TrustMechanism {
+	return admitted.ticket.NetworkPolicy.Mechanisms.Trust
+}
+
 // ExecuteTrust invokes exactly the trust handler selected by the already-admitted trust operation.
 func (admitted AdmittedTrustOperation) ExecuteTrust(ctx context.Context, handler TrustHandler) (OperationResult, error) {
 	if handler == nil {
@@ -763,6 +768,7 @@ func (e TrustMutationEvidence) validateShape(operation Operation) error {
 		return errors.New("trust mutation evidence fingerprints are invalid")
 	}
 	if e.Mechanism != networkpolicy.DarwinCurrentUserTrust &&
+		e.Mechanism != networkpolicy.DarwinAdministratorTrust &&
 		e.Mechanism != networkpolicy.UbuntuSystemTrust &&
 		e.Mechanism != networkpolicy.WindowsCurrentUserTrust {
 		return errors.New("trust mutation evidence mechanism is unsupported")

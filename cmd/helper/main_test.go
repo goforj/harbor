@@ -19,7 +19,7 @@ func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	dependencies := productionDependencies()
 	if dependencies.authorizeInvocation == nil || dependencies.openTicketRedeemer == nil ||
 		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil ||
-		dependencies.openResolverHandler == nil || dependencies.openTrustHandler == nil ||
+		dependencies.openResolverHandler == nil || dependencies.openTrustHandler == nil || dependencies.openAdministratorTrustHandler == nil ||
 		dependencies.openLowPortHandler == nil || dependencies.transitionTrustIdentity == nil {
 		t.Fatal("production dependencies are incomplete")
 	}
@@ -128,6 +128,13 @@ func TestRunFailsFastWithoutRequiredDependency(t *testing.T) {
 			clock: fixedClock{now: time.Now().UTC()},
 			mutate: func(dependencies *runtimeDependencies) {
 				dependencies.openTrustHandler = nil
+			},
+		},
+		{
+			name:  "administrator trust handler factory",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.openAdministratorTrustHandler = nil
 			},
 		},
 		{
@@ -519,6 +526,10 @@ func unusedRuntimeDependencies(t *testing.T) runtimeDependencies {
 			t.Fatal("trust handler factory was not configured for this test")
 			return nil, nil
 		},
+		openAdministratorTrustHandler: func() (closingTrustHandler, error) {
+			t.Fatal("administrator trust handler factory was not configured for this test")
+			return nil, nil
+		},
 		openLowPortHandler: func() (closingLowPortHandler, error) {
 			t.Fatal("low-port handler factory was not configured for this test")
 			return nil, nil
@@ -557,6 +568,9 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 			return &testResolverHandler{events: events}, nil
 		},
 		openTrustHandler: func() (closingTrustHandler, error) {
+			return helper.UnavailableTrustHandler{}, nil
+		},
+		openAdministratorTrustHandler: func() (closingTrustHandler, error) {
 			return helper.UnavailableTrustHandler{}, nil
 		},
 		openLowPortHandler: func() (closingLowPortHandler, error) {

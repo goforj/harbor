@@ -129,6 +129,7 @@ func TestAdmittedOperationTypesSealMetadata(t *testing.T) {
 			methods: []string{
 				"ExecuteTrust",
 				"RequesterIdentity",
+				"TrustMechanism",
 			},
 		},
 		{

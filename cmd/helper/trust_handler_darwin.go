@@ -16,3 +16,8 @@ func openPlatformTrustHandler() (closingTrustHandler, error) {
 	}
 	return trusthandler.New(adapter), nil
 }
+
+// openPlatformAdministratorTrustHandler binds the administrator-selected dispatch seam to Darwin's reviewed trust adapter.
+func openPlatformAdministratorTrustHandler() (closingTrustHandler, error) {
+	return openPlatformTrustHandler()
+}

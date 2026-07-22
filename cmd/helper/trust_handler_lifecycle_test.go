@@ -86,6 +86,75 @@ func TestRunTrustLifecycleClosesPrivilegedAuthorityBeforeTransition(t *testing.T
 	}
 }
 
+// TestRunAdministratorTrustLifecycleKeepsAdministratorIdentity proves the administrator scope uses its own handler only after admission authority closes.
+func TestRunAdministratorTrustLifecycleKeepsAdministratorIdentity(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := trustLifecycleRedemptionForMechanism(t, now, helper.OperationEnsureTrust, networkpolicy.DarwinAdministratorTrust)
+	events := make([]string, 0, 12)
+	handler := &lifecycleTrustHandler{events: &events, evidence: trustLifecycleEvidence(redemption.Ticket)}
+	dependencies := successfulTestDependencies(&events, redemption)
+	dependencies.transitionTrustIdentity = func(string) error {
+		t.Fatal("administrator trust transitioned to requester identity")
+		return nil
+	}
+	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+		t.Fatal("current-user trust handler opened for administrator ticket")
+		return nil, nil
+	}
+	dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+		events = append(events, "open administrator trust handler")
+		return handler, nil
+	}
+
+	output, err := runTrustLifecycle(t, now, reference, dependencies)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !output.OK || handler.calls != 1 {
+		t.Fatalf("response = %#v, handler calls = %d", output, handler.calls)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"redeem ticket",
+		"consume replay claim",
+		"close replay guard",
+		"close ticket redeemer",
+		"open administrator trust handler",
+		"trust mutation",
+		"close trust handler",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+// TestRunTrustLifecycleRejectsUnsupportedMechanismBeforeHandlers proves a verified ticket cannot select an unreviewed native trust scope.
+func TestRunTrustLifecycleRejectsUnsupportedMechanismBeforeHandlers(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := trustLifecycleRedemptionForMechanisms(t, now, helper.OperationEnsureTrust, networkpolicy.UbuntuMechanisms())
+	events := make([]string, 0, 8)
+	dependencies := successfulTestDependencies(&events, redemption)
+	dependencies.transitionTrustIdentity = func(string) error {
+		t.Fatal("unsupported trust mechanism transitioned identity")
+		return nil
+	}
+	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+		t.Fatal("current-user trust handler opened for unsupported mechanism")
+		return nil, nil
+	}
+	dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+		t.Fatal("administrator trust handler opened for unsupported mechanism")
+		return nil, nil
+	}
+
+	_, err := runTrustLifecycle(t, now, reference, dependencies)
+	if err == nil {
+		t.Fatal("run() accepted unsupported trust mechanism")
+	}
+}
+
 // TestRunTrustLifecycleRejectsBeforeTransition proves failed redemption or replay admission never opens user trust authority.
 func TestRunTrustLifecycleRejectsBeforeTransition(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
@@ -139,6 +208,10 @@ func TestRunTrustLifecycleRejectsBeforeTransition(t *testing.T) {
 			}
 			dependencies.openTrustHandler = func() (closingTrustHandler, error) {
 				t.Fatal("trust handler opened before complete admission")
+				return nil, nil
+			}
+			dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+				t.Fatal("administrator trust handler opened before complete admission")
 				return nil, nil
 			}
 			_, err := runTrustLifecycle(t, now, reference, dependencies)
@@ -513,12 +586,28 @@ func runTrustLifecycle(t *testing.T, now time.Time, reference helper.TicketRefer
 
 // trustLifecycleRedemption creates one authenticated trust ticket and matching protected admission record.
 func trustLifecycleRedemption(t *testing.T, now time.Time, operation helper.Operation) (helper.TicketReference, helper.TicketRedemption) {
+	return trustLifecycleRedemptionForMechanisms(t, now, operation, networkpolicy.Mechanisms{
+		Resolver: networkpolicy.DarwinResolverFile,
+		LowPorts: networkpolicy.DarwinLaunchdRelay,
+		Trust:    networkpolicy.DarwinCurrentUserTrust,
+	})
+}
+
+// trustLifecycleRedemptionForMechanism creates one authenticated trust ticket with the requested tested scope.
+func trustLifecycleRedemptionForMechanism(t *testing.T, now time.Time, operation helper.Operation, mechanism networkpolicy.TrustMechanism) (helper.TicketReference, helper.TicketRedemption) {
+	mechanisms := networkpolicy.MacOSMechanisms()
+	mechanisms.Trust = mechanism
+	return trustLifecycleRedemptionForMechanisms(t, now, operation, mechanisms)
+}
+
+// trustLifecycleRedemptionForMechanisms creates one authenticated trust ticket with the requested tested platform profile.
+func trustLifecycleRedemptionForMechanisms(t *testing.T, now time.Time, operation helper.Operation, mechanisms networkpolicy.Mechanisms) (helper.TicketReference, helper.TicketRedemption) {
 	t.Helper()
 	root := trustLifecycleRoot(t)
 	loopback := netip.MustParseAddr("127.0.0.1")
 	policy, err := networkpolicy.New(
 		root.Fingerprint,
-		networkpolicy.MacOSMechanisms(),
+		mechanisms,
 		networkpolicy.Listener{
 			Advertised: netip.AddrPortFrom(loopback, 25000),
 			Bind:       netip.AddrPortFrom(loopback, 25000),
