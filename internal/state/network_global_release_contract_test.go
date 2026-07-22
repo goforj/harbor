@@ -86,13 +86,36 @@ func TestGlobalNetworkReleaseAuthorityRejectsEveryIndependentInvalidBranch(t *te
 			authority.ProjectRevisions = nil
 		},
 		"project revisions unordered": func(authority *GlobalNetworkReleaseAuthority) {
-			authority.ProjectRevisions = []NetworkProjectRevision{{ProjectID: "project-z", Revision: 2}, {ProjectID: "project-a", Revision: 1}}
+			authority.ProjectRevisions = []NetworkProjectRevision{
+				{
+					ProjectID: "project-z",
+					Revision:  2,
+				},
+				{
+					ProjectID: "project-a",
+					Revision:  1,
+				},
+			}
 		},
 		"project revision duplicate": func(authority *GlobalNetworkReleaseAuthority) {
-			authority.ProjectRevisions = []NetworkProjectRevision{{ProjectID: "project-a", Revision: 1}, {ProjectID: "project-b", Revision: 1}}
+			authority.ProjectRevisions = []NetworkProjectRevision{
+				{
+					ProjectID: "project-a",
+					Revision:  1,
+				},
+				{
+					ProjectID: "project-b",
+					Revision:  1,
+				},
+			}
 		},
 		"project revision invalid": func(authority *GlobalNetworkReleaseAuthority) {
-			authority.ProjectRevisions = []NetworkProjectRevision{{ProjectID: "project-a", Revision: 0}}
+			authority.ProjectRevisions = []NetworkProjectRevision{
+				{
+					ProjectID: "project-a",
+					Revision:  0,
+				},
+			}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -123,7 +146,12 @@ func TestGlobalNetworkReleaseAuthorityPinsEveryPoolAddress(t *testing.T) {
 // TestGlobalNetworkReleaseAuthorityCloneIsIndependent verifies retained authority cannot be mutated through its source.
 func TestGlobalNetworkReleaseAuthorityCloneIsIndependent(t *testing.T) {
 	authority := validGlobalNetworkReleaseAuthority(t)
-	authority.ProjectRevisions = []NetworkProjectRevision{{ProjectID: "project-a", Revision: 1}}
+	authority.ProjectRevisions = []NetworkProjectRevision{
+		{
+			ProjectID: "project-a",
+			Revision:  1,
+		},
+	}
 	clone := authority.Clone()
 
 	authority.Root.CertificatePEM[0] ^= 0xff
@@ -189,7 +217,10 @@ func validStageGlobalNetworkReleaseRequest(t *testing.T) StageGlobalNetworkRelea
 	if err != nil {
 		t.Fatalf("NewOperation() error = %v", err)
 	}
-	return StageGlobalNetworkReleaseRequest{Operation: operation, Authority: authority}
+	return StageGlobalNetworkReleaseRequest{
+		Operation: operation,
+		Authority: authority,
+	}
 }
 
 // validGlobalNetworkReleaseAuthority derives a current root-bound full-stage release snapshot.
@@ -205,7 +236,12 @@ func validGlobalNetworkReleaseAuthority(t *testing.T) GlobalNetworkReleaseAuthor
 		t.Fatalf("localca.New() error = %v", err)
 	}
 	material := authority.Material()
-	root := certroot.Root{CertificatePEM: material.CertificatePEM, Fingerprint: material.Fingerprint, NotBefore: material.NotBefore, NotAfter: material.NotAfter}
+	root := certroot.Root{
+		CertificatePEM: material.CertificatePEM,
+		Fingerprint:    material.Fingerprint,
+		NotBefore:      material.NotBefore,
+		NotAfter:       material.NotAfter,
+	}
 	policy := fixture.request.Policy
 	policy.AuthorityFingerprint = root.Fingerprint
 	projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint, err = policy.Fingerprint()
@@ -223,7 +259,10 @@ func validGlobalNetworkReleaseAuthority(t *testing.T) GlobalNetworkReleaseAuthor
 	}
 	targets := make([]GlobalNetworkReleaseLoopbackTarget, 0, pool.Capacity())
 	for _, address := range pool.Candidates() {
-		targets = append(targets, GlobalNetworkReleaseLoopbackTarget{Address: address, ObservationFingerprint: strings.Repeat("a", 64)})
+		targets = append(targets, GlobalNetworkReleaseLoopbackTarget{
+			Address:                address,
+			ObservationFingerprint: strings.Repeat("a", 64),
+		})
 	}
 	return GlobalNetworkReleaseAuthority{
 		Projection:                     projection,
