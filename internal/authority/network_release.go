@@ -28,6 +28,10 @@ type networkReleaseCoordinator interface {
 	PrepareLowPorts(context.Context, reconcile.GlobalNetworkReleasePrepareLowPortsRequest) (ticketissuer.LowPortResult, error)
 	// ConfirmLowPorts verifies low-port removal and advances the retained release plan.
 	ConfirmLowPorts(context.Context, reconcile.GlobalNetworkReleaseConfirmLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// PrepareResolver publishes one bounded resolver release capability.
+	PrepareResolver(context.Context, reconcile.GlobalNetworkReleasePrepareResolverRequest) (ticketissuer.ResolverResult, error)
+	// ConfirmResolver verifies resolver removal and advances the retained release plan.
+	ConfirmResolver(context.Context, reconcile.GlobalNetworkReleaseConfirmResolverRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // NetworkReleaseAuthority adapts the durable global release lifecycle to its optional control surface.
@@ -176,6 +180,75 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseApproval(ctx cont
 	return result, nil
 }
 
+// PrepareNetworkReleaseResolverApproval binds release-resolver helper authority to the authenticated transport user.
+func (authority *NetworkReleaseAuthority) PrepareNetworkReleaseResolverApproval(ctx context.Context, caller control.Caller, request control.PrepareNetworkReleaseResolverApprovalRequest) (control.NetworkReleaseResolverApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseResolverApprovalPreparation{}, err
+	}
+	result, err := authority.coordinator.PrepareResolver(ctx, reconcile.GlobalNetworkReleasePrepareResolverRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+	})
+	disposition := control.NetworkReleaseResolverPublicationDurable
+	if errors.Is(err, ticketissuer.ErrResolverPublicationIndeterminate) {
+		disposition = control.NetworkReleaseResolverPublicationIndeterminate
+	} else if err != nil {
+		return control.NetworkReleaseResolverApprovalPreparation{}, classifyNetworkReleaseError(err)
+	}
+	if err := result.Validate(time.Now().UTC()); err != nil {
+		return control.NetworkReleaseResolverApprovalPreparation{}, fmt.Errorf("network release resolver preparation result: %w", err)
+	}
+	preparation := control.NetworkReleaseResolverApprovalPreparation{
+		OperationID:            request.OperationID,
+		CheckpointRevision:     request.ExpectedCheckpointRevision,
+		PublicationDisposition: disposition,
+		Ticket: control.NetworkReleaseResolverApprovalTicket{
+			OperationID:                result.OperationID,
+			Reference:                  result.Reference,
+			Operation:                  result.Operation,
+			PolicyFingerprint:          result.PolicyFingerprint,
+			TargetOwnershipFingerprint: result.OwnershipFingerprint,
+			ExpiresAt:                  result.ExpiresAt,
+		},
+	}
+	if err := preparation.Validate(); err != nil {
+		return control.NetworkReleaseResolverApprovalPreparation{}, fmt.Errorf("network release resolver preparation: %w", err)
+	}
+	if preparation.Ticket.OperationID != request.OperationID {
+		return control.NetworkReleaseResolverApprovalPreparation{}, errors.New("network release resolver preparation ticket differs from the requested operation")
+	}
+	return preparation, nil
+}
+
+// ConfirmNetworkReleaseResolverApproval independently verifies resolver removal and advances the release to trust retirement.
+func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseResolverApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseResolverApprovalRequest) (control.NetworkReleaseOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	plan, err := authority.coordinator.ConfirmResolver(ctx, reconcile.GlobalNetworkReleaseConfirmResolverRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+		ResolverEvidence:           request.ResolverEvidence,
+	})
+	if err != nil {
+		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
+	}
+	result, err := networkReleaseOperation(plan)
+	if err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.CheckpointRevision <= request.ExpectedCheckpointRevision ||
+		result.Phase != control.NetworkReleasePhaseTrust {
+		return control.NetworkReleaseOperation{}, errors.New("network release resolver confirmation did not advance the requested checkpoint to trust release")
+	}
+	return result, nil
+}
+
 // readNetworkRelease reads and projects the exact durable plan without returning retained host authority.
 func (authority *NetworkReleaseAuthority) readNetworkRelease(ctx context.Context, requesterIdentity string, operationID domain.OperationID) (control.NetworkReleaseOperation, error) {
 	plan, found, err := authority.plans.ReadGlobalNetworkReleasePlan(ctx, operationID)
@@ -266,7 +339,11 @@ func classifyNetworkReleaseError(err error) error {
 	var operationConflict *state.OperationIDConflictError
 	var active *state.GlobalNetworkReleaseActiveError
 	var stale *state.StaleRevisionError
-	if errors.As(err, &intentConflict) || errors.As(err, &operationConflict) || errors.As(err, &active) || errors.As(err, &stale) {
+	if errors.As(err, &intentConflict) ||
+		errors.As(err, &operationConflict) ||
+		errors.As(err, &active) ||
+		errors.As(err, &stale) ||
+		errors.Is(err, ticketissuer.ErrResolverPublicationIndeterminate) {
 		return control.NewNetworkReleaseConflictError(err)
 	}
 	return err

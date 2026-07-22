@@ -21,13 +21,17 @@ import (
 
 // recordingNetworkReleaseCoordinator records the caller-bound start request before returning its scripted result.
 type recordingNetworkReleaseCoordinator struct {
-	request        reconcile.GlobalNetworkReleaseStartRequest
-	prepareRequest reconcile.GlobalNetworkReleasePrepareLowPortsRequest
-	confirmRequest reconcile.GlobalNetworkReleaseConfirmLowPortsRequest
-	record         state.OperationRecord
-	prepareResult  ticketissuer.LowPortResult
-	confirmResult  state.GlobalNetworkReleasePlanRecord
-	err            error
+	request                reconcile.GlobalNetworkReleaseStartRequest
+	prepareRequest         reconcile.GlobalNetworkReleasePrepareLowPortsRequest
+	confirmRequest         reconcile.GlobalNetworkReleaseConfirmLowPortsRequest
+	prepareResolverRequest reconcile.GlobalNetworkReleasePrepareResolverRequest
+	confirmResolverRequest reconcile.GlobalNetworkReleaseConfirmResolverRequest
+	record                 state.OperationRecord
+	prepareResult          ticketissuer.LowPortResult
+	confirmResult          state.GlobalNetworkReleasePlanRecord
+	prepareResolverResult  ticketissuer.ResolverResult
+	confirmResolverResult  state.GlobalNetworkReleasePlanRecord
+	err                    error
 }
 
 // Start records the exact request so tests can assert the authority boundary.
@@ -46,6 +50,18 @@ func (c *recordingNetworkReleaseCoordinator) PrepareLowPorts(_ context.Context, 
 func (c *recordingNetworkReleaseCoordinator) ConfirmLowPorts(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	c.confirmRequest = request
 	return c.confirmResult, c.err
+}
+
+// PrepareResolver records one authenticated resolver capability request.
+func (c *recordingNetworkReleaseCoordinator) PrepareResolver(_ context.Context, request reconcile.GlobalNetworkReleasePrepareResolverRequest) (ticketissuer.ResolverResult, error) {
+	c.prepareResolverRequest = request
+	return c.prepareResolverResult, c.err
+}
+
+// ConfirmResolver records one authenticated resolver release acknowledgement.
+func (c *recordingNetworkReleaseCoordinator) ConfirmResolver(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	c.confirmResolverRequest = request
+	return c.confirmResolverResult, c.err
 }
 
 // recordingNetworkReleasePlans records an exact durable plan selection before returning its scripted result.
@@ -690,6 +706,251 @@ func TestNetworkReleaseAuthorityMapsLowPortCheckpointConflicts(t *testing.T) {
 	}
 }
 
+// TestNetworkReleaseAuthorityBindsCallerToResolverApproval proves resolver helper authority is selected solely by the transport identity.
+func TestNetworkReleaseAuthorityBindsCallerToResolverApproval(t *testing.T) {
+	caller := control.Caller{
+		Transport: local.PeerIdentity{
+			UserID: "authenticated-user",
+		},
+	}
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareResolverResult: validNetworkReleaseResolverResult("operation-release"),
+		confirmResolverResult: validNetworkReleasePlan(
+			"operation-release",
+			"intent-release",
+			state.GlobalNetworkReleasePlanPhaseTrust,
+		),
+	}
+	coordinator.confirmResolverResult.CheckpointRevision = 13
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) { return "operation-generated", nil },
+	)
+	prepare := control.PrepareNetworkReleaseResolverApprovalRequest{
+		OperationID:                "operation-release",
+		ExpectedCheckpointRevision: 12,
+	}
+	preparation, err := authority.PrepareNetworkReleaseResolverApproval(t.Context(), caller, prepare)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseResolverApproval() error = %v", err)
+	}
+	confirm := control.ConfirmNetworkReleaseResolverApprovalRequest{
+		OperationID:                "operation-release",
+		ExpectedCheckpointRevision: 12,
+		ResolverEvidence:           validNetworkReleaseResolverEvidence(),
+	}
+	result, err := authority.ConfirmNetworkReleaseResolverApproval(t.Context(), caller, confirm)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkReleaseResolverApproval() error = %v", err)
+	}
+	if coordinator.prepareResolverRequest.RequesterIdentity != caller.Transport.UserID || coordinator.confirmResolverRequest.RequesterIdentity != caller.Transport.UserID {
+		t.Fatalf("resolver approval requester identities = %q, %q", coordinator.prepareResolverRequest.RequesterIdentity, coordinator.confirmResolverRequest.RequesterIdentity)
+	}
+	if coordinator.prepareResolverRequest.ExpectedCheckpointRevision != prepare.ExpectedCheckpointRevision || coordinator.confirmResolverRequest.ExpectedCheckpointRevision != confirm.ExpectedCheckpointRevision {
+		t.Fatalf("resolver approval checkpoint requests = %#v, %#v", coordinator.prepareResolverRequest, coordinator.confirmResolverRequest)
+	}
+	if preparation.PublicationDisposition != control.NetworkReleaseResolverPublicationDurable ||
+		preparation.Ticket.OperationID != prepare.OperationID ||
+		preparation.Ticket.Operation != helper.OperationReleaseResolver {
+		t.Fatalf("resolver preparation = %#v", preparation)
+	}
+	if result.Phase != control.NetworkReleasePhaseTrust || result.CheckpointRevision != 13 {
+		t.Fatalf("resolver confirmation result = %#v", result)
+	}
+}
+
+// TestNetworkReleaseAuthorityReturnsIndeterminateResolverReference preserves the sole reference available after uncertain publication.
+func TestNetworkReleaseAuthorityReturnsIndeterminateResolverReference(t *testing.T) {
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareResolverResult: validNetworkReleaseResolverResult("operation-release"),
+		err:                   ticketissuer.ErrResolverPublicationIndeterminate,
+	}
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseResolverApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.PrepareNetworkReleaseResolverApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseResolverApproval() error = %v", err)
+	}
+	if preparation.PublicationDisposition != control.NetworkReleaseResolverPublicationIndeterminate ||
+		preparation.Ticket.Reference != coordinator.prepareResolverResult.Reference {
+		t.Fatalf("preparation = %#v", preparation)
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsUnadvancedResolverConfirmation ensures confirmation cannot claim trust release without advancing its exact checkpoint.
+func TestNetworkReleaseAuthorityRejectsUnadvancedResolverConfirmation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		plan state.GlobalNetworkReleasePlanRecord
+	}{
+		{
+			name: "operation",
+			plan: validNetworkReleasePlan("operation-other", "intent-release", state.GlobalNetworkReleasePlanPhaseTrust),
+		},
+		{
+			name: "checkpoint",
+			plan: validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseTrust),
+		},
+		{
+			name: "phase",
+			plan: validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseResolver),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{confirmResolverResult: test.plan},
+				func() (domain.OperationID, error) { return "operation-generated", nil },
+			)
+			_, err := authority.ConfirmNetworkReleaseResolverApproval(
+				t.Context(),
+				control.Caller{Transport: local.PeerIdentity{UserID: "authenticated-user"}},
+				control.ConfirmNetworkReleaseResolverApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+					ResolverEvidence:           validNetworkReleaseResolverEvidence(),
+				},
+			)
+			if err == nil {
+				t.Fatal("ConfirmNetworkReleaseResolverApproval() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsUncorrelatedOrExpiredResolverTickets keeps opaque helper output scoped to the selected operation and lifetime.
+func TestNetworkReleaseAuthorityRejectsUncorrelatedOrExpiredResolverTickets(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*ticketissuer.ResolverResult)
+	}{
+		{
+			name: "other operation",
+			mutate: func(result *ticketissuer.ResolverResult) {
+				result.OperationID = "operation-other"
+			},
+		},
+		{
+			name: "expired",
+			mutate: func(result *ticketissuer.ResolverResult) {
+				result.ExpiresAt = time.Now().UTC().Add(-time.Second)
+			},
+		},
+		{
+			name: "malformed",
+			mutate: func(result *ticketissuer.ResolverResult) {
+				result.PolicyFingerprint = "invalid"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := validNetworkReleaseResolverResult("operation-release")
+			test.mutate(&result)
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{prepareResolverResult: result},
+				func() (domain.OperationID, error) { return "operation-generated", nil },
+			)
+			_, err := authority.PrepareNetworkReleaseResolverApproval(
+				t.Context(),
+				control.Caller{Transport: local.PeerIdentity{UserID: "authenticated-user"}},
+				control.PrepareNetworkReleaseResolverApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+				},
+			)
+			if err == nil {
+				t.Fatal("PrepareNetworkReleaseResolverApproval() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityMapsResolverCheckpointConflicts preserves stale checkpoint semantics at both resolver approval boundaries.
+func TestNetworkReleaseAuthorityMapsResolverCheckpointConflicts(t *testing.T) {
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		&recordingNetworkReleaseCoordinator{err: &state.StaleRevisionError{}},
+		func() (domain.OperationID, error) { return "operation-generated", nil },
+	)
+	caller := control.Caller{
+		Transport: local.PeerIdentity{
+			UserID: "authenticated-user",
+		},
+	}
+	for _, call := range []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "prepare",
+			call: func() error {
+				_, err := authority.PrepareNetworkReleaseResolverApproval(
+					t.Context(),
+					caller,
+					control.PrepareNetworkReleaseResolverApprovalRequest{
+						OperationID:                "operation-release",
+						ExpectedCheckpointRevision: 12,
+					},
+				)
+				return err
+			},
+		},
+		{
+			name: "confirm",
+			call: func() error {
+				_, err := authority.ConfirmNetworkReleaseResolverApproval(
+					t.Context(),
+					caller,
+					control.ConfirmNetworkReleaseResolverApprovalRequest{
+						OperationID:                "operation-release",
+						ExpectedCheckpointRevision: 12,
+						ResolverEvidence:           validNetworkReleaseResolverEvidence(),
+					},
+				)
+				return err
+			},
+		},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			err := call.call()
+			if err == nil {
+				t.Fatal("resolver approval unexpectedly succeeded")
+			}
+			var handlerError *session.HandlerError
+			if !errors.As(err, &handlerError) || handlerError.Code() != rpc.ErrorCodeConflict {
+				t.Fatalf("resolver approval error = %#v, want conflict", err)
+			}
+		})
+	}
+}
+
+// TestClassifyNetworkReleaseErrorMapsResolverPublicationIndeterminate preserves a retriable conflict when resolver capability publication has an unknown outcome.
+func TestClassifyNetworkReleaseErrorMapsResolverPublicationIndeterminate(t *testing.T) {
+	classified := classifyNetworkReleaseError(ticketissuer.ErrResolverPublicationIndeterminate)
+	var handlerError *session.HandlerError
+	if !errors.As(classified, &handlerError) || handlerError.Code() != rpc.ErrorCodeConflict {
+		t.Fatalf("classifyNetworkReleaseError() = %#v, want conflict", classified)
+	}
+}
+
 // validNetworkReleasePlan constructs the smallest complete durable release plan needed by adapter tests.
 func validNetworkReleasePlan(operationID domain.OperationID, intentID domain.IntentID, phase state.GlobalNetworkReleasePlanPhase) state.GlobalNetworkReleasePlanRecord {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
@@ -731,6 +992,18 @@ func validNetworkReleaseLowPortResult(operationID domain.OperationID) ticketissu
 	}
 }
 
+// validNetworkReleaseResolverResult constructs one unexpired release-resolver ticket result.
+func validNetworkReleaseResolverResult(operationID domain.OperationID) ticketissuer.ResolverResult {
+	return ticketissuer.ResolverResult{
+		OperationID:          operationID,
+		Reference:            helper.TicketReference(strings.Repeat("e", 64)),
+		Operation:            helper.OperationReleaseResolver,
+		PolicyFingerprint:    strings.Repeat("b", 64),
+		OwnershipFingerprint: strings.Repeat("c", 64),
+		ExpiresAt:            time.Now().UTC().Add(time.Minute),
+	}
+}
+
 // validNetworkReleaseLowPortEvidence constructs one exact owned-absent release receipt.
 func validNetworkReleaseLowPortEvidence() helper.LowPortMutationEvidence {
 	return helper.LowPortMutationEvidence{
@@ -738,5 +1011,15 @@ func validNetworkReleaseLowPortEvidence() helper.LowPortMutationEvidence {
 		OwnershipFingerprint:   strings.Repeat("c", 64),
 		ObservationFingerprint: strings.Repeat("d", 64),
 		Postcondition:          helper.LowPortPostconditionOwnedAbsent,
+	}
+}
+
+// validNetworkReleaseResolverEvidence constructs one exact owned-absent release receipt.
+func validNetworkReleaseResolverEvidence() helper.ResolverMutationEvidence {
+	return helper.ResolverMutationEvidence{
+		PolicyFingerprint:      strings.Repeat("b", 64),
+		OwnershipFingerprint:   strings.Repeat("c", 64),
+		ObservationFingerprint: strings.Repeat("d", 64),
+		Postcondition:          helper.ResolverPostconditionOwnedAbsent,
 	}
 }

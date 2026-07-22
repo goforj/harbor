@@ -16,15 +16,19 @@ import (
 	"github.com/goforj/harbor/internal/rpc/session"
 )
 
-// recordingNetworkReleaseApprovalAuthority records the narrow low-port approval calls made through a connected server.
+// recordingNetworkReleaseApprovalAuthority records the narrow low-port and resolver approval calls made through a connected server.
 type recordingNetworkReleaseApprovalAuthority struct {
-	mu            sync.Mutex
-	preparation   NetworkReleaseApprovalPreparation
-	release       NetworkReleaseOperation
-	err           error
-	callers       []Caller
-	prepares      []PrepareNetworkReleaseApprovalRequest
-	confirmations []ConfirmNetworkReleaseApprovalRequest
+	mu                    sync.Mutex
+	preparation           NetworkReleaseApprovalPreparation
+	resolverPreparation   NetworkReleaseResolverApprovalPreparation
+	release               NetworkReleaseOperation
+	resolverRelease       NetworkReleaseOperation
+	err                   error
+	callers               []Caller
+	prepares              []PrepareNetworkReleaseApprovalRequest
+	confirmations         []ConfirmNetworkReleaseApprovalRequest
+	resolverPrepares      []PrepareNetworkReleaseResolverApprovalRequest
+	resolverConfirmations []ConfirmNetworkReleaseResolverApprovalRequest
 }
 
 // PrepareNetworkReleaseApproval records the authenticated caller and returns the configured preparation.
@@ -53,14 +57,133 @@ func (authority *recordingNetworkReleaseApprovalAuthority) ConfirmNetworkRelease
 	return authority.release, authority.err
 }
 
+// PrepareNetworkReleaseResolverApproval records the authenticated caller and returns the configured resolver preparation.
+func (authority *recordingNetworkReleaseApprovalAuthority) PrepareNetworkReleaseResolverApproval(
+	_ context.Context,
+	caller Caller,
+	request PrepareNetworkReleaseResolverApprovalRequest,
+) (NetworkReleaseResolverApprovalPreparation, error) {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.callers = append(authority.callers, caller)
+	authority.resolverPrepares = append(authority.resolverPrepares, request)
+	return authority.resolverPreparation, authority.err
+}
+
+// ConfirmNetworkReleaseResolverApproval records the authenticated caller and returns the configured resolver release projection.
+func (authority *recordingNetworkReleaseApprovalAuthority) ConfirmNetworkReleaseResolverApproval(
+	_ context.Context,
+	caller Caller,
+	request ConfirmNetworkReleaseResolverApprovalRequest,
+) (NetworkReleaseOperation, error) {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.callers = append(authority.callers, caller)
+	authority.resolverConfirmations = append(authority.resolverConfirmations, request)
+	return authority.resolverRelease, authority.err
+}
+
 // TestNetworkReleaseApprovalStableProtocolNames fixes the reviewed capability and method identities.
 func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 	if CapabilityNetworkReleaseApprovalV1 != "control.network-release-approval.v1" {
 		t.Fatalf("capability = %q", CapabilityNetworkReleaseApprovalV1)
 	}
+	if CapabilityNetworkReleaseResolverApprovalV1 != "control.network-release-resolver-approval.v1" {
+		t.Fatalf("resolver capability = %q", CapabilityNetworkReleaseResolverApprovalV1)
+	}
 	if methodNetworkReleaseLowPortPrepare != "control.v1.network.release.low-port.prepare" ||
-		methodNetworkReleaseLowPortConfirm != "control.v1.network.release.low-port.confirm" {
-		t.Fatalf("methods = %q, %q", methodNetworkReleaseLowPortPrepare, methodNetworkReleaseLowPortConfirm)
+		methodNetworkReleaseLowPortConfirm != "control.v1.network.release.low-port.confirm" ||
+		methodNetworkReleaseResolverPrepare != "control.v1.network.release.resolver.prepare" ||
+		methodNetworkReleaseResolverConfirm != "control.v1.network.release.resolver.confirm" {
+		t.Fatalf(
+			"methods = %q, %q, %q, %q",
+			methodNetworkReleaseLowPortPrepare,
+			methodNetworkReleaseLowPortConfirm,
+			methodNetworkReleaseResolverPrepare,
+			methodNetworkReleaseResolverConfirm,
+		)
+	}
+}
+
+// TestNetworkReleaseResolverApprovalValidationAndCorrelation confines resolver release to owned-absent evidence and trust progress.
+func TestNetworkReleaseResolverApprovalValidationAndCorrelation(t *testing.T) {
+	preparation := validNetworkReleaseResolverApprovalPreparation()
+	if err := preparation.Validate(); err != nil {
+		t.Fatalf("preparation.Validate() error = %v", err)
+	}
+	confirmation := validNetworkReleaseResolverApprovalConfirmation()
+	if err := confirmation.Validate(); err != nil {
+		t.Fatalf("confirmation.Validate() error = %v", err)
+	}
+	request := PrepareNetworkReleaseResolverApprovalRequest{
+		OperationID:                preparation.OperationID,
+		ExpectedCheckpointRevision: preparation.CheckpointRevision,
+	}
+	if err := validateNetworkReleaseResolverApprovalPreparationCorrelation(request, preparation); err != nil {
+		t.Fatalf("validateNetworkReleaseResolverApprovalPreparationCorrelation() error = %v", err)
+	}
+	release := validNetworkReleaseApprovalRelease(t)
+	release.Phase = NetworkReleasePhaseTrust
+	if err := validateNetworkReleaseResolverApprovalConfirmationCorrelation(confirmation, release); err != nil {
+		t.Fatalf("validateNetworkReleaseResolverApprovalConfirmationCorrelation() error = %v", err)
+	}
+	confirmation.ResolverEvidence.Postcondition = helper.ResolverPostconditionExact
+	if err := confirmation.Validate(); err == nil {
+		t.Fatal("confirmation.Validate() unexpectedly succeeded")
+	}
+	preparation.PublicationDisposition = "unknown"
+	if err := preparation.Validate(); err == nil {
+		t.Fatal("preparation.Validate() accepted an unknown publication disposition")
+	}
+	release.Phase = NetworkReleasePhaseResolver
+	if err := validateNetworkReleaseResolverApprovalConfirmationCorrelation(validNetworkReleaseResolverApprovalConfirmation(), release); err == nil {
+		t.Fatal("validateNetworkReleaseResolverApprovalConfirmationCorrelation() unexpectedly succeeded")
+	}
+}
+
+// TestNetworkReleaseResolverApprovalDecodersRejectAmbiguousJSON keeps resolver authority bounded at every transport boundary.
+func TestNetworkReleaseResolverApprovalDecodersRejectAmbiguousJSON(t *testing.T) {
+	evidence, err := json.Marshal(validNetworkReleaseResolverApprovalEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := json.Marshal(networkReleaseResolverApprovalPreparationResponse{
+		Preparation: validNetworkReleaseResolverApprovalPreparation(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{
+		`{"operation_id":"operation-release"}`,
+		`{"operation_id":"operation-release","operation_id":"operation-release","expected_checkpoint_revision":6}`,
+		`{"operation_id":"operation-release","expected_checkpoint_revision":6,"extra":true}`,
+		`{"operation_id":"operation-release","expected_checkpoint_revision":6}{}`,
+	} {
+		if _, err := decodePrepareNetworkReleaseResolverApprovalRequest([]byte(payload)); err == nil {
+			t.Fatalf("decodePrepareNetworkReleaseResolverApprovalRequest(%q) unexpectedly succeeded", payload)
+		}
+	}
+	for _, payload := range []string{
+		`{"operation_id":"operation-release","expected_checkpoint_revision":6}`,
+		`{"operation_id":"operation-release","expected_checkpoint_revision":6,"resolver_evidence":` + string(evidence) + `,"resolver_evidence":` + string(evidence) + `}`,
+		`{"operation_id":"operation-release","expected_checkpoint_revision":6,"resolver_evidence":` + string(evidence) + `,"extra":true}`,
+		`{"operation_id":"operation-release","expected_checkpoint_revision":6,"resolver_evidence":` + string(evidence) + `}{}`,
+	} {
+		if _, err := decodeConfirmNetworkReleaseResolverApprovalRequest([]byte(payload)); err == nil {
+			t.Fatalf("decodeConfirmNetworkReleaseResolverApprovalRequest(%q) unexpectedly succeeded", payload)
+		}
+	}
+	if err := decodeNetworkReleaseResolverApprovalPreparationResponse(preparation, &networkReleaseResolverApprovalPreparationResponse{}); err != nil {
+		t.Fatalf("decodeNetworkReleaseResolverApprovalPreparationResponse() error = %v", err)
+	}
+	unknownTicketField := strings.Replace(
+		string(preparation),
+		`"expires_at"`,
+		`"unexpected":true,"expires_at"`,
+		1,
+	)
+	if err := decodeNetworkReleaseResolverApprovalPreparationResponse([]byte(unknownTicketField), &networkReleaseResolverApprovalPreparationResponse{}); err == nil {
+		t.Fatal("decodeNetworkReleaseResolverApprovalPreparationResponse() unexpectedly accepted an unknown ticket field")
 	}
 }
 
@@ -177,6 +300,9 @@ func TestNetworkReleaseApprovalCapabilityIsIndependent(t *testing.T) {
 	if !containsCapability(daemonCapabilities(false, false, true), CapabilityNetworkReleaseApprovalV1) {
 		t.Fatal("approval was not independently enabled")
 	}
+	if !containsCapability(daemonCapabilities(false, false, true), CapabilityNetworkReleaseResolverApprovalV1) {
+		t.Fatal("resolver approval was not independently enabled")
+	}
 	for _, authority := range []NetworkReleaseApprovalAuthority{
 		nil,
 		(*recordingNetworkReleaseApprovalAuthority)(nil),
@@ -187,17 +313,25 @@ func TestNetworkReleaseApprovalCapabilityIsIndependent(t *testing.T) {
 	}
 }
 
-// TestNetworkReleaseApprovalConnectedCalls proves exact caller propagation and selection correlation on both approval methods.
+// TestNetworkReleaseApprovalConnectedCalls proves exact caller propagation and selection correlation on all approval methods.
 func TestNetworkReleaseApprovalConnectedCalls(t *testing.T) {
 	preparation := validNetworkReleaseApprovalPreparation()
 	release := validNetworkReleaseApprovalRelease(t)
+	resolverPreparation := validNetworkReleaseResolverApprovalPreparation()
+	resolverRelease := release
+	resolverRelease.Phase = NetworkReleasePhaseTrust
 	authority := &recordingNetworkReleaseApprovalAuthority{
-		preparation: preparation,
-		release:     release,
+		preparation:         preparation,
+		resolverPreparation: resolverPreparation,
+		release:             release,
+		resolverRelease:     resolverRelease,
 	}
 	running := newNetworkReleaseApprovalRunningClient(t, authority)
 	if !containsCapability(running.client.Peer().Session.Capabilities, CapabilityNetworkReleaseApprovalV1) {
 		t.Fatal("approval capability was not negotiated")
+	}
+	if !containsCapability(running.client.Peer().Session.Capabilities, CapabilityNetworkReleaseResolverApprovalV1) {
+		t.Fatal("resolver approval capability was not negotiated")
 	}
 	prepared, err := running.client.PrepareNetworkReleaseApproval(
 		t.Context(),
@@ -216,16 +350,37 @@ func TestNetworkReleaseApprovalConnectedCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfirmNetworkReleaseApproval() error = %v", err)
 	}
+	resolverPrepared, err := running.client.PrepareNetworkReleaseResolverApproval(
+		t.Context(),
+		PrepareNetworkReleaseResolverApprovalRequest{
+			OperationID:                resolverPreparation.OperationID,
+			ExpectedCheckpointRevision: resolverPreparation.CheckpointRevision,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseResolverApproval() error = %v", err)
+	}
+	resolverConfirmed, err := running.client.ConfirmNetworkReleaseResolverApproval(
+		t.Context(),
+		validNetworkReleaseResolverApprovalConfirmation(),
+	)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkReleaseResolverApproval() error = %v", err)
+	}
 	if prepared != preparation ||
 		confirmed.Operation.ID != release.Operation.ID ||
 		confirmed.Phase != NetworkReleasePhaseResolver ||
-		confirmed.CheckpointRevision != release.CheckpointRevision {
-		t.Fatalf("results = %#v %#v", prepared, confirmed)
+		confirmed.CheckpointRevision != release.CheckpointRevision ||
+		resolverPrepared != resolverPreparation ||
+		resolverConfirmed.Operation.ID != resolverRelease.Operation.ID ||
+		resolverConfirmed.Phase != NetworkReleasePhaseTrust ||
+		resolverConfirmed.CheckpointRevision != resolverRelease.CheckpointRevision {
+		t.Fatalf("results = %#v %#v %#v %#v", prepared, confirmed, resolverPrepared, resolverConfirmed)
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	if len(authority.prepares) != 1 || len(authority.confirmations) != 1 || len(authority.callers) != 2 {
-		t.Fatalf("calls = %#v %#v %#v", authority.prepares, authority.confirmations, authority.callers)
+	if len(authority.prepares) != 1 || len(authority.confirmations) != 1 || len(authority.resolverPrepares) != 1 || len(authority.resolverConfirmations) != 1 || len(authority.callers) != 4 {
+		t.Fatalf("calls = %#v %#v %#v %#v %#v", authority.prepares, authority.confirmations, authority.resolverPrepares, authority.resolverConfirmations, authority.callers)
 	}
 	for _, caller := range authority.callers {
 		if caller.Transport.UserID != testClientPeer.UserID {
@@ -239,6 +394,9 @@ func TestNetworkReleaseApprovalClientRejectsUnnegotiatedCapability(t *testing.T)
 	running := newNetworkReleaseApprovalRunningClient(t, nil)
 	if containsCapability(running.client.Peer().Session.Capabilities, CapabilityNetworkReleaseApprovalV1) {
 		t.Fatal("absent approval authority negotiated capability")
+	}
+	if containsCapability(running.client.Peer().Session.Capabilities, CapabilityNetworkReleaseResolverApprovalV1) {
+		t.Fatal("absent approval authority negotiated resolver capability")
 	}
 	if _, err := running.client.PrepareNetworkReleaseApproval(
 		t.Context(),
@@ -254,6 +412,47 @@ func TestNetworkReleaseApprovalClientRejectsUnnegotiatedCapability(t *testing.T)
 		validNetworkReleaseApprovalConfirmation(),
 	); err == nil || !strings.Contains(err.Error(), "does not support network release approval") {
 		t.Fatalf("confirm error = %v", err)
+	}
+	if _, err := running.client.PrepareNetworkReleaseResolverApproval(
+		t.Context(),
+		PrepareNetworkReleaseResolverApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 6,
+		},
+	); err == nil || !strings.Contains(err.Error(), "does not support network release approval") {
+		t.Fatalf("resolver prepare error = %v", err)
+	}
+	if _, err := running.client.ConfirmNetworkReleaseResolverApproval(
+		t.Context(),
+		validNetworkReleaseResolverApprovalConfirmation(),
+	); err == nil || !strings.Contains(err.Error(), "does not support network release approval") {
+		t.Fatalf("resolver confirm error = %v", err)
+	}
+}
+
+// TestNetworkReleaseResolverApprovalClientRejectsLegacyLowPortCapability proves a pre-resolver approval daemon cannot be mistaken for resolver support.
+func TestNetworkReleaseResolverApprovalClientRejectsLegacyLowPortCapability(t *testing.T) {
+	authority := &recordingNetworkReleaseApprovalAuthority{
+		resolverPreparation: validNetworkReleaseResolverApprovalPreparation(),
+	}
+	running := newNetworkReleaseApprovalRunningClient(t, authority)
+	running.client.peer.Session.Capabilities = []rpc.Capability{
+		CapabilityNetworkReleaseApprovalV1,
+	}
+	_, err := running.client.PrepareNetworkReleaseResolverApproval(
+		t.Context(),
+		PrepareNetworkReleaseResolverApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 6,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not support network release approval") {
+		t.Fatalf("resolver prepare error = %v", err)
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if len(authority.resolverPrepares) != 0 {
+		t.Fatalf("resolver prepare calls = %d, want zero", len(authority.resolverPrepares))
 	}
 }
 
@@ -480,6 +679,48 @@ func TestNetworkReleaseApprovalHandlerRejectsUnnegotiatedAndAuthorityFailures(t 
 	assertNetworkReleaseHandlerCode(t, err, rpc.ErrorCodeInternal)
 }
 
+// TestNetworkReleaseResolverApprovalHandlerRequiresResolverCapability prevents the legacy low-port capability from authorizing resolver methods.
+func TestNetworkReleaseResolverApprovalHandlerRequiresResolverCapability(t *testing.T) {
+	server := &Server{
+		config: ServerConfig{
+			NetworkReleaseApprovalAuthority: &recordingNetworkReleaseApprovalAuthority{
+				resolverPreparation: validNetworkReleaseResolverApprovalPreparation(),
+			},
+		},
+	}
+	handler := server.networkReleaseResolverPrepareHandler(testClientPeer)
+	payload, err := json.Marshal(PrepareNetworkReleaseResolverApprovalRequest{
+		OperationID:                "operation-release",
+		ExpectedCheckpointRevision: 6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := session.Peer{
+		Role:     rpc.RoleCLI,
+		Protocol: protocolV1,
+		Capabilities: []rpc.Capability{
+			CapabilityV1,
+			CapabilityNetworkReleaseApprovalV1,
+		},
+	}
+	_, err = handler(t.Context(), session.Request{
+		Peer:    peer,
+		Payload: payload,
+	})
+	assertNetworkReleaseHandlerCode(t, err, rpc.ErrorCodePermissionDenied)
+	peer.Capabilities = []rpc.Capability{
+		CapabilityV1,
+		CapabilityNetworkReleaseResolverApprovalV1,
+	}
+	if _, err := handler(t.Context(), session.Request{
+		Peer:    peer,
+		Payload: payload,
+	}); err != nil {
+		t.Fatalf("resolver preparation handler error = %v", err)
+	}
+}
+
 // validNetworkReleaseApprovalPreparation returns one canonical ticket preparation fixture.
 func validNetworkReleaseApprovalPreparation() NetworkReleaseApprovalPreparation {
 	return NetworkReleaseApprovalPreparation{
@@ -504,6 +745,42 @@ func validNetworkReleaseApprovalEvidence() helper.LowPortMutationEvidence {
 		OwnershipFingerprint:   strings.Repeat("b", 64),
 		ObservationFingerprint: strings.Repeat("c", 64),
 		Postcondition:          helper.LowPortPostconditionOwnedAbsent,
+	}
+}
+
+// validNetworkReleaseResolverApprovalPreparation returns one canonical resolver ticket preparation fixture.
+func validNetworkReleaseResolverApprovalPreparation() NetworkReleaseResolverApprovalPreparation {
+	return NetworkReleaseResolverApprovalPreparation{
+		OperationID:            "operation-release",
+		CheckpointRevision:     6,
+		PublicationDisposition: NetworkReleaseResolverPublicationDurable,
+		Ticket: NetworkReleaseResolverApprovalTicket{
+			OperationID:                "operation-release",
+			Reference:                  helper.TicketReference(strings.Repeat("a", 64)),
+			Operation:                  helper.OperationReleaseResolver,
+			PolicyFingerprint:          strings.Repeat("b", 64),
+			TargetOwnershipFingerprint: strings.Repeat("c", 64),
+			ExpiresAt:                  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		},
+	}
+}
+
+// validNetworkReleaseResolverApprovalEvidence returns canonical helper evidence for the release-only owned-absent resolver postcondition.
+func validNetworkReleaseResolverApprovalEvidence() helper.ResolverMutationEvidence {
+	return helper.ResolverMutationEvidence{
+		PolicyFingerprint:      strings.Repeat("a", 64),
+		OwnershipFingerprint:   strings.Repeat("b", 64),
+		ObservationFingerprint: strings.Repeat("c", 64),
+		Postcondition:          helper.ResolverPostconditionOwnedAbsent,
+	}
+}
+
+// validNetworkReleaseResolverApprovalConfirmation returns a canonical confirmation at the retained resolver checkpoint.
+func validNetworkReleaseResolverApprovalConfirmation() ConfirmNetworkReleaseResolverApprovalRequest {
+	return ConfirmNetworkReleaseResolverApprovalRequest{
+		OperationID:                "operation-release",
+		ExpectedCheckpointRevision: 6,
+		ResolverEvidence:           validNetworkReleaseResolverApprovalEvidence(),
 	}
 }
 

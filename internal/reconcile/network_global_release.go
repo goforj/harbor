@@ -38,12 +38,22 @@ type GlobalNetworkReleaseJournal interface {
 	ReadGlobalNetworkReleasePlan(context.Context, domain.OperationID) (state.GlobalNetworkReleasePlanRecord, bool, error)
 	// AdvanceGlobalNetworkReleaseLowPorts commits the independently verified release receipt.
 	AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// AdvanceGlobalNetworkReleaseResolver commits the independently verified resolver-release receipt.
+	AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // GlobalNetworkReleaseLowPortIssuer issues a bounded low-port release capability.
 type GlobalNetworkReleaseLowPortIssuer interface {
 	// Issue publishes one release-low-ports capability for its authenticated owner.
 	Issue(context.Context, string, ticketissuer.LowPortRequest) (ticketissuer.LowPortResult, error)
+	// Close releases issuer resources after one publication attempt.
+	Close() error
+}
+
+// GlobalNetworkReleaseResolverIssuer issues a bounded resolver release capability.
+type GlobalNetworkReleaseResolverIssuer interface {
+	// Issue publishes one release-resolver capability for its authenticated owner.
+	Issue(context.Context, string, ticketissuer.ResolverRequest) (ticketissuer.ResolverResult, error)
 	// Close releases issuer resources after one publication attempt.
 	Close() error
 }
@@ -82,21 +92,23 @@ type GlobalNetworkReleaseResolverObserver interface {
 
 // GlobalNetworkReleaseCoordinator stages daemon-observed release authority then retires runtime listeners.
 type GlobalNetworkReleaseCoordinator struct {
-	journal        GlobalNetworkReleaseJournal
-	state          GlobalNetworkReleaseStateSource
-	projections    GlobalNetworkReleaseProjectionSource
-	roots          GlobalNetworkReleaseRootSource
-	ownership      OwnershipObserver
-	lowPorts       NetworkDataPlaneSetupLowPortObserver
-	lowPortPlans   ticketissuer.LowPortPlanSource
-	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error)
-	resolver       GlobalNetworkReleaseResolverObserver
-	trust          NetworkDataPlaneSetupTrustObserver
-	loopback       LoopbackObserver
-	runtime        GlobalNetworkReleaseRuntime
-	platform       networkplan.Platform
-	clock          helper.Clock
-	mutex          sync.Mutex
+	journal         GlobalNetworkReleaseJournal
+	state           GlobalNetworkReleaseStateSource
+	projections     GlobalNetworkReleaseProjectionSource
+	roots           GlobalNetworkReleaseRootSource
+	ownership       OwnershipObserver
+	lowPorts        NetworkDataPlaneSetupLowPortObserver
+	lowPortPlans    ticketissuer.LowPortPlanSource
+	lowPortIssuers  func() (GlobalNetworkReleaseLowPortIssuer, error)
+	resolverPlans   ticketissuer.ResolverPlanSource
+	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error)
+	resolver        GlobalNetworkReleaseResolverObserver
+	trust           NetworkDataPlaneSetupTrustObserver
+	loopback        LoopbackObserver
+	runtime         GlobalNetworkReleaseRuntime
+	platform        networkplan.Platform
+	clock           helper.Clock
+	mutex           sync.Mutex
 }
 
 // GlobalNetworkReleaseStartRequest identifies a caller intent and daemon-assigned global operation.
@@ -127,6 +139,8 @@ func NewGlobalNetworkReleaseCoordinator(
 	lowPorts NetworkDataPlaneSetupLowPortObserver,
 	lowPortPlans ticketissuer.LowPortPlanSource,
 	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error),
+	resolverPlans ticketissuer.ResolverPlanSource,
+	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error),
 	resolverObserver GlobalNetworkReleaseResolverObserver,
 	trustObserver NetworkDataPlaneSetupTrustObserver,
 	loopbackObserver LoopbackObserver,
@@ -142,6 +156,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(lowPorts) ||
 		nilDependency(lowPortPlans) ||
 		nilDependency(lowPortIssuers) ||
+		nilDependency(resolverPlans) ||
+		nilDependency(resolverIssuers) ||
 		nilDependency(resolverObserver) ||
 		nilDependency(trustObserver) ||
 		nilDependency(loopbackObserver) ||
@@ -150,20 +166,22 @@ func NewGlobalNetworkReleaseCoordinator(
 		panic("reconcile.NewGlobalNetworkReleaseCoordinator requires every dependency")
 	}
 	return &GlobalNetworkReleaseCoordinator{
-		journal:        journal,
-		state:          source,
-		projections:    projections,
-		roots:          roots,
-		ownership:      ownershipObserver,
-		lowPorts:       lowPorts,
-		lowPortPlans:   lowPortPlans,
-		lowPortIssuers: lowPortIssuers,
-		resolver:       resolverObserver,
-		trust:          trustObserver,
-		loopback:       loopbackObserver,
-		runtime:        runtimeReleaser,
-		platform:       platform,
-		clock:          clock,
+		journal:         journal,
+		state:           source,
+		projections:     projections,
+		roots:           roots,
+		ownership:       ownershipObserver,
+		lowPorts:        lowPorts,
+		lowPortPlans:    lowPortPlans,
+		lowPortIssuers:  lowPortIssuers,
+		resolverPlans:   resolverPlans,
+		resolverIssuers: resolverIssuers,
+		resolver:        resolverObserver,
+		trust:           trustObserver,
+		loopback:        loopbackObserver,
+		runtime:         runtimeReleaser,
+		platform:        platform,
+		clock:           clock,
 	}
 }
 
@@ -272,12 +290,15 @@ func (c *GlobalNetworkReleaseCoordinator) PrepareLowPorts(ctx context.Context, r
 	if err := ctx.Err(); err != nil {
 		return ticketissuer.LowPortResult{}, err
 	}
-	plan, _, err := c.releaseLowPortPlan(ctx, request.OperationID)
+	plan, durable, err := c.releaseLowPortPlan(ctx, request.OperationID)
 	if err != nil {
 		return ticketissuer.LowPortResult{}, err
 	}
 	if err := validateGlobalNetworkReleaseLowPortPlan(plan, request.OperationID, request.ExpectedCheckpointRevision, request.RequesterIdentity); err != nil {
 		return ticketissuer.LowPortResult{}, err
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseLowPorts {
+		return ticketissuer.LowPortResult{}, fmt.Errorf("release low-port publication requires plan phase %q, found %q", state.GlobalNetworkReleasePlanPhaseLowPorts, durable.Phase)
 	}
 	issuer, err := c.lowPortIssuers()
 	if err != nil {
@@ -432,7 +453,7 @@ func validateGlobalNetworkReleaseLowPortDurablePlan(plan ticketissuer.LowPortPla
 	if err := validateGlobalNetworkReleaseOperation(durable.Operation, durable.Operation.Operation.IntentID); err != nil {
 		return fmt.Errorf("release low-port operation: %w", err)
 	}
-	if plan.Operation != durable.Operation.Operation || plan.OperationRevision != durable.Operation.Revision {
+	if !sameGlobalNetworkReleaseOperation(plan.Operation, durable.Operation.Operation) || plan.OperationRevision != durable.Operation.Revision {
 		return fmt.Errorf("release low-port plan operation differs from durable authority")
 	}
 	if plan.Purpose != ticketissuer.LowPortPlanPurposeGlobalNetworkRelease ||
@@ -517,6 +538,364 @@ func validateGlobalNetworkReleaseLowPortEvidence(evidence helper.LowPortMutation
 		return fmt.Errorf("release low-port evidence must prove owned_absent")
 	}
 	return nil
+}
+
+// GlobalNetworkReleasePrepareResolverRequest selects one owner-approved release-resolver checkpoint.
+type GlobalNetworkReleasePrepareResolverRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences preparation to one retained resolver checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner requesting helper authority.
+	RequesterIdentity string
+}
+
+// Validate rejects malformed release-resolver publication input.
+func (request GlobalNetworkReleasePrepareResolverRequest) Validate() error {
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := validateOperationRevision(request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	return validateNetworkSetupRequesterIdentity(request.RequesterIdentity)
+}
+
+// GlobalNetworkReleaseConfirmResolverRequest carries the helper's bounded resolver-removal postcondition.
+type GlobalNetworkReleaseConfirmResolverRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences confirmation to one retained resolver checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner confirming helper evidence.
+	RequesterIdentity string
+	// ResolverEvidence proves the resolver release postcondition.
+	ResolverEvidence helper.ResolverMutationEvidence
+}
+
+// Validate rejects malformed release-resolver confirmation input.
+func (request GlobalNetworkReleaseConfirmResolverRequest) Validate() error {
+	prepare := GlobalNetworkReleasePrepareResolverRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          request.RequesterIdentity,
+	}
+	if err := prepare.Validate(); err != nil {
+		return err
+	}
+	return validateGlobalNetworkReleaseResolverEvidence(request.ResolverEvidence)
+}
+
+// PrepareResolver validates one durable release checkpoint before publishing a resolver-removal capability.
+func (c *GlobalNetworkReleaseCoordinator) PrepareResolver(ctx context.Context, request GlobalNetworkReleasePrepareResolverRequest) (ticketissuer.ResolverResult, error) {
+	if err := request.Validate(); err != nil {
+		return ticketissuer.ResolverResult{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ticketissuer.ResolverResult{}, err
+	}
+	plan, durable, err := c.releaseResolverPlan(ctx, request.OperationID)
+	if err != nil {
+		return ticketissuer.ResolverResult{}, err
+	}
+	if err := validateGlobalNetworkReleaseResolverPlan(plan, request.OperationID, request.ExpectedCheckpointRevision, request.RequesterIdentity); err != nil {
+		return ticketissuer.ResolverResult{}, err
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseResolver {
+		return ticketissuer.ResolverResult{}, fmt.Errorf("release resolver publication requires plan phase %q, found %q", state.GlobalNetworkReleasePlanPhaseResolver, durable.Phase)
+	}
+	result, issueErr := c.issueReleaseResolver(ctx, request.RequesterIdentity, ticketissuer.ResolverRequest{
+		OperationID: request.OperationID,
+	})
+	if issueErr != nil {
+		if errors.Is(issueErr, ticketissuer.ErrResolverPublicationIndeterminate) {
+			if validationErr := validateGlobalNetworkReleaseResolverResult(result, plan, c.clock.Now().UTC()); validationErr != nil {
+				return ticketissuer.ResolverResult{}, fmt.Errorf("validate indeterminate release resolver result: %w", validationErr)
+			}
+			return result, issueErr
+		}
+		return ticketissuer.ResolverResult{}, issueErr
+	}
+	if err := validateGlobalNetworkReleaseResolverResult(result, plan, c.clock.Now().UTC()); err != nil {
+		return ticketissuer.ResolverResult{}, err
+	}
+	return result, nil
+}
+
+// ConfirmResolver independently verifies removal and advances the release plan to trust retirement.
+func (c *GlobalNetworkReleaseCoordinator) ConfirmResolver(ctx context.Context, request GlobalNetworkReleaseConfirmResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	if err := request.Validate(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	plan, durable, err := c.releaseResolverPlan(ctx, request.OperationID)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := validateGlobalNetworkReleaseResolverPlan(plan, request.OperationID, request.ExpectedCheckpointRevision, request.RequesterIdentity); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := c.observeAbsentReleaseResolver(ctx, plan, request.ResolverEvidence); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	digest, err := state.NetworkDataPlaneSetupEvidenceDigest(request.ResolverEvidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	verifiedAt := c.releaseNow(durable.LowPortReceipt.VerifiedAt)
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseTrust && durable.ResolverReceipt != nil {
+		verifiedAt = durable.ResolverReceipt.VerifiedAt
+	}
+	return c.journal.AdvanceGlobalNetworkReleaseResolver(ctx, state.AdvanceGlobalNetworkReleaseResolverRequest{
+		OperationID:        request.OperationID,
+		CheckpointRevision: plan.CheckpointRevision,
+		NetworkRevision:    durable.NetworkRevision,
+		Receipt: state.GlobalNetworkReleaseResolverReceipt{
+			SourceCheckpointRevision:          plan.CheckpointRevision,
+			ResolverEvidenceDigest:            digest,
+			OwnedAbsentObservationFingerprint: request.ResolverEvidence.ObservationFingerprint,
+			VerifiedAt:                        verifiedAt,
+		},
+	})
+}
+
+// releaseResolverPlan resolves a live resolver plan or reconstructs an exact replay plan from its durable receipt.
+func (c *GlobalNetworkReleaseCoordinator) releaseResolverPlan(ctx context.Context, operationID domain.OperationID) (ticketissuer.ResolverPlan, state.GlobalNetworkReleasePlanRecord, error) {
+	durable, found, err := c.journal.ReadGlobalNetworkReleasePlan(ctx, operationID)
+	if err != nil {
+		return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("read release resolver plan: %w", err)
+	}
+	if !found || durable.Operation.Operation.ID != operationID {
+		return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release resolver plan does not match operation")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseResolver {
+		plan, err := c.resolverPlans.Resolve(ctx, ticketissuer.ResolverRequest{OperationID: operationID})
+		if err != nil {
+			return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		if err := validateGlobalNetworkReleaseResolverDurablePlan(plan, durable); err != nil {
+			return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		return plan, durable, nil
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseTrust || durable.ResolverReceipt == nil {
+		return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release resolver plan phase is %q", durable.Phase)
+	}
+	ownershipFingerprint, err := durable.Authority.Projection.ConfirmedOwnership.Record.Fingerprint()
+	if err != nil {
+		return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("fingerprint release resolver ownership: %w", err)
+	}
+	plan := ticketissuer.ResolverPlan{
+		Purpose:                            ticketissuer.ResolverPlanPurposeGlobalRelease,
+		Operation:                          durable.Operation.Operation,
+		OperationRevision:                  durable.Operation.Revision,
+		CheckpointRevision:                 durable.ResolverReceipt.SourceCheckpointRevision,
+		CheckpointPhase:                    ticketissuer.ResolverCheckpointPhaseGlobalRelease,
+		Mutation:                           helper.OperationReleaseResolver,
+		ExpectedSourceOwnershipFingerprint: ownershipFingerprint,
+		TargetOwnership:                    durable.Authority.Projection.ConfirmedOwnership.Record,
+		Policy:                             durable.Authority.Policy,
+	}
+	if err := validateGlobalNetworkReleaseResolverDurablePlan(plan, durable); err != nil {
+		return ticketissuer.ResolverPlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return plan, durable, nil
+}
+
+// validateGlobalNetworkReleaseResolverPlan binds a user request to the sole release-only resolver purpose.
+func validateGlobalNetworkReleaseResolverPlan(plan ticketissuer.ResolverPlan, operationID domain.OperationID, checkpoint domain.Sequence, requester string) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release resolver plan: %w", err)
+	}
+	if plan.Purpose != ticketissuer.ResolverPlanPurposeGlobalRelease || plan.Mutation != helper.OperationReleaseResolver {
+		return fmt.Errorf("release resolver plan is not release_resolver authority")
+	}
+	if plan.Operation.ID != operationID {
+		return fmt.Errorf("release resolver plan belongs to another operation")
+	}
+	if plan.CheckpointRevision != checkpoint {
+		return &state.StaleRevisionError{
+			OperationID: operationID,
+			Expected:    checkpoint,
+			Actual:      plan.CheckpointRevision,
+		}
+	}
+	if plan.TargetOwnership.OwnerIdentity != requester {
+		return fmt.Errorf("authenticated requester does not own release resolver authority")
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseResolverDurablePlan verifies resolver authority cannot drift from the journaled release plan.
+func validateGlobalNetworkReleaseResolverDurablePlan(plan ticketissuer.ResolverPlan, durable state.GlobalNetworkReleasePlanRecord) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release resolver plan: %w", err)
+	}
+	if err := validateGlobalNetworkReleaseOperation(durable.Operation, durable.Operation.Operation.IntentID); err != nil {
+		return fmt.Errorf("release resolver operation: %w", err)
+	}
+	if !sameGlobalNetworkReleaseOperation(plan.Operation, durable.Operation.Operation) || plan.OperationRevision != durable.Operation.Revision {
+		return fmt.Errorf("release resolver plan operation differs from durable authority")
+	}
+	if plan.Purpose != ticketissuer.ResolverPlanPurposeGlobalRelease ||
+		plan.CheckpointPhase != ticketissuer.ResolverCheckpointPhaseGlobalRelease ||
+		plan.Mutation != helper.OperationReleaseResolver {
+		return fmt.Errorf("release resolver plan purpose differs from durable authority")
+	}
+	if plan.TargetOwnership != durable.Authority.Projection.ConfirmedOwnership.Record || plan.Policy != durable.Authority.Policy {
+		return fmt.Errorf("release resolver plan policy or ownership differs from durable authority")
+	}
+	if durable.LowPortReceipt == nil {
+		return fmt.Errorf("release resolver plan has no committed low-port receipt")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseResolver && plan.CheckpointRevision != durable.CheckpointRevision {
+		return fmt.Errorf("release resolver plan checkpoint differs from durable authority")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseTrust &&
+		(durable.ResolverReceipt == nil || plan.CheckpointRevision != durable.ResolverReceipt.SourceCheckpointRevision) {
+		return fmt.Errorf("release resolver replay checkpoint differs from durable receipt")
+	}
+	return nil
+}
+
+// sameGlobalNetworkReleaseOperation compares operation facts without treating equivalent pointer allocations as authority drift.
+func sameGlobalNetworkReleaseOperation(left domain.Operation, right domain.Operation) bool {
+	return left.ID == right.ID &&
+		left.IntentID == right.IntentID &&
+		left.Kind == right.Kind &&
+		left.ProjectID == right.ProjectID &&
+		left.State == right.State &&
+		left.Phase == right.Phase &&
+		left.RequestedAt.Equal(right.RequestedAt) &&
+		sameGlobalNetworkReleaseOperationTime(left.StartedAt, right.StartedAt) &&
+		sameGlobalNetworkReleaseOperationTime(left.FinishedAt, right.FinishedAt) &&
+		sameGlobalNetworkReleaseOperationProblem(left.Problem, right.Problem)
+}
+
+// sameGlobalNetworkReleaseOperationTime compares optional lifecycle times by timestamp value.
+func sameGlobalNetworkReleaseOperationTime(left *time.Time, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+// sameGlobalNetworkReleaseOperationProblem compares optional operation problems by immutable value.
+func sameGlobalNetworkReleaseOperationProblem(left *domain.Problem, right *domain.Problem) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+// validateGlobalNetworkReleaseResolverResult confirms the issuer returned the exact planned mutation authority.
+func validateGlobalNetworkReleaseResolverResult(result ticketissuer.ResolverResult, plan ticketissuer.ResolverPlan, now time.Time) error {
+	if err := result.Validate(now); err != nil {
+		return err
+	}
+	if result.OperationID != plan.Operation.ID || result.Operation != helper.OperationReleaseResolver {
+		return fmt.Errorf("release resolver issuer returned another operation")
+	}
+	policyFingerprint, err := plan.Policy.Fingerprint()
+	if err != nil {
+		return err
+	}
+	ownershipFingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if result.PolicyFingerprint != policyFingerprint || result.OwnershipFingerprint != ownershipFingerprint {
+		return fmt.Errorf("release resolver issuer result belongs to another policy or ownership")
+	}
+	return nil
+}
+
+// observeAbsentReleaseResolver accepts complete owned-absence facts and preserves unrelated foreign resolver rules.
+func (c *GlobalNetworkReleaseCoordinator) observeAbsentReleaseResolver(ctx context.Context, plan ticketissuer.ResolverPlan, evidence helper.ResolverMutationEvidence) error {
+	policyFingerprint, err := plan.Policy.Fingerprint()
+	if err != nil {
+		return err
+	}
+	ownershipFingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if evidence.PolicyFingerprint != policyFingerprint || evidence.OwnershipFingerprint != ownershipFingerprint {
+		return fmt.Errorf("release resolver evidence belongs to another policy or ownership")
+	}
+	native, err := resolver.NewRequest(plan.TargetOwnership.InstallationID, plan.Policy)
+	if err != nil {
+		return fmt.Errorf("derive release resolver request: %w", err)
+	}
+	observation, err := c.resolver.Observe(ctx, native)
+	if err != nil {
+		return fmt.Errorf("observe release resolver: %w", err)
+	}
+	if err := observation.Validate(); err != nil {
+		return fmt.Errorf("release resolver observation is invalid: %w", err)
+	}
+	if observation.Request != native || !observation.Complete {
+		return fmt.Errorf("release resolver observation does not prove the exact complete request")
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return fmt.Errorf("fingerprint release resolver: %w", err)
+	}
+	if fingerprint != evidence.ObservationFingerprint {
+		return fmt.Errorf("release resolver evidence differs from independently observed resolver")
+	}
+	assessment, err := observation.Classify()
+	if err != nil {
+		return fmt.Errorf("classify release resolver: %w", err)
+	}
+	if assessment.Owned != resolver.OwnedStateAbsent {
+		return fmt.Errorf("release resolver owned state is %q, want absent", assessment.Owned)
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseResolverEvidence admits only one owned-absence resolver postcondition.
+func validateGlobalNetworkReleaseResolverEvidence(evidence helper.ResolverMutationEvidence) error {
+	if !canonicalNetworkDataPlaneFingerprint(evidence.PolicyFingerprint) ||
+		!canonicalNetworkDataPlaneFingerprint(evidence.OwnershipFingerprint) ||
+		!canonicalNetworkDataPlaneFingerprint(evidence.ObservationFingerprint) {
+		return fmt.Errorf("release resolver evidence fingerprint is invalid")
+	}
+	if evidence.Postcondition != helper.ResolverPostconditionOwnedAbsent {
+		return fmt.Errorf("release resolver evidence must prove owned_absent")
+	}
+	return nil
+}
+
+// issueReleaseResolver opens helper authority after durable validation and closes it after every publication attempt.
+func (c *GlobalNetworkReleaseCoordinator) issueReleaseResolver(ctx context.Context, requester string, request ticketissuer.ResolverRequest) (ticketissuer.ResolverResult, error) {
+	issuer, err := c.resolverIssuers()
+	if err != nil {
+		return ticketissuer.ResolverResult{}, fmt.Errorf("open release resolver issuer: %w", err)
+	}
+	if nilDependency(issuer) {
+		return ticketissuer.ResolverResult{}, fmt.Errorf("prepare release resolver: issuer is nil")
+	}
+	result, issueErr := issuer.Issue(ctx, requester, request)
+	closeErr := issuer.Close()
+	if issueErr == nil && closeErr == nil {
+		return result, nil
+	}
+	if issueErr == nil {
+		return result, errors.Join(ticketissuer.ErrResolverPublicationIndeterminate, closeErr)
+	}
+	if errors.Is(issueErr, ticketissuer.ErrResolverPublicationIndeterminate) {
+		return result, errors.Join(issueErr, closeErr)
+	}
+	return ticketissuer.ResolverResult{}, errors.Join(issueErr, closeErr)
 }
 
 // Recover resumes an already-staged release after the runtime has installed its cold anchor.

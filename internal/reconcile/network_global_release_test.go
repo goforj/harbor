@@ -321,6 +321,11 @@ func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPo
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected low-port advance")
 }
 
+// AdvanceGlobalNetworkReleaseResolver is not exercised by recovery tests.
+func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected resolver advance")
+}
+
 // testGlobalNetworkReleaseRuntime records runtime-release requests.
 type testGlobalNetworkReleaseRuntime struct {
 	calls int
@@ -891,6 +896,10 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		func() (GlobalNetworkReleaseLowPortIssuer, error) {
 			return nil, errors.New("unexpected release low-port issuer")
 		},
+		globalNetworkReleaseUnavailableResolverPlans{},
+		func() (GlobalNetworkReleaseResolverIssuer, error) {
+			return nil, errors.New("unexpected release resolver issuer")
+		},
 		fixture.resolver,
 		fixture.trust,
 		fixture.loopback,
@@ -907,6 +916,14 @@ type globalNetworkReleaseUnavailableLowPortPlans struct{}
 // Resolve rejects a capability read that start tests do not exercise.
 func (globalNetworkReleaseUnavailableLowPortPlans) Resolve(context.Context, ticketissuer.LowPortRequest) (ticketissuer.LowPortPlan, error) {
 	return ticketissuer.LowPortPlan{}, errors.New("unexpected release low-port plan")
+}
+
+// globalNetworkReleaseUnavailableResolverPlans prevents start tests from opening resolver approval authority.
+type globalNetworkReleaseUnavailableResolverPlans struct{}
+
+// Resolve rejects a capability read that start tests do not exercise.
+func (globalNetworkReleaseUnavailableResolverPlans) Resolve(context.Context, ticketissuer.ResolverRequest) (ticketissuer.ResolverPlan, error) {
+	return ticketissuer.ResolverPlan{}, errors.New("unexpected release resolver plan")
 }
 
 // call appends an observable coordinator boundary.
@@ -1031,6 +1048,11 @@ func (journal *globalNetworkReleaseJournal) ReadGlobalNetworkReleasePlan(_ conte
 // AdvanceGlobalNetworkReleaseLowPorts is not exercised by start tests.
 func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected low-port advance")
+}
+
+// AdvanceGlobalNetworkReleaseResolver is not exercised by start tests.
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected resolver advance")
 }
 
 // globalNetworkReleaseState scripts coherent durable state and revision reads.

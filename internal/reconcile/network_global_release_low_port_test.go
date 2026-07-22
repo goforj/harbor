@@ -64,6 +64,33 @@ func TestGlobalNetworkReleaseLowPortsPrepare(t *testing.T) {
 	}
 }
 
+// TestGlobalNetworkReleaseLowPortsPrepareAcceptsEqualOperationWithDistinctStartedAt proves separate durable reads compare operation timestamps by value.
+func TestGlobalNetworkReleaseLowPortsPrepareAcceptsEqualOperationWithDistinctStartedAt(t *testing.T) {
+	fixture := newGlobalNetworkReleaseLowPortFixture(t)
+	fixture.plans.distinctStartedAt = true
+	if _, err := fixture.coordinator.PrepareLowPorts(t.Context(), fixture.prepareRequest()); err != nil {
+		t.Fatalf("PrepareLowPorts() error = %v", err)
+	}
+}
+
+// TestGlobalNetworkReleaseLowPortsPrepareRejectsCommittedResolver proves completed low-port authority cannot republish a capability.
+func TestGlobalNetworkReleaseLowPortsPrepareRejectsCommittedResolver(t *testing.T) {
+	fixture := newGlobalNetworkReleaseLowPortFixture(t)
+	fixture.journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseResolver
+	fixture.journal.plan.LowPortReceipt = &state.GlobalNetworkReleaseLowPortReceipt{
+		SourceCheckpointRevision:          fixture.plan.CheckpointRevision,
+		LowPortEvidenceDigest:             strings.Repeat("a", 64),
+		OwnedAbsentObservationFingerprint: strings.Repeat("b", 64),
+		VerifiedAt:                        fixture.clock.now,
+	}
+	if _, err := fixture.coordinator.PrepareLowPorts(t.Context(), fixture.prepareRequest()); err == nil {
+		t.Fatal("PrepareLowPorts() unexpectedly accepted committed resolver")
+	}
+	if fixture.issuer.issues != 0 || fixture.issuer.closes != 0 {
+		t.Fatalf("issues/closes = %d/%d, want zero", fixture.issuer.issues, fixture.issuer.closes)
+	}
+}
+
 // TestGlobalNetworkReleaseLowPortsConfirmPersistsIndependentAbsence proves a crash-after-helper absent state can advance once.
 func TestGlobalNetworkReleaseLowPortsConfirmPersistsIndependentAbsence(t *testing.T) {
 	fixture := newGlobalNetworkReleaseLowPortFixture(t)
@@ -195,6 +222,10 @@ func newGlobalNetworkReleaseLowPortFixture(t *testing.T) *globalNetworkReleaseLo
 		func() (GlobalNetworkReleaseLowPortIssuer, error) {
 			return fixture.issuer, nil
 		},
+		globalNetworkReleaseUnavailableResolverPlans{},
+		func() (GlobalNetworkReleaseResolverIssuer, error) {
+			return nil, errors.New("unexpected release resolver issuer")
+		},
 		base.resolver,
 		base.trust,
 		base.loopback,
@@ -252,7 +283,8 @@ func (fixture *globalNetworkReleaseLowPortFixture) absentEvidence(t *testing.T) 
 
 // globalNetworkReleaseLowPortPlans resolves the fixture plan only at the release checkpoint.
 type globalNetworkReleaseLowPortPlans struct {
-	fixture *globalNetworkReleaseLowPortFixture
+	fixture           *globalNetworkReleaseLowPortFixture
+	distinctStartedAt bool
 }
 
 // Resolve returns the exact release-low-ports plan derived from durable fixture authority.
@@ -265,9 +297,14 @@ func (source *globalNetworkReleaseLowPortPlans) Resolve(_ context.Context, reque
 	if err != nil {
 		return ticketissuer.LowPortPlan{}, err
 	}
+	operation := plan.Operation.Operation
+	if source.distinctStartedAt && operation.StartedAt != nil {
+		startedAt := *operation.StartedAt
+		operation.StartedAt = &startedAt
+	}
 	return ticketissuer.LowPortPlan{
 		Purpose:            ticketissuer.LowPortPlanPurposeGlobalNetworkRelease,
-		Operation:          plan.Operation.Operation,
+		Operation:          operation,
 		OperationRevision:  plan.Operation.Revision,
 		CheckpointRevision: plan.CheckpointRevision,
 		CheckpointPhase:    ticketissuer.LowPortCheckpointPhaseGlobalRelease,
@@ -338,6 +375,11 @@ func (*globalNetworkReleaseLowPortJournal) StageGlobalNetworkRelease(context.Con
 // ReadActiveGlobalNetworkReleasePlan is unused by focused low-port tests.
 func (*globalNetworkReleaseLowPortJournal) ReadActiveGlobalNetworkReleasePlan(context.Context) (state.GlobalNetworkReleasePlanRecord, bool, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, false, errors.New("unexpected")
+}
+
+// AdvanceGlobalNetworkReleaseResolver is unused by focused low-port tests.
+func (*globalNetworkReleaseLowPortJournal) AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected resolver advance")
 }
 
 // ReadGlobalNetworkReleasePlan returns the fixture's active release plan.

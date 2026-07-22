@@ -107,6 +107,7 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 		CapabilityNetworkDataPlaneSetupV1,
 		CapabilityNetworkReleaseV1,
 		CapabilityNetworkReleaseApprovalV1,
+		CapabilityNetworkReleaseResolverApprovalV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
