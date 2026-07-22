@@ -58,15 +58,16 @@ func (unavailableClosingLowPortHandler) Close() error {
 
 // runtimeDependencies keeps fixed production authority replaceable without redirectable path arguments.
 type runtimeDependencies struct {
-	authorizeInvocation           func() error
-	openTicketRedeemer            func() (closingTicketRedeemer, error)
-	openReplayGuard               func() (closingReplayGuard, error)
-	newLoopbackIdentityHandler    func() helper.LoopbackIdentityHandler
-	openResolverHandler           func() (closingResolverHandler, error)
-	openTrustHandler              func() (closingTrustHandler, error)
-	openAdministratorTrustHandler func() (closingTrustHandler, error)
-	openLowPortHandler            func() (closingLowPortHandler, error)
-	transitionTrustIdentity       func(string) error
+	authorizeInvocation                  func() error
+	openTicketRedeemer                   func() (closingTicketRedeemer, error)
+	openReplayGuard                      func() (closingReplayGuard, error)
+	newLoopbackIdentityHandler           func() helper.LoopbackIdentityHandler
+	openResolverHandler                  func() (closingResolverHandler, error)
+	openTrustHandler                     func() (closingTrustHandler, error)
+	openAdministratorTrustHandler        func() (closingTrustHandler, error)
+	openLowPortHandler                   func() (closingLowPortHandler, error)
+	transitionTrustIdentity              func(string) error
+	transitionAdministratorTrustIdentity func(string) error
 }
 
 // runtimeAuthorities retains only resources opened for the single admitted helper operation.
@@ -105,11 +106,12 @@ func productionDependencies() runtimeDependencies {
 		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
 			return loopbackhandler.New()
 		},
-		openResolverHandler:           openPlatformResolverHandler,
-		openTrustHandler:              openPlatformTrustHandler,
-		openAdministratorTrustHandler: openPlatformAdministratorTrustHandler,
-		openLowPortHandler:            openPlatformLowPortHandler,
-		transitionTrustIdentity:       irreversiblyDropTrustIdentity,
+		openResolverHandler:                  openPlatformResolverHandler,
+		openTrustHandler:                     openPlatformTrustHandler,
+		openAdministratorTrustHandler:        openPlatformAdministratorTrustHandler,
+		openLowPortHandler:                   openPlatformLowPortHandler,
+		transitionTrustIdentity:              irreversiblyDropTrustIdentity,
+		transitionAdministratorTrustIdentity: irreversiblyEnterAdministratorTrustIdentity,
 	}
 }
 
@@ -191,6 +193,9 @@ func validateRuntimeComposition(clock helper.Clock, dependencies runtimeDependen
 	if dependencies.transitionTrustIdentity == nil {
 		panic("helper trust identity transition is required")
 	}
+	if dependencies.transitionAdministratorTrustIdentity == nil {
+		panic("helper administrator trust identity transition is required")
+	}
 }
 
 // executeAdmittedTrust selects the authenticated trust scope before calling its native handler.
@@ -237,7 +242,7 @@ func executeAdmittedCurrentUserTrust(
 	return admitted.ExecuteTrust(ctx, trustHandler)
 }
 
-// executeAdmittedAdministratorTrust closes ticket and replay authority while retaining the helper's administrator identity.
+// executeAdmittedAdministratorTrust restores the real root identity Security.framework requires after admission authority closes.
 func executeAdmittedAdministratorTrust(
 	ctx context.Context,
 	admitted helper.AdmittedTrustOperation,
@@ -246,6 +251,12 @@ func executeAdmittedAdministratorTrust(
 ) (helper.OperationResult, error) {
 	if err := authorities.closePrivileged(); err != nil {
 		return helper.OperationResult{}, err
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := dependencies.transitionAdministratorTrustIdentity(admitted.RequesterIdentity()); err != nil {
+		return helper.OperationResult{}, fmt.Errorf("enter helper administrator trust identity: %w", err)
 	}
 	trustHandler, err := dependencies.openAdministratorTrustHandler()
 	if err != nil {

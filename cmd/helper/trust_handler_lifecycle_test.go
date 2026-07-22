@@ -39,6 +39,10 @@ func TestRunTrustLifecycleClosesPrivilegedAuthorityBeforeTransition(t *testing.T
 				}
 				return nil
 			}
+			dependencies.transitionAdministratorTrustIdentity = func(string) error {
+				t.Fatal("administrator trust identity transitioned for current-user ticket")
+				return nil
+			}
 			dependencies.openTrustHandler = func() (closingTrustHandler, error) {
 				events = append(events, "open trust handler")
 				return handler, nil
@@ -86,8 +90,8 @@ func TestRunTrustLifecycleClosesPrivilegedAuthorityBeforeTransition(t *testing.T
 	}
 }
 
-// TestRunAdministratorTrustLifecycleKeepsAdministratorIdentity proves the administrator scope uses its own handler only after admission authority closes.
-func TestRunAdministratorTrustLifecycleKeepsAdministratorIdentity(t *testing.T) {
+// TestRunAdministratorTrustLifecycleRestoresRootIdentity proves the administrator handler opens only after its root identity transition.
+func TestRunAdministratorTrustLifecycleRestoresRootIdentity(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	reference, redemption := trustLifecycleRedemptionForMechanism(t, now, helper.OperationEnsureTrust, networkpolicy.DarwinAdministratorTrust)
 	events := make([]string, 0, 12)
@@ -95,6 +99,13 @@ func TestRunAdministratorTrustLifecycleKeepsAdministratorIdentity(t *testing.T) 
 	dependencies := successfulTestDependencies(&events, redemption)
 	dependencies.transitionTrustIdentity = func(string) error {
 		t.Fatal("administrator trust transitioned to requester identity")
+		return nil
+	}
+	dependencies.transitionAdministratorTrustIdentity = func(requester string) error {
+		events = append(events, "transition administrator trust identity")
+		if requester != redemption.Ticket.RequesterIdentity {
+			t.Fatalf("administrator transition requester = %q, want %q", requester, redemption.Ticket.RequesterIdentity)
+		}
 		return nil
 	}
 	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
@@ -121,9 +132,52 @@ func TestRunAdministratorTrustLifecycleKeepsAdministratorIdentity(t *testing.T) 
 		"consume replay claim",
 		"close replay guard",
 		"close ticket redeemer",
+		"transition administrator trust identity",
 		"open administrator trust handler",
 		"trust mutation",
 		"close trust handler",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+// TestRunAdministratorTrustLifecycleStopsAfterIdentityFailure proves a consumed administrator ticket cannot open Security.framework without restored root identity.
+func TestRunAdministratorTrustLifecycleStopsAfterIdentityFailure(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := trustLifecycleRedemptionForMechanism(t, now, helper.OperationEnsureTrust, networkpolicy.DarwinAdministratorTrust)
+	events := make([]string, 0, 10)
+	dependencies := successfulTestDependencies(&events, redemption)
+	transitionErr := errors.New("administrator identity transition failed")
+	dependencies.transitionTrustIdentity = func(string) error {
+		t.Fatal("current-user identity transition ran for administrator ticket")
+		return nil
+	}
+	dependencies.transitionAdministratorTrustIdentity = func(requester string) error {
+		events = append(events, "transition administrator trust identity")
+		if requester != redemption.Ticket.RequesterIdentity {
+			t.Fatalf("administrator transition requester = %q, want %q", requester, redemption.Ticket.RequesterIdentity)
+		}
+		return transitionErr
+	}
+	dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+		t.Fatal("administrator trust handler opened after identity transition failure")
+		return nil, nil
+	}
+
+	_, err := runTrustLifecycle(t, now, reference, dependencies)
+	if !errors.Is(err, transitionErr) {
+		t.Fatalf("run() error = %v, want %v", err, transitionErr)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"redeem ticket",
+		"consume replay claim",
+		"close replay guard",
+		"close ticket redeemer",
+		"transition administrator trust identity",
 	}
 	if !slices.Equal(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
@@ -206,6 +260,10 @@ func TestRunTrustLifecycleRejectsBeforeTransition(t *testing.T) {
 				t.Fatal("trust identity transitioned before complete admission")
 				return nil
 			}
+			dependencies.transitionAdministratorTrustIdentity = func(string) error {
+				t.Fatal("administrator trust identity transitioned before complete admission")
+				return nil
+			}
 			dependencies.openTrustHandler = func() (closingTrustHandler, error) {
 				t.Fatal("trust handler opened before complete admission")
 				return nil, nil
@@ -237,6 +295,10 @@ func TestRunTrustLifecycleStopsAfterPrivilegedCloseFailure(t *testing.T) {
 	}
 	dependencies.transitionTrustIdentity = func(string) error {
 		t.Fatal("trust identity transitioned after privileged close failure")
+		return nil
+	}
+	dependencies.transitionAdministratorTrustIdentity = func(string) error {
+		t.Fatal("administrator trust identity transitioned after privileged close failure")
 		return nil
 	}
 	dependencies.openTrustHandler = func() (closingTrustHandler, error) {

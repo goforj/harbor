@@ -138,3 +138,125 @@ func TestTransitionTrustIdentityRejectsDropAndPostconditionFailures(t *testing.T
 		})
 	}
 }
+
+// TestTransitionAdministratorTrustIdentityBindsRequesterAndRestoresRoot proves Apple Security's real-root precondition is enforced independently of current-user demotion.
+func TestTransitionAdministratorTrustIdentityBindsRequesterAndRestoresRoot(t *testing.T) {
+	transitions := 0
+	err := transitionAdministratorTrustIdentity("501", func(uid uint32) (trustIdentityState, trustIdentityState, error) {
+		transitions++
+		if uid != 501 {
+			t.Fatalf("transition UID = %d, want 501", uid)
+		}
+		return trustIdentityState{
+			realUID:      uid,
+			effectiveUID: 0,
+		}, trustIdentityState{}, nil
+	})
+	if err != nil {
+		t.Fatalf("transitionAdministratorTrustIdentity() error = %v", err)
+	}
+	if transitions != 1 {
+		t.Fatalf("transitions = %d, want 1", transitions)
+	}
+}
+
+// TestTransitionAdministratorTrustIdentityRejectsUnsafeStates proves malformed requesters and every incomplete native proof fail closed.
+func TestTransitionAdministratorTrustIdentityRejectsUnsafeStates(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		requester       string
+		before          trustIdentityState
+		after           trustIdentityState
+		transitionErr   error
+		wantTransitions int
+	}{
+		{
+			name:      "missing requester",
+			requester: "",
+		},
+		{
+			name:      "nonnumeric requester",
+			requester: "user-501",
+		},
+		{
+			name:      "noncanonical requester",
+			requester: "0501",
+		},
+		{
+			name:      "root requester",
+			requester: "0",
+		},
+		{
+			name:      "out of range requester",
+			requester: "4294967296",
+		},
+		{
+			name:      "different invoking user",
+			requester: "501",
+			before: trustIdentityState{
+				realUID:      502,
+				effectiveUID: 0,
+			},
+			wantTransitions: 1,
+		},
+		{
+			name:      "nonroot effective identity",
+			requester: "501",
+			before: trustIdentityState{
+				realUID:      501,
+				effectiveUID: 501,
+			},
+			wantTransitions: 1,
+		},
+		{
+			name:            "transition failure",
+			requester:       "501",
+			transitionErr:   errors.New("setuid failed"),
+			wantTransitions: 1,
+		},
+		{
+			name:      "real identity not root after transition",
+			requester: "501",
+			before: trustIdentityState{
+				realUID:      501,
+				effectiveUID: 0,
+			},
+			after: trustIdentityState{
+				realUID:      501,
+				effectiveUID: 0,
+			},
+			wantTransitions: 1,
+		},
+		{
+			name:      "effective identity not root after transition",
+			requester: "501",
+			before: trustIdentityState{
+				realUID:      501,
+				effectiveUID: 0,
+			},
+			after: trustIdentityState{
+				realUID:      0,
+				effectiveUID: 501,
+			},
+			wantTransitions: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transitions := 0
+			err := transitionAdministratorTrustIdentity(test.requester, func(uint32) (trustIdentityState, trustIdentityState, error) {
+				transitions++
+				return test.before, test.after, test.transitionErr
+			})
+			if err == nil || transitions != test.wantTransitions {
+				t.Fatalf("transitionAdministratorTrustIdentity() error=%v transitions=%d, want %d", err, transitions, test.wantTransitions)
+			}
+		})
+	}
+}
+
+// TestTransitionAdministratorTrustIdentityRequiresNativeTransition keeps the one-way native boundary mandatory.
+func TestTransitionAdministratorTrustIdentityRequiresNativeTransition(t *testing.T) {
+	if err := transitionAdministratorTrustIdentity("501", nil); err == nil {
+		t.Fatal("transitionAdministratorTrustIdentity() error = nil")
+	}
+}

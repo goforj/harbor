@@ -20,7 +20,8 @@ func TestProductionDependenciesExposeFixedComposition(t *testing.T) {
 	if dependencies.authorizeInvocation == nil || dependencies.openTicketRedeemer == nil ||
 		dependencies.openReplayGuard == nil || dependencies.newLoopbackIdentityHandler == nil ||
 		dependencies.openResolverHandler == nil || dependencies.openTrustHandler == nil || dependencies.openAdministratorTrustHandler == nil ||
-		dependencies.openLowPortHandler == nil || dependencies.transitionTrustIdentity == nil {
+		dependencies.openLowPortHandler == nil || dependencies.transitionTrustIdentity == nil ||
+		dependencies.transitionAdministratorTrustIdentity == nil {
 		t.Fatal("production dependencies are incomplete")
 	}
 	if handler := dependencies.newLoopbackIdentityHandler(); handler == nil {
@@ -149,6 +150,13 @@ func TestRunFailsFastWithoutRequiredDependency(t *testing.T) {
 			clock: fixedClock{now: time.Now().UTC()},
 			mutate: func(dependencies *runtimeDependencies) {
 				dependencies.transitionTrustIdentity = nil
+			},
+		},
+		{
+			name:  "administrator trust identity transition",
+			clock: fixedClock{now: time.Now().UTC()},
+			mutate: func(dependencies *runtimeDependencies) {
+				dependencies.transitionAdministratorTrustIdentity = nil
 			},
 		},
 	} {
@@ -538,6 +546,10 @@ func unusedRuntimeDependencies(t *testing.T) runtimeDependencies {
 			t.Fatal("trust identity transition was not configured for this test")
 			return nil
 		},
+		transitionAdministratorTrustIdentity: func(string) error {
+			t.Fatal("administrator trust identity transition was not configured for this test")
+			return nil
+		},
 	}
 }
 
@@ -578,6 +590,9 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 		},
 		transitionTrustIdentity: func(string) error {
 			return errors.New("test trust identity transition is not configured")
+		},
+		transitionAdministratorTrustIdentity: func(string) error {
+			return errors.New("test administrator trust identity transition is not configured")
 		},
 	}
 }
