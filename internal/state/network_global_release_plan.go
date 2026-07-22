@@ -141,29 +141,11 @@ func (journal *OperationJournal) ReadGlobalNetworkReleasePlan(ctx context.Contex
 			}
 			return nil
 		}
-		if operation.Operation.Kind != domain.OperationKindNetworkRelease || operation.Operation.ProjectID != "" {
-			return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("operation owner is not a global network release"))
-		}
-		if operation.Operation.State != domain.OperationRunning || operation.Operation.Phase != globalNetworkReleaseRuntimeOperationPhase {
-			return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("operation is %q/%q, expected running/%q", operation.Operation.State, operation.Operation.Phase, globalNetworkReleaseRuntimeOperationPhase))
-		}
-		result, err = globalNetworkReleasePlanFromRow(rows[0], operation)
+		validated, err := validateActiveGlobalNetworkReleasePlan(tx, rows[0], operation)
 		if err != nil {
 			return err
 		}
-		highWater, err := validateRetainedSequenceBounds(tx)
-		if err != nil {
-			return err
-		}
-		if err := validateGlobalNetworkReleaseCheckpoint(tx, result, highWater); err != nil {
-			return err
-		}
-		if err := requireCurrentGlobalNetworkReleaseAuthority(tx, result.Authority); err != nil {
-			return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current network authority: %w", err))
-		}
-		if err := requireGlobalNetworkReleaseQuiescence(tx, result.Authority.ProjectRevisions); err != nil {
-			return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current project authority: %w", err))
-		}
+		result = validated
 		found = true
 		return nil
 	}, &sql.TxOptions{ReadOnly: true})
@@ -171,6 +153,85 @@ func (journal *OperationJournal) ReadGlobalNetworkReleasePlan(ctx context.Contex
 		return GlobalNetworkReleasePlanRecord{}, false, fmt.Errorf("read global network release plan: %w", err)
 	}
 	return result.Clone(), found, nil
+}
+
+// ReadActiveGlobalNetworkReleasePlan discovers the sole active release plan without requiring a caller-supplied operation identity.
+func (journal *OperationJournal) ReadActiveGlobalNetworkReleasePlan(ctx context.Context) (GlobalNetworkReleasePlanRecord, bool, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return GlobalNetworkReleasePlanRecord{}, false, err
+	}
+	builder, err := journal.operations.WithContext(ctx).Builder()
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, false, fmt.Errorf("open active global network release plan: %w", err)
+	}
+	var result GlobalNetworkReleasePlanRecord
+	found := false
+	err = builder.Transaction(func(tx *gorm.DB) error {
+		row, planFound, readErr := readOptionalGlobalNetworkReleasePlanForStaging(tx, "global")
+		if readErr != nil {
+			return readErr
+		}
+		active, activeFound, readErr := findActiveGlobalNetworkReleaseOperation(tx)
+		if readErr != nil {
+			return readErr
+		}
+		if !planFound && !activeFound {
+			return nil
+		}
+		if !activeFound {
+			return corruptGlobalNetworkReleasePlan(domain.OperationID(row.OperationID), fmt.Errorf("durable plan exists without an active global network release operation"))
+		}
+		if !planFound {
+			return corruptGlobalNetworkReleasePlan(active.Operation.ID, fmt.Errorf("active global network release operation has no durable plan"))
+		}
+		if row.OperationID != string(active.Operation.ID) {
+			return corruptGlobalNetworkReleasePlan(active.Operation.ID, fmt.Errorf("singleton belongs to operation %q", row.OperationID))
+		}
+		result, readErr = validateActiveGlobalNetworkReleasePlan(tx, row, active)
+		if readErr != nil {
+			return readErr
+		}
+		found = true
+		return nil
+	}, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, false, fmt.Errorf("read active global network release plan: %w", err)
+	}
+	return result.Clone(), found, nil
+}
+
+// validateActiveGlobalNetworkReleasePlan validates the fixed release owner, authority, checkpoint, and stopped-project boundary.
+func validateActiveGlobalNetworkReleasePlan(
+	tx *gorm.DB,
+	row globalNetworkReleasePlanRow,
+	operation OperationRecord,
+) (GlobalNetworkReleasePlanRecord, error) {
+	operationID := operation.Operation.ID
+	if operation.Operation.Kind != domain.OperationKindNetworkRelease || operation.Operation.ProjectID != "" {
+		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("operation owner is not a global network release"))
+	}
+	if operation.Operation.State != domain.OperationRunning || operation.Operation.Phase != globalNetworkReleaseRuntimeOperationPhase {
+		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("operation is %q/%q, expected running/%q", operation.Operation.State, operation.Operation.Phase, globalNetworkReleaseRuntimeOperationPhase))
+	}
+	plan, err := globalNetworkReleasePlanFromRow(row, operation)
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, err
+	}
+	highWater, err := validateRetainedSequenceBounds(tx)
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := validateGlobalNetworkReleaseCheckpoint(tx, plan, highWater); err != nil {
+		return GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := requireCurrentGlobalNetworkReleaseAuthority(tx, plan.Authority); err != nil {
+		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current network authority: %w", err))
+	}
+	if err := requireGlobalNetworkReleaseQuiescence(tx, plan.Authority.ProjectRevisions); err != nil {
+		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current project authority: %w", err))
+	}
+	return plan, nil
 }
 
 // globalNetworkReleasePlanFromRow validates every indexed source and canonical authority payload.

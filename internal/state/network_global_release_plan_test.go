@@ -6,10 +6,67 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 	"gorm.io/gorm"
 )
+
+// TestReadGlobalNetworkReleasePlanPreservesAbsentCompatibility distinguishes a missing plan from the one active release state that requires it.
+func TestReadGlobalNetworkReleasePlanPreservesAbsentCompatibility(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		prepare   func(t *testing.T, connection *gorm.DB, requestedAt time.Time)
+		corrupt   bool
+	}{
+		{
+			name:      "requested operation absent",
+			operation: "operation-absent",
+		},
+		{
+			name:      "terminal release",
+			operation: "operation-terminal-release",
+			prepare: func(t *testing.T, connection *gorm.DB, requestedAt time.Time) {
+				globalNetworkReleaseStageInsertOperation(t, connection, "operation-terminal-release", "intent-terminal-release", "", domain.OperationKindNetworkRelease, domain.OperationSucceeded, requestedAt)
+			},
+		},
+		{
+			name:      "non-release operation",
+			operation: "operation-network-setup",
+			prepare: func(t *testing.T, connection *gorm.DB, requestedAt time.Time) {
+				globalNetworkReleaseStageInsertOperation(t, connection, "operation-network-setup", "intent-network-setup", "", domain.OperationKindNetworkSetup, domain.OperationRunning, requestedAt)
+			},
+		},
+		{
+			name:      "active release",
+			operation: "operation-active-release",
+			prepare: func(t *testing.T, connection *gorm.DB, requestedAt time.Time) {
+				globalNetworkReleaseStageInsertOperation(t, connection, "operation-active-release", "intent-active-release", "", domain.OperationKindNetworkRelease, domain.OperationRunning, requestedAt)
+			},
+			corrupt: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal, connection, request := newGlobalNetworkReleaseStageFixture(t)
+			if test.prepare != nil {
+				test.prepare(t, connection, request.Operation.RequestedAt)
+			}
+			before := globalNetworkReleaseStageSnapshot(t, connection)
+			plan, found, err := journal.ReadGlobalNetworkReleasePlan(context.Background(), domain.OperationID(test.operation))
+			if test.corrupt {
+				var corrupt *CorruptStateError
+				if found || !errors.As(err, &corrupt) {
+					t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
+				}
+			} else if err != nil || found || !reflect.DeepEqual(plan, GlobalNetworkReleasePlanRecord{}) {
+				t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
+			}
+			globalNetworkReleaseStageAssertUnchanged(t, connection, before)
+		})
+	}
+}
 
 // TestReadGlobalNetworkReleasePlanRejectsDurableCorruption verifies recovery refuses every corrupted plan owner and payload boundary.
 func TestReadGlobalNetworkReleasePlanRejectsDurableCorruption(t *testing.T) {
