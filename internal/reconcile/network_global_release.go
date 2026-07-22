@@ -45,6 +45,11 @@ type GlobalNetworkReleaseJournal interface {
 	AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error)
 	// AdvanceGlobalNetworkReleaseLoopbacks commits the independently verified loopback-pool release receipt.
 	AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// AdvanceGlobalNetworkReleaseEffects commits fresh daemon-owned verification before ownership release.
+	AdvanceGlobalNetworkReleaseEffects(
+		context.Context,
+		state.AdvanceGlobalNetworkReleaseEffectsRequest,
+	) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // GlobalNetworkReleaseLowPortIssuer issues a bounded low-port release capability.
@@ -99,10 +104,12 @@ type GlobalNetworkReleaseRootSource interface {
 	PublicRoot() (certroot.Root, error)
 }
 
-// GlobalNetworkReleaseRuntime releases only the in-process full network runtime.
+// GlobalNetworkReleaseRuntime releases and verifies only the in-process full network runtime.
 type GlobalNetworkReleaseRuntime interface {
 	// ReleaseNetworkRuntime idempotently advances the durable plan to low ports.
 	ReleaseNetworkRuntime(context.Context, domain.OperationID) (state.GlobalNetworkReleasePlanRecord, error)
+	// VerifyNetworkRuntimeReleased proves the retained runtime release anchor for one effects checkpoint.
+	VerifyNetworkRuntimeReleased(context.Context, domain.OperationID, domain.Sequence, domain.Sequence) (string, error)
 }
 
 // GlobalNetworkReleaseResolverObserver observes the exact canonical resolver authority without mutating it.
@@ -1504,7 +1511,7 @@ func (c *GlobalNetworkReleaseCoordinator) PrepareLoopbacks(ctx context.Context, 
 	return result, nil
 }
 
-// ConfirmLoopbacks independently verifies complete pool absence and advances the release plan to effect verification.
+// ConfirmLoopbacks independently verifies complete pool absence and advances the release through effect verification to ownership.
 func (c *GlobalNetworkReleaseCoordinator) ConfirmLoopbacks(ctx context.Context, request GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	if err := request.Validate(); err != nil {
 		return state.GlobalNetworkReleasePlanRecord{}, err
@@ -1523,7 +1530,17 @@ func (c *GlobalNetworkReleaseCoordinator) ConfirmLoopbacks(ctx context.Context, 
 		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release loopback plan does not match operation")
 	}
 	if durable.Phase == state.GlobalNetworkReleasePlanPhaseVerifyEffects {
-		return c.replayReleaseLoopbacks(ctx, durable, request)
+		durable, err = c.replayReleaseLoopbacks(ctx, durable, request)
+		if err != nil {
+			return state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		return c.verifyReleaseEffects(ctx, durable)
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseOwnership {
+		if err := validateReleaseLoopbackOwnershipReplay(durable, request); err != nil {
+			return state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		return durable, nil
 	}
 	plan, durable, err := c.releaseLoopbackPlan(ctx, request.OperationID)
 	if err != nil {
@@ -1548,7 +1565,7 @@ func (c *GlobalNetworkReleaseCoordinator) ConfirmLoopbacks(ctx context.Context, 
 	if err != nil {
 		return state.GlobalNetworkReleasePlanRecord{}, err
 	}
-	return c.journal.AdvanceGlobalNetworkReleaseLoopbacks(ctx, state.AdvanceGlobalNetworkReleaseLoopbacksRequest{
+	durable, err = c.journal.AdvanceGlobalNetworkReleaseLoopbacks(ctx, state.AdvanceGlobalNetworkReleaseLoopbacksRequest{
 		OperationID:        request.OperationID,
 		CheckpointRevision: plan.CheckpointRevision,
 		NetworkRevision:    durable.NetworkRevision,
@@ -1559,6 +1576,10 @@ func (c *GlobalNetworkReleaseCoordinator) ConfirmLoopbacks(ctx context.Context, 
 			VerifiedAt:                   c.releaseNow(durable.TrustReceipt.VerifiedAt),
 		},
 	})
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return c.verifyReleaseEffects(ctx, durable)
 }
 
 // replayReleaseLoopbacks validates one committed receipt without reissuing or reobserving destructive authority.
@@ -1755,6 +1776,60 @@ func validateGlobalNetworkReleaseLoopbackReplayDurable(durable state.GlobalNetwo
 	return nil
 }
 
+// validateReleaseLoopbackOwnershipReplay validates an exact completed loopback acknowledgement without re-observation.
+func validateReleaseLoopbackOwnershipReplay(
+	durable state.GlobalNetworkReleasePlanRecord,
+	request GlobalNetworkReleaseConfirmLoopbacksRequest,
+) error {
+	if durable.Operation.Operation.ID != request.OperationID {
+		return fmt.Errorf("release loopback ownership replay does not match committed authority")
+	}
+	if err := validateReleaseEffectsOwnership(durable); err != nil {
+		return err
+	}
+	if durable.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity != request.RequesterIdentity {
+		return fmt.Errorf("authenticated requester does not own release loopback authority")
+	}
+	if request.ExpectedCheckpointRevision != durable.LoopbackReceipt.SourceCheckpointRevision {
+		return &state.StaleRevisionError{
+			OperationID: request.OperationID,
+			Expected:    request.ExpectedCheckpointRevision,
+			Actual:      durable.LoopbackReceipt.SourceCheckpointRevision,
+		}
+	}
+	digest, err := state.NetworkDataPlaneSetupEvidenceDigest(request.LoopbackEvidence)
+	if err != nil {
+		return err
+	}
+	if digest != durable.LoopbackReceipt.LoopbackEvidenceDigest {
+		return fmt.Errorf("release loopback replay evidence differs from committed receipt")
+	}
+	return nil
+}
+
+// validateReleaseEffectsOwnership proves ownership is backed by the exact ordered effects receipt.
+func validateReleaseEffectsOwnership(durable state.GlobalNetworkReleasePlanRecord) error {
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseOwnership ||
+		durable.LoopbackReceipt == nil ||
+		durable.EffectsReceipt == nil {
+		return fmt.Errorf("release effects ownership does not match committed authority")
+	}
+	if err := durable.LoopbackReceipt.Validate(); err != nil {
+		return fmt.Errorf("release effects ownership loopback receipt: %w", err)
+	}
+	if err := durable.EffectsReceipt.Validate(); err != nil {
+		return fmt.Errorf("release effects ownership receipt: %w", err)
+	}
+	if durable.EffectsReceipt.SourceCheckpointRevision+1 != durable.CheckpointRevision ||
+		durable.EffectsReceipt.VerifiedAt.Before(durable.LoopbackReceipt.VerifiedAt) {
+		return fmt.Errorf("release effects ownership receipt does not precede the live checkpoint")
+	}
+	if durable.EffectsReceipt.OwnershipObservationFingerprint != durable.Authority.ExpectedOwnershipFingerprint {
+		return fmt.Errorf("release effects ownership receipt differs from retained ownership authority")
+	}
+	return nil
+}
+
 // issueReleaseLoopbacks opens helper authority after durable validation and closes it after every publication attempt.
 func (c *GlobalNetworkReleaseCoordinator) issueReleaseLoopbacks(ctx context.Context, requester string, request ticketissuer.PoolReleaseRequest) (ticketissuer.PoolResult, error) {
 	issuer, err := c.loopbackIssuers()
@@ -1773,6 +1848,252 @@ func (c *GlobalNetworkReleaseCoordinator) issueReleaseLoopbacks(ctx context.Cont
 		return result, errors.Join(ticketissuer.ErrPoolPublicationIndeterminate, issueErr, closeErr)
 	}
 	return ticketissuer.PoolResult{}, errors.Join(issueErr, closeErr)
+}
+
+// verifyReleaseEffects independently re-observes every released effect before ownership may advance.
+func (c *GlobalNetworkReleaseCoordinator) verifyReleaseEffects(
+	ctx context.Context,
+	durable state.GlobalNetworkReleasePlanRecord,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := durable.Authority.Validate(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release effects authority: %w", err)
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseOwnership {
+		if err := validateReleaseEffectsOwnership(durable); err != nil {
+			return state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		return durable, nil
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects ||
+		durable.LowPortReceipt == nil ||
+		durable.ResolverReceipt == nil ||
+		durable.TrustReceipt == nil ||
+		durable.LoopbackReceipt == nil {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf(
+			"release effects verification requires verify_effects plan with predecessor receipts",
+		)
+	}
+	runtimeDigest, err := c.runtime.VerifyNetworkRuntimeReleased(
+		ctx,
+		durable.Operation.Operation.ID,
+		durable.CheckpointRevision,
+		durable.NetworkRevision,
+	)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("verify released runtime: %w", err)
+	}
+	ownershipFingerprint, err := c.verifyReleaseOwnership(ctx, durable)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	lowPortFingerprint, err := c.verifyReleaseLowPorts(ctx, durable)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	resolverFingerprint, err := c.verifyReleaseResolver(ctx, durable)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	trustFingerprint, err := c.verifyReleaseTrust(ctx, durable)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	loopbackDigest, err := c.verifyReleaseLoopbacks(ctx, durable)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return c.journal.AdvanceGlobalNetworkReleaseEffects(ctx, state.AdvanceGlobalNetworkReleaseEffectsRequest{
+		OperationID:        durable.Operation.Operation.ID,
+		CheckpointRevision: durable.CheckpointRevision,
+		NetworkRevision:    durable.NetworkRevision,
+		Receipt: state.GlobalNetworkReleaseEffectsReceipt{
+			SourceCheckpointRevision:        durable.CheckpointRevision,
+			RuntimeObservationDigest:        runtimeDigest,
+			OwnershipObservationFingerprint: ownershipFingerprint,
+			LowPortObservationFingerprint:   lowPortFingerprint,
+			ResolverObservationFingerprint:  resolverFingerprint,
+			TrustObservationFingerprint:     trustFingerprint,
+			LoopbackObservationDigest:       loopbackDigest,
+			VerifiedAt:                      c.releaseNow(durable.LoopbackReceipt.VerifiedAt),
+		},
+	})
+}
+
+// verifyReleaseOwnership confirms the durable ownership projection remains the current daemon observation.
+func (c *GlobalNetworkReleaseCoordinator) verifyReleaseOwnership(
+	ctx context.Context,
+	durable state.GlobalNetworkReleasePlanRecord,
+) (string, error) {
+	observation, err := c.ownership.Observe(ctx)
+	if err != nil {
+		return "", fmt.Errorf("observe release ownership: %w", err)
+	}
+	if observation != durable.Authority.Projection.ConfirmedOwnership {
+		return "", fmt.Errorf("release ownership differs from durable authority")
+	}
+	return observation.Fingerprint, nil
+}
+
+// verifyReleaseLowPorts confirms the exact retained low-port authority is absent.
+func (c *GlobalNetworkReleaseCoordinator) verifyReleaseLowPorts(
+	ctx context.Context,
+	durable state.GlobalNetworkReleasePlanRecord,
+) (string, error) {
+	request, err := lowport.NewRequest(durable.Authority.Projection.ConfirmedOwnership.Record, durable.Authority.Policy)
+	if err != nil {
+		return "", fmt.Errorf("derive release low-port request: %w", err)
+	}
+	observation, err := c.lowPorts.Observe(ctx, request)
+	if err != nil {
+		return "", fmt.Errorf("observe release low ports: %w", err)
+	}
+	if err := observation.Validate(); err != nil {
+		return "", fmt.Errorf("release low-port observation is invalid: %w", err)
+	}
+	if observation.Request != request || !observation.Complete {
+		return "", fmt.Errorf("release low-port observation does not prove the exact complete request")
+	}
+	current, err := observation.State()
+	if err != nil {
+		return "", fmt.Errorf("classify release low ports: %w", err)
+	}
+	if current != lowport.StateAbsent {
+		return "", fmt.Errorf("release low-port state is %q, want absent", current)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return "", fmt.Errorf("fingerprint release low ports: %w", err)
+	}
+	return fingerprint, nil
+}
+
+// verifyReleaseResolver confirms Harbor's exact resolver ownership marker is absent.
+func (c *GlobalNetworkReleaseCoordinator) verifyReleaseResolver(
+	ctx context.Context,
+	durable state.GlobalNetworkReleasePlanRecord,
+) (string, error) {
+	request, err := resolver.NewRequest(
+		durable.Authority.Projection.ConfirmedOwnership.Record.InstallationID,
+		durable.Authority.Policy,
+	)
+	if err != nil {
+		return "", fmt.Errorf("derive release resolver request: %w", err)
+	}
+	observation, err := c.resolver.Observe(ctx, request)
+	if err != nil {
+		return "", fmt.Errorf("observe release resolver: %w", err)
+	}
+	if err := observation.Validate(); err != nil {
+		return "", fmt.Errorf("release resolver observation is invalid: %w", err)
+	}
+	if observation.Request != request || !observation.Complete {
+		return "", fmt.Errorf("release resolver observation does not prove the exact complete request")
+	}
+	assessment, err := observation.Classify()
+	if err != nil {
+		return "", fmt.Errorf("classify release resolver: %w", err)
+	}
+	if assessment.Owned != resolver.OwnedStateAbsent {
+		return "", fmt.Errorf("release resolver owned state is %q, want absent", assessment.Owned)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return "", fmt.Errorf("fingerprint release resolver: %w", err)
+	}
+	return fingerprint, nil
+}
+
+// verifyReleaseTrust confirms the retained trust disposition has no Harbor-owned marker.
+func (c *GlobalNetworkReleaseCoordinator) verifyReleaseTrust(
+	ctx context.Context,
+	durable state.GlobalNetworkReleasePlanRecord,
+) (string, error) {
+	request, err := trust.NewRequestForRequester(
+		durable.Authority.Projection.ConfirmedOwnership.Record.InstallationID,
+		durable.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+		durable.Authority.Policy.Mechanisms.Trust,
+		durable.Authority.Root,
+	)
+	if err != nil {
+		return "", fmt.Errorf("derive release trust request: %w", err)
+	}
+	observation, err := c.trust.Observe(ctx, request)
+	if err != nil {
+		return "", fmt.Errorf("observe release trust: %w", err)
+	}
+	if err := observation.Validate(); err != nil {
+		return "", fmt.Errorf("release trust observation is invalid: %w", err)
+	}
+	if !sameNetworkDataPlaneSetupTrustRequest(observation.Request, request) || !observation.Complete {
+		return "", fmt.Errorf("release trust observation does not prove the exact complete request")
+	}
+	assessment, err := observation.Classify()
+	if err != nil {
+		return "", fmt.Errorf("classify release trust: %w", err)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return "", fmt.Errorf("fingerprint release trust: %w", err)
+	}
+	switch durable.Authority.TrustDisposition {
+	case state.GlobalNetworkReleaseTrustOwned:
+		if assessment.Owned != trust.OwnedStateAbsent {
+			return "", fmt.Errorf("release trust does not prove owned absence")
+		}
+	case state.GlobalNetworkReleaseTrustPreexistingUnowned:
+		if fingerprint != durable.Authority.TrustObservationFingerprint ||
+			assessment.State != trust.StateForeign ||
+			assessment.Owned != trust.OwnedStateAbsent ||
+			!globalReleaseIdenticalUnownedTrust(observation) {
+			return "", fmt.Errorf("release trust does not preserve exact preexisting root")
+		}
+	default:
+		return "", fmt.Errorf("release trust disposition is unsupported")
+	}
+	return fingerprint, nil
+}
+
+// verifyReleaseLoopbacks constructs fresh complete absent evidence for every retained target and returns its canonical digest.
+func (c *GlobalNetworkReleaseCoordinator) verifyReleaseLoopbacks(
+	ctx context.Context,
+	durable state.GlobalNetworkReleasePlanRecord,
+) (string, error) {
+	evidence := helper.PoolMutationEvidence{
+		Pool:       durable.Authority.Projection.ConfirmedOwnership.Record.LoopbackPoolPrefix,
+		Identities: make([]helper.MutationEvidence, 0, len(durable.Authority.LoopbackTargets)),
+	}
+	for _, target := range durable.Authority.LoopbackTargets {
+		observation, err := c.loopback.Observe(ctx, target.Address)
+		if err != nil {
+			return "", fmt.Errorf("observe release loopback %s: %w", target.Address, err)
+		}
+		if observation.Address != target.Address || observation.State != loopback.StateAbsent {
+			return "", fmt.Errorf("release loopback %s is not absent", target.Address)
+		}
+		fingerprint, err := observation.Fingerprint()
+		if err != nil {
+			return "", fmt.Errorf("fingerprint release loopback %s: %w", target.Address, err)
+		}
+		evidence.Identities = append(evidence.Identities, helper.MutationEvidence{
+			Address: target.Address.String(),
+			Observation: helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: fingerprint,
+			},
+		})
+	}
+	if err := validateGlobalNetworkReleaseLoopbackEvidence(evidence); err != nil {
+		return "", err
+	}
+	digest, err := state.NetworkDataPlaneSetupEvidenceDigest(evidence)
+	if err != nil {
+		return "", err
+	}
+	return digest, nil
 }
 
 // Recover resumes an already-staged release after the runtime has installed its cold anchor.
@@ -1796,11 +2117,15 @@ func (c *GlobalNetworkReleaseCoordinator) Recover(ctx context.Context) error {
 	if err := plan.Phase.Validate(); err != nil {
 		return fmt.Errorf("recover global network release: active plan phase: %w", err)
 	}
-	if plan.Phase != state.GlobalNetworkReleasePlanPhaseRuntimeRelease && plan.Phase != state.GlobalNetworkReleasePlanPhaseLowPorts {
-		return nil
-	}
-	if _, err := c.runtime.ReleaseNetworkRuntime(ctx, plan.Operation.Operation.ID); err != nil {
-		return fmt.Errorf("recover global network release: release runtime: %w", err)
+	switch plan.Phase {
+	case state.GlobalNetworkReleasePlanPhaseRuntimeRelease, state.GlobalNetworkReleasePlanPhaseLowPorts:
+		if _, err := c.runtime.ReleaseNetworkRuntime(ctx, plan.Operation.Operation.ID); err != nil {
+			return fmt.Errorf("recover global network release: release runtime: %w", err)
+		}
+	case state.GlobalNetworkReleasePlanPhaseVerifyEffects:
+		if _, err := c.verifyReleaseEffects(ctx, plan); err != nil {
+			return fmt.Errorf("recover global network release: verify effects: %w", err)
+		}
 	}
 	return nil
 }
@@ -1826,6 +2151,11 @@ func (c *GlobalNetworkReleaseCoordinator) resume(ctx context.Context, operationI
 	if plan.Phase == state.GlobalNetworkReleasePlanPhaseRuntimeRelease || plan.Phase == state.GlobalNetworkReleasePlanPhaseLowPorts {
 		if _, err := c.runtime.ReleaseNetworkRuntime(ctx, operationID); err != nil {
 			return state.OperationRecord{}, fmt.Errorf("release runtime: %w", err)
+		}
+	}
+	if plan.Phase == state.GlobalNetworkReleasePlanPhaseVerifyEffects {
+		if _, err := c.verifyReleaseEffects(ctx, plan); err != nil {
+			return state.OperationRecord{}, fmt.Errorf("verify release effects: %w", err)
 		}
 	}
 	return plan.Operation, nil

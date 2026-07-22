@@ -615,3 +615,11 @@ func (*globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseTrust(con
 func (*globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
+
+// AdvanceGlobalNetworkReleaseEffects is unused by resolver-release tests.
+func (*globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseEffects(
+	context.Context,
+	state.AdvanceGlobalNetworkReleaseEffectsRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
+}

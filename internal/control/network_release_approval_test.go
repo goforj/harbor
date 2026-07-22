@@ -423,7 +423,7 @@ func TestNetworkReleaseApprovalConnectedCalls(t *testing.T) {
 	}
 	loopbackRelease := validNetworkReleaseApprovalRelease(t)
 	loopbackRelease.Operation.ID = loopbackPreparation.OperationID
-	loopbackRelease.Phase = NetworkReleasePhaseVerifyEffects
+	loopbackRelease.Phase = NetworkReleasePhaseOwnership
 	loopbackRelease.CheckpointRevision = loopbackPreparation.CheckpointRevision + 1
 	authority := &recordingNetworkReleaseApprovalAuthority{
 		preparation:         preparation,
@@ -572,7 +572,7 @@ func TestNetworkReleaseApprovalConnectedCalls(t *testing.T) {
 		preexistingConfirmed.CheckpointRevision != trustRelease.CheckpointRevision ||
 		!reflect.DeepEqual(loopbackPrepared, loopbackPreparation) ||
 		loopbackConfirmed.Operation.ID != loopbackRelease.Operation.ID ||
-		loopbackConfirmed.Phase != NetworkReleasePhaseVerifyEffects ||
+		loopbackConfirmed.Phase != NetworkReleasePhaseOwnership ||
 		loopbackConfirmed.CheckpointRevision != loopbackRelease.CheckpointRevision {
 		t.Fatalf(
 			"results = %#v %#v %#v %#v %#v %#v %#v %#v %#v %#v",
@@ -906,7 +906,7 @@ func TestNetworkReleaseLoopbackApprovalDecodersAndCorrelation(t *testing.T) {
 	}
 	release := validNetworkReleaseApprovalRelease(t)
 	release.Operation.ID = preparation.OperationID
-	release.Phase = NetworkReleasePhaseVerifyEffects
+	release.Phase = NetworkReleasePhaseOwnership
 	release.CheckpointRevision = preparation.CheckpointRevision + 1
 	if err := validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(confirmation, release); err != nil {
 		t.Fatalf("loopback confirmation correlation error = %v", err)
@@ -916,7 +916,7 @@ func TestNetworkReleaseLoopbackApprovalDecodersAndCorrelation(t *testing.T) {
 		func(value *NetworkReleaseOperation) {
 			value.CheckpointRevision = confirmation.ExpectedCheckpointRevision
 		},
-		func(value *NetworkReleaseOperation) { value.Phase = NetworkReleasePhaseLoopbacks },
+		func(value *NetworkReleaseOperation) { value.Phase = NetworkReleasePhaseVerifyEffects },
 	} {
 		value := release
 		mutate(&value)

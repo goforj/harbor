@@ -400,6 +400,14 @@ func (*globalNetworkReleaseLowPortJournal) AdvanceGlobalNetworkReleaseLoopbacks(
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
 
+// AdvanceGlobalNetworkReleaseEffects is unused by focused low-port tests.
+func (*globalNetworkReleaseLowPortJournal) AdvanceGlobalNetworkReleaseEffects(
+	context.Context,
+	state.AdvanceGlobalNetworkReleaseEffectsRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
+}
+
 // ReadGlobalNetworkReleasePlan returns the fixture's active release plan.
 func (journal *globalNetworkReleaseLowPortJournal) ReadGlobalNetworkReleasePlan(_ context.Context, operationID domain.OperationID) (state.GlobalNetworkReleasePlanRecord, bool, error) {
 	if journal.plan.Operation.Operation.ID != operationID {

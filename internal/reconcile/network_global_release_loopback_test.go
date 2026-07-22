@@ -15,6 +15,9 @@ import (
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
+	"github.com/goforj/harbor/internal/platform/lowport"
+	"github.com/goforj/harbor/internal/platform/resolver"
+	"github.com/goforj/harbor/internal/platform/trust"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -151,9 +154,10 @@ func TestGlobalNetworkReleaseLoopbacksPrepareIssuerFailures(t *testing.T) {
 	}
 }
 
-// TestGlobalNetworkReleaseLoopbacksConfirmAdvancesAndReplays proves exact evidence, all eight observations, and receipt replay.
+// TestGlobalNetworkReleaseLoopbacksConfirmAdvancesAndReplays proves effect verification follows durable loopback confirmation.
 func TestGlobalNetworkReleaseLoopbacksConfirmAdvancesAndReplays(t *testing.T) {
 	fixture := newGlobalNetworkReleaseLoopbackFixture(t)
+	fixture.base.runtimeRelease.verifyDigest = strings.Repeat("1", 64)
 	request := fixture.confirmRequest(t)
 	request.LoopbackEvidence.Identities[0].Changed = true
 	evidenceDigest, err := state.NetworkDataPlaneSetupEvidenceDigest(request.LoopbackEvidence)
@@ -172,8 +176,17 @@ func TestGlobalNetworkReleaseLoopbacksConfirmAdvancesAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	advanced, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), request)
-	if err != nil || advanced.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects || advanced.LoopbackReceipt == nil || len(fixture.observer.addresses) != 8 {
-		t.Fatalf("ConfirmLoopbacks() = %#v, %v; observations = %d", advanced, err, len(fixture.observer.addresses))
+	if err != nil ||
+		advanced.Phase != state.GlobalNetworkReleasePlanPhaseOwnership ||
+		advanced.LoopbackReceipt == nil ||
+		advanced.EffectsReceipt == nil ||
+		len(fixture.observer.addresses) != 16 {
+		t.Fatalf(
+			"ConfirmLoopbacks() = %#v, %v; observations = %d",
+			advanced,
+			err,
+			len(fixture.observer.addresses),
+		)
 	}
 	wantReceipt := state.GlobalNetworkReleaseLoopbackReceipt{
 		SourceCheckpointRevision:     fixture.plan.CheckpointRevision,
@@ -190,36 +203,204 @@ func TestGlobalNetworkReleaseLoopbacksConfirmAdvancesAndReplays(t *testing.T) {
 	if *advanced.LoopbackReceipt != wantReceipt || fixture.journal.lastRequest != wantAdvance {
 		t.Fatalf("receipt/advance = %#v / %#v, want %#v / %#v", *advanced.LoopbackReceipt, fixture.journal.lastRequest, wantReceipt, wantAdvance)
 	}
-	for index, target := range fixture.plan.Authority.LoopbackTargets {
-		if fixture.observer.addresses[index] != target.Address {
-			t.Fatalf("observation %d address = %s, want %s", index, fixture.observer.addresses[index], target.Address)
+	wantEffects := state.GlobalNetworkReleaseEffectsReceipt{
+		SourceCheckpointRevision:        wantReceipt.SourceCheckpointRevision + 1,
+		RuntimeObservationDigest:        fixture.base.runtimeRelease.verifyDigest,
+		OwnershipObservationFingerprint: fixture.plan.Authority.ExpectedOwnershipFingerprint,
+		LowPortObservationFingerprint:   mustGlobalNetworkReleaseLowPortFingerprint(t, fixture.base.low.observation),
+		ResolverObservationFingerprint:  mustGlobalNetworkReleaseResolverFingerprint(t, fixture.base.resolver.observation),
+		TrustObservationFingerprint:     mustGlobalNetworkReleaseTrustFingerprint(t, fixture.base.trust.observedRequest, false),
+		LoopbackObservationDigest:       observationDigest,
+		VerifiedAt:                      fixture.plan.TrustReceipt.VerifiedAt,
+	}
+	wantEffectsAdvance := state.AdvanceGlobalNetworkReleaseEffectsRequest{
+		OperationID:        fixture.plan.Operation.Operation.ID,
+		CheckpointRevision: wantEffects.SourceCheckpointRevision,
+		NetworkRevision:    fixture.plan.NetworkRevision,
+		Receipt:            wantEffects,
+	}
+	if *advanced.EffectsReceipt != wantEffects || fixture.journal.lastEffectsRequest != wantEffectsAdvance {
+		t.Fatalf(
+			"effects receipt/advance = %#v / %#v, want %#v / %#v",
+			*advanced.EffectsReceipt,
+			fixture.journal.lastEffectsRequest,
+			wantEffects,
+			wantEffectsAdvance,
+		)
+	}
+	if fixture.base.runtimeRelease.verifyCalls != 1 ||
+		!reflect.DeepEqual(
+			fixture.base.calls,
+			[]string{"verify runtime", "ownership", "low", "resolver", "trust"},
+		) {
+		t.Fatalf("runtime/calls = %d/%#v", fixture.base.runtimeRelease.verifyCalls, fixture.base.calls)
+	}
+	for round := range 2 {
+		for index, target := range fixture.plan.Authority.LoopbackTargets {
+			observedIndex := round*len(fixture.plan.Authority.LoopbackTargets) + index
+			if fixture.observer.addresses[observedIndex] != target.Address {
+				t.Fatalf("observation %d address = %s, want %s", observedIndex, fixture.observer.addresses[observedIndex], target.Address)
+			}
 		}
 	}
 	fixture.plans.calls = 0
 	fixture.observer.addresses = nil
+	fixture.base.calls = nil
+	fixture.base.runtimeRelease.verifyCalls = 0
 	replayed, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), request)
 	if err != nil ||
 		!reflect.DeepEqual(replayed, advanced) ||
 		fixture.plans.calls != 0 ||
 		len(fixture.observer.addresses) != 0 ||
 		fixture.issuer.issues != 0 ||
-		fixture.journal.advances != 2 ||
-		fixture.journal.lastRequest != wantAdvance {
+		fixture.journal.advances != 1 ||
+		fixture.journal.effectsAdvances != 1 ||
+		fixture.base.runtimeRelease.verifyCalls != 0 ||
+		len(fixture.base.calls) != 0 ||
+		fixture.journal.lastRequest != wantAdvance ||
+		fixture.journal.lastEffectsRequest != wantEffectsAdvance {
 		t.Fatalf(
-			"replay = %#v, %v; plan/observation/issue/advance = %d/%d/%d/%d; request = %#v",
+			"replay = %#v, %v; plan/observation/issue/loopback advance/effects advance = %d/%d/%d/%d/%d",
 			replayed,
 			err,
 			fixture.plans.calls,
 			len(fixture.observer.addresses),
 			fixture.issuer.issues,
 			fixture.journal.advances,
-			fixture.journal.lastRequest,
+			fixture.journal.effectsAdvances,
 		)
 	}
 	request.LoopbackEvidence.Identities[0].Changed = true
 	request.LoopbackEvidence.Identities[1].Changed = true
-	if _, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), request); err == nil || fixture.journal.advances != 2 {
+	if _, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), request); err == nil || fixture.journal.advances != 1 {
 		t.Fatal("ConfirmLoopbacks() accepted altered replay evidence")
+	}
+}
+
+// mustGlobalNetworkReleaseLowPortFingerprint returns one valid low-port observation digest for effect assertions.
+func mustGlobalNetworkReleaseLowPortFingerprint(t *testing.T, observation lowport.Observation) string {
+	t.Helper()
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fingerprint
+}
+
+// mustGlobalNetworkReleaseResolverFingerprint returns one valid resolver observation digest for effect assertions.
+func mustGlobalNetworkReleaseResolverFingerprint(t *testing.T, observation resolver.Observation) string {
+	t.Helper()
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fingerprint
+}
+
+// mustGlobalNetworkReleaseTrustFingerprint returns the released fixture's disposition-safe trust digest.
+func mustGlobalNetworkReleaseTrustFingerprint(t *testing.T, request trust.Request, owned bool) string {
+	t.Helper()
+	entry := trust.Entry{
+		Mechanism:              request.Mechanism(),
+		NativeID:               "entry",
+		CertificateFingerprint: request.AuthorityFingerprint(),
+		NativeExact:            true,
+		NativeAttributesSHA256: strings.Repeat("c", 64),
+	}
+	if owned {
+		owner := request.OwnerMarker()
+		entry.Owner = &owner
+	}
+	observation := trust.Observation{
+		Request:  request,
+		Complete: true,
+		Entries:  []trust.Entry{entry},
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fingerprint
+}
+
+// TestGlobalNetworkReleaseLoopbacksConfirmRetriesEffectVerification proves an effects
+// advance failure retains exact loopback replay authority.
+func TestGlobalNetworkReleaseLoopbacksConfirmRetriesEffectVerification(t *testing.T) {
+	fixture := newGlobalNetworkReleaseLoopbackFixture(t)
+	fixture.base.runtimeRelease.verifyDigest = strings.Repeat("1", 64)
+	request := fixture.confirmRequest(t)
+	fixture.journal.effectsAdvanceErr = errors.New("advance effects")
+	if _, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), request); err == nil ||
+		fixture.journal.plan.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects ||
+		fixture.journal.plan.LoopbackReceipt == nil ||
+		fixture.journal.plan.EffectsReceipt != nil ||
+		fixture.journal.advances != 1 ||
+		fixture.journal.effectsAdvances != 1 ||
+		len(fixture.observer.addresses) != 16 {
+		t.Fatalf(
+			"ConfirmLoopbacks() error = %v; phase/receipts/advances/observations = %q/%#v/%#v/%d/%d/%d",
+			err,
+			fixture.journal.plan.Phase,
+			fixture.journal.plan.LoopbackReceipt,
+			fixture.journal.plan.EffectsReceipt,
+			fixture.journal.advances,
+			fixture.journal.effectsAdvances,
+			len(fixture.observer.addresses),
+		)
+	}
+	fixture.journal.effectsAdvanceErr = nil
+	fixture.plans.calls = 0
+	fixture.observer.addresses = nil
+	fixture.base.calls = nil
+	fixture.base.runtimeRelease.verifyCalls = 0
+	advanced, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), request)
+	if err != nil ||
+		advanced.Phase != state.GlobalNetworkReleasePlanPhaseOwnership ||
+		fixture.plans.calls != 0 ||
+		fixture.issuer.issues != 0 ||
+		fixture.journal.advances != 2 ||
+		fixture.journal.effectsAdvances != 2 ||
+		len(fixture.observer.addresses) != 8 ||
+		fixture.base.runtimeRelease.verifyCalls != 1 ||
+		!reflect.DeepEqual(
+			fixture.base.calls,
+			[]string{"verify runtime", "ownership", "low", "resolver", "trust"},
+		) {
+		t.Fatalf(
+			"retry = %#v, %v; plan/issue/advances/observations/runtime/calls = %d/%d/%d/%d/%d/%d/%#v",
+			advanced,
+			err,
+			fixture.plans.calls,
+			fixture.issuer.issues,
+			fixture.journal.advances,
+			fixture.journal.effectsAdvances,
+			len(fixture.observer.addresses),
+			fixture.base.runtimeRelease.verifyCalls,
+			fixture.base.calls,
+		)
+	}
+}
+
+// TestGlobalNetworkReleaseLoopbacksConfirmPropagatesEffectsObservationFailure proves
+// uncommitted effects verification stops at its failed observer.
+func TestGlobalNetworkReleaseLoopbacksConfirmPropagatesEffectsObservationFailure(t *testing.T) {
+	fixture := newGlobalNetworkReleaseLoopbackFixture(t)
+	fixture.base.runtimeRelease.verifyDigest = strings.Repeat("1", 64)
+	fixture.base.low.err = errors.New("observe low")
+	if _, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), fixture.confirmRequest(t)); err == nil ||
+		!strings.Contains(err.Error(), "observe release low ports: observe low") ||
+		fixture.journal.plan.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects ||
+		fixture.journal.effectsAdvances != 0 ||
+		len(fixture.observer.addresses) != 8 ||
+		!reflect.DeepEqual(fixture.base.calls, []string{"verify runtime", "ownership", "low"}) {
+		t.Fatalf(
+			"ConfirmLoopbacks() error = %v; phase/effects/observations/calls = %q/%d/%d/%#v",
+			err,
+			fixture.journal.plan.Phase,
+			fixture.journal.effectsAdvances,
+			len(fixture.observer.addresses),
+			fixture.base.calls,
+		)
 	}
 }
 
@@ -379,6 +560,14 @@ func newGlobalNetworkReleaseLoopbackFixture(t *testing.T) *globalNetworkReleaseL
 		fixture: fixture,
 	}
 	fixture.observer = &globalNetworkReleaseLoopbackObserver{}
+	fixture.base.low.observation.Artifacts[0].Present = false
+	fixture.base.low.observation.Artifacts[0].Owned = false
+	fixture.base.low.observation.Artifacts[0].Exact = false
+	fixture.base.low.observation.Artifacts[1].Present = false
+	fixture.base.low.observation.Artifacts[1].Owned = false
+	fixture.base.low.observation.Artifacts[1].Exact = false
+	fixture.base.resolver.observation.Rules = nil
+	fixture.base.trust.owned = false
 	fixture.coordinator = NewGlobalNetworkReleaseCoordinator(
 		fixture.journal,
 		base.source,
@@ -590,9 +779,12 @@ func (observer *globalNetworkReleaseLoopbackObserver) Observe(_ context.Context,
 
 // globalNetworkReleaseLoopbackJournal advances and replays exact loopback receipts.
 type globalNetworkReleaseLoopbackJournal struct {
-	plan        state.GlobalNetworkReleasePlanRecord
-	advances    int
-	lastRequest state.AdvanceGlobalNetworkReleaseLoopbacksRequest
+	plan               state.GlobalNetworkReleasePlanRecord
+	advances           int
+	lastRequest        state.AdvanceGlobalNetworkReleaseLoopbacksRequest
+	effectsAdvances    int
+	lastEffectsRequest state.AdvanceGlobalNetworkReleaseEffectsRequest
+	effectsAdvanceErr  error
 }
 
 // OperationByIntent rejects unused journal paths so tests fail if the coordinator reaches them.
@@ -646,5 +838,35 @@ func (journal *globalNetworkReleaseLoopbackJournal) AdvanceGlobalNetworkReleaseL
 	journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseVerifyEffects
 	journal.plan.CheckpointRevision++
 	journal.plan.LoopbackReceipt = &request.Receipt
+	return journal.plan, nil
+}
+
+// AdvanceGlobalNetworkReleaseEffects records fresh release verification and permits only exact receipt replay.
+func (journal *globalNetworkReleaseLoopbackJournal) AdvanceGlobalNetworkReleaseEffects(
+	_ context.Context,
+	request state.AdvanceGlobalNetworkReleaseEffectsRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	journal.effectsAdvances++
+	journal.lastEffectsRequest = request
+	if journal.effectsAdvanceErr != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, journal.effectsAdvanceErr
+	}
+	if journal.plan.Phase == state.GlobalNetworkReleasePlanPhaseOwnership {
+		if journal.plan.EffectsReceipt == nil || request != (state.AdvanceGlobalNetworkReleaseEffectsRequest{
+			OperationID:        journal.plan.Operation.Operation.ID,
+			CheckpointRevision: journal.plan.EffectsReceipt.SourceCheckpointRevision,
+			NetworkRevision:    journal.plan.NetworkRevision,
+			Receipt:            *journal.plan.EffectsReceipt,
+		}) {
+			return state.GlobalNetworkReleasePlanRecord{}, errors.New("effects replay differs")
+		}
+		return journal.plan, nil
+	}
+	if journal.plan.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects {
+		return state.GlobalNetworkReleasePlanRecord{}, errors.New("effects phase differs")
+	}
+	journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseOwnership
+	journal.plan.CheckpointRevision++
+	journal.plan.EffectsReceipt = &request.Receipt
 	return journal.plan, nil
 }

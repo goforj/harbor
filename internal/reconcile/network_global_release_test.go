@@ -278,13 +278,16 @@ func testGlobalNetworkReleaseOperation(t *testing.T) state.OperationRecord {
 
 // testGlobalNetworkReleaseJournal records the recovery plan read without accepting staging.
 type testGlobalNetworkReleaseJournal struct {
-	mu        sync.Mutex
-	found     bool
-	plan      state.GlobalNetworkReleasePlanRecord
-	err       error
-	reads     int
-	intent    state.OperationRecord
-	intentErr error
+	mu             sync.Mutex
+	found          bool
+	plan           state.GlobalNetworkReleasePlanRecord
+	err            error
+	reads          int
+	intent         state.OperationRecord
+	intentErr      error
+	effectsCalls   int
+	effectsRequest state.AdvanceGlobalNetworkReleaseEffectsRequest
+	effectsErr     error
 }
 
 // OperationByIntent is not exercised by recovery tests.
@@ -336,16 +339,46 @@ func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLoopb
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
 
+// AdvanceGlobalNetworkReleaseEffects records effect verification recovery advances.
+func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseEffects(
+	_ context.Context,
+	request state.AdvanceGlobalNetworkReleaseEffectsRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	journal.effectsCalls++
+	journal.effectsRequest = request
+	return journal.plan, journal.effectsErr
+}
+
 // testGlobalNetworkReleaseRuntime records runtime-release requests.
 type testGlobalNetworkReleaseRuntime struct {
-	calls int
-	err   error
+	calls             int
+	err               error
+	verifyCalls       int
+	verifyOperationID domain.OperationID
+	verifyCheckpoint  domain.Sequence
+	verifyNetwork     domain.Sequence
+	verifyDigest      string
+	verifyErr         error
 }
 
 // ReleaseNetworkRuntime records one requested durable runtime checkpoint.
 func (runtime *testGlobalNetworkReleaseRuntime) ReleaseNetworkRuntime(context.Context, domain.OperationID) (state.GlobalNetworkReleasePlanRecord, error) {
 	runtime.calls++
 	return state.GlobalNetworkReleasePlanRecord{}, runtime.err
+}
+
+// VerifyNetworkRuntimeReleased records one fresh runtime-release observation.
+func (runtime *testGlobalNetworkReleaseRuntime) VerifyNetworkRuntimeReleased(
+	_ context.Context,
+	operationID domain.OperationID,
+	checkpoint domain.Sequence,
+	networkRevision domain.Sequence,
+) (string, error) {
+	runtime.verifyCalls++
+	runtime.verifyOperationID = operationID
+	runtime.verifyCheckpoint = checkpoint
+	runtime.verifyNetwork = networkRevision
+	return runtime.verifyDigest, runtime.verifyErr
 }
 
 // TestGlobalNetworkReleaseStartStagesCompleteAuthority proves a fresh release
@@ -999,6 +1032,9 @@ type globalNetworkReleaseJournal struct {
 	overflowRevisionResult bool
 	missingAfterStage      bool
 	mismatchAfterStage     bool
+	effectsCalls           int
+	effectsRequest         state.AdvanceGlobalNetworkReleaseEffectsRequest
+	effectsErr             error
 	fixture                *globalNetworkReleaseStartFixture
 }
 
@@ -1099,6 +1135,24 @@ func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLoopbacks
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
 
+// AdvanceGlobalNetworkReleaseEffects records exact effect-verification advancement.
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseEffects(
+	_ context.Context,
+	request state.AdvanceGlobalNetworkReleaseEffectsRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	journal.call("advance effects")
+	journal.effectsCalls++
+	journal.effectsRequest = request
+	if journal.effectsErr != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, journal.effectsErr
+	}
+	journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseOwnership
+	journal.plan.CheckpointRevision++
+	receipt := request.Receipt
+	journal.plan.EffectsReceipt = &receipt
+	return journal.plan, nil
+}
+
 // globalNetworkReleaseState scripts coherent durable state and revision reads.
 type globalNetworkReleaseState struct {
 	fixture     *globalNetworkReleaseStartFixture
@@ -1192,6 +1246,7 @@ func (source *globalNetworkReleaseResolver) Observe(_ context.Context, request r
 type globalNetworkReleaseTrust struct {
 	fixture         *globalNetworkReleaseStartFixture
 	request         trust.Request
+	observation     *trust.Observation
 	owned           bool
 	nativeExact     bool
 	requestMismatch bool
@@ -1203,6 +1258,9 @@ type globalNetworkReleaseTrust struct {
 func (source *globalNetworkReleaseTrust) Observe(_ context.Context, request trust.Request) (trust.Observation, error) {
 	source.fixture.call("trust")
 	source.observedRequest = request
+	if source.observation != nil {
+		return *source.observation, source.err
+	}
 	entry := trust.Entry{
 		Mechanism:              request.Mechanism(),
 		NativeID:               "entry",
@@ -1244,15 +1302,24 @@ func (source *globalNetworkReleaseLoopback) Observe(_ context.Context, address n
 		observation.Address = address.Next()
 	}
 	observation.State = source.state
+	if source.state == loopback.StateAbsent {
+		observation.Assignments = nil
+	}
 	return observation, source.err
 }
 
 // globalNetworkReleaseRuntime records release calls after durable staging.
 type globalNetworkReleaseRuntime struct {
-	fixture     *globalNetworkReleaseStartFixture
-	calls       int
-	err         error
-	operationID domain.OperationID
+	fixture          *globalNetworkReleaseStartFixture
+	calls            int
+	err              error
+	operationID      domain.OperationID
+	verifyCalls      int
+	verifyOperation  domain.OperationID
+	verifyCheckpoint domain.Sequence
+	verifyNetwork    domain.Sequence
+	verifyDigest     string
+	verifyErr        error
 }
 
 // ReleaseNetworkRuntime records the runtime boundary.
@@ -1261,6 +1328,21 @@ func (runtime *globalNetworkReleaseRuntime) ReleaseNetworkRuntime(_ context.Cont
 	runtime.calls++
 	runtime.operationID = operationID
 	return state.GlobalNetworkReleasePlanRecord{}, runtime.err
+}
+
+// VerifyNetworkRuntimeReleased rejects effect verification outside focused effect tests.
+func (runtime *globalNetworkReleaseRuntime) VerifyNetworkRuntimeReleased(
+	_ context.Context,
+	operationID domain.OperationID,
+	checkpoint domain.Sequence,
+	networkRevision domain.Sequence,
+) (string, error) {
+	runtime.fixture.call("verify runtime")
+	runtime.verifyCalls++
+	runtime.verifyOperation = operationID
+	runtime.verifyCheckpoint = checkpoint
+	runtime.verifyNetwork = networkRevision
+	return runtime.verifyDigest, runtime.verifyErr
 }
 
 // globalNetworkReleaseClock supplies mutable deterministic staging time.

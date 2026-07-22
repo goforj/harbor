@@ -33,7 +33,8 @@ type NetworkReleaseApprovalAuthority interface {
 	ConfirmNetworkReleaseTrustApproval(context.Context, Caller, ConfirmNetworkReleaseTrustApprovalRequest) (NetworkReleaseOperation, error)
 	// PrepareNetworkReleaseLoopbackApproval publishes one caller-bound loopback-pool release capability.
 	PrepareNetworkReleaseLoopbackApproval(context.Context, Caller, PrepareNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseLoopbackApprovalPreparation, error)
-	// ConfirmNetworkReleaseLoopbackApproval verifies loopback-pool removal and advances the retained release plan.
+	// ConfirmNetworkReleaseLoopbackApproval verifies loopback-pool removal and its effects,
+	// then advances the retained release plan to ownership.
 	ConfirmNetworkReleaseLoopbackApproval(context.Context, Caller, ConfirmNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseOperation, error)
 }
 
@@ -507,7 +508,8 @@ func decodeNetworkReleaseLoopbackApprovalPreparationResponse(payload []byte, res
 	return nil
 }
 
-// ConfirmNetworkReleaseLoopbackApproval submits exact loopback-pool release evidence and advances the retained plan.
+// ConfirmNetworkReleaseLoopbackApproval submits exact loopback-pool release evidence and
+// advances the retained plan through effect verification to ownership.
 func (client *Client) ConfirmNetworkReleaseLoopbackApproval(ctx context.Context, request ConfirmNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseOperation, error) {
 	if err := request.Validate(); err != nil {
 		return NetworkReleaseOperation{}, err
@@ -782,13 +784,14 @@ func validateNetworkReleaseLoopbackApprovalPreparationCorrelation(request Prepar
 	return nil
 }
 
-// validateNetworkReleaseLoopbackApprovalConfirmationCorrelation binds verification progress to a selected checkpoint after loopback-pool release.
+// validateNetworkReleaseLoopbackApprovalConfirmationCorrelation binds ownership progress to a
+// selected checkpoint after loopback-pool release and effect verification.
 func validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(request ConfirmNetworkReleaseLoopbackApprovalRequest, release NetworkReleaseOperation) error {
 	if err := release.Validate(); err != nil {
 		return err
 	}
 	if release.Operation.ID != request.OperationID ||
-		release.Phase != NetworkReleasePhaseVerifyEffects ||
+		release.Phase != NetworkReleasePhaseOwnership ||
 		release.CheckpointRevision <= request.ExpectedCheckpointRevision {
 		return errors.New("network release loopback confirmation does not match the requested checkpoint")
 	}

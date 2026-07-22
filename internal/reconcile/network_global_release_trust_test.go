@@ -810,3 +810,11 @@ func (journal *globalNetworkReleaseTrustJournal) AdvanceGlobalNetworkReleaseTrus
 func (*globalNetworkReleaseTrustJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
+
+// AdvanceGlobalNetworkReleaseEffects is unused by trust checkpoint tests.
+func (*globalNetworkReleaseTrustJournal) AdvanceGlobalNetworkReleaseEffects(
+	context.Context,
+	state.AdvanceGlobalNetworkReleaseEffectsRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
+}

@@ -1404,7 +1404,7 @@ func TestNetworkReleaseAuthorityBindsCallerAndProjectsLoopbackApproval(t *testin
 		confirmLoopbacksResult: validNetworkReleasePlan(
 			"operation-release",
 			"intent-release",
-			state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+			state.GlobalNetworkReleasePlanPhaseOwnership,
 		),
 	}
 	coordinator.confirmLoopbacksResult.CheckpointRevision = 13
@@ -1462,7 +1462,7 @@ func TestNetworkReleaseAuthorityBindsCallerAndProjectsLoopbackApproval(t *testin
 	}
 	if coordinator.confirmLoopbacksRequest.LoopbackEvidence.Pool != evidence.Pool ||
 		len(coordinator.confirmLoopbacksRequest.LoopbackEvidence.Identities) != len(evidence.Identities) ||
-		result.Phase != control.NetworkReleasePhaseVerifyEffects ||
+		result.Phase != control.NetworkReleasePhaseOwnership ||
 		result.CheckpointRevision != 13 {
 		t.Fatalf("loopback confirmation = %#v, result = %#v", coordinator.confirmLoopbacksRequest, result)
 	}
@@ -1557,7 +1557,8 @@ func TestNetworkReleaseAuthorityRejectsInvalidLoopbackApprovalResults(t *testing
 	}
 }
 
-// TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations ensures confirmation advances only the selected checkpoint into effect verification.
+// TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations ensures confirmation advances only
+// the selected checkpoint into ownership after effect verification.
 func TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -1568,7 +1569,7 @@ func TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations(t *testing.T
 			plan: validNetworkReleasePlan(
 				"operation-other",
 				"intent-release",
-				state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+				state.GlobalNetworkReleasePlanPhaseOwnership,
 			),
 		},
 		{
@@ -1576,7 +1577,7 @@ func TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations(t *testing.T
 			plan: validNetworkReleasePlan(
 				"operation-release",
 				"intent-release",
-				state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+				state.GlobalNetworkReleasePlanPhaseOwnership,
 			),
 		},
 		{
@@ -1584,7 +1585,7 @@ func TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations(t *testing.T
 			plan: validNetworkReleasePlan(
 				"operation-release",
 				"intent-release",
-				state.GlobalNetworkReleasePlanPhaseLoopbacks,
+				state.GlobalNetworkReleasePlanPhaseVerifyEffects,
 			),
 		},
 	} {

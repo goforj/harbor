@@ -377,7 +377,8 @@ func (authority *NetworkReleaseAuthority) PrepareNetworkReleaseLoopbackApproval(
 	return preparation, nil
 }
 
-// ConfirmNetworkReleaseLoopbackApproval independently verifies complete loopback-pool removal and advances the release to effect verification.
+// ConfirmNetworkReleaseLoopbackApproval independently verifies complete loopback-pool removal,
+// verifies its effects, and advances the release to ownership.
 func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseLoopbackApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseOperation, error) {
 	ctx = normalizeContext(ctx)
 	if err := request.Validate(); err != nil {
@@ -398,8 +399,10 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseLoopbackApproval(
 	}
 	if result.Operation.ID != request.OperationID ||
 		result.CheckpointRevision <= request.ExpectedCheckpointRevision ||
-		result.Phase != control.NetworkReleasePhaseVerifyEffects {
-		return control.NetworkReleaseOperation{}, errors.New("network release loopback confirmation did not advance the requested checkpoint to effect verification")
+		result.Phase != control.NetworkReleasePhaseOwnership {
+		return control.NetworkReleaseOperation{}, errors.New(
+			"network release loopback confirmation did not advance the requested checkpoint through effect verification to ownership",
+		)
 	}
 	return result, nil
 }
