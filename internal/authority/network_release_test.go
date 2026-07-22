@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -22,21 +23,25 @@ import (
 
 // recordingNetworkReleaseCoordinator records the caller-bound start request before returning its scripted result.
 type recordingNetworkReleaseCoordinator struct {
-	request                reconcile.GlobalNetworkReleaseStartRequest
-	prepareRequest         reconcile.GlobalNetworkReleasePrepareLowPortsRequest
-	confirmRequest         reconcile.GlobalNetworkReleaseConfirmLowPortsRequest
-	prepareResolverRequest reconcile.GlobalNetworkReleasePrepareResolverRequest
-	confirmResolverRequest reconcile.GlobalNetworkReleaseConfirmResolverRequest
-	prepareTrustRequest    reconcile.GlobalNetworkReleasePrepareTrustRequest
-	confirmTrustRequest    reconcile.GlobalNetworkReleaseConfirmTrustRequest
-	record                 state.OperationRecord
-	prepareResult          ticketissuer.LowPortResult
-	confirmResult          state.GlobalNetworkReleasePlanRecord
-	prepareResolverResult  ticketissuer.ResolverResult
-	confirmResolverResult  state.GlobalNetworkReleasePlanRecord
-	prepareTrustResult     reconcile.GlobalNetworkReleaseTrustPreparation
-	confirmTrustResult     state.GlobalNetworkReleasePlanRecord
-	err                    error
+	request                 reconcile.GlobalNetworkReleaseStartRequest
+	prepareRequest          reconcile.GlobalNetworkReleasePrepareLowPortsRequest
+	confirmRequest          reconcile.GlobalNetworkReleaseConfirmLowPortsRequest
+	prepareResolverRequest  reconcile.GlobalNetworkReleasePrepareResolverRequest
+	confirmResolverRequest  reconcile.GlobalNetworkReleaseConfirmResolverRequest
+	prepareTrustRequest     reconcile.GlobalNetworkReleasePrepareTrustRequest
+	confirmTrustRequest     reconcile.GlobalNetworkReleaseConfirmTrustRequest
+	prepareLoopbacksRequest reconcile.GlobalNetworkReleasePrepareLoopbacksRequest
+	confirmLoopbacksRequest reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest
+	record                  state.OperationRecord
+	prepareResult           ticketissuer.LowPortResult
+	confirmResult           state.GlobalNetworkReleasePlanRecord
+	prepareResolverResult   ticketissuer.ResolverResult
+	confirmResolverResult   state.GlobalNetworkReleasePlanRecord
+	prepareTrustResult      reconcile.GlobalNetworkReleaseTrustPreparation
+	confirmTrustResult      state.GlobalNetworkReleasePlanRecord
+	prepareLoopbacksResult  ticketissuer.PoolResult
+	confirmLoopbacksResult  state.GlobalNetworkReleasePlanRecord
+	err                     error
 }
 
 // Start records the exact request so tests can assert the authority boundary.
@@ -79,6 +84,18 @@ func (c *recordingNetworkReleaseCoordinator) PrepareTrust(_ context.Context, req
 func (c *recordingNetworkReleaseCoordinator) ConfirmTrust(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	c.confirmTrustRequest = request
 	return c.confirmTrustResult, c.err
+}
+
+// PrepareLoopbacks records one authenticated loopback-pool capability request.
+func (c *recordingNetworkReleaseCoordinator) PrepareLoopbacks(_ context.Context, request reconcile.GlobalNetworkReleasePrepareLoopbacksRequest) (ticketissuer.PoolResult, error) {
+	c.prepareLoopbacksRequest = request
+	return c.prepareLoopbacksResult, c.err
+}
+
+// ConfirmLoopbacks records one authenticated loopback-pool release acknowledgement.
+func (c *recordingNetworkReleaseCoordinator) ConfirmLoopbacks(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	c.confirmLoopbacksRequest = request
+	return c.confirmLoopbacksResult, c.err
 }
 
 // recordingNetworkReleasePlans records an exact durable plan selection before returning its scripted result.
@@ -1374,6 +1391,364 @@ func TestClassifyNetworkReleaseErrorMapsTrustPublicationIndeterminate(t *testing
 	}
 }
 
+// TestNetworkReleaseAuthorityBindsCallerAndProjectsLoopbackApproval proves loopback authority is scoped to the authenticated user and selected checkpoint.
+func TestNetworkReleaseAuthorityBindsCallerAndProjectsLoopbackApproval(t *testing.T) {
+	caller := control.Caller{
+		Transport: local.PeerIdentity{
+			UserID: "authenticated-user",
+		},
+	}
+	evidence := validNetworkReleaseLoopbackEvidence()
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareLoopbacksResult: validNetworkReleaseLoopbackResult("operation-release"),
+		confirmLoopbacksResult: validNetworkReleasePlan(
+			"operation-release",
+			"intent-release",
+			state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+		),
+	}
+	coordinator.confirmLoopbacksResult.CheckpointRevision = 13
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseLoopbackApproval(
+		t.Context(),
+		caller,
+		control.PrepareNetworkReleaseLoopbackApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseLoopbackApproval() error = %v", err)
+	}
+	result, err := authority.ConfirmNetworkReleaseLoopbackApproval(
+		t.Context(),
+		caller,
+		control.ConfirmNetworkReleaseLoopbackApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+			LoopbackEvidence:           evidence,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkReleaseLoopbackApproval() error = %v", err)
+	}
+	if coordinator.prepareLoopbacksRequest.RequesterIdentity != caller.Transport.UserID ||
+		coordinator.confirmLoopbacksRequest.RequesterIdentity != caller.Transport.UserID {
+		t.Fatalf("loopback requester identities = %q, %q", coordinator.prepareLoopbacksRequest.RequesterIdentity, coordinator.confirmLoopbacksRequest.RequesterIdentity)
+	}
+	if coordinator.prepareLoopbacksRequest.OperationID != "operation-release" ||
+		coordinator.prepareLoopbacksRequest.ExpectedCheckpointRevision != 12 ||
+		coordinator.confirmLoopbacksRequest.OperationID != "operation-release" ||
+		coordinator.confirmLoopbacksRequest.ExpectedCheckpointRevision != 12 {
+		t.Fatalf("loopback approval requests = %#v, %#v", coordinator.prepareLoopbacksRequest, coordinator.confirmLoopbacksRequest)
+	}
+	if preparation.OperationID != "operation-release" ||
+		preparation.CheckpointRevision != 12 ||
+		preparation.PublicationDisposition != control.NetworkReleaseLoopbackPublicationDurable {
+		t.Fatalf("loopback preparation = %#v", preparation)
+	}
+	if preparation.Ticket.OperationID != coordinator.prepareLoopbacksResult.OperationID ||
+		preparation.Ticket.Reference != coordinator.prepareLoopbacksResult.Reference ||
+		preparation.Ticket.Operation != coordinator.prepareLoopbacksResult.Operation ||
+		preparation.Ticket.Pool != coordinator.prepareLoopbacksResult.Pool.String() ||
+		!preparation.Ticket.ExpiresAt.Equal(coordinator.prepareLoopbacksResult.ExpiresAt) {
+		t.Fatalf("projected loopback ticket = %#v, want %#v", preparation.Ticket, coordinator.prepareLoopbacksResult)
+	}
+	if coordinator.confirmLoopbacksRequest.LoopbackEvidence.Pool != evidence.Pool ||
+		len(coordinator.confirmLoopbacksRequest.LoopbackEvidence.Identities) != len(evidence.Identities) ||
+		result.Phase != control.NetworkReleasePhaseVerifyEffects ||
+		result.CheckpointRevision != 13 {
+		t.Fatalf("loopback confirmation = %#v, result = %#v", coordinator.confirmLoopbacksRequest, result)
+	}
+}
+
+// TestNetworkReleaseAuthorityReturnsIndeterminateLoopbackReference preserves the sole reference available after uncertain publication.
+func TestNetworkReleaseAuthorityReturnsIndeterminateLoopbackReference(t *testing.T) {
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareLoopbacksResult: validNetworkReleaseLoopbackResult("operation-release"),
+		err:                    ticketissuer.ErrPoolPublicationIndeterminate,
+	}
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseLoopbackApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.PrepareNetworkReleaseLoopbackApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrepareNetworkReleaseLoopbackApproval() error = %v", err)
+	}
+	if preparation.PublicationDisposition != control.NetworkReleaseLoopbackPublicationIndeterminate ||
+		preparation.Ticket.Reference != coordinator.prepareLoopbacksResult.Reference {
+		t.Fatalf("loopback preparation = %#v", preparation)
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsInvalidLoopbackApprovalResults prevents malformed or uncorrelated capability metadata from reaching callers.
+func TestNetworkReleaseAuthorityRejectsInvalidLoopbackApprovalResults(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*ticketissuer.PoolResult)
+	}{
+		{
+			name: "operation",
+			mutate: func(result *ticketissuer.PoolResult) {
+				result.OperationID = "operation-other"
+			},
+		},
+		{
+			name: "wrong helper operation",
+			mutate: func(result *ticketissuer.PoolResult) {
+				result.Operation = helper.OperationEnsureLoopbackPool
+			},
+		},
+		{
+			name: "expired",
+			mutate: func(result *ticketissuer.PoolResult) {
+				result.ExpiresAt = time.Now().UTC().Add(-time.Second)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := validNetworkReleaseLoopbackResult("operation-release")
+			test.mutate(&result)
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{
+					prepareLoopbacksResult: result,
+				},
+				func() (domain.OperationID, error) {
+					return "operation-generated", nil
+				},
+			)
+			if _, err := authority.PrepareNetworkReleaseLoopbackApproval(
+				t.Context(),
+				control.Caller{
+					Transport: local.PeerIdentity{
+						UserID: "authenticated-user",
+					},
+				},
+				control.PrepareNetworkReleaseLoopbackApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+				},
+			); err == nil {
+				t.Fatal("PrepareNetworkReleaseLoopbackApproval() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations ensures confirmation advances only the selected checkpoint into effect verification.
+func TestNetworkReleaseAuthorityRejectsInvalidLoopbackConfirmations(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		plan state.GlobalNetworkReleasePlanRecord
+	}{
+		{
+			name: "operation",
+			plan: validNetworkReleasePlan(
+				"operation-other",
+				"intent-release",
+				state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+			),
+		},
+		{
+			name: "checkpoint",
+			plan: validNetworkReleasePlan(
+				"operation-release",
+				"intent-release",
+				state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+			),
+		},
+		{
+			name: "phase",
+			plan: validNetworkReleasePlan(
+				"operation-release",
+				"intent-release",
+				state.GlobalNetworkReleasePlanPhaseLoopbacks,
+			),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name != "checkpoint" {
+				test.plan.CheckpointRevision = 13
+			}
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{
+					confirmLoopbacksResult: test.plan,
+				},
+				func() (domain.OperationID, error) {
+					return "operation-generated", nil
+				},
+			)
+			if _, err := authority.ConfirmNetworkReleaseLoopbackApproval(
+				t.Context(),
+				control.Caller{
+					Transport: local.PeerIdentity{
+						UserID: "authenticated-user",
+					},
+				},
+				control.ConfirmNetworkReleaseLoopbackApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+					LoopbackEvidence:           validNetworkReleaseLoopbackEvidence(),
+				},
+			); err == nil {
+				t.Fatal("ConfirmNetworkReleaseLoopbackApproval() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityMapsLoopbackApprovalErrors preserves cancellation and contention classifications at both loopback approval boundaries.
+func TestNetworkReleaseAuthorityMapsLoopbackApprovalErrors(t *testing.T) {
+	caller := control.Caller{
+		Transport: local.PeerIdentity{
+			UserID: "authenticated-user",
+		},
+	}
+	for _, test := range []struct {
+		name string
+		err  error
+		code rpc.ErrorCode
+	}{
+		{
+			name: "stale",
+			err:  &state.StaleRevisionError{},
+			code: rpc.ErrorCodeConflict,
+		},
+		{
+			name: "indeterminate",
+			err:  ticketissuer.ErrPoolPublicationIndeterminate,
+			code: rpc.ErrorCodeConflict,
+		},
+		{
+			name: "canceled",
+			err:  context.Canceled,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				&recordingNetworkReleaseCoordinator{
+					err: test.err,
+				},
+				func() (domain.OperationID, error) {
+					return "operation-generated", nil
+				},
+			)
+			for _, call := range []func() error{
+				func() error {
+					_, err := authority.PrepareNetworkReleaseLoopbackApproval(
+						t.Context(),
+						caller,
+						control.PrepareNetworkReleaseLoopbackApprovalRequest{
+							OperationID:                "operation-release",
+							ExpectedCheckpointRevision: 12,
+						},
+					)
+					return err
+				},
+				func() error {
+					_, err := authority.ConfirmNetworkReleaseLoopbackApproval(
+						t.Context(),
+						caller,
+						control.ConfirmNetworkReleaseLoopbackApprovalRequest{
+							OperationID:                "operation-release",
+							ExpectedCheckpointRevision: 12,
+							LoopbackEvidence:           validNetworkReleaseLoopbackEvidence(),
+						},
+					)
+					return err
+				},
+			} {
+				err := call()
+				if test.err == context.Canceled {
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("loopback approval error = %v, want cancellation", err)
+					}
+					continue
+				}
+				var handlerError *session.HandlerError
+				if !errors.As(err, &handlerError) || handlerError.Code() != test.code {
+					t.Fatalf("loopback approval error = %#v, want %s", err, test.code)
+				}
+			}
+		})
+	}
+}
+
+// TestNetworkReleaseAuthorityReturnsZeroLoopbackResultsForOrdinaryErrors prevents partially returned authority from escaping an unsuccessful coordinator call.
+func TestNetworkReleaseAuthorityReturnsZeroLoopbackResultsForOrdinaryErrors(t *testing.T) {
+	coordinator := &recordingNetworkReleaseCoordinator{
+		prepareLoopbacksResult: validNetworkReleaseLoopbackResult("operation-release"),
+		confirmLoopbacksResult: validNetworkReleasePlan(
+			"operation-release",
+			"intent-release",
+			state.GlobalNetworkReleasePlanPhaseVerifyEffects,
+		),
+		err: errors.New("publisher unavailable"),
+	}
+	authority := newNetworkReleaseAuthority(
+		&recordingNetworkReleasePlans{},
+		coordinator,
+		func() (domain.OperationID, error) {
+			return "operation-generated", nil
+		},
+	)
+	preparation, err := authority.PrepareNetworkReleaseLoopbackApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.PrepareNetworkReleaseLoopbackApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+		},
+	)
+	if err == nil || preparation != (control.NetworkReleaseLoopbackApprovalPreparation{}) {
+		t.Fatalf("PrepareNetworkReleaseLoopbackApproval() = %#v, %v; want zero result and error", preparation, err)
+	}
+	result, err := authority.ConfirmNetworkReleaseLoopbackApproval(
+		t.Context(),
+		control.Caller{
+			Transport: local.PeerIdentity{
+				UserID: "authenticated-user",
+			},
+		},
+		control.ConfirmNetworkReleaseLoopbackApprovalRequest{
+			OperationID:                "operation-release",
+			ExpectedCheckpointRevision: 12,
+			LoopbackEvidence:           validNetworkReleaseLoopbackEvidence(),
+		},
+	)
+	if err == nil || result != (control.NetworkReleaseOperation{}) {
+		t.Fatalf("ConfirmNetworkReleaseLoopbackApproval() = %#v, %v; want zero result and error", result, err)
+	}
+}
+
 // validNetworkReleasePlan constructs the smallest complete durable release plan needed by adapter tests.
 func validNetworkReleasePlan(operationID domain.OperationID, intentID domain.IntentID, phase state.GlobalNetworkReleasePlanPhase) state.GlobalNetworkReleasePlanRecord {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
@@ -1473,5 +1848,37 @@ func validNetworkReleaseTrustEvidence() helper.TrustMutationEvidence {
 		ObservationFingerprint: strings.Repeat("e", 64),
 		Mechanism:              networkpolicy.UbuntuSystemTrust,
 		Postcondition:          helper.TrustPostconditionOwnedAbsent,
+	}
+}
+
+// validNetworkReleaseLoopbackResult constructs one unexpired loopback-pool release ticket result.
+func validNetworkReleaseLoopbackResult(operationID domain.OperationID) ticketissuer.PoolResult {
+	return ticketissuer.PoolResult{
+		OperationID: operationID,
+		Reference:   helper.TicketReference(strings.Repeat("a", 64)),
+		Operation:   helper.OperationReleaseLoopbackPool,
+		Pool:        netip.MustParsePrefix("127.77.0.8/29"),
+		ExpiresAt:   time.Now().UTC().Add(time.Minute),
+	}
+}
+
+// validNetworkReleaseLoopbackEvidence constructs a complete canonical owned-absent loopback-pool receipt.
+func validNetworkReleaseLoopbackEvidence() helper.PoolMutationEvidence {
+	pool := netip.MustParsePrefix("127.77.0.8/29")
+	identities := make([]helper.MutationEvidence, 0, 8)
+	address := pool.Addr()
+	for range 8 {
+		identities = append(identities, helper.MutationEvidence{
+			Address: address.String(),
+			Observation: helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: strings.Repeat("b", 64),
+			},
+		})
+		address = address.Next()
+	}
+	return helper.PoolMutationEvidence{
+		Pool:       pool.String(),
+		Identities: identities,
 	}
 }

@@ -52,7 +52,7 @@ type ServerConfig struct {
 	NetworkDataPlaneSetupAuthority NetworkDataPlaneSetupAuthority
 	// NetworkReleaseAuthority optionally enables machine-global network release control.
 	NetworkReleaseAuthority NetworkReleaseAuthority
-	// NetworkReleaseApprovalAuthority optionally enables machine-global low-port and resolver release approval.
+	// NetworkReleaseApprovalAuthority optionally enables machine-global low-port, resolver, trust, and loopback-pool release approval.
 	NetworkReleaseApprovalAuthority NetworkReleaseApprovalAuthority
 }
 
@@ -193,6 +193,8 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		handlers[methodNetworkReleaseResolverConfirm] = server.networkReleaseResolverConfirmHandler(transportPeer)
 		handlers[methodNetworkReleaseTrustPrepare] = server.networkReleaseTrustPrepareHandler(transportPeer)
 		handlers[methodNetworkReleaseTrustConfirm] = server.networkReleaseTrustConfirmHandler(transportPeer)
+		handlers[methodNetworkReleaseLoopbackPrepare] = server.networkReleaseLoopbackPrepareHandler(transportPeer)
+		handlers[methodNetworkReleaseLoopbackConfirm] = server.networkReleaseLoopbackConfirmHandler(transportPeer)
 	}
 
 	controlSession, err := session.NewServer(session.ServerConfig{

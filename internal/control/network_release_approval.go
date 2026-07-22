@@ -272,6 +272,151 @@ func validateNetworkReleaseResolverEvidence(evidence helper.ResolverMutationEvid
 	return nil
 }
 
+// PrepareNetworkReleaseLoopbackApprovalRequest selects the exact release checkpoint that may issue loopback-pool authority.
+type PrepareNetworkReleaseLoopbackApprovalRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// ExpectedCheckpointRevision fences preparation to one retained release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+}
+
+// Validate reports whether the request identifies one bounded release checkpoint.
+func (request PrepareNetworkReleaseLoopbackApprovalRequest) Validate() error {
+	return validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision)
+}
+
+// NetworkReleaseLoopbackApprovalTicket is non-secret launch metadata for one loopback-pool release.
+type NetworkReleaseLoopbackApprovalTicket struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// Reference identifies the opaque helper capability.
+	Reference helper.TicketReference `json:"reference"`
+	// Operation fixes the helper action to loopback-pool release.
+	Operation helper.Operation `json:"operation"`
+	// Pool identifies the complete loopback pool being released.
+	Pool string `json:"pool"`
+	// ExpiresAt limits the lifetime of the helper capability.
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Validate reports whether ticket metadata can launch only the selected loopback-pool release.
+func (ticket NetworkReleaseLoopbackApprovalTicket) Validate() error {
+	if err := ticket.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := ticket.Reference.Validate(); err != nil {
+		return err
+	}
+	if ticket.Operation != helper.OperationReleaseLoopbackPool {
+		return fmt.Errorf("network release loopback operation is %q, expected %q", ticket.Operation, helper.OperationReleaseLoopbackPool)
+	}
+	if _, err := parseCanonicalNetworkSetupPool(ticket.Pool); err != nil {
+		return fmt.Errorf("network release loopback pool: %w", err)
+	}
+	return validateNetworkReleaseLoopbackExpiry(ticket.ExpiresAt)
+}
+
+// NetworkReleaseLoopbackPublicationDisposition identifies whether ticket publication completed durably or needs reference-based reconciliation.
+type NetworkReleaseLoopbackPublicationDisposition string
+
+const (
+	// NetworkReleaseLoopbackPublicationDurable means the capability publisher confirmed durable storage.
+	NetworkReleaseLoopbackPublicationDurable NetworkReleaseLoopbackPublicationDisposition = "durable"
+	// NetworkReleaseLoopbackPublicationIndeterminate means the returned reference is the only capability that may be reconciled.
+	NetworkReleaseLoopbackPublicationIndeterminate NetworkReleaseLoopbackPublicationDisposition = "indeterminate"
+)
+
+// Validate rejects publication states that would let callers infer unsafe retry behavior.
+func (disposition NetworkReleaseLoopbackPublicationDisposition) Validate() error {
+	switch disposition {
+	case NetworkReleaseLoopbackPublicationDurable, NetworkReleaseLoopbackPublicationIndeterminate:
+		return nil
+	default:
+		return fmt.Errorf("network release loopback publication disposition %q is unsupported", disposition)
+	}
+}
+
+// NetworkReleaseLoopbackApprovalPreparation reports one helper capability for an exact release checkpoint.
+type NetworkReleaseLoopbackApprovalPreparation struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// CheckpointRevision identifies the retained release checkpoint.
+	CheckpointRevision domain.Sequence `json:"checkpoint_revision"`
+	// PublicationDisposition tells the caller whether to redeem or reconcile the one returned reference without reissuing.
+	PublicationDisposition NetworkReleaseLoopbackPublicationDisposition `json:"publication_disposition"`
+	// Ticket supplies the loopback-pool release helper capability.
+	Ticket NetworkReleaseLoopbackApprovalTicket `json:"ticket"`
+}
+
+// Validate reports whether preparation and ticket identify the same selected release operation.
+func (preparation NetworkReleaseLoopbackApprovalPreparation) Validate() error {
+	if err := validateNetworkReleaseApprovalSelection(preparation.OperationID, preparation.CheckpointRevision); err != nil {
+		return err
+	}
+	if err := preparation.PublicationDisposition.Validate(); err != nil {
+		return err
+	}
+	if err := preparation.Ticket.Validate(); err != nil {
+		return err
+	}
+	if preparation.Ticket.OperationID != preparation.OperationID {
+		return errors.New("network release loopback ticket belongs to another operation")
+	}
+	return nil
+}
+
+// ConfirmNetworkReleaseLoopbackApprovalRequest selects one release checkpoint and supplies loopback-pool release evidence.
+type ConfirmNetworkReleaseLoopbackApprovalRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// ExpectedCheckpointRevision fences confirmation to one retained release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+	// LoopbackEvidence proves the complete loopback pool is absent.
+	LoopbackEvidence helper.PoolMutationEvidence `json:"loopback_evidence"`
+}
+
+// Validate reports whether confirmation carries one complete owned-absent loopback-pool release postcondition.
+func (request ConfirmNetworkReleaseLoopbackApprovalRequest) Validate() error {
+	if err := validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	return validateNetworkReleaseLoopbackEvidence(request.LoopbackEvidence)
+}
+
+// validateNetworkReleaseLoopbackExpiry rejects ambiguous helper ticket lifetimes before callers redeem them.
+func validateNetworkReleaseLoopbackExpiry(expiresAt time.Time) error {
+	if expiresAt.IsZero() || expiresAt.Location() != time.UTC {
+		return errors.New("network release loopback expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
+// validateNetworkReleaseLoopbackEvidence confines confirmation to a complete canonical loopback-pool absence proof.
+func validateNetworkReleaseLoopbackEvidence(evidence helper.PoolMutationEvidence) error {
+	pool, err := parseCanonicalNetworkSetupPool(evidence.Pool)
+	if err != nil {
+		return fmt.Errorf("network release loopback evidence: %w", err)
+	}
+	if len(evidence.Identities) != networkSetupPoolAddresses {
+		return fmt.Errorf("network release loopback evidence must contain exactly %d identities", networkSetupPoolAddresses)
+	}
+
+	address := pool.Addr()
+	for _, identity := range evidence.Identities {
+		if identity.Address != address.String() {
+			return errors.New("network release loopback evidence identities must enumerate the complete pool in canonical order")
+		}
+		if err := identity.Observation.Validate(); err != nil {
+			return errors.New("network release loopback evidence observation is invalid")
+		}
+		if identity.Observation.State != helper.ObservationAbsent {
+			return errors.New("network release loopback evidence observations must be absent")
+		}
+		address = address.Next()
+	}
+	return nil
+}
+
 // PrepareNetworkReleaseTrustApprovalRequest selects the exact release checkpoint that may issue trust-release authority.
 type PrepareNetworkReleaseTrustApprovalRequest struct {
 	// OperationID identifies the durable global release operation.

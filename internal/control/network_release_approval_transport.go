@@ -17,7 +17,7 @@ import (
 
 const maximumNetworkReleaseApprovalConfirmationRequestBytes = helper.MaxResponseBytes + maximumNetworkReleaseRequestBytes
 
-// NetworkReleaseApprovalAuthority owns the optional low-port and resolver release approval control surface.
+// NetworkReleaseApprovalAuthority owns the optional low-port, resolver, trust, and loopback-pool release approval control surface.
 type NetworkReleaseApprovalAuthority interface {
 	// PrepareNetworkReleaseApproval publishes one caller-bound low-port release capability.
 	PrepareNetworkReleaseApproval(context.Context, Caller, PrepareNetworkReleaseApprovalRequest) (NetworkReleaseApprovalPreparation, error)
@@ -31,6 +31,10 @@ type NetworkReleaseApprovalAuthority interface {
 	PrepareNetworkReleaseTrustApproval(context.Context, Caller, PrepareNetworkReleaseTrustApprovalRequest) (NetworkReleaseTrustApprovalPreparation, error)
 	// ConfirmNetworkReleaseTrustApproval verifies optional trust removal and advances the retained release plan.
 	ConfirmNetworkReleaseTrustApproval(context.Context, Caller, ConfirmNetworkReleaseTrustApprovalRequest) (NetworkReleaseOperation, error)
+	// PrepareNetworkReleaseLoopbackApproval publishes one caller-bound loopback-pool release capability.
+	PrepareNetworkReleaseLoopbackApproval(context.Context, Caller, PrepareNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseLoopbackApprovalPreparation, error)
+	// ConfirmNetworkReleaseLoopbackApproval verifies loopback-pool removal and advances the retained release plan.
+	ConfirmNetworkReleaseLoopbackApproval(context.Context, Caller, ConfirmNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseOperation, error)
 }
 
 // networkReleaseApprovalAuthorityIsNil rejects typed-nil optional implementations before capability negotiation.
@@ -63,6 +67,12 @@ type networkReleaseResolverApprovalPreparationResponse struct {
 type networkReleaseTrustApprovalPreparationResponse struct {
 	// Preparation carries the reviewed optional helper capability.
 	Preparation NetworkReleaseTrustApprovalPreparation `json:"preparation"`
+}
+
+// networkReleaseLoopbackApprovalPreparationResponse keeps loopback-pool launch metadata extensible around its reviewed result.
+type networkReleaseLoopbackApprovalPreparationResponse struct {
+	// Preparation carries the reviewed helper capability.
+	Preparation NetworkReleaseLoopbackApprovalPreparation `json:"preparation"`
 }
 
 // PrepareNetworkReleaseApproval requests one caller-bound low-port release capability.
@@ -406,6 +416,121 @@ func (client *Client) ConfirmNetworkReleaseTrustApproval(ctx context.Context, re
 	return response.Release, nil
 }
 
+// PrepareNetworkReleaseLoopbackApproval requests one caller-bound loopback-pool release capability.
+func (client *Client) PrepareNetworkReleaseLoopbackApproval(ctx context.Context, request PrepareNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseLoopbackApprovalPreparation, error) {
+	if err := request.Validate(); err != nil {
+		return NetworkReleaseLoopbackApprovalPreparation{}, err
+	}
+	payload, err := client.networkReleaseApprovalCall(
+		ctx,
+		CapabilityNetworkReleaseLoopbackApprovalV1,
+		methodNetworkReleaseLoopbackPrepare,
+		request,
+	)
+	if err != nil {
+		return NetworkReleaseLoopbackApprovalPreparation{}, err
+	}
+	var response networkReleaseLoopbackApprovalPreparationResponse
+	if err := decodeNetworkReleaseLoopbackApprovalPreparationResponse(payload, &response); err != nil {
+		return NetworkReleaseLoopbackApprovalPreparation{}, err
+	}
+	if err := validateNetworkReleaseLoopbackApprovalPreparationCorrelation(request, response.Preparation); err != nil {
+		return NetworkReleaseLoopbackApprovalPreparation{}, err
+	}
+	return response.Preparation, nil
+}
+
+// decodeNetworkReleaseLoopbackApprovalPreparationResponse rejects ambiguous loopback-pool ticket response fields before validation.
+func decodeNetworkReleaseLoopbackApprovalPreparationResponse(payload []byte, response *networkReleaseLoopbackApprovalPreparationResponse) error {
+	fields, err := decodeBoundedNetworkReleaseObject(
+		payload,
+		maximumNetworkReleaseResponseBytes,
+		"network release loopback preparation response",
+		"preparation",
+	)
+	if err != nil {
+		return err
+	}
+	preparationFields, err := decodeBoundedNetworkReleaseObject(
+		fields["preparation"],
+		maximumNetworkReleaseResponseBytes,
+		"network release loopback preparation",
+		"operation_id",
+		"checkpoint_revision",
+		"publication_disposition",
+		"ticket",
+	)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(preparationFields["operation_id"], &response.Preparation.OperationID); err != nil {
+		return fmt.Errorf("decode network release loopback preparation operation ID: %w", err)
+	}
+	if err := json.Unmarshal(preparationFields["checkpoint_revision"], &response.Preparation.CheckpointRevision); err != nil {
+		return fmt.Errorf("decode network release loopback preparation checkpoint revision: %w", err)
+	}
+	if err := json.Unmarshal(preparationFields["publication_disposition"], &response.Preparation.PublicationDisposition); err != nil {
+		return fmt.Errorf("decode network release loopback preparation publication disposition: %w", err)
+	}
+	ticketFields, err := decodeBoundedNetworkReleaseObject(
+		preparationFields["ticket"],
+		maximumNetworkReleaseResponseBytes,
+		"network release loopback ticket",
+		"operation_id",
+		"reference",
+		"operation",
+		"pool",
+		"expires_at",
+	)
+	if err != nil {
+		return err
+	}
+	ticket := &response.Preparation.Ticket
+	if err := json.Unmarshal(ticketFields["operation_id"], &ticket.OperationID); err != nil {
+		return fmt.Errorf("decode network release loopback ticket operation ID: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["reference"], &ticket.Reference); err != nil {
+		return fmt.Errorf("decode network release loopback ticket reference: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["operation"], &ticket.Operation); err != nil {
+		return fmt.Errorf("decode network release loopback ticket operation: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["pool"], &ticket.Pool); err != nil {
+		return fmt.Errorf("decode network release loopback ticket pool: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["expires_at"], &ticket.ExpiresAt); err != nil {
+		return fmt.Errorf("decode network release loopback ticket expiry: %w", err)
+	}
+	if err := response.Preparation.Validate(); err != nil {
+		return fmt.Errorf("validate network release loopback preparation response: %w", err)
+	}
+	return nil
+}
+
+// ConfirmNetworkReleaseLoopbackApproval submits exact loopback-pool release evidence and advances the retained plan.
+func (client *Client) ConfirmNetworkReleaseLoopbackApproval(ctx context.Context, request ConfirmNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseOperation, error) {
+	if err := request.Validate(); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	payload, err := client.networkReleaseApprovalCall(
+		ctx,
+		CapabilityNetworkReleaseLoopbackApprovalV1,
+		methodNetworkReleaseLoopbackConfirm,
+		request,
+	)
+	if err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	var response networkReleaseResponse
+	if err := decodeNetworkReleaseResponse(payload, &response); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	if err := validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(request, response.Release); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	return response.Release, nil
+}
+
 // networkReleaseApprovalCall enforces independent approval capability negotiation before dispatch.
 func (client *Client) networkReleaseApprovalCall(ctx context.Context, capability rpc.Capability, method string, request any) ([]byte, error) {
 	if !containsCapability(client.peer.Session.Capabilities, capability) {
@@ -523,6 +648,53 @@ func (server *Server) networkReleaseTrustConfirmHandler(peer local.PeerIdentity)
 	)
 }
 
+// networkReleaseLoopbackPrepareHandler admits one exact release checkpoint for loopback-pool helper authorization.
+func (server *Server) networkReleaseLoopbackPrepareHandler(peer local.PeerIdentity) session.Handler {
+	return networkReleaseApprovalHandler(
+		server,
+		peer,
+		CapabilityNetworkReleaseLoopbackApprovalV1,
+		decodePrepareNetworkReleaseLoopbackApprovalRequest,
+		func(ctx context.Context, caller Caller, request PrepareNetworkReleaseLoopbackApprovalRequest) (any, error) {
+			preparation, err := server.config.NetworkReleaseApprovalAuthority.PrepareNetworkReleaseLoopbackApproval(ctx, caller, request)
+			if err != nil {
+				return nil, err
+			}
+			if err := preparation.Validate(); err != nil {
+				return nil, err
+			}
+			if err := validateNetworkReleaseLoopbackApprovalPreparationCorrelation(request, preparation); err != nil {
+				return nil, err
+			}
+			return networkReleaseLoopbackApprovalPreparationResponse{
+				Preparation: preparation,
+			}, nil
+		},
+	)
+}
+
+// networkReleaseLoopbackConfirmHandler admits canonical loopback-pool absence evidence for one release checkpoint.
+func (server *Server) networkReleaseLoopbackConfirmHandler(peer local.PeerIdentity) session.Handler {
+	return networkReleaseApprovalHandler(
+		server,
+		peer,
+		CapabilityNetworkReleaseLoopbackApprovalV1,
+		decodeConfirmNetworkReleaseLoopbackApprovalRequest,
+		func(ctx context.Context, caller Caller, request ConfirmNetworkReleaseLoopbackApprovalRequest) (any, error) {
+			release, err := server.config.NetworkReleaseApprovalAuthority.ConfirmNetworkReleaseLoopbackApproval(ctx, caller, request)
+			if err != nil {
+				return nil, err
+			}
+			if err := validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(request, release); err != nil {
+				return nil, err
+			}
+			return networkReleaseResponse{
+				Release: release,
+			}, nil
+		},
+	)
+}
+
 // networkReleaseApprovalHandler establishes the caller and blocks every unnegotiated approval method.
 func networkReleaseApprovalHandler[T any](server *Server, peer local.PeerIdentity, capability rpc.Capability, decode func([]byte) (T, error), call func(context.Context, Caller, T) (any, error)) session.Handler {
 	return func(ctx context.Context, request session.Request) (any, error) {
@@ -598,6 +770,27 @@ func validateNetworkReleaseTrustApprovalConfirmationCorrelation(request ConfirmN
 	}
 	if release.Operation.ID != request.OperationID || release.Phase != NetworkReleasePhaseLoopbacks || release.CheckpointRevision <= request.ExpectedCheckpointRevision {
 		return errors.New("network release trust confirmation does not match the requested checkpoint")
+	}
+	return nil
+}
+
+// validateNetworkReleaseLoopbackApprovalPreparationCorrelation binds a loopback-pool ticket to the selected operation and checkpoint.
+func validateNetworkReleaseLoopbackApprovalPreparationCorrelation(request PrepareNetworkReleaseLoopbackApprovalRequest, preparation NetworkReleaseLoopbackApprovalPreparation) error {
+	if preparation.OperationID != request.OperationID || preparation.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return errors.New("network release loopback preparation does not match the requested checkpoint")
+	}
+	return nil
+}
+
+// validateNetworkReleaseLoopbackApprovalConfirmationCorrelation binds verification progress to a selected checkpoint after loopback-pool release.
+func validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(request ConfirmNetworkReleaseLoopbackApprovalRequest, release NetworkReleaseOperation) error {
+	if err := release.Validate(); err != nil {
+		return err
+	}
+	if release.Operation.ID != request.OperationID ||
+		release.Phase != NetworkReleasePhaseVerifyEffects ||
+		release.CheckpointRevision <= request.ExpectedCheckpointRevision {
+		return errors.New("network release loopback confirmation does not match the requested checkpoint")
 	}
 	return nil
 }
@@ -702,6 +895,43 @@ func decodeConfirmNetworkReleaseTrustApprovalRequest(payload []byte) (ConfirmNet
 	return request, request.Validate()
 }
 
+// decodePrepareNetworkReleaseLoopbackApprovalRequest rejects authority beyond one exact release checkpoint.
+func decodePrepareNetworkReleaseLoopbackApprovalRequest(payload []byte) (PrepareNetworkReleaseLoopbackApprovalRequest, error) {
+	var request PrepareNetworkReleaseLoopbackApprovalRequest
+	fields, err := decodeNetworkReleaseObject(payload, "network release loopback preparation", "operation_id", "expected_checkpoint_revision")
+	if err != nil {
+		return request, err
+	}
+	if err := decodeNetworkReleaseApprovalSelection(fields, &request.OperationID, &request.ExpectedCheckpointRevision); err != nil {
+		return request, err
+	}
+	return request, request.Validate()
+}
+
+// decodeConfirmNetworkReleaseLoopbackApprovalRequest rejects extra authority and delegates evidence parsing to the helper decoder.
+func decodeConfirmNetworkReleaseLoopbackApprovalRequest(payload []byte) (ConfirmNetworkReleaseLoopbackApprovalRequest, error) {
+	var request ConfirmNetworkReleaseLoopbackApprovalRequest
+	fields, err := decodeBoundedNetworkReleaseObject(
+		payload,
+		maximumNetworkReleaseApprovalConfirmationRequestBytes,
+		"network release loopback confirmation",
+		"operation_id",
+		"expected_checkpoint_revision",
+		"loopback_evidence",
+	)
+	if err != nil {
+		return request, err
+	}
+	if err := decodeNetworkReleaseApprovalSelection(fields, &request.OperationID, &request.ExpectedCheckpointRevision); err != nil {
+		return request, err
+	}
+	request.LoopbackEvidence, err = decodeNetworkReleaseLoopbackEvidence(fields["loopback_evidence"])
+	if err != nil {
+		return request, err
+	}
+	return request, request.Validate()
+}
+
 // decodeNetworkReleaseApprovalSelection decodes the shared operation and optimistic checkpoint selector.
 func decodeNetworkReleaseApprovalSelection(fields map[string]json.RawMessage, operationID *domain.OperationID, revision *domain.Sequence) error {
 	if err := json.Unmarshal(fields["operation_id"], operationID); err != nil {
@@ -759,6 +989,34 @@ func decodeNetworkReleaseTrustEvidence(body json.RawMessage) (helper.TrustMutati
 	evidence := *response.Result.TrustEvidence
 	if err := validateNetworkReleaseTrustEvidence(evidence); err != nil {
 		return helper.TrustMutationEvidence{}, err
+	}
+	return evidence, nil
+}
+
+// decodeNetworkReleaseLoopbackEvidence reconstructs the authoritative helper response envelope for loopback-pool release evidence.
+func decodeNetworkReleaseLoopbackEvidence(body json.RawMessage) (helper.PoolMutationEvidence, error) {
+	envelope := make([]byte, 0, len(body)+128)
+	envelope = fmt.Appendf(
+		envelope,
+		`{"version":%d,"ok":true,"result":{"operation":"release_loopback_pool","pool_evidence":`,
+		helper.ProtocolVersion,
+	)
+	envelope = append(envelope, body...)
+	envelope = append(envelope, '}', '}')
+	response, err := helper.DecodeResponse(bytes.NewReader(envelope))
+	if err != nil {
+		return helper.PoolMutationEvidence{}, fmt.Errorf("network release loopback evidence is invalid: %w", err)
+	}
+	if !response.OK ||
+		response.Error != nil ||
+		response.Result == nil ||
+		response.Result.Operation != helper.OperationReleaseLoopbackPool ||
+		response.Result.PoolEvidence == nil {
+		return helper.PoolMutationEvidence{}, errors.New("network release loopback evidence is not a successful pool release result")
+	}
+	evidence := *response.Result.PoolEvidence
+	if err := validateNetworkReleaseLoopbackEvidence(evidence); err != nil {
+		return helper.PoolMutationEvidence{}, err
 	}
 	return evidence, nil
 }

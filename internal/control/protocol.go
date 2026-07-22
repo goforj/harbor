@@ -32,6 +32,8 @@ const (
 	CapabilityNetworkReleaseResolverApprovalV1 rpc.Capability = "control.network-release-resolver-approval.v1"
 	// CapabilityNetworkReleaseTrustApprovalV1 identifies machine-global trust release approval.
 	CapabilityNetworkReleaseTrustApprovalV1 rpc.Capability = "control.network-release-trust-approval.v1"
+	// CapabilityNetworkReleaseLoopbackApprovalV1 identifies machine-global loopback-pool release approval.
+	CapabilityNetworkReleaseLoopbackApprovalV1 rpc.Capability = "control.network-release-loopback-approval.v1"
 	// CapabilityProjectActivityV1 identifies bounded current-session project output reads.
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectActivityWaitV1 identifies bounded cursor waits on current-session project output.
@@ -76,6 +78,8 @@ const (
 	methodNetworkReleaseResolverConfirm       = "control.v1.network.release.resolver.confirm"
 	methodNetworkReleaseTrustPrepare          = "control.v1.network.release.trust.prepare"
 	methodNetworkReleaseTrustConfirm          = "control.v1.network.release.trust.confirm"
+	methodNetworkReleaseLoopbackPrepare       = "control.v1.network.release.loopback.prepare"
+	methodNetworkReleaseLoopbackConfirm       = "control.v1.network.release.loopback.confirm"
 	methodProjectActivity                     = "control.v1.project.activity"
 	methodServiceLogs                         = "control.v1.project.service.logs"
 	methodProjectStart                        = "control.v1.project.start"
@@ -294,6 +298,7 @@ func capabilities() []rpc.Capability {
 		CapabilityNetworkDataPlaneSetupV1,
 		CapabilityNetworkReleaseV1,
 		CapabilityNetworkReleaseApprovalV1,
+		CapabilityNetworkReleaseLoopbackApprovalV1,
 		CapabilityNetworkReleaseResolverApprovalV1,
 		CapabilityNetworkReleaseTrustApprovalV1,
 		CapabilityNetworkResolverSetupV1,
@@ -320,7 +325,8 @@ func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool, network
 			(capability == CapabilityNetworkReleaseV1 && !networkRelease) ||
 			(capability == CapabilityNetworkReleaseApprovalV1 && !networkReleaseApproval) ||
 			(capability == CapabilityNetworkReleaseResolverApprovalV1 && !networkReleaseApproval) ||
-			(capability == CapabilityNetworkReleaseTrustApprovalV1 && !networkReleaseApproval)
+			(capability == CapabilityNetworkReleaseTrustApprovalV1 && !networkReleaseApproval) ||
+			(capability == CapabilityNetworkReleaseLoopbackApprovalV1 && !networkReleaseApproval)
 	})
 	return capabilities
 }

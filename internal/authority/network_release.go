@@ -37,6 +37,10 @@ type networkReleaseCoordinator interface {
 	PrepareTrust(context.Context, reconcile.GlobalNetworkReleasePrepareTrustRequest) (reconcile.GlobalNetworkReleaseTrustPreparation, error)
 	// ConfirmTrust verifies trust removal or preservation and advances the retained release plan.
 	ConfirmTrust(context.Context, reconcile.GlobalNetworkReleaseConfirmTrustRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// PrepareLoopbacks publishes one bounded loopback-pool release capability.
+	PrepareLoopbacks(context.Context, reconcile.GlobalNetworkReleasePrepareLoopbacksRequest) (ticketissuer.PoolResult, error)
+	// ConfirmLoopbacks verifies complete loopback-pool removal and advances the retained release plan.
+	ConfirmLoopbacks(context.Context, reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // NetworkReleaseAuthority adapts the durable global release lifecycle to its optional control surface.
@@ -312,6 +316,94 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseTrustApproval(ctx
 	return result, nil
 }
 
+// PrepareNetworkReleaseLoopbackApproval binds release-loopback-pool helper authority to the authenticated transport user.
+func (authority *NetworkReleaseAuthority) PrepareNetworkReleaseLoopbackApproval(ctx context.Context, caller control.Caller, request control.PrepareNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseLoopbackApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseLoopbackApprovalPreparation{}, err
+	}
+	result, err := authority.coordinator.PrepareLoopbacks(ctx, reconcile.GlobalNetworkReleasePrepareLoopbacksRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+	})
+	publicationDisposition := control.NetworkReleaseLoopbackPublicationDurable
+	if errors.Is(err, ticketissuer.ErrPoolPublicationIndeterminate) {
+		publicationDisposition = control.NetworkReleaseLoopbackPublicationIndeterminate
+	} else if err != nil {
+		return control.NetworkReleaseLoopbackApprovalPreparation{}, classifyNetworkReleaseError(err)
+	}
+	if err := result.Validate(time.Now().UTC()); err != nil {
+		resultErr := fmt.Errorf("network release loopback preparation result: %w", err)
+		if publicationDisposition == control.NetworkReleaseLoopbackPublicationIndeterminate {
+			return control.NetworkReleaseLoopbackApprovalPreparation{}, classifyNetworkReleaseError(
+				errors.Join(ticketissuer.ErrPoolPublicationIndeterminate, resultErr),
+			)
+		}
+		return control.NetworkReleaseLoopbackApprovalPreparation{}, resultErr
+	}
+	preparation := control.NetworkReleaseLoopbackApprovalPreparation{
+		OperationID:            request.OperationID,
+		CheckpointRevision:     request.ExpectedCheckpointRevision,
+		PublicationDisposition: publicationDisposition,
+		Ticket: control.NetworkReleaseLoopbackApprovalTicket{
+			OperationID: result.OperationID,
+			Reference:   result.Reference,
+			Operation:   result.Operation,
+			Pool:        result.Pool.String(),
+			ExpiresAt:   result.ExpiresAt,
+		},
+	}
+	if err := preparation.Validate(); err != nil {
+		preparationErr := fmt.Errorf("network release loopback preparation: %w", err)
+		if publicationDisposition == control.NetworkReleaseLoopbackPublicationIndeterminate {
+			return control.NetworkReleaseLoopbackApprovalPreparation{}, classifyNetworkReleaseError(
+				errors.Join(ticketissuer.ErrPoolPublicationIndeterminate, preparationErr),
+			)
+		}
+		return control.NetworkReleaseLoopbackApprovalPreparation{}, preparationErr
+	}
+	if preparation.OperationID != request.OperationID ||
+		preparation.CheckpointRevision != request.ExpectedCheckpointRevision ||
+		preparation.Ticket.OperationID != request.OperationID {
+		correlationErr := errors.New("network release loopback preparation differs from the requested checkpoint")
+		if publicationDisposition == control.NetworkReleaseLoopbackPublicationIndeterminate {
+			return control.NetworkReleaseLoopbackApprovalPreparation{}, classifyNetworkReleaseError(
+				errors.Join(ticketissuer.ErrPoolPublicationIndeterminate, correlationErr),
+			)
+		}
+		return control.NetworkReleaseLoopbackApprovalPreparation{}, correlationErr
+	}
+	return preparation, nil
+}
+
+// ConfirmNetworkReleaseLoopbackApproval independently verifies complete loopback-pool removal and advances the release to effect verification.
+func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseLoopbackApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	plan, err := authority.coordinator.ConfirmLoopbacks(ctx, reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+		LoopbackEvidence:           request.LoopbackEvidence,
+	})
+	if err != nil {
+		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
+	}
+	result, err := networkReleaseOperation(plan)
+	if err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.CheckpointRevision <= request.ExpectedCheckpointRevision ||
+		result.Phase != control.NetworkReleasePhaseVerifyEffects {
+		return control.NetworkReleaseOperation{}, errors.New("network release loopback confirmation did not advance the requested checkpoint to effect verification")
+	}
+	return result, nil
+}
+
 // networkReleaseTrustApprovalPreparation projects trusted issuer metadata while preserving ownership and publication invariants.
 func networkReleaseTrustApprovalPreparation(request control.PrepareNetworkReleaseTrustApprovalRequest, result reconcile.GlobalNetworkReleaseTrustPreparation, publicationDisposition control.NetworkReleaseTrustPublicationDisposition) (control.NetworkReleaseTrustApprovalPreparation, error) {
 	preparation := control.NetworkReleaseTrustApprovalPreparation{
@@ -448,7 +540,8 @@ func classifyNetworkReleaseError(err error) error {
 		errors.As(err, &active) ||
 		errors.As(err, &stale) ||
 		errors.Is(err, ticketissuer.ErrResolverPublicationIndeterminate) ||
-		errors.Is(err, ticketissuer.ErrTrustPublicationIndeterminate) {
+		errors.Is(err, ticketissuer.ErrTrustPublicationIndeterminate) ||
+		errors.Is(err, ticketissuer.ErrPoolPublicationIndeterminate) {
 		return control.NewNetworkReleaseConflictError(err)
 	}
 	return err
