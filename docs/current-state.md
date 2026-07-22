@@ -336,4 +336,6 @@ Managed starts now fail closed before process launch when a descriptor includes 
 
 The shared Redis driver now follows the same contract across cache, queue, events, and storage: descriptors emit only `REDIS_HOST` and `REDIS_PORT`, and Harbor fills them from the observed project-private publication rather than the Compose-internal hostname.
 
+Credential-free address consumers now use the same boundary: Memcached emits `CACHE_ADDRESSES` and Kafka emits `EVENTS_BROKERS`, both materialized as the exact project-private `host:port` value. URL/DSN-shaped drivers remain withheld until their scheme, database, and credential semantics can be represented without guessing.
+
 The focused Harbor and GoForj unit and race checks for this slice pass. Full GoForj package validation still depends on a local `templates/demo/frontend/node_modules` fixture and a native Docker environment; cross-compilation or a remote Docker endpoint is not macOS product evidence.

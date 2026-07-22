@@ -399,4 +399,6 @@ The cross-repository runtime-plan slice now transports exact declared service en
 
 The same explicit contract now covers every shared Redis driver (cache, queue, events, and storage). A generated descriptor emits `REDIS_HOST` and `REDIS_PORT` metadata, and Harbor's runtime plan supplies the observed loopback/private-port pair to the App overlay. The Redis slice is committed as GoForj `3e36cb1b` with Harbor planner coverage in `ea973b9`.
 
+The address-valued extension now covers Memcached `CACHE_ADDRESSES` and Kafka `EVENTS_BROKERS`. GoForj emits only those declared keys as `address` metadata, and Harbor materializes one observed loopback/private-port pair; no credentials or guessed URL/DSN syntax crosses the boundary. Commits: GoForj `488d6404`, Harbor `3cb04e8`.
+
 Focused package and race checks pass for the new admission, terminal-barrier, descriptor, and overlay paths. Full GoForj package tests remain environment-dependent here because the demo frontend `node_modules` fixture is absent and Docker is not a native macOS Desktop engine. Native macOS execution is still required before claiming resolver, Docker, or desktop lifecycle evidence.
