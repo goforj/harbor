@@ -38,6 +38,22 @@ type closingTrustHandler interface {
 	Close() error
 }
 
+// closingLowPortHandler retains the reviewed low-port mutation boundary for one helper invocation.
+type closingLowPortHandler interface {
+	helper.LowPortHandler
+	Close() error
+}
+
+// unavailableClosingLowPortHandler keeps unsupported builds resource-free while satisfying helper lifecycle wiring.
+type unavailableClosingLowPortHandler struct {
+	helper.UnavailableLowPortHandler
+}
+
+// Close releases no resources because the unavailable handler owns no native authority.
+func (unavailableClosingLowPortHandler) Close() error {
+	return nil
+}
+
 // runtimeDependencies keeps fixed production authority replaceable without redirectable path arguments.
 type runtimeDependencies struct {
 	authorizeInvocation        func() error
@@ -46,6 +62,7 @@ type runtimeDependencies struct {
 	newLoopbackIdentityHandler func() helper.LoopbackIdentityHandler
 	openResolverHandler        func() (closingResolverHandler, error)
 	openTrustHandler           func() (closingTrustHandler, error)
+	openLowPortHandler         func() (closingLowPortHandler, error)
 }
 
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
@@ -77,6 +94,7 @@ func productionDependencies() runtimeDependencies {
 		},
 		openResolverHandler: openPlatformResolverHandler,
 		openTrustHandler:    openPlatformTrustHandler,
+		openLowPortHandler:  openPlatformLowPortHandler,
 	}
 }
 
@@ -132,13 +150,30 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 		}()
 	}
 
-	dispatcher := helper.NewDispatcherWithResolverAndTrust(
+	lowPortHandler := closingLowPortHandler(unavailableClosingLowPortHandler{})
+	if dependencies.openLowPortHandler != nil {
+		lowPortHandler, err = dependencies.openLowPortHandler()
+		if err != nil {
+			return fmt.Errorf("open helper low-port handler: %w", err)
+		}
+		if lowPortHandler == nil {
+			return errors.New("open helper low-port handler: handler is nil")
+		}
+		defer func() {
+			if err := lowPortHandler.Close(); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("close helper low-port handler: %w", err))
+			}
+		}()
+	}
+
+	dispatcher := helper.NewDispatcherWithResolverTrustAndLowPorts(
 		redeemer,
 		clock,
 		replayGuard,
 		dependencies.newLoopbackIdentityHandler(),
 		resolverHandler,
 		trustHandler,
+		lowPortHandler,
 	)
 	return helper.ServeOnce(ctx, reader, writer, dispatcher)
 }

@@ -34,9 +34,9 @@ func TestHelperDependencyBoundary(t *testing.T) {
 		dependencies := runGoListForTarget(t, target, "-deps", "-f", "{{.ImportPath}}", ".")
 		for _, dependency := range strings.Fields(dependencies) {
 			if dependency == "os/exec" {
-				// Windows NRPT mutation invokes one immutable, system-directory PowerShell program.
+				// Windows NRPT and Darwin launchd mutation each invoke one immutable system program.
 				// assertNoUnreviewedProcessImports below keeps that exception package-scoped.
-				if target != "windows" {
+				if target != "windows" && target != "darwin" {
 					t.Fatalf("helper %s production dependencies include forbidden package %q", target, dependency)
 				}
 			} else if _, forbidden := forbiddenExact[dependency]; forbidden && !unavoidableStandardDependency(target, dependency) {
@@ -142,8 +142,11 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 	}
 	platformDependencies := map[string][]string{
 		"darwin": {
+			"github.com/goforj/harbor/internal/helper/lowporthandler",
 			"github.com/goforj/harbor/internal/helper/resolverhandler",
 			"github.com/goforj/harbor/internal/platform/darwinacl",
+			"github.com/goforj/harbor/internal/platform/launchdrelaypath",
+			"github.com/goforj/harbor/internal/platform/lowport",
 			"github.com/goforj/harbor/internal/platform/resolver",
 			"golang.org/x/net/route",
 			"golang.org/x/sys/unix",
@@ -192,7 +195,7 @@ func assertNoUnreviewedNetworkImports(t *testing.T, target string) {
 	}
 }
 
-// assertNoUnreviewedProcessImports keeps Windows PowerShell authority inside the fixed resolver adapter.
+// assertNoUnreviewedProcessImports keeps process authority inside the fixed reviewed platform adapters.
 func assertNoUnreviewedProcessImports(t *testing.T, target string) {
 	t.Helper()
 	packages := runGoListForTarget(t, target, "-deps", "-f", "{{.ImportPath}}|{{join .Imports \",\"}}", ".")
@@ -205,9 +208,13 @@ func assertNoUnreviewedProcessImports(t *testing.T, target string) {
 			if imported != "os/exec" {
 				continue
 			}
-			if target != "windows" || importer != "github.com/goforj/harbor/internal/platform/resolver" {
-				t.Fatalf("helper %s package %q imports forbidden package %q", target, importer, imported)
+			if target == "windows" && importer == "github.com/goforj/harbor/internal/platform/resolver" {
+				continue
 			}
+			if target == "darwin" && importer == "github.com/goforj/harbor/internal/platform/lowport" {
+				continue
+			}
+			t.Fatalf("helper %s package %q imports forbidden package %q", target, importer, imported)
 		}
 	}
 }
