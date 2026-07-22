@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"runtime"
 	"slices"
 	"sync"
@@ -42,6 +43,8 @@ type GlobalNetworkReleaseJournal interface {
 	AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error)
 	// AdvanceGlobalNetworkReleaseTrust commits the independently verified trust-release receipt.
 	AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// AdvanceGlobalNetworkReleaseLoopbacks commits the independently verified loopback-pool release receipt.
+	AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // GlobalNetworkReleaseLowPortIssuer issues a bounded low-port release capability.
@@ -64,6 +67,14 @@ type GlobalNetworkReleaseResolverIssuer interface {
 type GlobalNetworkReleaseTrustIssuer interface {
 	// Issue publishes one release-trust capability for its authenticated owner.
 	Issue(context.Context, string, ticketissuer.TrustRequest) (ticketissuer.TrustResult, error)
+	// Close releases issuer resources after one publication attempt.
+	Close() error
+}
+
+// GlobalNetworkReleaseLoopbackIssuer issues a bounded complete loopback-pool release capability.
+type GlobalNetworkReleaseLoopbackIssuer interface {
+	// Issue publishes one release-loopback-pool capability for its authenticated owner.
+	Issue(context.Context, string, ticketissuer.PoolReleaseRequest) (ticketissuer.PoolResult, error)
 	// Close releases issuer resources after one publication attempt.
 	Close() error
 }
@@ -114,6 +125,8 @@ type GlobalNetworkReleaseCoordinator struct {
 	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error)
 	trustPlans      ticketissuer.TrustPlanSource
 	trustIssuers    func() (GlobalNetworkReleaseTrustIssuer, error)
+	loopbackPlans   ticketissuer.PoolReleasePlanSource
+	loopbackIssuers func() (GlobalNetworkReleaseLoopbackIssuer, error)
 	resolver        GlobalNetworkReleaseResolverObserver
 	trust           NetworkDataPlaneSetupTrustObserver
 	loopback        LoopbackObserver
@@ -155,6 +168,8 @@ func NewGlobalNetworkReleaseCoordinator(
 	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error),
 	trustPlans ticketissuer.TrustPlanSource,
 	trustIssuers func() (GlobalNetworkReleaseTrustIssuer, error),
+	loopbackPlans ticketissuer.PoolReleasePlanSource,
+	loopbackIssuers func() (GlobalNetworkReleaseLoopbackIssuer, error),
 	resolverObserver GlobalNetworkReleaseResolverObserver,
 	trustObserver NetworkDataPlaneSetupTrustObserver,
 	loopbackObserver LoopbackObserver,
@@ -174,6 +189,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(resolverIssuers) ||
 		nilDependency(trustPlans) ||
 		nilDependency(trustIssuers) ||
+		nilDependency(loopbackPlans) ||
+		nilDependency(loopbackIssuers) ||
 		nilDependency(resolverObserver) ||
 		nilDependency(trustObserver) ||
 		nilDependency(loopbackObserver) ||
@@ -194,6 +211,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		resolverIssuers: resolverIssuers,
 		trustPlans:      trustPlans,
 		trustIssuers:    trustIssuers,
+		loopbackPlans:   loopbackPlans,
+		loopbackIssuers: loopbackIssuers,
 		resolver:        resolverObserver,
 		trust:           trustObserver,
 		loopback:        loopbackObserver,
@@ -1394,6 +1413,366 @@ func (c *GlobalNetworkReleaseCoordinator) issueReleaseResolver(ctx context.Conte
 		return result, errors.Join(issueErr, closeErr)
 	}
 	return ticketissuer.ResolverResult{}, errors.Join(issueErr, closeErr)
+}
+
+// GlobalNetworkReleasePrepareLoopbacksRequest selects one owner-approved release-loopback-pool checkpoint.
+type GlobalNetworkReleasePrepareLoopbacksRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences preparation to one retained loopback checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner requesting helper authority.
+	RequesterIdentity string
+}
+
+// Validate rejects malformed release-loopback-pool publication input.
+func (request GlobalNetworkReleasePrepareLoopbacksRequest) Validate() error {
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := validateOperationRevision(request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	return validateNetworkSetupRequesterIdentity(request.RequesterIdentity)
+}
+
+// GlobalNetworkReleaseConfirmLoopbacksRequest carries the helper's complete loopback-pool removal postcondition.
+type GlobalNetworkReleaseConfirmLoopbacksRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences confirmation to one retained loopback checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner confirming helper evidence.
+	RequesterIdentity string
+	// LoopbackEvidence proves the complete owned loopback pool is absent.
+	LoopbackEvidence helper.PoolMutationEvidence
+}
+
+// Validate rejects malformed release-loopback-pool confirmation input.
+func (request GlobalNetworkReleaseConfirmLoopbacksRequest) Validate() error {
+	prepare := GlobalNetworkReleasePrepareLoopbacksRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          request.RequesterIdentity,
+	}
+	if err := prepare.Validate(); err != nil {
+		return err
+	}
+	return validateGlobalNetworkReleaseLoopbackEvidence(request.LoopbackEvidence)
+}
+
+// PrepareLoopbacks validates one durable loopback checkpoint before publishing a complete pool-removal capability.
+func (c *GlobalNetworkReleaseCoordinator) PrepareLoopbacks(ctx context.Context, request GlobalNetworkReleasePrepareLoopbacksRequest) (ticketissuer.PoolResult, error) {
+	if err := request.Validate(); err != nil {
+		return ticketissuer.PoolResult{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ticketissuer.PoolResult{}, err
+	}
+	plan, durable, err := c.releaseLoopbackPlan(ctx, request.OperationID)
+	if err != nil {
+		return ticketissuer.PoolResult{}, err
+	}
+	if err := validateGlobalNetworkReleaseLoopbackPlan(plan, durable, request); err != nil {
+		return ticketissuer.PoolResult{}, err
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseLoopbacks {
+		return ticketissuer.PoolResult{}, fmt.Errorf("release loopback publication requires plan phase %q, found %q", state.GlobalNetworkReleasePlanPhaseLoopbacks, durable.Phase)
+	}
+	result, issueErr := c.issueReleaseLoopbacks(
+		ctx,
+		request.RequesterIdentity,
+		ticketissuer.PoolReleaseRequest{
+			OperationID: request.OperationID,
+		},
+	)
+	if issueErr != nil {
+		if errors.Is(issueErr, ticketissuer.ErrPoolPublicationIndeterminate) {
+			if validationErr := validateGlobalNetworkReleaseLoopbackResult(result, plan, c.clock.Now().UTC()); validationErr != nil {
+				return ticketissuer.PoolResult{}, fmt.Errorf("validate indeterminate release loopback result: %w", validationErr)
+			}
+			return result, issueErr
+		}
+		return ticketissuer.PoolResult{}, issueErr
+	}
+	if err := validateGlobalNetworkReleaseLoopbackResult(result, plan, c.clock.Now().UTC()); err != nil {
+		return ticketissuer.PoolResult{}, err
+	}
+	return result, nil
+}
+
+// ConfirmLoopbacks independently verifies complete pool absence and advances the release plan to effect verification.
+func (c *GlobalNetworkReleaseCoordinator) ConfirmLoopbacks(ctx context.Context, request GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	if err := request.Validate(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	durable, found, err := c.journal.ReadGlobalNetworkReleasePlan(ctx, request.OperationID)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("read release loopback plan: %w", err)
+	}
+	if !found {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release loopback plan does not match operation")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseVerifyEffects {
+		return c.replayReleaseLoopbacks(ctx, durable, request)
+	}
+	plan, durable, err := c.releaseLoopbackPlan(ctx, request.OperationID)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := validateGlobalNetworkReleaseLoopbackPlan(plan, durable, GlobalNetworkReleasePrepareLoopbacksRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          request.RequesterIdentity,
+	}); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	observed, err := c.observeAbsentReleaseLoopbacks(ctx, plan, request.LoopbackEvidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	evidenceDigest, err := state.NetworkDataPlaneSetupEvidenceDigest(request.LoopbackEvidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	observationDigest, err := state.NetworkDataPlaneSetupEvidenceDigest(observed)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return c.journal.AdvanceGlobalNetworkReleaseLoopbacks(ctx, state.AdvanceGlobalNetworkReleaseLoopbacksRequest{
+		OperationID:        request.OperationID,
+		CheckpointRevision: plan.CheckpointRevision,
+		NetworkRevision:    durable.NetworkRevision,
+		Receipt: state.GlobalNetworkReleaseLoopbackReceipt{
+			SourceCheckpointRevision:     plan.CheckpointRevision,
+			LoopbackEvidenceDigest:       evidenceDigest,
+			OwnedAbsentObservationDigest: observationDigest,
+			VerifiedAt:                   c.releaseNow(durable.TrustReceipt.VerifiedAt),
+		},
+	})
+}
+
+// replayReleaseLoopbacks validates one committed receipt without reissuing or reobserving destructive authority.
+func (c *GlobalNetworkReleaseCoordinator) replayReleaseLoopbacks(ctx context.Context, durable state.GlobalNetworkReleasePlanRecord, request GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	if err := validateGlobalNetworkReleaseLoopbackReplayDurable(durable, request); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	digest, err := state.NetworkDataPlaneSetupEvidenceDigest(request.LoopbackEvidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if digest != durable.LoopbackReceipt.LoopbackEvidenceDigest {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release loopback replay evidence differs from committed receipt")
+	}
+	receipt := *durable.LoopbackReceipt
+	return c.journal.AdvanceGlobalNetworkReleaseLoopbacks(ctx, state.AdvanceGlobalNetworkReleaseLoopbacksRequest{
+		OperationID:        request.OperationID,
+		CheckpointRevision: receipt.SourceCheckpointRevision,
+		NetworkRevision:    durable.NetworkRevision,
+		Receipt:            receipt,
+	})
+}
+
+// releaseLoopbackPlan resolves a live loopback plan only while durable authority remains at its release checkpoint.
+func (c *GlobalNetworkReleaseCoordinator) releaseLoopbackPlan(ctx context.Context, operationID domain.OperationID) (ticketissuer.PoolReleasePlan, state.GlobalNetworkReleasePlanRecord, error) {
+	durable, found, err := c.journal.ReadGlobalNetworkReleasePlan(ctx, operationID)
+	if err != nil {
+		return ticketissuer.PoolReleasePlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("read release loopback plan: %w", err)
+	}
+	if !found || durable.Operation.Operation.ID != operationID {
+		return ticketissuer.PoolReleasePlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release loopback plan does not match operation")
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseLoopbacks {
+		return ticketissuer.PoolReleasePlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release loopback plan phase is %q", durable.Phase)
+	}
+	plan, err := c.loopbackPlans.Resolve(ctx, ticketissuer.PoolReleaseRequest{
+		OperationID: operationID,
+	})
+	if err != nil {
+		return ticketissuer.PoolReleasePlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := validateGlobalNetworkReleaseLoopbackDurablePlan(plan, durable); err != nil {
+		return ticketissuer.PoolReleasePlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return plan, durable, nil
+}
+
+// validateGlobalNetworkReleaseLoopbackPlan binds a requester and checkpoint to the sole complete release-pool authority.
+func validateGlobalNetworkReleaseLoopbackPlan(plan ticketissuer.PoolReleasePlan, durable state.GlobalNetworkReleasePlanRecord, request GlobalNetworkReleasePrepareLoopbacksRequest) error {
+	if err := validateGlobalNetworkReleaseLoopbackDurablePlan(plan, durable); err != nil {
+		return err
+	}
+	if plan.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return &state.StaleRevisionError{
+			OperationID: request.OperationID,
+			Expected:    request.ExpectedCheckpointRevision,
+			Actual:      plan.CheckpointRevision,
+		}
+	}
+	if plan.TargetOwnership.OwnerIdentity != request.RequesterIdentity {
+		return fmt.Errorf("authenticated requester does not own release loopback authority")
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseLoopbackDurablePlan verifies complete release-pool authority cannot drift from the journaled plan.
+func validateGlobalNetworkReleaseLoopbackDurablePlan(plan ticketissuer.PoolReleasePlan, durable state.GlobalNetworkReleasePlanRecord) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release loopback plan: %w", err)
+	}
+	if err := validateGlobalNetworkReleaseOperation(durable.Operation, durable.Operation.Operation.IntentID); err != nil {
+		return fmt.Errorf("release loopback operation: %w", err)
+	}
+	if err := durable.Authority.Validate(); err != nil {
+		return fmt.Errorf("release loopback authority: %w", err)
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseLoopbacks || durable.TrustReceipt == nil {
+		return fmt.Errorf("release loopback plan is not live authority")
+	}
+	if err := durable.TrustReceipt.Validate(); err != nil {
+		return fmt.Errorf("release loopback trust receipt: %w", err)
+	}
+	if durable.TrustReceipt.SourceCheckpointRevision+1 != durable.CheckpointRevision {
+		return fmt.Errorf("release loopback trust receipt does not precede the live checkpoint")
+	}
+	if !sameGlobalNetworkReleaseOperation(plan.Operation, durable.Operation.Operation) || plan.OperationRevision != durable.Operation.Revision || plan.CheckpointRevision != durable.CheckpointRevision {
+		return fmt.Errorf("release loopback plan operation or checkpoint differs from durable authority")
+	}
+	if plan.TargetOwnership != durable.Authority.Projection.ConfirmedOwnership.Record || plan.Pool.Prefix().String() != plan.TargetOwnership.LoopbackPoolPrefix {
+		return fmt.Errorf("release loopback plan ownership differs from durable authority")
+	}
+	if len(plan.Targets) != len(durable.Authority.LoopbackTargets) {
+		return fmt.Errorf("release loopback plan targets differ from durable authority")
+	}
+	for index, target := range plan.Targets {
+		durableTarget := durable.Authority.LoopbackTargets[index]
+		if target.Address != durableTarget.Address || target.ObservationFingerprint != durableTarget.ObservationFingerprint {
+			return fmt.Errorf("release loopback plan targets differ from durable authority")
+		}
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseLoopbackResult confirms an issuer returned the exact planned complete release authority.
+func validateGlobalNetworkReleaseLoopbackResult(result ticketissuer.PoolResult, plan ticketissuer.PoolReleasePlan, now time.Time) error {
+	if err := result.Validate(now); err != nil {
+		return err
+	}
+	if result.OperationID != plan.Operation.ID || result.Operation != helper.OperationReleaseLoopbackPool || result.Pool != plan.Pool.Prefix() {
+		return fmt.Errorf("release loopback issuer returned another authority")
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseLoopbackEvidence admits only canonical complete owned-absence pool evidence.
+func validateGlobalNetworkReleaseLoopbackEvidence(evidence helper.PoolMutationEvidence) error {
+	prefix, err := netip.ParsePrefix(evidence.Pool)
+	if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsLoopback() || prefix.Bits() != 29 || prefix != prefix.Masked() || prefix.String() != evidence.Pool {
+		return fmt.Errorf("release loopback evidence does not identify a canonical IPv4-loopback /29")
+	}
+	if len(evidence.Identities) != 8 {
+		return fmt.Errorf("release loopback evidence contains %d identities, want 8", len(evidence.Identities))
+	}
+	address := prefix.Addr()
+	for _, identity := range evidence.Identities {
+		if identity.Address != address.String() || identity.Observation.State != helper.ObservationAbsent {
+			return fmt.Errorf("release loopback evidence does not prove canonical owned absence")
+		}
+		if err := identity.Observation.Validate(); err != nil {
+			return fmt.Errorf("release loopback evidence observation: %w", err)
+		}
+		address = address.Next()
+	}
+	return nil
+}
+
+// observeAbsentReleaseLoopbacks independently re-reads every canonical address and returns its fresh absent observation evidence.
+func (c *GlobalNetworkReleaseCoordinator) observeAbsentReleaseLoopbacks(ctx context.Context, plan ticketissuer.PoolReleasePlan, evidence helper.PoolMutationEvidence) (helper.PoolMutationEvidence, error) {
+	if evidence.Pool != plan.Pool.Prefix().String() {
+		return helper.PoolMutationEvidence{}, fmt.Errorf("release loopback evidence belongs to another pool")
+	}
+	observed := helper.PoolMutationEvidence{
+		Pool:       evidence.Pool,
+		Identities: make([]helper.MutationEvidence, 0, len(plan.Targets)),
+	}
+	for index, target := range plan.Targets {
+		provided := evidence.Identities[index]
+		if provided.Address != target.Address.String() {
+			return helper.PoolMutationEvidence{}, fmt.Errorf("release loopback evidence does not match the retained target order")
+		}
+		observation, err := c.loopback.Observe(ctx, target.Address)
+		if err != nil {
+			return helper.PoolMutationEvidence{}, fmt.Errorf("observe release loopback %s: %w", target.Address, err)
+		}
+		if observation.Address != target.Address || observation.State != loopback.StateAbsent {
+			return helper.PoolMutationEvidence{}, fmt.Errorf("release loopback %s is not absent", target.Address)
+		}
+		fingerprint, err := observation.Fingerprint()
+		if err != nil {
+			return helper.PoolMutationEvidence{}, fmt.Errorf("fingerprint release loopback %s: %w", target.Address, err)
+		}
+		if fingerprint != provided.Observation.Fingerprint {
+			return helper.PoolMutationEvidence{}, fmt.Errorf("release loopback evidence differs from independently observed target %s", target.Address)
+		}
+		observed.Identities = append(observed.Identities, helper.MutationEvidence{
+			Address: target.Address.String(),
+			Observation: helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: fingerprint,
+			},
+		})
+	}
+	return observed, nil
+}
+
+// validateGlobalNetworkReleaseLoopbackReplayDurable proves a replay can only reuse one committed loopback receipt.
+func validateGlobalNetworkReleaseLoopbackReplayDurable(durable state.GlobalNetworkReleasePlanRecord, request GlobalNetworkReleaseConfirmLoopbacksRequest) error {
+	if durable.Operation.Operation.ID != request.OperationID || durable.Phase != state.GlobalNetworkReleasePlanPhaseVerifyEffects || durable.LoopbackReceipt == nil {
+		return fmt.Errorf("release loopback replay does not match committed authority")
+	}
+	if durable.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity != request.RequesterIdentity {
+		return fmt.Errorf("authenticated requester does not own release loopback authority")
+	}
+	if request.ExpectedCheckpointRevision != durable.LoopbackReceipt.SourceCheckpointRevision {
+		return &state.StaleRevisionError{
+			OperationID: request.OperationID,
+			Expected:    request.ExpectedCheckpointRevision,
+			Actual:      durable.LoopbackReceipt.SourceCheckpointRevision,
+		}
+	}
+	if err := durable.LoopbackReceipt.Validate(); err != nil {
+		return fmt.Errorf("release loopback replay receipt: %w", err)
+	}
+	return nil
+}
+
+// issueReleaseLoopbacks opens helper authority after durable validation and closes it after every publication attempt.
+func (c *GlobalNetworkReleaseCoordinator) issueReleaseLoopbacks(ctx context.Context, requester string, request ticketissuer.PoolReleaseRequest) (ticketissuer.PoolResult, error) {
+	issuer, err := c.loopbackIssuers()
+	if err != nil {
+		return ticketissuer.PoolResult{}, fmt.Errorf("open release loopback issuer: %w", err)
+	}
+	if nilDependency(issuer) {
+		return ticketissuer.PoolResult{}, fmt.Errorf("prepare release loopback: issuer is nil")
+	}
+	result, issueErr := issuer.Issue(ctx, requester, request)
+	closeErr := issuer.Close()
+	if issueErr == nil && closeErr == nil {
+		return result, nil
+	}
+	if issueErr == nil || errors.Is(issueErr, ticketissuer.ErrPoolPublicationIndeterminate) {
+		return result, errors.Join(ticketissuer.ErrPoolPublicationIndeterminate, issueErr, closeErr)
+	}
+	return ticketissuer.PoolResult{}, errors.Join(issueErr, closeErr)
 }
 
 // Recover resumes an already-staged release after the runtime has installed its cold anchor.

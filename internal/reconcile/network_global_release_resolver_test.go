@@ -384,6 +384,10 @@ func newGlobalNetworkReleaseResolverFixture(t *testing.T) *globalNetworkReleaseR
 		func() (GlobalNetworkReleaseTrustIssuer, error) {
 			return nil, errors.New("unexpected release trust issuer")
 		},
+		globalNetworkReleaseUnavailableLoopbackPlans{},
+		func() (GlobalNetworkReleaseLoopbackIssuer, error) {
+			return nil, errors.New("unexpected release loopback issuer")
+		},
 		fixture.observer,
 		base.trust,
 		base.loopback,
@@ -605,4 +609,9 @@ func (journal *globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseR
 // AdvanceGlobalNetworkReleaseTrust is unused by resolver-release tests.
 func (*globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
+}
+
+// AdvanceGlobalNetworkReleaseLoopbacks is unused by resolver-release tests.
+func (*globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }

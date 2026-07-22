@@ -545,6 +545,10 @@ func newGlobalNetworkReleaseTrustFixture(t *testing.T) *globalNetworkReleaseTrus
 			}
 			return fixture.issuer, nil
 		},
+		globalNetworkReleaseUnavailableLoopbackPlans{},
+		func() (GlobalNetworkReleaseLoopbackIssuer, error) {
+			return nil, errors.New("unexpected release loopback issuer")
+		},
 		base.resolver,
 		fixture.observer,
 		base.loopback,
@@ -800,4 +804,9 @@ func (journal *globalNetworkReleaseTrustJournal) AdvanceGlobalNetworkReleaseTrus
 	journal.plan.TrustReceipt = &request.Receipt
 	journal.plan.CheckpointRevision++
 	return journal.plan, nil
+}
+
+// AdvanceGlobalNetworkReleaseLoopbacks is unused by trust checkpoint tests.
+func (*globalNetworkReleaseTrustJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }

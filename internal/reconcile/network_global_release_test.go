@@ -331,6 +331,11 @@ func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseTrust
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
 }
 
+// AdvanceGlobalNetworkReleaseLoopbacks is not exercised by recovery tests.
+func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
+}
+
 // testGlobalNetworkReleaseRuntime records runtime-release requests.
 type testGlobalNetworkReleaseRuntime struct {
 	calls int
@@ -909,6 +914,10 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		func() (GlobalNetworkReleaseTrustIssuer, error) {
 			return nil, errors.New("unexpected release trust issuer")
 		},
+		globalNetworkReleaseUnavailableLoopbackPlans{},
+		func() (GlobalNetworkReleaseLoopbackIssuer, error) {
+			return nil, errors.New("unexpected release loopback issuer")
+		},
 		fixture.resolver,
 		fixture.trust,
 		fixture.loopback,
@@ -941,6 +950,14 @@ type globalNetworkReleaseUnavailableTrustPlans struct{}
 // Resolve rejects a capability read that start tests do not exercise.
 func (globalNetworkReleaseUnavailableTrustPlans) Resolve(context.Context, ticketissuer.TrustRequest) (ticketissuer.TrustPlan, error) {
 	return ticketissuer.TrustPlan{}, errors.New("unexpected release trust plan")
+}
+
+// globalNetworkReleaseUnavailableLoopbackPlans prevents unrelated tests from opening loopback release authority.
+type globalNetworkReleaseUnavailableLoopbackPlans struct{}
+
+// Resolve rejects a capability read that the fixture does not exercise.
+func (globalNetworkReleaseUnavailableLoopbackPlans) Resolve(context.Context, ticketissuer.PoolReleaseRequest) (ticketissuer.PoolReleasePlan, error) {
+	return ticketissuer.PoolReleasePlan{}, errors.New("unexpected release loopback plan")
 }
 
 // call appends an observable coordinator boundary.
@@ -1075,6 +1092,11 @@ func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseResolver(
 // AdvanceGlobalNetworkReleaseTrust is not exercised by start tests.
 func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
+}
+
+// AdvanceGlobalNetworkReleaseLoopbacks is not exercised by start tests.
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
 
 // globalNetworkReleaseState scripts coherent durable state and revision reads.

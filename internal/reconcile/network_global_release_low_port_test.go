@@ -230,6 +230,10 @@ func newGlobalNetworkReleaseLowPortFixture(t *testing.T) *globalNetworkReleaseLo
 		func() (GlobalNetworkReleaseTrustIssuer, error) {
 			return nil, errors.New("unexpected release trust issuer")
 		},
+		globalNetworkReleaseUnavailableLoopbackPlans{},
+		func() (GlobalNetworkReleaseLoopbackIssuer, error) {
+			return nil, errors.New("unexpected release loopback issuer")
+		},
 		base.resolver,
 		base.trust,
 		base.loopback,
@@ -389,6 +393,11 @@ func (*globalNetworkReleaseLowPortJournal) AdvanceGlobalNetworkReleaseResolver(c
 // AdvanceGlobalNetworkReleaseTrust is unused by focused low-port tests.
 func (*globalNetworkReleaseLowPortJournal) AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
+}
+
+// AdvanceGlobalNetworkReleaseLoopbacks is unused by focused low-port tests.
+func (*globalNetworkReleaseLowPortJournal) AdvanceGlobalNetworkReleaseLoopbacks(context.Context, state.AdvanceGlobalNetworkReleaseLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected")
 }
 
 // ReadGlobalNetworkReleasePlan returns the fixture's active release plan.

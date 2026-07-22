@@ -42,6 +42,7 @@ func provideNetworkReleaseCapability(
 	lowPortPlans := state.NewGlobalNetworkReleaseLowPortPlanSource(operations)
 	resolverPlans := state.NewGlobalNetworkReleaseResolverPlanSource(operations)
 	trustPlans := state.NewGlobalNetworkReleaseTrustPlanSource(operations)
+	loopbackPlans := state.NewGlobalNetworkReleaseLoopbackPlanSource(operations)
 	coordinator := reconcile.NewGlobalNetworkReleaseCoordinator(
 		operations,
 		store,
@@ -60,6 +61,10 @@ func provideNetworkReleaseCapability(
 		trustPlans,
 		func() (reconcile.GlobalNetworkReleaseTrustIssuer, error) {
 			return ticketissuer.OpenDefaultTrustService(trustPlans, ownership, trustAdapter)
+		},
+		loopbackPlans,
+		func() (reconcile.GlobalNetworkReleaseLoopbackIssuer, error) {
+			return ticketissuer.OpenDefaultPoolReleaseService(loopbackPlans, ownership)
 		},
 		resolverObserver,
 		trustAdapter,
