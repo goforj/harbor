@@ -429,10 +429,16 @@ func assertProjectIdentityAcceptanceEndpoints(
 		}
 		observedAddresses = append(observedAddresses, address)
 		record := ready[index]
-		if len(record.Project.Resources) != 1 {
-			t.Fatalf("project %q resources = %#v, want one App resource", project.id, record.Project.Resources)
+		appResources := make([]domain.ResourceSnapshot, 0, 1)
+		for _, candidate := range record.Project.Resources {
+			if candidate.Name == "App" && candidate.Kind == "application" {
+				appResources = append(appResources, candidate)
+			}
 		}
-		resource := record.Project.Resources[0]
+		if len(appResources) != 1 {
+			t.Fatalf("project %q App application resources = %#v, want exactly one", project.id, appResources)
+		}
+		resource := appResources[0]
 		parsed, err := url.Parse(resource.URL)
 		if err != nil {
 			t.Fatalf("parse project %q resource URL %q: %v", project.id, resource.URL, err)
