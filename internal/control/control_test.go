@@ -486,7 +486,7 @@ func testStatus() DaemonStatus {
 		State:                 DaemonStateReady,
 		Build:                 buildFromInfo(testBuild),
 		Protocol:              protocolV1,
-		Capabilities:          capabilities(),
+		Capabilities:          daemonCapabilities(false),
 		SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
 		Sequence:              42,
 	}

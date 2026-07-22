@@ -22,6 +22,8 @@ const (
 	CapabilityNetworkSetupV1 rpc.Capability = "control.network-setup.v1"
 	// CapabilityNetworkResolverSetupV1 identifies machine-global resolver setup initiation and approval.
 	CapabilityNetworkResolverSetupV1 rpc.Capability = "control.network-resolver-setup.v1"
+	// CapabilityNetworkDataPlaneSetupV1 identifies machine-global trusted-ingress setup and approval.
+	CapabilityNetworkDataPlaneSetupV1 rpc.Capability = "control.network-data-plane-setup.v1"
 	// CapabilityProjectActivityV1 identifies bounded current-session project output reads.
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectActivityWaitV1 identifies bounded cursor waits on current-session project output.
@@ -52,6 +54,12 @@ const (
 	methodNetworkResolverSetupStart           = "control.v1.network.resolver.setup.start"
 	methodNetworkResolverSetupApprovalPrepare = "control.v1.network.resolver.setup.approval.prepare"
 	methodNetworkResolverSetupApprovalConfirm = "control.v1.network.resolver.setup.approval.confirm"
+	methodNetworkDataPlaneSetupStart          = "control.v1.network.data-plane.setup.start"
+	methodNetworkDataPlaneSetupRead           = "control.v1.network.data-plane.setup.read"
+	methodNetworkDataPlaneTrustPrepare        = "control.v1.network.data-plane.setup.trust.prepare"
+	methodNetworkDataPlaneTrustConfirm        = "control.v1.network.data-plane.setup.trust.confirm"
+	methodNetworkDataPlaneLowPortPrepare      = "control.v1.network.data-plane.setup.low-port.prepare"
+	methodNetworkDataPlaneLowPortConfirm      = "control.v1.network.data-plane.setup.low-port.confirm"
 	methodProjectActivity                     = "control.v1.project.activity"
 	methodServiceLogs                         = "control.v1.project.service.logs"
 	methodProjectStart                        = "control.v1.project.start"
@@ -267,6 +275,7 @@ func protocolRanges() []rpc.VersionRange {
 func capabilities() []rpc.Capability {
 	return []rpc.Capability{
 		CapabilityDaemonControlV1,
+		CapabilityNetworkDataPlaneSetupV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
@@ -281,6 +290,17 @@ func capabilities() []rpc.Capability {
 		CapabilityServiceLogsV1,
 		CapabilityV1,
 	}
+}
+
+// daemonCapabilities returns the capabilities implemented by this server configuration.
+func daemonCapabilities(networkDataPlaneSetup bool) []rpc.Capability {
+	capabilities := capabilities()
+	if networkDataPlaneSetup {
+		return capabilities
+	}
+	return slices.DeleteFunc(capabilities, func(capability rpc.Capability) bool {
+		return capability == CapabilityNetworkDataPlaneSetupV1
+	})
 }
 
 // buildFromInfo projects process metadata into the reviewed status JSON shape.

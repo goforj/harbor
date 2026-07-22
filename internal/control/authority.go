@@ -179,6 +179,16 @@ func NewNetworkResolverSetupNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
 }
 
+// NewNetworkDataPlaneSetupConflictError classifies durable state that prevents trusted-ingress setup progress.
+func NewNetworkDataPlaneSetupConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
+}
+
+// NewNetworkDataPlaneSetupNotFoundError classifies a trusted-ingress setup operation that is no longer durable.
+func NewNetworkDataPlaneSetupNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
 // NewNetworkResolverSetupPrivilegedHelperRequiredError reports an absent resolver helper boundary without exposing its path.
 func NewNetworkResolverSetupPrivilegedHelperRequiredError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)

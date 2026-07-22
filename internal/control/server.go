@@ -48,6 +48,8 @@ type ServerConfig struct {
 	ObserveError ErrorObserver
 	// ManagedAuthority optionally enables the isolated GoForj managed-session role on the same authenticated endpoint.
 	ManagedAuthority managedsession.Authority
+	// NetworkDataPlaneSetupAuthority optionally enables trusted-ingress setup when every narrow dependency is available.
+	NetworkDataPlaneSetupAuthority NetworkDataPlaneSetupAuthority
 }
 
 // Server adapts authenticated local connections to the typed Harbor control API.
@@ -105,7 +107,8 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	shutdownAccepted := make(chan struct{})
 	var acceptShutdown sync.Once
 	var shutdownCaller Caller
-	serverCapabilities := capabilities()
+	dataPlaneSetupEnabled := !networkDataPlaneSetupAuthorityIsNil(server.config.NetworkDataPlaneSetupAuthority)
+	serverCapabilities := daemonCapabilities(dataPlaneSetupEnabled)
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
 	var managedEventHandler session.EventHandler
@@ -134,6 +137,42 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		}
 		managedEventHandler = managedHandlers.EventHandler()
 	}
+	handlers := map[string]session.Handler{
+		methodDaemonStatus: server.statusHandler(transportPeer),
+		methodDaemonStop: server.stopHandler(transportPeer, func(caller Caller) {
+			acceptShutdown.Do(func() {
+				shutdownCaller = caller
+				close(shutdownAccepted)
+			})
+		}),
+		methodNetworkSetupStart:                   server.networkSetupStartHandler(transportPeer),
+		methodNetworkSetupApprovalPrepare:         server.networkSetupApprovalPrepareHandler(transportPeer),
+		methodNetworkSetupApprovalConfirm:         server.networkSetupApprovalConfirmHandler(transportPeer),
+		methodNetworkResolverSetupStart:           server.networkResolverSetupStartHandler(transportPeer),
+		methodNetworkResolverSetupApprovalPrepare: server.networkResolverSetupApprovalPrepareHandler(transportPeer),
+		methodNetworkResolverSetupApprovalConfirm: server.networkResolverSetupApprovalConfirmHandler(transportPeer),
+		methodSnapshot:                            server.snapshotHandler(transportPeer),
+		methodProjectActivity:                     server.projectActivityHandler(transportPeer),
+		methodServiceLogs:                         server.serviceLogsHandler(transportPeer),
+		methodProjectRuntimeRepairInspect:         server.projectRuntimeRepairInspectHandler(transportPeer),
+		methodProjectRuntimeRepairConfirm:         server.projectRuntimeRepairConfirmHandler(transportPeer),
+		methodProjectStart:                        server.projectStartHandler(transportPeer),
+		methodProjectStop:                         server.projectStopHandler(transportPeer),
+		methodProjectRestart:                      server.projectRestartHandler(transportPeer),
+		methodProjectRegister:                     server.projectRegisterHandler(transportPeer),
+		methodProjectUnregister:                   server.projectUnregisterHandler(transportPeer),
+		methodProjectUnregisterApprovalPrepare:    server.projectUnregisterApprovalPrepareHandler(transportPeer),
+		methodProjectUnregisterApprovalConfirm:    server.projectUnregisterApprovalConfirmHandler(transportPeer),
+	}
+	if dataPlaneSetupEnabled {
+		handlers[methodNetworkDataPlaneSetupStart] = server.networkDataPlaneSetupStartHandler(transportPeer)
+		handlers[methodNetworkDataPlaneSetupRead] = server.networkDataPlaneSetupReadHandler(transportPeer)
+		handlers[methodNetworkDataPlaneTrustPrepare] = server.networkDataPlaneTrustPrepareHandler(transportPeer)
+		handlers[methodNetworkDataPlaneTrustConfirm] = server.networkDataPlaneTrustConfirmHandler(transportPeer)
+		handlers[methodNetworkDataPlaneLowPortPrepare] = server.networkDataPlaneLowPortPrepareHandler(transportPeer)
+		handlers[methodNetworkDataPlaneLowPortConfirm] = server.networkDataPlaneLowPortConfirmHandler(transportPeer)
+	}
+
 	controlSession, err := session.NewServer(session.ServerConfig{
 		DaemonVersion:  server.build.Version,
 		ProtocolRanges: protocolRanges(),
@@ -141,34 +180,8 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		Authorize:      serverAuthorize,
 		RoleHandlers:   roleHandlers,
 		EventHandler:   managedEventHandler,
-		Handlers: map[string]session.Handler{
-			methodDaemonStatus: server.statusHandler(transportPeer),
-			methodDaemonStop: server.stopHandler(transportPeer, func(caller Caller) {
-				acceptShutdown.Do(func() {
-					shutdownCaller = caller
-					close(shutdownAccepted)
-				})
-			}),
-			methodNetworkSetupStart:                   server.networkSetupStartHandler(transportPeer),
-			methodNetworkSetupApprovalPrepare:         server.networkSetupApprovalPrepareHandler(transportPeer),
-			methodNetworkSetupApprovalConfirm:         server.networkSetupApprovalConfirmHandler(transportPeer),
-			methodNetworkResolverSetupStart:           server.networkResolverSetupStartHandler(transportPeer),
-			methodNetworkResolverSetupApprovalPrepare: server.networkResolverSetupApprovalPrepareHandler(transportPeer),
-			methodNetworkResolverSetupApprovalConfirm: server.networkResolverSetupApprovalConfirmHandler(transportPeer),
-			methodSnapshot:                            server.snapshotHandler(transportPeer),
-			methodProjectActivity:                     server.projectActivityHandler(transportPeer),
-			methodServiceLogs:                         server.serviceLogsHandler(transportPeer),
-			methodProjectRuntimeRepairInspect:         server.projectRuntimeRepairInspectHandler(transportPeer),
-			methodProjectRuntimeRepairConfirm:         server.projectRuntimeRepairConfirmHandler(transportPeer),
-			methodProjectStart:                        server.projectStartHandler(transportPeer),
-			methodProjectStop:                         server.projectStopHandler(transportPeer),
-			methodProjectRestart:                      server.projectRestartHandler(transportPeer),
-			methodProjectRegister:                     server.projectRegisterHandler(transportPeer),
-			methodProjectUnregister:                   server.projectUnregisterHandler(transportPeer),
-			methodProjectUnregisterApprovalPrepare:    server.projectUnregisterApprovalPrepareHandler(transportPeer),
-			methodProjectUnregisterApprovalConfirm:    server.projectUnregisterApprovalConfirmHandler(transportPeer),
-		},
-		ObserveError: server.sessionErrorObserver(transportPeer),
+		Handlers:       handlers,
+		ObserveError:   server.sessionErrorObserver(transportPeer),
 	})
 	if err != nil {
 		_ = connection.Close()

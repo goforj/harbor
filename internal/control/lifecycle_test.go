@@ -104,6 +104,7 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(capabilities(), []rpc.Capability{
 		CapabilityDaemonControlV1,
+		CapabilityNetworkDataPlaneSetupV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
