@@ -1,0 +1,239 @@
+name: Hosted macOS intermediate native lifecycle evidence
+
+# This workflow supplies intermediate hosted native lifecycle evidence only. It
+# does not prove user-consent behavior, released-product installation, or
+# machine-global cleanup. Any remaining host state is bounded by the admitted
+# disposable GitHub-hosted runner rather than treated as release evidence.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-macos-intermediate-native-lifecycle
+  cancel-in-progress: false
+
+env:
+  HARBOR_INTERMEDIATE_NATIVE_FORJ_COMMIT: d64c2fe24eb29531177966f9b99841f41193042e
+
+jobs:
+  intermediate-native-lifecycle:
+    name: Intermediate hosted native lifecycle evidence
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Admit default-branch GitHub-hosted execution
+        shell: bash
+        env:
+          HARBOR_EXPECTED_REF: refs/heads/${{ github.event.repository.default_branch }}
+          HARBOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          [[ "$HARBOR_RUNNER_ENVIRONMENT" == "github-hosted" ]]
+          [[ "$GITHUB_REF" == "$HARBOR_EXPECTED_REF" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+
+      - name: Require clean Harbor-owned host state
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              printf 'preexisting Harbor-owned path: %s\n' "$path" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          /Library/Application Support/GoForj/Harbor/Privileged
+          /Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist
+          /Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
+          /etc/resolver/test
+          EOF
+          if sudo -n launchctl print system/com.goforj.harbor.launchdrelay >/dev/null 2>&1; then
+            printf 'preexisting Harbor launchd relay service\n' >&2
+            exit 1
+          fi
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: ${{ env.HARBOR_INTERMEDIATE_NATIVE_FORJ_COMMIT }}
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Prepare isolated Go caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_identity="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_cache="${RUNNER_TEMP}/harbor-gocache-${cache_identity}"
+          module_cache="${RUNNER_TEMP}/harbor-gomodcache-${cache_identity}"
+          install -d -m 0700 "$build_cache" "$module_cache"
+          [[ "$(stat -f '%u:%g %Lp' "$build_cache")" == "$(id -u):$(id -g) 700" ]]
+          [[ "$(stat -f '%u:%g %Lp' "$module_cache")" == "$(id -u):$(id -g) 700" ]]
+          printf 'GOCACHE=%s\n' "$build_cache" >> "$GITHUB_ENV"
+          printf 'GOMODCACHE=%s\n' "$module_cache" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Verify isolated Go caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(go env GOCACHE)" == "$GOCACHE" ]]
+          [[ "$(go env GOMODCACHE)" == "$GOMODCACHE" ]]
+          [[ "$(stat -f '%u:%g %Lp' "$GOCACHE")" == "$(id -u):$(id -g) 700" ]]
+          [[ "$(stat -f '%u:%g %Lp' "$GOMODCACHE")" == "$(id -u):$(id -g) 700" ]]
+
+      - name: Build production Harbor and GoForj binaries
+        shell: bash
+        run: |
+          binary_directory="${RUNNER_TEMP}/harbor-intermediate-native-bin"
+          mkdir -p "$binary_directory"
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/harbor" ./cmd/app
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/harbord" ./cmd/harbord
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/helper" ./cmd/helper
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/devbootstrap" ./cmd/devbootstrap
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/launchdrelay" ./cmd/launchdrelay
+          (
+            cd .ci/goforj
+            GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/forj" ./cmd/forj
+          )
+          printf 'HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY=%s\n' "$binary_directory" >> "$GITHUB_ENV"
+
+      - name: Preflight current-user keychain
+        shell: bash
+        run: |
+          security list-keychains -d user
+          security default-keychain -d user
+          security find-certificate -a -p >/dev/null
+
+      - name: Install development helper for the current user
+        shell: bash
+        run: |
+          sudo -n "${HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY}/devbootstrap" \
+            --helper "${HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY}/helper" \
+            --launchd-relay "${HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY}/launchdrelay" \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"
+
+      - name: Capture and allow kAuthorizationRightExecute system.privilege.admin
+        shell: bash
+        run: |
+          set -euo pipefail
+          authorization_directory="/var/root/harbor-intermediate-native-authorizationdb"
+          authorization_rule="${authorization_directory}/original.plist"
+          authorization_digest="${authorization_directory}/original.sha256"
+          authorization_marker="${authorization_directory}/capture-complete"
+          sudo -n test ! -e "$authorization_directory"
+          sudo -n install -d -m 0700 -o root -g wheel "$authorization_directory"
+          sudo -n /bin/sh -ceu '
+            umask 077
+            /usr/bin/security authorizationdb read system.privilege.admin > "$1"
+            /usr/bin/plutil -lint "$1" >/dev/null
+            /bin/test -s "$1"
+            /usr/bin/shasum -a 256 "$1" > "$2"
+            /usr/bin/touch "$3"
+          ' harbor-authorization-capture "$authorization_rule" "$authorization_digest" "$authorization_marker"
+          sudo -n security authorizationdb write system.privilege.admin allow
+
+      - name: Run intermediate native lifecycle test
+        shell: bash
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/forj
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.19.0"
+          HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/harbor
+          HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/harbord
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-intermediate-native-lifecycle-evidence
+        run: |
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=25m \
+            -run '^TestDarwinTrustedHTTPSIntermediateNativeLifecycle$' \
+            ./internal/acceptance
+
+      - name: Restore system.privilege.admin authorization rule
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          authorization_directory="/var/root/harbor-intermediate-native-authorizationdb"
+          authorization_rule="${authorization_directory}/original.plist"
+          authorization_digest="${authorization_directory}/original.sha256"
+          authorization_marker="${authorization_directory}/capture-complete"
+          authorization_restored="${authorization_directory}/restored.plist"
+          if ! sudo -n test -e "$authorization_directory"; then
+            exit 0
+          fi
+          if ! sudo -n test -f "$authorization_marker"; then
+            sudo -n rm -f "$authorization_rule" "$authorization_digest"
+            sudo -n rmdir "$authorization_directory"
+            exit 0
+          fi
+          sudo -n /bin/sh -ceu '
+            /usr/bin/shasum -a 256 -c "$2"
+            /usr/bin/security authorizationdb write system.privilege.admin < "$1"
+            umask 077
+            /usr/bin/security authorizationdb read system.privilege.admin > "$4"
+            /usr/bin/cmp -s "$1" "$4"
+            /bin/rm -f "$4" "$3" "$2" "$1"
+            /bin/rmdir "$5"
+          ' harbor-authorization-restore "$authorization_rule" "$authorization_digest" "$authorization_marker" "$authorization_restored" "$authorization_directory"
+
+      - name: Remove development bootstrap artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if sudo -n launchctl print system/com.goforj.harbor.launchdrelay >/dev/null 2>&1; then
+            sudo -n launchctl bootout system/com.goforj.harbor.launchdrelay
+          fi
+          sudo -n rm -f \
+            /Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist \
+            /Library/PrivilegedHelperTools/com.goforj.harbor.helper \
+            /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay \
+            /etc/resolver/test
+          if sudo -n test -e "/Library/Application Support/GoForj/Harbor/Privileged"; then
+            sudo -n rm -rf "/Library/Application Support/GoForj/Harbor/Privileged"
+          fi
+          sudo -n rmdir "/Library/Application Support/GoForj/Harbor" 2>/dev/null || true
+          sudo -n rmdir "/Library/Application Support/GoForj" 2>/dev/null || true
+          sudo -n rmdir /etc/resolver 2>/dev/null || true
+          while IFS= read -r path; do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              printf 'Harbor bootstrap cleanup left path: %s\n' "$path" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          /Library/Application Support/GoForj/Harbor/Privileged
+          /Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist
+          /Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
+          /etc/resolver/test
+          EOF
+
+      - name: Upload bounded Phase1 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-macos-intermediate-native-lifecycle-phase1-evidence
+          path: harbor-intermediate-native-lifecycle-evidence/summary.json
+          if-no-files-found: error
+          retention-days: 7

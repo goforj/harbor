@@ -75,6 +75,7 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	)
 	configuration := phase1LoadConfig(t)
 	sandbox := phase1ConfigureSandbox(t, configuration)
+	trustedHTTPSPropagateGoCaches(t, &sandbox)
 	lifecycle := &trustedHTTPSNativeLifecycle{
 		configuration: configuration,
 		sandbox:       sandbox,
@@ -219,6 +220,28 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	phase1AssertDaemonUnavailable(t, configuration, sandbox)
 	phase1AssertCleanup(t, sandbox)
 	evidence.check("project processes and per-user daemon resources were removed")
+}
+
+// trustedHTTPSPropagateGoCaches preserves the explicitly selected Go build caches for generated-project dev builds.
+func trustedHTTPSPropagateGoCaches(t *testing.T, sandbox *phase1Sandbox) {
+	t.Helper()
+
+	overrides := make(map[string]string, 2)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
+		path := strings.TrimSpace(os.Getenv(name))
+		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			t.Fatalf("%s must identify an absolute clean Go cache path", name)
+		}
+		information, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("inspect %s: %v", name, err)
+		}
+		if !information.IsDir() {
+			t.Fatalf("%s path %q is not a directory", name, path)
+		}
+		overrides[name] = path
+	}
+	sandbox.environment = phase1MergedEnvironment(sandbox.environment, overrides)
 }
 
 // trustedHTTPSRequireControlCapabilities prevents a pool-only or lifecycle-incomplete daemon from entering the native proof.
