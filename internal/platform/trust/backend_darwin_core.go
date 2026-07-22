@@ -114,6 +114,13 @@ func (backend *darwinTrustBackend) release(ctx context.Context, request Request,
 	if err := before.Validate(); err != nil {
 		return err
 	}
+	assessment := classifyValidated(before)
+	if assessment.State != StateExact || assessment.Owned != OwnedStateExact {
+		return fmt.Errorf(
+			"Darwin trust release requires one exact owned entry: %w",
+			errNativeMutationConflict,
+		)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

@@ -8,6 +8,10 @@ import (
 var (
 	// ErrUnavailable reports that the current build has no reviewed native trust-store adapter.
 	ErrUnavailable = errors.New("native trust-store adapter is unavailable")
+	// errNativeObservationChanged reports a successful native recheck that no longer matches admitted facts.
+	errNativeObservationChanged = errors.New("native trust observation changed before mutation")
+	// errNativeMutationConflict reports facts that cannot identify one exact safe native effect.
+	errNativeMutationConflict = errors.New("native trust mutation conflicts with current facts")
 )
 
 // ErrorKind classifies a trust failure without exposing unbounded native diagnostics.

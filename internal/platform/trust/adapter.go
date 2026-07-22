@@ -149,8 +149,15 @@ func (adapter *Adapter) ReleaseIfObserved(
 	mutationErr := adapter.backend.release(mutationContext, request, cloneObservation(before))
 	change, afterAssessment, observationErr := adapter.reconcileMutation(request, before)
 	if mutationErr != nil {
+		kind := ErrorKindMutationFailed
+		switch {
+		case errors.Is(mutationErr, errNativeObservationChanged):
+			kind = ErrorKindObservationChanged
+		case errors.Is(mutationErr, errNativeMutationConflict):
+			kind = ErrorKindConflict
+		}
 		return change, operationError(
-			ErrorKindMutationFailed,
+			kind,
 			operation,
 			changeObservation(change),
 			changeAssessment(change, assessment, afterAssessment),

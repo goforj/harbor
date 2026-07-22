@@ -437,6 +437,45 @@ func TestAdapterReleaseRejectsAmbiguousOwnershipAndMalformedCAS(t *testing.T) {
 	}
 }
 
+// TestAdapterClassifiesNativeReleaseRejection preserves bounded stale and conflict outcomes from backend revalidation.
+func TestAdapterClassifiesNativeReleaseRejection(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinCurrentUserTrust)
+	owned := trustExactEntry(request, "owned")
+	for _, test := range []struct {
+		name string
+		err  error
+		kind ErrorKind
+	}{
+		{
+			name: "observation changed",
+			err:  errNativeObservationChanged,
+			kind: ErrorKindObservationChanged,
+		},
+		{
+			name: "native conflict",
+			err:  errNativeMutationConflict,
+			kind: ErrorKindConflict,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newTrustFakeBackend(request, owned)
+			backend.skipReleaseEffect = true
+			backend.releaseErr = test.err
+			change, err := newAdapter(backend).ReleaseIfObserved(
+				t.Context(),
+				request,
+				trustFingerprint(t, backend.observation),
+			)
+			if !hasTrustErrorKind(err, test.kind) || !errors.Is(err, test.err) {
+				t.Fatalf("ReleaseIfObserved() error = %v, want %q wrapping %v", err, test.kind, test.err)
+			}
+			if backend.releaseCalls != 1 || !change.Attempted || change.Changed || change.Indeterminate {
+				t.Fatalf("ReleaseIfObserved() change = %#v, calls = %d", change, backend.releaseCalls)
+			}
+		})
+	}
+}
+
 // TestAdapterReportsMutationAndVerificationFailures preserves uncertainty around effects and postconditions.
 func TestAdapterReportsMutationAndVerificationFailures(t *testing.T) {
 	request := trustTestRequest(t, networkpolicy.DarwinCurrentUserTrust)

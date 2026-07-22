@@ -47,16 +47,28 @@ static int harbor_trust_append(uint8_t **buffer, size_t *length, size_t *capacit
 	return errSecSuccess;
 }
 
-static int harbor_trust_settings_are_exact(SecCertificateRef certificate) {
+static int harbor_trust_settings_are_exact(SecCertificateRef certificate, int *exact) {
+	if (certificate == NULL || exact == NULL) {
+		return errSecParam;
+	}
+	*exact = 0;
 	CFArrayRef settings = NULL;
 	OSStatus status = SecTrustSettingsCopyTrustSettings(certificate, kSecTrustSettingsDomainUser, &settings);
-	if (status == errSecItemNotFound || settings == NULL) {
-		return 0;
+	if (status == errSecItemNotFound || status == errSecNoTrustSettings) {
+		if (settings != NULL) {
+			CFRelease(settings);
+		}
+		return errSecSuccess;
 	}
 	if (status != errSecSuccess) {
-		return 0;
+		if (settings != NULL) {
+			CFRelease(settings);
+		}
+		return status;
 	}
-	int exact = 0;
+	if (settings == NULL) {
+		return errSecDecode;
+	}
 	if (CFArrayGetCount(settings) == 1) {
 		CFTypeRef candidate = CFArrayGetValueAtIndex(settings, 0);
 		if (candidate != NULL && CFGetTypeID(candidate) == CFDictionaryGetTypeID()) {
@@ -66,14 +78,14 @@ static int harbor_trust_settings_are_exact(SecCertificateRef certificate) {
 				if (result != NULL && CFGetTypeID(result) == CFNumberGetTypeID()) {
 					int32_t value = 0;
 					if (CFNumberGetValue((CFNumberRef)result, kCFNumberSInt32Type, &value) && value == kSecTrustSettingsResultTrustRoot) {
-						exact = 1;
+						*exact = 1;
 					}
 				}
 			}
 		}
 	}
 	CFRelease(settings);
-	return exact;
+	return errSecSuccess;
 }
 
 // harbor_trust_copy_user_snapshot returns repeated [DER length][DER][exact byte] records.
@@ -85,11 +97,20 @@ static int harbor_trust_copy_user_snapshot(uint8_t **output, size_t *output_leng
 	*output_length = 0;
 	CFArrayRef certificates = NULL;
 	OSStatus status = SecTrustSettingsCopyCertificates(kSecTrustSettingsDomainUser, &certificates);
-	if (status == errSecItemNotFound || certificates == NULL) {
+	if (status == errSecItemNotFound || status == errSecNoTrustSettings) {
+		if (certificates != NULL) {
+			CFRelease(certificates);
+		}
 		return errSecSuccess;
 	}
 	if (status != errSecSuccess) {
+		if (certificates != NULL) {
+			CFRelease(certificates);
+		}
 		return status;
+	}
+	if (certificates == NULL) {
+		return errSecDecode;
 	}
 	CFIndex count = CFArrayGetCount(certificates);
 	if (count < 0 || count > 256) {
@@ -126,7 +147,13 @@ static int harbor_trust_copy_user_snapshot(uint8_t **output, size_t *output_leng
 			CFRelease(certificates);
 			return status;
 		}
-		uint8_t exact = (uint8_t)harbor_trust_settings_are_exact((SecCertificateRef)candidate);
+		int exact = 0;
+		status = harbor_trust_settings_are_exact((SecCertificateRef)candidate, &exact);
+		if (status != errSecSuccess) {
+			free(buffer);
+			CFRelease(certificates);
+			return status;
+		}
 		if (length == capacity) {
 			size_t next = capacity == 0 ? 4096 : capacity * 2;
 			if (next <= capacity) {
@@ -143,7 +170,7 @@ static int harbor_trust_copy_user_snapshot(uint8_t **output, size_t *output_leng
 			buffer = grown;
 			capacity = next;
 		}
-		buffer[length++] = exact;
+		buffer[length++] = (uint8_t)exact;
 	}
 	CFRelease(certificates);
 	*output = buffer;
@@ -169,6 +196,9 @@ static int harbor_trust_find_owner(const char *account, size_t account_length, c
 	}
 	if (status != errSecSuccess) {
 		return status;
+	}
+	if (data == NULL) {
+		return data_length == 0 ? errSecDuplicateItem : errSecDecode;
 	}
 	int matches = data_length == fingerprint_length && memcmp(data, fingerprint, fingerprint_length) == 0;
 	SecKeychainItemFreeContent(NULL, data);
@@ -214,6 +244,16 @@ static int harbor_trust_delete_owner(const char *account, size_t account_length,
 	}
 	if (status != errSecSuccess) {
 		return status;
+	}
+	if (item == NULL) {
+		if (data != NULL) {
+			SecKeychainItemFreeContent(NULL, data);
+		}
+		return errSecDecode;
+	}
+	if (data == NULL) {
+		CFRelease(item);
+		return data_length == 0 ? errSecDuplicateItem : errSecDecode;
 	}
 	int matches = data_length == fingerprint_length && memcmp(data, fingerprint, fingerprint_length) == 0;
 	SecKeychainItemFreeContent(NULL, data);
@@ -267,7 +307,20 @@ static int harbor_trust_set_user_root(const uint8_t *der, size_t der_length) {
 	return status;
 }
 
-static int harbor_trust_remove_user_root(const uint8_t *der, size_t der_length) {
+// harbor_trust_remove_user_root_if_owned_exact narrows the stale window by rechecking target settings and ownership immediately before removal.
+static int harbor_trust_remove_user_root_if_owned_exact(
+	const uint8_t *der,
+	size_t der_length,
+	const char *account,
+	size_t account_length,
+	const char *fingerprint,
+	size_t fingerprint_length,
+	int *stale
+) {
+	if (der == NULL || der_length == 0 || account == NULL || account_length == 0 || fingerprint == NULL || fingerprint_length == 0 || stale == NULL) {
+		return errSecParam;
+	}
+	*stale = 0;
 	CFDataRef data = CFDataCreate(kCFAllocatorDefault, der, (CFIndex)der_length);
 	if (data == NULL) {
 		return errSecAllocate;
@@ -277,9 +330,37 @@ static int harbor_trust_remove_user_root(const uint8_t *der, size_t der_length) 
 	if (certificate == NULL) {
 		return errSecDecode;
 	}
-	OSStatus status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainUser);
+	int exact = 0;
+	OSStatus status = harbor_trust_settings_are_exact(certificate, &exact);
+	if (status != errSecSuccess) {
+		CFRelease(certificate);
+		return status;
+	}
+	if (!exact) {
+		*stale = 1;
+		CFRelease(certificate);
+		return errSecSuccess;
+	}
+	int owner = harbor_trust_find_owner(account, account_length, fingerprint, fingerprint_length);
+	if (owner == 0 || owner == errSecDuplicateItem) {
+		*stale = 1;
+		CFRelease(certificate);
+		return errSecSuccess;
+	}
+	if (owner != 1) {
+		CFRelease(certificate);
+		return owner;
+	}
+	status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainUser);
 	CFRelease(certificate);
-	return status == errSecItemNotFound ? errSecSuccess : status;
+	if (status == errSecItemNotFound) {
+		*stale = 1;
+		return errSecSuccess;
+	}
+	if (status != errSecSuccess) {
+		return status;
+	}
+	return harbor_trust_delete_owner(account, account_length, fingerprint, fingerprint_length);
 }
 
 #pragma clang diagnostic pop
@@ -297,6 +378,9 @@ const maximumDarwinTrustSnapshotBytes = 16 << 20
 
 // darwinNativeTrustStore is the only production Security.framework boundary used by the adapter.
 type darwinNativeTrustStore struct{}
+
+// darwinTrustReleaseEffect performs the one native optimistic recheck and bounded removal.
+type darwinTrustReleaseEffect func([]byte, string, string) (bool, error)
 
 // New creates a macOS current-user trust adapter backed by Security.framework and the login keychain.
 func New() (*Adapter, error) {
@@ -376,7 +460,7 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 	return nil
 }
 
-// release removes the trust setting before deleting the matching ownership marker.
+// release optimistically revalidates exact settings and ownership next to the bounded native removal.
 func (darwinNativeTrustStore) release(ctx context.Context, request Request) error {
 	if err := validateDarwinTrustContext(ctx); err != nil {
 		return err
@@ -391,25 +475,46 @@ func (darwinNativeTrustStore) release(ctx context.Context, request Request) erro
 	if err != nil {
 		return err
 	}
-	status := C.harbor_trust_remove_user_root(
-		(*C.uint8_t)(unsafe.Pointer(&root[0])),
-		C.size_t(len(root)),
-	)
-	if status != C.harborErrSecSuccess {
-		return darwinTrustStatusError("remove current-user root trust", status)
-	}
 	account := darwinTrustOwnerAccount(request)
 	fingerprint := request.AuthorityFingerprint()
-	accountPointer, accountLength := cStringBytes(account)
-	fingerprintPointer, fingerprintLength := cStringBytes(fingerprint)
-	status = C.harbor_trust_delete_owner(
-		(*C.char)(unsafe.Pointer(&accountPointer[0])), accountLength,
-		(*C.char)(unsafe.Pointer(&fingerprintPointer[0])), fingerprintLength,
-	)
-	if status != C.harborErrSecSuccess {
-		return darwinTrustStatusError("remove current-user trust ownership", status)
+	return executeDarwinTrustRelease(root, account, fingerprint, removeExactOwnedDarwinTrust)
+}
+
+// executeDarwinTrustRelease maps native revalidation outcomes onto the portable stale-observation contract.
+func executeDarwinTrustRelease(
+	root []byte,
+	account string,
+	fingerprint string,
+	effect darwinTrustReleaseEffect,
+) error {
+	stale, err := effect(root, account, fingerprint)
+	if err != nil {
+		return err
+	}
+	if stale {
+		return errNativeObservationChanged
 	}
 	return nil
+}
+
+// removeExactOwnedDarwinTrust invokes the single native recheck-and-remove helper for one validated target.
+func removeExactOwnedDarwinTrust(root []byte, account string, fingerprint string) (bool, error) {
+	accountPointer, accountLength := cStringBytes(account)
+	fingerprintPointer, fingerprintLength := cStringBytes(fingerprint)
+	var stale C.int
+	status := C.harbor_trust_remove_user_root_if_owned_exact(
+		(*C.uint8_t)(unsafe.Pointer(&root[0])),
+		C.size_t(len(root)),
+		(*C.char)(unsafe.Pointer(&accountPointer[0])),
+		accountLength,
+		(*C.char)(unsafe.Pointer(&fingerprintPointer[0])),
+		fingerprintLength,
+		&stale,
+	)
+	if status != C.harborErrSecSuccess {
+		return false, darwinTrustStatusError("remove exact owned current-user root trust", status)
+	}
+	return stale != 0, nil
 }
 
 // ownerExists checks only the fixed Harbor marker account bound to this exact authority.
