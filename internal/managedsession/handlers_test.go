@@ -380,6 +380,31 @@ func TestManagedSessionHandlerClassifiesRuntimeSettlementAsUnavailable(t *testin
 	}
 }
 
+// TestManagedSessionHandlerClassifiesIncompleteNetworkAuthorityAsTerminal prevents GoForj from polling an impossible barrier.
+func TestManagedSessionHandlerClassifiesIncompleteNetworkAuthorityAsTerminal(t *testing.T) {
+	authority := managedSessionHandlerTestAuthority()
+	authority.err = ErrManagedSessionNetworkSetupRequired
+	set, err := NewHandlerSet(managedSessionHandlerTestPeer(), authority)
+	if err != nil {
+		t.Fatalf("NewHandlerSet() error = %v", err)
+	}
+	request := BarrierRequest{
+		SchemaVersion:           SchemaVersion,
+		Fence:                   managedSessionTestFence(),
+		Phase:                   BarrierPhaseCompose,
+		AcceptedProjectIdentity: "orders-dev",
+	}
+	body, err := MarshalBarrierRequest(request)
+	if err != nil {
+		t.Fatalf("MarshalBarrierRequest() error = %v", err)
+	}
+	_, err = set.Handlers()[MethodBarrier](t.Context(), session.Request{Method: MethodBarrier, Payload: body, Peer: managedSessionHandlerTestSessionPeer()})
+	var handlerError *session.HandlerError
+	if !errors.As(err, &handlerError) || handlerError.Code() != rpc.ErrorCodeConflict {
+		t.Fatalf("handler error = %#v, want conflict HandlerError", err)
+	}
+}
+
 // TestNewHandlerSetValidatesAuthenticatedPeerAndAuthority proves construction cannot create an unbound handler set.
 func TestNewHandlerSetValidatesAuthenticatedPeerAndAuthority(t *testing.T) {
 	authority := managedSessionHandlerTestAuthority()

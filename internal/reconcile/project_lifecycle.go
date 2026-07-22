@@ -618,6 +618,20 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 			coordinator.failQueuedAdmission(record, lifecycleProblem("project.endpoint.assignment.failed", err))
 			return
 		}
+		if serviceIDs := managedPublicationServiceIDs(descriptor.ServiceRequirements); len(serviceIDs) > 0 {
+			network, initialized, readErr := coordinator.primaryLeases.state.Network(coordinator.ctx)
+			if readErr != nil {
+				coordinator.cancelQueued(record, readErr)
+				return
+			}
+			if !initialized || network.Stage != state.NetworkStageFull {
+				coordinator.failQueuedAdmission(record, lifecycleProblem(
+					"project.network.setup_required",
+					fmt.Errorf("managed service publication requires full Harbor network authority; current stage is %q", network.Stage),
+				))
+				return
+			}
+		}
 		refreshed, readErr := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
 		if readErr != nil {
 			coordinator.cancelQueued(record, readErr)
