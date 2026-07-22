@@ -7,16 +7,14 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
-
-	"golang.org/x/mod/semver"
 )
 
 const (
 	goForjCommandPath        = "github.com/goforj/goforj/cmd/forj"
 	goForjModulePath         = "github.com/goforj/goforj"
-	minimumGoForjVersion     = "v0.20.1-0.20260722020216-d64c2fe24eb2"
-	minimumGoForjRevision    = "d64c2fe24eb29531177966f9b99841f41193042e"
-	goForjUpgradeInstruction = "use a canonical GoForj build at or above v0.20.1-0.20260722020216-d64c2fe24eb2 or the exact clean development revision d64c2fe24eb29531177966f9b99841f41193042e, run \"forj render\" in this project, and try again"
+	compatibleGoForjVersion  = "v0.21.1-0.20260722203521-55a1e5759956"
+	compatibleGoForjRevision = "55a1e57599565c9768627db016fc781e3c705f15"
+	goForjUpgradeInstruction = "use the canonical GoForj build v0.21.1-0.20260722203521-55a1e5759956 or its exact clean source revision 55a1e57599565c9768627db016fc781e3c705f15, run \"forj render\" in this project, and try again"
 	maximumErrorPathBytes    = 256
 	maximumErrorReasonBytes  = 512
 )
@@ -61,23 +59,14 @@ func verifyGoForjExecutable(path string, reader buildInformationReader) error {
 	}
 
 	version := strings.TrimSpace(information.Main.Version)
-	if semver.IsValid(version) {
-		if semver.Compare(version, minimumGoForjVersion) >= 0 {
-			return nil
-		}
-		if cleanMinimumRevisionProvesCompatibility(information) {
-			return nil
-		}
-		return incompatibleGoForjError(path, fmt.Sprintf("version %q is older than required version %q", version, minimumGoForjVersion))
-	}
-	if cleanMinimumRevisionProvesCompatibility(information) && developmentVersionMayUseRevision(version) {
+	if version == compatibleGoForjVersion || cleanCompatibleRevisionProvesCompatibility(information) && developmentVersionMayUseRevision(version) {
 		return nil
 	}
-	return incompatibleGoForjError(path, fmt.Sprintf("version %q cannot prove managed project address support", version))
+	return incompatibleGoForjError(path, fmt.Sprintf("version %q is not the supported managed-session build %q", version, compatibleGoForjVersion))
 }
 
-// cleanMinimumRevisionProvesCompatibility admits the exact clean source revision that defines Harbor's address contract.
-func cleanMinimumRevisionProvesCompatibility(information *debug.BuildInfo) bool {
+// cleanCompatibleRevisionProvesCompatibility admits the exact clean source revision that defines Harbor's address contract.
+func cleanCompatibleRevisionProvesCompatibility(information *debug.BuildInfo) bool {
 	revision := ""
 	modified := ""
 	for _, setting := range information.Settings {
@@ -88,7 +77,7 @@ func cleanMinimumRevisionProvesCompatibility(information *debug.BuildInfo) bool 
 			modified = strings.TrimSpace(setting.Value)
 		}
 	}
-	return revision == minimumGoForjRevision && modified == "false"
+	return revision == compatibleGoForjRevision && modified == "false"
 }
 
 // developmentVersionMayUseRevision limits revision-based admission to Go's unversioned development metadata.

@@ -2,7 +2,6 @@ package reconcile
 
 import (
 	"net/netip"
-	"slices"
 	"strings"
 	"testing"
 
@@ -49,87 +48,6 @@ func TestManagedRuntimeServiceEndpointRequiresExactPublicationGeneration(t *test
 	publication.Fence.SessionGeneration++
 	if _, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation); err == nil || !strings.Contains(err.Error(), "does not match the requested fence") {
 		t.Fatalf("managedRuntimeServiceEndpoint() fence error = %v, want fence rejection", err)
-	}
-}
-
-// TestManagedRuntimeServiceEndpointMaterializesDeclaredEnvironmentKeys keeps Harbor from guessing framework names.
-func TestManagedRuntimeServiceEndpointMaterializesDeclaredEnvironmentKeys(t *testing.T) {
-	fence := harbordruntime.ManagedPublicationFence{ProjectID: "project-orders", SessionID: "session-orders", SessionGeneration: 2}
-	requirement := goforj.ServiceRequirement{ID: "database", Consumers: []string{"app"}}
-	declared := goforj.ServiceEndpoint{
-		ID: "endpoint.database.primary.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 3306, Visibility: goforj.ServiceEndpointVisibilityHost,
-		Environment: []goforj.ServiceEndpointEnvironment{
-			{AppID: "app", Key: "DB_HOST", Kind: goforj.ServiceEndpointEnvironmentKindHost},
-			{AppID: "app", Key: "DB_PORT", Kind: goforj.ServiceEndpointEnvironmentKindPort},
-		},
-	}
-	publication := harbordruntime.ManagedEndpointPublication{
-		Fence: fence, EndpointID: "service:database.tcp", ReservationGeneration: 4, Upstream: netip.MustParseAddrPort("127.0.0.1:43106"),
-	}
-	reservation := state.EndpointReservation{
-		Key: state.EndpointReservationKey{ProjectID: fence.ProjectID, EndpointID: publication.EndpointID}, Protocol: state.EndpointProtocolTCP,
-		Host: "database.orders.test", Public: netip.MustParseAddrPort("127.77.1.8:3306"), Generation: 4,
-	}
-	endpoint, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation)
-	if err != nil {
-		t.Fatalf("managedRuntimeServiceEndpoint() error = %v", err)
-	}
-	want := []managedsession.RuntimePlanServiceEnvironment{
-		{AppID: "app", Key: "DB_HOST", Value: "127.0.0.1"},
-		{AppID: "app", Key: "DB_PORT", Value: "43106"},
-	}
-	if !slices.Equal(endpoint.Environment, want) {
-		t.Fatalf("managed runtime environment = %#v, want %#v", endpoint.Environment, want)
-	}
-}
-
-// TestManagedRuntimeServiceEndpointMaterializesRedisEnvironment keeps shared Redis consumers on the project-local publication.
-func TestManagedRuntimeServiceEndpointMaterializesRedisEnvironment(t *testing.T) {
-	fence := harbordruntime.ManagedPublicationFence{ProjectID: "project-orders", SessionID: "session-orders", SessionGeneration: 2}
-	requirement := goforj.ServiceRequirement{ID: "requirement.redis.cache", Consumers: []string{"app"}}
-	declared := goforj.ServiceEndpoint{
-		ID: "requirement.redis.cache.endpoint.tcp", Protocol: goforj.ServiceEndpointProtocolTCP, NativePort: 6379, Visibility: goforj.ServiceEndpointVisibilityHost,
-		Environment: []goforj.ServiceEndpointEnvironment{
-			{AppID: "app", Key: "REDIS_HOST", Kind: goforj.ServiceEndpointEnvironmentKindHost},
-			{AppID: "app", Key: "REDIS_PORT", Kind: goforj.ServiceEndpointEnvironmentKindPort},
-		},
-	}
-	publication := harbordruntime.ManagedEndpointPublication{
-		Fence: fence, EndpointID: "service:requirement.redis.cache.tcp", ReservationGeneration: 4, Upstream: netip.MustParseAddrPort("127.0.0.1:43179"),
-	}
-	reservation := state.EndpointReservation{
-		Key: state.EndpointReservationKey{ProjectID: fence.ProjectID, EndpointID: publication.EndpointID}, Protocol: state.EndpointProtocolTCP,
-		Host: "redis.orders.test", Public: netip.MustParseAddrPort("127.77.1.8:6379"), Generation: 4,
-	}
-	endpoint, err := managedRuntimeServiceEndpoint(fence, requirement, []string{"app"}, declared, publication, reservation)
-	if err != nil {
-		t.Fatalf("managedRuntimeServiceEndpoint() error = %v", err)
-	}
-	want := []managedsession.RuntimePlanServiceEnvironment{
-		{AppID: "app", Key: "REDIS_HOST", Value: "127.0.0.1"},
-		{AppID: "app", Key: "REDIS_PORT", Value: "43179"},
-	}
-	if !slices.Equal(endpoint.Environment, want) {
-		t.Fatalf("managed Redis environment = %#v, want %#v", endpoint.Environment, want)
-	}
-}
-
-// TestManagedRuntimeServiceEnvironmentMaterializesAddressValues keeps address-list consumers on the exact private publication.
-func TestManagedRuntimeServiceEnvironmentMaterializesAddressValues(t *testing.T) {
-	metadata := []goforj.ServiceEndpointEnvironment{
-		{AppID: "app", Key: "CACHE_ADDRESSES", Kind: goforj.ServiceEndpointEnvironmentKindAddress},
-		{AppID: "app", Key: "EVENTS_BROKERS", Kind: goforj.ServiceEndpointEnvironmentKindAddress},
-	}
-	got, err := managedRuntimeServiceEnvironment(metadata, []string{"app"}, netip.MustParseAddrPort("127.0.0.1:43112"))
-	if err != nil {
-		t.Fatalf("managedRuntimeServiceEnvironment() error = %v", err)
-	}
-	want := []managedsession.RuntimePlanServiceEnvironment{
-		{AppID: "app", Key: "CACHE_ADDRESSES", Value: "127.0.0.1:43112"},
-		{AppID: "app", Key: "EVENTS_BROKERS", Value: "127.0.0.1:43112"},
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("managed address environment = %#v, want %#v", got, want)
 	}
 }
 

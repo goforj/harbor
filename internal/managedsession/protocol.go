@@ -32,6 +32,12 @@ const (
 	CapabilityEventsV1 rpc.Capability = "managed-session.events.v1"
 	// CapabilityRuntimePlanV1 identifies the optional semantic endpoint-assignment plan.
 	CapabilityRuntimePlanV1 rpc.Capability = "managed-session.runtime-plan.v1"
+	// CapabilityRuntimePlanV2 reserves a future incompatible runtime-plan schema.
+	//
+	// Runtime-plan v1 deliberately has no service environment assignments: the pinned
+	// GoForj v1 reader strictly rejects unknown endpoint fields. A peer must negotiate
+	// this distinct capability and schema before Harbor can send such assignments.
+	CapabilityRuntimePlanV2 rpc.Capability = "managed-session.runtime-plan.v2"
 	// CapabilityOutputReattachV1 identifies the optional authenticated output-reattachment handshake.
 	CapabilityOutputReattachV1 rpc.Capability = "managed-session.output-reattach.v1"
 	// MethodRegister attaches one authenticated GoForj process to a Harbor session.

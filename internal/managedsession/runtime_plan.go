@@ -13,10 +13,9 @@ import (
 )
 
 const (
-	maximumRuntimePlanRoutes      = 32
-	maximumRuntimePlanEndpoints   = 256
-	maximumRuntimePlanEnvironment = 64
-	minimumRuntimePlanPort        = 1024
+	maximumRuntimePlanRoutes    = 32
+	maximumRuntimePlanEndpoints = 256
+	minimumRuntimePlanPort      = 1024
 )
 
 // RuntimePlanRequest asks Harbor for assignments for one exact attached session.
@@ -144,24 +143,13 @@ func (route RuntimePlanRoute) Validate() error {
 
 // RuntimePlanServiceEndpoint assigns one private publication and one native service endpoint.
 type RuntimePlanServiceEndpoint struct {
-	ID            string                          `json:"id"`
-	RequirementID string                          `json:"requirement_id"`
-	Consumers     []string                        `json:"consumers"`
-	PublishHost   string                          `json:"publish_host"`
-	PublishPort   uint16                          `json:"publish_port"`
-	PublicHost    string                          `json:"public_host"`
-	PublicPort    uint16                          `json:"public_port"`
-	Environment   []RuntimePlanServiceEnvironment `json:"environment,omitempty"`
-}
-
-// RuntimePlanServiceEnvironment carries one concrete, secret-free service value to an App process.
-type RuntimePlanServiceEnvironment struct {
-	// AppID identifies the App process that receives the assignment.
-	AppID string `json:"app_id"`
-	// Key is the generated environment key that consumes the assignment.
-	Key string `json:"key"`
-	// Value is the exact value derived from the observed private publication.
-	Value string `json:"value"`
+	ID            string   `json:"id"`
+	RequirementID string   `json:"requirement_id"`
+	Consumers     []string `json:"consumers"`
+	PublishHost   string   `json:"publish_host"`
+	PublishPort   uint16   `json:"publish_port"`
+	PublicHost    string   `json:"public_host"`
+	PublicPort    uint16   `json:"public_port"`
 }
 
 // Validate reports whether one service assignment is deterministic and keeps private addressing loopback-only.
@@ -194,41 +182,6 @@ func (endpoint RuntimePlanServiceEndpoint) Validate() error {
 	}
 	if endpoint.PublicPort == 0 {
 		return fmt.Errorf("managed runtime endpoint %q public port must be positive", endpoint.ID)
-	}
-	if endpoint.Environment != nil {
-		if len(endpoint.Environment) > maximumRuntimePlanEnvironment {
-			return fmt.Errorf("managed runtime endpoint %q contains more than %d environment assignments", endpoint.ID, maximumRuntimePlanEnvironment)
-		}
-		consumers := make(map[string]struct{}, len(endpoint.Consumers))
-		for _, consumer := range endpoint.Consumers {
-			consumers[consumer] = struct{}{}
-		}
-		seen := make(map[string]struct{}, len(endpoint.Environment))
-		for index, assignment := range endpoint.Environment {
-			if err := validateManagedSessionToken("managed runtime endpoint environment App ID", assignment.AppID, maximumManagedSessionTokenBytes); err != nil {
-				return err
-			}
-			if _, known := consumers[assignment.AppID]; !known {
-				return fmt.Errorf("managed runtime endpoint %q environment App %q is not a consumer", endpoint.ID, assignment.AppID)
-			}
-			if err := validateManagedRuntimeEnvironmentKey("managed runtime endpoint environment key", assignment.Key); err != nil {
-				return err
-			}
-			if assignment.Value == "" || !utf8.ValidString(assignment.Value) || len(assignment.Value) > maximumManagedSessionTokenBytes || strings.ContainsAny(assignment.Value, "\r\n") {
-				return fmt.Errorf("managed runtime endpoint %q environment value must be bounded UTF-8 without line breaks", endpoint.ID)
-			}
-			identity := assignment.AppID + "\x00" + assignment.Key
-			if _, duplicate := seen[identity]; duplicate {
-				return fmt.Errorf("managed runtime endpoint %q environment assignments must be unique", endpoint.ID)
-			}
-			seen[identity] = struct{}{}
-			if index > 0 {
-				previous := endpoint.Environment[index-1]
-				if previous.AppID > assignment.AppID || previous.AppID == assignment.AppID && previous.Key >= assignment.Key {
-					return fmt.Errorf("managed runtime endpoint %q environment assignments must be sorted and unique", endpoint.ID)
-				}
-			}
-		}
 	}
 	return nil
 }

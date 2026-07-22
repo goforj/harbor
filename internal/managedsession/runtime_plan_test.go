@@ -1,7 +1,9 @@
 package managedsession
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,15 +36,82 @@ func runtimePlanTestResponse(request RuntimePlanRequest) RuntimePlanResponse {
 				}},
 			}},
 			ServiceEndpoints: []RuntimePlanServiceEndpoint{{
-				ID: "endpoint.database.primary.tcp", RequirementID: "requirement.database.primary",
-				Consumers: []string{"app"}, PublishHost: "127.0.0.11", PublishPort: 43106,
-				PublicHost: "mysql.orders.test", PublicPort: 3306,
-				Environment: []RuntimePlanServiceEnvironment{
-					{AppID: "app", Key: "DB_HOST", Value: "127.0.0.11"},
-					{AppID: "app", Key: "DB_PORT", Value: "43106"},
-				},
+				ID:            "endpoint.database.primary.tcp",
+				RequirementID: "requirement.database.primary",
+				Consumers:     []string{"app"},
+				PublishHost:   "127.0.0.11",
+				PublishPort:   43106,
+				PublicHost:    "mysql.orders.test",
+				PublicPort:    3306,
 			}},
 		},
+	}
+}
+
+// TestRuntimePlanV1MatchesPinnedGoForjJSONShape keeps Harbor's response decodable by 55a1e575's strict v1 reader.
+func TestRuntimePlanV1MatchesPinnedGoForjJSONShape(t *testing.T) {
+	response := runtimePlanTestResponse(runtimePlanTestFence())
+	payload, err := MarshalRuntimePlanResponse(response)
+	if err != nil {
+		t.Fatalf("MarshalRuntimePlanResponse() error = %v", err)
+	}
+	if bytes.Contains(payload, []byte(`"environment"`)) {
+		t.Fatalf("runtime-plan v1 payload unexpectedly contains environment: %s", payload)
+	}
+
+	var pinned struct {
+		SchemaVersion uint16 `json:"schema_version"`
+		Fence         struct {
+			ProjectID         string `json:"project_id"`
+			SessionID         string `json:"session_id"`
+			SessionGeneration uint64 `json:"session_generation"`
+		} `json:"fence"`
+		Plan struct {
+			Apps []struct {
+				ID       string `json:"id"`
+				Active   bool   `json:"active"`
+				Runtimes []struct {
+					ID        string `json:"id"`
+					BindHost  string `json:"bind_host"`
+					BindPort  uint16 `json:"bind_port"`
+					PublicURL string `json:"public_url"`
+					Routes    []struct {
+						Name string `json:"name"`
+						Path string `json:"path"`
+					} `json:"routes"`
+				} `json:"runtimes"`
+			} `json:"apps"`
+			ServiceEndpoints []struct {
+				ID            string   `json:"id"`
+				RequirementID string   `json:"requirement_id"`
+				Consumers     []string `json:"consumers"`
+				PublishHost   string   `json:"publish_host"`
+				PublishPort   uint16   `json:"publish_port"`
+				PublicHost    string   `json:"public_host"`
+				PublicPort    uint16   `json:"public_port"`
+			} `json:"service_endpoints"`
+		} `json:"plan"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&pinned); err != nil {
+		t.Fatalf("pinned GoForj v1 strict decode error = %v", err)
+	}
+}
+
+// TestRuntimePlanV2EnvironmentCapabilityIsNotAdvertised keeps future environment assignments out of v1 negotiation.
+func TestRuntimePlanV2EnvironmentCapabilityIsNotAdvertised(t *testing.T) {
+	authority := &runtimePlanRecordingAuthority{
+		recordingManagedAuthority: managedSessionHandlerTestAuthority(),
+	}
+	set, err := NewHandlerSet(managedSessionHandlerTestPeer(), authority)
+	if err != nil {
+		t.Fatalf("NewHandlerSet() error = %v", err)
+	}
+	for _, capability := range set.Capabilities() {
+		if capability == CapabilityRuntimePlanV2 {
+			t.Fatalf("managed-session v1 advertised future environment capability %q", capability)
+		}
 	}
 }
 
@@ -91,15 +160,6 @@ func TestRuntimePlanValidationRejectsUnsafeAssignments(t *testing.T) {
 			routes[0], routes[1] = routes[1], routes[0]
 		}, want: "routes"},
 		{name: "invalid upstream", mutate: func(response *RuntimePlanResponse) { response.Plan.ServiceEndpoints[0].PublishHost = "::1" }, want: "loopback"},
-		{name: "environment foreign App", mutate: func(response *RuntimePlanResponse) { response.Plan.ServiceEndpoints[0].Environment[0].AppID = "worker" }, want: "not a consumer"},
-		{name: "environment invalid key", mutate: func(response *RuntimePlanResponse) { response.Plan.ServiceEndpoints[0].Environment[0].Key = "db_host" }, want: "uppercase"},
-		{name: "environment line break", mutate: func(response *RuntimePlanResponse) {
-			response.Plan.ServiceEndpoints[0].Environment[0].Value = "127.0.0.11\n"
-		}, want: "line breaks"},
-		{name: "environment unsorted", mutate: func(response *RuntimePlanResponse) {
-			assignments := response.Plan.ServiceEndpoints[0].Environment
-			assignments[0], assignments[1] = assignments[1], assignments[0]
-		}, want: "sorted"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

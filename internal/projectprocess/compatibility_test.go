@@ -14,12 +14,12 @@ import (
 // TestGoForjExecutableCompatibilityPolicy covers every accepted and rejected embedded-build shape.
 func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 	readFailure := errors.New("build information is unreadable")
-	wrongCommand := compatibleGoForjBuildInfo(minimumGoForjVersion, minimumGoForjRevision, false)
+	wrongCommand := compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false)
 	wrongCommand.Path = "example.test/not-forj"
-	wrongModule := compatibleGoForjBuildInfo(minimumGoForjVersion, minimumGoForjRevision, false)
+	wrongModule := compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false)
 	wrongModule.Main.Path = "example.test/not-goforj"
-	replacedModule := compatibleGoForjBuildInfo(minimumGoForjVersion, minimumGoForjRevision, false)
-	replacedModule.Main.Replace = &debug.Module{Path: "example.test/goforj-fork", Version: minimumGoForjVersion}
+	replacedModule := compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false)
+	replacedModule.Main.Replace = &debug.Module{Path: "example.test/goforj-fork", Version: compatibleGoForjVersion}
 	tests := []struct {
 		name        string
 		information *debug.BuildInfo
@@ -49,8 +49,8 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			wantErr:     true,
 		},
 		{
-			name:        "exact minimum source pseudo version",
-			information: compatibleGoForjBuildInfo("v0.20.1-0.20260722020216-d64c2fe24eb2", minimumGoForjRevision, false),
+			name:        "exact pinned source pseudo version",
+			information: compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false),
 		},
 		{
 			name:        "development without revision",
@@ -63,29 +63,41 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			wantErr:     true,
 		},
 		{
-			name:        "development exact minimum dirty",
-			information: compatibleGoForjBuildInfo("(devel)", minimumGoForjRevision, true),
+			name:        "development exact pinned revision dirty",
+			information: compatibleGoForjBuildInfo("(devel)", compatibleGoForjRevision, true),
 			wantErr:     true,
 		},
 		{
-			name:        "development exact minimum clean",
-			information: compatibleGoForjBuildInfo("(devel)", minimumGoForjRevision, false),
+			name:        "development exact pinned revision clean",
+			information: compatibleGoForjBuildInfo("(devel)", compatibleGoForjRevision, false),
 		},
 		{
-			name:        "unversioned exact minimum clean",
-			information: compatibleGoForjBuildInfo("", minimumGoForjRevision, false),
+			name:        "unversioned exact pinned revision clean",
+			information: compatibleGoForjBuildInfo("", compatibleGoForjRevision, false),
 		},
 		{
-			name:        "exact minimum pseudo version",
-			information: compatibleGoForjBuildInfo(minimumGoForjVersion, minimumGoForjRevision, false),
+			name:        "exact pinned pseudo version",
+			information: compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false),
 		},
 		{
-			name:        "clean v0.20.1",
+			name:        "unproven release",
 			information: compatibleGoForjBuildInfo("v0.20.1", "release-revision", false),
+			wantErr:     true,
 		},
 		{
-			name:        "newer release",
-			information: compatibleGoForjBuildInfo("v0.21.0", "newer-revision", false),
+			name:        "tagged release before pinned build",
+			information: compatibleGoForjBuildInfo("v0.21.0", "older-release-revision", false),
+			wantErr:     true,
+		},
+		{
+			name:        "release after pinned build without proven implementation",
+			information: compatibleGoForjBuildInfo("v0.21.2", "newer-release-revision", false),
+			wantErr:     true,
+		},
+		{
+			name:        "pseudo version after pinned build without proven implementation",
+			information: compatibleGoForjBuildInfo("v0.21.1-0.20260723120000-deadbeefcafe", "deadbeefcafedeadbeefcafedeadbeefcafedead", false),
+			wantErr:     true,
 		},
 	}
 	for _, test := range tests {
@@ -112,7 +124,7 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			if !errors.Is(err, errIncompatibleGoForj) {
 				t.Fatalf("verifier error = %v, want errIncompatibleGoForj", err)
 			}
-			for _, text := range []string{minimumGoForjVersion, "d64c2fe24eb29531177966f9b99841f41193042e", "forj render"} {
+			for _, text := range []string{compatibleGoForjVersion, compatibleGoForjRevision, "forj render"} {
 				if !strings.Contains(err.Error(), text) {
 					t.Fatalf("verifier error = %q, want actionable text %q", err, text)
 				}

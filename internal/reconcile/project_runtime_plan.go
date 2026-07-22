@@ -179,10 +179,6 @@ func managedRuntimeServiceEndpoint(
 	if publication.ReservationGeneration != reservation.Generation {
 		return managedsession.RuntimePlanServiceEndpoint{}, fmt.Errorf("managed runtime service endpoint %q publication generation %d does not match durable generation %d", publication.EndpointID, publication.ReservationGeneration, reservation.Generation)
 	}
-	environment, err := managedRuntimeServiceEnvironment(declared.Environment, consumers, publication.Upstream)
-	if err != nil {
-		return managedsession.RuntimePlanServiceEndpoint{}, fmt.Errorf("managed runtime service endpoint %q environment: %w", publication.EndpointID, err)
-	}
 	return managedsession.RuntimePlanServiceEndpoint{
 		ID:            publication.EndpointID,
 		RequirementID: requirement.ID,
@@ -191,64 +187,7 @@ func managedRuntimeServiceEndpoint(
 		PublishPort:   publication.Upstream.Port(),
 		PublicHost:    reservation.Host,
 		PublicPort:    reservation.Public.Port(),
-		Environment:   environment,
 	}, nil
-}
-
-// managedRuntimeServiceEnvironment materializes only the descriptor's explicit environment metadata.
-func managedRuntimeServiceEnvironment(
-	metadata []goforj.ServiceEndpointEnvironment,
-	consumers []string,
-	upstream netip.AddrPort,
-) ([]managedsession.RuntimePlanServiceEnvironment, error) {
-	if len(metadata) == 0 {
-		return nil, nil
-	}
-	if !upstream.IsValid() || !upstream.Addr().IsLoopback() {
-		return nil, fmt.Errorf("private publication address must be a loopback address")
-	}
-	knownConsumers := make(map[string]struct{}, len(consumers))
-	for _, consumer := range consumers {
-		knownConsumers[consumer] = struct{}{}
-	}
-	assignments := make([]managedsession.RuntimePlanServiceEnvironment, 0, len(metadata))
-	seen := make(map[string]struct{}, len(metadata))
-	for _, assignment := range metadata {
-		if _, known := knownConsumers[assignment.AppID]; !known {
-			return nil, fmt.Errorf("environment App %q is not a consumer", assignment.AppID)
-		}
-		value := ""
-		switch assignment.Kind {
-		case goforj.ServiceEndpointEnvironmentKindHost:
-			value = upstream.Addr().String()
-		case goforj.ServiceEndpointEnvironmentKindPort:
-			value = strconv.Itoa(int(upstream.Port()))
-		case goforj.ServiceEndpointEnvironmentKindAddress:
-			value = upstream.String()
-		default:
-			return nil, fmt.Errorf("environment key %q kind %q is unsupported", assignment.Key, assignment.Kind)
-		}
-		if value == "" || strings.ContainsAny(value, "\r\n") {
-			return nil, fmt.Errorf("environment key %q produced an invalid value", assignment.Key)
-		}
-		identity := assignment.AppID + "\x00" + assignment.Key
-		if _, duplicate := seen[identity]; duplicate {
-			return nil, fmt.Errorf("environment key %q for App %q is duplicated", assignment.Key, assignment.AppID)
-		}
-		seen[identity] = struct{}{}
-		assignments = append(assignments, managedsession.RuntimePlanServiceEnvironment{
-			AppID: assignment.AppID,
-			Key:   assignment.Key,
-			Value: value,
-		})
-	}
-	slices.SortFunc(assignments, func(left, right managedsession.RuntimePlanServiceEnvironment) int {
-		if left.AppID != right.AppID {
-			return strings.Compare(left.AppID, right.AppID)
-		}
-		return strings.Compare(left.Key, right.Key)
-	})
-	return assignments, nil
 }
 
 // managedRuntimePlanApps translates descriptor runtime intent into exact loopback assignments for one request.
