@@ -90,6 +90,12 @@ type LoopbackIdentityHandler interface {
 	ReleaseLoopbackIdentity(context.Context, Ticket) (MutationEvidence, error)
 }
 
+// LoopbackPoolReleaseHandler applies the additive aggregate pool release operation.
+type LoopbackPoolReleaseHandler interface {
+	// ReleaseLoopbackPool releases all owned ticket-approved addresses and returns absent postconditions.
+	ReleaseLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error)
+}
+
 // UnavailableLoopbackIdentityHandler fails closed until platform mutation adapters are installed.
 type UnavailableLoopbackIdentityHandler struct{}
 
@@ -100,6 +106,11 @@ func (UnavailableLoopbackIdentityHandler) EnsureLoopbackIdentity(context.Context
 
 // EnsureLoopbackPool rejects pool ensure operations because this seed contains no OS mutation authority.
 func (UnavailableLoopbackIdentityHandler) EnsureLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error) {
+	return PoolMutationEvidence{}, ErrMutationUnavailable
+}
+
+// ReleaseLoopbackPool rejects pool release operations because this seed contains no OS mutation authority.
+func (UnavailableLoopbackIdentityHandler) ReleaseLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error) {
 	return PoolMutationEvidence{}, ErrMutationUnavailable
 }
 
@@ -348,6 +359,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 			err = poolEvidence.validate(ticket)
 		}
 		result.PoolEvidence = &poolEvidence
+	case OperationReleaseLoopbackPool:
+		releaseHandler, supported := d.loopback.(LoopbackPoolReleaseHandler)
+		if !supported {
+			err = ErrMutationUnavailable
+			break
+		}
+		poolEvidence, poolErr := releaseHandler.ReleaseLoopbackPool(operationContext, ticket)
+		err = poolErr
+		if err == nil {
+			err = poolEvidence.validate(ticket)
+		}
+		result.PoolEvidence = &poolEvidence
 	case OperationReleaseLoopbackIdentity:
 		result.Evidence, err = d.loopback.ReleaseLoopbackIdentity(operationContext, ticket)
 		if err == nil {
@@ -540,7 +563,7 @@ func (e MutationEvidence) validate(ticket Ticket) error {
 
 // validate prevents a platform adapter from returning pool evidence outside the ticket's exact address authority.
 func (e PoolMutationEvidence) validate(ticket Ticket) error {
-	if err := e.validateShape(); err != nil {
+	if err := e.validateShape(ticket.Operation); err != nil {
 		return newRequestError(ErrorCodeMutationFailed, "pool mutation evidence is invalid")
 	}
 	if e.Pool != ticket.ApprovedPool {
@@ -558,7 +581,7 @@ func (e PoolMutationEvidence) validate(ticket Ticket) error {
 }
 
 // validateShape enforces the standalone canonical response shape without requiring the redeemed ticket.
-func (e PoolMutationEvidence) validateShape() error {
+func (e PoolMutationEvidence) validateShape(operation Operation) error {
 	pool, err := netip.ParsePrefix(e.Pool)
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() || pool.String() != e.Pool {
 		return errors.New("response pool evidence pool is not a canonical IPv4 loopback /29")
@@ -575,8 +598,12 @@ func (e PoolMutationEvidence) validateShape() error {
 		if err := evidence.Observation.Validate(); err != nil {
 			return errors.New("response pool evidence observation is invalid")
 		}
-		if evidence.Observation.State != ObservationOwned {
-			return errors.New("response pool evidence postcondition is not owned")
+		want := ObservationOwned
+		if operation == OperationReleaseLoopbackPool {
+			want = ObservationAbsent
+		}
+		if evidence.Observation.State != want {
+			return errors.New("response pool evidence postcondition does not match the operation")
 		}
 		address = address.Next()
 	}

@@ -73,6 +73,55 @@ func TestDispatcherDispatchEnsuresLoopbackPool(t *testing.T) {
 	}
 }
 
+// TestDispatcherDispatchReleasesLoopbackPoolValidatesAbsentEvidenceAndReplay proves release evidence is complete and single-use.
+func TestDispatcherDispatchReleasesLoopbackPoolValidatesAbsentEvidenceAndReplay(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	reference := testTicketReference()
+	ticket := validTestPoolTicket(now)
+	ticket.Operation = OperationReleaseLoopbackPool
+	for index := range ticket.ExpectedLoopbackPool.Identities {
+		ticket.ExpectedLoopbackPool.Identities[index].ExpectedPreAssignment = nil
+	}
+	handler := newTestLoopbackHandler()
+	dispatcher := NewDispatcher(newTestTicketRedeemer(reference, ticket), newTestClock(now), newTestReplayGuard(), handler)
+	response, err := dispatcher.Dispatch(t.Context(), validTestRequest(reference))
+	if err != nil || response.Result == nil || response.Result.PoolEvidence == nil {
+		t.Fatalf("first release dispatch = %#v, %v", response, err)
+	}
+	if _, err := dispatcher.Dispatch(t.Context(), validTestRequest(reference)); err == nil {
+		t.Fatal("replayed release dispatch error = nil")
+	}
+	for _, identity := range response.Result.PoolEvidence.Identities {
+		if identity.Observation.State != ObservationAbsent {
+			t.Fatalf("release evidence = %#v", identity)
+		}
+	}
+}
+
+// TestDispatcherDispatchRejectsMalformedReleasePoolEvidence proves release cannot claim an owned or reordered postcondition.
+func TestDispatcherDispatchRejectsMalformedReleasePoolEvidence(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	for _, mutate := range []func(*PoolMutationEvidence){
+		func(evidence *PoolMutationEvidence) { evidence.Identities[2].Observation.State = ObservationOwned },
+		func(evidence *PoolMutationEvidence) {
+			evidence.Identities[2], evidence.Identities[3] = evidence.Identities[3], evidence.Identities[2]
+		},
+	} {
+		reference := testTicketReference()
+		ticket := validTestPoolTicket(now)
+		ticket.Operation = OperationReleaseLoopbackPool
+		for index := range ticket.ExpectedLoopbackPool.Identities {
+			ticket.ExpectedLoopbackPool.Identities[index].ExpectedPreAssignment = nil
+		}
+		handler := newTestLoopbackHandler()
+		mutate(&handler.releasePoolEvidence)
+		response, err := NewDispatcher(newTestTicketRedeemer(reference, ticket), newTestClock(now), newTestReplayGuard(), handler).Dispatch(t.Context(), validTestRequest(reference))
+		if err == nil || response.Error == nil || response.Error.Code != ErrorCodeMutationFailed {
+			t.Fatalf("malformed release result = %#v, %v", response, err)
+		}
+	}
+}
+
 // TestDispatcherDispatchPassesOnlyOpaqueReferenceToRedeemer verifies request data cannot select an adapter or ticket.
 func TestDispatcherDispatchPassesOnlyOpaqueReferenceToRedeemer(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
@@ -698,13 +747,14 @@ func (g *testReplayGuard) consumeCount() int {
 }
 
 type testLoopbackHandler struct {
-	mutex           sync.Mutex
-	ensureEvidence  MutationEvidence
-	poolEvidence    PoolMutationEvidence
-	releaseEvidence MutationEvidence
-	err             error
-	calls           int
-	poolCalls       int
+	mutex               sync.Mutex
+	ensureEvidence      MutationEvidence
+	poolEvidence        PoolMutationEvidence
+	releasePoolEvidence PoolMutationEvidence
+	releaseEvidence     MutationEvidence
+	err                 error
+	calls               int
+	poolCalls           int
 }
 
 type blockingLoopbackHandler struct{}
@@ -738,7 +788,8 @@ func newTestLoopbackHandler() *testLoopbackHandler {
 				Fingerprint: strings.Repeat("b", fingerprintLength),
 			},
 		},
-		poolEvidence: testPoolMutationEvidence("127.77.0.8/29"),
+		poolEvidence:        testPoolMutationEvidence("127.77.0.8/29"),
+		releasePoolEvidence: testPoolReleaseEvidence("127.77.0.8/29"),
 		releaseEvidence: MutationEvidence{
 			Changed: true,
 			Address: "127.77.0.10",
@@ -765,6 +816,15 @@ func (h *testLoopbackHandler) EnsureLoopbackPool(context.Context, Ticket) (PoolM
 	h.calls++
 	h.poolCalls++
 	return h.poolEvidence, h.err
+}
+
+// ReleaseLoopbackPool returns configured aggregate absent evidence without touching the host.
+func (h *testLoopbackHandler) ReleaseLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.calls++
+	h.poolCalls++
+	return h.releasePoolEvidence, h.err
 }
 
 // ReleaseLoopbackIdentity returns the configured release evidence without touching the host.
@@ -805,5 +865,18 @@ func testPoolMutationEvidence(poolText string) PoolMutationEvidence {
 		})
 		address = address.Next()
 	}
-	return PoolMutationEvidence{Pool: pool.String(), Identities: identities}
+	return PoolMutationEvidence{
+		Pool:       pool.String(),
+		Identities: identities,
+	}
+}
+
+// testPoolReleaseEvidence returns eight canonical absent postconditions for one /29.
+func testPoolReleaseEvidence(poolText string) PoolMutationEvidence {
+	evidence := testPoolMutationEvidence(poolText)
+	for index := range evidence.Identities {
+		evidence.Identities[index].Changed = false
+		evidence.Identities[index].Observation.State = ObservationAbsent
+	}
+	return evidence
 }

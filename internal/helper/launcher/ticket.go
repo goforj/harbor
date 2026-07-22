@@ -289,7 +289,7 @@ func (ticket PoolLaunchTicket) validateStructure(pool string) error {
 	if err := ticket.reference.Validate(); err != nil {
 		return fmt.Errorf("pool launch ticket reference: %w", err)
 	}
-	if ticket.operation != helper.OperationEnsureLoopbackPool {
+	if ticket.operation != helper.OperationEnsureLoopbackPool && ticket.operation != helper.OperationReleaseLoopbackPool {
 		return fmt.Errorf("pool launch ticket helper operation %q is unsupported", ticket.operation)
 	}
 	if !ticket.pool.IsValid() ||

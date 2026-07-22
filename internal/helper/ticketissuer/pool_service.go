@@ -50,6 +50,7 @@ type PoolPlan struct {
 	OperationID       domain.OperationID
 	OperationRevision domain.Sequence
 	OperationState    domain.OperationState
+	Operation         helper.Operation
 	Mode              PoolMode
 	Ownership         ownership.Record
 	Pool              identity.Pool
@@ -65,6 +66,10 @@ func (plan PoolPlan) Validate() error {
 	}
 	if plan.OperationState != domain.OperationRequiresApproval {
 		return fmt.Errorf("helper pool approval operation state is %q, want %q", plan.OperationState, domain.OperationRequiresApproval)
+	}
+	operation := plan.operation()
+	if operation != helper.OperationEnsureLoopbackPool && operation != helper.OperationReleaseLoopbackPool {
+		return fmt.Errorf("helper pool approval operation %q is unsupported", operation)
 	}
 	switch plan.Mode {
 	case PoolModeBootstrap, PoolModeRepair:
@@ -84,6 +89,9 @@ func (plan PoolPlan) Validate() error {
 			ownership.IdentitySchemaVersion,
 		)
 	}
+	if operation == helper.OperationReleaseLoopbackPool && plan.Mode != PoolModeRepair {
+		return fmt.Errorf("helper pool release requires established repair authority")
+	}
 	prefix, _, err := validateExactPool(plan.Pool)
 	if err != nil {
 		return err
@@ -92,6 +100,14 @@ func (plan PoolPlan) Validate() error {
 		return fmt.Errorf("helper pool approval ownership prefix does not match its exact pool")
 	}
 	return nil
+}
+
+// operation returns the legacy ensure operation when older durable plans omit the additive operation field.
+func (plan PoolPlan) operation() helper.Operation {
+	if plan.Operation == "" {
+		return helper.OperationEnsureLoopbackPool
+	}
+	return plan.Operation
 }
 
 // PoolPlanSource resolves the same immutable durable pool plan before and immediately before publication.
@@ -142,7 +158,7 @@ func (result PoolResult) Validate(now time.Time) error {
 	if err := result.Reference.Validate(); err != nil {
 		return err
 	}
-	if result.Operation != helper.OperationEnsureLoopbackPool {
+	if result.Operation != helper.OperationEnsureLoopbackPool && result.Operation != helper.OperationReleaseLoopbackPool {
 		return fmt.Errorf("helper pool approval result operation %q is unsupported", result.Operation)
 	}
 	if err := validateExactPrefix(result.Pool); err != nil {
@@ -316,7 +332,7 @@ func (service *PoolService) Issue(ctx context.Context, requesterIdentity string,
 	result := PoolResult{
 		OperationID: plan.OperationID,
 		Reference:   reference,
-		Operation:   helper.OperationEnsureLoopbackPool,
+		Operation:   plan.operation(),
 		Pool:        plan.Pool.Prefix(),
 		ExpiresAt:   ticket.ExpiresAt,
 	}
@@ -408,7 +424,7 @@ func (service *PoolService) buildTicket(
 				Fingerprint: fingerprint,
 			},
 		}
-		if expectedState == helper.ObservationAbsent {
+		if expectedState == helper.ObservationAbsent && plan.operation() == helper.OperationEnsureLoopbackPool {
 			identityEvidence.ExpectedPreAssignment, err = service.observePoolPreAssignment(ctx, plan.Ownership.OwnerIdentity, address)
 			if err != nil {
 				return helper.Ticket{}, err
@@ -424,7 +440,7 @@ func (service *PoolService) buildTicket(
 	now := service.clock.Now().UTC()
 	ticket := helper.Ticket{
 		Version:                  helper.ProtocolVersion,
-		Operation:                helper.OperationEnsureLoopbackPool,
+		Operation:                plan.operation(),
 		InstallationID:           plan.Ownership.InstallationID,
 		RequesterIdentity:        plan.Ownership.OwnerIdentity,
 		OwnershipGeneration:      plan.Ownership.Generation,
@@ -530,6 +546,7 @@ func samePoolPlan(left PoolPlan, right PoolPlan) bool {
 	return left.OperationID == right.OperationID &&
 		left.OperationRevision == right.OperationRevision &&
 		left.OperationState == right.OperationState &&
+		left.operation() == right.operation() &&
 		left.Mode == right.Mode &&
 		left.Ownership == right.Ownership &&
 		left.Pool.Prefix() == right.Pool.Prefix() &&

@@ -171,7 +171,7 @@ func validateCanonicalResultObject(body []byte) error {
 			return err
 		}
 		return validateCanonicalMutationEvidenceObject(fields["evidence"])
-	case OperationEnsureLoopbackPool:
+	case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
 		if err := requireCanonicalJSONFields(fields, "operation", "pool_evidence"); err != nil {
 			return err
 		}
@@ -341,11 +341,11 @@ func validateResponse(response Response) error {
 
 // validateOperationResult verifies success evidence identifies the allowlisted operation postcondition.
 func validateOperationResult(result OperationResult) error {
-	if result.Operation == OperationEnsureLoopbackPool {
+	if result.Operation == OperationEnsureLoopbackPool || result.Operation == OperationReleaseLoopbackPool {
 		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence == nil || result.ResolverEvidence != nil || result.TrustEvidence != nil || result.LowPortEvidence != nil {
 			return errors.New("pool response must contain only pool evidence")
 		}
-		return result.PoolEvidence.validateShape()
+		return result.PoolEvidence.validateShape(result.Operation)
 	}
 	if result.Operation == OperationEnsureResolver || result.Operation == OperationReleaseResolver {
 		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence == nil || result.TrustEvidence != nil || result.LowPortEvidence != nil {

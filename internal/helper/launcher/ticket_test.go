@@ -123,27 +123,34 @@ func TestLaunchTicketValidateAtAcceptsProtocolLifetimeBoundary(t *testing.T) {
 	}
 }
 
-// TestNewPoolLaunchTicketAcceptsCanonicalMetadata verifies aggregate approval metadata becomes one immutable launch value.
+// TestNewPoolLaunchTicketAcceptsCanonicalMetadata verifies aggregate ensure and release approvals become immutable launch values.
 func TestNewPoolLaunchTicketAcceptsCanonicalMetadata(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	reference := helper.TicketReference(strings.Repeat("b", 64))
-	ticket, err := NewPoolLaunchTicket(
-		domain.OperationID("operation-pool"),
-		reference,
+	for _, operation := range []helper.Operation{
 		helper.OperationEnsureLoopbackPool,
-		"127.77.0.8/29",
-		now.Add(time.Minute),
-	)
-	if err != nil {
-		t.Fatalf("NewPoolLaunchTicket() error = %v", err)
-	}
-	if ticket.operationID != "operation-pool" || ticket.reference != reference {
-		t.Fatalf("pool ticket identity = %#v", ticket)
-	}
-	if ticket.operation != helper.OperationEnsureLoopbackPool ||
-		ticket.pool != netip.MustParsePrefix("127.77.0.8/29") ||
-		!ticket.expiresAt.Equal(now.Add(time.Minute)) {
-		t.Fatalf("pool ticket effect = %#v", ticket)
+		helper.OperationReleaseLoopbackPool,
+	} {
+		t.Run(string(operation), func(t *testing.T) {
+			ticket, err := NewPoolLaunchTicket(
+				domain.OperationID("operation-pool"),
+				reference,
+				operation,
+				"127.77.0.8/29",
+				now.Add(time.Minute),
+			)
+			if err != nil {
+				t.Fatalf("NewPoolLaunchTicket() error = %v", err)
+			}
+			if ticket.operationID != "operation-pool" || ticket.reference != reference {
+				t.Fatalf("pool ticket identity = %#v", ticket)
+			}
+			if ticket.operation != operation ||
+				ticket.pool != netip.MustParsePrefix("127.77.0.8/29") ||
+				!ticket.expiresAt.Equal(now.Add(time.Minute)) {
+				t.Fatalf("pool ticket effect = %#v", ticket)
+			}
+		})
 	}
 }
 

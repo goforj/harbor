@@ -402,6 +402,29 @@ func TestTicketValidateLoopbackPool(t *testing.T) {
 	}
 }
 
+// TestTicketValidateReleaseLoopbackPool accepts mixed owned-or-absent authority without assignment capabilities.
+func TestTicketValidateReleaseLoopbackPool(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	for _, mutate := range []func(*Ticket){
+		func(*Ticket) {},
+		func(ticket *Ticket) {
+			ticket.ExpectedLoopbackPool.Identities[4].ExpectedObservation.State = ObservationOwned
+		},
+	} {
+		ticket := validTestPoolReleaseTicket(now)
+		mutate(&ticket)
+		if err := ticket.Validate(now); err != nil {
+			t.Fatalf("Ticket.Validate() valid release error = %v", err)
+		}
+	}
+
+	ticket := validTestPoolReleaseTicket(now)
+	ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment = testExpectedPreAssignment()
+	if err := ticket.Validate(now); err == nil || requestErrorCode(t, err) != ErrorCodeInvalidTicket {
+		t.Fatalf("Ticket.Validate() release pre-assignment error = %v, want invalid ticket", err)
+	}
+}
+
 // TestRequestValidate verifies protocol and opaque-reference bounds before redemption.
 func TestRequestValidate(t *testing.T) {
 	tests := []struct {
@@ -446,6 +469,7 @@ func TestTicketValidateAcceptsAllowlistedShapes(t *testing.T) {
 	tickets := []Ticket{
 		validTestTicket(now, OperationEnsureLoopbackIdentity),
 		validTestPoolTicket(now),
+		validTestPoolReleaseTicket(now),
 		validTestTicket(now, OperationReleaseLoopbackIdentity),
 	}
 	mixedPool := validTestPoolTicket(now)
@@ -560,6 +584,16 @@ func validTestPoolTicket(now time.Time) Ticket {
 		Nonce:     strings.Repeat("n", minimumNonceLength),
 		ExpiresAt: now.Add(time.Minute),
 	}
+}
+
+// validTestPoolReleaseTicket returns one canonical exact-eight pool release authority.
+func validTestPoolReleaseTicket(now time.Time) Ticket {
+	ticket := validTestPoolTicket(now)
+	ticket.Operation = OperationReleaseLoopbackPool
+	for index := range ticket.ExpectedLoopbackPool.Identities {
+		ticket.ExpectedLoopbackPool.Identities[index].ExpectedPreAssignment = nil
+	}
+	return ticket
 }
 
 // validTestResolverTicket returns one canonical policy-bound resolver authority.

@@ -104,6 +104,7 @@ type poolFakeAdapter struct {
 	observeErrors      map[netip.Addr]error
 	ensureErrors       map[netip.Addr]error
 	ensureEffectsOnErr map[netip.Addr]bool
+	releaseErrors      map[netip.Addr]error
 	observeCalls       []netip.Addr
 	ensureCalls        []poolEnsureCall
 	releaseCalls       int
@@ -157,11 +158,29 @@ func (adapter *poolFakeAdapter) EnsureIfObserved(_ context.Context, address neti
 	}, nil
 }
 
-// ReleaseIfObserved records an unexpected compensating effect and fails closed.
+// ReleaseIfObserved applies one exact fake release while preserving injected ambiguous-error outcomes.
 func (adapter *poolFakeAdapter) ReleaseIfObserved(_ context.Context, address netip.Addr, _ string) (loopback.Change, error) {
 	adapter.releaseCalls++
 	adapter.record("loopback.release:" + address.String())
-	return loopback.Change{}, errors.New("pool ensure must not compensate with release")
+	before, found := adapter.observations[address]
+	if !found {
+		return loopback.Change{}, errors.New("pool fake release observation is missing")
+	}
+	after := handlerObservationAt(address, loopback.StateAbsent)
+	if err := adapter.releaseErrors[address]; err != nil {
+		return loopback.Change{
+			Attempted: true,
+			Before:    before,
+			After:     after,
+		}, err
+	}
+	adapter.observations[address] = after
+	return loopback.Change{
+		Attempted: true,
+		Changed:   true,
+		Before:    before,
+		After:     after,
+	}, nil
 }
 
 // record appends one address-specific pool effect boundary.
@@ -484,7 +503,7 @@ func TestValidatePoolMutationTicketCopiesAuthority(t *testing.T) {
 	wantObservation := ticket.ExpectedLoopbackPool.Identities[0].ExpectedObservation
 	wantPreAssignment := *ticket.ExpectedLoopbackPool.Identities[0].ExpectedPreAssignment
 
-	plan, err := validatePoolMutationTicket(ticket)
+	plan, err := validatePoolMutationTicket(ticket, helper.OperationEnsureLoopbackPool)
 	if err != nil {
 		t.Fatalf("validatePoolMutationTicket() error = %v", err)
 	}
@@ -933,6 +952,79 @@ func handlerPoolTicket(t *testing.T, observations map[netip.Addr]loopback.Observ
 		RequesterIdentity:    "1000",
 		ApprovedPool:         "127.77.0.8/29",
 		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{Identities: identities},
+	}
+}
+
+// handlerPoolReleaseTicket derives a release authority without granting assignment safety checks.
+func handlerPoolReleaseTicket(t *testing.T, observations map[netip.Addr]loopback.Observation) helper.Ticket {
+	t.Helper()
+	ticket := handlerPoolTicket(t, observations)
+	ticket.Operation = helper.OperationReleaseLoopbackPool
+	for index := range ticket.ExpectedLoopbackPool.Identities {
+		ticket.ExpectedLoopbackPool.Identities[index].ExpectedPreAssignment = nil
+	}
+	return ticket
+}
+
+// TestReleaseLoopbackPoolPreflightsThenReleasesOnlyOwned proves recovery leaves absent addresses untouched.
+func TestReleaseLoopbackPoolPreflightsThenReleasesOnlyOwned(t *testing.T) {
+	states := handlerPoolObservations(func(index int) loopback.State {
+		if index%2 == 0 {
+			return loopback.StateExact
+		}
+		return loopback.StateAbsent
+	})
+	ticket := handlerPoolReleaseTicket(t, states)
+	adapter := &poolFakeAdapter{
+		observations:  states,
+		releaseErrors: make(map[netip.Addr]error),
+	}
+	evidence, err := newHandler(adapter, nil).ReleaseLoopbackPool(t.Context(), ticket)
+	if err != nil {
+		t.Fatalf("ReleaseLoopbackPool() error = %v", err)
+	}
+	if len(adapter.observeCalls) != 8 || adapter.ensureCalls != nil || adapter.releaseCalls != 4 || len(evidence.Identities) != 8 {
+		t.Fatalf("release calls = observes %d ensures %d releases %d evidence %d", len(adapter.observeCalls), len(adapter.ensureCalls), adapter.releaseCalls, len(evidence.Identities))
+	}
+	for index, identity := range evidence.Identities {
+		if identity.Observation.State != helper.ObservationAbsent || identity.Address != ticket.ExpectedLoopbackPool.Identities[index].Address {
+			t.Fatalf("release evidence %d = %#v", index, identity)
+		}
+	}
+}
+
+// TestReleaseLoopbackPoolPreflightFailureMakesNoMutation proves an invalid later observation prevents every release.
+func TestReleaseLoopbackPoolPreflightFailureMakesNoMutation(t *testing.T) {
+	states := handlerPoolObservations(func(int) loopback.State { return loopback.StateExact })
+	ticket := handlerPoolReleaseTicket(t, states)
+	address := netip.MustParseAddr(ticket.ExpectedLoopbackPool.Identities[5].Address)
+	states[address] = handlerObservationAt(address, loopback.StateAbsent)
+	adapter := &poolFakeAdapter{
+		observations:  states,
+		releaseErrors: make(map[netip.Addr]error),
+	}
+	if _, err := newHandler(adapter, nil).ReleaseLoopbackPool(t.Context(), ticket); err == nil {
+		t.Fatal("ReleaseLoopbackPool() error = nil, want preflight failure")
+	}
+	if adapter.releaseCalls != 0 {
+		t.Fatalf("release calls = %d, want 0", adapter.releaseCalls)
+	}
+}
+
+// TestReleaseLoopbackPoolPartialFailureReturnsNoEvidence proves callers must treat a failed aggregate result as indeterminate.
+func TestReleaseLoopbackPoolPartialFailureReturnsNoEvidence(t *testing.T) {
+	states := handlerPoolObservations(func(int) loopback.State { return loopback.StateExact })
+	ticket := handlerPoolReleaseTicket(t, states)
+	adapter := &poolFakeAdapter{
+		observations:  states,
+		releaseErrors: make(map[netip.Addr]error),
+	}
+	adapter.releaseErrors[netip.MustParseAddr(ticket.ExpectedLoopbackPool.Identities[3].Address)] = errors.New("platform failed after mutation attempt")
+	if evidence, err := newHandler(adapter, nil).ReleaseLoopbackPool(t.Context(), ticket); err == nil || evidence.Pool != "" || evidence.Identities != nil {
+		t.Fatalf("ReleaseLoopbackPool() = %#v, %v", evidence, err)
+	}
+	if adapter.releaseCalls != 4 {
+		t.Fatalf("release calls = %d, want 4", adapter.releaseCalls)
 	}
 }
 

@@ -266,6 +266,32 @@ func TestPoolServiceIssueRepairBindsMixedPostconditions(t *testing.T) {
 	}
 }
 
+// TestPoolServiceIssueReleaseBindsMixedOwnedOrAbsentAuthority proves recovery release does not request assignment checks.
+func TestPoolServiceIssueReleaseBindsMixedOwnedOrAbsentAuthority(t *testing.T) {
+	fixture := newPoolIssuerFixture(t, PoolModeRepair)
+	fixture.plan.Operation = helper.OperationReleaseLoopbackPool
+	fixture.plan.Ownership.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	fixture.plan.Ownership.NetworkPolicyFingerprint = strings.Repeat("c", 64)
+	fixture.plans.plans = []PoolPlan{fixture.plan}
+	for index, address := range fixture.plan.Pool.Candidates() {
+		if index%2 == 0 {
+			fixture.loopback.observations[address] = poolLoopbackObservation(address, loopback.StateExact)
+		}
+	}
+	result, err := fixture.service.Issue(t.Context(), fixture.plan.Ownership.OwnerIdentity, fixture.request)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if result.Operation != helper.OperationReleaseLoopbackPool || len(fixture.conflicts.calls) != 0 {
+		t.Fatalf("release result/calls = %#v/%d", result, len(fixture.conflicts.calls))
+	}
+	for _, identity := range fixture.publisher.ticket.ExpectedLoopbackPool.Identities {
+		if identity.ExpectedPreAssignment != nil {
+			t.Fatalf("release identity has pre-assignment authority: %#v", identity)
+		}
+	}
+}
+
 // TestPoolServiceIssueFailsClosed covers the independently trusted plan, observation, key, and publication boundaries.
 func TestPoolServiceIssueFailsClosed(t *testing.T) {
 	sentinel := errors.New("pool issuer sentinel")
@@ -358,6 +384,12 @@ func TestPoolContractsAndPlanComparison(t *testing.T) {
 	if err := fixture.plan.Validate(); err != nil {
 		t.Fatalf("PoolPlan.Validate() error = %v", err)
 	}
+	releasePlan := fixture.plan
+	releasePlan.Operation = helper.OperationReleaseLoopbackPool
+	releasePlan.Mode = PoolModeRepair
+	if err := releasePlan.Validate(); err != nil {
+		t.Fatalf("PoolPlan.Validate(release) error = %v", err)
+	}
 	validResult := PoolResult{
 		OperationID: fixture.plan.OperationID,
 		Reference:   fixture.publisher.reference,
@@ -368,10 +400,17 @@ func TestPoolContractsAndPlanComparison(t *testing.T) {
 	if err := validResult.Validate(fixture.now); err != nil {
 		t.Fatalf("PoolResult.Validate() error = %v", err)
 	}
+	validReleaseResult := validResult
+	validReleaseResult.Operation = helper.OperationReleaseLoopbackPool
+	if err := validReleaseResult.Validate(fixture.now); err != nil {
+		t.Fatalf("PoolResult.Validate(release) error = %v", err)
+	}
 
 	invalidPlans := []func(*PoolPlan){
 		func(plan *PoolPlan) { plan.OperationRevision = 0 },
 		func(plan *PoolPlan) { plan.OperationState = domain.OperationRunning },
+		func(plan *PoolPlan) { plan.Operation = "unsupported" },
+		func(plan *PoolPlan) { plan.Operation = helper.OperationReleaseLoopbackPool },
 		func(plan *PoolPlan) { plan.Mode = "replacement" },
 		func(plan *PoolPlan) { plan.Ownership.Generation = 2 },
 		func(plan *PoolPlan) { plan.Ownership.TicketVerifierKey = "bad" },
@@ -396,6 +435,7 @@ func TestPoolContractsAndPlanComparison(t *testing.T) {
 		func(plan *PoolPlan) { plan.OperationID = "operation-other" },
 		func(plan *PoolPlan) { plan.OperationRevision++ },
 		func(plan *PoolPlan) { plan.OperationState = domain.OperationRunning },
+		func(plan *PoolPlan) { plan.Operation = helper.OperationReleaseLoopbackPool },
 		func(plan *PoolPlan) { plan.Mode = PoolModeRepair },
 		func(plan *PoolPlan) { plan.Ownership.Generation++ },
 		func(plan *PoolPlan) {
@@ -652,9 +692,16 @@ func newPoolIssuerFixture(t *testing.T, mode PoolMode) *poolIssuerFixture {
 		bytes.NewReader(bytes.Repeat([]byte{0x5a}, ticketNonceBytes*2)),
 	)
 	return &poolIssuerFixture{
-		now: now, request: PoolRequest{OperationID: plan.OperationID}, plan: plan, private: privateKey,
-		plans: plans, keys: keys, publisher: publisher,
-		loopback: loopbackObserver, conflicts: conflictObserver, service: service,
+		now:       now,
+		request:   PoolRequest{OperationID: plan.OperationID},
+		plan:      plan,
+		private:   privateKey,
+		plans:     plans,
+		keys:      keys,
+		publisher: publisher,
+		loopback:  loopbackObserver,
+		conflicts: conflictObserver,
+		service:   service,
 	}
 }
 

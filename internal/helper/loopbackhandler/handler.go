@@ -28,6 +28,7 @@ const (
 // poolMutationPlan is an immutable copy of the signed pool authority used after validation.
 type poolMutationPlan struct {
 	pool              netip.Prefix
+	operation         helper.Operation
 	requesterIdentity string
 	identities        []poolIdentityPlan
 }
@@ -81,7 +82,7 @@ func (handler *Handler) EnsureLoopbackIdentity(ctx context.Context, ticket helpe
 
 // EnsureLoopbackPool ensures all eight approved identities only after every signed assignment precondition holds.
 func (handler *Handler) EnsureLoopbackPool(ctx context.Context, ticket helper.Ticket) (helper.PoolMutationEvidence, error) {
-	plan, err := validatePoolMutationTicket(ticket)
+	plan, err := validatePoolMutationTicket(ticket, helper.OperationEnsureLoopbackPool)
 	if err != nil {
 		return helper.PoolMutationEvidence{}, err
 	}
@@ -116,6 +117,46 @@ func (handler *Handler) EnsureLoopbackPool(ctx context.Context, ticket helper.Ti
 		evidence = append(evidence, identityEvidence)
 	}
 
+	return helper.PoolMutationEvidence{
+		Pool:       plan.pool.String(),
+		Identities: evidence,
+	}, nil
+}
+
+// ReleaseLoopbackPool releases every owned identity only after all eight signed observations still hold.
+func (handler *Handler) ReleaseLoopbackPool(ctx context.Context, ticket helper.Ticket) (helper.PoolMutationEvidence, error) {
+	plan, err := validatePoolMutationTicket(ticket, helper.OperationReleaseLoopbackPool)
+	if err != nil {
+		return helper.PoolMutationEvidence{}, err
+	}
+	observations := make([]loopback.Observation, len(plan.identities))
+	for index, identity := range plan.identities {
+		observation, observeErr := handler.observeExpected(ctx, identity.address, identity.expectedObservation)
+		if observeErr != nil {
+			return helper.PoolMutationEvidence{}, observeErr
+		}
+		observations[index] = observation
+	}
+
+	evidence := make([]helper.MutationEvidence, 0, len(plan.identities))
+	for index, identity := range plan.identities {
+		change := loopback.Change{
+			Before: observations[index],
+			After:  observations[index],
+		}
+		if identity.expectedObservation.State == helper.ObservationOwned {
+			var releaseErr error
+			change, releaseErr = handler.adapter.ReleaseIfObserved(ctx, identity.address, identity.expectedObservation.Fingerprint)
+			if releaseErr != nil {
+				return helper.PoolMutationEvidence{}, releaseErr
+			}
+		}
+		identityEvidence, evidenceErr := evidenceFromChange(plan.operation, identity.address, change)
+		if evidenceErr != nil {
+			return helper.PoolMutationEvidence{}, evidenceErr
+		}
+		evidence = append(evidence, identityEvidence)
+	}
 	return helper.PoolMutationEvidence{
 		Pool:       plan.pool.String(),
 		Identities: evidence,
@@ -175,21 +216,26 @@ func (handler *Handler) observeExpectedPreAssignment(
 }
 
 // validatePoolMutationTicket copies one exact canonical /29 authority for safe two-phase processing.
-func validatePoolMutationTicket(ticket helper.Ticket) (poolMutationPlan, error) {
-	if ticket.Operation != helper.OperationEnsureLoopbackPool {
-		return poolMutationPlan{}, fmt.Errorf("loopback ticket operation %q does not match handler operation %q", ticket.Operation, helper.OperationEnsureLoopbackPool)
+func validatePoolMutationTicket(ticket helper.Ticket, operation helper.Operation) (poolMutationPlan, error) {
+	if ticket.Operation != operation {
+		return poolMutationPlan{}, fmt.Errorf("loopback ticket operation %q does not match handler operation %q", ticket.Operation, operation)
 	}
 	if ticket.ApprovedAddress != "" || ticket.ExpectedObservation != (helper.ExpectedObservation{}) || ticket.ExpectedPreAssignment != nil {
-		return poolMutationPlan{}, fmt.Errorf("pool ensure cannot contain single-address authority")
+		return poolMutationPlan{}, fmt.Errorf("pool operation cannot contain single-address authority")
 	}
 	pool, err := netip.ParsePrefix(ticket.ApprovedPool)
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() || pool.String() != ticket.ApprovedPool {
-		return poolMutationPlan{}, fmt.Errorf("pool ensure requires a canonical IPv4 loopback /29")
+		return poolMutationPlan{}, fmt.Errorf("pool operation requires a canonical IPv4 loopback /29")
 	}
 	if ticket.ExpectedLoopbackPool == nil {
-		return poolMutationPlan{}, fmt.Errorf("pool ensure requires expected loopback pool authority")
+		return poolMutationPlan{}, fmt.Errorf("pool operation requires expected loopback pool authority")
 	}
-	if err := ticket.ExpectedLoopbackPool.Validate(pool); err != nil {
+	if operation == helper.OperationEnsureLoopbackPool {
+		err = ticket.ExpectedLoopbackPool.Validate(pool)
+	} else {
+		err = ticket.ExpectedLoopbackPool.ValidateRelease(pool)
+	}
+	if err != nil {
 		return poolMutationPlan{}, err
 	}
 
@@ -216,6 +262,7 @@ func validatePoolMutationTicket(ticket helper.Ticket) (poolMutationPlan, error) 
 	}
 	return poolMutationPlan{
 		pool:              pool,
+		operation:         operation,
 		requesterIdentity: ticket.RequesterIdentity,
 		identities:        identities,
 	}, nil
@@ -317,7 +364,7 @@ func evidenceFromChange(operation helper.Operation, address netip.Addr, change l
 	case helper.OperationEnsureLoopbackIdentity, helper.OperationEnsureLoopbackPool:
 		wantState = loopback.StateExact
 		evidenceState = helper.ObservationOwned
-	case helper.OperationReleaseLoopbackIdentity:
+	case helper.OperationReleaseLoopbackIdentity, helper.OperationReleaseLoopbackPool:
 		wantState = loopback.StateAbsent
 		evidenceState = helper.ObservationAbsent
 	default:

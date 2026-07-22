@@ -42,6 +42,8 @@ const (
 	OperationEnsureLoopbackIdentity Operation = "ensure_loopback_identity"
 	// OperationEnsureLoopbackPool admits one canonical pool ensure operation containing eight exact identities.
 	OperationEnsureLoopbackPool Operation = "ensure_loopback_pool"
+	// OperationReleaseLoopbackPool admits one canonical pool release operation containing eight exact identities.
+	OperationReleaseLoopbackPool Operation = "release_loopback_pool"
 	// OperationReleaseLoopbackIdentity admits one owned loopback identity release operation.
 	OperationReleaseLoopbackIdentity Operation = "release_loopback_identity"
 	// OperationEnsureResolver admits one exact policy-bound resolver ensure operation.
@@ -221,8 +223,18 @@ func (root TrustRoot) Validate() error {
 	return validateTrustRootShape(root)
 }
 
-// Validate verifies that the authority contains every exact /29 address once in canonical order with route-only absent-state evidence.
+// Validate verifies that the authority contains every exact /29 ensure address once in canonical order.
 func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
+	return expected.validate(pool, OperationEnsureLoopbackPool)
+}
+
+// ValidateRelease verifies that the authority contains every exact /29 release address once in canonical order.
+func (expected ExpectedLoopbackPool) ValidateRelease(pool netip.Prefix) error {
+	return expected.validate(pool, OperationReleaseLoopbackPool)
+}
+
+// validate verifies that the authority contains every exact /29 address once in canonical order.
+func (expected ExpectedLoopbackPool) validate(pool netip.Prefix, operation Operation) error {
 	if !pool.IsValid() || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool requires a canonical IPv4 loopback /29")
 	}
@@ -244,6 +256,12 @@ func (expected ExpectedLoopbackPool) Validate(pool netip.Prefix) error {
 		}
 		switch identity.ExpectedObservation.State {
 		case ObservationAbsent:
+			if operation == OperationReleaseLoopbackPool {
+				if identity.ExpectedPreAssignment != nil {
+					return newRequestError(ErrorCodeInvalidTicket, "release pool identity cannot contain an expected pre-assignment observation")
+				}
+				break
+			}
 			if identity.ExpectedPreAssignment == nil {
 				return newRequestError(ErrorCodeInvalidTicket, "absent pool identity requires an expected pre-assignment observation")
 			}
@@ -331,7 +349,7 @@ func (t Ticket) Validate(now time.Time) error {
 		if err := t.validateLowPortAuthority(); err != nil {
 			return err
 		}
-	} else if t.Operation == OperationEnsureLoopbackPool {
+	} else if t.Operation == OperationEnsureLoopbackPool || t.Operation == OperationReleaseLoopbackPool {
 		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil || t.ExpectedLowPortObservation != nil {
 			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain network authority")
 		}
@@ -344,7 +362,7 @@ func (t Ticket) Validate(now time.Time) error {
 		if t.ExpectedLoopbackPool == nil {
 			return newRequestError(ErrorCodeInvalidTicket, "pool ensure requires expected loopback pool authority")
 		}
-		if err := t.ExpectedLoopbackPool.Validate(pool); err != nil {
+		if err := t.ExpectedLoopbackPool.validate(pool, t.Operation); err != nil {
 			return err
 		}
 	} else {
@@ -378,6 +396,7 @@ func validOperation(operation Operation) bool {
 	switch operation {
 	case OperationEnsureLoopbackIdentity,
 		OperationEnsureLoopbackPool,
+		OperationReleaseLoopbackPool,
 		OperationReleaseLoopbackIdentity,
 		OperationEnsureResolver,
 		OperationReleaseResolver,

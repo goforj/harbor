@@ -136,7 +136,12 @@ func TestDecodeRequestRejectsOversizedAndFailedReads(t *testing.T) {
 
 // TestDecodeResponseAcceptsStrictSuccessAndFailure verifies both protocol envelope shapes round trip.
 func TestDecodeResponseAcceptsStrictSuccessAndFailure(t *testing.T) {
-	responses := []Response{validTestSuccessResponse(), validTestPoolSuccessResponse(), validTestFailureResponse()}
+	responses := []Response{
+		validTestSuccessResponse(),
+		validTestPoolSuccessResponse(),
+		validTestPoolReleaseSuccessResponse(),
+		validTestFailureResponse(),
+	}
 	for _, want := range responses {
 		body, err := json.Marshal(want)
 		if err != nil {
@@ -589,6 +594,19 @@ func validTestPoolSuccessResponse() Response {
 		OK:      true,
 		Result: &OperationResult{
 			Operation:    OperationEnsureLoopbackPool,
+			PoolEvidence: &poolEvidence,
+		},
+	}
+}
+
+// validTestPoolReleaseSuccessResponse returns complete absent evidence for one aggregate release.
+func validTestPoolReleaseSuccessResponse() Response {
+	poolEvidence := testPoolReleaseEvidence("127.77.0.8/29")
+	return Response{
+		Version: ProtocolVersion,
+		OK:      true,
+		Result: &OperationResult{
+			Operation:    OperationReleaseLoopbackPool,
 			PoolEvidence: &poolEvidence,
 		},
 	}
