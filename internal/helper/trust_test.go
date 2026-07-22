@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/platform/trust"
 	"github.com/goforj/harbor/internal/trust/localca"
 )
 
@@ -213,6 +214,49 @@ func TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues(t *te
 	} {
 		if message, ok := administratorTrustDiagnosticMessage(diagnostic.stage, diagnostic.status); ok {
 			t.Fatalf("administratorTrustDiagnosticMessage(%q, %d) = %q, true", diagnostic.stage, diagnostic.status, message)
+		}
+	}
+}
+
+// TestResponseForErrorExposesOnlyBoundedTrustClassification verifies adapter failures retain useful finite diagnostics without raw causes.
+func TestResponseForErrorExposesOnlyBoundedTrustClassification(t *testing.T) {
+	err := &trust.Error{
+		Kind:      trust.ErrorKindVerificationFailed,
+		Operation: "ensure",
+		Assessment: trust.Assessment{
+			State: trust.StateForeign,
+			Owned: trust.OwnedStateAbsent,
+		},
+	}
+	response := responseForError(err)
+	if response.Error == nil || response.Error.Code != ErrorCodeMutationFailed ||
+		response.Error.Message != "helper operation failed: trust ensure verification-failed foreign/absent" {
+		t.Fatalf("bounded trust diagnostic response = %#v", response)
+	}
+
+	for _, err := range []*trust.Error{
+		{Kind: trust.ErrorKind("forged"), Operation: "ensure"},
+		{Kind: trust.ErrorKindVerificationFailed, Operation: "forged"},
+		{
+			Kind:      trust.ErrorKindVerificationFailed,
+			Operation: "ensure",
+			Assessment: trust.Assessment{
+				State: trust.State("forged"),
+				Owned: trust.OwnedStateAbsent,
+			},
+		},
+		{
+			Kind:      trust.ErrorKindVerificationFailed,
+			Operation: "ensure",
+			Assessment: trust.Assessment{
+				State: trust.StateForeign,
+				Owned: trust.OwnedState("forged"),
+			},
+		},
+	} {
+		response = responseForError(err)
+		if response.Error == nil || response.Error.Code != ErrorCodeMutationFailed || response.Error.Message != "helper operation failed" {
+			t.Fatalf("unrecognized trust diagnostic response = %#v", response)
 		}
 	}
 }

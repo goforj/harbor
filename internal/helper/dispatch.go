@@ -899,6 +899,8 @@ func responseForError(err error) Response {
 				if message, ok := administratorTrustDiagnosticMessage(stage, status); ok {
 					responseError.Message = message
 				}
+			} else if message, ok := trustFailureDiagnosticMessage(trustError); ok {
+				responseError.Message = message
 			}
 		}
 	}
@@ -907,6 +909,59 @@ func responseForError(err error) Response {
 		Version: ProtocolVersion,
 		OK:      false,
 		Error:   responseError,
+	}
+}
+
+// trustFailureDiagnosticMessage exposes only the adapter's finite operation, kind, and classification enums.
+func trustFailureDiagnosticMessage(err *trust.Error) (string, bool) {
+	if err == nil || !validTrustFailureOperationKind(err.Operation, err.Kind) {
+		return "", false
+	}
+	state := err.Assessment.State
+	owned := err.Assessment.Owned
+	if state == "" && owned == "" {
+		return fmt.Sprintf("helper operation failed: trust %s %s", err.Operation, err.Kind), true
+	}
+	if !validTrustFailureAssessment(state, owned) {
+		return "", false
+	}
+	return fmt.Sprintf("helper operation failed: trust %s %s %s/%s", err.Operation, err.Kind, state, owned), true
+}
+
+// validTrustFailureOperationKind rejects arbitrary text even when a caller constructs the exported adapter error shape directly.
+func validTrustFailureOperationKind(operation string, kind trust.ErrorKind) bool {
+	switch operation {
+	case "observe":
+		return kind == trust.ErrorKindInvalidRequest ||
+			kind == trust.ErrorKindObserveFailed ||
+			kind == trust.ErrorKindInvalidFacts
+	case "ensure", "release":
+		return kind == trust.ErrorKindInvalidRequest ||
+			kind == trust.ErrorKindInvalidFacts ||
+			kind == trust.ErrorKindObservationChanged ||
+			kind == trust.ErrorKindConflict ||
+			kind == trust.ErrorKindIndeterminate ||
+			kind == trust.ErrorKindMutationFailed ||
+			kind == trust.ErrorKindVerificationFailed
+	default:
+		return false
+	}
+}
+
+// validTrustFailureAssessment accepts only the finite state pairs produced by trust classification.
+func validTrustFailureAssessment(state trust.State, owned trust.OwnedState) bool {
+	switch state {
+	case trust.StateAbsent, trust.StateExact, trust.StateOwnedDrifted,
+		trust.StateForeign, trust.StateAmbiguous, trust.StateIndeterminate:
+	default:
+		return false
+	}
+	switch owned {
+	case trust.OwnedStateAbsent, trust.OwnedStateExact,
+		trust.OwnedStateDrifted, trust.OwnedStateAmbiguous:
+		return true
+	default:
+		return false
 	}
 }
 
