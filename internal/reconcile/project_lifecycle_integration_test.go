@@ -15,7 +15,6 @@ import (
 	"slices"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,12 +38,13 @@ import (
 )
 
 const (
-	projectLifecycleHelperEnvironment          = "HARBOR_PROJECT_LIFECYCLE_HELPER"
-	projectLifecycleHelperModeEnvironment      = "HARBOR_PROJECT_LIFECYCLE_HELPER_MODE"
-	projectLifecycleDescriptorModeEnvironment  = "HARBOR_PROJECT_LIFECYCLE_DESCRIPTOR_MODE"
-	projectLifecycleServiceReportEnvironment   = "HARBOR_PROJECT_LIFECYCLE_SERVICE_REPORT"
-	projectLifecycleHelperWatcherMode          = "watcher"
-	projectLifecycleHelperIgnoringListenerMode = "ignoring-listener"
+	projectLifecycleHelperEnvironment           = "HARBOR_PROJECT_LIFECYCLE_HELPER"
+	projectLifecycleHelperModeEnvironment       = "HARBOR_PROJECT_LIFECYCLE_HELPER_MODE"
+	projectLifecycleDescriptorModeEnvironment   = "HARBOR_PROJECT_LIFECYCLE_DESCRIPTOR_MODE"
+	projectLifecycleDescriptorMarkerEnvironment = "HARBOR_PROJECT_LIFECYCLE_DESCRIPTOR_MARKER"
+	projectLifecycleServiceReportEnvironment    = "HARBOR_PROJECT_LIFECYCLE_SERVICE_REPORT"
+	projectLifecycleHelperWatcherMode           = "watcher"
+	projectLifecycleHelperIgnoringListenerMode  = "ignoring-listener"
 )
 
 // projectLifecycleTestRouteReconciler keeps identity-stage lifecycle tests independent from a live data plane.
@@ -348,6 +348,16 @@ func runProjectLifecycleHelper() {
 			_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"project":{"name":"lifecycle","module":"example.com/lifecycle","config_digest":"not-a-digest"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[]}`)
 			return
 		}
+		if os.Getenv(projectLifecycleDescriptorModeEnvironment) == "hang" {
+			// This child process cannot report a descriptor invocation through in-memory test state.
+			if marker := os.Getenv(projectLifecycleDescriptorMarkerEnvironment); marker != "" {
+				if err := os.WriteFile(marker, []byte("project:describe invoked\n"), 0o600); err != nil {
+					_, _ = fmt.Fprintln(os.Stderr, err)
+					os.Exit(91)
+				}
+			}
+			waitForProjectLifecycleHelperTermination()
+		}
 		_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"project":{"name":"lifecycle","module":"example.com/lifecycle","config_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"goforj":{"version":"v0.20.1","cli_capabilities":["project-descriptor.v1"],"generated_project":{"generation":"v0.20.1","capabilities":[]}},"apps":[{"id":"app","name":"app","entrypoint":"cmd/app/main.go","runtimes":[{"id":"http","kind":"http","default_port":3000,"public_url":true,"readiness_path":"/-/ready"}]}]}`)
 		return
 	}
@@ -423,14 +433,16 @@ func waitForProjectLifecycleHelperTermination() {
 	}
 }
 
-// TestProjectLifecycleCoordinatorRejectsDescriptorBeforeNetworkMutation proves invalid static intent cannot allocate a durable project identity.
-func TestProjectLifecycleCoordinatorRejectsDescriptorBeforeNetworkMutation(t *testing.T) {
+// TestProjectLifecycleCoordinatorIgnoresHangingDescriptor proves primary lifecycle authority does not depend on descriptor execution.
+func TestProjectLifecycleCoordinatorIgnoresHangingDescriptor(t *testing.T) {
 	store, journal := newProjectLifecycleIntegrationState(t)
 	root, port := newProjectLifecycleIntegrationCheckout(t)
 	project := registerProjectLifecycleIntegrationProject(t, store, root)
 	initializeProjectLifecycleIntegrationIdentity(t, store, project.ID, netip.MustParseAddr("127.0.0.1"))
 	installProjectLifecycleIntegrationForj(t, port)
-	t.Setenv(projectLifecycleDescriptorModeEnvironment, "invalid")
+	t.Setenv(projectLifecycleDescriptorModeEnvironment, "hang")
+	descriptorMarker := filepath.Join(t.TempDir(), "project-describe-invoked")
+	t.Setenv(projectLifecycleDescriptorMarkerEnvironment, descriptorMarker)
 
 	coordinator, _ := newProjectLifecycleIntegrationCoordinator(
 		t,
@@ -449,27 +461,57 @@ func TestProjectLifecycleCoordinatorRejectsDescriptorBeforeNetworkMutation(t *te
 	})
 
 	if _, err := coordinator.Start(t.Context(), ProjectStartRequest{
-		ProjectID: project.ID, OperationID: "operation-start-invalid-descriptor", IntentID: "intent-start-invalid-descriptor",
+		ProjectID: project.ID, OperationID: "operation-start-hanging-descriptor", IntentID: "intent-start-hanging-descriptor",
 	}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	failed := waitForProjectLifecycleOperationState(t, journal, "intent-start-invalid-descriptor", domain.OperationFailed)
-	if failed.Operation.Problem == nil || failed.Operation.Problem.Code != "project.descriptor.invalid" {
-		t.Fatalf("failed descriptor operation = %#v", failed.Operation)
+	ready := waitForProjectLifecycleState(t, store, project.ID, domain.ProjectReady)
+	if ready.Project.State != domain.ProjectReady {
+		t.Fatalf("project after hanging descriptor = %q, want ready", ready.Project.State)
 	}
-	current, err := store.Project(t.Context(), project.ID)
-	if err != nil {
-		t.Fatalf("read project after invalid descriptor: %v", err)
+	started := waitForProjectLifecycleOperationState(t, journal, "intent-start-hanging-descriptor", domain.OperationSucceeded)
+	if started.Operation.Problem != nil {
+		t.Fatalf("start operation problem = %#v, want nil", started.Operation.Problem)
 	}
-	if current.Project.State != domain.ProjectStopped {
-		t.Fatalf("project after invalid descriptor = %q, want stopped", current.Project.State)
+	// A cross-process marker makes a descriptor subprocess observable even if it hangs indefinitely.
+	if _, err := os.Stat(descriptorMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project:describe marker stat = %v, want no invocation", err)
 	}
 	network, initialized, err := store.Network(t.Context())
 	if err != nil || !initialized {
-		t.Fatalf("read network after invalid descriptor = %#v, %t, %v", network, initialized, err)
+		t.Fatalf("read network after ready start = %#v, %t, %v", network, initialized, err)
 	}
-	if len(network.Leases) != 0 || len(network.Reservations.Endpoints) != 0 {
-		t.Fatalf("network mutated before descriptor admission: leases=%#v endpoints=%#v", network.Leases, network.Reservations.Endpoints)
+	if len(network.Reservations.Endpoints) != 0 {
+		t.Fatalf("descriptor-derived endpoint reservations = %#v, want none", network.Reservations.Endpoints)
+	}
+
+	if _, err := coordinator.Restart(t.Context(), ProjectRestartRequest{
+		ProjectID: project.ID, OperationID: "operation-restart-hanging-descriptor", IntentID: "intent-restart-hanging-descriptor",
+	}); err != nil {
+		t.Fatalf("Restart() error = %v", err)
+	}
+	waitForProjectLifecycleState(t, store, project.ID, domain.ProjectReady)
+	waitForProjectLifecycleOperationState(t, journal, "intent-restart-hanging-descriptor", domain.OperationSucceeded)
+	if _, err := os.Stat(descriptorMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project:describe marker after restart stat = %v, want no invocation", err)
+	}
+	network, initialized, err = store.Network(t.Context())
+	if err != nil || !initialized {
+		t.Fatalf("read network after ready restart = %#v, %t, %v", network, initialized, err)
+	}
+	if len(network.Reservations.Endpoints) != 0 {
+		t.Fatalf("restart descriptor-derived endpoint reservations = %#v, want none", network.Reservations.Endpoints)
+	}
+
+	if _, err := coordinator.Stop(t.Context(), ProjectStopRequest{
+		ProjectID: project.ID, OperationID: "operation-stop-hanging-descriptor", IntentID: "intent-stop-hanging-descriptor",
+	}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	waitForProjectLifecycleState(t, store, project.ID, domain.ProjectStopped)
+	stopped := waitForProjectLifecycleOperationState(t, journal, "intent-stop-hanging-descriptor", domain.OperationSucceeded)
+	if stopped.Operation.Problem != nil {
+		t.Fatalf("stop operation problem = %#v, want nil", stopped.Operation.Problem)
 	}
 }
 
@@ -619,9 +661,6 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 		t.Fatalf("read active session: %v", err)
 	}
 	firstSessionID := session.ID
-	if session.DescriptorDigest != strings.Repeat("a", 64) {
-		t.Fatalf("active session descriptor digest = %q, want descriptor topology digest", session.DescriptorDigest)
-	}
 	if !slices.Equal(discoverer.calls, []netip.Addr{netip.MustParseAddr("127.0.0.1")}) {
 		t.Fatalf("admission target discoveries = %v, want one exact assigned target", discoverer.calls)
 	}

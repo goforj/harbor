@@ -158,7 +158,7 @@ type projectRuntimeProjectionRefresher interface {
 	RefreshProjectRuntime(context.Context, state.RefreshProjectRuntimeRequest) (state.ProjectRecord, error)
 }
 
-// projectDescriptorObserver validates the static GoForj contract before process authority is created.
+// projectDescriptorObserver exposes optional static descriptor enrichment outside critical lifecycle execution.
 type projectDescriptorObserver interface {
 	ObserveProjectDescriptor(context.Context, string) (projectprocess.ProjectDescriptorObservation, error)
 }
@@ -616,24 +616,6 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if record.Operation.State != domain.OperationQueued {
 		return
 	}
-	descriptor := projectprocess.ProjectDescriptorObservation{}
-	var descriptorObserver projectDescriptorObserver
-	var descriptorProjectPath string
-	var err error
-	if observer, ok := coordinator.supervisor.(projectDescriptorObserver); ok {
-		descriptorObserver = observer
-		registered, readErr := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
-		if readErr != nil {
-			coordinator.cancelQueued(record, readErr)
-			return
-		}
-		descriptorProjectPath = registered.Project.Path
-		descriptor, err = descriptorObserver.ObserveProjectDescriptor(coordinator.ctx, descriptorProjectPath)
-		if err != nil {
-			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
-			return
-		}
-	}
 	admission, err := coordinator.primaryLeases.Ensure(coordinator.ctx, record.Operation.ProjectID)
 	if err != nil {
 		if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
@@ -653,47 +635,6 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	project := admission.Project
-	if descriptorObserver != nil && project.Project.Path != descriptorProjectPath {
-		// The lease coordinator rereads the registration under its own revision fence; revalidate the path it admitted before launch.
-		descriptor, err = descriptorObserver.ObserveProjectDescriptor(coordinator.ctx, project.Project.Path)
-		if err != nil {
-			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
-			return
-		}
-	}
-	if descriptor.ServiceRequirementsSupported {
-		if err := coordinator.primaryLeases.assignServiceEndpointReservations(coordinator.ctx, record.Operation.ProjectID, descriptor.ServiceRequirements); err != nil {
-			coordinator.failQueuedAdmission(record, lifecycleProblem("project.endpoint.assignment.failed", err))
-			return
-		}
-		if serviceIDs := managedPublicationServiceIDs(descriptor.ServiceRequirements); len(serviceIDs) > 0 {
-			network, initialized, readErr := coordinator.primaryLeases.state.Network(coordinator.ctx)
-			if readErr != nil {
-				coordinator.cancelQueued(record, readErr)
-				return
-			}
-			if !initialized {
-				coordinator.failQueuedAdmission(record, managedPublicationNetworkProblem(initialized, network.Stage))
-				return
-			}
-			if network.Stage != state.NetworkStageResolver && network.Stage != state.NetworkStageFull {
-				coordinator.failQueuedAdmission(record, managedPublicationNetworkProblem(initialized, network.Stage))
-				return
-			}
-		}
-		refreshed, readErr := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
-		if readErr != nil {
-			coordinator.cancelQueued(record, readErr)
-			return
-		}
-		project = refreshed
-		if network, initialized, readErr := coordinator.primaryLeases.state.Network(coordinator.ctx); readErr != nil {
-			coordinator.cancelQueued(record, readErr)
-			return
-		} else if initialized && network.UpdatedAt.After(admission.NetworkUpdatedAt) {
-			admission.NetworkUpdatedAt = network.UpdatedAt
-		}
-	}
 	at := lifecycleTime(coordinator.now())
 	if at.Before(project.Project.UpdatedAt) {
 		at = project.Project.UpdatedAt
@@ -701,7 +642,12 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if at.Before(admission.NetworkUpdatedAt) {
 		at = admission.NetworkUpdatedAt
 	}
-	session, managedLaunch, err := coordinator.prepareLaunchSession(record.Operation.ProjectID, project.Project.Path, at, descriptor)
+	session, managedLaunch, err := coordinator.prepareLaunchSession(
+		record.Operation.ProjectID,
+		project.Project.Path,
+		at,
+		projectprocess.ProjectDescriptorObservation{},
+	)
 	if err != nil {
 		coordinator.cancelQueued(record, err)
 		return
@@ -721,7 +667,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		coordinator.cancelQueued(record, err)
 		return
 	}
-	if !coordinator.resetBeforeLaunch(begun, session, project.Project.Path, descriptor.Executable, "project.reset") {
+	if !coordinator.resetBeforeLaunch(begun, session, project.Project.Path, "", "project.reset") {
 		return
 	}
 
@@ -730,7 +676,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		ProjectID:            record.Operation.ProjectID,
 		SessionID:            session.ID,
 		CheckoutRoot:         project.Project.Path,
-		GoForjExecutable:     descriptor.Executable,
+		GoForjExecutable:     "",
 		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
 		ManagedLaunch:        managedLaunch,
 		// The daemon retains this transcript for its authenticated clients; mirroring it would mix project output with daemon diagnostics.
@@ -782,7 +728,13 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		coordinator.stopAndFailUnattached(begun, session, handle, err)
 		return
 	}
-	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
+	coordinator.waitForReadiness(
+		begun,
+		attached,
+		handle,
+		admission.Target,
+		projectprocess.ProjectDescriptorObservation{},
+	)
 }
 
 // managedPublicationNetworkProblem keeps resolver-stage DNS progress distinct from the unavailable identity foundation.
@@ -1492,7 +1444,7 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 	if err != nil {
 		var missing *state.ProjectSessionNotFoundError
 		if errors.As(err, &missing) && project.Project.State == domain.ProjectStopped {
-			coordinator.startRestartAfterStop(record, project, projectprocess.ProjectDescriptorObservation{})
+			coordinator.startRestartAfterStop(record, project)
 			return
 		}
 		coordinator.recordAsyncError(err)
@@ -1514,7 +1466,7 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 			return
 		}
 		if project.Project.State == domain.ProjectStopped {
-			coordinator.startRestartAfterStop(record, project, projectprocess.ProjectDescriptorObservation{})
+			coordinator.startRestartAfterStop(record, project)
 		}
 		return
 	}
@@ -1572,28 +1524,11 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 		coordinator.recordAsyncError(err)
 		return
 	}
-	coordinator.startRestartAfterStop(completed.Operation, completed.Project, projectprocess.ProjectDescriptorObservation{})
+	coordinator.startRestartAfterStop(completed.Operation, completed.Project)
 }
 
-// runQueuedRestart validates launch intent before taking the currently healthy project offline.
+// runQueuedRestart takes the currently healthy project offline before launching its replacement.
 func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.OperationRecord) {
-	descriptor := projectprocess.ProjectDescriptorObservation{}
-	var descriptorObserver projectDescriptorObserver
-	var descriptorPath string
-	if observer, ok := coordinator.supervisor.(projectDescriptorObserver); ok {
-		descriptorObserver = observer
-		registered, err := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
-		if err != nil {
-			coordinator.cancelQueued(record, err)
-			return
-		}
-		descriptorPath = registered.Project.Path
-		descriptor, err = observer.ObserveProjectDescriptor(coordinator.ctx, descriptorPath)
-		if err != nil {
-			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
-			return
-		}
-	}
 	admission, err := coordinator.primaryLeases.Ensure(coordinator.ctx, record.Operation.ProjectID)
 	if err != nil {
 		if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
@@ -1607,13 +1542,6 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 		}
 		coordinator.cancelQueued(record, err)
 		return
-	}
-	if descriptorObserver != nil && admission.Project.Project.Path != descriptorPath {
-		descriptor, err = descriptorObserver.ObserveProjectDescriptor(coordinator.ctx, admission.Project.Project.Path)
-		if err != nil {
-			coordinator.failQueuedAdmission(record, lifecycleProblem("project.descriptor.invalid", err))
-			return
-		}
 	}
 	session, err := coordinator.state.ActiveProjectSession(coordinator.ctx, record.Operation.ProjectID)
 	if err != nil {
@@ -1638,7 +1566,7 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 					coordinator.recordAsyncError(err)
 					return
 				}
-				coordinator.startRestartAfterStop(latest, stopped, projectprocess.ProjectDescriptorObservation{})
+				coordinator.startRestartAfterStop(latest, stopped)
 			}
 			return
 		}
@@ -1724,28 +1652,18 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 		coordinator.recordAsyncError(err)
 		return
 	}
-	coordinator.startRestartAfterStop(completed.Operation, completed.Project, descriptor)
+	coordinator.startRestartAfterStop(completed.Operation, completed.Project)
 }
 
 // startRestartAfterStop creates and launches the replacement process from the durable stopped boundary.
 func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 	record state.OperationRecord,
 	stoppedProject state.ProjectRecord,
-	descriptor projectprocess.ProjectDescriptorObservation,
 ) {
 	admission, err := coordinator.primaryLeases.Ensure(context.Background(), record.Operation.ProjectID)
 	if err != nil {
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.admission", err)
 		return
-	}
-	descriptorObserver, observesDescriptor := coordinator.supervisor.(projectDescriptorObserver)
-	if observesDescriptor {
-		fresh, observeErr := descriptorObserver.ObserveProjectDescriptor(context.Background(), admission.Project.Project.Path)
-		if observeErr != nil {
-			coordinator.failRestartAfterStop(record, stoppedProject, "project.descriptor.invalid", observeErr)
-			return
-		}
-		descriptor = fresh
 	}
 	at := lifecycleTime(coordinator.now())
 	for _, lowerBound := range []time.Time{stoppedProject.Project.UpdatedAt, admission.Project.Project.UpdatedAt} {
@@ -1753,7 +1671,12 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 			at = lowerBound
 		}
 	}
-	session, managedLaunch, err := coordinator.prepareLaunchSession(record.Operation.ProjectID, admission.Project.Project.Path, at, descriptor)
+	session, managedLaunch, err := coordinator.prepareLaunchSession(
+		record.Operation.ProjectID,
+		admission.Project.Project.Path,
+		at,
+		projectprocess.ProjectDescriptorObservation{},
+	)
 	if err != nil {
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.session", err)
 		return
@@ -1774,7 +1697,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.state", err)
 		return
 	}
-	if !coordinator.resetBeforeLaunch(begun, session, admission.Project.Project.Path, descriptor.Executable, "project.restart.reset") {
+	if !coordinator.resetBeforeLaunch(begun, session, admission.Project.Project.Path, "", "project.restart.reset") {
 		return
 	}
 	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
@@ -1782,7 +1705,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		ProjectID:            record.Operation.ProjectID,
 		SessionID:            session.ID,
 		CheckoutRoot:         admission.Project.Project.Path,
-		GoForjExecutable:     descriptor.Executable,
+		GoForjExecutable:     "",
 		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
 		ManagedLaunch:        managedLaunch,
 		Stdout:               io.Discard,
@@ -1820,7 +1743,13 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		coordinator.stopAndFailUnattached(begun, session, handle, err)
 		return
 	}
-	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
+	coordinator.waitForReadiness(
+		begun,
+		attached,
+		handle,
+		admission.Target,
+		projectprocess.ProjectDescriptorObservation{},
+	)
 }
 
 // failRestartAfterStop records a restart failure without inventing a replacement process session.
