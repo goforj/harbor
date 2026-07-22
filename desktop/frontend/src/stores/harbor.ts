@@ -66,7 +66,7 @@ export const useHarborStore = defineStore('harbor', () => {
   const networkSetupError = ref<string | null>(null)
   const removingProjectId = ref<string | null>(null)
   const projectRemovalApprovalProjectId = ref<string | null>(null)
-  const projectLifecycleProjectId = ref<string | null>(null)
+  const projectLifecycleRequestProjectIds = ref<Record<string, true>>({})
   const projectLifecycleErrors = ref<Record<string, string>>({})
   const projectLifecycleProblemCodes = ref<Record<string, string>>({})
   const projectRemovalNotices = ref<Record<string, ProjectRemovalNotice>>({})
@@ -119,8 +119,11 @@ export const useHarborStore = defineStore('harbor', () => {
     })
   })
   const operations = computed(() => snapshot.value?.operations ?? [])
-  const projectLifecycleBusy = computed(() => projectLifecycleProjectId.value !== null
+  const projectLifecycleBusy = computed(() => Object.keys(projectLifecycleRequestProjectIds.value).length > 0
     || projectLifecycleIntentCount.value > 0
+    || projects.value.some((project) => project.state === 'starting'
+      || project.state === 'stopping'
+      || project.state === 'rebuilding')
     || operations.value.some((operation) => (operation.kind === 'project.start'
       || operation.kind === 'project.stop'
       || operation.kind === 'project.restart')
@@ -410,6 +413,39 @@ export const useHarborStore = defineStore('harbor', () => {
       && isActiveOperation(operation))
   }
 
+  function projectLifecycleBusyFor(projectId: string) {
+    const projectState = projectById(projectId)?.state
+    return projectLifecycleRequestProjectIds.value[projectId] === true
+      || activeProjectLifecycle(projectId) !== undefined
+      || projectState === 'starting'
+      || projectState === 'stopping'
+      || projectState === 'rebuilding'
+  }
+
+  function projectLifecycleBlockedFor(projectId: string, action: ProjectLifecycleAction) {
+    if (projectLifecycleBusyFor(projectId)) {
+      return true
+    }
+    const remembered = projectLifecycleIntents.get(projectId)
+    return remembered !== undefined && remembered.action !== action
+  }
+
+  function beginProjectLifecycleRequest(projectId: string) {
+    projectLifecycleRequestProjectIds.value = {
+      ...projectLifecycleRequestProjectIds.value,
+      [projectId]: true,
+    }
+  }
+
+  function endProjectLifecycleRequest(projectId: string) {
+    if (!projectLifecycleRequestProjectIds.value[projectId]) {
+      return
+    }
+    const requests = { ...projectLifecycleRequestProjectIds.value }
+    delete requests[projectId]
+    projectLifecycleRequestProjectIds.value = requests
+  }
+
   function trackProjectLifecycleIntent(projectId: string, intent: TrackedProjectLifecycleIntent) {
     projectLifecycleIntents.set(projectId, intent)
     projectLifecycleIntentCount.value = projectLifecycleIntents.size
@@ -434,6 +470,9 @@ export const useHarborStore = defineStore('harbor', () => {
     }
 
     for (const [projectId, operation] of latestOperations) {
+      if (projectLifecycleRequestProjectIds.value[projectId]) {
+        continue
+      }
       if (!projectsById.has(projectId)) {
         forgetProjectLifecycleIntent(projectId)
         setProjectLifecycleProblem(projectId, null)
@@ -450,6 +489,9 @@ export const useHarborStore = defineStore('harbor', () => {
     }
 
     for (const [projectId, tracked] of projectLifecycleIntents) {
+      if (projectLifecycleRequestProjectIds.value[projectId]) {
+        continue
+      }
       const project = projectsById.get(projectId)
       if (!project) {
         forgetProjectLifecycleIntent(projectId)
@@ -459,14 +501,15 @@ export const useHarborStore = defineStore('harbor', () => {
       const trackedOperation = nextSnapshot.operations.find((operation) => operation.project_id === projectId
         && operation.intent_id === tracked.id)
       const active = trackedOperation ? isActiveOperation(trackedOperation) : false
-      const reachedTarget = tracked.action !== 'stop'
+      const matchesTrackedAction = trackedOperation?.kind === `project.${tracked.action}`
+      const reachedTarget = tracked.action === 'start'
         ? project.state === 'ready' || project.state === 'degraded'
-        : project.state === 'stopped'
-      if (!active && (trackedOperation || reachedTarget)) {
+        : tracked.action === 'stop' && project.state === 'stopped'
+      if (!active && (matchesTrackedAction || reachedTarget)) {
         forgetProjectLifecycleIntent(projectId)
         setProjectLifecycleProblem(
           projectId,
-          trackedOperation ? projectLifecycleTerminalProblem(trackedOperation, tracked.action) : null,
+          matchesTrackedAction && trackedOperation ? projectLifecycleTerminalProblem(trackedOperation, tracked.action) : null,
           trackedOperation?.intent_id,
         )
       }
@@ -564,7 +607,7 @@ export const useHarborStore = defineStore('harbor', () => {
       setProjectLifecycleError(projectId, 'Harbor is still reconciling local state. Wait for a fresh snapshot, then try again.')
       return null
     }
-    if (projectLifecycleProjectId.value) {
+    if (projectLifecycleRequestProjectIds.value[projectId]) {
       setProjectLifecycleError(projectId, 'Wait for the current project action to finish, then try again.')
       return null
     }
@@ -575,13 +618,17 @@ export const useHarborStore = defineStore('harbor', () => {
       return null
     }
     const remembered = projectLifecycleIntents.get(projectId)
+    if (remembered && remembered.action !== action) {
+      setProjectLifecycleError(projectId, `Harbor is already ${lifecycleProgressLabel(`project.${remembered.action}`)} this project.`)
+      return null
+    }
     const intent = active
       ? { action, id: active.intent_id }
       : remembered?.action === action
         ? remembered
         : { action, id: newProjectLifecycleIntent(action) }
     trackProjectLifecycleIntent(projectId, intent)
-    projectLifecycleProjectId.value = projectId
+    beginProjectLifecycleRequest(projectId)
     setProjectLifecycleProblem(projectId, null)
 
     try {
@@ -617,7 +664,7 @@ export const useHarborStore = defineStore('harbor', () => {
       return null
     }
     finally {
-      projectLifecycleProjectId.value = null
+      endProjectLifecycleRequest(projectId)
       await refresh()
     }
   }
@@ -1224,8 +1271,9 @@ export const useHarborStore = defineStore('harbor', () => {
     removingProjectId,
     projectRemovalApprovalProjectId,
     projectRemovalApprovalBusy,
-    projectLifecycleProjectId,
     projectLifecycleBusy,
+    projectLifecycleBusyFor,
+    projectLifecycleBlockedFor,
     projectLifecycleErrors,
     projectLifecycleProblemCodes,
     projectRuntimeRepairInspection,

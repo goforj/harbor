@@ -153,10 +153,10 @@ const runtimeRepairExpired = computed(() => {
   const expiresAt = runtimeRepairInspection.value?.confirmable.expires_at
   return expiresAt ? Date.parse(expiresAt) <= now : false
 })
-const lifecycleInFlight = computed(() => store.projectLifecycleProjectId === projectId.value)
+const lifecycleInFlight = computed(() => store.projectLifecycleBusyFor(projectId.value))
 const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
 const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
-const restarting = computed(() => activeLifecycle.value?.kind === 'project.restart')
+const restarting = computed(() => project.value?.state === 'rebuilding' || activeLifecycle.value?.kind === 'project.restart')
 const restartAvailable = computed(() => project.value?.state === 'ready'
   || project.value?.state === 'degraded'
   || restarting.value)
@@ -174,16 +174,17 @@ const lifecycleLabel = computed(() => {
   if (stopping.value) return 'Stopping…'
   return lifecycleAction.value === 'start' ? 'Start project' : 'Stop project'
 })
-const lifecycleDisabled = computed(() => store.snapshotStale
+const lifecycleControlsDisabled = computed(() => store.snapshotStale
   || store.connectionState !== 'connected'
   || store.settingUpNetwork
-  || store.projectLifecycleBusy
   || store.projectRuntimeRepairBusy
   || store.projectRemovalApprovalBusy
-  || starting.value
-  || stopping.value
   || removalPending.value)
-const restartDisabled = computed(() => lifecycleDisabled.value || !restartAvailable.value)
+const lifecycleDisabled = computed(() => lifecycleControlsDisabled.value
+  || store.projectLifecycleBlockedFor(projectId.value, lifecycleAction.value))
+const restartDisabled = computed(() => lifecycleControlsDisabled.value
+  || store.projectLifecycleBlockedFor(projectId.value, 'restart')
+  || !restartAvailable.value)
 const networkSetupDisabled = computed(() => !needsNetworkSetup.value
   || project.value?.id !== projectId.value
   || store.settingUpNetwork
@@ -198,7 +199,7 @@ const removalPending = computed(() => removalNotice.value?.state === 'queued'
   || removalNotice.value?.state === 'running'
   || removalNotice.value?.state === 'requires_approval')
 const removalDisabled = computed(() => store.removingProjectId !== null
-  || store.projectLifecycleProjectId !== null
+  || store.projectLifecycleBusy
   || store.projectRuntimeRepairBusy
   || store.projectRemovalApprovalBusy
   || activeLifecycle.value != null
@@ -365,7 +366,7 @@ async function setupNetworkAndStartProject() {
     || store.projectById(requestedProjectId)?.id !== requestedProjectId
     || store.snapshotStale
     || store.connectionState !== 'connected'
-    || store.projectLifecycleBusy) return
+    || store.projectLifecycleBusyFor(requestedProjectId)) return
   await startProject(requestedProjectId)
 }
 

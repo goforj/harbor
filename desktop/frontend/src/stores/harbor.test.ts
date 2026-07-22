@@ -8,10 +8,12 @@ import { useHarborStore } from './harbor'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve
+    reject = nextReject
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 function statusWithSequence(sequence: number): DaemonStatus {
@@ -521,6 +523,100 @@ describe('Harbor store', () => {
     expect(setupNetwork).not.toHaveBeenCalled()
   })
 
+  it('allows independent project lifecycle requests while preserving each project request state', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const reports = deferred<ProjectLifecycleOperation>()
+    const billing = deferred<ProjectLifecycleOperation>()
+    const startProject = vi.spyOn(harborBridge, 'startProject')
+      .mockReturnValueOnce(reports.promise)
+      .mockReturnValueOnce(billing.promise)
+
+    const startingReports = store.startProject('reports')
+    await vi.waitFor(() => expect(store.projectLifecycleBusyFor('reports')).toBe(true))
+
+    await expect(store.startProject('reports')).resolves.toBeNull()
+    expect(startProject).toHaveBeenCalledTimes(1)
+
+    const startingBilling = store.startProject('billing')
+    await vi.waitFor(() => expect(startProject).toHaveBeenCalledTimes(2))
+    expect(store.projectLifecycleBusyFor('billing')).toBe(true)
+
+    const reportsResult = structuredClone(harborWireFixture.start_project) as ProjectLifecycleOperation
+    reportsResult.operation.project_id = 'reports'
+    reportsResult.operation.intent_id = startProject.mock.calls[0][1]
+    reportsResult.operation.state = 'succeeded'
+    reportsResult.operation.phase = 'succeeded'
+    reportsResult.operation.started_at = '2026-07-19T18:00:01Z'
+    reportsResult.operation.finished_at = '2026-07-19T18:00:02Z'
+    reports.resolve(reportsResult)
+    await startingReports
+
+    expect(store.projectLifecycleBusyFor('reports')).toBe(false)
+    expect(store.projectLifecycleBusyFor('billing')).toBe(true)
+
+    const billingResult = structuredClone(harborWireFixture.start_project) as ProjectLifecycleOperation
+    billingResult.operation.project_id = 'billing'
+    billingResult.operation.intent_id = startProject.mock.calls[1][1]
+    billingResult.operation.state = 'succeeded'
+    billingResult.operation.phase = 'succeeded'
+    billingResult.operation.started_at = '2026-07-19T18:00:01Z'
+    billingResult.operation.finished_at = '2026-07-19T18:00:02Z'
+    billing.resolve(billingResult)
+    await startingBilling
+    expect(store.projectLifecycleBusy).toBe(false)
+  })
+
+  it('keeps an uncertain restart through another project refresh and retries it without permitting a conflicting stop', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const billingRestart = deferred<ProjectLifecycleOperation>()
+    const unchanged = mockSnapshot()
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(unchanged)
+    const restartProject = vi.spyOn(harborBridge, 'restartProject')
+      .mockReturnValueOnce(billingRestart.promise)
+      .mockImplementationOnce(async (projectId, intentId) => {
+        const result = structuredClone(harborWireFixture.restart_project) as ProjectLifecycleOperation
+        result.operation.project_id = projectId
+        result.operation.intent_id = intentId
+        result.operation.state = 'succeeded'
+        result.operation.phase = 'succeeded'
+        result.operation.started_at = '2026-07-19T18:00:01Z'
+        result.operation.finished_at = '2026-07-19T18:00:02Z'
+        return result
+      })
+    const startProject = vi.spyOn(harborBridge, 'startProject').mockImplementationOnce(async (projectId, intentId) => {
+      const result = structuredClone(harborWireFixture.start_project) as ProjectLifecycleOperation
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      result.operation.state = 'succeeded'
+      result.operation.phase = 'succeeded'
+      result.operation.started_at = '2026-07-19T18:00:01Z'
+      result.operation.finished_at = '2026-07-19T18:00:02Z'
+      return result
+    })
+    const stopProject = vi.spyOn(harborBridge, 'stopProject')
+
+    const restartingBilling = store.restartProject('billing')
+    await vi.waitFor(() => expect(store.projectLifecycleBusyFor('billing')).toBe(true))
+
+    await store.startProject('reports')
+    expect(store.projectLifecycleBusyFor('billing')).toBe(true)
+
+    billingRestart.reject(new Error('connection closed before the operation response'))
+    await expect(restartingBilling).resolves.toBeNull()
+
+    expect(store.projectLifecycleBusyFor('billing')).toBe(false)
+    expect(store.projectLifecycleBlockedFor('billing', 'restart')).toBe(false)
+    expect(store.projectLifecycleBlockedFor('billing', 'stop')).toBe(true)
+    await expect(store.stopProject('billing')).resolves.toBeNull()
+    expect(stopProject).not.toHaveBeenCalled()
+
+    await store.restartProject('billing')
+    expect(restartProject).toHaveBeenCalledTimes(2)
+    expect(restartProject.mock.calls[1][1]).toBe(restartProject.mock.calls[0][1])
+  })
+
   it('restores only the latest retained lifecycle outcome and clears it when newer work starts', async () => {
     const baseline = mockSnapshot()
     baseline.sequence = 50
@@ -608,7 +704,7 @@ describe('Harbor store', () => {
     expect(startProject.mock.calls[0][1]).toMatch(/^desktop-project-start-[0-9a-f]{32}$/)
     expect(store.projectById('reports')?.state).toBe('starting')
     expect(store.activeProjectLifecycle('reports')?.kind).toBe('project.start')
-    expect(store.projectLifecycleProjectId).toBeNull()
+    expect(store.projectLifecycleBusyFor('reports')).toBe(true)
     expect(store.projectLifecycleErrors.reports).toBeUndefined()
   })
 
@@ -633,7 +729,7 @@ describe('Harbor store', () => {
 
     expect(restartProject.mock.calls[0][1]).toMatch(/^desktop-project-restart-[0-9a-f]{32}$/)
     expect(store.activeProjectLifecycle('billing')?.kind).toBe('project.restart')
-    expect(store.projectLifecycleProjectId).toBeNull()
+    expect(store.projectLifecycleBusyFor('billing')).toBe(true)
     expect(store.projectLifecycleErrors.billing).toBeUndefined()
   })
 
@@ -668,7 +764,7 @@ describe('Harbor store', () => {
     await expect(store.startProject('reports')).resolves.toMatchObject({ operation: { kind: 'project.start' } })
 
     expect(store.projectById('reports')?.state).toBe('failed')
-    expect(store.projectLifecycleProjectId).toBeNull()
+    expect(store.projectLifecycleBusyFor('reports')).toBe(false)
     expect(store.activeProjectLifecycle('reports')).toBeUndefined()
     expect(store.projectLifecycleErrors.reports).toBe('forj dev exited before the project became ready.')
     expect(store.projectLifecycleProblemCodes.reports).toBe('project.process.exited')

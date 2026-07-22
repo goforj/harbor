@@ -220,6 +220,26 @@ describe('ProjectView project start output', () => {
     expect(activeDetailTab(wrapper)).toBe('Overview')
     wrapper.unmount()
   })
+
+  it('keeps billing lifecycle controls enabled while reports start is in flight', async () => {
+    const pending = deferred<ProjectLifecycleOperation>()
+    vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
+    const { store, wrapper } = await mountProject('billing')
+
+    const startingReports = store.startProject('reports')
+    await vi.waitFor(() => expect(store.projectLifecycleBusyFor('reports')).toBe(true))
+
+    expect(bodyButton('Start project').disabled).toBe(false)
+
+    const result = admittedStart('reports', 'reports-start')
+    result.operation.state = 'succeeded'
+    result.operation.phase = 'succeeded'
+    result.operation.started_at = '2026-07-19T18:00:01Z'
+    result.operation.finished_at = '2026-07-19T18:00:02Z'
+    pending.resolve(result)
+    await startingReports
+    wrapper.unmount()
+  })
 })
 
 describe('ProjectView stale runtime recovery', () => {
@@ -249,7 +269,15 @@ describe('ProjectView stale runtime recovery', () => {
     await wrapper.vm.$nextTick()
     expect(recover?.attributes('disabled')).toBeDefined()
 
-    store.$patch({ connectionState: 'connected', projectLifecycleProjectId: 'billing' })
+    const snapshot = mockSnapshot()
+    snapshot.operations.push({
+      ...structuredClone(harborWireFixture.start_project.operation),
+      project_id: 'billing',
+      intent_id: 'billing-start',
+      state: 'running',
+      phase: 'running',
+    })
+    store.$patch({ connectionState: 'connected', snapshot })
     await wrapper.vm.$nextTick()
     expect(recover?.attributes('disabled')).toBeDefined()
 
@@ -493,6 +521,20 @@ describe('ProjectView project restart', () => {
     await flushPromises()
 
     expect(restart).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-restart-/))
+    wrapper.unmount()
+  })
+
+  it('allows an uncertain restart retry while blocking the conflicting stop action', async () => {
+    vi.spyOn(harborBridge, 'restartProject').mockRejectedValueOnce(new Error('connection closed before the operation response'))
+    const { store, wrapper } = await mountProject('orders-api')
+
+    await store.restartProject('orders-api')
+    await flushPromises()
+
+    expect(bodyButton('Stop project').disabled).toBe(true)
+    expect(bodyButton('Restart project').disabled).toBe(false)
+    expect(bodyButton('Stop project').querySelector('.animate-spin')).toBeNull()
+    expect(bodyButton('Restart project').querySelector('.animate-spin')).toBeNull()
     wrapper.unmount()
   })
 })
