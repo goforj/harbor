@@ -21,6 +21,7 @@ import (
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/platform/runtimepath"
 	"github.com/goforj/harbor/internal/platform/userpaths"
 )
@@ -386,6 +387,52 @@ func (evidence *phase1Evidence) registerLog(name string, log *phase1BoundedLog) 
 	evidence.mutex.Lock()
 	evidence.logs[name] = log
 	evidence.mutex.Unlock()
+}
+
+// redactedLogTail returns a bounded daemon tail suitable for a test failure without exposing sandbox paths or secret-shaped values.
+func (evidence *phase1Evidence) redactedLogTail(log *phase1BoundedLog) string {
+	if log == nil {
+		return ""
+	}
+	tail := evidence.redact(string(log.snapshot()))
+	if len(tail) > phase1MaximumLogBytes {
+		tail = tail[len(tail)-phase1MaximumLogBytes:]
+	}
+	return tail
+}
+
+// redact applies the evidence publication policy to one diagnostic value before it reaches test output.
+func (evidence *phase1Evidence) redact(contents string) string {
+	evidence.mutex.Lock()
+	replacements := append([]string(nil), evidence.replacements...)
+	evidence.mutex.Unlock()
+	return phase1RedactLog(contents, replacements)
+}
+
+// phase1ActiveOperationDiagnostic formats only the active operation fields that are safe to expose in an acceptance failure.
+func phase1ActiveOperationDiagnostic(snapshot domain.Snapshot, evidence *phase1Evidence) string {
+	lines := make([]string, 0, len(snapshot.Operations)+1)
+	lines = append(lines, "active daemon operations:")
+	for _, operation := range snapshot.Operations {
+		if operation.State.IsTerminal() {
+			continue
+		}
+		phase := operation.Phase
+		if evidence != nil {
+			phase = evidence.redact(phase)
+		}
+		lines = append(lines, fmt.Sprintf(
+			"- kind=%s state=%s phase=%q snapshot_sequence=%d",
+			operation.Kind,
+			operation.State,
+			phase,
+			snapshot.Sequence,
+		))
+	}
+	if len(lines) == 1 {
+		lines = append(lines, "- none")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // write emits only the allowlisted summary and redacted bounded daemon logs.

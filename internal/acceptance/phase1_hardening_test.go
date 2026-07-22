@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goforj/harbor/internal/domain"
 )
 
 // phase1TestEnvironmentMap parses deterministic child environments for focused boundary assertions.
@@ -205,5 +207,54 @@ func TestPhase1WindowsRedactionIgnoresPathCaseAndRemovesPipeSID(t *testing.T) {
 	}
 	if strings.Count(redacted, "<sandbox>") != 2 {
 		t.Fatalf("Windows redaction = %q, want pipe and standalone SID redacted", redacted)
+	}
+}
+
+// TestPhase1ActiveOperationDiagnosticExcludesOperationIdentity verifies setup failure output retains only allowlisted active-operation fields.
+func TestPhase1ActiveOperationDiagnosticExcludesOperationIdentity(t *testing.T) {
+	evidence := &phase1Evidence{replacements: []string{"/private/sandbox"}}
+	snapshot := domain.Snapshot{
+		Sequence: 19,
+		Operations: []domain.Operation{
+			{
+				ID:       "operation-sensitive",
+				IntentID: "intent-sensitive",
+				Kind:     domain.OperationKindNetworkSetup,
+				State:    domain.OperationRunning,
+				Phase:    "copy /private/sandbox APP_KEY=secret-value",
+			},
+			{
+				ID:       "operation-terminal",
+				IntentID: "intent-terminal",
+				Kind:     domain.OperationKindNetworkResolverSetup,
+				State:    domain.OperationSucceeded,
+				Phase:    "complete",
+			},
+		},
+	}
+
+	diagnostic := phase1ActiveOperationDiagnostic(snapshot, evidence)
+	for _, forbidden := range []string{
+		"operation-sensitive",
+		"intent-sensitive",
+		"operation-terminal",
+		"intent-terminal",
+		"/private/sandbox",
+		"secret-value",
+		"network.resolver.setup",
+	} {
+		if strings.Contains(diagnostic, forbidden) {
+			t.Fatalf("active operation diagnostic exposed %q: %s", forbidden, diagnostic)
+		}
+	}
+	for _, expected := range []string{
+		"kind=network.setup",
+		"state=running",
+		`phase="copy <sandbox> APP_KEY= <redacted>"`,
+		"snapshot_sequence=19",
+	} {
+		if !strings.Contains(diagnostic, expected) {
+			t.Fatalf("active operation diagnostic = %q, want %q", diagnostic, expected)
+		}
 	}
 }

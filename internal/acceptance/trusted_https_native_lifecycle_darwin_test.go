@@ -143,7 +143,7 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 		}
 	})
 
-	trustedHTTPSRequireSetup(t, testContext, configuration, sandbox)
+	trustedHTTPSRequireSetup(t, testContext, configuration, sandbox, lifecycle.daemon, evidence)
 	evidence.check("full macOS network setup completed")
 
 	for index, project := range workspace.Projects {
@@ -296,6 +296,8 @@ func trustedHTTPSRequireSetup(
 	parent context.Context,
 	configuration phase1Config,
 	sandbox phase1Sandbox,
+	daemon *phase1DaemonProcess,
+	evidence *phase1Evidence,
 ) {
 	t.Helper()
 
@@ -303,11 +305,48 @@ func trustedHTTPSRequireSetup(
 	defer cancel()
 	result := phase1RunCommand(ctx, sandbox, configuration.cliBinary, "setup")
 	if result.err != nil {
-		t.Fatalf("run harbor setup: %v: %s", result.err, strings.TrimSpace(result.stderr))
+		t.Fatalf(
+			"run harbor setup: %v: %s%s",
+			result.err,
+			strings.TrimSpace(result.stderr),
+			trustedHTTPSSetupFailureDiagnostic(configuration, sandbox, daemon, evidence),
+		)
 	}
 	if !strings.Contains(result.stdout, "Network setup complete.") {
 		t.Fatalf("harbor setup output did not confirm completion: %q", result.stdout)
 	}
+}
+
+// trustedHTTPSSetupFailureDiagnostic captures only the active-operation fields and redacted daemon tail needed to diagnose setup failures.
+func trustedHTTPSSetupFailureDiagnostic(
+	configuration phase1Config,
+	sandbox phase1Sandbox,
+	daemon *phase1DaemonProcess,
+	evidence *phase1Evidence,
+) string {
+	if daemon == nil || evidence == nil {
+		return ""
+	}
+
+	sections := make([]string, 0, 2)
+	if exited, _ := daemon.exited(); !exited {
+		ctx, cancel := context.WithTimeout(context.Background(), phase1CommandTimeout)
+		result := phase1RunCommand(ctx, sandbox, configuration.cliBinary, "daemon", "snapshot")
+		cancel()
+		var snapshot domain.Snapshot
+		if result.decodeJSON(&snapshot) == nil && snapshot.Validate() == nil {
+			sections = append(sections, phase1ActiveOperationDiagnostic(snapshot, evidence))
+		} else {
+			sections = append(sections, "daemon snapshot unavailable")
+		}
+	}
+	if tail := strings.TrimSpace(evidence.redactedLogTail(daemon.log)); tail != "" {
+		sections = append(sections, "redacted daemon log tail:\n"+tail)
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(sections, "\n")
 }
 
 // trustedHTTPSInvokeProjectLifecycle executes one production lifecycle request with an explicit replay identity.
