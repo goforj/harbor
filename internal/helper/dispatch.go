@@ -61,6 +61,25 @@ type TrustMutationEvidence struct {
 	Postcondition          TrustPostcondition           `json:"postcondition"`
 }
 
+// LowPortPostcondition identifies the exact paired low-port service state proven after an operation.
+type LowPortPostcondition string
+
+const (
+	// LowPortPostconditionExact means the Harbor-owned 80/443 forwarding service exactly matches the signed policy.
+	LowPortPostconditionExact LowPortPostcondition = "exact"
+	// LowPortPostconditionOwnedAbsent means no low-port service owned by the signed policy remains.
+	LowPortPostconditionOwnedAbsent LowPortPostcondition = "owned_absent"
+)
+
+// LowPortMutationEvidence is the bounded low-port service postcondition returned by the privileged handler.
+type LowPortMutationEvidence struct {
+	Changed                bool                 `json:"changed"`
+	PolicyFingerprint      string               `json:"policy_fingerprint"`
+	OwnershipFingerprint   string               `json:"ownership_fingerprint"`
+	ObservationFingerprint string               `json:"observation_fingerprint"`
+	Postcondition          LowPortPostcondition `json:"postcondition"`
+}
+
 // LoopbackIdentityHandler applies only the loopback operations admitted by this protocol.
 type LoopbackIdentityHandler interface {
 	// EnsureLoopbackIdentity ensures the ticket's approved address and returns its observed postcondition.
@@ -103,6 +122,27 @@ type TrustHandler interface {
 	EnsureTrust(context.Context, Ticket) (TrustMutationEvidence, error)
 	// ReleaseTrust removes only the signed installation's owned public CA trust projection.
 	ReleaseTrust(context.Context, Ticket) (TrustMutationEvidence, error)
+}
+
+// LowPortHandler applies only the policy-bound low-port operations admitted by this protocol.
+type LowPortHandler interface {
+	// EnsureLowPorts ensures the signed low-port service and returns its verified postcondition.
+	EnsureLowPorts(context.Context, Ticket, TicketAdmission) (LowPortMutationEvidence, error)
+	// ReleaseLowPorts removes only the signed policy's owned low-port service and returns its verified postcondition.
+	ReleaseLowPorts(context.Context, Ticket, TicketAdmission) (LowPortMutationEvidence, error)
+}
+
+// UnavailableLowPortHandler fails closed until a reviewed platform low-port adapter is installed.
+type UnavailableLowPortHandler struct{}
+
+// EnsureLowPorts rejects low-port ensure operations because no mutation authority is installed.
+func (UnavailableLowPortHandler) EnsureLowPorts(context.Context, Ticket, TicketAdmission) (LowPortMutationEvidence, error) {
+	return LowPortMutationEvidence{}, ErrMutationUnavailable
+}
+
+// ReleaseLowPorts rejects low-port release operations because no mutation authority is installed.
+func (UnavailableLowPortHandler) ReleaseLowPorts(context.Context, Ticket, TicketAdmission) (LowPortMutationEvidence, error) {
+	return LowPortMutationEvidence{}, ErrMutationUnavailable
 }
 
 // UnavailableTrustHandler fails closed until a reviewed platform trust adapter is installed.
@@ -154,6 +194,7 @@ type OperationResult struct {
 	PoolEvidence     *PoolMutationEvidence     `json:"pool_evidence,omitempty"`
 	ResolverEvidence *ResolverMutationEvidence `json:"resolver_evidence,omitempty"`
 	TrustEvidence    *TrustMutationEvidence    `json:"trust_evidence,omitempty"`
+	LowPortEvidence  *LowPortMutationEvidence  `json:"low_port_evidence,omitempty"`
 }
 
 // Response is the versioned one-shot helper response envelope.
@@ -172,14 +213,15 @@ type Dispatcher struct {
 	loopback    LoopbackIdentityHandler
 	resolver    ResolverHandler
 	trust       TrustHandler
+	lowPorts    LowPortHandler
 }
 
-// NewDispatcher constructs a dispatcher with resolver and trust effects intentionally unavailable.
+// NewDispatcher constructs a dispatcher with resolver, trust, and low-port effects intentionally unavailable.
 func NewDispatcher(redeemer TicketRedeemer, clock Clock, replayGuard ReplayGuard, handler LoopbackIdentityHandler) *Dispatcher {
 	return NewDispatcherWithResolverAndTrust(redeemer, clock, replayGuard, handler, UnavailableResolverHandler{}, UnavailableTrustHandler{})
 }
 
-// NewDispatcherWithResolver constructs a dispatcher with an explicit resolver handler and unavailable trust effects.
+// NewDispatcherWithResolver constructs a dispatcher with an explicit resolver handler and unavailable trust and low-port effects.
 func NewDispatcherWithResolver(
 	redeemer TicketRedeemer,
 	clock Clock,
@@ -224,6 +266,22 @@ func NewDispatcherWithResolverAndTrust(
 	if trustHandler == nil {
 		panic("helper.NewDispatcherWithResolverAndTrust requires a non-nil trust handler")
 	}
+	return NewDispatcherWithResolverTrustAndLowPorts(redeemer, clock, replayGuard, loopbackHandler, resolverHandler, trustHandler, UnavailableLowPortHandler{})
+}
+
+// NewDispatcherWithResolverTrustAndLowPorts constructs a dispatcher with explicit resolver, trust, and low-port authorities.
+func NewDispatcherWithResolverTrustAndLowPorts(
+	redeemer TicketRedeemer,
+	clock Clock,
+	replayGuard ReplayGuard,
+	loopbackHandler LoopbackIdentityHandler,
+	resolverHandler ResolverHandler,
+	trustHandler TrustHandler,
+	lowPortHandler LowPortHandler,
+) *Dispatcher {
+	if redeemer == nil || clock == nil || replayGuard == nil || loopbackHandler == nil || resolverHandler == nil || trustHandler == nil || lowPortHandler == nil {
+		panic("helper.NewDispatcherWithResolverTrustAndLowPorts requires non-nil dependencies")
+	}
 	return &Dispatcher{
 		redeemer:    redeemer,
 		clock:       clock,
@@ -231,6 +289,7 @@ func NewDispatcherWithResolverAndTrust(
 		loopback:    loopbackHandler,
 		resolver:    resolverHandler,
 		trust:       trustHandler,
+		lowPorts:    lowPortHandler,
 	}
 }
 
@@ -322,6 +381,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 			err = trustEvidence.validate(ticket)
 		}
 		result.TrustEvidence = &trustEvidence
+	case OperationEnsureLowPorts:
+		lowPortEvidence, lowPortErr := d.lowPorts.EnsureLowPorts(operationContext, ticket, redemption.Admission)
+		err = lowPortErr
+		if err == nil {
+			err = lowPortEvidence.validate(ticket, redemption.Admission)
+		}
+		result.LowPortEvidence = &lowPortEvidence
+	case OperationReleaseLowPorts:
+		lowPortEvidence, lowPortErr := d.lowPorts.ReleaseLowPorts(operationContext, ticket, redemption.Admission)
+		err = lowPortErr
+		if err == nil {
+			err = lowPortEvidence.validate(ticket, redemption.Admission)
+		}
+		result.LowPortEvidence = &lowPortEvidence
 	default:
 		err = newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
 	}
@@ -384,6 +457,34 @@ func (e TrustMutationEvidence) validate(ticket Ticket) error {
 		return newRequestError(ErrorCodeMutationFailed, "trust mutation evidence mechanism does not match the approved policy")
 	}
 	return nil
+}
+
+// validate prevents a low-port adapter from returning evidence for another policy or protected ownership target.
+func (e LowPortMutationEvidence) validate(ticket Ticket, admission TicketAdmission) error {
+	if err := e.validateShape(ticket.Operation); err != nil {
+		return newRequestError(ErrorCodeMutationFailed, "low-port mutation evidence is invalid")
+	}
+	if e.PolicyFingerprint != ticket.NetworkPolicyFingerprint || e.OwnershipFingerprint != admission.TargetOwnershipFingerprint {
+		return newRequestError(ErrorCodeMutationFailed, "low-port mutation evidence does not match approved authority")
+	}
+	if ticket.Operation == OperationEnsureLowPorts && e.Postcondition != LowPortPostconditionExact || ticket.Operation == OperationReleaseLowPorts && e.Postcondition != LowPortPostconditionOwnedAbsent {
+		return newRequestError(ErrorCodeMutationFailed, "low-port mutation evidence postcondition does not match operation")
+	}
+	return nil
+}
+
+// validateShape enforces the standalone low-port response shape before ticket correlation.
+func (e LowPortMutationEvidence) validateShape(operation Operation) error {
+	if !validFingerprint(e.PolicyFingerprint) || !validFingerprint(e.OwnershipFingerprint) || !validFingerprint(e.ObservationFingerprint) {
+		return errors.New("low-port mutation evidence fingerprints are invalid")
+	}
+	if operation == OperationEnsureLowPorts && e.Postcondition == LowPortPostconditionExact {
+		return nil
+	}
+	if operation == OperationReleaseLowPorts && e.Postcondition == LowPortPostconditionOwnedAbsent {
+		return nil
+	}
+	return errors.New("low-port mutation evidence postcondition is invalid")
 }
 
 // validateShape enforces the standalone trust response shape before ticket correlation.

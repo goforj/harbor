@@ -52,6 +52,10 @@ const (
 	OperationEnsureTrust Operation = "ensure_trust"
 	// OperationReleaseTrust admits one exact public-CA trust release operation.
 	OperationReleaseTrust Operation = "release_trust"
+	// OperationEnsureLowPorts admits one exact policy-bound low-port service ensure operation.
+	OperationEnsureLowPorts Operation = "ensure_low_ports"
+	// OperationReleaseLowPorts admits one exact policy-bound low-port service release operation.
+	OperationReleaseLowPorts Operation = "release_low_ports"
 )
 
 // ObservationState identifies the expected pre-mutation state of an approved address.
@@ -183,6 +187,19 @@ type ExpectedTrustObservation struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// ExpectedLowPortObservation binds one low-port mutation to a complete native service observation.
+type ExpectedLowPortObservation struct {
+	Fingerprint string `json:"fingerprint"`
+}
+
+// Validate requires the canonical digest emitted by the low-port platform adapter.
+func (o ExpectedLowPortObservation) Validate() error {
+	if !validFingerprint(o.Fingerprint) {
+		return newRequestError(ErrorCodeInvalidTicket, "expected low-port observation fingerprint is invalid")
+	}
+	return nil
+}
+
 // Validate requires the canonical digest emitted by the trust adapter.
 func (o ExpectedTrustObservation) Validate() error {
 	if !validFingerprint(o.Fingerprint) {
@@ -264,6 +281,7 @@ type Ticket struct {
 	ExpectedResolverObservation *ExpectedResolverObservation `json:"expected_resolver_observation,omitempty"`
 	TrustRoot                   *TrustRoot                   `json:"trust_root,omitempty"`
 	ExpectedTrustObservation    *ExpectedTrustObservation    `json:"expected_trust_observation,omitempty"`
+	ExpectedLowPortObservation  *ExpectedLowPortObservation  `json:"expected_low_port_observation,omitempty"`
 	Nonce                       string                       `json:"nonce"`
 	ExpiresAt                   time.Time                    `json:"expires_at"`
 }
@@ -309,8 +327,12 @@ func (t Ticket) Validate(now time.Time) error {
 		if err := t.validateTrustAuthority(); err != nil {
 			return err
 		}
+	} else if t.Operation == OperationEnsureLowPorts || t.Operation == OperationReleaseLowPorts {
+		if err := t.validateLowPortAuthority(); err != nil {
+			return err
+		}
 	} else if t.Operation == OperationEnsureLoopbackPool {
-		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil || t.ExpectedLowPortObservation != nil {
 			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain network authority")
 		}
 		if pool.Bits() != loopbackPoolPrefixBits || pool.String() != t.ApprovedPool {
@@ -326,7 +348,7 @@ func (t Ticket) Validate(now time.Time) error {
 			return err
 		}
 	} else {
-		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil || t.ExpectedLowPortObservation != nil {
 			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain network authority")
 		}
 		if t.ExpectedLoopbackPool != nil {
@@ -360,7 +382,9 @@ func validOperation(operation Operation) bool {
 		OperationEnsureResolver,
 		OperationReleaseResolver,
 		OperationEnsureTrust,
-		OperationReleaseTrust:
+		OperationReleaseTrust,
+		OperationEnsureLowPorts,
+		OperationReleaseLowPorts:
 		return true
 	default:
 		return false
@@ -383,7 +407,7 @@ func (t Ticket) validateResolverAuthority() error {
 		return newRequestError(ErrorCodeInvalidTicket, "resolver host-network policy fingerprint does not match ownership")
 	}
 	if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) ||
-		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil || t.ExpectedLowPortObservation != nil {
 		return newRequestError(ErrorCodeInvalidTicket, "resolver operation cannot contain loopback or trust mutation authority")
 	}
 	if t.ExpectedResolverObservation == nil {
@@ -423,8 +447,32 @@ func (t Ticket) validateTrustAuthority() error {
 		return err
 	}
 	if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) ||
-		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.ExpectedResolverObservation != nil {
+		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.ExpectedResolverObservation != nil || t.ExpectedLowPortObservation != nil {
 		return newRequestError(ErrorCodeInvalidTicket, "trust operation cannot contain loopback or resolver mutation authority")
+	}
+	return nil
+}
+
+// validateLowPortAuthority binds a low-port service effect to one complete host-network policy only.
+func (t Ticket) validateLowPortAuthority() error {
+	if t.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion || t.NetworkPolicy == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "low-port operation requires network-policy ownership")
+	}
+	if err := t.NetworkPolicy.Validate(); err != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "low-port host-network policy is invalid")
+	}
+	fingerprint, err := t.NetworkPolicy.Fingerprint()
+	if err != nil || fingerprint != t.NetworkPolicyFingerprint {
+		return newRequestError(ErrorCodeInvalidTicket, "low-port host-network policy fingerprint does not match ownership")
+	}
+	if t.ExpectedLowPortObservation == nil {
+		return newRequestError(ErrorCodeInvalidTicket, "low-port operation requires an expected observation")
+	}
+	if err := t.ExpectedLowPortObservation.Validate(); err != nil {
+		return err
+	}
+	if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) || t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "low-port operation cannot contain loopback, resolver, or trust mutation authority")
 	}
 	return nil
 }

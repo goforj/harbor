@@ -186,6 +186,11 @@ func validateCanonicalResultObject(body []byte) error {
 			return err
 		}
 		return validateCanonicalTrustMutationEvidenceObject(fields["trust_evidence"])
+	case OperationEnsureLowPorts, OperationReleaseLowPorts:
+		if err := requireCanonicalJSONFields(fields, "operation", "low_port_evidence"); err != nil {
+			return err
+		}
+		return validateCanonicalLowPortMutationEvidenceObject(fields["low_port_evidence"])
 	default:
 		return errors.New("helper response operation is unsupported")
 	}
@@ -263,6 +268,22 @@ func validateCanonicalTrustMutationEvidenceObject(body []byte) error {
 	)
 }
 
+// validateCanonicalLowPortMutationEvidenceObject verifies one exact low-port service postcondition object.
+func validateCanonicalLowPortMutationEvidenceObject(body []byte) error {
+	evidence, err := decodeJSONObject(body)
+	if err != nil {
+		return err
+	}
+	return requireCanonicalJSONFields(
+		evidence,
+		"changed",
+		"policy_fingerprint",
+		"ownership_fingerprint",
+		"observation_fingerprint",
+		"postcondition",
+	)
+}
+
 // validateCanonicalErrorObject verifies every failure object uses exact protocol field names.
 func validateCanonicalErrorObject(body []byte) error {
 	fields, err := decodeJSONObject(body)
@@ -321,27 +342,33 @@ func validateResponse(response Response) error {
 // validateOperationResult verifies success evidence identifies the allowlisted operation postcondition.
 func validateOperationResult(result OperationResult) error {
 	if result.Operation == OperationEnsureLoopbackPool {
-		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence == nil || result.ResolverEvidence != nil || result.TrustEvidence != nil {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence == nil || result.ResolverEvidence != nil || result.TrustEvidence != nil || result.LowPortEvidence != nil {
 			return errors.New("pool response must contain only pool evidence")
 		}
 		return result.PoolEvidence.validateShape()
 	}
 	if result.Operation == OperationEnsureResolver || result.Operation == OperationReleaseResolver {
-		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence == nil || result.TrustEvidence != nil {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence == nil || result.TrustEvidence != nil || result.LowPortEvidence != nil {
 			return errors.New("resolver response must contain only resolver evidence")
 		}
 		return result.ResolverEvidence.validateShape(result.Operation)
 	}
 	if result.Operation == OperationEnsureTrust || result.Operation == OperationReleaseTrust {
-		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence != nil || result.TrustEvidence == nil {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence != nil || result.TrustEvidence == nil || result.LowPortEvidence != nil {
 			return errors.New("trust response must contain only trust evidence")
 		}
 		return result.TrustEvidence.validateShape(result.Operation)
 	}
+	if result.Operation == OperationEnsureLowPorts || result.Operation == OperationReleaseLowPorts {
+		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence != nil || result.TrustEvidence != nil || result.LowPortEvidence == nil {
+			return errors.New("low-port operation result contains invalid evidence")
+		}
+		return result.LowPortEvidence.validateShape(result.Operation)
+	}
 	if result.Operation != OperationEnsureLoopbackIdentity && result.Operation != OperationReleaseLoopbackIdentity {
 		return errors.New("response operation is unsupported")
 	}
-	if result.PoolEvidence != nil || result.ResolverEvidence != nil || result.TrustEvidence != nil {
+	if result.PoolEvidence != nil || result.ResolverEvidence != nil || result.TrustEvidence != nil || result.LowPortEvidence != nil {
 		return errors.New("single-address response must contain only scalar evidence")
 	}
 	if !validApprovedAddress(result.Evidence.Address) {
