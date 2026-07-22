@@ -8,6 +8,7 @@ import (
 	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
@@ -38,6 +39,7 @@ func provideNetworkReleaseCapability(
 		return networkReleaseCapability{}, fmt.Errorf("create network release low-port adapter: %w", err)
 	}
 	projection := state.NewNetworkDataPlaneSetupProjectionSource(network)
+	lowPortPlans := state.NewGlobalNetworkReleaseLowPortPlanSource(operations)
 	coordinator := reconcile.NewGlobalNetworkReleaseCoordinator(
 		operations,
 		store,
@@ -45,6 +47,10 @@ func provideNetworkReleaseCapability(
 		runtimeController,
 		ownership,
 		lowPortAdapter,
+		lowPortPlans,
+		func() (reconcile.GlobalNetworkReleaseLowPortIssuer, error) {
+			return ticketissuer.OpenDefaultLowPortService(lowPortPlans, ownership, lowPortAdapter)
+		},
 		resolverObserver,
 		trustAdapter,
 		loopback.New(),

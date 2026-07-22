@@ -8,9 +8,11 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/platform/loopback"
@@ -32,6 +34,18 @@ type GlobalNetworkReleaseJournal interface {
 	StageGlobalNetworkRelease(context.Context, state.StageGlobalNetworkReleaseRequest) (state.OperationRecord, error)
 	// ReadActiveGlobalNetworkReleasePlan returns the one durable in-progress release plan.
 	ReadActiveGlobalNetworkReleasePlan(context.Context) (state.GlobalNetworkReleasePlanRecord, bool, error)
+	// ReadGlobalNetworkReleasePlan returns the active plan for one exact operation.
+	ReadGlobalNetworkReleasePlan(context.Context, domain.OperationID) (state.GlobalNetworkReleasePlanRecord, bool, error)
+	// AdvanceGlobalNetworkReleaseLowPorts commits the independently verified release receipt.
+	AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error)
+}
+
+// GlobalNetworkReleaseLowPortIssuer issues a bounded low-port release capability.
+type GlobalNetworkReleaseLowPortIssuer interface {
+	// Issue publishes one release-low-ports capability for its authenticated owner.
+	Issue(context.Context, string, ticketissuer.LowPortRequest) (ticketissuer.LowPortResult, error)
+	// Close releases issuer resources after one publication attempt.
+	Close() error
 }
 
 // GlobalNetworkReleaseStateSource supplies the current network and stopped-project revisions.
@@ -68,19 +82,21 @@ type GlobalNetworkReleaseResolverObserver interface {
 
 // GlobalNetworkReleaseCoordinator stages daemon-observed release authority then retires runtime listeners.
 type GlobalNetworkReleaseCoordinator struct {
-	journal     GlobalNetworkReleaseJournal
-	state       GlobalNetworkReleaseStateSource
-	projections GlobalNetworkReleaseProjectionSource
-	roots       GlobalNetworkReleaseRootSource
-	ownership   OwnershipObserver
-	lowPorts    NetworkDataPlaneSetupLowPortObserver
-	resolver    GlobalNetworkReleaseResolverObserver
-	trust       NetworkDataPlaneSetupTrustObserver
-	loopback    LoopbackObserver
-	runtime     GlobalNetworkReleaseRuntime
-	platform    networkplan.Platform
-	clock       helper.Clock
-	mutex       sync.Mutex
+	journal        GlobalNetworkReleaseJournal
+	state          GlobalNetworkReleaseStateSource
+	projections    GlobalNetworkReleaseProjectionSource
+	roots          GlobalNetworkReleaseRootSource
+	ownership      OwnershipObserver
+	lowPorts       NetworkDataPlaneSetupLowPortObserver
+	lowPortPlans   ticketissuer.LowPortPlanSource
+	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error)
+	resolver       GlobalNetworkReleaseResolverObserver
+	trust          NetworkDataPlaneSetupTrustObserver
+	loopback       LoopbackObserver
+	runtime        GlobalNetworkReleaseRuntime
+	platform       networkplan.Platform
+	clock          helper.Clock
+	mutex          sync.Mutex
 }
 
 // GlobalNetworkReleaseStartRequest identifies a caller intent and daemon-assigned global operation.
@@ -109,6 +125,8 @@ func NewGlobalNetworkReleaseCoordinator(
 	roots GlobalNetworkReleaseRootSource,
 	ownershipObserver OwnershipObserver,
 	lowPorts NetworkDataPlaneSetupLowPortObserver,
+	lowPortPlans ticketissuer.LowPortPlanSource,
+	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error),
 	resolverObserver GlobalNetworkReleaseResolverObserver,
 	trustObserver NetworkDataPlaneSetupTrustObserver,
 	loopbackObserver LoopbackObserver,
@@ -122,6 +140,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(roots) ||
 		nilDependency(ownershipObserver) ||
 		nilDependency(lowPorts) ||
+		nilDependency(lowPortPlans) ||
+		nilDependency(lowPortIssuers) ||
 		nilDependency(resolverObserver) ||
 		nilDependency(trustObserver) ||
 		nilDependency(loopbackObserver) ||
@@ -130,18 +150,20 @@ func NewGlobalNetworkReleaseCoordinator(
 		panic("reconcile.NewGlobalNetworkReleaseCoordinator requires every dependency")
 	}
 	return &GlobalNetworkReleaseCoordinator{
-		journal:     journal,
-		state:       source,
-		projections: projections,
-		roots:       roots,
-		ownership:   ownershipObserver,
-		lowPorts:    lowPorts,
-		resolver:    resolverObserver,
-		trust:       trustObserver,
-		loopback:    loopbackObserver,
-		runtime:     runtimeReleaser,
-		platform:    platform,
-		clock:       clock,
+		journal:        journal,
+		state:          source,
+		projections:    projections,
+		roots:          roots,
+		ownership:      ownershipObserver,
+		lowPorts:       lowPorts,
+		lowPortPlans:   lowPortPlans,
+		lowPortIssuers: lowPortIssuers,
+		resolver:       resolverObserver,
+		trust:          trustObserver,
+		loopback:       loopbackObserver,
+		runtime:        runtimeReleaser,
+		platform:       platform,
+		clock:          clock,
 	}
 }
 
@@ -191,6 +213,310 @@ func (c *GlobalNetworkReleaseCoordinator) Start(ctx context.Context, request Glo
 		return state.OperationRecord{}, fmt.Errorf("start global network release: staged operation: %w", err)
 	}
 	return c.resume(ctx, staged.Operation.ID, request.RequesterIdentity)
+}
+
+// GlobalNetworkReleasePrepareLowPortsRequest selects one owner-approved release-low-ports checkpoint.
+type GlobalNetworkReleasePrepareLowPortsRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences preparation to one retained release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner requesting helper authority.
+	RequesterIdentity string
+}
+
+// Validate rejects malformed release-low-ports publication input.
+func (request GlobalNetworkReleasePrepareLowPortsRequest) Validate() error {
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := validateOperationRevision(request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	return validateNetworkSetupRequesterIdentity(request.RequesterIdentity)
+}
+
+// GlobalNetworkReleaseConfirmLowPortsRequest carries the helper's bounded removal postcondition.
+type GlobalNetworkReleaseConfirmLowPortsRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences confirmation to one retained release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner confirming helper evidence.
+	RequesterIdentity string
+	// LowPortEvidence proves the low-port release postcondition.
+	LowPortEvidence helper.LowPortMutationEvidence
+}
+
+// Validate rejects malformed release-low-ports confirmation input.
+func (request GlobalNetworkReleaseConfirmLowPortsRequest) Validate() error {
+	prepare := GlobalNetworkReleasePrepareLowPortsRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          request.RequesterIdentity,
+	}
+	if err := prepare.Validate(); err != nil {
+		return err
+	}
+	return validateGlobalNetworkReleaseLowPortEvidence(request.LowPortEvidence)
+}
+
+// PrepareLowPorts validates one durable release checkpoint before publishing a removal capability.
+func (c *GlobalNetworkReleaseCoordinator) PrepareLowPorts(ctx context.Context, request GlobalNetworkReleasePrepareLowPortsRequest) (ticketissuer.LowPortResult, error) {
+	if err := request.Validate(); err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	plan, _, err := c.releaseLowPortPlan(ctx, request.OperationID)
+	if err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	if err := validateGlobalNetworkReleaseLowPortPlan(plan, request.OperationID, request.ExpectedCheckpointRevision, request.RequesterIdentity); err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	issuer, err := c.lowPortIssuers()
+	if err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	if nilDependency(issuer) {
+		return ticketissuer.LowPortResult{}, fmt.Errorf("prepare release low ports: issuer is nil")
+	}
+	result, issueErr := issuer.Issue(ctx, request.RequesterIdentity, ticketissuer.LowPortRequest{
+		OperationID: request.OperationID,
+	})
+	closeErr := issuer.Close()
+	if issueErr != nil || closeErr != nil {
+		return result, errors.Join(issueErr, closeErr)
+	}
+	if err := result.Validate(c.clock.Now().UTC().Round(0)); err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	if result.OperationID != request.OperationID || result.Operation != helper.OperationReleaseLowPorts {
+		return ticketissuer.LowPortResult{}, fmt.Errorf("prepare release low ports: issuer returned another operation")
+	}
+	policyFingerprint, err := plan.Policy.Fingerprint()
+	if err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	ownershipFingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		return ticketissuer.LowPortResult{}, err
+	}
+	if result.PolicyFingerprint != policyFingerprint || result.OwnershipFingerprint != ownershipFingerprint {
+		return ticketissuer.LowPortResult{}, fmt.Errorf("prepare release low ports: issuer result belongs to another policy or ownership")
+	}
+	return result, nil
+}
+
+// ConfirmLowPorts independently verifies removal and advances the release plan to resolver retirement.
+func (c *GlobalNetworkReleaseCoordinator) ConfirmLowPorts(ctx context.Context, request GlobalNetworkReleaseConfirmLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	if err := request.Validate(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	plan, durable, err := c.releaseLowPortPlan(ctx, request.OperationID)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := validateGlobalNetworkReleaseLowPortPlan(plan, request.OperationID, request.ExpectedCheckpointRevision, request.RequesterIdentity); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if err := c.observeAbsentReleaseLowPorts(ctx, plan, request.LowPortEvidence); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	digest, err := state.NetworkDataPlaneSetupEvidenceDigest(request.LowPortEvidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	verifiedAt := c.releaseNow(durable.NetworkUpdatedAt)
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseResolver && durable.LowPortReceipt != nil {
+		verifiedAt = durable.LowPortReceipt.VerifiedAt
+	}
+	return c.journal.AdvanceGlobalNetworkReleaseLowPorts(ctx, state.AdvanceGlobalNetworkReleaseLowPortsRequest{
+		OperationID:        request.OperationID,
+		CheckpointRevision: plan.CheckpointRevision,
+		NetworkRevision:    durable.NetworkRevision,
+		Receipt: state.GlobalNetworkReleaseLowPortReceipt{
+			SourceCheckpointRevision:          plan.CheckpointRevision,
+			LowPortEvidenceDigest:             digest,
+			OwnedAbsentObservationFingerprint: request.LowPortEvidence.ObservationFingerprint,
+			VerifiedAt:                        verifiedAt,
+		},
+	})
+}
+
+// releaseLowPortPlan re-resolves the plan so replay can validate the committed resolver receipt.
+func (c *GlobalNetworkReleaseCoordinator) releaseLowPortPlan(ctx context.Context, operationID domain.OperationID) (ticketissuer.LowPortPlan, state.GlobalNetworkReleasePlanRecord, error) {
+	durable, found, err := c.journal.ReadGlobalNetworkReleasePlan(ctx, operationID)
+	if err != nil {
+		return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("read release low-port plan: %w", err)
+	}
+	if !found || durable.Operation.Operation.ID != operationID {
+		return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release low-port plan does not match operation")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseLowPorts {
+		plan, err := c.lowPortPlans.Resolve(ctx, ticketissuer.LowPortRequest{
+			OperationID: operationID,
+		})
+		if err != nil {
+			return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		if err := validateGlobalNetworkReleaseLowPortDurablePlan(plan, durable); err != nil {
+			return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+		}
+		return plan, durable, nil
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseResolver || durable.LowPortReceipt == nil {
+		return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release low-port plan phase is %q", durable.Phase)
+	}
+	native, err := lowport.NewRequest(durable.Authority.Projection.ConfirmedOwnership.Record, durable.Authority.Policy)
+	if err != nil {
+		return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("derive release low-port request: %w", err)
+	}
+	plan := ticketissuer.LowPortPlan{
+		Purpose:            ticketissuer.LowPortPlanPurposeGlobalNetworkRelease,
+		Operation:          durable.Operation.Operation,
+		OperationRevision:  durable.Operation.Revision,
+		CheckpointRevision: durable.LowPortReceipt.SourceCheckpointRevision,
+		CheckpointPhase:    ticketissuer.LowPortCheckpointPhaseGlobalRelease,
+		Mutation:           helper.OperationReleaseLowPorts,
+		TargetOwnership:    durable.Authority.Projection.ConfirmedOwnership.Record,
+		Policy:             durable.Authority.Policy,
+		NativeRequest:      native,
+	}
+	if err := validateGlobalNetworkReleaseLowPortDurablePlan(plan, durable); err != nil {
+		return ticketissuer.LowPortPlan{}, state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return plan, durable, nil
+}
+
+// validateGlobalNetworkReleaseLowPortPlan binds a user request to the sole release-only ticket purpose.
+func validateGlobalNetworkReleaseLowPortPlan(plan ticketissuer.LowPortPlan, operationID domain.OperationID, checkpoint domain.Sequence, requester string) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release low-port plan: %w", err)
+	}
+	if plan.Purpose != ticketissuer.LowPortPlanPurposeGlobalNetworkRelease || plan.Mutation != helper.OperationReleaseLowPorts {
+		return fmt.Errorf("release low-port plan is not release_low_ports authority")
+	}
+	if plan.Operation.ID != operationID {
+		return fmt.Errorf("release low-port plan belongs to another operation")
+	}
+	if plan.CheckpointRevision != checkpoint {
+		return &state.StaleRevisionError{
+			OperationID: operationID,
+			Expected:    checkpoint,
+			Actual:      plan.CheckpointRevision,
+		}
+	}
+	if plan.TargetOwnership.OwnerIdentity != requester {
+		return fmt.Errorf("authenticated requester does not own release low-port authority")
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseLowPortDurablePlan verifies a capability source cannot drift from its journaled authority.
+func validateGlobalNetworkReleaseLowPortDurablePlan(plan ticketissuer.LowPortPlan, durable state.GlobalNetworkReleasePlanRecord) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release low-port plan: %w", err)
+	}
+	if err := validateGlobalNetworkReleaseOperation(durable.Operation, durable.Operation.Operation.IntentID); err != nil {
+		return fmt.Errorf("release low-port operation: %w", err)
+	}
+	if plan.Operation != durable.Operation.Operation || plan.OperationRevision != durable.Operation.Revision {
+		return fmt.Errorf("release low-port plan operation differs from durable authority")
+	}
+	if plan.Purpose != ticketissuer.LowPortPlanPurposeGlobalNetworkRelease ||
+		plan.CheckpointPhase != ticketissuer.LowPortCheckpointPhaseGlobalRelease ||
+		plan.Mutation != helper.OperationReleaseLowPorts {
+		return fmt.Errorf("release low-port plan purpose differs from durable authority")
+	}
+	if plan.TargetOwnership != durable.Authority.Projection.ConfirmedOwnership.Record || plan.Policy != durable.Authority.Policy {
+		return fmt.Errorf("release low-port plan policy or ownership differs from durable authority")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseLowPorts && plan.CheckpointRevision != durable.CheckpointRevision {
+		return fmt.Errorf("release low-port plan checkpoint differs from durable authority")
+	}
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseResolver &&
+		(durable.LowPortReceipt == nil || plan.CheckpointRevision != durable.LowPortReceipt.SourceCheckpointRevision) {
+		return fmt.Errorf("release low-port replay checkpoint differs from durable receipt")
+	}
+	return nil
+}
+
+// observeAbsentReleaseLowPorts accepts only complete exact authority-bound owned-absence facts.
+func (c *GlobalNetworkReleaseCoordinator) observeAbsentReleaseLowPorts(ctx context.Context, plan ticketissuer.LowPortPlan, evidence helper.LowPortMutationEvidence) error {
+	policyFingerprint, err := plan.Policy.Fingerprint()
+	if err != nil {
+		return err
+	}
+	ownershipFingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if evidence.PolicyFingerprint != policyFingerprint || evidence.OwnershipFingerprint != ownershipFingerprint {
+		return fmt.Errorf("release low-port evidence belongs to another policy or ownership")
+	}
+	observation, err := c.lowPorts.Observe(ctx, plan.NativeRequest)
+	if err != nil {
+		return fmt.Errorf("observe release low ports: %w", err)
+	}
+	if err := observation.Validate(); err != nil {
+		return fmt.Errorf("release low-port observation is invalid: %w", err)
+	}
+	if observation.Request != plan.NativeRequest || !observation.Complete {
+		return fmt.Errorf("release low-port observation does not prove the exact complete request")
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return fmt.Errorf("fingerprint release low ports: %w", err)
+	}
+	if fingerprint != evidence.ObservationFingerprint {
+		return fmt.Errorf("release low-port evidence differs from independently observed service")
+	}
+	current, err := observation.State()
+	if err != nil {
+		return fmt.Errorf("classify release low ports: %w", err)
+	}
+	if current != lowport.StateAbsent {
+		return fmt.Errorf("release low-port state is %q, want absent", current)
+	}
+	return nil
+}
+
+// releaseNow preserves the durable authority's lower time bound for its receipt.
+func (c *GlobalNetworkReleaseCoordinator) releaseNow(lower time.Time) time.Time {
+	at := c.clock.Now().UTC().Round(0)
+	if at.Before(lower) {
+		return lower.UTC().Round(0)
+	}
+	return at
+}
+
+// validateGlobalNetworkReleaseLowPortEvidence admits only one owned-absence removal postcondition.
+func validateGlobalNetworkReleaseLowPortEvidence(evidence helper.LowPortMutationEvidence) error {
+	if !canonicalNetworkDataPlaneFingerprint(evidence.PolicyFingerprint) {
+		return fmt.Errorf("release low-port evidence policy fingerprint is invalid")
+	}
+	if !canonicalNetworkDataPlaneFingerprint(evidence.OwnershipFingerprint) {
+		return fmt.Errorf("release low-port evidence ownership fingerprint is invalid")
+	}
+	if !canonicalNetworkDataPlaneFingerprint(evidence.ObservationFingerprint) {
+		return fmt.Errorf("release low-port evidence observation fingerprint is invalid")
+	}
+	if evidence.Postcondition != helper.LowPortPostconditionOwnedAbsent {
+		return fmt.Errorf("release low-port evidence must prove owned_absent")
+	}
+	return nil
 }
 
 // Recover resumes an already-staged release after the runtime has installed its cold anchor.

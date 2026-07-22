@@ -261,12 +261,13 @@ func provideControlServer(
 		return nil, errors.New("create control server: application logger is required")
 	}
 	return control.NewServer(control.ServerConfig{
-		Authority:                      controlAuthority,
-		RequestShutdown:                shutdown.Request,
-		ObserveError:                   newControlErrorObserver(appLogger),
-		ManagedAuthority:               controlAuthority,
-		NetworkDataPlaneSetupAuthority: networkDataPlaneSetup.authority,
-		NetworkReleaseAuthority:        networkRelease.authority,
+		Authority:                       controlAuthority,
+		RequestShutdown:                 shutdown.Request,
+		ObserveError:                    newControlErrorObserver(appLogger),
+		ManagedAuthority:                controlAuthority,
+		NetworkDataPlaneSetupAuthority:  networkDataPlaneSetup.authority,
+		NetworkReleaseAuthority:         networkRelease.authority,
+		NetworkReleaseApprovalAuthority: networkRelease.authority,
 	})
 }
 

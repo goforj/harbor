@@ -26,6 +26,8 @@ const (
 	CapabilityNetworkDataPlaneSetupV1 rpc.Capability = "control.network-data-plane-setup.v1"
 	// CapabilityNetworkReleaseV1 identifies machine-global network release initiation and progress reads.
 	CapabilityNetworkReleaseV1 rpc.Capability = "control.network-release.v1"
+	// CapabilityNetworkReleaseApprovalV1 identifies machine-global low-port release approval.
+	CapabilityNetworkReleaseApprovalV1 rpc.Capability = "control.network-release-approval.v1"
 	// CapabilityProjectActivityV1 identifies bounded current-session project output reads.
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectActivityWaitV1 identifies bounded cursor waits on current-session project output.
@@ -64,6 +66,8 @@ const (
 	methodNetworkDataPlaneLowPortConfirm      = "control.v1.network.data-plane.setup.low-port.confirm"
 	methodNetworkReleaseStart                 = "control.v1.network.release.start"
 	methodNetworkReleaseRead                  = "control.v1.network.release.read"
+	methodNetworkReleaseLowPortPrepare        = "control.v1.network.release.low-port.prepare"
+	methodNetworkReleaseLowPortConfirm        = "control.v1.network.release.low-port.confirm"
 	methodProjectActivity                     = "control.v1.project.activity"
 	methodServiceLogs                         = "control.v1.project.service.logs"
 	methodProjectStart                        = "control.v1.project.start"
@@ -281,6 +285,7 @@ func capabilities() []rpc.Capability {
 		CapabilityDaemonControlV1,
 		CapabilityNetworkDataPlaneSetupV1,
 		CapabilityNetworkReleaseV1,
+		CapabilityNetworkReleaseApprovalV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
@@ -298,11 +303,12 @@ func capabilities() []rpc.Capability {
 }
 
 // daemonCapabilities returns the capabilities implemented by this server configuration.
-func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool) []rpc.Capability {
+func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool, networkReleaseApproval bool) []rpc.Capability {
 	capabilities := capabilities()
 	capabilities = slices.DeleteFunc(capabilities, func(capability rpc.Capability) bool {
 		return (capability == CapabilityNetworkDataPlaneSetupV1 && !networkDataPlaneSetup) ||
-			(capability == CapabilityNetworkReleaseV1 && !networkRelease)
+			(capability == CapabilityNetworkReleaseV1 && !networkRelease) ||
+			(capability == CapabilityNetworkReleaseApprovalV1 && !networkReleaseApproval)
 	})
 	return capabilities
 }

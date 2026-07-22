@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/host/ownership"
@@ -308,6 +309,16 @@ func (journal *testGlobalNetworkReleaseJournal) ReadActiveGlobalNetworkReleasePl
 	defer journal.mu.Unlock()
 	journal.reads++
 	return journal.plan, journal.found, journal.err
+}
+
+// ReadGlobalNetworkReleasePlan is not exercised by recovery tests.
+func (journal *testGlobalNetworkReleaseJournal) ReadGlobalNetworkReleasePlan(context.Context, domain.OperationID) (state.GlobalNetworkReleasePlanRecord, bool, error) {
+	return journal.plan, journal.found, journal.err
+}
+
+// AdvanceGlobalNetworkReleaseLowPorts is not exercised by recovery tests.
+func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected low-port advance")
 }
 
 // testGlobalNetworkReleaseRuntime records runtime-release requests.
@@ -876,6 +887,10 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		fixture.roots,
 		fixture.ownership,
 		fixture.low,
+		globalNetworkReleaseUnavailableLowPortPlans{},
+		func() (GlobalNetworkReleaseLowPortIssuer, error) {
+			return nil, errors.New("unexpected release low-port issuer")
+		},
 		fixture.resolver,
 		fixture.trust,
 		fixture.loopback,
@@ -884,6 +899,14 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		fixture.clock,
 	)
 	return fixture
+}
+
+// globalNetworkReleaseUnavailableLowPortPlans prevents start tests from opening release approval authority.
+type globalNetworkReleaseUnavailableLowPortPlans struct{}
+
+// Resolve rejects a capability read that start tests do not exercise.
+func (globalNetworkReleaseUnavailableLowPortPlans) Resolve(context.Context, ticketissuer.LowPortRequest) (ticketissuer.LowPortPlan, error) {
+	return ticketissuer.LowPortPlan{}, errors.New("unexpected release low-port plan")
 }
 
 // call appends an observable coordinator boundary.
@@ -994,6 +1017,20 @@ func (journal *globalNetworkReleaseJournal) StageGlobalNetworkRelease(_ context.
 func (journal *globalNetworkReleaseJournal) ReadActiveGlobalNetworkReleasePlan(context.Context) (state.GlobalNetworkReleasePlanRecord, bool, error) {
 	journal.call("read")
 	return journal.plan, journal.found, journal.err
+}
+
+// ReadGlobalNetworkReleasePlan returns the fixture plan for the selected operation.
+func (journal *globalNetworkReleaseJournal) ReadGlobalNetworkReleasePlan(_ context.Context, operationID domain.OperationID) (state.GlobalNetworkReleasePlanRecord, bool, error) {
+	journal.call("read operation")
+	if journal.plan.Operation.Operation.ID != operationID {
+		return state.GlobalNetworkReleasePlanRecord{}, false, journal.err
+	}
+	return journal.plan, journal.found, journal.err
+}
+
+// AdvanceGlobalNetworkReleaseLowPorts is not exercised by start tests.
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected low-port advance")
 }
 
 // globalNetworkReleaseState scripts coherent durable state and revision reads.

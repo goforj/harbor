@@ -13,7 +13,10 @@ import (
 	"github.com/goforj/harbor/internal/rpc/session"
 )
 
-const maximumNetworkReleaseRequestBytes = 2048
+const (
+	maximumNetworkReleaseRequestBytes  = 2048
+	maximumNetworkReleaseResponseBytes = 4096
+)
 
 // NetworkReleaseAuthority owns only the optional machine-global network release control surface.
 type NetworkReleaseAuthority interface {
@@ -186,6 +189,9 @@ func decodeReadNetworkReleaseRequest(payload []byte) (ReadNetworkReleaseRequest,
 
 // decodeNetworkReleaseResponse rejects response trailing data before validating the reviewed result shape.
 func decodeNetworkReleaseResponse(payload []byte, response *networkReleaseResponse) error {
+	if len(payload) == 0 || len(payload) > maximumNetworkReleaseResponseBytes {
+		return errors.New("decode network release response: response exceeds its bounded object shape")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	opening, err := decoder.Token()
 	if err != nil {
@@ -309,7 +315,12 @@ func scanNetworkReleaseJSONValue(decoder *json.Decoder) error {
 
 // decodeNetworkReleaseObject rejects duplicate, unknown, missing, or trailing JSON values before method decoding.
 func decodeNetworkReleaseObject(payload []byte, name string, allowed ...string) (map[string]json.RawMessage, error) {
-	if len(payload) == 0 || len(payload) > maximumNetworkReleaseRequestBytes {
+	return decodeBoundedNetworkReleaseObject(payload, maximumNetworkReleaseRequestBytes, name, allowed...)
+}
+
+// decodeBoundedNetworkReleaseObject rejects duplicate, unknown, missing, or trailing JSON values within one method bound.
+func decodeBoundedNetworkReleaseObject(payload []byte, maximum int, name string, allowed ...string) (map[string]json.RawMessage, error) {
+	if len(payload) == 0 || len(payload) > maximum {
 		return nil, fmt.Errorf("%s request exceeds its bounded object shape", name)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))

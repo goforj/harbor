@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -22,6 +24,10 @@ type networkReleasePlanReader interface {
 type networkReleaseCoordinator interface {
 	// Start stages or resumes one caller-bound global network release.
 	Start(context.Context, reconcile.GlobalNetworkReleaseStartRequest) (state.OperationRecord, error)
+	// PrepareLowPorts publishes one bounded low-port release capability.
+	PrepareLowPorts(context.Context, reconcile.GlobalNetworkReleasePrepareLowPortsRequest) (ticketissuer.LowPortResult, error)
+	// ConfirmLowPorts verifies low-port removal and advances the retained release plan.
+	ConfirmLowPorts(context.Context, reconcile.GlobalNetworkReleaseConfirmLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // NetworkReleaseAuthority adapts the durable global release lifecycle to its optional control surface.
@@ -33,6 +39,9 @@ type NetworkReleaseAuthority struct {
 
 // _ confirms NetworkReleaseAuthority exposes the optional control boundary.
 var _ control.NetworkReleaseAuthority = (*NetworkReleaseAuthority)(nil)
+
+// _ confirms NetworkReleaseAuthority exposes the optional low-port approval boundary.
+var _ control.NetworkReleaseApprovalAuthority = (*NetworkReleaseAuthority)(nil)
 
 // NewNetworkReleaseAuthority creates an optional global network release authority with all required narrow dependencies.
 func NewNetworkReleaseAuthority(plans networkReleasePlanReader, coordinator networkReleaseCoordinator) *NetworkReleaseAuthority {
@@ -79,7 +88,7 @@ func (authority *NetworkReleaseAuthority) StartNetworkRelease(ctx context.Contex
 	if err := validateNetworkReleaseStartedOperation(started, request.IntentID); err != nil {
 		return control.NetworkReleaseOperation{}, err
 	}
-	result, err := authority.readNetworkRelease(ctx, started.Operation.ID)
+	result, err := authority.readNetworkRelease(ctx, caller.Transport.UserID, started.Operation.ID)
 	if err != nil {
 		return control.NetworkReleaseOperation{}, err
 	}
@@ -93,21 +102,90 @@ func (authority *NetworkReleaseAuthority) StartNetworkRelease(ctx context.Contex
 }
 
 // ReadNetworkRelease returns only the requested daemon-owned global release operation.
-func (authority *NetworkReleaseAuthority) ReadNetworkRelease(ctx context.Context, _ control.Caller, request control.ReadNetworkReleaseRequest) (control.NetworkReleaseOperation, error) {
+func (authority *NetworkReleaseAuthority) ReadNetworkRelease(ctx context.Context, caller control.Caller, request control.ReadNetworkReleaseRequest) (control.NetworkReleaseOperation, error) {
 	ctx = normalizeContext(ctx)
 	if err := request.Validate(); err != nil {
 		return control.NetworkReleaseOperation{}, err
 	}
-	return authority.readNetworkRelease(ctx, request.OperationID)
+	return authority.readNetworkRelease(ctx, caller.Transport.UserID, request.OperationID)
+}
+
+// PrepareNetworkReleaseApproval binds release-low-ports helper authority to the authenticated transport user.
+func (authority *NetworkReleaseAuthority) PrepareNetworkReleaseApproval(ctx context.Context, caller control.Caller, request control.PrepareNetworkReleaseApprovalRequest) (control.NetworkReleaseApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseApprovalPreparation{}, err
+	}
+	result, err := authority.coordinator.PrepareLowPorts(ctx, reconcile.GlobalNetworkReleasePrepareLowPortsRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+	})
+	if err != nil {
+		return control.NetworkReleaseApprovalPreparation{}, classifyNetworkReleaseError(err)
+	}
+	if err := result.Validate(time.Now().UTC()); err != nil {
+		return control.NetworkReleaseApprovalPreparation{}, fmt.Errorf("network release low-port preparation result: %w", err)
+	}
+	preparation := control.NetworkReleaseApprovalPreparation{
+		OperationID:        request.OperationID,
+		CheckpointRevision: request.ExpectedCheckpointRevision,
+		Ticket: control.NetworkReleaseApprovalTicket{
+			OperationID:                result.OperationID,
+			Reference:                  result.Reference,
+			Operation:                  result.Operation,
+			PolicyFingerprint:          result.PolicyFingerprint,
+			TargetOwnershipFingerprint: result.OwnershipFingerprint,
+			ObservationFingerprint:     result.ObservationFingerprint,
+			ExpiresAt:                  result.ExpiresAt,
+		},
+	}
+	if err := preparation.Validate(); err != nil {
+		return control.NetworkReleaseApprovalPreparation{}, fmt.Errorf("network release low-port preparation: %w", err)
+	}
+	if preparation.Ticket.OperationID != request.OperationID {
+		return control.NetworkReleaseApprovalPreparation{}, errors.New("network release low-port preparation ticket differs from the requested operation")
+	}
+	return preparation, nil
+}
+
+// ConfirmNetworkReleaseApproval independently verifies low-port removal and advances the release to resolver retirement.
+func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseApprovalRequest) (control.NetworkReleaseOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	plan, err := authority.coordinator.ConfirmLowPorts(ctx, reconcile.GlobalNetworkReleaseConfirmLowPortsRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+		LowPortEvidence:            request.LowPortEvidence,
+	})
+	if err != nil {
+		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
+	}
+	result, err := networkReleaseOperation(plan)
+	if err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.CheckpointRevision <= request.ExpectedCheckpointRevision ||
+		result.Phase != control.NetworkReleasePhaseResolver {
+		return control.NetworkReleaseOperation{}, errors.New("network release low-port confirmation did not advance the requested checkpoint to resolver release")
+	}
+	return result, nil
 }
 
 // readNetworkRelease reads and projects the exact durable plan without returning retained host authority.
-func (authority *NetworkReleaseAuthority) readNetworkRelease(ctx context.Context, operationID domain.OperationID) (control.NetworkReleaseOperation, error) {
+func (authority *NetworkReleaseAuthority) readNetworkRelease(ctx context.Context, requesterIdentity string, operationID domain.OperationID) (control.NetworkReleaseOperation, error) {
 	plan, found, err := authority.plans.ReadGlobalNetworkReleasePlan(ctx, operationID)
 	if err != nil {
 		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
 	}
 	if !found {
+		return control.NetworkReleaseOperation{}, control.NewNetworkReleaseNotFoundError(errors.New("network release operation was not found"))
+	}
+	if plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity != requesterIdentity {
 		return control.NetworkReleaseOperation{}, control.NewNetworkReleaseNotFoundError(errors.New("network release operation was not found"))
 	}
 	result, err := networkReleaseOperation(plan)

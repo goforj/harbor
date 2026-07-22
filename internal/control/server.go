@@ -52,6 +52,8 @@ type ServerConfig struct {
 	NetworkDataPlaneSetupAuthority NetworkDataPlaneSetupAuthority
 	// NetworkReleaseAuthority optionally enables machine-global network release control.
 	NetworkReleaseAuthority NetworkReleaseAuthority
+	// NetworkReleaseApprovalAuthority optionally enables machine-global low-port release approval.
+	NetworkReleaseApprovalAuthority NetworkReleaseApprovalAuthority
 }
 
 // Server adapts authenticated local connections to the typed Harbor control API.
@@ -111,9 +113,11 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	var shutdownCaller Caller
 	dataPlaneSetupEnabled := !networkDataPlaneSetupAuthorityIsNil(server.config.NetworkDataPlaneSetupAuthority)
 	networkReleaseEnabled := !networkReleaseAuthorityIsNil(server.config.NetworkReleaseAuthority)
+	networkReleaseApprovalEnabled := !networkReleaseApprovalAuthorityIsNil(server.config.NetworkReleaseApprovalAuthority)
 	serverCapabilities := daemonCapabilities(
 		dataPlaneSetupEnabled,
 		networkReleaseEnabled,
+		networkReleaseApprovalEnabled,
 	)
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
@@ -181,6 +185,10 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	if networkReleaseEnabled {
 		handlers[methodNetworkReleaseStart] = server.networkReleaseStartHandler(transportPeer)
 		handlers[methodNetworkReleaseRead] = server.networkReleaseReadHandler(transportPeer)
+	}
+	if networkReleaseApprovalEnabled {
+		handlers[methodNetworkReleaseLowPortPrepare] = server.networkReleaseLowPortPrepareHandler(transportPeer)
+		handlers[methodNetworkReleaseLowPortConfirm] = server.networkReleaseLowPortConfirmHandler(transportPeer)
 	}
 
 	controlSession, err := session.NewServer(session.ServerConfig{
