@@ -7,6 +7,20 @@ name: Hosted macOS intermediate native lifecycle evidence
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hosted-macos-intermediate-native-lifecycle.yml
+      - app/**
+      - cmd/app/**
+      - cmd/devbootstrap/**
+      - cmd/harbord/**
+      - cmd/helper/**
+      - cmd/launchdrelay/**
+      - go.mod
+      - go.sum
+      - internal/**
 
 permissions:
   contents: read
