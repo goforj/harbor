@@ -572,8 +572,8 @@ func TestControllerReconcileWaitsForReleaseAnchorAdmission(t *testing.T) {
 	}
 }
 
-// TestControllerCloseDoesNotWaitForReleaseSerialization proves explicit shutdown can claim stop while release admission holds its lock.
-func TestControllerCloseDoesNotWaitForReleaseSerialization(t *testing.T) {
+// TestControllerCloseWaitsForReleaseSerialization proves shutdown cannot complete while release admission owns a candidate generation.
+func TestControllerCloseWaitsForReleaseSerialization(t *testing.T) {
 	anchor := newTestDataPlane(nil)
 	dependencies := testControllerDependencies(&testMaterialStore{}, &testCertificateAuthority{root: validTestRoot()}, anchor)
 	dependencies.globalNetworkReleasePlans = releaseTestPlanStore(state.GlobalNetworkReleasePlanPhaseLowPorts)
@@ -589,17 +589,17 @@ func TestControllerCloseDoesNotWaitForReleaseSerialization(t *testing.T) {
 	go func() { result <- controller.Close(context.Background()) }()
 	select {
 	case err := <-result:
+		t.Fatalf("Close() returned before release serialization ended: %v", err)
+	case <-time.After(controllerTestWait):
+	}
+	controller.reconcileMutex.Unlock()
+	select {
+	case err := <-result:
 		if err != nil {
 			t.Fatalf("Close() error = %v", err)
 		}
 	case <-time.After(controllerTestWait):
-		t.Fatal("Close() waited for release serialization")
-	}
-	controller.reconcileMutex.Unlock()
-	select {
-	case <-controller.Done():
-	default:
-		t.Fatal("Close() returned before terminal ownership")
+		t.Fatal("Close() did not return after release serialization ended")
 	}
 }
 

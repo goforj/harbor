@@ -885,15 +885,19 @@ func (controller *Controller) monitor(material certificateMaterialStore) {
 	for {
 		select {
 		case <-controller.stop:
+			controller.reconcileMutex.Lock()
 			exit = controller.currentRuntimeExit()
 		case observed := <-controller.runtimeExits:
+			controller.reconcileMutex.Lock()
 			if !controller.isCurrentRuntimeExit(observed) {
+				controller.reconcileMutex.Unlock()
 				continue
 			}
 			exit = observed
 		}
 		break
 	}
+	defer controller.reconcileMutex.Unlock()
 	unsettledExit := exit.runtime != nil && controller.observeRuntimeExit(exit.generation, exit.done)
 
 	var runtimeErr error
