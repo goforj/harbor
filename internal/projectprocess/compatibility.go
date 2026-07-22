@@ -10,13 +10,10 @@ import (
 )
 
 const (
-	goForjCommandPath        = "github.com/goforj/goforj/cmd/forj"
-	goForjModulePath         = "github.com/goforj/goforj"
-	compatibleGoForjVersion  = "v0.21.1-0.20260722203521-55a1e5759956"
-	compatibleGoForjRevision = "55a1e57599565c9768627db016fc781e3c705f15"
-	goForjUpgradeInstruction = "use the canonical GoForj build v0.21.1-0.20260722203521-55a1e5759956 or its exact clean source revision 55a1e57599565c9768627db016fc781e3c705f15, run \"forj render\" in this project, and try again"
-	maximumErrorPathBytes    = 256
-	maximumErrorReasonBytes  = 512
+	goForjCommandPath       = "github.com/goforj/goforj/cmd/forj"
+	goForjModulePath        = "github.com/goforj/goforj"
+	maximumErrorPathBytes   = 256
+	maximumErrorReasonBytes = 512
 )
 
 var errIncompatibleGoForj = errors.New("incompatible GoForj executable")
@@ -42,7 +39,7 @@ func productionGoForjExecutableVerifier() ExecutableVerifier {
 	return newGoForjExecutableVerifier(buildinfo.ReadFile)
 }
 
-// verifyGoForjExecutable accepts only a canonical GoForj command whose embedded build can prove the managed-address contract.
+// verifyGoForjExecutable accepts only an executable whose embedded build information identifies the canonical GoForj command and module.
 func verifyGoForjExecutable(path string, reader buildInformationReader) error {
 	information, err := reader(path)
 	if err != nil {
@@ -57,27 +54,7 @@ func verifyGoForjExecutable(path string, reader buildInformationReader) error {
 	if information.Main.Path != goForjModulePath || information.Main.Replace != nil {
 		return incompatibleGoForjError(path, fmt.Sprintf("main module is not the canonical %q module", goForjModulePath))
 	}
-
-	version := strings.TrimSpace(information.Main.Version)
-	if version == compatibleGoForjVersion || cleanCompatibleRevisionProvesCompatibility(information) {
-		return nil
-	}
-	return incompatibleGoForjError(path, fmt.Sprintf("version %q is not the supported managed-session build %q", version, compatibleGoForjVersion))
-}
-
-// cleanCompatibleRevisionProvesCompatibility admits the exact clean source revision that defines Harbor's address contract.
-func cleanCompatibleRevisionProvesCompatibility(information *debug.BuildInfo) bool {
-	revision := ""
-	modified := ""
-	for _, setting := range information.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = strings.TrimSpace(setting.Value)
-		case "vcs.modified":
-			modified = strings.TrimSpace(setting.Value)
-		}
-	}
-	return revision == compatibleGoForjRevision && modified == "false"
+	return nil
 }
 
 // incompatibleGoForjError keeps every preflight failure actionable without asking callers to interpret build metadata.
@@ -86,7 +63,7 @@ func incompatibleGoForjError(path string, reason string) error {
 	if strings.TrimSpace(path) != "" {
 		location = fmt.Sprintf("at \"%s\"", boundedVisibleASCII(path, maximumErrorPathBytes))
 	}
-	return fmt.Errorf("%w: GoForj %s cannot preserve Harbor-managed project addresses (%s); %s", errIncompatibleGoForj, location, boundedVisibleASCII(reason, maximumErrorReasonBytes), goForjUpgradeInstruction)
+	return fmt.Errorf("%w: GoForj executable %s does not identify the canonical command and module (%s)", errIncompatibleGoForj, location, boundedVisibleASCII(reason, maximumErrorReasonBytes))
 }
 
 // boundedVisibleASCII prevents executable metadata from injecting invisible control text into durable lifecycle problems.

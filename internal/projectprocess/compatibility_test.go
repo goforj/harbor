@@ -14,20 +14,30 @@ import (
 // TestGoForjExecutableCompatibilityPolicy covers every accepted and rejected embedded-build shape.
 func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 	readFailure := errors.New("build information is unreadable")
-	wrongCommand := compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false)
+	wrongCommand := compatibleGoForjBuildInfo("v0.21.1", "released-revision", false)
 	wrongCommand.Path = "example.test/not-forj"
-	wrongModule := compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false)
+	wrongModule := compatibleGoForjBuildInfo("v0.21.1", "released-revision", false)
 	wrongModule.Main.Path = "example.test/not-goforj"
-	replacedModule := compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false)
-	replacedModule.Main.Replace = &debug.Module{Path: "example.test/goforj-fork", Version: compatibleGoForjVersion}
+	replacedModule := compatibleGoForjBuildInfo("(devel)", "b0d6f13b0d6f13b0d6f13b0d6f13b0d6f13b0d6f", true)
+	replacedModule.Main.Replace = &debug.Module{
+		Path:    "example.test/goforj-fork",
+		Version: "v0.21.1",
+	}
 	tests := []struct {
 		name        string
 		information *debug.BuildInfo
 		readErr     error
 		wantErr     bool
 	}{
-		{name: "unreadable", readErr: readFailure, wantErr: true},
-		{name: "unverifiable", wantErr: true},
+		{
+			name:    "unreadable",
+			readErr: readFailure,
+			wantErr: true,
+		},
+		{
+			name:    "unverifiable",
+			wantErr: true,
+		},
 		{
 			name:        "wrong command",
 			information: wrongCommand,
@@ -44,73 +54,24 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			wantErr:     true,
 		},
 		{
-			name:        "old pseudo version",
-			information: compatibleGoForjBuildInfo("v0.20.1-0.20260710184502-69fd75a80bf8", "69fd75a80bf8d613c89256a4f4fe9175b20675e7", false),
-			wantErr:     true,
-		},
-		{
-			name:        "exact pinned source pseudo version",
-			information: compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false),
-		},
-		{
-			name:        "development without revision",
-			information: compatibleGoForjBuildInfo("(devel)", "", false),
-			wantErr:     true,
-		},
-		{
-			name:        "development at other revision",
-			information: compatibleGoForjBuildInfo("(devel)", "69fd75a80bf8d613c89256a4f4fe9175b20675e7", false),
-			wantErr:     true,
-		},
-		{
-			name:        "development exact pinned revision dirty",
-			information: compatibleGoForjBuildInfo("(devel)", compatibleGoForjRevision, true),
-			wantErr:     true,
-		},
-		{
-			name:        "development exact pinned revision clean",
-			information: compatibleGoForjBuildInfo("(devel)", compatibleGoForjRevision, false),
-		},
-		{
-			name:        "unversioned exact pinned revision clean",
-			information: compatibleGoForjBuildInfo("", compatibleGoForjRevision, false),
-		},
-		{
-			name:        "shallow checkout pseudo version at exact pinned revision clean",
-			information: compatibleGoForjBuildInfo("v0.0.0-20260722203521-55a1e5759956", compatibleGoForjRevision, false),
-		},
-		{
-			name:        "shallow checkout pseudo version at exact pinned revision dirty",
-			information: compatibleGoForjBuildInfo("v0.0.0-20260722203521-55a1e5759956", compatibleGoForjRevision, true),
-			wantErr:     true,
-		},
-		{
-			name:        "version label at exact pinned revision clean",
-			information: compatibleGoForjBuildInfo("v9.9.9", compatibleGoForjRevision, false),
-		},
-		{
-			name:        "exact pinned pseudo version",
-			information: compatibleGoForjBuildInfo(compatibleGoForjVersion, compatibleGoForjRevision, false),
-		},
-		{
-			name:        "unproven release",
+			name:        "canonical released version",
 			information: compatibleGoForjBuildInfo("v0.20.1", "release-revision", false),
-			wantErr:     true,
 		},
 		{
-			name:        "tagged release before pinned build",
-			information: compatibleGoForjBuildInfo("v0.21.0", "older-release-revision", false),
-			wantErr:     true,
+			name:        "canonical arbitrary released version",
+			information: compatibleGoForjBuildInfo("v9.9.9", "another-release-revision", false),
 		},
 		{
-			name:        "release after pinned build without proven implementation",
-			information: compatibleGoForjBuildInfo("v0.21.2", "newer-release-revision", false),
-			wantErr:     true,
+			name:        "canonical development without revision",
+			information: compatibleGoForjBuildInfo("(devel)", "", false),
 		},
 		{
-			name:        "pseudo version after pinned build without proven implementation",
-			information: compatibleGoForjBuildInfo("v0.21.1-0.20260723120000-deadbeefcafe", "deadbeefcafedeadbeefcafedeadbeefcafedead", false),
-			wantErr:     true,
+			name:        "canonical dirty development metadata",
+			information: compatibleGoForjBuildInfo("(devel)", "b0d6f13b0d6f13b0d6f13b0d6f13b0d6f13b0d6f", true),
+		},
+		{
+			name:        "canonical arbitrary pseudo version",
+			information: compatibleGoForjBuildInfo("v0.0.0-20260723120000-deadbeefcafe", "deadbeefcafedeadbeefcafedeadbeefcafedead", true),
 		},
 	}
 	for _, test := range tests {
@@ -137,7 +98,7 @@ func TestGoForjExecutableCompatibilityPolicy(t *testing.T) {
 			if !errors.Is(err, errIncompatibleGoForj) {
 				t.Fatalf("verifier error = %v, want errIncompatibleGoForj", err)
 			}
-			for _, text := range []string{compatibleGoForjVersion, compatibleGoForjRevision, "forj render"} {
+			for _, text := range []string{"executable", "canonical command and module"} {
 				if !strings.Contains(err.Error(), text) {
 					t.Fatalf("verifier error = %q, want actionable text %q", err, text)
 				}
@@ -169,7 +130,7 @@ func TestIncompatibleGoForjErrorSanitizesUntrustedEvidence(t *testing.T) {
 			t.Fatalf("incompatibility message contains non-visible character %U", character)
 		}
 	}
-	for _, text := range []string{"\\x00", "\\n", "\\u202e", "...", "forj render"} {
+	for _, text := range []string{"\\x00", "\\n", "\\u202e", "...", "canonical command and module"} {
 		if !strings.Contains(message, text) {
 			t.Fatalf("incompatibility message = %q, want sanitized text %q", message, text)
 		}
@@ -187,7 +148,7 @@ func TestStartReportsMissingGoForjWithoutInspectingOrStartingAnything(t *testing
 	if handle != nil || !errors.Is(err, errIncompatibleGoForj) {
 		t.Fatalf("Start() = %#v, %v, want nil incompatible result", handle, err)
 	}
-	if !strings.Contains(err.Error(), "PATH") || !strings.Contains(err.Error(), "forj render") {
+	if !strings.Contains(err.Error(), "PATH") || !strings.Contains(err.Error(), "canonical command and module") {
 		t.Fatalf("Start() missing error = %q", err)
 	}
 }
@@ -270,10 +231,19 @@ func TestNewUsesProductionExecutableVerifier(t *testing.T) {
 func compatibleGoForjBuildInfo(version string, revision string, modified bool) *debug.BuildInfo {
 	return &debug.BuildInfo{
 		Path: goForjCommandPath,
-		Main: debug.Module{Path: goForjModulePath, Version: version},
+		Main: debug.Module{
+			Path:    goForjModulePath,
+			Version: version,
+		},
 		Settings: []debug.BuildSetting{
-			{Key: "vcs.revision", Value: revision},
-			{Key: "vcs.modified", Value: fmt.Sprintf("%t", modified)},
+			{
+				Key:   "vcs.revision",
+				Value: revision,
+			},
+			{
+				Key:   "vcs.modified",
+				Value: fmt.Sprintf("%t", modified),
+			},
 		},
 	}
 }
