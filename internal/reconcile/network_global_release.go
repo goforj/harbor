@@ -40,6 +40,8 @@ type GlobalNetworkReleaseJournal interface {
 	AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error)
 	// AdvanceGlobalNetworkReleaseResolver commits the independently verified resolver-release receipt.
 	AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// AdvanceGlobalNetworkReleaseTrust commits the independently verified trust-release receipt.
+	AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error)
 }
 
 // GlobalNetworkReleaseLowPortIssuer issues a bounded low-port release capability.
@@ -54,6 +56,14 @@ type GlobalNetworkReleaseLowPortIssuer interface {
 type GlobalNetworkReleaseResolverIssuer interface {
 	// Issue publishes one release-resolver capability for its authenticated owner.
 	Issue(context.Context, string, ticketissuer.ResolverRequest) (ticketissuer.ResolverResult, error)
+	// Close releases issuer resources after one publication attempt.
+	Close() error
+}
+
+// GlobalNetworkReleaseTrustIssuer issues a bounded trust release capability.
+type GlobalNetworkReleaseTrustIssuer interface {
+	// Issue publishes one release-trust capability for its authenticated owner.
+	Issue(context.Context, string, ticketissuer.TrustRequest) (ticketissuer.TrustResult, error)
 	// Close releases issuer resources after one publication attempt.
 	Close() error
 }
@@ -102,6 +112,8 @@ type GlobalNetworkReleaseCoordinator struct {
 	lowPortIssuers  func() (GlobalNetworkReleaseLowPortIssuer, error)
 	resolverPlans   ticketissuer.ResolverPlanSource
 	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error)
+	trustPlans      ticketissuer.TrustPlanSource
+	trustIssuers    func() (GlobalNetworkReleaseTrustIssuer, error)
 	resolver        GlobalNetworkReleaseResolverObserver
 	trust           NetworkDataPlaneSetupTrustObserver
 	loopback        LoopbackObserver
@@ -141,6 +153,8 @@ func NewGlobalNetworkReleaseCoordinator(
 	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error),
 	resolverPlans ticketissuer.ResolverPlanSource,
 	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error),
+	trustPlans ticketissuer.TrustPlanSource,
+	trustIssuers func() (GlobalNetworkReleaseTrustIssuer, error),
 	resolverObserver GlobalNetworkReleaseResolverObserver,
 	trustObserver NetworkDataPlaneSetupTrustObserver,
 	loopbackObserver LoopbackObserver,
@@ -158,6 +172,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(lowPortIssuers) ||
 		nilDependency(resolverPlans) ||
 		nilDependency(resolverIssuers) ||
+		nilDependency(trustPlans) ||
+		nilDependency(trustIssuers) ||
 		nilDependency(resolverObserver) ||
 		nilDependency(trustObserver) ||
 		nilDependency(loopbackObserver) ||
@@ -176,6 +192,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		lowPortIssuers:  lowPortIssuers,
 		resolverPlans:   resolverPlans,
 		resolverIssuers: resolverIssuers,
+		trustPlans:      trustPlans,
+		trustIssuers:    trustIssuers,
 		resolver:        resolverObserver,
 		trust:           trustObserver,
 		loopback:        loopbackObserver,
@@ -538,6 +556,486 @@ func validateGlobalNetworkReleaseLowPortEvidence(evidence helper.LowPortMutation
 		return fmt.Errorf("release low-port evidence must prove owned_absent")
 	}
 	return nil
+}
+
+// GlobalNetworkReleasePrepareTrustRequest selects one trust-release checkpoint.
+type GlobalNetworkReleasePrepareTrustRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences preparation to one retained trust checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner requesting helper authority.
+	RequesterIdentity string
+}
+
+// GlobalNetworkReleaseTrustPreparation reports whether a trust capability was required for the retained disposition.
+type GlobalNetworkReleaseTrustPreparation struct {
+	// Disposition identifies whether Harbor owns the trust entry.
+	Disposition state.GlobalNetworkReleaseTrustDisposition
+	// Ticket is present only when Harbor owns and may remove the trust entry.
+	Ticket *ticketissuer.TrustResult
+}
+
+// Validate rejects a preparation that could blur owned removal with preexisting preservation.
+func (preparation GlobalNetworkReleaseTrustPreparation) Validate(now time.Time) error {
+	if err := preparation.Disposition.Validate(); err != nil {
+		return err
+	}
+	switch preparation.Disposition {
+	case state.GlobalNetworkReleaseTrustOwned:
+		if preparation.Ticket == nil {
+			return fmt.Errorf("owned release trust preparation has no ticket")
+		}
+		if err := preparation.Ticket.Validate(now); err != nil {
+			return fmt.Errorf("owned release trust preparation ticket: %w", err)
+		}
+		if preparation.Ticket.Operation != helper.OperationReleaseTrust {
+			return fmt.Errorf("owned release trust preparation ticket is not release_trust authority")
+		}
+	case state.GlobalNetworkReleaseTrustPreexistingUnowned:
+		if preparation.Ticket != nil {
+			return fmt.Errorf("preexisting release trust preparation has a ticket")
+		}
+	}
+	return nil
+}
+
+// Validate rejects malformed release-trust publication input.
+func (request GlobalNetworkReleasePrepareTrustRequest) Validate() error {
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := validateOperationRevision(request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	return validateNetworkSetupRequesterIdentity(request.RequesterIdentity)
+}
+
+// GlobalNetworkReleaseConfirmTrustRequest selects one trust checkpoint and its bounded confirmation evidence.
+type GlobalNetworkReleaseConfirmTrustRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences confirmation to one retained trust checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner confirming trust state.
+	RequesterIdentity string
+	// TrustEvidence proves owned absence when the staged disposition is owned.
+	TrustEvidence helper.TrustMutationEvidence
+}
+
+// Validate rejects malformed trust confirmation input before disposition-specific validation.
+func (request GlobalNetworkReleaseConfirmTrustRequest) Validate() error {
+	return (GlobalNetworkReleasePrepareTrustRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          request.RequesterIdentity,
+	}).Validate()
+}
+
+// PrepareTrust selects either owned removal authority or confirmation-only preservation.
+func (c *GlobalNetworkReleaseCoordinator) PrepareTrust(ctx context.Context, request GlobalNetworkReleasePrepareTrustRequest) (GlobalNetworkReleaseTrustPreparation, error) {
+	if err := request.Validate(); err != nil {
+		return GlobalNetworkReleaseTrustPreparation{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return GlobalNetworkReleaseTrustPreparation{}, err
+	}
+	durable, err := c.releaseTrustDurable(ctx, GlobalNetworkReleaseConfirmTrustRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          request.RequesterIdentity,
+	})
+	if err != nil {
+		return GlobalNetworkReleaseTrustPreparation{}, err
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseTrust {
+		return GlobalNetworkReleaseTrustPreparation{}, fmt.Errorf("release trust preparation requires plan phase %q", state.GlobalNetworkReleasePlanPhaseTrust)
+	}
+	if durable.Authority.TrustDisposition == state.GlobalNetworkReleaseTrustPreexistingUnowned {
+		preparation := GlobalNetworkReleaseTrustPreparation{
+			Disposition: durable.Authority.TrustDisposition,
+		}
+		return preparation, preparation.Validate(c.clock.Now().UTC())
+	}
+	plan, err := c.trustPlans.Resolve(ctx, ticketissuer.TrustRequest{
+		OperationID: request.OperationID,
+	})
+	if err != nil {
+		return GlobalNetworkReleaseTrustPreparation{}, err
+	}
+	if err := validateGlobalNetworkReleaseTrustPlan(plan, durable, request); err != nil {
+		return GlobalNetworkReleaseTrustPreparation{}, err
+	}
+	result, issueErr := c.issueReleaseTrust(
+		ctx,
+		request.RequesterIdentity,
+		ticketissuer.TrustRequest{
+			OperationID: request.OperationID,
+		},
+	)
+	if issueErr != nil {
+		if errors.Is(issueErr, ticketissuer.ErrTrustPublicationIndeterminate) {
+			if validationErr := validateGlobalNetworkReleaseTrustResult(result, plan, c.clock.Now().UTC()); validationErr != nil {
+				return GlobalNetworkReleaseTrustPreparation{}, fmt.Errorf("validate indeterminate release trust result: %w", validationErr)
+			}
+			preparation := GlobalNetworkReleaseTrustPreparation{
+				Disposition: durable.Authority.TrustDisposition,
+				Ticket:      &result,
+			}
+			if validationErr := preparation.Validate(c.clock.Now().UTC()); validationErr != nil {
+				return GlobalNetworkReleaseTrustPreparation{}, validationErr
+			}
+			return preparation, issueErr
+		}
+		return GlobalNetworkReleaseTrustPreparation{}, issueErr
+	}
+	if err := validateGlobalNetworkReleaseTrustResult(result, plan, c.clock.Now().UTC()); err != nil {
+		return GlobalNetworkReleaseTrustPreparation{}, err
+	}
+	preparation := GlobalNetworkReleaseTrustPreparation{
+		Disposition: durable.Authority.TrustDisposition,
+		Ticket:      &result,
+	}
+	return preparation, preparation.Validate(c.clock.Now().UTC())
+}
+
+// ConfirmTrust independently verifies trust removal or preservation and advances to loopback release.
+func (c *GlobalNetworkReleaseCoordinator) ConfirmTrust(ctx context.Context, request GlobalNetworkReleaseConfirmTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	if err := request.Validate(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	durable, err := c.releaseTrustDurable(ctx, request)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	evidence, err := c.observeReleaseTrust(ctx, durable, request.TrustEvidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	digest, err := state.NetworkDataPlaneSetupEvidenceDigest(evidence)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	checkpoint := durable.CheckpointRevision
+	verifiedAt := c.releaseNow(durable.ResolverReceipt.VerifiedAt)
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseLoopbacks {
+		checkpoint = durable.TrustReceipt.SourceCheckpointRevision
+		verifiedAt = durable.TrustReceipt.VerifiedAt
+	}
+	return c.journal.AdvanceGlobalNetworkReleaseTrust(ctx, state.AdvanceGlobalNetworkReleaseTrustRequest{
+		OperationID:        request.OperationID,
+		CheckpointRevision: checkpoint,
+		NetworkRevision:    durable.NetworkRevision,
+		Receipt: state.GlobalNetworkReleaseTrustReceipt{
+			SourceCheckpointRevision: checkpoint,
+			Disposition:              durable.Authority.TrustDisposition,
+			ConfirmationDigest:       digest,
+			ObservationFingerprint:   evidence.ObservationFingerprint,
+			VerifiedAt:               verifiedAt,
+		},
+	})
+}
+
+// validateGlobalNetworkReleaseTrustPlan binds a user request to owned release-only trust authority.
+func validateGlobalNetworkReleaseTrustPlan(plan ticketissuer.TrustPlan, durable state.GlobalNetworkReleasePlanRecord, request GlobalNetworkReleasePrepareTrustRequest) error {
+	if err := validateGlobalNetworkReleaseTrustDurablePlan(plan, durable); err != nil {
+		return err
+	}
+	if plan.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return &state.StaleRevisionError{
+			OperationID: request.OperationID,
+			Expected:    request.ExpectedCheckpointRevision,
+			Actual:      plan.CheckpointRevision,
+		}
+	}
+	if plan.TargetOwnership.OwnerIdentity != request.RequesterIdentity {
+		return fmt.Errorf("authenticated requester does not own release trust authority")
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseTrustDurablePlan verifies the trust capability cannot drift from durable release authority.
+func validateGlobalNetworkReleaseTrustDurablePlan(plan ticketissuer.TrustPlan, durable state.GlobalNetworkReleasePlanRecord) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release trust plan: %w", err)
+	}
+	if err := validateGlobalNetworkReleaseTrustDurable(durable, durable.Operation.Operation.ID); err != nil {
+		return err
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseTrust ||
+		durable.Authority.TrustDisposition != state.GlobalNetworkReleaseTrustOwned {
+		return fmt.Errorf("release trust plan is not live owned authority")
+	}
+	if !sameGlobalNetworkReleaseOperation(plan.Operation, durable.Operation.Operation) ||
+		plan.OperationRevision != durable.Operation.Revision {
+		return fmt.Errorf("release trust plan operation differs from durable authority")
+	}
+	if plan.Purpose != ticketissuer.TrustPlanPurposeGlobalNetworkRelease ||
+		plan.CheckpointPhase != ticketissuer.TrustCheckpointPhaseGlobalRelease ||
+		plan.Mutation != helper.OperationReleaseTrust {
+		return fmt.Errorf("release trust plan purpose differs from durable authority")
+	}
+	if plan.TargetOwnership != durable.Authority.Projection.ConfirmedOwnership.Record ||
+		plan.Policy != durable.Authority.Policy ||
+		!sameGlobalNetworkReleaseTrustRoot(plan.Root, durable.Authority.Root) {
+		return fmt.Errorf("release trust plan target differs from durable authority")
+	}
+	if durable.ResolverReceipt == nil || durable.LowPortReceipt == nil {
+		return fmt.Errorf("release trust plan has no committed predecessor receipts")
+	}
+	if plan.CheckpointRevision != durable.CheckpointRevision {
+		return fmt.Errorf("release trust plan checkpoint differs from durable authority")
+	}
+	return nil
+}
+
+// sameGlobalNetworkReleaseTrustRoot compares root metadata and certificate bytes without pointer identity.
+func sameGlobalNetworkReleaseTrustRoot(left certroot.Root, right certroot.Root) bool {
+	return left.Fingerprint == right.Fingerprint &&
+		left.NotBefore.Equal(right.NotBefore) &&
+		left.NotAfter.Equal(right.NotAfter) &&
+		bytes.Equal(left.CertificatePEM, right.CertificatePEM)
+}
+
+// validateGlobalNetworkReleaseTrustResult confirms an issuer returned the exact release-trust authority.
+func validateGlobalNetworkReleaseTrustResult(result ticketissuer.TrustResult, plan ticketissuer.TrustPlan, now time.Time) error {
+	if err := result.Validate(now); err != nil {
+		return err
+	}
+	policyFingerprint, err := plan.Policy.Fingerprint()
+	if err != nil {
+		return err
+	}
+	ownershipFingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		return err
+	}
+	if result.OperationID != plan.Operation.ID || result.Operation != helper.OperationReleaseTrust {
+		return fmt.Errorf("release trust issuer returned another operation")
+	}
+	if result.PolicyFingerprint != policyFingerprint ||
+		result.OwnershipFingerprint != ownershipFingerprint ||
+		result.AuthorityFingerprint != plan.Root.Fingerprint ||
+		result.Mechanism != plan.Policy.Mechanisms.Trust {
+		return fmt.Errorf("release trust issuer returned another authority")
+	}
+	return nil
+}
+
+// issueReleaseTrust opens one issuer only after durable validation and always closes it.
+func (c *GlobalNetworkReleaseCoordinator) issueReleaseTrust(ctx context.Context, requester string, request ticketissuer.TrustRequest) (ticketissuer.TrustResult, error) {
+	issuer, err := c.trustIssuers()
+	if err != nil {
+		return ticketissuer.TrustResult{}, fmt.Errorf("open release trust issuer: %w", err)
+	}
+	if nilDependency(issuer) {
+		return ticketissuer.TrustResult{}, fmt.Errorf("prepare release trust: issuer is nil")
+	}
+	result, issueErr := issuer.Issue(ctx, requester, request)
+	closeErr := issuer.Close()
+	if issueErr == nil && closeErr == nil {
+		return result, nil
+	}
+	if issueErr == nil || errors.Is(issueErr, ticketissuer.ErrTrustPublicationIndeterminate) {
+		return result, errors.Join(ticketissuer.ErrTrustPublicationIndeterminate, issueErr, closeErr)
+	}
+	return ticketissuer.TrustResult{}, errors.Join(issueErr, closeErr)
+}
+
+// releaseTrustDurable validates a live trust checkpoint or its exact loopback replay boundary.
+func (c *GlobalNetworkReleaseCoordinator) releaseTrustDurable(ctx context.Context, request GlobalNetworkReleaseConfirmTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	durable, found, err := c.journal.ReadGlobalNetworkReleasePlan(ctx, request.OperationID)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("read release trust plan: %w", err)
+	}
+	if !found {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("release trust plan does not match durable authority")
+	}
+	if err := validateGlobalNetworkReleaseTrustDurable(durable, request.OperationID); err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	if durable.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity != request.RequesterIdentity {
+		return state.GlobalNetworkReleasePlanRecord{}, fmt.Errorf("authenticated requester does not own release trust authority")
+	}
+	checkpoint := durable.CheckpointRevision
+	if durable.Phase == state.GlobalNetworkReleasePlanPhaseLoopbacks {
+		checkpoint = durable.TrustReceipt.SourceCheckpointRevision
+	}
+	if checkpoint != request.ExpectedCheckpointRevision {
+		return state.GlobalNetworkReleasePlanRecord{}, &state.StaleRevisionError{
+			OperationID: request.OperationID,
+			Expected:    request.ExpectedCheckpointRevision,
+			Actual:      checkpoint,
+		}
+	}
+	return durable, nil
+}
+
+// validateGlobalNetworkReleaseTrustDurable proves a journal result retains the exact trust-phase authority before it can drive host effects.
+func validateGlobalNetworkReleaseTrustDurable(durable state.GlobalNetworkReleasePlanRecord, operationID domain.OperationID) error {
+	if durable.Operation.Operation.ID != operationID {
+		return fmt.Errorf("release trust plan does not match durable authority")
+	}
+	if err := validateGlobalNetworkReleaseOperation(durable.Operation, durable.Operation.Operation.IntentID); err != nil {
+		return fmt.Errorf("release trust operation: %w", err)
+	}
+	if err := durable.Phase.Validate(); err != nil {
+		return fmt.Errorf("release trust plan phase: %w", err)
+	}
+	if durable.Phase != state.GlobalNetworkReleasePlanPhaseTrust && durable.Phase != state.GlobalNetworkReleasePlanPhaseLoopbacks {
+		return fmt.Errorf("release trust plan phase is %q", durable.Phase)
+	}
+	if err := validateOperationRevision(durable.CheckpointRevision); err != nil {
+		return fmt.Errorf("release trust checkpoint revision: %w", err)
+	}
+	if durable.CheckpointRevision <= durable.Operation.Revision {
+		return fmt.Errorf(
+			"release trust checkpoint revision %d does not follow operation revision %d",
+			durable.CheckpointRevision,
+			durable.Operation.Revision,
+		)
+	}
+	if err := validateOperationRevision(durable.NetworkRevision); err != nil {
+		return fmt.Errorf("release trust network revision: %w", err)
+	}
+	if err := durable.Authority.Validate(); err != nil {
+		return fmt.Errorf("release trust authority: %w", err)
+	}
+	if durable.NetworkRevision != durable.Authority.Projection.NetworkRevision ||
+		!durable.NetworkUpdatedAt.Equal(durable.Authority.Projection.NetworkUpdatedAt) {
+		return fmt.Errorf("release trust network boundary differs from durable authority")
+	}
+	if durable.LowPortReceipt == nil || durable.ResolverReceipt == nil {
+		return fmt.Errorf("release trust plan has no committed predecessor receipts")
+	}
+	if err := durable.LowPortReceipt.Validate(); err != nil {
+		return fmt.Errorf("release trust low-port receipt: %w", err)
+	}
+	if durable.LowPortReceipt.SourceCheckpointRevision <= durable.Operation.Revision {
+		return fmt.Errorf("release trust low-port receipt does not follow operation revision")
+	}
+	if durable.LowPortReceipt.VerifiedAt.Before(durable.NetworkUpdatedAt) {
+		return fmt.Errorf("release trust low-port receipt verification precedes network authority")
+	}
+	if err := durable.ResolverReceipt.Validate(); err != nil {
+		return fmt.Errorf("release trust resolver receipt: %w", err)
+	}
+	if durable.ResolverReceipt.VerifiedAt.Before(durable.NetworkUpdatedAt) ||
+		durable.ResolverReceipt.VerifiedAt.Before(durable.LowPortReceipt.VerifiedAt) {
+		return fmt.Errorf("release trust resolver receipt verification precedes durable authority")
+	}
+	switch durable.Phase {
+	case state.GlobalNetworkReleasePlanPhaseTrust:
+		if durable.TrustReceipt != nil {
+			return fmt.Errorf("release trust phase retains a premature trust receipt")
+		}
+		if durable.LowPortReceipt.SourceCheckpointRevision+1 >= durable.CheckpointRevision {
+			return fmt.Errorf("release trust low-port receipt does not precede the trust checkpoint")
+		}
+		if durable.ResolverReceipt.SourceCheckpointRevision+1 != durable.CheckpointRevision {
+			return fmt.Errorf("release trust resolver receipt source checkpoint does not precede trust checkpoint")
+		}
+	case state.GlobalNetworkReleasePlanPhaseLoopbacks:
+		if durable.TrustReceipt == nil {
+			return fmt.Errorf("release loopback phase has no trust receipt")
+		}
+		if err := durable.TrustReceipt.Validate(); err != nil {
+			return fmt.Errorf("release trust receipt: %w", err)
+		}
+		if durable.TrustReceipt.Disposition != durable.Authority.TrustDisposition {
+			return fmt.Errorf("release trust receipt disposition differs from durable authority")
+		}
+		if durable.LowPortReceipt.SourceCheckpointRevision+1 >= durable.CheckpointRevision {
+			return fmt.Errorf("release trust low-port receipt does not precede the loopback checkpoint")
+		}
+		if durable.ResolverReceipt.SourceCheckpointRevision+1 >= durable.CheckpointRevision {
+			return fmt.Errorf("release trust resolver receipt does not precede the loopback checkpoint")
+		}
+		if durable.TrustReceipt.SourceCheckpointRevision+1 != durable.CheckpointRevision {
+			return fmt.Errorf("release trust receipt source checkpoint does not bound loopback replay")
+		}
+		if durable.TrustReceipt.VerifiedAt.Before(durable.ResolverReceipt.VerifiedAt) {
+			return fmt.Errorf("release trust receipt verification precedes resolver receipt")
+		}
+	}
+	return nil
+}
+
+// observeReleaseTrust validates disposition-specific bounded evidence against a fresh exact native observation.
+func (c *GlobalNetworkReleaseCoordinator) observeReleaseTrust(ctx context.Context, durable state.GlobalNetworkReleasePlanRecord, evidence helper.TrustMutationEvidence) (helper.TrustMutationEvidence, error) {
+	if durable.Authority.TrustDisposition == state.GlobalNetworkReleaseTrustPreexistingUnowned &&
+		evidence != (helper.TrustMutationEvidence{}) {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("preexisting release trust confirmation must not carry helper evidence")
+	}
+	if durable.Authority.TrustDisposition == state.GlobalNetworkReleaseTrustOwned &&
+		(!canonicalNetworkDataPlaneFingerprint(evidence.AuthorityFingerprint) ||
+			!canonicalNetworkDataPlaneFingerprint(evidence.ObservationFingerprint) ||
+			evidence.AuthorityFingerprint != durable.Authority.Root.Fingerprint ||
+			evidence.Mechanism != durable.Authority.Policy.Mechanisms.Trust) {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("release trust evidence belongs to another authority")
+	}
+	native, err := trust.NewRequestForRequester(
+		durable.Authority.Projection.ConfirmedOwnership.Record.InstallationID,
+		durable.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+		durable.Authority.Policy.Mechanisms.Trust,
+		durable.Authority.Root,
+	)
+	if err != nil {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("derive release trust request: %w", err)
+	}
+	observation, err := c.trust.Observe(ctx, native)
+	if err != nil {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("observe release trust: %w", err)
+	}
+	if err := observation.Validate(); err != nil {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("release trust observation is invalid: %w", err)
+	}
+	if !sameNetworkDataPlaneSetupTrustRequest(observation.Request, native) || !observation.Complete {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("release trust observation does not prove the exact complete request")
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("fingerprint release trust: %w", err)
+	}
+	if durable.Authority.TrustDisposition == state.GlobalNetworkReleaseTrustOwned && fingerprint != evidence.ObservationFingerprint {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("release trust evidence differs from independently observed trust")
+	}
+	assessment, err := observation.Classify()
+	if err != nil {
+		return helper.TrustMutationEvidence{}, fmt.Errorf("classify release trust: %w", err)
+	}
+	switch durable.Authority.TrustDisposition {
+	case state.GlobalNetworkReleaseTrustOwned:
+		if evidence.Postcondition != helper.TrustPostconditionOwnedAbsent || assessment.Owned != trust.OwnedStateAbsent {
+			return helper.TrustMutationEvidence{}, fmt.Errorf("release trust does not prove owned absence")
+		}
+	case state.GlobalNetworkReleaseTrustPreexistingUnowned:
+		if fingerprint != durable.Authority.TrustObservationFingerprint ||
+			assessment.State != trust.StateForeign ||
+			assessment.Owned != trust.OwnedStateAbsent ||
+			!globalReleaseIdenticalUnownedTrust(observation) {
+			return helper.TrustMutationEvidence{}, fmt.Errorf("release trust does not preserve exact preexisting root")
+		}
+		evidence = helper.TrustMutationEvidence{
+			Changed:                false,
+			AuthorityFingerprint:   durable.Authority.Root.Fingerprint,
+			Mechanism:              durable.Authority.Policy.Mechanisms.Trust,
+			ObservationFingerprint: fingerprint,
+			Postcondition:          helper.TrustPostconditionPreexisting,
+		}
+	default:
+		return helper.TrustMutationEvidence{}, fmt.Errorf("release trust disposition is unsupported")
+	}
+	return evidence, nil
 }
 
 // GlobalNetworkReleasePrepareResolverRequest selects one owner-approved release-resolver checkpoint.

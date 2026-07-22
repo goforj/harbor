@@ -380,6 +380,10 @@ func newGlobalNetworkReleaseResolverFixture(t *testing.T) *globalNetworkReleaseR
 			}
 			return fixture.issuer, nil
 		},
+		globalNetworkReleaseUnavailableTrustPlans{},
+		func() (GlobalNetworkReleaseTrustIssuer, error) {
+			return nil, errors.New("unexpected release trust issuer")
+		},
 		fixture.observer,
 		base.trust,
 		base.loopback,
@@ -596,4 +600,9 @@ func (journal *globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseR
 	journal.plan.ResolverReceipt = &request.Receipt
 	journal.plan.CheckpointRevision++
 	return journal.plan, nil
+}
+
+// AdvanceGlobalNetworkReleaseTrust is unused by resolver-release tests.
+func (*globalNetworkReleaseResolverJournal) AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
 }

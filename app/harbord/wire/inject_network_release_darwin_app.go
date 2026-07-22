@@ -41,6 +41,7 @@ func provideNetworkReleaseCapability(
 	projection := state.NewNetworkDataPlaneSetupProjectionSource(network)
 	lowPortPlans := state.NewGlobalNetworkReleaseLowPortPlanSource(operations)
 	resolverPlans := state.NewGlobalNetworkReleaseResolverPlanSource(operations)
+	trustPlans := state.NewGlobalNetworkReleaseTrustPlanSource(operations)
 	coordinator := reconcile.NewGlobalNetworkReleaseCoordinator(
 		operations,
 		store,
@@ -55,6 +56,10 @@ func provideNetworkReleaseCapability(
 		resolverPlans,
 		func() (reconcile.GlobalNetworkReleaseResolverIssuer, error) {
 			return ticketissuer.OpenDefaultResolverService(resolverPlans, ownership, resolverObserver)
+		},
+		trustPlans,
+		func() (reconcile.GlobalNetworkReleaseTrustIssuer, error) {
+			return ticketissuer.OpenDefaultTrustService(trustPlans, ownership, trustAdapter)
 		},
 		resolverObserver,
 		trustAdapter,

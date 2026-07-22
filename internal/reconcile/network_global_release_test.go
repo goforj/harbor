@@ -326,6 +326,11 @@ func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseResol
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected resolver advance")
 }
 
+// AdvanceGlobalNetworkReleaseTrust is not exercised by recovery tests.
+func (journal *testGlobalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
+}
+
 // testGlobalNetworkReleaseRuntime records runtime-release requests.
 type testGlobalNetworkReleaseRuntime struct {
 	calls int
@@ -900,6 +905,10 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		func() (GlobalNetworkReleaseResolverIssuer, error) {
 			return nil, errors.New("unexpected release resolver issuer")
 		},
+		globalNetworkReleaseUnavailableTrustPlans{},
+		func() (GlobalNetworkReleaseTrustIssuer, error) {
+			return nil, errors.New("unexpected release trust issuer")
+		},
 		fixture.resolver,
 		fixture.trust,
 		fixture.loopback,
@@ -924,6 +933,14 @@ type globalNetworkReleaseUnavailableResolverPlans struct{}
 // Resolve rejects a capability read that start tests do not exercise.
 func (globalNetworkReleaseUnavailableResolverPlans) Resolve(context.Context, ticketissuer.ResolverRequest) (ticketissuer.ResolverPlan, error) {
 	return ticketissuer.ResolverPlan{}, errors.New("unexpected release resolver plan")
+}
+
+// globalNetworkReleaseUnavailableTrustPlans prevents start tests from opening release trust authority.
+type globalNetworkReleaseUnavailableTrustPlans struct{}
+
+// Resolve rejects a capability read that start tests do not exercise.
+func (globalNetworkReleaseUnavailableTrustPlans) Resolve(context.Context, ticketissuer.TrustRequest) (ticketissuer.TrustPlan, error) {
+	return ticketissuer.TrustPlan{}, errors.New("unexpected release trust plan")
 }
 
 // call appends an observable coordinator boundary.
@@ -1053,6 +1070,11 @@ func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPorts(
 // AdvanceGlobalNetworkReleaseResolver is not exercised by start tests.
 func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseResolver(context.Context, state.AdvanceGlobalNetworkReleaseResolverRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected resolver advance")
+}
+
+// AdvanceGlobalNetworkReleaseTrust is not exercised by start tests.
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseTrust(context.Context, state.AdvanceGlobalNetworkReleaseTrustRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected trust advance")
 }
 
 // globalNetworkReleaseState scripts coherent durable state and revision reads.
