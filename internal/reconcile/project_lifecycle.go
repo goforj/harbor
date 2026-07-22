@@ -624,11 +624,12 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 				coordinator.cancelQueued(record, readErr)
 				return
 			}
-			if !initialized || network.Stage != state.NetworkStageFull {
-				coordinator.failQueuedAdmission(record, lifecycleProblem(
-					"project.network.setup_required",
-					fmt.Errorf("managed service publication requires full Harbor network authority; current stage is %q", network.Stage),
-				))
+			if !initialized {
+				coordinator.failQueuedAdmission(record, managedPublicationNetworkProblem(initialized, network.Stage))
+				return
+			}
+			if network.Stage != state.NetworkStageFull {
+				coordinator.failQueuedAdmission(record, managedPublicationNetworkProblem(initialized, network.Stage))
 				return
 			}
 		}
@@ -731,6 +732,20 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		return
 	}
 	coordinator.waitForReadiness(begun, attached, handle, admission.Target, descriptor)
+}
+
+// managedPublicationNetworkProblem keeps resolver-stage DNS progress distinct from the unavailable identity foundation.
+func managedPublicationNetworkProblem(initialized bool, stage state.NetworkStage) domain.Problem {
+	if !initialized {
+		return lifecycleProblem(
+			"project.network.setup_required",
+			errors.New("managed service publication requires Harbor network setup; the network identity is not initialized"),
+		)
+	}
+	return lifecycleProblem(
+		"project.network.full_setup_required",
+		fmt.Errorf("Harbor DNS is active, but secure ingress is not ready; full network and trust setup is required before publishing managed services (current stage is %q)", stage),
+	)
 }
 
 // outputBrokerSession converts complete launcher metadata into neutral durable evidence without importing supervisor types into state.

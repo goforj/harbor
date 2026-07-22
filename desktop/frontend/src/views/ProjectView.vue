@@ -129,6 +129,7 @@ const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.va
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
 const lifecycleProblemCode = computed(() => store.projectLifecycleProblemCodes[projectId.value])
 const needsNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.setup_required')
+const needsFullNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.full_setup_required')
 const recoveryRequired = computed(() => lifecycleProblemCode.value === 'project.recovery.ambiguous_launch')
 const runtimeRepairNotice = computed(() => store.projectRuntimeRepairNotice(projectId.value))
 const runtimeRepairInspection = computed(() => {
@@ -515,11 +516,12 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </TabsList>
 
         <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
-        <Alert v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" :variant="recoveryRequired ? 'default' : 'destructive'">
+        <Alert v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" :variant="recoveryRequired || needsFullNetworkSetup ? 'default' : 'destructive'">
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : 'Project action failed' }}</AlertTitle>
+          <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : needsFullNetworkSetup ? 'Secure networking is not ready' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
             <p v-if="recoveryRequired">Starting again will reconcile the previous runtime and launch a fresh process.</p>
+            <p v-else-if="needsFullNetworkSetup">Harbor's DNS foundation is active, but this project declares host-visible services that require HTTPS and native ingress. Finish the full network and trust setup, then retry the project.</p>
             <p v-else-if="lifecycleError">{{ lifecycleError }}</p>
             <p v-if="recoveryRequired && runtimeRepairNotice" class="text-destructive">
               {{ runtimeRepairNotice.message }}

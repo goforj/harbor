@@ -87,6 +87,20 @@ async function mountStaleRuntimeProject(projectId = 'billing'): Promise<MountedP
   return mounted
 }
 
+async function mountFullNetworkBlockedProject(projectId = 'orders-api'): Promise<MountedProjectView> {
+  const mounted = await mountProject(projectId)
+  mounted.store.$patch({
+    projectLifecycleErrors: {
+      [projectId]: 'Harbor DNS is active, but secure ingress is not ready.',
+    },
+    projectLifecycleProblemCodes: {
+      [projectId]: 'project.network.full_setup_required',
+    },
+  })
+  await mounted.wrapper.vm.$nextTick()
+  return mounted
+}
+
 function confirmableInspection(): Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }> {
   return structuredClone(harborWireFixture.project_runtime_repair_inspection)
 }
@@ -253,6 +267,18 @@ describe('ProjectView stale runtime recovery', () => {
     expect(bodyButton('Stop this process and reset project').disabled).toBe(true)
     expect(document.body.textContent).toContain('This inspection has expired.')
     expect(confirmRuntime).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+describe('ProjectView network admission', () => {
+  it('does not offer the resolver-only setup action when full ingress authority is missing', async () => {
+    const { wrapper } = await mountFullNetworkBlockedProject()
+
+    expect(wrapper.text()).toContain('Secure networking is not ready')
+    expect(wrapper.text()).toContain('Harbor\'s DNS foundation is active')
+    expect(wrapper.text()).not.toContain('Set up networking and start')
+
     wrapper.unmount()
   })
 })
