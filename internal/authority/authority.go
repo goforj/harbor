@@ -131,26 +131,29 @@ type networkResolverSetupCoordinator interface {
 
 // Authority projects the daemon's durable state through the bounded control protocol.
 type Authority struct {
-	store             controlState
-	routes            httpRouteObserver
-	unregister        projectUnregisterCoordinator
-	lifecycle         projectLifecycleCoordinator
-	runtimeRepair     projectRuntimeRepairCoordinator
-	networkSetup      networkSetupCoordinator
-	resolverSetup     networkResolverSetupCoordinator
-	build             buildinfo.Info
-	discoverer        projectDiscoverer
-	now               func() time.Time
-	newProjectID      func() (domain.ProjectID, error)
-	newOperationID    func() (domain.OperationID, error)
-	newInstallationID func() (identity.InstallationID, error)
-	managedStore      managedSessionState
-	managedRegistry   *harbordruntime.ManagedPublicationRegistry
-	managedRoutes     managedNativeRouteActivator
-	managedObserver   managedPublicationObserver
-	managedMu         sync.Mutex
-	managedSessions   map[domain.ProjectID]managedSessionAttachment
-	resolverRuntime   networkResolverActivator
+	store                    controlState
+	routes                   httpRouteObserver
+	unregister               projectUnregisterCoordinator
+	lifecycle                projectLifecycleCoordinator
+	runtimeRepair            projectRuntimeRepairCoordinator
+	networkSetup             networkSetupCoordinator
+	resolverSetup            networkResolverSetupCoordinator
+	build                    buildinfo.Info
+	discoverer               projectDiscoverer
+	now                      func() time.Time
+	newProjectID             func() (domain.ProjectID, error)
+	newOperationID           func() (domain.OperationID, error)
+	newInstallationID        func() (identity.InstallationID, error)
+	managedStore             managedSessionState
+	managedRegistry          *harbordruntime.ManagedPublicationRegistry
+	managedRoutes            managedNativeRouteActivator
+	managedObserver          managedPublicationObserver
+	managedMu                sync.Mutex
+	managedBarrierMu         sync.Mutex
+	managedBarrierActive     bool
+	managedBarrierGeneration uint64
+	managedSessions          map[domain.ProjectID]managedSessionAttachment
+	resolverRuntime          networkResolverActivator
 }
 
 var _ control.Authority = (*Authority)(nil)

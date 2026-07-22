@@ -94,6 +94,17 @@ func PlanVerifiedManagedNativeRoutes(
 // managedPublicationAuthorityChanged marks a durable fence that moved while a pure plan was being assembled.
 var managedPublicationAuthorityChanged = errors.New("managed publication durable authority changed during planning")
 
+// ManagedPublicationProjectStateError reports that a project is not in a state eligible for a requested plan.
+type ManagedPublicationProjectStateError struct {
+	ProjectID domain.ProjectID
+	State     domain.ProjectState
+}
+
+// Error returns the project-state rejection without requiring callers to parse planner text.
+func (err *ManagedPublicationProjectStateError) Error() string {
+	return fmt.Sprintf("managed publication project %q is %q, not ready", err.ProjectID, err.State)
+}
+
 // managedPublicationAuthority is the validated, Harbor-owned input captured for one planner pass.
 type managedPublicationAuthority struct {
 	Session      domain.ProjectSession
@@ -126,7 +137,7 @@ func readVerifiedManagedPublicationAuthority(
 		return managedPublicationAuthority{}, &state.ProjectNotFoundError{ProjectID: fence.ProjectID}
 	}
 	if project.State != domain.ProjectReady && !(allowProjectStarting && project.State == domain.ProjectStarting) {
-		return managedPublicationAuthority{}, fmt.Errorf("managed publication project %q is %q, not ready", fence.ProjectID, project.State)
+		return managedPublicationAuthority{}, &ManagedPublicationProjectStateError{ProjectID: fence.ProjectID, State: project.State}
 	}
 
 	session, err := source.ActiveProjectSession(ctx, fence.ProjectID)

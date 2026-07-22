@@ -120,6 +120,11 @@ func TestPlanVerifiedManagedNativeRoutesRequiresReadyProject(t *testing.T) {
 
 	if _, err := PlanVerifiedManagedNativeRoutes(t.Context(), source, request); err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v, want project readiness rejection", err)
+	} else {
+		var projectState *ManagedPublicationProjectStateError
+		if !errors.As(err, &projectState) || projectState.State != domain.ProjectStopped {
+			t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v, want typed stopped-project rejection", err)
+		}
 	}
 }
 

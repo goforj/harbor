@@ -20,10 +20,11 @@ import (
 
 // managedSessionAttachment retains the authenticated peer and response needed to replay one registration.
 type managedSessionAttachment struct {
-	request            managedsession.RegisterRequest
-	launchTicketDigest string
-	response           managedsession.RegisterResponse
-	peer               local.PeerIdentity
+	request             managedsession.RegisterRequest
+	launchTicketDigest  string
+	response            managedsession.RegisterResponse
+	peer                local.PeerIdentity
+	composeAcknowledged bool
 }
 
 // RegisterManagedSession authenticates one Harbor-launched process against its awaiting durable session.
@@ -45,6 +46,11 @@ func (authority *Authority) RegisterManagedSession(
 	if err := ctx.Err(); err != nil {
 		return managedsession.RegisterResponse{}, err
 	}
+	lease, err := authority.reserveManagedBarrierLease()
+	if err != nil {
+		return managedsession.RegisterResponse{}, err
+	}
+	defer authority.releaseManagedBarrierLease(lease)
 
 	authority.managedMu.Lock()
 	defer authority.managedMu.Unlock()
@@ -261,12 +267,18 @@ func (authority *Authority) ReplaceManagedPublications(
 	if err := request.Validate(); err != nil {
 		return managedsession.ReplacePublicationsResponse{}, err
 	}
+	lease, err := authority.reserveManagedBarrierLease()
+	if err != nil {
+		return managedsession.ReplacePublicationsResponse{}, err
+	}
+	defer authority.releaseManagedBarrierLease(lease)
 	if _, err := authority.authorizeManagedFence(ctx, peer, request.Fence); err != nil {
 		return managedsession.ReplacePublicationsResponse{}, err
 	}
 	if err := authority.managedRegistry.Replace(request.Fence, request.Publications); err != nil {
 		return managedsession.ReplacePublicationsResponse{}, err
 	}
+	authority.clearManagedComposeAcknowledgement(request.Fence)
 	response := managedsession.ReplacePublicationsResponse{
 		SchemaVersion:    managedsession.SchemaVersion,
 		Fence:            request.Fence,
@@ -322,7 +334,11 @@ func (source managedPublicationStateSource) ActiveProjectSession(ctx context.Con
 }
 
 // currentManagedNativeRoutes plans every attached managed session from its latest complete observation.
-func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allowProjectStarting bool, startingFence harbordruntime.ManagedPublicationFence) (harbordruntime.ManagedNativePublicationPlan, error) {
+func (authority *Authority) currentManagedNativeRoutes(
+	ctx context.Context,
+	callerFence harbordruntime.ManagedPublicationFence,
+	callerComposeObserved bool,
+) (harbordruntime.ManagedNativePublicationPlan, error) {
 	if authority.managedStore == nil || authority.managedRegistry == nil {
 		return harbordruntime.ManagedNativePublicationPlan{}, errors.New("managed session route authority is unavailable")
 	}
@@ -336,9 +352,18 @@ func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allo
 	source := managedPublicationStateSource{runtime: authority.store, sessions: authority.managedStore}
 	for _, attachment := range attachments {
 		fence := attachment.response.Fence
-		allowStartingForAttachment := allowProjectStarting && fence == startingFence
+		allowStartingForAttachment := attachment.composeAcknowledged || (fence == callerFence && callerComposeObserved)
+		if !allowStartingForAttachment {
+			if fence == callerFence {
+				return harbordruntime.ManagedNativePublicationPlan{}, fmt.Errorf("managed publication fence for project %q has not completed a Harbor-observed Compose barrier", fence.ProjectID)
+			}
+			continue
+		}
 		publications, err := authority.managedRegistry.Snapshot(fence)
 		if err != nil {
+			if fence != callerFence && errors.Is(err, harbordruntime.ErrManagedPublicationFenceNotFound) {
+				continue
+			}
 			return harbordruntime.ManagedNativePublicationPlan{}, err
 		}
 		planned, err := harbordruntime.PlanVerifiedManagedNativeRoutes(ctx, source, harbordruntime.ManagedNativeRoutePlanRequest{
@@ -347,6 +372,10 @@ func (authority *Authority) currentManagedNativeRoutes(ctx context.Context, allo
 			AllowProjectStarting: allowStartingForAttachment,
 		})
 		if err != nil {
+			var projectState *harbordruntime.ManagedPublicationProjectStateError
+			if fence != callerFence && errors.As(err, &projectState) {
+				continue
+			}
 			return harbordruntime.ManagedNativePublicationPlan{}, fmt.Errorf("plan managed native routes for project %q: %w", fence.ProjectID, err)
 		}
 		plans = append(plans, planned)
@@ -363,12 +392,21 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 	if err := request.Validate(); err != nil {
 		return managedsession.BarrierResponse{}, err
 	}
+	lease, err := authority.reserveManagedBarrierLease()
+	if err != nil {
+		return managedsession.BarrierResponse{}, err
+	}
+	defer authority.releaseManagedBarrierLease(lease)
 	if _, err := authority.authorizeManagedFence(ctx, peer, request.Fence); err != nil {
 		return managedsession.BarrierResponse{}, err
 	}
 	acknowledged := false
 	if authority.managedRoutes != nil {
-		allowProjectStarting := request.Phase == managedsession.BarrierPhaseCompose
+		composeBarrier := request.Phase == managedsession.BarrierPhaseCompose
+		composeObserved := false
+		if composeBarrier && authority.managedObserver == nil {
+			return managedsession.BarrierResponse{}, fmt.Errorf("%w: managed Compose barrier observation is unavailable", managedsession.ErrManagedSessionNotReady)
+		}
 		if authority.managedObserver != nil {
 			var observed []harbordruntime.ManagedEndpointPublication
 			var err error
@@ -378,7 +416,7 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 					request.Fence.ProjectID,
 					request.Fence.SessionID,
 					request.Fence,
-					allowProjectStarting,
+					composeBarrier,
 				)
 			} else {
 				observed, err = authority.managedObserver.ObserveManagedPublications(
@@ -391,11 +429,13 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 			if err != nil {
 				return managedsession.BarrierResponse{}, err
 			}
+			authority.clearManagedComposeAcknowledgement(request.Fence)
 			if err := authority.managedRegistry.Replace(request.Fence, observed); err != nil {
 				return managedsession.BarrierResponse{}, err
 			}
+			composeObserved = composeBarrier
 		}
-		plan, err := authority.currentManagedNativeRoutes(normalizeContext(ctx), allowProjectStarting, request.Fence)
+		plan, err := authority.currentManagedNativeRoutes(normalizeContext(ctx), request.Fence, composeObserved)
 		if err != nil {
 			return managedsession.BarrierResponse{}, fmt.Errorf("%w: plan managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
 		}
@@ -405,6 +445,9 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 		}
 		if err := authority.managedRoutes.ManagedNativeRoutesLive(normalizeContext(ctx), routes); err != nil {
 			return managedsession.BarrierResponse{}, fmt.Errorf("%w: verify managed native routes: %w", managedsession.ErrManagedSessionNotReady, err)
+		}
+		if composeObserved {
+			authority.acknowledgeManagedComposeBarrier(request.Fence)
 		}
 		acknowledged = true
 	}
@@ -418,6 +461,51 @@ func (authority *Authority) AcknowledgeManagedBarrier(
 		return managedsession.BarrierResponse{}, err
 	}
 	return response, nil
+}
+
+// reserveManagedBarrierLease admits one complete process-local barrier generation without holding a lock in callbacks.
+func (authority *Authority) reserveManagedBarrierLease() (uint64, error) {
+	authority.managedBarrierMu.Lock()
+	defer authority.managedBarrierMu.Unlock()
+	if authority.managedBarrierActive {
+		return 0, fmt.Errorf("%w: another managed barrier generation is active", managedsession.ErrManagedSessionNotReady)
+	}
+	authority.managedBarrierGeneration++
+	authority.managedBarrierActive = true
+	return authority.managedBarrierGeneration, nil
+}
+
+// releaseManagedBarrierLease retires only the generation that acquired the process-local activation lease.
+func (authority *Authority) releaseManagedBarrierLease(generation uint64) {
+	authority.managedBarrierMu.Lock()
+	defer authority.managedBarrierMu.Unlock()
+	if authority.managedBarrierActive && authority.managedBarrierGeneration == generation {
+		authority.managedBarrierActive = false
+	}
+}
+
+// acknowledgeManagedComposeBarrier records that Harbor observed and activated one exact Compose fence.
+func (authority *Authority) acknowledgeManagedComposeBarrier(fence harbordruntime.ManagedPublicationFence) {
+	authority.managedMu.Lock()
+	defer authority.managedMu.Unlock()
+	attachment, found := authority.managedSessions[fence.ProjectID]
+	if !found || attachment.response.Fence != fence {
+		return
+	}
+	attachment.composeAcknowledged = true
+	authority.managedSessions[fence.ProjectID] = attachment
+}
+
+// clearManagedComposeAcknowledgement prevents caller-provided replacement observations from retaining barrier trust.
+func (authority *Authority) clearManagedComposeAcknowledgement(fence harbordruntime.ManagedPublicationFence) {
+	authority.managedMu.Lock()
+	defer authority.managedMu.Unlock()
+	attachment, found := authority.managedSessions[fence.ProjectID]
+	if !found || attachment.response.Fence != fence {
+		return
+	}
+	attachment.composeAcknowledged = false
+	authority.managedSessions[fence.ProjectID] = attachment
 }
 
 // authorizeManagedFence revalidates the durable session and operating-system peer before each observation.
