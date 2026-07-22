@@ -16,6 +16,7 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 	}{
 		{name: "network setup", kind: OperationKindNetworkSetup, want: "network.setup"},
 		{name: "network resolver setup", kind: OperationKindNetworkResolverSetup, want: "network.resolver.setup"},
+		{name: "network data-plane setup", kind: OperationKindNetworkDataPlaneSetup, want: "network.data-plane.setup"},
 		{name: "start", kind: OperationKindProjectStart, want: "project.start"},
 		{name: "stop", kind: OperationKindProjectStop, want: "project.stop"},
 		{name: "unregister", kind: OperationKindProjectUnregister, want: "project.unregister"},
@@ -35,7 +36,7 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 func TestNetworkSetupOperationsRequireGlobalScope(t *testing.T) {
 	t.Parallel()
 	requestedAt := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
-	for _, kind := range []OperationKind{OperationKindNetworkSetup, OperationKindNetworkResolverSetup} {
+	for _, kind := range []OperationKind{OperationKindNetworkSetup, OperationKindNetworkResolverSetup, OperationKindNetworkDataPlaneSetup} {
 		if _, err := NewOperation(
 			"operation-network-setup",
 			"intent-network-setup",
