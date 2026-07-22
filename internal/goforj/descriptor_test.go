@@ -91,6 +91,21 @@ func TestObserveAdmitsOptionalServiceIntent(t *testing.T) {
 	}
 }
 
+// TestObserveDropsServiceIntentWithUnknownConsumer keeps producer-side environment aliases from blocking App launch.
+func TestObserveDropsServiceIntentWithUnknownConsumer(t *testing.T) {
+	requirements := strings.Replace(serviceRequirementFixtureJSON(), `"consumers":["app"]`, `"consumers":["app","diclan"]`, 1)
+	observation, err := decodeReport([]byte(descriptorWithServiceRequirementsJSON(requirements)))
+	if err != nil {
+		t.Fatalf("decodeReport() error = %v", err)
+	}
+	if observation.ServiceRequirementsSupported {
+		t.Fatal("service requirements marked supported after an unknown consumer")
+	}
+	if len(observation.ServiceRequirements) != 0 {
+		t.Fatalf("service requirements = %#v, want none after dropping unsafe optional metadata", observation.ServiceRequirements)
+	}
+}
+
 // TestProjectServiceRequirementsProjectsEnvironmentMetadata keeps generated keys explicit and secret-free.
 func TestProjectServiceRequirementsProjectsEnvironmentMetadata(t *testing.T) {
 	requirements := serviceRequirementWireFixtures()

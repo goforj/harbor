@@ -45,6 +45,8 @@ var (
 	ErrReportTooLarge = errors.New("GoForj project descriptor exceeds the supported size")
 	// ErrObservationTimedOut means the descriptor command did not settle within its bound.
 	ErrObservationTimedOut = errors.New("GoForj project descriptor observation timed out")
+	// errUnknownServiceConsumer marks optional service metadata that cannot be joined to a declared App.
+	errUnknownServiceConsumer = errors.New("unknown service consumer")
 )
 
 // Query identifies the exact GoForj executable, checkout, and environment used for one descriptor read.
@@ -467,7 +469,15 @@ func decodeReport(payload []byte) (Observation, error) {
 	}
 	serviceRequirements, serviceRequirementsSupported, err := decodeServiceRequirementsSection(report.ServiceRequirements, apps)
 	if err != nil {
-		return Observation{}, err
+		// Service metadata is additive. A producer can report an environment-derived consumer that is not a
+		// declared process App; dropping the optional section keeps the project launchable without guessing where
+		// service values belong. Other descriptor-shape errors remain fail-closed.
+		if errors.Is(err, errUnknownServiceConsumer) {
+			serviceRequirements = []ServiceRequirement{}
+			serviceRequirementsSupported = false
+		} else {
+			return Observation{}, err
+		}
 	}
 	digest := strings.TrimPrefix(report.Project.ConfigDigest, "sha256:")
 	return Observation{
@@ -763,7 +773,7 @@ func projectServiceRequirements(source []wireServiceRequirement, apps []App) ([]
 				return nil, fmt.Errorf("%s is duplicated", consumerLabel)
 			}
 			if _, exists := knownApps[consumer]; !exists {
-				return nil, fmt.Errorf("%s references unknown App %q", consumerLabel, consumer)
+				return nil, fmt.Errorf("%w: %s references unknown App %q", errUnknownServiceConsumer, consumerLabel, consumer)
 			}
 			seenConsumers[consumer] = struct{}{}
 			consumers = append(consumers, consumer)
