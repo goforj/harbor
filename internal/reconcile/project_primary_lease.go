@@ -325,7 +325,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) assignServiceEndpointReservat
 		if err := network.Validate(); err != nil {
 			return fmt.Errorf("assign service endpoints for project %q: invalid network authority: %w", projectID, err)
 		}
-		if network.Stage != state.NetworkStageFull {
+		if network.Stage != state.NetworkStageResolver && network.Stage != state.NetworkStageFull {
 			return nil
 		}
 		primary, found := primaryLeaseForKey(network.Leases, identity.LeaseKey{ProjectID: projectID})

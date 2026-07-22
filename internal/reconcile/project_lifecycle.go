@@ -628,7 +628,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 				coordinator.failQueuedAdmission(record, managedPublicationNetworkProblem(initialized, network.Stage))
 				return
 			}
-			if network.Stage != state.NetworkStageFull {
+			if network.Stage != state.NetworkStageResolver && network.Stage != state.NetworkStageFull {
 				coordinator.failQueuedAdmission(record, managedPublicationNetworkProblem(initialized, network.Stage))
 				return
 			}

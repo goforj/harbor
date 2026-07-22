@@ -106,7 +106,7 @@ func networkRecordFromModels(rows networkModelRows) (NetworkRecord, bool, error)
 	if err != nil {
 		return NetworkRecord{}, false, err
 	}
-	if stage != NetworkStageFull && len(rows.Endpoints) != 0 {
+	if stage == NetworkStageIdentity && len(rows.Endpoints) != 0 {
 		return NetworkRecord{}, false, corruptStateError(
 			"public endpoint lease",
 			string(stage)+"-stage",

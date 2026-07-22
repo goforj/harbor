@@ -46,8 +46,8 @@ func TestPlanVerifiedManagedNativeRoutesRejectsCallerSuppliedTopology(t *testing
 	}
 }
 
-// TestPlanVerifiedManagedNativeRoutesRequiresFullNetworkOwnership keeps identity and resolver setup from becoming native publication authority.
-func TestPlanVerifiedManagedNativeRoutesRequiresFullNetworkOwnership(t *testing.T) {
+// TestPlanVerifiedManagedNativeRoutesRequiresResolverNetworkOwnership keeps identity setup from becoming native publication authority.
+func TestPlanVerifiedManagedNativeRoutesRequiresResolverNetworkOwnership(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*state.RuntimeState)
@@ -78,10 +78,37 @@ func TestPlanVerifiedManagedNativeRoutesRequiresFullNetworkOwnership(t *testing.
 			test.mutate(&source.runtimeValues[0])
 			source.runtimeValues[1] = source.runtimeValues[0]
 
-			if _, err := PlanVerifiedManagedNativeRoutes(t.Context(), source, request); err == nil || !strings.Contains(err.Error(), "full Harbor network ownership") {
-				t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v, want full-network rejection", err)
+			want := "Harbor network resolver authority"
+			if test.name == "identity stage" {
+				want = "resolver or full Harbor network ownership"
+			}
+			if _, err := PlanVerifiedManagedNativeRoutes(t.Context(), source, request); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("PlanVerifiedManagedNativeRoutes() error = %v, want %q", err, want)
 			}
 		})
+	}
+}
+
+// TestPlanVerifiedManagedNativeRoutesAllowsResolverNetwork proves DNS-stage authority is sufficient for native TCP relays.
+func TestPlanVerifiedManagedNativeRoutesAllowsResolverNetwork(t *testing.T) {
+	source, request := managedPublicationBoundaryFixture()
+	for index := range source.runtimeValues {
+		source.runtimeValues[index].Network.Stage = state.NetworkStageResolver
+		source.runtimeValues[index].Network.Reservations.Listeners = state.SharedListenerReservations{}
+		project := &source.runtimeValues[index].Snapshot.Projects[0]
+		project.Apps = []domain.AppSnapshot{{ID: "app", Name: "App", State: domain.EntityReady, Active: true, Required: true}}
+		project.Resources = []domain.ResourceSnapshot{{
+			ID: "app-http", Name: "App", Kind: "application",
+			Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
+			URL:   "http://127.77.0.10:3000",
+		}}
+	}
+	routes, err := PlanVerifiedManagedNativeRoutes(t.Context(), source, request)
+	if err != nil {
+		t.Fatalf("PlanVerifiedManagedNativeRoutes() resolver error = %v", err)
+	}
+	if len(routes) != 1 || routes[0].Listen != netip.MustParseAddrPort("127.77.0.10:3306") {
+		t.Fatalf("resolver routes = %#v, want one native route", routes)
 	}
 }
 

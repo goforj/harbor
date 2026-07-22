@@ -107,8 +107,8 @@ func (coordinator *ProjectLifecycleCoordinator) observeManagedPublications(
 	if err := network.Validate(); err != nil {
 		return nil, fmt.Errorf("validate managed publication network: %w", err)
 	}
-	if network.Stage != state.NetworkStageFull {
-		return nil, fmt.Errorf("%w: managed publication network is at %q stage; full stage is required", managedsession.ErrManagedSessionNetworkSetupRequired, network.Stage)
+	if network.Stage != state.NetworkStageResolver && network.Stage != state.NetworkStageFull {
+		return nil, fmt.Errorf("%w: managed publication network is at %q stage; resolver stage is required", managedsession.ErrManagedSessionNetworkSetupRequired, network.Stage)
 	}
 
 	portReader, ok := coordinator.supervisor.(projectServicePortReader)

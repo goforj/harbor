@@ -75,9 +75,11 @@ func TestNetworkRecordFromModelsAcceptsIdentityFoundation(t *testing.T) {
 	}
 }
 
-// TestNetworkRecordFromModelsAcceptsResolverAuthority verifies policy-bound resolution remains non-publishable.
+// TestNetworkRecordFromModelsAcceptsResolverAuthority verifies policy-bound resolution can carry native service authority.
 func TestNetworkRecordFromModelsAcceptsResolverAuthority(t *testing.T) {
 	rows := resolverNetworkModelRows()
+	rows.Leases = []models.LoopbackAddressLease{validNetworkModelRows().Leases[1]}
+	rows.Endpoints = []models.PublicEndpointLease{validNetworkModelRows().Endpoints[2]}
 	record, initialized, err := networkRecordFromModels(rows)
 	if err != nil {
 		t.Fatalf("networkRecordFromModels() resolver error = %v", err)
@@ -86,15 +88,18 @@ func TestNetworkRecordFromModelsAcceptsResolverAuthority(t *testing.T) {
 		t.Fatalf("resolver conversion = initialized %t, stage %q", initialized, record.Stage)
 	}
 	if record.Reservations.Listeners != (SharedListenerReservations{}) ||
-		len(record.Reservations.Endpoints) != 0 || len(record.Leases) != 0 {
-		t.Fatalf("resolver conversion projected publishable authority: %#v", record)
+		len(record.Reservations.Endpoints) != 1 || len(record.Leases) != 1 {
+		t.Fatalf("resolver conversion projected native service authority: %#v", record)
+	}
+	if record.Reservations.Endpoints[0].Protocol != EndpointProtocolTCP {
+		t.Fatalf("resolver endpoint protocol = %q, want TCP", record.Reservations.Endpoints[0].Protocol)
 	}
 	if err := record.Validate(); err != nil {
 		t.Fatalf("resolver NetworkRecord.Validate() error = %v", err)
 	}
 }
 
-// TestNetworkRecordFromModelsRejectsResolverDataPlaneCorruption verifies the intermediate stage owns exactly three proofs and no routes.
+// TestNetworkRecordFromModelsRejectsResolverDataPlaneCorruption verifies resolver state cannot claim shared listeners or HTTP ingress.
 func TestNetworkRecordFromModelsRejectsResolverDataPlaneCorruption(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -113,8 +118,8 @@ func TestNetworkRecordFromModelsRejectsResolverDataPlaneCorruption(t *testing.T)
 			rows.Listeners = []models.NetworkSharedListener{validNetworkModelRows().Listeners[0]}
 		}, want: "resolver-stage network must not contain listener reservations"},
 		{name: "endpoint", mutate: func(rows *networkModelRows) {
-			rows.Endpoints = []models.PublicEndpointLease{validNetworkModelRows().Endpoints[0]}
-		}, want: "resolver-stage network must not contain endpoint reservations"},
+			rows.Endpoints = []models.PublicEndpointLease{validNetworkModelRows().Endpoints[1]}
+		}, want: "HTTP endpoint must use the advertised HTTPS socket"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rows := resolverNetworkModelRows()

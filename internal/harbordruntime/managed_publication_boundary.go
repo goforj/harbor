@@ -100,7 +100,7 @@ type managedPublicationAuthority struct {
 	Reservations []state.EndpointReservation
 }
 
-// readVerifiedManagedPublicationAuthority reads only full-network, ready-project state for the requested attached session.
+// readVerifiedManagedPublicationAuthority reads resolver-or-full network state for the requested attached session.
 func readVerifiedManagedPublicationAuthority(
 	ctx context.Context,
 	source ManagedPublicationStateSource,
@@ -114,8 +114,11 @@ func readVerifiedManagedPublicationAuthority(
 	if err := runtimeState.Validate(); err != nil {
 		return managedPublicationAuthority{}, fmt.Errorf("validate managed publication runtime state: %w", err)
 	}
-	if !runtimeState.NetworkInitialized || runtimeState.Network.Stage != state.NetworkStageFull {
-		return managedPublicationAuthority{}, fmt.Errorf("managed publication requires full Harbor network ownership")
+	if !runtimeState.NetworkInitialized {
+		return managedPublicationAuthority{}, fmt.Errorf("managed publication requires Harbor network resolver authority")
+	}
+	if runtimeState.Network.Stage != state.NetworkStageResolver && runtimeState.Network.Stage != state.NetworkStageFull {
+		return managedPublicationAuthority{}, fmt.Errorf("managed publication requires resolver or full Harbor network ownership; current stage is %q", runtimeState.Network.Stage)
 	}
 
 	project, found := managedPublicationProject(runtimeState.Snapshot.Projects, fence.ProjectID)

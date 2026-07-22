@@ -8,5 +8,5 @@ var ErrManagedSessionAwaitingAttach = errors.New("managed session is awaiting pr
 // ErrManagedSessionNotReady identifies a valid attached session whose dependent runtime evidence is still settling.
 var ErrManagedSessionNotReady = errors.New("managed session runtime is not ready")
 
-// ErrManagedSessionNetworkSetupRequired identifies a managed start that cannot proceed until Harbor reaches full network authority.
+// ErrManagedSessionNetworkSetupRequired identifies a managed start that cannot proceed until Harbor reaches the required network stage.
 var ErrManagedSessionNetworkSetupRequired = errors.New("managed session network setup is required")

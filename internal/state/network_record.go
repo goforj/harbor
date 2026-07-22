@@ -301,7 +301,7 @@ func (reservations DataPlaneReservations) Validate() error {
 	return nil
 }
 
-// validateNonPublishableDataPlaneReservations prevents a pre-full aggregate from claiming ingress authority.
+// validateNonPublishableDataPlaneReservations prevents a pre-full aggregate from claiming shared ingress authority.
 func validateNonPublishableDataPlaneReservations(stage NetworkStage, reservations DataPlaneReservations) error {
 	if reservations.Endpoints == nil {
 		return fmt.Errorf("network endpoint reservations must be initialized")
@@ -312,8 +312,18 @@ func validateNonPublishableDataPlaneReservations(stage NetworkStage, reservation
 	if reservations.Listeners != (SharedListenerReservations{}) {
 		return fmt.Errorf("%s-stage network must not contain listener reservations", stage)
 	}
-	if len(reservations.Endpoints) != 0 {
+	if stage == NetworkStageIdentity && len(reservations.Endpoints) != 0 {
 		return fmt.Errorf("%s-stage network must not contain endpoint reservations", stage)
+	}
+	if stage == NetworkStageResolver {
+		if err := validateNetworkMutationEndpoints(reservations.Endpoints, ""); err != nil {
+			return err
+		}
+		for _, endpoint := range reservations.Endpoints {
+			if endpoint.Protocol != EndpointProtocolTCP {
+				return fmt.Errorf("resolver-stage network may reserve only native TCP endpoints, not %q", endpoint.Protocol)
+			}
+		}
 	}
 	_, err := validateSuppressedNetworkProjects(reservations.SuppressedProjectIDs)
 	return err

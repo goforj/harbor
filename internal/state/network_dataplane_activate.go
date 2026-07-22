@@ -168,13 +168,6 @@ func (store *Store) ActivateNetworkDataPlane(
 		default:
 			return corruptStateError("network state", "1", fmt.Errorf("stage %q cannot be activated", current.Stage))
 		}
-		if len(before.Endpoints) != 0 {
-			return corruptStateError(
-				"public endpoint lease",
-				string(sourceStage)+"-stage",
-				fmt.Errorf("%s-stage network must not contain endpoint reservations", sourceStage),
-			)
-		}
 		if request.At.Before(current.UpdatedAt) {
 			return &NetworkDataPlaneActivationConflictError{
 				ActualRevision: current.Revision,

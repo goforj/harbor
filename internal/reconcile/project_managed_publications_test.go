@@ -50,14 +50,17 @@ func (supervisor *managedPublicationTestSupervisor) ObserveServicePorts(context.
 	return supervisor.ports, nil
 }
 
-// TestObserveManagedPublicationsRepairsMissingServiceReservation proves a barrier can recover an attached session
-// whose launch predates durable service-endpoint assignment.
-func TestObserveManagedPublicationsRepairsMissingServiceReservation(t *testing.T) {
+// TestObserveManagedPublicationsRepairsMissingServiceReservationInResolverStage proves DNS-stage authority is enough for native service endpoints.
+func TestObserveManagedPublicationsRepairsMissingServiceReservationInResolverStage(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
 	fixture := newPrimaryLeaseTestFixture(t, address)
 	fixture.state.project.Project.State = domain.ProjectStarting
 	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
-	primaryLeaseTestEnableFullStage(t, fixture)
+	fixture.state.network.Stage = state.NetworkStageResolver
+	fixture.state.network.Reservations.Listeners = state.SharedListenerReservations{}
+	if err := fixture.state.network.Validate(); err != nil {
+		t.Fatalf("resolver-stage fixture Validate() error = %v", err)
+	}
 	session := managedPublicationTestSession(fixture.state.project.Project.ID)
 	stateSource := &managedPublicationLifecycleState{leaseState: fixture.state, session: session}
 	descriptor := projectprocess.ProjectDescriptorObservation{
@@ -106,7 +109,7 @@ func TestObserveManagedPublicationsRejectsIncompleteNetworkAuthority(t *testing.
 	fixture := newPrimaryLeaseTestFixture(t, address)
 	fixture.state.project.Project.State = domain.ProjectStarting
 	fixture.state.network.Leases = []identity.Lease{primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership)}
-	fixture.state.network.Stage = state.NetworkStageResolver
+	fixture.state.network.Stage = state.NetworkStageIdentity
 	session := managedPublicationTestSession(fixture.state.project.Project.ID)
 	stateSource := &managedPublicationLifecycleState{leaseState: fixture.state, session: session}
 	descriptor := projectprocess.ProjectDescriptorObservation{
@@ -134,8 +137,8 @@ func TestObserveManagedPublicationsRejectsIncompleteNetworkAuthority(t *testing.
 	if err == nil {
 		t.Fatal("ObserveManagedPublicationsForPhase() error = nil, want pre-full network authority error")
 	}
-	if !strings.Contains(err.Error(), "full stage is required") {
-		t.Fatalf("ObserveManagedPublicationsForPhase() error = %v, want full-stage explanation", err)
+	if !strings.Contains(err.Error(), "resolver stage is required") {
+		t.Fatalf("ObserveManagedPublicationsForPhase() error = %v, want network-stage explanation", err)
 	}
 	if strings.Contains(err.Error(), "no exact durable reservation") {
 		t.Fatalf("ObserveManagedPublicationsForPhase() error = %v, retained misleading reservation error", err)

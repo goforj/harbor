@@ -65,8 +65,8 @@ func TestNetworkRecordValidateSeparatesIdentityFromDataPlaneAuthority(t *testing
 	}
 }
 
-// TestNetworkRecordValidateKeepsResolverStageNonPublishable verifies resolver proof alone cannot expose listeners or endpoints.
-func TestNetworkRecordValidateKeepsResolverStageNonPublishable(t *testing.T) {
+// TestNetworkRecordValidateKeepsResolverStageScoped verifies resolver proof carries native TCP authority but not shared ingress.
+func TestNetworkRecordValidateKeepsResolverStageScoped(t *testing.T) {
 	record := recordTestNetworkRecord()
 	record.Stage = NetworkStageResolver
 	record.Reservations.Listeners = SharedListenerReservations{}
@@ -78,8 +78,12 @@ func TestNetworkRecordValidateKeepsResolverStageNonPublishable(t *testing.T) {
 	record.Reservations.Listeners = recordTestListeners()
 	assertRecordValidationError(t, record.Validate(), "resolver-stage network must not contain listener reservations")
 	record.Reservations.Listeners = SharedListenerReservations{}
+	record.Reservations.Endpoints = []EndpointReservation{recordTestTCPEndpoint("mysql.alpha.test", "project-alpha", "mysql", "127.77.0.10:3306")}
+	if err := record.Validate(); err != nil {
+		t.Fatalf("resolver native TCP NetworkRecord.Validate() error = %v", err)
+	}
 	record.Reservations.Endpoints = []EndpointReservation{recordTestHTTPEndpoint("alpha.test", "project-alpha", "web")}
-	assertRecordValidationError(t, record.Validate(), "resolver-stage network must not contain endpoint reservations")
+	assertRecordValidationError(t, record.Validate(), "resolver-stage network may reserve only native TCP endpoints")
 }
 
 // TestListenerModeValidate covers the complete durable listener-mode vocabulary.
