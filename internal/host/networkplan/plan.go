@@ -82,6 +82,20 @@ func Build(request Request) (networkpolicy.Policy, error) {
 	}
 }
 
+// BuildLegacyMacOS constructs only the exact persisted macOS policy that used current-user trust.
+func BuildLegacyMacOS(request Request) (networkpolicy.Policy, error) {
+	if request.Platform != PlatformMacOS {
+		return networkpolicy.Policy{}, &UnsupportedPlatformError{Platform: request.Platform}
+	}
+	if err := request.InstallationID.Validate(); err != nil {
+		return networkpolicy.Policy{}, fmt.Errorf("legacy macOS host network plan: installation ID: %w", err)
+	}
+	if err := request.Pool.Validate(); err != nil {
+		return networkpolicy.Policy{}, fmt.Errorf("legacy macOS host network plan: pool: %w", err)
+	}
+	return buildRedirectedPolicy(request, networkpolicy.LegacyMacOSMechanisms())
+}
+
 // buildRedirectedPolicy keeps all supported redirected profiles on the same installation-stable socket contract.
 func buildRedirectedPolicy(request Request, mechanisms networkpolicy.Mechanisms) (networkpolicy.Policy, error) {
 	firstPort := redirectedPortBlockStart(request.InstallationID)

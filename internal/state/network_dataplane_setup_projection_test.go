@@ -327,9 +327,13 @@ func TestNetworkDataPlaneSetupProjectionSourceAdmission(t *testing.T) {
 	if err := mismatchedPolicy.Validate(); err != nil {
 		t.Fatalf("mismatched policy should remain canonical: %v", err)
 	}
-	if _, err := fixture.source.Resolve(context.Background(), mismatchedPolicy); err == nil ||
-		!strings.Contains(err.Error(), "fingerprint does not match confirmed ownership") {
-		t.Fatalf("Resolve(mismatched policy) error = %v", err)
+	if _, err := fixture.source.Resolve(context.Background(), mismatchedPolicy); err == nil {
+		t.Fatal("Resolve(mismatched policy) error = nil")
+	} else {
+		var mismatch *NetworkDataPlaneSetupPolicyFingerprintMismatchError
+		if !errors.As(err, &mismatch) {
+			t.Fatalf("Resolve(mismatched policy) error = %v, want policy fingerprint mismatch", err)
+		}
 	}
 	if afterRows := networkDataPlaneActivationTestRows(t, fixture.database); !reflect.DeepEqual(afterRows, beforeRows) {
 		t.Fatal("rejected Resolve() calls mutated network rows")

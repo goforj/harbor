@@ -426,6 +426,78 @@ func TestGlobalNetworkReleaseStartAcceptsIdenticalPreexistingTrust(t *testing.T)
 	}
 }
 
+// TestGlobalNetworkReleaseStartAcceptsExactLegacyMacOSAuthority proves release can retire only the persisted current-user-trust profile.
+func TestGlobalNetworkReleaseStartAcceptsExactLegacyMacOSAuthority(t *testing.T) {
+	fixture := newGlobalNetworkReleaseStartFixture(t)
+	fixture.setLegacyMacOSAuthority(t)
+	if _, err := fixture.coordinator.Start(t.Context(), fixture.request); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if fixture.stage.Authority.Policy.Mechanisms != networkpolicy.LegacyMacOSMechanisms() ||
+		fixture.stage.Authority.Projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint != fixture.legacyPolicyFingerprint(t) {
+		t.Fatalf("staged legacy authority = %#v", fixture.stage.Authority)
+	}
+}
+
+// TestGlobalNetworkReleaseStartRejectsNonLegacyAndMismatchedPolicyAuthority proves fallback cannot authorize arbitrary or mismatched persisted policies.
+func TestGlobalNetworkReleaseStartRejectsNonLegacyAndMismatchedPolicyAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *globalNetworkReleaseStartFixture)
+	}{
+		{
+			name: "non-legacy profile",
+			mutate: func(t *testing.T, fixture *globalNetworkReleaseStartFixture) {
+				fixture.projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint = strings.Repeat("f", 64)
+				fixture.refreshOwnership(t)
+			},
+		},
+		{
+			name: "legacy profile fingerprint mismatch",
+			mutate: func(t *testing.T, fixture *globalNetworkReleaseStartFixture) {
+				fixture.setLegacyMacOSAuthority(t)
+				fixture.projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint = strings.Repeat("f", 64)
+				fixture.refreshOwnership(t)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGlobalNetworkReleaseStartFixture(t)
+			test.mutate(t, fixture)
+			if _, err := fixture.coordinator.Start(t.Context(), fixture.request); err == nil {
+				t.Fatal("Start() error = nil")
+			}
+			if fixture.stageCalls != 0 || fixture.runtimeRelease.calls != 0 {
+				t.Fatalf("stage/runtime calls = %d/%d, want 0/0", fixture.stageCalls, fixture.runtimeRelease.calls)
+			}
+		})
+	}
+}
+
+// TestGlobalNetworkReleaseStartDoesNotFallbackOnProjectionErrors proves only the persisted-policy mismatch signal may open the legacy read.
+func TestGlobalNetworkReleaseStartDoesNotFallbackOnProjectionErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "transient", err: errors.New("transient projection read")},
+		{name: "storage", err: errors.New("storage projection read")},
+		{name: "corruption", err: errors.New("corrupt projection")},
+		{name: "current policy", err: errors.New("current policy projection rejected")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGlobalNetworkReleaseStartFixture(t)
+			fixture.projections.resolveErrors = []error{test.err, nil}
+			if _, err := fixture.coordinator.Start(t.Context(), fixture.request); !errors.Is(err, test.err) {
+				t.Fatalf("Start() error = %v, want %v", err, test.err)
+			}
+			if got := strings.Count(strings.Join(fixture.calls, ","), "projection"); got != 1 {
+				t.Fatalf("projection calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
 // TestGlobalNetworkReleaseStartStopsBeforeStageOnAuthorityFailure proves every observer and source boundary is fail-closed.
 func TestGlobalNetworkReleaseStartStopsBeforeStageOnAuthorityFailure(t *testing.T) {
 	for _, test := range []struct {
@@ -1004,6 +1076,60 @@ func (fixture *globalNetworkReleaseStartFixture) expectedAuthority() state.Globa
 	return fixture.stage.Authority
 }
 
+// setLegacyMacOSAuthority rewrites only test fixtures to model an exact persisted current-user-trust setup.
+func (fixture *globalNetworkReleaseStartFixture) setLegacyMacOSAuthority(t *testing.T) {
+	t.Helper()
+	policy, err := networkplan.BuildLegacyMacOS(networkplan.Request{
+		Platform:             networkplan.PlatformMacOS,
+		InstallationID:       fixture.runtime.Network.Ownership.InstallationID,
+		Pool:                 fixture.runtime.Network.Pool,
+		AuthorityFingerprint: fixture.roots.root.Fingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fixture.projection.ConfirmedOwnership.Record
+	target.NetworkPolicyFingerprint = fingerprint
+	fixture.projection.ConfirmedOwnership = networkResolverSetupTestOwnershipObservation(t, target)
+	fixture.ownership.observation = fixture.projection.ConfirmedOwnership
+	request, err := lowport.NewRequest(target, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.low.observation = networkDataPlaneSetupLowPortObservation(request)
+	fixture.resolver.observation = networkResolverSetupTestExactObservation(t, target, policy)
+}
+
+// refreshOwnership synchronizes the independent ownership observer after fixture record changes.
+func (fixture *globalNetworkReleaseStartFixture) refreshOwnership(t *testing.T) {
+	t.Helper()
+	fixture.projection.ConfirmedOwnership = networkResolverSetupTestOwnershipObservation(t, fixture.projection.ConfirmedOwnership.Record)
+	fixture.ownership.observation = fixture.projection.ConfirmedOwnership
+}
+
+// legacyPolicyFingerprint returns the fixture's exact former current-user-trust policy fingerprint.
+func (fixture *globalNetworkReleaseStartFixture) legacyPolicyFingerprint(t *testing.T) string {
+	t.Helper()
+	policy, err := networkplan.BuildLegacyMacOS(networkplan.Request{
+		Platform:             networkplan.PlatformMacOS,
+		InstallationID:       fixture.runtime.Network.Ownership.InstallationID,
+		Pool:                 fixture.runtime.Network.Pool,
+		AuthorityFingerprint: fixture.roots.root.Fingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fingerprint
+}
+
 // tStageAuthority stages once through the normal fixture so the replay record is contract-valid.
 func (fixture *globalNetworkReleaseStartFixture) tStageAuthority() {
 	if fixture.stage.Operation.ID != "" {
@@ -1176,14 +1302,35 @@ func (source *globalNetworkReleaseState) GlobalNetworkReleaseProjectRevisions(_ 
 
 // globalNetworkReleaseProjection scripts full policy-bound authority reads.
 type globalNetworkReleaseProjection struct {
-	fixture *globalNetworkReleaseStartFixture
-	err     error
+	fixture       *globalNetworkReleaseStartFixture
+	err           error
+	resolveErrors []error
 }
 
 // Resolve returns the configured projection.
-func (source *globalNetworkReleaseProjection) Resolve(context.Context, networkpolicy.Policy) (state.NetworkDataPlaneSetupProjection, error) {
+func (source *globalNetworkReleaseProjection) Resolve(_ context.Context, policy networkpolicy.Policy) (state.NetworkDataPlaneSetupProjection, error) {
 	source.fixture.call("projection")
-	return source.fixture.projection, source.err
+	if len(source.resolveErrors) > 0 {
+		err := source.resolveErrors[0]
+		source.resolveErrors = source.resolveErrors[1:]
+		if err != nil {
+			return state.NetworkDataPlaneSetupProjection{}, err
+		}
+	}
+	if source.err != nil {
+		return state.NetworkDataPlaneSetupProjection{}, source.err
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		return state.NetworkDataPlaneSetupProjection{}, err
+	}
+	if fingerprint != source.fixture.projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint {
+		return state.NetworkDataPlaneSetupProjection{}, &state.NetworkDataPlaneSetupPolicyFingerprintMismatchError{
+			Expected: fingerprint,
+			Actual:   source.fixture.projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint,
+		}
+	}
+	return source.fixture.projection, nil
 }
 
 // globalNetworkReleaseRoots scripts public-root reads.

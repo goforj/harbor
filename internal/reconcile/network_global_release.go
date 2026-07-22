@@ -2188,7 +2188,15 @@ func (c *GlobalNetworkReleaseCoordinator) authority(ctx context.Context, request
 	}
 	projection, err := c.projections.Resolve(ctx, policy)
 	if err != nil {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("full projection: %w", err)
+		var mismatch *state.NetworkDataPlaneSetupPolicyFingerprintMismatchError
+		policyFingerprint, fingerprintErr := policy.Fingerprint()
+		if !errors.As(err, &mismatch) || fingerprintErr != nil || mismatch.Expected != policyFingerprint || c.platform != networkplan.PlatformMacOS {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("full projection: %w", err)
+		}
+		policy, projection, err = c.legacyMacOSReleaseProjection(ctx, runtimeState, root)
+		if err != nil {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("full projection: %w", err)
+		}
 	}
 	if projection.Stage != state.NetworkStageFull || projection.ConfirmedOwnership.Record.OwnerIdentity != requester {
 		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("authenticated requester does not own full authority")
@@ -2321,6 +2329,41 @@ func (c *GlobalNetworkReleaseCoordinator) authority(ctx context.Context, request
 		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("validate global network release authority: %w", err)
 	}
 	return authority, nil
+}
+
+// legacyMacOSReleaseProjection admits only the former current-user-trust policy when persisted ownership confirms its exact fingerprint.
+func (c *GlobalNetworkReleaseCoordinator) legacyMacOSReleaseProjection(
+	ctx context.Context,
+	runtimeState state.RuntimeState,
+	root certroot.Root,
+) (networkpolicy.Policy, state.NetworkDataPlaneSetupProjection, error) {
+	if c.platform != networkplan.PlatformMacOS {
+		return networkpolicy.Policy{}, state.NetworkDataPlaneSetupProjection{}, errors.New("legacy macOS release policy is unsupported on this platform")
+	}
+	policy, err := networkplan.BuildLegacyMacOS(networkplan.Request{
+		Platform:             c.platform,
+		InstallationID:       runtimeState.Network.Ownership.InstallationID,
+		Pool:                 runtimeState.Network.Pool,
+		AuthorityFingerprint: root.Fingerprint,
+	})
+	if err != nil {
+		return networkpolicy.Policy{}, state.NetworkDataPlaneSetupProjection{}, err
+	}
+	projection, err := c.projections.Resolve(ctx, policy)
+	if err != nil {
+		return networkpolicy.Policy{}, state.NetworkDataPlaneSetupProjection{}, err
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		return networkpolicy.Policy{}, state.NetworkDataPlaneSetupProjection{}, err
+	}
+	if projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint != fingerprint {
+		return networkpolicy.Policy{}, state.NetworkDataPlaneSetupProjection{}, &state.NetworkDataPlaneSetupPolicyFingerprintMismatchError{
+			Expected: fingerprint,
+			Actual:   projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint,
+		}
+	}
+	return policy, projection, nil
 }
 
 // globalReleaseIdenticalUnownedTrust permits preservation only of byte-identical unowned public-root facts.

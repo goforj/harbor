@@ -11,6 +11,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/platform/trust"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -175,6 +176,24 @@ func TestGlobalNetworkReleaseTrustConfirmOwnedAdvancesAndReplays(t *testing.T) {
 	request.TrustEvidence.Changed = true
 	if _, err := fixture.coordinator.ConfirmTrust(t.Context(), request); err == nil {
 		t.Fatal("ConfirmTrust() accepted altered replay evidence")
+	}
+}
+
+// TestGlobalNetworkReleaseLegacyMacOSTrustRemovalUsesCurrentUserMechanism proves legacy release preserves its historical trust mechanism through issuance and completion.
+func TestGlobalNetworkReleaseLegacyMacOSTrustRemovalUsesCurrentUserMechanism(t *testing.T) {
+	base := newGlobalNetworkReleaseStartFixture(t)
+	base.setLegacyMacOSAuthority(t)
+	base.tStageAuthority()
+	fixture := newGlobalNetworkReleaseTrustFixtureFromBase(t, base)
+	prepared, err := fixture.coordinator.PrepareTrust(t.Context(), fixture.prepareRequest())
+	if err != nil || prepared.Ticket == nil || prepared.Ticket.Mechanism != networkpolicy.DarwinCurrentUserTrust {
+		t.Fatalf("PrepareTrust() = %#v, %v", prepared, err)
+	}
+	fixture.observer.observation = fixture.absentObservation(t)
+	advanced, err := fixture.coordinator.ConfirmTrust(t.Context(), fixture.confirmRequest(t))
+	if err != nil || advanced.Phase != state.GlobalNetworkReleasePlanPhaseLoopbacks ||
+		advanced.TrustReceipt == nil || advanced.TrustReceipt.Disposition != state.GlobalNetworkReleaseTrustOwned {
+		t.Fatalf("ConfirmTrust() = %#v, %v", advanced, err)
 	}
 }
 
@@ -489,6 +508,12 @@ func newGlobalNetworkReleaseTrustFixture(t *testing.T) *globalNetworkReleaseTrus
 	t.Helper()
 	base := newGlobalNetworkReleaseStartFixture(t)
 	base.tStageAuthority()
+	return newGlobalNetworkReleaseTrustFixtureFromBase(t, base)
+}
+
+// newGlobalNetworkReleaseTrustFixtureFromBase constructs trust-release authority from a staged start fixture.
+func newGlobalNetworkReleaseTrustFixtureFromBase(t *testing.T, base *globalNetworkReleaseStartFixture) *globalNetworkReleaseTrustFixture {
+	t.Helper()
 	plan := base.journal.plan
 	plan.Phase = state.GlobalNetworkReleasePlanPhaseTrust
 	plan.CheckpointRevision = 14

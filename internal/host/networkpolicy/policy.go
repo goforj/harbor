@@ -91,6 +91,11 @@ func MacOSMechanisms() Mechanisms {
 	}
 }
 
+// LegacyMacOSMechanisms returns the exact persisted macOS profile used before administrator trust.
+func LegacyMacOSMechanisms() Mechanisms {
+	return legacyMacOSMechanisms()
+}
+
 // legacyMacOSMechanisms returns the persisted macOS profile used before administrator trust.
 func legacyMacOSMechanisms() Mechanisms {
 	return Mechanisms{

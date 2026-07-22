@@ -24,6 +24,17 @@ type NetworkDataPlaneSetupProjection struct {
 	ConfirmedOwnership ownership.Observation
 }
 
+// NetworkDataPlaneSetupPolicyFingerprintMismatchError identifies persisted ownership bound to another otherwise valid policy.
+type NetworkDataPlaneSetupPolicyFingerprintMismatchError struct {
+	Expected string
+	Actual   string
+}
+
+// Error reports the bounded policy-ownership mismatch without classifying storage or corruption failures as compatible state.
+func (err *NetworkDataPlaneSetupPolicyFingerprintMismatchError) Error() string {
+	return fmt.Sprintf("network data-plane setup policy fingerprint does not match confirmed ownership (expected %q, actual %q)", err.Expected, err.Actual)
+}
+
 // Validate rejects projections that cannot authorize resolver-to-full setup or exact full-stage replay.
 func (projection NetworkDataPlaneSetupProjection) Validate() error {
 	switch projection.Stage {
@@ -206,9 +217,10 @@ func resolveNetworkDataPlaneSetupProjection(
 		)
 	}
 	if confirmedOwnership.Record.NetworkPolicyFingerprint != policyFingerprint {
-		return NetworkDataPlaneSetupProjection{}, fmt.Errorf(
-			"network data-plane setup policy fingerprint does not match confirmed ownership",
-		)
+		return NetworkDataPlaneSetupProjection{}, &NetworkDataPlaneSetupPolicyFingerprintMismatchError{
+			Expected: policyFingerprint,
+			Actual:   confirmedOwnership.Record.NetworkPolicyFingerprint,
+		}
 	}
 	if confirmedAt.After(root.UpdatedAt) {
 		return NetworkDataPlaneSetupProjection{}, corruptStateError(

@@ -52,7 +52,7 @@ func TestBuildConstructsEveryProductProfile(t *testing.T) {
 			dns:         directListener("127.0.0.1:22656"),
 			http:        redirectedListener("127.0.0.1:80", "127.0.0.1:22657"),
 			https:       redirectedListener("127.0.0.1:443", "127.0.0.1:22658"),
-			fingerprint: "64c48e8a29796930f5aa0c7cfb5152a84e44c88e1d2b6cc6e038872145f61c93",
+			fingerprint: "3b5224deda3bd9cf7b592c7a90dd63ffaa08d076713030a720daabf4caf4e0e1",
 		},
 		{
 			name:        "Ubuntu 24.04",
@@ -108,6 +108,33 @@ func TestBuildConstructsEveryProductProfile(t *testing.T) {
 				t.Fatalf("Policy.Fingerprint() = %q, want %q", fingerprint, test.fingerprint)
 			}
 		})
+	}
+}
+
+// TestBuildLegacyMacOSPinsHistoricalCurrentUserTrustPolicy prevents persisted-release compatibility from drifting with current defaults.
+func TestBuildLegacyMacOSPinsHistoricalCurrentUserTrustPolicy(t *testing.T) {
+	pool := mustPool(t, "127.77.0.8/29", "127.77.0.10", "127.77.0.11")
+	policy, err := BuildLegacyMacOS(Request{
+		Platform:             PlatformMacOS,
+		InstallationID:       testInstallationID,
+		Pool:                 pool,
+		AuthorityFingerprint: testAuthorityFingerprint,
+	})
+	if err != nil {
+		t.Fatalf("BuildLegacyMacOS() error = %v", err)
+	}
+	if policy.Mechanisms != networkpolicy.LegacyMacOSMechanisms() ||
+		policy.DNS != directListener("127.0.0.1:22656") ||
+		policy.HTTP != redirectedListener("127.0.0.1:80", "127.0.0.1:22657") ||
+		policy.HTTPS != redirectedListener("127.0.0.1:443", "127.0.0.1:22658") {
+		t.Fatalf("BuildLegacyMacOS() = %#v", policy)
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatalf("Policy.Fingerprint() error = %v", err)
+	}
+	if fingerprint != "64c48e8a29796930f5aa0c7cfb5152a84e44c88e1d2b6cc6e038872145f61c93" {
+		t.Fatalf("Policy.Fingerprint() = %q", fingerprint)
 	}
 }
 

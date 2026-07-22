@@ -13,6 +13,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
@@ -277,6 +278,30 @@ func TestGlobalNetworkReleaseLoopbacksConfirmAdvancesAndReplays(t *testing.T) {
 	}
 }
 
+// TestGlobalNetworkReleaseLegacyMacOSCompletesEffects proves a legacy current-user-trust release reaches the ownership handoff with complete effects evidence.
+func TestGlobalNetworkReleaseLegacyMacOSCompletesEffects(t *testing.T) {
+	base := newGlobalNetworkReleaseStartFixture(t)
+	base.setLegacyMacOSAuthority(t)
+	base.tStageAuthority()
+	fixture := newGlobalNetworkReleaseLoopbackFixtureFromBase(t, base)
+	fixture.base.runtimeRelease.verifyDigest = strings.Repeat("1", 64)
+	advanced, err := fixture.coordinator.ConfirmLoopbacks(t.Context(), fixture.confirmRequest(t))
+	if err != nil || advanced.Phase != state.GlobalNetworkReleasePlanPhaseOwnership ||
+		advanced.TrustReceipt == nil || advanced.LoopbackReceipt == nil || advanced.EffectsReceipt == nil {
+		t.Fatalf("ConfirmLoopbacks() = %#v, %v", advanced, err)
+	}
+	if advanced.Authority.Policy.Mechanisms.Trust != networkpolicy.DarwinCurrentUserTrust ||
+		advanced.TrustReceipt.Disposition != state.GlobalNetworkReleaseTrustOwned ||
+		fixture.journal.effectsAdvances != 1 {
+		t.Fatalf("legacy effects authority = %#v", advanced)
+	}
+	wantTrustFingerprint := mustGlobalNetworkReleaseTrustFingerprint(t, fixture.base.trust.observedRequest, false)
+	if advanced.EffectsReceipt.TrustObservationFingerprint != wantTrustFingerprint ||
+		fixture.journal.lastEffectsRequest.Receipt.TrustObservationFingerprint != wantTrustFingerprint {
+		t.Fatalf("legacy trust absence fingerprint = %q/%q, want %q", advanced.EffectsReceipt.TrustObservationFingerprint, fixture.journal.lastEffectsRequest.Receipt.TrustObservationFingerprint, wantTrustFingerprint)
+	}
+}
+
 // mustGlobalNetworkReleaseLowPortFingerprint returns one valid low-port observation digest for effect assertions.
 func mustGlobalNetworkReleaseLowPortFingerprint(t *testing.T, observation lowport.Observation) string {
 	t.Helper()
@@ -523,6 +548,12 @@ func newGlobalNetworkReleaseLoopbackFixture(t *testing.T) *globalNetworkReleaseL
 	t.Helper()
 	base := newGlobalNetworkReleaseStartFixture(t)
 	base.tStageAuthority()
+	return newGlobalNetworkReleaseLoopbackFixtureFromBase(t, base)
+}
+
+// newGlobalNetworkReleaseLoopbackFixtureFromBase constructs a complete pool-release checkpoint from staged authority.
+func newGlobalNetworkReleaseLoopbackFixtureFromBase(t *testing.T, base *globalNetworkReleaseStartFixture) *globalNetworkReleaseLoopbackFixture {
+	t.Helper()
 	plan := base.journal.plan
 	plan.Phase = state.GlobalNetworkReleasePlanPhaseLoopbacks
 	plan.CheckpointRevision = 15
