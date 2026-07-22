@@ -310,11 +310,22 @@ static int harbor_admin_trust_owner_query(const char *account, size_t account_le
 	CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
 	CFDictionarySetValue(query, kSecAttrService, service);
 	CFDictionarySetValue(query, kSecAttrAccount, account_value);
-	CFDictionarySetValue(query, kSecUseKeychain, keychain);
 	CFRelease(account_value);
 	CFRelease(service);
 	*keychain_output = keychain;
 	*query_output = query;
+	return errSecSuccess;
+}
+
+// SecItem lookup and deletion use a search list; kSecUseKeychain is reserved for adding an item.
+static int harbor_admin_trust_select_system_keychain_for_query(SecKeychainRef keychain, CFMutableDictionaryRef query) {
+	const void *values[] = {keychain};
+	CFArrayRef search_list = CFArrayCreate(kCFAllocatorDefault, values, 1, &kCFTypeArrayCallBacks);
+	if (search_list == NULL) {
+		return errSecAllocate;
+	}
+	CFDictionarySetValue(query, kSecMatchSearchList, search_list);
+	CFRelease(search_list);
 	return errSecSuccess;
 }
 
@@ -342,6 +353,12 @@ static int harbor_admin_trust_find_owner_exact(const char *account, size_t accou
 	CFMutableDictionaryRef query = NULL;
 	OSStatus status = harbor_admin_trust_owner_query(account, account_length, &keychain, &query);
 	if (status != errSecSuccess) {
+		return status;
+	}
+	status = harbor_admin_trust_select_system_keychain_for_query(keychain, query);
+	if (status != errSecSuccess) {
+		CFRelease(query);
+		CFRelease(keychain);
 		return status;
 	}
 	CFDictionarySetValue(query, kSecReturnAttributes, kCFBooleanTrue);
@@ -381,6 +398,7 @@ static int harbor_admin_trust_add_owner(const char *account, size_t account_leng
 		CFRelease(keychain);
 		return errSecAllocate;
 	}
+	CFDictionarySetValue(query, kSecUseKeychain, keychain);
 	CFDictionarySetValue(query, kSecAttrGeneric, generic);
 	CFDictionarySetValue(query, kSecValueData, empty_password);
 	status = SecItemAdd(query, NULL);
@@ -403,6 +421,12 @@ static int harbor_admin_trust_delete_owner(const char *account, size_t account_l
 	CFMutableDictionaryRef query = NULL;
 	OSStatus status = harbor_admin_trust_owner_query(account, account_length, &keychain, &query);
 	if (status != errSecSuccess) {
+		return status;
+	}
+	status = harbor_admin_trust_select_system_keychain_for_query(keychain, query);
+	if (status != errSecSuccess) {
+		CFRelease(query);
+		CFRelease(keychain);
 		return status;
 	}
 	CFDataRef generic = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)fingerprint, (CFIndex)fingerprint_length);
