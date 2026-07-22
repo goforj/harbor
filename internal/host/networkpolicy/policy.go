@@ -54,6 +54,8 @@ const (
 type TrustMechanism string
 
 const (
+	// DarwinAdministratorTrust installs trust for every macOS user through Harbor's administrator contract.
+	DarwinAdministratorTrust TrustMechanism = "darwin-administrator-trust-v1"
 	// DarwinCurrentUserTrust installs trust for only the interactive macOS user.
 	DarwinCurrentUserTrust TrustMechanism = "darwin-current-user-trust-v1"
 	// UbuntuSystemTrust installs trust through Harbor's first Ubuntu system-store contract.
@@ -73,7 +75,7 @@ type Mechanisms struct {
 // Validate rejects partial and mixed-platform profiles because each supported
 // profile is proven and repaired as one host-integration unit.
 func (mechanisms Mechanisms) Validate() error {
-	if mechanisms == MacOSMechanisms() || mechanisms == UbuntuMechanisms() || mechanisms == WindowsMechanisms() {
+	if mechanisms == MacOSMechanisms() || mechanisms == legacyMacOSMechanisms() || mechanisms == UbuntuMechanisms() || mechanisms == WindowsMechanisms() {
 		return nil
 	}
 
@@ -82,17 +84,38 @@ func (mechanisms Mechanisms) Validate() error {
 
 // MacOSMechanisms returns Harbor's complete supported macOS integration profile.
 func MacOSMechanisms() Mechanisms {
-	return Mechanisms{Resolver: DarwinResolverFile, LowPorts: DarwinLaunchdRelay, Trust: DarwinCurrentUserTrust}
+	return Mechanisms{
+		Resolver: DarwinResolverFile,
+		LowPorts: DarwinLaunchdRelay,
+		Trust:    DarwinAdministratorTrust,
+	}
+}
+
+// legacyMacOSMechanisms returns the persisted macOS profile used before administrator trust.
+func legacyMacOSMechanisms() Mechanisms {
+	return Mechanisms{
+		Resolver: DarwinResolverFile,
+		LowPorts: DarwinLaunchdRelay,
+		Trust:    DarwinCurrentUserTrust,
+	}
 }
 
 // UbuntuMechanisms returns Harbor's complete supported Ubuntu integration profile.
 func UbuntuMechanisms() Mechanisms {
-	return Mechanisms{Resolver: UbuntuSystemdResolved, LowPorts: UbuntuNFTables, Trust: UbuntuSystemTrust}
+	return Mechanisms{
+		Resolver: UbuntuSystemdResolved,
+		LowPorts: UbuntuNFTables,
+		Trust:    UbuntuSystemTrust,
+	}
 }
 
 // WindowsMechanisms returns Harbor's complete supported Windows integration profile.
 func WindowsMechanisms() Mechanisms {
-	return Mechanisms{Resolver: WindowsNRPT, LowPorts: WindowsDirectLowPorts, Trust: WindowsCurrentUserTrust}
+	return Mechanisms{
+		Resolver: WindowsNRPT,
+		LowPorts: WindowsDirectLowPorts,
+		Trust:    WindowsCurrentUserTrust,
+	}
 }
 
 // Listener records the public socket clients use and the socket the daemon binds.

@@ -12,6 +12,8 @@ import (
 
 const networkResolverSetupPlansMigrationName = "2026_07_20_020000_create_network_resolver_setup_plans"
 
+const networkResolverSetupAdministratorTrustMigrationName = "2026_07_22_048000_add_network_resolver_setup_administrator_trust"
+
 const networkResolverSetupVerifierKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 // TestNetworkResolverSetupPlansMigrationCreatesExactAuthoritySchema verifies every persisted plan dimension and owner index.
@@ -112,6 +114,96 @@ func TestNetworkResolverSetupPlansMigrationPersistsEverySupportedPolicy(t *testi
 			assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
 		})
 	}
+}
+
+// TestNetworkResolverSetupAdministratorTrustMigrationAdmitsOnlyCompleteMacOSProfiles verifies the forward schema upgrade preserves legacy plans and permits only the new complete administrator profile.
+func TestNetworkResolverSetupAdministratorTrustMigrationAdmitsOnlyCompleteMacOSProfiles(t *testing.T) {
+	databaseConnection := newNetworkResolverSetupMigrationHarness(t)
+	seedNetworkResolverSetupMigrationOwners(t, databaseConnection, "operation-resolver", 3, 1)
+
+	legacy := defaultNetworkResolverSetupMigrationPlan("operation-resolver", 3, 1)
+	legacy.PolicyResolverMechanism = "darwin-resolver-file-v1"
+	legacy.PolicyLowPortsMechanism = "darwin-launchd-relay-v1"
+	legacy.PolicyTrustMechanism = "darwin-current-user-trust-v1"
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, legacy)
+
+	migration := networkResolverSetupAdministratorTrustMigration(t)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply administrator trust migration: %v", err)
+	}
+
+	var read models.NetworkResolverSetupPlan
+	if err := databaseConnection.First(&read, 1).Error; err != nil {
+		t.Fatalf("read preserved legacy plan: %v", err)
+	}
+	if read != legacy {
+		t.Fatalf("preserved legacy plan = %#v, want %#v", read, legacy)
+	}
+	assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
+	for table, index := range map[string]string{
+		"network_state": "network_state_resolver_setup_revision_idx",
+		"operations":    "operations_one_active_network_resolver_setup_idx",
+	} {
+		if !databaseConnection.Migrator().HasIndex(table, index) {
+			t.Fatalf("administrator trust migration removed %s on %s", index, table)
+		}
+	}
+
+	mustExecNetworkResolverSetupMigration(t, databaseConnection, "DELETE FROM network_resolver_setup_plans")
+	administrator := legacy
+	administrator.PolicyTrustMechanism = "darwin-administrator-trust-v1"
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, administrator)
+
+	mustExecNetworkResolverSetupMigration(t, databaseConnection, "DELETE FROM network_resolver_setup_plans")
+	mixed := administrator
+	mixed.PolicyLowPortsMechanism = "ubuntu-nftables-v1"
+	if err := executeNetworkResolverSetupMigrationPlan(databaseConnection, mixed); err == nil {
+		t.Fatalf("mixed administrator plan unexpectedly succeeded: %#v", mixed)
+	}
+}
+
+// TestNetworkResolverSetupAdministratorTrustMigrationRefusesUnsafeRollback proves downgrade cannot discard an active administrator-trust approval.
+func TestNetworkResolverSetupAdministratorTrustMigrationRefusesUnsafeRollback(t *testing.T) {
+	databaseConnection := newNetworkResolverSetupMigrationHarness(t)
+	seedNetworkResolverSetupMigrationOwners(t, databaseConnection, "operation-resolver", 3, 1)
+	migration := networkResolverSetupAdministratorTrustMigration(t)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply administrator trust migration: %v", err)
+	}
+
+	administrator := defaultNetworkResolverSetupMigrationPlan("operation-resolver", 3, 1)
+	administrator.PolicyResolverMechanism = "darwin-resolver-file-v1"
+	administrator.PolicyLowPortsMechanism = "darwin-launchd-relay-v1"
+	administrator.PolicyTrustMechanism = "darwin-administrator-trust-v1"
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, administrator)
+
+	if err := migration.Down(databaseConnection); err == nil {
+		t.Fatal("administrator trust migration rollback unexpectedly succeeded")
+	}
+	var preserved models.NetworkResolverSetupPlan
+	if err := databaseConnection.First(&preserved, 1).Error; err != nil {
+		t.Fatalf("read administrator plan after refused rollback: %v", err)
+	}
+	if preserved != administrator {
+		t.Fatalf("administrator plan after refused rollback = %#v, want %#v", preserved, administrator)
+	}
+	assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
+
+	mustExecNetworkResolverSetupMigration(t, databaseConnection, "DELETE FROM network_resolver_setup_plans")
+	legacy := administrator
+	legacy.PolicyTrustMechanism = "darwin-current-user-trust-v1"
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, legacy)
+	if err := migration.Down(databaseConnection); err != nil {
+		t.Fatalf("rollback administrator trust migration after removing administrator plan: %v", err)
+	}
+	var downgraded models.NetworkResolverSetupPlan
+	if err := databaseConnection.First(&downgraded, 1).Error; err != nil {
+		t.Fatalf("read legacy plan after rollback: %v", err)
+	}
+	if downgraded != legacy {
+		t.Fatalf("legacy plan after rollback = %#v, want %#v", downgraded, legacy)
+	}
+	assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
 }
 
 // TestNetworkResolverSetupPlansMigrationRejectsMalformedAuthority proves direct writers cannot broaden durable approval.
@@ -317,6 +409,20 @@ func newNetworkResolverSetupMigrationPrerequisiteHarness(t *testing.T) (*gorm.DB
 	}
 	t.Fatalf("network resolver setup migration %q is not registered", networkResolverSetupPlansMigrationName)
 	return nil, nil
+}
+
+// networkResolverSetupAdministratorTrustMigration returns the registered schema upgrade under test.
+func networkResolverSetupAdministratorTrustMigration(t *testing.T) Migration {
+	t.Helper()
+	for _, migration := range GetMigrations() {
+		if migration.Name() == networkResolverSetupAdministratorTrustMigrationName &&
+			migration.App() == "harbord" &&
+			migration.Connection() == "default" {
+			return migration
+		}
+	}
+	t.Fatalf("administrator trust migration %q is not registered", networkResolverSetupAdministratorTrustMigrationName)
+	return nil
 }
 
 // seedNetworkResolverSetupMigrationOwners inserts the exact operation and network revision referenced by a plan.

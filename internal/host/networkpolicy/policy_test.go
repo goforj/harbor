@@ -11,7 +11,12 @@ const testAuthorityFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 // TestMechanismsValidateAcceptsOnlyCompleteProfiles proves profile parts cannot be mixed across operating systems.
 func TestMechanismsValidateAcceptsOnlyCompleteProfiles(t *testing.T) {
-	valid := []Mechanisms{MacOSMechanisms(), UbuntuMechanisms(), WindowsMechanisms()}
+	valid := []Mechanisms{
+		MacOSMechanisms(),
+		legacyMacOSMechanisms(),
+		UbuntuMechanisms(),
+		WindowsMechanisms(),
+	}
 	for _, mechanisms := range valid {
 		if err := mechanisms.Validate(); err != nil {
 			t.Fatalf("Mechanisms.Validate() for %+v error = %v", mechanisms, err)
@@ -20,11 +25,40 @@ func TestMechanismsValidateAcceptsOnlyCompleteProfiles(t *testing.T) {
 
 	invalid := []Mechanisms{
 		{},
-		{Resolver: DarwinResolverFile, LowPorts: DarwinLaunchdRelay},
-		{Resolver: DarwinResolverFile, LowPorts: UbuntuNFTables, Trust: DarwinCurrentUserTrust},
-		{Resolver: UbuntuSystemdResolved, LowPorts: UbuntuNFTables, Trust: DarwinCurrentUserTrust},
-		{Resolver: WindowsNRPT, LowPorts: WindowsDirectLowPorts, Trust: UbuntuSystemTrust},
-		{Resolver: "unknown", LowPorts: WindowsDirectLowPorts, Trust: WindowsCurrentUserTrust},
+		{
+			Resolver: DarwinResolverFile,
+			LowPorts: DarwinLaunchdRelay,
+		},
+		{
+			Resolver: DarwinResolverFile,
+			LowPorts: DarwinLaunchdRelay,
+			Trust:    UbuntuSystemTrust,
+		},
+		{
+			Resolver: DarwinResolverFile,
+			LowPorts: UbuntuNFTables,
+			Trust:    DarwinCurrentUserTrust,
+		},
+		{
+			Resolver: DarwinResolverFile,
+			LowPorts: UbuntuNFTables,
+			Trust:    DarwinAdministratorTrust,
+		},
+		{
+			Resolver: UbuntuSystemdResolved,
+			LowPorts: UbuntuNFTables,
+			Trust:    DarwinCurrentUserTrust,
+		},
+		{
+			Resolver: WindowsNRPT,
+			LowPorts: WindowsDirectLowPorts,
+			Trust:    UbuntuSystemTrust,
+		},
+		{
+			Resolver: "unknown",
+			LowPorts: WindowsDirectLowPorts,
+			Trust:    WindowsCurrentUserTrust,
+		},
 	}
 	for _, mechanisms := range invalid {
 		if err := mechanisms.Validate(); !errors.Is(err, ErrInvalidPolicy) {
@@ -163,6 +197,34 @@ func TestPolicyFingerprintPinsCanonicalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalJSON() error = %v", err)
 	}
+	const wantJSON = `{"suffix":".test","authority_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mechanisms":{"resolver":"darwin-resolver-file-v1","low_ports":"darwin-launchd-relay-v1","trust":"darwin-administrator-trust-v1"},"dns":{"advertised":"127.0.0.1:53535","bind":"127.0.0.1:53535"},"http":{"advertised":"127.0.0.1:80","bind":"127.0.0.1:58080"},"https":{"advertised":"127.0.0.1:443","bind":"127.0.0.1:58443"}}`
+	if string(payload) != wantJSON {
+		t.Fatalf("canonicalJSON() = %s, want %s", payload, wantJSON)
+	}
+
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatalf("Policy.Fingerprint() error = %v", err)
+	}
+	const wantFingerprint = "a7089fc6b9a4594c965113e8cd00fb9fe5dc0e89472e433d0ffa8661d447fcec"
+	if fingerprint != wantFingerprint {
+		t.Fatalf("Policy.Fingerprint() = %q, want %q", fingerprint, wantFingerprint)
+	}
+	second, err := policy.Fingerprint()
+	if err != nil || second != fingerprint {
+		t.Fatalf("second Policy.Fingerprint() = (%q, %v), want (%q, nil)", second, err, fingerprint)
+	}
+}
+
+// TestPolicyFingerprintPreservesLegacyMacOSEvidence proves persisted current-user macOS plans retain their canonical evidence after the default changes.
+func TestPolicyFingerprintPreservesLegacyMacOSEvidence(t *testing.T) {
+	policy := validMacOSPolicy()
+	policy.Mechanisms = legacyMacOSMechanisms()
+
+	payload, err := policy.canonicalJSON()
+	if err != nil {
+		t.Fatalf("canonicalJSON() error = %v", err)
+	}
 	const wantJSON = `{"suffix":".test","authority_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mechanisms":{"resolver":"darwin-resolver-file-v1","low_ports":"darwin-launchd-relay-v1","trust":"darwin-current-user-trust-v1"},"dns":{"advertised":"127.0.0.1:53535","bind":"127.0.0.1:53535"},"http":{"advertised":"127.0.0.1:80","bind":"127.0.0.1:58080"},"https":{"advertised":"127.0.0.1:443","bind":"127.0.0.1:58443"}}`
 	if string(payload) != wantJSON {
 		t.Fatalf("canonicalJSON() = %s, want %s", payload, wantJSON)
@@ -175,10 +237,6 @@ func TestPolicyFingerprintPinsCanonicalJSON(t *testing.T) {
 	const wantFingerprint = "effffb6c7ea5ae82e2b44f78c543ea9053513fa46b9adef4785e1d8ae018edf0"
 	if fingerprint != wantFingerprint {
 		t.Fatalf("Policy.Fingerprint() = %q, want %q", fingerprint, wantFingerprint)
-	}
-	second, err := policy.Fingerprint()
-	if err != nil || second != fingerprint {
-		t.Fatalf("second Policy.Fingerprint() = (%q, %v), want (%q, nil)", second, err, fingerprint)
 	}
 }
 

@@ -164,7 +164,8 @@ func validateNetworkDataPlaneSetupTrustEvidence(evidence helper.TrustMutationEvi
 		return fmt.Errorf("trust evidence authority fingerprint is invalid")
 	}
 	switch evidence.Mechanism {
-	case networkpolicy.DarwinCurrentUserTrust,
+	case networkpolicy.DarwinAdministratorTrust,
+		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
 		networkpolicy.WindowsCurrentUserTrust:
 	default:

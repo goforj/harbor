@@ -86,6 +86,11 @@ func TestNetworkReleaseTrustPublicationDispositionValidate(t *testing.T) {
 // TestNetworkReleaseTrustApprovalTicketValidate covers every public ticket boundary.
 func TestNetworkReleaseTrustApprovalTicketValidate(t *testing.T) {
 	valid := validNetworkReleaseTrustApprovalTicket()
+	administrator := valid
+	administrator.Mechanism = networkpolicy.DarwinAdministratorTrust
+	if err := administrator.Validate(); err != nil {
+		t.Fatalf("administrator ticket Validate() error = %v", err)
+	}
 	for _, test := range []struct {
 		name   string
 		mutate func(*NetworkReleaseTrustApprovalTicket)
@@ -137,9 +142,16 @@ func TestNetworkReleaseTrustApprovalTicketValidate(t *testing.T) {
 			want: "authority fingerprint",
 		},
 		{
-			name: "mechanism",
+			name: "unknown mechanism",
 			mutate: func(ticket *NetworkReleaseTrustApprovalTicket) {
 				ticket.Mechanism = "unsupported"
+			},
+			want: "mechanism",
+		},
+		{
+			name: "mixed mechanism",
+			mutate: func(ticket *NetworkReleaseTrustApprovalTicket) {
+				ticket.Mechanism = networkpolicy.TrustMechanism(string(networkpolicy.DarwinAdministratorTrust) + "," + string(networkpolicy.DarwinCurrentUserTrust))
 			},
 			want: "mechanism",
 		},
@@ -312,6 +324,13 @@ func TestConfirmNetworkReleaseTrustApprovalRequestValidate(t *testing.T) {
 		OperationID:                "operation-network-release",
 		ExpectedCheckpointRevision: 7,
 	}
+	administratorEvidence := validEvidence
+	administratorEvidence.Mechanism = networkpolicy.DarwinAdministratorTrust
+	administratorRequest := valid
+	administratorRequest.TrustEvidence = &administratorEvidence
+	if err := administratorRequest.Validate(); err != nil {
+		t.Fatalf("administrator evidence Validate() error = %v", err)
+	}
 	for _, test := range []struct {
 		name    string
 		request ConfirmNetworkReleaseTrustApprovalRequest
@@ -357,11 +376,22 @@ func TestConfirmNetworkReleaseTrustApprovalRequestValidate(t *testing.T) {
 			want: "observation fingerprint",
 		},
 		{
-			name: "mechanism",
+			name: "unknown mechanism",
 			request: func() ConfirmNetworkReleaseTrustApprovalRequest {
 				value := valid
 				evidence := validEvidence
 				evidence.Mechanism = "unsupported"
+				value.TrustEvidence = &evidence
+				return value
+			}(),
+			want: "mechanism",
+		},
+		{
+			name: "mixed mechanism",
+			request: func() ConfirmNetworkReleaseTrustApprovalRequest {
+				value := valid
+				evidence := validEvidence
+				evidence.Mechanism = networkpolicy.TrustMechanism(string(networkpolicy.DarwinAdministratorTrust) + "," + string(networkpolicy.DarwinCurrentUserTrust))
 				value.TrustEvidence = &evidence
 				return value
 			}(),

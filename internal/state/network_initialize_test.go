@@ -33,6 +33,8 @@ const (
 	networkInitializeTestResolverStageMigrationName = "2026_07_20_010000_add_network_resolver_stage"
 	// networkInitializeTestResolverSetupPlanMigrationName identifies resolver approval persistence.
 	networkInitializeTestResolverSetupPlanMigrationName = "2026_07_20_020000_create_network_resolver_setup_plans"
+	// networkInitializeTestAdministratorTrustMigrationName identifies the administrator trust compatibility upgrade.
+	networkInitializeTestAdministratorTrustMigrationName = "2026_07_22_048000_add_network_resolver_setup_administrator_trust"
 )
 
 // TestStoreInitializeNetworkCommitsCompleteAggregate verifies the first write owns one global revision and every hidden host fact.
@@ -869,6 +871,7 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 		networkInitializeTestOwnershipPolicyMigrationName,
 		networkInitializeTestResolverStageMigrationName,
 		networkInitializeTestResolverSetupPlanMigrationName,
+		networkInitializeTestAdministratorTrustMigrationName,
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {

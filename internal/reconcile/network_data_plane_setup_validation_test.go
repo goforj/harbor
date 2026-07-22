@@ -86,6 +86,11 @@ func TestNetworkDataPlaneSetupRequestValidation(t *testing.T) {
 	if err := confirmTrust.Validate(); err != nil {
 		t.Fatalf("NetworkDataPlaneSetupConfirmTrustRequest.Validate() error = %v", err)
 	}
+	administrator := confirmTrust
+	administrator.TrustEvidence.Mechanism = networkpolicy.DarwinAdministratorTrust
+	if err := administrator.Validate(); err != nil {
+		t.Fatalf("administrator NetworkDataPlaneSetupConfirmTrustRequest.Validate() error = %v", err)
+	}
 	preexisting := confirmTrust
 	preexisting.TrustEvidence.Postcondition = helper.TrustPostconditionPreexisting
 	if err := preexisting.Validate(); err != nil {
@@ -102,7 +107,10 @@ func TestNetworkDataPlaneSetupRequestValidation(t *testing.T) {
 		{name: "authority", mutate: func(value *NetworkDataPlaneSetupConfirmTrustRequest) {
 			value.TrustEvidence.AuthorityFingerprint = strings.Repeat("A", 64)
 		}, want: "authority fingerprint"},
-		{name: "mechanism", mutate: func(value *NetworkDataPlaneSetupConfirmTrustRequest) { value.TrustEvidence.Mechanism = "unsupported" }, want: "mechanism"},
+		{name: "unknown mechanism", mutate: func(value *NetworkDataPlaneSetupConfirmTrustRequest) { value.TrustEvidence.Mechanism = "unsupported" }, want: "mechanism"},
+		{name: "mixed mechanism", mutate: func(value *NetworkDataPlaneSetupConfirmTrustRequest) {
+			value.TrustEvidence.Mechanism = networkpolicy.TrustMechanism(string(networkpolicy.DarwinAdministratorTrust) + "," + string(networkpolicy.DarwinCurrentUserTrust))
+		}, want: "mechanism"},
 		{name: "observation", mutate: func(value *NetworkDataPlaneSetupConfirmTrustRequest) {
 			value.TrustEvidence.ObservationFingerprint = "short"
 		}, want: "observation fingerprint"},

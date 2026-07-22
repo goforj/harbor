@@ -221,7 +221,8 @@ func (result TrustResult) Validate(now time.Time) error {
 		return errors.New("trust approval result authority fingerprint is invalid")
 	}
 	switch result.Mechanism {
-	case networkpolicy.DarwinCurrentUserTrust,
+	case networkpolicy.DarwinAdministratorTrust,
+		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
 		networkpolicy.WindowsCurrentUserTrust:
 	default:

@@ -319,7 +319,8 @@ func validateNetworkDataPlaneLowPortEvidence(evidence helper.LowPortMutationEvid
 // validNetworkDataPlaneTrustMechanism accepts only complete supported platform trust profiles.
 func validNetworkDataPlaneTrustMechanism(mechanism networkpolicy.TrustMechanism) bool {
 	switch mechanism {
-	case networkpolicy.DarwinCurrentUserTrust,
+	case networkpolicy.DarwinAdministratorTrust,
+		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
 		networkpolicy.WindowsCurrentUserTrust:
 		return true

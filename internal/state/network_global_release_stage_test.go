@@ -258,6 +258,7 @@ func globalNetworkReleaseStageApplyPlanMigration(t *testing.T, connection *gorm.
 		"2026_07_22_045000_create_network_global_release_loopback_receipts",
 		"2026_07_22_046000_create_network_global_release_effects_receipts",
 		"2026_07_22_047000_create_network_global_release_ownership_receipts",
+		"2026_07_22_048000_add_network_resolver_setup_administrator_trust",
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {

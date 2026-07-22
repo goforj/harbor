@@ -312,6 +312,7 @@ func sameRequest(left Request, right Request) bool {
 func validateMechanism(mechanism networkpolicy.TrustMechanism) error {
 	switch mechanism {
 	case networkpolicy.DarwinCurrentUserTrust,
+		networkpolicy.DarwinAdministratorTrust,
 		networkpolicy.UbuntuSystemTrust,
 		networkpolicy.WindowsCurrentUserTrust:
 		return nil

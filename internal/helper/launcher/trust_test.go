@@ -106,7 +106,9 @@ func TestInvokeTrustRejectsUncorrelatedEvidence(t *testing.T) {
 		mutate func(*helper.TrustMutationEvidence)
 	}{
 		{name: "authority", mutate: func(evidence *helper.TrustMutationEvidence) { evidence.AuthorityFingerprint = strings.Repeat("f", 64) }},
-		{name: "mechanism", mutate: func(evidence *helper.TrustMutationEvidence) { evidence.Mechanism = networkpolicy.UbuntuSystemTrust }},
+		{name: "mechanism", mutate: func(evidence *helper.TrustMutationEvidence) {
+			evidence.Mechanism = networkpolicy.DarwinAdministratorTrust
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transport := transportFunc(func(_ context.Context, _ io.Reader, response io.Writer) TransportResult {
@@ -132,6 +134,11 @@ func TestInvokeTrustRejectsUncorrelatedEvidence(t *testing.T) {
 func TestNewTrustLaunchTicketValidatesMetadata(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	valid := trustLaunchTicketFixture{operationID: "operation-trust", reference: helper.TicketReference(strings.Repeat("e", 64)), operation: helper.OperationEnsureTrust, policyFingerprint: strings.Repeat("a", 64), ownershipFingerprint: strings.Repeat("b", 64), authorityFingerprint: strings.Repeat("c", 64), mechanism: string(networkpolicy.DarwinCurrentUserTrust), expiresAt: now.Add(time.Minute)}
+	administrator := valid
+	administrator.mechanism = string(networkpolicy.DarwinAdministratorTrust)
+	if _, err := newTrustLaunchTicket(administrator); err != nil {
+		t.Fatalf("administrator newTrustLaunchTicket() error = %v", err)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*trustLaunchTicketFixture)
@@ -157,7 +164,10 @@ func TestNewTrustLaunchTicketValidatesMetadata(t *testing.T) {
 		{name: "ownership uppercase", mutate: func(value *trustLaunchTicketFixture) { value.ownershipFingerprint = strings.Repeat("B", 64) }},
 		{name: "authority fingerprint", mutate: func(value *trustLaunchTicketFixture) { value.authorityFingerprint = "bad" }},
 		{name: "authority uppercase", mutate: func(value *trustLaunchTicketFixture) { value.authorityFingerprint = strings.Repeat("C", 64) }},
-		{name: "mechanism", mutate: func(value *trustLaunchTicketFixture) { value.mechanism = "unsupported" }},
+		{name: "unknown mechanism", mutate: func(value *trustLaunchTicketFixture) { value.mechanism = "unsupported" }},
+		{name: "mixed mechanism", mutate: func(value *trustLaunchTicketFixture) {
+			value.mechanism = string(networkpolicy.DarwinAdministratorTrust) + "," + string(networkpolicy.DarwinCurrentUserTrust)
+		}},
 		{name: "zero expiry", mutate: func(value *trustLaunchTicketFixture) { value.expiresAt = time.Time{} }},
 		{name: "local expiry", mutate: func(value *trustLaunchTicketFixture) {
 			value.expiresAt = value.expiresAt.In(time.FixedZone("local", 3600))

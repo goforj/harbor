@@ -265,6 +265,11 @@ func TestTrustRequestPlanAndResultValidation(t *testing.T) {
 	if err := validResult.Validate(fixture.now); err != nil {
 		t.Fatalf("TrustResult.Validate() error = %v", err)
 	}
+	administratorResult := validResult
+	administratorResult.Mechanism = networkpolicy.DarwinAdministratorTrust
+	if err := administratorResult.Validate(fixture.now); err != nil {
+		t.Fatalf("administrator TrustResult.Validate() error = %v", err)
+	}
 	resultTests := []struct {
 		name   string
 		want   string
@@ -285,7 +290,10 @@ func TestTrustRequestPlanAndResultValidation(t *testing.T) {
 		{name: "ownership fingerprint case", want: "ownership fingerprint", mutate: func(result *TrustResult) { result.OwnershipFingerprint = strings.Repeat("A", 64) }},
 		{name: "authority fingerprint length", want: "authority fingerprint", mutate: func(result *TrustResult) { result.AuthorityFingerprint = "bad" }},
 		{name: "authority fingerprint case", want: "authority fingerprint", mutate: func(result *TrustResult) { result.AuthorityFingerprint = strings.Repeat("A", 64) }},
-		{name: "mechanism", want: "mechanism", mutate: func(result *TrustResult) { result.Mechanism = "unsupported" }},
+		{name: "unknown mechanism", want: "mechanism", mutate: func(result *TrustResult) { result.Mechanism = "unsupported" }},
+		{name: "mixed mechanism", want: "mechanism", mutate: func(result *TrustResult) {
+			result.Mechanism = networkpolicy.TrustMechanism(string(networkpolicy.DarwinAdministratorTrust) + "," + string(networkpolicy.DarwinCurrentUserTrust))
+		}},
 		{name: "expiry zero", want: "expiry is invalid", mutate: func(result *TrustResult) { result.ExpiresAt = time.Time{} }},
 		{name: "expiry non-UTC", want: "expiry is invalid", mutate: func(result *TrustResult) {
 			result.ExpiresAt = fixture.now.In(time.FixedZone("test", 60)).Add(time.Minute)

@@ -378,7 +378,7 @@ func (ticket TrustLaunchTicket) validateStructure() error {
 		}
 	}
 	switch ticket.trustMechanism {
-	case "darwin-current-user-trust-v1", "ubuntu-system-trust-v1", "windows-current-user-trust-v1":
+	case "darwin-administrator-trust-v1", "darwin-current-user-trust-v1", "ubuntu-system-trust-v1", "windows-current-user-trust-v1":
 	default:
 		return fmt.Errorf("trust launch ticket mechanism %q is unsupported", ticket.trustMechanism)
 	}

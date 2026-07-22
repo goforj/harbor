@@ -427,7 +427,7 @@ func TestNetworkDataPlaneSetupConfirmTrustRejectsDifferentSupportedMechanism(t *
 		RequesterIdentity:         plan.TargetOwnership.OwnerIdentity,
 		TrustEvidence: helper.TrustMutationEvidence{
 			AuthorityFingerprint:   plan.Root.Fingerprint,
-			Mechanism:              networkpolicy.UbuntuSystemTrust,
+			Mechanism:              networkpolicy.DarwinCurrentUserTrust,
 			ObservationFingerprint: fingerprint,
 			Postcondition:          helper.TrustPostconditionExact,
 		},
