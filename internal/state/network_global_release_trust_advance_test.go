@@ -251,6 +251,11 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 			if err != nil {
 				t.Fatalf("advance trust: %v", err)
 			}
+			loopbackRequest := validAdvanceGlobalNetworkReleaseLoopbacksRequest(stage, advanced)
+			advanced, err = journal.AdvanceGlobalNetworkReleaseLoopbacks(t.Context(), loopbackRequest)
+			if err != nil {
+				t.Fatalf("advance loopbacks: %v", err)
+			}
 			if test.deleteReceipt {
 				globalNetworkReleaseStageExec(
 					t,
@@ -259,23 +264,24 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 				)
 			}
 			if test.advance {
-				globalNetworkReleaseStageExec(
-					t,
-					connection,
-					"UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1",
-				)
-				globalNetworkReleaseStageExec(
-					t,
-					connection,
-					"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
-					test.phase,
-				)
+				if test.phase != GlobalNetworkReleasePlanPhaseVerifyEffects {
+					globalNetworkReleaseStageExec(
+						t,
+						connection,
+						"UPDATE harbor_state SET sequence = sequence + 1 WHERE id = 1",
+					)
+					globalNetworkReleaseStageExec(
+						t,
+						connection,
+						"UPDATE network_global_release_plans SET phase = ?, checkpoint_revision = checkpoint_revision + 1 WHERE id = 1",
+						test.phase,
+					)
+				}
 			} else {
 				globalNetworkReleaseStageExec(
 					t,
 					connection,
-					"UPDATE network_global_release_plans SET phase = ? WHERE id = 1",
-					test.phase,
+					"UPDATE network_global_release_loopback_receipts SET source_checkpoint_revision = source_checkpoint_revision - 1 WHERE id = 1",
 				)
 			}
 
@@ -289,10 +295,16 @@ func TestGlobalNetworkReleaseTrustReceiptFencesLaterPhases(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
 			}
+			expectedCheckpoint := advanced.CheckpointRevision
+			if test.phase != GlobalNetworkReleasePlanPhaseVerifyEffects {
+				expectedCheckpoint++
+			}
 			if plan.Phase != test.phase ||
-				plan.CheckpointRevision != advanced.CheckpointRevision+1 ||
+				plan.CheckpointRevision != expectedCheckpoint ||
 				plan.TrustReceipt == nil ||
-				*plan.TrustReceipt != request.Receipt {
+				*plan.TrustReceipt != request.Receipt ||
+				plan.LoopbackReceipt == nil ||
+				*plan.LoopbackReceipt != loopbackRequest.Receipt {
 				t.Fatalf("later release plan = %#v", plan)
 			}
 		})

@@ -179,7 +179,12 @@ func requireNoGlobalNetworkReleasePlan(tx *gorm.DB, action string) error {
 		return err
 	}
 	plan.ResolverReceipt = resolverReceipt
-	if _, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan); err != nil {
+	trustReceipt, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan)
+	if err != nil {
+		return err
+	}
+	plan.TrustReceipt = trustReceipt
+	if _, err := validateGlobalNetworkReleaseLoopbackReceipt(tx, plan); err != nil {
 		return err
 	}
 	return &GlobalNetworkReleaseActiveError{
@@ -243,7 +248,12 @@ func validateGlobalNetworkReleaseMutationOwner(
 		return err
 	}
 	plan.ResolverReceipt = resolverReceipt
-	if _, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan); err != nil {
+	trustReceipt, err := validateGlobalNetworkReleaseTrustReceipt(tx, plan)
+	if err != nil {
+		return err
+	}
+	plan.TrustReceipt = trustReceipt
+	if _, err := validateGlobalNetworkReleaseLoopbackReceipt(tx, plan); err != nil {
 		return err
 	}
 	if plan.Phase != phase {
