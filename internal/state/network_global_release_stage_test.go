@@ -32,7 +32,11 @@ func TestStageGlobalNetworkReleaseStagesAndReplays(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("ReadGlobalNetworkReleasePlan() = %#v, %t, %v", plan, found, err)
 	}
-	if plan.Operation.Operation.ID != staged.Operation.ID || plan.Operation.Revision != staged.Revision || plan.Phase != GlobalNetworkReleasePlanPhaseRuntimeRelease || !reflect.DeepEqual(plan.Authority, request.Authority) {
+	if plan.Operation.Operation.ID != staged.Operation.ID ||
+		plan.Operation.Revision != staged.Revision ||
+		plan.CheckpointRevision != staged.Revision ||
+		plan.Phase != GlobalNetworkReleasePlanPhaseRuntimeRelease ||
+		!reflect.DeepEqual(plan.Authority, request.Authority) {
 		t.Fatalf("read plan = %#v", plan)
 	}
 	before := globalNetworkReleaseStageSnapshot(t, connection)
@@ -242,25 +246,49 @@ func newGlobalNetworkReleaseStageFixture(t *testing.T) (*OperationJournal, *gorm
 		}
 }
 
-// globalNetworkReleaseStageApplyPlanMigration applies the new migration to the established full-network fixture.
+// globalNetworkReleaseStageApplyPlanMigration applies the release-plan migrations to the established full-network fixture.
 func globalNetworkReleaseStageApplyPlanMigration(t *testing.T, connection *gorm.DB) {
 	t.Helper()
-	for _, migration := range migrations.GetMigrations() {
-		if migration.Name() == "2026_07_22_040000_create_network_global_release_plans" && migration.App() == "harbord" && migration.Connection() == "default" {
-			if err := migration.Up(connection); err != nil {
-				t.Fatalf("apply global release plan migration: %v", err)
+	for _, name := range []string{
+		"2026_07_22_040000_create_network_global_release_plans",
+		"2026_07_22_041000_add_network_global_release_plan_checkpoint_revision",
+	} {
+		found := false
+		for _, migration := range migrations.GetMigrations() {
+			if migration.Name() == name &&
+				migration.App() == "harbord" &&
+				migration.Connection() == "default" {
+				if err := migration.Up(connection); err != nil {
+					t.Fatalf("apply global release plan migration %s: %v", name, err)
+				}
+				found = true
+				break
 			}
-			return
+		}
+		if !found {
+			t.Fatalf("global release plan migration %q is not registered", name)
 		}
 	}
-	t.Fatal("global release plan migration is not registered")
 }
 
 // globalNetworkReleaseStageSnapshot captures every stage-owned table so failed transactions prove rollback.
 func globalNetworkReleaseStageSnapshot(t *testing.T, connection *gorm.DB) map[string][]map[string]any {
 	t.Helper()
 	result := make(map[string][]map[string]any)
-	for _, table := range []string{"harbor_state", "network_state", "projects", "project_apps", "project_services", "project_resources", "project_sessions", "operations", "operation_transitions", "public_endpoint_leases", "network_project_releases", "network_global_release_plans"} {
+	for _, table := range []string{
+		"harbor_state",
+		"network_state",
+		"projects",
+		"project_apps",
+		"project_services",
+		"project_resources",
+		"project_sessions",
+		"operations",
+		"operation_transitions",
+		"public_endpoint_leases",
+		"network_project_releases",
+		"network_global_release_plans",
+	} {
 		var rows []map[string]any
 		if err := connection.Table(table).Order("rowid ASC").Find(&rows).Error; err != nil {
 			t.Fatalf("snapshot %s: %v", table, err)

@@ -150,6 +150,41 @@ func TestGlobalNetworkReleaseCoordinatorFreezesOrdinaryWriters(t *testing.T) {
 	globalNetworkReleaseStageAssertUnchanged(t, connection, before)
 }
 
+// TestGlobalNetworkReleaseCoordinatorRejectsCorruptCheckpointBeforeOrdinaryWriter proves the writer guard fails closed on an invalid release boundary.
+func TestGlobalNetworkReleaseCoordinatorRejectsCorruptCheckpointBeforeOrdinaryWriter(t *testing.T) {
+	journal, connection, request := newGlobalNetworkReleaseStageFixture(t)
+	if _, err := journal.StageGlobalNetworkRelease(context.Background(), request); err != nil {
+		t.Fatalf("stage global network release: %v", err)
+	}
+	globalNetworkReleaseStageExec(
+		t,
+		connection,
+		"UPDATE network_global_release_plans SET checkpoint_revision = 999 WHERE id = 1",
+	)
+	before := globalNetworkReleaseStageSnapshot(t, connection)
+	store := newStore(
+		models.NewHarborStateRepo(journal.mutations.connections),
+		models.NewProjectRepo(journal.mutations.connections),
+		models.NewProjectSessionRepo(journal.mutations.connections),
+		models.NewNetworkStateRepo(journal.mutations.connections),
+		journal.mutations,
+		projectStoreMutationTestClock,
+	)
+	project := registrationTestProject(
+		"project-corrupt-release-guard",
+		"/work/corrupt-release-guard",
+		"corrupt-release-guard",
+		request.Operation.RequestedAt,
+	)
+
+	_, err := store.RegisterProject(context.Background(), project)
+	var corrupt *CorruptStateError
+	if !errors.As(err, &corrupt) {
+		t.Fatalf("project registration error = %v, want CorruptStateError", err)
+	}
+	globalNetworkReleaseStageAssertUnchanged(t, connection, before)
+}
+
 // TestOperationJournalGlobalNetworkReleaseGuardRejectsDirectRelease keeps the authority receipt inseparable from release enqueue.
 func TestOperationJournalGlobalNetworkReleaseGuardRejectsDirectRelease(t *testing.T) {
 	journal, _ := newOperationJournalTestHarness(t)

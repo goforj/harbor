@@ -31,8 +31,8 @@ func (coordinator *MutationCoordinator) mutate(ctx context.Context, scope string
 	}, mutation, nil)
 }
 
-// mutateGlobalNetworkRelease admits one release-owned mutation after its callback proves the exact durable release boundary.
-func (coordinator *MutationCoordinator) mutateGlobalNetworkRelease(
+// mutateGlobalNetworkReleaseStage admits the sole mutation allowed to create a release owner and plan together.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseStage(
 	ctx context.Context,
 	scope string,
 	mutation func(*gorm.DB) error,

@@ -24,7 +24,7 @@ func (journal *OperationJournal) StageGlobalNetworkRelease(
 	}
 
 	var result OperationRecord
-	err := journal.mutations.mutateGlobalNetworkRelease(ctx, "global network release staging", func(tx *gorm.DB) error {
+	err := journal.mutations.mutateGlobalNetworkReleaseStage(ctx, "global network release staging", func(tx *gorm.DB) error {
 		staged, err := stageGlobalNetworkReleaseInTransaction(tx, request)
 		if err != nil {
 			return err
@@ -274,15 +274,16 @@ func insertGlobalNetworkReleasePlan(tx *gorm.DB, operation OperationRecord, auth
 		return err
 	}
 	row := globalNetworkReleasePlanRow{
-		ID:                1,
-		OperationID:       string(operation.Operation.ID),
-		OperationRevision: int(operation.Revision),
-		Phase:             string(GlobalNetworkReleasePlanPhaseRuntimeRelease),
-		NetworkStateID:    networkStateSingletonID,
-		NetworkRevision:   int(authority.Projection.NetworkRevision),
-		NetworkUpdatedAt:  authority.Projection.NetworkUpdatedAt,
-		AuthorityPayload:  payload,
-		AuthorityDigest:   digest,
+		ID:                 1,
+		OperationID:        string(operation.Operation.ID),
+		OperationRevision:  int(operation.Revision),
+		CheckpointRevision: int(operation.Revision),
+		Phase:              string(GlobalNetworkReleasePlanPhaseRuntimeRelease),
+		NetworkStateID:     networkStateSingletonID,
+		NetworkRevision:    int(authority.Projection.NetworkRevision),
+		NetworkUpdatedAt:   authority.Projection.NetworkUpdatedAt,
+		AuthorityPayload:   payload,
+		AuthorityDigest:    digest,
 	}
 	if err := tx.Create(&row).Error; err != nil {
 		return fmt.Errorf("create global network release plan: %w", err)
@@ -331,6 +332,9 @@ func replayGlobalNetworkReleaseInTransaction(tx *gorm.DB, record OperationRecord
 		row.AuthorityPayload != expectedPayload ||
 		row.AuthorityDigest != expectedDigest {
 		return OperationRecord{}, corruptGlobalNetworkReleasePlan(record.Operation.ID, fmt.Errorf("persisted authority differs from exact staging request"))
+	}
+	if plan.CheckpointRevision != record.Revision {
+		return OperationRecord{}, corruptGlobalNetworkReleasePlan(record.Operation.ID, fmt.Errorf("initial checkpoint revision %d differs from running operation revision %d", plan.CheckpointRevision, record.Revision))
 	}
 	return record, nil
 }

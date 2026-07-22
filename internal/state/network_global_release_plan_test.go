@@ -69,6 +69,18 @@ func TestReadGlobalNetworkReleasePlanRejectsDurableCorruption(t *testing.T) {
 			},
 		},
 		{
+			name: "runtime checkpoint revision",
+			mutate: func(t *testing.T, connection *gorm.DB, operationID domain.OperationID) {
+				globalNetworkReleasePlanExec(t, connection, "UPDATE network_global_release_plans SET checkpoint_revision = operation_revision - 1")
+			},
+		},
+		{
+			name: "future checkpoint revision",
+			mutate: func(t *testing.T, connection *gorm.DB, operationID domain.OperationID) {
+				globalNetworkReleasePlanExec(t, connection, "UPDATE network_global_release_plans SET checkpoint_revision = 999")
+			},
+		},
+		{
 			name: "network revision",
 			mutate: func(t *testing.T, connection *gorm.DB, operationID domain.OperationID) {
 				globalNetworkReleasePlanExec(t, connection, "PRAGMA foreign_keys = OFF")
@@ -103,6 +115,199 @@ func TestReadGlobalNetworkReleasePlanRejectsDurableCorruption(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReadGlobalNetworkReleasePlanRejectsCheckpointSequenceReuse verifies an advanced checkpoint cannot borrow any materialized sequence owner.
+func TestReadGlobalNetworkReleasePlanRejectsCheckpointSequenceReuse(t *testing.T) {
+	tests := []struct {
+		name    string
+		offset  int
+		want    string
+		prepare func(t *testing.T, connection *gorm.DB, sequence int)
+	}{
+		{
+			name:   "project",
+			offset: 1,
+			want:   "project",
+			prepare: func(t *testing.T, connection *gorm.DB, sequence int) {
+				globalNetworkReleasePlanInsertSequenceProject(t, connection, "project-collision", sequence)
+			},
+		},
+		{
+			name:   "recent resource",
+			offset: 2,
+			want:   "recent resource",
+			prepare: func(t *testing.T, connection *gorm.DB, sequence int) {
+				globalNetworkReleasePlanInsertSequenceProject(t, connection, "recent-collision", sequence-1)
+				globalNetworkReleasePlanExec(
+					t,
+					connection,
+					`INSERT INTO project_apps (project_id, app_id, name, state, active, required)
+					 VALUES ('recent-collision', 'app', 'App', 'stopped', 0, 1)`,
+				)
+				globalNetworkReleasePlanExec(
+					t,
+					connection,
+					`INSERT INTO project_resources (
+						project_id,
+						resource_id,
+						name,
+						kind,
+						url,
+						owner_kind,
+						owner_app_id
+					 ) VALUES (
+						'recent-collision',
+						'app-http',
+						'App',
+						'http',
+						'https://recent-collision.test',
+						'app',
+						'app'
+					 )`,
+				)
+				globalNetworkReleasePlanExec(
+					t,
+					connection,
+					`INSERT INTO recent_resources (
+						project_id,
+						resource_id,
+						accessed_at,
+						sequence
+					 ) VALUES (
+						'recent-collision',
+						'app-http',
+						'2026-07-22T00:00:00Z',
+						?
+					 )`,
+					sequence,
+				)
+			},
+		},
+		{
+			name:   "operation",
+			offset: 1,
+			want:   "operation",
+			prepare: func(t *testing.T, connection *gorm.DB, sequence int) {
+				globalNetworkReleasePlanInsertSequenceOperation(t, connection, "operation-collision", sequence)
+			},
+		},
+		{
+			name:   "operation transition",
+			offset: 2,
+			want:   "operation transition",
+			prepare: func(t *testing.T, connection *gorm.DB, sequence int) {
+				globalNetworkReleasePlanInsertSequenceOperation(t, connection, "transition-collision", sequence-1)
+				globalNetworkReleasePlanExec(
+					t,
+					connection,
+					`INSERT INTO operation_transitions (
+						operation_id,
+						ordinal,
+						state,
+						phase,
+						occurred_at,
+						sequence
+					 ) VALUES (
+						'transition-collision',
+						1,
+						'queued',
+						'queued',
+						'2026-07-22T00:00:00Z',
+						?
+					 )`,
+					sequence,
+				)
+			},
+		},
+		{
+			name:   "network state",
+			offset: 1,
+			want:   "network state",
+			prepare: func(t *testing.T, connection *gorm.DB, sequence int) {
+				globalNetworkReleasePlanExec(t, connection, "PRAGMA foreign_keys = OFF")
+				globalNetworkReleasePlanExec(t, connection, "UPDATE network_state SET revision = ? WHERE id = 1", sequence)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal, connection, request := newGlobalNetworkReleaseStageFixture(t)
+			staged, err := journal.StageGlobalNetworkRelease(context.Background(), request)
+			if err != nil {
+				t.Fatalf("stage release plan: %v", err)
+			}
+			sequence := int(staged.Revision) + test.offset
+			globalNetworkReleasePlanExec(t, connection, "UPDATE harbor_state SET sequence = ? WHERE id = 1", sequence)
+			test.prepare(t, connection, sequence)
+			globalNetworkReleasePlanExec(
+				t,
+				connection,
+				"UPDATE network_global_release_plans SET phase = 'low_ports', checkpoint_revision = ? WHERE id = 1",
+				sequence,
+			)
+			_, found, err := journal.ReadGlobalNetworkReleasePlan(context.Background(), request.Operation.ID)
+			var corrupt *CorruptStateError
+			if found || !errors.As(err, &corrupt) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ReadGlobalNetworkReleasePlan() = found %t, error %v; want checkpoint collision containing %q", found, err, test.want)
+			}
+		})
+	}
+}
+
+// globalNetworkReleasePlanInsertSequenceProject inserts one otherwise valid stopped project at a chosen corrupt sequence owner.
+func globalNetworkReleasePlanInsertSequenceProject(
+	t *testing.T,
+	connection *gorm.DB,
+	projectID string,
+	revision int,
+) {
+	t.Helper()
+	globalNetworkReleasePlanExec(
+		t,
+		connection,
+		`INSERT INTO projects (
+			project_id,
+			name,
+			path,
+			slug,
+			state,
+			favorite,
+			updated_at,
+			revision
+		 ) VALUES (?, ?, ?, ?, 'stopped', 0, '2026-07-22T00:00:00Z', ?)`,
+		projectID,
+		projectID,
+		"/tmp/"+projectID,
+		projectID,
+		revision,
+	)
+}
+
+// globalNetworkReleasePlanInsertSequenceOperation inserts one queued operation header at a chosen corrupt sequence owner.
+func globalNetworkReleasePlanInsertSequenceOperation(
+	t *testing.T,
+	connection *gorm.DB,
+	operationID string,
+	revision int,
+) {
+	t.Helper()
+	globalNetworkReleasePlanExec(
+		t,
+		connection,
+		`INSERT INTO operations (
+			id,
+			intent_id,
+			kind,
+			state,
+			phase,
+			requested_at,
+			revision
+		 ) VALUES (?, ?, 'maintenance.run', 'queued', 'queued', '2026-07-22T00:00:00Z', ?)`,
+		operationID,
+		"intent-"+operationID,
+		revision,
+	)
 }
 
 // TestReadGlobalNetworkReleasePlanCancellationAndClone verifies canceled reads do not open a plan and callers cannot mutate a returned authority.

@@ -61,11 +61,12 @@ func (phase GlobalNetworkReleasePlanPhase) Validate() error {
 
 // GlobalNetworkReleasePlanRecord exposes immutable recovery authority and its exact source boundary.
 type GlobalNetworkReleasePlanRecord struct {
-	Operation        OperationRecord
-	Phase            GlobalNetworkReleasePlanPhase
-	NetworkRevision  domain.Sequence
-	NetworkUpdatedAt time.Time
-	Authority        GlobalNetworkReleaseAuthority
+	Operation          OperationRecord
+	Phase              GlobalNetworkReleasePlanPhase
+	CheckpointRevision domain.Sequence
+	NetworkRevision    domain.Sequence
+	NetworkUpdatedAt   time.Time
+	Authority          GlobalNetworkReleaseAuthority
 }
 
 // Clone returns a copy whose retained authority bytes and slices cannot be modified by the caller.
@@ -76,15 +77,16 @@ func (record GlobalNetworkReleasePlanRecord) Clone() GlobalNetworkReleasePlanRec
 
 // globalNetworkReleasePlanRow is the private persistence shape for release recovery authority.
 type globalNetworkReleasePlanRow struct {
-	ID                int       `gorm:"column:id"`
-	OperationID       string    `gorm:"column:operation_id"`
-	OperationRevision int       `gorm:"column:operation_revision"`
-	Phase             string    `gorm:"column:phase"`
-	NetworkStateID    int       `gorm:"column:network_state_id"`
-	NetworkRevision   int       `gorm:"column:network_revision"`
-	NetworkUpdatedAt  time.Time `gorm:"column:network_updated_at"`
-	AuthorityPayload  string    `gorm:"column:authority_payload"`
-	AuthorityDigest   string    `gorm:"column:authority_digest"`
+	ID                 int       `gorm:"column:id"`
+	OperationID        string    `gorm:"column:operation_id"`
+	OperationRevision  int       `gorm:"column:operation_revision"`
+	CheckpointRevision int       `gorm:"column:checkpoint_revision"`
+	Phase              string    `gorm:"column:phase"`
+	NetworkStateID     int       `gorm:"column:network_state_id"`
+	NetworkRevision    int       `gorm:"column:network_revision"`
+	NetworkUpdatedAt   time.Time `gorm:"column:network_updated_at"`
+	AuthorityPayload   string    `gorm:"column:authority_payload"`
+	AuthorityDigest    string    `gorm:"column:authority_digest"`
 }
 
 // TableName returns the durable release-authority table name.
@@ -149,6 +151,13 @@ func (journal *OperationJournal) ReadGlobalNetworkReleasePlan(ctx context.Contex
 		if err != nil {
 			return err
 		}
+		highWater, err := validateRetainedSequenceBounds(tx)
+		if err != nil {
+			return err
+		}
+		if err := validateGlobalNetworkReleaseCheckpoint(tx, result, highWater); err != nil {
+			return err
+		}
 		if err := requireCurrentGlobalNetworkReleaseAuthority(tx, result.Authority); err != nil {
 			return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("current network authority: %w", err))
 		}
@@ -180,6 +189,13 @@ func globalNetworkReleasePlanFromRow(row globalNetworkReleasePlanRow, operation 
 	if or != operation.Revision {
 		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(id, fmt.Errorf("plan revision is %d, operation revision is %d", or, operation.Revision))
 	}
+	checkpointRevision, err := modelIntToSequence("global network release checkpoint revision", row.CheckpointRevision)
+	if err != nil {
+		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(id, err)
+	}
+	if checkpointRevision < operation.Revision {
+		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(id, fmt.Errorf("checkpoint revision %d precedes operation revision %d", checkpointRevision, operation.Revision))
+	}
 	if row.NetworkStateID != networkStateSingletonID {
 		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(id, fmt.Errorf("network state ID is %d, expected 1", row.NetworkStateID))
 	}
@@ -208,11 +224,12 @@ func globalNetworkReleasePlanFromRow(row globalNetworkReleasePlanRow, operation 
 		return GlobalNetworkReleasePlanRecord{}, corruptGlobalNetworkReleasePlan(id, err)
 	}
 	return GlobalNetworkReleasePlanRecord{
-		Operation:        operation,
-		Phase:            phase,
-		NetworkRevision:  nr,
-		NetworkUpdatedAt: row.NetworkUpdatedAt,
-		Authority:        authority.Clone(),
+		Operation:          operation,
+		Phase:              phase,
+		CheckpointRevision: checkpointRevision,
+		NetworkRevision:    nr,
+		NetworkUpdatedAt:   row.NetworkUpdatedAt,
+		Authority:          authority.Clone(),
 	}, nil
 }
 

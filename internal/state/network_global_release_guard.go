@@ -158,7 +158,15 @@ func requireNoGlobalNetworkReleasePlan(tx *gorm.DB, action string) error {
 		operation.Operation.State != domain.OperationRunning || operation.Operation.Phase != globalNetworkReleaseRuntimeOperationPhase {
 		return corruptGlobalNetworkReleasePlan(operationID, fmt.Errorf("operation owner is not the active global network release"))
 	}
-	if _, err := globalNetworkReleasePlanFromRow(row, operation); err != nil {
+	plan, err := globalNetworkReleasePlanFromRow(row, operation)
+	if err != nil {
+		return err
+	}
+	highWater, err := validateRetainedSequenceBounds(tx)
+	if err != nil {
+		return err
+	}
+	if err := validateGlobalNetworkReleaseCheckpoint(tx, plan, highWater); err != nil {
 		return err
 	}
 	return &GlobalNetworkReleaseActiveError{
@@ -203,6 +211,13 @@ func validateGlobalNetworkReleaseMutationOwner(
 	}
 	plan, err := globalNetworkReleasePlanFromRow(rows[0], operation)
 	if err != nil {
+		return err
+	}
+	highWater, err := validateRetainedSequenceBounds(tx)
+	if err != nil {
+		return err
+	}
+	if err := validateGlobalNetworkReleaseCheckpoint(tx, plan, highWater); err != nil {
 		return err
 	}
 	if plan.Phase != phase {
