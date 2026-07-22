@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 const postMutationObservationTimeout = 5 * time.Second
+
+const postMutationObservationInterval = 100 * time.Millisecond
 
 // backend confines platform implementations to bounded observations and one exact trust effect.
 type backend interface {
@@ -21,12 +25,18 @@ type backend interface {
 
 // Adapter applies platform-neutral classification and compare-and-swap policy around trust effects.
 type Adapter struct {
-	backend backend
+	backend             backend
+	reconciliationNow   func() time.Time
+	reconciliationSleep func(context.Context, time.Duration) error
 }
 
 // newAdapter injects typed native effects so safety policy can be tested without host mutation.
 func newAdapter(platform backend) *Adapter {
-	return &Adapter{backend: platform}
+	return &Adapter{
+		backend:             platform,
+		reconciliationNow:   time.Now,
+		reconciliationSleep: sleepForPostMutationObservation,
+	}
 }
 
 // Observe returns a validated, bounded snapshot for one immutable trust request.
@@ -96,7 +106,11 @@ func (adapter *Adapter) EnsureIfObserved(
 		return Change{Before: cloneObservation(before)}, operationError(ErrorKindMutationFailed, operation, before, assessment, err)
 	}
 	mutationErr := adapter.backend.ensure(mutationContext, request, cloneObservation(before))
-	change, afterAssessment, observationErr := adapter.reconcileMutation(request, before)
+	change, afterAssessment, observationErr := adapter.reconcileMutation(
+		request,
+		before,
+		mutationErr == nil && request.Mechanism() == networkpolicy.DarwinAdministratorTrust,
+	)
 	if mutationErr != nil {
 		return change, operationError(
 			ErrorKindMutationFailed,
@@ -147,7 +161,7 @@ func (adapter *Adapter) ReleaseIfObserved(
 		return Change{Before: cloneObservation(before)}, operationError(ErrorKindMutationFailed, operation, before, assessment, err)
 	}
 	mutationErr := adapter.backend.release(mutationContext, request, cloneObservation(before))
-	change, afterAssessment, observationErr := adapter.reconcileMutation(request, before)
+	change, afterAssessment, observationErr := adapter.reconcileMutation(request, before, false)
 	if mutationErr != nil {
 		kind := ErrorKindMutationFailed
 		switch {
@@ -202,25 +216,50 @@ func (adapter *Adapter) observeExpected(
 }
 
 // reconcileMutation uses fresh cancellation authority because caller cancellation cannot prove whether an effect landed.
-func (adapter *Adapter) reconcileMutation(request Request, before Observation) (Change, Assessment, error) {
+func (adapter *Adapter) reconcileMutation(request Request, before Observation, retryUntilExact bool) (Change, Assessment, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), postMutationObservationTimeout)
 	defer cancel()
-	after, err := adapter.Observe(ctx, request)
-	if err != nil {
-		return Change{
-			Attempted:     true,
-			Indeterminate: true,
-			Before:        cloneObservation(before),
-		}, Assessment{}, err
+	deadline := adapter.reconciliationNow().Add(postMutationObservationTimeout)
+	for {
+		after, err := adapter.Observe(ctx, request)
+		if err != nil {
+			return Change{
+				Attempted:     true,
+				Indeterminate: true,
+				Before:        cloneObservation(before),
+			}, Assessment{}, err
+		}
+		afterAssessment := classifyValidated(after)
+		change := Change{
+			Attempted: true,
+			Changed:   observationChanged(before, after),
+			Before:    cloneObservation(before),
+			After:     cloneObservation(after),
+		}
+		if !retryUntilExact || afterAssessment.State == StateExact || !adapter.reconciliationNow().Before(deadline) {
+			return change, afterAssessment, nil
+		}
+		interval := min(postMutationObservationInterval, deadline.Sub(adapter.reconciliationNow()))
+		if err := adapter.reconciliationSleep(ctx, interval); err != nil {
+			return Change{
+				Attempted:     true,
+				Indeterminate: true,
+				Before:        cloneObservation(before),
+			}, Assessment{}, err
+		}
 	}
-	afterAssessment := classifyValidated(after)
-	changed := observationChanged(before, after)
-	return Change{
-		Attempted: true,
-		Changed:   changed,
-		Before:    cloneObservation(before),
-		After:     cloneObservation(after),
-	}, afterAssessment, nil
+}
+
+// sleepForPostMutationObservation keeps asynchronous native visibility cancellable between fresh observations.
+func sleepForPostMutationObservation(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // observationChanged compares canonical facts so same-state native replacements still report a change.

@@ -28,6 +28,7 @@ type trustFakeBackend struct {
 	skipEnsureEffect  bool
 	skipReleaseEffect bool
 	afterObserve      func(int)
+	observeSequence   []Observation
 	observeCalls      int
 	ensureCalls       int
 	releaseCalls      int
@@ -43,6 +44,9 @@ func (backend *trustFakeBackend) observe(_ context.Context, _ Request) (Observat
 	}
 	if backend.observeErr != nil && (backend.observeErrCall == 0 || backend.observeCalls == backend.observeErrCall) {
 		return Observation{}, backend.observeErr
+	}
+	if sequenceIndex := backend.observeCalls - 1; sequenceIndex < len(backend.observeSequence) {
+		return cloneObservation(backend.observeSequence[sequenceIndex]), nil
 	}
 	return cloneObservation(backend.observation), nil
 }
@@ -503,6 +507,65 @@ func TestAdapterReportsMutationAndVerificationFailures(t *testing.T) {
 				t.Fatalf("EnsureIfObserved() error = %v, want %q", err, test.wantKind)
 			}
 			if !change.Attempted || change.Changed != test.wantChanged || change.Indeterminate != test.wantUnknown {
+				t.Fatalf("EnsureIfObserved() change = %#v", change)
+			}
+		})
+	}
+}
+
+// TestAdapterReconcilesDelayedAdministratorTrustEnsure verifies administrator trust visibility without repeating its native mutation.
+func TestAdapterReconcilesDelayedAdministratorTrustEnsure(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinAdministratorTrust)
+	absent := Observation{Request: request, Complete: true}
+	exact := Observation{Request: request, Complete: true, Entries: []Entry{trustExactEntry(request, "owned")}}
+
+	for _, test := range []struct {
+		name             string
+		observations     []Observation
+		observeErrCall   int
+		skipEnsureEffect bool
+		wantErrorKind    ErrorKind
+		wantObserveCalls int
+		wantSleeps       int
+	}{
+		{name: "delayed exact", observations: []Observation{absent, absent, absent, exact}, wantObserveCalls: 4, wantSleeps: 2},
+		{name: "persistent absence", observations: []Observation{absent}, skipEnsureEffect: true, wantErrorKind: ErrorKindVerificationFailed, wantObserveCalls: 52, wantSleeps: 50},
+		{name: "immediate exact", observations: []Observation{absent, exact}, wantObserveCalls: 2},
+		{name: "post mutation observation error", observations: []Observation{absent}, observeErrCall: 2, wantErrorKind: ErrorKindVerificationFailed, wantObserveCalls: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newTrustFakeBackend(request)
+			backend.observeSequence = test.observations
+			backend.skipEnsureEffect = test.skipEnsureEffect
+			if test.observeErrCall != 0 {
+				backend.observeErr = errTrustFake
+				backend.observeErrCall = test.observeErrCall
+			}
+			adapter := newAdapter(backend)
+			now := time.Date(2026, time.July, 22, 0, 0, 0, 0, time.UTC)
+			adapter.reconciliationNow = func() time.Time { return now }
+			sleeps := 0
+			adapter.reconciliationSleep = func(context.Context, time.Duration) error {
+				sleeps++
+				now = now.Add(postMutationObservationInterval)
+				return nil
+			}
+
+			change, err := adapter.EnsureIfObserved(t.Context(), request, trustFingerprint(t, absent))
+			if test.wantErrorKind == "" {
+				if err != nil {
+					t.Fatalf("EnsureIfObserved() error = %v", err)
+				}
+			} else if !hasTrustErrorKind(err, test.wantErrorKind) {
+				t.Fatalf("EnsureIfObserved() error = %v, want %q", err, test.wantErrorKind)
+			}
+			if test.observeErrCall != 0 && !errors.Is(err, errTrustFake) {
+				t.Fatalf("EnsureIfObserved() error = %v, want native observation error", err)
+			}
+			if backend.ensureCalls != 1 || backend.observeCalls != test.wantObserveCalls || sleeps != test.wantSleeps {
+				t.Fatalf("EnsureIfObserved() ensure calls = %d, observe calls = %d, sleeps = %d", backend.ensureCalls, backend.observeCalls, sleeps)
+			}
+			if test.wantErrorKind == "" && (!change.Attempted || !change.Changed || change.Indeterminate) {
 				t.Fatalf("EnsureIfObserved() change = %#v", change)
 			}
 		})
