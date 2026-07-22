@@ -18,11 +18,37 @@ type MutationCoordinator struct {
 func NewMutationCoordinator(connections *database.Connections) *MutationCoordinator {
 	permit := make(chan struct{}, 1)
 	permit <- struct{}{}
-	return &MutationCoordinator{connections: connections, permit: permit}
+	return &MutationCoordinator{
+		connections: connections,
+		permit:      permit,
+	}
 }
 
 // mutate waits without defeating cancellation, then executes one immediate database transaction.
 func (coordinator *MutationCoordinator) mutate(ctx context.Context, scope string, mutation func(*gorm.DB) error) error {
+	return coordinator.mutateWithAdmission(ctx, scope, func(tx *gorm.DB) error {
+		return requireNoActiveGlobalNetworkReleaseMutation(tx, scope)
+	}, mutation, nil)
+}
+
+// mutateGlobalNetworkRelease admits one release-owned mutation after its callback proves the exact durable release boundary.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkRelease(
+	ctx context.Context,
+	scope string,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
+	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
+}
+
+// mutateWithAdmission serializes a mutation and runs its admission proof in the same immediate transaction.
+func (coordinator *MutationCoordinator) mutateWithAdmission(
+	ctx context.Context,
+	scope string,
+	admit func(*gorm.DB) error,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
 	ctx = normalizeContext(ctx)
 	select {
 	case <-ctx.Done():
@@ -40,5 +66,18 @@ func (coordinator *MutationCoordinator) mutate(ctx context.Context, scope string
 	if err != nil {
 		return fmt.Errorf("open %s state: %w", scope, err)
 	}
-	return connection.WithContext(ctx).Transaction(mutation)
+	return connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if admit != nil {
+			if err := admit(tx); err != nil {
+				return err
+			}
+		}
+		if err := mutation(tx); err != nil {
+			return err
+		}
+		if validate != nil {
+			return validate(tx)
+		}
+		return nil
+	})
 }

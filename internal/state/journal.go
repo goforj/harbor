@@ -195,6 +195,9 @@ func enqueueOperationInTransaction(
 			RequestedIntentID: operation.IntentID,
 		}
 	}
+	if err := rejectGlobalNetworkReleaseEnqueue(tx, operation); err != nil {
+		return OperationRecord{}, err
+	}
 	if enforceStartAdmission && operation.Kind == domain.OperationKindProjectStart {
 		if err := requireNoActiveProjectSession(tx, operation.ProjectID); err != nil {
 			return OperationRecord{}, fmt.Errorf("enqueue project start: %w", err)
@@ -233,7 +236,10 @@ func enqueueOperationInTransaction(
 	if err := tx.Create(&transition).Error; err != nil {
 		return OperationRecord{}, fmt.Errorf("append queued operation transition: %w", err)
 	}
-	return OperationRecord{Operation: operation, Revision: sequence}, nil
+	return OperationRecord{
+		Operation: operation,
+		Revision:  sequence,
+	}, nil
 }
 
 // Transition advances one operation when its durable revision still matches the caller's expectation.
@@ -410,7 +416,10 @@ func transitionOperationInTransaction(
 	if err := tx.Create(&transitionRow).Error; err != nil {
 		return OperationRecord{}, fmt.Errorf("append operation transition: %w", err)
 	}
-	return OperationRecord{Operation: nextOperation, Revision: sequence}, nil
+	return OperationRecord{
+		Operation: nextOperation,
+		Revision:  sequence,
+	}, nil
 }
 
 // Operation returns one durable operation by its daemon-owned ID.
@@ -601,7 +610,10 @@ func readJournalSnapshot(tx *gorm.DB) (JournalSnapshot, error) {
 	for _, record := range records {
 		operations = append(operations, record.Operation)
 	}
-	return JournalSnapshot{Sequence: sequence, Operations: operations}, nil
+	return JournalSnapshot{
+		Sequence:   sequence,
+		Operations: operations,
+	}, nil
 }
 
 // readSnapshotSequence reads every singleton-table row so weakened schemas cannot hide extra journal authorities.
