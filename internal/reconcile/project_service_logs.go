@@ -8,6 +8,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -59,7 +60,7 @@ type projectServiceLogReader interface {
 
 // projectServicePortReader supplies ephemeral port mappings without adding them to durable supervisor state.
 type projectServicePortReader interface {
-	ObserveServicePorts(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID) (projectprocess.ServicePortObservation, error)
+	ObserveServicePorts(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID) (projectruntime.ServicePortObservation, error)
 }
 
 // ServiceLogs reads only one selected Compose service in the current durable project session.

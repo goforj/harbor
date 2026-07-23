@@ -8,7 +8,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
-	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 )
 
 // reconcileObservedNativeServiceRoutes publishes Docker-observed TCP services without requiring runtime-specific descriptors.
@@ -114,10 +114,10 @@ func projectHTTPResourceHosts(
 
 // preferredNativeServicePort chooses a stable project-address binding before a localhost relay candidate.
 func preferredNativeServicePort(
-	ports []projectprocess.ServicePort,
+	ports []projectruntime.ServicePort,
 	primaryAddress netip.Addr,
-) (projectprocess.ServicePort, netip.Addr, bool) {
-	var selected projectprocess.ServicePort
+) (projectruntime.ServicePort, netip.Addr, bool) {
+	var selected projectruntime.ServicePort
 	var selectedAddress netip.Addr
 	selectedPriority := 0
 	for _, port := range ports {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/projectruntime"
 )
 
 // ServiceObservation is one complete replacement view of the active Compose services reported by the host runtime.
@@ -15,21 +16,11 @@ type ServiceObservation struct {
 	Services  []domain.ServiceSnapshot
 }
 
-// ServicePort is one non-secret port mapping observed for a selected Compose service.
-type ServicePort struct {
-	Address  string
-	Private  uint16
-	Public   uint16
-	Protocol string
-	Replica  int
-}
+// ServicePort retains the compatibility name for the runtime-neutral observation contract.
+type ServicePort = projectruntime.ServicePort
 
-// ServicePortObservation is the current, non-durable port view for one Compose service.
-type ServicePortObservation struct {
-	Supported bool
-	Available bool
-	Ports     []ServicePort
-}
+// ServicePortObservation retains the compatibility name for the runtime-neutral observation contract.
+type ServicePortObservation = projectruntime.ServicePortObservation
 
 // ObserveServices asks Harbor's host-runtime adapter for Compose containers admitted to the exact supervised checkout.
 func (supervisor *Supervisor) ObserveServices(

@@ -213,6 +213,22 @@ type ServiceObservation struct {
 	Services  []domain.ServiceSnapshot
 }
 
+// ServicePort is one non-secret host publication observed for a runtime service.
+type ServicePort struct {
+	Address  string
+	Private  uint16
+	Public   uint16
+	Protocol string
+	Replica  int
+}
+
+// ServicePortObservation is the current, non-durable port view for one runtime service.
+type ServicePortObservation struct {
+	Supported bool
+	Available bool
+	Ports     []ServicePort
+}
+
 // ResourceObservationRequest supplies the proven runtime facts needed to admit optional resource links.
 type ResourceObservationRequest struct {
 	ProjectID domain.ProjectID
@@ -230,6 +246,11 @@ type ResourceObservation struct {
 // ServiceObserver optionally observes the complete runtime service topology.
 type ServiceObserver interface {
 	ObserveServices(context.Context, domain.ProjectID, domain.SessionID) (ServiceObservation, error)
+}
+
+// ServicePortObserver optionally observes current host publications for one runtime service.
+type ServicePortObserver interface {
+	ObserveServicePorts(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID) (ServicePortObservation, error)
 }
 
 // ResourceObserver optionally observes resource links already admitted against runtime facts.
