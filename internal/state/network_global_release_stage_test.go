@@ -15,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/trust/certroot"
 	"github.com/goforj/harbor/internal/trust/localca"
 	"github.com/goforj/harbor/migrations"
+	"github.com/goforj/null/v6"
 	"gorm.io/gorm"
 )
 
@@ -103,6 +104,120 @@ func TestStageGlobalNetworkReleaseRejectsAdmissionDriftWithoutMutation(t *testin
 			globalNetworkReleaseStageAssertUnchanged(t, connection, before)
 		})
 	}
+}
+
+// TestStageGlobalNetworkReleaseRetainsCompletedProjectReleaseTombstone verifies terminal unregister evidence remains available until projection finalization owns its cleanup.
+func TestStageGlobalNetworkReleaseRetainsCompletedProjectReleaseTombstone(t *testing.T) {
+	journal, connection, request := newGlobalNetworkReleaseStageFixture(t)
+	completedAt := request.Authority.Projection.NetworkUpdatedAt
+	globalNetworkReleaseStageInsertTerminalUnregister(
+		t,
+		connection,
+		"operation-completed-unregister",
+		"intent-completed-unregister",
+		"project-retired",
+		completedAt,
+		domain.OperationSucceeded,
+	)
+	tombstone := models.NetworkProjectRelease{
+		NetworkStateId:       networkStateSingletonID,
+		SourceProjectId:      "project-retired",
+		OperationId:          "operation-completed-unregister",
+		State:                string(ProjectNetworkReleaseCompleted),
+		BeginGeneration:      1,
+		BeganAt:              completedAt.Add(-time.Minute),
+		CompletionGeneration: null.IntFrom(2),
+		CompletedAt:          &completedAt,
+		ReleaseEvidence:      null.StringFrom("verified project retirement"),
+		ReleaseSetDigest:     null.StringFrom(projectNetworkReleaseSetDigest([]NetworkLeaseRelease{})),
+	}
+	if err := connection.Create(&tombstone).Error; err != nil {
+		t.Fatalf("create completed project release tombstone: %v", err)
+	}
+
+	if _, err := journal.StageGlobalNetworkRelease(context.Background(), request); err != nil {
+		t.Fatalf("StageGlobalNetworkRelease() error = %v", err)
+	}
+	var retained models.NetworkProjectRelease
+	if err := connection.Where("operation_id = ?", tombstone.OperationId).First(&retained).Error; err != nil {
+		t.Fatalf("read retained project release tombstone: %v", err)
+	}
+	if !reflect.DeepEqual(retained, tombstone) {
+		t.Fatalf("retained project release tombstone = %#v, want %#v", retained, tombstone)
+	}
+}
+
+// TestRequireGlobalNetworkReleaseAdmissionRowsRejectsEndpointsAndActiveSuppressions verifies the narrow allowlist admits only completed tombstones.
+func TestRequireGlobalNetworkReleaseAdmissionRowsRejectsEndpointsAndActiveSuppressions(t *testing.T) {
+	tests := []struct {
+		name string
+		rows networkModelRows
+		want string
+	}{
+		{
+			name: "endpoint",
+			rows: networkModelRows{
+				Endpoints: []models.PublicEndpointLease{
+					{},
+				},
+			},
+			want: "requires no project endpoint rows",
+		},
+		{
+			name: "non-completed suppression",
+			rows: networkModelRows{
+				Releases: []models.NetworkProjectRelease{
+					{
+						State: string(ProjectNetworkReleaseReleasing),
+					},
+				},
+			},
+			want: "requires every project release row to be completed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := requireGlobalNetworkReleaseAdmissionRows(test.rows)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("requireGlobalNetworkReleaseAdmissionRows() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestStageGlobalNetworkReleaseRejectsCompletedTombstoneOwnedByCancelledUnregister proves corrupted terminal evidence cannot authorize global deletion.
+func TestStageGlobalNetworkReleaseRejectsCompletedTombstoneOwnedByCancelledUnregister(t *testing.T) {
+	journal, connection, request := newGlobalNetworkReleaseStageFixture(t)
+	completedAt := request.Authority.Projection.NetworkUpdatedAt
+	globalNetworkReleaseStageInsertTerminalUnregister(
+		t,
+		connection,
+		"operation-cancelled-unregister",
+		"intent-cancelled-unregister",
+		"project-retired",
+		completedAt,
+		domain.OperationCancelled,
+	)
+	tombstone := models.NetworkProjectRelease{
+		NetworkStateId:       networkStateSingletonID,
+		SourceProjectId:      "project-retired",
+		OperationId:          "operation-cancelled-unregister",
+		State:                string(ProjectNetworkReleaseCompleted),
+		BeginGeneration:      1,
+		BeganAt:              completedAt.Add(-time.Minute),
+		CompletionGeneration: null.IntFrom(2),
+		CompletedAt:          &completedAt,
+		ReleaseEvidence:      null.StringFrom("invalid cancelled project retirement"),
+		ReleaseSetDigest:     null.StringFrom(projectNetworkReleaseSetDigest([]NetworkLeaseRelease{})),
+	}
+	if err := connection.Create(&tombstone).Error; err != nil {
+		t.Fatalf("create cancelled project release tombstone: %v", err)
+	}
+	before := globalNetworkReleaseStageSnapshot(t, connection)
+	if _, err := journal.StageGlobalNetworkRelease(context.Background(), request); err == nil {
+		t.Fatal("StageGlobalNetworkRelease() unexpectedly accepted a cancelled unregister owner")
+	}
+	globalNetworkReleaseStageAssertUnchanged(t, connection, before)
 }
 
 // TestStageGlobalNetworkReleaseRejectsActiveResolverPolicyMigration verifies resolver retirement completes before global release staging writes.
@@ -374,4 +489,70 @@ func globalNetworkReleaseStageInsertOperation(t *testing.T, connection *gorm.DB,
 	if err := connection.Create(&row).Error; err != nil {
 		t.Fatalf("insert fixture operation: %v", err)
 	}
+}
+
+// globalNetworkReleaseStageInsertTerminalUnregister installs complete history so tombstone tests can exercise the production owner boundary.
+func globalNetworkReleaseStageInsertTerminalUnregister(
+	t *testing.T,
+	connection *gorm.DB,
+	id domain.OperationID,
+	intent domain.IntentID,
+	projectID domain.ProjectID,
+	completedAt time.Time,
+	terminalState domain.OperationState,
+) {
+	t.Helper()
+	operation := newOperationJournalTestOperation(t, id, intent, projectID, domain.OperationKindProjectUnregister, completedAt.Add(-2*time.Minute))
+	running, err := operation.Transition(domain.OperationRunning, "removing project", completedAt.Add(-time.Minute), nil)
+	if err != nil {
+		t.Fatalf("start terminal unregister fixture: %v", err)
+	}
+	terminal, err := running.Transition(terminalState, "project removal finished", completedAt, nil)
+	if err != nil {
+		t.Fatalf("complete terminal unregister fixture: %v", err)
+	}
+	var highWater int
+	if err := connection.Raw("SELECT sequence FROM harbor_state WHERE id = 1").Scan(&highWater).Error; err != nil {
+		t.Fatalf("read fixture sequence: %v", err)
+	}
+	finalSequence := domain.Sequence(highWater + 3)
+	row, err := operationModelFromDomain(terminal, finalSequence)
+	if err != nil {
+		t.Fatalf("model terminal unregister fixture: %v", err)
+	}
+	if err := connection.Create(&row).Error; err != nil {
+		t.Fatalf("insert terminal unregister fixture: %v", err)
+	}
+	transitions := []models.OperationTransition{
+		{
+			OperationId: string(id),
+			Ordinal:     1,
+			State:       string(domain.OperationQueued),
+			Phase:       string(domain.OperationQueued),
+			OccurredAt:  operation.RequestedAt,
+			Sequence:    highWater + 1,
+		},
+		{
+			OperationId:   string(id),
+			Ordinal:       2,
+			PreviousState: null.StringFrom(string(domain.OperationQueued)),
+			State:         string(domain.OperationRunning),
+			Phase:         "removing project",
+			OccurredAt:    *running.StartedAt,
+			Sequence:      highWater + 2,
+		},
+		{
+			OperationId:   string(id),
+			Ordinal:       3,
+			PreviousState: null.StringFrom(string(domain.OperationRunning)),
+			State:         string(terminalState),
+			Phase:         "project removal finished",
+			OccurredAt:    *terminal.FinishedAt,
+			Sequence:      highWater + 3,
+		},
+	}
+	if err := connection.Create(&transitions).Error; err != nil {
+		t.Fatalf("insert terminal unregister history: %v", err)
+	}
+	globalNetworkReleaseStageExec(t, connection, "UPDATE harbor_state SET sequence = ? WHERE id = 1", highWater+3)
 }

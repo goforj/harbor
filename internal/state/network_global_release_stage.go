@@ -156,8 +156,17 @@ func requireCurrentGlobalNetworkReleaseAuthority(tx *gorm.DB, authority GlobalNe
 	if network.Stage != NetworkStageFull {
 		return fmt.Errorf("global network release requires %q network stage, found %q", NetworkStageFull, network.Stage)
 	}
-	if len(rows.Endpoints) != 0 || len(rows.Releases) != 0 {
-		return fmt.Errorf("global network release requires no project endpoint or suppression rows")
+	if len(rows.Releases) != 0 {
+		highWater, err := validateRetainedSequenceBounds(tx)
+		if err != nil {
+			return err
+		}
+		if _, err := validateProjectNetworkReleaseOwners(tx, highWater, rows.Releases); err != nil {
+			return err
+		}
+	}
+	if err := requireGlobalNetworkReleaseAdmissionRows(rows); err != nil {
+		return err
 	}
 	fingerprint, err := authority.Policy.Fingerprint()
 	if err != nil {
@@ -172,6 +181,19 @@ func requireCurrentGlobalNetworkReleaseAuthority(tx *gorm.DB, authority GlobalNe
 	}
 	if network.Revision != authority.Projection.NetworkRevision || !network.UpdatedAt.Equal(authority.Projection.NetworkUpdatedAt) {
 		return fmt.Errorf("global network release authority network boundary differs from current network")
+	}
+	return nil
+}
+
+// requireGlobalNetworkReleaseAdmissionRows preserves completed unregister evidence until projection finalization while excluding live project routes.
+func requireGlobalNetworkReleaseAdmissionRows(rows networkModelRows) error {
+	if len(rows.Endpoints) != 0 {
+		return fmt.Errorf("global network release requires no project endpoint rows")
+	}
+	for _, release := range rows.Releases {
+		if release.State != string(ProjectNetworkReleaseCompleted) {
+			return fmt.Errorf("global network release requires every project release row to be completed")
+		}
 	}
 	return nil
 }
