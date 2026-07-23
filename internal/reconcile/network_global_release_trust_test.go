@@ -395,6 +395,17 @@ func TestGlobalNetworkReleaseTrustConfirmRejectsUnsafeOwnedEvidence(t *testing.T
 				request.TrustEvidence.ObservationFingerprint = fingerprint
 			},
 		},
+		{
+			name: "foreign state",
+			mutate: func(fixture *globalNetworkReleaseTrustFixture, request *GlobalNetworkReleaseConfirmTrustRequest) {
+				fixture.observer.observation = fixture.foreignObservation(t)
+				fingerprint, err := fixture.observer.observation.Fingerprint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.TrustEvidence.ObservationFingerprint = fingerprint
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newGlobalNetworkReleaseTrustFixture(t)

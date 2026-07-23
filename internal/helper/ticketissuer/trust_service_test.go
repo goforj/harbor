@@ -418,8 +418,8 @@ func TestSameTrustPlanAcceptsEquivalentOperationPointers(t *testing.T) {
 	}
 }
 
-// TestTrustServiceReleaseObservationRequiresExactOwnedTrust prevents destructive release capability issuance after native trust drift.
-func TestTrustServiceReleaseObservationRequiresExactOwnedTrust(t *testing.T) {
+// TestTrustServiceReleaseObservationRequiresOwnedTrustOrConfirmedAbsence prevents destructive release capability issuance after native trust drift.
+func TestTrustServiceReleaseObservationRequiresOwnedTrustOrConfirmedAbsence(t *testing.T) {
 	fixture := newTrustIssuerFixture(t)
 	request := fixture.observation.Request
 	for _, test := range []struct {
@@ -435,6 +435,7 @@ func TestTrustServiceReleaseObservationRequiresExactOwnedTrust(t *testing.T) {
 		{
 			name:  "absent",
 			state: platformtrust.StateAbsent,
+			want:  true,
 		},
 		{
 			name:  "owned drifted",
@@ -558,8 +559,19 @@ func TestTrustPlanReleaseLifecycleValidation(t *testing.T) {
 	}
 }
 
-// TestTrustServiceIssuesGlobalReleaseTrust proves release capability publication remains bound to exact owned trust authority.
+// TestTrustServiceIssuesGlobalReleaseTrust proves exact owned trust can publish its destructive release ticket.
 func TestTrustServiceIssuesGlobalReleaseTrust(t *testing.T) {
+	assertTrustServiceIssuesGlobalReleaseTrust(t, platformtrust.StateExact)
+}
+
+// TestTrustServiceIssuesGlobalReleaseTrustAfterLostResponse proves confirmed absence can publish a replacement release ticket.
+func TestTrustServiceIssuesGlobalReleaseTrustAfterLostResponse(t *testing.T) {
+	assertTrustServiceIssuesGlobalReleaseTrust(t, platformtrust.StateAbsent)
+}
+
+// assertTrustServiceIssuesGlobalReleaseTrust verifies publication for either release-safe native state.
+func assertTrustServiceIssuesGlobalReleaseTrust(t *testing.T, trustState platformtrust.State) {
+	t.Helper()
 	fixture := newTrustIssuerFixture(t)
 	fixture.plan = validGlobalReleaseTrustPlan(t, fixture.plan)
 	fixture.request = TrustRequest{
@@ -569,10 +581,10 @@ func TestTrustServiceIssuesGlobalReleaseTrust(t *testing.T) {
 		cloneTrustPlan(fixture.plan),
 		cloneTrustPlan(fixture.plan),
 	}
-	exact := trustObservationForState(t, fixture.observation.Request, platformtrust.StateExact)
+	observation := trustObservationForState(t, fixture.observation.Request, trustState)
 	fixture.observer.observations = []platformtrust.Observation{
-		exact,
-		exact,
+		observation,
+		observation,
 	}
 	result, err := fixture.service.Issue(
 		t.Context(),
@@ -591,8 +603,16 @@ func TestTrustServiceIssuesGlobalReleaseTrust(t *testing.T) {
 	if fixture.publisher.ticket.Operation != helper.OperationReleaseTrust ||
 		fixture.publisher.ticket.NetworkPolicyFingerprint != fixture.plan.TargetOwnership.NetworkPolicyFingerprint ||
 		fixture.publisher.ticket.TrustRoot == nil ||
-		fixture.publisher.ticket.TrustRoot.Fingerprint != fixture.plan.Root.Fingerprint {
+		fixture.publisher.ticket.TrustRoot.Fingerprint != fixture.plan.Root.Fingerprint ||
+		fixture.publisher.ticket.ExpectedTrustObservation == nil {
 		t.Fatalf("published release ticket = %#v", fixture.publisher.ticket)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.publisher.ticket.ExpectedTrustObservation.Fingerprint != fingerprint {
+		t.Fatalf("published release ticket fingerprint = %q, want %q", fixture.publisher.ticket.ExpectedTrustObservation.Fingerprint, fingerprint)
 	}
 }
 

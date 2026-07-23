@@ -105,21 +105,38 @@ func TestHandlerPreservesPreexistingUnownedRoot(t *testing.T) {
 	}
 }
 
-// TestHandlerPreservesForeignRootOnRelease proves release evidence does not require removing unowned trust.
-func TestHandlerPreservesForeignRootOnRelease(t *testing.T) {
+// TestHandlerAcceptsAbsentReleaseNoOpAndRejectsForeignRoot prevents foreign trust from becoming release evidence.
+func TestHandlerAcceptsAbsentReleaseNoOpAndRejectsForeignRoot(t *testing.T) {
 	request, policy, root := trustHandlerTestRequest(t)
-	preexisting := trustHandlerPreexistingObservation(request)
-	fingerprint := trustHandlerFingerprint(t, preexisting)
-	adapter := &testConditionalAdapter{change: trust.Change{Before: preexisting, After: preexisting}}
-	ticket := trustHandlerTestTicket(t, policy, root, helper.OperationReleaseTrust, fingerprint)
-
-	evidence, err := newHandler(adapter).ReleaseTrust(t.Context(), ticket)
-	if err != nil {
-		t.Fatalf("ReleaseTrust() error = %v", err)
-	}
-	if evidence.Changed || evidence.Postcondition != helper.TrustPostconditionOwnedAbsent ||
-		evidence.ObservationFingerprint != fingerprint {
-		t.Fatalf("foreign release evidence = %#v", evidence)
+	absent := trust.Observation{Request: request, Complete: true}
+	foreign := trustHandlerPreexistingObservation(request)
+	for _, test := range []struct {
+		name    string
+		after   trust.Observation
+		wantErr bool
+	}{
+		{name: "absent no-op", after: absent},
+		{name: "foreign", after: foreign, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fingerprint := trustHandlerFingerprint(t, test.after)
+			adapter := &testConditionalAdapter{change: trust.Change{Before: test.after, After: test.after}}
+			ticket := trustHandlerTestTicket(t, policy, root, helper.OperationReleaseTrust, fingerprint)
+			evidence, err := newHandler(adapter).ReleaseTrust(t.Context(), ticket)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("ReleaseTrust() accepted foreign root")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReleaseTrust() error = %v", err)
+			}
+			if evidence.Changed || evidence.Postcondition != helper.TrustPostconditionOwnedAbsent ||
+				evidence.ObservationFingerprint != fingerprint {
+				t.Fatalf("absent release evidence = %#v", evidence)
+			}
+		})
 	}
 }
 

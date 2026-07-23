@@ -536,7 +536,8 @@ func (service *TrustService) observeTrust(ctx context.Context, request platformt
 			return "", fmt.Errorf("issue helper trust ticket: trust state %q is unsupported", assessment.State)
 		}
 	case TrustPlanPurposeGlobalNetworkRelease:
-		if assessment.State != platformtrust.StateExact || assessment.Owned != platformtrust.OwnedStateExact {
+		if (assessment.State != platformtrust.StateExact || assessment.Owned != platformtrust.OwnedStateExact) &&
+			(assessment.State != platformtrust.StateAbsent || assessment.Owned != platformtrust.OwnedStateAbsent) {
 			return "", fmt.Errorf("issue helper trust ticket: trust state %q cannot be safely released", assessment.State)
 		}
 	default:

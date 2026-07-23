@@ -325,6 +325,17 @@ func mustGlobalNetworkReleaseResolverFingerprint(t *testing.T, observation resol
 // mustGlobalNetworkReleaseTrustFingerprint returns the released fixture's disposition-safe trust digest.
 func mustGlobalNetworkReleaseTrustFingerprint(t *testing.T, request trust.Request, owned bool) string {
 	t.Helper()
+	if !owned {
+		observation := trust.Observation{
+			Request:  request,
+			Complete: true,
+		}
+		fingerprint, err := observation.Fingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fingerprint
+	}
 	entry := trust.Entry{
 		Mechanism:              request.Mechanism(),
 		NativeID:               "entry",
@@ -332,10 +343,8 @@ func mustGlobalNetworkReleaseTrustFingerprint(t *testing.T, request trust.Reques
 		NativeExact:            true,
 		NativeAttributesSHA256: strings.Repeat("c", 64),
 	}
-	if owned {
-		owner := request.OwnerMarker()
-		entry.Owner = &owner
-	}
+	owner := request.OwnerMarker()
+	entry.Owner = &owner
 	observation := trust.Observation{
 		Request:  request,
 		Complete: true,
@@ -598,7 +607,20 @@ func newGlobalNetworkReleaseLoopbackFixtureFromBase(t *testing.T, base *globalNe
 	fixture.base.low.observation.Artifacts[1].Owned = false
 	fixture.base.low.observation.Artifacts[1].Exact = false
 	fixture.base.resolver.observation.Rules = nil
-	fixture.base.trust.owned = false
+	trustRequest, err := trust.NewRequestForRequester(
+		plan.Authority.Projection.ConfirmedOwnership.Record.InstallationID,
+		plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+		plan.Authority.Policy.Mechanisms.Trust,
+		plan.Authority.Root,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustObservation := trust.Observation{
+		Request:  trustRequest,
+		Complete: true,
+	}
+	fixture.base.trust.observation = &trustObservation
 	fixture.coordinator = NewGlobalNetworkReleaseCoordinator(
 		fixture.journal,
 		base.source,

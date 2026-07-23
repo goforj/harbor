@@ -253,6 +253,20 @@ func TestGlobalNetworkReleaseVerifyEffectsPreservesForeignReleasedNamespaces(t *
 // TestGlobalNetworkReleaseVerifyEffectsPreservesExactPreexistingTrust proves an unowned public root remains byte-for-byte unchanged.
 func TestGlobalNetworkReleaseVerifyEffectsPreservesExactPreexistingTrust(t *testing.T) {
 	fixture := newGlobalNetworkReleaseEffectsFixture(t)
+	request := fixture.trust.request
+	fixture.trust.observation = &trust.Observation{
+		Request:  request,
+		Complete: true,
+		Entries: []trust.Entry{
+			{
+				Mechanism:              request.Mechanism(),
+				NativeID:               "preexisting-root",
+				CertificateFingerprint: request.AuthorityFingerprint(),
+				NativeExact:            true,
+				NativeAttributesSHA256: strings.Repeat("c", 64),
+			},
+		},
+	}
 	observation, err := fixture.trust.Observe(t.Context(), fixture.trust.request)
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +336,25 @@ func TestGlobalNetworkReleaseVerifyEffectsRejectsUnsafeFreshFacts(t *testing.T) 
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture) {
 				fixture.trust.observation = nil
 				fixture.trust.owned = true
+			},
+		},
+		{
+			name: "trust foreign same root remains",
+			mutate: func(fixture *globalNetworkReleaseEffectsFixture) {
+				request := fixture.trust.request
+				fixture.trust.observation = &trust.Observation{
+					Request:  request,
+					Complete: true,
+					Entries: []trust.Entry{
+						{
+							Mechanism:              request.Mechanism(),
+							NativeID:               "foreign-same-root",
+							CertificateFingerprint: request.AuthorityFingerprint(),
+							NativeExact:            true,
+							NativeAttributesSHA256: strings.Repeat("c", 64),
+						},
+					},
+				}
 			},
 		},
 		{
@@ -521,7 +554,20 @@ func newGlobalNetworkReleaseEffectsFixture(t *testing.T) *globalNetworkReleaseEf
 	base.low.observation.Artifacts[1].Owned = false
 	base.low.observation.Artifacts[1].Exact = false
 	base.resolver.observation.Rules = nil
-	base.trust.owned = false
+	trustRequest, err := trust.NewRequestForRequester(
+		plan.Authority.Projection.ConfirmedOwnership.Record.InstallationID,
+		plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+		plan.Authority.Policy.Mechanisms.Trust,
+		plan.Authority.Root,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustObservation := trust.Observation{
+		Request:  trustRequest,
+		Complete: true,
+	}
+	base.trust.observation = &trustObservation
 	base.loopback.state = loopback.StateAbsent
 	base.loopback.addresses = nil
 	base.runtimeRelease.verifyDigest = strings.Repeat("f", 64)

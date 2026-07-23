@@ -1070,7 +1070,9 @@ func (c *GlobalNetworkReleaseCoordinator) observeReleaseTrust(ctx context.Contex
 	}
 	switch durable.Authority.TrustDisposition {
 	case state.GlobalNetworkReleaseTrustOwned:
-		if evidence.Postcondition != helper.TrustPostconditionOwnedAbsent || assessment.Owned != trust.OwnedStateAbsent {
+		if evidence.Postcondition != helper.TrustPostconditionOwnedAbsent ||
+			assessment.State != trust.StateAbsent ||
+			assessment.Owned != trust.OwnedStateAbsent {
 			return helper.TrustMutationEvidence{}, fmt.Errorf("release trust does not prove owned absence")
 		}
 	case state.GlobalNetworkReleaseTrustPreexistingUnowned:
@@ -2191,7 +2193,7 @@ func (c *GlobalNetworkReleaseCoordinator) verifyReleaseTrust(
 	}
 	switch durable.Authority.TrustDisposition {
 	case state.GlobalNetworkReleaseTrustOwned:
-		if assessment.Owned != trust.OwnedStateAbsent {
+		if assessment.State != trust.StateAbsent || assessment.Owned != trust.OwnedStateAbsent {
 			return "", fmt.Errorf("release trust does not prove owned absence")
 		}
 	case state.GlobalNetworkReleaseTrustPreexistingUnowned:

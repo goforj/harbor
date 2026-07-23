@@ -209,7 +209,7 @@ func trustPostcondition(
 		}
 		return "", fmt.Errorf("trust ensure did not produce a trusted postcondition")
 	case helper.OperationReleaseTrust:
-		if assessment.State == trust.StateIndeterminate || assessment.Owned != trust.OwnedStateAbsent {
+		if assessment.State != trust.StateAbsent || assessment.Owned != trust.OwnedStateAbsent {
 			return "", fmt.Errorf("trust release did not remove its owned root")
 		}
 		return helper.TrustPostconditionOwnedAbsent, nil
