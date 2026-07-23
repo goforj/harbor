@@ -730,29 +730,27 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
 
         <TabsContent value="terminal" class="m-0 flex min-h-0 flex-1 flex-col">
           <Card class="flex min-h-[28rem] flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
-            <CardHeader class="border-b px-4 py-0">
-              <div class="flex h-11 min-w-0 items-center gap-5 overflow-x-auto" role="tablist" aria-label="Project terminal sessions">
-                <div
-                  v-for="tab in projectTerminalTabs"
-                  :key="tab.id"
-                  class="flex h-11 shrink-0 items-center border-b-2 border-transparent text-muted-foreground"
-                  :class="selectedProjectTerminalTabID === tab.id ? '!border-primary text-primary' : 'hover:text-foreground'"
-                >
-                  <button type="button" role="tab" class="h-full text-sm" :aria-selected="selectedProjectTerminalTabID === tab.id" @click="selectedProjectTerminalTabID = tab.id">{{ tab.name }}</button>
-                  <button type="button" class="ml-1 rounded-sm p-1 hover:bg-muted hover:text-foreground" :aria-label="`Close ${tab.name}`" @click="closeProjectTerminalTab(tab.id)"><X class="size-3" /></button>
-                </div>
-                <button
-                  type="button"
-                  class="flex h-11 shrink-0 items-center border-b-2 border-transparent px-1 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                  aria-label="New terminal"
-                  :disabled="closingProjectTerminalCount > 0 || projectTerminalTabs.length >= projectTerminalLimit"
-                  :title="projectTerminalTabs.length >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
-                  @click="createProjectTerminalTab"
-                >
-                  <Plus class="size-4" />
-                </button>
+            <div class="flex h-11 w-full shrink-0 items-center justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7" role="tablist" aria-label="Project terminal sessions">
+              <div
+                v-for="tab in projectTerminalTabs"
+                :key="tab.id"
+                class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
+                :data-state="selectedProjectTerminalTabID === tab.id ? 'active' : 'inactive'"
+              >
+                <button type="button" role="tab" class="h-full text-sm font-medium" :aria-selected="selectedProjectTerminalTabID === tab.id" @click="selectedProjectTerminalTabID = tab.id">{{ tab.name }}</button>
+                <button type="button" class="ml-1 rounded-sm p-1 text-muted-foreground hover:text-foreground" :aria-label="`Close ${tab.name}`" @click="closeProjectTerminalTab(tab.id)"><X class="size-3" /></button>
               </div>
-            </CardHeader>
+              <button
+                type="button"
+                class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="New terminal"
+                :disabled="closingProjectTerminalCount > 0 || projectTerminalTabs.length >= projectTerminalLimit"
+                :title="projectTerminalTabs.length >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
+                @click="createProjectTerminalTab"
+              >
+                <Plus class="size-4" />
+              </button>
+            </div>
             <CardContent class="flex min-h-0 flex-1 flex-col p-0">
               <div v-if="selectedProjectTerminalTab?.error || projectTerminalCleanupError" class="flex items-center justify-between gap-3 border-b px-4 py-2 text-xs text-destructive">
                 <p>{{ selectedProjectTerminalTab?.error ?? projectTerminalCleanupError }}</p>
