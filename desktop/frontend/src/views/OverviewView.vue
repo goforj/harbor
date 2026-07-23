@@ -125,7 +125,6 @@ async function removeOldNetworking() {
             <template v-else>
               <p class="font-medium">Set up secure local networking before you start a project.</p>
               <p v-if="store.networkSetupError" class="mt-1 text-xs text-destructive" role="alert">{{ store.networkSetupError }}</p>
-              <p v-if="store.oldNetworkingRemovalError" class="mt-1 text-xs text-destructive" role="alert">{{ store.oldNetworkingRemovalError }}</p>
             </template>
           </div>
           <div v-if="!store.networkSetupResult" class="flex shrink-0 flex-wrap gap-2">
@@ -138,7 +137,7 @@ async function removeOldNetworking() {
               {{ store.settingUpNetwork ? 'Setting up secure networking…' : 'Set up secure networking' }}
             </Button>
             <Button
-              v-if="store.networkSetupError && store.oldNetworkingRemovalAvailable"
+              v-if="(store.networkSetupError || store.oldNetworkingRemovalError) && store.oldNetworkingRemovalAvailable"
               variant="outline"
               class="border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive"
               :disabled="store.oldNetworkingRemovalBlocked"
@@ -148,6 +147,7 @@ async function removeOldNetworking() {
               <Network v-else class="size-4" aria-hidden="true" />
               {{ store.removingOldNetworking ? 'Removing old networking…' : 'Remove old networking' }}
             </Button>
+            <p v-if="store.oldNetworkingRemovalError" class="basis-full text-xs text-destructive" role="alert">{{ store.oldNetworkingRemovalError }}</p>
           </div>
         </CardContent>
       </Card>

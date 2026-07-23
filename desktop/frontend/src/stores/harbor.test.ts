@@ -501,6 +501,10 @@ describe('Harbor store', () => {
     const store = useHarborStore()
     const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork')
     const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValue({
+      ...mockStatus(),
+      capabilities: ['control.network-setup.v1'],
+    })
 
     setupNetwork.mockRejectedValueOnce(new Error('administrator approval was declined'))
     await expect(store.setupNetwork()).resolves.toBeNull()
@@ -514,6 +518,19 @@ describe('Harbor store', () => {
     expect(store.networkSetupError).toBe('Harbor returned incomplete network setup progress.')
     expect(store.settingUpNetwork).toBe(false)
     expect(getSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears stale removal feedback when starting a network setup retry', async () => {
+    const store = useHarborStore()
+    const pending = deferred<NetworkSetupOperation>()
+    vi.spyOn(harborBridge, 'setupNetwork').mockReturnValueOnce(pending.promise)
+    store.$patch({ oldNetworkingRemovalError: 'Harbor could not remove old networking.' })
+
+    const setup = store.setupNetwork()
+
+    expect(store.oldNetworkingRemovalError).toBeNull()
+    pending.resolve(completedNetworkSetup())
+    await setup
   })
 
   it('serializes old networking removal, reports failures, and refreshes authoritative state', async () => {
@@ -549,6 +566,48 @@ describe('Harbor store', () => {
     await expect(store.removeOldNetworking()).resolves.toBeNull()
     expect(store.oldNetworkingRemovalError).toBe('Harbor returned incomplete old networking removal progress.')
     expect(getSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('retains failed removal feedback through fresh refreshes and reconnects', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    const supported = {
+      ...mockStatus(),
+      capabilities: ['control.network-setup.v1', 'control.network-resolver-policy-migration.v1'],
+    }
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValue(supported)
+    const store = useHarborStore()
+    await store.initialize()
+    vi.spyOn(harborBridge, 'removeOldNetworking').mockRejectedValueOnce(new Error('old networking is still active'))
+
+    await store.removeOldNetworking()
+    expect(store.oldNetworkingRemovalError).toBe('old networking is still active')
+
+    await store.refresh()
+    expect(store.oldNetworkingRemovalError).toBe('old networking is still active')
+
+    connectionListener?.({ state: 'disconnected' })
+    connectionListener?.({ state: 'connected' })
+    await vi.waitFor(() => expect(store.daemonStatus).toEqual(supported))
+    expect(store.oldNetworkingRemovalError).toBe('old networking is still active')
+  })
+
+  it('clears network action feedback when a fresh status drops its capability', async () => {
+    const store = useHarborStore()
+    store.$patch({
+      networkSetupError: 'setup failed',
+      oldNetworkingRemovalError: 'removal failed',
+    })
+    const unsupported = { ...mockStatus(), capabilities: [] }
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValueOnce(unsupported)
+
+    await store.refresh()
+
+    expect(store.networkSetupError).toBeNull()
+    expect(store.oldNetworkingRemovalError).toBeNull()
   })
 
   it.each([

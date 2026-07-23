@@ -223,6 +223,15 @@ export const useHarborStore = defineStore('harbor', () => {
     }
   }
 
+  function reconcileNetworkActionFeedback(status: DaemonStatus) {
+    if (!status.capabilities.includes('control.network-setup.v1')) {
+      networkSetupError.value = null
+    }
+    if (!status.capabilities.includes('control.network-resolver-policy-migration.v1')) {
+      oldNetworkingRemovalError.value = null
+    }
+  }
+
   async function refreshStatus(epoch = connectionEpoch) {
     const request = ++statusRequest
     try {
@@ -231,6 +240,7 @@ export const useHarborStore = defineStore('harbor', () => {
         return
       }
       daemonStatus.value = status
+      reconcileNetworkActionFeedback(status)
       connectionState.value = 'connected'
     } catch {
       // Connection events own transport state; a single diagnostic failure must not regress a newer result.
@@ -260,6 +270,7 @@ export const useHarborStore = defineStore('harbor', () => {
 
     if (statusResult.status === 'fulfilled' && statusRequestForRefresh === statusRequest) {
       daemonStatus.value = statusResult.value
+      reconcileNetworkActionFeedback(statusResult.value)
       connectionState.value = 'connected'
     }
     if (snapshotResult.status === 'fulfilled') {
@@ -391,6 +402,7 @@ export const useHarborStore = defineStore('harbor', () => {
 
     settingUpNetwork.value = true
     networkSetupError.value = null
+    oldNetworkingRemovalError.value = null
     try {
       const result = await harborBridge.setupNetwork()
       if (result.operation.kind !== 'network.setup'

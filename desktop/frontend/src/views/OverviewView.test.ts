@@ -99,4 +99,17 @@ describe('OverviewView', () => {
     expect(wrapper.text()).not.toContain('Remove old networking')
     wrapper.unmount()
   })
+
+  it('keeps failed removal feedback with its retry action instead of the setup message', async () => {
+    const { store, wrapper } = await mountOverview()
+    store.$patch({
+      networkSetupError: null,
+      oldNetworkingRemovalError: 'Old networking is still active.',
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('p[role="alert"]').text()).toBe('Old networking is still active.')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('Remove old networking'))).toBe(true)
+    wrapper.unmount()
+  })
 })
