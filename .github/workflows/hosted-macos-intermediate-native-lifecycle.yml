@@ -128,7 +128,19 @@ jobs:
             cd .ci/goforj
             GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/forj" ./cmd/forj
           )
+          GOBIN="$binary_directory" GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" \
+            go install github.com/goforj/wire/cmd/wire@v1.2.0
           printf 'HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY=%s\n' "$binary_directory" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Verify native lifecycle failure diagnostics
+        shell: bash
+        run: |
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -run '^TestTrustedHTTPS(DecodeProjectLifecycleResult|ProjectLifecycleTerminalErrorIncludesProblem)$' \
+            ./internal/acceptance
 
       - name: Preflight current-user keychain
         shell: bash
@@ -188,6 +200,8 @@ jobs:
           HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/harbord
           HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-intermediate-native-lifecycle-evidence
         run: |
+          [[ "$(command -v forj)" == "${HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY}/forj" ]]
+          [[ "$(command -v wire)" == "${HARBOR_INTERMEDIATE_NATIVE_BINARY_DIRECTORY}/wire" ]]
           GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test \
             -tags=phase1acceptance \
             -count=1 \
