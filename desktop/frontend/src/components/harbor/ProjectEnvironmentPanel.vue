@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { Check, Clipboard, LoaderCircle, RefreshCw, Save } from '@lucide/vue'
 import { copyText } from '@/bridge/clipboard'
 import { harborBridge } from '@/bridge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { Textarea } from '@/components/ui/textarea'
 import type { ProjectEnvironment, ProjectEnvironmentFile } from '@/domain/harbor'
+
+const DotenvEditor = defineAsyncComponent(async () => (await import('./DotenvEditor.vue')).default)
 
 const props = defineProps<{
   active: boolean
@@ -245,11 +246,9 @@ async function copyOverride(name: string, value: string) {
             </div>
           </div>
           <p v-if="selectedDraft.error" class="border-b px-4 py-2 text-xs text-destructive">{{ selectedDraft.error }}</p>
-          <Textarea
+          <DotenvEditor
             v-model="selectedDraft.contents"
-            :aria-label="`${selectedFileName} contents`"
-            class="field-sizing-fixed min-h-0 flex-1 resize-none overflow-auto rounded-none border-0 bg-black p-4 font-mono text-xs leading-5 text-zinc-100 caret-white shadow-inner shadow-black/40 selection:bg-primary/30 focus-visible:ring-0"
-            spellcheck="false"
+            :label="`${selectedFileName} contents`"
           />
         </div>
         <p v-else class="px-4 py-10 text-center text-sm text-muted-foreground">No direct <code>.env</code> files were found in this project.</p>

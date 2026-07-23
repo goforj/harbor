@@ -3,6 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import ProjectEnvironmentPanel from './ProjectEnvironmentPanel.vue'
 import { harborBridge } from '@/bridge'
 
+vi.mock('./DotenvEditor.vue', () => ({
+  default: {
+    props: ['label', 'modelValue'],
+    emits: ['update:modelValue'],
+    template: '<textarea :aria-label="label" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
+}))
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
