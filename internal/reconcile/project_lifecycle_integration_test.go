@@ -26,6 +26,7 @@ import (
 	"github.com/goforj/harbor/internal/goforjruntime"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
@@ -80,12 +81,30 @@ func (projectLifecycleTestRouteReconciler) Reconcile(context.Context) error {
 	return nil
 }
 
+// ReconcileProjectNativeRoutes accepts observed native routes without external publication.
+func (projectLifecycleTestRouteReconciler) ReconcileProjectNativeRoutes(
+	context.Context,
+	domain.ProjectID,
+	[]dataplane.NativeRoute,
+) error {
+	return nil
+}
+
 // projectLifecycleRouteReconcilerFunc adapts one deterministic test function to route reconciliation.
 type projectLifecycleRouteReconcilerFunc func(context.Context) error
 
 // Reconcile invokes the deterministic route fixture.
 func (reconciler projectLifecycleRouteReconcilerFunc) Reconcile(ctx context.Context) error {
 	return reconciler(ctx)
+}
+
+// ReconcileProjectNativeRoutes accepts observed native routes for fixtures concerned only with durable HTTP edges.
+func (projectLifecycleRouteReconcilerFunc) ReconcileProjectNativeRoutes(
+	context.Context,
+	domain.ProjectID,
+	[]dataplane.NativeRoute,
+) error {
+	return nil
 }
 
 // projectLifecycleRecordingRouteReconciler captures the durable project state visible at each publication edge.
@@ -105,6 +124,15 @@ func (reconciler *projectLifecycleRecordingRouteReconciler) Reconcile(ctx contex
 	reconciler.mutex.Lock()
 	reconciler.states = append(reconciler.states, record.Project.State)
 	reconciler.mutex.Unlock()
+	return nil
+}
+
+// ReconcileProjectNativeRoutes accepts native publication after the durable state recorder sees readiness.
+func (*projectLifecycleRecordingRouteReconciler) ReconcileProjectNativeRoutes(
+	context.Context,
+	domain.ProjectID,
+	[]dataplane.NativeRoute,
+) error {
 	return nil
 }
 

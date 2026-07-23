@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -128,6 +129,7 @@ type projectRuntimeProjectionRefresher interface {
 // ProjectRouteReconciler projects durable project lifecycle changes into Harbor's live route table.
 type ProjectRouteReconciler interface {
 	Reconcile(context.Context) error
+	ReconcileProjectNativeRoutes(context.Context, domain.ProjectID, []dataplane.NativeRoute) error
 }
 
 // ProjectLifecycleCoordinator turns durable start, stop, and scoped restart intents into supervised project runtime processes.
@@ -831,7 +833,18 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				coordinator.stopAndFailAttached(mutation, session, handle, "project.state.failed", err)
 				return
 			}
+			completionSession = *completed.Session
 			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
+				coordinator.recordAsyncError(err)
+			}
+			if err := coordinator.reconcileObservedNativeServiceRoutes(
+				coordinator.ctx,
+				completed.Project.Project,
+				completionSession,
+				plan.NetworkAssignment.Address,
+				runtime.Services,
+				runtime.Resources,
+			); err != nil {
 				coordinator.recordAsyncError(err)
 			}
 			coordinator.startReadyServiceWatcher(completed.Project, completionSession, handle, plan)
@@ -1015,6 +1028,19 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 						coordinator.recordAsyncError(routeErr)
 						return
 					}
+				}
+			}
+			if plan.NetworkAssignment.Address.IsValid() {
+				if routeErr := coordinator.reconcileObservedNativeServiceRoutes(
+					ctx,
+					refreshed.Project,
+					session,
+					plan.NetworkAssignment.Address,
+					observation.Services,
+					refreshed.Project.Resources,
+				); routeErr != nil {
+					coordinator.recordAsyncError(routeErr)
+					return
 				}
 			}
 			continue

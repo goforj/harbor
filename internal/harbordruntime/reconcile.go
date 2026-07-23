@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
@@ -44,7 +45,53 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 	if lifecycle != controllerStateReady || runtime == nil || authority == nil {
 		return fmt.Errorf("reconcile harbord runtime: %w", ErrNotReady)
 	}
+	if err := controller.reconcileNativeRouteOwnership(ctx); err != nil {
+		return fmt.Errorf("reconcile native route ownership: %w", err)
+	}
 	return controller.reconcileHTTPRoutes(ctx, controllerStateReady, runtime, authority)
+}
+
+// reconcileNativeRouteOwnership withdraws routes whose durable project or primary lease is no longer active.
+func (controller *Controller) reconcileNativeRouteOwnership(ctx context.Context) error {
+	controller.reconcileMutex.Lock()
+	defer controller.reconcileMutex.Unlock()
+
+	runtimeState, err := controller.source.RuntimeState(ctx)
+	if err != nil {
+		return fmt.Errorf("read durable state: %w", err)
+	}
+	if err := runtimeState.Validate(); err != nil {
+		return fmt.Errorf("validate durable state: %w", err)
+	}
+	activeAddresses := make(map[domain.ProjectID]netip.Addr)
+	for _, project := range runtimeState.Snapshot.Projects {
+		if project.State != domain.ProjectReady && project.State != domain.ProjectStarting {
+			continue
+		}
+		for _, lease := range runtimeState.Network.Leases {
+			if lease.Key.Kind() == identity.LeaseKindPrimary && lease.Key.ProjectID == project.ID {
+				activeAddresses[project.ID] = lease.Address.Unmap()
+				break
+			}
+		}
+	}
+	controller.mutex.RLock()
+	current := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
+	controller.mutex.RUnlock()
+	retained := make([]dataplane.NativeRoute, 0, len(current))
+	for _, route := range current {
+		for projectID, address := range activeAddresses {
+			if strings.HasPrefix(route.ID, string(projectID)+":") && route.Listen.Addr().Unmap() == address {
+				retained = append(retained, route)
+				break
+			}
+		}
+	}
+	retained = canonicalManagedNativeRoutes(retained)
+	if slices.Equal(current, retained) {
+		return nil
+	}
+	return controller.replaceNativeRoutesLocked(ctx, retained)
 }
 
 // HTTPRouteLive reports whether the ready generation last published one exact host-to-upstream route.

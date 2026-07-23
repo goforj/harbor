@@ -15,6 +15,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/dataplane"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/trust/certificates"
 	"github.com/goforj/harbor/internal/trust/materialstore"
@@ -466,6 +467,14 @@ func (controller *Controller) ReplaceManagedNativeRoutes(ctx context.Context, ro
 	}
 	controller.reconcileMutex.Lock()
 	defer controller.reconcileMutex.Unlock()
+	return controller.replaceNativeRoutesLocked(ctx, routes)
+}
+
+// replaceNativeRoutesLocked publishes one canonical replacement while its caller serializes all route mutations.
+func (controller *Controller) replaceNativeRoutesLocked(
+	ctx context.Context,
+	routes []dataplane.NativeRoute,
+) error {
 	controller.mutex.RLock()
 	lifecycle := controller.state
 	runtime := controller.dataPlane
@@ -517,6 +526,96 @@ func (controller *Controller) ReconcileManagedNativeRoutes(ctx context.Context, 
 		return nil
 	}
 	return controller.ReplaceManagedNativeRoutes(ctx, canonical)
+}
+
+// ReconcileProjectNativeRoutes atomically replaces one project's observed TCP routes without disturbing its neighbors.
+func (controller *Controller) ReconcileProjectNativeRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	routes []dataplane.NativeRoute,
+) error {
+	if controller == nil || !controller.initialized {
+		return ErrNotInitialized
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := projectID.Validate(); err != nil {
+		return fmt.Errorf("reconcile project native routes: %w", err)
+	}
+	prefix := string(projectID) + ":"
+	for _, route := range routes {
+		if !strings.HasPrefix(route.ID, prefix) {
+			return fmt.Errorf("reconcile project native routes: route %q does not belong to project %q", route.ID, projectID)
+		}
+	}
+
+	controller.reconcileMutex.Lock()
+	defer controller.reconcileMutex.Unlock()
+	runtimeState, err := controller.source.RuntimeState(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile project native routes: read durable state: %w", err)
+	}
+	if err := validateProjectNativeRouteAuthority(runtimeState, projectID, routes); err != nil {
+		return err
+	}
+	controller.mutex.RLock()
+	current := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
+	controller.mutex.RUnlock()
+	replacement := make([]dataplane.NativeRoute, 0, len(current)+len(routes))
+	for _, route := range current {
+		if !strings.HasPrefix(route.ID, prefix) {
+			replacement = append(replacement, route)
+		}
+	}
+	replacement = append(replacement, routes...)
+	replacement = canonicalManagedNativeRoutes(replacement)
+	if slices.Equal(current, replacement) {
+		return nil
+	}
+	if err := controller.probeManagedDirectRoutes(ctx, routes); err != nil {
+		return err
+	}
+	return controller.replaceNativeRoutesLocked(ctx, replacement)
+}
+
+// validateProjectNativeRouteAuthority binds observed routes to one ready project and its durable primary address.
+func validateProjectNativeRouteAuthority(
+	runtimeState state.RuntimeState,
+	projectID domain.ProjectID,
+	routes []dataplane.NativeRoute,
+) error {
+	if err := runtimeState.Validate(); err != nil {
+		return fmt.Errorf("reconcile project native routes: invalid durable state: %w", err)
+	}
+	project, found := runtimeProject(runtimeState.Snapshot, projectID)
+	if !found || project.State != domain.ProjectReady {
+		return fmt.Errorf("reconcile project native routes: project %q is not ready", projectID)
+	}
+	var primary netip.Addr
+	for _, lease := range runtimeState.Network.Leases {
+		if lease.Key.Kind() == identity.LeaseKindPrimary && lease.Key.ProjectID == projectID {
+			primary = lease.Address.Unmap()
+			break
+		}
+	}
+	if !primary.IsValid() {
+		return fmt.Errorf("reconcile project native routes: project %q primary lease is missing", projectID)
+	}
+	for _, route := range routes {
+		if route.Listen.Addr().Unmap() != primary {
+			return fmt.Errorf(
+				"reconcile project native routes: route %q address %s does not match project primary %s",
+				route.ID,
+				route.Listen.Addr(),
+				primary,
+			)
+		}
+	}
+	return nil
 }
 
 // managedRelayRoutes removes DNS-only direct publications while retaining the relay generation.

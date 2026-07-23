@@ -11,6 +11,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/goforj"
+	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
@@ -133,11 +134,13 @@ type projectServiceRefreshTestSupervisor struct {
 	changeErr           error
 	changeErrors        []error
 	observationErrors   []error
+	portObservations    map[domain.ServiceID]projectprocess.ServicePortObservation
 
 	mutex         sync.Mutex
 	waitCalls     int
 	observeCalls  int
 	resourceCalls int
+	portCalls     int
 }
 
 // WaitServiceChange emits the configured wake event once and blocks subsequent waits until cancellation.
@@ -187,6 +190,19 @@ func (supervisor *projectServiceRefreshTestSupervisor) ObserveResources(
 	return supervisor.resourceObservation, supervisor.resourceErr
 }
 
+// ObserveServicePorts returns the configured host publication for native route refresh.
+func (supervisor *projectServiceRefreshTestSupervisor) ObserveServicePorts(
+	_ context.Context,
+	_ domain.ProjectID,
+	_ domain.SessionID,
+	serviceID domain.ServiceID,
+) (projectprocess.ServicePortObservation, error) {
+	supervisor.mutex.Lock()
+	defer supervisor.mutex.Unlock()
+	supervisor.portCalls++
+	return supervisor.portObservations[serviceID], nil
+}
+
 // ObserveCalls returns the number of fresh host observations requested by the watcher.
 func (supervisor *projectServiceRefreshTestSupervisor) ObserveCalls() int {
 	supervisor.mutex.Lock()
@@ -203,8 +219,10 @@ func (supervisor *projectServiceRefreshTestSupervisor) ResourceObserveCalls() in
 
 // projectServiceRefreshTestRoutes records route publication after a durable refresh.
 type projectServiceRefreshTestRoutes struct {
-	mutex sync.Mutex
-	calls int
+	mutex       sync.Mutex
+	calls       int
+	nativeCalls int
+	native      []dataplane.NativeRoute
 }
 
 // Reconcile records one route publication edge.
@@ -215,11 +233,31 @@ func (routes *projectServiceRefreshTestRoutes) Reconcile(context.Context) error 
 	return nil
 }
 
+// ReconcileProjectNativeRoutes records the latest project-scoped native publication.
+func (routes *projectServiceRefreshTestRoutes) ReconcileProjectNativeRoutes(
+	_ context.Context,
+	_ domain.ProjectID,
+	replacement []dataplane.NativeRoute,
+) error {
+	routes.mutex.Lock()
+	routes.nativeCalls++
+	routes.native = append([]dataplane.NativeRoute(nil), replacement...)
+	routes.mutex.Unlock()
+	return nil
+}
+
 // Calls returns the number of route publication edges observed by the fixture.
 func (routes *projectServiceRefreshTestRoutes) Calls() int {
 	routes.mutex.Lock()
 	defer routes.mutex.Unlock()
 	return routes.calls
+}
+
+// NativeRoutes returns the latest defensive project-scoped native replacement.
+func (routes *projectServiceRefreshTestRoutes) NativeRoutes() []dataplane.NativeRoute {
+	routes.mutex.Lock()
+	defer routes.mutex.Unlock()
+	return append([]dataplane.NativeRoute(nil), routes.native...)
 }
 
 // projectServiceRefreshTestLeaseCoordinator binds the watcher fixture to one retained private primary address.
@@ -427,6 +465,19 @@ func TestWatchReadyServicesRefreshesFrameworkResourcesAfterFreshObservation(t *t
 		resourceObservation: projectruntime.ResourceObservation{Supported: true, Resources: []domain.ResourceSnapshot{{
 			ID: "swagger", Name: "Swagger", Kind: "docs", URL: "http://127.77.4.8:3000/swagger", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
 		}}},
+		portObservations: map[domain.ServiceID]projectprocess.ServicePortObservation{
+			"mysql": {
+				Supported: true,
+				Available: true,
+				Ports: []projectprocess.ServicePort{{
+					Address:  "127.77.4.8",
+					Private:  3306,
+					Public:   3306,
+					Protocol: "tcp",
+					Replica:  1,
+				}},
+			},
+		},
 	}
 	routes := new(projectServiceRefreshTestRoutes)
 	target, _ := projectServiceRefreshTestRuntimeContext(t)
@@ -467,6 +518,13 @@ func TestWatchReadyServicesRefreshesFrameworkResourcesAfterFreshObservation(t *t
 	}
 	if routes.Calls() != 1 {
 		t.Fatalf("route reconciliation calls = %d, want one after durable resource refresh", routes.Calls())
+	}
+	nativeRoutes := routes.NativeRoutes()
+	if len(nativeRoutes) != 1 ||
+		nativeRoutes[0].Host != "mysql.orders.test" ||
+		nativeRoutes[0].Listen != netip.MustParseAddrPort("127.77.4.8:3306") ||
+		!nativeRoutes[0].Direct {
+		t.Fatalf("native routes = %#v, want direct MySQL publication", nativeRoutes)
 	}
 }
 

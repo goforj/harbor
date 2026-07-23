@@ -2154,3 +2154,177 @@ func TestControllerManagedNativeRoutesLiveProbesDirectPublication(t *testing.T) 
 		t.Fatalf("ManagedNativeRoutesLive() error = %v, want live direct publication", err)
 	}
 }
+
+// TestControllerReconcileProjectNativeRoutesPreservesNeighborProjects proves concurrent starts cannot replace one another.
+func TestControllerReconcileProjectNativeRoutesPreservesNeighborProjects(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	runtimeState.Snapshot.Projects[0].State = domain.ProjectReady
+	source := &testRuntimeStateSource{
+		snapshot:           runtimeState.Snapshot,
+		network:            runtimeState.Network,
+		networkInitialized: true,
+	}
+	neighbor := dataplane.NativeRoute{
+		ID:       "project-neighbor:service:mysql",
+		Host:     "mysql.neighbor.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.11:3306"),
+		Upstream: netip.MustParseAddrPort("127.77.0.11:3306"),
+		Direct:   true,
+	}
+	orders := dataplane.NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
+		Upstream: netip.MustParseAddrPort("127.77.0.10:3306"),
+		Direct:   true,
+	}
+	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
+		snapshot: dataplane.Snapshot{
+			State:   dataplane.StateReady,
+			DNS:     dataplane.DNSStatus{Records: 1},
+			Relays:  []dataplane.RelayStatus{},
+			Directs: []dataplane.DirectStatus{},
+		},
+	}}
+	controller := &Controller{
+		initialized:         true,
+		source:              source,
+		state:               controllerStateReady,
+		dataPlane:           runtime,
+		managedNativeRoutes: []dataplane.NativeRoute{neighbor},
+		dependencies: dependencies{
+			nativeSocketProbe: func(context.Context, netip.AddrPort) error { return nil },
+		},
+	}
+
+	if err := controller.ReconcileProjectNativeRoutes(t.Context(), "orders", []dataplane.NativeRoute{orders}); err != nil {
+		t.Fatalf("ReconcileProjectNativeRoutes() error = %v", err)
+	}
+	want := canonicalManagedNativeRoutes([]dataplane.NativeRoute{neighbor, orders})
+	if !reflect.DeepEqual(controller.managedNativeRoutes, want) {
+		t.Fatalf("managed native routes = %#v, want %#v", controller.managedNativeRoutes, want)
+	}
+	if len(runtime.nativeReplacements) != 1 || !reflect.DeepEqual(runtime.nativeReplacements[0], want) {
+		t.Fatalf("native replacements = %#v, want one atomic replacement %#v", runtime.nativeReplacements, want)
+	}
+}
+
+// TestControllerReconcileProjectNativeRoutesSerializesConcurrentProjects proves simultaneous starts cannot lose either route.
+func TestControllerReconcileProjectNativeRoutesSerializesConcurrentProjects(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	runtimeState.Snapshot.Projects[0].State = domain.ProjectReady
+	neighborProject := validControllerProject()
+	neighborProject.ID = "project-neighbor"
+	neighborProject.Name = "Neighbor"
+	neighborProject.Path = "/workspace/neighbor"
+	neighborProject.Slug = "neighbor"
+	neighborProject.State = domain.ProjectReady
+	runtimeState.Snapshot.Projects = append(runtimeState.Snapshot.Projects, neighborProject)
+	ownership := runtimeState.Network.Ownership
+	runtimeState.Network.Leases = append(runtimeState.Network.Leases, identity.Lease{
+		Key:       identity.LeaseKey{ProjectID: neighborProject.ID},
+		Address:   netip.MustParseAddr("127.77.0.11"),
+		Ownership: ownership,
+	})
+	source := &testRuntimeStateSource{
+		snapshot:           runtimeState.Snapshot,
+		network:            runtimeState.Network,
+		networkInitialized: true,
+	}
+	routes := []dataplane.NativeRoute{
+		{
+			ID:       "orders:service:mysql",
+			Host:     "mysql.orders.test",
+			Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
+			Upstream: netip.MustParseAddrPort("127.77.0.10:3306"),
+			Direct:   true,
+		},
+		{
+			ID:       "project-neighbor:service:mysql",
+			Host:     "mysql.neighbor.test",
+			Listen:   netip.MustParseAddrPort("127.77.0.11:3306"),
+			Upstream: netip.MustParseAddrPort("127.77.0.11:3306"),
+			Direct:   true,
+		},
+	}
+	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
+		snapshot: dataplane.Snapshot{
+			State:   dataplane.StateReady,
+			Relays:  []dataplane.RelayStatus{},
+			Directs: []dataplane.DirectStatus{},
+		},
+	}}
+	controller := &Controller{
+		initialized: true,
+		source:      source,
+		state:       controllerStateReady,
+		dataPlane:   runtime,
+		dependencies: dependencies{
+			nativeSocketProbe: func(context.Context, netip.AddrPort) error { return nil },
+		},
+	}
+
+	var wait sync.WaitGroup
+	failures := make(chan error, len(routes))
+	for index, projectID := range []domain.ProjectID{"orders", neighborProject.ID} {
+		wait.Add(1)
+		go func(projectID domain.ProjectID, route dataplane.NativeRoute) {
+			defer wait.Done()
+			failures <- controller.ReconcileProjectNativeRoutes(t.Context(), projectID, []dataplane.NativeRoute{route})
+		}(projectID, routes[index])
+	}
+	wait.Wait()
+	close(failures)
+	for err := range failures {
+		if err != nil {
+			t.Fatalf("ReconcileProjectNativeRoutes() error = %v", err)
+		}
+	}
+	want := canonicalManagedNativeRoutes(routes)
+	if !reflect.DeepEqual(controller.managedNativeRoutes, want) {
+		t.Fatalf("managed native routes = %#v, want %#v", controller.managedNativeRoutes, want)
+	}
+}
+
+// TestControllerReconcileNativeRouteOwnershipWithdrawsStoppedProject proves stop removes only inactive route authority.
+func TestControllerReconcileNativeRouteOwnershipWithdrawsStoppedProject(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	runtimeState.Snapshot.Projects[0].State = domain.ProjectStopped
+	source := &testRuntimeStateSource{
+		snapshot:           runtimeState.Snapshot,
+		network:            runtimeState.Network,
+		networkInitialized: true,
+	}
+	route := dataplane.NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
+		Upstream: netip.MustParseAddrPort("127.77.0.10:3306"),
+		Direct:   true,
+	}
+	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
+		snapshot: dataplane.Snapshot{
+			State:   dataplane.StateReady,
+			DNS:     dataplane.DNSStatus{Records: 1},
+			Relays:  []dataplane.RelayStatus{},
+			Directs: []dataplane.DirectStatus{},
+		},
+	}}
+	controller := &Controller{
+		initialized:         true,
+		source:              source,
+		state:               controllerStateReady,
+		dataPlane:           runtime,
+		managedNativeRoutes: []dataplane.NativeRoute{route},
+	}
+
+	if err := controller.reconcileNativeRouteOwnership(t.Context()); err != nil {
+		t.Fatalf("reconcileNativeRouteOwnership() error = %v", err)
+	}
+	if len(controller.managedNativeRoutes) != 0 {
+		t.Fatalf("managed native routes = %#v, want stopped project withdrawn", controller.managedNativeRoutes)
+	}
+	if len(runtime.nativeReplacements) != 1 || len(runtime.nativeReplacements[0]) != 0 {
+		t.Fatalf("native replacements = %#v, want one empty replacement", runtime.nativeReplacements)
+	}
+}
