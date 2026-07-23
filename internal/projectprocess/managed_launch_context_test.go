@@ -101,7 +101,7 @@ func TestWithDevelopmentEnvironmentReplacesAmbientContext(t *testing.T) {
 		EnvironmentOverrides{},
 		path,
 	)
-	if got := strings.Join(result, "|"); got != "UNRELATED=preserved|FORJ_DEV_PLAIN=1|FORJ_BUILD_ENV_OVERRIDES=|FORJ_INTERNAL_MANAGED_CONTEXT="+path {
+	if got := strings.Join(result, "|"); got != "UNRELATED=preserved|FORJ_DEV_PLAIN=1|FORJ_INTERNAL_MANAGED_CONTEXT="+path {
 		t.Fatalf("withDevelopmentEnvironment() = %q", got)
 	}
 }

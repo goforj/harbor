@@ -44,16 +44,15 @@ type trustedHTTPSNativeConfiguration struct {
 
 // trustedHTTPSNativeLifecycle tracks only the resources this intermediate native proof can safely retire.
 type trustedHTTPSNativeLifecycle struct {
-	configuration       phase1Config
-	sandbox             phase1Sandbox
-	workspace           *goforjproject.Workspace
-	baselines           []trustedhttpsharness.CheckoutBaseline
-	projects            []trustedHTTPSNativeProject
-	daemon              *phase1DaemonProcess
-	retainDiagnostics   bool
-	restoreReadyMarkers func([]trustedhttpsharness.CheckoutBaseline) error
-	verifyBaselines     func([]trustedhttpsharness.CheckoutBaseline) error
-	closeWorkspace      func(*goforjproject.Workspace) error
+	configuration     phase1Config
+	sandbox           phase1Sandbox
+	workspace         *goforjproject.Workspace
+	baselines         []trustedhttpsharness.CheckoutBaseline
+	projects          []trustedHTTPSNativeProject
+	daemon            *phase1DaemonProcess
+	retainDiagnostics bool
+	verifyBaselines   func([]trustedhttpsharness.CheckoutBaseline) error
+	closeWorkspace    func(*goforjproject.Workspace) error
 }
 
 // trustedHTTPSNativeProject binds one generated public identity to its daemon registration and cleanup intents.
@@ -629,7 +628,6 @@ func TestTrustedHTTPSApprovalClientConfigDialsSandboxEndpoint(t *testing.T) {
 func TestTrustedHTTPSFinalizeCheckoutRetainsArtifactsAfterCleanupFailure(t *testing.T) {
 	t.Parallel()
 
-	restored := false
 	verified := false
 	closed := false
 	lifecycle := &trustedHTTPSNativeLifecycle{
@@ -638,10 +636,6 @@ func TestTrustedHTTPSFinalizeCheckoutRetainsArtifactsAfterCleanupFailure(t *test
 		},
 		baselines: []trustedhttpsharness.CheckoutBaseline{
 			{},
-		},
-		restoreReadyMarkers: func([]trustedhttpsharness.CheckoutBaseline) error {
-			restored = true
-			return nil
 		},
 		verifyBaselines: func([]trustedhttpsharness.CheckoutBaseline) error {
 			verified = true
@@ -657,8 +651,8 @@ func TestTrustedHTTPSFinalizeCheckoutRetainsArtifactsAfterCleanupFailure(t *test
 	if !errors.Is(err, cleanupFailure) {
 		t.Fatalf("finalizeCheckout() error = %v, want cleanup failure", err)
 	}
-	if restored || verified || closed {
-		t.Fatalf("finalizeCheckout() restore/verify/close = %t/%t/%t, want false/false/false", restored, verified, closed)
+	if verified || closed {
+		t.Fatalf("finalizeCheckout() verify/close = %t/%t, want false/false", verified, closed)
 	}
 	if !lifecycle.retainDiagnostics {
 		t.Fatal("finalizeCheckout() did not mark the failed cleanup workspace for diagnostic retention")
@@ -696,11 +690,10 @@ func TestTrustedHTTPSFallbackWorkspaceCleanupReleasesPreLifecycleFailure(t *test
 	}
 }
 
-// TestTrustedHTTPSFinalizeCheckoutRestoresAndDeletesAfterSuccess proves exact checkout restoration remains part of successful cleanup.
-func TestTrustedHTTPSFinalizeCheckoutRestoresAndDeletesAfterSuccess(t *testing.T) {
+// TestTrustedHTTPSFinalizeCheckoutVerifiesExactCheckoutAndDeletesAfterSuccess proves exact checkout verification remains part of successful cleanup.
+func TestTrustedHTTPSFinalizeCheckoutVerifiesExactCheckoutAndDeletesAfterSuccess(t *testing.T) {
 	t.Parallel()
 
-	restored := false
 	verified := false
 	closed := false
 	lifecycle := &trustedHTTPSNativeLifecycle{
@@ -709,10 +702,6 @@ func TestTrustedHTTPSFinalizeCheckoutRestoresAndDeletesAfterSuccess(t *testing.T
 		},
 		baselines: []trustedhttpsharness.CheckoutBaseline{
 			{},
-		},
-		restoreReadyMarkers: func([]trustedhttpsharness.CheckoutBaseline) error {
-			restored = true
-			return nil
 		},
 		verifyBaselines: func([]trustedhttpsharness.CheckoutBaseline) error {
 			verified = true
@@ -726,8 +715,8 @@ func TestTrustedHTTPSFinalizeCheckoutRestoresAndDeletesAfterSuccess(t *testing.T
 	if err := lifecycle.finalizeCheckout(nil, true); err != nil {
 		t.Fatalf("finalizeCheckout() error = %v", err)
 	}
-	if !restored || !verified || !closed {
-		t.Fatalf("finalizeCheckout() restore/verify/close = %t/%t/%t, want true/true/true", restored, verified, closed)
+	if !verified || !closed {
+		t.Fatalf("finalizeCheckout() verify/close = %t/%t, want true/true", verified, closed)
 	}
 	if lifecycle.workspace != nil || lifecycle.baselines != nil {
 		t.Fatalf("finalizeCheckout() retained successful artifacts: workspace=%#v baselines=%#v", lifecycle.workspace, lifecycle.baselines)
@@ -1077,19 +1066,12 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 	return lifecycle.finalizeCheckout(cleanupErr, daemonStopped)
 }
 
-// finalizeCheckout restores and deletes generated checkouts only after every cleanup boundary completed successfully.
+// finalizeCheckout verifies and deletes generated checkouts only after every cleanup boundary completed successfully.
 func (lifecycle *trustedHTTPSNativeLifecycle) finalizeCheckout(cleanupErr error, daemonStopped bool) error {
 	if cleanupErr != nil || !daemonStopped {
 		return lifecycle.retainWorkspace(cleanupErr)
 	}
 	if len(lifecycle.baselines) != 0 {
-		restore := lifecycle.restoreReadyMarkers
-		if restore == nil {
-			restore = trustedhttpsharness.RestoreReadyMarkers
-		}
-		if err := restore(lifecycle.baselines); err != nil {
-			return lifecycle.retainWorkspace(err)
-		}
 		verify := lifecycle.verifyBaselines
 		if verify == nil {
 			verify = trustedhttpsharness.VerifyBaselinesExact

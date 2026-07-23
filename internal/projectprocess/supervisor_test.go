@@ -106,7 +106,8 @@ func init() {
 	fmt.Fprintf(os.Stdout, "lighthouse-url=%s\n", os.Getenv("LIGHTHOUSE_URL"))
 	fmt.Fprintf(os.Stdout, "db-host=%s\n", os.Getenv("DB_HOST"))
 	fmt.Fprintf(os.Stdout, "database-url=%s\n", os.Getenv("DATABASE_URL"))
-	fmt.Fprintf(os.Stdout, "build-environment-overrides=%s\n", os.Getenv(buildEnvironmentOverridesEnvName))
+	fmt.Fprintf(os.Stdout, "legacy-build-environment-overrides=%s\n", os.Getenv(legacyBuildEnvironmentOverridesEnvName))
+	fmt.Fprintf(os.Stdout, "legacy-private-build-environment-overrides=%s\n", os.Getenv(legacyPrivateBuildEnvironmentOverridesName))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -788,7 +789,8 @@ func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	captured = replaceEnvironment(captured, "IP_ADDRESS", "127.0.0.8")
 	captured = replaceEnvironment(captured, "API_HTTP_HOST", "127.0.0.9")
 	captured = replaceEnvironment(captured, "LIGHTHOUSE_URL", "ws://127.0.0.9:3000/lighthouse/ws/agent")
-	captured = replaceEnvironment(captured, buildEnvironmentOverridesEnvName, "AMBIENT_HOST=127.0.0.9")
+	captured = replaceEnvironment(captured, legacyBuildEnvironmentOverridesEnvName, "AMBIENT_HOST=127.0.0.9")
+	captured = replaceEnvironment(captured, legacyPrivateBuildEnvironmentOverridesName, "PRIVATE_HOST=127.0.0.9")
 	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
 	captured = replaceEnvironment(captured, helperUnrelatedEnvironment, "preserved")
 	supervisor := newTestSupervisor(Options{Environment: captured})
@@ -824,7 +826,8 @@ func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	waitForOutput(t, stdout, "lighthouse-url=ws://127.77.0.42:3000/lighthouse/ws/agent")
 	waitForOutput(t, stdout, "db-host=127.77.0.42")
 	waitForOutput(t, stdout, "database-url=mysql://127.77.0.42:3306/app")
-	waitForOutput(t, stdout, "build-environment-overrides=API_HTTP_HOST=127.77.0.42,DB_HOST=127.77.0.42,DEV_SERVICE_IP_ADDRESS=127.77.0.42,IP_ADDRESS=127.77.0.42,LIGHTHOUSE_URL=ws://127.77.0.42:3000/lighthouse/ws/agent")
+	waitForOutput(t, stdout, "legacy-build-environment-overrides=")
+	waitForOutput(t, stdout, "legacy-private-build-environment-overrides=")
 	waitForOutput(t, stdout, "override=captured")
 	waitForOutput(t, stdout, "empty=false:")
 	waitForOutput(t, stdout, "unrelated=preserved")
@@ -1349,15 +1352,15 @@ func TestStartRejectsInvalidEnvironmentOverrides(t *testing.T) {
 		{name: "GoForj app selector", overrides: EnvironmentOverrides{"FORJ_APP": "value"}},
 		{name: "plain launcher mode", overrides: EnvironmentOverrides{developmentPlainEnvName: "0"}},
 		{
-			name: "build environment overrides",
+			name: "legacy build environment overrides",
 			overrides: EnvironmentOverrides{
-				buildEnvironmentOverridesEnvName: "value",
+				legacyBuildEnvironmentOverridesEnvName: "value",
 			},
 		},
 		{
-			name: "mixed case build environment overrides",
+			name: "private legacy build environment overrides",
 			overrides: EnvironmentOverrides{
-				"FoRj_BuIlD_EnV_OvErRiDeS": "value",
+				legacyPrivateBuildEnvironmentOverridesName: "value",
 			},
 		},
 		{name: "unsupported setting", overrides: EnvironmentOverrides{"PROJECT_VALUE": "value"}},
@@ -1408,6 +1411,7 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 		"IP_ADDRESS=127.0.0.8",
 		"API_HTTP_HOST=127.0.0.9",
 		"FORJ_BUILD_ENV_OVERRIDES=AMBIENT_HOST=127.0.0.9",
+		"FORJ_INTERNAL_LEGACY_BUILD_ENV_OVERRIDES=PRIVATE_HOST=127.0.0.9",
 		"ip_address=127.0.0.10",
 		"UNRELATED=preserved",
 	}
@@ -1421,12 +1425,50 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		want += "|ip_address=127.0.0.10"
 	}
-	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1|FORJ_BUILD_ENV_OVERRIDES=API_HTTP_HOST=127.77.0.42,DEV_SERVICE_IP_ADDRESS=127.77.0.42,IP_ADDRESS=127.77.0.42|API_HTTP_HOST=127.77.0.42|DEV_SERVICE_IP_ADDRESS=127.77.0.42|IP_ADDRESS=127.77.0.42"
+	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1|API_HTTP_HOST=127.77.0.42|DEV_SERVICE_IP_ADDRESS=127.77.0.42|IP_ADDRESS=127.77.0.42"
 	if strings.Join(result, "|") != want {
 		t.Fatalf("withDevelopmentEnvironment() = %q, want %q", strings.Join(result, "|"), want)
 	}
 	if strings.Join(base, "|") != strings.Join(before, "|") {
 		t.Fatalf("withDevelopmentEnvironment() mutated base = %#v, want %#v", base, before)
+	}
+}
+
+// TestDevelopmentEnvironmentReplacesAmbientArtifactRoot verifies a child receives only its Harbor-owned artifact directory.
+func TestDevelopmentEnvironmentReplacesAmbientArtifactRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "dev-artifacts", "session")
+	result := withDevelopmentEnvironmentAndArtifactRoot([]string{
+		"FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root",
+		"UNRELATED=preserved",
+	}, projectProcessTestEnvironment(), root)
+	if strings.Contains(strings.Join(result, "\x00"), "FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root") {
+		t.Fatalf("development environment retained ambient artifact root: %#v", result)
+	}
+	if !strings.Contains(strings.Join(result, "\x00"), "FORJ_DEV_ARTIFACT_ROOT="+root) {
+		t.Fatalf("development environment omitted Harbor artifact root: %#v", result)
+	}
+}
+
+// TestStartRejectsUnsafeExternalArtifactRoots verifies artifact cleanup cannot be aimed at a checkout or ambiguous path.
+func TestStartRejectsUnsafeExternalArtifactRoots(t *testing.T) {
+	checkout := t.TempDir()
+	for _, artifactRoot := range []string{
+		"relative",
+		filepath.Join(checkout, "artifacts"),
+		string(filepath.Separator),
+	} {
+		t.Run(artifactRoot, func(t *testing.T) {
+			_, err := newTestSupervisor(Options{}).Start(t.Context(), StartRequest{
+				ProjectID:            "project-artifact-invalid",
+				SessionID:            "session-artifact-invalid",
+				CheckoutRoot:         checkout,
+				ExternalArtifactRoot: artifactRoot,
+				EnvironmentOverrides: projectProcessTestEnvironment(),
+			})
+			if !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("Start() error = %v, want ErrInvalidRequest", err)
+			}
+		})
 	}
 }
 

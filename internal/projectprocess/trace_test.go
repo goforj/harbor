@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goforj/harbor/internal/domain"
 )
 
 // TestStartRetainsAndClosesProjectLaunchTrace proves one accepted process leaves immediately reusable diagnostics.
@@ -79,6 +82,126 @@ func TestStopRemovesProjectLaunchTrace(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(checkout, "_data")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("trace parent directory stat error = %v, want not exist", err)
+	}
+}
+
+// TestExternalArtifactRootLifecycleRetainsUnexpectedExitAndRemovesSettledStop verifies cleanup tracks the same confidence boundary as launch traces.
+func TestExternalArtifactRootLifecycleRetainsUnexpectedExitAndRemovesSettledStop(t *testing.T) {
+	prepareExternalArtifactRootTestDataDirectory(t)
+	failedRoot := externalArtifactRootPathForTest(t, "project-artifact-failed", "session-artifact-failed")
+	failedCheckout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(failedCheckout, "_data"), []byte("block launch trace"), 0o600); err != nil {
+		t.Fatalf("block failed launch trace: %v", err)
+	}
+	_, err := newTestSupervisor(Options{}).Start(t.Context(), StartRequest{
+		ProjectID:            "project-artifact-failed",
+		SessionID:            "session-artifact-failed",
+		CheckoutRoot:         failedCheckout,
+		ExternalArtifactRoot: failedRoot,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err == nil {
+		t.Fatal("Start() start-failure error = nil")
+	}
+	if _, err := os.Stat(failedRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("start failure artifact root stat error = %v, want not exist", err)
+	}
+
+	installForjHelper(t, "exit")
+	retainedRoot := externalArtifactRootPathForTest(t, "project-artifact-retained", "session-artifact-retained")
+	retained := newTestSupervisor(Options{})
+	retainedHandle, err := retained.Start(t.Context(), StartRequest{
+		ProjectID:            "project-artifact-retained",
+		SessionID:            "session-artifact-retained",
+		CheckoutRoot:         t.TempDir(),
+		ExternalArtifactRoot: retainedRoot,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() unexpected-exit error = %v", err)
+	}
+	if _, err := retainedHandle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() unexpected-exit error = %v", err)
+	}
+	if _, err := os.Stat(retainedRoot); err != nil {
+		t.Fatalf("unexpected exit removed artifact root: %v", err)
+	}
+
+	installForjHelper(t, "wait")
+	removedRoot := externalArtifactRootPathForTest(t, "project-artifact-removed", "session-artifact-removed")
+	removed := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	t.Cleanup(func() { _ = removed.Close(context.Background()) })
+	handle, err := removed.Start(t.Context(), StartRequest{
+		ProjectID:            "project-artifact-removed",
+		SessionID:            "session-artifact-removed",
+		CheckoutRoot:         t.TempDir(),
+		ExternalArtifactRoot: removedRoot,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() settled-stop error = %v", err)
+	}
+	if err := removed.Stop(t.Context(), "project-artifact-removed", "session-artifact-removed"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() settled-stop error = %v", err)
+	}
+	if _, err := os.Stat(removedRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("settled stop artifact root stat error = %v, want not exist", err)
+	}
+}
+
+// TestStartArtifactRootCleanupRequiresSettledAcceptedProcess proves post-start setup failures retain artifacts unless the accepted tree settled.
+func TestStartArtifactRootCleanupRequiresSettledAcceptedProcess(t *testing.T) {
+	prepareExternalArtifactRootTestDataDirectory(t)
+	installForjHelper(t, "wait")
+
+	for _, test := range []struct {
+		name             string
+		cleanupUncertain bool
+		wantRoot         bool
+	}{
+		{
+			name:             "uncertain settlement retains root",
+			cleanupUncertain: true,
+			wantRoot:         true,
+		},
+		{
+			name:     "settled cleanup removes root",
+			wantRoot: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projectID := domain.ProjectID("project-artifact-post-start-" + strings.ReplaceAll(test.name, " ", "-"))
+			sessionID := domain.SessionID("session-artifact-post-start-" + strings.ReplaceAll(test.name, " ", "-"))
+			artifactRoot := externalArtifactRootPathForTest(t, projectID, sessionID)
+			supervisor := newTestSupervisor(Options{})
+			supervisor.afterCommandStart = func() error { return errors.New("post-start setup failed") }
+			if test.cleanupUncertain {
+				supervisor.terminateAccepted = func(command *exec.Cmd, platform *platformProcess) error {
+					return errors.Join(terminateStartedCommand(command, platform), ErrCleanupUncertain)
+				}
+			}
+
+			_, err := supervisor.Start(t.Context(), StartRequest{
+				ProjectID:            projectID,
+				SessionID:            sessionID,
+				CheckoutRoot:         t.TempDir(),
+				ExternalArtifactRoot: artifactRoot,
+				EnvironmentOverrides: projectProcessTestEnvironment(),
+			})
+			if !errors.Is(err, ErrCleanupUncertain) == test.cleanupUncertain {
+				t.Fatalf("Start() error = %v, cleanup uncertainty = %t, want %t", err, errors.Is(err, ErrCleanupUncertain), test.cleanupUncertain)
+			}
+			_, statErr := os.Stat(artifactRoot)
+			if test.wantRoot && statErr != nil {
+				t.Fatalf("artifact root stat error = %v, want retained root", statErr)
+			}
+			if !test.wantRoot && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("artifact root stat error = %v, want removed root", statErr)
+			}
+		})
 	}
 }
 

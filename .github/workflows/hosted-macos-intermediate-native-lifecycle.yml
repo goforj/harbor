@@ -30,7 +30,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HARBOR_INTERMEDIATE_NATIVE_FORJ_COMMIT: 5f6343ce16fe0891b9eb7c8192ac42bb983fb975
+  HARBOR_INTERMEDIATE_NATIVE_FORJ_COMMIT: 86d7fcacd681d9f9798b7f47521ce14969a594f6
 
 jobs:
   intermediate-native-lifecycle:
