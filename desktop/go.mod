@@ -3,9 +3,11 @@ module github.com/goforj/harbor/desktop
 go 1.26.1
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/goforj/harbor v0.0.0
 	github.com/wailsapp/wails/v2 v2.13.0
 	golang.org/x/net v0.54.0
+	golang.org/x/sys v0.47.0
 )
 
 replace github.com/goforj/harbor => ..
@@ -75,7 +77,6 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
