@@ -57,6 +57,8 @@ const (
 	OperationEnsureLowPorts Operation = "ensure_low_ports"
 	// OperationReleaseLowPorts admits one exact policy-bound low-port service release operation.
 	OperationReleaseLowPorts Operation = "release_low_ports"
+	// OperationReleaseNetworkOwnership admits removal of the exact schema-two protected ownership record.
+	OperationReleaseNetworkOwnership Operation = "release_network_ownership"
 )
 
 // ObservationState identifies the expected pre-mutation state of an approved address.
@@ -282,25 +284,29 @@ func (expected ExpectedLoopbackPool) validate(pool netip.Prefix, operation Opera
 
 // Ticket authorizes exactly one bounded privileged operation.
 type Ticket struct {
-	Version                     uint16                       `json:"version"`
-	Operation                   Operation                    `json:"operation"`
-	InstallationID              string                       `json:"installation_id"`
-	RequesterIdentity           string                       `json:"requester_identity"`
-	OwnershipGeneration         uint64                       `json:"ownership_generation"`
-	OwnershipSchemaVersion      uint32                       `json:"ownership_schema_version"`
-	NetworkPolicyFingerprint    string                       `json:"network_policy_fingerprint,omitempty"`
-	NetworkPolicy               *networkpolicy.Policy        `json:"network_policy,omitempty"`
-	ApprovedPool                string                       `json:"approved_pool"`
-	ApprovedAddress             string                       `json:"approved_address,omitempty"`
-	ExpectedObservation         ExpectedObservation          `json:"expected_observation,omitzero"`
-	ExpectedPreAssignment       *ExpectedPreAssignment       `json:"expected_pre_assignment,omitempty"`
-	ExpectedLoopbackPool        *ExpectedLoopbackPool        `json:"expected_loopback_pool,omitempty"`
-	ExpectedResolverObservation *ExpectedResolverObservation `json:"expected_resolver_observation,omitempty"`
-	TrustRoot                   *TrustRoot                   `json:"trust_root,omitempty"`
-	ExpectedTrustObservation    *ExpectedTrustObservation    `json:"expected_trust_observation,omitempty"`
-	ExpectedLowPortObservation  *ExpectedLowPortObservation  `json:"expected_low_port_observation,omitempty"`
-	Nonce                       string                       `json:"nonce"`
-	ExpiresAt                   time.Time                    `json:"expires_at"`
+	Version                      uint16                       `json:"version"`
+	Operation                    Operation                    `json:"operation"`
+	InstallationID               string                       `json:"installation_id"`
+	RequesterIdentity            string                       `json:"requester_identity"`
+	OwnershipGeneration          uint64                       `json:"ownership_generation"`
+	OwnershipSchemaVersion       uint32                       `json:"ownership_schema_version"`
+	NetworkPolicyFingerprint     string                       `json:"network_policy_fingerprint,omitempty"`
+	NetworkPolicy                *networkpolicy.Policy        `json:"network_policy,omitempty"`
+	ApprovedPool                 string                       `json:"approved_pool"`
+	ApprovedAddress              string                       `json:"approved_address,omitempty"`
+	ExpectedObservation          ExpectedObservation          `json:"expected_observation,omitzero"`
+	ExpectedPreAssignment        *ExpectedPreAssignment       `json:"expected_pre_assignment,omitempty"`
+	ExpectedLoopbackPool         *ExpectedLoopbackPool        `json:"expected_loopback_pool,omitempty"`
+	ExpectedResolverObservation  *ExpectedResolverObservation `json:"expected_resolver_observation,omitempty"`
+	TrustRoot                    *TrustRoot                   `json:"trust_root,omitempty"`
+	ExpectedTrustObservation     *ExpectedTrustObservation    `json:"expected_trust_observation,omitempty"`
+	ExpectedLowPortObservation   *ExpectedLowPortObservation  `json:"expected_low_port_observation,omitempty"`
+	ReleaseOperationID           string                       `json:"release_operation_id,omitempty"`
+	ReleaseOperationRevision     uint64                       `json:"release_operation_revision,omitempty"`
+	ReleaseCheckpointRevision    uint64                       `json:"release_checkpoint_revision,omitempty"`
+	ExpectedOwnershipFingerprint string                       `json:"expected_ownership_fingerprint,omitempty"`
+	Nonce                        string                       `json:"nonce"`
+	ExpiresAt                    time.Time                    `json:"expires_at"`
 }
 
 // Validate verifies the ticket against the current time without touching host state.
@@ -336,7 +342,18 @@ func (t Ticket) Validate(now time.Time) error {
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "approved pool must be a canonical IPv4 loopback prefix")
 	}
-	if t.Operation == OperationEnsureResolver || t.Operation == OperationReleaseResolver || t.Operation == OperationRetireResolver {
+	if t.Operation != OperationReleaseNetworkOwnership &&
+		(t.ReleaseOperationID != "" ||
+			t.ReleaseOperationRevision != 0 ||
+			t.ReleaseCheckpointRevision != 0 ||
+			t.ExpectedOwnershipFingerprint != "") {
+		return newRequestError(ErrorCodeInvalidTicket, "non-ownership-release operation cannot contain ownership release bindings")
+	}
+	if t.Operation == OperationReleaseNetworkOwnership {
+		if err := t.validateOwnershipReleaseAuthority(); err != nil {
+			return err
+		}
+	} else if t.Operation == OperationEnsureResolver || t.Operation == OperationReleaseResolver || t.Operation == OperationRetireResolver {
 		if err := t.validateResolverAuthority(); err != nil {
 			return err
 		}
@@ -403,11 +420,32 @@ func validOperation(operation Operation) bool {
 		OperationEnsureTrust,
 		OperationReleaseTrust,
 		OperationEnsureLowPorts,
-		OperationReleaseLowPorts:
+		OperationReleaseLowPorts,
+		OperationReleaseNetworkOwnership:
 		return true
 	default:
 		return false
 	}
+}
+
+// validateOwnershipReleaseAuthority confines ownership release to the full schema-two target without any mutation authority.
+func (t Ticket) validateOwnershipReleaseAuthority() error {
+	if t.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+		return newRequestError(ErrorCodeInvalidTicket, "ownership release requires network-policy ownership")
+	}
+	if t.NetworkPolicy != nil || t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) ||
+		t.ExpectedPreAssignment != nil || t.ExpectedLoopbackPool != nil || t.ExpectedResolverObservation != nil ||
+		t.TrustRoot != nil || t.ExpectedTrustObservation != nil || t.ExpectedLowPortObservation != nil {
+		return newRequestError(ErrorCodeInvalidTicket, "ownership release cannot contain mutation authority")
+	}
+	if !validToken(t.ReleaseOperationID, 1, 128) ||
+		t.ReleaseOperationRevision == 0 ||
+		t.ReleaseCheckpointRevision == 0 ||
+		t.ReleaseCheckpointRevision <= t.ReleaseOperationRevision ||
+		!validFingerprint(t.ExpectedOwnershipFingerprint) {
+		return newRequestError(ErrorCodeInvalidTicket, "ownership release bindings are invalid")
+	}
+	return nil
 }
 
 // validateResolverAuthority binds the resolver effect to one complete canonical host-network policy.

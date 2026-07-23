@@ -82,6 +82,23 @@ type LowPortMutationEvidence struct {
 	Postcondition          LowPortPostcondition `json:"postcondition"`
 }
 
+// OwnershipPostcondition identifies the protected ownership state proven after an ownership release.
+type OwnershipPostcondition string
+
+const (
+	// OwnershipPostconditionOwnedAbsent means the exact signed ownership record is absent.
+	OwnershipPostconditionOwnedAbsent OwnershipPostcondition = "owned_absent"
+)
+
+// OwnershipMutationEvidence is the bounded postcondition returned by the ownership release handler.
+type OwnershipMutationEvidence struct {
+	ReleaseOperationID           string                 `json:"release_operation_id"`
+	ReleaseOperationRevision     uint64                 `json:"release_operation_revision"`
+	ReleaseCheckpointRevision    uint64                 `json:"release_checkpoint_revision"`
+	ReleasedOwnershipFingerprint string                 `json:"released_ownership_fingerprint"`
+	Postcondition                OwnershipPostcondition `json:"postcondition"`
+}
+
 // LoopbackIdentityHandler applies only the loopback operations admitted by this protocol.
 type LoopbackIdentityHandler interface {
 	// EnsureLoopbackIdentity ensures the ticket's approved address and returns its observed postcondition.
@@ -147,6 +164,20 @@ type LowPortHandler interface {
 	ReleaseLowPorts(context.Context, Ticket, TicketAdmission) (LowPortMutationEvidence, error)
 }
 
+// OwnershipHandler applies the exact admitted ownership release operation.
+type OwnershipHandler interface {
+	// ReleaseNetworkOwnership removes only the admitted protected ownership record.
+	ReleaseNetworkOwnership(context.Context, Ticket, TicketAdmission) (OwnershipMutationEvidence, error)
+}
+
+// UnavailableOwnershipHandler fails closed until a reviewed ownership release adapter is installed.
+type UnavailableOwnershipHandler struct{}
+
+// ReleaseNetworkOwnership rejects ownership release because no ownership mutation authority is installed.
+func (UnavailableOwnershipHandler) ReleaseNetworkOwnership(context.Context, Ticket, TicketAdmission) (OwnershipMutationEvidence, error) {
+	return OwnershipMutationEvidence{}, ErrMutationUnavailable
+}
+
 // UnavailableLowPortHandler fails closed until a reviewed platform low-port adapter is installed.
 type UnavailableLowPortHandler struct{}
 
@@ -209,12 +240,13 @@ type ResponseError struct {
 
 // OperationResult records the admitted operation and its validated postcondition evidence.
 type OperationResult struct {
-	Operation        Operation                 `json:"operation"`
-	Evidence         MutationEvidence          `json:"evidence,omitzero"`
-	PoolEvidence     *PoolMutationEvidence     `json:"pool_evidence,omitempty"`
-	ResolverEvidence *ResolverMutationEvidence `json:"resolver_evidence,omitempty"`
-	TrustEvidence    *TrustMutationEvidence    `json:"trust_evidence,omitempty"`
-	LowPortEvidence  *LowPortMutationEvidence  `json:"low_port_evidence,omitempty"`
+	Operation         Operation                  `json:"operation"`
+	Evidence          MutationEvidence           `json:"evidence,omitzero"`
+	PoolEvidence      *PoolMutationEvidence      `json:"pool_evidence,omitempty"`
+	ResolverEvidence  *ResolverMutationEvidence  `json:"resolver_evidence,omitempty"`
+	TrustEvidence     *TrustMutationEvidence     `json:"trust_evidence,omitempty"`
+	LowPortEvidence   *LowPortMutationEvidence   `json:"low_port_evidence,omitempty"`
+	OwnershipEvidence *OwnershipMutationEvidence `json:"ownership_evidence,omitempty"`
 }
 
 // Response is the versioned one-shot helper response envelope.
@@ -309,6 +341,35 @@ func (admitted AdmittedResolverOperation) ExecuteResolver(ctx context.Context, h
 type AdmittedLowPortOperation struct {
 	ticket    Ticket
 	admission TicketAdmission
+}
+
+// AdmittedOwnershipOperation is one ownership release ticket that passed redemption, clock, and replay admission.
+type AdmittedOwnershipOperation struct {
+	ticket    Ticket
+	admission TicketAdmission
+}
+
+// RequesterIdentity returns the authenticated requester identity bound to the admitted ownership release ticket.
+func (admitted AdmittedOwnershipOperation) RequesterIdentity() string {
+	return admitted.ticket.RequesterIdentity
+}
+
+// ExecuteOwnership invokes only the ownership handler selected by the already-admitted release ticket.
+func (admitted AdmittedOwnershipOperation) ExecuteOwnership(ctx context.Context, handler OwnershipHandler) (OperationResult, error) {
+	if handler == nil {
+		return OperationResult{}, ErrMutationUnavailable
+	}
+	if admitted.ticket.Operation != OperationReleaseNetworkOwnership {
+		return OperationResult{}, newRequestError(ErrorCodeInvalidTicket, "admitted operation is not an ownership release operation")
+	}
+	evidence, err := handler.ReleaseNetworkOwnership(ctx, admitted.ticket, admitted.admission)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if err := evidence.validate(admitted.ticket, admitted.admission); err != nil {
+		return OperationResult{}, err
+	}
+	return OperationResult{Operation: admitted.ticket.Operation, OwnershipEvidence: &evidence}, nil
 }
 
 // RequesterIdentity returns the authenticated requester identity bound to the admitted low-port ticket.
@@ -416,6 +477,9 @@ type AdmittedResolverExecutor func(context.Context, AdmittedResolverOperation) (
 // AdmittedLowPortExecutor executes one already-admitted low-port operation.
 type AdmittedLowPortExecutor func(context.Context, AdmittedLowPortOperation) (OperationResult, error)
 
+// AdmittedOwnershipExecutor executes one already-admitted ownership release operation.
+type AdmittedOwnershipExecutor func(context.Context, AdmittedOwnershipOperation) (OperationResult, error)
+
 // AdmittedLoopbackExecutor executes one already-admitted loopback operation.
 type AdmittedLoopbackExecutor func(context.Context, AdmittedLoopbackOperation) (OperationResult, error)
 
@@ -427,35 +491,51 @@ type AdmittedOperationExecutors struct {
 	Resolver AdmittedResolverExecutor
 	// LowPorts executes authenticated low-port ticket operations.
 	LowPorts AdmittedLowPortExecutor
+	// Ownership executes authenticated ownership release ticket operations.
+	Ownership AdmittedOwnershipExecutor
 	// Loopback executes authenticated loopback ticket operations.
 	Loopback AdmittedLoopbackExecutor
 }
 
 // handlerAdmittedOperationExecutors retains the established handler graph behind the admitted-operation boundary.
 type handlerAdmittedOperationExecutors struct {
-	loopback LoopbackIdentityHandler
-	resolver ResolverHandler
-	trust    TrustHandler
-	lowPorts LowPortHandler
+	loopback  LoopbackIdentityHandler
+	resolver  ResolverHandler
+	trust     TrustHandler
+	lowPorts  LowPortHandler
+	ownership OwnershipHandler
 }
 
 // NewAdmittedOperationExecutors constructs the production callbacks from the reviewed operation-family handlers.
-func NewAdmittedOperationExecutors(loopback LoopbackIdentityHandler, resolver ResolverHandler, trust TrustHandler, lowPorts LowPortHandler) AdmittedOperationExecutors {
-	if loopback == nil || resolver == nil || trust == nil || lowPorts == nil {
+func NewAdmittedOperationExecutors(
+	loopback LoopbackIdentityHandler,
+	resolver ResolverHandler,
+	trust TrustHandler,
+	lowPorts LowPortHandler,
+	ownership OwnershipHandler,
+) AdmittedOperationExecutors {
+	if loopback == nil || resolver == nil || trust == nil || lowPorts == nil || ownership == nil {
 		panic("helper.NewAdmittedOperationExecutors requires non-nil handlers")
 	}
 	handlers := handlerAdmittedOperationExecutors{
-		loopback: loopback,
-		resolver: resolver,
-		trust:    trust,
-		lowPorts: lowPorts,
+		loopback:  loopback,
+		resolver:  resolver,
+		trust:     trust,
+		lowPorts:  lowPorts,
+		ownership: ownership,
 	}
 	return AdmittedOperationExecutors{
-		Trust:    handlers.executeTrust,
-		Resolver: handlers.executeResolver,
-		LowPorts: handlers.executeLowPorts,
-		Loopback: handlers.executeLoopback,
+		Trust:     handlers.executeTrust,
+		Resolver:  handlers.executeResolver,
+		LowPorts:  handlers.executeLowPorts,
+		Ownership: handlers.executeOwnership,
+		Loopback:  handlers.executeLoopback,
 	}
+}
+
+// executeOwnership executes one admitted ownership release through the configured handler.
+func (executor handlerAdmittedOperationExecutors) executeOwnership(ctx context.Context, admitted AdmittedOwnershipOperation) (OperationResult, error) {
+	return admitted.ExecuteOwnership(ctx, executor.ownership)
 }
 
 // executeTrust executes one admitted trust operation through the configured handler.
@@ -562,13 +642,21 @@ func NewDispatcherWithResolverTrustAndLowPorts(
 			resolverHandler,
 			trustHandler,
 			lowPortHandler,
+			UnavailableOwnershipHandler{},
 		),
 	)
 }
 
 // NewDispatcherWithAdmittedOperationExecutors constructs a dispatcher that delegates only after ticket admission is complete.
 func NewDispatcherWithAdmittedOperationExecutors(redeemer TicketRedeemer, clock Clock, replayGuard ReplayGuard, executors AdmittedOperationExecutors) *Dispatcher {
-	if redeemer == nil || clock == nil || replayGuard == nil || executors.Trust == nil || executors.Resolver == nil || executors.LowPorts == nil || executors.Loopback == nil {
+	if redeemer == nil ||
+		clock == nil ||
+		replayGuard == nil ||
+		executors.Trust == nil ||
+		executors.Resolver == nil ||
+		executors.LowPorts == nil ||
+		executors.Ownership == nil ||
+		executors.Loopback == nil {
 		panic("helper.NewDispatcherWithAdmittedOperationExecutors requires non-nil dependencies")
 	}
 	return &Dispatcher{
@@ -633,6 +721,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 	var result OperationResult
 	var err error
 	switch ticket.Operation {
+	case OperationReleaseNetworkOwnership:
+		result, err = d.executors.Ownership(operationContext, AdmittedOwnershipOperation{
+			ticket:    ticket,
+			admission: redemption.Admission,
+		})
 	case OperationEnsureTrust, OperationReleaseTrust:
 		if d.detachTrustAdmission {
 			d.redeemer = nil
@@ -680,6 +773,8 @@ func validateAdmittedOperationResult(ticket Ticket, admission TicketAdmission, r
 		return newRequestError(ErrorCodeMutationFailed, "admitted operation result is invalid")
 	}
 	switch ticket.Operation {
+	case OperationReleaseNetworkOwnership:
+		return result.OwnershipEvidence.validate(ticket, admission)
 	case OperationEnsureLoopbackIdentity, OperationReleaseLoopbackIdentity:
 		return result.Evidence.validate(ticket)
 	case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
@@ -771,6 +866,34 @@ func (e LowPortMutationEvidence) validateShape(operation Operation) error {
 		return nil
 	}
 	return errors.New("low-port mutation evidence postcondition is invalid")
+}
+
+// validate prevents an ownership adapter from returning evidence for another durable release checkpoint or record.
+func (e OwnershipMutationEvidence) validate(ticket Ticket, admission TicketAdmission) error {
+	if err := e.validateShape(); err != nil {
+		return newRequestError(ErrorCodeMutationFailed, "ownership mutation evidence is invalid")
+	}
+	if e.ReleaseOperationID != ticket.ReleaseOperationID ||
+		e.ReleaseOperationRevision != ticket.ReleaseOperationRevision ||
+		e.ReleaseCheckpointRevision != ticket.ReleaseCheckpointRevision ||
+		e.ReleasedOwnershipFingerprint != ticket.ExpectedOwnershipFingerprint ||
+		e.ReleasedOwnershipFingerprint != admission.TargetOwnershipFingerprint {
+		return newRequestError(ErrorCodeMutationFailed, "ownership mutation evidence does not match approved authority")
+	}
+	return nil
+}
+
+// validateShape enforces the standalone ownership-release response shape before ticket correlation.
+func (e OwnershipMutationEvidence) validateShape() error {
+	if !validToken(e.ReleaseOperationID, 1, 128) ||
+		e.ReleaseOperationRevision == 0 ||
+		e.ReleaseCheckpointRevision == 0 ||
+		e.ReleaseCheckpointRevision <= e.ReleaseOperationRevision ||
+		!validFingerprint(e.ReleasedOwnershipFingerprint) ||
+		e.Postcondition != OwnershipPostconditionOwnedAbsent {
+		return errors.New("ownership mutation evidence shape is invalid")
+	}
+	return nil
 }
 
 // validateShape enforces the standalone trust response shape before ticket correlation.

@@ -542,6 +542,10 @@ func unusedRuntimeDependencies(t *testing.T) runtimeDependencies {
 			t.Fatal("low-port handler factory was not configured for this test")
 			return nil, nil
 		},
+		openOwnershipHandler: func() (closingOwnershipHandler, error) {
+			t.Fatal("ownership handler factory was not configured for this test")
+			return nil, nil
+		},
 		transitionTrustIdentity: func(string) error {
 			t.Fatal("trust identity transition was not configured for this test")
 			return nil
@@ -587,6 +591,9 @@ func successfulTestDependencies(events *[]string, redemption helper.TicketRedemp
 		},
 		openLowPortHandler: func() (closingLowPortHandler, error) {
 			return unavailableClosingLowPortHandler{}, nil
+		},
+		openOwnershipHandler: func() (closingOwnershipHandler, error) {
+			return unavailableClosingOwnershipHandler{}, nil
 		},
 		transitionTrustIdentity: func(string) error {
 			return errors.New("test trust identity transition is not configured")

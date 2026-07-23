@@ -47,6 +47,10 @@ func TestDispatcherExecutorRunsOnlyAfterReplayConsumption(t *testing.T) {
 				t.Fatal("low-port executor unexpectedly called")
 				return OperationResult{}, nil
 			},
+			Ownership: func(context.Context, AdmittedOwnershipOperation) (OperationResult, error) {
+				t.Fatal("ownership executor unexpectedly called")
+				return OperationResult{}, nil
+			},
 			Loopback: func(context.Context, AdmittedLoopbackOperation) (OperationResult, error) {
 				t.Fatal("loopback executor unexpectedly called")
 				return OperationResult{}, nil
@@ -98,6 +102,10 @@ func TestOneShotDispatcherDetachesAdmissionBeforeTrustExecutor(t *testing.T) {
 			},
 			LowPorts: func(context.Context, AdmittedLowPortOperation) (OperationResult, error) {
 				t.Fatal("low-port executor unexpectedly called")
+				return OperationResult{}, nil
+			},
+			Ownership: func(context.Context, AdmittedOwnershipOperation) (OperationResult, error) {
+				t.Fatal("ownership executor unexpectedly called")
 				return OperationResult{}, nil
 			},
 			Loopback: func(context.Context, AdmittedLoopbackOperation) (OperationResult, error) {

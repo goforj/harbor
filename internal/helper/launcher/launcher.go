@@ -182,6 +182,20 @@ func (launcher *Launcher) InvokeLowPorts(ctx context.Context, ticket LowPortLaun
 	return launcher.invoke(ctx, ticket.reference, matchLowPortLaunchTicket(ticket))
 }
 
+// InvokeOwnership performs one transport attempt for an exact ownership release capability.
+func (launcher *Launcher) InvokeOwnership(ctx context.Context, ticket OwnershipLaunchTicket) (Outcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, err
+	}
+	if err := ticket.validateAt(launcher.clock.Now().UTC()); err != nil {
+		return Outcome{}, fmt.Errorf("validate helper ownership launch ticket: %w", err)
+	}
+	return launcher.invoke(ctx, ticket.reference, matchOwnershipLaunchTicket(ticket))
+}
+
 // invoke owns the shared bounded request and response exchange after launch metadata has been validated.
 func (launcher *Launcher) invoke(
 	ctx context.Context,
@@ -307,6 +321,18 @@ func matchLowPortLaunchTicket(ticket LowPortLaunchTicket) resultMatcher {
 			return result.LowPortEvidence.Postcondition == helper.LowPortPostconditionExact
 		}
 		return result.LowPortEvidence.Postcondition == helper.LowPortPostconditionOwnedAbsent
+	}
+}
+
+// matchOwnershipLaunchTicket binds success to one durable release checkpoint and exact released ownership record.
+func matchOwnershipLaunchTicket(ticket OwnershipLaunchTicket) resultMatcher {
+	return func(result *helper.OperationResult) bool {
+		return result != nil && result.Operation == ticket.operation && result.OwnershipEvidence != nil &&
+			result.OwnershipEvidence.ReleaseOperationID == ticket.releaseOperationID &&
+			result.OwnershipEvidence.ReleaseOperationRevision == ticket.releaseOperationRevision &&
+			result.OwnershipEvidence.ReleaseCheckpointRevision == ticket.releaseCheckpointRevision &&
+			result.OwnershipEvidence.ReleasedOwnershipFingerprint == ticket.expectedOwnershipFingerprint &&
+			result.OwnershipEvidence.Postcondition == helper.OwnershipPostconditionOwnedAbsent
 	}
 }
 

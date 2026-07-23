@@ -18,14 +18,16 @@ func TestResolveReturnsTheFixedValidatedGraph(t *testing.T) {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 	want := Paths{
-		Root:               root,
-		StateDirectory:     filepath.Join(root, stateDirectoryName),
-		OwnershipPath:      filepath.Join(root, stateDirectoryName, ownershipFilename),
-		HostProjectionPath: filepath.Join(root, stateDirectoryName, hostProjectionFilename),
-		ReplayDirectory:    filepath.Join(root, stateDirectoryName, replayDirectoryName),
-		TicketsDirectory:   filepath.Join(root, ticketsDirectoryName),
-		PendingDirectory:   filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
-		ClaimsDirectory:    filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		Root:                          root,
+		StateDirectory:                filepath.Join(root, stateDirectoryName),
+		OwnershipPath:                 filepath.Join(root, stateDirectoryName, ownershipFilename),
+		HostProjectionPath:            filepath.Join(root, stateDirectoryName, hostProjectionFilename),
+		ReplayDirectory:               filepath.Join(root, stateDirectoryName, replayDirectoryName),
+		TicketsDirectory:              filepath.Join(root, ticketsDirectoryName),
+		PendingDirectory:              filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
+		ClaimsDirectory:               filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		OwnershipReleaseProofPath:     filepath.Join(root, ownershipReleaseProofFilename),
+		OwnershipReleaseProofLockPath: filepath.Join(root, ownershipReleaseProofLockFilename),
 	}
 	if paths != want {
 		t.Fatalf("Resolve() = %#v, want %#v", paths, want)
@@ -91,6 +93,8 @@ func TestValidatePathsRejectsRedirectedFields(t *testing.T) {
 		{name: "tickets", mutate: func(paths *Paths) { paths.TicketsDirectory = filepath.Join(root, "other") }},
 		{name: "pending", mutate: func(paths *Paths) { paths.PendingDirectory = filepath.Join(root, "other") }},
 		{name: "claims", mutate: func(paths *Paths) { paths.ClaimsDirectory = filepath.Join(root, "other") }},
+		{name: "ownership release proof", mutate: func(paths *Paths) { paths.OwnershipReleaseProofPath = filepath.Join(root, "other.json") }},
+		{name: "ownership release proof lock", mutate: func(paths *Paths) { paths.OwnershipReleaseProofLockPath = filepath.Join(root, "other.lock") }},
 		{name: "empty ownership", mutate: func(paths *Paths) { paths.OwnershipPath = "" }},
 	}
 	for _, mutation := range mutations {

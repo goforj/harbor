@@ -140,6 +140,7 @@ func TestDecodeResponseAcceptsStrictSuccessAndFailure(t *testing.T) {
 		validTestSuccessResponse(),
 		validTestPoolSuccessResponse(),
 		validTestPoolReleaseSuccessResponse(),
+		validTestOwnershipReleaseSuccessResponse(),
 		validTestFailureResponse(),
 	}
 	for _, want := range responses {
@@ -154,6 +155,60 @@ func TestDecodeResponseAcceptsStrictSuccessAndFailure(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("decoded response = %#v, want %#v", got, want)
 		}
+	}
+}
+
+// TestDecodeResponseRejectsAmbiguousOwnershipEvidenceJSON covers the terminal release evidence field set.
+func TestDecodeResponseRejectsAmbiguousOwnershipEvidenceJSON(t *testing.T) {
+	validBody, err := json.Marshal(validTestOwnershipReleaseSuccessResponse())
+	if err != nil {
+		t.Fatalf("marshal ownership response: %v", err)
+	}
+	valid := string(validBody)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "null ownership evidence",
+			body: `{"version":3,"ok":true,"result":{"operation":"release_network_ownership","ownership_evidence":null}}`,
+		},
+		{
+			name: "scalar evidence instead",
+			body: strings.Replace(valid, `"ownership_evidence"`, `"evidence"`, 1),
+		},
+		{
+			name: "ownership evidence alias",
+			body: strings.Replace(valid, `"ownership_evidence"`, `"Ownership_Evidence"`, 1),
+		},
+		{
+			name: "duplicate ownership evidence",
+			body: strings.Replace(valid, `"ownership_evidence":`, `"ownership_evidence":null,"ownership_evidence":`, 1),
+		},
+		{
+			name: "release operation ID alias",
+			body: strings.Replace(valid, `"release_operation_id"`, `"Release_Operation_ID"`, 1),
+		},
+		{
+			name: "missing checkpoint revision",
+			body: strings.Replace(valid, `,"release_checkpoint_revision":12`, "", 1),
+		},
+		{
+			name: "unknown evidence field",
+			body: strings.Replace(valid, `"postcondition":`, `"owner":"harbor","postcondition":`, 1),
+		},
+		{
+			name: "null ownership fingerprint",
+			body: strings.Replace(valid, `"released_ownership_fingerprint":"`+strings.Repeat("d", fingerprintLength)+`"`, `"released_ownership_fingerprint":null`, 1),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := DecodeResponse(strings.NewReader(test.body)); err == nil {
+				t.Fatal("expected decode error")
+			}
+		})
 	}
 }
 
@@ -608,6 +663,24 @@ func validTestPoolReleaseSuccessResponse() Response {
 		Result: &OperationResult{
 			Operation:    OperationReleaseLoopbackPool,
 			PoolEvidence: &poolEvidence,
+		},
+	}
+}
+
+// validTestOwnershipReleaseSuccessResponse returns canonical terminal ownership release evidence.
+func validTestOwnershipReleaseSuccessResponse() Response {
+	return Response{
+		Version: ProtocolVersion,
+		OK:      true,
+		Result: &OperationResult{
+			Operation: OperationReleaseNetworkOwnership,
+			OwnershipEvidence: &OwnershipMutationEvidence{
+				ReleaseOperationID:           "operation-ownership-release",
+				ReleaseOperationRevision:     11,
+				ReleaseCheckpointRevision:    12,
+				ReleasedOwnershipFingerprint: strings.Repeat("d", fingerprintLength),
+				Postcondition:                OwnershipPostconditionOwnedAbsent,
+			},
 		},
 	}
 }

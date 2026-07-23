@@ -39,6 +39,8 @@ func TestValidateLayoutRequiresTheFixedShape(t *testing.T) {
 		{name: "replay", mutate: func(paths *machinepaths.Paths) { paths.ReplayDirectory += "-other" }},
 		{name: "ownership", mutate: func(paths *machinepaths.Paths) { paths.OwnershipPath += "-other" }},
 		{name: "host projection", mutate: func(paths *machinepaths.Paths) { paths.HostProjectionPath += "-other" }},
+		{name: "ownership release proof", mutate: func(paths *machinepaths.Paths) { paths.OwnershipReleaseProofPath += "-other" }},
+		{name: "ownership release proof lock", mutate: func(paths *machinepaths.Paths) { paths.OwnershipReleaseProofLockPath += "-other" }},
 		{name: "tickets", mutate: func(paths *machinepaths.Paths) { paths.TicketsDirectory += "-other" }},
 		{name: "pending", mutate: func(paths *machinepaths.Paths) { paths.PendingDirectory += "-other" }},
 		{name: "claims", mutate: func(paths *machinepaths.Paths) { paths.ClaimsDirectory += "-other" }},
@@ -67,6 +69,7 @@ func TestValidateDependenciesRejectsEveryMissingBoundary(t *testing.T) {
 		{name: "clock", mutate: func(value *dependencies) { value.clock = nil }},
 		{name: "process admission", mutate: func(value *dependencies) { value.admitProcess = nil }},
 		{name: "ownership", mutate: func(value *dependencies) { value.openOwnership = nil }},
+		{name: "ownership release proof", mutate: func(value *dependencies) { value.openReleaseProof = nil }},
 		{name: "pending open", mutate: func(value *dependencies) { value.files.openPending = nil }},
 		{name: "claim open", mutate: func(value *dependencies) { value.files.openClaim = nil }},
 		{name: "existence", mutate: func(value *dependencies) { value.files.entryExists = nil }},
@@ -283,6 +286,9 @@ func inertDependencies() dependencies {
 		openOwnership: func(string) (ownershipStore, error) {
 			return &testOwnershipObserver{}, nil
 		},
+		openReleaseProof: func() (ownershipReleaseProofObserver, error) {
+			return &testOwnershipReleaseProofObserver{}, nil
+		},
 		files: fileOperations{
 			openPending: func(*os.File, string, string) (*os.File, error) { return nil, nil },
 			openClaim:   func(*os.File, string, string) (*os.File, error) { return nil, nil },
@@ -300,14 +306,16 @@ func inertDependencies() dependencies {
 // testPaths builds the exact machinepaths graph beneath one test root.
 func testPaths(root string) machinepaths.Paths {
 	return machinepaths.Paths{
-		Root:               root,
-		StateDirectory:     filepath.Join(root, "state"),
-		OwnershipPath:      filepath.Join(root, "state", "ownership.json"),
-		HostProjectionPath: filepath.Join(root, "state", "host-projection.json"),
-		ReplayDirectory:    filepath.Join(root, "state", "replay"),
-		TicketsDirectory:   filepath.Join(root, "tickets"),
-		PendingDirectory:   filepath.Join(root, "tickets", "pending"),
-		ClaimsDirectory:    filepath.Join(root, "tickets", "claims"),
+		Root:                          root,
+		StateDirectory:                filepath.Join(root, "state"),
+		OwnershipPath:                 filepath.Join(root, "state", "ownership.json"),
+		HostProjectionPath:            filepath.Join(root, "state", "host-projection.json"),
+		ReplayDirectory:               filepath.Join(root, "state", "replay"),
+		TicketsDirectory:              filepath.Join(root, "tickets"),
+		PendingDirectory:              filepath.Join(root, "tickets", "pending"),
+		ClaimsDirectory:               filepath.Join(root, "tickets", "claims"),
+		OwnershipReleaseProofPath:     filepath.Join(root, "ownership-release-proof.json"),
+		OwnershipReleaseProofLockPath: filepath.Join(root, "ownership-release-proof.lock"),
 	}
 }
 

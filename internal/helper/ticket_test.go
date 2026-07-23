@@ -108,6 +108,140 @@ func TestTicketValidateResolverAuthority(t *testing.T) {
 	}
 }
 
+// TestTicketValidateOwnershipReleaseAuthority covers the terminal release-only authority boundary.
+func TestTicketValidateOwnershipReleaseAuthority(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	if err := validTicketValidationOwnershipReleaseTicket(now).Validate(now); err != nil {
+		t.Fatalf("Ticket.Validate() valid ownership release error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Ticket)
+	}{
+		{
+			name: "identity ownership schema",
+			mutate: func(ticket *Ticket) {
+				ticket.OwnershipSchemaVersion = identityOwnershipSchemaVersion
+			},
+		},
+		{
+			name: "network mutation authority",
+			mutate: func(ticket *Ticket) {
+				policy := testResolverPolicy()
+				ticket.NetworkPolicy = &policy
+			},
+		},
+		{
+			name: "address mutation authority",
+			mutate: func(ticket *Ticket) {
+				ticket.ApprovedAddress = "127.77.0.10"
+			},
+		},
+		{
+			name: "observation mutation authority",
+			mutate: func(ticket *Ticket) {
+				ticket.ExpectedObservation = ExpectedObservation{
+					State:       ObservationOwned,
+					Fingerprint: testFingerprint(),
+				}
+			},
+		},
+		{
+			name: "pool mutation authority",
+			mutate: func(ticket *Ticket) {
+				expected := testExpectedLoopbackPool(netip.MustParsePrefix("127.77.0.8/29"))
+				ticket.ExpectedLoopbackPool = &expected
+			},
+		},
+		{
+			name: "empty release operation ID",
+			mutate: func(ticket *Ticket) {
+				ticket.ReleaseOperationID = ""
+			},
+		},
+		{
+			name: "zero operation revision",
+			mutate: func(ticket *Ticket) {
+				ticket.ReleaseOperationRevision = 0
+			},
+		},
+		{
+			name: "zero checkpoint revision",
+			mutate: func(ticket *Ticket) {
+				ticket.ReleaseCheckpointRevision = 0
+			},
+		},
+		{
+			name: "noncanonical ownership fingerprint",
+			mutate: func(ticket *Ticket) {
+				ticket.ExpectedOwnershipFingerprint = strings.Repeat("A", fingerprintLength)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ticket := validTicketValidationOwnershipReleaseTicket(now)
+			test.mutate(&ticket)
+			if err := ticket.Validate(now); err == nil {
+				t.Fatalf("Ticket.Validate() accepted ownership release mutation %#v", ticket)
+			}
+		})
+	}
+}
+
+// TestTicketValidateRejectsOwnershipReleaseBindingsForOtherOperations prevents release consent from widening another effect.
+func TestTicketValidateRejectsOwnershipReleaseBindingsForOtherOperations(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	bindings := validTicketValidationOwnershipReleaseTicket(now)
+	for _, operation := range []Operation{
+		OperationEnsureLoopbackIdentity,
+		OperationReleaseLoopbackIdentity,
+		OperationEnsureLoopbackPool,
+		OperationReleaseLoopbackPool,
+		OperationEnsureResolver,
+		OperationReleaseResolver,
+		OperationRetireResolver,
+		OperationEnsureTrust,
+		OperationReleaseTrust,
+		OperationEnsureLowPorts,
+		OperationReleaseLowPorts,
+	} {
+		t.Run(string(operation), func(t *testing.T) {
+			var ticket Ticket
+			switch operation {
+			case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
+				ticket = validTestPoolTicket(now)
+				ticket.Operation = operation
+				if operation == OperationReleaseLoopbackPool {
+					for index := range ticket.ExpectedLoopbackPool.Identities {
+						ticket.ExpectedLoopbackPool.Identities[index].ExpectedPreAssignment = nil
+					}
+				}
+			case OperationEnsureResolver, OperationReleaseResolver, OperationRetireResolver:
+				ticket = validTestResolverTicket(now, operation)
+			case OperationEnsureTrust, OperationReleaseTrust:
+				ticket = validTestTrustTicket(t, now, operation)
+			case OperationEnsureLowPorts, OperationReleaseLowPorts:
+				ticket = validTestLowPortTicket(now, operation)
+			default:
+				ticket = validTestTicket(now, operation)
+			}
+			if err := ticket.Validate(now); err != nil {
+				t.Fatalf("Ticket.Validate() valid %q ticket error = %v", operation, err)
+			}
+			ticket.ReleaseOperationID = bindings.ReleaseOperationID
+			ticket.ReleaseOperationRevision = bindings.ReleaseOperationRevision
+			ticket.ReleaseCheckpointRevision = bindings.ReleaseCheckpointRevision
+			ticket.ExpectedOwnershipFingerprint = bindings.ExpectedOwnershipFingerprint
+			if err := ticket.Validate(now); err == nil {
+				t.Fatal("Ticket.Validate() accepted ownership release bindings")
+			}
+		})
+	}
+}
+
 // TestSocketRequirementValidate covers the complete transport and port allowlist.
 func TestSocketRequirementValidate(t *testing.T) {
 	tests := []struct {
@@ -618,6 +752,26 @@ func validTestResolverTicket(now time.Time, operation Operation) Ticket {
 		},
 		Nonce:     strings.Repeat("n", minimumNonceLength),
 		ExpiresAt: now.Add(time.Minute),
+	}
+}
+
+// validTicketValidationOwnershipReleaseTicket returns canonical schema-two terminal ownership release authority.
+func validTicketValidationOwnershipReleaseTicket(now time.Time) Ticket {
+	return Ticket{
+		Version:                      ProtocolVersion,
+		Operation:                    OperationReleaseNetworkOwnership,
+		InstallationID:               "harbor-test-installation",
+		RequesterIdentity:            "uid-1000",
+		OwnershipGeneration:          7,
+		OwnershipSchemaVersion:       networkPolicyOwnershipSchemaVersion,
+		NetworkPolicyFingerprint:     strings.Repeat("c", fingerprintLength),
+		ApprovedPool:                 "127.77.0.0/24",
+		ReleaseOperationID:           "operation-ownership-release",
+		ReleaseOperationRevision:     11,
+		ReleaseCheckpointRevision:    12,
+		ExpectedOwnershipFingerprint: strings.Repeat("d", fingerprintLength),
+		Nonce:                        strings.Repeat("n", minimumNonceLength),
+		ExpiresAt:                    now.Add(time.Minute),
 	}
 }
 

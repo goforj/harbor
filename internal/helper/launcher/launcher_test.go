@@ -91,6 +91,78 @@ func TestInvokePoolWritesCanonicalRequestAndSucceeds(t *testing.T) {
 	}
 }
 
+// TestInvokeOwnershipWritesCanonicalRequestAndSucceeds verifies terminal release consent correlates durable evidence.
+func TestInvokeOwnershipWritesCanonicalRequestAndSucceeds(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	issued := validOwnershipLaunchTicket(t, now)
+	wantResponse := ownershipSuccessResponse(issued)
+	calls := 0
+	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
+		calls++
+		decoded, err := helper.DecodeRequest(request)
+		if err != nil {
+			t.Fatalf("decode transport request: %v", err)
+		}
+		if decoded.Version != helper.ProtocolVersion || decoded.TicketReference != issued.reference {
+			t.Fatalf("transport request = %#v", decoded)
+		}
+		if err := helper.WriteResponse(response, wantResponse); err != nil {
+			t.Fatalf("write transport response: %v", err)
+		}
+		return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+	})
+
+	outcome, err := New(transport, fixedClock{now: now}).InvokeOwnership(nil, issued)
+	if err != nil {
+		t.Fatalf("InvokeOwnership() error = %v", err)
+	}
+	if calls != 1 || outcome.State != Succeeded || outcome.Exit == nil || outcome.Exit.Code != ExitCodeSucceeded {
+		t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
+	}
+	if !reflect.DeepEqual(outcome.Response, wantResponse) {
+		t.Fatalf("response = %#v, want %#v", outcome.Response, wantResponse)
+	}
+}
+
+// TestMatchOwnershipLaunchTicketRejectsEveryCorrelationMismatch keeps terminal consent bound to one durable result.
+func TestMatchOwnershipLaunchTicketRejectsEveryCorrelationMismatch(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	ticket := validOwnershipLaunchTicket(t, now)
+	valid := ownershipSuccessResponse(ticket).Result
+	tests := []struct {
+		name   string
+		mutate func(*helper.OperationResult)
+	}{
+		{name: "operation", mutate: func(result *helper.OperationResult) { result.Operation = helper.OperationReleaseLoopbackIdentity }},
+		{name: "missing ownership evidence", mutate: func(result *helper.OperationResult) { result.OwnershipEvidence = nil }},
+		{name: "release operation ID", mutate: func(result *helper.OperationResult) { result.OwnershipEvidence.ReleaseOperationID = "other-operation" }},
+		{name: "release operation revision", mutate: func(result *helper.OperationResult) { result.OwnershipEvidence.ReleaseOperationRevision++ }},
+		{name: "release checkpoint revision", mutate: func(result *helper.OperationResult) { result.OwnershipEvidence.ReleaseCheckpointRevision++ }},
+		{name: "ownership fingerprint", mutate: func(result *helper.OperationResult) {
+			result.OwnershipEvidence.ReleasedOwnershipFingerprint = strings.Repeat("f", 64)
+		}},
+		{name: "postcondition", mutate: func(result *helper.OperationResult) { result.OwnershipEvidence.Postcondition = "owned" }},
+	}
+
+	if !matchOwnershipLaunchTicket(ticket)(valid) {
+		t.Fatal("matchOwnershipLaunchTicket() rejected matching result")
+	}
+	if matchOwnershipLaunchTicket(ticket)(nil) {
+		t.Fatal("matchOwnershipLaunchTicket() accepted nil result")
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := *valid
+			evidence := *valid.OwnershipEvidence
+			result.OwnershipEvidence = &evidence
+			test.mutate(&result)
+			if matchOwnershipLaunchTicket(ticket)(&result) {
+				t.Fatal("matchOwnershipLaunchTicket() accepted correlation mismatch")
+			}
+		})
+	}
+}
+
 // TestInvokeClassifiesValidHelperFailure verifies structured helper rejection remains distinct from launch failure.
 func TestInvokeClassifiesValidHelperFailure(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
@@ -666,6 +738,25 @@ func validPoolLaunchTicket(t *testing.T, now time.Time) PoolLaunchTicket {
 	return ticket
 }
 
+// validOwnershipLaunchTicket returns one complete short-lived terminal ownership release capability.
+func validOwnershipLaunchTicket(t *testing.T, now time.Time) OwnershipLaunchTicket {
+	t.Helper()
+	ticket, err := NewOwnershipLaunchTicket(
+		"operation-ownership-release",
+		helper.TicketReference(strings.Repeat("e", 64)),
+		helper.OperationReleaseNetworkOwnership,
+		"operation-ownership-release",
+		11,
+		12,
+		strings.Repeat("d", 64),
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("create ownership launch ticket: %v", err)
+	}
+	return ticket
+}
+
 // successResponse returns valid postcondition evidence for one allowlisted operation and address.
 func successResponse(operation helper.Operation, address netip.Addr) helper.Response {
 	state := helper.ObservationOwned
@@ -712,6 +803,24 @@ func poolSuccessResponse(pool netip.Prefix) helper.Response {
 			PoolEvidence: &helper.PoolMutationEvidence{
 				Pool:       pool.String(),
 				Identities: identities,
+			},
+		},
+	}
+}
+
+// ownershipSuccessResponse returns the exact durable postcondition correlated to one ownership launch ticket.
+func ownershipSuccessResponse(ticket OwnershipLaunchTicket) helper.Response {
+	return helper.Response{
+		Version: helper.ProtocolVersion,
+		OK:      true,
+		Result: &helper.OperationResult{
+			Operation: ticket.operation,
+			OwnershipEvidence: &helper.OwnershipMutationEvidence{
+				ReleaseOperationID:           ticket.releaseOperationID,
+				ReleaseOperationRevision:     ticket.releaseOperationRevision,
+				ReleaseCheckpointRevision:    ticket.releaseCheckpointRevision,
+				ReleasedOwnershipFingerprint: ticket.expectedOwnershipFingerprint,
+				Postcondition:                helper.OwnershipPostconditionOwnedAbsent,
 			},
 		},
 	}

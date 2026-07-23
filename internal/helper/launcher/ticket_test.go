@@ -123,6 +123,95 @@ func TestLaunchTicketValidateAtAcceptsProtocolLifetimeBoundary(t *testing.T) {
 	}
 }
 
+// TestNewOwnershipLaunchTicketAcceptsCanonicalMetadata verifies terminal release metadata remains immutable.
+func TestNewOwnershipLaunchTicketAcceptsCanonicalMetadata(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	ticket, err := NewOwnershipLaunchTicket(
+		domain.OperationID("operation-ownership-release"),
+		helper.TicketReference(strings.Repeat("e", 64)),
+		helper.OperationReleaseNetworkOwnership,
+		"operation-ownership-release",
+		11,
+		12,
+		strings.Repeat("d", 64),
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("NewOwnershipLaunchTicket() error = %v", err)
+	}
+	if ticket.operationID != "operation-ownership-release" || ticket.reference != helper.TicketReference(strings.Repeat("e", 64)) {
+		t.Fatalf("ticket identity = %#v", ticket)
+	}
+	if ticket.operation != helper.OperationReleaseNetworkOwnership ||
+		ticket.releaseOperationID != "operation-ownership-release" ||
+		ticket.releaseOperationRevision != 11 ||
+		ticket.releaseCheckpointRevision != 12 ||
+		ticket.expectedOwnershipFingerprint != strings.Repeat("d", 64) ||
+		!ticket.expiresAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("ticket effect = %#v", ticket)
+	}
+}
+
+// TestNewOwnershipLaunchTicketRejectsInvalidMetadata covers every terminal release metadata boundary.
+func TestNewOwnershipLaunchTicketRejectsInvalidMetadata(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	type input struct {
+		operationID                  domain.OperationID
+		reference                    helper.TicketReference
+		operation                    helper.Operation
+		releaseOperationID           string
+		releaseOperationRevision     uint64
+		releaseCheckpointRevision    uint64
+		expectedOwnershipFingerprint string
+		expiresAt                    time.Time
+	}
+	valid := input{
+		operationID:                  "operation-ownership-release",
+		reference:                    helper.TicketReference(strings.Repeat("e", 64)),
+		operation:                    helper.OperationReleaseNetworkOwnership,
+		releaseOperationID:           "operation-ownership-release",
+		releaseOperationRevision:     11,
+		releaseCheckpointRevision:    12,
+		expectedOwnershipFingerprint: strings.Repeat("d", 64),
+		expiresAt:                    now.Add(time.Minute),
+	}
+	tests := []struct {
+		name   string
+		mutate func(*input)
+	}{
+		{name: "operation ID", mutate: func(value *input) { value.operationID = " bad " }},
+		{name: "reference", mutate: func(value *input) { value.reference = "short" }},
+		{name: "helper operation", mutate: func(value *input) { value.operation = helper.OperationReleaseLoopbackIdentity }},
+		{name: "release operation ID", mutate: func(value *input) { value.releaseOperationID = "" }},
+		{name: "release operation revision", mutate: func(value *input) { value.releaseOperationRevision = 0 }},
+		{name: "release checkpoint revision", mutate: func(value *input) { value.releaseCheckpointRevision = 0 }},
+		{name: "uppercase fingerprint", mutate: func(value *input) { value.expectedOwnershipFingerprint = strings.Repeat("D", 64) }},
+		{name: "short fingerprint", mutate: func(value *input) { value.expectedOwnershipFingerprint = "bad" }},
+		{name: "zero expiry", mutate: func(value *input) { value.expiresAt = time.Time{} }},
+		{name: "non-UTC expiry", mutate: func(value *input) { value.expiresAt = now.In(time.FixedZone("test", 0)).Add(time.Minute) }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := valid
+			test.mutate(&candidate)
+			ticket, err := NewOwnershipLaunchTicket(
+				candidate.operationID,
+				candidate.reference,
+				candidate.operation,
+				candidate.releaseOperationID,
+				candidate.releaseOperationRevision,
+				candidate.releaseCheckpointRevision,
+				candidate.expectedOwnershipFingerprint,
+				candidate.expiresAt,
+			)
+			if err == nil || ticket != (OwnershipLaunchTicket{}) {
+				t.Fatalf("NewOwnershipLaunchTicket() = %#v, %v", ticket, err)
+			}
+		})
+	}
+}
+
 // TestNewPoolLaunchTicketAcceptsCanonicalMetadata verifies aggregate ensure and release approvals become immutable launch values.
 func TestNewPoolLaunchTicketAcceptsCanonicalMetadata(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)

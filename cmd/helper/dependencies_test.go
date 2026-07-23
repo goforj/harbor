@@ -125,21 +125,23 @@ func helperTargets() []string {
 // reviewedRuntimeDependencies returns the exact audited graph available to one platform build.
 func reviewedRuntimeDependencies(target string) map[string]struct{} {
 	allowed := map[string]struct{}{
-		"github.com/goforj/harbor/cmd/helper":                      {},
-		"github.com/goforj/harbor/internal/helper":                 {},
-		"github.com/goforj/harbor/internal/helper/loopbackhandler": {},
-		"github.com/goforj/harbor/internal/helper/replaystore":     {},
-		"github.com/goforj/harbor/internal/helper/ticketauth":      {},
-		"github.com/goforj/harbor/internal/helper/ticketredeemer":  {},
-		"github.com/goforj/harbor/internal/helper/trusthandler":    {},
-		"github.com/goforj/harbor/internal/host/networkpolicy":     {},
-		"github.com/goforj/harbor/internal/host/ownership":         {},
-		"github.com/goforj/harbor/internal/identitytext":           {},
-		"github.com/goforj/harbor/internal/platform/hostconflict":  {},
-		"github.com/goforj/harbor/internal/platform/loopback":      {},
-		"github.com/goforj/harbor/internal/platform/machinepaths":  {},
-		"github.com/goforj/harbor/internal/platform/trust":         {},
-		"github.com/goforj/harbor/internal/trust/certroot":         {},
+		"github.com/goforj/harbor/cmd/helper":                          {},
+		"github.com/goforj/harbor/internal/helper":                     {},
+		"github.com/goforj/harbor/internal/helper/loopbackhandler":     {},
+		"github.com/goforj/harbor/internal/helper/ownershiphandler":    {},
+		"github.com/goforj/harbor/internal/helper/replaystore":         {},
+		"github.com/goforj/harbor/internal/helper/ticketauth":          {},
+		"github.com/goforj/harbor/internal/helper/ticketredeemer":      {},
+		"github.com/goforj/harbor/internal/helper/trusthandler":        {},
+		"github.com/goforj/harbor/internal/host/networkpolicy":         {},
+		"github.com/goforj/harbor/internal/host/ownership":             {},
+		"github.com/goforj/harbor/internal/host/ownershipreleaseproof": {},
+		"github.com/goforj/harbor/internal/identitytext":               {},
+		"github.com/goforj/harbor/internal/platform/hostconflict":      {},
+		"github.com/goforj/harbor/internal/platform/loopback":          {},
+		"github.com/goforj/harbor/internal/platform/machinepaths":      {},
+		"github.com/goforj/harbor/internal/platform/trust":             {},
+		"github.com/goforj/harbor/internal/trust/certroot":             {},
 	}
 	platformDependencies := map[string][]string{
 		"darwin": {

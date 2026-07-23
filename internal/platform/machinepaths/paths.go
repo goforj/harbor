@@ -7,13 +7,15 @@ import (
 )
 
 const (
-	stateDirectoryName     = "state"
-	ownershipFilename      = "ownership.json"
-	hostProjectionFilename = "host-projection.json"
-	replayDirectoryName    = "replay"
-	ticketsDirectoryName   = "tickets"
-	pendingDirectoryName   = "pending"
-	claimsDirectoryName    = "claims"
+	stateDirectoryName                = "state"
+	ownershipFilename                 = "ownership.json"
+	hostProjectionFilename            = "host-projection.json"
+	replayDirectoryName               = "replay"
+	ticketsDirectoryName              = "tickets"
+	pendingDirectoryName              = "pending"
+	claimsDirectoryName               = "claims"
+	ownershipReleaseProofFilename     = "ownership-release-proof.json"
+	ownershipReleaseProofLockFilename = "ownership-release-proof.lock"
 )
 
 // ErrUnsupported identifies operating systems without a reviewed machine-global path policy.
@@ -21,14 +23,16 @@ var ErrUnsupported = errors.New("machine-global privileged paths are unsupported
 
 // Paths contains every installer-provisioned path shared by Harbor's daemon and privileged helper.
 type Paths struct {
-	Root               string
-	StateDirectory     string
-	OwnershipPath      string
-	HostProjectionPath string
-	ReplayDirectory    string
-	TicketsDirectory   string
-	PendingDirectory   string
-	ClaimsDirectory    string
+	Root                          string
+	StateDirectory                string
+	OwnershipPath                 string
+	HostProjectionPath            string
+	ReplayDirectory               string
+	TicketsDirectory              string
+	PendingDirectory              string
+	ClaimsDirectory               string
+	OwnershipReleaseProofPath     string
+	OwnershipReleaseProofLockPath string
 }
 
 // rootLookup keeps platform resolution failures testable without making the production root configurable.
@@ -52,14 +56,16 @@ func resolve(lookup rootLookup) (Paths, error) {
 // buildPaths derives the complete graph at once so callers cannot independently choose privileged destinations.
 func buildPaths(root string) (Paths, error) {
 	paths := Paths{
-		Root:               root,
-		StateDirectory:     filepath.Join(root, stateDirectoryName),
-		OwnershipPath:      filepath.Join(root, stateDirectoryName, ownershipFilename),
-		HostProjectionPath: filepath.Join(root, stateDirectoryName, hostProjectionFilename),
-		ReplayDirectory:    filepath.Join(root, stateDirectoryName, replayDirectoryName),
-		TicketsDirectory:   filepath.Join(root, ticketsDirectoryName),
-		PendingDirectory:   filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
-		ClaimsDirectory:    filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		Root:                          root,
+		StateDirectory:                filepath.Join(root, stateDirectoryName),
+		OwnershipPath:                 filepath.Join(root, stateDirectoryName, ownershipFilename),
+		HostProjectionPath:            filepath.Join(root, stateDirectoryName, hostProjectionFilename),
+		ReplayDirectory:               filepath.Join(root, stateDirectoryName, replayDirectoryName),
+		TicketsDirectory:              filepath.Join(root, ticketsDirectoryName),
+		PendingDirectory:              filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
+		ClaimsDirectory:               filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		OwnershipReleaseProofPath:     filepath.Join(root, ownershipReleaseProofFilename),
+		OwnershipReleaseProofLockPath: filepath.Join(root, ownershipReleaseProofLockFilename),
 	}
 	if err := validatePaths(paths, root); err != nil {
 		return Paths{}, err
@@ -75,14 +81,16 @@ func validatePaths(paths Paths, root string) error {
 	}
 
 	expected := Paths{
-		Root:               root,
-		StateDirectory:     filepath.Join(root, stateDirectoryName),
-		OwnershipPath:      filepath.Join(root, stateDirectoryName, ownershipFilename),
-		HostProjectionPath: filepath.Join(root, stateDirectoryName, hostProjectionFilename),
-		ReplayDirectory:    filepath.Join(root, stateDirectoryName, replayDirectoryName),
-		TicketsDirectory:   filepath.Join(root, ticketsDirectoryName),
-		PendingDirectory:   filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
-		ClaimsDirectory:    filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		Root:                          root,
+		StateDirectory:                filepath.Join(root, stateDirectoryName),
+		OwnershipPath:                 filepath.Join(root, stateDirectoryName, ownershipFilename),
+		HostProjectionPath:            filepath.Join(root, stateDirectoryName, hostProjectionFilename),
+		ReplayDirectory:               filepath.Join(root, stateDirectoryName, replayDirectoryName),
+		TicketsDirectory:              filepath.Join(root, ticketsDirectoryName),
+		PendingDirectory:              filepath.Join(root, ticketsDirectoryName, pendingDirectoryName),
+		ClaimsDirectory:               filepath.Join(root, ticketsDirectoryName, claimsDirectoryName),
+		OwnershipReleaseProofPath:     filepath.Join(root, ownershipReleaseProofFilename),
+		OwnershipReleaseProofLockPath: filepath.Join(root, ownershipReleaseProofLockFilename),
 	}
 	values := []struct {
 		name string
@@ -97,6 +105,8 @@ func validatePaths(paths Paths, root string) error {
 		{name: "tickets directory", got: paths.TicketsDirectory, want: expected.TicketsDirectory},
 		{name: "pending directory", got: paths.PendingDirectory, want: expected.PendingDirectory},
 		{name: "claims directory", got: paths.ClaimsDirectory, want: expected.ClaimsDirectory},
+		{name: "ownership release proof path", got: paths.OwnershipReleaseProofPath, want: expected.OwnershipReleaseProofPath},
+		{name: "ownership release proof lock path", got: paths.OwnershipReleaseProofLockPath, want: expected.OwnershipReleaseProofLockPath},
 	}
 	for _, value := range values {
 		if err := validateAbsoluteCleanPath(value.name, value.got); err != nil {

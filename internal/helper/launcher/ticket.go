@@ -63,6 +63,83 @@ type LowPortLaunchTicket struct {
 	expiresAt              time.Time
 }
 
+// OwnershipLaunchTicket is immutable non-secret metadata for one exact ownership release capability.
+type OwnershipLaunchTicket struct {
+	operationID                  domain.OperationID
+	reference                    helper.TicketReference
+	operation                    helper.Operation
+	releaseOperationID           string
+	releaseOperationRevision     uint64
+	releaseCheckpointRevision    uint64
+	expectedOwnershipFingerprint string
+	expiresAt                    time.Time
+}
+
+// NewOwnershipLaunchTicket validates metadata from an authenticated ownership-release approval response.
+func NewOwnershipLaunchTicket(
+	operationID domain.OperationID,
+	reference helper.TicketReference,
+	operation helper.Operation,
+	releaseOperationID string,
+	releaseOperationRevision uint64,
+	releaseCheckpointRevision uint64,
+	expectedOwnershipFingerprint string,
+	expiresAt time.Time,
+) (OwnershipLaunchTicket, error) {
+	ticket := OwnershipLaunchTicket{
+		operationID:                  operationID,
+		reference:                    reference,
+		operation:                    operation,
+		releaseOperationID:           releaseOperationID,
+		releaseOperationRevision:     releaseOperationRevision,
+		releaseCheckpointRevision:    releaseCheckpointRevision,
+		expectedOwnershipFingerprint: expectedOwnershipFingerprint,
+		expiresAt:                    expiresAt,
+	}
+	if err := ticket.validateStructure(); err != nil {
+		return OwnershipLaunchTicket{}, err
+	}
+	return ticket, nil
+}
+
+// validateAt rejects stale ownership-release launch metadata.
+func (ticket OwnershipLaunchTicket) validateAt(now time.Time) error {
+	if err := ticket.validateStructure(); err != nil {
+		return err
+	}
+	if !ticket.expiresAt.After(now) || ticket.expiresAt.After(now.Add(helper.MaxTicketLifetime)) {
+		return fmt.Errorf("ownership launch ticket expiry is invalid")
+	}
+	return nil
+}
+
+// validateStructure confines consent to one exact ownership release and durable checkpoint binding.
+func (ticket OwnershipLaunchTicket) validateStructure() error {
+	if err := ticket.operationID.Validate(); err != nil {
+		return fmt.Errorf("ownership launch ticket operation ID: %w", err)
+	}
+	if err := ticket.reference.Validate(); err != nil {
+		return fmt.Errorf("ownership launch ticket reference: %w", err)
+	}
+	if ticket.operation != helper.OperationReleaseNetworkOwnership {
+		return fmt.Errorf("ownership launch ticket helper operation %q is unsupported", ticket.operation)
+	}
+	if ticket.releaseOperationID == "" ||
+		ticket.releaseOperationRevision == 0 ||
+		ticket.releaseCheckpointRevision == 0 ||
+		ticket.releaseCheckpointRevision <= ticket.releaseOperationRevision {
+		return fmt.Errorf("ownership launch ticket release binding is invalid")
+	}
+	decoded, err := hex.DecodeString(ticket.expectedOwnershipFingerprint)
+	if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != ticket.expectedOwnershipFingerprint {
+		return fmt.Errorf("ownership launch ticket fingerprint is invalid")
+	}
+	if ticket.expiresAt.IsZero() || ticket.expiresAt.Location() != time.UTC {
+		return fmt.Errorf("ownership launch ticket expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
 // NewLowPortLaunchTicket validates metadata from an authenticated low-port approval response.
 func NewLowPortLaunchTicket(
 	operationID domain.OperationID,

@@ -11,6 +11,7 @@ import (
 
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/loopbackhandler"
+	"github.com/goforj/harbor/internal/helper/ownershiphandler"
 	"github.com/goforj/harbor/internal/helper/replaystore"
 	"github.com/goforj/harbor/internal/helper/ticketredeemer"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
@@ -46,6 +47,12 @@ type closingLowPortHandler interface {
 	Close() error
 }
 
+// closingOwnershipHandler retains the protected ownership release boundary for one helper invocation.
+type closingOwnershipHandler interface {
+	helper.OwnershipHandler
+	Close() error
+}
+
 // unavailableClosingLowPortHandler keeps unsupported builds resource-free while satisfying helper lifecycle wiring.
 type unavailableClosingLowPortHandler struct {
 	helper.UnavailableLowPortHandler
@@ -53,6 +60,16 @@ type unavailableClosingLowPortHandler struct {
 
 // Close releases no resources because the unavailable handler owns no native authority.
 func (unavailableClosingLowPortHandler) Close() error {
+	return nil
+}
+
+// unavailableClosingOwnershipHandler keeps unsupported compositions resource-free while satisfying helper lifecycle wiring.
+type unavailableClosingOwnershipHandler struct {
+	helper.UnavailableOwnershipHandler
+}
+
+// Close releases no resources because the unavailable handler owns no protected authority.
+func (unavailableClosingOwnershipHandler) Close() error {
 	return nil
 }
 
@@ -66,17 +83,19 @@ type runtimeDependencies struct {
 	openTrustHandler                     func() (closingTrustHandler, error)
 	openAdministratorTrustHandler        func() (closingTrustHandler, error)
 	openLowPortHandler                   func() (closingLowPortHandler, error)
+	openOwnershipHandler                 func() (closingOwnershipHandler, error)
 	transitionTrustIdentity              func(string) error
 	transitionAdministratorTrustIdentity func(string) error
 }
 
 // runtimeAuthorities retains only resources opened for the single admitted helper operation.
 type runtimeAuthorities struct {
-	redeemer        closingTicketRedeemer
-	replayGuard     closingReplayGuard
-	resolverHandler closingResolverHandler
-	trustHandler    closingTrustHandler
-	lowPortHandler  closingLowPortHandler
+	redeemer         closingTicketRedeemer
+	replayGuard      closingReplayGuard
+	resolverHandler  closingResolverHandler
+	trustHandler     closingTrustHandler
+	lowPortHandler   closingLowPortHandler
+	ownershipHandler closingOwnershipHandler
 }
 
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
@@ -106,10 +125,13 @@ func productionDependencies() runtimeDependencies {
 		newLoopbackIdentityHandler: func() helper.LoopbackIdentityHandler {
 			return loopbackhandler.New()
 		},
-		openResolverHandler:                  openPlatformResolverHandler,
-		openTrustHandler:                     openPlatformTrustHandler,
-		openAdministratorTrustHandler:        openPlatformAdministratorTrustHandler,
-		openLowPortHandler:                   openPlatformLowPortHandler,
+		openResolverHandler:           openPlatformResolverHandler,
+		openTrustHandler:              openPlatformTrustHandler,
+		openAdministratorTrustHandler: openPlatformAdministratorTrustHandler,
+		openLowPortHandler:            openPlatformLowPortHandler,
+		openOwnershipHandler: func() (closingOwnershipHandler, error) {
+			return ownershiphandler.OpenDefault()
+		},
 		transitionTrustIdentity:              irreversiblyDropTrustIdentity,
 		transitionAdministratorTrustIdentity: irreversiblyEnterAdministratorTrustIdentity,
 	}
@@ -153,6 +175,9 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 			LowPorts: func(ctx context.Context, admitted helper.AdmittedLowPortOperation) (helper.OperationResult, error) {
 				return executeAdmittedLowPorts(ctx, admitted, dependencies, authorities)
 			},
+			Ownership: func(ctx context.Context, admitted helper.AdmittedOwnershipOperation) (helper.OperationResult, error) {
+				return executeAdmittedOwnership(ctx, admitted, dependencies, authorities)
+			},
 			Loopback: func(ctx context.Context, admitted helper.AdmittedLoopbackOperation) (helper.OperationResult, error) {
 				return executeAdmittedLoopback(ctx, admitted, dependencies)
 			},
@@ -190,12 +215,28 @@ func validateRuntimeComposition(clock helper.Clock, dependencies runtimeDependen
 	if dependencies.openLowPortHandler == nil {
 		panic("helper low-port handler factory is required")
 	}
+	if dependencies.openOwnershipHandler == nil {
+		panic("helper ownership handler factory is required")
+	}
 	if dependencies.transitionTrustIdentity == nil {
 		panic("helper trust identity transition is required")
 	}
 	if dependencies.transitionAdministratorTrustIdentity == nil {
 		panic("helper administrator trust identity transition is required")
 	}
+}
+
+// executeAdmittedOwnership opens only the ownership store after ticket and replay admission.
+func executeAdmittedOwnership(ctx context.Context, admitted helper.AdmittedOwnershipOperation, dependencies runtimeDependencies, authorities *runtimeAuthorities) (helper.OperationResult, error) {
+	handler, err := dependencies.openOwnershipHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper ownership handler: %w", err)
+	}
+	if handler == nil {
+		panic("helper ownership handler factory returned nil")
+	}
+	authorities.ownershipHandler = handler
+	return admitted.ExecuteOwnership(ctx, handler)
 }
 
 // executeAdmittedTrust selects the authenticated trust scope before calling its native handler.
@@ -323,10 +364,24 @@ func (authorities *runtimeAuthorities) close() error {
 	return errors.Join(
 		authorities.closeTrustHandler(),
 		authorities.closeLowPortHandler(),
+		authorities.closeOwnershipHandler(),
 		authorities.closeResolverHandler(),
 		authorities.closeReplayGuard(),
 		authorities.closeTicketRedeemer(),
 	)
+}
+
+// closeOwnershipHandler closes and forgets the protected ownership release boundary.
+func (authorities *runtimeAuthorities) closeOwnershipHandler() error {
+	if authorities.ownershipHandler == nil {
+		return nil
+	}
+	handler := authorities.ownershipHandler
+	authorities.ownershipHandler = nil
+	if err := handler.Close(); err != nil {
+		return fmt.Errorf("close helper ownership handler: %w", err)
+	}
+	return nil
 }
 
 // closePrivileged disarms admission authority before the selected trust handler gains mutation authority.

@@ -14,6 +14,8 @@ const (
 	OwnershipAdmissionSchema2To1 OwnershipAdmissionState = "schema_2_to_1"
 	// OwnershipAdmissionAlreadyRetired means a resolver retirement already reached its exact schema-one successor.
 	OwnershipAdmissionAlreadyRetired OwnershipAdmissionState = "already_retired"
+	// OwnershipAdmissionAlreadyReleased means the exact signed schema-two target has already been removed.
+	OwnershipAdmissionAlreadyReleased OwnershipAdmissionState = "already_released"
 )
 
 // TicketAdmission carries bindings established independently from the untrusted wire request.
@@ -72,6 +74,12 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 	}
 	switch admission.OwnershipState {
 	case OwnershipAdmissionAlreadyCurrent:
+		if r.Ticket.Operation == OperationReleaseNetworkOwnership &&
+			(r.Ticket.ExpectedOwnershipFingerprint != admission.TargetOwnershipFingerprint ||
+				admission.OwnershipFingerprint != admission.TargetOwnershipFingerprint ||
+				admission.PostOwnershipFingerprint != admission.TargetOwnershipFingerprint) {
+			return ErrTicketRedemptionFailed
+		}
 	case OwnershipAdmissionSchema1To2:
 		if r.Ticket.Operation != OperationEnsureResolver ||
 			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
@@ -85,6 +93,13 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 	case OwnershipAdmissionAlreadyRetired:
 		if r.Ticket.Operation != OperationRetireResolver ||
 			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+			return ErrTicketRedemptionFailed
+		}
+	case OwnershipAdmissionAlreadyReleased:
+		if r.Ticket.Operation != OperationReleaseNetworkOwnership ||
+			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion ||
+			admission.OwnershipFingerprint != admission.TargetOwnershipFingerprint ||
+			admission.PostOwnershipFingerprint != admission.TargetOwnershipFingerprint {
 			return ErrTicketRedemptionFailed
 		}
 	default:

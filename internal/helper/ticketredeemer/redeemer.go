@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketauth"
 	"github.com/goforj/harbor/internal/host/ownership"
+	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/platform/machinepaths"
 )
 
@@ -38,6 +39,14 @@ type ownershipStore interface {
 // ownershipOpen keeps fixed production path resolution separate from fault-focused tests.
 type ownershipOpen func(string) (ownershipStore, error)
 
+// ownershipReleaseProofObserver admits a replay only when it matches root-authored release evidence.
+type ownershipReleaseProofObserver interface {
+	AdmitReplay(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error)
+}
+
+// ownershipReleaseProofOpen delays platform-specific proof storage until an absent ownership release needs it.
+type ownershipReleaseProofOpen func() (ownershipReleaseProofObserver, error)
+
 // fileOperations groups post-open mutation seams without allowing production callers to select filesystem paths.
 type fileOperations struct {
 	openPending func(*os.File, string, string) (*os.File, error)
@@ -53,10 +62,11 @@ type fileOperations struct {
 
 // dependencies fixes trusted time and protected storage operations for one Redeemer.
 type dependencies struct {
-	clock         helper.Clock
-	admitProcess  func() error
-	openOwnership ownershipOpen
-	files         fileOperations
+	clock            helper.Clock
+	admitProcess     func() error
+	openOwnership    ownershipOpen
+	openReleaseProof ownershipReleaseProofOpen
+	files            fileOperations
 }
 
 // topology retains every directory handle that participates in a pending-to-claimed transition.
@@ -192,16 +202,85 @@ func (redeemer *Redeemer) Redeem(ctx context.Context, reference helper.TicketRef
 			return helper.TicketRedemption{}, err
 		}
 	} else {
-		ticket, observation, err = redeemer.bootstrapOwnership(ctx, envelope, now)
+		ticket, observation, err = redeemer.admitAbsentOwnership(ctx, envelope, now)
 		if err != nil {
 			return helper.TicketRedemption{}, err
 		}
+	}
+	if !observation.Exists && ticket.Operation == helper.OperationReleaseNetworkOwnership {
+		return redeemer.admitAlreadyReleased(ctx, reference, ticket, envelope, now)
 	}
 	admission, err := admitTicket(reference, ticket, observation, redeemer.topology.requesterIdentity)
 	if err != nil {
 		return helper.TicketRedemption{}, err
 	}
 	return helper.TicketRedemption{Ticket: ticket, Admission: admission}, nil
+}
+
+// admitAbsentOwnership preserves bootstrap behavior while allowing only a signed ownership-release replay to observe absence.
+func (redeemer *Redeemer) admitAbsentOwnership(ctx context.Context, envelope ticketauth.Envelope, now time.Time) (helper.Ticket, ownership.Observation, error) {
+	ticket, _, err := verifyBootstrapEnvelope(envelope, now)
+	if err != nil {
+		return helper.Ticket{}, ownership.Observation{}, errors.Join(ErrReferenceConsumed, err)
+	}
+	if ticket.Operation == helper.OperationReleaseNetworkOwnership {
+		if ticket.RequesterIdentity != redeemer.topology.requesterIdentity {
+			return helper.Ticket{}, ownership.Observation{}, consumedFailure("bind ownership release requester", errors.New("ownership release ticket requester does not match the pending ticket owner"))
+		}
+		return ticket, ownership.Observation{}, nil
+	}
+	return redeemer.bootstrapOwnership(ctx, envelope, now)
+}
+
+// admitAlreadyReleased reconstructs the signed target and requires root-authored proof before admitting an absent replay.
+func (redeemer *Redeemer) admitAlreadyReleased(ctx context.Context, reference helper.TicketReference, ticket helper.Ticket, envelope ticketauth.Envelope, now time.Time) (helper.TicketRedemption, error) {
+	if ticket.Operation != helper.OperationReleaseNetworkOwnership || ticket.RequesterIdentity != redeemer.topology.requesterIdentity {
+		return helper.TicketRedemption{}, consumedFailure("bind released ownership", errors.New("ownership release ticket does not match the authenticated requester"))
+	}
+	_, verifierKey, err := verifyBootstrapEnvelope(envelope, now)
+	if err != nil {
+		return helper.TicketRedemption{}, errors.Join(ErrReferenceConsumed, err)
+	}
+	target := ownershipRecordFromTicket(ticket, base64.StdEncoding.EncodeToString(verifierKey))
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		return helper.TicketRedemption{}, consumedFailure("derive released ownership target", err)
+	}
+	if targetFingerprint != ticket.ExpectedOwnershipFingerprint {
+		return helper.TicketRedemption{}, consumedFailure("bind released ownership target", errors.New("signed ownership release fingerprint does not match its full target"))
+	}
+	observer, err := redeemer.dependencies.openReleaseProof()
+	if err != nil {
+		return helper.TicketRedemption{}, consumedFailure("open ownership release proof", err)
+	}
+	if _, err := observer.AdmitReplay(ctx, ownershipReleaseProofAuthority(ticket, targetFingerprint)); err != nil {
+		return helper.TicketRedemption{}, consumedFailure("admit ownership release replay", err)
+	}
+	return helper.TicketRedemption{Ticket: ticket, Admission: helper.TicketAdmission{
+		TicketReference:            reference,
+		RequesterIdentity:          ticket.RequesterIdentity,
+		InstallationID:             ticket.InstallationID,
+		OwnershipGeneration:        ticket.OwnershipGeneration,
+		OwnershipSchemaVersion:     ticket.OwnershipSchemaVersion,
+		NetworkPolicyFingerprint:   ticket.NetworkPolicyFingerprint,
+		ApprovedPool:               ticket.ApprovedPool,
+		OwnershipState:             helper.OwnershipAdmissionAlreadyReleased,
+		OwnershipFingerprint:       targetFingerprint,
+		TargetOwnershipFingerprint: targetFingerprint,
+		PostOwnershipFingerprint:   targetFingerprint,
+		TicketVerifierKey:          target.TicketVerifierKey,
+	}}, nil
+}
+
+// ownershipReleaseProofAuthority derives the durable replay boundary from the signed ticket's complete target.
+func ownershipReleaseProofAuthority(ticket helper.Ticket, targetFingerprint string) ownershipreleaseproof.Authority {
+	return ownershipreleaseproof.Authority{
+		ReleaseOperationID:         ticket.ReleaseOperationID,
+		OperationRevision:          ticket.ReleaseOperationRevision,
+		CheckpointRevision:         ticket.ReleaseCheckpointRevision,
+		RequesterIdentity:          ticket.RequesterIdentity,
+		TargetOwnershipFingerprint: targetFingerprint,
+	}
 }
 
 // admitTicket binds a signed target either to exact current ownership or to the one allowed schema transition source.
@@ -260,6 +339,14 @@ func admitTicket(
 		return helper.TicketAdmission{}, consumedFailure("bind ticket ownership target", err)
 	}
 	postOwnershipFingerprint = targetFingerprint
+	if ticket.Operation == helper.OperationReleaseNetworkOwnership {
+		if observation.Fingerprint != targetFingerprint || ticket.ExpectedOwnershipFingerprint != targetFingerprint {
+			return helper.TicketAdmission{}, consumedFailure(
+				"bind ownership release to machine ownership",
+				errors.New("ownership release requires protected ownership to equal the signed exact target"),
+			)
+		}
+	}
 	if ticket.Operation == helper.OperationRetireResolver {
 		source := targetDerivedSchema1Record(ticket, record.TicketVerifierKey)
 		postOwnershipFingerprint, err = source.Fingerprint()
@@ -656,7 +743,7 @@ func claimDurabilityFailure(operation string, err error) error {
 
 // validateDependencies rejects partial test seams before any protected path is opened.
 func validateDependencies(dependencies dependencies) error {
-	if dependencies.clock == nil || dependencies.admitProcess == nil || dependencies.openOwnership == nil ||
+	if dependencies.clock == nil || dependencies.admitProcess == nil || dependencies.openOwnership == nil || dependencies.openReleaseProof == nil ||
 		dependencies.files.openPending == nil || dependencies.files.openClaim == nil ||
 		dependencies.files.entryExists == nil || dependencies.files.rename == nil ||
 		dependencies.files.secureClaim == nil || dependencies.files.syncFile == nil ||
@@ -673,6 +760,9 @@ func defaultDependencies() dependencies {
 		clock:         helper.SystemClock{},
 		admitProcess:  validatePlatformProcessAdmission,
 		openOwnership: func(path string) (ownershipStore, error) { return ownership.NewStore(path) },
+		openReleaseProof: func() (ownershipReleaseProofObserver, error) {
+			return ownershipreleaseproof.NewDefaultObserver()
+		},
 		files: fileOperations{
 			openPending: openPlatformFile,
 			openClaim:   openPlatformFile,
@@ -698,6 +788,8 @@ func validateLayout(paths machinepaths.Paths) error {
 		{name: "replay directory", got: paths.ReplayDirectory, want: filepath.Join(paths.Root, "state", "replay")},
 		{name: "ownership path", got: paths.OwnershipPath, want: filepath.Join(paths.Root, "state", "ownership.json")},
 		{name: "host projection path", got: paths.HostProjectionPath, want: filepath.Join(paths.Root, "state", "host-projection.json")},
+		{name: "ownership release proof path", got: paths.OwnershipReleaseProofPath, want: filepath.Join(paths.Root, "ownership-release-proof.json")},
+		{name: "ownership release proof lock path", got: paths.OwnershipReleaseProofLockPath, want: filepath.Join(paths.Root, "ownership-release-proof.lock")},
 		{name: "tickets directory", got: paths.TicketsDirectory, want: filepath.Join(paths.Root, "tickets")},
 		{name: "pending directory", got: paths.PendingDirectory, want: filepath.Join(paths.Root, "tickets", "pending")},
 		{name: "claims directory", got: paths.ClaimsDirectory, want: filepath.Join(paths.Root, "tickets", "claims")},
