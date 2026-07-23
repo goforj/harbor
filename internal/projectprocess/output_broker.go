@@ -263,12 +263,18 @@ func (journal *OutputBrokerJournal) Subscribe(cursor uint64, buffer int) (Output
 		return OutputBrokerReplay{}, nil, ErrOutputBrokerJournalClosed
 	}
 	replay := journal.replayLocked(cursor)
+	ackCursor := replay.NextCursor
+	if len(replay.Frames) > 0 {
+		// Replay frames are acknowledged in order after the handshake, so the live subscription
+		// cannot begin at the end of replay without rejecting its first acknowledgement.
+		ackCursor = replay.Frames[0].Cursor
+	}
 	journal.nextSubscriber++
 	subscription := &OutputBrokerSubscription{
 		journal: journal,
 		id:      journal.nextSubscriber,
 		records: make(chan OutputBrokerRecord, buffer),
-		ack:     replay.NextCursor,
+		ack:     ackCursor,
 	}
 	journal.subscribers[subscription.id] = subscription
 	return replay, subscription, nil

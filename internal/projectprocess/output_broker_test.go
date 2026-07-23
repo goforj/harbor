@@ -180,6 +180,50 @@ func TestOutputBrokerSubscriptionEmitsGapsAndIdempotentAcks(t *testing.T) {
 	}
 }
 
+// TestOutputBrokerSubscriptionAcknowledgesBufferedReplayInOrder proves startup output cannot disconnect the live stream.
+func TestOutputBrokerSubscriptionAcknowledgesBufferedReplayInOrder(t *testing.T) {
+	journal, err := OpenOutputBrokerJournal(t.TempDir(), "project-broker-replay-ack", "session-broker-replay-ack")
+	if err != nil {
+		t.Fatalf("OpenOutputBrokerJournal() error = %v", err)
+	}
+	defer func() { _ = journal.Close() }()
+
+	first, err := journal.Append(OutputBrokerStreamStdout, 0, []byte("pre-dev\n"))
+	if err != nil {
+		t.Fatalf("append first replay frame: %v", err)
+	}
+	second, err := journal.Append(OutputBrokerStreamStdout, first.NextCursor, []byte("compose\n"))
+	if err != nil {
+		t.Fatalf("append second replay frame: %v", err)
+	}
+	replay, subscription, err := journal.Subscribe(0, 1)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer func() { _ = subscription.Close() }()
+	if len(replay.Frames) != 2 {
+		t.Fatalf("replay frames = %d, want 2", len(replay.Frames))
+	}
+	if err := subscription.Ack(first.NextCursor); err != nil {
+		t.Fatalf("ack first replay frame: %v", err)
+	}
+	if err := subscription.Ack(second.NextCursor); err != nil {
+		t.Fatalf("ack second replay frame: %v", err)
+	}
+
+	live, err := journal.Append(OutputBrokerStreamStdout, second.NextCursor, []byte("ready\n"))
+	if err != nil {
+		t.Fatalf("append live frame: %v", err)
+	}
+	record := <-subscription.Records()
+	if record.Frame == nil || *record.Frame != live {
+		t.Fatalf("live record = %#v, want %#v", record, live)
+	}
+	if err := subscription.Ack(live.NextCursor); err != nil {
+		t.Fatalf("ack live frame: %v", err)
+	}
+}
+
 // TestOutputBrokerValidationRejectsUnboundedOrAmbiguousRecords keeps future transport decoders fail closed.
 func TestOutputBrokerValidationRejectsUnboundedOrAmbiguousRecords(t *testing.T) {
 	if err := (OutputBrokerFrame{Stream: OutputBrokerStreamStdout, Cursor: 4, NextCursor: 3, Text: "x"}).Validate(); err == nil {
