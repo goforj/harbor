@@ -55,7 +55,8 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 		return App{}, err
 	}
 	supervisor := provideProjectProcessSupervisor(environment)
-	projectLifecycleCoordinator := reconcile.NewProjectLifecycleCoordinator(store, operationJournal, supervisor, controller)
+	goforjruntimeRuntime := provideGoForjProjectRuntime(supervisor)
+	projectLifecycleCoordinator := reconcile.NewProjectLifecycleCoordinator(store, operationJournal, goforjruntimeRuntime, controller)
 	networkSetupPlanRepo := models.NewNetworkSetupPlanRepo(connections)
 	networkSetupPlanSource := state.NewNetworkSetupPlanSource(networkSetupPlanRepo)
 	networkSetupCoordinator, err := provideNetworkSetupCoordinator(store, operationJournal, networkSetupPlanSource, machineOwnershipProjectionSource)

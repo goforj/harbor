@@ -14,11 +14,9 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
-	"github.com/goforj/harbor/internal/goforj"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
-	"github.com/goforj/harbor/internal/projectdiscovery"
-	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -37,16 +35,8 @@ const (
 	primaryLeaseDefaultHTTPEndpointInitialGeneration uint64 = 1
 	// primaryLeaseResourceHTTPEndpointInitialGeneration starts an optional descriptor resource endpoint history.
 	primaryLeaseResourceHTTPEndpointInitialGeneration uint64 = 1
-	// primaryLeaseServiceEndpointInitialGeneration starts a descriptor service endpoint's independent shape history.
-	primaryLeaseServiceEndpointInitialGeneration uint64 = 1
-	// primaryLeaseServiceEndpointIDPrefix keeps Harbor-owned service endpoint keys separate from resource IDs.
-	primaryLeaseServiceEndpointIDPrefix = "service:"
 	// primaryLeaseEvidenceDomain prevents a digest from being reused as evidence for another Harbor operation.
 	primaryLeaseEvidenceDomain = "goforj.harbor.project-primary-lease.v1\x00"
-	// primaryLeaseRuntimeRepairAttempts bounds transient native process races before Start reports a real conflict.
-	primaryLeaseRuntimeRepairAttempts = 3
-	// primaryLeaseRuntimeRepairRetryDelay gives a terminating listener a short window to publish its new state.
-	primaryLeaseRuntimeRepairRetryDelay = 50 * time.Millisecond
 )
 
 // projectPrimaryLeaseState is the optimistic durable surface needed to allocate one registered project identity.
@@ -54,11 +44,6 @@ type projectPrimaryLeaseState interface {
 	Project(context.Context, domain.ProjectID) (state.ProjectRecord, error)
 	Network(context.Context) (state.NetworkRecord, bool, error)
 	ReplaceProjectNetwork(context.Context, state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error)
-}
-
-// projectPrimaryLeaseDiscoverer reads the one App port that must remain available on an allocated identity.
-type projectPrimaryLeaseDiscoverer interface {
-	DiscoverDefaultRuntimeAtAddress(context.Context, string, netip.Addr) (projectdiscovery.RuntimeTarget, error)
 }
 
 // projectPrimaryLeaseLoopbackObserver proves a pre-provisioned pool address still has Harbor's exact host shape.
@@ -69,7 +54,7 @@ type projectPrimaryLeaseLoopbackObserver interface {
 // projectPrimaryLeaseAdmission binds one durable identity to the exact runtime target checked before persistence.
 type projectPrimaryLeaseAdmission struct {
 	Lease            identity.Lease
-	Target           projectdiscovery.RuntimeTarget
+	Plan             projectruntime.Plan
 	Project          state.ProjectRecord
 	NetworkUpdatedAt time.Time
 }
@@ -102,7 +87,7 @@ func newProjectPrimaryLeaseRejection(problem domain.Problem, cause error) error 
 
 // projectPrimaryLeaseObservation is the complete read-only admission result for one planned or retained identity.
 type projectPrimaryLeaseObservation struct {
-	Target              projectdiscovery.RuntimeTarget
+	Plan                projectruntime.Plan
 	Loopback            loopback.Observation
 	LoopbackFingerprint string
 	Probe               identity.ProbeResult
@@ -112,52 +97,54 @@ type projectPrimaryLeaseObservation struct {
 // projectPrimaryLeaseCoordinator allocates from a verified pool and can settle one exact project runtime before retrying admission.
 type projectPrimaryLeaseCoordinator struct {
 	state           projectPrimaryLeaseState
-	discoverer      projectPrimaryLeaseDiscoverer
+	preparer        projectruntime.Preparer
 	loopback        projectPrimaryLeaseLoopbackObserver
 	ports           identity.HostProber
 	planner         identity.Planner
 	now             func() time.Time
-	runtimeRepairer projectprocess.UnattributedRuntimeRepairer
+	runtimeRepairer projectruntime.ListenerRepairer
 }
 
 // newProjectPrimaryLeaseCoordinator creates the independently observable allocation boundary used before process launch.
 func newProjectPrimaryLeaseCoordinator(
 	projectState projectPrimaryLeaseState,
-	discoverer projectPrimaryLeaseDiscoverer,
+	preparer projectruntime.Preparer,
 	loopbackObserver projectPrimaryLeaseLoopbackObserver,
 	portProber identity.HostProber,
 	now func() time.Time,
 ) *projectPrimaryLeaseCoordinator {
-	if nilDependency(projectState) || nilDependency(discoverer) || nilDependency(loopbackObserver) ||
+	if nilDependency(projectState) || nilDependency(preparer) || nilDependency(loopbackObserver) ||
 		nilDependency(portProber) || nilDependency(now) {
 		panic("reconcile.newProjectPrimaryLeaseCoordinator requires every dependency")
 	}
 	return &projectPrimaryLeaseCoordinator{
-		state:      projectState,
-		discoverer: discoverer,
-		loopback:   loopbackObserver,
-		ports:      portProber,
-		planner:    identity.NewPlanner(),
-		now:        now,
+		state:    projectState,
+		preparer: preparer,
+		loopback: loopbackObserver,
+		ports:    portProber,
+		planner:  identity.NewPlanner(),
+		now:      now,
 	}
 }
 
 // newSystemProjectPrimaryLeaseCoordinator selects production read-only host adapters for a pre-provisioned identity pool.
 func newSystemProjectPrimaryLeaseCoordinator(
 	projectState *state.Store,
-	discoverer projectPrimaryLeaseDiscoverer,
+	preparer projectruntime.Preparer,
 ) *projectPrimaryLeaseCoordinator {
 	if projectState == nil {
 		panic("reconcile.newSystemProjectPrimaryLeaseCoordinator requires non-nil state")
 	}
 	coordinator := newProjectPrimaryLeaseCoordinator(
 		projectState,
-		discoverer,
+		preparer,
 		loopback.New(),
 		identity.NewSystemHost(),
 		time.Now,
 	)
-	coordinator.runtimeRepairer = projectprocess.NewUnattributedRuntimeRepairer()
+	if repairer, ok := preparer.(projectruntime.ListenerRepairer); ok {
+		coordinator.runtimeRepairer = repairer
+	}
 	return coordinator
 }
 
@@ -429,203 +416,6 @@ func (coordinator *projectPrimaryLeaseCoordinator) assignHTTPResourceEndpoints(
 		primaryLeasePersistenceAttempts,
 		lastConflict,
 	)
-}
-
-// assignServiceEndpointReservations replaces Harbor-owned native service reservations from one validated descriptor.
-//
-// This boundary records only public endpoint authority. A native relay is intentionally not published here because
-// its private upstream must come from a fresh managed-session or container observation, never from static intent.
-func (coordinator *projectPrimaryLeaseCoordinator) assignServiceEndpointReservations(
-	ctx context.Context,
-	projectID domain.ProjectID,
-	requirements []goforj.ServiceRequirement,
-) error {
-	if coordinator == nil {
-		panic("reconcile.projectPrimaryLeaseCoordinator.assignServiceEndpointReservations requires a non-nil receiver")
-	}
-	if err := projectID.Validate(); err != nil {
-		return err
-	}
-	if requirements == nil {
-		return errors.New("descriptor service endpoint assignment requires initialized requirements")
-	}
-	ctx = normalizeLifecycleContext(ctx)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	var lastConflict error
-	for attempt := 0; attempt < primaryLeasePersistenceAttempts; attempt++ {
-		project, err := coordinator.state.Project(ctx, projectID)
-		if err != nil {
-			return fmt.Errorf("read project before service endpoint assignment: %w", err)
-		}
-		network, initialized, err := coordinator.state.Network(ctx)
-		if err != nil {
-			return fmt.Errorf("read network before service endpoint assignment: %w", err)
-		}
-		if !initialized {
-			return fmt.Errorf("assign service endpoints for project %q: network identity is not initialized", projectID)
-		}
-		if err := network.Validate(); err != nil {
-			return fmt.Errorf("assign service endpoints for project %q: invalid network authority: %w", projectID, err)
-		}
-		if network.Stage != state.NetworkStageResolver && network.Stage != state.NetworkStageFull {
-			return nil
-		}
-		primary, found := primaryLeaseForKey(network.Leases, identity.LeaseKey{ProjectID: projectID})
-		if !found {
-			return fmt.Errorf("assign service endpoints for project %q: primary lease is missing", projectID)
-		}
-		desired, err := primaryLeaseServiceEndpoints(network, project, primary, requirements)
-		if err != nil {
-			return err
-		}
-		current := projectNetworkEndpoints(network, projectID)
-		if endpointReservationsEqual(current, desired) {
-			return nil
-		}
-		at := lifecycleTime(coordinator.now())
-		if at.Before(project.Project.UpdatedAt) {
-			at = project.Project.UpdatedAt
-		}
-		if at.Before(network.UpdatedAt) {
-			at = network.UpdatedAt
-		}
-		result, err := coordinator.state.ReplaceProjectNetwork(ctx, state.ReplaceProjectNetworkRequest{
-			ProjectID:               projectID,
-			ExpectedNetworkRevision: network.Revision,
-			ExpectedProjectRevision: project.Revision,
-			Ensures:                 []state.NetworkLeaseEnsure{},
-			Releases:                []state.NetworkLeaseRelease{},
-			Endpoints:               desired,
-			At:                      at,
-		})
-		if err != nil {
-			if primaryLeaseRevisionConflict(err) {
-				lastConflict = err
-				continue
-			}
-			return fmt.Errorf("persist service endpoints for project %q: %w", projectID, err)
-		}
-		if err := result.Validate(); err != nil {
-			return fmt.Errorf("validate persisted service endpoints for project %q: %w", projectID, err)
-		}
-		if got := projectNetworkEndpoints(result.Record, projectID); !endpointReservationsEqual(got, desired) {
-			return fmt.Errorf("persisted service endpoints for project %q differ from requested authority", projectID)
-		}
-		return nil
-	}
-	return fmt.Errorf(
-		"assign service endpoints for project %q did not converge after %d revisions: %w",
-		projectID,
-		primaryLeasePersistenceAttempts,
-		lastConflict,
-	)
-}
-
-// primaryLeaseServiceEndpoints derives native endpoint reservations while preserving HTTP and non-managed authority.
-func primaryLeaseServiceEndpoints(
-	network state.NetworkRecord,
-	project state.ProjectRecord,
-	primary identity.Lease,
-	requirements []goforj.ServiceRequirement,
-) ([]state.EndpointReservation, error) {
-	if err := project.Project.Validate(); err != nil {
-		return nil, fmt.Errorf("validate project before service endpoint assignment: %w", err)
-	}
-	if err := primary.Validate(); err != nil {
-		return nil, fmt.Errorf("validate primary lease before service endpoint assignment: %w", err)
-	}
-	if primary.Key != (identity.LeaseKey{ProjectID: project.Project.ID}) {
-		return nil, fmt.Errorf("service endpoint assignment requires the project's primary lease")
-	}
-	current := projectNetworkEndpoints(network, project.Project.ID)
-	result := make([]state.EndpointReservation, 0, len(current)+len(requirements))
-	existing := make(map[state.EndpointReservationKey]state.EndpointReservation, len(current))
-	hosts := make(map[string]state.EndpointReservation, len(current))
-	for _, endpoint := range current {
-		existing[endpoint.Key] = endpoint
-		if strings.HasPrefix(endpoint.Key.EndpointID, primaryLeaseServiceEndpointIDPrefix) {
-			continue
-		}
-		result = append(result, endpoint)
-		if prior, duplicate := hosts[endpoint.Host]; duplicate && prior.Key != endpoint.Key {
-			return nil, fmt.Errorf("project %q has duplicate preserved endpoint host %q", project.Project.ID, endpoint.Host)
-		}
-		hosts[endpoint.Host] = endpoint
-	}
-
-	seenEndpoints := make(map[string]struct{})
-	for _, requirement := range requirements {
-		if requirement.Owner == goforj.ServiceRequirementOwnerAvailable {
-			continue
-		}
-		if requirement.Owner != goforj.ServiceRequirementOwnerCompose && requirement.Owner != goforj.ServiceRequirementOwnerExternal {
-			return nil, fmt.Errorf("service requirement %q owner %q is unsupported for native endpoint assignment", requirement.ID, requirement.Owner)
-		}
-		for _, endpoint := range requirement.Endpoints {
-			if endpoint.Visibility != goforj.ServiceEndpointVisibilityHost {
-				continue
-			}
-			if endpoint.Protocol != goforj.ServiceEndpointProtocolTCP {
-				return nil, fmt.Errorf("service endpoint %q protocol %q cannot be host-published before managed-session observation", endpoint.ID, endpoint.Protocol)
-			}
-			if endpoint.NativePort < 1 || endpoint.NativePort > 65535 {
-				return nil, fmt.Errorf("service endpoint %q native port %d is outside 1-65535", endpoint.ID, endpoint.NativePort)
-			}
-			endpointID := primaryLeaseServiceEndpointIDPrefix + endpoint.ID
-			if _, duplicate := seenEndpoints[endpointID]; duplicate {
-				return nil, fmt.Errorf("duplicate service endpoint reservation ID %q", endpointID)
-			}
-			seenEndpoints[endpointID] = struct{}{}
-			host, err := projectServiceEndpointHost(project.Project.Slug, requirement.ServiceKey)
-			if err != nil {
-				return nil, fmt.Errorf("service endpoint %q: %w", endpoint.ID, err)
-			}
-			key := state.EndpointReservationKey{ProjectID: project.Project.ID, EndpointID: endpointID}
-			if prior, conflict := existing[key]; conflict && prior.Protocol != state.EndpointProtocolTCP {
-				return nil, fmt.Errorf("service endpoint %q conflicts with non-TCP endpoint", endpoint.ID)
-			}
-			if prior, duplicate := hosts[host]; duplicate && prior.Key != key {
-				return nil, fmt.Errorf("service endpoint %q host %q collides with endpoint %q", endpoint.ID, host, prior.Key.EndpointID)
-			}
-			public := netip.AddrPortFrom(primary.Address.Unmap(), uint16(endpoint.NativePort))
-			generation := primaryLeaseServiceEndpointInitialGeneration
-			if prior, exists := existing[key]; exists {
-				if prior.Protocol == state.EndpointProtocolTCP && prior.Host == host && prior.Public == public && prior.Identity != nil && *prior.Identity == primary.Key {
-					generation = prior.Generation
-				} else if prior.Generation == ^uint64(0) {
-					return nil, fmt.Errorf("service endpoint %q generation cannot advance", endpoint.ID)
-				} else {
-					generation = prior.Generation + 1
-				}
-			}
-			reservation := state.EndpointReservation{
-				Key:        key,
-				Protocol:   state.EndpointProtocolTCP,
-				Host:       host,
-				Public:     public,
-				Identity:   &primary.Key,
-				Generation: generation,
-			}
-			if prior, duplicate := hosts[host]; duplicate && prior.Key != reservation.Key {
-				return nil, fmt.Errorf("service endpoint %q host %q collides with endpoint %q", endpoint.ID, host, prior.Key.EndpointID)
-			}
-			hosts[host] = reservation
-			result = append(result, reservation)
-		}
-	}
-	slices.SortFunc(result, projectEndpointReservationCompare)
-	return result, nil
-}
-
-// projectServiceEndpointHost applies the stable native service naming policy inside one project zone.
-func projectServiceEndpointHost(slug string, serviceKey string) (string, error) {
-	if !validProjectResourceHostLabel(serviceKey) {
-		return "", fmt.Errorf("service key %q must be a lowercase DNS label for native endpoint publication", serviceKey)
-	}
-	return serviceKey + "." + slug + ".test", nil
 }
 
 // verifyPrimaryLeaseAddress rejects a refresh built from an address that is no longer the project's durable lease.
@@ -938,7 +728,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 					// The retained lease is safe to reuse after the exact project scope settled.
 					admission := projectPrimaryLeaseAdmission{
 						Lease:            existing,
-						Target:           observation.Target,
+						Plan:             observation.Plan,
 						Project:          project,
 						NetworkUpdatedAt: network.UpdatedAt,
 					}
@@ -962,7 +752,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) ensureAtCurrentRevision(
 		}
 		admission := projectPrimaryLeaseAdmission{
 			Lease:            existing,
-			Target:           observation.Target,
+			Plan:             observation.Plan,
 			Project:          project,
 			NetworkUpdatedAt: network.UpdatedAt,
 		}
@@ -985,7 +775,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) repairProjectAppPortConflict(
 	return coordinator.repairAppPortConflict(ctx, checkoutRoot, address, port, false)
 }
 
-// repairAppPortConflict applies bounded native cleanup while optionally requiring a signal-backed settlement proof.
+// repairAppPortConflict asks an optional runtime capability to settle one exact checkout listener.
 func (coordinator *projectPrimaryLeaseCoordinator) repairAppPortConflict(
 	ctx context.Context,
 	checkoutRoot string,
@@ -996,89 +786,15 @@ func (coordinator *projectPrimaryLeaseCoordinator) repairAppPortConflict(
 	if coordinator.runtimeRepairer == nil {
 		return false, nil
 	}
-	target := projectprocess.RuntimeRepairTarget{
-		CheckoutRoot: checkoutRoot,
-		Endpoint:     netip.AddrPortFrom(address.Unmap(), port),
+	result, err := coordinator.runtimeRepairer.RepairListener(ctx, projectruntime.ListenerRepairRequest{
+		CheckoutRoot:        checkoutRoot,
+		Endpoint:            netip.AddrPortFrom(address.Unmap(), port),
+		RequireConfirmation: requireConfirmation,
+	})
+	if err != nil {
+		return false, err
 	}
-	var lastErr error
-	for attempt := 0; attempt < primaryLeaseRuntimeRepairAttempts; attempt++ {
-		inspection, err := coordinator.runtimeRepairer.Inspect(ctx, target)
-		if err != nil {
-			lastErr = err
-			if !waitForPrimaryLeaseRuntimeRepairRetry(ctx, attempt) {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return false, ctxErr
-				}
-				return false, lastErr
-			}
-			continue
-		}
-		lastErr = nil
-		if err := inspection.State.Validate(); err != nil {
-			return false, fmt.Errorf("validate automatic listener inspection: %w", err)
-		}
-		switch inspection.State {
-		case projectprocess.RuntimeRepairInspectionMissing:
-			// The listener disappeared during the probe; a fresh primary observation decides whether admission can continue.
-			if requireConfirmation {
-				return false, nil
-			}
-			return true, nil
-		case projectprocess.RuntimeRepairInspectionActionable:
-			if inspection.Candidate == nil {
-				return false, errors.New("automatic listener inspection was actionable without a candidate")
-			}
-			confirmation, err := coordinator.runtimeRepairer.Confirm(ctx, *inspection.Candidate)
-			if err != nil {
-				lastErr = err
-				if !waitForPrimaryLeaseRuntimeRepairRetry(ctx, attempt) {
-					if ctxErr := ctx.Err(); ctxErr != nil {
-						return false, ctxErr
-					}
-					return false, lastErr
-				}
-				continue
-			}
-			lastErr = nil
-			if err := confirmation.Validate(); err != nil {
-				return false, fmt.Errorf("validate automatic listener cleanup: %w", err)
-			}
-			if confirmation.State == projectprocess.RuntimeRepairConfirmationSettled {
-				return true, nil
-			}
-			if confirmation.State == projectprocess.RuntimeRepairConfirmationFailed {
-				lastErr = errors.New("automatic listener cleanup returned a failed confirmation")
-			}
-			if !waitForPrimaryLeaseRuntimeRepairRetry(ctx, attempt) {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return false, ctxErr
-				}
-				if lastErr != nil {
-					return false, lastErr
-				}
-				return false, nil
-			}
-		default:
-			// Foreign, ambiguous, unreadable, and unsupported listeners remain fail-closed rather than becoming kill-anything authority.
-			return false, nil
-		}
-	}
-	return false, lastErr
-}
-
-// waitForPrimaryLeaseRuntimeRepairRetry bounds the pause between native observations while a process exits.
-func waitForPrimaryLeaseRuntimeRepairRetry(ctx context.Context, attempt int) bool {
-	if attempt+1 >= primaryLeaseRuntimeRepairAttempts {
-		return false
-	}
-	timer := time.NewTimer(primaryLeaseRuntimeRepairRetryDelay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
+	return result.Settled, nil
 }
 
 // allocateAtCurrentRevision rejects unsafe candidates through the planner until one exact identity and port set is proved.
@@ -1166,7 +882,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 	}
 }
 
-// observePrimaryLease binds one exact default-App target to the address and port observations used for admission.
+// observePrimaryLease binds one exact runtime plan to the address and port observations used for admission.
 //
 // Native service ports remain endpoint-reconciliation work. This slice admits only the default App listener that
 // Harbor launches and probes for readiness.
@@ -1176,45 +892,75 @@ func (coordinator *projectPrimaryLeaseCoordinator) observePrimaryLease(
 	pool identity.Pool,
 	lease identity.Lease,
 ) (projectPrimaryLeaseObservation, error) {
-	target, err := coordinator.discoverer.DiscoverDefaultRuntimeAtAddress(ctx, checkoutRoot, lease.Address)
+	plan, err := coordinator.preparer.Prepare(ctx, projectruntime.PreparationRequest{CheckoutRoot: checkoutRoot, Address: lease.Address})
 	if err != nil {
-		cause := fmt.Errorf("discover primary runtime at %s: %w", lease.Address, err)
-		var updateRequired *projectdiscovery.RenderUpdateRequiredError
-		if errors.As(err, &updateRequired) {
-			return projectPrimaryLeaseObservation{}, newProjectPrimaryLeaseRejection(domain.Problem{
-				Code:      "project.render.update_required",
-				Message:   "This project was rendered by an older GoForj build. Run forj render with the current GoForj version, then try again.",
-				Retryable: true,
-			}, cause)
+		cause := fmt.Errorf("prepare primary runtime at %s: %w", lease.Address, err)
+		var preparation *projectruntime.PreparationError
+		if errors.As(err, &preparation) && preparation.Problem.Code != "" {
+			return projectPrimaryLeaseObservation{}, newProjectPrimaryLeaseRejection(preparation.Problem, cause)
 		}
-		var invalid *projectdiscovery.InvalidProjectError
-		if errors.As(err, &invalid) {
-			return projectPrimaryLeaseObservation{}, newProjectPrimaryLeaseRejection(
-				lifecycleProblem("project.runtime.invalid", cause),
-				cause,
-			)
-		}
-		return projectPrimaryLeaseObservation{}, cause
+		return projectPrimaryLeaseObservation{}, newProjectPrimaryLeaseRejection(lifecycleProblem("project.runtime.prepare_failed", cause), cause)
+	}
+	if err := validatePrimaryRuntimePlan(plan, lease.Address); err != nil {
+		return projectPrimaryLeaseObservation{}, fmt.Errorf("prepare primary runtime at %s: %w", lease.Address, err)
 	}
 	assignment, fingerprint, err := coordinator.observePreProvisionedIdentity(ctx, lease.Address)
 	if err != nil {
 		return projectPrimaryLeaseObservation{}, err
 	}
 	result := projectPrimaryLeaseObservation{
-		Target:              target,
+		Plan:                plan,
 		Loopback:            assignment,
 		LoopbackFingerprint: fingerprint,
 	}
 	if assignment.State != loopback.StateExact {
 		return result, nil
 	}
-	probe, unavailable, err := coordinator.probePrimaryPorts(ctx, pool, lease.Address, []uint16{target.Port})
+	probe, unavailable, err := coordinator.probePrimaryPorts(ctx, pool, lease.Address, []uint16{plan.NetworkAssignment.PrimaryPort})
 	if err != nil {
 		return projectPrimaryLeaseObservation{}, err
 	}
 	result.Probe = probe
 	result.UnavailableAppPorts = unavailable
 	return result, nil
+}
+
+// validatePrimaryRuntimePlan ensures a provider cannot move Harbor's durable listener identity during preparation.
+func validatePrimaryRuntimePlan(plan projectruntime.Plan, address netip.Addr) error {
+	assignment := plan.NetworkAssignment
+	if assignment.Address != address {
+		return errors.New("prepared runtime address differs from the durable primary lease")
+	}
+	if assignment.PrimaryPort == 0 {
+		return errors.New("prepared runtime primary port must be positive")
+	}
+	if plan.Readiness == nil {
+		return errors.New("prepared runtime readiness probe is required")
+	}
+	if err := plan.Presentation.AppID.Validate(); err != nil {
+		return fmt.Errorf("prepared runtime App ID: %w", err)
+	}
+	if strings.TrimSpace(plan.Presentation.Name) == "" || strings.TrimSpace(plan.Presentation.Name) != plan.Presentation.Name {
+		return errors.New("prepared runtime presentation name must be canonical")
+	}
+	if strings.TrimSpace(plan.Presentation.ResourceURL) == "" {
+		return errors.New("prepared runtime presentation resource URL is required")
+	}
+	resource, err := privateHTTPResourceAddress(plan.Presentation.ResourceURL, address)
+	if err != nil {
+		return fmt.Errorf("prepared runtime presentation resource URL: %w", err)
+	}
+	if resource.Port() != plan.NetworkAssignment.PrimaryPort {
+		return errors.New("prepared runtime presentation resource URL port differs from the primary port")
+	}
+	parsedResource, err := url.Parse(plan.Presentation.ResourceURL)
+	if err != nil {
+		return fmt.Errorf("parse prepared runtime presentation resource URL: %w", err)
+	}
+	if parsedResource.Path != "" {
+		return errors.New("prepared runtime presentation resource URL must be an HTTP origin without a path")
+	}
+	return nil
 }
 
 // observePreProvisionedIdentity requires the exact platform assignment shape established during elevated setup.
@@ -1319,7 +1065,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) persistPrimaryLease(
 	}
 	return projectPrimaryLeaseAdmission{
 		Lease:            persisted,
-		Target:           observation.Target,
+		Plan:             observation.Plan,
 		Project:          project,
 		NetworkUpdatedAt: result.Record.UpdatedAt,
 	}, nil

@@ -79,7 +79,7 @@ func (coordinator *ProjectLifecycleCoordinator) observeManagedPublications(
 		return nil, fmt.Errorf("%w: managed publication project %q is %q, not ready", managedsession.ErrManagedSessionNotReady, projectID, project.Project.State)
 	}
 
-	descriptorObserver, ok := coordinator.supervisor.(projectDescriptorObserver)
+	descriptorObserver, ok := coordinator.projectRuntimeCapabilities().(projectDescriptorObserver)
 	if !ok {
 		return nil, fmt.Errorf("managed publication descriptor observer is unavailable")
 	}
@@ -111,7 +111,7 @@ func (coordinator *ProjectLifecycleCoordinator) observeManagedPublications(
 		return nil, fmt.Errorf("%w: managed publication network is at %q stage; resolver stage is required", managedsession.ErrManagedSessionNetworkSetupRequired, network.Stage)
 	}
 
-	portReader, ok := coordinator.supervisor.(projectServicePortReader)
+	portReader, ok := coordinator.projectRuntimeCapabilities().(projectServicePortReader)
 	if !ok {
 		return nil, fmt.Errorf("managed publication service-port observer is unavailable")
 	}

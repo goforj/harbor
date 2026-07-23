@@ -10,7 +10,9 @@ import (
 	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
+	"github.com/goforj/harbor/internal/goforjruntime"
 	"github.com/goforj/harbor/internal/harbordruntime"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/runtime"
 	"github.com/goforj/harbor/internal/state"
@@ -30,6 +32,7 @@ var appSet = wire.NewSet(
 	state.NewStore,
 	harbordruntime.NewController,
 	provideProjectProcessSupervisor,
+	provideGoForjProjectRuntime,
 	reconcile.NewProjectLifecycleCoordinator,
 	provideProjectUnregisterCoordinator,
 	provideNetworkSetupCoordinator,
@@ -43,4 +46,5 @@ var appSet = wire.NewSet(
 	provideDaemonRunner,
 	wire.Bind(new(daemon.ConnectionServer), new(*control.Server)),
 	wire.Bind(new(reconcile.ProjectRouteReconciler), new(*harbordruntime.Controller)),
+	wire.Bind(new(projectruntime.Runtime), new(*goforjruntime.Runtime)),
 )

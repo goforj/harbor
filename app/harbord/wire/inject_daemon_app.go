@@ -14,6 +14,7 @@ import (
 	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/goforjruntime"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
@@ -359,6 +360,11 @@ func provideProjectProcessSupervisor(environment projectprocess.Environment) *pr
 		options.OutputBrokerLauncher = launcher
 	}
 	return projectprocess.New(options)
+}
+
+// provideGoForjProjectRuntime adapts the ordinary GoForj process supervisor to Harbor's project-neutral lifecycle boundary.
+func provideGoForjProjectRuntime(supervisor *projectprocess.Supervisor) *goforjruntime.Runtime {
+	return goforjruntime.New(supervisor)
 }
 
 // provideProjectUnregisterCoordinatorWithIssuerOpener keeps default issuer storage injectable without making it process-global.

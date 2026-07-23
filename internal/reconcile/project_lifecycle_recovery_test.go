@@ -15,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -30,16 +31,21 @@ type projectLifecycleRecoverySupervisor struct {
 	adopted        []domain.OutputBrokerSession
 }
 
-// Start rejects launches because recovery must never replay a process-backed running start.
-func (*projectLifecycleRecoverySupervisor) Start(
+// Prepare rejects preparation because recovery fixtures never launch a registered checkout runtime.
+func (*projectLifecycleRecoverySupervisor) Prepare(context.Context, projectruntime.PreparationRequest) (projectruntime.Plan, error) {
+	return projectruntime.Plan{}, errors.New("unexpected project preparation during project lifecycle recovery")
+}
+
+// Launch rejects launches because recovery must never replay a process-backed running start.
+func (*projectLifecycleRecoverySupervisor) Launch(
 	context.Context,
-	projectprocess.StartRequest,
-) (*projectprocess.Handle, error) {
+	projectruntime.LaunchRequest,
+) (projectruntime.Handle, error) {
 	return nil, errors.New("unexpected process launch during project lifecycle recovery")
 }
 
-// Down rejects reset work because recovery fixtures never own a registered checkout runtime.
-func (*projectLifecycleRecoverySupervisor) Down(context.Context, projectprocess.DownRequest) error {
+// Reset rejects reset work because recovery fixtures never own a registered checkout runtime.
+func (*projectLifecycleRecoverySupervisor) Reset(context.Context, projectruntime.ResetRequest) error {
 	return errors.New("unexpected project reset during project lifecycle recovery")
 }
 
@@ -111,18 +117,18 @@ func (*projectLifecycleRecoverySupervisor) WaitServiceLogs(
 func (supervisor *projectLifecycleRecoverySupervisor) ObservePriorProcess(
 	_ context.Context,
 	evidence domain.ProcessEvidence,
-) (projectprocess.PriorProcessObservation, error) {
+) (projectruntime.PriorProcessObservation, error) {
 	supervisor.observed = append(supervisor.observed, evidence)
-	return supervisor.observation, supervisor.observationErr
+	return projectruntime.PriorProcessObservation{State: projectruntime.PriorProcessState(supervisor.observation.State)}, supervisor.observationErr
 }
 
 // SettlePriorProcess returns the configured terminal settlement and records the exact evidence retired.
 func (supervisor *projectLifecycleRecoverySupervisor) SettlePriorProcess(
 	_ context.Context,
 	evidence domain.ProcessEvidence,
-) (projectprocess.PriorProcessSettlement, error) {
+) (projectruntime.PriorProcessSettlement, error) {
 	supervisor.settled = append(supervisor.settled, evidence)
-	return supervisor.settlement, supervisor.settlementErr
+	return projectruntime.PriorProcessSettlement{Outcome: projectruntime.PriorProcessSettlementOutcome(supervisor.settlement.Outcome)}, supervisor.settlementErr
 }
 
 // AdoptOutputBroker records the optional live-output recovery boundary without granting process authority.
@@ -1339,10 +1345,9 @@ func completeProjectLifecycleRecoveryStart(
 		SessionID:                 seed.session.ID,
 		ExpectedSessionGeneration: seed.session.Generation,
 		Runtime: defaultRuntime(
-			target,
+			projectRuntimePlanForTest(target),
 			[]domain.ServiceSnapshot{},
-			projectprocess.ProjectDescriptorObservation{},
-			projectprocess.FrameworkResourceObservation{Resources: []projectprocess.FrameworkResource{}},
+			[]domain.ResourceSnapshot{},
 		),
 		Phase: "ready",
 		At:    readyAt,

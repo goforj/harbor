@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
-	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -98,15 +98,15 @@ func (coordinator *ProjectLifecycleCoordinator) preserveAttachedManagedSession(c
 	if session.Owner != domain.SessionOwnerHarbor || session.State != domain.SessionAttached || session.Process == nil {
 		return false
 	}
-	observation, err := coordinator.supervisor.ObservePriorProcess(ctx, *session.Process)
+	observation, err := coordinator.runtime.ObservePriorProcess(ctx, *session.Process)
 	if err != nil {
 		return false
 	}
-	if observation.State != projectprocess.PriorProcessPresent {
+	if observation.State != projectruntime.PriorProcessPresent {
 		return false
 	}
 	if session.OutputBroker != nil {
-		if adopter, ok := coordinator.supervisor.(projectOutputBrokerRecoveryAdopter); ok {
+		if adopter, ok := coordinator.projectRuntimeCapabilities().(projectOutputBrokerRecoveryAdopter); ok {
 			// Broker adoption is optional diagnostic continuity. A failed reattach must not
 			// turn a proven live managed process into a recovery quarantine; the checksummed
 			// spool remains available through the ordinary historical-output path.
@@ -299,18 +299,18 @@ func (coordinator *ProjectLifecycleCoordinator) settleRecoveredProjectProcess(
 	ctx context.Context,
 	operation string,
 	evidence domain.ProcessEvidence,
-) (projectprocess.PriorProcessSettlement, error) {
-	settlement, err := coordinator.supervisor.SettlePriorProcess(ctx, evidence)
+) (projectruntime.PriorProcessSettlement, error) {
+	settlement, err := coordinator.runtime.SettlePriorProcess(ctx, evidence)
 	if err != nil {
-		return projectprocess.PriorProcessSettlement{}, fmt.Errorf("settle prior process for %s: %w", operation, err)
+		return projectruntime.PriorProcessSettlement{}, fmt.Errorf("settle prior process for %s: %w", operation, err)
 	}
 	switch settlement.Outcome {
-	case projectprocess.PriorProcessSettlementAbsent,
-		projectprocess.PriorProcessSettlementReplaced,
-		projectprocess.PriorProcessSettlementTerminated:
+	case projectruntime.PriorProcessSettlementAbsent,
+		projectruntime.PriorProcessSettlementReplaced,
+		projectruntime.PriorProcessSettlementTerminated:
 		return settlement, nil
 	default:
-		return projectprocess.PriorProcessSettlement{}, fmt.Errorf(
+		return projectruntime.PriorProcessSettlement{}, fmt.Errorf(
 			"settle prior process for %s: unsupported outcome %q",
 			operation,
 			settlement.Outcome,
@@ -411,11 +411,7 @@ func (coordinator *ProjectLifecycleCoordinator) repairReceiptFreeProjectListener
 	if coordinator == nil || coordinator.primaryLeases == nil || coordinator.primaryLeases.runtimeRepairer == nil {
 		return errors.New("project-owned primary listener repair is unavailable")
 	}
-	target, err := coordinator.primaryLeases.discoverer.DiscoverDefaultRuntimeAtAddress(
-		ctx,
-		boundary.Project.Project.Path,
-		boundary.PrimaryLease.Address,
-	)
+	plan, err := coordinator.primaryLeases.preparer.Prepare(ctx, projectruntime.PreparationRequest{CheckoutRoot: boundary.Project.Project.Path, Address: boundary.PrimaryLease.Address})
 	if err != nil {
 		return fmt.Errorf("discover project-owned primary listener: %w", err)
 	}
@@ -423,7 +419,7 @@ func (coordinator *ProjectLifecycleCoordinator) repairReceiptFreeProjectListener
 		ctx,
 		boundary.Project.Project.Path,
 		boundary.PrimaryLease.Address,
-		target.Port,
+		plan.NetworkAssignment.PrimaryPort,
 		false,
 	)
 	if err != nil {
@@ -443,11 +439,7 @@ func (coordinator *ProjectLifecycleCoordinator) repairProjectOwnedPrimaryListene
 	if coordinator == nil || coordinator.primaryLeases == nil || coordinator.primaryLeases.runtimeRepairer == nil {
 		return errors.New("project-owned primary listener repair is unavailable")
 	}
-	target, err := coordinator.primaryLeases.discoverer.DiscoverDefaultRuntimeAtAddress(
-		ctx,
-		boundary.Project.Project.Path,
-		boundary.PrimaryLease.Address,
-	)
+	plan, err := coordinator.primaryLeases.preparer.Prepare(ctx, projectruntime.PreparationRequest{CheckoutRoot: boundary.Project.Project.Path, Address: boundary.PrimaryLease.Address})
 	if err != nil {
 		return fmt.Errorf("discover project-owned primary listener for %q: %w", boundary.Project.Project.ID, err)
 	}
@@ -455,7 +447,7 @@ func (coordinator *ProjectLifecycleCoordinator) repairProjectOwnedPrimaryListene
 		ctx,
 		boundary.Project.Project.Path,
 		boundary.PrimaryLease.Address,
-		target.Port,
+		plan.NetworkAssignment.PrimaryPort,
 		true,
 	)
 	if err != nil {

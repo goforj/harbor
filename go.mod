@@ -22,7 +22,6 @@ require (
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
 	github.com/rs/zerolog v1.35.1
-	golang.org/x/mod v0.31.0
 	golang.org/x/net v0.48.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
@@ -57,6 +56,7 @@ require (
 	go.opentelemetry.io/otel v1.35.0 // indirect
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
+	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/tools v0.40.0 // indirect
 	modernc.org/libc v1.22.5 // indirect

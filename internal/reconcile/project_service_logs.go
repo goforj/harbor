@@ -67,7 +67,11 @@ func (coordinator *ProjectLifecycleCoordinator) ServiceLogs(
 	ctx context.Context,
 	request ProjectServiceLogsRequest,
 ) (ProjectServiceLogs, error) {
-	return readCurrentProjectServiceLogs(ctx, coordinator.state, coordinator.supervisor, request)
+	reader, ok := coordinator.projectRuntimeCapabilities().(projectServiceLogReader)
+	if !ok {
+		return ProjectServiceLogs{}, errors.New("project runtime service log reader is unavailable")
+	}
+	return readCurrentProjectServiceLogs(ctx, coordinator.state, reader, request)
 }
 
 // readCurrentProjectServiceLogs keeps durable project, service, and session selection ahead of runtime access.

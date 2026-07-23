@@ -57,7 +57,11 @@ func (coordinator *ProjectLifecycleCoordinator) ProjectActivity(
 	ctx context.Context,
 	request ProjectActivityRequest,
 ) (ProjectActivity, error) {
-	return readCurrentProjectActivity(ctx, coordinator.state, coordinator.supervisor, request)
+	reader, ok := coordinator.projectRuntimeCapabilities().(projectActivityOutputReader)
+	if !ok {
+		return ProjectActivity{}, errors.New("project runtime output reader is unavailable")
+	}
+	return readCurrentProjectActivity(ctx, coordinator.state, reader, request)
 }
 
 // readCurrentProjectActivity keeps durable selection ahead of any in-memory process access.

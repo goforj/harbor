@@ -20,6 +20,11 @@ import (
 
 const managedRuntimeHTTPID = "http"
 
+// projectDescriptorObserver exposes GoForj descriptor enrichment used only by managed-session planning.
+type projectDescriptorObserver interface {
+	ObserveProjectDescriptor(context.Context, string) (projectprocess.ProjectDescriptorObservation, error)
+}
+
 // PlanManagedRuntime derives one complete private runtime assignment from Harbor-owned lease and observation facts.
 //
 // App binds come from the static descriptor's declared ports and the project's durable loopback identity. Service
@@ -50,7 +55,7 @@ func (coordinator *ProjectLifecycleCoordinator) PlanManagedRuntime(
 	if active.ID != request.Fence.SessionID || active.Generation != request.Fence.SessionGeneration || active.State != domain.SessionAttached || active.Process == nil {
 		return managedsession.RuntimePlanResponse{}, fmt.Errorf("%w: managed runtime fence is not the attached process", managedsession.ErrManagedSessionNotReady)
 	}
-	descriptorObserver, ok := coordinator.supervisor.(projectDescriptorObserver)
+	descriptorObserver, ok := coordinator.projectRuntimeCapabilities().(projectDescriptorObserver)
 	if !ok {
 		return managedsession.RuntimePlanResponse{}, fmt.Errorf("%w: managed runtime descriptor observer is unavailable", managedsession.ErrManagedSessionNotReady)
 	}

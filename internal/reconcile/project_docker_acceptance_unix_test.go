@@ -20,6 +20,7 @@ import (
 
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/goforjruntime"
 	"github.com/goforj/harbor/internal/productproof"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
@@ -116,7 +117,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		ContainerRuntime:     runtime,
 		ServiceLogIdlePeriod: time.Second,
 	})
-	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
+	coordinator := NewProjectLifecycleCoordinator(store, journal, goforjruntime.New(supervisor), projectLifecycleTestRouteReconciler{})
 	t.Cleanup(func() {
 		closeContext, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer closeCancel()

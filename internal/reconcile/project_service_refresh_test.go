@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/goforj"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -127,8 +127,8 @@ func (source *projectServiceRefreshTestState) RuntimeRefreshes() []state.Refresh
 // projectServiceRefreshTestSupervisor supplies one host event and then waits for watcher cancellation.
 type projectServiceRefreshTestSupervisor struct {
 	*projectprocess.Supervisor
-	observation         projectprocess.ServiceObservation
-	resourceObservation projectprocess.FrameworkResourceObservation
+	observation         projectruntime.ServiceObservation
+	resourceObservation projectruntime.ResourceObservation
 	resourceErr         error
 	changeErr           error
 	changeErrors        []error
@@ -165,23 +165,22 @@ func (supervisor *projectServiceRefreshTestSupervisor) ObserveServices(
 	context.Context,
 	domain.ProjectID,
 	domain.SessionID,
-) (projectprocess.ServiceObservation, error) {
+) (projectruntime.ServiceObservation, error) {
 	supervisor.mutex.Lock()
 	defer supervisor.mutex.Unlock()
 	supervisor.observeCalls++
 	call := supervisor.observeCalls
 	if call <= len(supervisor.observationErrors) {
-		return projectprocess.ServiceObservation{}, supervisor.observationErrors[call-1]
+		return projectruntime.ServiceObservation{}, supervisor.observationErrors[call-1]
 	}
 	return supervisor.observation, nil
 }
 
-// ObserveFrameworkResources returns the configured fresh framework catalog after a host wake edge.
-func (supervisor *projectServiceRefreshTestSupervisor) ObserveFrameworkResources(
+// ObserveResources returns the configured fresh framework catalog after a host wake edge.
+func (supervisor *projectServiceRefreshTestSupervisor) ObserveResources(
 	context.Context,
-	domain.ProjectID,
-	domain.SessionID,
-) (projectprocess.FrameworkResourceObservation, error) {
+	projectruntime.ResourceObservationRequest,
+) (projectruntime.ResourceObservation, error) {
 	supervisor.mutex.Lock()
 	defer supervisor.mutex.Unlock()
 	supervisor.resourceCalls++
@@ -289,17 +288,17 @@ func TestWatchReadyServicesRefreshesFromFreshObservation(t *testing.T) {
 		refreshDone: make(chan struct{}),
 	}
 	supervisor := &projectServiceRefreshTestSupervisor{
-		observation: projectprocess.ServiceObservation{
+		observation: projectruntime.ServiceObservation{
 			Supported: true,
 			Services:  []domain.ServiceSnapshot{service},
 		},
 	}
 	routes := new(projectServiceRefreshTestRoutes)
 	coordinator := &ProjectLifecycleCoordinator{
-		state:      source,
-		supervisor: supervisor,
-		routes:     routes,
-		now:        func() time.Time { return at },
+		state:               source,
+		runtimeCapabilities: supervisor,
+		routes:              routes,
+		now:                 func() time.Time { return at },
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -373,22 +372,22 @@ func TestWatchReadyServicesRefreshesFrameworkResourcesAfterFreshObservation(t *t
 		project: project, session: session, runtimeRefresh: refreshed, runtimeDone: make(chan struct{}),
 	}
 	supervisor := &projectServiceRefreshTestSupervisor{
-		observation: projectprocess.ServiceObservation{Supported: true, Services: []domain.ServiceSnapshot{service}},
-		resourceObservation: projectprocess.FrameworkResourceObservation{Supported: true, Resources: []projectprocess.FrameworkResource{{
-			ID: "swagger", Name: "Swagger", Kind: "docs", URL: "http://127.77.4.8:3000/swagger", App: "app", Runtime: "http",
+		observation: projectruntime.ServiceObservation{Supported: true, Services: []domain.ServiceSnapshot{service}},
+		resourceObservation: projectruntime.ResourceObservation{Supported: true, Resources: []domain.ResourceSnapshot{{
+			ID: "swagger", Name: "Swagger", Kind: "docs", URL: "http://127.77.4.8:3000/swagger", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"},
 		}}},
 	}
 	routes := new(projectServiceRefreshTestRoutes)
-	target, descriptor := projectServiceRefreshTestRuntimeContext(t)
+	target, _ := projectServiceRefreshTestRuntimeContext(t)
 	coordinator := &ProjectLifecycleCoordinator{
-		state: source, supervisor: supervisor, routes: routes, now: func() time.Time { return at },
+		state: source, runtimeCapabilities: supervisor, routes: routes, now: func() time.Time { return at },
 		primaryLeases: projectServiceRefreshTestLeaseCoordinator(t, source, target.Address),
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		coordinator.watchReadyServicesWithRuntime(ctx, project, session, target, descriptor)
+		coordinator.watchReadyServicesWithRuntime(ctx, project, session, projectRuntimePlanForTest(target))
 	}()
 	select {
 	case <-source.runtimeDone:
@@ -428,20 +427,20 @@ func TestWatchReadyServicesPreservesResourcesWhenFrameworkObservationUnsupported
 	session := projectActivityTestSession()
 	source := &projectServiceRefreshTestState{project: project, session: session, refresh: project, refreshDone: make(chan struct{})}
 	supervisor := &projectServiceRefreshTestSupervisor{
-		observation:         projectprocess.ServiceObservation{Supported: true, Services: []domain.ServiceSnapshot{}},
-		resourceObservation: projectprocess.FrameworkResourceObservation{Supported: false},
+		observation:         projectruntime.ServiceObservation{Supported: true, Services: []domain.ServiceSnapshot{}},
+		resourceObservation: projectruntime.ResourceObservation{Supported: false},
 	}
 	routes := new(projectServiceRefreshTestRoutes)
-	target, descriptor := projectServiceRefreshTestRuntimeContext(t)
+	target, _ := projectServiceRefreshTestRuntimeContext(t)
 	coordinator := &ProjectLifecycleCoordinator{
-		state: source, supervisor: supervisor, routes: routes, now: time.Now,
+		state: source, runtimeCapabilities: supervisor, routes: routes, now: time.Now,
 		primaryLeases: projectServiceRefreshTestLeaseCoordinator(t, source, target.Address),
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		coordinator.watchReadyServicesWithRuntime(ctx, project, session, target, descriptor)
+		coordinator.watchReadyServicesWithRuntime(ctx, project, session, projectRuntimePlanForTest(target))
 	}()
 	select {
 	case <-source.refreshDone:
@@ -472,12 +471,12 @@ func TestRefreshReadyProjectRuntimePreservesResourcesWhenFrameworkObservationErr
 	session := projectActivityTestSession()
 	source := &projectServiceRefreshTestState{project: project, session: session, refresh: project}
 	supervisor := &projectServiceRefreshTestSupervisor{resourceErr: errors.New("resource query failed")}
-	target, descriptor := projectServiceRefreshTestRuntimeContext(t)
+	target, _ := projectServiceRefreshTestRuntimeContext(t)
 	primaryLeases := projectServiceRefreshTestLeaseCoordinator(t, source, target.Address)
-	coordinator := &ProjectLifecycleCoordinator{state: source, supervisor: supervisor, primaryLeases: primaryLeases, now: time.Now}
+	coordinator := &ProjectLifecycleCoordinator{state: source, runtimeCapabilities: supervisor, primaryLeases: primaryLeases, now: time.Now}
 	refreshed, err, resourceRefresh := coordinator.refreshReadyProjectRuntime(
 		t.Context(), source, source, true, project, session, project.Revision, project.Project.UpdatedAt,
-		target, descriptor, []domain.ServiceSnapshot{},
+		projectRuntimePlanForTest(target), []domain.ServiceSnapshot{},
 	)
 	if err != nil {
 		t.Fatalf("refreshReadyProjectRuntime() error = %v", err)
@@ -496,18 +495,18 @@ func TestWatchReadyServicesWithdrawsRoutesOnResourceFenceFailure(t *testing.T) {
 	project.Project.State = domain.ProjectReady
 	session := projectActivityTestSession()
 	source := &projectServiceRefreshTestState{project: project, session: session}
-	target, descriptor := projectServiceRefreshTestRuntimeContext(t)
+	target, _ := projectServiceRefreshTestRuntimeContext(t)
 	primaryLeases := projectServiceRefreshTestLeaseCoordinator(t, source, target.Address)
 	source.network.Leases[0].Address = netip.MustParseAddr("127.77.4.9")
 	supervisor := &projectServiceRefreshTestSupervisor{
-		observation:         projectprocess.ServiceObservation{Supported: true, Services: []domain.ServiceSnapshot{}},
-		resourceObservation: projectprocess.FrameworkResourceObservation{Supported: true},
+		observation:         projectruntime.ServiceObservation{Supported: true, Services: []domain.ServiceSnapshot{}},
+		resourceObservation: projectruntime.ResourceObservation{Supported: true},
 	}
 	routes := new(projectServiceRefreshTestRoutes)
 	coordinator := &ProjectLifecycleCoordinator{
-		state: source, supervisor: supervisor, primaryLeases: primaryLeases, routes: routes, now: time.Now,
+		state: source, runtimeCapabilities: supervisor, primaryLeases: primaryLeases, routes: routes, now: time.Now,
 	}
-	coordinator.watchReadyServicesWithRuntime(t.Context(), project, session, target, descriptor)
+	coordinator.watchReadyServicesWithRuntime(t.Context(), project, session, projectRuntimePlanForTest(target))
 	if routes.Calls() != 1 {
 		t.Fatalf("route reconciliation calls = %d, want one fail-closed withdrawal edge", routes.Calls())
 	}
@@ -521,12 +520,12 @@ func TestWatchReadyServicesStopsQuietlyWhenEventsAreUnsupported(t *testing.T) {
 	project := projectActivityTestProject()
 	session := projectActivityTestSession()
 	source := &projectServiceRefreshTestState{project: project, session: session}
-	supervisor := &projectServiceRefreshTestSupervisor{changeErr: containerruntime.ErrProjectChangeUnsupported}
+	supervisor := &projectServiceRefreshTestSupervisor{changeErr: projectruntime.ErrServiceChangeUnsupported}
 	coordinator := &ProjectLifecycleCoordinator{
-		state:      source,
-		supervisor: supervisor,
-		routes:     new(projectServiceRefreshTestRoutes),
-		now:        time.Now,
+		state:               source,
+		runtimeCapabilities: supervisor,
+		routes:              new(projectServiceRefreshTestRoutes),
+		now:                 time.Now,
 	}
 
 	coordinator.watchReadyServices(t.Context(), project, session)
@@ -549,10 +548,10 @@ func TestWatchReadyServicesRecordsUnexpectedEventWaitFailure(t *testing.T) {
 	project := projectActivityTestProject()
 	session := projectActivityTestSession()
 	coordinator := &ProjectLifecycleCoordinator{
-		state:      &projectServiceRefreshTestState{project: project, session: session},
-		supervisor: supervisor,
-		routes:     new(projectServiceRefreshTestRoutes),
-		now:        time.Now,
+		state:               &projectServiceRefreshTestState{project: project, session: session},
+		runtimeCapabilities: supervisor,
+		routes:              new(projectServiceRefreshTestRoutes),
+		now:                 time.Now,
 	}
 
 	coordinator.watchReadyServices(t.Context(), project, session)
@@ -583,14 +582,14 @@ func TestWatchReadyServicesReconnectsTransientEventFailure(t *testing.T) {
 		refreshDone: make(chan struct{}),
 	}
 	supervisor := &projectServiceRefreshTestSupervisor{
-		changeErrors: []error{fmt.Errorf("%w: Docker is restarting", containerruntime.ErrProjectChangeTransient)},
-		observation: projectprocess.ServiceObservation{
+		changeErrors: []error{fmt.Errorf("%w: Docker is restarting", projectruntime.ErrServiceChangeTransient)},
+		observation: projectruntime.ServiceObservation{
 			Supported: true,
 			Services:  []domain.ServiceSnapshot{service},
 		},
 	}
 	coordinator := &ProjectLifecycleCoordinator{
-		state: source, supervisor: supervisor, routes: new(projectServiceRefreshTestRoutes), now: func() time.Time { return at },
+		state: source, runtimeCapabilities: supervisor, routes: new(projectServiceRefreshTestRoutes), now: func() time.Time { return at },
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -620,7 +619,7 @@ func TestWatchReadyServicesReconnectsTransientEventFailure(t *testing.T) {
 
 // TestWatchReadyServicesSurfacesPersistentTransientEventFailure keeps reconnect attempts bounded and diagnosable.
 func TestWatchReadyServicesSurfacesPersistentTransientEventFailure(t *testing.T) {
-	testErr := fmt.Errorf("%w: Docker remains unavailable", containerruntime.ErrProjectChangeTransient)
+	testErr := fmt.Errorf("%w: Docker remains unavailable", projectruntime.ErrServiceChangeTransient)
 	changeErrors := make([]error, maximumServiceChangeRetries+1)
 	for index := range changeErrors {
 		changeErrors[index] = testErr
@@ -629,10 +628,10 @@ func TestWatchReadyServicesSurfacesPersistentTransientEventFailure(t *testing.T)
 	project := projectActivityTestProject()
 	session := projectActivityTestSession()
 	coordinator := &ProjectLifecycleCoordinator{
-		state:      &projectServiceRefreshTestState{project: project, session: session},
-		supervisor: supervisor,
-		routes:     new(projectServiceRefreshTestRoutes),
-		now:        time.Now,
+		state:               &projectServiceRefreshTestState{project: project, session: session},
+		runtimeCapabilities: supervisor,
+		routes:              new(projectServiceRefreshTestRoutes),
+		now:                 time.Now,
 	}
 
 	coordinator.watchReadyServices(t.Context(), project, session)
@@ -665,14 +664,14 @@ func TestWatchReadyServicesRetriesTransientObservationFailure(t *testing.T) {
 		refreshDone: make(chan struct{}),
 	}
 	supervisor := &projectServiceRefreshTestSupervisor{
-		observationErrors: []error{fmt.Errorf("%w: Docker is restarting", containerruntime.ErrProjectObservationTransient)},
-		observation: projectprocess.ServiceObservation{
+		observationErrors: []error{fmt.Errorf("%w: Docker is restarting", projectruntime.ErrServiceObservationTransient)},
+		observation: projectruntime.ServiceObservation{
 			Supported: true,
 			Services:  []domain.ServiceSnapshot{service},
 		},
 	}
 	coordinator := &ProjectLifecycleCoordinator{
-		state: source, supervisor: supervisor, routes: new(projectServiceRefreshTestRoutes), now: func() time.Time { return at },
+		state: source, runtimeCapabilities: supervisor, routes: new(projectServiceRefreshTestRoutes), now: func() time.Time { return at },
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -702,7 +701,7 @@ func TestWatchReadyServicesRetriesTransientObservationFailure(t *testing.T) {
 
 // TestWatchReadyServicesSurfacesPersistentTransientObservationFailure keeps Docker observation retries bounded and diagnosable.
 func TestWatchReadyServicesSurfacesPersistentTransientObservationFailure(t *testing.T) {
-	testErr := fmt.Errorf("%w: Docker remains unavailable", containerruntime.ErrProjectObservationTransient)
+	testErr := fmt.Errorf("%w: Docker remains unavailable", projectruntime.ErrServiceObservationTransient)
 	observationErrors := make([]error, maximumServiceObservationRetries+1)
 	for index := range observationErrors {
 		observationErrors[index] = testErr
@@ -711,10 +710,10 @@ func TestWatchReadyServicesSurfacesPersistentTransientObservationFailure(t *test
 	project := projectActivityTestProject()
 	session := projectActivityTestSession()
 	coordinator := &ProjectLifecycleCoordinator{
-		state:      &projectServiceRefreshTestState{project: project, session: session},
-		supervisor: supervisor,
-		routes:     new(projectServiceRefreshTestRoutes),
-		now:        time.Now,
+		state:               &projectServiceRefreshTestState{project: project, session: session},
+		runtimeCapabilities: supervisor,
+		routes:              new(projectServiceRefreshTestRoutes),
+		now:                 time.Now,
 	}
 
 	coordinator.watchReadyServices(t.Context(), project, session)
@@ -730,7 +729,7 @@ func TestWatchReadyServicesSurfacesPersistentTransientObservationFailure(t *test
 func TestObserveServicesWithRetryKeepsNonTransientFailureTerminal(t *testing.T) {
 	testErr := errors.New("malformed service observation")
 	supervisor := &projectServiceRefreshTestSupervisor{observationErrors: []error{testErr}}
-	coordinator := &ProjectLifecycleCoordinator{supervisor: supervisor}
+	coordinator := &ProjectLifecycleCoordinator{runtimeCapabilities: supervisor}
 	project := projectActivityTestProject()
 	session := projectActivityTestSession()
 

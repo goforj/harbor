@@ -8,22 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/netip"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
-	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
-	"github.com/goforj/harbor/internal/goforj"
-	"github.com/goforj/harbor/internal/projectdiscovery"
-	"github.com/goforj/harbor/internal/projectprocess"
-	"github.com/goforj/harbor/internal/projectreadiness"
-	"github.com/goforj/harbor/internal/rpc/local"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -122,32 +114,6 @@ type projectLifecycleJournal interface {
 	ActiveOperations(context.Context) ([]state.OperationRecord, error)
 }
 
-// projectReadinessProber performs one bounded readiness observation.
-type projectReadinessProber interface {
-	Probe(context.Context, projectdiscovery.RuntimeTarget) (projectreadiness.State, error)
-}
-
-// projectProcessSupervisor owns exact project process trees for the daemon lifetime.
-type projectProcessSupervisor interface {
-	Start(context.Context, projectprocess.StartRequest) (*projectprocess.Handle, error)
-	Down(context.Context, projectprocess.DownRequest) error
-	Stop(context.Context, domain.ProjectID, domain.SessionID) error
-	ObserveServices(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.ServiceObservation, error)
-	ObserveFrameworkResources(context.Context, domain.ProjectID, domain.SessionID) (projectprocess.FrameworkResourceObservation, error)
-	ReadOutput(domain.ProjectID, domain.SessionID, uint64) projectprocess.OutputChunk
-	WaitOutput(context.Context, domain.ProjectID, domain.SessionID, uint64) (projectprocess.OutputChunk, error)
-	ReadServiceLogs(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID, uint64) (projectprocess.ServiceLogSelection, error)
-	WaitServiceLogs(context.Context, domain.ProjectID, domain.SessionID, domain.ServiceID, uint64) (projectprocess.ServiceLogSelection, error)
-	ObservePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessObservation, error)
-	SettlePriorProcess(context.Context, domain.ProcessEvidence) (projectprocess.PriorProcessSettlement, error)
-	Close(context.Context) error
-}
-
-// projectServiceChangeWaiter is the optional host-event wake boundary used after a project becomes ready.
-type projectServiceChangeWaiter interface {
-	WaitServiceChange(context.Context, domain.ProjectID, domain.SessionID) error
-}
-
 // projectRuntimeRefresher is the optional durable projection boundary for a fresh service observation.
 type projectRuntimeRefresher interface {
 	RefreshProjectServices(context.Context, state.RefreshProjectServicesRequest) (state.ProjectRecord, error)
@@ -158,64 +124,56 @@ type projectRuntimeProjectionRefresher interface {
 	RefreshProjectRuntime(context.Context, state.RefreshProjectRuntimeRequest) (state.ProjectRecord, error)
 }
 
-// projectDescriptorObserver exposes optional static descriptor enrichment outside critical lifecycle execution.
-type projectDescriptorObserver interface {
-	ObserveProjectDescriptor(context.Context, string) (projectprocess.ProjectDescriptorObservation, error)
-}
-
 // ProjectRouteReconciler projects durable project lifecycle changes into Harbor's live route table.
 type ProjectRouteReconciler interface {
 	Reconcile(context.Context) error
 }
 
-// ProjectLifecycleCoordinator turns durable start, stop, and scoped restart intents into supervised GoForj development processes.
+// ProjectLifecycleCoordinator turns durable start, stop, and scoped restart intents into supervised project runtime processes.
 type ProjectLifecycleCoordinator struct {
-	state              projectLifecycleState
-	operations         projectLifecycleJournal
-	primaryLeases      *projectPrimaryLeaseCoordinator
-	readiness          projectReadinessProber
-	supervisor         projectProcessSupervisor
-	routes             ProjectRouteReconciler
-	now                func() time.Time
-	newOperationID     func() (domain.OperationID, error)
-	newIntentID        func() (domain.IntentID, error)
-	newSession         func(domain.ProjectID, string, time.Time) (domain.ProjectSession, error)
-	newManagedLaunch   func(domain.ProjectID, string, time.Time) (domain.ProjectSession, string, error)
-	startupTimeout     time.Duration
-	launchTimeout      time.Duration
-	resetTimeout       time.Duration
-	processJoinTimeout time.Duration
-	readinessInterval  time.Duration
-	ctx                context.Context
-	cancel             context.CancelFunc
-	mutex              sync.Mutex
-	closed             bool
-	closeDone          chan struct{}
-	closeErr           error
-	asyncErr           error
-	dispatched         map[domain.OperationID]struct{}
-	recoveredStarts    []state.OperationRecord
-	handles            map[domain.ProjectID]*projectprocess.Handle
-	wait               sync.WaitGroup
+	state               projectLifecycleState
+	operations          projectLifecycleJournal
+	primaryLeases       *projectPrimaryLeaseCoordinator
+	runtime             projectruntime.Runtime
+	runtimeCapabilities any
+	routes              ProjectRouteReconciler
+	now                 func() time.Time
+	newOperationID      func() (domain.OperationID, error)
+	newIntentID         func() (domain.IntentID, error)
+	newSession          func(domain.ProjectID, string, time.Time) (domain.ProjectSession, error)
+	startupTimeout      time.Duration
+	launchTimeout       time.Duration
+	resetTimeout        time.Duration
+	processJoinTimeout  time.Duration
+	readinessInterval   time.Duration
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	mutex               sync.Mutex
+	closed              bool
+	closeDone           chan struct{}
+	closeErr            error
+	asyncErr            error
+	dispatched          map[domain.OperationID]struct{}
+	recoveredStarts     []state.OperationRecord
+	handles             map[domain.ProjectID]projectruntime.Handle
+	wait                sync.WaitGroup
 }
 
 // NewProjectLifecycleCoordinator creates the production project-process reconciler.
 func NewProjectLifecycleCoordinator(
 	projectState *state.Store,
 	operations *state.OperationJournal,
-	supervisor *projectprocess.Supervisor,
+	runtime projectruntime.Runtime,
 	routes ProjectRouteReconciler,
 ) *ProjectLifecycleCoordinator {
-	if projectState == nil || operations == nil || supervisor == nil || nilDependency(routes) {
-		panic("reconcile.NewProjectLifecycleCoordinator requires non-nil state, journal, supervisor, and route dependencies")
+	if projectState == nil || operations == nil || nilDependency(runtime) || nilDependency(routes) {
+		panic("reconcile.NewProjectLifecycleCoordinator requires non-nil state, journal, runtime, and route dependencies")
 	}
-	discoverer := projectdiscovery.NewDiscoverer()
 	coordinator := newProjectLifecycleCoordinator(
 		projectState,
 		operations,
-		newSystemProjectPrimaryLeaseCoordinator(projectState, discoverer),
-		projectreadiness.NewProber(&http.Client{Timeout: defaultReadinessHTTPTimeout}),
-		supervisor,
+		newSystemProjectPrimaryLeaseCoordinator(projectState, runtime),
+		runtime,
 		routes,
 		time.Now,
 		newLifecycleOperationID,
@@ -227,13 +185,30 @@ func NewProjectLifecycleCoordinator(
 	return coordinator
 }
 
+// observeRuntimeServices reads optional runtime service state without making it a launch requirement.
+func (coordinator *ProjectLifecycleCoordinator) observeRuntimeServices(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) (projectruntime.ServiceObservation, error) {
+	observer, ok := coordinator.projectRuntimeCapabilities().(projectruntime.ServiceObserver)
+	if !ok {
+		return projectruntime.ServiceObservation{}, errors.New("project runtime service observation is unavailable")
+	}
+	return observer.ObserveServices(ctx, projectID, sessionID)
+}
+
+// observeRuntimeResources reads optional runtime resource state without making it a launch requirement.
+func (coordinator *ProjectLifecycleCoordinator) observeRuntimeResources(ctx context.Context, request projectruntime.ResourceObservationRequest) (projectruntime.ResourceObservation, error) {
+	observer, ok := coordinator.projectRuntimeCapabilities().(projectruntime.ResourceObserver)
+	if !ok {
+		return projectruntime.ResourceObservation{}, errors.New("project runtime resource observation is unavailable")
+	}
+	return observer.ObserveResources(ctx, request)
+}
+
 // newProjectLifecycleCoordinator keeps clocks, identity, discovery, process, and readiness boundaries deterministic in tests.
 func newProjectLifecycleCoordinator(
 	projectState projectLifecycleState,
 	operations projectLifecycleJournal,
 	primaryLeases *projectPrimaryLeaseCoordinator,
-	readiness projectReadinessProber,
-	supervisor projectProcessSupervisor,
+	runtime projectruntime.Runtime,
 	routes ProjectRouteReconciler,
 	now func() time.Time,
 	newOperationID func() (domain.OperationID, error),
@@ -243,7 +218,7 @@ func newProjectLifecycleCoordinator(
 	readinessInterval time.Duration,
 ) *ProjectLifecycleCoordinator {
 	if nilDependency(projectState) || nilDependency(operations) || nilDependency(primaryLeases) ||
-		nilDependency(readiness) || nilDependency(supervisor) || nilDependency(routes) || nilDependency(now) ||
+		nilDependency(runtime) || nilDependency(routes) || nilDependency(now) ||
 		nilDependency(newOperationID) || nilDependency(newIntentID) || nilDependency(newSession) {
 		panic("reconcile.newProjectLifecycleCoordinator requires every dependency")
 	}
@@ -252,27 +227,35 @@ func newProjectLifecycleCoordinator(
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ProjectLifecycleCoordinator{
-		state:              projectState,
-		operations:         operations,
-		primaryLeases:      primaryLeases,
-		readiness:          readiness,
-		supervisor:         supervisor,
-		routes:             routes,
-		now:                now,
-		newOperationID:     newOperationID,
-		newIntentID:        newIntentID,
-		newSession:         newSession,
-		startupTimeout:     startupTimeout,
-		launchTimeout:      defaultProjectLaunchTimeout,
-		resetTimeout:       defaultProjectResetTimeout,
-		processJoinTimeout: defaultProjectProcessJoinTimeout,
-		readinessInterval:  readinessInterval,
-		ctx:                ctx,
-		cancel:             cancel,
-		dispatched:         make(map[domain.OperationID]struct{}),
-		handles:            make(map[domain.ProjectID]*projectprocess.Handle),
-		closeDone:          make(chan struct{}),
+		state:               projectState,
+		operations:          operations,
+		primaryLeases:       primaryLeases,
+		runtime:             runtime,
+		runtimeCapabilities: runtime,
+		routes:              routes,
+		now:                 now,
+		newOperationID:      newOperationID,
+		newIntentID:         newIntentID,
+		newSession:          newSession,
+		startupTimeout:      startupTimeout,
+		launchTimeout:       defaultProjectLaunchTimeout,
+		resetTimeout:        defaultProjectResetTimeout,
+		processJoinTimeout:  defaultProjectProcessJoinTimeout,
+		readinessInterval:   readinessInterval,
+		ctx:                 ctx,
+		cancel:              cancel,
+		dispatched:          make(map[domain.OperationID]struct{}),
+		handles:             make(map[domain.ProjectID]projectruntime.Handle),
+		closeDone:           make(chan struct{}),
 	}
+}
+
+// projectRuntimeCapabilities returns optional enrichment implemented alongside the required lifecycle runtime.
+func (coordinator *ProjectLifecycleCoordinator) projectRuntimeCapabilities() any {
+	if coordinator.runtimeCapabilities != nil {
+		return coordinator.runtimeCapabilities
+	}
+	return coordinator.runtime
 }
 
 // Start durably journals one idempotent intent before scheduling its supervised process launch.
@@ -494,7 +477,6 @@ func (coordinator *ProjectLifecycleCoordinator) resetBeforeLaunch(
 	mutation state.ProjectLifecycleMutation,
 	session domain.ProjectSession,
 	checkoutRoot string,
-	executable string,
 	code string,
 ) bool {
 	if err := coordinator.reconcileProjectRoutes(context.Background(), "withdraw project routes before runtime reset"); err != nil {
@@ -502,15 +484,12 @@ func (coordinator *ProjectLifecycleCoordinator) resetBeforeLaunch(
 		return false
 	}
 	resetContext, cancelReset := coordinator.withProjectResetTimeout()
-	err := coordinator.supervisor.Down(resetContext, projectprocess.DownRequest{
-		CheckoutRoot:     checkoutRoot,
-		GoForjExecutable: executable,
-	})
+	err := coordinator.runtime.Reset(resetContext, projectruntime.ResetRequest{CheckoutRoot: checkoutRoot})
 	cancelReset()
 	if err == nil {
 		return true
 	}
-	if errors.Is(err, projectprocess.ErrCleanupUncertain) {
+	if errors.Is(err, projectruntime.ErrCleanupUncertain) {
 		// Down never accepts a development-process identity. Retire this planned session so a
 		// subsequent Start can reach the supervisor's in-memory checkout fence, rather than
 		// persisting a process-scope quarantine that blocks every retry before Down runs again.
@@ -642,12 +621,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	if at.Before(admission.NetworkUpdatedAt) {
 		at = admission.NetworkUpdatedAt
 	}
-	session, managedLaunch, err := coordinator.prepareLaunchSession(
-		record.Operation.ProjectID,
-		project.Project.Path,
-		at,
-		projectprocess.ProjectDescriptorObservation{},
-	)
+	session, err := coordinator.newSession(record.Operation.ProjectID, project.Project.Path, at)
 	if err != nil {
 		coordinator.cancelQueued(record, err)
 		return
@@ -667,25 +641,23 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		coordinator.cancelQueued(record, err)
 		return
 	}
-	if !coordinator.resetBeforeLaunch(begun, session, project.Project.Path, "", "project.reset") {
+	if !coordinator.resetBeforeLaunch(begun, session, project.Project.Path, "project.reset") {
 		return
 	}
 
 	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
-	handle, err := coordinator.supervisor.Start(launchContext, projectprocess.StartRequest{
-		ProjectID:            record.Operation.ProjectID,
-		SessionID:            session.ID,
-		CheckoutRoot:         project.Project.Path,
-		GoForjExecutable:     "",
-		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
-		ManagedLaunch:        managedLaunch,
+	handle, err := coordinator.runtime.Launch(launchContext, projectruntime.LaunchRequest{
+		ProjectID:         record.Operation.ProjectID,
+		SessionID:         session.ID,
+		CheckoutRoot:      project.Project.Path,
+		NetworkAssignment: admission.Plan.NetworkAssignment,
 		// The daemon retains this transcript for its authenticated clients; mirroring it would mix project output with daemon diagnostics.
 		Stdout: io.Discard,
 		Stderr: io.Discard,
 	})
 	cancelLaunch()
 	if err != nil {
-		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
+		if errors.Is(err, projectruntime.ErrCleanupUncertain) {
 			problem := domain.Problem{
 				Code: projectRecoveryAmbiguousLaunchCode,
 				Message: "Harbor accepted the project process but could not prove that every descendant stopped. " +
@@ -707,7 +679,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 	}
 	coordinator.retainHandle(record.Operation.ProjectID, handle)
 	evidence := processEvidence(handle.Info())
-	broker := outputBrokerSession(handle.Info().OutputBroker)
+	broker := handle.Info().OutputBroker
 	attachedAt := lifecycleTime(coordinator.now())
 	if attachedAt.Before(session.UpdatedAt) {
 		attachedAt = session.UpdatedAt
@@ -732,8 +704,7 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		begun,
 		attached,
 		handle,
-		admission.Target,
-		projectprocess.ProjectDescriptorObservation{},
+		admission.Plan,
 	)
 }
 
@@ -751,95 +722,12 @@ func managedPublicationNetworkProblem(initialized bool, stage state.NetworkStage
 	)
 }
 
-// outputBrokerSession converts complete launcher metadata into neutral durable evidence without importing supervisor types into state.
-func outputBrokerSession(peer *projectprocess.OutputBrokerPeer) *domain.OutputBrokerSession {
-	if peer == nil || peer.ManifestPath == "" || peer.TicketDigest == "" {
-		return nil
-	}
-	return &domain.OutputBrokerSession{
-		EndpointReference: peer.EndpointReference,
-		ManifestPath:      peer.ManifestPath,
-		CredentialDigest:  peer.TicketDigest,
-		Process: domain.ProcessEvidence{
-			PID:                peer.Process.PID,
-			BirthToken:         peer.Process.BirthToken,
-			ExecutableIdentity: peer.Process.ExecutableIdentity,
-			ArgumentDigest:     peer.Process.ArgumentDigest,
-		},
-	}
-}
-
-// prepareLaunchSession creates the durable process session and includes a child context only when an explicit managed-launch factory is configured.
-func (coordinator *ProjectLifecycleCoordinator) prepareLaunchSession(
-	projectID domain.ProjectID,
-	checkoutRoot string,
-	at time.Time,
-	descriptor projectprocess.ProjectDescriptorObservation,
-) (domain.ProjectSession, *projectprocess.ManagedLaunchContext, error) {
-	var (
-		session domain.ProjectSession
-		ticket  string
-		err     error
-	)
-	if coordinator.newManagedLaunch != nil {
-		session, ticket, err = coordinator.newManagedLaunch(projectID, checkoutRoot, at)
-	} else {
-		session, err = coordinator.newSession(projectID, checkoutRoot, at)
-	}
-	if err != nil {
-		return domain.ProjectSession{}, nil, err
-	}
-	if descriptor.TopologyDigest != "" {
-		session.DescriptorDigest = descriptor.TopologyDigest
-		if err := session.Validate(); err != nil {
-			return domain.ProjectSession{}, nil, fmt.Errorf("validate GoForj project descriptor session: %w", err)
-		}
-	}
-	if ticket == "" {
-		return session, nil, nil
-	}
-	endpoint, err := local.EndpointReference()
-	if err != nil {
-		return domain.ProjectSession{}, nil, fmt.Errorf("resolve managed session endpoint: %w", err)
-	}
-	managedLaunch := &projectprocess.ManagedLaunchContext{
-		SchemaVersion:             projectprocess.ManagedLaunchContextSchemaVersion,
-		ProjectID:                 session.ProjectID,
-		SessionID:                 session.ID,
-		ProjectRoot:               checkoutRoot,
-		ExpectedSessionGeneration: session.Generation + 1,
-		DescriptorDigest:          session.DescriptorDigest,
-		EndpointReference:         endpoint,
-		Owner:                     session.Owner,
-		Ticket:                    ticket,
-	}
-	if err := managedLaunch.Validate(); err != nil {
-		return domain.ProjectSession{}, nil, fmt.Errorf("validate managed launch context: %w", err)
-	}
-	return session, managedLaunch, nil
-}
-
-// projectRuntimeEnvironmentOverrides keeps App and project-owned service publications on one assigned identity.
-func projectRuntimeEnvironmentOverrides(target projectdiscovery.RuntimeTarget) projectprocess.EnvironmentOverrides {
-	return projectprocess.EnvironmentOverrides{
-		"API_HTTP_HOST":          target.Address.String(),
-		"DEV_SERVICE_IP_ADDRESS": target.Address.String(),
-		"IP_ADDRESS":             target.Address.String(),
-		"LIGHTHOUSE_URL": fmt.Sprintf(
-			"ws://%s:%d/lighthouse/ws/agent",
-			target.Address,
-			target.Port,
-		),
-	}
-}
-
 // waitForReadiness owns startup until the exact App proves ready or the supervised process exits.
 func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 	mutation state.ProjectLifecycleMutation,
 	session domain.ProjectSession,
-	handle *projectprocess.Handle,
-	target projectdiscovery.RuntimeTarget,
-	descriptor projectprocess.ProjectDescriptorObservation,
+	handle projectruntime.Handle,
+	plan projectruntime.Plan,
 ) {
 	deadline := time.NewTimer(coordinator.startupTimeout)
 	defer deadline.Stop()
@@ -847,13 +735,13 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 	defer ticker.Stop()
 	for {
 		probeCtx, cancel := context.WithTimeout(coordinator.ctx, defaultReadinessHTTPTimeout)
-		readinessState, err := coordinator.readiness.Probe(probeCtx, target)
+		readinessState, err := plan.Readiness.Probe(probeCtx)
 		cancel()
 		if err != nil {
 			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.invalid", err)
 			return
 		}
-		if readinessState == projectreadiness.StateReady {
+		if readinessState == projectruntime.ReadinessReady {
 			completionPhase := "ready"
 			observationRetryContext, observationRetryCancel := context.WithTimeout(coordinator.ctx, defaultServiceObserveTimeout)
 			observation, observationErr := coordinator.observeServicesWithRetry(
@@ -864,7 +752,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			observationRetryCancel()
 			select {
 			case <-handle.Done():
-				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("forj dev exited while Harbor observed project services"))
+				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("project runtime exited while Harbor observed project services"))
 				return
 			default:
 			}
@@ -873,28 +761,30 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 					coordinator.stopAndFailAttached(mutation, session, handle, "project.daemon.stopping", ctxErr)
 					return
 				}
-				observation = projectprocess.ServiceObservation{
+				observation = projectruntime.ServiceObservation{
 					Supported: false,
 					Services:  []domain.ServiceSnapshot{},
 				}
 				completionPhase = "ready; service observation unavailable"
 			}
 			resourceCtx, resourceCancel := context.WithTimeout(coordinator.ctx, defaultServiceObserveTimeout)
-			resourceObservation, resourceErr := coordinator.supervisor.ObserveFrameworkResources(
+			resourceObservation, resourceErr := coordinator.observeRuntimeResources(
 				resourceCtx,
-				mutation.Operation.Operation.ProjectID,
-				session.ID,
+				projectruntime.ResourceObservationRequest{ProjectID: mutation.Operation.Operation.ProjectID, SessionID: session.ID, Plan: plan, Services: observation.Services},
 			)
 			resourceCancel()
 			if resourceErr != nil {
-				resourceObservation = projectprocess.FrameworkResourceObservation{
+				resourceObservation = projectruntime.ResourceObservation{
 					Supported: false,
-					Resources: []projectprocess.FrameworkResource{},
+					Resources: []domain.ResourceSnapshot{},
 				}
+			}
+			if !resourceObservation.Supported {
+				resourceObservation.Resources = []domain.ResourceSnapshot{}
 			}
 			select {
 			case <-handle.Done():
-				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("forj dev exited while Harbor observed framework resources"))
+				coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("project runtime exited while Harbor observed framework resources"))
 				return
 			default:
 			}
@@ -902,27 +792,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if readyAt.Before(session.UpdatedAt) {
 				readyAt = session.UpdatedAt
 			}
-			runtime := defaultRuntime(target, observation.Services, descriptor, resourceObservation)
-			if descriptor.ResourcesSupported {
-				if err := coordinator.primaryLeases.assignHTTPResourceEndpoints(
-					coordinator.ctx,
-					mutation.Operation.Operation.ProjectID,
-					runtime.Resources,
-				); err != nil {
-					coordinator.stopAndFailAttached(mutation, session, handle, "project.endpoint.assignment.failed", err)
-					return
-				}
-			}
-			if descriptor.ServiceRequirementsSupported {
-				if err := coordinator.primaryLeases.assignServiceEndpointReservations(
-					coordinator.ctx,
-					mutation.Operation.Operation.ProjectID,
-					descriptor.ServiceRequirements,
-				); err != nil {
-					coordinator.stopAndFailAttached(mutation, session, handle, "project.endpoint.assignment.failed", err)
-					return
-				}
-			}
+			runtime := defaultRuntime(plan, observation.Services, resourceObservation.Resources)
 			completionSession := session
 			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 				current, currentErr := coordinator.state.ActiveProjectSession(coordinator.ctx, session.ProjectID)
@@ -949,17 +819,17 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
 				coordinator.recordAsyncError(err)
 			}
-			coordinator.startReadyServiceWatcher(completed.Project, completionSession, handle, target, descriptor)
+			coordinator.startReadyServiceWatcher(completed.Project, completionSession, handle, plan)
 			coordinator.watchReadyProcess(completionSession, handle)
 			return
 		}
 
 		select {
 		case <-handle.Done():
-			coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("forj dev exited before readiness"))
+			coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("project runtime exited before readiness"))
 			return
 		case <-deadline.C:
-			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.timeout", errors.New("forj dev did not become ready before the startup deadline"))
+			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.timeout", errors.New("project runtime did not become ready before the startup deadline"))
 			return
 		case <-ticker.C:
 		case <-coordinator.ctx.Done():
@@ -970,7 +840,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 }
 
 // watchReadyProcess records a process loss only when no exact stop request owned the exit.
-func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain.ProjectSession, handle *projectprocess.Handle) {
+func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain.ProjectSession, handle projectruntime.Handle) {
 	exit, err := handle.Wait(context.Background())
 	if err != nil {
 		coordinator.recordAsyncError(fmt.Errorf("observe project %q process exit: %w", session.ProjectID, err))
@@ -1012,11 +882,10 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain
 func (coordinator *ProjectLifecycleCoordinator) startReadyServiceWatcher(
 	project state.ProjectRecord,
 	session domain.ProjectSession,
-	handle *projectprocess.Handle,
-	target projectdiscovery.RuntimeTarget,
-	descriptor projectprocess.ProjectDescriptorObservation,
+	handle projectruntime.Handle,
+	plan projectruntime.Plan,
 ) {
-	if _, waitOK := coordinator.supervisor.(projectServiceChangeWaiter); !waitOK {
+	if _, waitOK := coordinator.projectRuntimeCapabilities().(projectruntime.ServiceChangeWaiter); !waitOK {
 		return
 	}
 	if _, refreshOK := coordinator.state.(projectRuntimeRefresher); !refreshOK {
@@ -1034,7 +903,7 @@ func (coordinator *ProjectLifecycleCoordinator) startReadyServiceWatcher(
 			case <-watchContext.Done():
 			}
 		}()
-		coordinator.watchReadyServicesWithRuntime(watchContext, project, session, target, descriptor)
+		coordinator.watchReadyServicesWithRuntime(watchContext, project, session, plan)
 	}()
 }
 
@@ -1044,18 +913,17 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServices(
 	project state.ProjectRecord,
 	session domain.ProjectSession,
 ) {
-	coordinator.watchReadyServicesWithRuntime(ctx, project, session, projectdiscovery.RuntimeTarget{}, projectprocess.ProjectDescriptorObservation{})
+	coordinator.watchReadyServicesWithRuntime(ctx, project, session, projectruntime.Plan{})
 }
 
-// watchReadyServicesWithRuntime refreshes services and descriptor-constrained resources from one host wake edge.
+// watchReadyServicesWithRuntime refreshes services and adapter-admitted resources from one host wake edge.
 func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 	ctx context.Context,
 	project state.ProjectRecord,
 	session domain.ProjectSession,
-	target projectdiscovery.RuntimeTarget,
-	descriptor projectprocess.ProjectDescriptorObservation,
+	plan projectruntime.Plan,
 ) {
-	waiter := coordinator.supervisor.(projectServiceChangeWaiter)
+	waiter := coordinator.projectRuntimeCapabilities().(projectruntime.ServiceChangeWaiter)
 	refresher := coordinator.state.(projectRuntimeRefresher)
 	runtimeRefresher, runtimeRefreshOK := coordinator.state.(projectRuntimeProjectionRefresher)
 	expectedRevision := project.Revision
@@ -1065,10 +933,10 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return
 			}
-			if errors.Is(err, containerruntime.ErrProjectChangeUnsupported) || errors.Is(err, projectprocess.ErrNotRunning) {
+			if errors.Is(err, projectruntime.ErrServiceChangeUnsupported) || errors.Is(err, projectruntime.ErrNotRunning) {
 				return
 			}
-			if errors.Is(err, containerruntime.ErrProjectChangeTransient) {
+			if errors.Is(err, projectruntime.ErrServiceChangeTransient) {
 				transientFailures++
 				if transientFailures > maximumServiceChangeRetries {
 					coordinator.recordAsyncError(fmt.Errorf("watch project %q service topology after %d transient runtime failures: %w", session.ProjectID, transientFailures, err))
@@ -1109,8 +977,7 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 			session,
 			expectedRevision,
 			at,
-			target,
-			descriptor,
+			plan,
 			observation.Services,
 		)
 		if err == nil {
@@ -1118,39 +985,12 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 			expectedRevision = refreshed.Revision
 			project = refreshed
 			if resourceRefresh {
-				if descriptor.ResourcesSupported {
-					if endpointErr := coordinator.primaryLeases.assignHTTPResourceEndpoints(ctx, session.ProjectID, refreshed.Project.Resources); endpointErr != nil {
-						if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed resource endpoint refresh"); routeErr != nil {
-							coordinator.recordAsyncError(routeErr)
-						}
-						coordinator.recordAsyncError(fmt.Errorf("refresh project %q resource endpoints: %w", session.ProjectID, endpointErr))
-						return
-					}
-				}
-				if descriptor.ServiceRequirementsSupported {
-					if endpointErr := coordinator.primaryLeases.assignServiceEndpointReservations(ctx, session.ProjectID, descriptor.ServiceRequirements); endpointErr != nil {
-						if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed service endpoint refresh"); routeErr != nil {
-							coordinator.recordAsyncError(routeErr)
-						}
-						coordinator.recordAsyncError(fmt.Errorf("refresh project %q service endpoints: %w", session.ProjectID, endpointErr))
-						return
-					}
-				}
 				if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
 					coordinator.recordAsyncError(routeErr)
 					return
 				}
 			} else {
-				if descriptor.ServiceRequirementsSupported {
-					if endpointErr := coordinator.primaryLeases.assignServiceEndpointReservations(ctx, session.ProjectID, descriptor.ServiceRequirements); endpointErr != nil {
-						if routeErr := coordinator.reconcileProjectRoutes(ctx, "withdraw project routes after failed service endpoint refresh"); routeErr != nil {
-							coordinator.recordAsyncError(routeErr)
-						}
-						coordinator.recordAsyncError(fmt.Errorf("refresh project %q service endpoints: %w", session.ProjectID, endpointErr))
-						return
-					}
-				}
-				if projectChanged || descriptor.ServiceRequirementsSupported {
+				if projectChanged {
 					if routeErr := coordinator.reconcileProjectRoutes(ctx, "publish refreshed project services"); routeErr != nil {
 						coordinator.recordAsyncError(routeErr)
 						return
@@ -1198,27 +1038,27 @@ func (coordinator *ProjectLifecycleCoordinator) observeServicesWithRetry(
 	ctx context.Context,
 	projectID domain.ProjectID,
 	sessionID domain.SessionID,
-) (projectprocess.ServiceObservation, error) {
+) (projectruntime.ServiceObservation, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	transientFailures := 0
 	for {
 		observationCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
-		observation, err := coordinator.supervisor.ObserveServices(observationCtx, projectID, sessionID)
+		observation, err := coordinator.observeRuntimeServices(observationCtx, projectID, sessionID)
 		cancel()
 		if err == nil {
 			return observation, nil
 		}
 		if ctx.Err() != nil {
-			return projectprocess.ServiceObservation{}, ctx.Err()
+			return projectruntime.ServiceObservation{}, ctx.Err()
 		}
-		if !errors.Is(err, containerruntime.ErrProjectObservationTransient) {
-			return projectprocess.ServiceObservation{}, err
+		if !errors.Is(err, projectruntime.ErrServiceObservationTransient) {
+			return projectruntime.ServiceObservation{}, err
 		}
 		transientFailures++
 		if transientFailures > maximumServiceObservationRetries {
-			return projectprocess.ServiceObservation{}, fmt.Errorf(
+			return projectruntime.ServiceObservation{}, fmt.Errorf(
 				"observe project %q services after %d transient runtime failures: %w",
 				projectID,
 				transientFailures,
@@ -1226,7 +1066,7 @@ func (coordinator *ProjectLifecycleCoordinator) observeServicesWithRetry(
 			)
 		}
 		if err := waitForRuntimeRetry(ctx); err != nil {
-			return projectprocess.ServiceObservation{}, err
+			return projectruntime.ServiceObservation{}, err
 		}
 	}
 }
@@ -1253,11 +1093,10 @@ func (coordinator *ProjectLifecycleCoordinator) refreshReadyProjectRuntime(
 	session domain.ProjectSession,
 	expectedRevision domain.Sequence,
 	at time.Time,
-	target projectdiscovery.RuntimeTarget,
-	descriptor projectprocess.ProjectDescriptorObservation,
+	plan projectruntime.Plan,
 	services []domain.ServiceSnapshot,
 ) (state.ProjectRecord, error, bool) {
-	if !runtimeRefreshOK || !descriptor.ResourcesSupported || !target.Address.IsValid() || target.AppID == "" {
+	if !runtimeRefreshOK || !plan.NetworkAssignment.Address.IsValid() || plan.Presentation.AppID == "" {
 		refreshed, err := refresher.RefreshProjectServices(ctx, state.RefreshProjectServicesRequest{
 			ProjectID:                 session.ProjectID,
 			ExpectedProjectRevision:   expectedRevision,
@@ -1268,11 +1107,11 @@ func (coordinator *ProjectLifecycleCoordinator) refreshReadyProjectRuntime(
 		})
 		return refreshed, err, false
 	}
-	if err := coordinator.primaryLeases.verifyPrimaryLeaseAddress(ctx, session.ProjectID, target.Address); err != nil {
+	if err := coordinator.primaryLeases.verifyPrimaryLeaseAddress(ctx, session.ProjectID, plan.NetworkAssignment.Address); err != nil {
 		return state.ProjectRecord{}, err, true
 	}
 	resourceCtx, cancel := context.WithTimeout(ctx, defaultServiceObserveTimeout)
-	resourceObservation, err := coordinator.supervisor.ObserveFrameworkResources(resourceCtx, session.ProjectID, session.ID)
+	resourceObservation, err := coordinator.observeRuntimeResources(resourceCtx, projectruntime.ResourceObservationRequest{ProjectID: session.ProjectID, SessionID: session.ID, Plan: plan, Services: services})
 	cancel()
 	if err != nil || !resourceObservation.Supported {
 		refreshed, refreshErr := refresher.RefreshProjectServices(ctx, state.RefreshProjectServicesRequest{
@@ -1285,7 +1124,7 @@ func (coordinator *ProjectLifecycleCoordinator) refreshReadyProjectRuntime(
 		})
 		return refreshed, refreshErr, false
 	}
-	runtime := defaultRuntime(target, services, descriptor, resourceObservation)
+	runtime := defaultRuntime(plan, services, resourceObservation.Resources)
 	if err := runtime.Validate(); err != nil {
 		return state.ProjectRecord{}, fmt.Errorf("validate refreshed project runtime: %w", err), true
 	}
@@ -1294,7 +1133,7 @@ func (coordinator *ProjectLifecycleCoordinator) refreshReadyProjectRuntime(
 		ExpectedProjectRevision:   expectedRevision,
 		SessionID:                 session.ID,
 		ExpectedSessionGeneration: session.Generation,
-		PrimaryAddress:            target.Address,
+		PrimaryAddress:            plan.NetworkAssignment.Address,
 		Services:                  runtime.Services,
 		Resources:                 runtime.Resources,
 		At:                        at,
@@ -1361,9 +1200,9 @@ func (coordinator *ProjectLifecycleCoordinator) runStop(record state.OperationRe
 		coordinator.recordAsyncError(err)
 	}
 	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
-	stopErr := coordinator.supervisor.Stop(stopContext, record.Operation.ProjectID, session.ID)
+	stopErr := coordinator.runtime.Stop(stopContext, record.Operation.ProjectID, session.ID)
 	cancelStop()
-	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	if err := stopErr; err != nil && !errors.Is(err, projectruntime.ErrNotRunning) {
 		stopErr := fmt.Errorf("stop project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -1471,9 +1310,9 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 		return
 	}
 	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
-	stopErr := coordinator.supervisor.Stop(stopContext, record.Operation.ProjectID, session.ID)
+	stopErr := coordinator.runtime.Stop(stopContext, record.Operation.ProjectID, session.ID)
 	cancelStop()
-	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	if err := stopErr; err != nil && !errors.Is(err, projectruntime.ErrNotRunning) {
 		stopErr := fmt.Errorf("restart project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -1599,9 +1438,9 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 		coordinator.recordAsyncError(err)
 	}
 	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
-	stopErr := coordinator.supervisor.Stop(stopContext, record.Operation.ProjectID, session.ID)
+	stopErr := coordinator.runtime.Stop(stopContext, record.Operation.ProjectID, session.ID)
 	cancelStop()
-	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	if err := stopErr; err != nil && !errors.Is(err, projectruntime.ErrNotRunning) {
 		stopErr := fmt.Errorf("restart project %q process: %w", record.Operation.ProjectID, err)
 		coordinator.releaseHandle(record.Operation.ProjectID, handle)
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -1671,12 +1510,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 			at = lowerBound
 		}
 	}
-	session, managedLaunch, err := coordinator.prepareLaunchSession(
-		record.Operation.ProjectID,
-		admission.Project.Project.Path,
-		at,
-		projectprocess.ProjectDescriptorObservation{},
-	)
+	session, err := coordinator.newSession(record.Operation.ProjectID, admission.Project.Project.Path, at)
 	if err != nil {
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.session", err)
 		return
@@ -1697,23 +1531,21 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.state", err)
 		return
 	}
-	if !coordinator.resetBeforeLaunch(begun, session, admission.Project.Project.Path, "", "project.restart.reset") {
+	if !coordinator.resetBeforeLaunch(begun, session, admission.Project.Project.Path, "project.restart.reset") {
 		return
 	}
 	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
-	handle, err := coordinator.supervisor.Start(launchContext, projectprocess.StartRequest{
-		ProjectID:            record.Operation.ProjectID,
-		SessionID:            session.ID,
-		CheckoutRoot:         admission.Project.Project.Path,
-		GoForjExecutable:     "",
-		EnvironmentOverrides: projectRuntimeEnvironmentOverrides(admission.Target),
-		ManagedLaunch:        managedLaunch,
-		Stdout:               io.Discard,
-		Stderr:               io.Discard,
+	handle, err := coordinator.runtime.Launch(launchContext, projectruntime.LaunchRequest{
+		ProjectID:         record.Operation.ProjectID,
+		SessionID:         session.ID,
+		CheckoutRoot:      admission.Project.Project.Path,
+		NetworkAssignment: admission.Plan.NetworkAssignment,
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
 	})
 	cancelLaunch()
 	if err != nil {
-		if errors.Is(err, projectprocess.ErrCleanupUncertain) {
+		if errors.Is(err, projectruntime.ErrCleanupUncertain) {
 			if quarantineErr := coordinator.quarantineProjectProcessScope(context.Background(), begun.Operation, session, processScopeRecoveryProblem()); quarantineErr != nil {
 				coordinator.recordAsyncError(quarantineErr)
 			}
@@ -1747,8 +1579,7 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		begun,
 		attached,
 		handle,
-		admission.Target,
-		projectprocess.ProjectDescriptorObservation{},
+		admission.Plan,
 	)
 }
 
@@ -1784,7 +1615,7 @@ func (coordinator *ProjectLifecycleCoordinator) failRestartAfterStop(record stat
 }
 
 // completeDaemonStop records clean daemon shutdown as a stopped project instead of stale ready process authority.
-func (coordinator *ProjectLifecycleCoordinator) completeDaemonStop(session domain.ProjectSession, handle *projectprocess.Handle, exit projectprocess.Exit) {
+func (coordinator *ProjectLifecycleCoordinator) completeDaemonStop(session domain.ProjectSession, handle projectruntime.Handle, exit projectruntime.Exit) {
 	if err := requireSettledProjectExit(exit); err != nil {
 		coordinator.quarantineExitedProjectScope(session, err)
 		return
@@ -2191,9 +2022,9 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 	evidence := *session.Process
 	cause := errors.New("previous Harbor-managed process was absent during daemon recovery")
 	switch settlement.Outcome {
-	case projectprocess.PriorProcessSettlementReplaced:
+	case projectruntime.PriorProcessSettlementReplaced:
 		cause = errors.New("previous Harbor-managed process birth was replaced before daemon recovery")
-	case projectprocess.PriorProcessSettlementTerminated:
+	case projectruntime.PriorProcessSettlementTerminated:
 		cause = errors.New("previous Harbor-managed process was terminated during daemon recovery")
 	}
 	request := state.FailProjectStartRequest{
@@ -2280,7 +2111,7 @@ func (coordinator *ProjectLifecycleCoordinator) Err() error {
 
 // finishClose continues joined cleanup after a caller deadline so a later close can still observe the terminal result.
 func (coordinator *ProjectLifecycleCoordinator) finishClose(ctx context.Context) {
-	err := coordinator.supervisor.Close(ctx)
+	err := coordinator.runtime.Close(ctx)
 	coordinator.wait.Wait()
 	coordinator.mutex.Lock()
 	coordinator.closeErr = errors.Join(err, coordinator.asyncErr)
@@ -2289,14 +2120,14 @@ func (coordinator *ProjectLifecycleCoordinator) finishClose(ctx context.Context)
 }
 
 // retainHandle publishes one accepted process only after its operating-system evidence is available.
-func (coordinator *ProjectLifecycleCoordinator) retainHandle(projectID domain.ProjectID, handle *projectprocess.Handle) {
+func (coordinator *ProjectLifecycleCoordinator) retainHandle(projectID domain.ProjectID, handle projectruntime.Handle) {
 	coordinator.mutex.Lock()
 	coordinator.handles[projectID] = handle
 	coordinator.mutex.Unlock()
 }
 
 // releaseHandle removes only the process generation observed by the caller.
-func (coordinator *ProjectLifecycleCoordinator) releaseHandle(projectID domain.ProjectID, handle *projectprocess.Handle) {
+func (coordinator *ProjectLifecycleCoordinator) releaseHandle(projectID domain.ProjectID, handle projectruntime.Handle) {
 	coordinator.mutex.Lock()
 	if coordinator.handles[projectID] == handle {
 		delete(coordinator.handles, projectID)
@@ -2305,7 +2136,7 @@ func (coordinator *ProjectLifecycleCoordinator) releaseHandle(projectID domain.P
 }
 
 // handle returns the in-memory authority only when both durable identities match.
-func (coordinator *ProjectLifecycleCoordinator) handle(projectID domain.ProjectID, sessionID domain.SessionID) *projectprocess.Handle {
+func (coordinator *ProjectLifecycleCoordinator) handle(projectID domain.ProjectID, sessionID domain.SessionID) projectruntime.Handle {
 	coordinator.mutex.Lock()
 	defer coordinator.mutex.Unlock()
 	handle := coordinator.handles[projectID]
@@ -2342,11 +2173,11 @@ func (coordinator *ProjectLifecycleCoordinator) failStartWithoutProcess(mutation
 }
 
 // stopAndFailUnattached joins an accepted process that never reached durable evidence attachment.
-func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle *projectprocess.Handle, cause error) {
+func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle projectruntime.Handle, cause error) {
 	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
-	stopErr := coordinator.supervisor.Stop(stopContext, session.ProjectID, session.ID)
+	stopErr := coordinator.runtime.Stop(stopContext, session.ProjectID, session.ID)
 	cancelStop()
-	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	if err := stopErr; err != nil && !errors.Is(err, projectruntime.ErrNotRunning) {
 		coordinator.recordAsyncError(err)
 	}
 	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
@@ -2357,7 +2188,7 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation s
 		// Attach the immutable birth before retaining an unresolved scope; a planned row has
 		// no evidence and must never be mistaken for proof that an accepted process is absent.
 		evidence := processEvidence(handle.Info())
-		broker := outputBrokerSession(handle.Info().OutputBroker)
+		broker := handle.Info().OutputBroker
 		attachedAt := lifecycleTime(coordinator.now())
 		if attachedAt.Before(session.UpdatedAt) {
 			attachedAt = session.UpdatedAt
@@ -2413,18 +2244,18 @@ func (coordinator *ProjectLifecycleCoordinator) stopAndFailUnattached(mutation s
 }
 
 // stopAndFailAttached joins an exact process before retiring its durable process-backed session.
-func (coordinator *ProjectLifecycleCoordinator) stopAndFailAttached(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle *projectprocess.Handle, code string, cause error) {
+func (coordinator *ProjectLifecycleCoordinator) stopAndFailAttached(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle projectruntime.Handle, code string, cause error) {
 	stopContext, cancelStop := coordinator.withProjectJoinTimeout()
-	stopErr := coordinator.supervisor.Stop(stopContext, session.ProjectID, session.ID)
+	stopErr := coordinator.runtime.Stop(stopContext, session.ProjectID, session.ID)
 	cancelStop()
-	if err := stopErr; err != nil && !errors.Is(err, projectprocess.ErrNotRunning) {
+	if err := stopErr; err != nil && !errors.Is(err, projectruntime.ErrNotRunning) {
 		coordinator.recordAsyncError(err)
 	}
 	coordinator.failExitedStart(mutation, session, handle, code, cause)
 }
 
 // failExitedStart records failure only after the supervised process tree has joined.
-func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle *projectprocess.Handle, code string, cause error) {
+func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.ProjectLifecycleMutation, session domain.ProjectSession, handle projectruntime.Handle, code string, cause error) {
 	joinContext, cancelJoin := coordinator.withProjectJoinTimeout()
 	exit, err := handle.Wait(joinContext)
 	cancelJoin()
@@ -2475,7 +2306,7 @@ func (coordinator *ProjectLifecycleCoordinator) failExitedStart(mutation state.P
 }
 
 // requireSettledProjectExit keeps durable process evidence until the complete ownership scope is proven absent.
-func requireSettledProjectExit(exit projectprocess.Exit) error {
+func requireSettledProjectExit(exit projectruntime.Exit) error {
 	if exit.ScopeSettlementErr != nil {
 		return fmt.Errorf("process ownership scope did not settle: %w", exit.ScopeSettlementErr)
 	}
@@ -2527,7 +2358,7 @@ func (coordinator *ProjectLifecycleCoordinator) quarantineExitedProjectScope(ses
 }
 
 // confirmedExit binds a joined process result to the exact evidence captured at launch.
-func confirmedExit(session domain.ProjectSession, handle *projectprocess.Handle, exit projectprocess.Exit) state.ConfirmedProjectProcessExit {
+func confirmedExit(session domain.ProjectSession, handle projectruntime.Handle, exit projectruntime.Exit) state.ConfirmedProjectProcessExit {
 	evidence := processEvidence(handle.Info())
 	return state.ConfirmedProjectProcessExit{
 		SessionID:                 session.ID,
@@ -2538,80 +2369,36 @@ func confirmedExit(session domain.ProjectSession, handle *projectprocess.Handle,
 }
 
 // processEvidence converts immutable supervisor evidence without weakening its exact-birth correlation.
-func processEvidence(info projectprocess.Info) domain.ProcessEvidence {
+func processEvidence(info projectruntime.Info) domain.ProcessEvidence {
 	return domain.ProcessEvidence{
 		PID:                info.Evidence.PID,
 		BirthToken:         info.Evidence.BirthToken,
 		ExecutableIdentity: info.Evidence.ExecutableIdentity,
-		ArgumentDigest:     info.Evidence.ArgumentsSHA256,
+		ArgumentDigest:     info.Evidence.ArgumentDigest,
 	}
 }
 
-// defaultRuntime projects the ready App, directly observed services, and admitted framework links.
+// defaultRuntime projects the ready App and optional runtime-neutral enrichment.
 func defaultRuntime(
-	target projectdiscovery.RuntimeTarget,
+	plan projectruntime.Plan,
 	services []domain.ServiceSnapshot,
-	descriptor projectprocess.ProjectDescriptorObservation,
-	observation projectprocess.FrameworkResourceObservation,
+	resources []domain.ResourceSnapshot,
 ) state.DefaultProjectRuntime {
-	resources := []domain.ResourceSnapshot{{
+	resources = append([]domain.ResourceSnapshot{{
 		ID:   "app-http",
-		Name: target.Name,
+		Name: plan.Presentation.Name,
 		Kind: "application",
 		Owner: domain.ResourceOwner{
 			Kind:  domain.ResourceOwnedByApp,
-			AppID: target.AppID,
+			AppID: plan.Presentation.AppID,
 		},
-		URL: target.ResourceURL,
-	}}
-	serviceIDs := make(map[domain.ServiceID]struct{}, len(services))
-	for _, service := range services {
-		serviceIDs[service.ID] = struct{}{}
-	}
-	intents := descriptorResourceIntents(descriptor)
-	for _, reported := range frameworkResources(observation) {
-		if reported.ID == "app-http" || !frameworkResourceUsesAssignedAddress(reported.URL, target.Address) {
-			continue
-		}
-		intent, constrained := intents[reported.ID]
-		if descriptor.ResourcesSupported {
-			if !constrained || !intent.Enabled || !frameworkResourceMatchesDescriptor(reported, intent) {
-				continue
-			}
-		}
-		resource := domain.ResourceSnapshot{
-			ID:   domain.ResourceID(reported.ID),
-			Name: reported.Name,
-			Kind: reported.Kind,
-			URL:  reported.URL,
-		}
-		if descriptor.ResourcesSupported {
-			resource.Name = intent.Name
-			resource.Kind = intent.Category
-			resource.URL = canonicalDescriptorResourceURL(reported.URL)
-		}
-		switch {
-		case reported.App == string(target.AppID) && reported.Service == "":
-			if equivalentHTTPResourceURL(reported.URL, target.ResourceURL) {
-				continue
-			}
-			resource.Owner = domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: target.AppID}
-		case reported.App == "" && reported.Service != "":
-			serviceID := domain.ServiceID(reported.Service)
-			if _, exists := serviceIDs[serviceID]; !exists {
-				continue
-			}
-			resource.Owner = domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: serviceID}
-		default:
-			continue
-		}
-		resources = append(resources, resource)
-	}
+		URL: plan.Presentation.ResourceURL,
+	}}, resources...)
 	sort.Slice(resources, func(left, right int) bool { return resources[left].ID < resources[right].ID })
 	return state.DefaultProjectRuntime{
 		App: domain.AppSnapshot{
-			ID:       target.AppID,
-			Name:     target.Name,
+			ID:       plan.Presentation.AppID,
+			Name:     plan.Presentation.Name,
 			State:    domain.EntityReady,
 			Active:   true,
 			Required: true,
@@ -2619,97 +2406,6 @@ func defaultRuntime(
 		Services:  append(make([]domain.ServiceSnapshot, 0, len(services)), services...),
 		Resources: resources,
 	}
-}
-
-// canonicalDescriptorResourceURL removes only the harmless root slash that would otherwise change Harbor's origin identity.
-func canonicalDescriptorResourceURL(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Path != "/" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return rawURL
-	}
-	parsed.Path = ""
-	parsed.RawPath = ""
-	return parsed.String()
-}
-
-// descriptorResourceIntents indexes validated static resource intent without allowing callers to mutate the source slice.
-func descriptorResourceIntents(descriptor projectprocess.ProjectDescriptorObservation) map[string]goforj.Resource {
-	intents := make(map[string]goforj.Resource, len(descriptor.Resources))
-	if !descriptor.ResourcesSupported {
-		return intents
-	}
-	for _, resource := range descriptor.Resources {
-		intents[resource.ID] = resource
-	}
-	return intents
-}
-
-// frameworkResourceMatchesDescriptor joins live resource facts to one static owner, runtime, and path intent.
-func frameworkResourceMatchesDescriptor(reported projectprocess.FrameworkResource, intent goforj.Resource) bool {
-	if intent.Protocol != goforj.ResourceProtocolHTTP {
-		return false
-	}
-	switch intent.Owner {
-	case goforj.ResourceOwnerApp:
-		if reported.App != intent.App || reported.Service != "" {
-			return false
-		}
-	case goforj.ResourceOwnerService:
-		if reported.Service != intent.Service || reported.App != "" {
-			return false
-		}
-	default:
-		return false
-	}
-	if reported.Runtime != intent.Runtime {
-		return false
-	}
-	parsed, err := url.Parse(reported.URL)
-	if err != nil {
-		return false
-	}
-	if parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
-		return false
-	}
-	path := parsed.EscapedPath()
-	if path == "" {
-		path = "/"
-	}
-	return path == intent.Path
-}
-
-// frameworkResources prevents unsupported optional observations from publishing stray payload data.
-func frameworkResources(observation projectprocess.FrameworkResourceObservation) []projectprocess.FrameworkResource {
-	if !observation.Supported {
-		return []projectprocess.FrameworkResource{}
-	}
-	return observation.Resources
-}
-
-// frameworkResourceUsesAssignedAddress keeps optional launch links within the private identity Harbor proved for the session.
-func frameworkResourceUsesAssignedAddress(rawURL string, assignedAddress netip.Addr) bool {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	resourceAddress, err := netip.ParseAddr(parsed.Hostname())
-	return err == nil && resourceAddress.Unmap() == assignedAddress.Unmap()
-}
-
-// equivalentHTTPResourceURL recognizes the framework's optional trailing slash without suppressing distinct paths or queries.
-func equivalentHTTPResourceURL(left string, right string) bool {
-	leftURL, leftErr := url.Parse(left)
-	rightURL, rightErr := url.Parse(right)
-	if leftErr != nil || rightErr != nil {
-		return false
-	}
-	leftPath := strings.TrimSuffix(leftURL.EscapedPath(), "/")
-	rightPath := strings.TrimSuffix(rightURL.EscapedPath(), "/")
-	return strings.EqualFold(leftURL.Scheme, rightURL.Scheme) &&
-		strings.EqualFold(leftURL.Host, rightURL.Host) &&
-		leftPath == rightPath &&
-		leftURL.RawQuery == rightURL.RawQuery &&
-		leftURL.Fragment == rightURL.Fragment
 }
 
 // validateProjectStartRequest rejects incomplete daemon and client identity before journaling.
@@ -2765,48 +2461,37 @@ func validateNewLifecycleState(projectState projectLifecycleState, ctx context.C
 	return nil
 }
 
-// newHarborProjectSession binds launch shape to a digest while keeping fresh credential material out of durable state.
+// newHarborProjectSession binds the ordinary development launch shape to one durable session.
 func newHarborProjectSession(projectID domain.ProjectID, checkoutRoot string, at time.Time) (domain.ProjectSession, error) {
-	session, _, err := newHarborProjectSessionWithTicket(projectID, checkoutRoot, at)
-	return session, err
-}
-
-// newHarborProjectSessionWithTicket creates a session and its exact launch proof as one atomic identity pair.
-func newHarborProjectSessionWithTicket(projectID domain.ProjectID, checkoutRoot string, at time.Time) (domain.ProjectSession, string, error) {
 	sessionID, err := newLifecycleSessionID()
 	if err != nil {
-		return domain.ProjectSession{}, "", err
+		return domain.ProjectSession{}, err
 	}
 	if strings.TrimSpace(checkoutRoot) == "" {
-		return domain.ProjectSession{}, "", errors.New("project lifecycle descriptor requires a checkout root")
+		return domain.ProjectSession{}, errors.New("project lifecycle launch requires a checkout root")
 	}
-	descriptorHash := sha256.Sum256([]byte(checkoutRoot + "\x00forj\x00dev"))
+	descriptorHash := sha256.Sum256([]byte(checkoutRoot + "\x00harbor-project-runtime\x00launch"))
 	descriptor := hex.EncodeToString(descriptorHash[:])
-	rawTicket := make([]byte, 32)
-	if _, err := rand.Read(rawTicket); err != nil {
-		return domain.ProjectSession{}, "", err
+	credentialSeed := make([]byte, 32)
+	if _, err := rand.Read(credentialSeed); err != nil {
+		return domain.ProjectSession{}, err
 	}
-	ticket := hex.EncodeToString(rawTicket)
-	credentialHash := sha256.Sum256([]byte(ticket))
-	credential := hex.EncodeToString(credentialHash[:])
-	if err := validateLifecycleTicket(ticket); err != nil {
-		return domain.ProjectSession{}, "", err
-	}
+	credentialHash := sha256.Sum256(credentialSeed)
 	session := domain.ProjectSession{
 		ID:               sessionID,
 		ProjectID:        projectID,
 		Owner:            domain.SessionOwnerHarbor,
 		State:            domain.SessionPlanned,
 		DescriptorDigest: descriptor,
-		CredentialDigest: credential,
+		CredentialDigest: hex.EncodeToString(credentialHash[:]),
 		Generation:       1,
 		CreatedAt:        lifecycleTime(at),
 		UpdatedAt:        lifecycleTime(at),
 	}
 	if err := session.Validate(); err != nil {
-		return domain.ProjectSession{}, "", err
+		return domain.ProjectSession{}, err
 	}
-	return session, ticket, nil
+	return session, nil
 }
 
 // newLifecycleOperationID creates a daemon-owned operation identity independent of client idempotency.

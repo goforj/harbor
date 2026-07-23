@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/goforjruntime"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
@@ -81,7 +82,7 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		OutputSpoolDirectory: filepath.Join(t.TempDir(), "project-output"),
 		Environment:          projectEnvironment,
 	})
-	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
+	coordinator := NewProjectLifecycleCoordinator(store, journal, goforjruntime.New(supervisor), projectLifecycleTestRouteReconciler{})
 	t.Cleanup(func() {
 		closeContext, closeCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer closeCancel()

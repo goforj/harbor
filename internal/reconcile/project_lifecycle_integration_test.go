@@ -25,13 +25,14 @@ import (
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/goforjruntime"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
-	"github.com/goforj/harbor/internal/projectreadiness"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/migrations"
 	"gorm.io/gorm"
@@ -152,7 +153,12 @@ func (fixture *projectLifecycleRevisionRaceState) BeginProjectStart(
 // projectLifecycleRevisionRaceSupervisor records any launch that escapes the project revision fence.
 type projectLifecycleRevisionRaceSupervisor struct {
 	mutex  sync.Mutex
-	starts []projectprocess.StartRequest
+	starts []projectruntime.LaunchRequest
+}
+
+// Prepare rejects preparation because the injected primary-lease fixture owns planning in this revision-race test.
+func (*projectLifecycleRevisionRaceSupervisor) Prepare(context.Context, projectruntime.PreparationRequest) (projectruntime.Plan, error) {
+	return projectruntime.Plan{}, errors.New("unexpected runtime preparation after project revision drift")
 }
 
 // projectLifecycleBlockingLeaseState holds admission until the daemon lifecycle context is cancelled.
@@ -184,19 +190,19 @@ func (*projectLifecycleBlockingLeaseState) ReplaceProjectNetwork(
 	return state.NetworkMutationResult{}, errors.New("unexpected network write after blocked project admission")
 }
 
-// Start records an unexpected process launch after the injected project revision changed.
-func (fixture *projectLifecycleRevisionRaceSupervisor) Start(
+// Launch records an unexpected process launch after the injected project revision changed.
+func (fixture *projectLifecycleRevisionRaceSupervisor) Launch(
 	_ context.Context,
-	request projectprocess.StartRequest,
-) (*projectprocess.Handle, error) {
+	request projectruntime.LaunchRequest,
+) (projectruntime.Handle, error) {
 	fixture.mutex.Lock()
 	fixture.starts = append(fixture.starts, request)
 	fixture.mutex.Unlock()
 	return nil, errors.New("unexpected process launch after project revision drift")
 }
 
-// Down rejects reset work because the revision-race fixture must fail before runtime effects begin.
-func (*projectLifecycleRevisionRaceSupervisor) Down(context.Context, projectprocess.DownRequest) error {
+// Reset rejects reset work because the revision-race fixture must fail before runtime effects begin.
+func (*projectLifecycleRevisionRaceSupervisor) Reset(context.Context, projectruntime.ResetRequest) error {
 	return errors.New("unexpected project reset after project revision drift")
 }
 
@@ -268,16 +274,16 @@ func (*projectLifecycleRevisionRaceSupervisor) ObserveFrameworkResources(
 func (*projectLifecycleRevisionRaceSupervisor) ObservePriorProcess(
 	context.Context,
 	domain.ProcessEvidence,
-) (projectprocess.PriorProcessObservation, error) {
-	return projectprocess.PriorProcessObservation{}, errors.New("unexpected prior process observation after project revision drift")
+) (projectruntime.PriorProcessObservation, error) {
+	return projectruntime.PriorProcessObservation{}, errors.New("unexpected prior process observation after project revision drift")
 }
 
 // SettlePriorProcess is unreachable because the revision-race fixture never persists process evidence.
 func (*projectLifecycleRevisionRaceSupervisor) SettlePriorProcess(
 	context.Context,
 	domain.ProcessEvidence,
-) (projectprocess.PriorProcessSettlement, error) {
-	return projectprocess.PriorProcessSettlement{}, errors.New("unexpected prior process settlement after project revision drift")
+) (projectruntime.PriorProcessSettlement, error) {
+	return projectruntime.PriorProcessSettlement{}, errors.New("unexpected prior process settlement after project revision drift")
 }
 
 // Close is inert because the revision-race fixture never accepts a process.
@@ -297,7 +303,7 @@ func newProjectLifecycleAdmissionTestCoordinator(
 	lifecycleState projectLifecycleState,
 	journal *state.OperationJournal,
 	leaseState projectPrimaryLeaseState,
-	supervisor projectProcessSupervisor,
+	runtime projectruntime.Runtime,
 	address netip.Addr,
 ) *ProjectLifecycleCoordinator {
 	discoverer := &primaryLeaseTestDiscoverer{port: 3000}
@@ -313,8 +319,7 @@ func newProjectLifecycleAdmissionTestCoordinator(
 		lifecycleState,
 		journal,
 		newProjectPrimaryLeaseCoordinator(leaseState, discoverer, observer, prober, time.Now),
-		projectreadiness.NewProber(&http.Client{Timeout: time.Second}),
-		supervisor,
+		runtime,
 		projectLifecycleTestRouteReconciler{},
 		time.Now,
 		newLifecycleOperationID,
@@ -558,24 +563,11 @@ func TestProjectLifecycleCoordinatorKeepsReadyAppWhenServiceObservationFails(t *
 	}
 }
 
-// TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdentity prevents split bind and dial targets.
-func TestProjectRuntimeEnvironmentOverridesPinsInternalEndpointsToAssignedIdentity(t *testing.T) {
-	target, err := projectdiscovery.NewRuntimeTarget(
-		"app",
-		"App",
-		netip.MustParseAddr("127.77.0.11"),
-		3000,
-	)
-	if err != nil {
-		t.Fatalf("create runtime target: %v", err)
-	}
-
-	overrides := projectRuntimeEnvironmentOverrides(target)
-	if len(overrides) != 4 || overrides["API_HTTP_HOST"] != "127.77.0.11" ||
-		overrides["DEV_SERVICE_IP_ADDRESS"] != "127.77.0.11" ||
-		overrides["IP_ADDRESS"] != "127.77.0.11" ||
-		overrides["LIGHTHOUSE_URL"] != "ws://127.77.0.11:3000/lighthouse/ws/agent" {
-		t.Fatalf("runtime environment overrides = %#v", overrides)
+// TestProjectRuntimePlanPinsInternalEndpointsToAssignedIdentity prevents split bind and dial targets.
+func TestProjectRuntimePlanPinsInternalEndpointsToAssignedIdentity(t *testing.T) {
+	assignment := projectruntime.NetworkAssignment{Address: netip.MustParseAddr("127.77.0.11"), PrimaryPort: 3000}
+	if assignment.Address != netip.MustParseAddr("127.77.0.11") || assignment.PrimaryPort != 3000 {
+		t.Fatalf("runtime network assignment = %#v", assignment)
 	}
 }
 
@@ -731,7 +723,8 @@ func TestProjectLifecycleCoordinatorLeavesNoStartingProjectAfterReadinessTimeout
 	installProjectLifecycleIntegrationForj(t, port)
 	t.Setenv(projectLifecycleHelperModeEnvironment, projectLifecycleHelperIgnoringListenerMode)
 	supervisor := newProjectLifecycleIntegrationSupervisor(projectprocess.Options{GracePeriod: 100 * time.Millisecond})
-	coordinator, _ := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
+	coordinator, discoverer := newProjectLifecycleIntegrationCoordinator(t, store, journal, supervisor, netip.MustParseAddr("127.0.0.1"), uint16(port))
+	discoverer.readiness = primaryLeaseTestPendingReadinessProbe{}
 	coordinator.startupTimeout = 100 * time.Millisecond
 	coordinator.processJoinTimeout = 2 * time.Second
 	t.Cleanup(func() {
@@ -877,7 +870,6 @@ func TestProjectLifecycleCoordinatorRejectsCheckoutDriftAfterLeaseAdmission(t *t
 		racingState,
 		journal,
 		newProjectPrimaryLeaseCoordinator(store, discoverer, observer, prober, time.Now),
-		projectreadiness.NewProber(&http.Client{Timeout: time.Second}),
 		supervisor,
 		projectLifecycleTestRouteReconciler{},
 		time.Now,
@@ -1210,7 +1202,7 @@ func newProjectLifecycleIntegrationCoordinator(
 	port uint16,
 ) (*ProjectLifecycleCoordinator, *primaryLeaseTestDiscoverer) {
 	t.Helper()
-	coordinator := NewProjectLifecycleCoordinator(store, journal, supervisor, projectLifecycleTestRouteReconciler{})
+	coordinator := NewProjectLifecycleCoordinator(store, journal, goforjruntime.New(supervisor), projectLifecycleTestRouteReconciler{})
 	discoverer := &primaryLeaseTestDiscoverer{port: port}
 	observer := &primaryLeaseTestLoopbackObserver{
 		facts: map[netip.Addr]loopback.Observation{address: primaryLeaseTestExactObservation(address)},

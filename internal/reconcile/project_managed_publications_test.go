@@ -35,7 +35,6 @@ func (source *managedPublicationLifecycleState) ActiveProjectSession(context.Con
 
 // managedPublicationTestSupervisor supplies static service intent and one exact host-port observation.
 type managedPublicationTestSupervisor struct {
-	projectProcessSupervisor
 	descriptor projectprocess.ProjectDescriptorObservation
 	ports      projectprocess.ServicePortObservation
 }
@@ -82,9 +81,9 @@ func TestObserveManagedPublicationsRepairsMissingServiceReservationInResolverSta
 		},
 	}
 	coordinator := &ProjectLifecycleCoordinator{
-		state:         stateSource,
-		supervisor:    supervisor,
-		primaryLeases: fixture.coordinator,
+		state:               stateSource,
+		runtimeCapabilities: supervisor,
+		primaryLeases:       fixture.coordinator,
 	}
 	fence := managedPublicationTestFence(fixture.state.project.Project.ID, session)
 
@@ -130,7 +129,7 @@ func TestObserveManagedPublicationsRejectsIncompleteNetworkAuthority(t *testing.
 			Ports: []projectprocess.ServicePort{{Address: "127.0.0.1", Private: 3306, Public: 43106, Protocol: "tcp", Replica: 1}},
 		},
 	}
-	coordinator := &ProjectLifecycleCoordinator{state: stateSource, supervisor: supervisor, primaryLeases: fixture.coordinator}
+	coordinator := &ProjectLifecycleCoordinator{state: stateSource, runtimeCapabilities: supervisor, primaryLeases: fixture.coordinator}
 	fence := managedPublicationTestFence(fixture.state.project.Project.ID, session)
 
 	_, err := coordinator.ObserveManagedPublicationsForPhase(t.Context(), fixture.state.project.Project.ID, session.ID, fence, true)

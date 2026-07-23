@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -106,22 +107,153 @@ func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 
 // primaryLeaseTestDiscoverer records the exact address whose project App port was admitted.
 type primaryLeaseTestDiscoverer struct {
-	port  uint16
-	err   error
-	calls []netip.Addr
+	port      uint16
+	readiness projectruntime.ReadinessProbe
+	err       error
+	calls     []netip.Addr
 }
 
-// DiscoverDefaultRuntimeAtAddress constructs the same literal-address runtime target as production discovery.
-func (discoverer *primaryLeaseTestDiscoverer) DiscoverDefaultRuntimeAtAddress(
+// Prepare constructs the same literal-address runtime plan as production preparation.
+func (discoverer *primaryLeaseTestDiscoverer) Prepare(
 	_ context.Context,
-	_ string,
-	address netip.Addr,
-) (projectdiscovery.RuntimeTarget, error) {
+	request projectruntime.PreparationRequest,
+) (projectruntime.Plan, error) {
+	address := request.Address
 	discoverer.calls = append(discoverer.calls, address)
 	if discoverer.err != nil {
-		return projectdiscovery.RuntimeTarget{}, discoverer.err
+		return projectruntime.Plan{}, discoverer.err
 	}
-	return projectdiscovery.NewRuntimeTarget("app", "App", address, discoverer.port)
+	target, err := projectdiscovery.NewRuntimeTarget("app", "App", address, discoverer.port)
+	if err != nil {
+		return projectruntime.Plan{}, err
+	}
+	readiness := discoverer.readiness
+	if readiness == nil {
+		readiness = primaryLeaseTestReadinessProbe{}
+	}
+	return projectruntime.Plan{
+		NetworkAssignment: projectruntime.NetworkAssignment{Address: address, PrimaryPort: discoverer.port},
+		Readiness:         readiness,
+		Presentation:      projectruntime.Presentation{AppID: target.AppID, Name: target.Name, ResourceURL: target.ResourceURL},
+	}, nil
+}
+
+// primaryLeaseTestReadinessProbe supplies the non-nil plan invariant without exercising lifecycle readiness.
+type primaryLeaseTestReadinessProbe struct{}
+
+// Probe reports ready because primary lease tests do not start a runtime process.
+func (primaryLeaseTestReadinessProbe) Probe(context.Context) (projectruntime.ReadinessState, error) {
+	return projectruntime.ReadinessReady, nil
+}
+
+// primaryLeaseTestPendingReadinessProbe keeps a launched test runtime from satisfying readiness.
+type primaryLeaseTestPendingReadinessProbe struct{}
+
+// Probe reports pending until the lifecycle timeout owns the terminal outcome.
+func (primaryLeaseTestPendingReadinessProbe) Probe(context.Context) (projectruntime.ReadinessState, error) {
+	return projectruntime.ReadinessPending, nil
+}
+
+// projectRuntimePlanForTest converts legacy target fixtures while production code depends only on neutral plans.
+func projectRuntimePlanForTest(target projectdiscovery.RuntimeTarget) projectruntime.Plan {
+	return projectruntime.Plan{
+		NetworkAssignment: projectruntime.NetworkAssignment{Address: target.Address, PrimaryPort: target.Port},
+		Readiness:         primaryLeaseTestReadinessProbe{},
+		Presentation:      projectruntime.Presentation{AppID: target.AppID, Name: target.Name, ResourceURL: target.ResourceURL},
+	}
+}
+
+// TestValidatePrimaryRuntimePlanRejectsProviderBoundaryDrift proves adapters cannot move or weaken Harbor's leased HTTP origin.
+func TestValidatePrimaryRuntimePlanRejectsProviderBoundaryDrift(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.18")
+	target, err := projectdiscovery.NewRuntimeTarget("app", "App", address, 3000)
+	if err != nil {
+		t.Fatalf("create valid runtime target: %v", err)
+	}
+	valid := projectRuntimePlanForTest(target)
+	if err := validatePrimaryRuntimePlan(valid, address); err != nil {
+		t.Fatalf("validate valid runtime plan: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*projectruntime.Plan)
+		want   string
+	}{
+		{
+			name: "different address",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.NetworkAssignment.Address = netip.MustParseAddr("127.77.0.19")
+			},
+			want: "address differs",
+		},
+		{
+			name: "zero port",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.NetworkAssignment.PrimaryPort = 0
+			},
+			want: "port must be positive",
+		},
+		{
+			name: "missing readiness",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Readiness = nil
+			},
+			want: "readiness probe is required",
+		},
+		{
+			name: "missing App ID",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Presentation.AppID = ""
+			},
+			want: "App ID",
+		},
+		{
+			name: "noncanonical name",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Presentation.Name = " App "
+			},
+			want: "name must be canonical",
+		},
+		{
+			name: "missing resource URL",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Presentation.ResourceURL = ""
+			},
+			want: "resource URL is required",
+		},
+		{
+			name: "different resource address",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Presentation.ResourceURL = "http://127.77.0.19:3000"
+			},
+			want: "assigned IPv4 loopback address",
+		},
+		{
+			name: "different resource port",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Presentation.ResourceURL = "http://127.77.0.18:4000"
+			},
+			want: "port differs",
+		},
+		{
+			name: "resource path",
+			mutate: func(plan *projectruntime.Plan) {
+				plan.Presentation.ResourceURL = "http://127.77.0.18:3000/private"
+			},
+			want: "without a path",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := valid
+			test.mutate(&plan)
+			err := validatePrimaryRuntimePlan(plan, address)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validatePrimaryRuntimePlan() error = %v, want %q", err, test.want)
+			}
+		})
+	}
 }
 
 // primaryLeaseTestLoopbackObserver returns one independently fingerprintable assignment fact per candidate.
@@ -147,54 +279,43 @@ type primaryLeaseTestPortProber struct {
 	calls   []identity.ProbeRequest
 }
 
-// primaryLeaseTestRuntimeRepairer models the reviewed same-user cleanup boundary without native process effects.
+// primaryLeaseTestRuntimeRepairer models an optional runtime-owned listener settlement capability.
 type primaryLeaseTestRuntimeRepairer struct {
+	result         projectruntime.ListenerRepairResult
+	err            error
+	requests       []projectruntime.ListenerRepairRequest
+	onRepair       func()
+	onConfirm      func()
 	inspection     projectprocess.UnattributedRuntimeInspection
-	inspections    []projectprocess.UnattributedRuntimeInspection
 	confirmation   projectprocess.RuntimeRepairConfirmation
-	confirmations  []projectprocess.RuntimeRepairConfirmation
-	inspectErr     error
-	confirmErr     error
 	inspectTargets []projectprocess.RuntimeRepairTarget
 	candidates     []projectprocess.UnattributedRuntimeCandidate
-	onInspect      func()
-	onConfirm      func()
-	inspectIndex   int
-	confirmIndex   int
 }
 
-// Inspect returns one configured exact-listener classification for automatic retained-port recovery.
-func (repairer *primaryLeaseTestRuntimeRepairer) Inspect(_ context.Context, target projectprocess.RuntimeRepairTarget) (projectprocess.UnattributedRuntimeInspection, error) {
-	repairer.inspectTargets = append(repairer.inspectTargets, target)
-	if repairer.onInspect != nil {
-		repairer.onInspect()
+// RepairListener records one exact listener request and returns the configured settlement result.
+func (repairer *primaryLeaseTestRuntimeRepairer) RepairListener(_ context.Context, request projectruntime.ListenerRepairRequest) (projectruntime.ListenerRepairResult, error) {
+	repairer.requests = append(repairer.requests, request)
+	repairer.inspectTargets = append(repairer.inspectTargets, projectprocess.RuntimeRepairTarget{CheckoutRoot: request.CheckoutRoot, Endpoint: request.Endpoint})
+	if repairer.onRepair != nil {
+		repairer.onRepair()
 	}
-	if repairer.inspectErr != nil {
-		return projectprocess.UnattributedRuntimeInspection{}, repairer.inspectErr
+	if repairer.inspection.State != "" {
+		switch repairer.inspection.State {
+		case projectprocess.RuntimeRepairInspectionMissing:
+			return projectruntime.ListenerRepairResult{Settled: !request.RequireConfirmation}, repairer.err
+		case projectprocess.RuntimeRepairInspectionActionable:
+			if repairer.inspection.Candidate != nil {
+				repairer.candidates = append(repairer.candidates, *repairer.inspection.Candidate)
+			}
+			if repairer.onConfirm != nil {
+				repairer.onConfirm()
+			}
+			return projectruntime.ListenerRepairResult{Settled: repairer.confirmation.State == projectprocess.RuntimeRepairConfirmationSettled}, repairer.err
+		default:
+			return projectruntime.ListenerRepairResult{}, repairer.err
+		}
 	}
-	if repairer.inspectIndex < len(repairer.inspections) {
-		inspection := repairer.inspections[repairer.inspectIndex]
-		repairer.inspectIndex++
-		return inspection, nil
-	}
-	return repairer.inspection, nil
-}
-
-// Confirm records one exact candidate and returns the configured bounded settlement result.
-func (repairer *primaryLeaseTestRuntimeRepairer) Confirm(_ context.Context, candidate projectprocess.UnattributedRuntimeCandidate) (projectprocess.RuntimeRepairConfirmation, error) {
-	repairer.candidates = append(repairer.candidates, candidate)
-	if repairer.onConfirm != nil {
-		repairer.onConfirm()
-	}
-	if repairer.confirmErr != nil {
-		return projectprocess.RuntimeRepairConfirmation{}, repairer.confirmErr
-	}
-	if repairer.confirmIndex < len(repairer.confirmations) {
-		confirmation := repairer.confirmations[repairer.confirmIndex]
-		repairer.confirmIndex++
-		return confirmation, nil
-	}
-	return repairer.confirmation, nil
+	return repairer.result, repairer.err
 }
 
 // Probe returns configured facts or an available result for every requested port.
@@ -300,7 +421,7 @@ func TestProjectPrimaryLeaseCoordinatorAllocatesAndPersistsOneObservedDelta(t *t
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
-	if admission.Lease.Address != address13 || admission.Target.Address != address13 || admission.Target.Port != 3000 ||
+	if admission.Lease.Address != address13 || admission.Plan.NetworkAssignment.Address != address13 || admission.Plan.NetworkAssignment.PrimaryPort != 3000 ||
 		admission.Project.Revision != fixture.state.project.Revision || admission.Project.Project.Path != fixture.state.project.Project.Path {
 		t.Fatalf("Ensure() admission = %#v", admission)
 	}
@@ -377,15 +498,8 @@ func TestProjectPrimaryLeaseCoordinatorSettlesAnOwnedFreshCandidateBeforeReplann
 	fixture := newPrimaryLeaseTestFixture(t, address)
 	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
 	repairer := &primaryLeaseTestRuntimeRepairer{
-		inspection: projectprocess.UnattributedRuntimeInspection{
-			State:     projectprocess.RuntimeRepairInspectionActionable,
-			Candidate: &projectprocess.UnattributedRuntimeCandidate{},
-		},
-		confirmation: projectprocess.RuntimeRepairConfirmation{
-			State:    projectprocess.RuntimeRepairConfirmationSettled,
-			Signaled: true,
-		},
-		onConfirm: func() {
+		result: projectruntime.ListenerRepairResult{Settled: true},
+		onRepair: func() {
 			fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
 		},
 	}
@@ -395,12 +509,12 @@ func TestProjectPrimaryLeaseCoordinatorSettlesAnOwnedFreshCandidateBeforeReplann
 	if err != nil || admission.Lease.Address != address {
 		t.Fatalf("Ensure() = %#v, %v, want the repaired candidate address", admission, err)
 	}
-	if len(repairer.inspectTargets) != 1 || len(repairer.candidates) != 1 {
-		t.Fatalf("fresh candidate cleanup calls = inspections %d candidates %d, want one each", len(repairer.inspectTargets), len(repairer.candidates))
+	if len(repairer.requests) != 1 {
+		t.Fatalf("fresh candidate cleanup calls = %d, want one", len(repairer.requests))
 	}
-	if repairer.inspectTargets[0].CheckoutRoot != fixture.state.project.Project.Path ||
-		repairer.inspectTargets[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") {
-		t.Fatalf("fresh candidate repair target = %#v, want project checkout and exact listener", repairer.inspectTargets[0])
+	if repairer.requests[0].CheckoutRoot != fixture.state.project.Project.Path ||
+		repairer.requests[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") || repairer.requests[0].RequireConfirmation {
+		t.Fatalf("fresh candidate repair request = %#v, want project checkout and exact listener", repairer.requests[0])
 	}
 	if len(fixture.ports.calls) != 2 {
 		t.Fatalf("fresh candidate probes = %d, want initial and post-settlement probes", len(fixture.ports.calls))
@@ -415,7 +529,7 @@ func TestProjectPrimaryLeaseCoordinatorReturnsRetainedLeaseWithoutHostMutation(t
 	fixture.state.network.Leases = []identity.Lease{retained}
 
 	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
-	if err != nil || admission.Lease != retained || admission.Target.Address != address ||
+	if err != nil || admission.Lease != retained || admission.Plan.NetworkAssignment.Address != address ||
 		admission.Project.Revision != fixture.state.project.Revision || admission.Project.Project.Path != fixture.state.project.Project.Path {
 		t.Fatalf("Ensure() = %#v, %v", admission, err)
 	}
@@ -476,6 +590,22 @@ func TestProjectPrimaryLeaseCoordinatorRejectsUnsafeRetainedLeaseWithoutRealloca
 	}
 }
 
+// TestProjectPrimaryLeaseCoordinatorLeavesOccupiedPortUnresolvedWithoutRuntimeRepairer proves generic runtimes gain no GoForj inspection authority.
+func TestProjectPrimaryLeaseCoordinatorLeavesOccupiedPortUnresolvedWithoutRuntimeRepairer(t *testing.T) {
+	address := netip.MustParseAddr("127.77.0.11")
+	fixture := newPrimaryLeaseTestFixture(t, address)
+	fixture.state.network.Leases = []identity.Lease{
+		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
+	}
+	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
+
+	_, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err == nil || !strings.Contains(err.Error(), "App port 3000 is unavailable") {
+		t.Fatalf("Ensure() error = %v, want unresolved occupied-port rejection", err)
+	}
+	assertPrimaryLeaseTestRejection(t, err, "project.network.port_unavailable")
+}
+
 // TestProjectPrimaryLeaseCoordinatorSettlesAProjectOwnedListenerBeforeRejecting proves a same-project stale listener is an automatic retry edge.
 func TestProjectPrimaryLeaseCoordinatorSettlesAProjectOwnedListenerBeforeRejecting(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
@@ -485,8 +615,8 @@ func TestProjectPrimaryLeaseCoordinatorSettlesAProjectOwnedListenerBeforeRejecti
 	}
 	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
 	fixture.coordinator.runtimeRepairer = &primaryLeaseTestRuntimeRepairer{
-		inspection: projectprocess.UnattributedRuntimeInspection{State: projectprocess.RuntimeRepairInspectionMissing},
-		onInspect: func() {
+		result: projectruntime.ListenerRepairResult{Settled: true},
+		onRepair: func() {
 			fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
 		},
 	}
@@ -495,7 +625,7 @@ func TestProjectPrimaryLeaseCoordinatorSettlesAProjectOwnedListenerBeforeRejecti
 	if err != nil || admission.Lease.Address != address {
 		t.Fatalf("Ensure() = %#v, %v, want retained lease after automatic settlement", admission, err)
 	}
-	if len(fixture.coordinator.runtimeRepairer.(*primaryLeaseTestRuntimeRepairer).inspectTargets) != 1 || len(fixture.ports.calls) != 2 {
+	if len(fixture.coordinator.runtimeRepairer.(*primaryLeaseTestRuntimeRepairer).requests) != 1 || len(fixture.ports.calls) != 2 {
 		t.Fatalf("automatic cleanup observations = %#v, probes %d, want one inspection and two probes", fixture.coordinator.runtimeRepairer, len(fixture.ports.calls))
 	}
 }
@@ -509,15 +639,8 @@ func TestProjectPrimaryLeaseCoordinatorConfirmsAnExactProjectListener(t *testing
 	}
 	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
 	repairer := &primaryLeaseTestRuntimeRepairer{
-		inspection: projectprocess.UnattributedRuntimeInspection{
-			State:     projectprocess.RuntimeRepairInspectionActionable,
-			Candidate: &projectprocess.UnattributedRuntimeCandidate{},
-		},
-		confirmation: projectprocess.RuntimeRepairConfirmation{
-			State:    projectprocess.RuntimeRepairConfirmationSettled,
-			Signaled: true,
-		},
-		onConfirm: func() {
+		result: projectruntime.ListenerRepairResult{Settled: true},
+		onRepair: func() {
 			fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
 		},
 	}
@@ -526,48 +649,30 @@ func TestProjectPrimaryLeaseCoordinatorConfirmsAnExactProjectListener(t *testing
 	if _, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID); err != nil {
 		t.Fatalf("Ensure() error = %v, want automatic exact-scope cleanup", err)
 	}
-	if len(repairer.inspectTargets) != 1 || repairer.inspectTargets[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") || len(repairer.candidates) != 1 {
-		t.Fatalf("automatic cleanup calls = targets %#v candidates %d, want one exact target and candidate", repairer.inspectTargets, len(repairer.candidates))
+	if len(repairer.requests) != 1 || repairer.requests[0].Endpoint != netip.MustParseAddrPort("127.77.0.11:3000") {
+		t.Fatalf("automatic cleanup requests = %#v, want one exact target", repairer.requests)
 	}
 }
 
-// TestProjectPrimaryLeaseCoordinatorRetriesTransientListenerDrift keeps a process race from surfacing as a user-visible port conflict.
-func TestProjectPrimaryLeaseCoordinatorRetriesTransientListenerDrift(t *testing.T) {
+// TestProjectPrimaryLeaseCoordinatorUsesRuntimeSettlementResult keeps runtime-specific retry policy outside core admission.
+func TestProjectPrimaryLeaseCoordinatorUsesRuntimeSettlementResult(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
 	fixture := newPrimaryLeaseTestFixture(t, address)
 	fixture.state.network.Leases = []identity.Lease{
 		primaryLeaseTestLease(t, fixture.state.project.Project.ID, address, fixture.state.network.Ownership),
 	}
 	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
-	var repairer *primaryLeaseTestRuntimeRepairer
-	repairer = &primaryLeaseTestRuntimeRepairer{
-		inspections: []projectprocess.UnattributedRuntimeInspection{
-			{
-				State:     projectprocess.RuntimeRepairInspectionActionable,
-				Candidate: &projectprocess.UnattributedRuntimeCandidate{},
-			},
-			{
-				State:     projectprocess.RuntimeRepairInspectionActionable,
-				Candidate: &projectprocess.UnattributedRuntimeCandidate{},
-			},
-		},
-		confirmations: []projectprocess.RuntimeRepairConfirmation{
-			{State: projectprocess.RuntimeRepairConfirmationDrifted},
-			{State: projectprocess.RuntimeRepairConfirmationSettled, Signaled: true},
-		},
-		onConfirm: func() {
-			if len(repairer.candidates) == 2 {
-				fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true)
-			}
-		},
+	repairer := &primaryLeaseTestRuntimeRepairer{
+		result:   projectruntime.ListenerRepairResult{Settled: true},
+		onRepair: func() { fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, true) },
 	}
 	fixture.coordinator.runtimeRepairer = repairer
 
 	if _, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID); err != nil {
-		t.Fatalf("Ensure() error = %v, want retry after transient listener drift", err)
+		t.Fatalf("Ensure() error = %v, want runtime settlement", err)
 	}
-	if len(repairer.inspectTargets) != 2 || len(repairer.candidates) != 2 {
-		t.Fatalf("automatic cleanup retries = inspections %d candidates %d, want two each", len(repairer.inspectTargets), len(repairer.candidates))
+	if len(repairer.requests) != 1 {
+		t.Fatalf("automatic cleanup requests = %d, want one runtime-owned attempt", len(repairer.requests))
 	}
 }
 
@@ -576,9 +681,7 @@ func TestProjectPrimaryLeaseCoordinatorRequiresSignalProofForProcessBackedRecove
 	address := netip.MustParseAddr("127.77.0.11")
 	fixture := newPrimaryLeaseTestFixture(t, address)
 	repairer := &primaryLeaseTestRuntimeRepairer{
-		inspection: projectprocess.UnattributedRuntimeInspection{
-			State: projectprocess.RuntimeRepairInspectionMissing,
-		},
+		result: projectruntime.ListenerRepairResult{},
 	}
 	fixture.coordinator.runtimeRepairer = repairer
 
@@ -589,8 +692,8 @@ func TestProjectPrimaryLeaseCoordinatorRequiresSignalProofForProcessBackedRecove
 	if resolved {
 		t.Fatal("repairAppPortConflict() reported a vanished listener as signal-backed settlement")
 	}
-	if len(repairer.candidates) != 0 {
-		t.Fatalf("repairAppPortConflict() signaled %d candidates after listener disappearance", len(repairer.candidates))
+	if len(repairer.requests) != 1 || !repairer.requests[0].RequireConfirmation {
+		t.Fatalf("repairAppPortConflict() requests = %#v, want one confirmation-required request", repairer.requests)
 	}
 }
 
@@ -603,7 +706,7 @@ func TestProjectPrimaryLeaseCoordinatorPreservesForeignListenerFailure(t *testin
 	}
 	fixture.ports.results[address] = primaryLeaseTestProbeResult(address, 3000, false)
 	repairer := &primaryLeaseTestRuntimeRepairer{
-		inspection: projectprocess.UnattributedRuntimeInspection{State: projectprocess.RuntimeRepairInspectionForeign},
+		result: projectruntime.ListenerRepairResult{},
 	}
 	fixture.coordinator.runtimeRepairer = repairer
 
@@ -611,8 +714,8 @@ func TestProjectPrimaryLeaseCoordinatorPreservesForeignListenerFailure(t *testin
 	if err == nil || !strings.Contains(err.Error(), "App port 3000 is unavailable") {
 		t.Fatalf("Ensure() error = %v, want retained foreign-listener rejection", err)
 	}
-	if len(repairer.candidates) != 0 {
-		t.Fatalf("foreign listener cleanup signaled %d candidates", len(repairer.candidates))
+	if len(repairer.requests) != 1 {
+		t.Fatalf("foreign listener cleanup requests = %d, want one", len(repairer.requests))
 	}
 }
 
@@ -869,7 +972,7 @@ func TestProjectPrimaryLeaseCoordinatorReconcilesThreeDefaultHTTPReservationsWit
 		fixture.loopback.errs[address] = observationFailure
 		fixture.ports.errs[address] = observationFailure
 	}
-	repairer := &primaryLeaseTestRuntimeRepairer{inspectErr: observationFailure, confirmErr: observationFailure}
+	repairer := &primaryLeaseTestRuntimeRepairer{err: observationFailure}
 	fixture.coordinator.runtimeRepairer = repairer
 	lifecycle := &ProjectLifecycleCoordinator{primaryLeases: fixture.coordinator}
 
@@ -926,14 +1029,13 @@ func TestProjectPrimaryLeaseCoordinatorReconcilesThreeDefaultHTTPReservationsWit
 		t.Fatalf("replayed reconciliation = revision %d and %d writes, want revision %d and %d writes", replayed.Revision, len(fixture.state.replaceCalls), final.Revision, len(projects))
 	}
 	if len(fixture.discoverer.calls) != 0 || len(fixture.loopback.calls) != 0 || len(fixture.ports.calls) != 0 ||
-		len(repairer.inspectTargets) != 0 || len(repairer.candidates) != 0 {
+		len(repairer.requests) != 0 {
 		t.Fatalf(
-			"endpoint reconciliation observations = discovery %v, loopback %v, ports %#v, repair inspect %#v, repair confirm %#v",
+			"endpoint reconciliation observations = discovery %v, loopback %v, ports %#v, repair requests %#v",
 			fixture.discoverer.calls,
 			fixture.loopback.calls,
 			fixture.ports.calls,
-			repairer.inspectTargets,
-			repairer.candidates,
+			repairer.requests,
 		)
 	}
 }
@@ -1415,9 +1517,12 @@ func TestProjectPrimaryLeaseCoordinatorFailsClosedOnIncompleteAuthority(t *testi
 		{name: "project read", configure: func(fixture *primaryLeaseTestFixture) { fixture.state.projectErr = cause }, want: "read project"},
 		{name: "network read", configure: func(fixture *primaryLeaseTestFixture) { fixture.state.networkErr = cause }, want: "read network"},
 		{name: "network invalid", configure: func(fixture *primaryLeaseTestFixture) { fixture.state.network.Leases = nil }, want: "invalid network authority"},
-		{name: "discovery", configure: func(fixture *primaryLeaseTestFixture) { fixture.discoverer.err = cause }, want: "discover primary runtime at"},
+		{name: "discovery", configure: func(fixture *primaryLeaseTestFixture) { fixture.discoverer.err = cause }, want: "prepare primary runtime at", wantCode: "project.runtime.prepare_failed"},
 		{name: "render update", configure: func(fixture *primaryLeaseTestFixture) {
-			fixture.discoverer.err = &projectdiscovery.RenderUpdateRequiredError{}
+			fixture.discoverer.err = &projectruntime.PreparationError{
+				Problem: domain.Problem{Code: "project.render.update_required", Message: "Run forj render and try again.", Retryable: true},
+				Cause:   errors.New("run forj render"),
+			}
 		}, want: "run forj render", wantCode: "project.render.update_required"},
 		{name: "loopback read", configure: func(fixture *primaryLeaseTestFixture) { fixture.loopback.errs[address] = cause }, want: "observe pre-provisioned"},
 		{name: "loopback address", configure: func(fixture *primaryLeaseTestFixture) {
@@ -1468,17 +1573,15 @@ func TestProjectPrimaryLeaseCoordinatorFailsClosedOnIncompleteAuthority(t *testi
 func TestProjectPrimaryLeaseCoordinatorClassifiesInvalidRuntimeConfiguration(t *testing.T) {
 	address := netip.MustParseAddr("127.77.0.11")
 	fixture := newPrimaryLeaseTestFixture(t, address)
-	_, invalidErr := projectdiscovery.NewDiscoverer().DiscoverDefaultRuntimeAtAddress(t.Context(), t.TempDir(), address)
-	var invalid *projectdiscovery.InvalidProjectError
-	if !errors.As(invalidErr, &invalid) {
-		t.Fatalf("runtime discovery fixture error = %T / %v", invalidErr, invalidErr)
+	fixture.discoverer.err = &projectruntime.PreparationError{
+		Problem: domain.Problem{Code: "project.runtime.invalid", Message: "The project runtime configuration is invalid. Fix it and try again.", Retryable: true},
+		Cause:   errors.New("runtime configuration is invalid"),
 	}
-	fixture.discoverer.err = invalidErr
 
 	_, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
 	assertPrimaryLeaseTestRejection(t, err, "project.runtime.invalid")
-	if !errors.As(err, &invalid) {
-		t.Fatalf("classified runtime error lost InvalidProjectError: %v", err)
+	if !strings.Contains(err.Error(), "runtime configuration is invalid") {
+		t.Fatalf("classified runtime error lost neutral preparation cause: %v", err)
 	}
 }
 
