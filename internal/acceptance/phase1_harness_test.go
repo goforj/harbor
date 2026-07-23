@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -949,8 +950,30 @@ func phase1AssertCleanup(t *testing.T, sandbox phase1Sandbox) {
 		names = append(names, entry.Name())
 	}
 	sort.Strings(names)
-	if len(names) != 1 || names[0] != "harbord.lock" {
-		t.Fatalf("runtime artifacts after shutdown = %v, want only reusable lock file", names)
+	// The spool directory is reusable infrastructure; successful shutdown must still retire every session file within it.
+	if !slices.Equal(names, []string{"harbord.lock"}) && !slices.Equal(names, []string{"harbord.lock", "output-spool"}) {
+		t.Fatalf("runtime artifacts after shutdown = %v, want only reusable runtime infrastructure", names)
+	}
+	if slices.Contains(names, "output-spool") {
+		outputSpoolPath := filepath.Join(sandbox.runtimeDirectory, "output-spool")
+		outputSpoolInformation, err := os.Lstat(outputSpoolPath)
+		if err != nil {
+			t.Fatalf("inspect reusable output spool directory after shutdown: %v", err)
+		}
+		if outputSpoolInformation.Mode()&os.ModeSymlink != 0 || !outputSpoolInformation.IsDir() {
+			t.Fatalf("reusable output spool path is not a direct directory: %v", outputSpoolInformation.Mode())
+		}
+		outputSpoolEntries, err := os.ReadDir(outputSpoolPath)
+		if err != nil {
+			t.Fatalf("read reusable output spool directory after shutdown: %v", err)
+		}
+		if len(outputSpoolEntries) != 0 {
+			outputSpoolNames := make([]string, 0, len(outputSpoolEntries))
+			for _, entry := range outputSpoolEntries {
+				outputSpoolNames = append(outputSpoolNames, entry.Name())
+			}
+			t.Fatalf("output spool artifacts after shutdown = %v, want empty reusable directory", outputSpoolNames)
+		}
 	}
 
 	entries, err = os.ReadDir(sandbox.intentDirectory)
