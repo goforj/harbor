@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,18 +23,22 @@ import (
 
 // primaryLeaseTestState keeps optimistic project and network revisions observable without replacing persistence semantics.
 type primaryLeaseTestState struct {
-	project      state.ProjectRecord
-	projects     map[domain.ProjectID]state.ProjectRecord
-	network      state.NetworkRecord
-	initialized  bool
-	projectErr   error
-	networkErr   error
-	replaceCalls []state.ReplaceProjectNetworkRequest
-	replace      func(state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error)
+	mu            sync.Mutex
+	project       state.ProjectRecord
+	projects      map[domain.ProjectID]state.ProjectRecord
+	network       state.NetworkRecord
+	initialized   bool
+	projectErr    error
+	networkErr    error
+	replaceCalls  []state.ReplaceProjectNetworkRequest
+	replace       func(state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error)
+	beforeReplace func()
 }
 
 // Project returns the fixture's exact registered project revision.
 func (fixture *primaryLeaseTestState) Project(_ context.Context, projectID domain.ProjectID) (state.ProjectRecord, error) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
 	if fixture.projectErr != nil {
 		return state.ProjectRecord{}, fixture.projectErr
 	}
@@ -49,10 +54,12 @@ func (fixture *primaryLeaseTestState) Project(_ context.Context, projectID domai
 
 // Network returns the fixture's complete network authority at its configured stage.
 func (fixture *primaryLeaseTestState) Network(context.Context) (state.NetworkRecord, bool, error) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
 	if fixture.networkErr != nil {
 		return state.NetworkRecord{}, false, fixture.networkErr
 	}
-	return fixture.network, fixture.initialized, nil
+	return clonePrimaryLeaseTestNetwork(fixture.network), fixture.initialized, nil
 }
 
 // ReplaceProjectNetwork applies one complete project delta while enforcing production's optimistic revisions.
@@ -60,10 +67,17 @@ func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 	_ context.Context,
 	request state.ReplaceProjectNetworkRequest,
 ) (state.NetworkMutationResult, error) {
-	fixture.replaceCalls = append(fixture.replaceCalls, request)
-	if fixture.replace != nil {
-		return fixture.replace(request)
+	if fixture.beforeReplace != nil {
+		fixture.beforeReplace()
 	}
+	fixture.mu.Lock()
+	fixture.replaceCalls = append(fixture.replaceCalls, request)
+	replace := fixture.replace
+	if replace != nil {
+		fixture.mu.Unlock()
+		return replace(request)
+	}
+	defer fixture.mu.Unlock()
 	if err := request.Validate(); err != nil {
 		return state.NetworkMutationResult{}, err
 	}
@@ -102,11 +116,23 @@ func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 	if err := fixture.network.Validate(); err != nil {
 		return state.NetworkMutationResult{}, err
 	}
-	return state.NetworkMutationResult{Record: fixture.network}, nil
+	return state.NetworkMutationResult{
+		Record: clonePrimaryLeaseTestNetwork(fixture.network),
+	}, nil
+}
+
+// clonePrimaryLeaseTestNetwork prevents optimistic callers from sharing mutable fixture slice storage.
+func clonePrimaryLeaseTestNetwork(network state.NetworkRecord) state.NetworkRecord {
+	network.Leases = slices.Clone(network.Leases)
+	network.Quarantines = slices.Clone(network.Quarantines)
+	network.Reservations.Endpoints = slices.Clone(network.Reservations.Endpoints)
+	network.Reservations.SuppressedProjectIDs = slices.Clone(network.Reservations.SuppressedProjectIDs)
+	return network
 }
 
 // primaryLeaseTestDiscoverer records the exact address whose project App port was admitted.
 type primaryLeaseTestDiscoverer struct {
+	mu        sync.Mutex
 	port      uint16
 	readiness projectruntime.ReadinessProbe
 	err       error
@@ -118,6 +144,8 @@ func (discoverer *primaryLeaseTestDiscoverer) Prepare(
 	_ context.Context,
 	request projectruntime.PreparationRequest,
 ) (projectruntime.Plan, error) {
+	discoverer.mu.Lock()
+	defer discoverer.mu.Unlock()
 	address := request.Address
 	discoverer.calls = append(discoverer.calls, address)
 	if discoverer.err != nil {
@@ -258,6 +286,7 @@ func TestValidatePrimaryRuntimePlanRejectsProviderBoundaryDrift(t *testing.T) {
 
 // primaryLeaseTestLoopbackObserver returns one independently fingerprintable assignment fact per candidate.
 type primaryLeaseTestLoopbackObserver struct {
+	mu    sync.Mutex
 	facts map[netip.Addr]loopback.Observation
 	errs  map[netip.Addr]error
 	calls []netip.Addr
@@ -265,6 +294,8 @@ type primaryLeaseTestLoopbackObserver struct {
 
 // Observe returns the configured exact-address host snapshot.
 func (observer *primaryLeaseTestLoopbackObserver) Observe(_ context.Context, address netip.Addr) (loopback.Observation, error) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
 	observer.calls = append(observer.calls, address)
 	if err := observer.errs[address]; err != nil {
 		return loopback.Observation{}, err
@@ -274,6 +305,7 @@ func (observer *primaryLeaseTestLoopbackObserver) Observe(_ context.Context, add
 
 // primaryLeaseTestPortProber returns deterministic exact-address listener evidence.
 type primaryLeaseTestPortProber struct {
+	mu      sync.Mutex
 	results map[netip.Addr]identity.ProbeResult
 	errs    map[netip.Addr]error
 	calls   []identity.ProbeRequest
@@ -320,6 +352,8 @@ func (repairer *primaryLeaseTestRuntimeRepairer) RepairListener(_ context.Contex
 
 // Probe returns configured facts or an available result for every requested port.
 func (prober *primaryLeaseTestPortProber) Probe(_ context.Context, request identity.ProbeRequest) (identity.ProbeResult, error) {
+	prober.mu.Lock()
+	defer prober.mu.Unlock()
 	prober.calls = append(prober.calls, request)
 	if err := prober.errs[request.Address]; err != nil {
 		return identity.ProbeResult{}, err
@@ -446,6 +480,94 @@ func TestProjectPrimaryLeaseCoordinatorAllocatesAndPersistsOneObservedDelta(t *t
 	}
 	if len(fixture.state.network.Leases) != 2 || fixture.state.network.Leases[0].Key.ProjectID != "project-billing" {
 		t.Fatalf("persisted leases = %#v", fixture.state.network.Leases)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorConvergesEightConcurrentProjects proves every supported pool member replans around shared revision conflicts.
+func TestProjectPrimaryLeaseCoordinatorConvergesEightConcurrentProjects(t *testing.T) {
+	addresses := []netip.Addr{
+		netip.MustParseAddr("127.77.0.11"),
+		netip.MustParseAddr("127.77.0.12"),
+		netip.MustParseAddr("127.77.0.13"),
+		netip.MustParseAddr("127.77.0.14"),
+		netip.MustParseAddr("127.77.0.15"),
+		netip.MustParseAddr("127.77.0.16"),
+		netip.MustParseAddr("127.77.0.17"),
+		netip.MustParseAddr("127.77.0.18"),
+	}
+	fixture := newPrimaryLeaseTestFixture(t, addresses...)
+	projectIDs := []domain.ProjectID{
+		"project-alpha",
+		"project-bravo",
+		"project-charlie",
+		"project-delta",
+		"project-echo",
+		"project-foxtrot",
+		"project-golf",
+		"project-hotel",
+	}
+	fixture.state.projects = make(map[domain.ProjectID]state.ProjectRecord, len(projectIDs))
+	for _, projectID := range projectIDs {
+		project := fixture.state.project
+		project.Project.ID = projectID
+		project.Project.Name = string(projectID)
+		project.Project.Path = "/test/" + string(projectID)
+		project.Project.Slug = strings.TrimPrefix(string(projectID), "project-")
+		fixture.state.projects[projectID] = project
+	}
+
+	initialWritesReady := make(chan struct{})
+	releaseInitialWrites := make(chan struct{})
+	var initialWriteCount int
+	var initialWriteMu sync.Mutex
+	fixture.state.beforeReplace = func() {
+		initialWriteMu.Lock()
+		initialWriteCount++
+		count := initialWriteCount
+		initialWriteMu.Unlock()
+		if count == len(projectIDs) {
+			close(initialWritesReady)
+		}
+		if count <= len(projectIDs) {
+			<-releaseInitialWrites
+		}
+	}
+
+	start := make(chan struct{})
+	type outcome struct {
+		projectID domain.ProjectID
+		admission projectPrimaryLeaseAdmission
+		err       error
+	}
+	outcomes := make(chan outcome, len(projectIDs))
+	for _, projectID := range projectIDs {
+		go func(projectID domain.ProjectID) {
+			<-start
+			admission, err := fixture.coordinator.Ensure(t.Context(), projectID)
+			outcomes <- outcome{
+				projectID: projectID,
+				admission: admission,
+				err:       err,
+			}
+		}(projectID)
+	}
+	close(start)
+	<-initialWritesReady
+	close(releaseInitialWrites)
+
+	leasedAddresses := make(map[netip.Addr]domain.ProjectID, len(projectIDs))
+	for range projectIDs {
+		outcome := <-outcomes
+		if outcome.err != nil {
+			t.Fatalf("Ensure(%q) error = %v", outcome.projectID, outcome.err)
+		}
+		if owner, exists := leasedAddresses[outcome.admission.Lease.Address]; exists {
+			t.Fatalf("projects %q and %q both received %s", owner, outcome.projectID, outcome.admission.Lease.Address)
+		}
+		leasedAddresses[outcome.admission.Lease.Address] = outcome.projectID
+	}
+	if len(leasedAddresses) != len(projectIDs) || len(fixture.state.network.Leases) != len(projectIDs) {
+		t.Fatalf("converged leases = %#v, want one unique lease for every project", fixture.state.network.Leases)
 	}
 }
 
@@ -730,11 +852,11 @@ func TestProjectPrimaryLeaseCoordinatorBoundsOptimisticRevisionRaces(t *testing.
 		}
 	}
 	_, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
-	if err == nil || !strings.Contains(err.Error(), "did not converge after 4 revisions") {
+	if err == nil || !strings.Contains(err.Error(), "did not converge after 8 revisions") {
 		t.Fatalf("Ensure() error = %v, want bounded convergence failure", err)
 	}
-	if len(fixture.state.replaceCalls) != primaryLeasePersistenceAttempts {
-		t.Fatalf("replacement attempts = %d, want %d", len(fixture.state.replaceCalls), primaryLeasePersistenceAttempts)
+	if len(fixture.state.replaceCalls) != primaryLeaseAllocationPersistenceAttempts {
+		t.Fatalf("replacement attempts = %d, want %d", len(fixture.state.replaceCalls), primaryLeaseAllocationPersistenceAttempts)
 	}
 }
 

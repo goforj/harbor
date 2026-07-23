@@ -23,6 +23,8 @@ import (
 const (
 	// primaryLeasePersistenceAttempts bounds optimistic replanning when another durable writer wins the revision.
 	primaryLeasePersistenceAttempts = 4
+	// primaryLeaseAllocationPersistenceAttempts gives every member of Harbor's fixed /29 pool one turn to win a shared revision race.
+	primaryLeaseAllocationPersistenceAttempts = networkSetupPoolAddressCount
 	// maximumPrimaryLeasePorts matches Harbor's bounded host-conflict socket vocabulary.
 	maximumPrimaryLeasePorts = 128
 	// maximumPrimaryLeaseProbeEvidenceBytes rejects unbounded injected observer output before it reaches a digest.
@@ -165,7 +167,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) Ensure(
 	}
 
 	var lastConflict error
-	for attempt := 0; attempt < primaryLeasePersistenceAttempts; attempt++ {
+	for attempt := 0; attempt < primaryLeaseAllocationPersistenceAttempts; attempt++ {
 		admission, err := coordinator.ensureAtCurrentRevision(ctx, projectID)
 		if err == nil {
 			return admission, nil
@@ -178,7 +180,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) Ensure(
 	return projectPrimaryLeaseAdmission{}, fmt.Errorf(
 		"allocate primary network lease for project %q did not converge after %d revisions: %w",
 		projectID,
-		primaryLeasePersistenceAttempts,
+		primaryLeaseAllocationPersistenceAttempts,
 		lastConflict,
 	)
 }
