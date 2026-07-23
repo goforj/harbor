@@ -906,18 +906,6 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 		return trust_state;
 	}
 	OSStatus status = errSecSuccess;
-	if (root_state == 1) {
-		status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
-		if (status == errSecItemNotFound) {
-			*stale = 1;
-			CFRelease(certificate);
-			return errSecSuccess;
-		}
-		if (status != errSecSuccess) {
-			CFRelease(certificate);
-			return status;
-		}
-	}
 	if (trust_state == 1) {
 		trust_state = harbor_trust_admin_root_state(der, der_length);
 		if (trust_state != 1) {
@@ -933,6 +921,22 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 			*stale = 1;
 			CFRelease(certificate);
 			return errSecSuccess;
+		}
+		if (status != errSecSuccess) {
+			CFRelease(certificate);
+			return status;
+		}
+	}
+	if (root_state == 1) {
+		status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
+		if (status == errSecItemNotFound) {
+			*stale = 1;
+			CFRelease(certificate);
+			return errSecSuccess;
+		}
+		if (status != errSecSuccess) {
+			CFRelease(certificate);
+			return status;
 		}
 	}
 	CFRelease(certificate);
