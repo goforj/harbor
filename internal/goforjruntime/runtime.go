@@ -3,21 +3,17 @@ package goforjruntime
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
-	"github.com/goforj/harbor/internal/platform/userpaths"
 	"github.com/goforj/harbor/internal/projectdiscovery"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/projectreadiness"
@@ -190,15 +186,10 @@ func (probe goForjReadinessProbe) Probe(ctx context.Context) (projectruntime.Rea
 
 // Launch starts the ordinary GoForj development runtime for one project session.
 func (runtime *Runtime) Launch(ctx context.Context, request projectruntime.LaunchRequest) (projectruntime.Handle, error) {
-	externalArtifactRoot, err := goForjExternalArtifactRoot(request.ProjectID, request.SessionID)
-	if err != nil {
-		return nil, fmt.Errorf("derive development artifact root: %w", err)
-	}
 	handle, err := runtime.supervisor.Start(ctx, projectprocess.StartRequest{
 		ProjectID:            request.ProjectID,
 		SessionID:            request.SessionID,
 		CheckoutRoot:         request.CheckoutRoot,
-		ExternalArtifactRoot: externalArtifactRoot,
 		EnvironmentOverrides: goForjEnvironmentOverrides(request.NetworkAssignment),
 		Stdout:               request.Stdout,
 		Stderr:               request.Stderr,
@@ -207,24 +198,6 @@ func (runtime *Runtime) Launch(ctx context.Context, request projectruntime.Launc
 		return nil, translateRuntimeError(err)
 	}
 	return projectHandle{handle: handle}, nil
-}
-
-// goForjExternalArtifactRoot derives a private, stable-on-retry directory for one Harbor project session.
-func goForjExternalArtifactRoot(projectID domain.ProjectID, sessionID domain.SessionID) (string, error) {
-	dataDirectory, err := userpaths.DataDirectory()
-	if err != nil {
-		return "", err
-	}
-	return externalArtifactRoot(filepath.Join(dataDirectory, "dev-artifacts"), projectID, sessionID), nil
-}
-
-// externalArtifactRoot keeps project and session identities opaque in filesystem paths while preserving uniqueness.
-func externalArtifactRoot(parent string, projectID domain.ProjectID, sessionID domain.SessionID) string {
-	hash := sha256.New()
-	_, _ = hash.Write([]byte(projectID))
-	_, _ = hash.Write([]byte{0})
-	_, _ = hash.Write([]byte(sessionID))
-	return filepath.Join(parent, hex.EncodeToString(hash.Sum(nil)))
 }
 
 // goForjEnvironmentOverrides maps a neutral Harbor network assignment to GoForj's current dotenv bridge.

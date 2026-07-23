@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,21 +16,6 @@ import (
 // goForjRuntimeRepairerFixture records the native target selected by the neutral repair adapter.
 type goForjRuntimeRepairerFixture struct {
 	targets []projectprocess.RuntimeRepairTarget
-}
-
-// TestExternalArtifactRootSeparatesProjectSessions verifies opaque artifact paths cannot collide across Harbor owners.
-func TestExternalArtifactRootSeparatesProjectSessions(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "dev-artifacts")
-	first := externalArtifactRoot(parent, "project-one", "session-one")
-	if first == externalArtifactRoot(parent, "project-two", "session-one") {
-		t.Fatal("externalArtifactRoot() reused a project artifact root")
-	}
-	if first == externalArtifactRoot(parent, "project-one", "session-two") {
-		t.Fatal("externalArtifactRoot() reused a session artifact root")
-	}
-	if filepath.Dir(first) != parent {
-		t.Fatalf("externalArtifactRoot() = %q, want child of %q", first, parent)
-	}
 }
 
 // Inspect records the exact native target and reports a listener that disappeared during observation.
