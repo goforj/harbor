@@ -41,24 +41,20 @@ type relayRuntime interface {
 
 // runtimeDependencies keeps native identity and socket activation deterministic in tests.
 type runtimeDependencies struct {
-	effectiveUID    func() (uint32, error)
-	activateIngress func() (ingressrelay.Listeners, error)
-	newRuntime      func(ingressrelay.Config) (relayRuntime, error)
+	effectiveUID            func() (uint32, error)
+	activateIngress         func() (ingressrelay.Listeners, error)
+	clearAmbientEnvironment func() error
+	newRuntime              func(ingressrelay.Config) (relayRuntime, error)
 }
 
 // environmentDependencies controls the environment clearing boundary.
 type environmentDependencies struct {
 	getenv   func(string) string
 	clearenv func()
-	setenv   func(string, string) error
 }
 
-// main clears ambient configuration while retaining launchd's socket-activation identity.
+// main starts the relay with launchd's activation context available until socket acquisition completes.
 func main() {
-	if err := clearAmbientEnvironment(productionEnvironmentDependencies()); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 	if err := run(ctx, os.Args[1:], productionDependencies()); err != nil {
@@ -72,11 +68,10 @@ func productionEnvironmentDependencies() environmentDependencies {
 	return environmentDependencies{
 		getenv:   os.Getenv,
 		clearenv: os.Clearenv,
-		setenv:   os.Setenv,
 	}
 }
 
-// clearAmbientEnvironment removes ambient configuration while retaining the launchd identity socket activation requires.
+// clearAmbientEnvironment removes every ambient setting after recording launchd's service identity.
 func clearAmbientEnvironment(dependencies environmentDependencies) error {
 	validateEnvironmentDependencies(dependencies)
 	serviceName := dependencies.getenv(launchdServiceNameEnvironment)
@@ -84,17 +79,15 @@ func clearAmbientEnvironment(dependencies environmentDependencies) error {
 	if serviceName != launchdRelayServiceName {
 		return errors.New("launchd service identity does not match Harbor's relay")
 	}
-	if err := dependencies.setenv(launchdServiceNameEnvironment, serviceName); err != nil {
-		return fmt.Errorf("restore launchd service identity: %w", err)
-	}
 	return nil
 }
 
 // productionDependencies binds the process to its current UID and fixed launchd socket names.
 func productionDependencies() runtimeDependencies {
 	return runtimeDependencies{
-		effectiveUID:    productionEffectiveUID,
-		activateIngress: launchdsocket.ActivateIngress,
+		effectiveUID:            productionEffectiveUID,
+		activateIngress:         launchdsocket.ActivateIngress,
+		clearAmbientEnvironment: func() error { return clearAmbientEnvironment(productionEnvironmentDependencies()) },
 		newRuntime: func(config ingressrelay.Config) (relayRuntime, error) {
 			return ingressrelay.New(config)
 		},
@@ -135,6 +128,9 @@ func run(ctx context.Context, arguments []string, dependencies runtimeDependenci
 	listeners, err := dependencies.activateIngress()
 	if err != nil {
 		return errors.Join(fmt.Errorf("activate launchd ingress sockets: %w", err), closeListeners(listeners))
+	}
+	if err := dependencies.clearAmbientEnvironment(); err != nil {
+		return errors.Join(fmt.Errorf("clear launchd relay ambient environment: %w", err), closeListeners(listeners))
 	}
 	if err := runtime.Serve(ctx, listeners); err != nil {
 		return fmt.Errorf("serve launchd ingress relay: %w", err)
@@ -222,14 +218,14 @@ func closeListeners(listeners ingressrelay.Listeners) error {
 
 // validateDependencies fails fast before process identity or socket authority is consulted.
 func validateDependencies(dependencies runtimeDependencies) {
-	if dependencies.effectiveUID == nil || dependencies.activateIngress == nil || dependencies.newRuntime == nil {
+	if dependencies.effectiveUID == nil || dependencies.activateIngress == nil || dependencies.clearAmbientEnvironment == nil || dependencies.newRuntime == nil {
 		panic("launchd relay requires every runtime dependency")
 	}
 }
 
 // validateEnvironmentDependencies fails fast when environment cleanup is not fully wired.
 func validateEnvironmentDependencies(dependencies environmentDependencies) {
-	if dependencies.getenv == nil || dependencies.clearenv == nil || dependencies.setenv == nil {
+	if dependencies.getenv == nil || dependencies.clearenv == nil {
 		panic("launchd relay requires every environment dependency")
 	}
 }

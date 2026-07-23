@@ -19,13 +19,11 @@ import (
 
 const commandTestFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity verifies socket activation retains its launchd identity.
-func TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity(t *testing.T) {
+// TestClearAmbientEnvironmentRemovesEverySetting verifies activation-only context cannot reach the relay runtime.
+func TestClearAmbientEnvironmentRemovesEverySetting(t *testing.T) {
 	tests := []struct {
 		name        string
 		environment map[string]string
-		wantService string
-		wantPresent bool
 		wantError   bool
 	}{
 		{
@@ -35,8 +33,6 @@ func TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity(t *testing.T) 
 				"HARBOR_INSTALLATION_ID":      "installation-123",
 				"UNRELATED_ENVIRONMENT":       "remove-me",
 			},
-			wantService: launchdRelayServiceName,
-			wantPresent: true,
 		},
 		{
 			name: "rejects foreign service name",
@@ -73,9 +69,8 @@ func TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity(t *testing.T) 
 			if (err != nil) != test.wantError {
 				t.Fatalf("clearAmbientEnvironment() error = %v, want error %t", err, test.wantError)
 			}
-			gotService, gotPresent := environment[launchdServiceNameEnvironment]
-			if gotService != test.wantService || gotPresent != test.wantPresent {
-				t.Fatalf("XPC_SERVICE_NAME = (%q, %t), want (%q, %t)", gotService, gotPresent, test.wantService, test.wantPresent)
+			if _, ok := environment[launchdServiceNameEnvironment]; ok {
+				t.Fatal("XPC_SERVICE_NAME remained after clearing environment")
 			}
 			if _, ok := environment["HARBOR_INSTALLATION_ID"]; ok {
 				t.Fatal("HARBOR_INSTALLATION_ID remained after clearing environment")
@@ -84,19 +79,6 @@ func TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity(t *testing.T) 
 				t.Fatal("UNRELATED_ENVIRONMENT remained after clearing environment")
 			}
 		})
-	}
-}
-
-// TestClearAmbientEnvironmentReturnsSetFailure verifies service identity restoration failures stop startup.
-func TestClearAmbientEnvironmentReturnsSetFailure(t *testing.T) {
-	want := errors.New("set environment failed")
-	err := clearAmbientEnvironment(environmentDependencies{
-		getenv:   func(string) string { return launchdRelayServiceName },
-		clearenv: func() {},
-		setenv:   func(string, string) error { return want },
-	})
-	if !errors.Is(err, want) {
-		t.Fatalf("clearAmbientEnvironment() error = %v, want %v", err, want)
 	}
 }
 
@@ -110,21 +92,12 @@ func TestValidateEnvironmentDependenciesRequiresEveryDependency(t *testing.T) {
 			name: "missing getenv",
 			dependencies: environmentDependencies{
 				clearenv: func() {},
-				setenv:   func(string, string) error { return nil },
 			},
 		},
 		{
 			name: "missing clearenv",
 			dependencies: environmentDependencies{
 				getenv: func(string) string { return "" },
-				setenv: func(string, string) error { return nil },
-			},
-		},
-		{
-			name: "missing setenv",
-			dependencies: environmentDependencies{
-				getenv:   func(string) string { return "" },
-				clearenv: func() {},
 			},
 		},
 	}
@@ -170,10 +143,14 @@ type commandTestRuntime struct {
 	listeners ingressrelay.Listeners
 	serveErr  error
 	calls     int
+	onServe   func()
 }
 
 // Serve captures listener ownership without starting network goroutines.
 func (runtime *commandTestRuntime) Serve(ctx context.Context, listeners ingressrelay.Listeners) error {
+	if runtime.onServe != nil {
+		runtime.onServe()
+	}
 	runtime.context = ctx
 	runtime.listeners = listeners
 	runtime.calls++
@@ -231,16 +208,34 @@ func TestParseConfigurationRejectsUnownedShapes(t *testing.T) {
 	}
 }
 
-// TestRunTransfersOnlyValidatedCapabilities verifies identity, construction, activation, and Serve ordering.
+// TestRunTransfersOnlyValidatedCapabilities verifies activation completes before cleanup and serving.
 func TestRunTransfersOnlyValidatedCapabilities(t *testing.T) {
 	http := &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:80")}
 	https := &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:443")}
-	runtime := &commandTestRuntime{}
+	events := make([]string, 0, 3)
+	environment := map[string]string{
+		launchdServiceNameEnvironment: launchdRelayServiceName,
+		"LAUNCHD_ACTIVATION_STATE":    "available-until-activation",
+	}
+	runtime := &commandTestRuntime{onServe: func() {
+		events = append(events, "serve")
+		if len(environment) != 0 {
+			t.Fatalf("runtime environment = %#v, want empty", environment)
+		}
+	}}
 	var receivedConfig ingressrelay.Config
 	dependencies := runtimeDependencies{
 		effectiveUID: func() (uint32, error) { return 501, nil },
 		activateIngress: func() (ingressrelay.Listeners, error) {
+			events = append(events, "activate")
+			if environment["LAUNCHD_ACTIVATION_STATE"] != "available-until-activation" {
+				t.Fatalf("activation context = %#v, want complete launchd environment", environment)
+			}
 			return ingressrelay.Listeners{HTTP: http, HTTPS: https}, nil
+		},
+		clearAmbientEnvironment: func() error {
+			events = append(events, "clear")
+			return clearAmbientEnvironment(commandTestEnvironmentDependencies(environment))
 		},
 		newRuntime: func(config ingressrelay.Config) (relayRuntime, error) {
 			receivedConfig = config
@@ -261,6 +256,9 @@ func TestRunTransfersOnlyValidatedCapabilities(t *testing.T) {
 	}
 	if http.closed != 0 || https.closed != 0 {
 		t.Fatalf("command closed transferred listeners: HTTP=%d HTTPS=%d", http.closed, https.closed)
+	}
+	if got := strings.Join(events, ","); got != "activate,clear,serve" {
+		t.Fatalf("startup events = %q, want activate,clear,serve", got)
 	}
 }
 
@@ -285,6 +283,7 @@ func TestRunRejectsIdentityBeforeCapabilityAcquisition(t *testing.T) {
 					capabilityCalls++
 					return ingressrelay.Listeners{}, nil
 				},
+				clearAmbientEnvironment: func() error { return nil },
 				newRuntime: func(ingressrelay.Config) (relayRuntime, error) {
 					capabilityCalls++
 					return &commandTestRuntime{}, nil
@@ -344,6 +343,24 @@ func TestRunCleansPartialActivationAndPropagatesRuntimeFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("environment cleanup failure", func(t *testing.T) {
+		http := &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:80")}
+		https := &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:443"), err: errors.New("HTTPS close failed")}
+		runtime := &commandTestRuntime{}
+		dependencies := validCommandTestDependencies(runtime)
+		dependencies.activateIngress = func() (ingressrelay.Listeners, error) {
+			return ingressrelay.Listeners{HTTP: http, HTTPS: https}, nil
+		}
+		dependencies.clearAmbientEnvironment = func() error { return errors.New("environment cleanup failed") }
+		err := run(context.Background(), validCommandTestArguments(), dependencies)
+		if err == nil || !strings.Contains(err.Error(), "environment cleanup failed") || !strings.Contains(err.Error(), "HTTPS close failed") {
+			t.Fatalf("run() error = %v, want environment cleanup and listener close failures", err)
+		}
+		if runtime.calls != 0 || http.closed != 1 || https.closed != 1 {
+			t.Fatalf("Serve calls and listener closes = (%d, %d, %d), want (0, 1, 1)", runtime.calls, http.closed, https.closed)
+		}
+	})
+
 	t.Run("serve failure", func(t *testing.T) {
 		runtime := &commandTestRuntime{serveErr: errors.New("relay failed")}
 		err := run(context.Background(), validCommandTestArguments(), validCommandTestDependencies(runtime))
@@ -373,9 +390,26 @@ func TestRunCleansPartialActivationAndPropagatesRuntimeFailures(t *testing.T) {
 // TestRunRequiresEveryDependency verifies bad process wiring fails before interpreting arguments.
 func TestRunRequiresEveryDependency(t *testing.T) {
 	tests := []runtimeDependencies{
-		{activateIngress: func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil }, newRuntime: func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil }},
-		{effectiveUID: func() (uint32, error) { return 501, nil }, newRuntime: func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil }},
-		{effectiveUID: func() (uint32, error) { return 501, nil }, activateIngress: func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil }},
+		{
+			activateIngress:         func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
+			clearAmbientEnvironment: func() error { return nil },
+			newRuntime:              func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
+		},
+		{
+			effectiveUID:            func() (uint32, error) { return 501, nil },
+			clearAmbientEnvironment: func() error { return nil },
+			newRuntime:              func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
+		},
+		{
+			effectiveUID:    func() (uint32, error) { return 501, nil },
+			activateIngress: func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
+			newRuntime:      func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
+		},
+		{
+			effectiveUID:            func() (uint32, error) { return 501, nil },
+			activateIngress:         func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
+			clearAmbientEnvironment: func() error { return nil },
+		},
 	}
 	for index, dependencies := range tests {
 		t.Run(strconv.Itoa(index), func(t *testing.T) {
@@ -467,7 +501,8 @@ func validCommandTestDependencies(runtime relayRuntime) runtimeDependencies {
 				HTTPS: &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:443")},
 			}, nil
 		},
-		newRuntime: func(ingressrelay.Config) (relayRuntime, error) { return runtime, nil },
+		clearAmbientEnvironment: func() error { return nil },
+		newRuntime:              func(ingressrelay.Config) (relayRuntime, error) { return runtime, nil },
 	}
 }
 
@@ -481,10 +516,6 @@ func commandTestEnvironmentDependencies(environment map[string]string) environme
 			for key := range environment {
 				delete(environment, key)
 			}
-		},
-		setenv: func(key string, value string) error {
-			environment[key] = value
-			return nil
 		},
 	}
 }
