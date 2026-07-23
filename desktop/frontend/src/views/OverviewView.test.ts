@@ -100,6 +100,22 @@ describe('OverviewView', () => {
     wrapper.unmount()
   })
 
+  it('removes a stale recovery action when the selected background service cannot perform it', async () => {
+    const { wrapper } = await mountOverview()
+    vi.spyOn(harborBridge, 'removeOldNetworking').mockRejectedValueOnce(
+      new Error('Harbor daemon does not support network resolver policy migration; upgrade or restart harbord'),
+    )
+    vi.spyOn(harborBridge, 'getStatus').mockRejectedValueOnce(new Error('daemon session changed'))
+    const remove = wrapper.findAll('button').find((button) => button.text().includes('Remove old networking'))
+
+    await remove!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Harbor connected to an older background service. Waiting for the updated service before retrying.')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('Remove old networking'))).toBe(false)
+    wrapper.unmount()
+  })
+
   it('keeps failed removal feedback with its retry action instead of the setup message', async () => {
     const { store, wrapper } = await mountOverview()
     store.$patch({

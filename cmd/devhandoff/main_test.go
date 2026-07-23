@@ -16,8 +16,7 @@ func TestSourceDevelopmentRunsDaemonHandoffBeforeWatchers(t *testing.T) {
 	}
 
 	const handoffTask = "- name: Handoff Harbor daemon\n      cmd: go run ./cmd/devhandoff"
-	const sourceMarker = "env:\n          HARBOR_SOURCE_DEVELOPMENT_HANDOFF: \"1\""
-	if !strings.Contains(string(configuration), handoffTask) || !strings.Contains(string(configuration), sourceMarker) {
-		t.Fatalf("%s does not configure the Harbor daemon handoff task and source-development marker", configurationPath)
+	if !strings.Contains(string(configuration), handoffTask) {
+		t.Fatalf("%s does not configure the Harbor daemon handoff task", configurationPath)
 	}
 }

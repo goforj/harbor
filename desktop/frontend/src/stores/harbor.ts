@@ -44,6 +44,8 @@ interface TrackedProjectRemovalIntent {
 type ProjectLifecycleAction = 'start' | 'stop' | 'restart'
 type ProjectRuntimeRepairAction = 'inspect' | 'confirm'
 
+const unsupportedResolverPolicyMigration = 'does not support network resolver policy migration'
+
 interface TrackedProjectLifecycleIntent {
   action: ProjectLifecycleAction
   id: string
@@ -444,9 +446,23 @@ export const useHarborStore = defineStore('harbor', () => {
       return result
     }
     catch (cause) {
-      oldNetworkingRemovalError.value = cause instanceof Error
+      const message = cause instanceof Error
         ? cause.message
         : 'Harbor could not remove old networking.'
+      if (message.includes(unsupportedResolverPolicyMigration)) {
+        if (daemonStatus.value) {
+          daemonStatus.value = {
+            ...daemonStatus.value,
+            capabilities: daemonStatus.value.capabilities.filter(
+              capability => capability !== 'control.network-resolver-policy-migration.v1',
+            ),
+          }
+        }
+        oldNetworkingRemovalError.value = 'Harbor connected to an older background service. Waiting for the updated service before retrying.'
+      }
+      else {
+        oldNetworkingRemovalError.value = message
+      }
       return null
     }
     finally {

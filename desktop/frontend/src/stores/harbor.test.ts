@@ -595,6 +595,53 @@ describe('Harbor store', () => {
     expect(store.oldNetworkingRemovalError).toBe('old networking is still active')
   })
 
+  it('revokes stale removal capability when the selected daemon session rejects it', async () => {
+    const store = useHarborStore()
+    store.$patch({
+      daemonStatus: {
+        ...mockStatus(),
+        capabilities: ['control.network-resolver-policy-migration.v1'],
+      },
+      connectionState: 'connected',
+      networkSetupError: 'Harbor detected old networking.',
+    })
+    const removeOldNetworking = vi.spyOn(harborBridge, 'removeOldNetworking').mockRejectedValueOnce(
+      new Error('Harbor daemon does not support network resolver policy migration; upgrade or restart harbord'),
+    )
+    vi.spyOn(harborBridge, 'getStatus').mockRejectedValueOnce(new Error('daemon session changed'))
+
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+
+    expect(store.daemonStatus?.capabilities).not.toContain('control.network-resolver-policy-migration.v1')
+    expect(store.oldNetworkingRemovalAvailable).toBe(false)
+    expect(store.oldNetworkingRemovalError).toBe('Harbor connected to an older background service. Waiting for the updated service before retrying.')
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+    expect(removeOldNetworking).toHaveBeenCalledOnce()
+  })
+
+  it('re-enables removal only after a fresh background service advertises it', async () => {
+    const supported = {
+      ...mockStatus(),
+      capabilities: ['control.network-resolver-policy-migration.v1'],
+    }
+    const store = useHarborStore()
+    store.$patch({
+      daemonStatus: supported,
+      connectionState: 'connected',
+      networkSetupError: 'Harbor detected old networking.',
+    })
+    vi.spyOn(harborBridge, 'removeOldNetworking').mockRejectedValueOnce(
+      new Error('Harbor daemon does not support network resolver policy migration; upgrade or restart harbord'),
+    )
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValueOnce(supported)
+
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+
+    expect(store.daemonStatus).toEqual(supported)
+    expect(store.oldNetworkingRemovalAvailable).toBe(true)
+    expect(store.oldNetworkingRemovalError).toBe('Harbor connected to an older background service. Waiting for the updated service before retrying.')
+  })
+
   it('clears network action feedback when a fresh status drops its capability', async () => {
     const store = useHarborStore()
     store.$patch({

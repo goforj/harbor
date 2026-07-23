@@ -19,8 +19,6 @@ dev:
         ignore: [desktop, bin, .tmp]
       run:
         exec: ./bin/harbord migrate && ./bin/harbord --foreground
-        env:
-          HARBOR_SOURCE_DEVELOPMENT_HANDOFF: "1"
   watches:
     - name: Build Harbor Output Broker
       root: .

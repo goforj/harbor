@@ -33,11 +33,11 @@ import (
 const runtimeCloseCoordinationMargin = 5 * time.Second
 
 const (
-	sourceDevelopmentHandoffEnvironment    = "HARBOR_SOURCE_DEVELOPMENT_HANDOFF"
-	sourceDevelopmentOriginEnvironment     = "FORJ_COMMAND_ORIGIN"
-	sourceDevelopmentSubprocessEnvironment = "FORJ_SUBPROCESS"
-	sourceDevelopmentCommandOrigin         = "dev_command"
-	sourceDevelopmentHandoffTimeout        = 2 * time.Second
+	sourceDevelopmentAppEnvironment           = "FORJ_APP"
+	sourceDevelopmentCommandPrefixEnvironment = "FORJ_COMMAND_PREFIX"
+	sourceDevelopmentApp                      = "harbord"
+	sourceDevelopmentCommandPrefix            = "forj harbord"
+	sourceDevelopmentHandoffTimeout           = 2 * time.Second
 )
 
 // projectUnregisterIssuerOpener isolates default issuer stores while retaining daemon-owned ownership authority.
@@ -595,7 +595,7 @@ func provideDaemonRunner(
 	})
 }
 
-// sourceDevelopmentDaemonHandoff enables same-user graceful handoff only for the explicit source-development watcher environment.
+// sourceDevelopmentDaemonHandoff enables same-user graceful handoff for Harbor's structured GoForj app runtime.
 func sourceDevelopmentDaemonHandoff(environment projectprocess.Environment) daemon.AuthorityContentionHandler {
 	if !sourceDevelopmentEnvironmentEnabled(environment) {
 		return nil
@@ -608,22 +608,19 @@ func sourceDevelopmentDaemonHandoff(environment projectprocess.Environment) daem
 	}
 }
 
-// sourceDevelopmentEnvironmentEnabled reads the pre-dotenv process snapshot so project configuration cannot opt production daemons into source-only behavior.
+// sourceDevelopmentEnvironmentEnabled reads the pre-dotenv process snapshot so dotenv files cannot opt an ordinary launch into source-only behavior.
 func sourceDevelopmentEnvironmentEnabled(environment projectprocess.Environment) bool {
-	handoffEnabled := false
-	developmentOrigin := false
-	subprocess := false
+	developmentApp := false
+	developmentCommandPrefix := false
 	for _, entry := range environment {
 		switch entry {
-		case sourceDevelopmentHandoffEnvironment + "=1":
-			handoffEnabled = true
-		case sourceDevelopmentOriginEnvironment + "=" + sourceDevelopmentCommandOrigin:
-			developmentOrigin = true
-		case sourceDevelopmentSubprocessEnvironment + "=1":
-			subprocess = true
+		case sourceDevelopmentAppEnvironment + "=" + sourceDevelopmentApp:
+			developmentApp = true
+		case sourceDevelopmentCommandPrefixEnvironment + "=" + sourceDevelopmentCommandPrefix:
+			developmentCommandPrefix = true
 		}
 	}
-	return handoffEnabled && developmentOrigin && subprocess
+	return developmentApp && developmentCommandPrefix
 }
 
 // recoverDaemonState arms durable global release recovery before ordinary project recovery.

@@ -845,22 +845,27 @@ func TestProvideControlServerExposesResolverPolicyMigrationAuthority(t *testing.
 
 // TestSourceDevelopmentDaemonHandoffUsesCapturedEnvironment proves source-only authority retry cannot be enabled by Harbor's later dotenv load.
 func TestSourceDevelopmentDaemonHandoffUsesCapturedEnvironment(t *testing.T) {
-	t.Setenv(sourceDevelopmentHandoffEnvironment, "1")
+	t.Setenv(sourceDevelopmentAppEnvironment, sourceDevelopmentApp)
+	t.Setenv(sourceDevelopmentCommandPrefixEnvironment, sourceDevelopmentCommandPrefix)
 	if handler := sourceDevelopmentDaemonHandoff(nil); handler != nil {
 		t.Fatal("sourceDevelopmentDaemonHandoff() enabled from the current process environment")
 	}
 	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{"OTHER=value"}); handler != nil {
-		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without captured marker")
+		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without captured GoForj provenance")
 	}
 	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{
-		sourceDevelopmentHandoffEnvironment + "=1",
+		sourceDevelopmentAppEnvironment + "=" + sourceDevelopmentApp,
 	}); handler != nil {
-		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without GoForj development provenance")
+		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without the GoForj command prefix")
 	}
 	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{
-		sourceDevelopmentHandoffEnvironment + "=1",
-		sourceDevelopmentOriginEnvironment + "=" + sourceDevelopmentCommandOrigin,
-		sourceDevelopmentSubprocessEnvironment + "=1",
+		sourceDevelopmentCommandPrefixEnvironment + "=" + sourceDevelopmentCommandPrefix,
+	}); handler != nil {
+		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without the Harbor app identity")
+	}
+	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{
+		sourceDevelopmentAppEnvironment + "=" + sourceDevelopmentApp,
+		sourceDevelopmentCommandPrefixEnvironment + "=" + sourceDevelopmentCommandPrefix,
 	}); handler == nil {
 		t.Fatal("sourceDevelopmentDaemonHandoff() did not enable from the captured GoForj development environment")
 	}
