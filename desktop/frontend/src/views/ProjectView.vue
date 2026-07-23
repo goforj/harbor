@@ -523,16 +523,8 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         </div>
       </header>
 
-      <Tabs v-model="selectedDetailTab" class="min-h-0 min-w-0 flex-1 gap-0">
-        <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
-          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
-          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
-          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
-          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
-        </TabsList>
-
-        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
-        <Alert v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" :variant="recoveryRequired || needsNetworkSetup ? 'default' : 'destructive'">
+      <div v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" class="px-5 pt-5 lg:px-7">
+        <Alert :variant="recoveryRequired || needsNetworkSetup ? 'default' : 'destructive'">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : needsNetworkSetup ? 'Secure networking is not ready' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
@@ -557,7 +549,17 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
             </Button>
           </AlertDescription>
         </Alert>
+      </div>
 
+      <Tabs v-model="selectedDetailTab" class="min-h-0 min-w-0 flex-1 gap-0">
+        <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
+          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
+          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
+          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
+          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
+        </TabsList>
+
+        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <Alert
           v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"

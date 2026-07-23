@@ -441,6 +441,33 @@ describe('ProjectView stale runtime recovery', () => {
 })
 
 describe('ProjectView network admission', () => {
+  it.each([
+    ['network readiness', 'project.network.setup_required', 'Secure networking is not ready', 'Set up Harbor\'s secure, trusted local DNS, HTTPS, and ingress before starting this project.'],
+    ['runtime', 'project.process.exited', 'Project action failed', 'The development runtime exited unexpectedly.'],
+  ])('keeps the %s lifecycle error above the primary tabs across project surfaces', async (_, problemCode, title, message) => {
+    const { store, wrapper } = await mountProject()
+    store.$patch({
+      projectLifecycleErrors: { 'orders-api': message },
+      projectLifecycleProblemCodes: { 'orders-api': problemCode },
+    })
+    await wrapper.vm.$nextTick()
+
+    const lifecycleAlert = wrapper.find('[role="alert"]')
+    const primaryTabList = wrapper.find('[role="tablist"]')
+    expect(lifecycleAlert.text()).toContain(title)
+    expect(lifecycleAlert.text()).toContain(message)
+    expect(lifecycleAlert.element.compareDocumentPosition(primaryTabList.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    for (const tabLabel of ['Overview', 'Development output', 'Services', 'Resources']) {
+      await detailTab(wrapper, tabLabel).trigger('mousedown', { button: 0 })
+      await wrapper.vm.$nextTick()
+      expect(lifecycleAlert.isVisible()).toBe(true)
+      expect(lifecycleAlert.text()).toContain(message)
+    }
+
+    wrapper.unmount()
+  })
+
   it('offers the same trusted-ingress setup action when full network authority is missing', async () => {
     const { wrapper } = await mountFullNetworkBlockedProject()
     const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork').mockResolvedValue(structuredClone(harborWireFixture.setup_network))
