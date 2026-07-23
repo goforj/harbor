@@ -1151,7 +1151,8 @@ func administratorTrustDiagnosticMessage(stage string, status int) (string, bool
 		"add-system-root",
 		"owner-record",
 		"root-recheck-after-marker",
-		"set-root":
+		"set-root",
+		"release-remove":
 		return fmt.Sprintf("helper operation failed: administrator trust %s OSStatus %d", stage, status), true
 	default:
 		return "", false

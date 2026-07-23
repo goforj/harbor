@@ -55,6 +55,22 @@ func TestErrorAdministratorTrustDiagnosticExposesOnlyReviewedNativeStatus(t *tes
 		t.Fatalf("AdministratorTrustDiagnostic() = %q, %d, %t", stage, status, ok)
 	}
 
+	releaseErr := operationError(
+		ErrorKindMutationFailed,
+		"release",
+		Observation{},
+		Assessment{},
+		newAdministratorTrustStatusError("release-remove", -25299),
+	)
+	trustError, ok = releaseErr.(*Error)
+	if !ok {
+		t.Fatalf("operationError() type = %T", releaseErr)
+	}
+	stage, status, ok = trustError.AdministratorTrustDiagnostic()
+	if !ok || stage != "release-remove" || status != -25299 {
+		t.Fatalf("AdministratorTrustDiagnostic() = %q, %d, %t", stage, status, ok)
+	}
+
 	for _, err := range []*Error{
 		{Kind: ErrorKindMutationFailed, Operation: "ensure", cause: errors.New("/private/keychain")},
 		{Kind: ErrorKindMutationFailed, Operation: "release", cause: newAdministratorTrustStatusError("set-root", -25299)},

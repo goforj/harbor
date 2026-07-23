@@ -58,25 +58,28 @@ func (err *Error) Unwrap() error {
 	return err.cause
 }
 
-// AdministratorTrustDiagnostic returns a reviewed administrator observation or ensure failure, when this error wraps one.
+// AdministratorTrustDiagnostic returns a reviewed administrator observation, ensure, or release failure, when this error wraps one.
 func (err *Error) AdministratorTrustDiagnostic() (string, int, bool) {
 	if err == nil || !administratorTrustDiagnosticBoundary(err.Kind, err.Operation) {
 		return "", 0, false
 	}
 	var cause *administratorTrustStatusError
-	if !errors.As(err.cause, &cause) || !validAdministratorTrustStage(cause.stage) {
+	if !errors.As(err.cause, &cause) || !validAdministratorTrustStage(cause.stage) ||
+		(err.Operation == "release" && cause.stage != "release-remove") {
 		return "", 0, false
 	}
 	return cause.stage, cause.status, true
 }
 
-// administratorTrustDiagnosticBoundary limits native diagnostics to trust observations and the ensure path that consumes them.
+// administratorTrustDiagnosticBoundary limits native diagnostics to trust observations and the reviewed mutation paths that consume them.
 func administratorTrustDiagnosticBoundary(kind ErrorKind, operation string) bool {
 	switch operation {
 	case "observe":
 		return kind == ErrorKindObserveFailed
 	case "ensure":
 		return kind == ErrorKindMutationFailed || kind == ErrorKindVerificationFailed
+	case "release":
+		return kind == ErrorKindMutationFailed
 	default:
 		return false
 	}
@@ -93,9 +96,12 @@ func (err *administratorTrustStatusError) Error() string {
 	return "administrator trust native mutation failed"
 }
 
-// newAdministratorTrustStatusError binds a native status to one reviewed administrator ensure step.
+// newAdministratorTrustStatusError binds a native status to one reviewed administrator trust step.
 func newAdministratorTrustStatusError(stage string, status int) error {
-	return &administratorTrustStatusError{stage: stage, status: status}
+	return &administratorTrustStatusError{
+		stage:  stage,
+		status: status,
+	}
 }
 
 // validAdministratorTrustStage rejects arbitrary native-operation labels from diagnostic propagation.
@@ -110,7 +116,8 @@ func validAdministratorTrustStage(stage string) bool {
 		"add-system-root",
 		"owner-record",
 		"root-recheck-after-marker",
-		"set-root":
+		"set-root",
+		"release-remove":
 		return true
 	default:
 		return false

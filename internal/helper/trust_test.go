@@ -205,6 +205,7 @@ func TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues(t *te
 		"root-store-recheck",
 		"root-store-verify",
 		"add-system-root",
+		"release-remove",
 	} {
 		message, ok := administratorTrustDiagnosticMessage(stage, -25291)
 		expected := fmt.Sprintf("helper operation failed: administrator trust %s OSStatus -25291", stage)

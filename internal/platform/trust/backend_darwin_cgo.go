@@ -1285,7 +1285,7 @@ func removeExactOwnedDarwinAdministratorTrust(root []byte, account string, finge
 		&stale,
 	)
 	if status != C.harborErrSecSuccess {
-		return false, darwinTrustStatusError("remove exact owned administrator root trust", status)
+		return false, newAdministratorTrustStatusError("release-remove", int(status))
 	}
 	return stale != 0, nil
 }
