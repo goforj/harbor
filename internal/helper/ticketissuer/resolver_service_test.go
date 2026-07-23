@@ -542,6 +542,29 @@ func TestResolverServiceRejectsUnsafePolicyMigration(t *testing.T) {
 			want: "cannot be safely released",
 		},
 		{
+			name: "foreign only",
+			mutate: func(fixture *resolverIssuerFixture) {
+				observation := fixture.observation
+				observation.Rules = []resolver.RuleFact{
+					resolverRuleFor(observation.Request, "foreign", false, false),
+				}
+				fixture.resolver.observations = []resolver.Observation{observation}
+			},
+			want: "foreign resolver rules cannot be safely retired",
+		},
+		{
+			name: "foreign plus owned",
+			mutate: func(fixture *resolverIssuerFixture) {
+				observation := fixture.observation
+				observation.Rules = []resolver.RuleFact{
+					resolverRuleFor(observation.Request, "owned", true, false),
+					resolverRuleFor(observation.Request, "foreign", false, false),
+				}
+				fixture.resolver.observations = []resolver.Observation{observation}
+			},
+			want: "foreign resolver rules cannot be safely retired",
+		},
+		{
 			name: "source ownership drift",
 			mutate: func(fixture *resolverIssuerFixture) {
 				drifted := fixture.ownership.observations[0]

@@ -601,9 +601,21 @@ func (service *ResolverService) observeResolver(ctx context.Context, plan Resolv
 		default:
 			return "", fmt.Errorf("issue helper resolver ticket: resolver state %q is unsupported", assessment.State)
 		}
-	case ResolverPlanPurposeGlobalRelease, ResolverPlanPurposePolicyMigration:
+	case ResolverPlanPurposeGlobalRelease:
 		if assessment.State == resolver.StateIndeterminate || assessment.Owned == resolver.OwnedStateAmbiguous {
 			return "", fmt.Errorf("issue helper resolver ticket: resolver ownership state %q cannot be safely released", assessment.Owned)
+		}
+		switch assessment.Owned {
+		case resolver.OwnedStateAbsent, resolver.OwnedStateExact, resolver.OwnedStateDrifted:
+		default:
+			return "", fmt.Errorf("issue helper resolver ticket: resolver ownership state %q is unsupported", assessment.Owned)
+		}
+	case ResolverPlanPurposePolicyMigration:
+		if assessment.State == resolver.StateIndeterminate || assessment.Owned == resolver.OwnedStateAmbiguous {
+			return "", fmt.Errorf("issue helper resolver ticket: resolver ownership state %q cannot be safely released", assessment.Owned)
+		}
+		if assessment.ForeignCount != 0 {
+			return "", fmt.Errorf("issue helper resolver ticket: foreign resolver rules cannot be safely retired")
 		}
 		switch assessment.Owned {
 		case resolver.OwnedStateAbsent, resolver.OwnedStateExact, resolver.OwnedStateDrifted:
