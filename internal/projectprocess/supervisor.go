@@ -195,30 +195,29 @@ func (handle *Handle) complete(result Exit) {
 
 // Supervisor owns every process tree it launches until exit or shutdown.
 type Supervisor struct {
-	mu                    sync.Mutex
-	closed                bool
-	gracePeriod           time.Duration
-	outputLines           int
-	environment           Environment
-	verifyExecutable      ExecutableVerifier
-	projects              map[domain.ProjectID]*managedProcess
-	sessions              map[domain.SessionID]*managedProcess
-	checkouts             map[string]*managedProcess
-	launches              map[*launchReservation]struct{}
-	launchProjects        map[domain.ProjectID]*launchReservation
-	launchSessions        map[domain.SessionID]*launchReservation
-	launchCheckouts       map[string]*launchReservation
-	removeHostEnvironment func(string) error
-	containerRuntime      containerruntime.Runtime
-	runtimeCloseOnce      sync.Once
-	runtimeCloseErr       error
-	serviceLogIdle        time.Duration
-	serviceLogs           map[serviceLogKey]*serviceLogStream
-	outputSpoolDirectory  string
-	outputBrokerLauncher  OutputBrokerLauncher
-	adoptedOutputs        map[outputBrokerKey]*adoptedOutput
-	resets                map[*resetProcess]struct{}
-	resetCheckouts        map[string]*resetProcess
+	mu                   sync.Mutex
+	closed               bool
+	gracePeriod          time.Duration
+	outputLines          int
+	environment          Environment
+	verifyExecutable     ExecutableVerifier
+	projects             map[domain.ProjectID]*managedProcess
+	sessions             map[domain.SessionID]*managedProcess
+	checkouts            map[string]*managedProcess
+	launches             map[*launchReservation]struct{}
+	launchProjects       map[domain.ProjectID]*launchReservation
+	launchSessions       map[domain.SessionID]*launchReservation
+	launchCheckouts      map[string]*launchReservation
+	containerRuntime     containerruntime.Runtime
+	runtimeCloseOnce     sync.Once
+	runtimeCloseErr      error
+	serviceLogIdle       time.Duration
+	serviceLogs          map[serviceLogKey]*serviceLogStream
+	outputSpoolDirectory string
+	outputBrokerLauncher OutputBrokerLauncher
+	adoptedOutputs       map[outputBrokerKey]*adoptedOutput
+	resets               map[*resetProcess]struct{}
+	resetCheckouts       map[string]*resetProcess
 }
 
 // New constructs an empty project process supervisor.
@@ -260,26 +259,25 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 	}
 	outputSpoolDirectory := resolveOutputSpoolDirectory(options.OutputSpoolDirectory)
 	return &Supervisor{
-		gracePeriod:           gracePeriod,
-		outputLines:           outputLines,
-		environment:           environment,
-		verifyExecutable:      verifier,
-		projects:              make(map[domain.ProjectID]*managedProcess),
-		sessions:              make(map[domain.SessionID]*managedProcess),
-		checkouts:             make(map[string]*managedProcess),
-		launches:              make(map[*launchReservation]struct{}),
-		launchProjects:        make(map[domain.ProjectID]*launchReservation),
-		launchSessions:        make(map[domain.SessionID]*launchReservation),
-		launchCheckouts:       make(map[string]*launchReservation),
-		removeHostEnvironment: removeManagedHostEnvironment,
-		containerRuntime:      containerRuntime,
-		serviceLogIdle:        serviceLogIdle,
-		serviceLogs:           make(map[serviceLogKey]*serviceLogStream),
-		outputSpoolDirectory:  outputSpoolDirectory,
-		outputBrokerLauncher:  options.OutputBrokerLauncher,
-		adoptedOutputs:        make(map[outputBrokerKey]*adoptedOutput),
-		resets:                make(map[*resetProcess]struct{}),
-		resetCheckouts:        make(map[string]*resetProcess),
+		gracePeriod:          gracePeriod,
+		outputLines:          outputLines,
+		environment:          environment,
+		verifyExecutable:     verifier,
+		projects:             make(map[domain.ProjectID]*managedProcess),
+		sessions:             make(map[domain.SessionID]*managedProcess),
+		checkouts:            make(map[string]*managedProcess),
+		launches:             make(map[*launchReservation]struct{}),
+		launchProjects:       make(map[domain.ProjectID]*launchReservation),
+		launchSessions:       make(map[domain.SessionID]*launchReservation),
+		launchCheckouts:      make(map[string]*launchReservation),
+		containerRuntime:     containerRuntime,
+		serviceLogIdle:       serviceLogIdle,
+		serviceLogs:          make(map[serviceLogKey]*serviceLogStream),
+		outputSpoolDirectory: outputSpoolDirectory,
+		outputBrokerLauncher: options.OutputBrokerLauncher,
+		adoptedOutputs:       make(map[outputBrokerKey]*adoptedOutput),
+		resets:               make(map[*resetProcess]struct{}),
+		resetCheckouts:       make(map[string]*resetProcess),
 	}
 }
 
@@ -485,7 +483,7 @@ func (supervisor *Supervisor) readAdoptedOutput(key outputBrokerKey, adopted *ad
 }
 
 // Start launches the checkout's current GoForj development command without a shell or terminal.
-func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (handle *Handle, startErr error) {
+func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (*Handle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -504,6 +502,14 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	checkoutRoot, err := canonicalDirectory(request.CheckoutRoot)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize checkout root: %w", err)
+	}
+	if request.ManagedLaunch != nil {
+		if request.ManagedLaunch.ProjectID != request.ProjectID || request.ManagedLaunch.SessionID != request.SessionID {
+			return nil, fmt.Errorf("%w: managed launch context identity does not match process request", ErrInvalidRequest)
+		}
+		if request.ManagedLaunch.ProjectRoot != checkoutRoot {
+			return nil, fmt.Errorf("%w: managed launch context project root does not match checkout", ErrInvalidRequest)
+		}
 	}
 	executable, err := supervisor.acceptedGoForjExecutable(request.GoForjExecutable)
 	if err != nil {
@@ -552,31 +558,10 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = spool.close()
 		}
 	}()
-	managedOverrides, err := writeManagedHostEnvironment(checkoutRoot, request.EnvironmentOverrides)
+	managedOverrides, err := prepareManagedHostEnvironment(checkoutRoot, request.EnvironmentOverrides)
 	if err != nil {
-		return nil, fmt.Errorf("apply Harbor managed host environment: %w", err)
+		return nil, fmt.Errorf("prepare Harbor host environment: %w", err)
 	}
-	managedHostEnvironmentCleanup := len(managedOverrides) > 0
-	defer func() {
-		if managedHostEnvironmentCleanup {
-			cleanupErr := supervisor.removeHostEnvironment(checkoutRoot)
-			if cleanupErr != nil {
-				startErr = managedHostEnvironmentRollbackError(startErr, cleanupErr)
-			}
-		}
-	}()
-	if err := validateEnvironmentOverrides(request.EnvironmentOverrides); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
-	}
-	if request.ManagedLaunch != nil {
-		if request.ManagedLaunch.ProjectID != request.ProjectID || request.ManagedLaunch.SessionID != request.SessionID {
-			return nil, fmt.Errorf("%w: managed launch context identity does not match process request", ErrInvalidRequest)
-		}
-		if request.ManagedLaunch.ProjectRoot != checkoutRoot {
-			return nil, fmt.Errorf("%w: managed launch context project root does not match checkout", ErrInvalidRequest)
-		}
-	}
-
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
 	managedLaunchPath := ""
@@ -592,7 +577,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = removeManagedLaunchContext(managedLaunchPath)
 		}
 	}()
-	command.Env = withDevelopmentEnvironment(supervisor.environment, requestedManagedEnvironmentOverrides(request.EnvironmentOverrides, managedOverrides), managedLaunchPath)
+	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -640,8 +625,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		relay.finish()
 		return nil, fmt.Errorf("start forj dev: %w", err)
 	}
-	managedHostEnvironmentCleanup = false
-
 	var brokerAttachment OutputBrokerAttachment
 	var brokerPeer *OutputBrokerPeer
 	fallbackBrokerToDirect := func() {
@@ -692,7 +675,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
-		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -709,7 +691,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
-		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -725,7 +706,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
-		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -741,7 +721,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
-		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -754,7 +733,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 
 	arguments := append([]string(nil), command.Args...)
-	handle = &Handle{
+	handle := &Handle{
 		info: Info{
 			ProjectID:    request.ProjectID,
 			SessionID:    request.SessionID,
@@ -793,7 +772,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
-		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -827,11 +805,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	managedLaunchCleanup = false
 	go supervisor.wait(process)
 	return handle, nil
-}
-
-// managedHostEnvironmentRollbackError retains the launch failure while marking failed cleanup as unsafe ownership release.
-func managedHostEnvironmentRollbackError(startErr error, cleanupErr error) error {
-	return fmt.Errorf("%w: %w", ErrCleanupUncertain, errors.Join(startErr, fmt.Errorf("remove Harbor managed host environment: %w", cleanupErr)))
 }
 
 // resetProcess retains shutdown authority until the reset command has been reaped.
@@ -1264,11 +1237,8 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 			supervisor.removeSettledServiceLogStream(stream.key, stream)
 		}
 	}
-	if treeSettlementErr == nil {
-		cleanupErr = errors.Join(cleanupErr, supervisor.removeHostEnvironment(info.CheckoutRoot))
-		if stopRequested {
-			cleanupErr = errors.Join(cleanupErr, removeProjectLaunchTrace(info.CheckoutRoot))
-		}
+	if treeSettlementErr == nil && stopRequested {
+		cleanupErr = errors.Join(cleanupErr, removeProjectLaunchTrace(info.CheckoutRoot))
 	}
 	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))
 
@@ -1529,17 +1499,6 @@ func cloneEnvironmentOverrides(overrides EnvironmentOverrides) EnvironmentOverri
 	result := make(EnvironmentOverrides, len(overrides))
 	for name, value := range overrides {
 		result[name] = value
-	}
-	return result
-}
-
-// requestedManagedEnvironmentOverrides keeps the child environment limited to caller-requested keys while using the persisted normalized values.
-func requestedManagedEnvironmentOverrides(requested EnvironmentOverrides, managed EnvironmentOverrides) EnvironmentOverrides {
-	result := make(EnvironmentOverrides, len(requested))
-	for name := range requested {
-		if value, present := managed[name]; present {
-			result[name] = value
-		}
 	}
 	return result
 }

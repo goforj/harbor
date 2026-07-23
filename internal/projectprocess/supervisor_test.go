@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,7 +68,7 @@ func init() {
 	}
 	mode := os.Getenv(helperModeEnvironment)
 	if mode != "environment-only" && mode != "precommand" && mode != "precommand-child" {
-		if err := godotenv.Overload(".env.host"); err != nil {
+		if err := godotenv.Overload(".env.host"); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			os.Exit(101)
 		}
 	}
@@ -100,6 +101,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "api-http-host=%s\n", os.Getenv("API_HTTP_HOST"))
 	fmt.Fprintf(os.Stdout, "lighthouse-url=%s\n", os.Getenv("LIGHTHOUSE_URL"))
 	fmt.Fprintf(os.Stdout, "db-host=%s\n", os.Getenv("DB_HOST"))
+	fmt.Fprintf(os.Stdout, "database-url=%s\n", os.Getenv("DATABASE_URL"))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -447,7 +449,9 @@ func replaceEnvironment(environment []string, name, value string) []string {
 
 // projectProcessTestEnvironment supplies one explicit managed value used by valid launch tests.
 func projectProcessTestEnvironment() EnvironmentOverrides {
-	return EnvironmentOverrides{"IP_ADDRESS": "127.77.0.42"}
+	return EnvironmentOverrides{
+		"IP_ADDRESS": "127.77.0.42",
+	}
 }
 
 // newTestSupervisor keeps helper-process tests focused on lifecycle behavior behind an explicit compatible executable seam.
@@ -525,11 +529,11 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	}
 }
 
-// TestStartRollsBackManagedHostEnvironmentBeforeAcceptingProcess preserves project-owned dotenv content when launch validation fails.
-func TestStartRollsBackManagedHostEnvironmentBeforeAcceptingProcess(t *testing.T) {
+// TestStartRejectsInvalidManagedLaunchBeforeLegacyCleanup preserves a legacy block when lifecycle identity is invalid.
+func TestStartRejectsInvalidManagedLaunchBeforeLegacyCleanup(t *testing.T) {
 	checkout := t.TempDir()
 	path := filepath.Join(checkout, ".env.host")
-	contents := []byte("DB_HOST=127.0.0.1\n")
+	contents := []byte(managedHostEnvironmentBegin + "\nIP_ADDRESS=127.0.0.1\n" + managedHostEnvironmentEnd + "\n")
 	if err := os.WriteFile(path, contents, 0o640); err != nil {
 		t.Fatalf("write project host environment: %v", err)
 	}
@@ -564,44 +568,6 @@ func TestStartRollsBackManagedHostEnvironmentBeforeAcceptingProcess(t *testing.T
 	}
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("project host environment mode = %o, want 640", info.Mode().Perm())
-	}
-}
-
-// TestStartReportsManagedHostEnvironmentRollbackFailure preserves both launch and cleanup failures when Harbor cannot retire its block.
-func TestStartReportsManagedHostEnvironmentRollbackFailure(t *testing.T) {
-	checkout := t.TempDir()
-	installForjHelper(t, "exit")
-	managedContext := validManagedLaunchContext(t)
-	managedContext.ProjectID = "project-rollback-failure"
-	managedContext.SessionID = "session-rollback-failure"
-	managedContext.ProjectRoot = canonicalTestPath(t, t.TempDir())
-	rollbackErr := errors.New("host environment remains unavailable")
-	supervisor := newTestSupervisor(Options{})
-	supervisor.removeHostEnvironment = func(string) error { return rollbackErr }
-	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
-
-	_, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:            managedContext.ProjectID,
-		SessionID:            managedContext.SessionID,
-		CheckoutRoot:         checkout,
-		EnvironmentOverrides: projectProcessTestEnvironment(),
-		ManagedLaunch:        &managedContext,
-	})
-	if !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("Start() error = %v, want ErrInvalidRequest", err)
-	}
-	if !errors.Is(err, ErrCleanupUncertain) {
-		t.Fatalf("Start() error = %v, want ErrCleanupUncertain", err)
-	}
-	if !errors.Is(err, rollbackErr) {
-		t.Fatalf("Start() error = %v, want rollback error", err)
-	}
-	contents, readErr := os.ReadFile(filepath.Join(checkout, ".env.host"))
-	if readErr != nil {
-		t.Fatalf("read managed host environment: %v", readErr)
-	}
-	if !strings.Contains(string(contents), managedHostEnvironmentBegin) {
-		t.Fatalf("managed host environment was unexpectedly removed: %q", contents)
 	}
 }
 
@@ -642,65 +608,8 @@ func TestStartRejectsDifferentLifecycleForSameCheckout(t *testing.T) {
 	}
 }
 
-// TestCheckoutReservationOutlastsExitUntilManagedHostEnvironmentCleanup finishes cleanup before allowing a new lifecycle for the same checkout.
-func TestCheckoutReservationOutlastsExitUntilManagedHostEnvironmentCleanup(t *testing.T) {
-	checkout := t.TempDir()
-	installForjHelper(t, "exit")
-	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
-	removeHostEnvironment := supervisor.removeHostEnvironment
-	cleanupStarted := make(chan struct{})
-	releaseCleanup := make(chan struct{})
-	var cleanupStartOnce sync.Once
-	var releaseCleanupOnce sync.Once
-	release := func() { releaseCleanupOnce.Do(func() { close(releaseCleanup) }) }
-	supervisor.removeHostEnvironment = func(root string) error {
-		cleanupStartOnce.Do(func() { close(cleanupStarted) })
-		<-releaseCleanup
-		return removeHostEnvironment(root)
-	}
-	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
-	defer release()
-
-	handle, err := supervisor.Start(t.Context(), StartRequest{
-		ProjectID:            "project-exit-one",
-		SessionID:            "session-exit-one",
-		CheckoutRoot:         checkout,
-		EnvironmentOverrides: projectProcessTestEnvironment(),
-	})
-	if err != nil {
-		t.Fatalf("first Start() error = %v", err)
-	}
-	select {
-	case <-cleanupStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("managed host environment cleanup did not start")
-	}
-	_, err = supervisor.Start(t.Context(), StartRequest{
-		ProjectID:            "project-exit-two",
-		SessionID:            "session-exit-two",
-		CheckoutRoot:         checkout,
-		EnvironmentOverrides: projectProcessTestEnvironment(),
-	})
-	if !errors.Is(err, ErrProjectRunning) {
-		t.Fatalf("Start() during cleanup error = %v, want ErrProjectRunning", err)
-	}
-	release()
-	if _, err := handle.Wait(t.Context()); err != nil {
-		t.Fatalf("Wait() error = %v", err)
-	}
-	_, err = supervisor.Start(t.Context(), StartRequest{
-		ProjectID:            "project-exit-two",
-		SessionID:            "session-exit-two",
-		CheckoutRoot:         checkout,
-		EnvironmentOverrides: projectProcessTestEnvironment(),
-	})
-	if err != nil {
-		t.Fatalf("Start() after cleanup error = %v", err)
-	}
-}
-
-// TestUnexpectedSettledExitRemovesManagedHostEnvironment removes Harbor's block after an owned child exits without a stop request.
-func TestUnexpectedSettledExitRemovesManagedHostEnvironment(t *testing.T) {
+// TestUnexpectedSettledExitLeavesProjectHostEnvironmentUntouched preserves project dotenv content after an owned child exits.
+func TestUnexpectedSettledExitLeavesProjectHostEnvironmentUntouched(t *testing.T) {
 	checkout := t.TempDir()
 	path := filepath.Join(checkout, ".env.host")
 	contents := []byte("DB_HOST=127.0.0.1\n")
@@ -741,6 +650,35 @@ func TestUnexpectedSettledExitRemovesManagedHostEnvironment(t *testing.T) {
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("project host environment mode = %o, want 640", info.Mode().Perm())
 	}
+}
+
+// TestStartWithoutIPAddressPreservesLegacyEnvironmentBehavior verifies callers that do not assign an address still launch.
+func TestStartWithoutIPAddressPreservesLegacyEnvironmentBehavior(t *testing.T) {
+	checkout := t.TempDir()
+	stdout := &synchronizedBuffer{}
+	installForjHelper(t, "environment-only")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:    "project-no-ip",
+		SessionID:    "session-no-ip",
+		CheckoutRoot: checkout,
+		EnvironmentOverrides: EnvironmentOverrides{
+			"LIGHTHOUSE_URL": "ws://127.0.0.1:3000/lighthouse/ws/agent",
+		},
+		Stdout: stdout,
+		Stderr: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	waitForOutput(t, stdout, "ip-address=\n")
+	waitForOutput(t, stdout, "api-http-host=\n")
+	waitForOutput(t, stdout, "lighthouse-url=ws://127.0.0.1:3000/lighthouse/ws/agent")
 }
 
 // TestStartCarriesOwnerOnlyManagedContextWithoutChangingArgv verifies the context crosses only through the reserved file reference.
@@ -831,7 +769,9 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 // TestStartInjectsManagedValuesIntoChildEnvironment proves ordinary GoForj children inherit Harbor's assignments without dotenv loading.
 func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, ".env.host"), []byte("DB_HOST=127.0.0.1\nIP_ADDRESS=127.0.0.99\n"), 0o600); err != nil {
+	hostEnvironment := filepath.Join(checkout, ".env.host")
+	originalHostEnvironment := []byte("DB_HOST=127.0.0.1\nDATABASE_URL=mysql://localhost:3306/app\nIP_ADDRESS=127.0.0.99\n")
+	if err := os.WriteFile(hostEnvironment, originalHostEnvironment, 0o600); err != nil {
 		t.Fatalf("write project host environment: %v", err)
 	}
 	stdout := &synchronizedBuffer{}
@@ -867,11 +807,16 @@ func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	if _, err := handle.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait() error = %v", err)
 	}
+	actualHostEnvironment, err := os.ReadFile(hostEnvironment)
+	if err != nil || !bytes.Equal(actualHostEnvironment, originalHostEnvironment) {
+		t.Fatalf(".env.host = %q, %v; want unchanged", actualHostEnvironment, err)
+	}
 	waitForOutput(t, stdout, "dev-service-ip-address=127.77.0.42")
 	waitForOutput(t, stdout, "ip-address=127.77.0.42")
 	waitForOutput(t, stdout, "api-http-host=127.77.0.42")
 	waitForOutput(t, stdout, "lighthouse-url=ws://127.77.0.42:3000/lighthouse/ws/agent")
-	waitForOutput(t, stdout, "db-host=\n")
+	waitForOutput(t, stdout, "db-host=127.77.0.42")
+	waitForOutput(t, stdout, "database-url=mysql://127.77.0.42:3306/app")
 	waitForOutput(t, stdout, "override=captured")
 	waitForOutput(t, stdout, "empty=false:")
 	waitForOutput(t, stdout, "unrelated=preserved")
