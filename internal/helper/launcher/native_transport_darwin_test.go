@@ -97,6 +97,21 @@ func darwinTestPipe(t *testing.T, writer *darwinTestWriteCloser) darwinAuthoriza
 	}
 }
 
+// darwinTestLivenessPipe constructs a disposable read descriptor and observable parent write side.
+func darwinTestLivenessPipe(t *testing.T, writer *darwinTestWriteCloser) darwinParentLivenessPipeFactory {
+	t.Helper()
+	return func() (darwinParentLivenessPipe, error) {
+		reader, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatalf("open test liveness reader: %v", err)
+		}
+		return darwinParentLivenessPipe{
+			reader: reader,
+			writer: writer,
+		}, nil
+	}
+}
+
 // newDarwinTestTransport constructs the complete successful seam graph for one focused mutation.
 func newDarwinTestTransport(
 	t *testing.T,
@@ -117,6 +132,7 @@ func newDarwinTestTransport(
 			}, nil
 		},
 		darwinTestPipe(t, writer),
+		darwinTestLivenessPipe(t, &darwinTestWriteCloser{}),
 		func(context.Context, darwinCommandSpec) darwinCommand { return command },
 	)
 	if mutate != nil {
@@ -158,8 +174,8 @@ func TestDarwinNativeTransportExecutesFixedReviewedShape(t *testing.T) {
 	if command.starts != 1 || command.waits != 1 {
 		t.Fatalf("process calls = start:%d wait:%d, want 1 each", command.starts, command.waits)
 	}
-	if capturedSpec.executable != darwinTestHelperExecutable || capturedSpec.authorization == nil {
-		t.Fatalf("command spec = %#v, want fixed executable and FD 3 source", capturedSpec)
+	if capturedSpec.executable != darwinTestHelperExecutable || capturedSpec.authorization == nil || capturedSpec.liveness == nil {
+		t.Fatalf("command spec = %#v, want fixed executable and FD 3 and FD 4 sources", capturedSpec)
 	}
 	if capturedRequest != requestBody || response.String() != responseBody {
 		t.Fatalf("request = %q, response = %q", capturedRequest, response.String())
@@ -167,6 +183,27 @@ func TestDarwinNativeTransportExecutesFixedReviewedShape(t *testing.T) {
 	wantExternalForm := darwinTestExternalForm()
 	if !authorizationWriter.closed || !bytes.Equal(authorizationWriter.Bytes(), wantExternalForm[:]) {
 		t.Fatalf("authorization = %x, closed = %t", authorizationWriter.Bytes(), authorizationWriter.closed)
+	}
+}
+
+// TestDarwinNativeTransportRetainsParentLivenessThroughExactWait verifies normal completion never waits for liveness EOF.
+func TestDarwinNativeTransportRetainsParentLivenessThroughExactWait(t *testing.T) {
+	livenessWriter := &darwinTestWriteCloser{}
+	command := &darwinTestCommand{
+		waitCode: ExitCodeSucceeded,
+		waitHook: func() {
+			if livenessWriter.closed {
+				t.Fatal("parent liveness was released before exact child wait")
+			}
+		},
+	}
+	transport := newDarwinTestTransport(t, &darwinTestWriteCloser{}, command, func(transport *darwinNativeTransport) {
+		transport.newLivenessPipe = darwinTestLivenessPipe(t, livenessWriter)
+	})
+
+	result := transport.Invoke(t.Context(), strings.NewReader("request"), io.Discard)
+	if result != (TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}) || !livenessWriter.closed {
+		t.Fatalf("result = %#v, liveness closed = %t", result, livenessWriter.closed)
 	}
 }
 
@@ -262,6 +299,7 @@ func TestNewOSDarwinCommandHasNoAmbientProcessCapability(t *testing.T) {
 		standardInput:  request,
 		standardOutput: response,
 		authorization:  authorization,
+		liveness:       authorization,
 	})
 	command, ok := created.(*osDarwinCommand)
 	if !ok {
@@ -271,8 +309,8 @@ func TestNewOSDarwinCommandHasNoAmbientProcessCapability(t *testing.T) {
 		!reflect.DeepEqual(command.command.Args, []string{darwinTestHelperExecutable}) ||
 		command.command.Env == nil || len(command.command.Env) != 0 ||
 		command.command.Dir != "/" || command.command.Stdin != request || command.command.Stdout != response ||
-		command.command.Stderr != io.Discard || len(command.command.ExtraFiles) != 1 ||
-		command.command.ExtraFiles[0] != authorization || command.command.Cancel == nil {
+		command.command.Stderr != io.Discard || len(command.command.ExtraFiles) != 2 ||
+		command.command.ExtraFiles[0] != authorization || command.command.ExtraFiles[1] != authorization || command.command.Cancel == nil {
 		t.Fatalf("os/exec command contains ambient or unexpected process state: %#v", command.command)
 	}
 }
@@ -447,13 +485,16 @@ func TestDarwinNativeTransportWaitsAfterEveryStartedChild(t *testing.T) {
 // TestDarwinNativeTransportStartFailureRemainsUnavailable verifies a proved exec failure closes both pipe ends without waiting.
 func TestDarwinNativeTransportStartFailureRemainsUnavailable(t *testing.T) {
 	testErr := errors.New("exec failed")
-	writer := &darwinTestWriteCloser{}
+	authorizationWriter := &darwinTestWriteCloser{}
+	livenessWriter := &darwinTestWriteCloser{}
 	command := &darwinTestCommand{startErr: testErr}
-	transport := newDarwinTestTransport(t, writer, command, nil)
+	transport := newDarwinTestTransport(t, authorizationWriter, command, func(transport *darwinNativeTransport) {
+		transport.newLivenessPipe = darwinTestLivenessPipe(t, livenessWriter)
+	})
 
 	result := transport.Invoke(t.Context(), strings.NewReader("request"), io.Discard)
-	if result.State != TransportUnavailable || command.starts != 1 || command.waits != 0 || !writer.closed {
-		t.Fatalf("result = %#v, starts = %d, waits = %d, writer closed = %t", result, command.starts, command.waits, writer.closed)
+	if result.State != TransportUnavailable || command.starts != 1 || command.waits != 0 || !authorizationWriter.closed || !livenessWriter.closed {
+		t.Fatalf("result = %#v, starts = %d, waits = %d, authorization closed = %t, liveness closed = %t", result, command.starts, command.waits, authorizationWriter.closed, livenessWriter.closed)
 	}
 }
 
@@ -489,16 +530,20 @@ func TestNewDarwinNativeTransportRequiresDependencies(t *testing.T) {
 		return darwinAuthorizationGrant{release: func() error { return nil }}, nil
 	}
 	pipe := func() (darwinAuthorizationPipe, error) { return darwinAuthorizationPipe{}, nil }
+	liveness := func() (darwinParentLivenessPipe, error) { return darwinParentLivenessPipe{}, nil }
 	command := func(context.Context, darwinCommandSpec) darwinCommand { return &darwinTestCommand{} }
 	tests := []struct {
 		name  string
 		build func()
 	}{
-		{name: "helper path", build: func() { newDarwinNativeTransport("", inspect, authorize, pipe, command) }},
-		{name: "helper inspector", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, nil, authorize, pipe, command) }},
-		{name: "authorization", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, inspect, nil, pipe, command) }},
-		{name: "pipe", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, inspect, authorize, nil, command) }},
-		{name: "command", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, inspect, authorize, pipe, nil) }},
+		{name: "helper path", build: func() { newDarwinNativeTransport("", inspect, authorize, pipe, liveness, command) }},
+		{name: "helper inspector", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, nil, authorize, pipe, liveness, command) }},
+		{name: "authorization", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, inspect, nil, pipe, liveness, command) }},
+		{name: "authorization pipe", build: func() {
+			newDarwinNativeTransport(darwinTestHelperExecutable, inspect, authorize, nil, liveness, command)
+		}},
+		{name: "liveness pipe", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, inspect, authorize, pipe, nil, command) }},
+		{name: "command", build: func() { newDarwinNativeTransport(darwinTestHelperExecutable, inspect, authorize, pipe, liveness, nil) }},
 	}
 
 	for _, test := range tests {

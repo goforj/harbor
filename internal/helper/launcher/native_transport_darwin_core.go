@@ -22,6 +22,7 @@ type darwinNativeTransport struct {
 	inspectHelper    darwinHelperInspector
 	preauthorize     darwinAuthorizationProvider
 	newPipe          darwinAuthorizationPipeFactory
+	newLivenessPipe  darwinParentLivenessPipeFactory
 	newCommand       darwinCommandFactory
 }
 
@@ -48,7 +49,7 @@ type darwinAuthorizationGrant struct {
 // darwinAuthorizationProvider preauthorizes execute authority and distinguishes user dismissal before child creation.
 type darwinAuthorizationProvider func() (darwinAuthorizationGrant, error)
 
-// darwinAuthorizationPipe contains the only extra descriptor inherited by the helper.
+// darwinAuthorizationPipe carries the one Authorization Services external form to helper FD 3.
 type darwinAuthorizationPipe struct {
 	reader *os.File
 	writer io.WriteCloser
@@ -57,12 +58,22 @@ type darwinAuthorizationPipe struct {
 // darwinAuthorizationPipeFactory creates one private channel whose read side becomes child FD 3.
 type darwinAuthorizationPipeFactory func() (darwinAuthorizationPipe, error)
 
-// darwinCommandSpec contains only fixed process metadata and the three reviewed byte streams.
+// darwinParentLivenessPipe carries parent lifetime to helper FD 4 without affecting authorization.
+type darwinParentLivenessPipe struct {
+	reader *os.File
+	writer io.WriteCloser
+}
+
+// darwinParentLivenessPipeFactory creates the pipe whose writer remains open for the exact child lifetime.
+type darwinParentLivenessPipeFactory func() (darwinParentLivenessPipe, error)
+
+// darwinCommandSpec contains only fixed process metadata and the reviewed helper streams.
 type darwinCommandSpec struct {
 	executable     string
 	standardInput  io.Reader
 	standardOutput io.Writer
 	authorization  *os.File
+	liveness       *os.File
 }
 
 // darwinCommand exposes only exact-child start and wait boundaries.
@@ -85,6 +96,7 @@ func newDarwinNativeTransport(
 	inspectHelper darwinHelperInspector,
 	preauthorize darwinAuthorizationProvider,
 	newPipe darwinAuthorizationPipeFactory,
+	newLivenessPipe darwinParentLivenessPipeFactory,
 	newCommand darwinCommandFactory,
 ) *darwinNativeTransport {
 	if helperExecutable == "" {
@@ -99,6 +111,9 @@ func newDarwinNativeTransport(
 	if newPipe == nil {
 		panic("launcher Darwin transport requires an authorization pipe factory")
 	}
+	if newLivenessPipe == nil {
+		panic("launcher Darwin transport requires a parent liveness pipe factory")
+	}
 	if newCommand == nil {
 		panic("launcher Darwin transport requires a command factory")
 	}
@@ -107,6 +122,7 @@ func newDarwinNativeTransport(
 		inspectHelper:    inspectHelper,
 		preauthorize:     preauthorize,
 		newPipe:          newPipe,
+		newLivenessPipe:  newLivenessPipe,
 		newCommand:       newCommand,
 	}
 }
@@ -153,24 +169,34 @@ func (transport *darwinNativeTransport) Invoke(ctx context.Context, request io.R
 		closeDarwinAuthorizationPipe(authorization)
 		return TransportResult{State: TransportUnavailable}
 	}
+	liveness, err := transport.newLivenessPipe()
+	if err != nil || liveness.reader == nil || requiredInterfaceIsNil(liveness.writer) {
+		closeDarwinAuthorizationPipe(authorization)
+		closeDarwinParentLivenessPipe(liveness)
+		return TransportResult{State: TransportUnavailable}
+	}
 	capturedResponse := &boundedResponseWriter{}
 	command := transport.newCommand(ctx, darwinCommandSpec{
 		executable:     transport.helperExecutable,
 		standardInput:  io.LimitReader(request, helper.MaxRequestBytes+1),
 		standardOutput: capturedResponse,
 		authorization:  authorization.reader,
+		liveness:       liveness.reader,
 	})
 	if requiredInterfaceIsNil(command) || command.start() != nil {
 		closeDarwinAuthorizationPipe(authorization)
+		closeDarwinParentLivenessPipe(liveness)
 		return TransportResult{State: TransportUnavailable}
 	}
 	childStarted = true
 
 	readerCloseErr := authorization.reader.Close()
+	livenessReaderCloseErr := liveness.reader.Close()
 	writeErr := writeDarwinAuthorizationExternalForm(authorization.writer, grant.externalForm)
 	writerCloseErr := authorization.writer.Close()
 	exitCode, waitErr := command.wait()
-	if readerCloseErr != nil || writeErr != nil || writerCloseErr != nil || waitErr != nil || ctx.Err() != nil {
+	livenessWriterCloseErr := liveness.writer.Close()
+	if readerCloseErr != nil || livenessReaderCloseErr != nil || writeErr != nil || writerCloseErr != nil || livenessWriterCloseErr != nil || waitErr != nil || ctx.Err() != nil {
 		return TransportResult{State: TransportIndeterminate}
 	}
 	if exitCode != ExitCodeSucceeded && exitCode != ExitCodeHelperFailed {
@@ -191,17 +217,42 @@ func validInstalledDarwinHelper(metadata darwinHelperMetadata) bool {
 	return metadata.mode == darwinHelperFileMode && metadata.ownerUID == 0 && metadata.linkCount == 1
 }
 
-// newDarwinAuthorizationPipe creates the sole capability channel inherited by the fixed helper.
+// newDarwinAuthorizationPipe creates the FD 3 capability channel inherited by the fixed helper.
 func newDarwinAuthorizationPipe() (darwinAuthorizationPipe, error) {
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return darwinAuthorizationPipe{}, err
 	}
-	return darwinAuthorizationPipe{reader: reader, writer: writer}, nil
+	return darwinAuthorizationPipe{
+		reader: reader,
+		writer: writer,
+	}, nil
+}
+
+// newDarwinParentLivenessPipe creates the FD 4 parent-lifetime channel inherited by the fixed helper.
+func newDarwinParentLivenessPipe() (darwinParentLivenessPipe, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return darwinParentLivenessPipe{}, err
+	}
+	return darwinParentLivenessPipe{
+		reader: reader,
+		writer: writer,
+	}, nil
 }
 
 // closeDarwinAuthorizationPipe releases both parent handles before any no-child result is returned.
 func closeDarwinAuthorizationPipe(pipe darwinAuthorizationPipe) {
+	if pipe.reader != nil {
+		_ = pipe.reader.Close()
+	}
+	if !requiredInterfaceIsNil(pipe.writer) {
+		_ = pipe.writer.Close()
+	}
+}
+
+// closeDarwinParentLivenessPipe releases both parent handles before any no-child result is returned.
+func closeDarwinParentLivenessPipe(pipe darwinParentLivenessPipe) {
 	if pipe.reader != nil {
 		_ = pipe.reader.Close()
 	}
@@ -238,7 +289,7 @@ func newOSDarwinCommand(ctx context.Context, specification darwinCommandSpec) da
 	command.Stdin = specification.standardInput
 	command.Stdout = specification.standardOutput
 	command.Stderr = io.Discard
-	command.ExtraFiles = []*os.File{specification.authorization}
+	command.ExtraFiles = []*os.File{specification.authorization, specification.liveness}
 	return &osDarwinCommand{command: command}
 }
 

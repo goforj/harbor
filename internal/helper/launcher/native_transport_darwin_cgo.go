@@ -84,6 +84,7 @@ func newNativeTransport() Transport {
 		inspectInstalledDarwinHelper,
 		preauthorizeDarwinExecute,
 		newDarwinAuthorizationPipe,
+		newDarwinParentLivenessPipe,
 		newOSDarwinCommand,
 	)
 }

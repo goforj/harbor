@@ -106,7 +106,12 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
-	runErr := run(context.Background(), invocation.reader, invocation.writer, helper.SystemClock{}, productionDependencies())
+	runErr := runWithPlatformParentLiveness(func(ctx context.Context) error {
+		return run(ctx, invocation.reader, invocation.writer, helper.SystemClock{}, productionDependencies())
+	})
+	if parentLivenessFailed(runErr) {
+		os.Exit(1)
+	}
 	if err := errors.Join(runErr, invocation.close()); err != nil {
 		os.Exit(1)
 	}
