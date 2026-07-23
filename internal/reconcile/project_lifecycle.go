@@ -37,6 +37,7 @@ const (
 const (
 	// projectRecoveryAmbiguousLaunchCode identifies a launch whose process identity was not durable before daemon replacement.
 	projectRecoveryAmbiguousLaunchCode = domain.ProjectRecoveryAmbiguousLaunchProblemCode
+	projectLaunchTraceRelativePath     = "_data/harbor/forj-dev.log"
 	// projectRecoveryQuarantinePhase keeps the terminal operation distinct from an ordinary launch failure.
 	projectRecoveryQuarantinePhase = domain.ProjectRecoveryRequiredPhase
 )
@@ -826,7 +827,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 
 		select {
 		case <-handle.Done():
-			coordinator.failExitedStart(mutation, session, handle, "project.process.exited", errors.New("project runtime exited before readiness"))
+			coordinator.failExitedStart(mutation, session, handle, "project.process.exited", failedStartBeforeReadinessCause())
 			return
 		case <-deadline.C:
 			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.timeout", errors.New("project runtime did not become ready before the startup deadline"))
@@ -837,6 +838,11 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 			return
 		}
 	}
+}
+
+// failedStartBeforeReadinessCause directs users to the bounded launch trace without copying child output into durable control state.
+func failedStartBeforeReadinessCause() error {
+	return fmt.Errorf("project runtime exited before readiness; inspect Harbor's retained launch trace at %s", projectLaunchTraceRelativePath)
 }
 
 // watchReadyProcess records a process loss only when no exact stop request owned the exit.

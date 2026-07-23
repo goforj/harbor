@@ -83,15 +83,20 @@ const {
   wait: (selectedProjectId, sessionId, cursor, waitMilliseconds) => store.waitProjectActivity(selectedProjectId, sessionId, cursor, waitMilliseconds),
 })
 const projectActivitySession = computed(() => projectActivity.value?.session)
-const showDevelopmentOutput = computed(() => projectActivitySupported.value && (
-  projectActivitySession.value != null
-  || developmentOutput.value !== ''
-  || developmentOutputError.value != null
-  || project.value?.state === 'starting'
-  || project.value?.state === 'ready'
-  || project.value?.state === 'rebuilding'
-  || project.value?.state === 'degraded'
-  || project.value?.state === 'stopping'
+const showDevelopmentOutput = computed(() => (
+  project.value?.state === 'failed'
+  && store.projectLifecycleProblemCodes[projectId.value] === 'project.process.exited'
+) || (
+  projectActivitySupported.value && (
+    projectActivitySession.value != null
+    || developmentOutput.value !== ''
+    || developmentOutputError.value != null
+    || project.value?.state === 'starting'
+    || project.value?.state === 'ready'
+    || project.value?.state === 'rebuilding'
+    || project.value?.state === 'degraded'
+    || project.value?.state === 'stopping'
+  )
 ))
 const currentProjectOperation = computed(() => {
   for (let index = store.operations.length - 1; index >= 0; index -= 1) {
@@ -638,6 +643,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                 @rendered="scrollDevelopmentOutput"
               />
               <p v-else-if="projectActivitySession?.output.historical" class="text-zinc-500">No retained output was recorded before Harbor reconnected.</p>
+              <p v-else-if="project?.state === 'failed' && lifecycleProblemCode === 'project.process.exited'" class="text-zinc-500">Harbor retained the launch trace at <code>_data/harbor/forj-dev.log</code>.</p>
               <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
               <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
             </div>

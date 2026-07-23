@@ -184,6 +184,37 @@ describe('ProjectView project start output', () => {
     wrapper.unmount()
   })
 
+  it('points failed projects without streamed output to Harbor\'s retained launch trace', async () => {
+    const { store, wrapper } = await mountProject('reports')
+    const project = store.projectById('reports')
+    if (!project) throw new Error('Reports fixture project is missing')
+    project.state = 'failed'
+    store.projectLifecycleProblemCodes.reports = 'project.process.exited'
+    await wrapper.vm.$nextTick()
+
+    await detailTab(wrapper, 'Development output').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Harbor retained the launch trace at _data/harbor/forj-dev.log.')
+    wrapper.unmount()
+  })
+
+  it('does not claim a launch trace for failures that happened before a runtime started', async () => {
+    const { store, wrapper } = await mountProject('reports')
+    const project = store.projectById('reports')
+    if (!project) throw new Error('Reports fixture project is missing')
+    project.state = 'failed'
+    store.projectLifecycleProblemCodes.reports = 'project.network.setup_required'
+    await wrapper.vm.$nextTick()
+
+    await detailTab(wrapper, 'Development output').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('No development output yet')
+    expect(wrapper.text()).not.toContain('Harbor retained the launch trace')
+    wrapper.unmount()
+  })
+
   it('does not override a tab selected while start is pending', async () => {
     const pending = deferred<ProjectLifecycleOperation>()
     vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
