@@ -359,12 +359,6 @@ func TestControllerReleaseNetworkRuntimeRejectsDriftedFullProof(t *testing.T) {
 			},
 		},
 		{
-			name: "wrong revision",
-			mutate: func(_ *Controller, store *testGlobalNetworkReleasePlanStore, _ *testDataPlane) {
-				store.plan.NetworkRevision++
-			},
-		},
-		{
 			name: "wrong root",
 			mutate: func(_ *Controller, store *testGlobalNetworkReleasePlanStore, _ *testDataPlane) {
 				store.plan.Authority.Root.Fingerprint = "different"
@@ -402,6 +396,62 @@ func TestControllerReleaseNetworkRuntimeRejectsDriftedFullProof(t *testing.T) {
 				t.Fatalf("drift started anchor %d times and closed full runtime %d times", anchor.starts.Load(), previous.closes.Load())
 			}
 		})
+	}
+}
+
+// TestControllerReleaseNetworkRuntimeAdmitsAdvancedLifecycleRevision proves a lifecycle-only durable revision advance does not require rebuilding the immutable full listener generation.
+func TestControllerReleaseNetworkRuntimeAdmitsAdvancedLifecycleRevision(t *testing.T) {
+	controller, store, previous, anchor := readyReleaseController(t)
+	runtimeRevision := controller.runtimeNetworkRevision
+	rootFingerprint := store.plan.Authority.Root.Fingerprint
+	listeners := store.plan.Authority.Projection.Listeners
+	store.mutex.Lock()
+	store.plan.NetworkRevision++
+	store.plan.NetworkUpdatedAt = store.plan.NetworkUpdatedAt.Add(time.Second)
+	store.plan.Authority.Projection.NetworkRevision = store.plan.NetworkRevision
+	store.plan.Authority.Projection.NetworkUpdatedAt = store.plan.NetworkUpdatedAt
+	stagedRevision := store.plan.NetworkRevision
+	store.mutex.Unlock()
+	if runtimeRevision >= stagedRevision {
+		t.Fatalf("runtime network revision = %d, want less than staged revision %d", runtimeRevision, stagedRevision)
+	}
+	if store.plan.Authority.Projection.NetworkRevision != store.plan.NetworkRevision ||
+		!store.plan.Authority.Projection.NetworkUpdatedAt.Equal(store.plan.NetworkUpdatedAt) {
+		t.Fatalf("staged authority projection does not match durable network boundary")
+	}
+	if store.plan.Authority.Root.Fingerprint != rootFingerprint {
+		t.Fatalf("staged root fingerprint = %q, want %q", store.plan.Authority.Root.Fingerprint, rootFingerprint)
+	}
+	if store.plan.Authority.Projection.Listeners != listeners {
+		t.Fatalf("staged listeners = %#v, want %#v", store.plan.Authority.Projection.Listeners, listeners)
+	}
+
+	result, err := controller.ReleaseNetworkRuntime(context.Background(), "operation-global-release")
+	if err != nil {
+		t.Fatalf("ReleaseNetworkRuntime() error = %v", err)
+	}
+	if anchor.starts.Load() != 1 {
+		t.Fatalf("anchor starts = %d, want 1", anchor.starts.Load())
+	}
+	if previous.closes.Load() != 1 {
+		t.Fatalf("full runtime closes = %d, want 1", previous.closes.Load())
+	}
+	if result.NetworkRevision != stagedRevision {
+		t.Fatalf("durable network revision = %d, want %d", result.NetworkRevision, stagedRevision)
+	}
+	store.mutex.Lock()
+	requests := append([]state.AdvanceGlobalNetworkReleaseRuntimeRequest(nil), store.advanceCalls...)
+	store.mutex.Unlock()
+	expected := state.AdvanceGlobalNetworkReleaseRuntimeRequest{
+		OperationID:        "operation-global-release",
+		CheckpointRevision: 11,
+		NetworkRevision:    stagedRevision,
+	}
+	if len(requests) != 1 || requests[0] != expected {
+		t.Fatalf("advance requests = %#v, want %#v", requests, expected)
+	}
+	if controller.releaseFence.networkRevision != stagedRevision {
+		t.Fatalf("release fence network revision = %d, want %d", controller.releaseFence.networkRevision, stagedRevision)
 	}
 }
 
@@ -1169,6 +1219,7 @@ func releaseTestPlanStore(phase state.GlobalNetworkReleasePlanPhase) *testGlobal
 // readyReleaseController assembles an exact full listener generation without invoking unrelated startup dependencies.
 func readyReleaseController(t *testing.T) (*Controller, *testGlobalNetworkReleasePlanStore, *testDataPlane, *testDataPlane) {
 	t.Helper()
+	networkUpdatedAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	listeners := dataplane.ListenerPlan{
 		DNS:   netip.MustParseAddrPort("127.0.0.1:1053"),
 		HTTP:  netip.MustParseAddrPort("127.0.0.1:1080"),
@@ -1206,6 +1257,9 @@ func readyReleaseController(t *testing.T) (*Controller, *testGlobalNetworkReleas
 		NetworkRevision:    7,
 	}
 	plan.Authority.Root.Fingerprint = validTestRoot().Fingerprint
+	plan.NetworkUpdatedAt = networkUpdatedAt
+	plan.Authority.Projection.NetworkRevision = plan.NetworkRevision
+	plan.Authority.Projection.NetworkUpdatedAt = networkUpdatedAt
 	plan.Authority.Projection.Listeners.DNS.Bind = listeners.DNS
 	plan.Authority.Projection.Listeners.HTTP.Bind = listeners.HTTP
 	plan.Authority.Projection.Listeners.HTTPS.Bind = listeners.HTTPS

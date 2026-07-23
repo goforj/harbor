@@ -221,7 +221,6 @@ func (controller *Controller) ensureReleaseAnchor(ctx context.Context, plan stat
 	runtime := controller.dataPlane
 	runtimeDone := controller.runtimeDone
 	generation := controller.runtimeGeneration
-	runtimeRevision := controller.runtimeNetworkRevision
 	mode := controller.releaseMode
 	retired := controller.releaseRuntimeRetired
 	fence := controller.releaseFence
@@ -252,7 +251,7 @@ func (controller *Controller) ensureReleaseAnchor(ctx context.Context, plan stat
 	if plan.Phase != state.GlobalNetworkReleasePlanPhaseRuntimeRelease {
 		return errors.New("release Harbor network runtime: a low-ports replay requires an existing release anchor")
 	}
-	if runtimeRevision != plan.NetworkRevision || foundation.ListenerPlan() != (dataplane.ListenerPlan{
+	if foundation.ListenerPlan() != (dataplane.ListenerPlan{
 		DNS:   plan.Authority.Projection.Listeners.DNS.Bind,
 		HTTP:  plan.Authority.Projection.Listeners.HTTP.Bind,
 		HTTPS: plan.Authority.Projection.Listeners.HTTPS.Bind,
