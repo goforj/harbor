@@ -567,30 +567,33 @@ static int harbor_admin_root_add_certificate(const uint8_t *der, size_t der_leng
 		return errSecAllocate;
 	}
 	SecCertificateRef certificate = SecCertificateCreateWithData(kCFAllocatorDefault, data);
-	CFRelease(data);
 	if (certificate == NULL) {
+		CFRelease(data);
 		return errSecDecode;
 	}
+	CFRelease(certificate);
 	SecKeychainRef keychain = NULL;
 	OSStatus status = SecKeychainOpen(harbor_system_keychain_path, &keychain);
 	if (status != errSecSuccess) {
-		CFRelease(certificate);
+		CFRelease(data);
 		return status;
 	}
 	CFMutableDictionaryRef query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	if (query == NULL) {
 		CFRelease(keychain);
-		CFRelease(certificate);
+		CFRelease(data);
 		return errSecAllocate;
 	}
 	CFDictionarySetValue(query, kSecClass, kSecClassCertificate);
 	CFDictionarySetValue(query, kSecUseKeychain, keychain);
-	CFDictionarySetValue(query, kSecValueRef, certificate);
+	// System.keychain uses the legacy SecItem path, where a certificate reference drops
+	// caller attributes by delegating to SecCertificateAddToKeychain.
+	CFDictionarySetValue(query, kSecValueData, data);
 	CFStringRef label_value = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)label, (CFIndex)label_length, kCFStringEncodingUTF8, false);
 	if (label_value == NULL) {
 		CFRelease(query);
 		CFRelease(keychain);
-		CFRelease(certificate);
+		CFRelease(data);
 		return errSecAllocate;
 	}
 	CFDictionarySetValue(query, kSecAttrLabel, label_value);
@@ -598,7 +601,7 @@ static int harbor_admin_root_add_certificate(const uint8_t *der, size_t der_leng
 	status = SecItemAdd(query, NULL);
 	CFRelease(query);
 	CFRelease(keychain);
-	CFRelease(certificate);
+	CFRelease(data);
 	return status;
 }
 
