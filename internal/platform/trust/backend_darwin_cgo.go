@@ -436,6 +436,7 @@ static int harbor_admin_trust_delete_owner(const char *account, size_t account_l
 		return errSecAllocate;
 	}
 	CFDictionarySetValue(query, kSecAttrGeneric, generic);
+	CFDictionarySetValue(query, kSecUseAuthenticationUI, kSecUseAuthenticationUIFail);
 	status = SecItemDelete(query);
 	CFRelease(generic);
 	CFRelease(query);
