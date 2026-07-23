@@ -66,7 +66,7 @@ func newWriterForOwner(path, lockPath string, owner uint32) (*RootWriter, error)
 	return &RootWriter{path: path, lockPath: lockPath, owner: owner}, nil
 }
 
-// newObserver validates the fixed root-owned parent before exposing read-only observation.
+// newObserver defers filesystem validation until read time so optional helper-owned storage does not block daemon assembly.
 func newObserver(path string) (*Observer, error) {
 	return newObserverForOwner(path, 0)
 }
@@ -74,9 +74,6 @@ func newObserver(path string) (*Observer, error) {
 // newObserverForOwner creates test-only observer fixtures with an explicit expected owner.
 func newObserverForOwner(path string, owner uint32) (*Observer, error) {
 	if err := validateFixedPath(path, "ownership-release-proof.json"); err != nil {
-		return nil, err
-	}
-	if err := validateProofDirectory(filepath.Dir(path), owner); err != nil {
 		return nil, err
 	}
 	return &Observer{path: path, owner: owner}, nil
@@ -256,6 +253,13 @@ func flockContext(ctx context.Context, file *os.File) error {
 
 // readProof opens with O_NOFOLLOW and validates canonical proof JSON.
 func readProof(path string, owner uint32) (Proof, bool, error) {
+	_, err := os.Lstat(filepath.Dir(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Proof{}, false, nil
+	}
+	if err != nil {
+		return Proof{}, false, fmt.Errorf("%w: inspect proof directory: %v", ErrUnsafePath, err)
+	}
 	if err := validateProofDirectory(filepath.Dir(path), owner); err != nil {
 		return Proof{}, false, err
 	}

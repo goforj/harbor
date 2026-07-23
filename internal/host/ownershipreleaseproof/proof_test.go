@@ -256,9 +256,13 @@ func TestProofStorageRejectsInsecurePermissions(t *testing.T) {
 		if err := os.Chmod(directory, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		_, err := newObserverForOwner(filepath.Join(directory, "ownership-release-proof.json"), uint32(os.Geteuid()))
+		observer, err := newObserverForOwner(filepath.Join(directory, "ownership-release-proof.json"), uint32(os.Geteuid()))
+		if err != nil {
+			t.Fatalf("newObserverForOwner() error = %v", err)
+		}
+		_, _, err = observer.Observe(context.Background())
 		if !errors.Is(err, ErrUnsafePath) {
-			t.Fatalf("newObserverForOwner() error = %v, want ErrUnsafePath", err)
+			t.Fatalf("Observe() error = %v, want ErrUnsafePath", err)
 		}
 	})
 
@@ -286,6 +290,56 @@ func TestProofStorageRejectsInsecurePermissions(t *testing.T) {
 			t.Fatalf("Observe() error = %v, want ErrUnsafePath", err)
 		}
 	})
+
+	t.Run("proof symlink", func(t *testing.T) {
+		writer, observer := fixture(t)
+		target := filepath.Join(filepath.Dir(writer.path), "other-proof.json")
+		if err := os.WriteFile(target, []byte("ignored"), proofFileMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, writer.path); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := observer.Observe(context.Background())
+		if !errors.Is(err, ErrUnsafePath) {
+			t.Fatalf("Observe() error = %v, want ErrUnsafePath", err)
+		}
+	})
+}
+
+// TestObserverTreatsAbsentProofDirectoryAsNoProof keeps optional helper storage from blocking daemon assembly.
+func TestObserverTreatsAbsentProofDirectoryAsNoProof(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "absent")
+	observer, err := newObserverForOwner(
+		filepath.Join(directory, "ownership-release-proof.json"),
+		uint32(os.Geteuid()),
+	)
+	if err != nil {
+		t.Fatalf("newObserverForOwner() error = %v", err)
+	}
+	proof, exists, err := observer.Observe(context.Background())
+	if err != nil || exists || proof != (Proof{}) {
+		t.Fatalf("Observe() = (%#v, %t, %v), want (empty, false, nil)", proof, exists, err)
+	}
+}
+
+// TestObserverDefersUnsafePresentDirectoryValidation proves construction stays lazy while reads still fail closed.
+func TestObserverDefersUnsafePresentDirectoryValidation(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	observer, err := newObserverForOwner(
+		filepath.Join(directory, "ownership-release-proof.json"),
+		uint32(os.Geteuid()),
+	)
+	if err != nil {
+		t.Fatalf("newObserverForOwner() error = %v", err)
+	}
+	_, _, err = observer.Observe(context.Background())
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("Observe() error = %v, want ErrUnsafePath", err)
+	}
 }
 
 // TestCompleteSerializesConcurrentWriters proves only one held proof lock can invoke ownership mutation.
