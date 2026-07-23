@@ -372,7 +372,7 @@ describe('ProjectView interactive terminal', () => {
     wrapper.unmount()
   })
 
-  it('closes every terminal shell when leaving the terminal surface or project', async () => {
+  it('preserves every terminal while another project tab is active and closes them when leaving the project', async () => {
     const { router, wrapper } = await mountProject('orders-api')
 
     await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
@@ -382,16 +382,17 @@ describe('ProjectView interactive terminal', () => {
 
     await detailTab(wrapper, 'Overview').trigger('mousedown', { button: 0 })
     await flushPromises()
-    expect(wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(false)
-    expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 1)).toBe(true)
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(2)
+    expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 0)).toBe(true)
 
     await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(2)
+    expect(terminalSessions.sessions).toHaveLength(2)
     await router.push('/projects')
     await router.isReady()
     await flushPromises()
-    expect(terminalSessions.sessions[2]?.close).toHaveBeenCalledOnce()
+    expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 1)).toBe(true)
   })
 
   it('prevents the UI from exceeding the desktop terminal session limit', async () => {

@@ -154,10 +154,8 @@ async function refreshSelectedServicePorts() {
 watch([selectedServiceId, selectedServiceSurface], ([, surface]) => {
   if (surface === 'ports') void refreshSelectedServicePorts()
 })
-watch([selectedDetailTab, projectId], ([tab, selectedProjectID], [previousTab, previousProjectID]) => {
-  if (selectedProjectID !== previousProjectID || (previousTab === 'terminal' && tab !== 'terminal')) {
-    closeProjectTerminalTabs()
-  }
+watch([selectedDetailTab, projectId], ([tab, selectedProjectID], [, previousProjectID]) => {
+  if (selectedProjectID !== previousProjectID) closeProjectTerminalTabs()
   if (tab === 'terminal' && projectTerminalTabs.value.length === 0) {
     void createInitialProjectTerminalTab(selectedProjectID)
   }
@@ -212,7 +210,7 @@ function closeProjectTerminalTab(id: number) {
   if (closed) projectTerminalCleanup.close(closed.session)
 }
 
-// closeProjectTerminalTabs releases every PTY when the project or terminal surface is left.
+// closeProjectTerminalTabs releases every PTY when its project view is replaced or destroyed.
 function closeProjectTerminalTabs() {
   for (const tab of projectTerminalTabs.value) projectTerminalCleanup.close(tab.session)
   projectTerminalTabs.value = []
@@ -728,7 +726,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           </Card>
         </TabsContent>
 
-        <TabsContent value="terminal" class="m-0 flex min-h-0 flex-1 flex-col">
+        <TabsContent value="terminal" force-mount class="m-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <Card class="flex min-h-[28rem] flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
             <div class="flex h-11 w-full shrink-0 items-center justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7" role="tablist" aria-label="Project terminal sessions">
               <div
@@ -769,7 +767,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                 v-for="tab in projectTerminalTabs"
                 :key="`${project.id}:${tab.id}`"
                 v-show="selectedProjectTerminalTabID === tab.id"
-                :active="selectedProjectTerminalTabID === tab.id"
+                :active="selectedDetailTab === 'terminal' && selectedProjectTerminalTabID === tab.id"
                 :session="tab.session"
                 :aria-label="`${project.name} ${tab.name.toLowerCase()}`"
                 class="min-h-0 flex-1"
