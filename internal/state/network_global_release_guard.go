@@ -90,6 +90,7 @@ func globalNetworkReleaseBlockedKind(kind domain.OperationKind) bool {
 	switch kind {
 	case domain.OperationKindNetworkSetup,
 		domain.OperationKindNetworkResolverSetup,
+		domain.OperationKindNetworkResolverPolicyMigration,
 		domain.OperationKindNetworkDataPlaneSetup,
 		domain.OperationKindNetworkRelease,
 		domain.OperationKindProjectStart,

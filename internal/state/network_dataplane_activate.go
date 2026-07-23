@@ -51,6 +51,15 @@ func (store *Store) ActivateNetworkDataPlane(
 		if !present {
 			return fmt.Errorf("network persistence schema is not installed")
 		}
+		if active, found, err := findActiveNetworkResolverPolicyMigrationOperation(tx); err != nil {
+			return err
+		} else if found {
+			return fmt.Errorf(
+				"network data-plane activation is blocked by active resolver policy migration operation %q in state %q",
+				active.Operation.ID,
+				active.Operation.State,
+			)
+		}
 
 		before, err := readNetworkModelRows(tx)
 		if err != nil {

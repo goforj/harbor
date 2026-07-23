@@ -105,6 +105,28 @@ func TestStageGlobalNetworkReleaseRejectsAdmissionDriftWithoutMutation(t *testin
 	}
 }
 
+// TestStageGlobalNetworkReleaseRejectsActiveResolverPolicyMigration verifies resolver retirement completes before global release staging writes.
+func TestStageGlobalNetworkReleaseRejectsActiveResolverPolicyMigration(t *testing.T) {
+	journal, connection, request := newGlobalNetworkReleaseStageFixture(t)
+	globalNetworkReleaseStageInsertOperation(
+		t,
+		connection,
+		"operation-policy-migration",
+		"intent-policy-migration",
+		"",
+		domain.OperationKindNetworkResolverPolicyMigration,
+		domain.OperationRequiresApproval,
+		request.Operation.RequestedAt,
+	)
+	before := globalNetworkReleaseStageSnapshot(t, connection)
+
+	_, err := journal.StageGlobalNetworkRelease(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "active setup operations") {
+		t.Fatalf("StageGlobalNetworkRelease() error = %v, want active resolver policy migration rejection", err)
+	}
+	globalNetworkReleaseStageAssertUnchanged(t, connection, before)
+}
+
 // TestStageGlobalNetworkReleaseRejectsConflictsWithoutMutation verifies retries cannot cross intent, ID, or active-owner boundaries.
 func TestStageGlobalNetworkReleaseRejectsConflictsWithoutMutation(t *testing.T) {
 	tests := []struct {

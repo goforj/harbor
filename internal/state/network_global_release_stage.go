@@ -227,6 +227,7 @@ func requireGlobalNetworkReleaseQuiescence(tx *gorm.DB, expected []NetworkProjec
 	if err := tx.Where("project_id IS NULL AND kind IN ? AND (state NOT IN ? OR state IS NULL)", []domain.OperationKind{
 		domain.OperationKindNetworkSetup,
 		domain.OperationKindNetworkResolverSetup,
+		domain.OperationKindNetworkResolverPolicyMigration,
 		domain.OperationKindNetworkDataPlaneSetup,
 	}, []string{
 		string(domain.OperationSucceeded),

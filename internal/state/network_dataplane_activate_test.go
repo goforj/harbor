@@ -207,6 +207,36 @@ func TestStoreActivateNetworkDataPlaneCommitsOnlyAdditionalAuthority(t *testing.
 	}
 }
 
+// TestStoreActivateNetworkDataPlaneRejectsActiveResolverPolicyMigration verifies retirement authority resolves before the data-plane can change.
+func TestStoreActivateNetworkDataPlaneRejectsActiveResolverPolicyMigration(t *testing.T) {
+	store, connection := newNetworkInitializeTestHarness(t, false)
+	_, identity := initializeNetworkDataPlaneActivationIdentity(t, store, connection)
+	request := networkDataPlaneActivationTestRequest(t, identity.Record.Revision)
+	globalNetworkReleaseStageInsertOperation(
+		t,
+		connection,
+		"operation-policy-migration",
+		"intent-policy-migration",
+		"",
+		domain.OperationKindNetworkResolverPolicyMigration,
+		domain.OperationRequiresApproval,
+		request.At,
+	)
+	before := networkDataPlaneActivationTestRows(t, connection)
+	beforeSequence := projectStoreMutationSequence(t, store)
+
+	_, err := store.ActivateNetworkDataPlane(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "active resolver policy migration operation") {
+		t.Fatalf("ActivateNetworkDataPlane() error = %v, want active resolver policy migration rejection", err)
+	}
+	if after := networkDataPlaneActivationTestRows(t, connection); !reflect.DeepEqual(after, before) {
+		t.Fatal("blocked data-plane activation changed durable network rows")
+	}
+	if afterSequence := projectStoreMutationSequence(t, store); afterSequence != beforeSequence {
+		t.Fatalf("blocked data-plane activation advanced sequence to %d, want %d", afterSequence, beforeSequence)
+	}
+}
+
 // TestStoreActivateNetworkDataPlaneRejectsUninitializedState verifies activation cannot create the identity foundation implicitly.
 func TestStoreActivateNetworkDataPlaneRejectsUninitializedState(t *testing.T) {
 	store, connection := newNetworkInitializeTestHarness(t, false)
