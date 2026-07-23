@@ -45,6 +45,7 @@ type ProjectLifecycleAction = 'start' | 'stop' | 'restart'
 type ProjectRuntimeRepairAction = 'inspect' | 'confirm'
 
 const unsupportedResolverPolicyMigration = 'does not support network resolver policy migration'
+const staleResolverPolicyMigrationGuidance = 'Harbor’s background service cannot remove old networking. Restart harbord if you manage it; Harbor will reconnect after it restarts. Harbor did not stop the background service.'
 
 interface TrackedProjectLifecycleIntent {
   action: ProjectLifecycleAction
@@ -69,6 +70,7 @@ export const useHarborStore = defineStore('harbor', () => {
   const networkSetupResult = ref<NetworkSetupOperation | null>(null)
   const networkSetupError = ref<string | null>(null)
   const oldNetworkingRemovalError = ref<string | null>(null)
+  const oldNetworkingRemovalUnsupportedEpoch = ref<number | null>(null)
   const removingProjectId = ref<string | null>(null)
   const projectRemovalApprovalProjectId = ref<string | null>(null)
   const projectLifecycleRequestProjectIds = ref<Record<string, true>>({})
@@ -138,7 +140,8 @@ export const useHarborStore = defineStore('harbor', () => {
   const networkSetupOnboarding = computed(() => snapshot.value !== null
     && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true)
   const oldNetworkingRemovalAvailable = computed(() => daemonStatus.value?.capabilities
-    .includes('control.network-resolver-policy-migration.v1') === true)
+    .includes('control.network-resolver-policy-migration.v1') === true
+    && oldNetworkingRemovalUnsupportedEpoch.value !== connectionEpoch)
   const oldNetworkingRemovalBlocked = computed(() => !oldNetworkingRemovalAvailable.value
     || connectionState.value !== 'connected'
     || projectLifecycleBusy.value
@@ -229,7 +232,15 @@ export const useHarborStore = defineStore('harbor', () => {
     if (!status.capabilities.includes('control.network-setup.v1')) {
       networkSetupError.value = null
     }
-    if (!status.capabilities.includes('control.network-resolver-policy-migration.v1')) {
+    if (oldNetworkingRemovalUnsupportedEpoch.value !== null
+      && oldNetworkingRemovalUnsupportedEpoch.value !== connectionEpoch
+      && status.capabilities.includes('control.network-resolver-policy-migration.v1')) {
+      oldNetworkingRemovalUnsupportedEpoch.value = null
+      oldNetworkingRemovalError.value = null
+      return
+    }
+    if (!status.capabilities.includes('control.network-resolver-policy-migration.v1')
+      && oldNetworkingRemovalUnsupportedEpoch.value !== connectionEpoch) {
       oldNetworkingRemovalError.value = null
     }
   }
@@ -432,6 +443,7 @@ export const useHarborStore = defineStore('harbor', () => {
       return null
     }
 
+    const requestEpoch = connectionEpoch
     removingOldNetworking.value = true
     oldNetworkingRemovalError.value = null
     try {
@@ -442,6 +454,9 @@ export const useHarborStore = defineStore('harbor', () => {
         || result.operation.phase !== 'completed') {
         throw new Error('Harbor returned incomplete old networking removal progress.')
       }
+      if (requestEpoch !== connectionEpoch) {
+        return null
+      }
       networkSetupError.value = null
       return result
     }
@@ -449,7 +464,11 @@ export const useHarborStore = defineStore('harbor', () => {
       const message = cause instanceof Error
         ? cause.message
         : 'Harbor could not remove old networking.'
+      if (requestEpoch !== connectionEpoch) {
+        return null
+      }
       if (message.includes(unsupportedResolverPolicyMigration)) {
+        oldNetworkingRemovalUnsupportedEpoch.value = connectionEpoch
         if (daemonStatus.value) {
           daemonStatus.value = {
             ...daemonStatus.value,
@@ -458,7 +477,7 @@ export const useHarborStore = defineStore('harbor', () => {
             ),
           }
         }
-        oldNetworkingRemovalError.value = 'Harbor connected to an older background service. Waiting for the updated service before retrying.'
+        oldNetworkingRemovalError.value = staleResolverPolicyMigrationGuidance
       }
       else {
         oldNetworkingRemovalError.value = message
@@ -466,7 +485,9 @@ export const useHarborStore = defineStore('harbor', () => {
       return null
     }
     finally {
-      await refresh()
+      if (requestEpoch === connectionEpoch) {
+        await refresh()
+      }
       removingOldNetworking.value = false
     }
   }

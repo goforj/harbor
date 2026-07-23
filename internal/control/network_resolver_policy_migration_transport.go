@@ -17,6 +17,9 @@ import (
 
 const maximumNetworkResolverPolicyMigrationConfirmationRequestBytes = helper.MaxResponseBytes + maximumNetworkReleaseRequestBytes
 
+// ErrNetworkResolverPolicyMigrationUnsupported reports that the selected daemon session did not negotiate legacy resolver-policy retirement.
+var ErrNetworkResolverPolicyMigrationUnsupported = errors.New("Harbor daemon does not support network resolver policy migration")
+
 // networkResolverPolicyMigrationAuthorityIsNil rejects typed-nil optional implementations before capability negotiation.
 func networkResolverPolicyMigrationAuthorityIsNil(authority NetworkResolverPolicyMigrationAuthority) bool {
 	if authority == nil {
@@ -107,7 +110,7 @@ func (client *Client) ConfirmNetworkResolverPolicyMigrationApproval(ctx context.
 // networkResolverPolicyMigrationCall checks the dedicated capability before sending authority-bearing requests.
 func (client *Client) networkResolverPolicyMigrationCall(ctx context.Context, method string, request any) ([]byte, error) {
 	if !containsCapability(client.peer.Session.Capabilities, CapabilityNetworkResolverPolicyMigrationV1) {
-		return nil, errors.New("Harbor daemon does not support network resolver policy migration; upgrade or restart harbord")
+		return nil, fmt.Errorf("%w; upgrade or restart harbord", ErrNetworkResolverPolicyMigrationUnsupported)
 	}
 	return client.session.Call(ctx, method, request)
 }

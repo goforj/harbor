@@ -1290,6 +1290,9 @@ func (a *App) RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOpera
 		return control.NetworkResolverPolicyMigrationOperation{}, err
 	}
 	defer release()
+	if err := a.requireNetworkResolverPolicyMigration(ctx, client); err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, err
+	}
 
 	operation, err := a.startNetworkResolverPolicyMigration(ctx, client)
 	if err != nil {
@@ -1315,6 +1318,20 @@ func (a *App) RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOpera
 		return replayed, nil
 	}
 	return control.NetworkResolverPolicyMigrationOperation{}, err
+}
+
+// requireNetworkResolverPolicyMigration verifies the selected session still advertises the action before native approval can begin.
+func (a *App) requireNetworkResolverPolicyMigration(ctx context.Context, client controlClient) error {
+	status, err := client.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("read Harbor daemon capability status: %w", err)
+	}
+	for _, capability := range status.Capabilities {
+		if capability == control.CapabilityNetworkResolverPolicyMigrationV1 {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w; restart harbord if you manage it, then Harbor will reconnect", control.ErrNetworkResolverPolicyMigrationUnsupported)
 }
 
 // startNetworkResolverPolicyMigration starts the stable migration intent and validates its exact daemon binding.

@@ -229,7 +229,7 @@ func newFakeControlClient() *fakeControlClient {
 			State:                 control.DaemonStateReady,
 			Build:                 control.Build{Version: "test"},
 			Protocol:              rpc.Version{Major: 1},
-			Capabilities:          []rpc.Capability{control.CapabilityV1},
+			Capabilities:          []rpc.Capability{control.CapabilityNetworkResolverPolicyMigrationV1, control.CapabilityV1},
 			SnapshotSchemaVersion: domain.SnapshotSchemaVersion,
 			Sequence:              8,
 		},
@@ -4151,6 +4151,30 @@ func TestRemoveOldNetworkingCompletesApproval(t *testing.T) {
 	}
 	if len(client.migrationReqs) != 1 || client.migrationReqs[0].IntentID != networkResolverPolicyMigrationIntentID {
 		t.Fatalf("migration start requests = %#v", client.migrationReqs)
+	}
+}
+
+// TestRemoveOldNetworkingRejectsAnUnsupportedSessionWithoutMutation preserves the live session for the daemon's normal restart and reconnect lifecycle.
+func TestRemoveOldNetworkingRejectsAnUnsupportedSessionWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.status.Capabilities = []rpc.Capability{control.CapabilityV1}
+
+	if _, err := app.RemoveOldNetworking(); !errors.Is(err, control.ErrNetworkResolverPolicyMigrationUnsupported) {
+		t.Fatalf("RemoveOldNetworking() error = %v, want unsupported migration capability", err)
+	}
+	if len(client.migrationReqs) != 0 {
+		t.Fatalf("migration requests = %#v, want no daemon mutation", client.migrationReqs)
+	}
+	if client.closeCount.Load() != 0 {
+		t.Fatalf("desktop client closes = %d, want 0", client.closeCount.Load())
+	}
+	app.mu.RLock()
+	installed := app.client
+	app.mu.RUnlock()
+	if installed != client {
+		t.Fatal("unsupported session was replaced")
 	}
 }
 

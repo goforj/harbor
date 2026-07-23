@@ -614,17 +614,86 @@ describe('Harbor store', () => {
 
     expect(store.daemonStatus?.capabilities).not.toContain('control.network-resolver-policy-migration.v1')
     expect(store.oldNetworkingRemovalAvailable).toBe(false)
-    expect(store.oldNetworkingRemovalError).toBe('Harbor connected to an older background service. Waiting for the updated service before retrying.')
+    expect(store.oldNetworkingRemovalError).toBe('Harbor’s background service cannot remove old networking. Restart harbord if you manage it; Harbor will reconnect after it restarts. Harbor did not stop the background service.')
     await expect(store.removeOldNetworking()).resolves.toBeNull()
     expect(removeOldNetworking).toHaveBeenCalledOnce()
   })
 
-  it('re-enables removal only after a fresh background service advertises it', async () => {
+  it('ignores an unsupported removal result from a superseded daemon connection', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
     const supported = {
       ...mockStatus(),
       capabilities: ['control.network-resolver-policy-migration.v1'],
     }
+    const getStatus = vi.spyOn(harborBridge, 'getStatus').mockResolvedValue(supported)
+    const pending = deferred<NetworkResolverPolicyMigrationOperation>()
+    vi.spyOn(harborBridge, 'removeOldNetworking').mockReturnValueOnce(pending.promise)
     const store = useHarborStore()
+    await store.initialize()
+    store.$patch({ networkSetupError: 'Harbor detected old networking.' })
+
+    const removal = store.removeOldNetworking()
+    connectionListener?.({ state: 'disconnected' })
+    connectionListener?.({ state: 'connected' })
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2))
+
+    pending.reject(new Error('Harbor daemon does not support network resolver policy migration; upgrade or restart harbord'))
+    await expect(removal).resolves.toBeNull()
+
+    expect(store.daemonStatus?.capabilities).toContain('control.network-resolver-policy-migration.v1')
+    expect(store.oldNetworkingRemovalAvailable).toBe(true)
+    expect(store.oldNetworkingRemovalError).toBeNull()
+  })
+
+  it('ignores a generic removal failure from a superseded daemon connection', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    const supported = {
+      ...mockStatus(),
+      capabilities: ['control.network-resolver-policy-migration.v1'],
+    }
+    const getStatus = vi.spyOn(harborBridge, 'getStatus').mockResolvedValue(supported)
+    const pending = deferred<NetworkResolverPolicyMigrationOperation>()
+    vi.spyOn(harborBridge, 'removeOldNetworking').mockReturnValueOnce(pending.promise)
+    const store = useHarborStore()
+    await store.initialize()
+    store.$patch({ networkSetupError: 'Harbor detected old networking.' })
+
+    const removal = store.removeOldNetworking()
+    connectionListener?.({ state: 'disconnected' })
+    connectionListener?.({ state: 'connected' })
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2))
+    store.$patch({ networkSetupError: 'Harbor detected old networking on the reconnected daemon.' })
+
+    pending.reject(new Error('Harbor could not remove old networking.'))
+    await expect(removal).resolves.toBeNull()
+
+    expect(store.daemonStatus?.capabilities).toContain('control.network-resolver-policy-migration.v1')
+    expect(store.oldNetworkingRemovalAvailable).toBe(true)
+    expect(store.oldNetworkingRemovalError).toBeNull()
+    expect(store.networkSetupError).toBe('Harbor detected old networking on the reconnected daemon.')
+  })
+
+  it('re-enables removal only after a fresh background service advertises it', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    const supported = {
+      ...mockStatus(),
+      capabilities: ['control.network-resolver-policy-migration.v1'],
+    }
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValue(supported)
+    const store = useHarborStore()
+    await store.initialize()
     store.$patch({
       daemonStatus: supported,
       connectionState: 'connected',
@@ -633,13 +702,17 @@ describe('Harbor store', () => {
     vi.spyOn(harborBridge, 'removeOldNetworking').mockRejectedValueOnce(
       new Error('Harbor daemon does not support network resolver policy migration; upgrade or restart harbord'),
     )
-    vi.spyOn(harborBridge, 'getStatus').mockResolvedValueOnce(supported)
 
     await expect(store.removeOldNetworking()).resolves.toBeNull()
 
     expect(store.daemonStatus).toEqual(supported)
-    expect(store.oldNetworkingRemovalAvailable).toBe(true)
-    expect(store.oldNetworkingRemovalError).toBe('Harbor connected to an older background service. Waiting for the updated service before retrying.')
+    expect(store.oldNetworkingRemovalAvailable).toBe(false)
+    expect(store.oldNetworkingRemovalError).toBe('Harbor’s background service cannot remove old networking. Restart harbord if you manage it; Harbor will reconnect after it restarts. Harbor did not stop the background service.')
+
+    connectionListener?.({ state: 'disconnected' })
+    connectionListener?.({ state: 'connected' })
+    await vi.waitFor(() => expect(store.oldNetworkingRemovalAvailable).toBe(true))
+    expect(store.oldNetworkingRemovalError).toBeNull()
   })
 
   it('clears network action feedback when a fresh status drops its capability', async () => {

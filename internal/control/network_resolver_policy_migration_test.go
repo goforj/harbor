@@ -1,7 +1,9 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +12,17 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 )
+
+// TestNetworkResolverPolicyMigrationCallReportsTypedUnsupportedCapability lets desktop recovery distinguish a stale negotiated session from a mutation failure.
+func TestNetworkResolverPolicyMigrationCallReportsTypedUnsupportedCapability(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{peer: DaemonPeer{}}
+	_, err := client.networkResolverPolicyMigrationCall(context.Background(), methodNetworkResolverPolicyMigrationStart, struct{}{})
+	if !errors.Is(err, ErrNetworkResolverPolicyMigrationUnsupported) {
+		t.Fatalf("networkResolverPolicyMigrationCall() error = %v, want typed unsupported capability", err)
+	}
+}
 
 // TestNetworkResolverPolicyMigrationContractsKeepRetirementAuthorityNarrow validates the fixed retirement-only contract.
 func TestNetworkResolverPolicyMigrationContractsKeepRetirementAuthorityNarrow(t *testing.T) {

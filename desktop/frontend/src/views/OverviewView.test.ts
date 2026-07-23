@@ -111,7 +111,7 @@ describe('OverviewView', () => {
     await remove!.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Harbor connected to an older background service. Waiting for the updated service before retrying.')
+    expect(wrapper.text()).toContain('Harbor’s background service cannot remove old networking. Restart harbord if you manage it; Harbor will reconnect after it restarts. Harbor did not stop the background service.')
     expect(wrapper.findAll('button').some((button) => button.text().includes('Remove old networking'))).toBe(false)
     wrapper.unmount()
   })
