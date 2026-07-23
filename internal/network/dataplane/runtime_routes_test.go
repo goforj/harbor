@@ -367,24 +367,34 @@ func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing
 
 // TestRuntimeReplaceNativeRoutesPublishesDirectDNSWithoutBindingRelay keeps a service-owned socket out of relay lifecycle.
 func TestRuntimeReplaceNativeRoutesPublishesDirectDNSWithoutBindingRelay(t *testing.T) {
-	listeners := ListenerPlan{DNS: reserveDNSPort(t)}
-	desired := mustDesiredState(t, listeners, nil, nil)
+	shared := reserveTCPPorts(t, 2)
 	directAddress := reserveTCPPorts(t, 1)[0]
 	service, err := net.Listen("tcp", directAddress.String())
 	if err != nil {
 		t.Fatalf("listen direct service: %v", err)
 	}
 	t.Cleanup(func() { _ = service.Close() })
+	listeners := ListenerPlan{
+		DNS:   reserveDNSPort(t),
+		HTTP:  shared[0],
+		HTTPS: shared[1],
+	}
+	desired := mustDesiredState(t, listeners, []HTTPRoute{{
+		ID:       "orders:victoria-metrics",
+		Host:     "victoria-metrics.orders.test",
+		Upstream: directAddress,
+	}}, nil)
 	direct := NativeRoute{
-		ID:       "orders:service:mysql",
-		Host:     "mysql.orders.test",
+		ID:       "orders:service:victoriametrics",
+		Host:     "victoriametrics.orders.test",
 		Listen:   directAddress,
 		Upstream: directAddress,
 		Direct:   true,
 	}
 	runtime, err := newRuntime(
 		Config{
-			Desired: desired,
+			Desired:             desired,
+			CertificateProvider: inertCertificateProvider(),
 		},
 		runtimeDependencies{
 			listen: func(ctx context.Context, address netip.AddrPort) (net.Listener, error) {
@@ -409,7 +419,7 @@ func TestRuntimeReplaceNativeRoutesPublishesDirectDNSWithoutBindingRelay(t *test
 	if err := snapshot.Validate(); err != nil {
 		t.Fatalf("direct Snapshot().Validate() error = %v", err)
 	}
-	if snapshot.DNS.Records != 1 || len(snapshot.Relays) != 0 || len(snapshot.Directs) != 1 || snapshot.Directs[0].ListenAddress != directAddress {
+	if snapshot.DNS.Records != 2 || len(snapshot.Relays) != 0 || len(snapshot.Directs) != 1 || snapshot.Directs[0].ListenAddress != directAddress {
 		t.Fatalf("direct snapshot = %#v", snapshot)
 	}
 	if err := runtime.ReplaceNativeRoutes(t.Context(), []NativeRoute{direct}); err != nil {
@@ -419,7 +429,7 @@ func TestRuntimeReplaceNativeRoutesPublishesDirectDNSWithoutBindingRelay(t *test
 		t.Fatalf("withdraw direct ReplaceNativeRoutes() error = %v", err)
 	}
 	snapshot = runtime.Snapshot()
-	if snapshot.DNS.Records != 0 || len(snapshot.Relays) != 0 || len(snapshot.Directs) != 0 {
+	if snapshot.DNS.Records != 1 || len(snapshot.Relays) != 0 || len(snapshot.Directs) != 0 {
 		t.Fatalf("withdrawn direct snapshot = %#v", snapshot)
 	}
 }

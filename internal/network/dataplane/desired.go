@@ -430,6 +430,9 @@ func validateNoSelfRouting(plan ListenerPlan, httpRoutes []HTTPRoute, nativeRout
 		}
 	}
 	for _, route := range nativeRoutes {
+		if route.Direct {
+			continue
+		}
 		public[route.Listen] = "native route " + route.ID
 	}
 	for _, route := range httpRoutes {

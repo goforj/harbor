@@ -218,6 +218,33 @@ func TestNewDesiredStateAllowsSameNativePortOnDistinctIdentities(t *testing.T) {
 	}
 }
 
+// TestNewDesiredStateAllowsHTTPUpstreamOwnedByDirectNativeRoute keeps DNS aliases from masquerading as Harbor listeners.
+func TestNewDesiredStateAllowsHTTPUpstreamOwnedByDirectNativeRoute(t *testing.T) {
+	service := testEndpoint("127.77.0.10:8428")
+	desired, err := NewDesiredState(
+		testListenerPlan(),
+		[]HTTPRoute{{
+			ID:       "http:victoria-metrics",
+			Host:     "victoria-metrics.orders.test",
+			Upstream: service,
+		}},
+		[]NativeRoute{{
+			ID:       "tcp:victoriametrics",
+			Host:     "victoriametrics.orders.test",
+			Listen:   service,
+			Upstream: service,
+			Direct:   true,
+		}},
+		0,
+	)
+	if err != nil {
+		t.Fatalf("NewDesiredState() error = %v", err)
+	}
+	if len(desired.HTTPRoutes()) != 1 || len(desired.NativeRoutes()) != 1 {
+		t.Fatalf("desired routes = HTTP %#v, native %#v", desired.HTTPRoutes(), desired.NativeRoutes())
+	}
+}
+
 // TestDesiredStateRejectsForgedZeroValue protects runtime construction from bypassing constructors.
 func TestDesiredStateRejectsForgedZeroValue(t *testing.T) {
 	if err := (DesiredState{}).validate(); err == nil || !strings.Contains(err.Error(), "NewDesiredState") {
