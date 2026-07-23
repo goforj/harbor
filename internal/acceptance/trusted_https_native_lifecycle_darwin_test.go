@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -42,7 +43,7 @@ type trustedHTTPSNativeConfiguration struct {
 	forjVersion string
 }
 
-// trustedHTTPSNativeLifecycle tracks only the resources this intermediate native proof can safely retire.
+// trustedHTTPSNativeLifecycle tracks the generated and machine-global resources the native proof must release.
 type trustedHTTPSNativeLifecycle struct {
 	configuration     phase1Config
 	sandbox           phase1Sandbox
@@ -69,8 +70,7 @@ type trustedHTTPSNativeProject struct {
 	removed         bool
 }
 
-// TestDarwinTrustedHTTPSIntermediateNativeLifecycle proves setup and three trusted HTTPS projects through production binaries.
-// It deliberately does not claim terminal machine-global cleanup while protected ownership release remains unavailable.
+// TestDarwinTrustedHTTPSIntermediateNativeLifecycle proves setup, three trusted HTTPS projects, and terminal product cleanup through production binaries.
 func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	if os.Getenv(trustedHTTPSAcceptanceEnvironment) != "1" {
 		t.Skipf("set %s=1 to run the Darwin trusted HTTPS acceptance", trustedHTTPSAcceptanceEnvironment)
@@ -141,8 +141,8 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	phase1RequireControlCapabilities(t, status)
 	trustedHTTPSRequireControlCapabilities(t, status)
 
-	// This cleanup is registered after phase1StartDaemon so it can request graceful
-	// product cleanup before the harness's final forced-process safety net runs.
+	// This cleanup is registered after phase1StartDaemon so product release runs
+	// before the harness's final forced-process safety net can stop the daemon.
 	t.Cleanup(func() {
 		if err := lifecycle.cleanup(context.Background()); err != nil {
 			t.Errorf("recover intermediate native lifecycle resources: %v", err)
@@ -267,17 +267,33 @@ func trustedHTTPSRequiredControlCapabilities() []rpc.Capability {
 		control.CapabilityNetworkSetupV1,
 		control.CapabilityNetworkResolverSetupV1,
 		control.CapabilityNetworkDataPlaneSetupV1,
+		control.CapabilityNetworkReleaseV1,
+		control.CapabilityNetworkReleaseApprovalV1,
+		control.CapabilityNetworkReleaseResolverApprovalV1,
+		control.CapabilityNetworkReleaseTrustApprovalV1,
+		control.CapabilityNetworkReleaseLoopbackApprovalV1,
+		control.CapabilityNetworkReleaseOwnershipApprovalV1,
 		control.CapabilityProjectLifecycleV1,
 		control.CapabilityProjectUnregisterApprovalV1,
 	}
 }
 
-// TestTrustedHTTPSRequiredControlCapabilitiesIncludesRemovalApproval prevents native setup from entering a cleanup-incomplete daemon.
-func TestTrustedHTTPSRequiredControlCapabilitiesIncludesRemovalApproval(t *testing.T) {
+// TestTrustedHTTPSRequiredControlCapabilitiesIncludesReleasePhases prevents native setup from entering a cleanup-incomplete daemon.
+func TestTrustedHTTPSRequiredControlCapabilitiesIncludesReleasePhases(t *testing.T) {
 	t.Parallel()
 
-	if !slices.Contains(trustedHTTPSRequiredControlCapabilities(), control.CapabilityProjectUnregisterApprovalV1) {
-		t.Fatal("trusted HTTPS native proof does not require project unregister approval")
+	for _, capability := range []rpc.Capability{
+		control.CapabilityNetworkReleaseV1,
+		control.CapabilityNetworkReleaseApprovalV1,
+		control.CapabilityNetworkReleaseResolverApprovalV1,
+		control.CapabilityNetworkReleaseTrustApprovalV1,
+		control.CapabilityNetworkReleaseLoopbackApprovalV1,
+		control.CapabilityNetworkReleaseOwnershipApprovalV1,
+		control.CapabilityProjectUnregisterApprovalV1,
+	} {
+		if !slices.Contains(trustedHTTPSRequiredControlCapabilities(), capability) {
+			t.Fatalf("trusted HTTPS native proof does not require cleanup capability %s", capability)
+		}
 	}
 }
 
@@ -542,7 +558,11 @@ func TestTrustedHTTPSProjectLifecycleTerminalErrorIncludesProblem(t *testing.T) 
 		domain.OperationFailed,
 	)
 	err := trustedHTTPSProjectLifecycleTerminalError(lifecycle.Operation)
-	for _, want := range []string{"code=\"project.start.failed\"", "retryable=true"} {
+	for _, want := range []string{
+		"code=\"project.start.failed\"",
+		"message=\"project did not become ready\"",
+		"retryable=true",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("trustedHTTPSProjectLifecycleTerminalError() = %q, want %q", err, want)
 		}
@@ -841,11 +861,12 @@ func trustedHTTPSAwaitProjectLifecycle(
 func trustedHTTPSProjectLifecycleTerminalError(operation domain.Operation) error {
 	if operation.Problem != nil {
 		return fmt.Errorf(
-			"operation %s ended %s in phase %q (problem code=%q retryable=%t)",
+			"operation %s ended %s in phase %q (problem code=%q message=%q retryable=%t)",
 			operation.ID,
 			operation.State,
 			operation.Phase,
 			operation.Problem.Code,
+			operation.Problem.Message,
 			operation.Problem.Retryable,
 		)
 	}
@@ -952,7 +973,7 @@ func trustedHTTPSLifecycleKind(action string) (domain.OperationKind, error) {
 	}
 }
 
-// cleanup attempts every project stop/removal, snapshot check, daemon shutdown, and checkout verification.
+// cleanup attempts every project stop/removal, product release, verification, daemon shutdown, and checkout verification.
 func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) error {
 	if parent == nil {
 		parent = context.Background()
@@ -1028,11 +1049,31 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 		}
 	}
 	if lifecycle.daemon != nil {
-		if err := trustedHTTPSVerifyEmptySnapshot(
+		if err := trustedHTTPSRequireNetworkRelease(parent, lifecycle.configuration, lifecycle.sandbox); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+		releaseID, err := trustedHTTPSVerifyEmptySnapshot(
 			parent,
 			lifecycle.configuration,
 			lifecycle.sandbox,
-		); err != nil {
+		)
+		if err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+		if err := trustedHTTPSRequireNetworkRelease(parent, lifecycle.configuration, lifecycle.sandbox); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("replay harbor daemon release: %w", err))
+		}
+		replayedReleaseID, replayErr := trustedHTTPSVerifyEmptySnapshot(
+			parent,
+			lifecycle.configuration,
+			lifecycle.sandbox,
+		)
+		if replayErr != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("verify replayed terminal release: %w", replayErr))
+		} else if releaseID != "" && replayedReleaseID != releaseID {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("network release replay changed durable operation from %s to %s", releaseID, replayedReleaseID))
+		}
+		if err := trustedHTTPSVerifyNoMachineEffects(parent, lifecycle.sandbox); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
@@ -1064,6 +1105,260 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 		}
 	}
 	return lifecycle.finalizeCheckout(cleanupErr, daemonStopped)
+}
+
+// trustedHTTPSRequireNetworkRelease drives the production CLI until its exact terminal confirmation.
+func trustedHTTPSRequireNetworkRelease(
+	parent context.Context,
+	configuration phase1Config,
+	sandbox phase1Sandbox,
+) error {
+	ctx, cancel := context.WithTimeout(parent, trustedHTTPSSetupTimeout)
+	defer cancel()
+
+	result := phase1RunCommand(ctx, sandbox, configuration.cliBinary, "daemon", "release")
+	return trustedHTTPSValidateNetworkReleaseResult(result)
+}
+
+// trustedHTTPSValidateNetworkReleaseResult admits only the product's exact terminal release response.
+func trustedHTTPSValidateNetworkReleaseResult(result phase1CommandResult) error {
+	if result.err != nil {
+		return fmt.Errorf("run harbor daemon release: %w: %s", result.err, strings.TrimSpace(result.stderr))
+	}
+	if result.stdout != "Network release complete.\n" {
+		return fmt.Errorf("harbor daemon release output = %q, want %q", result.stdout, "Network release complete.\n")
+	}
+	return nil
+}
+
+// TestTrustedHTTPSValidateNetworkReleaseResultRejectsNonExactCompletion keeps the acceptance gate bound to the production CLI contract.
+func TestTrustedHTTPSValidateNetworkReleaseResultRejectsNonExactCompletion(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		result    phase1CommandResult
+		wantError bool
+	}{
+		{
+			name: "exact",
+			result: phase1CommandResult{
+				stdout: "Network release complete.\n",
+			},
+		},
+		{
+			name: "missing newline",
+			result: phase1CommandResult{
+				stdout: "Network release complete.",
+			},
+			wantError: true,
+		},
+		{
+			name: "diagnostic",
+			result: phase1CommandResult{
+				stdout: "Network release complete.\nwarning\n",
+			},
+			wantError: true,
+		},
+		{
+			name: "command failure",
+			result: phase1CommandResult{
+				err: errors.New("release failed"),
+			},
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := trustedHTTPSValidateNetworkReleaseResult(test.result)
+			if (err != nil) != test.wantError {
+				t.Fatalf("trustedHTTPSValidateNetworkReleaseResult() error = %v, want error %t", err, test.wantError)
+			}
+		})
+	}
+}
+
+// trustedHTTPSVerifyNoMachineEffects independently rejects retained Harbor-owned Darwin effects after product release.
+func trustedHTTPSVerifyNoMachineEffects(parent context.Context, sandbox phase1Sandbox) error {
+	ctx, cancel := context.WithTimeout(parent, phase1CommandTimeout)
+	defer cancel()
+
+	for _, path := range []string{
+		"/etc/resolver/test",
+		"/Library/Application Support/GoForj/Harbor/Privileged/state/ownership.json",
+		"/Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist",
+	} {
+		if err := trustedHTTPSRequirePrivilegedPathAbsent(ctx, sandbox, path); err != nil {
+			return err
+		}
+	}
+	if err := trustedHTTPSRequireLaunchdLabelAbsent(ctx, sandbox, "com.goforj.harbor.launchdrelay"); err != nil {
+		return err
+	}
+	if err := trustedHTTPSRequireNoHTTPListeners(ctx, sandbox); err != nil {
+		return err
+	}
+	if err := trustedHTTPSRequireNoLoopbackAlias(ctx, sandbox); err != nil {
+		return err
+	}
+	if err := trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx, sandbox, "find-generic-password", "-s", "com.goforj.harbor.admin-trust-owner.v1", "/Library/Keychains/System.keychain"); err != nil {
+		return err
+	}
+	if err := trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx, sandbox, "find-certificate", "-c", "com.goforj.harbor.admin-root.v1|", "/Library/Keychains/System.keychain"); err != nil {
+		return err
+	}
+
+	if err := trustedHTTPSRequireSecurityItemAbsent(ctx, sandbox, "/usr/bin/security", "find-generic-password", "-s", "com.goforj.harbor.trust-owner.v1"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// trustedHTTPSRequirePrivilegedPathAbsent rejects either a surviving path or a failed privileged inspection.
+func trustedHTTPSRequirePrivilegedPathAbsent(ctx context.Context, sandbox phase1Sandbox, path string) error {
+	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/bin/sh", "-ceu", `test ! -e "$1" && test ! -L "$1"`, "sh", path)
+	if err != nil {
+		return fmt.Errorf("verify released privileged path %q: %w: %s", path, err, strings.TrimSpace(output))
+	}
+	return nil
+}
+
+// trustedHTTPSRequireLaunchdLabelAbsent checks the complete system launchd registry before rejecting the Harbor label.
+func trustedHTTPSRequireLaunchdLabelAbsent(ctx context.Context, sandbox phase1Sandbox, label string) error {
+	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/bin/launchctl", "print", "system")
+	if err != nil {
+		return fmt.Errorf("inspect system launchd registry: %w: %s", err, strings.TrimSpace(output))
+	}
+	if strings.Contains(output, label) {
+		return fmt.Errorf("verify released launchd label: retained Harbor label %q", label)
+	}
+	return nil
+}
+
+// trustedHTTPSRequireNoHTTPListeners confirms lsof is usable before accepting its no-listener status.
+func trustedHTTPSRequireNoHTTPListeners(ctx context.Context, sandbox phase1Sandbox) error {
+	if output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/usr/sbin/lsof", "-v"); err != nil {
+		return fmt.Errorf("inspect lsof availability: %w: %s", err, strings.TrimSpace(output))
+	}
+	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+	if err != nil && !trustedHTTPSLsofNoFilesError(err) {
+		return fmt.Errorf("inspect TCP listeners: %w: %s", err, strings.TrimSpace(output))
+	}
+	if trustedHTTPSOutputHasListeningPort(output, "80") || trustedHTTPSOutputHasListeningPort(output, "443") {
+		return errors.New("verify released HTTP listeners: Harbor port 80 or 443 remains listening")
+	}
+	return nil
+}
+
+// trustedHTTPSRequireNoLoopbackAlias rejects a retained Harbor loopback alias and failed interface inspection.
+func trustedHTTPSRequireNoLoopbackAlias(ctx context.Context, sandbox phase1Sandbox) error {
+	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/sbin/ifconfig", "lo0")
+	if err != nil {
+		return fmt.Errorf("inspect loopback aliases: %w: %s", err, strings.TrimSpace(output))
+	}
+	if strings.Contains(output, "inet 127.77.") {
+		return errors.New("verify released loopback aliases: retained Harbor 127.77.x.x alias")
+	}
+	return nil
+}
+
+// trustedHTTPSRequireSecurityItemAbsent accepts only security's documented item-not-found status.
+func trustedHTTPSRequireSecurityItemAbsent(ctx context.Context, sandbox phase1Sandbox, command string, arguments ...string) error {
+	output, err := trustedHTTPSRunCommand(ctx, sandbox, command, arguments...)
+	return trustedHTTPSValidateSecurityItemAbsence(output, err)
+}
+
+// trustedHTTPSRequirePrivilegedSecurityItemAbsent checks a system keychain item through non-interactive sudo.
+func trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx context.Context, sandbox phase1Sandbox, arguments ...string) error {
+	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/usr/bin/security", arguments...)
+	return trustedHTTPSValidateSecurityItemAbsence(output, err)
+}
+
+// trustedHTTPSValidateSecurityItemAbsence accepts only security's documented item-not-found status.
+func trustedHTTPSValidateSecurityItemAbsence(output string, err error) error {
+	if err == nil {
+		return fmt.Errorf("verify released Security keychain item: retained Harbor marker: %s", strings.TrimSpace(output))
+	}
+	if !trustedHTTPSSecurityItemNotFound(err) {
+		return fmt.Errorf("verify released Security keychain item: %w: %s", err, strings.TrimSpace(output))
+	}
+	return nil
+}
+
+// trustedHTTPSRunPrivileged executes a non-interactive root probe with the acceptance sandbox environment.
+func trustedHTTPSRunPrivileged(ctx context.Context, sandbox phase1Sandbox, command string, arguments ...string) (string, error) {
+	return trustedHTTPSRunCommand(ctx, sandbox, "/usr/bin/sudo", append([]string{"-n", command}, arguments...)...)
+}
+
+// trustedHTTPSRunCommand executes one probe while keeping its working directory and environment reproducible.
+func trustedHTTPSRunCommand(ctx context.Context, sandbox phase1Sandbox, command string, arguments ...string) (string, error) {
+	process := exec.CommandContext(ctx, command, arguments...)
+	process.Dir = sandbox.root
+	process.Env = sandbox.environment
+	output, err := process.CombinedOutput()
+	return string(output), err
+}
+
+// trustedHTTPSLsofNoFilesError identifies lsof's documented status for a successful query with no matching files.
+func trustedHTTPSLsofNoFilesError(err error) bool {
+	exitError, ok := err.(*exec.ExitError)
+	return ok && trustedHTTPSLsofNoFilesExitStatus(exitError.ExitCode())
+}
+
+// trustedHTTPSLsofNoFilesExitStatus identifies lsof's documented status for a successful query with no matching files.
+func trustedHTTPSLsofNoFilesExitStatus(status int) bool {
+	return status == 1
+}
+
+// trustedHTTPSOutputHasListeningPort reports whether lsof's full TCP listener output includes port.
+func trustedHTTPSOutputHasListeningPort(output, port string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), ":"+port+" (LISTEN)") {
+			return true
+		}
+	}
+	return false
+}
+
+// trustedHTTPSSecurityItemNotFound identifies security's documented item-not-found status.
+func trustedHTTPSSecurityItemNotFound(err error) bool {
+	exitError, ok := err.(*exec.ExitError)
+	return ok && trustedHTTPSSecurityItemNotFoundExitStatus(exitError.ExitCode())
+}
+
+// trustedHTTPSSecurityItemNotFoundExitStatus identifies security's documented item-not-found status.
+func trustedHTTPSSecurityItemNotFoundExitStatus(status int) bool {
+	return status == 44
+}
+
+// TestTrustedHTTPSOutputHasListeningPortKeepsTheListenerProbeBoundToExactPorts validates lsof output filtering without executing host commands.
+func TestTrustedHTTPSOutputHasListeningPortKeepsTheListenerProbeBoundToExactPorts(t *testing.T) {
+	t.Parallel()
+
+	output := "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nharbor 1 root 7u IPv4 0x0 0t0 TCP *:443 (LISTEN)\nother 2 root 8u IPv4 0x0 0t0 TCP 127.0.0.1:8080 (LISTEN)\n"
+	if !trustedHTTPSOutputHasListeningPort(output, "443") {
+		t.Fatal("trustedHTTPSOutputHasListeningPort() did not find port 443")
+	}
+	if trustedHTTPSOutputHasListeningPort(output, "80") {
+		t.Fatal("trustedHTTPSOutputHasListeningPort() matched unrelated port 8080")
+	}
+}
+
+// TestTrustedHTTPSProbeExitStatusesAcceptOnlyDocumentedAbsenceValues keeps operational failures fail-closed.
+func TestTrustedHTTPSProbeExitStatusesAcceptOnlyDocumentedAbsenceValues(t *testing.T) {
+	t.Parallel()
+
+	if !trustedHTTPSSecurityItemNotFoundExitStatus(44) {
+		t.Fatal("trustedHTTPSSecurityItemNotFoundExitStatus(44) = false, want true")
+	}
+	if trustedHTTPSSecurityItemNotFoundExitStatus(1) || trustedHTTPSSecurityItemNotFoundExitStatus(0) {
+		t.Fatal("trustedHTTPSSecurityItemNotFoundExitStatus() accepted a non-absence status")
+	}
+	if !trustedHTTPSLsofNoFilesExitStatus(1) {
+		t.Fatal("trustedHTTPSLsofNoFilesExitStatus(1) = false, want true")
+	}
+	if trustedHTTPSLsofNoFilesExitStatus(2) || trustedHTTPSLsofNoFilesExitStatus(0) {
+		t.Fatal("trustedHTTPSLsofNoFilesExitStatus() accepted a non-no-files status")
+	}
 }
 
 // finalizeCheckout verifies and deletes generated checkouts only after every cleanup boundary completed successfully.
@@ -1282,29 +1577,43 @@ func trustedHTTPSInvokeProjectRemoval(
 	return removal, nil
 }
 
-// trustedHTTPSVerifyEmptySnapshot proves project cleanup left no registered project or active operation.
+// trustedHTTPSVerifyEmptySnapshot proves the durable projection is empty and retains one replayable terminal network release.
 func trustedHTTPSVerifyEmptySnapshot(
 	parent context.Context,
 	configuration phase1Config,
 	sandbox phase1Sandbox,
-) error {
+) (domain.OperationID, error) {
 	ctx, cancel := context.WithTimeout(parent, phase1CommandTimeout)
 	defer cancel()
 	result := phase1RunCommand(ctx, sandbox, configuration.cliBinary, "daemon", "snapshot")
 	var snapshot domain.Snapshot
 	if err := result.decodeJSON(&snapshot); err != nil {
-		return err
+		return "", err
 	}
 	if err := snapshot.Validate(); err != nil {
-		return err
+		return "", err
 	}
 	if len(snapshot.Projects) != 0 {
-		return fmt.Errorf("final snapshot contains %d registered projects", len(snapshot.Projects))
+		return "", fmt.Errorf("final snapshot contains %d registered projects", len(snapshot.Projects))
 	}
+	var releaseID domain.OperationID
 	for _, operation := range snapshot.Operations {
 		if !operation.State.IsTerminal() {
-			return fmt.Errorf("final snapshot retains active operation %s in state %s", operation.ID, operation.State)
+			return "", fmt.Errorf("final snapshot retains active operation %s in state %s", operation.ID, operation.State)
 		}
+		if operation.Kind != domain.OperationKindNetworkRelease {
+			continue
+		}
+		if operation.ProjectID != "" || operation.State != domain.OperationSucceeded || operation.Phase != "network released" {
+			return "", fmt.Errorf("durable network release %s is not terminal projection state", operation.ID)
+		}
+		if releaseID != "" {
+			return "", fmt.Errorf("final snapshot contains multiple durable network releases: %s and %s", releaseID, operation.ID)
+		}
+		releaseID = operation.ID
 	}
-	return nil
+	if releaseID == "" {
+		return "", errors.New("final snapshot has no durable terminal network release")
+	}
+	return releaseID, nil
 }

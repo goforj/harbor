@@ -1,9 +1,8 @@
 name: Hosted macOS intermediate native lifecycle evidence
 
-# This workflow supplies intermediate hosted native lifecycle evidence only. It
-# does not prove user-consent behavior, released-product installation, or
-# machine-global cleanup. Any remaining host state is bounded by the admitted
-# disposable GitHub-hosted runner rather than treated as release evidence.
+# This workflow supplies hosted native lifecycle evidence. Its trusted HTTPS
+# acceptance must prove product-driven machine-global release before the
+# disposable runner safety net can remove any remaining state.
 
 on:
   workflow_dispatch:
@@ -139,7 +138,7 @@ jobs:
           GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test \
             -tags=phase1acceptance \
             -count=1 \
-            -run '^TestTrustedHTTPS(DecodeProjectLifecycleResult|ProjectLifecycleTerminalErrorIncludesProblem)$' \
+            -run '^TestTrustedHTTPS(DecodeProjectLifecycleResult|ProjectLifecycleTerminalErrorIncludesProblem|ValidateNetworkReleaseResultRejectsNonExactCompletion)$' \
             ./internal/acceptance
 
       - name: Preflight current-user keychain
@@ -317,7 +316,7 @@ jobs:
             "$authorization_directory"
 
       - name: Remove development bootstrap artifacts
-        if: always()
+        if: failure() || cancelled()
         shell: bash
         run: |
           set -euo pipefail
