@@ -290,12 +290,12 @@ describe('ProjectView service connections', () => {
     expect(getServiceLogs).toHaveBeenCalledWith('orders-api', '', 'mysql', 0)
     expect(getServiceLogs).toHaveBeenCalledWith('orders-api', '', 'redis', 0)
     expect(wrapper.text()).toContain('mysql.orders-api.test')
-    expect(wrapper.text()).toContain('Port 3306 · TCP')
+    expect(wrapper.text()).toContain('3306 · TCP')
     expect(wrapper.text()).toContain('No host connection is currently published for this service.')
 
-    const copyHost = wrapper.findAll('button').find((button) => button.text() === 'Copy host')
-    const copyAddress = wrapper.findAll('button').find((button) => button.text() === 'Copy address')
-    if (!copyHost || !copyAddress) throw new Error('Connection copy actions are missing')
+    const copyHost = wrapper.find('button[aria-label="Copy mysql.orders-api.test hostname"]')
+    const copyAddress = wrapper.find('button[aria-label="Copy mysql.orders-api.test:3306 address"]')
+    if (!copyHost.exists() || !copyAddress.exists()) throw new Error('Connection copy actions are missing')
     await copyHost.trigger('click')
     await copyAddress.trigger('click')
 

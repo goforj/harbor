@@ -88,10 +88,10 @@ async function copy(value: string, key: string) {
 
 <template>
   <Card class="gap-0 rounded-lg py-0 shadow-none">
-    <CardHeader class="!flex !items-center !justify-between border-b px-4 py-3">
+    <CardHeader class="!flex !items-center !justify-between border-b px-3 py-2.5">
       <div>
         <CardTitle class="text-sm">Service connections</CardTitle>
-        <p class="mt-1 text-xs text-muted-foreground">Hostnames and ports currently published by Harbor</p>
+        <p class="text-xs text-muted-foreground">Hostnames and ports published by Harbor</p>
       </div>
       <Button variant="ghost" size="sm" :disabled="loading" @click="refresh">
         <LoaderCircle v-if="loading" class="size-3.5 animate-spin" />
@@ -105,40 +105,47 @@ async function copy(value: string, key: string) {
         Harbor could not inspect ports for {{ failedServices.length }} {{ failedServices.length === 1 ? 'service' : 'services' }}.
       </p>
       <div class="divide-y">
-        <div v-for="row in serviceConnections" :key="row.service.id" class="px-4 py-4">
-          <div class="flex items-center gap-3">
+        <div
+          v-for="row in serviceConnections"
+          :key="row.service.id"
+          class="grid gap-1 px-3 py-2 sm:grid-cols-[minmax(10rem,0.7fr)_minmax(0,2fr)] sm:items-start sm:gap-3"
+        >
+          <div class="flex min-h-8 items-center gap-2">
             <StatusBadge :status="row.service.state" />
-            <div class="min-w-0 flex-1">
-              <p class="text-sm font-medium">{{ row.service.name }}</p>
-              <p class="text-xs text-muted-foreground">{{ row.service.kind }}</p>
-            </div>
+            <p class="min-w-0 truncate text-sm font-medium">{{ row.service.name }}</p>
           </div>
 
-          <div v-if="row.connections.length" class="mt-3 space-y-2">
+          <div v-if="row.connections.length" class="divide-y">
             <div
               v-for="connection in row.connections"
               :key="connection.id"
-              class="flex min-w-0 flex-wrap items-center gap-3 rounded-md border bg-muted/20 px-3 py-2"
+              class="flex min-h-8 min-w-0 items-center gap-2 py-1 first:pt-0 last:pb-0"
             >
-              <div class="min-w-0 flex-1">
-                <code class="block truncate text-sm font-medium text-foreground">{{ connection.hostname }}</code>
-                <p class="mt-0.5 text-xs text-muted-foreground">
-                  Port {{ connection.port }} · {{ connection.protocol }}<span v-if="connection.source === 'resource'"> · {{ connection.label }}</span>
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" @click="copy(connection.hostname, `${connection.id}:host`)">
+              <button
+                type="button"
+                class="group flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                :aria-label="`Copy ${connection.hostname} hostname`"
+                :title="`Copy ${connection.hostname}`"
+                @click="copy(connection.hostname, `${connection.id}:host`)"
+              >
+                <code class="truncate text-sm font-medium text-foreground">{{ connection.hostname }}</code>
                 <Check v-if="copied === `${connection.id}:host`" class="size-3.5" />
-                <Clipboard v-else class="size-3.5" />
-                {{ copied === `${connection.id}:host` ? 'Copied' : 'Copy host' }}
-              </Button>
-              <Button variant="outline" size="sm" @click="copy(connection.endpoint, `${connection.id}:endpoint`)">
+                <Clipboard v-else class="size-3.5 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+              </button>
+              <span class="shrink-0 text-xs tabular-nums text-muted-foreground">{{ connection.port }} · {{ connection.protocol }}</span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                :aria-label="`Copy ${connection.endpoint} address`"
+                :title="`Copy ${connection.endpoint}`"
+                @click="copy(connection.endpoint, `${connection.id}:endpoint`)"
+              >
                 <Check v-if="copied === `${connection.id}:endpoint`" class="size-3.5" />
                 <Clipboard v-else class="size-3.5" />
-                {{ copied === `${connection.id}:endpoint` ? 'Copied' : 'Copy address' }}
               </Button>
             </div>
           </div>
-          <p v-else class="mt-3 text-xs text-muted-foreground">
+          <p v-else class="flex min-h-8 items-center text-xs text-muted-foreground">
             {{ loading ? 'Inspecting published ports…' : 'No host connection is currently published for this service.' }}
           </p>
         </div>
