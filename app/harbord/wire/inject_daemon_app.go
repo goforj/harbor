@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/authority"
+	"github.com/goforj/harbor/internal/cmd"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/daemon"
 	"github.com/goforj/harbor/internal/database"
@@ -30,6 +31,14 @@ import (
 
 // runtimeCloseCoordinationMargin reserves outer-runner time for scheduling and certificate-store cleanup.
 const runtimeCloseCoordinationMargin = 5 * time.Second
+
+const (
+	sourceDevelopmentHandoffEnvironment    = "HARBOR_SOURCE_DEVELOPMENT_HANDOFF"
+	sourceDevelopmentOriginEnvironment     = "FORJ_COMMAND_ORIGIN"
+	sourceDevelopmentSubprocessEnvironment = "FORJ_SUBPROCESS"
+	sourceDevelopmentCommandOrigin         = "dev_command"
+	sourceDevelopmentHandoffTimeout        = 2 * time.Second
+)
 
 // projectUnregisterIssuerOpener isolates default issuer stores while retaining daemon-owned ownership authority.
 type projectUnregisterIssuerOpener func(ticketissuer.PlanSource, *state.MachineOwnershipProjectionSource) (reconcile.TicketIssuer, error)
@@ -552,6 +561,7 @@ func provideDaemonRunner(
 	networkDataPlaneSetup networkDataPlaneSetupCapability,
 	networkRelease networkReleaseCapability,
 	shutdown *daemon.Shutdown,
+	environment projectprocess.Environment,
 ) (*daemon.Runner, error) {
 	if runtimeController == nil {
 		return nil, errors.New("create daemon runner: runtime controller is required")
@@ -581,7 +591,39 @@ func provideDaemonRunner(
 		Runtime:             newProjectLifecycleRuntime(runtimeController, lifecycle, runtimeController, networkRelease, postRuntimeRecovery),
 		ShutdownRequested:   shutdown.Requested(),
 		RuntimeCloseTimeout: daemonRuntimeCloseTimeout(runtimeController),
+		AuthorityContention: sourceDevelopmentDaemonHandoff(environment),
 	})
+}
+
+// sourceDevelopmentDaemonHandoff enables same-user graceful handoff only for the explicit source-development watcher environment.
+func sourceDevelopmentDaemonHandoff(environment projectprocess.Environment) daemon.AuthorityContentionHandler {
+	if !sourceDevelopmentEnvironmentEnabled(environment) {
+		return nil
+	}
+	client := cmd.NewDaemonClient()
+	return func(ctx context.Context) {
+		handoffContext, cancel := context.WithTimeout(ctx, sourceDevelopmentHandoffTimeout)
+		defer cancel()
+		_ = client.Stop(handoffContext)
+	}
+}
+
+// sourceDevelopmentEnvironmentEnabled reads the pre-dotenv process snapshot so project configuration cannot opt production daemons into source-only behavior.
+func sourceDevelopmentEnvironmentEnabled(environment projectprocess.Environment) bool {
+	handoffEnabled := false
+	developmentOrigin := false
+	subprocess := false
+	for _, entry := range environment {
+		switch entry {
+		case sourceDevelopmentHandoffEnvironment + "=1":
+			handoffEnabled = true
+		case sourceDevelopmentOriginEnvironment + "=" + sourceDevelopmentCommandOrigin:
+			developmentOrigin = true
+		case sourceDevelopmentSubprocessEnvironment + "=1":
+			subprocess = true
+		}
+	}
+	return handoffEnabled && developmentOrigin && subprocess
 }
 
 // recoverDaemonState arms durable global release recovery before ordinary project recovery.

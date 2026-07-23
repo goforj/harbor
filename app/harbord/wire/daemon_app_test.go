@@ -724,25 +724,102 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(store, operations, plans, ownership, runtimeController, nil); err == nil {
 		t.Fatal("provideProjectUnregisterCoordinatorWithIssuerOpener(nil opener) error = nil")
 	}
-	if _, err := provideDaemonRunner(nil, func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(
+		nil,
+		func(context.Context) error { return nil },
+		runtimeController,
+		coordinator,
+		new(reconcile.ProjectLifecycleCoordinator),
+		operations,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		shutdown,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil server) error = nil, want required server error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), nil, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(
+		new(control.Server),
+		nil,
+		runtimeController,
+		coordinator,
+		new(reconcile.ProjectLifecycleCoordinator),
+		operations,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		shutdown,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil readiness) error = nil, want required readiness error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, nil, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(
+		new(control.Server),
+		func(context.Context) error { return nil },
+		nil,
+		coordinator,
+		new(reconcile.ProjectLifecycleCoordinator),
+		operations,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		shutdown,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil runtime) error = nil, want required runtime error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, nil, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(
+		new(control.Server),
+		func(context.Context) error { return nil },
+		runtimeController,
+		nil,
+		new(reconcile.ProjectLifecycleCoordinator),
+		operations,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		shutdown,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil coordinator) error = nil, want required coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, nil); err == nil {
+	if _, err := provideDaemonRunner(
+		new(control.Server),
+		func(context.Context) error { return nil },
+		runtimeController,
+		coordinator,
+		new(reconcile.ProjectLifecycleCoordinator),
+		operations,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		nil,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, nil, operations, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(
+		new(control.Server),
+		func(context.Context) error { return nil },
+		runtimeController,
+		coordinator,
+		nil,
+		operations,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		shutdown,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil lifecycle) error = nil, want required project lifecycle coordinator error")
 	}
-	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
+	if _, err := provideDaemonRunner(
+		new(control.Server),
+		func(context.Context) error { return nil },
+		runtimeController,
+		coordinator,
+		new(reconcile.ProjectLifecycleCoordinator),
+		nil,
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		shutdown,
+		nil,
+	); err == nil {
 		t.Fatal("provideDaemonRunner(nil operations) error = nil, want required operation journal error")
 	}
 }
@@ -763,6 +840,29 @@ func TestProvideControlServerExposesResolverPolicyMigrationAuthority(t *testing.
 	}
 	if server == nil {
 		t.Fatal("provideControlServer() = nil, want server")
+	}
+}
+
+// TestSourceDevelopmentDaemonHandoffUsesCapturedEnvironment proves source-only authority retry cannot be enabled by Harbor's later dotenv load.
+func TestSourceDevelopmentDaemonHandoffUsesCapturedEnvironment(t *testing.T) {
+	t.Setenv(sourceDevelopmentHandoffEnvironment, "1")
+	if handler := sourceDevelopmentDaemonHandoff(nil); handler != nil {
+		t.Fatal("sourceDevelopmentDaemonHandoff() enabled from the current process environment")
+	}
+	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{"OTHER=value"}); handler != nil {
+		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without captured marker")
+	}
+	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{
+		sourceDevelopmentHandoffEnvironment + "=1",
+	}); handler != nil {
+		t.Fatal("sourceDevelopmentDaemonHandoff() enabled without GoForj development provenance")
+	}
+	if handler := sourceDevelopmentDaemonHandoff(projectprocess.Environment{
+		sourceDevelopmentHandoffEnvironment + "=1",
+		sourceDevelopmentOriginEnvironment + "=" + sourceDevelopmentCommandOrigin,
+		sourceDevelopmentSubprocessEnvironment + "=1",
+	}); handler == nil {
+		t.Fatal("sourceDevelopmentDaemonHandoff() did not enable from the captured GoForj development environment")
 	}
 }
 

@@ -2,7 +2,9 @@ project_name: harbor
 module_name: github.com/goforj/harbor
 updated_at: 2026-07-17 23:23:48 CDT
 dev:
-  pre: []
+  pre:
+    - name: Handoff Harbor daemon
+      cmd: go run ./cmd/devhandoff
   down: []
   auto_migrate: false
   down_on_exit: true
@@ -17,6 +19,8 @@ dev:
         ignore: [desktop, bin, .tmp]
       run:
         exec: ./bin/harbord migrate && ./bin/harbord --foreground
+        env:
+          HARBOR_SOURCE_DEVELOPMENT_HANDOFF: "1"
   watches:
     - name: Build Harbor Output Broker
       root: .

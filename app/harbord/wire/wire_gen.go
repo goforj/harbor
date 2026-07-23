@@ -94,7 +94,7 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	if err != nil {
 		return App{}, err
 	}
-	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, operationJournal, wireNetworkDataPlaneSetupCapability, wireNetworkReleaseCapability, shutdown)
+	runner, err := provideDaemonRunner(server, readinessCheck, controller, projectUnregisterCoordinator, projectLifecycleCoordinator, operationJournal, wireNetworkDataPlaneSetupCapability, wireNetworkReleaseCapability, shutdown, environment)
 	if err != nil {
 		return App{}, err
 	}

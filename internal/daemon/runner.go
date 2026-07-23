@@ -18,6 +18,8 @@ const (
 	initialAcceptBackoff       = 10 * time.Millisecond
 	maximumAcceptBackoff       = time.Second
 	defaultRuntimeCloseTimeout = time.Minute
+	authorityRetryLimit        = 480
+	authorityRetryInterval     = 250 * time.Millisecond
 )
 
 var (
@@ -60,6 +62,9 @@ type StartupRecovery func(ctx context.Context) error
 // Observers may run concurrently or after Run returns and must return promptly.
 type ErrorObserver func(err error)
 
+// AuthorityContentionHandler requests orderly handoff before the runner retries singleton daemon authority.
+type AuthorityContentionHandler func(context.Context)
+
 // RunnerConfig describes the application services owned by a foreground Harbor daemon.
 type RunnerConfig struct {
 	// Server handles connections after the local transport authenticates their operating-system identity.
@@ -81,15 +86,18 @@ type RunnerConfig struct {
 	MaxConnections int
 	// ObserveError optionally records rejected peers, session failures, and asynchronous authority-release failures.
 	ObserveError ErrorObserver
+	// AuthorityContention optionally requests handoff when another same-user daemon holds singleton authority.
+	AuthorityContention AuthorityContentionHandler
 }
 
 // Runner owns singleton daemon authority, its authenticated endpoint, and all accepted connections.
 type Runner struct {
-	config      RunnerConfig
-	acquireLock processLockFactory
-	listen      listenerFactory
-	retryAccept acceptRetryPolicy
-	acceptDelay acceptDelay
+	config              RunnerConfig
+	acquireLock         processLockFactory
+	listen              listenerFactory
+	retryAccept         acceptRetryPolicy
+	acceptDelay         acceptDelay
+	authorityRetryDelay authorityRetryDelay
 }
 
 // authorityLock is the smallest process-lock surface needed by the lifecycle runner.
@@ -109,12 +117,16 @@ type acceptRetryPolicy func(err error) bool
 // acceptDelay prevents repeated transient endpoint failures from spinning the daemon.
 type acceptDelay func(ctx context.Context, consecutiveFailures int) error
 
+// authorityRetryDelay waits between source-development authority acquisition attempts.
+type authorityRetryDelay func(context.Context) error
+
 // runnerDependencies keeps operating-system boundaries replaceable in deterministic lifecycle tests.
 type runnerDependencies struct {
-	acquireLock processLockFactory
-	listen      listenerFactory
-	retryAccept acceptRetryPolicy
-	acceptDelay acceptDelay
+	acquireLock         processLockFactory
+	listen              listenerFactory
+	retryAccept         acceptRetryPolicy
+	acceptDelay         acceptDelay
+	authorityRetryDelay authorityRetryDelay
 }
 
 // managedConnection makes runner and session teardown share one idempotent connection close.
@@ -214,9 +226,10 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 		acquireLock: func() (authorityLock, error) {
 			return AcquireProcessLock()
 		},
-		listen:      local.Listen,
-		retryAccept: retryableAcceptError,
-		acceptDelay: waitForAcceptRetry,
+		listen:              local.Listen,
+		retryAccept:         retryableAcceptError,
+		acceptDelay:         waitForAcceptRetry,
+		authorityRetryDelay: waitForAuthorityRetry,
 	})
 }
 
@@ -259,6 +272,9 @@ func newRunner(config RunnerConfig, dependencies runnerDependencies) (*Runner, e
 	if dependencies.acceptDelay == nil {
 		return nil, errors.New("create daemon runner: accept retry delay is required")
 	}
+	if config.AuthorityContention != nil && dependencies.authorityRetryDelay == nil {
+		return nil, errors.New("create daemon runner: authority retry delay is required when authority contention handling is enabled")
+	}
 	if config.MaxConnections == 0 {
 		config.MaxConnections = defaultMaxConnections
 	}
@@ -267,11 +283,12 @@ func newRunner(config RunnerConfig, dependencies runnerDependencies) (*Runner, e
 	}
 
 	return &Runner{
-		config:      config,
-		acquireLock: dependencies.acquireLock,
-		listen:      dependencies.listen,
-		retryAccept: dependencies.retryAccept,
-		acceptDelay: dependencies.acceptDelay,
+		config:              config,
+		acquireLock:         dependencies.acquireLock,
+		listen:              dependencies.listen,
+		retryAccept:         dependencies.retryAccept,
+		acceptDelay:         dependencies.acceptDelay,
+		authorityRetryDelay: dependencies.authorityRetryDelay,
 	}, nil
 }
 
@@ -281,7 +298,7 @@ func (runner *Runner) Run(ctx context.Context) (runErr error) {
 		ctx = context.Background()
 	}
 
-	lock, err := runner.acquireLock()
+	lock, err := runner.acquireAuthority(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire daemon authority: %w", err)
 	}
@@ -364,6 +381,36 @@ func (runner *Runner) Run(ctx context.Context) (runErr error) {
 
 	served := runner.serve(ctx, listener, runtimeDone)
 	return runner.finishServe(ctx, served, runtimeDone)
+}
+
+// acquireAuthority preserves production's immediate contention failure unless source development explicitly enables orderly handoff retries.
+func (runner *Runner) acquireAuthority(ctx context.Context) (authorityLock, error) {
+	for attempt := 0; ; attempt++ {
+		lock, err := runner.acquireLock()
+		if err == nil || !errors.Is(err, ErrAlreadyRunning) || runner.config.AuthorityContention == nil {
+			return lock, err
+		}
+		if attempt >= authorityRetryLimit {
+			return nil, err
+		}
+
+		runner.config.AuthorityContention(ctx)
+		if err := runner.authorityRetryDelay(ctx); err != nil {
+			return nil, fmt.Errorf("wait to retry daemon authority: %w", err)
+		}
+	}
+}
+
+// waitForAuthorityRetry prevents source-development handoff from busy-spinning while the prior daemon completes graceful shutdown.
+func waitForAuthorityRetry(ctx context.Context) error {
+	timer := time.NewTimer(authorityRetryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // finishServe rechecks child termination after the watcher joins before classifying endpoint cleanup.

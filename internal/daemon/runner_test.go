@@ -78,6 +78,161 @@ func (lock *testAuthorityLock) releaseCount() int {
 	return lock.releases
 }
 
+// TestRunnerRetriesContendedAuthorityOnlyWhenHandoffIsEnabled proves source development retains the lock that wins the handoff race.
+func TestRunnerRetriesContendedAuthorityOnlyWhenHandoffIsEnabled(t *testing.T) {
+	lock := &testAuthorityLock{events: &testEventLog{}}
+	var acquisitions atomic.Int32
+	var handoffs atomic.Int32
+	runner := &Runner{
+		config: RunnerConfig{
+			AuthorityContention: func(context.Context) {
+				handoffs.Add(1)
+			},
+		},
+		acquireLock: func() (authorityLock, error) {
+			if acquisitions.Add(1) == 1 {
+				return nil, ErrAlreadyRunning
+			}
+			return lock, nil
+		},
+		authorityRetryDelay: func(context.Context) error { return nil },
+	}
+
+	got, err := runner.acquireAuthority(context.Background())
+	if err != nil {
+		t.Fatalf("acquireAuthority() error = %v", err)
+	}
+	if got != lock {
+		t.Fatalf("acquireAuthority() lock = %v, want retained acquired lock", got)
+	}
+	if handoffs.Load() != 1 {
+		t.Fatalf("handoff calls = %d, want 1", handoffs.Load())
+	}
+	if acquisitions.Load() != 2 {
+		t.Fatalf("lock acquisition calls = %d, want 2", acquisitions.Load())
+	}
+	if lock.releaseCount() != 0 {
+		t.Fatalf("lock releases = %d, want 0 before runner shutdown", lock.releaseCount())
+	}
+}
+
+// TestRunnerAllowsSlowGracefulAuthorityHandoff proves the retry window exceeds the daemon runtime's ordinary shutdown budget.
+func TestRunnerAllowsSlowGracefulAuthorityHandoff(t *testing.T) {
+	const contendedAttempts = 181
+	lock := &testAuthorityLock{events: &testEventLog{}}
+	var acquisitions atomic.Int32
+	var handoffs atomic.Int32
+	runner := &Runner{
+		config: RunnerConfig{
+			AuthorityContention: func(context.Context) {
+				handoffs.Add(1)
+			},
+		},
+		acquireLock: func() (authorityLock, error) {
+			if acquisitions.Add(1) <= contendedAttempts {
+				return nil, ErrAlreadyRunning
+			}
+			return lock, nil
+		},
+		authorityRetryDelay: func(context.Context) error {
+			return nil
+		},
+	}
+
+	got, err := runner.acquireAuthority(context.Background())
+	if err != nil {
+		t.Fatalf("acquireAuthority() error = %v", err)
+	}
+	if got != lock {
+		t.Fatalf("acquireAuthority() lock = %v, want retained acquired lock", got)
+	}
+	if handoffs.Load() != contendedAttempts {
+		t.Fatalf("handoff calls = %d, want %d", handoffs.Load(), contendedAttempts)
+	}
+}
+
+// TestRunnerRejectsContendedAuthorityImmediatelyInProduction proves ordinary daemon startup never requests a development handoff.
+func TestRunnerRejectsContendedAuthorityImmediatelyInProduction(t *testing.T) {
+	var acquisitions atomic.Int32
+	var handoffs atomic.Int32
+	runner := &Runner{
+		config: RunnerConfig{},
+		acquireLock: func() (authorityLock, error) {
+			acquisitions.Add(1)
+			return nil, ErrAlreadyRunning
+		},
+		authorityRetryDelay: func(context.Context) error {
+			handoffs.Add(1)
+			return nil
+		},
+	}
+
+	_, err := runner.acquireAuthority(context.Background())
+	if !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("acquireAuthority() error = %v, want %v", err, ErrAlreadyRunning)
+	}
+	if acquisitions.Load() != 1 {
+		t.Fatalf("lock acquisition calls = %d, want 1", acquisitions.Load())
+	}
+	if handoffs.Load() != 0 {
+		t.Fatalf("handoff calls = %d, want 0", handoffs.Load())
+	}
+}
+
+// TestRunnerBoundsAndCancelsContendedAuthorityRetries proves handoff retries cannot spin forever or outlive daemon cancellation.
+func TestRunnerBoundsAndCancelsContendedAuthorityRetries(t *testing.T) {
+	t.Run("bounded", func(t *testing.T) {
+		var acquisitions atomic.Int32
+		var handoffs atomic.Int32
+		runner := &Runner{
+			config: RunnerConfig{
+				AuthorityContention: func(context.Context) {
+					handoffs.Add(1)
+				},
+			},
+			acquireLock: func() (authorityLock, error) {
+				acquisitions.Add(1)
+				return nil, ErrAlreadyRunning
+			},
+			authorityRetryDelay: func(context.Context) error { return nil },
+		}
+
+		_, err := runner.acquireAuthority(context.Background())
+		if !errors.Is(err, ErrAlreadyRunning) {
+			t.Fatalf("acquireAuthority() error = %v, want %v", err, ErrAlreadyRunning)
+		}
+		if handoffs.Load() != authorityRetryLimit {
+			t.Fatalf("handoff calls = %d, want %d", handoffs.Load(), authorityRetryLimit)
+		}
+		if acquisitions.Load() != authorityRetryLimit+1 {
+			t.Fatalf("lock acquisition calls = %d, want %d", acquisitions.Load(), authorityRetryLimit+1)
+		}
+	})
+
+	t.Run("cancelable", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var handoffs atomic.Int32
+		runner := &Runner{
+			config: RunnerConfig{
+				AuthorityContention: func(context.Context) {
+					handoffs.Add(1)
+				},
+			},
+			acquireLock:         func() (authorityLock, error) { return nil, ErrAlreadyRunning },
+			authorityRetryDelay: waitForAuthorityRetry,
+		}
+
+		_, err := runner.acquireAuthority(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquireAuthority() error = %v, want canceled context", err)
+		}
+		if handoffs.Load() != 1 {
+			t.Fatalf("handoff calls = %d, want 1", handoffs.Load())
+		}
+	})
+}
+
 // acceptResult scripts one listener admission outcome.
 type acceptResult struct {
 	connection local.Conn
@@ -1887,6 +2042,17 @@ func TestNewRunnerRejectsInvalidWiring(t *testing.T) {
 		{name: "listener factory", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, retryAccept: validDependencies.retryAccept, acceptDelay: validDependencies.acceptDelay}},
 		{name: "retry policy", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, listen: validDependencies.listen, acceptDelay: validDependencies.acceptDelay}},
 		{name: "retry delay", config: RunnerConfig{Server: server, Readiness: readiness, Runtime: runtime, ShutdownRequested: shutdownRequested}, dependencies: runnerDependencies{acquireLock: validDependencies.acquireLock, listen: validDependencies.listen, retryAccept: validDependencies.retryAccept}},
+		{
+			name: "authority retry delay",
+			config: RunnerConfig{
+				Server:              server,
+				Readiness:           readiness,
+				Runtime:             runtime,
+				ShutdownRequested:   shutdownRequested,
+				AuthorityContention: func(context.Context) {},
+			},
+			dependencies: validDependencies,
+		},
 	}
 
 	for _, test := range tests {
