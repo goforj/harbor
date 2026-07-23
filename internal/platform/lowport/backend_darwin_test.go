@@ -140,6 +140,12 @@ func TestDarwinServiceContractAcceptsRuntimeFacts(t *testing.T) {
 		"receive_packet_info = 0\nfuture socket telemetry = enabled\nruntime details = {\nvalue = 1\n}",
 		1,
 	)
+	output = strings.Replace(
+		output,
+		"HARBOR_INSTALLATION_ID => "+request.InstallationID(),
+		"OSLogRateLimit => 64\n\tHARBOR_INSTALLATION_ID => "+request.InstallationID(),
+		1,
+	)
 	if !matchesDarwinServiceContract([]byte(output), request, "harbor-user") {
 		t.Fatal("matchesDarwinServiceContract() rejected unrelated launchd runtime facts")
 	}
@@ -148,14 +154,43 @@ func TestDarwinServiceContractAcceptsRuntimeFacts(t *testing.T) {
 // TestDarwinServiceContractRejectsForeignEnvironment keeps pre-main process configuration exact.
 func TestDarwinServiceContractRejectsForeignEnvironment(t *testing.T) {
 	request := testRequest(t)
-	output := strings.Replace(
-		darwinServicePrint(request, "harbor-user"),
-		"XPC_SERVICE_NAME => "+darwinLabel,
-		"XPC_SERVICE_NAME => "+darwinLabel+"\nHOME => /var/empty",
-		1,
-	)
-	if matchesDarwinServiceContract([]byte(output), request, "harbor-user") {
-		t.Fatal("matchesDarwinServiceContract() accepted foreign process environment")
+	for name, addition := range map[string]string{
+		"foreign variable":        "HOME => /var/empty",
+		"nonnumeric rate limit":   "OSLogRateLimit => enabled",
+		"negative rate limit":     "OSLogRateLimit => -1",
+		"noncanonical rate limit": "OSLogRateLimit => 064",
+		"rate limit plus foreign": "OSLogRateLimit => 64\n\tHOME => /var/empty",
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := strings.Replace(
+				darwinServicePrint(request, "harbor-user"),
+				"XPC_SERVICE_NAME => "+darwinLabel,
+				"XPC_SERVICE_NAME => "+darwinLabel+"\n\t"+addition,
+				1,
+			)
+			if matchesDarwinServiceContract([]byte(output), request, "harbor-user") {
+				t.Fatal("matchesDarwinServiceContract() accepted foreign process environment")
+			}
+		})
+	}
+}
+
+// TestCanonicalDarwinUnsignedIntegerPinsTelemetryBoundaries keeps runtime admission within one canonical uint32.
+func TestCanonicalDarwinUnsignedIntegerPinsTelemetryBoundaries(t *testing.T) {
+	for value, want := range map[string]bool{
+		"0":          true,
+		"64":         true,
+		"4294967295": true,
+		"":           false,
+		"-1":         false,
+		"064":        false,
+		"4294967296": false,
+	} {
+		t.Run(value, func(t *testing.T) {
+			if got := canonicalDarwinUnsignedInteger(value); got != want {
+				t.Fatalf("canonicalDarwinUnsignedInteger(%q) = %t, want %t", value, got, want)
+			}
+		})
 	}
 }
 

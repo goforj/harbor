@@ -356,9 +356,27 @@ func matchesOrderedDarwinArguments(text string, request Request) bool {
 // matchesDarwinEnvironment accepts only Harbor's marker and launchd's fixed service identity.
 func matchesDarwinEnvironment(text string, request Request) bool {
 	values, ok := launchctlBlockPairsWithSeparator(text, "environment", " => ")
-	return ok && len(values) == 2 &&
-		values["HARBOR_INSTALLATION_ID"] == request.InstallationID() &&
-		values["XPC_SERVICE_NAME"] == darwinLabel
+	if !ok ||
+		values["HARBOR_INSTALLATION_ID"] != request.InstallationID() ||
+		values["XPC_SERVICE_NAME"] != darwinLabel {
+		return false
+	}
+	delete(values, "HARBOR_INSTALLATION_ID")
+	delete(values, "XPC_SERVICE_NAME")
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 {
+		return false
+	}
+	rate, found := values["OSLogRateLimit"]
+	return found && canonicalDarwinUnsignedInteger(rate)
+}
+
+// canonicalDarwinUnsignedInteger admits launchd's numeric runtime telemetry without accepting arbitrary process environment.
+func canonicalDarwinUnsignedInteger(value string) bool {
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	return err == nil && strconv.FormatUint(parsed, 10) == value
 }
 
 // matchesDarwinSockets requires the two fixed named loopback listeners and no other socket declarations.
