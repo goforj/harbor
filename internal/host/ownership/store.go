@@ -270,6 +270,22 @@ func (store *Store) Observe(ctx context.Context) (Observation, error) {
 	return observation, nil
 }
 
+// ObservePath opens the protected ownership boundary for one read and closes it before returning.
+func ObservePath(ctx context.Context, path string) (observation Observation, err error) {
+	store, err := NewStore(path)
+	if err != nil {
+		return Observation{}, fmt.Errorf("open machine ownership observation: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, store.Close())
+	}()
+	observation, err = store.Observe(ctx)
+	if err != nil {
+		return Observation{}, fmt.Errorf("observe machine ownership: %w", err)
+	}
+	return observation, nil
+}
+
 // Claim creates a missing claim, replays an identical claim, and preserves every differing existing claim.
 // ErrDurabilityUncertain means the active name changed but must be reconciled before authority is granted.
 func (store *Store) Claim(ctx context.Context, record Record) (Observation, error) {

@@ -102,26 +102,26 @@ func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommitte
 		{
 			name: "ownership still present",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.ownership.observation.Exists = true
+				fixture.protectedOwnership.observation.Exists = true
 			},
 		},
 		{
 			name: "ownership observation error",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.ownership.err = errors.New("ownership observation failed")
+				fixture.protectedOwnership.err = errors.New("ownership observation failed")
 			},
 		},
 		{
-			name: "successful terminal completion",
+			name: "projection present and protected ownership absent",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.ownership.observation.Exists = false
+				fixture.protectedOwnership.observation.Exists = false
 			},
 			wantTerminal: true,
 		},
 		{
 			name: "committed projection replay",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, request *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.ownership.observation.Exists = false
+				fixture.protectedOwnership.observation.Exists = false
 				fixture.journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseProjection
 				fixture.journal.plan.OwnershipReceipt = &state.GlobalNetworkReleaseOwnershipReceipt{
 					SourceCheckpointRevision:     request.ExpectedCheckpointRevision,
@@ -153,6 +153,9 @@ func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommitte
 			}
 			fixture.coordinator.proofObserver = testGlobalNetworkReleaseProofObserver{}
 			test.mutate(fixture, &request)
+			if test.wantTerminal && !fixture.ownership.observation.Exists {
+				t.Fatal("durable ownership projection disappeared before terminal finalization")
+			}
 			result, err := fixture.coordinator.ConfirmOwnership(t.Context(), request)
 			if test.wantTerminal {
 				if err != nil || result.Operation.Operation.State != "succeeded" || result.SourceCheckpointRevision != request.ExpectedCheckpointRevision {
@@ -185,7 +188,10 @@ func TestGlobalNetworkReleaseResumeRecoversHelperCompletedOwnership(t *testing.T
 	}
 	fixture.journal.plan = advanced
 	fixture.coordinator.proofObserver = testGlobalNetworkReleaseProofObserver{}
-	fixture.ownership.observation.Exists = false
+	fixture.protectedOwnership.observation.Exists = false
+	if !fixture.ownership.observation.Exists {
+		t.Fatal("durable ownership projection disappeared before recovery")
+	}
 
 	completed, err := fixture.coordinator.resume(
 		t.Context(),
@@ -223,7 +229,7 @@ func TestGlobalNetworkReleaseResumeLeavesUnreleasedOwnershipAtApproval(t *testin
 	}
 	fixture.journal.plan = advanced
 	fixture.coordinator.proofObserver = testGlobalNetworkReleaseAbsentProofObserver{}
-	fixture.ownership.err = errors.New("ownership must not be observed without root proof")
+	fixture.protectedOwnership.err = errors.New("ownership must not be observed without root proof")
 
 	current, err := fixture.coordinator.resume(
 		t.Context(),
@@ -304,7 +310,7 @@ func TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence(t *test
 			}
 			coordinator := &GlobalNetworkReleaseCoordinator{
 				journal: journal,
-				ownership: testGlobalNetworkReleaseOwnershipObserver{
+				ownershipProjection: testGlobalNetworkReleaseOwnershipObserver{
 					err: errors.New("terminal replay must not reobserve mutable ownership"),
 				},
 			}

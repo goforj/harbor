@@ -627,6 +627,7 @@ func newGlobalNetworkReleaseLoopbackFixtureFromBase(t *testing.T, base *globalNe
 		base.projections,
 		base.roots,
 		base.ownership,
+		base.protectedOwnership,
 		base.low,
 		globalNetworkReleaseUnavailableLowPortPlans{},
 		func() (GlobalNetworkReleaseLowPortIssuer, error) {

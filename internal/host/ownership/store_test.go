@@ -87,6 +87,30 @@ func TestStoreObserveClaimReplayAndRelease(t *testing.T) {
 	}
 }
 
+// TestObservePathReadsFreshProtectedState proves one-shot observations do not retain an earlier ownership result.
+func TestObservePathReadsFreshProtectedState(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "owner.json")
+	store := openTestStore(t, path)
+	claimed, err := store.Claim(t.Context(), testRecord())
+	if err != nil {
+		t.Fatalf("Store.Claim() error = %v", err)
+	}
+
+	observed, err := ObservePath(t.Context(), path)
+	if err != nil || observed != claimed {
+		t.Fatalf("ObservePath() claimed = %#v, %v, want %#v", observed, err, claimed)
+	}
+	if err := store.Release(t.Context(), claimed.Fingerprint); err != nil {
+		t.Fatalf("Store.Release() error = %v", err)
+	}
+	observed, err = ObservePath(t.Context(), path)
+	if err != nil || observed != (Observation{}) {
+		t.Fatalf("ObservePath() released = %#v, %v, want empty observation", observed, err)
+	}
+}
+
 // TestStoreClaimAndObserveNetworkPolicyRecord proves strict storage round-trips the canonical schema-2 field.
 func TestStoreClaimAndObserveNetworkPolicyRecord(t *testing.T) {
 	t.Parallel()

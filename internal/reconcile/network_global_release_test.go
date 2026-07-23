@@ -957,26 +957,27 @@ func TestGlobalNetworkReleaseStartRejectsMalformedStagedOperation(t *testing.T) 
 
 // globalNetworkReleaseStartFixture provides a valid full authority graph whose individual observers can be rejected independently.
 type globalNetworkReleaseStartFixture struct {
-	coordinator    *GlobalNetworkReleaseCoordinator
-	request        GlobalNetworkReleaseStartRequest
-	journal        *globalNetworkReleaseJournal
-	source         *globalNetworkReleaseState
-	projections    *globalNetworkReleaseProjection
-	roots          *globalNetworkReleaseRoots
-	ownership      *globalNetworkReleaseOwnership
-	low            *globalNetworkReleaseLowPorts
-	resolver       *globalNetworkReleaseResolver
-	trust          *globalNetworkReleaseTrust
-	loopback       *globalNetworkReleaseLoopback
-	runtimeRelease *globalNetworkReleaseRuntime
-	clock          *globalNetworkReleaseClock
-	runtime        state.RuntimeState
-	projection     state.NetworkDataPlaneSetupProjection
-	projects       []state.NetworkProjectRevision
-	staged         state.OperationRecord
-	stage          state.StageGlobalNetworkReleaseRequest
-	stageCalls     int
-	calls          []string
+	coordinator        *GlobalNetworkReleaseCoordinator
+	request            GlobalNetworkReleaseStartRequest
+	journal            *globalNetworkReleaseJournal
+	source             *globalNetworkReleaseState
+	projections        *globalNetworkReleaseProjection
+	roots              *globalNetworkReleaseRoots
+	ownership          *globalNetworkReleaseOwnership
+	protectedOwnership *globalNetworkReleaseOwnership
+	low                *globalNetworkReleaseLowPorts
+	resolver           *globalNetworkReleaseResolver
+	trust              *globalNetworkReleaseTrust
+	loopback           *globalNetworkReleaseLoopback
+	runtimeRelease     *globalNetworkReleaseRuntime
+	clock              *globalNetworkReleaseClock
+	runtime            state.RuntimeState
+	projection         state.NetworkDataPlaneSetupProjection
+	projects           []state.NetworkProjectRevision
+	staged             state.OperationRecord
+	stage              state.StageGlobalNetworkReleaseRequest
+	stageCalls         int
+	calls              []string
 }
 
 // newGlobalNetworkReleaseStartFixture constructs full, stopped, canonical release authority using existing data-plane fixtures.
@@ -1082,6 +1083,10 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		observation: owner,
 		fixture:     fixture,
 	}
+	fixture.protectedOwnership = &globalNetworkReleaseOwnership{
+		fixture:     fixture,
+		observation: ownership.Observation{},
+	}
 	lowRequest, err := lowport.NewRequest(target, policy)
 	if err != nil {
 		t.Fatal(err)
@@ -1116,6 +1121,7 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		fixture.projections,
 		fixture.roots,
 		fixture.ownership,
+		fixture.protectedOwnership,
 		fixture.low,
 		globalNetworkReleaseUnavailableLowPortPlans{},
 		func() (GlobalNetworkReleaseLowPortIssuer, error) {

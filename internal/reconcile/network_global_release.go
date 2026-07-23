@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
@@ -109,6 +110,12 @@ type GlobalNetworkReleaseOwnershipProofObserver interface {
 	ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error)
 }
 
+// GlobalNetworkReleaseProtectedOwnershipObserver reads the helper-owned machine claim after root proof confirms its release.
+type GlobalNetworkReleaseProtectedOwnershipObserver interface {
+	// Observe returns the current protected machine ownership record.
+	Observe(context.Context) (ownership.Observation, error)
+}
+
 // GlobalNetworkReleaseStateSource supplies the current network and stopped-project revisions.
 type GlobalNetworkReleaseStateSource interface {
 	// RuntimeState returns a coherent durable network and project snapshot.
@@ -145,30 +152,31 @@ type GlobalNetworkReleaseResolverObserver interface {
 
 // GlobalNetworkReleaseCoordinator stages daemon-observed release authority then retires runtime listeners.
 type GlobalNetworkReleaseCoordinator struct {
-	journal          GlobalNetworkReleaseJournal
-	state            GlobalNetworkReleaseStateSource
-	projections      GlobalNetworkReleaseProjectionSource
-	roots            GlobalNetworkReleaseRootSource
-	ownership        OwnershipObserver
-	lowPorts         NetworkDataPlaneSetupLowPortObserver
-	lowPortPlans     ticketissuer.LowPortPlanSource
-	lowPortIssuers   func() (GlobalNetworkReleaseLowPortIssuer, error)
-	resolverPlans    ticketissuer.ResolverPlanSource
-	resolverIssuers  func() (GlobalNetworkReleaseResolverIssuer, error)
-	trustPlans       ticketissuer.TrustPlanSource
-	trustIssuers     func() (GlobalNetworkReleaseTrustIssuer, error)
-	loopbackPlans    ticketissuer.PoolReleasePlanSource
-	loopbackIssuers  func() (GlobalNetworkReleaseLoopbackIssuer, error)
-	ownershipPlans   ticketissuer.OwnershipReleasePlanSource
-	ownershipIssuers func() (GlobalNetworkReleaseOwnershipIssuer, error)
-	proofObserver    GlobalNetworkReleaseOwnershipProofObserver
-	resolver         GlobalNetworkReleaseResolverObserver
-	trust            NetworkDataPlaneSetupTrustObserver
-	loopback         LoopbackObserver
-	runtime          GlobalNetworkReleaseRuntime
-	platform         networkplan.Platform
-	clock            helper.Clock
-	mutex            sync.Mutex
+	journal             GlobalNetworkReleaseJournal
+	state               GlobalNetworkReleaseStateSource
+	projections         GlobalNetworkReleaseProjectionSource
+	roots               GlobalNetworkReleaseRootSource
+	ownershipProjection OwnershipObserver
+	protectedOwnership  GlobalNetworkReleaseProtectedOwnershipObserver
+	lowPorts            NetworkDataPlaneSetupLowPortObserver
+	lowPortPlans        ticketissuer.LowPortPlanSource
+	lowPortIssuers      func() (GlobalNetworkReleaseLowPortIssuer, error)
+	resolverPlans       ticketissuer.ResolverPlanSource
+	resolverIssuers     func() (GlobalNetworkReleaseResolverIssuer, error)
+	trustPlans          ticketissuer.TrustPlanSource
+	trustIssuers        func() (GlobalNetworkReleaseTrustIssuer, error)
+	loopbackPlans       ticketissuer.PoolReleasePlanSource
+	loopbackIssuers     func() (GlobalNetworkReleaseLoopbackIssuer, error)
+	ownershipPlans      ticketissuer.OwnershipReleasePlanSource
+	ownershipIssuers    func() (GlobalNetworkReleaseOwnershipIssuer, error)
+	proofObserver       GlobalNetworkReleaseOwnershipProofObserver
+	resolver            GlobalNetworkReleaseResolverObserver
+	trust               NetworkDataPlaneSetupTrustObserver
+	loopback            LoopbackObserver
+	runtime             GlobalNetworkReleaseRuntime
+	platform            networkplan.Platform
+	clock               helper.Clock
+	mutex               sync.Mutex
 }
 
 // GlobalNetworkReleaseStartRequest identifies a caller intent and daemon-assigned global operation.
@@ -195,7 +203,8 @@ func NewGlobalNetworkReleaseCoordinator(
 	source GlobalNetworkReleaseStateSource,
 	projections GlobalNetworkReleaseProjectionSource,
 	roots GlobalNetworkReleaseRootSource,
-	ownershipObserver OwnershipObserver,
+	ownershipProjection OwnershipObserver,
+	protectedOwnership GlobalNetworkReleaseProtectedOwnershipObserver,
 	lowPorts NetworkDataPlaneSetupLowPortObserver,
 	lowPortPlans ticketissuer.LowPortPlanSource,
 	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error),
@@ -219,7 +228,8 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(source) ||
 		nilDependency(projections) ||
 		nilDependency(roots) ||
-		nilDependency(ownershipObserver) ||
+		nilDependency(ownershipProjection) ||
+		nilDependency(protectedOwnership) ||
 		nilDependency(lowPorts) ||
 		nilDependency(lowPortPlans) ||
 		nilDependency(lowPortIssuers) ||
@@ -240,29 +250,30 @@ func NewGlobalNetworkReleaseCoordinator(
 		panic("reconcile.NewGlobalNetworkReleaseCoordinator requires every dependency")
 	}
 	return &GlobalNetworkReleaseCoordinator{
-		journal:          journal,
-		state:            source,
-		projections:      projections,
-		roots:            roots,
-		ownership:        ownershipObserver,
-		lowPorts:         lowPorts,
-		lowPortPlans:     lowPortPlans,
-		lowPortIssuers:   lowPortIssuers,
-		resolverPlans:    resolverPlans,
-		resolverIssuers:  resolverIssuers,
-		trustPlans:       trustPlans,
-		trustIssuers:     trustIssuers,
-		loopbackPlans:    loopbackPlans,
-		loopbackIssuers:  loopbackIssuers,
-		ownershipPlans:   ownershipPlans,
-		ownershipIssuers: ownershipIssuers,
-		proofObserver:    proofObserver,
-		resolver:         resolverObserver,
-		trust:            trustObserver,
-		loopback:         loopbackObserver,
-		runtime:          runtimeReleaser,
-		platform:         platform,
-		clock:            clock,
+		journal:             journal,
+		state:               source,
+		projections:         projections,
+		roots:               roots,
+		ownershipProjection: ownershipProjection,
+		protectedOwnership:  protectedOwnership,
+		lowPorts:            lowPorts,
+		lowPortPlans:        lowPortPlans,
+		lowPortIssuers:      lowPortIssuers,
+		resolverPlans:       resolverPlans,
+		resolverIssuers:     resolverIssuers,
+		trustPlans:          trustPlans,
+		trustIssuers:        trustIssuers,
+		loopbackPlans:       loopbackPlans,
+		loopbackIssuers:     loopbackIssuers,
+		ownershipPlans:      ownershipPlans,
+		ownershipIssuers:    ownershipIssuers,
+		proofObserver:       proofObserver,
+		resolver:            resolverObserver,
+		trust:               trustObserver,
+		loopback:            loopbackObserver,
+		runtime:             runtimeReleaser,
+		platform:            platform,
+		clock:               clock,
 	}
 }
 
@@ -1986,7 +1997,7 @@ func (c *GlobalNetworkReleaseCoordinator) verifyReleaseOwnership(
 	ctx context.Context,
 	durable state.GlobalNetworkReleasePlanRecord,
 ) (string, error) {
-	observation, err := c.ownership.Observe(ctx)
+	observation, err := c.ownershipProjection.Observe(ctx)
 	if err != nil {
 		return "", fmt.Errorf("observe release ownership: %w", err)
 	}
@@ -2204,7 +2215,7 @@ func (c *GlobalNetworkReleaseCoordinator) observeReleasedOwnership(ctx context.C
 	if _, err := c.proofObserver.ConfirmReleased(ctx, globalNetworkReleaseProofAuthority(plan)); err != nil {
 		return fmt.Errorf("confirm released ownership proof: %w", err)
 	}
-	observation, err := c.ownership.Observe(ctx)
+	observation, err := c.protectedOwnership.Observe(ctx)
 	if err != nil {
 		return fmt.Errorf("observe released ownership: %w", err)
 	}
@@ -2597,7 +2608,7 @@ func (c *GlobalNetworkReleaseCoordinator) authority(ctx context.Context, request
 	if projection.Stage != state.NetworkStageFull || projection.ConfirmedOwnership.Record.OwnerIdentity != requester {
 		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("authenticated requester does not own full authority")
 	}
-	observedOwnership, err := c.ownership.Observe(ctx)
+	observedOwnership, err := c.ownershipProjection.Observe(ctx)
 	if err != nil {
 		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("ownership: %w", err)
 	}
