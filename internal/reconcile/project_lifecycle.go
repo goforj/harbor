@@ -794,6 +794,20 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				readyAt = session.UpdatedAt
 			}
 			runtime := defaultRuntime(plan, observation.Services, resourceObservation.Resources)
+			if err := coordinator.primaryLeases.assignHTTPResourceEndpoints(
+				coordinator.ctx,
+				mutation.Operation.Operation.ProjectID,
+				runtime.Resources,
+			); err != nil {
+				coordinator.stopAndFailAttached(
+					mutation,
+					session,
+					handle,
+					"project.routes.failed",
+					fmt.Errorf("reserve project resource routes: %w", err),
+				)
+				return
+			}
 			completionSession := session
 			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 				current, currentErr := coordinator.state.ActiveProjectSession(coordinator.ctx, session.ProjectID)
@@ -1144,7 +1158,17 @@ func (coordinator *ProjectLifecycleCoordinator) refreshReadyProjectRuntime(
 		Resources:                 runtime.Resources,
 		At:                        at,
 	})
-	return refreshed, err, true
+	if err != nil {
+		return refreshed, err, true
+	}
+	if err := coordinator.primaryLeases.assignHTTPResourceEndpoints(
+		ctx,
+		session.ProjectID,
+		runtime.Resources,
+	); err != nil {
+		return refreshed, fmt.Errorf("reserve refreshed project resource routes: %w", err), true
+	}
+	return refreshed, nil, true
 }
 
 // runStop fences one exact durable session before asking the supervisor to terminate its process tree.

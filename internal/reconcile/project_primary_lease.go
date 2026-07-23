@@ -330,7 +330,7 @@ func projectNetworkSuppressed(network state.NetworkRecord, projectID domain.Proj
 	return false
 }
 
-// assignHTTPResourceEndpoints replaces optional HTTP reservations with the exact ready resources admitted from one descriptor.
+// assignHTTPResourceEndpoints replaces optional HTTP reservations with the exact ready resources admitted from runtime observation.
 func (coordinator *projectPrimaryLeaseCoordinator) assignHTTPResourceEndpoints(
 	ctx context.Context,
 	projectID domain.ProjectID,
@@ -343,7 +343,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) assignHTTPResourceEndpoints(
 		return err
 	}
 	if resources == nil {
-		return errors.New("descriptor resource endpoint assignment requires initialized resources")
+		return errors.New("runtime resource endpoint assignment requires initialized resources")
 	}
 	ctx = normalizeLifecycleContext(ctx)
 	if err := ctx.Err(); err != nil {

@@ -229,12 +229,63 @@ func projectServiceRefreshTestLeaseCoordinator(t *testing.T, source *projectServ
 	if err != nil {
 		t.Fatalf("NewPrimaryKey() error = %v", err)
 	}
+	ownership, err := identity.NewOwnership("service-refresh-test-installation", 1)
+	if err != nil {
+		t.Fatalf("NewOwnership() error = %v", err)
+	}
+	pool, err := identity.NewPool(netip.MustParsePrefix("127.77.4.0/24"), []netip.Addr{address})
+	if err != nil {
+		t.Fatalf("NewPool() error = %v", err)
+	}
+	at := source.project.Project.UpdatedAt
+	if at.IsZero() {
+		at = time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	}
 	source.network = state.NetworkRecord{
-		Stage:  state.NetworkStageIdentity,
-		Leases: []identity.Lease{{Key: key, Address: address}},
+		Stage:       state.NetworkStageIdentity,
+		Revision:    1,
+		CreatedAt:   at,
+		UpdatedAt:   at,
+		Ownership:   ownership,
+		Pool:        pool,
+		Leases:      []identity.Lease{{Key: key, Address: address, Ownership: ownership}},
+		Quarantines: []identity.Quarantine{},
+		Reservations: state.DataPlaneReservations{
+			Endpoints:            []state.EndpointReservation{},
+			SuppressedProjectIDs: []domain.ProjectID{},
+		},
 	}
 	source.initialized = true
-	return &projectPrimaryLeaseCoordinator{state: source}
+	return &projectPrimaryLeaseCoordinator{
+		state: source,
+		now:   func() time.Time { return at },
+	}
+}
+
+// projectServiceRefreshTestFullLeaseCoordinator adds shared ingress and the default App reservation.
+func projectServiceRefreshTestFullLeaseCoordinator(
+	t *testing.T,
+	source *projectServiceRefreshTestState,
+	address netip.Addr,
+) *projectPrimaryLeaseCoordinator {
+	t.Helper()
+	coordinator := projectServiceRefreshTestLeaseCoordinator(t, source, address)
+	source.network.Stage = state.NetworkStageFull
+	source.network.Reservations.Listeners = primaryLeaseTestListeners(source.network.UpdatedAt)
+	source.network.Reservations.Endpoints = []state.EndpointReservation{{
+		Key: state.EndpointReservationKey{
+			ProjectID:  source.project.Project.ID,
+			EndpointID: primaryLeaseDefaultHTTPEndpointID,
+		},
+		Protocol:   state.EndpointProtocolHTTP,
+		Host:       source.project.Project.Slug + ".test",
+		Public:     source.network.Reservations.Listeners.HTTPS.Advertised,
+		Generation: 1,
+	}}
+	if err := source.network.Validate(); err != nil {
+		t.Fatalf("full service-refresh network Validate() error = %v", err)
+	}
+	return coordinator
 }
 
 // projectServiceRefreshTestRuntimeContext creates the immutable descriptor and target carried by a ready watcher.
@@ -486,6 +537,105 @@ func TestRefreshReadyProjectRuntimePreservesResourcesWhenFrameworkObservationErr
 	}
 	if refreshed.Project.ID != project.Project.ID || len(source.RuntimeRefreshes()) != 0 || len(source.Refreshes()) != 1 {
 		t.Fatalf("fallback refresh state = project %#v runtime %#v services %#v", refreshed.Project, source.RuntimeRefreshes(), source.Refreshes())
+	}
+}
+
+// TestRefreshReadyProjectRuntimeReservesObservedHTTPResources proves Docker-backed links gain stable project hostnames.
+func TestRefreshReadyProjectRuntimeReservesObservedHTTPResources(t *testing.T) {
+	at := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	project := projectActivityTestProject()
+	project.Project.Name = "Orders"
+	project.Project.Path = "/tmp/orders"
+	project.Project.Slug = "orders"
+	project.Project.State = domain.ProjectReady
+	project.Project.UpdatedAt = at
+	project.Project.Apps = []domain.AppSnapshot{{
+		ID:       "app",
+		Name:     "App",
+		State:    domain.EntityReady,
+		Active:   true,
+		Required: true,
+	}}
+	project.Project.Services = []domain.ServiceSnapshot{}
+	project.Project.Resources = []domain.ResourceSnapshot{{
+		ID:   "app-http",
+		Name: "App",
+		Kind: "application",
+		URL:  "http://127.77.4.8:3000",
+		Owner: domain.ResourceOwner{
+			Kind:  domain.ResourceOwnedByApp,
+			AppID: "app",
+		},
+	}}
+	session := projectActivityTestSession()
+	session.ProjectID = project.Project.ID
+	session.State = domain.SessionAttached
+	service := domain.ServiceSnapshot{
+		ID:        "mailpit",
+		Name:      "Mailpit",
+		Kind:      "compose",
+		State:     domain.EntityReady,
+		Owner:     domain.ServiceOwnerCompose,
+		Selection: domain.ServiceSelected,
+	}
+	refreshed := project
+	refreshed.Revision++
+	source := &projectServiceRefreshTestState{
+		project:        project,
+		session:        session,
+		runtimeRefresh: refreshed,
+	}
+	supervisor := &projectServiceRefreshTestSupervisor{
+		resourceObservation: projectruntime.ResourceObservation{
+			Supported: true,
+			Resources: []domain.ResourceSnapshot{{
+				ID:   "mailpit",
+				Name: "Mailpit",
+				Kind: "mail",
+				URL:  "http://127.77.4.8:8025",
+				Owner: domain.ResourceOwner{
+					Kind:      domain.ResourceOwnedByService,
+					ServiceID: "mailpit",
+				},
+			}},
+		},
+	}
+	target, _ := projectServiceRefreshTestRuntimeContext(t)
+	primaryLeases := projectServiceRefreshTestFullLeaseCoordinator(t, source, target.Address)
+	coordinator := &ProjectLifecycleCoordinator{
+		state:               source,
+		runtimeCapabilities: supervisor,
+		primaryLeases:       primaryLeases,
+		now:                 time.Now,
+	}
+
+	_, err, resourceRefresh := coordinator.refreshReadyProjectRuntime(
+		t.Context(),
+		source,
+		source,
+		true,
+		project,
+		session,
+		project.Revision,
+		project.Project.UpdatedAt,
+		projectRuntimePlanForTest(target),
+		[]domain.ServiceSnapshot{service},
+	)
+	if err != nil {
+		t.Fatalf("refreshReadyProjectRuntime() error = %v", err)
+	}
+	if !resourceRefresh {
+		t.Fatal("refreshReadyProjectRuntime() did not select the complete resource path")
+	}
+	endpoints := projectNetworkEndpoints(source.network, project.Project.ID)
+	endpointByID := make(map[string]state.EndpointReservation, len(endpoints))
+	for _, endpoint := range endpoints {
+		endpointByID[endpoint.Key.EndpointID] = endpoint
+	}
+	if len(endpoints) != 2 ||
+		endpointByID[primaryLeaseDefaultHTTPEndpointID].Host != "orders.test" ||
+		endpointByID["mailpit"].Host != "mailpit.orders.test" {
+		t.Fatalf("refreshed HTTP endpoints = %#v, want App and Mailpit routes", endpoints)
 	}
 }
 
