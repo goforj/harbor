@@ -26,7 +26,7 @@ var (
 	ErrPoolPublicationIndeterminate = errors.New("pool-release capability publication is indeterminate")
 )
 
-// PoolReleaseTarget binds one canonical pool address to its retained exact loopback observation.
+// PoolReleaseTarget binds one canonical pool address to its retained loopback observation.
 type PoolReleaseTarget struct {
 	Address                netip.Addr
 	ObservationFingerprint string
@@ -128,7 +128,7 @@ type PoolReleasePlanSource interface {
 	Resolve(context.Context, PoolReleaseRequest) (PoolReleasePlan, error)
 }
 
-// PoolReleaseService serializes pool-release publication against durable ownership and exact loopback revalidation.
+// PoolReleaseService serializes pool-release publication against durable ownership and loopback revalidation.
 type PoolReleaseService struct {
 	plans      PoolReleasePlanSource
 	ownership  OwnershipObserver
@@ -261,7 +261,7 @@ func (service *PoolReleaseService) Close() error {
 	return service.closeStore()
 }
 
-// Issue derives one release capability from stable durable authority and two matching exact loopback observations.
+// Issue derives one release capability from stable durable authority and two matching loopback observations.
 func (service *PoolReleaseService) Issue(
 	ctx context.Context,
 	requesterIdentity string,
@@ -296,10 +296,11 @@ func (service *PoolReleaseService) Issue(
 	if err := requirePinnedKey(privateKey, plan.TargetOwnership.TicketVerifierKey); err != nil {
 		return PoolResult{}, fmt.Errorf("issue helper pool-release ticket: %w", err)
 	}
-	if err := service.observeTargets(ctx, plan); err != nil {
+	expectations, err := service.observeTargets(ctx, plan)
+	if err != nil {
 		return PoolResult{}, err
 	}
-	ticket, err := service.buildTicket(plan, privateKey)
+	ticket, err := service.buildTicket(plan, expectations, privateKey)
 	if err != nil {
 		return PoolResult{}, err
 	}
@@ -313,8 +314,12 @@ func (service *PoolReleaseService) Issue(
 	if err := service.observeOwnership(ctx, requesterIdentity, confirmed); err != nil {
 		return PoolResult{}, fmt.Errorf("issue helper pool-release ticket: revalidate ownership: %w", err)
 	}
-	if err := service.observeTargets(ctx, confirmed); err != nil {
+	confirmedExpectations, err := service.observeTargets(ctx, confirmed)
+	if err != nil {
 		return PoolResult{}, fmt.Errorf("issue helper pool-release ticket: revalidate loopback pool: %w", err)
+	}
+	if !slices.Equal(expectations, confirmedExpectations) {
+		return PoolResult{}, errors.New("issue helper pool-release ticket: loopback pool changed before publication")
 	}
 	reference, publishErr := service.publisher.Publish(ctx, ticket, privateKey)
 	result := PoolResult{
@@ -399,57 +404,71 @@ func (service *PoolReleaseService) observeOwnership(
 	return nil
 }
 
-// observeTargets admits only exact retained observations for every canonical pool address.
-func (service *PoolReleaseService) observeTargets(ctx context.Context, plan PoolReleasePlan) error {
+// observeTargets resolves the complete ordered release expectation vector from current admissible loopback facts.
+func (service *PoolReleaseService) observeTargets(
+	ctx context.Context,
+	plan PoolReleasePlan,
+) ([]helper.ExpectedLoopbackIdentity, error) {
+	expectations := make([]helper.ExpectedLoopbackIdentity, 0, len(plan.Targets))
 	for _, target := range plan.Targets {
 		observation, err := service.loopback.Observe(ctx, target.Address)
 		if err != nil {
-			return fmt.Errorf("issue helper pool-release ticket: observe loopback assignment %s: %w", target.Address, err)
+			return nil, fmt.Errorf("issue helper pool-release ticket: observe loopback assignment %s: %w", target.Address, err)
 		}
 		if observation.Address != target.Address {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"issue helper pool-release ticket: loopback observation address %s does not match %s",
 				observation.Address,
 				target.Address,
 			)
 		}
-		if observation.State != loopback.StateExact {
-			return fmt.Errorf(
-				"issue helper pool-release ticket: loopback assignment %s state is %q, want %q",
+		fingerprint, err := observation.Fingerprint()
+		if err != nil {
+			return nil, fmt.Errorf("issue helper pool-release ticket: fingerprint loopback assignment %s: %w", target.Address, err)
+		}
+		if !canonicalSHA256Fingerprint(fingerprint) {
+			return nil, fmt.Errorf("issue helper pool-release ticket: loopback assignment %s fingerprint is invalid", target.Address)
+		}
+		expected := helper.ExpectedLoopbackIdentity{
+			Address: target.Address.String(),
+		}
+		switch observation.State {
+		case loopback.StateExact:
+			if fingerprint != target.ObservationFingerprint {
+				return nil, fmt.Errorf(
+					"issue helper pool-release ticket: loopback assignment %s does not match its retained observation",
+					target.Address,
+				)
+			}
+			expected.ExpectedObservation = helper.ExpectedObservation{
+				State:       helper.ObservationOwned,
+				Fingerprint: fingerprint,
+			}
+		case loopback.StateAbsent:
+			expected.ExpectedObservation = helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: fingerprint,
+			}
+		default:
+			return nil, fmt.Errorf(
+				"issue helper pool-release ticket: loopback assignment %s state is %q, want %q or %q",
 				target.Address,
 				observation.State,
 				loopback.StateExact,
+				loopback.StateAbsent,
 			)
 		}
-		fingerprint, err := observation.Fingerprint()
-		if err != nil {
-			return fmt.Errorf("issue helper pool-release ticket: fingerprint loopback assignment %s: %w", target.Address, err)
-		}
-		if !canonicalSHA256Fingerprint(fingerprint) || fingerprint != target.ObservationFingerprint {
-			return fmt.Errorf(
-				"issue helper pool-release ticket: loopback assignment %s does not match its retained observation",
-				target.Address,
-			)
-		}
+		expectations = append(expectations, expected)
 	}
-	return nil
+	return expectations, nil
 }
 
-// buildTicket binds every canonical pool address to the retained exact release observation.
+// buildTicket binds every canonical pool address to the freshly resolved release expectation.
 func (service *PoolReleaseService) buildTicket(
 	plan PoolReleasePlan,
+	expectations []helper.ExpectedLoopbackIdentity,
 	privateKey ed25519.PrivateKey,
 ) (helper.Ticket, error) {
-	identities := make([]helper.ExpectedLoopbackIdentity, 0, len(plan.Targets))
-	for _, target := range plan.Targets {
-		identities = append(identities, helper.ExpectedLoopbackIdentity{
-			Address: target.Address.String(),
-			ExpectedObservation: helper.ExpectedObservation{
-				State:       helper.ObservationOwned,
-				Fingerprint: target.ObservationFingerprint,
-			},
-		})
-	}
 	nonce := make([]byte, ticketNonceBytes)
 	if _, err := io.ReadFull(service.entropy, nonce); err != nil {
 		return helper.Ticket{}, fmt.Errorf("issue helper pool-release ticket: generate nonce: %w", err)
@@ -465,7 +484,7 @@ func (service *PoolReleaseService) buildTicket(
 		NetworkPolicyFingerprint: plan.TargetOwnership.NetworkPolicyFingerprint,
 		ApprovedPool:             plan.TargetOwnership.LoopbackPoolPrefix,
 		ExpectedLoopbackPool: &helper.ExpectedLoopbackPool{
-			Identities: identities,
+			Identities: expectations,
 		},
 		Nonce:     hex.EncodeToString(nonce),
 		ExpiresAt: now.Add(ticketLifetime),

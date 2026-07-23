@@ -288,6 +288,78 @@ func TestPoolReleaseServiceIssueBindsEveryExactRetainedObservation(t *testing.T)
 	}
 }
 
+// TestPoolReleaseServiceIssueBindsMixedResolvedObservations proves absent candidates use freshly observed release evidence.
+func TestPoolReleaseServiceIssueBindsMixedResolvedObservations(t *testing.T) {
+	fixture := newPoolReleaseFixture(t)
+	absentAddress := fixture.plan.Targets[3].Address
+	absent := poolLoopbackObservation(absentAddress, loopback.StateAbsent)
+	absentFingerprint, err := absent.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.loopback.observations[absentAddress] = absent
+
+	if _, err := fixture.service.Issue(t.Context(), fixture.requester, fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	for index, identity := range fixture.publisher.ticket.ExpectedLoopbackPool.Identities {
+		if index == 3 {
+			if identity.ExpectedObservation != (helper.ExpectedObservation{
+				State:       helper.ObservationAbsent,
+				Fingerprint: absentFingerprint,
+			}) || identity.ExpectedPreAssignment != nil {
+				t.Fatalf("absent identity = %#v", identity)
+			}
+			continue
+		}
+		if identity.ExpectedObservation != (helper.ExpectedObservation{
+			State:       helper.ObservationOwned,
+			Fingerprint: fixture.plan.Targets[index].ObservationFingerprint,
+		}) || identity.ExpectedPreAssignment != nil {
+			t.Fatalf("owned identity %d = %#v", index, identity)
+		}
+	}
+}
+
+// TestPoolReleaseServiceIssueBindsAllAbsentResolvedObservations proves release supports an already-absent pool.
+func TestPoolReleaseServiceIssueBindsAllAbsentResolvedObservations(t *testing.T) {
+	fixture := newPoolReleaseFixture(t)
+	for _, target := range fixture.plan.Targets {
+		fixture.loopback.observations[target.Address] = poolLoopbackObservation(target.Address, loopback.StateAbsent)
+	}
+
+	if _, err := fixture.service.Issue(t.Context(), fixture.requester, fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range fixture.publisher.ticket.ExpectedLoopbackPool.Identities {
+		if identity.ExpectedObservation.State != helper.ObservationAbsent || identity.ExpectedPreAssignment != nil {
+			t.Fatalf("identity = %#v", identity)
+		}
+	}
+}
+
+// TestPoolReleaseServiceIssueRejectsUnsafeLoopbackStates proves no classified assignment conflict can authorize release.
+func TestPoolReleaseServiceIssueRejectsUnsafeLoopbackStates(t *testing.T) {
+	states := []loopback.State{
+		loopback.StateForeign,
+		loopback.StateNonHostPrefix,
+		loopback.StateAttributeConflict,
+		loopback.StateAmbiguous,
+	}
+	for _, state := range states {
+		t.Run(string(state), func(t *testing.T) {
+			fixture := newPoolReleaseFixture(t)
+			address := fixture.plan.Targets[0].Address
+			fixture.loopback.observations[address] = poolReleaseUnsafeLoopbackObservation(address, state)
+
+			result, err := fixture.service.Issue(t.Context(), fixture.requester, fixture.request)
+			if err == nil || result != (PoolResult{}) || fixture.publisher.calls != 0 {
+				t.Fatalf("Issue() = %#v, %v; publish calls = %d", result, err, fixture.publisher.calls)
+			}
+		})
+	}
+}
+
 // TestPoolReleaseServiceIssueRejectsObservationChangeBeforePublication proves retained evidence is re-read after ticket construction.
 func TestPoolReleaseServiceIssueRejectsObservationChangeBeforePublication(t *testing.T) {
 	fixture := newPoolReleaseFixture(t)
@@ -385,12 +457,10 @@ func TestPoolReleaseServiceIssueRejectsAuthorityFailures(t *testing.T) {
 			},
 		},
 		{
-			name: "loopback absent",
+			name: "loopback unsafe",
 			mutate: func(fixture *poolReleaseFixture) {
-				fixture.loopback.observations[fixture.plan.Targets[0].Address] = poolLoopbackObservation(
-					fixture.plan.Targets[0].Address,
-					loopback.StateAbsent,
-				)
+				address := fixture.plan.Targets[0].Address
+				fixture.loopback.observations[address] = poolReleaseUnsafeLoopbackObservation(address, loopback.StateForeign)
 			},
 		},
 		{
@@ -461,10 +531,8 @@ func TestPoolReleaseServiceIssueRejectsKeyEntropyAndLoopbackAuthorityFailures(t 
 		{
 			name: "foreign",
 			mutate: func(fixture *poolReleaseFixture) {
-				fixture.loopback.observations[fixture.plan.Targets[0].Address] = poolLoopbackObservation(
-					fixture.plan.Targets[0].Address,
-					loopback.StateForeign,
-				)
+				address := fixture.plan.Targets[0].Address
+				fixture.loopback.observations[address] = poolReleaseUnsafeLoopbackObservation(address, loopback.StateForeign)
 			},
 		},
 		{
@@ -831,4 +899,30 @@ func newPoolReleaseFixture(t *testing.T) *poolReleaseFixture {
 		loopback:  loopbackObserver,
 		service:   service,
 	}
+}
+
+// poolReleaseUnsafeLoopbackObservation returns one valid classified unsafe assignment state.
+func poolReleaseUnsafeLoopbackObservation(address netip.Addr, state loopback.State) loopback.Observation {
+	observation := poolLoopbackObservation(address, loopback.StateExact)
+	assignment := &observation.Assignments[0]
+	switch state {
+	case loopback.StateForeign:
+		assignment.InterfaceIndex = 2
+		assignment.InterfaceName = "eth0"
+		assignment.NativeLoopback = false
+		assignment.InterfaceKind = ""
+	case loopback.StateNonHostPrefix:
+		assignment.PrefixLength = 8
+	case loopback.StateAttributeConflict:
+		assignment.Linux.Flags = 0
+	case loopback.StateAmbiguous:
+		foreign := *assignment
+		foreign.InterfaceIndex = 2
+		foreign.InterfaceName = "eth0"
+		foreign.NativeLoopback = false
+		foreign.InterfaceKind = ""
+		observation.Assignments = append(observation.Assignments, foreign)
+	}
+	observation.State = state
+	return observation
 }

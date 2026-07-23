@@ -497,6 +497,32 @@ func TestGlobalNetworkReleaseStartStagesCompleteAuthority(t *testing.T) {
 	}
 }
 
+// TestGlobalNetworkReleaseStartAcceptsAlreadyAbsentLoopback proves project cleanup may satisfy one pool release before global cleanup begins.
+func TestGlobalNetworkReleaseStartAcceptsAlreadyAbsentLoopback(t *testing.T) {
+	fixture := newGlobalNetworkReleaseStartFixture(t)
+	address := fixture.runtime.Network.Pool.Candidates()[0]
+	fixture.loopback.states = map[netip.Addr]loopback.State{
+		address: loopback.StateAbsent,
+	}
+	got, err := fixture.coordinator.Start(t.Context(), fixture.request)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got != fixture.staged {
+		t.Fatalf("Start() = %#v, want %#v", got, fixture.staged)
+	}
+	observation := networkSetupTestObservation(address)
+	observation.State = loopback.StateAbsent
+	observation.Assignments = nil
+	wantFingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.stage.Authority.LoopbackTargets[0]; got.Address != address || got.ObservationFingerprint != wantFingerprint {
+		t.Fatalf("absent loopback target = %#v, want address %s fingerprint %s", got, address, wantFingerprint)
+	}
+}
+
 // TestGlobalNetworkReleaseStartAcceptsIdenticalPreexistingTrust proves a matching unowned root is retained rather than claimed.
 func TestGlobalNetworkReleaseStartAcceptsIdenticalPreexistingTrust(t *testing.T) {
 	fixture := newGlobalNetworkReleaseStartFixture(t)
@@ -716,9 +742,9 @@ func TestGlobalNetworkReleaseStartStopsBeforeStageOnAuthorityFailure(t *testing.
 			},
 		},
 		{
-			name: "loopback nonexact",
+			name: "loopback unsafe",
 			mutate: func(fixture *globalNetworkReleaseStartFixture) {
-				fixture.loopback.state = loopback.StateAbsent
+				fixture.loopback.state = loopback.StateForeign
 			},
 		},
 		{
@@ -1561,6 +1587,7 @@ func (source *globalNetworkReleaseTrust) Observe(_ context.Context, request trus
 type globalNetworkReleaseLoopback struct {
 	fixture         *globalNetworkReleaseStartFixture
 	state           loopback.State
+	states          map[netip.Addr]loopback.State
 	addressMismatch bool
 	addresses       []netip.Addr
 	err             error
@@ -1574,8 +1601,12 @@ func (source *globalNetworkReleaseLoopback) Observe(_ context.Context, address n
 	if source.addressMismatch {
 		observation.Address = address.Next()
 	}
-	observation.State = source.state
-	if source.state == loopback.StateAbsent {
+	observationState := source.state
+	if stateOverride, ok := source.states[address]; ok {
+		observationState = stateOverride
+	}
+	observation.State = observationState
+	if observationState == loopback.StateAbsent {
 		observation.Assignments = nil
 	}
 	return observation, source.err

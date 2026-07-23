@@ -2465,8 +2465,14 @@ func (c *GlobalNetworkReleaseCoordinator) authority(ctx context.Context, request
 		if observation.Address != address {
 			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("loopback observation for %s belongs to %s", address, observation.Address)
 		}
-		if observation.State != loopback.StateExact {
-			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("loopback %s is not exact", address)
+		switch observation.State {
+		case loopback.StateExact, loopback.StateAbsent:
+		default:
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf(
+				"loopback %s is neither exact nor absent: %s",
+				address,
+				observation.State,
+			)
 		}
 		fingerprint, err := observation.Fingerprint()
 		if err != nil {
