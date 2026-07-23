@@ -117,7 +117,7 @@ async function removeOldNetworking() {
           <p class="text-xs text-muted-foreground">Set up trusted local DNS, HTTPS, and ingress. This action is safe to run again.</p>
         </CardHeader>
         <CardContent class="flex flex-col items-start gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div class="min-w-0 text-sm">
+          <div class="min-w-0 flex-1 text-sm">
             <p v-if="store.networkSetupResult" class="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-400">
               <CircleCheck class="size-4 shrink-0" aria-hidden="true" />
               Harbor’s secure, trusted local ingress is ready.
