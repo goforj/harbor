@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/host/ownership"
+	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
@@ -1132,6 +1133,11 @@ func newGlobalNetworkReleaseStartFixture(t *testing.T) *globalNetworkReleaseStar
 		func() (GlobalNetworkReleaseLoopbackIssuer, error) {
 			return nil, errors.New("unexpected release loopback issuer")
 		},
+		globalNetworkReleaseUnavailableOwnershipPlans{},
+		func() (GlobalNetworkReleaseOwnershipIssuer, error) {
+			return nil, errors.New("unexpected release ownership issuer")
+		},
+		globalNetworkReleaseUnavailableOwnershipProofObserver{},
 		fixture.resolver,
 		fixture.trust,
 		fixture.loopback,
@@ -1152,6 +1158,22 @@ func (globalNetworkReleaseUnavailableLowPortPlans) Resolve(context.Context, tick
 
 // globalNetworkReleaseUnavailableResolverPlans prevents start tests from opening resolver approval authority.
 type globalNetworkReleaseUnavailableResolverPlans struct{}
+
+// globalNetworkReleaseUnavailableOwnershipPlans prevents unrelated fixture phases from opening ownership authority.
+type globalNetworkReleaseUnavailableOwnershipPlans struct{}
+
+// Resolve rejects a capability read that this fixture does not exercise.
+func (globalNetworkReleaseUnavailableOwnershipPlans) Resolve(context.Context, ticketissuer.OwnershipReleaseRequest) (ticketissuer.OwnershipReleasePlan, error) {
+	return ticketissuer.OwnershipReleasePlan{}, errors.New("unexpected release ownership plan")
+}
+
+// globalNetworkReleaseUnavailableOwnershipProofObserver prevents unrelated fixture phases from confirming ownership proof.
+type globalNetworkReleaseUnavailableOwnershipProofObserver struct{}
+
+// ConfirmReleased rejects proof reads that this fixture does not exercise.
+func (globalNetworkReleaseUnavailableOwnershipProofObserver) ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error) {
+	return ownershipreleaseproof.Proof{}, errors.New("unexpected release ownership proof")
+}
 
 // Resolve rejects a capability read that start tests do not exercise.
 func (globalNetworkReleaseUnavailableResolverPlans) Resolve(context.Context, ticketissuer.ResolverRequest) (ticketissuer.ResolverPlan, error) {

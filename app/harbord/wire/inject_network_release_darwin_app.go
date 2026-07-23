@@ -9,6 +9,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
@@ -43,6 +44,11 @@ func provideNetworkReleaseCapability(
 	resolverPlans := state.NewGlobalNetworkReleaseResolverPlanSource(operations)
 	trustPlans := state.NewGlobalNetworkReleaseTrustPlanSource(operations)
 	loopbackPlans := state.NewGlobalNetworkReleaseLoopbackPlanSource(operations)
+	ownershipPlans := state.NewGlobalNetworkReleaseOwnershipPlanSource(operations)
+	proofObserver, err := ownershipreleaseproof.NewDefaultObserver()
+	if err != nil {
+		return networkReleaseCapability{}, fmt.Errorf("create network release ownership proof observer: %w", err)
+	}
 	coordinator := reconcile.NewGlobalNetworkReleaseCoordinator(
 		operations,
 		store,
@@ -66,6 +72,11 @@ func provideNetworkReleaseCapability(
 		func() (reconcile.GlobalNetworkReleaseLoopbackIssuer, error) {
 			return ticketissuer.OpenDefaultPoolReleaseService(loopbackPlans, ownership)
 		},
+		ownershipPlans,
+		func() (reconcile.GlobalNetworkReleaseOwnershipIssuer, error) {
+			return ticketissuer.OpenDefaultOwnershipReleaseService(ownershipPlans, ownership)
+		},
+		proofObserver,
 		resolverObserver,
 		trustAdapter,
 		loopback.New(),

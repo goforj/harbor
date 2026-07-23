@@ -17,7 +17,7 @@ import (
 
 const maximumNetworkReleaseApprovalConfirmationRequestBytes = helper.MaxResponseBytes + maximumNetworkReleaseRequestBytes
 
-// NetworkReleaseApprovalAuthority owns the optional low-port, resolver, trust, and loopback-pool release approval control surface.
+// NetworkReleaseApprovalAuthority owns the optional low-port, resolver, trust, loopback-pool, and ownership release approval control surface.
 type NetworkReleaseApprovalAuthority interface {
 	// PrepareNetworkReleaseApproval publishes one caller-bound low-port release capability.
 	PrepareNetworkReleaseApproval(context.Context, Caller, PrepareNetworkReleaseApprovalRequest) (NetworkReleaseApprovalPreparation, error)
@@ -36,27 +36,29 @@ type NetworkReleaseApprovalAuthority interface {
 	// ConfirmNetworkReleaseLoopbackApproval verifies loopback-pool removal and its effects,
 	// then advances the retained release plan to ownership.
 	ConfirmNetworkReleaseLoopbackApproval(context.Context, Caller, ConfirmNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseOperation, error)
-	// ConfirmNetworkReleaseOwnership independently verifies ownership absence and completes projection retirement.
-	ConfirmNetworkReleaseOwnership(context.Context, Caller, ConfirmNetworkReleaseOwnershipRequest) (NetworkReleaseOperation, error)
+	// PrepareNetworkReleaseOwnershipApproval publishes one caller-bound ownership release capability.
+	PrepareNetworkReleaseOwnershipApproval(context.Context, Caller, PrepareNetworkReleaseOwnershipApprovalRequest) (NetworkReleaseOwnershipApprovalPreparation, error)
+	// ConfirmNetworkReleaseOwnershipApproval verifies ownership removal and completes projection retirement.
+	ConfirmNetworkReleaseOwnershipApproval(context.Context, Caller, ConfirmNetworkReleaseOwnershipApprovalRequest) (NetworkReleaseOperation, error)
 }
 
-// ConfirmNetworkReleaseOwnership confirms one independently observed ownership-release checkpoint.
-func (client *Client) ConfirmNetworkReleaseOwnership(ctx context.Context, request ConfirmNetworkReleaseOwnershipRequest) (NetworkReleaseOperation, error) {
+// PrepareNetworkReleaseOwnershipApproval requests one caller-bound ownership release capability.
+func (client *Client) PrepareNetworkReleaseOwnershipApproval(ctx context.Context, request PrepareNetworkReleaseOwnershipApprovalRequest) (NetworkReleaseOwnershipApprovalPreparation, error) {
 	if err := request.Validate(); err != nil {
-		return NetworkReleaseOperation{}, err
+		return NetworkReleaseOwnershipApprovalPreparation{}, err
 	}
-	payload, err := client.networkReleaseApprovalCall(ctx, CapabilityNetworkReleaseOwnershipApprovalV1, methodNetworkReleaseOwnershipConfirm, request)
+	payload, err := client.networkReleaseApprovalCall(ctx, CapabilityNetworkReleaseOwnershipApprovalV2, methodNetworkReleaseOwnershipPrepare, request)
 	if err != nil {
-		return NetworkReleaseOperation{}, err
+		return NetworkReleaseOwnershipApprovalPreparation{}, err
 	}
-	var response networkReleaseResponse
-	if err := decodeNetworkReleaseResponse(payload, &response); err != nil {
-		return NetworkReleaseOperation{}, err
+	var response networkReleaseOwnershipApprovalPreparationResponse
+	if err := decodeNetworkReleaseOwnershipApprovalPreparationResponse(payload, &response); err != nil {
+		return NetworkReleaseOwnershipApprovalPreparation{}, err
 	}
-	if err := validateNetworkReleaseOwnershipConfirmationCorrelation(request, response.Release); err != nil {
-		return NetworkReleaseOperation{}, err
+	if err := validateNetworkReleaseOwnershipApprovalPreparationCorrelation(request, response.Preparation); err != nil {
+		return NetworkReleaseOwnershipApprovalPreparation{}, err
 	}
-	return response.Release, nil
+	return response.Preparation, nil
 }
 
 // networkReleaseApprovalAuthorityIsNil rejects typed-nil optional implementations before capability negotiation.
@@ -95,6 +97,12 @@ type networkReleaseTrustApprovalPreparationResponse struct {
 type networkReleaseLoopbackApprovalPreparationResponse struct {
 	// Preparation carries the reviewed helper capability.
 	Preparation NetworkReleaseLoopbackApprovalPreparation `json:"preparation"`
+}
+
+// networkReleaseOwnershipApprovalPreparationResponse keeps ownership launch metadata extensible around its reviewed result.
+type networkReleaseOwnershipApprovalPreparationResponse struct {
+	// Preparation carries the reviewed helper capability.
+	Preparation NetworkReleaseOwnershipApprovalPreparation `json:"preparation"`
 }
 
 // PrepareNetworkReleaseApproval requests one caller-bound low-port release capability.
@@ -554,6 +562,85 @@ func (client *Client) ConfirmNetworkReleaseLoopbackApproval(ctx context.Context,
 	return response.Release, nil
 }
 
+// decodeNetworkReleaseOwnershipApprovalPreparationResponse rejects ambiguous ownership ticket response fields before validation.
+func decodeNetworkReleaseOwnershipApprovalPreparationResponse(payload []byte, response *networkReleaseOwnershipApprovalPreparationResponse) error {
+	fields, err := decodeBoundedNetworkReleaseObject(payload, maximumNetworkReleaseResponseBytes, "network release ownership preparation response", "preparation")
+	if err != nil {
+		return err
+	}
+	preparationFields, err := decodeBoundedNetworkReleaseObject(
+		fields["preparation"],
+		maximumNetworkReleaseResponseBytes,
+		"network release ownership preparation",
+		"operation_id",
+		"checkpoint_revision",
+		"publication_disposition",
+		"ticket",
+	)
+	if err != nil {
+		return err
+	}
+	preparation := &response.Preparation
+	if err := json.Unmarshal(preparationFields["operation_id"], &preparation.OperationID); err != nil {
+		return fmt.Errorf("decode network release ownership preparation operation ID: %w", err)
+	}
+	if err := json.Unmarshal(preparationFields["checkpoint_revision"], &preparation.CheckpointRevision); err != nil {
+		return fmt.Errorf("decode network release ownership preparation checkpoint revision: %w", err)
+	}
+	if err := json.Unmarshal(preparationFields["publication_disposition"], &preparation.PublicationDisposition); err != nil {
+		return fmt.Errorf("decode network release ownership preparation publication disposition: %w", err)
+	}
+	ticketFields, err := decodeBoundedNetworkReleaseObject(preparationFields["ticket"], maximumNetworkReleaseResponseBytes, "network release ownership ticket", "operation_id", "operation_revision", "checkpoint_revision", "reference", "operation", "ownership_fingerprint", "expires_at")
+	if err != nil {
+		return err
+	}
+	ticket := &preparation.Ticket
+	if err := json.Unmarshal(ticketFields["operation_id"], &ticket.OperationID); err != nil {
+		return fmt.Errorf("decode network release ownership ticket operation ID: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["operation_revision"], &ticket.OperationRevision); err != nil {
+		return fmt.Errorf("decode network release ownership ticket operation revision: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["checkpoint_revision"], &ticket.CheckpointRevision); err != nil {
+		return fmt.Errorf("decode network release ownership ticket checkpoint revision: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["reference"], &ticket.Reference); err != nil {
+		return fmt.Errorf("decode network release ownership ticket reference: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["operation"], &ticket.Operation); err != nil {
+		return fmt.Errorf("decode network release ownership ticket operation: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["ownership_fingerprint"], &ticket.OwnershipFingerprint); err != nil {
+		return fmt.Errorf("decode network release ownership ticket fingerprint: %w", err)
+	}
+	if err := json.Unmarshal(ticketFields["expires_at"], &ticket.ExpiresAt); err != nil {
+		return fmt.Errorf("decode network release ownership ticket expiry: %w", err)
+	}
+	if err := preparation.Validate(); err != nil {
+		return fmt.Errorf("validate network release ownership preparation response: %w", err)
+	}
+	return nil
+}
+
+// ConfirmNetworkReleaseOwnershipApproval submits exact ownership-release evidence and completes projection retirement.
+func (client *Client) ConfirmNetworkReleaseOwnershipApproval(ctx context.Context, request ConfirmNetworkReleaseOwnershipApprovalRequest) (NetworkReleaseOperation, error) {
+	if err := request.Validate(); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	payload, err := client.networkReleaseApprovalCall(ctx, CapabilityNetworkReleaseOwnershipApprovalV2, methodNetworkReleaseOwnershipConfirm, request)
+	if err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	var response networkReleaseResponse
+	if err := decodeNetworkReleaseResponse(payload, &response); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	if err := validateNetworkReleaseOwnershipApprovalConfirmationCorrelation(request, response.Release); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	return response.Release, nil
+}
+
 // networkReleaseApprovalCall enforces independent approval capability negotiation before dispatch.
 func (client *Client) networkReleaseApprovalCall(ctx context.Context, capability rpc.Capability, method string, request any) ([]byte, error) {
 	if !containsCapability(client.peer.Session.Capabilities, capability) {
@@ -718,19 +805,42 @@ func (server *Server) networkReleaseLoopbackConfirmHandler(peer local.PeerIdenti
 	)
 }
 
-// networkReleaseOwnershipConfirmHandler admits one independently observed ownership-release checkpoint.
+// networkReleaseOwnershipPrepareHandler admits one exact ownership checkpoint for helper authorization.
+func (server *Server) networkReleaseOwnershipPrepareHandler(peer local.PeerIdentity) session.Handler {
+	return networkReleaseApprovalHandler(
+		server,
+		peer,
+		CapabilityNetworkReleaseOwnershipApprovalV2,
+		decodePrepareNetworkReleaseOwnershipApprovalRequest,
+		func(ctx context.Context, caller Caller, request PrepareNetworkReleaseOwnershipApprovalRequest) (any, error) {
+			preparation, err := server.config.NetworkReleaseApprovalAuthority.PrepareNetworkReleaseOwnershipApproval(ctx, caller, request)
+			if err != nil {
+				return nil, err
+			}
+			if err := preparation.Validate(); err != nil {
+				return nil, err
+			}
+			if err := validateNetworkReleaseOwnershipApprovalPreparationCorrelation(request, preparation); err != nil {
+				return nil, err
+			}
+			return networkReleaseOwnershipApprovalPreparationResponse{Preparation: preparation}, nil
+		},
+	)
+}
+
+// networkReleaseOwnershipConfirmHandler admits canonical ownership absence evidence for one ownership checkpoint.
 func (server *Server) networkReleaseOwnershipConfirmHandler(peer local.PeerIdentity) session.Handler {
 	return networkReleaseApprovalHandler(
 		server,
 		peer,
-		CapabilityNetworkReleaseOwnershipApprovalV1,
-		decodeConfirmNetworkReleaseOwnershipRequest,
-		func(ctx context.Context, caller Caller, request ConfirmNetworkReleaseOwnershipRequest) (any, error) {
-			release, err := server.config.NetworkReleaseApprovalAuthority.ConfirmNetworkReleaseOwnership(ctx, caller, request)
+		CapabilityNetworkReleaseOwnershipApprovalV2,
+		decodeConfirmNetworkReleaseOwnershipApprovalRequest,
+		func(ctx context.Context, caller Caller, request ConfirmNetworkReleaseOwnershipApprovalRequest) (any, error) {
+			release, err := server.config.NetworkReleaseApprovalAuthority.ConfirmNetworkReleaseOwnershipApproval(ctx, caller, request)
 			if err != nil {
 				return nil, err
 			}
-			if err := validateNetworkReleaseOwnershipConfirmationCorrelation(request, release); err != nil {
+			if err := validateNetworkReleaseOwnershipApprovalConfirmationCorrelation(request, release); err != nil {
 				return nil, err
 			}
 			return networkReleaseResponse{Release: release}, nil
@@ -839,8 +949,16 @@ func validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(request Confi
 	return nil
 }
 
-// validateNetworkReleaseOwnershipConfirmationCorrelation binds terminal release completion to its selected ownership checkpoint.
-func validateNetworkReleaseOwnershipConfirmationCorrelation(request ConfirmNetworkReleaseOwnershipRequest, release NetworkReleaseOperation) error {
+// validateNetworkReleaseOwnershipApprovalPreparationCorrelation binds an ownership ticket to its selected checkpoint.
+func validateNetworkReleaseOwnershipApprovalPreparationCorrelation(request PrepareNetworkReleaseOwnershipApprovalRequest, preparation NetworkReleaseOwnershipApprovalPreparation) error {
+	if preparation.OperationID != request.OperationID || preparation.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return errors.New("network release ownership preparation does not match the requested checkpoint")
+	}
+	return nil
+}
+
+// validateNetworkReleaseOwnershipApprovalConfirmationCorrelation binds terminal release completion to its selected ownership checkpoint.
+func validateNetworkReleaseOwnershipApprovalConfirmationCorrelation(request ConfirmNetworkReleaseOwnershipApprovalRequest, release NetworkReleaseOperation) error {
 	if err := release.Validate(); err != nil {
 		return err
 	}
@@ -987,14 +1105,31 @@ func decodeConfirmNetworkReleaseLoopbackApprovalRequest(payload []byte) (Confirm
 	return request, request.Validate()
 }
 
-// decodeConfirmNetworkReleaseOwnershipRequest rejects authority beyond the selected ownership checkpoint.
-func decodeConfirmNetworkReleaseOwnershipRequest(payload []byte) (ConfirmNetworkReleaseOwnershipRequest, error) {
-	var request ConfirmNetworkReleaseOwnershipRequest
-	fields, err := decodeNetworkReleaseObject(payload, "network release ownership confirmation", "operation_id", "expected_checkpoint_revision")
+// decodePrepareNetworkReleaseOwnershipApprovalRequest rejects authority beyond the selected ownership checkpoint.
+func decodePrepareNetworkReleaseOwnershipApprovalRequest(payload []byte) (PrepareNetworkReleaseOwnershipApprovalRequest, error) {
+	var request PrepareNetworkReleaseOwnershipApprovalRequest
+	fields, err := decodeNetworkReleaseObject(payload, "network release ownership preparation", "operation_id", "expected_checkpoint_revision")
 	if err != nil {
 		return request, err
 	}
 	if err := decodeNetworkReleaseApprovalSelection(fields, &request.OperationID, &request.ExpectedCheckpointRevision); err != nil {
+		return request, err
+	}
+	return request, request.Validate()
+}
+
+// decodeConfirmNetworkReleaseOwnershipApprovalRequest rejects extra authority and delegates evidence parsing to the helper decoder.
+func decodeConfirmNetworkReleaseOwnershipApprovalRequest(payload []byte) (ConfirmNetworkReleaseOwnershipApprovalRequest, error) {
+	var request ConfirmNetworkReleaseOwnershipApprovalRequest
+	fields, err := decodeBoundedNetworkReleaseObject(payload, maximumNetworkReleaseApprovalConfirmationRequestBytes, "network release ownership confirmation", "operation_id", "expected_checkpoint_revision", "ownership_evidence")
+	if err != nil {
+		return request, err
+	}
+	if err := decodeNetworkReleaseApprovalSelection(fields, &request.OperationID, &request.ExpectedCheckpointRevision); err != nil {
+		return request, err
+	}
+	request.OwnershipEvidence, err = decodeNetworkReleaseOwnershipEvidence(fields["ownership_evidence"])
+	if err != nil {
 		return request, err
 	}
 	return request, request.Validate()
@@ -1087,4 +1222,17 @@ func decodeNetworkReleaseLoopbackEvidence(body json.RawMessage) (helper.PoolMuta
 		return helper.PoolMutationEvidence{}, err
 	}
 	return evidence, nil
+}
+
+// decodeNetworkReleaseOwnershipEvidence reconstructs the authoritative helper response envelope for ownership-release evidence.
+func decodeNetworkReleaseOwnershipEvidence(body json.RawMessage) (helper.OwnershipMutationEvidence, error) {
+	envelope := make([]byte, 0, len(body)+128)
+	envelope = fmt.Appendf(envelope, `{"version":%d,"ok":true,"result":{"operation":"release_network_ownership","ownership_evidence":`, helper.ProtocolVersion)
+	envelope = append(envelope, body...)
+	envelope = append(envelope, '}', '}')
+	response, err := helper.DecodeResponse(bytes.NewReader(envelope))
+	if err != nil || !response.OK || response.Error != nil || response.Result == nil || response.Result.Operation != helper.OperationReleaseNetworkOwnership || response.Result.OwnershipEvidence == nil {
+		return helper.OwnershipMutationEvidence{}, errors.New("network release ownership evidence is invalid")
+	}
+	return *response.Result.OwnershipEvidence, nil
 }

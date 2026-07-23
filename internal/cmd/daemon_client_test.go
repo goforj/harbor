@@ -37,6 +37,7 @@ type fakeDaemonControlClient struct {
 	networkReleaseResolverPreparation      control.NetworkReleaseResolverApprovalPreparation
 	networkReleaseTrustPreparation         control.NetworkReleaseTrustApprovalPreparation
 	networkReleaseLoopbackPreparation      control.NetworkReleaseLoopbackApprovalPreparation
+	networkReleaseOwnershipPreparation     control.NetworkReleaseOwnershipApprovalPreparation
 	networkReleaseOwnershipConfirmation    control.NetworkReleaseOperation
 	statusErr                              error
 	stopErr                                error
@@ -66,7 +67,8 @@ type fakeDaemonControlClient struct {
 	networkReleaseLoopbackPreparationErr   error
 	networkReleaseOwnershipConfirmationErr error
 	networkReleaseStartHook                func(context.Context, control.StartNetworkReleaseRequest) (control.NetworkReleaseOperation, error)
-	networkReleaseOwnershipConfirmations   []control.ConfirmNetworkReleaseOwnershipRequest
+	networkReleaseOwnershipConfirmations   []control.ConfirmNetworkReleaseOwnershipApprovalRequest
+	networkReleaseOwnershipPreparations    []control.PrepareNetworkReleaseOwnershipApprovalRequest
 	closeErr                               error
 	statusCalls                            int
 	stopCalls                              int
@@ -179,8 +181,14 @@ func (client *fakeDaemonControlClient) ConfirmNetworkReleaseLoopbackApproval(con
 	return client.networkRelease, client.networkReleaseErr
 }
 
-// ConfirmNetworkReleaseOwnership returns configured release progress after ownership confirmation.
-func (client *fakeDaemonControlClient) ConfirmNetworkReleaseOwnership(_ context.Context, request control.ConfirmNetworkReleaseOwnershipRequest) (control.NetworkReleaseOperation, error) {
+// PrepareNetworkReleaseOwnershipApproval returns configured terminal ownership preparation.
+func (client *fakeDaemonControlClient) PrepareNetworkReleaseOwnershipApproval(_ context.Context, request control.PrepareNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOwnershipApprovalPreparation, error) {
+	client.networkReleaseOwnershipPreparations = append(client.networkReleaseOwnershipPreparations, request)
+	return client.networkReleaseOwnershipPreparation, nil
+}
+
+// ConfirmNetworkReleaseOwnershipApproval returns configured release progress after ownership evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkReleaseOwnershipApproval(_ context.Context, request control.ConfirmNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOperation, error) {
 	client.networkReleaseOwnershipConfirmations = append(client.networkReleaseOwnershipConfirmations, request)
 	if client.networkReleaseOwnershipConfirmation != (control.NetworkReleaseOperation{}) || client.networkReleaseOwnershipConfirmationErr != nil {
 		return client.networkReleaseOwnershipConfirmation, client.networkReleaseOwnershipConfirmationErr
@@ -487,22 +495,35 @@ func TestDaemonClientSnapshotUsesASeparateOneShotConnection(t *testing.T) {
 	}
 }
 
-// TestDaemonClientConfirmsNetworkReleaseOwnershipUsesOneShotConnection verifies the authenticated terminal confirmation keeps the CLI cleanup contract.
-func TestDaemonClientConfirmsNetworkReleaseOwnershipUsesOneShotConnection(t *testing.T) {
-	request := control.ConfirmNetworkReleaseOwnershipRequest{
-		OperationID:                "operation-network-release",
-		ExpectedCheckpointRevision: 6,
-	}
+// TestDaemonClientConfirmsNetworkReleaseOwnershipApprovalUsesOneShotConnection verifies terminal evidence confirmation keeps the CLI cleanup contract.
+func TestDaemonClientConfirmsNetworkReleaseOwnershipApprovalUsesOneShotConnection(t *testing.T) {
+	request := control.ConfirmNetworkReleaseOwnershipApprovalRequest{}
 	connection := &fakeDaemonControlClient{}
 	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
 		return connection, nil
 	})
 
-	if _, err := client.ConfirmNetworkReleaseOwnership(t.Context(), request); err != nil {
+	if _, err := client.ConfirmNetworkReleaseOwnershipApproval(t.Context(), request); err != nil {
 		t.Fatalf("confirm network release ownership: %v", err)
 	}
-	if !reflect.DeepEqual(connection.networkReleaseOwnershipConfirmations, []control.ConfirmNetworkReleaseOwnershipRequest{request}) || connection.closeCalls != 1 {
+	if !reflect.DeepEqual(connection.networkReleaseOwnershipConfirmations, []control.ConfirmNetworkReleaseOwnershipApprovalRequest{request}) || connection.closeCalls != 1 {
 		t.Fatalf("confirmations = %#v, close calls = %d", connection.networkReleaseOwnershipConfirmations, connection.closeCalls)
+	}
+}
+
+// TestDaemonClientPreparesNetworkReleaseOwnershipApprovalUsesOneShotConnection verifies terminal capability preparation shares the CLI cleanup contract.
+func TestDaemonClientPreparesNetworkReleaseOwnershipApprovalUsesOneShotConnection(t *testing.T) {
+	request := control.PrepareNetworkReleaseOwnershipApprovalRequest{}
+	connection := &fakeDaemonControlClient{}
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+		return connection, nil
+	})
+
+	if _, err := client.PrepareNetworkReleaseOwnershipApproval(t.Context(), request); err != nil {
+		t.Fatalf("prepare network release ownership: %v", err)
+	}
+	if !reflect.DeepEqual(connection.networkReleaseOwnershipPreparations, []control.PrepareNetworkReleaseOwnershipApprovalRequest{request}) || connection.closeCalls != 1 {
+		t.Fatalf("preparations = %#v, close calls = %d", connection.networkReleaseOwnershipPreparations, connection.closeCalls)
 	}
 }
 

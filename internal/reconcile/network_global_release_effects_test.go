@@ -10,6 +10,8 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/host/ownership"
+	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/resolver"
 	"github.com/goforj/harbor/internal/platform/trust"
@@ -119,6 +121,7 @@ func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommitte
 		{
 			name: "committed projection replay",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, request *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				fixture.ownership.observation.Exists = false
 				fixture.journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseProjection
 				fixture.journal.plan.OwnershipReceipt = &state.GlobalNetworkReleaseOwnershipReceipt{
 					SourceCheckpointRevision:     request.ExpectedCheckpointRevision,
@@ -140,7 +143,15 @@ func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommitte
 				OperationID:                advanced.Operation.Operation.ID,
 				ExpectedCheckpointRevision: advanced.CheckpointRevision,
 				RequesterIdentity:          advanced.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+				OwnershipEvidence: helper.OwnershipMutationEvidence{
+					ReleaseOperationID:           string(advanced.Operation.Operation.ID),
+					ReleaseOperationRevision:     uint64(advanced.Operation.Revision),
+					ReleaseCheckpointRevision:    uint64(advanced.CheckpointRevision),
+					ReleasedOwnershipFingerprint: advanced.Authority.ExpectedOwnershipFingerprint,
+					Postcondition:                helper.OwnershipPostconditionOwnedAbsent,
+				},
 			}
+			fixture.coordinator.proofObserver = testGlobalNetworkReleaseProofObserver{}
 			test.mutate(fixture, &request)
 			result, err := fixture.coordinator.ConfirmOwnership(t.Context(), request)
 			if test.wantTerminal {
@@ -165,6 +176,75 @@ func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommitte
 	}
 }
 
+// TestGlobalNetworkReleaseResumeRecoversHelperCompletedOwnership proves a lost confirmation cannot strand an already released machine.
+func TestGlobalNetworkReleaseResumeRecoversHelperCompletedOwnership(t *testing.T) {
+	fixture := newGlobalNetworkReleaseEffectsFixture(t)
+	advanced, err := fixture.coordinator.verifyReleaseEffects(t.Context(), fixture.journal.plan)
+	if err != nil {
+		t.Fatalf("verifyReleaseEffects() error = %v", err)
+	}
+	fixture.journal.plan = advanced
+	fixture.coordinator.proofObserver = testGlobalNetworkReleaseProofObserver{}
+	fixture.ownership.observation.Exists = false
+
+	completed, err := fixture.coordinator.resume(
+		t.Context(),
+		advanced.Operation.Operation.ID,
+		advanced.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+	)
+	if err != nil {
+		t.Fatalf("resume() error = %v", err)
+	}
+	if completed.Operation.State != domain.OperationSucceeded {
+		t.Fatalf("resume() operation = %#v, want succeeded", completed)
+	}
+	if fixture.journal.ownershipCalls != 1 || fixture.journal.finalizeCalls != 1 {
+		t.Fatalf(
+			"ownership advances/finalizations = %d/%d, want 1/1",
+			fixture.journal.ownershipCalls,
+			fixture.journal.finalizeCalls,
+		)
+	}
+	if fixture.journal.ownershipRequest.Receipt.ReleasedOwnershipFingerprint != advanced.Authority.ExpectedOwnershipFingerprint {
+		t.Fatalf(
+			"released ownership fingerprint = %q, want %q",
+			fixture.journal.ownershipRequest.Receipt.ReleasedOwnershipFingerprint,
+			advanced.Authority.ExpectedOwnershipFingerprint,
+		)
+	}
+}
+
+// TestGlobalNetworkReleaseResumeLeavesUnreleasedOwnershipAtApproval proves an ordinary checkpoint still waits for its helper.
+func TestGlobalNetworkReleaseResumeLeavesUnreleasedOwnershipAtApproval(t *testing.T) {
+	fixture := newGlobalNetworkReleaseEffectsFixture(t)
+	advanced, err := fixture.coordinator.verifyReleaseEffects(t.Context(), fixture.journal.plan)
+	if err != nil {
+		t.Fatalf("verifyReleaseEffects() error = %v", err)
+	}
+	fixture.journal.plan = advanced
+	fixture.coordinator.proofObserver = testGlobalNetworkReleaseAbsentProofObserver{}
+	fixture.ownership.err = errors.New("ownership must not be observed without root proof")
+
+	current, err := fixture.coordinator.resume(
+		t.Context(),
+		advanced.Operation.Operation.ID,
+		advanced.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+	)
+	if err != nil {
+		t.Fatalf("resume() error = %v", err)
+	}
+	if current != advanced.Operation {
+		t.Fatalf("resume() = %#v, want %#v", current, advanced.Operation)
+	}
+	if fixture.journal.ownershipCalls != 0 || fixture.journal.finalizeCalls != 0 {
+		t.Fatalf(
+			"ownership advances/finalizations = %d/%d, want 0/0",
+			fixture.journal.ownershipCalls,
+			fixture.journal.finalizeCalls,
+		)
+	}
+}
+
 // TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence preserves client retries after the projection transaction deletes its active plan.
 func TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence(t *testing.T) {
 	operation := testGlobalNetworkReleaseOperation(t)
@@ -177,35 +257,69 @@ func TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence(t *test
 			Operation: completed,
 			Revision:  operation.Revision + 3,
 		},
-		OwnerIdentity:            "501",
-		SourceCheckpointRevision: 8,
-		NetworkRevision:          3,
+		OwnerIdentity:                "501",
+		ReleasedOwnershipFingerprint: strings.Repeat("a", 64),
+		SourceCheckpointRevision:     8,
+		NetworkRevision:              3,
 	}
 	for _, test := range []struct {
-		name         string
-		requester    string
-		wantNotFound bool
+		name                string
+		requester           string
+		terminalFingerprint string
+		evidenceFingerprint string
+		wantNotFound        bool
 	}{
 		{
-			name:      "exact replay",
-			requester: "501",
+			name:                "exact replay",
+			requester:           "501",
+			terminalFingerprint: terminal.ReleasedOwnershipFingerprint,
+			evidenceFingerprint: terminal.ReleasedOwnershipFingerprint,
 		},
 		{
-			name:         "wrong owner",
-			requester:    "different-owner",
-			wantNotFound: true,
+			name:                "wrong owner",
+			requester:           "different-owner",
+			terminalFingerprint: terminal.ReleasedOwnershipFingerprint,
+			evidenceFingerprint: terminal.ReleasedOwnershipFingerprint,
+			wantNotFound:        true,
+		},
+		{
+			name:                "wrong fingerprint",
+			requester:           "501",
+			terminalFingerprint: terminal.ReleasedOwnershipFingerprint,
+			evidenceFingerprint: strings.Repeat("b", 64),
+			wantNotFound:        true,
+		},
+		{
+			name:                "legacy terminal",
+			requester:           "501",
+			evidenceFingerprint: strings.Repeat("b", 64),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			testTerminal := terminal
+			testTerminal.ReleasedOwnershipFingerprint = test.terminalFingerprint
 			journal := &testGlobalNetworkReleaseJournal{
-				terminal:      terminal,
+				terminal:      testTerminal,
 				terminalFound: true,
 			}
-			coordinator := &GlobalNetworkReleaseCoordinator{journal: journal}
+			coordinator := &GlobalNetworkReleaseCoordinator{
+				journal: journal,
+				ownership: testGlobalNetworkReleaseOwnershipObserver{
+					err: errors.New("terminal replay must not reobserve mutable ownership"),
+				},
+			}
+			coordinator.proofObserver = globalNetworkReleaseUnavailableOwnershipProofObserver{}
 			result, confirmErr := coordinator.ConfirmOwnership(t.Context(), GlobalNetworkReleaseConfirmOwnershipRequest{
 				OperationID:                operation.Operation.ID,
 				ExpectedCheckpointRevision: terminal.SourceCheckpointRevision,
 				RequesterIdentity:          test.requester,
+				OwnershipEvidence: helper.OwnershipMutationEvidence{
+					ReleaseOperationID:           string(operation.Operation.ID),
+					ReleaseOperationRevision:     uint64(terminal.Operation.Revision),
+					ReleaseCheckpointRevision:    uint64(terminal.SourceCheckpointRevision),
+					ReleasedOwnershipFingerprint: test.evidenceFingerprint,
+					Postcondition:                helper.OwnershipPostconditionOwnedAbsent,
+				},
 			})
 			if test.wantNotFound {
 				var missing *state.OperationNotFoundError
@@ -214,11 +328,48 @@ func TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence(t *test
 				}
 				return
 			}
-			if confirmErr != nil || result != terminal {
+			if confirmErr != nil || result != testTerminal {
 				t.Fatalf("ConfirmOwnership() = %#v, %v", result, confirmErr)
 			}
 		})
 	}
+}
+
+// testGlobalNetworkReleaseOwnershipObserver supplies a fresh terminal ownership observation.
+type testGlobalNetworkReleaseOwnershipObserver struct {
+	observation ownership.Observation
+	err         error
+}
+
+// Observe returns the configured terminal ownership observation.
+func (observer testGlobalNetworkReleaseOwnershipObserver) Observe(context.Context) (ownership.Observation, error) {
+	return observer.observation, observer.err
+}
+
+// testGlobalNetworkReleaseProofObserver confirms fixture-owned proof authority.
+type testGlobalNetworkReleaseProofObserver struct{}
+
+// ConfirmReleased supplies terminal proof for focused coordinator tests.
+func (testGlobalNetworkReleaseProofObserver) ConfirmReleased(_ context.Context, authority ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error) {
+	return ownershipreleaseproof.Proof{
+		TicketReferenceHash:        strings.Repeat("a", 64),
+		NonceHash:                  strings.Repeat("b", 64),
+		ReleaseOperationID:         authority.ReleaseOperationID,
+		OperationRevision:          authority.OperationRevision,
+		CheckpointRevision:         authority.CheckpointRevision,
+		RequesterIdentity:          authority.RequesterIdentity,
+		TargetOwnershipFingerprint: authority.TargetOwnershipFingerprint,
+		State:                      ownershipreleaseproof.StateReleased,
+		VerifiedAt:                 time.Now().UTC(),
+	}, nil
+}
+
+// testGlobalNetworkReleaseAbsentProofObserver reports that the privileged helper has not released ownership.
+type testGlobalNetworkReleaseAbsentProofObserver struct{}
+
+// ConfirmReleased returns the sentinel that keeps an ordinary ownership checkpoint waiting for approval.
+func (testGlobalNetworkReleaseAbsentProofObserver) ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error) {
+	return ownershipreleaseproof.Proof{}, ownershipreleaseproof.ErrAbsentProof
 }
 
 // TestGlobalNetworkReleaseVerifyEffectsPreservesForeignReleasedNamespaces proves released ownership

@@ -32,6 +32,7 @@ type recordingNetworkReleaseCoordinator struct {
 	confirmTrustRequest     reconcile.GlobalNetworkReleaseConfirmTrustRequest
 	prepareLoopbacksRequest reconcile.GlobalNetworkReleasePrepareLoopbacksRequest
 	confirmLoopbacksRequest reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest
+	prepareOwnershipRequest reconcile.GlobalNetworkReleasePrepareOwnershipRequest
 	confirmOwnershipRequest reconcile.GlobalNetworkReleaseConfirmOwnershipRequest
 	record                  state.OperationRecord
 	prepareResult           ticketissuer.LowPortResult
@@ -42,6 +43,7 @@ type recordingNetworkReleaseCoordinator struct {
 	confirmTrustResult      state.GlobalNetworkReleasePlanRecord
 	prepareLoopbacksResult  ticketissuer.PoolResult
 	confirmLoopbacksResult  state.GlobalNetworkReleasePlanRecord
+	prepareOwnershipResult  ticketissuer.OwnershipReleaseResult
 	confirmOwnershipResult  state.GlobalNetworkReleaseTerminalRecord
 	err                     error
 }
@@ -98,6 +100,12 @@ func (c *recordingNetworkReleaseCoordinator) PrepareLoopbacks(_ context.Context,
 func (c *recordingNetworkReleaseCoordinator) ConfirmLoopbacks(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error) {
 	c.confirmLoopbacksRequest = request
 	return c.confirmLoopbacksResult, c.err
+}
+
+// PrepareOwnership records one authenticated ownership-release capability request.
+func (c *recordingNetworkReleaseCoordinator) PrepareOwnership(_ context.Context, request reconcile.GlobalNetworkReleasePrepareOwnershipRequest) (ticketissuer.OwnershipReleaseResult, error) {
+	c.prepareOwnershipRequest = request
+	return c.prepareOwnershipResult, c.err
 }
 
 // ConfirmOwnership records one authenticated ownership-release confirmation.
@@ -311,19 +319,83 @@ func TestNetworkReleaseAuthorityConfirmsOwnershipAsTerminalOperation(t *testing.
 	authority := newNetworkReleaseAuthority(&recordingNetworkReleasePlans{}, coordinator, func() (domain.OperationID, error) {
 		return "operation-unused", nil
 	})
-	result, err := authority.ConfirmNetworkReleaseOwnership(
+	result, err := authority.ConfirmNetworkReleaseOwnershipApproval(
 		t.Context(),
 		control.Caller{Transport: local.PeerIdentity{UserID: "authenticated-user"}},
-		control.ConfirmNetworkReleaseOwnershipRequest{
+		control.ConfirmNetworkReleaseOwnershipApprovalRequest{
 			OperationID:                plan.Operation.Operation.ID,
 			ExpectedCheckpointRevision: plan.CheckpointRevision,
+			OwnershipEvidence: helper.OwnershipMutationEvidence{
+				ReleaseOperationID:           string(plan.Operation.Operation.ID),
+				ReleaseOperationRevision:     uint64(plan.Operation.Revision),
+				ReleaseCheckpointRevision:    uint64(plan.CheckpointRevision),
+				ReleasedOwnershipFingerprint: strings.Repeat("a", 64),
+				Postcondition:                helper.OwnershipPostconditionOwnedAbsent,
+			},
 		},
 	)
 	if err != nil {
-		t.Fatalf("ConfirmNetworkReleaseOwnership() error = %v", err)
+		t.Fatalf("ConfirmNetworkReleaseOwnershipApproval() error = %v", err)
 	}
 	if result.Operation.State != domain.OperationSucceeded || result.CheckpointRevision != plan.CheckpointRevision {
-		t.Fatalf("ConfirmNetworkReleaseOwnership() = %#v", result)
+		t.Fatalf("ConfirmNetworkReleaseOwnershipApproval() = %#v", result)
+	}
+}
+
+// TestNetworkReleaseAuthorityPreparesDurableAndIndeterminateOwnershipTickets preserves the one published terminal capability.
+func TestNetworkReleaseAuthorityPreparesDurableAndIndeterminateOwnershipTickets(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		issueErr    error
+		disposition control.NetworkReleaseOwnershipPublicationDisposition
+	}{
+		{
+			name:        "durable",
+			disposition: control.NetworkReleaseOwnershipPublicationDurable,
+		},
+		{
+			name:        "indeterminate",
+			issueErr:    ticketissuer.ErrOwnershipReleasePublicationIndeterminate,
+			disposition: control.NetworkReleaseOwnershipPublicationIndeterminate,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := &recordingNetworkReleaseCoordinator{
+				prepareOwnershipResult: validNetworkReleaseOwnershipResult("operation-release"),
+				err:                    test.issueErr,
+			}
+			authority := newNetworkReleaseAuthority(
+				&recordingNetworkReleasePlans{},
+				coordinator,
+				func() (domain.OperationID, error) {
+					return "operation-unused", nil
+				},
+			)
+			preparation, err := authority.PrepareNetworkReleaseOwnershipApproval(
+				t.Context(),
+				control.Caller{
+					Transport: local.PeerIdentity{
+						UserID: "authenticated-user",
+					},
+				},
+				control.PrepareNetworkReleaseOwnershipApprovalRequest{
+					OperationID:                "operation-release",
+					ExpectedCheckpointRevision: 12,
+				},
+			)
+			if err != nil {
+				t.Fatalf("PrepareNetworkReleaseOwnershipApproval() error = %v", err)
+			}
+			if preparation.PublicationDisposition != test.disposition ||
+				preparation.Ticket.Reference != coordinator.prepareOwnershipResult.Reference ||
+				coordinator.prepareOwnershipRequest.RequesterIdentity != "authenticated-user" {
+				t.Fatalf(
+					"ownership preparation = %#v, coordinator request = %#v",
+					preparation,
+					coordinator.prepareOwnershipRequest,
+				)
+			}
+		})
 	}
 }
 
@@ -1989,6 +2061,19 @@ func validNetworkReleaseLoopbackResult(operationID domain.OperationID) ticketiss
 		Operation:   helper.OperationReleaseLoopbackPool,
 		Pool:        netip.MustParsePrefix("127.77.0.8/29"),
 		ExpiresAt:   time.Now().UTC().Add(time.Minute),
+	}
+}
+
+// validNetworkReleaseOwnershipResult constructs one unexpired terminal ownership-release ticket result.
+func validNetworkReleaseOwnershipResult(operationID domain.OperationID) ticketissuer.OwnershipReleaseResult {
+	return ticketissuer.OwnershipReleaseResult{
+		OperationID:          operationID,
+		OperationRevision:    11,
+		CheckpointRevision:   12,
+		Reference:            helper.TicketReference(strings.Repeat("9", 64)),
+		Operation:            helper.OperationReleaseNetworkOwnership,
+		OwnershipFingerprint: strings.Repeat("a", 64),
+		ExpiresAt:            time.Now().UTC().Add(time.Minute),
 	}
 }
 

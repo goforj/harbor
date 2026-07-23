@@ -274,7 +274,7 @@ func trustedHTTPSRequiredControlCapabilities() []rpc.Capability {
 		control.CapabilityNetworkReleaseResolverApprovalV1,
 		control.CapabilityNetworkReleaseTrustApprovalV1,
 		control.CapabilityNetworkReleaseLoopbackApprovalV1,
-		control.CapabilityNetworkReleaseOwnershipApprovalV1,
+		control.CapabilityNetworkReleaseOwnershipApprovalV2,
 		control.CapabilityProjectLifecycleV1,
 		control.CapabilityProjectUnregisterApprovalV1,
 	}
@@ -290,7 +290,7 @@ func TestTrustedHTTPSRequiredControlCapabilitiesIncludesReleasePhases(t *testing
 		control.CapabilityNetworkReleaseResolverApprovalV1,
 		control.CapabilityNetworkReleaseTrustApprovalV1,
 		control.CapabilityNetworkReleaseLoopbackApprovalV1,
-		control.CapabilityNetworkReleaseOwnershipApprovalV1,
+		control.CapabilityNetworkReleaseOwnershipApprovalV2,
 		control.CapabilityProjectUnregisterApprovalV1,
 	} {
 		if !slices.Contains(trustedHTTPSRequiredControlCapabilities(), capability) {

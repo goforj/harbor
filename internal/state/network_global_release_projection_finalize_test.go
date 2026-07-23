@@ -73,9 +73,40 @@ func TestFinalizeGlobalNetworkReleaseProjectionRetiresTheAggregateAndOwnerTogeth
 	}
 	if !sameGlobalNetworkReleaseTerminalOperation(terminal.Operation, completed) ||
 		terminal.OwnerIdentity != projection.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity ||
+		terminal.ReleasedOwnershipFingerprint != projection.OwnershipReceipt.ReleasedOwnershipFingerprint ||
 		terminal.SourceCheckpointRevision != projection.OwnershipReceipt.SourceCheckpointRevision ||
 		terminal.NetworkRevision != projection.NetworkRevision {
 		t.Fatalf("terminal = %#v", terminal)
+	}
+}
+
+// TestReadGlobalNetworkReleaseTerminalAcceptsLegacyEmptyOwnershipFingerprint preserves replay for terminal records written before ownership evidence was retained.
+func TestReadGlobalNetworkReleaseTerminalAcceptsLegacyEmptyOwnershipFingerprint(t *testing.T) {
+	journal, connection, stage, ownership := advanceGlobalNetworkReleaseOwnershipFixture(t)
+	projection, err := journal.AdvanceGlobalNetworkReleaseOwnership(t.Context(), validAdvanceGlobalNetworkReleaseOwnershipRequest(stage, ownership))
+	if err != nil {
+		t.Fatalf("AdvanceGlobalNetworkReleaseOwnership() error = %v", err)
+	}
+	if _, err := journal.FinalizeGlobalNetworkReleaseProjection(t.Context(), FinalizeGlobalNetworkReleaseProjectionRequest{
+		OperationID:        stage.Operation.ID,
+		CheckpointRevision: projection.CheckpointRevision,
+		NetworkRevision:    projection.NetworkRevision,
+		At:                 projection.OwnershipReceipt.VerifiedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("FinalizeGlobalNetworkReleaseProjection() error = %v", err)
+	}
+	globalNetworkReleaseStageExec(
+		t,
+		connection,
+		"UPDATE network_global_release_terminals SET released_ownership_fingerprint = NULL WHERE operation_id = ?",
+		string(stage.Operation.ID),
+	)
+	terminal, found, err := journal.ReadGlobalNetworkReleaseTerminal(t.Context(), stage.Operation.ID)
+	if err != nil || !found {
+		t.Fatalf("ReadGlobalNetworkReleaseTerminal() = %#v, found %v, err %v", terminal, found, err)
+	}
+	if terminal.ReleasedOwnershipFingerprint != "" {
+		t.Fatalf("terminal released ownership fingerprint = %q, want legacy empty value", terminal.ReleasedOwnershipFingerprint)
 	}
 }
 

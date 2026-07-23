@@ -51,7 +51,7 @@ func (request Request) Validate() error {
 		return err
 	}
 	switch request.Phase {
-	case control.NetworkReleasePhaseLowPorts, control.NetworkReleasePhaseResolver, control.NetworkReleasePhaseTrust, control.NetworkReleasePhaseLoopbacks:
+	case control.NetworkReleasePhaseLowPorts, control.NetworkReleasePhaseResolver, control.NetworkReleasePhaseTrust, control.NetworkReleasePhaseLoopbacks, control.NetworkReleasePhaseOwnership:
 		return nil
 	default:
 		return fmt.Errorf("network release phase %q does not require helper approval", request.Phase)
@@ -86,6 +86,8 @@ type Client interface {
 	ConfirmNetworkReleaseTrustApproval(context.Context, control.ConfirmNetworkReleaseTrustApprovalRequest) (control.NetworkReleaseOperation, error)
 	PrepareNetworkReleaseLoopbackApproval(context.Context, control.PrepareNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseLoopbackApprovalPreparation, error)
 	ConfirmNetworkReleaseLoopbackApproval(context.Context, control.ConfirmNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseOperation, error)
+	PrepareNetworkReleaseOwnershipApproval(context.Context, control.PrepareNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOwnershipApprovalPreparation, error)
+	ConfirmNetworkReleaseOwnershipApproval(context.Context, control.ConfirmNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOperation, error)
 }
 
 // HelperLauncher launches the immutable helper capabilities used by release checkpoints.
@@ -94,6 +96,7 @@ type HelperLauncher interface {
 	InvokeResolver(context.Context, launcher.ResolverLaunchTicket) (launcher.Outcome, error)
 	InvokeTrust(context.Context, launcher.TrustLaunchTicket) (launcher.Outcome, error)
 	InvokePool(context.Context, launcher.PoolLaunchTicket) (launcher.Outcome, error)
+	InvokeOwnership(context.Context, launcher.OwnershipLaunchTicket) (launcher.Outcome, error)
 }
 
 // Executor owns the bounded client-side release approval state machine.
@@ -133,6 +136,8 @@ func (executor *Executor) Execute(ctx context.Context, request Request) (Outcome
 		return executor.executeTrust(ctx, request)
 	case control.NetworkReleasePhaseLoopbacks:
 		return executor.executeLoopbacks(ctx, request)
+	case control.NetworkReleasePhaseOwnership:
+		return executor.executeOwnership(ctx, request)
 	default:
 		return Outcome{}, fmt.Errorf("%w: unsupported phase %q", ErrInconsistentResponse, request.Phase)
 	}
@@ -297,6 +302,77 @@ func (executor *Executor) executeLoopbacks(ctx context.Context, request Request)
 		LoopbackEvidence:           e,
 	})
 	return confirmedOutcome(request, control.NetworkReleasePhaseOwnership, confirmed, err)
+}
+
+// executeOwnership redeems one terminal ownership release ticket.
+func (executor *Executor) executeOwnership(ctx context.Context, request Request) (Outcome, error) {
+	p, err := executor.client.PrepareNetworkReleaseOwnershipApproval(ctx, control.PrepareNetworkReleaseOwnershipApprovalRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+	})
+	if err != nil {
+		return Outcome{}, fmt.Errorf("prepare network release ownership approval: %w", err)
+	}
+	if err := p.Validate(); err != nil || p.OperationID != request.OperationID || p.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return Outcome{}, inconsistent("ownership preparation", err)
+	}
+	t, err := launcher.NewOwnershipLaunchTicket(
+		p.Ticket.OperationID,
+		p.Ticket.Reference,
+		p.Ticket.Operation,
+		string(p.Ticket.OperationID),
+		uint64(p.Ticket.OperationRevision),
+		uint64(p.Ticket.CheckpointRevision),
+		p.Ticket.OwnershipFingerprint,
+		p.Ticket.ExpiresAt,
+	)
+	if err != nil {
+		return Outcome{}, inconsistent("convert ownership ticket", err)
+	}
+	launched, err := executor.launcher.InvokeOwnership(ctx, t)
+	if err != nil {
+		return indeterminate(), fmt.Errorf("launch network release ownership helper: %w", err)
+	}
+	if err := validateLaunch(launched, func(r *helper.OperationResult) bool {
+		return r != nil && r.Operation == helper.OperationReleaseNetworkOwnership && r.OwnershipEvidence != nil &&
+			r.OwnershipEvidence.ReleaseOperationID == string(p.Ticket.OperationID) &&
+			r.OwnershipEvidence.ReleaseOperationRevision == uint64(p.Ticket.OperationRevision) &&
+			r.OwnershipEvidence.ReleaseCheckpointRevision == uint64(p.Ticket.CheckpointRevision) &&
+			r.OwnershipEvidence.ReleasedOwnershipFingerprint == p.Ticket.OwnershipFingerprint &&
+			r.OwnershipEvidence.Postcondition == helper.OwnershipPostconditionOwnedAbsent
+	}); err != nil {
+		return indeterminate(), inconsistent("ownership helper result", err)
+	}
+	// A possibly durable reference is safe to redeem once, but only exact success resolves its publication state.
+	if p.PublicationDisposition == control.NetworkReleaseOwnershipPublicationIndeterminate &&
+		launched.State != launcher.Succeeded {
+		return indeterminate(), nil
+	}
+	if outcome, done := terminal(launched); done {
+		return outcome, nil
+	}
+	e := *launched.Response.Result.OwnershipEvidence
+	confirmed, err := executor.client.ConfirmNetworkReleaseOwnershipApproval(ctx, control.ConfirmNetworkReleaseOwnershipApprovalRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		OwnershipEvidence:          e,
+	})
+	return confirmedOwnershipOutcome(request, confirmed, err)
+}
+
+// confirmedOwnershipOutcome validates terminal projection retirement after ownership evidence.
+func confirmedOwnershipOutcome(request Request, operation control.NetworkReleaseOperation, err error) (Outcome, error) {
+	if err != nil {
+		return indeterminate(), fmt.Errorf("confirm network release ownership approval: %w", err)
+	}
+	if validationErr := operation.Validate(); validationErr != nil ||
+		operation.Operation.ID != request.OperationID ||
+		operation.Operation.State != domain.OperationSucceeded ||
+		operation.CheckpointRevision != request.ExpectedCheckpointRevision ||
+		operation.Phase != control.NetworkReleasePhaseProjection {
+		return indeterminate(), inconsistent("ownership confirmation", validationErr)
+	}
+	return Outcome{State: Succeeded, Operation: &operation}, nil
 }
 
 // confirmedOutcome validates the durable advance after one helper-backed checkpoint.

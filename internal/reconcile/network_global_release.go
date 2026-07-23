@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
 	"github.com/goforj/harbor/internal/platform/resolver"
@@ -94,6 +95,20 @@ type GlobalNetworkReleaseLoopbackIssuer interface {
 	Close() error
 }
 
+// GlobalNetworkReleaseOwnershipIssuer issues a bounded ownership-release capability.
+type GlobalNetworkReleaseOwnershipIssuer interface {
+	// Issue publishes one release-network-ownership capability for its authenticated owner.
+	Issue(context.Context, string, ticketissuer.OwnershipReleaseRequest) (ticketissuer.OwnershipReleaseResult, error)
+	// Close releases issuer resources after one publication attempt.
+	Close() error
+}
+
+// GlobalNetworkReleaseOwnershipProofObserver confirms root-authored terminal ownership release evidence.
+type GlobalNetworkReleaseOwnershipProofObserver interface {
+	// ConfirmReleased returns terminal proof only for the exact durable release authority.
+	ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error)
+}
+
 // GlobalNetworkReleaseStateSource supplies the current network and stopped-project revisions.
 type GlobalNetworkReleaseStateSource interface {
 	// RuntimeState returns a coherent durable network and project snapshot.
@@ -130,27 +145,30 @@ type GlobalNetworkReleaseResolverObserver interface {
 
 // GlobalNetworkReleaseCoordinator stages daemon-observed release authority then retires runtime listeners.
 type GlobalNetworkReleaseCoordinator struct {
-	journal         GlobalNetworkReleaseJournal
-	state           GlobalNetworkReleaseStateSource
-	projections     GlobalNetworkReleaseProjectionSource
-	roots           GlobalNetworkReleaseRootSource
-	ownership       OwnershipObserver
-	lowPorts        NetworkDataPlaneSetupLowPortObserver
-	lowPortPlans    ticketissuer.LowPortPlanSource
-	lowPortIssuers  func() (GlobalNetworkReleaseLowPortIssuer, error)
-	resolverPlans   ticketissuer.ResolverPlanSource
-	resolverIssuers func() (GlobalNetworkReleaseResolverIssuer, error)
-	trustPlans      ticketissuer.TrustPlanSource
-	trustIssuers    func() (GlobalNetworkReleaseTrustIssuer, error)
-	loopbackPlans   ticketissuer.PoolReleasePlanSource
-	loopbackIssuers func() (GlobalNetworkReleaseLoopbackIssuer, error)
-	resolver        GlobalNetworkReleaseResolverObserver
-	trust           NetworkDataPlaneSetupTrustObserver
-	loopback        LoopbackObserver
-	runtime         GlobalNetworkReleaseRuntime
-	platform        networkplan.Platform
-	clock           helper.Clock
-	mutex           sync.Mutex
+	journal          GlobalNetworkReleaseJournal
+	state            GlobalNetworkReleaseStateSource
+	projections      GlobalNetworkReleaseProjectionSource
+	roots            GlobalNetworkReleaseRootSource
+	ownership        OwnershipObserver
+	lowPorts         NetworkDataPlaneSetupLowPortObserver
+	lowPortPlans     ticketissuer.LowPortPlanSource
+	lowPortIssuers   func() (GlobalNetworkReleaseLowPortIssuer, error)
+	resolverPlans    ticketissuer.ResolverPlanSource
+	resolverIssuers  func() (GlobalNetworkReleaseResolverIssuer, error)
+	trustPlans       ticketissuer.TrustPlanSource
+	trustIssuers     func() (GlobalNetworkReleaseTrustIssuer, error)
+	loopbackPlans    ticketissuer.PoolReleasePlanSource
+	loopbackIssuers  func() (GlobalNetworkReleaseLoopbackIssuer, error)
+	ownershipPlans   ticketissuer.OwnershipReleasePlanSource
+	ownershipIssuers func() (GlobalNetworkReleaseOwnershipIssuer, error)
+	proofObserver    GlobalNetworkReleaseOwnershipProofObserver
+	resolver         GlobalNetworkReleaseResolverObserver
+	trust            NetworkDataPlaneSetupTrustObserver
+	loopback         LoopbackObserver
+	runtime          GlobalNetworkReleaseRuntime
+	platform         networkplan.Platform
+	clock            helper.Clock
+	mutex            sync.Mutex
 }
 
 // GlobalNetworkReleaseStartRequest identifies a caller intent and daemon-assigned global operation.
@@ -187,6 +205,9 @@ func NewGlobalNetworkReleaseCoordinator(
 	trustIssuers func() (GlobalNetworkReleaseTrustIssuer, error),
 	loopbackPlans ticketissuer.PoolReleasePlanSource,
 	loopbackIssuers func() (GlobalNetworkReleaseLoopbackIssuer, error),
+	ownershipPlans ticketissuer.OwnershipReleasePlanSource,
+	ownershipIssuers func() (GlobalNetworkReleaseOwnershipIssuer, error),
+	proofObserver GlobalNetworkReleaseOwnershipProofObserver,
 	resolverObserver GlobalNetworkReleaseResolverObserver,
 	trustObserver NetworkDataPlaneSetupTrustObserver,
 	loopbackObserver LoopbackObserver,
@@ -208,6 +229,9 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(trustIssuers) ||
 		nilDependency(loopbackPlans) ||
 		nilDependency(loopbackIssuers) ||
+		nilDependency(ownershipPlans) ||
+		nilDependency(ownershipIssuers) ||
+		nilDependency(proofObserver) ||
 		nilDependency(resolverObserver) ||
 		nilDependency(trustObserver) ||
 		nilDependency(loopbackObserver) ||
@@ -216,26 +240,29 @@ func NewGlobalNetworkReleaseCoordinator(
 		panic("reconcile.NewGlobalNetworkReleaseCoordinator requires every dependency")
 	}
 	return &GlobalNetworkReleaseCoordinator{
-		journal:         journal,
-		state:           source,
-		projections:     projections,
-		roots:           roots,
-		ownership:       ownershipObserver,
-		lowPorts:        lowPorts,
-		lowPortPlans:    lowPortPlans,
-		lowPortIssuers:  lowPortIssuers,
-		resolverPlans:   resolverPlans,
-		resolverIssuers: resolverIssuers,
-		trustPlans:      trustPlans,
-		trustIssuers:    trustIssuers,
-		loopbackPlans:   loopbackPlans,
-		loopbackIssuers: loopbackIssuers,
-		resolver:        resolverObserver,
-		trust:           trustObserver,
-		loopback:        loopbackObserver,
-		runtime:         runtimeReleaser,
-		platform:        platform,
-		clock:           clock,
+		journal:          journal,
+		state:            source,
+		projections:      projections,
+		roots:            roots,
+		ownership:        ownershipObserver,
+		lowPorts:         lowPorts,
+		lowPortPlans:     lowPortPlans,
+		lowPortIssuers:   lowPortIssuers,
+		resolverPlans:    resolverPlans,
+		resolverIssuers:  resolverIssuers,
+		trustPlans:       trustPlans,
+		trustIssuers:     trustIssuers,
+		loopbackPlans:    loopbackPlans,
+		loopbackIssuers:  loopbackIssuers,
+		ownershipPlans:   ownershipPlans,
+		ownershipIssuers: ownershipIssuers,
+		proofObserver:    proofObserver,
+		resolver:         resolverObserver,
+		trust:            trustObserver,
+		loopback:         loopbackObserver,
+		runtime:          runtimeReleaser,
+		platform:         platform,
+		clock:            clock,
 	}
 }
 
@@ -1977,6 +2004,8 @@ type GlobalNetworkReleaseConfirmOwnershipRequest struct {
 	ExpectedCheckpointRevision domain.Sequence
 	// RequesterIdentity identifies the authenticated owner confirming the released claim.
 	RequesterIdentity string
+	// OwnershipEvidence proves the exact helper-authorized ownership release postcondition.
+	OwnershipEvidence helper.OwnershipMutationEvidence
 }
 
 // Validate rejects malformed ownership-release confirmation input.
@@ -1987,7 +2016,112 @@ func (request GlobalNetworkReleaseConfirmOwnershipRequest) Validate() error {
 	if err := validateOperationRevision(request.ExpectedCheckpointRevision); err != nil {
 		return err
 	}
+	if err := validateNetworkSetupRequesterIdentity(request.RequesterIdentity); err != nil {
+		return err
+	}
+	evidence := request.OwnershipEvidence
+	if evidence.ReleaseOperationID != string(request.OperationID) ||
+		evidence.ReleaseOperationRevision == 0 ||
+		evidence.ReleaseCheckpointRevision != uint64(request.ExpectedCheckpointRevision) ||
+		evidence.ReleaseCheckpointRevision <= evidence.ReleaseOperationRevision ||
+		evidence.Postcondition != helper.OwnershipPostconditionOwnedAbsent ||
+		!canonicalNetworkDataPlaneFingerprint(evidence.ReleasedOwnershipFingerprint) {
+		return errors.New("release ownership evidence is invalid")
+	}
+	return nil
+}
+
+// GlobalNetworkReleasePrepareOwnershipRequest selects one owner-approved ownership-release checkpoint.
+type GlobalNetworkReleasePrepareOwnershipRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID
+	// ExpectedCheckpointRevision fences preparation to one retained ownership checkpoint.
+	ExpectedCheckpointRevision domain.Sequence
+	// RequesterIdentity identifies the authenticated owner requesting helper authority.
+	RequesterIdentity string
+}
+
+// Validate rejects malformed ownership-release publication input.
+func (request GlobalNetworkReleasePrepareOwnershipRequest) Validate() error {
+	if err := request.OperationID.Validate(); err != nil {
+		return err
+	}
+	if err := validateOperationRevision(request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
 	return validateNetworkSetupRequesterIdentity(request.RequesterIdentity)
+}
+
+// PrepareOwnership validates one durable ownership checkpoint before publishing an ownership-release capability.
+func (c *GlobalNetworkReleaseCoordinator) PrepareOwnership(ctx context.Context, request GlobalNetworkReleasePrepareOwnershipRequest) (ticketissuer.OwnershipReleaseResult, error) {
+	if err := request.Validate(); err != nil {
+		return ticketissuer.OwnershipReleaseResult{}, err
+	}
+	ctx = normalizeContext(ctx)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ticketissuer.OwnershipReleaseResult{}, err
+	}
+	plan, err := c.ownershipPlans.Resolve(ctx, ticketissuer.OwnershipReleaseRequest{OperationID: request.OperationID})
+	if err != nil {
+		return ticketissuer.OwnershipReleaseResult{}, err
+	}
+	if err := validateGlobalNetworkReleaseOwnershipPlan(plan, request); err != nil {
+		return ticketissuer.OwnershipReleaseResult{}, err
+	}
+	issuer, err := c.ownershipIssuers()
+	if err != nil {
+		return ticketissuer.OwnershipReleaseResult{}, fmt.Errorf("open release ownership issuer: %w", err)
+	}
+	result, issueErr := issuer.Issue(ctx, request.RequesterIdentity, ticketissuer.OwnershipReleaseRequest{OperationID: request.OperationID})
+	closeErr := issuer.Close()
+	if issueErr != nil && !errors.Is(issueErr, ticketissuer.ErrOwnershipReleasePublicationIndeterminate) {
+		return ticketissuer.OwnershipReleaseResult{}, errors.Join(issueErr, closeErr)
+	}
+	if err := validateGlobalNetworkReleaseOwnershipResult(result, plan, c.clock.Now().UTC()); err != nil {
+		if errors.Is(issueErr, ticketissuer.ErrOwnershipReleasePublicationIndeterminate) || closeErr != nil {
+			return ticketissuer.OwnershipReleaseResult{}, errors.Join(
+				ticketissuer.ErrOwnershipReleasePublicationIndeterminate,
+				err,
+				closeErr,
+			)
+		}
+		return ticketissuer.OwnershipReleaseResult{}, err
+	}
+	if issueErr != nil || closeErr != nil {
+		return result, errors.Join(ticketissuer.ErrOwnershipReleasePublicationIndeterminate, issueErr, closeErr)
+	}
+	return result, nil
+}
+
+// validateGlobalNetworkReleaseOwnershipPlan binds a requester and checkpoint to terminal ownership authority.
+func validateGlobalNetworkReleaseOwnershipPlan(plan ticketissuer.OwnershipReleasePlan, request GlobalNetworkReleasePrepareOwnershipRequest) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("release ownership plan: %w", err)
+	}
+	if plan.Operation.ID != request.OperationID || plan.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return errors.New("release ownership plan differs from requested checkpoint")
+	}
+	if plan.TargetOwnership.OwnerIdentity != request.RequesterIdentity {
+		return errors.New("authenticated requester does not own release ownership authority")
+	}
+	return nil
+}
+
+// validateGlobalNetworkReleaseOwnershipResult confirms an issuer returned the exact terminal ownership authority.
+func validateGlobalNetworkReleaseOwnershipResult(result ticketissuer.OwnershipReleaseResult, plan ticketissuer.OwnershipReleasePlan, now time.Time) error {
+	if err := result.Validate(now); err != nil {
+		return err
+	}
+	if result.OperationID != plan.Operation.ID ||
+		result.OperationRevision != plan.OperationRevision ||
+		result.CheckpointRevision != plan.CheckpointRevision ||
+		result.Operation != helper.OperationReleaseNetworkOwnership ||
+		result.OwnershipFingerprint != plan.ExpectedOwnershipFingerprint {
+		return errors.New("release ownership issuer returned another authority")
+	}
+	return nil
 }
 
 // ConfirmOwnership records independently observed ownership absence and retires the projection in one normal flow.
@@ -2018,6 +2152,9 @@ func (c *GlobalNetworkReleaseCoordinator) ConfirmOwnership(
 		if plan.OwnershipReceipt == nil || request.ExpectedCheckpointRevision != plan.OwnershipReceipt.SourceCheckpointRevision {
 			return state.GlobalNetworkReleaseTerminalRecord{}, fmt.Errorf("release ownership confirmation does not match committed receipt")
 		}
+		if err := c.confirmReleasedOwnershipProof(ctx, plan, request); err != nil {
+			return state.GlobalNetworkReleaseTerminalRecord{}, err
+		}
 		return c.finalizeConfirmedReleaseProjection(ctx, plan)
 	}
 	if err := validateReleaseEffectsOwnership(plan); err != nil {
@@ -2026,15 +2163,19 @@ func (c *GlobalNetworkReleaseCoordinator) ConfirmOwnership(
 	if plan.CheckpointRevision != request.ExpectedCheckpointRevision {
 		return state.GlobalNetworkReleaseTerminalRecord{}, fmt.Errorf("release ownership checkpoint does not match durable plan")
 	}
-	observation, err := c.ownership.Observe(ctx)
-	if err != nil {
-		return state.GlobalNetworkReleaseTerminalRecord{}, fmt.Errorf("observe released ownership: %w", err)
+	if err := c.confirmReleasedOwnershipProof(ctx, plan, request); err != nil {
+		return state.GlobalNetworkReleaseTerminalRecord{}, err
 	}
-	if observation.Exists {
-		return state.GlobalNetworkReleaseTerminalRecord{}, fmt.Errorf("release ownership is still present")
-	}
+	return c.advanceReleasedOwnership(ctx, plan)
+}
+
+// advanceReleasedOwnership commits the root-proven ownership receipt and retires its exact projection.
+func (c *GlobalNetworkReleaseCoordinator) advanceReleasedOwnership(
+	ctx context.Context,
+	plan state.GlobalNetworkReleasePlanRecord,
+) (state.GlobalNetworkReleaseTerminalRecord, error) {
 	projection, err := c.journal.AdvanceGlobalNetworkReleaseOwnership(ctx, state.AdvanceGlobalNetworkReleaseOwnershipRequest{
-		OperationID:        request.OperationID,
+		OperationID:        plan.Operation.Operation.ID,
 		CheckpointRevision: plan.CheckpointRevision,
 		NetworkRevision:    plan.NetworkRevision,
 		Receipt: state.GlobalNetworkReleaseOwnershipReceipt{
@@ -2047,6 +2188,41 @@ func (c *GlobalNetworkReleaseCoordinator) ConfirmOwnership(
 		return state.GlobalNetworkReleaseTerminalRecord{}, err
 	}
 	return c.finalizeConfirmedReleaseProjection(ctx, projection)
+}
+
+// confirmReleasedOwnershipProof requires caller evidence and root-authored proof for the durable ownership authority.
+func (c *GlobalNetworkReleaseCoordinator) confirmReleasedOwnershipProof(ctx context.Context, plan state.GlobalNetworkReleasePlanRecord, request GlobalNetworkReleaseConfirmOwnershipRequest) error {
+	if request.OwnershipEvidence.ReleaseOperationRevision != uint64(plan.Operation.Revision) ||
+		request.OwnershipEvidence.ReleasedOwnershipFingerprint != plan.Authority.ExpectedOwnershipFingerprint {
+		return errors.New("release ownership evidence differs from durable authority")
+	}
+	return c.observeReleasedOwnership(ctx, plan)
+}
+
+// observeReleasedOwnership requires root proof and a fresh normal observation for one durable authority.
+func (c *GlobalNetworkReleaseCoordinator) observeReleasedOwnership(ctx context.Context, plan state.GlobalNetworkReleasePlanRecord) error {
+	if _, err := c.proofObserver.ConfirmReleased(ctx, globalNetworkReleaseProofAuthority(plan)); err != nil {
+		return fmt.Errorf("confirm released ownership proof: %w", err)
+	}
+	observation, err := c.ownership.Observe(ctx)
+	if err != nil {
+		return fmt.Errorf("observe released ownership: %w", err)
+	}
+	if observation.Exists {
+		return errors.New("release ownership is still present")
+	}
+	return nil
+}
+
+// globalNetworkReleaseProofAuthority derives the sole root-proof key from a retained ownership checkpoint.
+func globalNetworkReleaseProofAuthority(plan state.GlobalNetworkReleasePlanRecord) ownershipreleaseproof.Authority {
+	return ownershipreleaseproof.Authority{
+		ReleaseOperationID:         string(plan.Operation.Operation.ID),
+		OperationRevision:          uint64(plan.Operation.Revision),
+		CheckpointRevision:         uint64(plan.CheckpointRevision),
+		RequesterIdentity:          plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+		TargetOwnershipFingerprint: plan.Authority.ExpectedOwnershipFingerprint,
+	}
 }
 
 // readConfirmedReleaseTerminal replays only the terminal fence bound to the exact authenticated ownership confirmation.
@@ -2070,6 +2246,16 @@ func (c *GlobalNetworkReleaseCoordinator) readConfirmedReleaseTerminal(
 		terminal.SourceCheckpointRevision != request.ExpectedCheckpointRevision {
 		return state.GlobalNetworkReleaseTerminalRecord{}, &state.OperationNotFoundError{OperationID: request.OperationID}
 	}
+	if request.OwnershipEvidence.ReleaseOperationRevision == 0 ||
+		request.OwnershipEvidence.ReleaseOperationRevision != uint64(terminal.Operation.Revision) ||
+		!canonicalNetworkDataPlaneFingerprint(request.OwnershipEvidence.ReleasedOwnershipFingerprint) {
+		return state.GlobalNetworkReleaseTerminalRecord{}, &state.OperationNotFoundError{OperationID: request.OperationID}
+	}
+	// Legacy terminal fences predate persisted fingerprints; new fences bind every replay to the committed receipt.
+	if terminal.ReleasedOwnershipFingerprint != "" &&
+		request.OwnershipEvidence.ReleasedOwnershipFingerprint != terminal.ReleasedOwnershipFingerprint {
+		return state.GlobalNetworkReleaseTerminalRecord{}, &state.OperationNotFoundError{OperationID: request.OperationID}
+	}
 	return terminal, nil
 }
 
@@ -2083,10 +2269,11 @@ func (c *GlobalNetworkReleaseCoordinator) finalizeConfirmedReleaseProjection(
 		return state.GlobalNetworkReleaseTerminalRecord{}, err
 	}
 	return state.GlobalNetworkReleaseTerminalRecord{
-		Operation:                completed,
-		OwnerIdentity:            plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
-		SourceCheckpointRevision: plan.OwnershipReceipt.SourceCheckpointRevision,
-		NetworkRevision:          plan.NetworkRevision,
+		Operation:                    completed,
+		OwnerIdentity:                plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+		ReleasedOwnershipFingerprint: plan.OwnershipReceipt.ReleasedOwnershipFingerprint,
+		SourceCheckpointRevision:     plan.OwnershipReceipt.SourceCheckpointRevision,
+		NetworkRevision:              plan.NetworkRevision,
 	}, nil
 }
 
@@ -2314,6 +2501,15 @@ func (c *GlobalNetworkReleaseCoordinator) resume(ctx context.Context, operationI
 			return state.OperationRecord{}, fmt.Errorf("verify release effects: %w", err)
 		}
 	}
+	if plan.Phase == state.GlobalNetworkReleasePlanPhaseOwnership {
+		completed, recovered, err := c.recoverReleasedOwnership(ctx, plan)
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("recover released ownership: %w", err)
+		}
+		if recovered {
+			return completed, nil
+		}
+	}
 	if plan.Phase == state.GlobalNetworkReleasePlanPhaseProjection {
 		completed, err := c.finalizeReleaseProjection(ctx, plan)
 		if err != nil {
@@ -2322,6 +2518,27 @@ func (c *GlobalNetworkReleaseCoordinator) resume(ctx context.Context, operationI
 		return completed, nil
 	}
 	return plan.Operation, nil
+}
+
+// recoverReleasedOwnership completes a checkpoint when the helper committed root proof before its client confirmation arrived.
+func (c *GlobalNetworkReleaseCoordinator) recoverReleasedOwnership(
+	ctx context.Context,
+	plan state.GlobalNetworkReleasePlanRecord,
+) (state.OperationRecord, bool, error) {
+	if err := validateReleaseEffectsOwnership(plan); err != nil {
+		return state.OperationRecord{}, false, err
+	}
+	if err := c.observeReleasedOwnership(ctx, plan); err != nil {
+		if errors.Is(err, ownershipreleaseproof.ErrAbsentProof) {
+			return state.OperationRecord{}, false, nil
+		}
+		return state.OperationRecord{}, false, err
+	}
+	terminal, err := c.advanceReleasedOwnership(ctx, plan)
+	if err != nil {
+		return state.OperationRecord{}, false, err
+	}
+	return terminal.Operation, true, nil
 }
 
 // finalizeReleaseProjection retires only the exact durable projection checkpoint after ownership release is committed.

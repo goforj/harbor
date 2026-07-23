@@ -69,7 +69,7 @@ func (command *ReleaseCmd) Run(ctx context.Context) error {
 			return err
 		}
 		switch operation.Phase {
-		case control.NetworkReleasePhaseLowPorts, control.NetworkReleasePhaseResolver, control.NetworkReleasePhaseTrust, control.NetworkReleasePhaseLoopbacks:
+		case control.NetworkReleasePhaseLowPorts, control.NetworkReleasePhaseResolver, control.NetworkReleasePhaseTrust, control.NetworkReleasePhaseLoopbacks, control.NetworkReleasePhaseOwnership:
 			outcome, executeErr := command.approval.Execute(ctx, networkreleaseapproval.Request{
 				OperationID:                operation.Operation.ID,
 				ExpectedCheckpointRevision: operation.CheckpointRevision,
@@ -85,23 +85,6 @@ func (command *ReleaseCmd) Run(ctx context.Context) error {
 			if err := validateNetworkReleaseOperation(operation, networkReleaseIntentID); err != nil {
 				return err
 			}
-		case control.NetworkReleasePhaseOwnership:
-			next, confirmErr := command.client.ConfirmNetworkReleaseOwnership(ctx, control.ConfirmNetworkReleaseOwnershipRequest{
-				OperationID:                operation.Operation.ID,
-				ExpectedCheckpointRevision: operation.CheckpointRevision,
-			})
-			if confirmErr != nil {
-				return fmt.Errorf("confirm network release ownership: %w", confirmErr)
-			}
-			if err := validateNetworkReleaseOperation(next, networkReleaseIntentID); err != nil {
-				return err
-			}
-			if next.Operation.State != domain.OperationSucceeded ||
-				next.CheckpointRevision != operation.CheckpointRevision ||
-				next.Phase != control.NetworkReleasePhaseProjection {
-				return errors.New("network release ownership confirmation did not complete the terminal release")
-			}
-			operation = next
 		case control.NetworkReleasePhaseRuntimeRelease, control.NetworkReleasePhaseVerifyEffects, control.NetworkReleasePhaseProjection:
 			next, startErr := command.client.StartNetworkRelease(ctx, control.StartNetworkReleaseRequest{IntentID: networkReleaseIntentID})
 			if startErr != nil {

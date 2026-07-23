@@ -74,10 +74,11 @@ func (journal *OperationJournal) FinalizeGlobalNetworkReleaseProjection(
 				return err
 			}
 			terminal := globalNetworkReleaseTerminalRow{
-				OperationID:              string(request.OperationID),
-				OwnerIdentity:            plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
-				SourceCheckpointRevision: int(plan.OwnershipReceipt.SourceCheckpointRevision),
-				NetworkRevision:          int(plan.NetworkRevision),
+				OperationID:                  string(request.OperationID),
+				OwnerIdentity:                plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+				ReleasedOwnershipFingerprint: plan.OwnershipReceipt.ReleasedOwnershipFingerprint,
+				SourceCheckpointRevision:     int(plan.OwnershipReceipt.SourceCheckpointRevision),
+				NetworkRevision:              int(plan.NetworkRevision),
 			}
 			expectedTerminal = terminal
 			if err := tx.Create(&terminal).Error; err != nil {
@@ -104,6 +105,7 @@ func (journal *OperationJournal) FinalizeGlobalNetworkReleaseProjection(
 			if !found ||
 				!sameGlobalNetworkReleaseTerminalOperation(terminal.Operation, result) ||
 				terminal.OwnerIdentity != expectedTerminal.OwnerIdentity ||
+				terminal.ReleasedOwnershipFingerprint != expectedTerminal.ReleasedOwnershipFingerprint ||
 				terminal.SourceCheckpointRevision != domain.Sequence(expectedTerminal.SourceCheckpointRevision) ||
 				terminal.NetworkRevision != domain.Sequence(expectedTerminal.NetworkRevision) {
 				return fmt.Errorf("global network release projection finalization did not retain the exact terminal record")

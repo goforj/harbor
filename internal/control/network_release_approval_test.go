@@ -25,6 +25,7 @@ type recordingNetworkReleaseApprovalAuthority struct {
 	resolverPreparation    NetworkReleaseResolverApprovalPreparation
 	trustPreparation       NetworkReleaseTrustApprovalPreparation
 	loopbackPreparation    NetworkReleaseLoopbackApprovalPreparation
+	ownershipPreparation   NetworkReleaseOwnershipApprovalPreparation
 	release                NetworkReleaseOperation
 	resolverRelease        NetworkReleaseOperation
 	trustRelease           NetworkReleaseOperation
@@ -40,14 +41,28 @@ type recordingNetworkReleaseApprovalAuthority struct {
 	trustConfirmations     []ConfirmNetworkReleaseTrustApprovalRequest
 	loopbackPrepares       []PrepareNetworkReleaseLoopbackApprovalRequest
 	loopbackConfirmations  []ConfirmNetworkReleaseLoopbackApprovalRequest
-	ownershipConfirmations []ConfirmNetworkReleaseOwnershipRequest
+	ownershipPrepares      []PrepareNetworkReleaseOwnershipApprovalRequest
+	ownershipConfirmations []ConfirmNetworkReleaseOwnershipApprovalRequest
 }
 
-// ConfirmNetworkReleaseOwnership records the authenticated caller and returns the configured projection release.
-func (authority *recordingNetworkReleaseApprovalAuthority) ConfirmNetworkReleaseOwnership(
+// PrepareNetworkReleaseOwnershipApproval records the authenticated caller and returns the configured ownership preparation.
+func (authority *recordingNetworkReleaseApprovalAuthority) PrepareNetworkReleaseOwnershipApproval(
 	_ context.Context,
 	caller Caller,
-	request ConfirmNetworkReleaseOwnershipRequest,
+	request PrepareNetworkReleaseOwnershipApprovalRequest,
+) (NetworkReleaseOwnershipApprovalPreparation, error) {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.callers = append(authority.callers, caller)
+	authority.ownershipPrepares = append(authority.ownershipPrepares, request)
+	return authority.ownershipPreparation, authority.err
+}
+
+// ConfirmNetworkReleaseOwnershipApproval records the authenticated caller and returns the configured projection release.
+func (authority *recordingNetworkReleaseApprovalAuthority) ConfirmNetworkReleaseOwnershipApproval(
+	_ context.Context,
+	caller Caller,
+	request ConfirmNetworkReleaseOwnershipApprovalRequest,
 ) (NetworkReleaseOperation, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
@@ -174,8 +189,8 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 	if CapabilityNetworkReleaseLoopbackApprovalV1 != "control.network-release-loopback-approval.v1" {
 		t.Fatalf("loopback capability = %q", CapabilityNetworkReleaseLoopbackApprovalV1)
 	}
-	if CapabilityNetworkReleaseOwnershipApprovalV1 != "control.network-release-ownership-approval.v1" {
-		t.Fatalf("ownership capability = %q", CapabilityNetworkReleaseOwnershipApprovalV1)
+	if CapabilityNetworkReleaseOwnershipApprovalV2 != "control.network-release-ownership-approval.v2" {
+		t.Fatalf("ownership capability = %q", CapabilityNetworkReleaseOwnershipApprovalV2)
 	}
 	if methodNetworkReleaseLowPortPrepare != "control.v1.network.release.low-port.prepare" ||
 		methodNetworkReleaseLowPortConfirm != "control.v1.network.release.low-port.confirm" ||
@@ -185,9 +200,10 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 		methodNetworkReleaseTrustConfirm != "control.v1.network.release.trust.confirm" ||
 		methodNetworkReleaseLoopbackPrepare != "control.v1.network.release.loopback.prepare" ||
 		methodNetworkReleaseLoopbackConfirm != "control.v1.network.release.loopback.confirm" ||
+		methodNetworkReleaseOwnershipPrepare != "control.v1.network.release.ownership.prepare" ||
 		methodNetworkReleaseOwnershipConfirm != "control.v1.network.release.ownership.confirm" {
 		t.Fatalf(
-			"methods = %q, %q, %q, %q, %q, %q, %q, %q, %q",
+			"methods = %q, %q, %q, %q, %q, %q, %q, %q, %q, %q",
 			methodNetworkReleaseLowPortPrepare,
 			methodNetworkReleaseLowPortConfirm,
 			methodNetworkReleaseResolverPrepare,
@@ -196,6 +212,7 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 			methodNetworkReleaseTrustConfirm,
 			methodNetworkReleaseLoopbackPrepare,
 			methodNetworkReleaseLoopbackConfirm,
+			methodNetworkReleaseOwnershipPrepare,
 			methodNetworkReleaseOwnershipConfirm,
 		)
 	}
@@ -203,9 +220,16 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 
 // TestNetworkReleaseOwnershipConfirmationHidesMissingAndForeignOperations proves the approval transport exposes both cases as the same not-found boundary.
 func TestNetworkReleaseOwnershipConfirmationHidesMissingAndForeignOperations(t *testing.T) {
-	request := ConfirmNetworkReleaseOwnershipRequest{
+	request := ConfirmNetworkReleaseOwnershipApprovalRequest{
 		OperationID:                "operation-network-release",
 		ExpectedCheckpointRevision: 6,
+		OwnershipEvidence: helper.OwnershipMutationEvidence{
+			ReleaseOperationID:           "operation-network-release",
+			ReleaseOperationRevision:     5,
+			ReleaseCheckpointRevision:    6,
+			ReleasedOwnershipFingerprint: strings.Repeat("a", 64),
+			Postcondition:                helper.OwnershipPostconditionOwnedAbsent,
+		},
 	}
 	var responses []string
 	for _, name := range []string{"missing", "foreign owner"} {
@@ -214,9 +238,9 @@ func TestNetworkReleaseOwnershipConfirmationHidesMissingAndForeignOperations(t *
 				err: NewNetworkReleaseNotFoundError(errors.New("network release operation was not found")),
 			}
 			running := newNetworkReleaseApprovalRunningClient(t, authority)
-			_, err := running.client.ConfirmNetworkReleaseOwnership(t.Context(), request)
+			_, err := running.client.ConfirmNetworkReleaseOwnershipApproval(t.Context(), request)
 			if err == nil {
-				t.Fatal("ConfirmNetworkReleaseOwnership() error = nil")
+				t.Fatal("ConfirmNetworkReleaseOwnershipApproval() error = nil")
 			}
 			responses = append(responses, err.Error())
 		})

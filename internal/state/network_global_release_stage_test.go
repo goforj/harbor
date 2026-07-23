@@ -399,6 +399,7 @@ func globalNetworkReleaseStageApplyPlanMigration(t *testing.T, connection *gorm.
 		"2026_07_22_047000_create_network_global_release_ownership_receipts",
 		"2026_07_22_048000_add_network_resolver_setup_administrator_trust",
 		"2026_07_22_049000_create_network_global_release_terminals",
+		"2026_07_22_051000_add_network_global_release_terminal_ownership_fingerprint",
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {

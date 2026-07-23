@@ -69,12 +69,15 @@ func TestReleaseCommandCompletesFullHappyPath(t *testing.T) {
 				State:     networkreleaseapproval.Succeeded,
 				Operation: &ownership,
 			},
+			{
+				State:     networkreleaseapproval.Succeeded,
+				Operation: &terminal,
+			},
 		},
 	}
 	starts := 0
 	var startRequests []control.StartNetworkReleaseRequest
 	connection := &fakeDaemonControlClient{
-		networkReleaseOwnershipConfirmation: terminal,
 		networkReleaseStartHook: func(_ context.Context, request control.StartNetworkReleaseRequest) (control.NetworkReleaseOperation, error) {
 			starts++
 			startRequests = append(startRequests, request)
@@ -131,6 +134,11 @@ func TestReleaseCommandCompletesFullHappyPath(t *testing.T) {
 			ExpectedCheckpointRevision: loopbacks.CheckpointRevision,
 			Phase:                      control.NetworkReleasePhaseLoopbacks,
 		},
+		{
+			OperationID:                ownership.Operation.ID,
+			ExpectedCheckpointRevision: ownership.CheckpointRevision,
+			Phase:                      control.NetworkReleasePhaseOwnership,
+		},
 	}
 	if !reflect.DeepEqual(approval.requests, expectedApprovals) {
 		t.Fatalf("approval requests = %#v, want %#v", approval.requests, expectedApprovals)
@@ -138,25 +146,17 @@ func TestReleaseCommandCompletesFullHappyPath(t *testing.T) {
 	if len(approval.outcomes) != 0 {
 		t.Fatalf("remaining approval outcomes = %d", len(approval.outcomes))
 	}
-	if len(connection.networkReleaseOwnershipConfirmations) != 1 {
-		t.Fatalf("ownership confirmations = %d, want 1", len(connection.networkReleaseOwnershipConfirmations))
-	}
-	confirmation := connection.networkReleaseOwnershipConfirmations[0]
-	if confirmation.OperationID != ownership.Operation.ID || confirmation.ExpectedCheckpointRevision != ownership.CheckpointRevision {
-		t.Fatalf("ownership confirmation = %#v", confirmation)
-	}
 	if output.String() != "Network release complete.\n" {
 		t.Fatalf("output = %q", output.String())
 	}
 }
 
-// TestReleaseCommandConfirmsOwnershipBeforeReportingSuccess protects the authenticated terminal checkpoint.
-func TestReleaseCommandConfirmsOwnershipBeforeReportingSuccess(t *testing.T) {
+// TestReleaseCommandDelegatesOwnershipBeforeReportingSuccess keeps terminal consent in the approval executor.
+func TestReleaseCommandDelegatesOwnershipBeforeReportingSuccess(t *testing.T) {
 	operation := releaseCommandOperation(t, control.NetworkReleasePhaseOwnership)
 	terminal := releaseCommandTerminal(t, operation)
 	connection := &fakeDaemonControlClient{
-		networkRelease:                      operation,
-		networkReleaseOwnershipConfirmation: terminal,
+		networkRelease: operation,
 	}
 	starts := 0
 	connection.networkReleaseStartHook = func(context.Context, control.StartNetworkReleaseRequest) (control.NetworkReleaseOperation, error) {
@@ -167,25 +167,95 @@ func TestReleaseCommandConfirmsOwnershipBeforeReportingSuccess(t *testing.T) {
 		newDaemonClient(func(context.Context) (daemonControlClient, error) {
 			return connection, nil
 		}),
-		releaseApprovalStub{},
+		&releaseApprovalRunnerStub{
+			outcomes: []networkreleaseapproval.Outcome{
+				{
+					State:     networkreleaseapproval.Succeeded,
+					Operation: &terminal,
+				},
+			},
+		},
 	)
 	var output bytes.Buffer
 	command.output = &output
 	if err := command.Run(t.Context()); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(connection.networkReleaseOwnershipConfirmations) != 1 {
-		t.Fatalf("ownership confirmations = %d, want 1", len(connection.networkReleaseOwnershipConfirmations))
-	}
 	if starts != 1 {
 		t.Fatalf("starts = %d, want 1", starts)
 	}
-	confirmation := connection.networkReleaseOwnershipConfirmations[0]
-	if confirmation.OperationID != operation.Operation.ID || confirmation.ExpectedCheckpointRevision != operation.CheckpointRevision {
-		t.Fatalf("ownership confirmation = %#v", confirmation)
-	}
 	if output.String() != "Network release complete.\n" {
 		t.Fatalf("output = %q", output.String())
+	}
+}
+
+// TestReleaseCommandReportsTerminalOwnershipApprovalOutcomes keeps retry guidance consistent at the CLI boundary.
+func TestReleaseCommandReportsTerminalOwnershipApprovalOutcomes(t *testing.T) {
+	t.Parallel()
+	operation := releaseCommandOperation(t, control.NetworkReleasePhaseOwnership)
+	tests := []struct {
+		name    string
+		outcome networkreleaseapproval.Outcome
+		want    string
+	}{
+		{
+			name: "declined",
+			outcome: networkreleaseapproval.Outcome{
+				State: networkreleaseapproval.Declined,
+			},
+			want: "was declined",
+		},
+		{
+			name: "unavailable",
+			outcome: networkreleaseapproval.Outcome{
+				State: networkreleaseapproval.Unavailable,
+			},
+			want: "is unavailable",
+		},
+		{
+			name: "helper failure",
+			outcome: networkreleaseapproval.Outcome{
+				State: networkreleaseapproval.HelperFailed,
+				HelperFailure: &networkreleaseapproval.HelperFailure{
+					Code:    "authentication_failed",
+					Message: "ownership release denied",
+				},
+			},
+			want: "ownership release denied",
+		},
+		{
+			name: "indeterminate",
+			outcome: networkreleaseapproval.Outcome{
+				State: networkreleaseapproval.Indeterminate,
+			},
+			want: "is indeterminate",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runner := &releaseApprovalRunnerStub{
+				outcomes: []networkreleaseapproval.Outcome{test.outcome},
+			}
+			command := NewReleaseCmd(newDaemonClient(func(context.Context) (daemonControlClient, error) {
+				return &fakeDaemonControlClient{
+					networkRelease: operation,
+				}, nil
+			}), runner)
+			err := command.Run(t.Context())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Run() error = %v, want %q", err, test.want)
+			}
+			if !reflect.DeepEqual(runner.requests, []networkreleaseapproval.Request{
+				{
+					OperationID:                operation.Operation.ID,
+					ExpectedCheckpointRevision: operation.CheckpointRevision,
+					Phase:                      control.NetworkReleasePhaseOwnership,
+				},
+			}) {
+				t.Fatalf("approval requests = %#v", runner.requests)
+			}
+		})
 	}
 }
 

@@ -42,7 +42,8 @@ type daemonControlClient interface {
 	ConfirmNetworkReleaseTrustApproval(context.Context, control.ConfirmNetworkReleaseTrustApprovalRequest) (control.NetworkReleaseOperation, error)
 	PrepareNetworkReleaseLoopbackApproval(context.Context, control.PrepareNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseLoopbackApprovalPreparation, error)
 	ConfirmNetworkReleaseLoopbackApproval(context.Context, control.ConfirmNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseOperation, error)
-	ConfirmNetworkReleaseOwnership(context.Context, control.ConfirmNetworkReleaseOwnershipRequest) (control.NetworkReleaseOperation, error)
+	PrepareNetworkReleaseOwnershipApproval(context.Context, control.PrepareNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOwnershipApprovalPreparation, error)
+	ConfirmNetworkReleaseOwnershipApproval(context.Context, control.ConfirmNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOperation, error)
 	Close() error
 }
 
@@ -116,10 +117,17 @@ func (client *DaemonClient) ConfirmNetworkReleaseLoopbackApproval(ctx context.Co
 	})
 }
 
-// ConfirmNetworkReleaseOwnership confirms the authenticated owner's released machine ownership checkpoint.
-func (client *DaemonClient) ConfirmNetworkReleaseOwnership(ctx context.Context, request control.ConfirmNetworkReleaseOwnershipRequest) (control.NetworkReleaseOperation, error) {
+// PrepareNetworkReleaseOwnershipApproval prepares one terminal ownership release checkpoint.
+func (client *DaemonClient) PrepareNetworkReleaseOwnershipApproval(ctx context.Context, request control.PrepareNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOwnershipApprovalPreparation, error) {
+	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkReleaseOwnershipApprovalPreparation, error) {
+		return connection.PrepareNetworkReleaseOwnershipApproval(ctx, request)
+	})
+}
+
+// ConfirmNetworkReleaseOwnershipApproval confirms terminal ownership release evidence.
+func (client *DaemonClient) ConfirmNetworkReleaseOwnershipApproval(ctx context.Context, request control.ConfirmNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOperation, error) {
 	return withDaemonConnection(ctx, client, func(connection daemonControlClient) (control.NetworkReleaseOperation, error) {
-		return connection.ConfirmNetworkReleaseOwnership(ctx, request)
+		return connection.ConfirmNetworkReleaseOwnershipApproval(ctx, request)
 	})
 }
 

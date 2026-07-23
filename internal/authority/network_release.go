@@ -42,6 +42,8 @@ type networkReleaseCoordinator interface {
 	PrepareLoopbacks(context.Context, reconcile.GlobalNetworkReleasePrepareLoopbacksRequest) (ticketissuer.PoolResult, error)
 	// ConfirmLoopbacks verifies complete loopback-pool removal and advances the retained release plan.
 	ConfirmLoopbacks(context.Context, reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// PrepareOwnership publishes one bounded ownership-release capability.
+	PrepareOwnership(context.Context, reconcile.GlobalNetworkReleasePrepareOwnershipRequest) (ticketissuer.OwnershipReleaseResult, error)
 	// ConfirmOwnership independently verifies ownership absence and returns the completed terminal fence.
 	ConfirmOwnership(context.Context, reconcile.GlobalNetworkReleaseConfirmOwnershipRequest) (state.GlobalNetworkReleaseTerminalRecord, error)
 }
@@ -410,8 +412,71 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseLoopbackApproval(
 	return result, nil
 }
 
-// ConfirmNetworkReleaseOwnership binds independent ownership absence confirmation to the authenticated transport user.
-func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseOwnership(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseOwnershipRequest) (control.NetworkReleaseOperation, error) {
+// PrepareNetworkReleaseOwnershipApproval binds release-network-ownership helper authority to the authenticated transport user.
+func (authority *NetworkReleaseAuthority) PrepareNetworkReleaseOwnershipApproval(ctx context.Context, caller control.Caller, request control.PrepareNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOwnershipApprovalPreparation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseOwnershipApprovalPreparation{}, err
+	}
+	result, err := authority.coordinator.PrepareOwnership(ctx, reconcile.GlobalNetworkReleasePrepareOwnershipRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+	})
+	publicationDisposition := control.NetworkReleaseOwnershipPublicationDurable
+	if errors.Is(err, ticketissuer.ErrOwnershipReleasePublicationIndeterminate) {
+		publicationDisposition = control.NetworkReleaseOwnershipPublicationIndeterminate
+	} else if err != nil {
+		return control.NetworkReleaseOwnershipApprovalPreparation{}, classifyNetworkReleaseError(err)
+	}
+	if err := result.Validate(time.Now().UTC()); err != nil {
+		resultErr := fmt.Errorf("network release ownership preparation result: %w", err)
+		if publicationDisposition == control.NetworkReleaseOwnershipPublicationIndeterminate {
+			return control.NetworkReleaseOwnershipApprovalPreparation{}, classifyNetworkReleaseError(
+				errors.Join(ticketissuer.ErrOwnershipReleasePublicationIndeterminate, resultErr),
+			)
+		}
+		return control.NetworkReleaseOwnershipApprovalPreparation{}, resultErr
+	}
+	preparation := control.NetworkReleaseOwnershipApprovalPreparation{
+		OperationID:            request.OperationID,
+		CheckpointRevision:     request.ExpectedCheckpointRevision,
+		PublicationDisposition: publicationDisposition,
+		Ticket: control.NetworkReleaseOwnershipApprovalTicket{
+			OperationID:          result.OperationID,
+			OperationRevision:    result.OperationRevision,
+			CheckpointRevision:   result.CheckpointRevision,
+			Reference:            result.Reference,
+			Operation:            result.Operation,
+			OwnershipFingerprint: result.OwnershipFingerprint,
+			ExpiresAt:            result.ExpiresAt,
+		},
+	}
+	if err := preparation.Validate(); err != nil {
+		preparationErr := fmt.Errorf("network release ownership preparation: %w", err)
+		if publicationDisposition == control.NetworkReleaseOwnershipPublicationIndeterminate {
+			return control.NetworkReleaseOwnershipApprovalPreparation{}, classifyNetworkReleaseError(
+				errors.Join(ticketissuer.ErrOwnershipReleasePublicationIndeterminate, preparationErr),
+			)
+		}
+		return control.NetworkReleaseOwnershipApprovalPreparation{}, preparationErr
+	}
+	if preparation.OperationID != request.OperationID ||
+		preparation.CheckpointRevision != request.ExpectedCheckpointRevision ||
+		preparation.Ticket.OperationID != request.OperationID {
+		correlationErr := errors.New("network release ownership preparation differs from the requested checkpoint")
+		if publicationDisposition == control.NetworkReleaseOwnershipPublicationIndeterminate {
+			return control.NetworkReleaseOwnershipApprovalPreparation{}, classifyNetworkReleaseError(
+				errors.Join(ticketissuer.ErrOwnershipReleasePublicationIndeterminate, correlationErr),
+			)
+		}
+		return control.NetworkReleaseOwnershipApprovalPreparation{}, correlationErr
+	}
+	return preparation, nil
+}
+
+// ConfirmNetworkReleaseOwnershipApproval verifies root-authored ownership release evidence and completes projection retirement.
+func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseOwnershipApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseOwnershipApprovalRequest) (control.NetworkReleaseOperation, error) {
 	ctx = normalizeContext(ctx)
 	if err := request.Validate(); err != nil {
 		return control.NetworkReleaseOperation{}, err
@@ -420,6 +485,7 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseOwnership(ctx con
 		OperationID:                request.OperationID,
 		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
 		RequesterIdentity:          caller.Transport.UserID,
+		OwnershipEvidence:          request.OwnershipEvidence,
 	})
 	if err != nil {
 		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)

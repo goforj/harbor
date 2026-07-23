@@ -234,6 +234,11 @@ func newGlobalNetworkReleaseLowPortFixture(t *testing.T) *globalNetworkReleaseLo
 		func() (GlobalNetworkReleaseLoopbackIssuer, error) {
 			return nil, errors.New("unexpected release loopback issuer")
 		},
+		globalNetworkReleaseUnavailableOwnershipPlans{},
+		func() (GlobalNetworkReleaseOwnershipIssuer, error) {
+			return nil, errors.New("unexpected release ownership issuer")
+		},
+		globalNetworkReleaseUnavailableOwnershipProofObserver{},
 		base.resolver,
 		base.trust,
 		base.loopback,

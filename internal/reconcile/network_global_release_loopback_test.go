@@ -654,6 +654,11 @@ func newGlobalNetworkReleaseLoopbackFixtureFromBase(t *testing.T, base *globalNe
 			}
 			return fixture.issuer, nil
 		},
+		globalNetworkReleaseUnavailableOwnershipPlans{},
+		func() (GlobalNetworkReleaseOwnershipIssuer, error) {
+			return nil, errors.New("unexpected release ownership issuer")
+		},
+		globalNetworkReleaseUnavailableOwnershipProofObserver{},
 		base.resolver,
 		base.trust,
 		fixture.observer,

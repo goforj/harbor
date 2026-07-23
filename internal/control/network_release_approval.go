@@ -101,17 +101,134 @@ type ConfirmNetworkReleaseApprovalRequest struct {
 	LowPortEvidence helper.LowPortMutationEvidence `json:"low_port_evidence"`
 }
 
-// ConfirmNetworkReleaseOwnershipRequest selects the ownership checkpoint whose independently observed absence may retire the projection.
-type ConfirmNetworkReleaseOwnershipRequest struct {
+// PrepareNetworkReleaseOwnershipApprovalRequest selects the exact ownership checkpoint that may issue ownership-release authority.
+type PrepareNetworkReleaseOwnershipApprovalRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// ExpectedCheckpointRevision fences preparation to the ownership release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+}
+
+// Validate reports whether preparation identifies one bounded ownership checkpoint.
+func (request PrepareNetworkReleaseOwnershipApprovalRequest) Validate() error {
+	return validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision)
+}
+
+// NetworkReleaseOwnershipApprovalTicket is non-secret launch metadata for one ownership release.
+type NetworkReleaseOwnershipApprovalTicket struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// OperationRevision identifies the retained release operation revision.
+	OperationRevision domain.Sequence `json:"operation_revision"`
+	// CheckpointRevision identifies the retained ownership checkpoint.
+	CheckpointRevision domain.Sequence `json:"checkpoint_revision"`
+	// Reference identifies the opaque helper capability.
+	Reference helper.TicketReference `json:"reference"`
+	// Operation fixes the helper action to ownership release.
+	Operation helper.Operation `json:"operation"`
+	// OwnershipFingerprint binds the ticket to the retained ownership target.
+	OwnershipFingerprint string `json:"ownership_fingerprint"`
+	// ExpiresAt limits the lifetime of the helper capability.
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// NetworkReleaseOwnershipPublicationDisposition identifies whether ownership capability publication completed durably.
+type NetworkReleaseOwnershipPublicationDisposition string
+
+const (
+	// NetworkReleaseOwnershipPublicationDurable means the returned ticket reference is ready for redemption.
+	NetworkReleaseOwnershipPublicationDurable NetworkReleaseOwnershipPublicationDisposition = "durable"
+	// NetworkReleaseOwnershipPublicationIndeterminate means the returned reference must be reconciled without reissuing.
+	NetworkReleaseOwnershipPublicationIndeterminate NetworkReleaseOwnershipPublicationDisposition = "indeterminate"
+)
+
+// Validate rejects unknown ownership capability publication states.
+func (disposition NetworkReleaseOwnershipPublicationDisposition) Validate() error {
+	switch disposition {
+	case NetworkReleaseOwnershipPublicationDurable, NetworkReleaseOwnershipPublicationIndeterminate:
+		return nil
+	default:
+		return errors.New("network release ownership publication disposition is invalid")
+	}
+}
+
+// Validate reports whether ticket metadata can launch only the selected ownership release.
+func (ticket NetworkReleaseOwnershipApprovalTicket) Validate() error {
+	if err := ticket.OperationID.Validate(); err != nil {
+		return err
+	}
+	if ticket.OperationRevision == 0 || ticket.CheckpointRevision == 0 || ticket.CheckpointRevision <= ticket.OperationRevision {
+		return errors.New("network release ownership ticket revisions are invalid")
+	}
+	if err := ticket.Reference.Validate(); err != nil {
+		return err
+	}
+	if ticket.Operation != helper.OperationReleaseNetworkOwnership {
+		return fmt.Errorf("network release ownership operation is %q, expected %q", ticket.Operation, helper.OperationReleaseNetworkOwnership)
+	}
+	if !validNetworkDataPlaneSetupFingerprint(ticket.OwnershipFingerprint) {
+		return errors.New("network release ownership fingerprint is invalid")
+	}
+	if ticket.ExpiresAt.IsZero() || ticket.ExpiresAt.Location() != time.UTC {
+		return errors.New("network release ownership expiry must be a nonzero UTC time")
+	}
+	return nil
+}
+
+// NetworkReleaseOwnershipApprovalPreparation reports one helper capability for an exact ownership checkpoint.
+type NetworkReleaseOwnershipApprovalPreparation struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// CheckpointRevision identifies the retained ownership checkpoint.
+	CheckpointRevision domain.Sequence `json:"checkpoint_revision"`
+	// PublicationDisposition tells the caller whether to redeem or reconcile the returned reference without reissuing.
+	PublicationDisposition NetworkReleaseOwnershipPublicationDisposition `json:"publication_disposition"`
+	// Ticket supplies the ownership release helper capability.
+	Ticket NetworkReleaseOwnershipApprovalTicket `json:"ticket"`
+}
+
+// Validate reports whether preparation and ticket identify the same selected ownership release.
+func (preparation NetworkReleaseOwnershipApprovalPreparation) Validate() error {
+	if err := validateNetworkReleaseApprovalSelection(preparation.OperationID, preparation.CheckpointRevision); err != nil {
+		return err
+	}
+	if err := preparation.Ticket.Validate(); err != nil {
+		return err
+	}
+	if err := preparation.PublicationDisposition.Validate(); err != nil {
+		return err
+	}
+	if preparation.Ticket.OperationID != preparation.OperationID || preparation.Ticket.CheckpointRevision != preparation.CheckpointRevision {
+		return errors.New("network release ownership ticket belongs to another checkpoint")
+	}
+	return nil
+}
+
+// ConfirmNetworkReleaseOwnershipApprovalRequest selects one ownership checkpoint and supplies ownership-release evidence.
+type ConfirmNetworkReleaseOwnershipApprovalRequest struct {
 	// OperationID identifies the durable global release operation.
 	OperationID domain.OperationID `json:"operation_id"`
 	// ExpectedCheckpointRevision fences confirmation to the ownership release checkpoint.
 	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+	// OwnershipEvidence proves the exact retained ownership record is absent.
+	OwnershipEvidence helper.OwnershipMutationEvidence `json:"ownership_evidence"`
 }
 
-// Validate reports whether confirmation identifies one bounded ownership checkpoint.
-func (request ConfirmNetworkReleaseOwnershipRequest) Validate() error {
-	return validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision)
+// Validate reports whether confirmation carries one canonical ownership-release postcondition.
+func (request ConfirmNetworkReleaseOwnershipApprovalRequest) Validate() error {
+	if err := validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision); err != nil {
+		return err
+	}
+	evidence := request.OwnershipEvidence
+	if evidence.ReleaseOperationID != string(request.OperationID) ||
+		evidence.ReleaseOperationRevision == 0 ||
+		evidence.ReleaseCheckpointRevision != uint64(request.ExpectedCheckpointRevision) ||
+		evidence.ReleaseCheckpointRevision <= evidence.ReleaseOperationRevision ||
+		!validNetworkDataPlaneSetupFingerprint(evidence.ReleasedOwnershipFingerprint) ||
+		evidence.Postcondition != helper.OwnershipPostconditionOwnedAbsent {
+		return errors.New("network release ownership evidence is invalid")
+	}
+	return nil
 }
 
 // Validate reports whether confirmation carries one owned-absent low-port release postcondition.

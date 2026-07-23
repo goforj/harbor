@@ -16,6 +16,9 @@ type GlobalNetworkReleaseTerminalRecord struct {
 	Operation OperationRecord
 	// OwnerIdentity is the original machine-owner identity released by this operation.
 	OwnerIdentity string
+	// ReleasedOwnershipFingerprint is the exact ownership receipt evidence retained for terminal replay.
+	// An empty value identifies a terminal record written before this evidence was persisted.
+	ReleasedOwnershipFingerprint string
 	// SourceCheckpointRevision is the ownership checkpoint that admitted the terminal record.
 	SourceCheckpointRevision domain.Sequence
 	// NetworkRevision is the released network aggregate revision.
@@ -24,10 +27,11 @@ type GlobalNetworkReleaseTerminalRecord struct {
 
 // globalNetworkReleaseTerminalRow is the private persistence shape for a completed release.
 type globalNetworkReleaseTerminalRow struct {
-	OperationID              string `gorm:"column:operation_id"`
-	OwnerIdentity            string `gorm:"column:owner_identity"`
-	SourceCheckpointRevision int    `gorm:"column:source_checkpoint_revision"`
-	NetworkRevision          int    `gorm:"column:network_revision"`
+	OperationID                  string `gorm:"column:operation_id"`
+	OwnerIdentity                string `gorm:"column:owner_identity"`
+	ReleasedOwnershipFingerprint string `gorm:"column:released_ownership_fingerprint"`
+	SourceCheckpointRevision     int    `gorm:"column:source_checkpoint_revision"`
+	NetworkRevision              int    `gorm:"column:network_revision"`
 }
 
 // TableName returns the durable global release terminal table name.
@@ -99,6 +103,11 @@ func readValidatedGlobalNetworkReleaseTerminal(tx *gorm.DB, operationID domain.O
 	if err := validateGlobalNetworkReleaseTerminalOwner(rows[0].OwnerIdentity); err != nil {
 		return GlobalNetworkReleaseTerminalRecord{}, false, corruptGlobalNetworkReleaseTerminal(operationID, err)
 	}
+	if rows[0].ReleasedOwnershipFingerprint != "" {
+		if err := validateGlobalNetworkReleaseDigest(rows[0].ReleasedOwnershipFingerprint); err != nil {
+			return GlobalNetworkReleaseTerminalRecord{}, false, corruptGlobalNetworkReleaseTerminal(operationID, err)
+		}
+	}
 	sourceCheckpointRevision, err := modelIntToSequence("global network release terminal source checkpoint revision", rows[0].SourceCheckpointRevision)
 	if err != nil {
 		return GlobalNetworkReleaseTerminalRecord{}, false, corruptGlobalNetworkReleaseTerminal(operationID, err)
@@ -111,10 +120,11 @@ func readValidatedGlobalNetworkReleaseTerminal(tx *gorm.DB, operationID domain.O
 		return GlobalNetworkReleaseTerminalRecord{}, false, corruptGlobalNetworkReleaseTerminal(operationID, fmt.Errorf("terminal replay fences must precede succeeded operation revision"))
 	}
 	return GlobalNetworkReleaseTerminalRecord{
-		Operation:                operation,
-		OwnerIdentity:            rows[0].OwnerIdentity,
-		SourceCheckpointRevision: sourceCheckpointRevision,
-		NetworkRevision:          networkRevision,
+		Operation:                    operation,
+		OwnerIdentity:                rows[0].OwnerIdentity,
+		ReleasedOwnershipFingerprint: rows[0].ReleasedOwnershipFingerprint,
+		SourceCheckpointRevision:     sourceCheckpointRevision,
+		NetworkRevision:              networkRevision,
 	}, true, nil
 }
 
