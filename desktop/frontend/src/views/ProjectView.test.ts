@@ -1,13 +1,17 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot } from '@/bridge/mock'
 import type { ProjectLifecycleOperation, ProjectRuntimeRepairInspection } from '@/domain/harbor'
 import { useHarborStore } from '@/stores/harbor'
 import ProjectView from './ProjectView.vue'
+
+afterEach(() => {
+  delete window.runtime
+})
 
 interface MountedProjectView {
   pinia: Pinia
@@ -158,7 +162,7 @@ describe('ProjectView project start output', () => {
     wrapper.unmount()
   })
 
-  it.each(['Development output', 'Services', 'Resources'])('preserves the %s tab when the selected project starts', async (tabLabel) => {
+  it.each(['Development output', 'Connect', 'Services', 'Resources'])('preserves the %s tab when the selected project starts', async (tabLabel) => {
     vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => admittedStart(projectId, intentId))
     const { wrapper } = await mountProject('reports')
     await detailTab(wrapper, tabLabel).trigger('mousedown', { button: 0 })
@@ -273,12 +277,41 @@ describe('ProjectView project start output', () => {
   })
 })
 
+describe('ProjectView service connections', () => {
+  it('loads every project service and copies the published hostname and address', async () => {
+    const getServiceLogs = vi.spyOn(harborBridge, 'getServiceLogs')
+    const ClipboardSetText = vi.fn().mockResolvedValue(true)
+    window.runtime = { ClipboardSetText }
+    const { wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Connect').trigger('mousedown', { button: 0 })
+    await flushPromises()
+
+    expect(getServiceLogs).toHaveBeenCalledWith('orders-api', '', 'mysql', 0)
+    expect(getServiceLogs).toHaveBeenCalledWith('orders-api', '', 'redis', 0)
+    expect(wrapper.text()).toContain('mysql.orders-api.test')
+    expect(wrapper.text()).toContain('Port 3306 · TCP')
+    expect(wrapper.text()).toContain('No host connection is currently published for this service.')
+
+    const copyHost = wrapper.findAll('button').find((button) => button.text() === 'Copy host')
+    const copyAddress = wrapper.findAll('button').find((button) => button.text() === 'Copy address')
+    if (!copyHost || !copyAddress) throw new Error('Connection copy actions are missing')
+    await copyHost.trigger('click')
+    await copyAddress.trigger('click')
+
+    expect(ClipboardSetText).toHaveBeenNthCalledWith(1, 'mysql.orders-api.test')
+    expect(ClipboardSetText).toHaveBeenNthCalledWith(2, 'mysql.orders-api.test:3306')
+
+    wrapper.unmount()
+  })
+})
+
 describe('ProjectView stale runtime recovery', () => {
   it('keeps project detail content in compact, task-focused tabs', async () => {
     const { wrapper } = await mountRecoveryProject()
 
     const tabLabels = wrapper.findAll('[role="tab"]').map((tab) => tab.text().replace(/\s+\d+$/, ''))
-    expect(tabLabels).toEqual(['Overview', 'Development output', 'Services', 'Resources'])
+    expect(tabLabels).toEqual(['Overview', 'Development output', 'Connect', 'Services', 'Resources'])
     expect(wrapper.text()).toContain('Apps')
     expect(wrapper.text()).not.toContain('Reported services for this project.')
 
@@ -458,7 +491,7 @@ describe('ProjectView network admission', () => {
     expect(lifecycleAlert.text()).toContain(message)
     expect(lifecycleAlert.element.compareDocumentPosition(primaryTabList.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    for (const tabLabel of ['Overview', 'Development output', 'Services', 'Resources']) {
+    for (const tabLabel of ['Overview', 'Development output', 'Connect', 'Services', 'Resources']) {
       await detailTab(wrapper, tabLabel).trigger('mousedown', { button: 0 })
       await wrapper.vm.$nextTick()
       expect(lifecycleAlert.isVisible()).toBe(true)
