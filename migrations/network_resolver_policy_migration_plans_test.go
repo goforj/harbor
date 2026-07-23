@@ -11,6 +11,7 @@ import (
 )
 
 const networkResolverPolicyMigrationPlansMigrationName = "2026_07_22_050000_create_network_resolver_policy_migration_plans"
+const networkResolverPolicyMigrationPlansRepairMigrationName = "2026_07_23_010000_repair_network_resolver_policy_migration_plans"
 
 // TestNetworkResolverPolicyMigrationPlansMigrationCreatesBoundSingleton verifies the schema retains its complete authority dimensions.
 func TestNetworkResolverPolicyMigrationPlansMigrationCreatesBoundSingleton(t *testing.T) {
@@ -123,6 +124,93 @@ func TestNetworkResolverPolicyMigrationPlansMigrationRollbackPreservesPlanAuthor
 	}
 }
 
+// TestNetworkResolverPolicyMigrationPlansRepairUpgradesTransientSchema verifies existing development databases gain the missing operation authority.
+func TestNetworkResolverPolicyMigrationPlansRepairUpgradesTransientSchema(t *testing.T) {
+	databaseConnection, migration := newNetworkResolverPolicyMigrationPlansPrerequisiteHarness(t)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply resolver policy migration plan migration: %v", err)
+	}
+	seedNetworkResolverPolicyMigrationOwners(t, databaseConnection, "policy-migration", 4, 2)
+	plan := defaultNetworkResolverPolicyMigrationPlan("policy-migration", 4, 2)
+	if err := databaseConnection.Create(&plan).Error; err != nil {
+		t.Fatalf("insert resolver policy migration plan: %v", err)
+	}
+	removeTransientNetworkResolverPolicyMigrationPlanColumns(t, databaseConnection)
+
+	repair := networkResolverPolicyMigrationPlansRepairMigration(t)
+	if err := databaseConnection.Transaction(repair.Up); err != nil {
+		t.Fatalf("repair resolver policy migration plan schema: %v", err)
+	}
+
+	for _, column := range []string{"operation_kind", "operation_state", "operation_phase"} {
+		if !databaseConnection.Migrator().HasColumn("network_resolver_policy_migration_plans", column) {
+			t.Fatalf("repair did not create network_resolver_policy_migration_plans.%s", column)
+		}
+	}
+	var persisted models.NetworkResolverPolicyMigrationPlan
+	if err := databaseConnection.First(&persisted, 1).Error; err != nil {
+		t.Fatalf("read repaired resolver policy migration plan: %v", err)
+	}
+	if persisted != plan {
+		t.Fatalf("repaired resolver policy migration plan = %#v, want %#v", persisted, plan)
+	}
+}
+
+// TestNetworkResolverPolicyMigrationPlansRepairAcceptsCanonicalSchema verifies new databases can apply the repair after the complete creation migration.
+func TestNetworkResolverPolicyMigrationPlansRepairAcceptsCanonicalSchema(t *testing.T) {
+	databaseConnection, migration := newNetworkResolverPolicyMigrationPlansPrerequisiteHarness(t)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply resolver policy migration plan migration: %v", err)
+	}
+
+	repair := networkResolverPolicyMigrationPlansRepairMigration(t)
+	if err := databaseConnection.Transaction(repair.Up); err != nil {
+		t.Fatalf("repair canonical resolver policy migration plan schema: %v", err)
+	}
+	for _, column := range []string{"operation_kind", "operation_state", "operation_phase"} {
+		if !databaseConnection.Migrator().HasColumn("network_resolver_policy_migration_plans", column) {
+			t.Fatalf("repair removed network_resolver_policy_migration_plans.%s", column)
+		}
+	}
+}
+
+// TestNetworkResolverPolicyMigrationPlansRepairRejectsMismatchedOperation verifies repair never invents authority for a staged row.
+func TestNetworkResolverPolicyMigrationPlansRepairRejectsMismatchedOperation(t *testing.T) {
+	databaseConnection, migration := newNetworkResolverPolicyMigrationPlansPrerequisiteHarness(t)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply resolver policy migration plan migration: %v", err)
+	}
+	seedNetworkResolverPolicyMigrationOwners(t, databaseConnection, "policy-migration", 4, 2)
+	plan := defaultNetworkResolverPolicyMigrationPlan("policy-migration", 4, 2)
+	if err := databaseConnection.Create(&plan).Error; err != nil {
+		t.Fatalf("insert resolver policy migration plan: %v", err)
+	}
+	removeTransientNetworkResolverPolicyMigrationPlanColumns(t, databaseConnection)
+	if err := databaseConnection.Exec("UPDATE operations SET state = 'running' WHERE id = ?", plan.OperationId).Error; err != nil {
+		t.Fatalf("drift operation state: %v", err)
+	}
+
+	repair := networkResolverPolicyMigrationPlansRepairMigration(t)
+	if err := databaseConnection.Transaction(repair.Up); err == nil {
+		t.Fatal("repair accepted a plan whose operation authority is no longer confirmable")
+	}
+	if !databaseConnection.Migrator().HasTable("network_resolver_policy_migration_plans") {
+		t.Fatal("failed repair removed the original resolver policy migration plan table")
+	}
+	for _, column := range []string{"operation_kind", "operation_state", "operation_phase"} {
+		if databaseConnection.Migrator().HasColumn("network_resolver_policy_migration_plans", column) {
+			t.Fatalf("failed repair partially added network_resolver_policy_migration_plans.%s", column)
+		}
+	}
+	var count int64
+	if err := databaseConnection.Table("network_resolver_policy_migration_plans").Count(&count).Error; err != nil {
+		t.Fatalf("count resolver policy migration plans after rejected repair: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("resolver policy migration plan count after rejected repair = %d, want 1", count)
+	}
+}
+
 // newNetworkResolverPolicyMigrationPlansPrerequisiteHarness applies production migrations through the immediate predecessor.
 func newNetworkResolverPolicyMigrationPlansPrerequisiteHarness(t *testing.T) (*gorm.DB, Migration) {
 	t.Helper()
@@ -140,6 +228,28 @@ func newNetworkResolverPolicyMigrationPlansPrerequisiteHarness(t *testing.T) (*g
 	}
 	t.Fatalf("resolver policy migration %q is not registered", networkResolverPolicyMigrationPlansMigrationName)
 	return nil, nil
+}
+
+// networkResolverPolicyMigrationPlansRepairMigration returns the production repair migration by stable identity.
+func networkResolverPolicyMigrationPlansRepairMigration(t *testing.T) Migration {
+	t.Helper()
+	for _, migration := range selectMigrations("harbord", "default", "sqlite") {
+		if migration.Name() == networkResolverPolicyMigrationPlansRepairMigrationName {
+			return migration
+		}
+	}
+	t.Fatalf("resolver policy migration plan repair %q is not registered", networkResolverPolicyMigrationPlansRepairMigrationName)
+	return nil
+}
+
+// removeTransientNetworkResolverPolicyMigrationPlanColumns recreates the exact schema observed in pre-commit development databases.
+func removeTransientNetworkResolverPolicyMigrationPlanColumns(t *testing.T, databaseConnection *gorm.DB) {
+	t.Helper()
+	for _, column := range []string{"operation_kind", "operation_state", "operation_phase"} {
+		if err := databaseConnection.Exec("ALTER TABLE network_resolver_policy_migration_plans DROP COLUMN " + column).Error; err != nil {
+			t.Fatalf("remove transient resolver policy migration plan column %s: %v", column, err)
+		}
+	}
 }
 
 // seedNetworkResolverPolicyMigrationOwners writes the exact foreign-key owners for one approval plan.
