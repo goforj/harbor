@@ -24,7 +24,6 @@ func TestClearAmbientEnvironmentRemovesEverySetting(t *testing.T) {
 	tests := []struct {
 		name        string
 		environment map[string]string
-		wantError   bool
 	}{
 		{
 			name: "preserves exact service name",
@@ -34,40 +33,14 @@ func TestClearAmbientEnvironmentRemovesEverySetting(t *testing.T) {
 				"UNRELATED_ENVIRONMENT":       "remove-me",
 			},
 		},
-		{
-			name: "rejects foreign service name",
-			environment: map[string]string{
-				launchdServiceNameEnvironment: "com.example.foreign",
-				"HARBOR_INSTALLATION_ID":      "installation-123",
-				"UNRELATED_ENVIRONMENT":       "remove-me",
-			},
-			wantError: true,
-		},
-		{
-			name: "missing service name",
-			environment: map[string]string{
-				"HARBOR_INSTALLATION_ID": "installation-123",
-				"UNRELATED_ENVIRONMENT":  "remove-me",
-			},
-			wantError: true,
-		},
-		{
-			name: "blank service name",
-			environment: map[string]string{
-				launchdServiceNameEnvironment: "",
-				"HARBOR_INSTALLATION_ID":      "installation-123",
-				"UNRELATED_ENVIRONMENT":       "remove-me",
-			},
-			wantError: true,
-		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			environment := maps.Clone(test.environment)
 			err := clearAmbientEnvironment(commandTestEnvironmentDependencies(environment))
-			if (err != nil) != test.wantError {
-				t.Fatalf("clearAmbientEnvironment() error = %v, want error %t", err, test.wantError)
+			if err != nil {
+				t.Fatalf("clearAmbientEnvironment() error = %v", err)
 			}
 			if _, ok := environment[launchdServiceNameEnvironment]; ok {
 				t.Fatal("XPC_SERVICE_NAME remained after clearing environment")
@@ -77,6 +50,51 @@ func TestClearAmbientEnvironmentRemovesEverySetting(t *testing.T) {
 			}
 			if _, ok := environment["UNRELATED_ENVIRONMENT"]; ok {
 				t.Fatal("UNRELATED_ENVIRONMENT remained after clearing environment")
+			}
+		})
+	}
+}
+
+// TestValidateLaunchdServiceNameRejectsUntrustedIdentity verifies identity is accepted only before activation.
+func TestValidateLaunchdServiceNameRejectsUntrustedIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment map[string]string
+		wantError   bool
+	}{
+		{
+			name:        "exact service name",
+			environment: map[string]string{launchdServiceNameEnvironment: launchdRelayServiceName},
+		},
+		{
+			name:        "foreign service name",
+			environment: map[string]string{launchdServiceNameEnvironment: "com.example.foreign"},
+			wantError:   true,
+		},
+		{
+			name:        "missing service name",
+			environment: map[string]string{},
+			wantError:   true,
+		},
+		{
+			name:        "blank service name",
+			environment: map[string]string{launchdServiceNameEnvironment: ""},
+			wantError:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			serviceName, err := captureLaunchdServiceName(commandTestEnvironmentDependencies(test.environment))
+			if err != nil {
+				t.Fatalf("captureLaunchdServiceName() error = %v", err)
+			}
+			err = validateLaunchdServiceName(serviceName)
+			if (err != nil) != test.wantError {
+				t.Fatalf("validateLaunchdServiceName(%q) error = %v, want error %t", serviceName, err, test.wantError)
+			}
+			if !test.wantError && serviceName != launchdRelayServiceName {
+				t.Fatalf("service name = %q, want %q", serviceName, launchdRelayServiceName)
 			}
 		})
 	}
@@ -208,11 +226,11 @@ func TestParseConfigurationRejectsUnownedShapes(t *testing.T) {
 	}
 }
 
-// TestRunTransfersOnlyValidatedCapabilities verifies activation completes before cleanup and serving.
-func TestRunTransfersOnlyValidatedCapabilities(t *testing.T) {
+// TestRunCapturesServiceNameBeforeActivation verifies activation can consume identity before cleanup and serving.
+func TestRunCapturesServiceNameBeforeActivation(t *testing.T) {
 	http := &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:80")}
 	https := &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:443")}
-	events := make([]string, 0, 3)
+	events := make([]string, 0, 4)
 	environment := map[string]string{
 		launchdServiceNameEnvironment: launchdRelayServiceName,
 		"LAUNCHD_ACTIVATION_STATE":    "available-until-activation",
@@ -226,12 +244,20 @@ func TestRunTransfersOnlyValidatedCapabilities(t *testing.T) {
 	var receivedConfig ingressrelay.Config
 	dependencies := runtimeDependencies{
 		effectiveUID: func() (uint32, error) { return 501, nil },
+		captureServiceName: func() (string, error) {
+			events = append(events, "capture")
+			return captureLaunchdServiceName(commandTestEnvironmentDependencies(environment))
+		},
 		activateIngress: func() (ingressrelay.Listeners, error) {
 			events = append(events, "activate")
-			if environment["LAUNCHD_ACTIVATION_STATE"] != "available-until-activation" {
+			if environment[launchdServiceNameEnvironment] != launchdRelayServiceName || environment["LAUNCHD_ACTIVATION_STATE"] != "available-until-activation" {
 				t.Fatalf("activation context = %#v, want complete launchd environment", environment)
 			}
-			return ingressrelay.Listeners{HTTP: http, HTTPS: https}, nil
+			delete(environment, launchdServiceNameEnvironment)
+			return ingressrelay.Listeners{
+				HTTP:  http,
+				HTTPS: https,
+			}, nil
 		},
 		clearAmbientEnvironment: func() error {
 			events = append(events, "clear")
@@ -257,8 +283,8 @@ func TestRunTransfersOnlyValidatedCapabilities(t *testing.T) {
 	if http.closed != 0 || https.closed != 0 {
 		t.Fatalf("command closed transferred listeners: HTTP=%d HTTPS=%d", http.closed, https.closed)
 	}
-	if got := strings.Join(events, ","); got != "activate,clear,serve" {
-		t.Fatalf("startup events = %q, want activate,clear,serve", got)
+	if got := strings.Join(events, ","); got != "capture,activate,clear,serve" {
+		t.Fatalf("startup events = %q, want capture,activate,clear,serve", got)
 	}
 }
 
@@ -278,7 +304,8 @@ func TestRunRejectsIdentityBeforeCapabilityAcquisition(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			capabilityCalls := 0
 			dependencies := runtimeDependencies{
-				effectiveUID: func() (uint32, error) { return test.uid, test.err },
+				effectiveUID:       func() (uint32, error) { return test.uid, test.err },
+				captureServiceName: func() (string, error) { return launchdRelayServiceName, nil },
 				activateIngress: func() (ingressrelay.Listeners, error) {
 					capabilityCalls++
 					return ingressrelay.Listeners{}, nil
@@ -297,6 +324,56 @@ func TestRunRejectsIdentityBeforeCapabilityAcquisition(t *testing.T) {
 				t.Fatalf("capability calls = %d, want 0", capabilityCalls)
 			}
 		})
+	}
+}
+
+// TestRunRejectsServiceIdentityBeforeCapabilityAcquisition verifies a foreign activation context fails closed.
+func TestRunRejectsServiceIdentityBeforeCapabilityAcquisition(t *testing.T) {
+	capabilityCalls := 0
+	dependencies := validCommandTestDependencies(&commandTestRuntime{})
+	dependencies.captureServiceName = func() (string, error) { return "com.example.foreign", nil }
+	dependencies.activateIngress = func() (ingressrelay.Listeners, error) {
+		capabilityCalls++
+		return ingressrelay.Listeners{}, nil
+	}
+
+	err := run(context.Background(), validCommandTestArguments(), dependencies)
+	if err == nil || !strings.Contains(err.Error(), "launchd service identity does not match Harbor's relay") {
+		t.Fatalf("run() error = %v, want foreign identity failure", err)
+	}
+	if capabilityCalls != 0 {
+		t.Fatalf("capability calls = %d, want 0", capabilityCalls)
+	}
+}
+
+// TestRunStopsWhenServiceNameCaptureFails verifies no privileged capability is used after capture failure.
+func TestRunStopsWhenServiceNameCaptureFails(t *testing.T) {
+	captureErr := errors.New("service name unavailable")
+	runtime := &commandTestRuntime{}
+	newRuntimeCalls := 0
+	activationCalls := 0
+	cleanupCalls := 0
+	dependencies := validCommandTestDependencies(runtime)
+	dependencies.captureServiceName = func() (string, error) { return "", captureErr }
+	dependencies.newRuntime = func(ingressrelay.Config) (relayRuntime, error) {
+		newRuntimeCalls++
+		return runtime, nil
+	}
+	dependencies.activateIngress = func() (ingressrelay.Listeners, error) {
+		activationCalls++
+		return ingressrelay.Listeners{}, nil
+	}
+	dependencies.clearAmbientEnvironment = func() error {
+		cleanupCalls++
+		return nil
+	}
+
+	err := run(context.Background(), validCommandTestArguments(), dependencies)
+	if !errors.Is(err, captureErr) || !strings.Contains(err.Error(), "capture launchd relay service identity") {
+		t.Fatalf("run() error = %v, want wrapped capture error", err)
+	}
+	if newRuntimeCalls != 0 || activationCalls != 0 || cleanupCalls != 0 || runtime.calls != 0 {
+		t.Fatalf("lifecycle calls = (new=%d, activate=%d, cleanup=%d, serve=%d), want all zero", newRuntimeCalls, activationCalls, cleanupCalls, runtime.calls)
 	}
 }
 
@@ -391,22 +468,32 @@ func TestRunCleansPartialActivationAndPropagatesRuntimeFailures(t *testing.T) {
 func TestRunRequiresEveryDependency(t *testing.T) {
 	tests := []runtimeDependencies{
 		{
+			captureServiceName:      func() (string, error) { return launchdRelayServiceName, nil },
 			activateIngress:         func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
 			clearAmbientEnvironment: func() error { return nil },
 			newRuntime:              func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
 		},
 		{
 			effectiveUID:            func() (uint32, error) { return 501, nil },
+			activateIngress:         func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
 			clearAmbientEnvironment: func() error { return nil },
 			newRuntime:              func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
 		},
 		{
-			effectiveUID:    func() (uint32, error) { return 501, nil },
-			activateIngress: func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
-			newRuntime:      func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
+			effectiveUID:            func() (uint32, error) { return 501, nil },
+			captureServiceName:      func() (string, error) { return launchdRelayServiceName, nil },
+			clearAmbientEnvironment: func() error { return nil },
+			newRuntime:              func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
+		},
+		{
+			effectiveUID:       func() (uint32, error) { return 501, nil },
+			captureServiceName: func() (string, error) { return launchdRelayServiceName, nil },
+			activateIngress:    func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
+			newRuntime:         func(ingressrelay.Config) (relayRuntime, error) { return &commandTestRuntime{}, nil },
 		},
 		{
 			effectiveUID:            func() (uint32, error) { return 501, nil },
+			captureServiceName:      func() (string, error) { return launchdRelayServiceName, nil },
 			activateIngress:         func() (ingressrelay.Listeners, error) { return ingressrelay.Listeners{}, nil },
 			clearAmbientEnvironment: func() error { return nil },
 		},
@@ -494,7 +581,8 @@ func mutateCommandTestArgument(index int, value string) func() []string {
 // validCommandTestDependencies returns the smallest successful runtime seam.
 func validCommandTestDependencies(runtime relayRuntime) runtimeDependencies {
 	return runtimeDependencies{
-		effectiveUID: func() (uint32, error) { return 501, nil },
+		effectiveUID:       func() (uint32, error) { return 501, nil },
+		captureServiceName: func() (string, error) { return launchdRelayServiceName, nil },
 		activateIngress: func() (ingressrelay.Listeners, error) {
 			return ingressrelay.Listeners{
 				HTTP:  &commandTestListener{address: fixedCommandTestAddress("127.0.0.1:80")},

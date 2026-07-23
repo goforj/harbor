@@ -42,6 +42,7 @@ type relayRuntime interface {
 // runtimeDependencies keeps native identity and socket activation deterministic in tests.
 type runtimeDependencies struct {
 	effectiveUID            func() (uint32, error)
+	captureServiceName      func() (string, error)
 	activateIngress         func() (ingressrelay.Listeners, error)
 	clearAmbientEnvironment func() error
 	newRuntime              func(ingressrelay.Config) (relayRuntime, error)
@@ -71,14 +72,24 @@ func productionEnvironmentDependencies() environmentDependencies {
 	}
 }
 
-// clearAmbientEnvironment removes every ambient setting after recording launchd's service identity.
-func clearAmbientEnvironment(dependencies environmentDependencies) error {
+// captureLaunchdServiceName records launchd's service identity before activation may consume it.
+func captureLaunchdServiceName(dependencies environmentDependencies) (string, error) {
 	validateEnvironmentDependencies(dependencies)
-	serviceName := dependencies.getenv(launchdServiceNameEnvironment)
-	dependencies.clearenv()
+	return dependencies.getenv(launchdServiceNameEnvironment), nil
+}
+
+// validateLaunchdServiceName rejects activation contexts not owned by Harbor's relay service.
+func validateLaunchdServiceName(serviceName string) error {
 	if serviceName != launchdRelayServiceName {
 		return errors.New("launchd service identity does not match Harbor's relay")
 	}
+	return nil
+}
+
+// clearAmbientEnvironment removes every ambient setting after launchd activation completes.
+func clearAmbientEnvironment(dependencies environmentDependencies) error {
+	validateEnvironmentDependencies(dependencies)
+	dependencies.clearenv()
 	return nil
 }
 
@@ -86,6 +97,7 @@ func clearAmbientEnvironment(dependencies environmentDependencies) error {
 func productionDependencies() runtimeDependencies {
 	return runtimeDependencies{
 		effectiveUID:            productionEffectiveUID,
+		captureServiceName:      func() (string, error) { return captureLaunchdServiceName(productionEnvironmentDependencies()) },
 		activateIngress:         launchdsocket.ActivateIngress,
 		clearAmbientEnvironment: func() error { return clearAmbientEnvironment(productionEnvironmentDependencies()) },
 		newRuntime: func(config ingressrelay.Config) (relayRuntime, error) {
@@ -113,6 +125,13 @@ func run(ctx context.Context, arguments []string, dependencies runtimeDependenci
 	}
 	if uid == 0 || uid != config.ownerUID {
 		return fmt.Errorf("launchd relay effective UID %d does not match non-root owner UID %d", uid, config.ownerUID)
+	}
+	serviceName, err := dependencies.captureServiceName()
+	if err != nil {
+		return fmt.Errorf("capture launchd relay service identity: %w", err)
+	}
+	if err := validateLaunchdServiceName(serviceName); err != nil {
+		return fmt.Errorf("validate launchd relay service identity: %w", err)
 	}
 
 	runtime, err := dependencies.newRuntime(ingressrelay.Config{
@@ -218,7 +237,7 @@ func closeListeners(listeners ingressrelay.Listeners) error {
 
 // validateDependencies fails fast before process identity or socket authority is consulted.
 func validateDependencies(dependencies runtimeDependencies) {
-	if dependencies.effectiveUID == nil || dependencies.activateIngress == nil || dependencies.clearAmbientEnvironment == nil || dependencies.newRuntime == nil {
+	if dependencies.effectiveUID == nil || dependencies.captureServiceName == nil || dependencies.activateIngress == nil || dependencies.clearAmbientEnvironment == nil || dependencies.newRuntime == nil {
 		panic("launchd relay requires every runtime dependency")
 	}
 }
