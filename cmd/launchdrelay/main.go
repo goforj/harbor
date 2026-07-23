@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	ownerUIDFlag          = "--owner-uid"
-	policyFingerprintFlag = "--policy-fingerprint"
-	httpUpstreamFlag      = "--http-upstream"
-	httpsUpstreamFlag     = "--https-upstream"
-	fingerprintLength     = 64
+	launchdRelayServiceName       = "com.goforj.harbor.launchdrelay"
+	launchdServiceNameEnvironment = "XPC_SERVICE_NAME"
+	ownerUIDFlag                  = "--owner-uid"
+	policyFingerprintFlag         = "--policy-fingerprint"
+	httpUpstreamFlag              = "--http-upstream"
+	httpsUpstreamFlag             = "--https-upstream"
+	fingerprintLength             = 64
 )
 
 // configuration contains only values pinned in the root-owned launchd definition.
@@ -44,15 +46,48 @@ type runtimeDependencies struct {
 	newRuntime      func(ingressrelay.Config) (relayRuntime, error)
 }
 
-// main clears ambient configuration before accepting only root-plist-supplied arguments.
+// environmentDependencies controls the environment clearing boundary.
+type environmentDependencies struct {
+	getenv   func(string) string
+	clearenv func()
+	setenv   func(string, string) error
+}
+
+// main clears ambient configuration while retaining launchd's socket-activation identity.
 func main() {
-	os.Clearenv()
+	if err := clearAmbientEnvironment(productionEnvironmentDependencies()); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 	if err := run(ctx, os.Args[1:], productionDependencies()); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// productionEnvironmentDependencies binds environment operations to the process environment.
+func productionEnvironmentDependencies() environmentDependencies {
+	return environmentDependencies{
+		getenv:   os.Getenv,
+		clearenv: os.Clearenv,
+		setenv:   os.Setenv,
+	}
+}
+
+// clearAmbientEnvironment removes ambient configuration while retaining the launchd identity socket activation requires.
+func clearAmbientEnvironment(dependencies environmentDependencies) error {
+	validateEnvironmentDependencies(dependencies)
+	serviceName := dependencies.getenv(launchdServiceNameEnvironment)
+	dependencies.clearenv()
+	if serviceName != launchdRelayServiceName {
+		return errors.New("launchd service identity does not match Harbor's relay")
+	}
+	if err := dependencies.setenv(launchdServiceNameEnvironment, serviceName); err != nil {
+		return fmt.Errorf("restore launchd service identity: %w", err)
+	}
+	return nil
 }
 
 // productionDependencies binds the process to its current UID and fixed launchd socket names.
@@ -189,5 +224,12 @@ func closeListeners(listeners ingressrelay.Listeners) error {
 func validateDependencies(dependencies runtimeDependencies) {
 	if dependencies.effectiveUID == nil || dependencies.activateIngress == nil || dependencies.newRuntime == nil {
 		panic("launchd relay requires every runtime dependency")
+	}
+}
+
+// validateEnvironmentDependencies fails fast when environment cleanup is not fully wired.
+func validateEnvironmentDependencies(dependencies environmentDependencies) {
+	if dependencies.getenv == nil || dependencies.clearenv == nil || dependencies.setenv == nil {
+		panic("launchd relay requires every environment dependency")
 	}
 }

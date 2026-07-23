@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -17,6 +18,128 @@ import (
 )
 
 const commandTestFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity verifies socket activation retains its launchd identity.
+func TestClearAmbientEnvironmentRetainsOnlyLaunchdServiceIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment map[string]string
+		wantService string
+		wantPresent bool
+		wantError   bool
+	}{
+		{
+			name: "preserves exact service name",
+			environment: map[string]string{
+				launchdServiceNameEnvironment: launchdRelayServiceName,
+				"HARBOR_INSTALLATION_ID":      "installation-123",
+				"UNRELATED_ENVIRONMENT":       "remove-me",
+			},
+			wantService: launchdRelayServiceName,
+			wantPresent: true,
+		},
+		{
+			name: "rejects foreign service name",
+			environment: map[string]string{
+				launchdServiceNameEnvironment: "com.example.foreign",
+				"HARBOR_INSTALLATION_ID":      "installation-123",
+				"UNRELATED_ENVIRONMENT":       "remove-me",
+			},
+			wantError: true,
+		},
+		{
+			name: "missing service name",
+			environment: map[string]string{
+				"HARBOR_INSTALLATION_ID": "installation-123",
+				"UNRELATED_ENVIRONMENT":  "remove-me",
+			},
+			wantError: true,
+		},
+		{
+			name: "blank service name",
+			environment: map[string]string{
+				launchdServiceNameEnvironment: "",
+				"HARBOR_INSTALLATION_ID":      "installation-123",
+				"UNRELATED_ENVIRONMENT":       "remove-me",
+			},
+			wantError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := maps.Clone(test.environment)
+			err := clearAmbientEnvironment(commandTestEnvironmentDependencies(environment))
+			if (err != nil) != test.wantError {
+				t.Fatalf("clearAmbientEnvironment() error = %v, want error %t", err, test.wantError)
+			}
+			gotService, gotPresent := environment[launchdServiceNameEnvironment]
+			if gotService != test.wantService || gotPresent != test.wantPresent {
+				t.Fatalf("XPC_SERVICE_NAME = (%q, %t), want (%q, %t)", gotService, gotPresent, test.wantService, test.wantPresent)
+			}
+			if _, ok := environment["HARBOR_INSTALLATION_ID"]; ok {
+				t.Fatal("HARBOR_INSTALLATION_ID remained after clearing environment")
+			}
+			if _, ok := environment["UNRELATED_ENVIRONMENT"]; ok {
+				t.Fatal("UNRELATED_ENVIRONMENT remained after clearing environment")
+			}
+		})
+	}
+}
+
+// TestClearAmbientEnvironmentReturnsSetFailure verifies service identity restoration failures stop startup.
+func TestClearAmbientEnvironmentReturnsSetFailure(t *testing.T) {
+	want := errors.New("set environment failed")
+	err := clearAmbientEnvironment(environmentDependencies{
+		getenv:   func(string) string { return launchdRelayServiceName },
+		clearenv: func() {},
+		setenv:   func(string, string) error { return want },
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("clearAmbientEnvironment() error = %v, want %v", err, want)
+	}
+}
+
+// TestValidateEnvironmentDependenciesRequiresEveryDependency verifies environment cleanup fails before incomplete wiring is used.
+func TestValidateEnvironmentDependenciesRequiresEveryDependency(t *testing.T) {
+	tests := []struct {
+		name         string
+		dependencies environmentDependencies
+	}{
+		{
+			name: "missing getenv",
+			dependencies: environmentDependencies{
+				clearenv: func() {},
+				setenv:   func(string, string) error { return nil },
+			},
+		},
+		{
+			name: "missing clearenv",
+			dependencies: environmentDependencies{
+				getenv: func(string) string { return "" },
+				setenv: func(string, string) error { return nil },
+			},
+		},
+		{
+			name: "missing setenv",
+			dependencies: environmentDependencies{
+				getenv:   func(string) string { return "" },
+				clearenv: func() {},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("validateEnvironmentDependencies() did not panic")
+				}
+			}()
+			validateEnvironmentDependencies(test.dependencies)
+		})
+	}
+}
 
 // commandTestListener records cleanup without acquiring an operating-system port.
 type commandTestListener struct {
@@ -345,6 +468,24 @@ func validCommandTestDependencies(runtime relayRuntime) runtimeDependencies {
 			}, nil
 		},
 		newRuntime: func(ingressrelay.Config) (relayRuntime, error) { return runtime, nil },
+	}
+}
+
+// commandTestEnvironmentDependencies simulates process environment operations without changing test state outside one case.
+func commandTestEnvironmentDependencies(environment map[string]string) environmentDependencies {
+	return environmentDependencies{
+		getenv: func(key string) string {
+			return environment[key]
+		},
+		clearenv: func() {
+			for key := range environment {
+				delete(environment, key)
+			}
+		},
+		setenv: func(key string, value string) error {
+			environment[key] = value
+			return nil
+		},
 	}
 }
 
