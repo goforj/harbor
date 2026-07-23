@@ -754,6 +754,45 @@ static int harbor_trust_admin_root_is_exact(const uint8_t *der, size_t der_lengt
 	return exact ? 1 : 0;
 }
 
+// harbor_trust_admin_root_state distinguishes no settings from the one exact Harbor setting and any drifted setting.
+static int harbor_trust_admin_root_state(const uint8_t *der, size_t der_length) {
+	if (der == NULL || der_length == 0) {
+		return errSecParam;
+	}
+	CFDataRef data = CFDataCreate(kCFAllocatorDefault, der, (CFIndex)der_length);
+	if (data == NULL) {
+		return errSecAllocate;
+	}
+	SecCertificateRef certificate = SecCertificateCreateWithData(kCFAllocatorDefault, data);
+	CFRelease(data);
+	if (certificate == NULL) {
+		return errSecDecode;
+	}
+	int exact = 0;
+	OSStatus status = harbor_trust_settings_are_exact_in_domain(certificate, kSecTrustSettingsDomainAdmin, &exact);
+	if (status != errSecSuccess) {
+		CFRelease(certificate);
+		return status;
+	}
+	if (exact) {
+		CFRelease(certificate);
+		return 1;
+	}
+	CFArrayRef settings = NULL;
+	status = SecTrustSettingsCopyTrustSettings(certificate, kSecTrustSettingsDomainAdmin, &settings);
+	CFRelease(certificate);
+	if (settings != NULL) {
+		CFRelease(settings);
+	}
+	if (status == errSecItemNotFound || status == errSecNoTrustSettings) {
+		return 0;
+	}
+	if (status != errSecSuccess) {
+		return status;
+	}
+	return 2;
+}
+
 // harbor_trust_remove_user_root_if_owned_exact narrows the stale window by rechecking target settings and ownership immediately before removal.
 static int harbor_trust_remove_user_root_if_owned_exact(
 	const uint8_t *der,
@@ -840,17 +879,6 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 	if (certificate == NULL) {
 		return errSecDecode;
 	}
-	int exact = 0;
-	OSStatus status = harbor_trust_settings_are_exact_in_domain(certificate, kSecTrustSettingsDomainAdmin, &exact);
-	if (status != errSecSuccess) {
-		CFRelease(certificate);
-		return status;
-	}
-	if (!exact) {
-		*stale = 1;
-		CFRelease(certificate);
-		return errSecSuccess;
-	}
 	int owner = harbor_admin_trust_find_owner_exact(account, account_length, fingerprint, fingerprint_length);
 	if (owner == 0 || owner == errSecDuplicateItem) {
 		*stale = 1;
@@ -861,15 +889,70 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 		CFRelease(certificate);
 		return owner;
 	}
-	status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
-	if (status != errSecSuccess && status != errSecItemNotFound) {
+	int root_state = harbor_admin_root_certificate_state(der, der_length, root_label, root_label_length);
+	if (root_state != 0 && root_state != 1) {
 		CFRelease(certificate);
+		return root_state;
+	}
+	int trust_state = harbor_trust_admin_root_state(der, der_length);
+	if (trust_state == 2) {
+		*stale = 1;
+		CFRelease(certificate);
+		return errSecSuccess;
+	}
+	if (trust_state != 0 && trust_state != 1) {
+		CFRelease(certificate);
+		return trust_state;
+	}
+	OSStatus status = errSecSuccess;
+	if (root_state == 1) {
+		status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
+		if (status == errSecItemNotFound) {
+			*stale = 1;
+			CFRelease(certificate);
+			return errSecSuccess;
+		}
+		if (status != errSecSuccess) {
+			CFRelease(certificate);
+			return status;
+		}
+	}
+	if (trust_state == 1) {
+		trust_state = harbor_trust_admin_root_state(der, der_length);
+		if (trust_state != 1) {
+			CFRelease(certificate);
+			if (trust_state == 0 || trust_state == 2) {
+				*stale = 1;
+				return errSecSuccess;
+			}
+			return trust_state;
+		}
+		status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainAdmin);
+		if (status == errSecItemNotFound) {
+			*stale = 1;
+			CFRelease(certificate);
+			return errSecSuccess;
+		}
+	}
+	CFRelease(certificate);
+	if (status != errSecSuccess) {
 		return status;
 	}
-	status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainAdmin);
-	CFRelease(certificate);
-	if (status != errSecSuccess && status != errSecItemNotFound) {
-		return status;
+	root_state = harbor_admin_root_certificate_state(der, der_length, root_label, root_label_length);
+	if (root_state != 0) {
+		if (root_state == 1 || root_state == errSecDuplicateItem) {
+			*stale = 1;
+			return errSecSuccess;
+		}
+		return root_state;
+	}
+	trust_state = harbor_trust_admin_root_state(der, der_length);
+	if (trust_state != 0) {
+		if (trust_state == 1 || trust_state == 2) {
+			*stale = 1;
+			return errSecSuccess;
+		}
+		return trust_state;
 	}
 	status = harbor_admin_trust_delete_owner(account, account_length, fingerprint, fingerprint_length);
 	if (status == errSecItemNotFound || status == errSecDuplicateItem) {
@@ -1184,7 +1267,7 @@ func removeExactOwnedDarwinTrust(root []byte, account string, fingerprint string
 	return stale != 0, nil
 }
 
-// removeExactOwnedDarwinAdministratorTrust invokes the administrator-domain CAS removal.
+// removeExactOwnedDarwinAdministratorTrust invokes the administrator-domain recheck and removes only exact Harbor-owned artifacts that remain.
 func removeExactOwnedDarwinAdministratorTrust(root []byte, account string, fingerprint string, rootLabel string) (bool, error) {
 	accountPointer, accountLength := cStringBytes(account)
 	fingerprintPointer, fingerprintLength := cStringBytes(fingerprint)

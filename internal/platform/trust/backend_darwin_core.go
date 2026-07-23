@@ -25,6 +25,7 @@ const (
 	darwinAdminTrustNativeIDPrefix     = "darwin-admin-trust-"
 	darwinTrustOwnerPrefix             = "v1|"
 	darwinAdministratorRootLabelPrefix = "com.goforj.harbor.admin-root.v1|"
+	darwinAdministratorOwnerNativeID   = "darwin-admin-trust-owner-marker"
 )
 
 // darwinTrustEntry is the bounded native certificate fact used by the portable trust adapter.
@@ -95,7 +96,27 @@ func (backend *darwinTrustBackend) observe(ctx context.Context, request Request)
 		}
 		observation.Entries = append(observation.Entries, fact)
 	}
+	if owned && request.Mechanism() == networkpolicy.DarwinAdministratorTrust && !darwinObservationHasAuthorityEntry(observation, request) {
+		marker := request.OwnerMarker()
+		observation.Entries = append(observation.Entries, Entry{
+			Mechanism:              request.Mechanism(),
+			NativeID:               darwinAdministratorOwnerNativeID,
+			CertificateFingerprint: request.AuthorityFingerprint(),
+			NativeAttributesSHA256: darwinTrustAttributesFingerprint(request.Mechanism(), false),
+			Owner:                  &marker,
+		})
+	}
 	return observation, nil
+}
+
+// darwinObservationHasAuthorityEntry reports whether the administrator marker is already represented by its root certificate fact.
+func darwinObservationHasAuthorityEntry(observation Observation, request Request) bool {
+	for _, entry := range observation.Entries {
+		if entry.CertificateFingerprint == request.AuthorityFingerprint() {
+			return true
+		}
+	}
+	return false
 }
 
 // ensure applies one exact Darwin trust projection after the portable adapter admits the native observation.
@@ -118,7 +139,7 @@ func (backend *darwinTrustBackend) ensure(ctx context.Context, request Request, 
 	return backend.native.ensure(ctx, request)
 }
 
-// release removes only the exact Darwin trust projection admitted by the portable adapter.
+// release removes an exact Darwin projection or an exact administrator marker whose other owned artifacts were interrupted mid-cleanup.
 func (backend *darwinTrustBackend) release(ctx context.Context, request Request, before Observation) error {
 	if err := validateDarwinTrustRequest(request); err != nil {
 		return err
@@ -127,7 +148,8 @@ func (backend *darwinTrustBackend) release(ctx context.Context, request Request,
 		return err
 	}
 	assessment := classifyValidated(before)
-	if assessment.State != StateExact || assessment.Owned != OwnedStateExact {
+	markerOnly := request.Mechanism() == networkpolicy.DarwinAdministratorTrust && darwinAdministratorMarkerOnlyObservation(before, request)
+	if (assessment.State != StateExact || assessment.Owned != OwnedStateExact) && !markerOnly {
 		return fmt.Errorf(
 			"Darwin trust release requires one exact owned entry: %w",
 			errNativeMutationConflict,
@@ -143,6 +165,20 @@ func (backend *darwinTrustBackend) release(ctx context.Context, request Request,
 		defer darwinAdministratorTrustMutationMutex.Unlock()
 	}
 	return backend.native.release(ctx, request)
+}
+
+// darwinAdministratorMarkerOnlyObservation recognizes the one synthetic fact used when an exact System.keychain owner marker outlives its certificate settings.
+func darwinAdministratorMarkerOnlyObservation(observation Observation, request Request) bool {
+	if !observation.Complete || observation.Truncated || len(observation.Entries) != 1 {
+		return false
+	}
+	entry := observation.Entries[0]
+	return entry.Mechanism == networkpolicy.DarwinAdministratorTrust &&
+		entry.NativeID == darwinAdministratorOwnerNativeID &&
+		entry.CertificateFingerprint == request.AuthorityFingerprint() &&
+		!entry.NativeExact &&
+		entry.NativeAttributesSHA256 == darwinTrustAttributesFingerprint(request.Mechanism(), false) &&
+		markerMatchesRequest(entry.Owner, request)
 }
 
 // validateDarwinTrustRequest confines this backend to the macOS trust mechanisms.

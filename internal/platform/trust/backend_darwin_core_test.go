@@ -23,11 +23,88 @@ type darwinTrustCoreFakeNative struct {
 	ensureBlock   chan struct{}
 	releaseCalls  int
 	releaseErr    error
+	releaseMutate func()
+	artifacts     *darwinTrustCoreFakeAdministratorArtifacts
+}
+
+// darwinTrustCoreFakeAdministratorArtifacts models the states hidden from the trust-settings snapshot by System.keychain cleanup.
+type darwinTrustCoreFakeAdministratorArtifacts struct {
+	root               darwinAdministratorArtifactState
+	trust              darwinAdministratorArtifactState
+	rootRemoval        darwinAdministratorArtifactRemovalResult
+	trustBeforeRemoval darwinAdministratorArtifactState
+	trustRemoval       darwinAdministratorArtifactRemovalResult
+	finalRoot          darwinAdministratorArtifactState
+	finalTrust         darwinAdministratorArtifactState
+}
+
+// darwinAdministratorArtifactState models the bounded cleanup states hidden from a System.keychain marker-only observation.
+type darwinAdministratorArtifactState uint8
+
+const (
+	darwinAdministratorArtifactAbsent darwinAdministratorArtifactState = iota
+	darwinAdministratorArtifactExact
+	darwinAdministratorArtifactDrifted
+)
+
+// darwinAdministratorArtifactRemovalResult models the two guarded deletion outcomes relevant to marker retention.
+type darwinAdministratorArtifactRemovalResult uint8
+
+const (
+	darwinAdministratorArtifactRemoved darwinAdministratorArtifactRemovalResult = iota
+	darwinAdministratorArtifactNotFound
+)
+
+// darwinAdministratorCleanupPlan records the test seam's bounded native cleanup decision.
+type darwinAdministratorCleanupPlan struct {
+	removeRoot   bool
+	removeTrust  bool
+	removeMarker bool
+	stale        bool
+}
+
+// darwinAdministratorCleanupPlanFor mirrors the native helper's exact-or-stale admission decision for fake-native tests.
+func darwinAdministratorCleanupPlanFor(root darwinAdministratorArtifactState, trust darwinAdministratorArtifactState) darwinAdministratorCleanupPlan {
+	if root == darwinAdministratorArtifactDrifted || trust == darwinAdministratorArtifactDrifted {
+		return darwinAdministratorCleanupPlan{stale: true}
+	}
+	return darwinAdministratorCleanupPlan{
+		removeRoot:   root == darwinAdministratorArtifactExact,
+		removeTrust:  trust == darwinAdministratorArtifactExact,
+		removeMarker: true,
+	}
+}
+
+// canDeleteMarker reports whether the fake native helper may delete the exact marker after its guarded artifact mutations.
+func (plan darwinAdministratorCleanupPlan) canDeleteMarker(
+	rootResult darwinAdministratorArtifactRemovalResult,
+	trustBeforeRemoval darwinAdministratorArtifactState,
+	trustResult darwinAdministratorArtifactRemovalResult,
+) bool {
+	if plan.stale || (plan.removeRoot && rootResult != darwinAdministratorArtifactRemoved) {
+		return false
+	}
+	if !plan.removeTrust {
+		return plan.removeMarker
+	}
+	return trustBeforeRemoval == darwinAdministratorArtifactExact && trustResult == darwinAdministratorArtifactRemoved
 }
 
 // snapshot returns an independent copy of the fake current-user trust entries.
-func (native *darwinTrustCoreFakeNative) snapshot(context.Context, Request) ([]darwinTrustEntry, error) {
-	return append([]darwinTrustEntry(nil), native.entries...), nil
+func (native *darwinTrustCoreFakeNative) snapshot(_ context.Context, request Request) ([]darwinTrustEntry, error) {
+	entries := append([]darwinTrustEntry(nil), native.entries...)
+	if native.artifacts == nil || native.artifacts.trust == darwinAdministratorArtifactAbsent {
+		return entries, nil
+	}
+	der, err := darwinRootDER(request.Root().CertificatePEM)
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, darwinTrustEntry{
+		CertificateDER: der,
+		NativeExact:    native.artifacts.trust == darwinAdministratorArtifactExact,
+	})
+	return entries, nil
 }
 
 // ensure records native mutation entry and can hold it for deterministic serialization tests.
@@ -45,6 +122,23 @@ func (native *darwinTrustCoreFakeNative) ensure(context.Context, Request) error 
 // release records whether Darwin-specific admission reached the native effect boundary.
 func (native *darwinTrustCoreFakeNative) release(context.Context, Request) error {
 	native.releaseCalls++
+	if native.artifacts != nil {
+		plan := darwinAdministratorCleanupPlanFor(native.artifacts.root, native.artifacts.trust)
+		if !plan.canDeleteMarker(native.artifacts.rootRemoval, native.artifacts.trustBeforeRemoval, native.artifacts.trustRemoval) {
+			return errNativeObservationChanged
+		}
+		native.artifacts.root = darwinAdministratorArtifactAbsent
+		native.artifacts.trust = darwinAdministratorArtifactAbsent
+		if native.artifacts.finalRoot != darwinAdministratorArtifactAbsent || native.artifacts.finalTrust != darwinAdministratorArtifactAbsent {
+			native.artifacts.root = native.artifacts.finalRoot
+			native.artifacts.trust = native.artifacts.finalTrust
+			return errNativeObservationChanged
+		}
+		native.owned = false
+	}
+	if native.releaseMutate != nil {
+		native.releaseMutate()
+	}
 	return native.releaseErr
 }
 
@@ -128,6 +222,234 @@ func TestDarwinAdministratorMarkerVerificationRejectsWrongOrMalformedData(t *tes
 				t.Fatalf("ensure calls = %d, want 0", native.ensureCalls)
 			}
 		})
+	}
+}
+
+// TestDarwinAdministratorMarkerOnlyObservationKeepsInterruptedCleanupRetryable proves an exact marker remains visible after its root and settings were removed.
+func TestDarwinAdministratorMarkerOnlyObservationKeepsInterruptedCleanupRetryable(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinAdministratorTrust)
+	native := &darwinTrustCoreFakeNative{owned: true}
+	backend := newDarwinTrustBackend(native)
+	observation, err := backend.observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("observe() error = %v", err)
+	}
+	if !darwinAdministratorMarkerOnlyObservation(observation, request) {
+		t.Fatalf("observation = %#v, want exact administrator marker-only fact", observation)
+	}
+	assessment := classifyValidated(observation)
+	if assessment.State != StateOwnedDrifted || assessment.Owned != OwnedStateDrifted {
+		t.Fatalf("assessment = %#v, want marker-only owned drift", assessment)
+	}
+
+	native.releaseMutate = func() { native.owned = false }
+	adapter := newAdapter(backend)
+	change, err := adapter.ReleaseIfObserved(t.Context(), request, fingerprintValidated(observation))
+	if err != nil {
+		t.Fatalf("ReleaseIfObserved() error = %v", err)
+	}
+	if native.releaseCalls != 1 || !change.Changed || classifyValidated(change.After).Owned != OwnedStateAbsent {
+		t.Fatalf("release calls = %d, change = %#v", native.releaseCalls, change)
+	}
+}
+
+// TestDarwinAdministratorInterruptedPartialCleanupRetriesOnlyExactMarker proves every exact partial subset reaches the native recheck while the marker remains.
+func TestDarwinAdministratorInterruptedPartialCleanupRetriesOnlyExactMarker(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinAdministratorTrust)
+	for _, test := range []struct {
+		name  string
+		root  darwinAdministratorArtifactState
+		trust darwinAdministratorArtifactState
+		state State
+	}{
+		{
+			name:  "marker only",
+			state: StateOwnedDrifted,
+		},
+		{
+			name:  "marker and exact reserved-label root",
+			root:  darwinAdministratorArtifactExact,
+			state: StateOwnedDrifted,
+		},
+		{
+			name:  "marker and exact trust settings",
+			trust: darwinAdministratorArtifactExact,
+			state: StateExact,
+		},
+		{
+			name:  "marker, root, and settings",
+			root:  darwinAdministratorArtifactExact,
+			trust: darwinAdministratorArtifactExact,
+			state: StateExact,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			native := &darwinTrustCoreFakeNative{owned: true, artifacts: &darwinTrustCoreFakeAdministratorArtifacts{
+				root:               test.root,
+				trust:              test.trust,
+				trustBeforeRemoval: test.trust,
+			}}
+			backend := newDarwinTrustBackend(native)
+			before, err := backend.observe(t.Context(), request)
+			if err != nil {
+				t.Fatalf("observe() error = %v", err)
+			}
+			if assessment := classifyValidated(before); assessment.State != test.state {
+				t.Fatalf("assessment = %#v, want state %q", assessment, test.state)
+			}
+			if err := backend.release(t.Context(), request, before); err != nil {
+				t.Fatalf("release() error = %v", err)
+			}
+			if native.releaseCalls != 1 || native.owned || native.artifacts.root != darwinAdministratorArtifactAbsent || native.artifacts.trust != darwinAdministratorArtifactAbsent {
+				t.Fatalf("release calls = %d, artifacts = %#v", native.releaseCalls, native.artifacts)
+			}
+		})
+	}
+}
+
+// TestDarwinAdministratorCleanupDecisionRejectsConcurrentArtifactChanges proves missing or drifted effects retain the marker for a later exact retry.
+func TestDarwinAdministratorCleanupDecisionRejectsConcurrentArtifactChanges(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		root               darwinAdministratorArtifactState
+		trust              darwinAdministratorArtifactState
+		rootRemoval        darwinAdministratorArtifactRemovalResult
+		trustBeforeRemoval darwinAdministratorArtifactState
+		trustRemoval       darwinAdministratorArtifactRemovalResult
+		wantDeleteMarker   bool
+	}{
+		{
+			name:             "both absent",
+			wantDeleteMarker: true,
+		},
+		{
+			name:             "root only",
+			root:             darwinAdministratorArtifactExact,
+			wantDeleteMarker: true,
+		},
+		{
+			name:               "settings only",
+			trust:              darwinAdministratorArtifactExact,
+			trustBeforeRemoval: darwinAdministratorArtifactExact,
+			wantDeleteMarker:   true,
+		},
+		{
+			name:               "both exact",
+			root:               darwinAdministratorArtifactExact,
+			trust:              darwinAdministratorArtifactExact,
+			trustBeforeRemoval: darwinAdministratorArtifactExact,
+			wantDeleteMarker:   true,
+		},
+		{
+			name: "drifted root",
+			root: darwinAdministratorArtifactDrifted,
+		},
+		{
+			name:  "drifted settings",
+			trust: darwinAdministratorArtifactDrifted,
+		},
+		{
+			name:        "root disappeared during delete",
+			root:        darwinAdministratorArtifactExact,
+			rootRemoval: darwinAdministratorArtifactNotFound,
+		},
+		{
+			name:               "settings changed before delete",
+			trust:              darwinAdministratorArtifactExact,
+			trustBeforeRemoval: darwinAdministratorArtifactAbsent,
+		},
+		{
+			name:               "settings disappeared during delete",
+			trust:              darwinAdministratorArtifactExact,
+			trustBeforeRemoval: darwinAdministratorArtifactExact,
+			trustRemoval:       darwinAdministratorArtifactNotFound,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := darwinAdministratorCleanupPlanFor(test.root, test.trust)
+			if got := plan.canDeleteMarker(test.rootRemoval, test.trustBeforeRemoval, test.trustRemoval); got != test.wantDeleteMarker {
+				t.Fatalf("canDeleteMarker() = %t, want %t; plan = %#v", got, test.wantDeleteMarker, plan)
+			}
+		})
+	}
+}
+
+// TestDarwinAdministratorMarkerCleanupRetainsMarkerWhenArtifactsReappear proves the final native recheck fences late root or settings creation.
+func TestDarwinAdministratorMarkerCleanupRetainsMarkerWhenArtifactsReappear(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinAdministratorTrust)
+	for _, test := range []struct {
+		name       string
+		root       darwinAdministratorArtifactState
+		trust      darwinAdministratorArtifactState
+		finalRoot  darwinAdministratorArtifactState
+		finalTrust darwinAdministratorArtifactState
+	}{
+		{
+			name:      "root appears before marker deletion",
+			finalRoot: darwinAdministratorArtifactExact,
+		},
+		{
+			name:       "settings appear before marker deletion",
+			finalTrust: darwinAdministratorArtifactExact,
+		},
+		{
+			name:      "root drifts before marker deletion",
+			finalRoot: darwinAdministratorArtifactDrifted,
+		},
+		{
+			name:       "settings drift before marker deletion",
+			finalTrust: darwinAdministratorArtifactDrifted,
+		},
+		{
+			name:      "root reappears after guarded deletion",
+			root:      darwinAdministratorArtifactExact,
+			finalRoot: darwinAdministratorArtifactExact,
+		},
+		{
+			name:       "settings reappear after guarded deletion",
+			trust:      darwinAdministratorArtifactExact,
+			finalTrust: darwinAdministratorArtifactExact,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			native := &darwinTrustCoreFakeNative{owned: true, artifacts: &darwinTrustCoreFakeAdministratorArtifacts{
+				root:               test.root,
+				trust:              test.trust,
+				trustBeforeRemoval: test.trust,
+				finalRoot:          test.finalRoot,
+				finalTrust:         test.finalTrust,
+			}}
+			backend := newDarwinTrustBackend(native)
+			before, err := backend.observe(t.Context(), request)
+			if err != nil {
+				t.Fatalf("observe() error = %v", err)
+			}
+			if err := backend.release(t.Context(), request, before); !errors.Is(err, errNativeObservationChanged) {
+				t.Fatalf("release() error = %v, want stale observation", err)
+			}
+			if !native.owned || native.releaseCalls != 1 {
+				t.Fatalf("owned = %t, release calls = %d", native.owned, native.releaseCalls)
+			}
+		})
+	}
+}
+
+// TestDarwinAdministratorMarkerCleanupRejectsDrift prevents a marker from authorizing certificate settings that no longer have Harbor's exact shape.
+func TestDarwinAdministratorMarkerCleanupRejectsDrift(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinAdministratorTrust)
+	native := &darwinTrustCoreFakeNative{
+		owned:     true,
+		artifacts: &darwinTrustCoreFakeAdministratorArtifacts{trust: darwinAdministratorArtifactDrifted},
+	}
+	before, err := newDarwinTrustBackend(native).observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("observe() error = %v", err)
+	}
+	if err := newDarwinTrustBackend(native).release(t.Context(), request, before); !errors.Is(err, errNativeMutationConflict) {
+		t.Fatalf("release() error = %v, want exact-artifact conflict", err)
+	}
+	if native.releaseCalls != 0 {
+		t.Fatalf("release calls = %d, want 0", native.releaseCalls)
 	}
 }
 
