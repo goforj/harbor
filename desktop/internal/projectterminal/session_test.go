@@ -199,7 +199,7 @@ func TestSessionCloseTerminatesTheTerminalProcessGroup(t *testing.T) {
 	}
 	defer func() { _ = session.Close() }()
 
-	if _, err := io.WriteString(session, "sleep 30 & printf 'child=%s\\n' \"$!\"\n"); err != nil {
+	if _, err := io.WriteString(session, "sh -c 'printf \"child=%s\\n\" \"$$\"; exec sleep 30' &\n"); err != nil {
 		t.Fatalf("WriteString() error = %v", err)
 	}
 
