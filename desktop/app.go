@@ -863,9 +863,21 @@ func networkDataPlaneLowPortNeedsPrerequisiteRepair(outcome networkdataplaneappr
 			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
 	}
 	if outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil {
-		return outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed
+		return networkDataPlaneLowPortHelperNeedsRepair(*outcome.HelperFailure)
 	}
 	return outcome.State == networkdataplaneapproval.Unavailable
+}
+
+// networkDataPlaneLowPortHelperNeedsRepair admits one replacement when a fixed old helper cannot classify the daemon's current launchd facts.
+func networkDataPlaneLowPortHelperNeedsRepair(failure networkdataplaneapproval.HelperFailure) bool {
+	if failure.Code == helper.ErrorCodeAuthenticationFailed {
+		return true
+	}
+	if failure.Code != helper.ErrorCodeMutationFailed {
+		return false
+	}
+	return failure.Message == "helper operation failed: low-port ensure verification-failed" ||
+		failure.Message == "helper operation failed: low-port ensure observation-changed"
 }
 
 // networkDataPlaneLowPortPrerequisiteVerificationError reports fixed peer-safe diagnostics after one bounded low-port repair.
@@ -887,6 +899,13 @@ func networkDataPlaneLowPortPrerequisiteVerificationError(outcome networkdatapla
 	if outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil &&
 		outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed {
 		return errors.New("verify Harbor privileged networking support after installation: the installed helper could not authenticate a newly issued data-plane low-port ticket")
+	}
+	if outcome.State == networkdataplaneapproval.HelperFailed &&
+		outcome.HelperFailure != nil &&
+		outcome.HelperFailure.Code == helper.ErrorCodeMutationFailed &&
+		(outcome.HelperFailure.Message == "helper operation failed: low-port ensure verification-failed" ||
+			outcome.HelperFailure.Message == "helper operation failed: low-port ensure observation-changed") {
+		return errors.New("verify Harbor privileged networking support after installation: the installed helper still cannot verify Harbor's launchd relay")
 	}
 	return errors.New("verify Harbor privileged networking support after installation: the data-plane low-port approval result was inconsistent")
 }

@@ -874,7 +874,7 @@ func TestSetupNetworkRepairsDataPlaneApprovalsThroughTheSharedPrerequisiteBounda
 				confirmation := testNetworkDataPlaneSetupConfirmation(client.dataPlaneSetup, 17, 18)
 				runner.lowPortExecute = func(_ context.Context, call int, _ networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error) {
 					if call == 1 {
-						return networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.HelperFailed, HelperFailure: &networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeAuthenticationFailed, Message: "helper ticket redemption failed"}}, nil
+						return networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.HelperFailed, HelperFailure: &networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeMutationFailed, Message: "helper operation failed: low-port ensure observation-changed"}}, nil
 					}
 					return networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: &confirmation}, nil
 				}
@@ -892,6 +892,48 @@ func TestSetupNetworkRepairsDataPlaneApprovalsThroughTheSharedPrerequisiteBounda
 				}
 			} else if len(runner.lowPortRequests) != 2 || runner.lowPortRequests[0] != runner.lowPortRequests[1] {
 				t.Fatalf("low-port retry crossed request boundary: %#v", runner.lowPortRequests)
+			}
+		})
+	}
+}
+
+// TestNetworkDataPlaneLowPortHelperNeedsRepairKeepsReplacementEvidenceExact rejects unrelated mutation and ticket failures.
+func TestNetworkDataPlaneLowPortHelperNeedsRepairKeepsReplacementEvidenceExact(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		failure networkdataplaneapproval.HelperFailure
+		want    bool
+	}{
+		{
+			name:    "authentication",
+			failure: networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeAuthenticationFailed, Message: "helper ticket redemption failed"},
+			want:    true,
+		},
+		{
+			name:    "old parser verification",
+			failure: networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeMutationFailed, Message: "helper operation failed: low-port ensure verification-failed"},
+			want:    true,
+		},
+		{
+			name:    "old parser observation",
+			failure: networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeMutationFailed, Message: "helper operation failed: low-port ensure observation-changed"},
+			want:    true,
+		},
+		{
+			name:    "other mutation",
+			failure: networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeMutationFailed, Message: "helper operation failed: low-port ensure conflict"},
+		},
+		{
+			name:    "wrong classification",
+			failure: networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeInvalidTicket, Message: "helper operation failed: low-port ensure observation-changed"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := networkDataPlaneLowPortHelperNeedsRepair(test.failure); got != test.want {
+				t.Fatalf("networkDataPlaneLowPortHelperNeedsRepair(%#v) = %t, want %t", test.failure, got, test.want)
 			}
 		})
 	}
