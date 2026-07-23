@@ -101,7 +101,16 @@ func newAdministratorTrustStatusError(stage string, status int) error {
 // validAdministratorTrustStage rejects arbitrary native-operation labels from diagnostic propagation.
 func validAdministratorTrustStage(stage string) bool {
 	switch stage {
-	case "snapshot", "owner-observe", "owner-recheck", "root-recheck", "owner-record", "root-recheck-after-marker", "set-root":
+	case "snapshot",
+		"owner-observe",
+		"owner-recheck",
+		"root-store-recheck",
+		"root-store-verify",
+		"root-recheck",
+		"add-system-root",
+		"owner-record",
+		"root-recheck-after-marker",
+		"set-root":
 		return true
 	default:
 		return false

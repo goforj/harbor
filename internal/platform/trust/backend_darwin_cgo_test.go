@@ -36,10 +36,11 @@ func TestExecuteDarwinTrustReleaseClassifiesNativeResult(t *testing.T) {
 				[]byte{1, 2, 3},
 				"owner-account",
 				"authority-fingerprint",
-				func(root []byte, account string, fingerprint string) (bool, error) {
+				"harbor-root-label",
+				func(root []byte, account string, fingerprint string, rootLabel string) (bool, error) {
 					calls++
-					if len(root) != 3 || account != "owner-account" || fingerprint != "authority-fingerprint" {
-						t.Fatalf("effect input = %v, %q, %q", root, account, fingerprint)
+					if len(root) != 3 || account != "owner-account" || fingerprint != "authority-fingerprint" || rootLabel != "harbor-root-label" {
+						t.Fatalf("effect input = %v, %q, %q, %q", root, account, fingerprint, rootLabel)
 					}
 					return test.stale, test.nativeErr
 				},

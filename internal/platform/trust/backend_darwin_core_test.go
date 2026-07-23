@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -157,13 +158,98 @@ func TestDarwinAdministratorOwnerClaimUsesOneAccountPerAuthority(t *testing.T) {
 	}
 }
 
-// TestDarwinAdministratorMarkerCleanupRequiresThisInvocationClaim prevents a failed duplicate-marker install from deleting an existing owner claim.
-func TestDarwinAdministratorMarkerCleanupRequiresThisInvocationClaim(t *testing.T) {
-	if darwinAdministratorMarkerCleanupRequired(false) {
-		t.Fatal("duplicate marker set failure selected cleanup for a pre-existing marker")
+// TestDarwinAdministratorRootLabelBindsOneCanonicalAuthority proves certificate ownership is encoded in a fixed label.
+func TestDarwinAdministratorRootLabelBindsOneCanonicalAuthority(t *testing.T) {
+	request := trustTestRequest(t, networkpolicy.DarwinAdministratorTrust)
+	label := darwinAdministratorRootLabel(request)
+	if !strings.HasSuffix(label, request.AuthorityFingerprint()) {
+		t.Fatalf("root label = %q, want authority fingerprint suffix", label)
 	}
-	if !darwinAdministratorMarkerCleanupRequired(true) {
-		t.Fatal("new marker set failure did not select cleanup")
+	if err := validateDarwinAdministratorRootLabel(request); err != nil {
+		t.Fatalf("validateDarwinAdministratorRootLabel() error = %v", err)
+	}
+}
+
+// TestDarwinAdministratorRollbackOrderPreservesPreexistingArtifacts proves failed installs undo only their own effects.
+func TestDarwinAdministratorRollbackOrderPreservesPreexistingArtifacts(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		created darwinAdministratorRollbackArtifacts
+		want    []darwinAdministratorRollbackArtifact
+	}{
+		{
+			name: "preexisting root certificate",
+		},
+		{
+			name:    "new trust marker",
+			created: darwinAdministratorRollbackArtifacts{TrustMarker: true},
+			want:    []darwinAdministratorRollbackArtifact{darwinAdministratorRollbackTrustMarker},
+		},
+		{
+			name:    "all invocation artifacts",
+			created: darwinAdministratorRollbackArtifacts{TrustMarker: true, RootCertificate: true},
+			want:    []darwinAdministratorRollbackArtifact{darwinAdministratorRollbackRootCertificate, darwinAdministratorRollbackTrustMarker},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := test.created.rollbackOrder()
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("rollbackOrder() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+// TestDarwinAdministratorRollbackFailurePreservesRemainingOwnership proves a failed artifact removal cannot erase the evidence needed for retry.
+func TestDarwinAdministratorRollbackFailurePreservesRemainingOwnership(t *testing.T) {
+	operationErr := errors.New("set administrator trust failed")
+	cleanupErr := errors.New("certificate cleanup failed")
+	var attempted []darwinAdministratorRollbackArtifact
+	err := rollbackDarwinAdministratorArtifacts(
+		darwinAdministratorRollbackArtifacts{
+			TrustMarker:     true,
+			RootCertificate: true,
+		},
+		func(artifact darwinAdministratorRollbackArtifact) error {
+			attempted = append(attempted, artifact)
+			return cleanupErr
+		},
+	)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("rollbackDarwinAdministratorArtifacts() error = %v, want %v", err, cleanupErr)
+	}
+	joined := joinDarwinAdministratorRollbackError(operationErr, err)
+	if !errors.Is(joined, operationErr) || !errors.Is(joined, cleanupErr) {
+		t.Fatalf("joinDarwinAdministratorRollbackError() = %v, want both operation and cleanup errors", joined)
+	}
+	want := []darwinAdministratorRollbackArtifact{darwinAdministratorRollbackRootCertificate}
+	if !slices.Equal(attempted, want) {
+		t.Fatalf("rollback attempts = %v, want %v", attempted, want)
+	}
+}
+
+// TestDarwinAdministratorRootStoreStateClassifiesOwnership proves only an absent exact label may be claimed.
+func TestDarwinAdministratorRootStoreStateClassifiesOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		state   darwinAdministratorRootStoreState
+		wantAdd bool
+	}{
+		{
+			name:    "absent label",
+			state:   darwinAdministratorRootStoreAbsent,
+			wantAdd: true,
+		},
+		{
+			name:  "one owned exact-DER item",
+			state: darwinAdministratorRootStoreOwned,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.state.canAddCertificate(); got != test.wantAdd {
+				t.Fatalf("canAddCertificate() = %t, want %t", got, test.wantAdd)
+			}
+		})
 	}
 }
 

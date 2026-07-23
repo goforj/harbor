@@ -67,3 +67,24 @@ func TestErrorAdministratorTrustDiagnosticExposesOnlyReviewedNativeStatus(t *tes
 		}
 	}
 }
+
+// TestAdministratorTrustDiagnosticAcceptsRootStoreStages keeps root-store failures available to the elevated helper.
+func TestAdministratorTrustDiagnosticAcceptsRootStoreStages(t *testing.T) {
+	for _, stage := range []string{
+		"root-store-recheck",
+		"root-store-verify",
+		"add-system-root",
+	} {
+		t.Run(stage, func(t *testing.T) {
+			err := &Error{
+				Kind:      ErrorKindMutationFailed,
+				Operation: "ensure",
+				cause:     newAdministratorTrustStatusError(stage, -25299),
+			}
+			gotStage, status, ok := err.AdministratorTrustDiagnostic()
+			if !ok || gotStage != stage || status != -25299 {
+				t.Fatalf("AdministratorTrustDiagnostic() = %q, %d, %t", gotStage, status, ok)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -20,9 +21,10 @@ import (
 var darwinAdministratorTrustMutationMutex sync.Mutex
 
 const (
-	darwinUserTrustNativeIDPrefix  = "darwin-user-trust-"
-	darwinAdminTrustNativeIDPrefix = "darwin-admin-trust-"
-	darwinTrustOwnerPrefix         = "v1|"
+	darwinUserTrustNativeIDPrefix      = "darwin-user-trust-"
+	darwinAdminTrustNativeIDPrefix     = "darwin-admin-trust-"
+	darwinTrustOwnerPrefix             = "v1|"
+	darwinAdministratorRootLabelPrefix = "com.goforj.harbor.admin-root.v1|"
 )
 
 // darwinTrustEntry is the bounded native certificate fact used by the portable trust adapter.
@@ -214,6 +216,11 @@ func darwinAdministratorTrustOwnerAttribute(request Request) string {
 	return strconv.FormatUint(uint64(marker.Version), 10) + "|" + marker.InstallationID + "|" + marker.RequesterIdentity + "|" + string(marker.Mechanism) + "|" + marker.AuthorityFingerprint
 }
 
+// darwinAdministratorRootLabel reserves ownership metadata inside the root-only System.keychain boundary.
+func darwinAdministratorRootLabel(request Request) string {
+	return darwinAdministratorRootLabelPrefix + request.AuthorityFingerprint()
+}
+
 // validateDarwinTrustOwnerAccount keeps the marker identity within the native keychain API's bounded text shape.
 func validateDarwinTrustOwnerAccount(request Request) error {
 	account := darwinTrustOwnerAccount(request)
@@ -232,9 +239,73 @@ func validateDarwinAdministratorTrustOwnerAttribute(request Request) error {
 	return nil
 }
 
-// darwinAdministratorMarkerCleanupRequired preserves an already-owned marker when only this invocation's new claim can be rolled back safely.
-func darwinAdministratorMarkerCleanupRequired(createdMarker bool) bool {
-	return createdMarker
+// validateDarwinAdministratorRootLabel keeps certificate-item ownership evidence bounded before it reaches Security.framework.
+func validateDarwinAdministratorRootLabel(request Request) error {
+	label := darwinAdministratorRootLabel(request)
+	if len(label) <= len(darwinAdministratorRootLabelPrefix) ||
+		len(label) > maximumNativeIDLength ||
+		strings.TrimSpace(label) != label ||
+		!utf8.ValidString(label) {
+		return fmt.Errorf("Darwin administrator root label is invalid")
+	}
+	if !strings.HasSuffix(label, request.AuthorityFingerprint()) || len(request.AuthorityFingerprint()) != canonicalFingerprintLength {
+		return fmt.Errorf("Darwin administrator root label is not canonical")
+	}
+	return nil
+}
+
+// darwinAdministratorRollbackArtifact identifies one administrator-trust effect that can be safely undone.
+type darwinAdministratorRollbackArtifact uint8
+
+const (
+	darwinAdministratorRollbackTrustMarker darwinAdministratorRollbackArtifact = iota + 1
+	darwinAdministratorRollbackRootCertificate
+)
+
+// darwinAdministratorRollbackArtifacts identifies only effects made by the current administrator-trust invocation.
+type darwinAdministratorRollbackArtifacts struct {
+	TrustMarker     bool
+	RootCertificate bool
+}
+
+// darwinAdministratorRootStoreState classifies the one exact Harbor-labelled certificate lookup.
+type darwinAdministratorRootStoreState uint8
+
+const (
+	darwinAdministratorRootStoreAbsent darwinAdministratorRootStoreState = iota
+	darwinAdministratorRootStoreOwned
+)
+
+// canAddCertificate reports whether the exact label is available for one atomic certificate add.
+func (state darwinAdministratorRootStoreState) canAddCertificate() bool {
+	return state == darwinAdministratorRootStoreAbsent
+}
+
+// rollbackOrder keeps ownership evidence until the artifact it protects has been removed.
+func (created darwinAdministratorRollbackArtifacts) rollbackOrder() []darwinAdministratorRollbackArtifact {
+	operations := make([]darwinAdministratorRollbackArtifact, 0, 3)
+	if created.RootCertificate {
+		operations = append(operations, darwinAdministratorRollbackRootCertificate)
+	}
+	if created.TrustMarker {
+		operations = append(operations, darwinAdministratorRollbackTrustMarker)
+	}
+	return operations
+}
+
+// rollbackDarwinAdministratorArtifacts stops at the first failure so later ownership evidence remains available for retry.
+func rollbackDarwinAdministratorArtifacts(created darwinAdministratorRollbackArtifacts, remove func(darwinAdministratorRollbackArtifact) error) error {
+	for _, artifact := range created.rollbackOrder() {
+		if err := remove(artifact); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// joinDarwinAdministratorRollbackError preserves the failed operation while exposing cleanup failures to callers.
+func joinDarwinAdministratorRollbackError(operationErr error, cleanupErr error) error {
+	return errors.Join(operationErr, cleanupErr)
 }
 
 // currentDarwinRequesterUID returns the process identity used by the current-user trust domain.

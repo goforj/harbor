@@ -443,6 +443,246 @@ static int harbor_admin_trust_delete_owner(const char *account, size_t account_l
 	return status;
 }
 
+// harbor_admin_root_certificate_query confines every certificate operation to one exact Harbor label in the system keychain.
+static int harbor_admin_root_certificate_query(
+	const char *label_bytes,
+	size_t label_length,
+	SecKeychainRef *keychain_output,
+	CFMutableDictionaryRef *query_output
+) {
+	if (label_bytes == NULL || label_length == 0) {
+		return errSecParam;
+	}
+	SecKeychainRef keychain = NULL;
+	OSStatus status = SecKeychainOpen(harbor_system_keychain_path, &keychain);
+	if (status != errSecSuccess) {
+		return status;
+	}
+	CFMutableDictionaryRef query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (query == NULL) {
+		CFRelease(keychain);
+		return errSecAllocate;
+	}
+	CFStringRef label = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)label_bytes, (CFIndex)label_length, kCFStringEncodingUTF8, false);
+	if (label == NULL) {
+		CFRelease(query);
+		CFRelease(keychain);
+		return errSecAllocate;
+	}
+	CFDictionarySetValue(query, kSecClass, kSecClassCertificate);
+	CFDictionarySetValue(query, kSecAttrLabel, label);
+	CFRelease(label);
+	status = harbor_admin_trust_select_system_keychain_for_query(keychain, query);
+	if (status != errSecSuccess) {
+		CFRelease(query);
+		CFRelease(keychain);
+		return status;
+	}
+	CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue);
+	int32_t match_limit_value = 2;
+	CFNumberRef match_limit = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &match_limit_value);
+	if (match_limit == NULL) {
+		CFRelease(query);
+		CFRelease(keychain);
+		return errSecAllocate;
+	}
+	CFDictionarySetValue(query, kSecMatchLimit, match_limit);
+	CFRelease(match_limit);
+	CFDictionarySetValue(query, kSecUseAuthenticationUI, kSecUseAuthenticationUIFail);
+	*keychain_output = keychain;
+	*query_output = query;
+	return errSecSuccess;
+}
+
+// harbor_admin_root_certificate_matches compares the label-scoped certificate item with the requested DER.
+static int harbor_admin_root_certificate_matches(const uint8_t *der, size_t der_length, SecCertificateRef certificate) {
+	CFDataRef data = SecCertificateCopyData(certificate);
+	if (data == NULL) {
+		return errSecDecode;
+	}
+	CFIndex length = CFDataGetLength(data);
+	const UInt8 *bytes = CFDataGetBytePtr(data);
+	int matches = length == (CFIndex)der_length && bytes != NULL && memcmp(bytes, der, der_length) == 0;
+	CFRelease(data);
+	return matches;
+}
+
+// harbor_admin_root_certificate_state distinguishes an absent label, one owned exact-DER item, and any conflicting label state.
+static int harbor_admin_root_certificate_state(const uint8_t *der, size_t der_length, const char *label, size_t label_length) {
+	if (der == NULL || der_length == 0 || label == NULL || label_length == 0) {
+		return errSecParam;
+	}
+	SecKeychainRef keychain = NULL;
+	CFMutableDictionaryRef query = NULL;
+	OSStatus status = harbor_admin_root_certificate_query(label, label_length, &keychain, &query);
+	if (status != errSecSuccess) {
+		return status;
+	}
+	CFTypeRef result = NULL;
+	status = SecItemCopyMatching(query, &result);
+	CFRelease(query);
+	CFRelease(keychain);
+	if (status == errSecItemNotFound) {
+		return 0;
+	}
+	if (status != errSecSuccess) {
+		return status;
+	}
+	if (result == NULL || CFGetTypeID(result) != CFArrayGetTypeID()) {
+		if (result != NULL) {
+			CFRelease(result);
+		}
+		return errSecDecode;
+	}
+	CFArrayRef certificates = (CFArrayRef)result;
+	CFIndex count = CFArrayGetCount(certificates);
+	if (count < 0) {
+		CFRelease(certificates);
+		return errSecDecode;
+	}
+	if (count != 1) {
+		CFRelease(certificates);
+		return errSecDuplicateItem;
+	}
+	CFTypeRef candidate = CFArrayGetValueAtIndex(certificates, 0);
+	if (candidate == NULL || CFGetTypeID(candidate) != SecCertificateGetTypeID()) {
+		CFRelease(certificates);
+		return errSecDecode;
+	}
+	int matches = harbor_admin_root_certificate_matches(der, der_length, (SecCertificateRef)candidate);
+	CFRelease(certificates);
+	if (matches == errSecDecode) {
+		return matches;
+	}
+	return matches ? 1 : errSecDuplicateItem;
+}
+
+// harbor_admin_root_add_certificate atomically stores one certificate with Harbor's exact ownership label.
+static int harbor_admin_root_add_certificate(const uint8_t *der, size_t der_length, const char *label, size_t label_length) {
+	if (der == NULL || der_length == 0 || label == NULL || label_length == 0) {
+		return errSecParam;
+	}
+	CFDataRef data = CFDataCreate(kCFAllocatorDefault, der, (CFIndex)der_length);
+	if (data == NULL) {
+		return errSecAllocate;
+	}
+	SecCertificateRef certificate = SecCertificateCreateWithData(kCFAllocatorDefault, data);
+	CFRelease(data);
+	if (certificate == NULL) {
+		return errSecDecode;
+	}
+	SecKeychainRef keychain = NULL;
+	OSStatus status = SecKeychainOpen(harbor_system_keychain_path, &keychain);
+	if (status != errSecSuccess) {
+		CFRelease(certificate);
+		return status;
+	}
+	CFMutableDictionaryRef query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (query == NULL) {
+		CFRelease(keychain);
+		CFRelease(certificate);
+		return errSecAllocate;
+	}
+	CFDictionarySetValue(query, kSecClass, kSecClassCertificate);
+	CFDictionarySetValue(query, kSecUseKeychain, keychain);
+	CFDictionarySetValue(query, kSecValueRef, certificate);
+	CFStringRef label_value = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)label, (CFIndex)label_length, kCFStringEncodingUTF8, false);
+	if (label_value == NULL) {
+		CFRelease(query);
+		CFRelease(keychain);
+		CFRelease(certificate);
+		return errSecAllocate;
+	}
+	CFDictionarySetValue(query, kSecAttrLabel, label_value);
+	CFRelease(label_value);
+	status = SecItemAdd(query, NULL);
+	CFRelease(query);
+	CFRelease(keychain);
+	CFRelease(certificate);
+	return status;
+}
+
+// harbor_admin_root_delete_candidate rechecks the reserved label against one exact System.keychain item reference at deletion time.
+static int harbor_admin_root_delete_candidate(SecCertificateRef certificate, const char *label_bytes, size_t label_length) {
+	if (certificate == NULL || label_bytes == NULL || label_length == 0) {
+		return errSecParam;
+	}
+	CFMutableDictionaryRef query = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	CFStringRef label = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)label_bytes, (CFIndex)label_length, kCFStringEncodingUTF8, false);
+	const void *items[] = {certificate};
+	CFArrayRef item_list = CFArrayCreate(kCFAllocatorDefault, items, 1, &kCFTypeArrayCallBacks);
+	if (query == NULL || label == NULL || item_list == NULL) {
+		if (query != NULL) {
+			CFRelease(query);
+		}
+		if (label != NULL) {
+			CFRelease(label);
+		}
+		if (item_list != NULL) {
+			CFRelease(item_list);
+		}
+		return errSecAllocate;
+	}
+	CFDictionarySetValue(query, kSecClass, kSecClassCertificate);
+	CFDictionarySetValue(query, kSecAttrLabel, label);
+	CFDictionarySetValue(query, kSecMatchItemList, item_list);
+	CFDictionarySetValue(query, kSecUseAuthenticationUI, kSecUseAuthenticationUIFail);
+	OSStatus status = SecItemDelete(query);
+	CFRelease(item_list);
+	CFRelease(label);
+	CFRelease(query);
+	return status;
+}
+
+// harbor_admin_root_delete_certificate removes only one exact-DER certificate bearing Harbor's exact label.
+static int harbor_admin_root_delete_certificate(const uint8_t *der, size_t der_length, const char *label, size_t label_length) {
+	if (der == NULL || der_length == 0 || label == NULL || label_length == 0) {
+		return errSecParam;
+	}
+	SecKeychainRef keychain = NULL;
+	CFMutableDictionaryRef query = NULL;
+	OSStatus status = harbor_admin_root_certificate_query(label, label_length, &keychain, &query);
+	if (status != errSecSuccess) {
+		return status;
+	}
+	CFTypeRef result = NULL;
+	status = SecItemCopyMatching(query, &result);
+	CFRelease(query);
+	CFRelease(keychain);
+	if (status == errSecItemNotFound) {
+		return errSecItemNotFound;
+	}
+	if (status != errSecSuccess || result == NULL || CFGetTypeID(result) != CFArrayGetTypeID()) {
+		if (result != NULL) {
+			CFRelease(result);
+		}
+		return status == errSecSuccess ? errSecDecode : status;
+	}
+	CFArrayRef certificates = (CFArrayRef)result;
+	CFIndex count = CFArrayGetCount(certificates);
+	if (count < 0) {
+		CFRelease(certificates);
+		return errSecDecode;
+	}
+	if (count != 1) {
+		CFRelease(certificates);
+		return errSecDuplicateItem;
+	}
+	CFTypeRef candidate = CFArrayGetValueAtIndex(certificates, 0);
+	if (candidate == NULL || CFGetTypeID(candidate) != SecCertificateGetTypeID()) {
+		CFRelease(certificates);
+		return errSecDecode;
+	}
+	int matches = harbor_admin_root_certificate_matches(der, der_length, (SecCertificateRef)candidate);
+	if (matches != 1) {
+		CFRelease(certificates);
+		return matches == errSecDecode ? matches : errSecDuplicateItem;
+	}
+	status = harbor_admin_root_delete_candidate((SecCertificateRef)candidate, label, label_length);
+	CFRelease(certificates);
+	return status;
+}
+
 static int harbor_trust_set_root_in_domain(const uint8_t *der, size_t der_length, SecTrustSettingsDomain domain) {
 	CFDataRef data = CFDataCreate(kCFAllocatorDefault, der, (CFIndex)der_length);
 	if (data == NULL) {
@@ -567,8 +807,24 @@ static int harbor_trust_remove_user_root_if_owned_exact(
 	return harbor_trust_delete_owner(account, account_length, fingerprint, fingerprint_length);
 }
 
-static int harbor_trust_remove_admin_root_if_owned_exact(const uint8_t *der, size_t der_length, const char *account, size_t account_length, const char *fingerprint, size_t fingerprint_length, int *stale) {
-	if (der == NULL || der_length == 0 || account == NULL || account_length == 0 || fingerprint == NULL || fingerprint_length == 0 || stale == NULL) {
+static int harbor_trust_remove_admin_root_if_owned_exact(
+	const uint8_t *der,
+	size_t der_length,
+	const char *account,
+	size_t account_length,
+	const char *fingerprint,
+	size_t fingerprint_length,
+	const char *root_label,
+	size_t root_label_length,
+	int *stale
+) {
+	if (
+		der == NULL || der_length == 0 ||
+		account == NULL || account_length == 0 ||
+		fingerprint == NULL || fingerprint_length == 0 ||
+		root_label == NULL || root_label_length == 0 ||
+		stale == NULL
+	) {
 		return errSecParam;
 	}
 	*stale = 0;
@@ -602,13 +858,14 @@ static int harbor_trust_remove_admin_root_if_owned_exact(const uint8_t *der, siz
 		CFRelease(certificate);
 		return owner;
 	}
+	status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
+	if (status != errSecSuccess && status != errSecItemNotFound) {
+		CFRelease(certificate);
+		return status;
+	}
 	status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainAdmin);
 	CFRelease(certificate);
-	if (status == errSecItemNotFound) {
-		*stale = 1;
-		return errSecSuccess;
-	}
-	if (status != errSecSuccess) {
+	if (status != errSecSuccess && status != errSecItemNotFound) {
 		return status;
 	}
 	status = harbor_admin_trust_delete_owner(account, account_length, fingerprint, fingerprint_length);
@@ -642,7 +899,7 @@ const darwinAdministratorTrustMutationLockPath = "/var/run/com.goforj.harbor.adm
 type darwinNativeTrustStore struct{}
 
 // darwinTrustReleaseEffect performs the one native optimistic recheck and bounded removal.
-type darwinTrustReleaseEffect func([]byte, string, string) (bool, error)
+type darwinTrustReleaseEffect func([]byte, string, string, string) (bool, error)
 
 // New creates a macOS current-user trust adapter backed by Security.framework and the login keychain.
 func New() (*Adapter, error) {
@@ -712,6 +969,9 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 		if err := validateDarwinAdministratorTrustOwnerAttribute(request); err != nil {
 			return err
 		}
+		if err := validateDarwinAdministratorRootLabel(request); err != nil {
+			return err
+		}
 	}
 	root, err := darwinRootDER(request.Root().CertificatePEM)
 	if err != nil {
@@ -724,6 +984,8 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 	if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
 		ownerAttribute := darwinAdministratorTrustOwnerAttribute(request)
 		ownerAttributePointer, ownerAttributeLength := cStringBytes(ownerAttribute)
+		rootLabel := darwinAdministratorRootLabel(request)
+		rootLabelPointer, rootLabelLength := cStringBytes(rootLabel)
 		unlock, err := acquireDarwinAdministratorTrustMutationLock()
 		if err != nil {
 			return err
@@ -738,6 +1000,15 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 		if markerStatus != 0 && markerStatus != 1 {
 			return newAdministratorTrustStatusError("owner-recheck", int(markerStatus))
 		}
+		rootStatus := C.harbor_admin_root_certificate_state(
+			(*C.uint8_t)(unsafe.Pointer(&root[0])),
+			C.size_t(len(root)),
+			(*C.char)(unsafe.Pointer(&rootLabelPointer[0])),
+			rootLabelLength,
+		)
+		if rootStatus != 0 && rootStatus != 1 {
+			return newAdministratorTrustStatusError("root-store-recheck", int(rootStatus))
+		}
 		trustStatus := C.harbor_trust_admin_root_is_exact((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)))
 		if trustStatus != 0 && trustStatus != 1 {
 			return newAdministratorTrustStatusError("root-recheck", int(trustStatus))
@@ -745,10 +1016,44 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 		if markerStatus == 0 && trustStatus == 1 {
 			return fmt.Errorf("administrator root trust became exact without this owner marker: %w", errNativeMutationConflict)
 		}
-		if markerStatus == 1 && trustStatus == 1 {
+		if markerStatus == 1 && trustStatus == 1 && rootStatus == 1 {
 			return nil
 		}
-		createdMarker := false
+		rootStoreState := darwinAdministratorRootStoreState(rootStatus)
+		created := darwinAdministratorRollbackArtifacts{}
+		rollback := func() error {
+			return rollbackDarwinAdministratorNativeArtifacts(created, root, account, ownerAttribute, rootLabel)
+		}
+		if rootStoreState.canAddCertificate() {
+			rootStatus = C.harbor_admin_root_add_certificate(
+				(*C.uint8_t)(unsafe.Pointer(&root[0])),
+				C.size_t(len(root)),
+				(*C.char)(unsafe.Pointer(&rootLabelPointer[0])),
+				rootLabelLength,
+			)
+			if rootStatus != C.harborErrSecSuccess && rootStatus != C.harborErrSecDuplicateItem {
+				return newAdministratorTrustStatusError("add-system-root", int(rootStatus))
+			}
+			created.RootCertificate = rootStatus == C.harborErrSecSuccess
+			verifiedRootStatus := C.harbor_admin_root_certificate_state(
+				(*C.uint8_t)(unsafe.Pointer(&root[0])),
+				C.size_t(len(root)),
+				(*C.char)(unsafe.Pointer(&rootLabelPointer[0])),
+				rootLabelLength,
+			)
+			if verifiedRootStatus != 0 && verifiedRootStatus != 1 {
+				return joinDarwinAdministratorRollbackError(
+					newAdministratorTrustStatusError("root-store-verify", int(verifiedRootStatus)),
+					rollback(),
+				)
+			}
+			if created.RootCertificate && verifiedRootStatus != 1 {
+				return joinDarwinAdministratorRollbackError(
+					newAdministratorTrustStatusError("root-store-verify", int(C.harborErrSecItemNotFound)),
+					rollback(),
+				)
+			}
+		}
 		if markerStatus == 0 {
 			markerStatus = C.harbor_admin_trust_add_owner(
 				(*C.char)(unsafe.Pointer(&accountPointer[0])),
@@ -757,26 +1062,32 @@ func (darwinNativeTrustStore) ensure(ctx context.Context, request Request) error
 				ownerAttributeLength,
 			)
 			if markerStatus != C.harborErrSecSuccess {
-				return newAdministratorTrustStatusError("owner-record", int(markerStatus))
+				return joinDarwinAdministratorRollbackError(
+					newAdministratorTrustStatusError("owner-record", int(markerStatus)),
+					rollback(),
+				)
 			}
-			createdMarker = true
+			created.TrustMarker = true
 			trustStatus = C.harbor_trust_admin_root_is_exact((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)))
 			if trustStatus != 0 {
-				if darwinAdministratorMarkerCleanupRequired(createdMarker) {
-					_ = deleteDarwinAdministratorOwner(account, ownerAttribute)
-				}
 				if trustStatus == 1 {
-					return fmt.Errorf("administrator root trust changed before install: %w", errNativeMutationConflict)
+					return joinDarwinAdministratorRollbackError(
+						fmt.Errorf("administrator root trust changed before install: %w", errNativeMutationConflict),
+						rollback(),
+					)
 				}
-				return newAdministratorTrustStatusError("root-recheck-after-marker", int(trustStatus))
+				return joinDarwinAdministratorRollbackError(
+					newAdministratorTrustStatusError("root-recheck-after-marker", int(trustStatus)),
+					rollback(),
+				)
 			}
 		}
 		status := C.harbor_trust_set_admin_root((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)))
 		if status != C.harborErrSecSuccess {
-			if darwinAdministratorMarkerCleanupRequired(createdMarker) {
-				_ = deleteDarwinAdministratorOwner(account, ownerAttribute)
-			}
-			return newAdministratorTrustStatusError("set-root", int(status))
+			return joinDarwinAdministratorRollbackError(
+				newAdministratorTrustStatusError("set-root", int(status)),
+				rollback(),
+			)
 		}
 		return nil
 	}
@@ -809,6 +1120,9 @@ func (darwinNativeTrustStore) release(ctx context.Context, request Request) erro
 		if err := validateDarwinAdministratorTrustOwnerAttribute(request); err != nil {
 			return err
 		}
+		if err := validateDarwinAdministratorRootLabel(request); err != nil {
+			return err
+		}
 	}
 	root, err := darwinRootDER(request.Root().CertificatePEM)
 	if err != nil {
@@ -818,14 +1132,15 @@ func (darwinNativeTrustStore) release(ctx context.Context, request Request) erro
 	fingerprint := request.AuthorityFingerprint()
 	if request.Mechanism() == networkpolicy.DarwinAdministratorTrust {
 		ownerAttribute := darwinAdministratorTrustOwnerAttribute(request)
+		rootLabel := darwinAdministratorRootLabel(request)
 		unlock, err := acquireDarwinAdministratorTrustMutationLock()
 		if err != nil {
 			return err
 		}
 		defer unlock()
-		return executeDarwinTrustRelease(root, account, ownerAttribute, removeExactOwnedDarwinAdministratorTrust)
+		return executeDarwinTrustRelease(root, account, ownerAttribute, rootLabel, removeExactOwnedDarwinAdministratorTrust)
 	}
-	return executeDarwinTrustRelease(root, account, fingerprint, removeExactOwnedDarwinTrust)
+	return executeDarwinTrustRelease(root, account, fingerprint, "", removeExactOwnedDarwinTrust)
 }
 
 // executeDarwinTrustRelease maps native revalidation outcomes onto the portable stale-observation contract.
@@ -833,9 +1148,10 @@ func executeDarwinTrustRelease(
 	root []byte,
 	account string,
 	fingerprint string,
+	rootLabel string,
 	effect darwinTrustReleaseEffect,
 ) error {
-	stale, err := effect(root, account, fingerprint)
+	stale, err := effect(root, account, fingerprint, rootLabel)
 	if err != nil {
 		return err
 	}
@@ -846,7 +1162,7 @@ func executeDarwinTrustRelease(
 }
 
 // removeExactOwnedDarwinTrust invokes the single native recheck-and-remove helper for one validated target.
-func removeExactOwnedDarwinTrust(root []byte, account string, fingerprint string) (bool, error) {
+func removeExactOwnedDarwinTrust(root []byte, account string, fingerprint string, _ string) (bool, error) {
 	accountPointer, accountLength := cStringBytes(account)
 	fingerprintPointer, fingerprintLength := cStringBytes(fingerprint)
 	var stale C.int
@@ -866,11 +1182,22 @@ func removeExactOwnedDarwinTrust(root []byte, account string, fingerprint string
 }
 
 // removeExactOwnedDarwinAdministratorTrust invokes the administrator-domain CAS removal.
-func removeExactOwnedDarwinAdministratorTrust(root []byte, account string, fingerprint string) (bool, error) {
+func removeExactOwnedDarwinAdministratorTrust(root []byte, account string, fingerprint string, rootLabel string) (bool, error) {
 	accountPointer, accountLength := cStringBytes(account)
 	fingerprintPointer, fingerprintLength := cStringBytes(fingerprint)
+	rootLabelPointer, rootLabelLength := cStringBytes(rootLabel)
 	var stale C.int
-	status := C.harbor_trust_remove_admin_root_if_owned_exact((*C.uint8_t)(unsafe.Pointer(&root[0])), C.size_t(len(root)), (*C.char)(unsafe.Pointer(&accountPointer[0])), accountLength, (*C.char)(unsafe.Pointer(&fingerprintPointer[0])), fingerprintLength, &stale)
+	status := C.harbor_trust_remove_admin_root_if_owned_exact(
+		(*C.uint8_t)(unsafe.Pointer(&root[0])),
+		C.size_t(len(root)),
+		(*C.char)(unsafe.Pointer(&accountPointer[0])),
+		accountLength,
+		(*C.char)(unsafe.Pointer(&fingerprintPointer[0])),
+		fingerprintLength,
+		(*C.char)(unsafe.Pointer(&rootLabelPointer[0])),
+		rootLabelLength,
+		&stale,
+	)
 	if status != C.harborErrSecSuccess {
 		return false, darwinTrustStatusError("remove exact owned administrator root trust", status)
 	}
@@ -976,6 +1303,35 @@ func deleteDarwinAdministratorOwner(account string, fingerprint string) error {
 		return nil
 	}
 	return darwinTrustStatusError("delete administrator trust ownership", status)
+}
+
+// rollbackDarwinAdministratorNativeArtifacts removes only effects recorded by the active failed installation.
+func rollbackDarwinAdministratorNativeArtifacts(
+	created darwinAdministratorRollbackArtifacts,
+	root []byte,
+	trustAccount string,
+	trustAttribute string,
+	rootLabel string,
+) error {
+	return rollbackDarwinAdministratorArtifacts(created, func(artifact darwinAdministratorRollbackArtifact) error {
+		switch artifact {
+		case darwinAdministratorRollbackTrustMarker:
+			return deleteDarwinAdministratorOwner(trustAccount, trustAttribute)
+		case darwinAdministratorRollbackRootCertificate:
+			labelPointer, labelLength := cStringBytes(rootLabel)
+			status := C.harbor_admin_root_delete_certificate(
+				(*C.uint8_t)(unsafe.Pointer(&root[0])),
+				C.size_t(len(root)),
+				(*C.char)(unsafe.Pointer(&labelPointer[0])),
+				labelLength,
+			)
+			if status == C.harborErrSecSuccess || status == C.harborErrSecItemNotFound {
+				return nil
+			}
+			return darwinTrustStatusError("delete administrator root certificate", status)
+		}
+		return nil
+	})
 }
 
 // validateDarwinTrustContext keeps native calls cancellation-aware even though Security.framework calls are synchronous.
