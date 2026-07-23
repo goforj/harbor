@@ -285,6 +285,7 @@ func provideControlServer(
 		NetworkReleaseAuthority:                 networkRelease.authority,
 		NetworkReleaseApprovalAuthority:         networkRelease.authority,
 		NetworkResolverPolicyMigrationAuthority: networkResolverPolicyMigration.authority,
+		ProjectEnvironmentAuthority:             controlAuthority,
 	})
 }
 

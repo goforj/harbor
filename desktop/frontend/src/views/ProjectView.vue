@@ -21,6 +21,7 @@ import {
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import InteractiveTerminal from '@/components/harbor/InteractiveTerminal.vue'
 import ProjectConnectPanel from '@/components/harbor/ProjectConnectPanel.vue'
+import ProjectEnvironmentPanel from '@/components/harbor/ProjectEnvironmentPanel.vue'
 import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
@@ -90,6 +91,7 @@ const project = computed(() => store.projectById(projectId.value))
 const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
 const projectActivitySupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity.v1') === true)
 const projectActivityWaitSupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity-wait.v1') === true)
+const projectEnvironmentSupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-environment.v1') === true)
 const daemonConnected = computed(() => store.connectionState === 'connected')
 const snapshotSequence = computed(() => store.snapshot?.sequence)
 const {
@@ -657,12 +659,13 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
           <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
           <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
           <TabsTrigger value="terminal" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Terminal</TabsTrigger>
+          <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
           <TabsTrigger value="connect" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Connect</TabsTrigger>
           <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
           <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
-        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
+        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <Alert
           v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
@@ -775,6 +778,15 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
               />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="environment" force-mount class="m-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+          <ProjectEnvironmentPanel
+            :active="selectedDetailTab === 'environment'"
+            :project-id="project.id"
+            :supported="projectEnvironmentSupported"
+            class="min-h-0 flex-1"
+          />
         </TabsContent>
 
         <TabsContent value="connect" class="m-0">

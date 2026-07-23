@@ -18,6 +18,25 @@ export interface ProjectTerminalEvent {
   dropped?: boolean
 }
 
+export interface ProjectEnvironmentVariable {
+  name: string
+  value: string
+}
+
+export interface ProjectEnvironmentFile {
+  name: string
+  contents: string
+  revision: string
+}
+
+export interface ProjectEnvironment {
+  project_id: string
+  overrides_available: boolean
+  override_error?: string
+  overrides: ProjectEnvironmentVariable[]
+  files: ProjectEnvironmentFile[]
+}
+
 export type ProjectState =
   | 'stopped'
   | 'starting'

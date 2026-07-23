@@ -116,6 +116,7 @@ func TestProjectLifecycleProtocolNamesAndCapabilityRemainStable(t *testing.T) {
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
 		CapabilityProjectActivityV1,
+		CapabilityProjectEnvironmentV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectRestartV1,

@@ -56,6 +56,8 @@ type ServerConfig struct {
 	NetworkReleaseApprovalAuthority NetworkReleaseApprovalAuthority
 	// NetworkResolverPolicyMigrationAuthority optionally enables legacy resolver-policy retirement control.
 	NetworkResolverPolicyMigrationAuthority NetworkResolverPolicyMigrationAuthority
+	// ProjectEnvironmentAuthority optionally enables project environment inspection and editing.
+	ProjectEnvironmentAuthority ProjectEnvironmentAuthority
 }
 
 // Server adapts authenticated local connections to the typed Harbor control API.
@@ -117,11 +119,13 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	networkReleaseEnabled := !networkReleaseAuthorityIsNil(server.config.NetworkReleaseAuthority)
 	networkReleaseApprovalEnabled := !networkReleaseApprovalAuthorityIsNil(server.config.NetworkReleaseApprovalAuthority)
 	networkResolverPolicyMigrationEnabled := !networkResolverPolicyMigrationAuthorityIsNil(server.config.NetworkResolverPolicyMigrationAuthority)
+	projectEnvironmentEnabled := !projectEnvironmentAuthorityIsNil(server.config.ProjectEnvironmentAuthority)
 	serverCapabilities := daemonCapabilities(
 		dataPlaneSetupEnabled,
 		networkReleaseEnabled,
 		networkReleaseApprovalEnabled,
 		networkResolverPolicyMigrationEnabled,
+		projectEnvironmentEnabled,
 	)
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
@@ -177,6 +181,10 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		methodProjectUnregister:                   server.projectUnregisterHandler(transportPeer),
 		methodProjectUnregisterApprovalPrepare:    server.projectUnregisterApprovalPrepareHandler(transportPeer),
 		methodProjectUnregisterApprovalConfirm:    server.projectUnregisterApprovalConfirmHandler(transportPeer),
+	}
+	if projectEnvironmentEnabled {
+		handlers[methodProjectEnvironment] = server.projectEnvironmentHandler(transportPeer)
+		handlers[methodProjectEnvironmentFileSave] = server.saveProjectEnvironmentFileHandler(transportPeer)
 	}
 	if dataPlaneSetupEnabled {
 		handlers[methodNetworkDataPlaneSetupStart] = server.networkDataPlaneSetupStartHandler(transportPeer)

@@ -77,6 +77,14 @@ type Authority interface {
 	ConfirmProjectUnregisterApproval(context.Context, Caller, ConfirmProjectUnregisterApprovalRequest) (ProjectUnregisterApprovalConfirmation, error)
 }
 
+// ProjectEnvironmentAuthority owns the optional project environment inspection and editing surface.
+type ProjectEnvironmentAuthority interface {
+	// ProjectEnvironment returns the runtime inputs for one registered project.
+	ProjectEnvironment(context.Context, Caller, ProjectEnvironmentRequest) (ProjectEnvironment, error)
+	// SaveProjectEnvironmentFile writes one revision-fenced provider environment file.
+	SaveProjectEnvironmentFile(context.Context, Caller, SaveProjectEnvironmentFileRequest) (ProjectEnvironmentFile, error)
+}
+
 // NetworkResolverPolicyMigrationAuthority owns the optional legacy resolver-policy retirement control surface.
 type NetworkResolverPolicyMigrationAuthority interface {
 	// StartNetworkResolverPolicyMigration starts or replays one bounded legacy resolver-policy retirement intent.
@@ -127,6 +135,21 @@ func NewProjectLifecycleInvalidError(cause error) error {
 // NewProjectLifecycleNotFoundError classifies a start, stop, or restart request for an unknown durable project.
 func NewProjectLifecycleNotFoundError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewProjectEnvironmentInvalidError classifies a project environment request rejected before any file mutation.
+func NewProjectEnvironmentInvalidError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeInvalidRequest, cause)
+}
+
+// NewProjectEnvironmentNotFoundError classifies an environment request for a missing project or file.
+func NewProjectEnvironmentNotFoundError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeNotFound, cause)
+}
+
+// NewProjectEnvironmentConflictError classifies a file edit whose displayed revision is stale.
+func NewProjectEnvironmentConflictError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeConflict, cause)
 }
 
 // NewProjectLifecycleConflictError classifies durable state that prevents a project start, stop, or restart.

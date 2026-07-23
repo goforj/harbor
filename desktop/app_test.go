@@ -82,6 +82,12 @@ type fakeControlClient struct {
 	activityErr                  error
 	activityRequest              control.ProjectActivityRequest
 	activityHook                 func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	environment                  control.ProjectEnvironment
+	environmentErr               error
+	environmentRequest           control.ProjectEnvironmentRequest
+	environmentFile              control.ProjectEnvironmentFile
+	environmentFileErr           error
+	environmentFileRequest       control.SaveProjectEnvironmentFileRequest
 	serviceLogs                  control.ServiceLogs
 	serviceLogsErr               error
 	serviceLogsRequest           control.ServiceLogsRequest
@@ -483,6 +489,28 @@ func (client *fakeControlClient) ProjectActivity(ctx context.Context, request co
 		return hook(ctx, request)
 	}
 	return activity, err
+}
+
+// ProjectEnvironment records the project selection and returns the configured runtime inputs.
+func (client *fakeControlClient) ProjectEnvironment(
+	_ context.Context,
+	request control.ProjectEnvironmentRequest,
+) (control.ProjectEnvironment, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.environmentRequest = request
+	return client.environment, client.environmentErr
+}
+
+// SaveProjectEnvironmentFile records the revision-fenced edit and returns the configured file.
+func (client *fakeControlClient) SaveProjectEnvironmentFile(
+	_ context.Context,
+	request control.SaveProjectEnvironmentFileRequest,
+) (control.ProjectEnvironmentFile, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.environmentFileRequest = request
+	return client.environmentFile, client.environmentFileErr
 }
 
 // ServiceLogs records the current-session service cursor and returns the configured bounded output.

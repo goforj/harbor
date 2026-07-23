@@ -64,6 +64,32 @@ func prepareManagedHostEnvironment(checkoutRoot string, overrides EnvironmentOve
 	return values, nil
 }
 
+// PreviewEnvironmentOverrides returns the exact Harbor-owned values that would
+// be supplied to a project's development process without modifying its checkout.
+//
+// The legacy managed block is ignored because Start removes it before deriving
+// the child environment. This keeps a read-only caller from presenting stale
+// values while avoiding a checkout mutation merely to inspect an environment.
+func PreviewEnvironmentOverrides(checkoutRoot string, overrides EnvironmentOverrides) (EnvironmentOverrides, error) {
+	addressValue, present := overrides["IP_ADDRESS"]
+	if !present {
+		return cloneEnvironmentOverrides(overrides), nil
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(addressValue))
+	if err != nil || !address.IsLoopback() {
+		return nil, fmt.Errorf("IP_ADDRESS must contain a loopback address: %q", addressValue)
+	}
+	contents, _, _, exists, err := readManagedHostEnvironment(filepath.Join(checkoutRoot, ".env.host"))
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		contents = nil
+	}
+	cleaned, _ := removeManagedHostEnvironmentBlock(string(contents))
+	return managedHostEnvironmentValues(cleaned, address.String(), cloneEnvironmentOverrides(overrides)), nil
+}
+
 // managedHostEnvironmentValues derives local endpoints from readable project dotenv content without making malformed user content fatal.
 func managedHostEnvironmentValues(contents string, address string, overrides EnvironmentOverrides) EnvironmentOverrides {
 	parsed, err := godotenv.Unmarshal(contents)

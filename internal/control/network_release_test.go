@@ -106,10 +106,10 @@ func TestNetworkReleaseClientValidatesBeforeSending(t *testing.T) {
 
 // TestNetworkReleaseCapabilityAdvertisementAndTypedNilHandling keeps optional authority negotiation explicit.
 func TestNetworkReleaseCapabilityAdvertisementAndTypedNilHandling(t *testing.T) {
-	if containsCapability(daemonCapabilities(false, false, false, false), CapabilityNetworkReleaseV1) {
+	if containsCapability(daemonCapabilities(false, false, false, false, false), CapabilityNetworkReleaseV1) {
 		t.Fatal("disabled release capability was advertised")
 	}
-	if !containsCapability(daemonCapabilities(false, true, false, false), CapabilityNetworkReleaseV1) {
+	if !containsCapability(daemonCapabilities(false, true, false, false, false), CapabilityNetworkReleaseV1) {
 		t.Fatal("enabled release capability was not advertised")
 	}
 	for _, authority := range []NetworkReleaseAuthority{

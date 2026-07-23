@@ -501,8 +501,8 @@ describe('ProjectView stale runtime recovery', () => {
   it('keeps project detail content in compact, task-focused tabs', async () => {
     const { wrapper } = await mountRecoveryProject()
 
-    const tabLabels = wrapper.findAll('[role="tab"]').map((tab) => tab.text().replace(/\s+\d+$/, ''))
-    expect(tabLabels).toEqual(['Overview', 'Development output', 'Terminal', 'Connect', 'Services', 'Resources'])
+    const tabLabels = wrapper.get('[data-slot="tabs-list"]').findAll('[role="tab"]').map((tab) => tab.text().replace(/\s+\d+$/, ''))
+    expect(tabLabels).toEqual(['Overview', 'Development output', 'Terminal', 'Environment', 'Connect', 'Services', 'Resources'])
     expect(wrapper.text()).toContain('Apps')
     expect(wrapper.text()).not.toContain('Reported services for this project.')
 

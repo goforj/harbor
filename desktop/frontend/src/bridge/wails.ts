@@ -17,10 +17,12 @@ interface AdditiveWailsAppBindings {
   AttachProjectTerminal(sessionId: string): ReturnType<HarborBridge['attachProjectTerminal']>
   CloseProjectTerminal(sessionId: string): ReturnType<HarborBridge['closeProjectTerminal']>
   OpenTerminalURL(url: string): ReturnType<HarborBridge['openTerminalURL']>
+  ProjectEnvironment(projectId: string): ReturnType<HarborBridge['getProjectEnvironment']>
   RemoveOldNetworking(): ReturnType<HarborBridge['removeOldNetworking']>
   ResizeProjectTerminal(sessionId: string, columns: number, rows: number): ReturnType<HarborBridge['resizeProjectTerminal']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
   StartProjectTerminal(projectId: string, columns: number, rows: number): ReturnType<HarborBridge['startProjectTerminal']>
+  SaveProjectEnvironmentFile(projectId: string, name: string, contents: string, revision: string): ReturnType<HarborBridge['saveProjectEnvironmentFile']>
   ResourceIconURL(projectId: string, resourceId: string): ReturnType<HarborBridge['getResourceIconURL']>
   WaitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): ReturnType<HarborBridge['waitServiceLogs']>
   WriteProjectTerminal(sessionId: string, data: string): ReturnType<HarborBridge['writeProjectTerminal']>
@@ -77,6 +79,8 @@ export function createWailsBridge(): HarborBridge {
   const openTerminalURL = app?.OpenTerminalURL
   const resourceIconURL = app?.ResourceIconURL
   const projectActivity = app?.ProjectActivity
+  const projectEnvironment = app?.ProjectEnvironment
+  const saveProjectEnvironmentFile = app?.SaveProjectEnvironmentFile
   const serviceLogs = app?.ServiceLogs
   const waitServiceLogs = app?.WaitServiceLogs
   const waitProjectActivity = app?.WaitProjectActivity
@@ -118,6 +122,12 @@ export function createWailsBridge(): HarborBridge {
     getStatus: () => status(),
     getSnapshot: () => snapshot(),
     getProjectActivity: (projectId, sessionId, cursor) => projectActivity(projectId, sessionId, cursor),
+    getProjectEnvironment: typeof projectEnvironment === 'function'
+      ? (projectId) => projectEnvironment(projectId)
+      : () => Promise.reject(new Error('Project environment bindings are not available in this desktop build.')),
+    saveProjectEnvironmentFile: typeof saveProjectEnvironmentFile === 'function'
+      ? (projectId, name, contents, revision) => saveProjectEnvironmentFile(projectId, name, contents, revision)
+      : () => Promise.reject(new Error('Project environment bindings are not available in this desktop build.')),
     getServiceLogs: typeof serviceLogs === 'function'
       ? (projectId, sessionId, serviceId, cursor) => serviceLogs(projectId, sessionId, serviceId, cursor)
       : () => Promise.reject(new Error('Service log bindings are not available in this desktop build.')),

@@ -19,6 +19,8 @@ function createUnavailableBridge(): HarborBridge {
     getStatus: unavailable,
     getSnapshot: unavailable,
     getProjectActivity: unavailable,
+    getProjectEnvironment: unavailable,
+    saveProjectEnvironmentFile: unavailable,
     getServiceLogs: unavailable,
     inspectProjectRuntimeRepair: unavailable,
     waitProjectActivity: unavailable,

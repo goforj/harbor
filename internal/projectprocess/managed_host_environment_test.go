@@ -40,6 +40,27 @@ func TestPrepareManagedHostEnvironmentLeavesUnmarkedFileUntouched(t *testing.T) 
 	}
 }
 
+// TestPreviewEnvironmentOverridesMatchesLaunchDerivationWithoutMutatingFiles verifies the desktop can show process inputs safely.
+func TestPreviewEnvironmentOverridesMatchesLaunchDerivationWithoutMutatingFiles(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env.host")
+	original := []byte("DB_HOST=localhost\n" + managedHostEnvironmentBegin + "\nIP_ADDRESS=127.77.0.9\n" + managedHostEnvironmentEnd + "\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write .env.host: %v", err)
+	}
+	values, err := PreviewEnvironmentOverrides(root, EnvironmentOverrides{"IP_ADDRESS": "127.77.0.11"})
+	if err != nil {
+		t.Fatalf("PreviewEnvironmentOverrides() error = %v", err)
+	}
+	if values["DB_HOST"] != "127.77.0.11" || values["IP_ADDRESS"] != "127.77.0.11" {
+		t.Fatalf("preview values = %#v", values)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(actual, original) {
+		t.Fatalf(".env.host = %q, %v; want unchanged %q", actual, err, original)
+	}
+}
+
 // TestPrepareManagedHostEnvironmentRemovesExactLegacyBlock verifies migration preserves surrounding bytes and file mode.
 func TestPrepareManagedHostEnvironmentRemovesExactLegacyBlock(t *testing.T) {
 	for _, test := range []struct {

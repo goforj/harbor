@@ -1,4 +1,4 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
@@ -10,6 +10,8 @@ export interface HarborWireFixture {
     open_terminal_url: 'OpenTerminalURL'
     resource_icon_url: 'ResourceIconURL'
     project_activity: 'ProjectActivity'
+    project_environment: 'ProjectEnvironment'
+    save_project_environment_file: 'SaveProjectEnvironmentFile'
     service_logs: 'ServiceLogs'
     wait_service_logs: 'WaitServiceLogs'
     wait_project_activity: 'WaitProjectActivity'
@@ -42,6 +44,8 @@ export interface HarborWireFixture {
   add_project: AddProjectResult & { canceled: false; registration: NonNullable<AddProjectResult['registration']> }
   approve_project_removal: ProjectUnregistration & { operation: Operation & { state: 'succeeded' } }
   project_activity: ProjectActivity & { session: NonNullable<ProjectActivity['session']> }
+  project_environment: ProjectEnvironment
+  saved_project_environment_file: ProjectEnvironmentFile
   service_logs: ServiceLogs & { session_id: string; supported: true; available: true }
   project_runtime_repair_inspection: ProjectRuntimeRepairInspection & { disposition: 'confirmable' }
   project_runtime_repair_not_actionable: ProjectRuntimeRepairInspection & { disposition: 'not_actionable'; reason: 'ambiguous' }
@@ -71,6 +75,8 @@ export interface HarborBridge {
   getStatus(): Promise<DaemonStatus>
   getSnapshot(): Promise<HarborSnapshot>
   getProjectActivity(projectId: string, sessionId: string, cursor: number): Promise<ProjectActivity>
+  getProjectEnvironment(projectId: string): Promise<ProjectEnvironment>
+  saveProjectEnvironmentFile(projectId: string, name: string, contents: string, revision: string): Promise<ProjectEnvironmentFile>
   getServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): Promise<ServiceLogs>
   inspectProjectRuntimeRepair(projectId: string): Promise<ProjectRuntimeRepairInspection>
   waitProjectActivity(projectId: string, sessionId: string, cursor: number, waitMilliseconds: number): Promise<ProjectActivity>

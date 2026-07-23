@@ -73,6 +73,8 @@ type controlClient interface {
 	InspectProjectRuntimeRepair(context.Context, control.InspectProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairInspection, error)
 	ConfirmProjectRuntimeRepair(context.Context, control.ConfirmProjectRuntimeRepairRequest) (control.ProjectRuntimeRepairConfirmation, error)
 	ProjectActivity(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	ProjectEnvironment(context.Context, control.ProjectEnvironmentRequest) (control.ProjectEnvironment, error)
+	SaveProjectEnvironmentFile(context.Context, control.SaveProjectEnvironmentFileRequest) (control.ProjectEnvironmentFile, error)
 	ServiceLogs(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
 	StartProject(context.Context, control.StartProjectRequest) (control.ProjectLifecycleOperation, error)
 	StopProject(context.Context, control.StopProjectRequest) (control.ProjectLifecycleOperation, error)
@@ -1799,6 +1801,52 @@ func (a *App) Snapshot() (domain.Snapshot, error) {
 	}
 
 	return snapshot, nil
+}
+
+// ProjectEnvironment returns the exact runtime inputs for one registered project.
+func (a *App) ProjectEnvironment(projectID string) (control.ProjectEnvironment, error) {
+	request := control.ProjectEnvironmentRequest{ProjectID: domain.ProjectID(projectID)}
+	if err := request.Validate(); err != nil {
+		return control.ProjectEnvironment{}, fmt.Errorf("project environment request: %w", err)
+	}
+	ctx, client, release, err := a.leaseCurrentConnection()
+	if err != nil {
+		return control.ProjectEnvironment{}, err
+	}
+	defer release()
+	environment, err := client.ProjectEnvironment(ctx, request)
+	if err != nil {
+		return control.ProjectEnvironment{}, fmt.Errorf("read project environment: %w", err)
+	}
+	return environment, nil
+}
+
+// SaveProjectEnvironmentFile publishes one displayed dotenv file revision through daemon-owned project resolution.
+func (a *App) SaveProjectEnvironmentFile(
+	projectID string,
+	name string,
+	contents string,
+	revision string,
+) (control.ProjectEnvironmentFile, error) {
+	request := control.SaveProjectEnvironmentFileRequest{
+		ProjectID: domain.ProjectID(projectID),
+		Name:      name,
+		Contents:  contents,
+		Revision:  revision,
+	}
+	if err := request.Validate(); err != nil {
+		return control.ProjectEnvironmentFile{}, fmt.Errorf("project environment file request: %w", err)
+	}
+	ctx, client, release, err := a.leaseCurrentConnection()
+	if err != nil {
+		return control.ProjectEnvironmentFile{}, err
+	}
+	defer release()
+	file, err := client.SaveProjectEnvironmentFile(ctx, request)
+	if err != nil {
+		return control.ProjectEnvironmentFile{}, fmt.Errorf("save project environment file: %w", err)
+	}
+	return file, nil
 }
 
 // StartProjectTerminal opens the user's login shell in one freshly resolved registered project.

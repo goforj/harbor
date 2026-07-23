@@ -211,6 +211,109 @@ func goForjEnvironmentOverrides(assignment projectruntime.NetworkAssignment) pro
 	}
 }
 
+// PreviewEnvironmentOverrides returns the exact Harbor values a GoForj project
+// would receive for an already-assigned network plan, without launching it or
+// modifying its checkout.
+func PreviewEnvironmentOverrides(checkoutRoot string, assignment projectruntime.NetworkAssignment) (projectprocess.EnvironmentOverrides, error) {
+	return projectprocess.PreviewEnvironmentOverrides(checkoutRoot, goForjEnvironmentOverrides(assignment))
+}
+
+// InspectEnvironment returns GoForj's direct dotenv files and the Harbor values supplied after dotenv loading.
+func (runtime *Runtime) InspectEnvironment(
+	ctx context.Context,
+	request projectruntime.EnvironmentInspectionRequest,
+) (projectruntime.EnvironmentInspection, error) {
+	if runtime == nil || runtime.supervisor == nil {
+		panic("goforjruntime.Runtime.InspectEnvironment requires a constructed runtime")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return projectruntime.EnvironmentInspection{}, err
+	}
+	files, err := projectprocess.ListDotenvFiles(request.CheckoutRoot)
+	if err != nil {
+		return projectruntime.EnvironmentInspection{}, err
+	}
+	inspection := projectruntime.EnvironmentInspection{
+		Files: make([]projectruntime.EnvironmentFile, 0, len(files)),
+	}
+	for _, file := range files {
+		inspection.Files = append(inspection.Files, projectruntime.EnvironmentFile{
+			Name:     file.Name,
+			Contents: file.Contents,
+			Revision: file.Revision,
+		})
+	}
+	if !request.Address.IsValid() {
+		return inspection, nil
+	}
+	plan, err := runtime.Prepare(ctx, projectruntime.PreparationRequest{
+		CheckoutRoot: request.CheckoutRoot,
+		Address:      request.Address,
+	})
+	if err != nil {
+		inspection.OverrideError = environmentOverrideError(err)
+		return inspection, nil
+	}
+	overrides, err := PreviewEnvironmentOverrides(request.CheckoutRoot, plan.NetworkAssignment)
+	if err != nil {
+		inspection.OverrideError = environmentOverrideError(err)
+		return inspection, nil
+	}
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	inspection.Overrides = make([]projectruntime.EnvironmentVariable, 0, len(names))
+	for _, name := range names {
+		inspection.Overrides = append(inspection.Overrides, projectruntime.EnvironmentVariable{
+			Name:  name,
+			Value: overrides[name],
+		})
+	}
+	inspection.OverridesAvailable = true
+	return inspection, nil
+}
+
+// SaveEnvironmentFile publishes one revision-fenced direct dotenv edit inside a GoForj checkout.
+func (runtime *Runtime) SaveEnvironmentFile(
+	ctx context.Context,
+	request projectruntime.EnvironmentFileSaveRequest,
+) (projectruntime.EnvironmentFile, error) {
+	if runtime == nil || runtime.supervisor == nil {
+		panic("goforjruntime.Runtime.SaveEnvironmentFile requires a constructed runtime")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return projectruntime.EnvironmentFile{}, err
+	}
+	file, err := projectprocess.SaveDotenvFile(
+		request.CheckoutRoot,
+		request.Name,
+		request.Contents,
+		request.Revision,
+	)
+	if err != nil {
+		return projectruntime.EnvironmentFile{}, err
+	}
+	return projectruntime.EnvironmentFile{
+		Name:     file.Name,
+		Contents: file.Contents,
+		Revision: file.Revision,
+	}, nil
+}
+
+// environmentOverrideError bounds provider diagnostics without splitting a UTF-8 character.
+func environmentOverrideError(err error) string {
+	characters := []rune(err.Error())
+	return string(characters[:min(len(characters), 256)])
+}
+
 // Reset withdraws any ordinary GoForj runtime left in a checkout.
 func (runtime *Runtime) Reset(ctx context.Context, request projectruntime.ResetRequest) error {
 	return translateRuntimeError(runtime.supervisor.Down(ctx, projectprocess.DownRequest{CheckoutRoot: request.CheckoutRoot}))

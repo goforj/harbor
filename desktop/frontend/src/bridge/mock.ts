@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectEnvironment, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
@@ -16,7 +16,21 @@ export function createMockBridge(): HarborBridge {
   const terminalListeners = new Set<(event: ProjectTerminalEvent) => void>()
   const terminals = new Map<string, string>()
   const attachedTerminals = new Set<string>()
+  const environments = new Map<string, ProjectEnvironment>()
   let terminalSequence = 0
+
+  // projectEnvironment gives each fixture project an independent editable file set.
+  function projectEnvironment(projectId: string): ProjectEnvironment {
+    const project = snapshot.projects.find((entry) => entry.id === projectId)
+    if (!project) throw new Error(`Unknown project: ${projectId}`)
+    let environment = environments.get(projectId)
+    if (!environment) {
+      environment = structuredClone(fixture.project_environment)
+      environment.project_id = projectId
+      environments.set(projectId, environment)
+    }
+    return environment
+  }
 
   // emitTerminal keeps browser fixtures on the same session-scoped event shape as native Wails.
   function emitTerminal(event: ProjectTerminalEvent) {
@@ -378,6 +392,20 @@ export function createMockBridge(): HarborBridge {
     },
     restartProject(projectId, intentId) {
       return changeProjectLifecycle(projectId, intentId, 'restart')
+    },
+    async getProjectEnvironment(projectId) {
+      return structuredClone(projectEnvironment(projectId))
+    },
+    async saveProjectEnvironmentFile(projectId, name, contents, revision) {
+      const environment = projectEnvironment(projectId)
+      const file = environment.files.find((entry) => entry.name === name)
+      if (!file) throw new Error(`Unknown environment file: ${name}`)
+      if (file.revision !== revision) {
+        throw new Error('dotenv file changed outside Harbor; reload before saving')
+      }
+      file.contents = contents
+      file.revision = fixture.saved_project_environment_file.revision
+      return structuredClone(file)
     },
     async startProjectTerminal(projectId) {
       const project = snapshot.projects.find((entry) => entry.id === projectId)

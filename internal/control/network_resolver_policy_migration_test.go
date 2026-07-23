@@ -209,10 +209,10 @@ func TestDecodeNetworkResolverPolicyMigrationResponsesRejectsAmbiguousFields(t *
 
 // TestNetworkResolverPolicyMigrationCapabilityTracksItsDedicatedAuthority verifies feature negotiation is independent.
 func TestNetworkResolverPolicyMigrationCapabilityTracksItsDedicatedAuthority(t *testing.T) {
-	if containsCapability(daemonCapabilities(false, false, false, false), CapabilityNetworkResolverPolicyMigrationV1) {
+	if containsCapability(daemonCapabilities(false, false, false, false, false), CapabilityNetworkResolverPolicyMigrationV1) {
 		t.Fatal("daemonCapabilities() advertised resolver policy migration without its authority")
 	}
-	if !containsCapability(daemonCapabilities(false, false, false, true), CapabilityNetworkResolverPolicyMigrationV1) {
+	if !containsCapability(daemonCapabilities(false, false, false, true, false), CapabilityNetworkResolverPolicyMigrationV1) {
 		t.Fatal("daemonCapabilities() omitted resolver policy migration with its authority")
 	}
 }

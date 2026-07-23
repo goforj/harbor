@@ -24,6 +24,8 @@ import (
 	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
+	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/state"
@@ -106,6 +108,10 @@ type projectLifecycleCoordinator interface {
 	Restart(context.Context, reconcile.ProjectRestartRequest) (state.OperationRecord, error)
 	// ProjectActivity reads bounded output only for the current durable session.
 	ProjectActivity(context.Context, reconcile.ProjectActivityRequest) (reconcile.ProjectActivity, error)
+	// ProjectEnvironment reads the runtime provider's environment inputs for one registered project.
+	ProjectEnvironment(context.Context, reconcile.ProjectEnvironmentRequest) (projectruntime.EnvironmentInspection, error)
+	// SaveProjectEnvironmentFile writes one revision-fenced runtime provider environment file.
+	SaveProjectEnvironmentFile(context.Context, reconcile.ProjectEnvironmentFileSaveRequest) (projectruntime.EnvironmentFile, error)
 	// ServiceLogs reads bounded output for one Compose service in the current durable session.
 	ServiceLogs(context.Context, reconcile.ProjectServiceLogsRequest) (reconcile.ProjectServiceLogs, error)
 }
@@ -844,6 +850,89 @@ func (authority *Authority) ProjectActivity(
 		return control.ProjectActivity{}, fmt.Errorf("bound project activity result: %w", err)
 	}
 	return bounded, nil
+}
+
+// ProjectEnvironment returns provider-owned inputs after daemon-side project and network resolution.
+func (authority *Authority) ProjectEnvironment(
+	ctx context.Context,
+	_ control.Caller,
+	request control.ProjectEnvironmentRequest,
+) (control.ProjectEnvironment, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectEnvironment{}, control.NewProjectEnvironmentInvalidError(err)
+	}
+	inspection, err := authority.lifecycle.ProjectEnvironment(ctx, reconcile.ProjectEnvironmentRequest{
+		ProjectID: request.ProjectID,
+	})
+	if err != nil {
+		var projectMissing *state.ProjectNotFoundError
+		if errors.As(err, &projectMissing) {
+			return control.ProjectEnvironment{}, control.NewProjectEnvironmentNotFoundError(err)
+		}
+		return control.ProjectEnvironment{}, err
+	}
+	result := control.ProjectEnvironment{
+		ProjectID:          request.ProjectID,
+		OverridesAvailable: inspection.OverridesAvailable,
+		OverrideError:      inspection.OverrideError,
+		Overrides:          make([]control.ProjectEnvironmentVariable, 0, len(inspection.Overrides)),
+		Files:              make([]control.ProjectEnvironmentFile, 0, len(inspection.Files)),
+	}
+	for _, override := range inspection.Overrides {
+		result.Overrides = append(result.Overrides, control.ProjectEnvironmentVariable{
+			Name:  override.Name,
+			Value: override.Value,
+		})
+	}
+	for _, file := range inspection.Files {
+		result.Files = append(result.Files, control.ProjectEnvironmentFile{
+			Name:     file.Name,
+			Contents: file.Contents,
+			Revision: file.Revision,
+		})
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectEnvironment{}, fmt.Errorf("project environment result: %w", err)
+	}
+	return result, nil
+}
+
+// SaveProjectEnvironmentFile writes one provider file only after daemon-side project resolution.
+func (authority *Authority) SaveProjectEnvironmentFile(
+	ctx context.Context,
+	_ control.Caller,
+	request control.SaveProjectEnvironmentFileRequest,
+) (control.ProjectEnvironmentFile, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.ProjectEnvironmentFile{}, control.NewProjectEnvironmentInvalidError(err)
+	}
+	file, err := authority.lifecycle.SaveProjectEnvironmentFile(ctx, reconcile.ProjectEnvironmentFileSaveRequest{
+		ProjectID: request.ProjectID,
+		Name:      request.Name,
+		Contents:  request.Contents,
+		Revision:  request.Revision,
+	})
+	if err != nil {
+		var projectMissing *state.ProjectNotFoundError
+		if errors.As(err, &projectMissing) {
+			return control.ProjectEnvironmentFile{}, control.NewProjectEnvironmentNotFoundError(err)
+		}
+		if errors.Is(err, projectprocess.ErrDotenvFileChanged) {
+			return control.ProjectEnvironmentFile{}, control.NewProjectEnvironmentConflictError(err)
+		}
+		return control.ProjectEnvironmentFile{}, err
+	}
+	result := control.ProjectEnvironmentFile{
+		Name:     file.Name,
+		Contents: file.Contents,
+		Revision: file.Revision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.ProjectEnvironmentFile{}, fmt.Errorf("saved project environment file result: %w", err)
+	}
+	return result, nil
 }
 
 // ServiceLogs projects one selected Compose service without exposing runtime ownership evidence.

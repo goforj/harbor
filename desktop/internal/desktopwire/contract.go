@@ -30,6 +30,10 @@ const (
 	MethodResourceIconURL = "ResourceIconURL"
 	// MethodProjectActivity is the generated Wails method that reads current project development output.
 	MethodProjectActivity = "ProjectActivity"
+	// MethodProjectEnvironment is the generated Wails method that reads one project's runtime environment inputs.
+	MethodProjectEnvironment = "ProjectEnvironment"
+	// MethodSaveProjectEnvironmentFile is the generated Wails method that writes one revision-fenced project environment file.
+	MethodSaveProjectEnvironmentFile = "SaveProjectEnvironmentFile"
 	// MethodServiceLogs is the generated Wails method that reads current Compose service output.
 	MethodServiceLogs = "ServiceLogs"
 	// MethodWaitServiceLogs is the generated Wails method that holds a service output cursor until it advances or times out.
@@ -184,6 +188,8 @@ type AppContract interface {
 	OpenTerminalURL(rawURL string) error
 	ResourceIconURL(projectID string, resourceID string) (string, error)
 	ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error)
+	ProjectEnvironment(projectID string) (control.ProjectEnvironment, error)
+	SaveProjectEnvironmentFile(projectID string, name string, contents string, revision string) (control.ProjectEnvironmentFile, error)
 	ServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64) (control.ServiceLogs, error)
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
 	RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOperation, error)
@@ -221,6 +227,8 @@ func MethodContracts() []MethodContract {
 		MethodOpenTerminalURL:             []string{"rawURL"},
 		MethodResourceIconURL:             []string{"projectId", "resourceId"},
 		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
+		MethodProjectEnvironment:          []string{"projectId"},
+		MethodSaveProjectEnvironmentFile:  []string{"projectId", "name", "contents", "revision"},
 		MethodServiceLogs:                 []string{"projectId", "sessionId", "serviceId", "cursor"},
 		MethodRemoveProject:               []string{"projectId", "intentId"},
 		MethodRemoveOldNetworking:         {},

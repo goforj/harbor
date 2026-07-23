@@ -17,6 +17,7 @@ import (
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/inspects"
 	"github.com/goforj/harbor/internal/models"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/rpc"
 	"github.com/goforj/harbor/internal/rpc/session"
@@ -58,12 +59,18 @@ type recordingProjectLifecycle struct {
 	restartErr         error
 	activity           reconcile.ProjectActivity
 	activityErr        error
+	environment        projectruntime.EnvironmentInspection
+	environmentErr     error
+	environmentFile    projectruntime.EnvironmentFile
+	environmentFileErr error
 	serviceLogs        reconcile.ProjectServiceLogs
 	serviceLogsErr     error
 	starts             []reconcile.ProjectStartRequest
 	stops              []reconcile.ProjectStopRequest
 	restarts           []reconcile.ProjectRestartRequest
 	activities         []reconcile.ProjectActivityRequest
+	environments       []reconcile.ProjectEnvironmentRequest
+	environmentSaves   []reconcile.ProjectEnvironmentFileSaveRequest
 	serviceLogRequests []reconcile.ProjectServiceLogsRequest
 }
 
@@ -102,6 +109,28 @@ func (lifecycle *recordingProjectLifecycle) ProjectActivity(
 	lifecycle.activities = append(lifecycle.activities, request)
 	lifecycle.mutex.Unlock()
 	return lifecycle.activity, lifecycle.activityErr
+}
+
+// ProjectEnvironment returns the configured provider environment while retaining the project selection.
+func (lifecycle *recordingProjectLifecycle) ProjectEnvironment(
+	_ context.Context,
+	request reconcile.ProjectEnvironmentRequest,
+) (projectruntime.EnvironmentInspection, error) {
+	lifecycle.mutex.Lock()
+	lifecycle.environments = append(lifecycle.environments, request)
+	lifecycle.mutex.Unlock()
+	return lifecycle.environment, lifecycle.environmentErr
+}
+
+// SaveProjectEnvironmentFile returns the configured provider file while retaining the revision-fenced edit.
+func (lifecycle *recordingProjectLifecycle) SaveProjectEnvironmentFile(
+	_ context.Context,
+	request reconcile.ProjectEnvironmentFileSaveRequest,
+) (projectruntime.EnvironmentFile, error) {
+	lifecycle.mutex.Lock()
+	lifecycle.environmentSaves = append(lifecycle.environmentSaves, request)
+	lifecycle.mutex.Unlock()
+	return lifecycle.environmentFile, lifecycle.environmentFileErr
 }
 
 // ServiceLogs returns configured service output while retaining the exact selection.

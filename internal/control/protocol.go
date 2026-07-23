@@ -43,6 +43,8 @@ const (
 	CapabilityProjectActivityV1 rpc.Capability = "control.project-activity.v1"
 	// CapabilityProjectActivityWaitV1 identifies bounded cursor waits on current-session project output.
 	CapabilityProjectActivityWaitV1 rpc.Capability = "control.project-activity-wait.v1"
+	// CapabilityProjectEnvironmentV1 identifies runtime environment inspection and revision-fenced file edits.
+	CapabilityProjectEnvironmentV1 rpc.Capability = "control.project-environment.v1"
 	// CapabilityServiceLogsV1 identifies bounded current-session Compose service log reads.
 	CapabilityServiceLogsV1 rpc.Capability = "control.service-logs.v1"
 	// CapabilityServiceLogsWaitV1 identifies bounded cursor waits on current-session Compose service logs.
@@ -91,6 +93,8 @@ const (
 	methodNetworkReleaseOwnershipPrepare                = "control.v1.network.release.ownership.prepare"
 	methodNetworkReleaseOwnershipConfirm                = "control.v1.network.release.ownership.confirm"
 	methodProjectActivity                               = "control.v1.project.activity"
+	methodProjectEnvironment                            = "control.v1.project.environment"
+	methodProjectEnvironmentFileSave                    = "control.v1.project.environment.file.save"
 	methodServiceLogs                                   = "control.v1.project.service.logs"
 	methodProjectStart                                  = "control.v1.project.start"
 	methodProjectStop                                   = "control.v1.project.stop"
@@ -317,6 +321,7 @@ func capabilities() []rpc.Capability {
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
 		CapabilityProjectActivityV1,
+		CapabilityProjectEnvironmentV1,
 		CapabilityProjectLifecycleV1,
 		CapabilityProjectRegistrationV1,
 		CapabilityProjectRestartV1,
@@ -330,7 +335,13 @@ func capabilities() []rpc.Capability {
 }
 
 // daemonCapabilities returns the capabilities implemented by this server configuration.
-func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool, networkReleaseApproval bool, networkResolverPolicyMigration bool) []rpc.Capability {
+func daemonCapabilities(
+	networkDataPlaneSetup bool,
+	networkRelease bool,
+	networkReleaseApproval bool,
+	networkResolverPolicyMigration bool,
+	projectEnvironment bool,
+) []rpc.Capability {
 	capabilities := capabilities()
 	capabilities = slices.DeleteFunc(capabilities, func(capability rpc.Capability) bool {
 		return (capability == CapabilityNetworkDataPlaneSetupV1 && !networkDataPlaneSetup) ||
@@ -340,7 +351,8 @@ func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool, network
 			(capability == CapabilityNetworkReleaseResolverApprovalV1 && !networkReleaseApproval) ||
 			(capability == CapabilityNetworkReleaseTrustApprovalV1 && !networkReleaseApproval) ||
 			(capability == CapabilityNetworkReleaseLoopbackApprovalV1 && !networkReleaseApproval) ||
-			(capability == CapabilityNetworkReleaseOwnershipApprovalV2 && !networkReleaseApproval)
+			(capability == CapabilityNetworkReleaseOwnershipApprovalV2 && !networkReleaseApproval) ||
+			(capability == CapabilityProjectEnvironmentV1 && !projectEnvironment)
 	})
 	return capabilities
 }
