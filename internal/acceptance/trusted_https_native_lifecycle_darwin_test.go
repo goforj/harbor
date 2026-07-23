@@ -51,6 +51,7 @@ type trustedHTTPSNativeLifecycle struct {
 	baselines         []trustedhttpsharness.CheckoutBaseline
 	projects          []trustedHTTPSNativeProject
 	daemon            *phase1DaemonProcess
+	evidence          *phase1Evidence
 	retainDiagnostics bool
 	verifyBaselines   func([]trustedhttpsharness.CheckoutBaseline) error
 	closeWorkspace    func(*goforjproject.Workspace) error
@@ -129,6 +130,7 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	phase1AssertDaemonUnavailable(t, configuration, sandbox)
 	phase1RunMigrations(t, testContext, configuration, sandbox)
 	evidence := phase1NewEvidence(t, configuration, sandbox)
+	lifecycle.evidence = evidence
 	evidence.addRedaction(workspace.Root)
 	lifecycle.daemon = phase1StartDaemon(
 		t,
@@ -346,7 +348,7 @@ func trustedHTTPSRequireSetup(
 			"run harbor setup: %v: %s%s",
 			result.err,
 			strings.TrimSpace(result.stderr),
-			trustedHTTPSSetupFailureDiagnostic(configuration, sandbox, daemon, evidence),
+			trustedHTTPSDaemonFailureDiagnostic(configuration, sandbox, daemon, evidence),
 		)
 	}
 	if !strings.Contains(result.stdout, "Network setup complete.") {
@@ -354,8 +356,8 @@ func trustedHTTPSRequireSetup(
 	}
 }
 
-// trustedHTTPSSetupFailureDiagnostic captures only the active-operation fields and redacted daemon tail needed to diagnose setup failures.
-func trustedHTTPSSetupFailureDiagnostic(
+// trustedHTTPSDaemonFailureDiagnostic captures only the active-operation fields and redacted daemon tail needed to diagnose native failures.
+func trustedHTTPSDaemonFailureDiagnostic(
 	configuration phase1Config,
 	sandbox phase1Sandbox,
 	daemon *phase1DaemonProcess,
@@ -1049,7 +1051,13 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 		}
 	}
 	if lifecycle.daemon != nil {
-		if err := trustedHTTPSRequireNetworkRelease(parent, lifecycle.configuration, lifecycle.sandbox); err != nil {
+		if err := trustedHTTPSRequireNetworkRelease(
+			parent,
+			lifecycle.configuration,
+			lifecycle.sandbox,
+			lifecycle.daemon,
+			lifecycle.evidence,
+		); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 		releaseID, err := trustedHTTPSVerifyEmptySnapshot(
@@ -1060,7 +1068,13 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 		if err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
-		if err := trustedHTTPSRequireNetworkRelease(parent, lifecycle.configuration, lifecycle.sandbox); err != nil {
+		if err := trustedHTTPSRequireNetworkRelease(
+			parent,
+			lifecycle.configuration,
+			lifecycle.sandbox,
+			lifecycle.daemon,
+			lifecycle.evidence,
+		); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("replay harbor daemon release: %w", err))
 		}
 		replayedReleaseID, replayErr := trustedHTTPSVerifyEmptySnapshot(
@@ -1112,12 +1126,27 @@ func trustedHTTPSRequireNetworkRelease(
 	parent context.Context,
 	configuration phase1Config,
 	sandbox phase1Sandbox,
+	daemon *phase1DaemonProcess,
+	evidence *phase1Evidence,
 ) error {
 	ctx, cancel := context.WithTimeout(parent, trustedHTTPSSetupTimeout)
 	defer cancel()
 
 	result := phase1RunCommand(ctx, sandbox, configuration.cliBinary, "daemon", "release")
-	return trustedHTTPSValidateNetworkReleaseResult(result)
+	return trustedHTTPSValidateNetworkReleaseResultWithDiagnostic(result, func() string {
+		return trustedHTTPSDaemonFailureDiagnostic(configuration, sandbox, daemon, evidence)
+	})
+}
+
+// trustedHTTPSValidateNetworkReleaseResultWithDiagnostic retains the command cause and appends only the caller's bounded diagnostic on failure.
+func trustedHTTPSValidateNetworkReleaseResultWithDiagnostic(
+	result phase1CommandResult,
+	diagnostic func() string,
+) error {
+	if err := trustedHTTPSValidateNetworkReleaseResult(result); err != nil {
+		return fmt.Errorf("%w%s", err, diagnostic())
+	}
+	return nil
 }
 
 // trustedHTTPSValidateNetworkReleaseResult admits only the product's exact terminal release response.
@@ -1174,6 +1203,43 @@ func TestTrustedHTTPSValidateNetworkReleaseResultRejectsNonExactCompletion(t *te
 				t.Fatalf("trustedHTTPSValidateNetworkReleaseResult() error = %v, want error %t", err, test.wantError)
 			}
 		})
+	}
+}
+
+// TestTrustedHTTPSValidateNetworkReleaseResultWithDiagnosticRetainsFailure proves diagnostics neither mask command failures nor run after success.
+func TestTrustedHTTPSValidateNetworkReleaseResultWithDiagnosticRetainsFailure(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("release failed")
+	diagnosticCalls := 0
+	diagnostic := func() string {
+		diagnosticCalls++
+		return "\nredacted daemon log tail:\nresolver is not exact"
+	}
+	err := trustedHTTPSValidateNetworkReleaseResultWithDiagnostic(
+		phase1CommandResult{err: cause},
+		diagnostic,
+	)
+	if !errors.Is(err, cause) {
+		t.Fatalf("release error = %v, want retained command cause", err)
+	}
+	if !strings.Contains(err.Error(), "redacted daemon log tail:\nresolver is not exact") {
+		t.Fatalf("release error = %q, want bounded diagnostic", err)
+	}
+	if diagnosticCalls != 1 {
+		t.Fatalf("failure diagnostic calls = %d, want 1", diagnosticCalls)
+	}
+
+	diagnosticCalls = 0
+	err = trustedHTTPSValidateNetworkReleaseResultWithDiagnostic(
+		phase1CommandResult{stdout: "Network release complete.\n"},
+		diagnostic,
+	)
+	if err != nil {
+		t.Fatalf("successful release error = %v", err)
+	}
+	if diagnosticCalls != 0 {
+		t.Fatalf("successful release diagnostic calls = %d, want 0", diagnosticCalls)
 	}
 }
 
