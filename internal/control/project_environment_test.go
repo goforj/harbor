@@ -77,8 +77,8 @@ func TestProjectEnvironmentValidationRequiresCanonicalSortedCollections(t *testi
 		ProjectID:          domain.ProjectID("project-alpha"),
 		OverridesAvailable: true,
 		Overrides: []ProjectEnvironmentVariable{
-			{Name: "APP_HOST", Value: "127.77.0.10"},
-			{Name: "DB_HOST", Value: "127.77.0.10"},
+			{Name: "APP_HOST", Value: "127.77.0.10", Source: "project.address"},
+			{Name: "DB_HOST", Value: "127.77.0.10", Source: "project.address"},
 		},
 		Files: []ProjectEnvironmentFile{
 			{Name: ".env", Contents: "APP_ENV=local\n", Revision: revision},
@@ -103,6 +103,8 @@ func TestProjectEnvironmentValidationRequiresCanonicalSortedCollections(t *testi
 		}},
 		{name: "error while available", mutate: func(environment *ProjectEnvironment) { environment.OverrideError = "failed" }},
 		{name: "values while unavailable", mutate: func(environment *ProjectEnvironment) { environment.OverridesAvailable = false }},
+		{name: "missing override source", mutate: func(environment *ProjectEnvironment) { environment.Overrides[0].Source = "" }},
+		{name: "noncanonical override source", mutate: func(environment *ProjectEnvironment) { environment.Overrides[0].Source = "project/address" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			environment := valid

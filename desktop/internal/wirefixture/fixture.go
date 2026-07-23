@@ -402,8 +402,8 @@ func Fixture() Document {
 			ProjectID:          "orders-api",
 			OverridesAvailable: true,
 			Overrides: []control.ProjectEnvironmentVariable{
-				{Name: "IP_ADDRESS", Value: "127.77.0.10"},
-				{Name: "LIGHTHOUSE_URL", Value: "ws://127.77.0.10:3000/lighthouse/ws/agent"},
+				{Name: "IP_ADDRESS", Value: "127.77.0.10", Source: "runtime.provider"},
+				{Name: "LIGHTHOUSE_URL", Value: "ws://127.77.0.10:3000/lighthouse/ws/agent", Source: "runtime.provider"},
 			},
 			Files: []control.ProjectEnvironmentFile{{
 				Name:     ".env",

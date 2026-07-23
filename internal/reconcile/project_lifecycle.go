@@ -644,16 +644,25 @@ func (coordinator *ProjectLifecycleCoordinator) runStart(record state.OperationR
 		coordinator.cancelQueued(record, err)
 		return
 	}
+	environmentOverrides, err := resolveProjectEnvironmentOverrides(
+		project.Project.Path,
+		admission.Plan.NetworkAssignment.Address,
+	)
+	if err != nil {
+		coordinator.failStartWithoutProcess(begun, session, "project.environment.invalid", err)
+		return
+	}
 	if !coordinator.resetBeforeLaunch(begun, session, project.Project.Path, "project.reset") {
 		return
 	}
 
 	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
 	handle, err := coordinator.runtime.Launch(launchContext, projectruntime.LaunchRequest{
-		ProjectID:         record.Operation.ProjectID,
-		SessionID:         session.ID,
-		CheckoutRoot:      project.Project.Path,
-		NetworkAssignment: admission.Plan.NetworkAssignment,
+		ProjectID:            record.Operation.ProjectID,
+		SessionID:            session.ID,
+		CheckoutRoot:         project.Project.Path,
+		NetworkAssignment:    admission.Plan.NetworkAssignment,
+		EnvironmentOverrides: environmentOverrides,
 		// The daemon retains this transcript for its authenticated clients; mirroring it would mix project output with daemon diagnostics.
 		Stdout: io.Discard,
 		Stderr: io.Discard,
@@ -1587,17 +1596,26 @@ func (coordinator *ProjectLifecycleCoordinator) startRestartAfterStop(
 		coordinator.failRestartAfterStop(record, stoppedProject, "project.restart.state", err)
 		return
 	}
+	environmentOverrides, err := resolveProjectEnvironmentOverrides(
+		admission.Project.Project.Path,
+		admission.Plan.NetworkAssignment.Address,
+	)
+	if err != nil {
+		coordinator.failStartWithoutProcess(begun, session, "project.environment.invalid", err)
+		return
+	}
 	if !coordinator.resetBeforeLaunch(begun, session, admission.Project.Project.Path, "project.restart.reset") {
 		return
 	}
 	launchContext, cancelLaunch := coordinator.withProjectLaunchTimeout()
 	handle, err := coordinator.runtime.Launch(launchContext, projectruntime.LaunchRequest{
-		ProjectID:         record.Operation.ProjectID,
-		SessionID:         session.ID,
-		CheckoutRoot:      admission.Project.Project.Path,
-		NetworkAssignment: admission.Plan.NetworkAssignment,
-		Stdout:            io.Discard,
-		Stderr:            io.Discard,
+		ProjectID:            record.Operation.ProjectID,
+		SessionID:            session.ID,
+		CheckoutRoot:         admission.Project.Project.Path,
+		NetworkAssignment:    admission.Plan.NetworkAssignment,
+		EnvironmentOverrides: environmentOverrides,
+		Stdout:               io.Discard,
+		Stderr:               io.Discard,
 	})
 	cancelLaunch()
 	if err != nil {

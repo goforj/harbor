@@ -365,11 +365,13 @@ export const harborWireFixture = {
     "overrides": [
       {
         "name": "IP_ADDRESS",
-        "value": "127.77.0.10"
+        "value": "127.77.0.10",
+        "source": "runtime.provider"
       },
       {
         "name": "LIGHTHOUSE_URL",
-        "value": "ws://127.77.0.10:3000/lighthouse/ws/agent"
+        "value": "ws://127.77.0.10:3000/lighthouse/ws/agent",
+        "source": "runtime.provider"
       }
     ],
     "files": [

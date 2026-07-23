@@ -881,8 +881,9 @@ func (authority *Authority) ProjectEnvironment(
 	}
 	for _, override := range inspection.Overrides {
 		result.Overrides = append(result.Overrides, control.ProjectEnvironmentVariable{
-			Name:  override.Name,
-			Value: override.Value,
+			Name:   override.Name,
+			Value:  override.Value,
+			Source: override.Source,
 		})
 	}
 	for _, file := range inspection.Files {

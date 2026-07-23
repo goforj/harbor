@@ -186,11 +186,12 @@ func (probe goForjReadinessProbe) Probe(ctx context.Context) (projectruntime.Rea
 
 // Launch starts the ordinary GoForj development runtime for one project session.
 func (runtime *Runtime) Launch(ctx context.Context, request projectruntime.LaunchRequest) (projectruntime.Handle, error) {
+	overrides, _ := goForjLaunchEnvironmentOverrides(request.NetworkAssignment, request.EnvironmentOverrides)
 	handle, err := runtime.supervisor.Start(ctx, projectprocess.StartRequest{
 		ProjectID:            request.ProjectID,
 		SessionID:            request.SessionID,
 		CheckoutRoot:         request.CheckoutRoot,
-		EnvironmentOverrides: goForjEnvironmentOverrides(request.NetworkAssignment),
+		EnvironmentOverrides: overrides,
 		Stdout:               request.Stdout,
 		Stderr:               request.Stderr,
 	})
@@ -198,6 +199,24 @@ func (runtime *Runtime) Launch(ctx context.Context, request projectruntime.Launc
 		return nil, translateRuntimeError(err)
 	}
 	return projectHandle{handle: handle}, nil
+}
+
+// goForjLaunchEnvironmentOverrides preserves provider invariants after applying repository-declared bindings.
+func goForjLaunchEnvironmentOverrides(
+	assignment projectruntime.NetworkAssignment,
+	configured []projectruntime.EnvironmentVariable,
+) (projectprocess.EnvironmentOverrides, map[string]string) {
+	overrides := make(projectprocess.EnvironmentOverrides, len(configured)+4)
+	sources := make(map[string]string, len(configured)+4)
+	for _, configuredOverride := range configured {
+		overrides[configuredOverride.Name] = configuredOverride.Value
+		sources[configuredOverride.Name] = configuredOverride.Source
+	}
+	for name, value := range goForjEnvironmentOverrides(assignment) {
+		overrides[name] = value
+		sources[name] = "runtime.provider"
+	}
+	return overrides, sources
 }
 
 // goForjEnvironmentOverrides maps a neutral Harbor network assignment to GoForj's current dotenv bridge.
@@ -211,11 +230,23 @@ func goForjEnvironmentOverrides(assignment projectruntime.NetworkAssignment) pro
 	}
 }
 
-// PreviewEnvironmentOverrides returns the exact Harbor values a GoForj project
-// would receive for an already-assigned network plan, without launching it or
-// modifying its checkout.
-func PreviewEnvironmentOverrides(checkoutRoot string, assignment projectruntime.NetworkAssignment) (projectprocess.EnvironmentOverrides, error) {
-	return projectprocess.PreviewEnvironmentOverrides(checkoutRoot, goForjEnvironmentOverrides(assignment))
+// previewEnvironmentOverrides returns the exact values and provenance a GoForj project would receive without launching it.
+func previewEnvironmentOverrides(
+	checkoutRoot string,
+	assignment projectruntime.NetworkAssignment,
+	configured []projectruntime.EnvironmentVariable,
+) (projectprocess.EnvironmentOverrides, map[string]string, error) {
+	overrides, sources := goForjLaunchEnvironmentOverrides(assignment, configured)
+	values, err := projectprocess.PreviewEnvironmentOverrides(checkoutRoot, overrides)
+	if err != nil {
+		return nil, nil, err
+	}
+	for name := range values {
+		if sources[name] == "" {
+			sources[name] = "legacy.localhost_rewrite"
+		}
+	}
+	return values, sources, nil
 }
 
 // InspectEnvironment returns GoForj's direct dotenv files and the Harbor values supplied after dotenv loading.
@@ -257,7 +288,11 @@ func (runtime *Runtime) InspectEnvironment(
 		inspection.OverrideError = environmentOverrideError(err)
 		return inspection, nil
 	}
-	overrides, err := PreviewEnvironmentOverrides(request.CheckoutRoot, plan.NetworkAssignment)
+	overrides, sources, err := previewEnvironmentOverrides(
+		request.CheckoutRoot,
+		plan.NetworkAssignment,
+		request.EnvironmentOverrides,
+	)
 	if err != nil {
 		inspection.OverrideError = environmentOverrideError(err)
 		return inspection, nil
@@ -270,8 +305,9 @@ func (runtime *Runtime) InspectEnvironment(
 	inspection.Overrides = make([]projectruntime.EnvironmentVariable, 0, len(names))
 	for _, name := range names {
 		inspection.Overrides = append(inspection.Overrides, projectruntime.EnvironmentVariable{
-			Name:  name,
-			Value: overrides[name],
+			Name:   name,
+			Value:  overrides[name],
+			Source: sources[name],
 		})
 	}
 	inspection.OverridesAvailable = true

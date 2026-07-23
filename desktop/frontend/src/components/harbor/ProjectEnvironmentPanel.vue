@@ -215,7 +215,10 @@ async function copyOverride(name: string, value: string) {
           </div>
           <div v-if="environment?.overrides_available && environment.overrides.length" class="min-h-0 flex-1 divide-y overflow-auto">
             <div v-for="override in environment.overrides" :key="override.name" class="grid items-center gap-2 px-4 py-2.5 sm:grid-cols-[minmax(12rem,0.35fr)_minmax(0,1fr)_auto]">
-              <code class="truncate text-xs font-semibold">{{ override.name }}</code>
+              <div class="min-w-0">
+                <code class="block truncate text-xs font-semibold">{{ override.name }}</code>
+                <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">{{ override.source }}</span>
+              </div>
               <code class="min-w-0 break-all text-xs text-muted-foreground">{{ override.value }}</code>
               <Button variant="ghost" size="sm" class="justify-self-start" @click="copyOverride(override.name, override.value)">
                 <Check v-if="copiedOverride === override.name" class="size-3.5" />

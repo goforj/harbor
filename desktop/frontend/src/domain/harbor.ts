@@ -21,6 +21,7 @@ export interface ProjectTerminalEvent {
 export interface ProjectEnvironmentVariable {
   name: string
   value: string
+  source: string
 }
 
 export interface ProjectEnvironmentFile {

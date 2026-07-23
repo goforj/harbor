@@ -36,6 +36,7 @@ describe('ProjectEnvironmentPanel', () => {
     expect(wrapper.find('textarea').exists()).toBe(false)
     expect(wrapper.text()).toContain('IP_ADDRESS')
     expect(wrapper.text()).toContain('127.77.0.10')
+    expect(wrapper.text()).toContain('runtime.provider')
   })
 
   it('saves the selected file against the revision that was displayed', async () => {

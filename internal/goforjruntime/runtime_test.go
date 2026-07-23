@@ -85,6 +85,27 @@ func TestGoForjEnvironmentOverridesKeepsProviderKeysInsideTheAdapter(t *testing.
 	}
 }
 
+// TestGoForjLaunchEnvironmentOverridesAddsRepositoryBindingsWithoutWeakeningProviderInvariants verifies ordering at the adapter boundary.
+func TestGoForjLaunchEnvironmentOverridesAddsRepositoryBindingsWithoutWeakeningProviderInvariants(t *testing.T) {
+	assignment := projectruntime.NetworkAssignment{
+		Address:     netip.MustParseAddr("127.77.0.18"),
+		PrimaryPort: 3000,
+	}
+	overrides, sources := goForjLaunchEnvironmentOverrides(
+		assignment,
+		[]projectruntime.EnvironmentVariable{
+			{Name: "IP_ADDRESS", Value: "127.0.0.2", Source: "project.address"},
+			{Name: "MEILISEARCH_HOST", Value: "127.77.0.18", Source: "project.address"},
+		},
+	)
+	if overrides["MEILISEARCH_HOST"] != "127.77.0.18" || sources["MEILISEARCH_HOST"] != "project.address" {
+		t.Fatalf("repository binding = %q from %q, want assigned project address", overrides["MEILISEARCH_HOST"], sources["MEILISEARCH_HOST"])
+	}
+	if overrides["IP_ADDRESS"] != "127.77.0.18" || sources["IP_ADDRESS"] != "runtime.provider" {
+		t.Fatalf("provider binding = %q from %q, want invariant provider address", overrides["IP_ADDRESS"], sources["IP_ADDRESS"])
+	}
+}
+
 // TestAdmittedResourcesKeepsRawGoForjOwnershipAtTheAdapter verifies lifecycle receives only validated snapshots.
 func TestAdmittedResourcesKeepsRawGoForjOwnershipAtTheAdapter(t *testing.T) {
 	plan := projectruntime.Plan{NetworkAssignment: projectruntime.NetworkAssignment{Address: netip.MustParseAddr("127.77.4.8")}, Presentation: projectruntime.Presentation{AppID: "app", ResourceURL: "http://127.77.4.8:3000"}}

@@ -26,7 +26,7 @@ No repository port files need to change, and stopping or unregistering a project
 | Desktop | Stable Wails v2 hosts a thin, replaceable client. Tray integration is a separate Go capability proved against the native event loops; closing the UI does not stop projects. |
 | Frontend | Harbor starts from GoForj's source-owned Vue/shadcn starter, keeps its primitive layer intact, and builds Harbor-specific views from those components. Lerd is the initial visual anchor for density, layout, and interaction styling. |
 | GoForj | GoForj describes and runs projects through versioned contracts; Harbor does not parse terminal output or reproduce `.goforj.yml` semantics. |
-| Project intent | `.goforj.yml` remains authoritative. Harbor does not introduce a repository-owned manifest. |
+| Project intent | `.goforj.yml` remains authoritative for GoForj composition. An optional, runtime-neutral `.harbor.yml` may map explicitly allowlisted Harbor facts to project environment names; it cannot define commands or project topology. |
 | HTTP | One local HTTP/TLS ingress routes exact domains by Host and SNI. |
 | Native ports | Each project receives a stable loopback identity so raw protocols can reuse their native ports across projects. |
 | Containers | Harbor exposes native endpoints through loopback-only TCP relays to private high host ports. It never relies on Docker container IPs. |
@@ -47,6 +47,7 @@ No repository port files need to change, and stopping or unregistering a project
 - [Architecture](./architecture.md) defines processes, ownership, IPC, state, reconciliation, privilege, packaging, and recovery.
 - [Networking](./networking.md) defines loopback identities, DNS, TLS, HTTP ingress, native-port relays, and container connectivity.
 - [GoForj integration](./goforj-integration.md) defines the project descriptor, managed development session, runtime overlay, resource projection, and ownership split.
+- [Repository environment overrides](./environment-overrides.md) defines the bounded `.harbor.yml` fact-to-environment mapping contract.
 - [Cross-platform testing](./testing.md) defines required CI jobs and the macOS, Linux, and Windows acceptance matrix.
 - [Delivery plan](./delivery-plan.md) defines proof gates, phases, release criteria, and deferred work.
 - [Research](./research.md) records the Herd, Yerd, Lerd, Wails, platform, and current-GoForj findings that informed the design.

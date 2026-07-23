@@ -8,6 +8,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/network/identity"
+	"github.com/goforj/harbor/internal/projectenvironment"
 	"github.com/goforj/harbor/internal/projectruntime"
 )
 
@@ -45,9 +46,14 @@ func (coordinator *ProjectLifecycleCoordinator) ProjectEnvironment(
 	if err != nil {
 		return projectruntime.EnvironmentInspection{}, err
 	}
+	overrides, err := resolveProjectEnvironmentOverrides(project.Project.Path, address)
+	if err != nil {
+		return projectruntime.EnvironmentInspection{}, err
+	}
 	return manager.InspectEnvironment(ctx, projectruntime.EnvironmentInspectionRequest{
-		CheckoutRoot: project.Project.Path,
-		Address:      address,
+		CheckoutRoot:         project.Project.Path,
+		Address:              address,
+		EnvironmentOverrides: overrides,
 	})
 }
 
@@ -93,4 +99,27 @@ func (coordinator *ProjectLifecycleCoordinator) projectEnvironmentAddress(
 		return netip.Addr{}, nil
 	}
 	return lease.Address, nil
+}
+
+// resolveProjectEnvironmentOverrides translates the repository contract into the neutral runtime boundary.
+func resolveProjectEnvironmentOverrides(
+	checkoutRoot string,
+	address netip.Addr,
+) ([]projectruntime.EnvironmentVariable, error) {
+	if !address.IsValid() {
+		return []projectruntime.EnvironmentVariable{}, nil
+	}
+	resolved, err := projectenvironment.Resolve(checkoutRoot, projectenvironment.Facts{ProjectAddress: address})
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository environment bindings: %w", err)
+	}
+	overrides := make([]projectruntime.EnvironmentVariable, 0, len(resolved))
+	for _, override := range resolved {
+		overrides = append(overrides, projectruntime.EnvironmentVariable{
+			Name:   override.Name,
+			Value:  override.Value,
+			Source: override.Source,
+		})
+	}
+	return overrides, nil
 }

@@ -5,10 +5,11 @@ import (
 	"net/netip"
 )
 
-// EnvironmentVariable is one explicit value a runtime provider adds to a project process.
+// EnvironmentVariable is one explicit Harbor value supplied to a project process.
 type EnvironmentVariable struct {
-	Name  string
-	Value string
+	Name   string
+	Value  string
+	Source string
 }
 
 // EnvironmentFile is one provider-recognized project environment file.
@@ -28,8 +29,9 @@ type EnvironmentInspection struct {
 
 // EnvironmentInspectionRequest identifies a checkout and its retained Harbor address, when one exists.
 type EnvironmentInspectionRequest struct {
-	CheckoutRoot string
-	Address      netip.Addr
+	CheckoutRoot         string
+	Address              netip.Addr
+	EnvironmentOverrides []EnvironmentVariable
 }
 
 // EnvironmentFileSaveRequest identifies one revision-fenced provider environment file edit.

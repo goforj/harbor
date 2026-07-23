@@ -113,12 +113,13 @@ func (err *PreparationError) Unwrap() error {
 
 // LaunchRequest identifies a project runtime launch without selecting a runtime implementation.
 type LaunchRequest struct {
-	ProjectID         domain.ProjectID
-	SessionID         domain.SessionID
-	CheckoutRoot      string
-	NetworkAssignment NetworkAssignment
-	Stdout            io.Writer
-	Stderr            io.Writer
+	ProjectID            domain.ProjectID
+	SessionID            domain.SessionID
+	CheckoutRoot         string
+	NetworkAssignment    NetworkAssignment
+	EnvironmentOverrides []EnvironmentVariable
+	Stdout               io.Writer
+	Stderr               io.Writer
 }
 
 // PriorProcessState classifies whether persisted runtime evidence still names the same host process.

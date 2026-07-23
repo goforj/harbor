@@ -47,6 +47,7 @@ See [source development](./docs/development.md) for current prerequisites, daemo
 - [Architecture](./docs/architecture.md): authority, state, lifecycle, IPC, privilege, and recovery.
 - [Networking](./docs/networking.md): loopback identity, DNS, TLS, ingress, relays, and platform proof gates.
 - [GoForj integration](./docs/goforj-integration.md): the intended versioned project and managed-session contract.
+- [Repository environment overrides](./docs/environment-overrides.md): the optional runtime-neutral mapping from Harbor facts to project environment names.
 - [Cross-platform testing](./docs/testing.md): required macOS, Linux, and Windows evidence.
 - [Delivery plan](./docs/delivery-plan.md): dependency-ordered milestones and release definition.
 - [Research](./docs/research.md): pinned Herd, Yerd, Lerd, Wails, platform, and GoForj findings.

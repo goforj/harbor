@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -20,11 +21,12 @@ import (
 
 // genericRuntimeFixture implements Harbor's mandatory lifecycle without GoForj discovery, commands, or process types.
 type genericRuntimeFixture struct {
-	mutex        sync.Mutex
-	handles      map[domain.SessionID]*genericRuntimeHandle
-	preparations int
-	resets       int
-	launches     int
+	mutex          sync.Mutex
+	handles        map[domain.SessionID]*genericRuntimeHandle
+	preparations   int
+	resets         int
+	launches       int
+	launchRequests []projectruntime.LaunchRequest
 }
 
 // genericRuntimeHandle publishes deterministic process evidence and completion for the neutral lifecycle proof.
@@ -76,6 +78,7 @@ func (runtime *genericRuntimeFixture) Launch(
 	runtime.mutex.Lock()
 	defer runtime.mutex.Unlock()
 	runtime.launches++
+	runtime.launchRequests = append(runtime.launchRequests, request)
 	handle := &genericRuntimeHandle{
 		info: projectruntime.Info{
 			ProjectID:    request.ProjectID,
@@ -207,6 +210,13 @@ func TestGenericRuntimeCompletesLifecycleWithoutGoForj(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".goforj.yml")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("plain project marker state = %v, want absent", err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(root, ".harbor.yml"),
+		[]byte("version: 1\nenvironment:\n  MEILISEARCH_HOST:\n    from: project.address\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write repository environment contract: %v", err)
+	}
 	project := domain.ProjectSnapshot{
 		ID:        "project-generic",
 		Name:      "Generic Project",
@@ -285,10 +295,46 @@ func TestGenericRuntimeCompletesLifecycleWithoutGoForj(t *testing.T) {
 	}
 	waitForProjectLifecycleState(t, store, project.ID, domain.ProjectStopped)
 
+	if err := os.WriteFile(
+		filepath.Join(root, ".harbor.yml"),
+		[]byte("version: 1\nenvironment:\n  MEILISEARCH_HOST:\n    from: shell.output\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write invalid repository environment contract: %v", err)
+	}
+	invalidStart, err := coordinator.Start(t.Context(), ProjectStartRequest{
+		ProjectID:   project.ID,
+		OperationID: "operation-generic-invalid-environment",
+		IntentID:    "intent-generic-invalid-environment",
+	})
+	if err != nil || invalidStart.Operation.State != domain.OperationQueued {
+		t.Fatalf("start invalid repository environment = %#v, %v", invalidStart, err)
+	}
+	failed := waitForProjectLifecycleOperationState(
+		t,
+		journal,
+		"intent-generic-invalid-environment",
+		domain.OperationFailed,
+	)
+	if failed.Operation.Problem == nil || failed.Operation.Problem.Code != "project.environment.invalid" {
+		t.Fatalf("invalid repository environment problem = %#v, want project.environment.invalid", failed.Operation.Problem)
+	}
+
 	runtime.mutex.Lock()
 	preparations, resets, launches := runtime.preparations, runtime.resets, runtime.launches
+	launchRequests := append([]projectruntime.LaunchRequest(nil), runtime.launchRequests...)
 	runtime.mutex.Unlock()
 	if preparations < 2 || resets != 2 || launches != 2 {
 		t.Fatalf("generic runtime calls = prepare %d, reset %d, launch %d; want at least 2, 2, 2", preparations, resets, launches)
+	}
+	for index, request := range launchRequests {
+		want := []projectruntime.EnvironmentVariable{{
+			Name:   "MEILISEARCH_HOST",
+			Value:  address.String(),
+			Source: "project.address",
+		}}
+		if !reflect.DeepEqual(request.EnvironmentOverrides, want) {
+			t.Fatalf("generic runtime launch %d environment overrides = %#v, want %#v", index+1, request.EnvironmentOverrides, want)
+		}
 	}
 }

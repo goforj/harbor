@@ -18,6 +18,7 @@ const (
 	maximumProjectEnvironmentValueBytes     = 1024 * 1024
 	maximumProjectEnvironmentErrorBytes     = 1024
 	maximumProjectEnvironmentFilenameBytes  = 128
+	maximumProjectEnvironmentSourceBytes    = 128
 	projectEnvironmentRevisionBytes         = 32
 )
 
@@ -58,8 +59,9 @@ func (request SaveProjectEnvironmentFileRequest) Validate() error {
 
 // ProjectEnvironmentVariable is one read-only value Harbor supplies to the project process.
 type ProjectEnvironmentVariable struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Source string `json:"source"`
 }
 
 // Validate reports whether the environment variable has a portable name and bounded UTF-8 value.
@@ -72,6 +74,19 @@ func (variable ProjectEnvironmentVariable) Validate() error {
 	}
 	if len(variable.Value) > maximumProjectEnvironmentValueBytes {
 		return fmt.Errorf("project environment override %q exceeds %d bytes", variable.Name, maximumProjectEnvironmentValueBytes)
+	}
+	if variable.Source == "" || len(variable.Source) > maximumProjectEnvironmentSourceBytes || !utf8.ValidString(variable.Source) {
+		return fmt.Errorf("project environment override %q source must contain between 1 and %d UTF-8 bytes", variable.Name, maximumProjectEnvironmentSourceBytes)
+	}
+	for _, character := range variable.Source {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' ||
+			character == '_' ||
+			character == '-' {
+			continue
+		}
+		return fmt.Errorf("project environment override %q source is not canonical", variable.Name)
 	}
 	return nil
 }
