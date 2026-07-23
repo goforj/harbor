@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -199,9 +200,17 @@ func TestResponseForErrorRejectsSpoofedAdministratorTrustDiagnostics(t *testing.
 
 // TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues verifies formatter behavior separately from the concrete trust error boundary.
 func TestAdministratorTrustDiagnosticMessageAllowsOnlyReviewedNativeValues(t *testing.T) {
-	message, ok := administratorTrustDiagnosticMessage("snapshot", -25291)
-	if !ok || message != "helper operation failed: administrator trust snapshot OSStatus -25291" {
-		t.Fatalf("administratorTrustDiagnosticMessage() = %q, %t", message, ok)
+	for _, stage := range []string{
+		"snapshot",
+		"root-store-recheck",
+		"root-store-verify",
+		"add-system-root",
+	} {
+		message, ok := administratorTrustDiagnosticMessage(stage, -25291)
+		expected := fmt.Sprintf("helper operation failed: administrator trust %s OSStatus -25291", stage)
+		if !ok || message != expected {
+			t.Fatalf("administratorTrustDiagnosticMessage(%q, -25291) = %q, %t", stage, message, ok)
+		}
 	}
 
 	for _, diagnostic := range []struct {
