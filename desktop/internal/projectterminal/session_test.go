@@ -76,7 +76,7 @@ func TestTerminalEnvironmentExcludesHarborState(t *testing.T) {
 
 // TestSessionCarriesInputOutputSizeAndExit verifies the interactive terminal contract.
 func TestSessionCarriesInputOutputSizeAndExit(t *testing.T) {
-	directory := t.TempDir()
+	directory := canonicalTempDir(t)
 	session, err := startPlatform(directory, "/bin/sh")
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -107,7 +107,7 @@ func TestSessionCarriesInputOutputSizeAndExit(t *testing.T) {
 
 // TestSessionUsesProjectDirectory verifies the login shell begins in the exact caller directory.
 func TestSessionUsesProjectDirectory(t *testing.T) {
-	directory := t.TempDir()
+	directory := canonicalTempDir(t)
 	session, err := startPlatform(directory, "/bin/sh")
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -128,7 +128,7 @@ func TestSessionUsesProjectDirectory(t *testing.T) {
 
 // TestSessionCloseIsIdempotent waits for the shell reaper on every Close call.
 func TestSessionCloseIsIdempotent(t *testing.T) {
-	session, err := startPlatform(t.TempDir(), "/bin/sh")
+	session, err := startPlatform(canonicalTempDir(t), "/bin/sh")
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -177,7 +177,7 @@ func TestSessionCloseIsIdempotent(t *testing.T) {
 
 // TestResizeRejectsEmptyDimensions protects the terminal ioctl from invalid sizes.
 func TestResizeRejectsEmptyDimensions(t *testing.T) {
-	session, err := startPlatform(t.TempDir(), "/bin/sh")
+	session, err := startPlatform(canonicalTempDir(t), "/bin/sh")
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -193,7 +193,7 @@ func TestResizeRejectsEmptyDimensions(t *testing.T) {
 
 // TestSessionCloseTerminatesTheTerminalProcessGroup keeps background jobs bounded.
 func TestSessionCloseTerminatesTheTerminalProcessGroup(t *testing.T) {
-	session, err := startPlatform(t.TempDir(), "/bin/sh")
+	session, err := startPlatform(canonicalTempDir(t), "/bin/sh")
 	if err != nil {
 		t.Fatalf("startPlatform() error = %v", err)
 	}
@@ -208,6 +208,17 @@ func TestSessionCloseTerminatesTheTerminalProcessGroup(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 	waitForProcessExit(t, childPID)
+}
+
+// canonicalTempDir resolves macOS's /var alias so terminal security checks receive an exact path.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	return directory
 }
 
 // readUntilTerminalClose accepts the EIO that Unix PTYs report after their child exits.
