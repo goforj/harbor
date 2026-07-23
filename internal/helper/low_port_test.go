@@ -197,6 +197,100 @@ func TestLowPortAdmissionRejectsOwnershipTransition(t *testing.T) {
 	}
 }
 
+// TestResponseForErrorExposesOnlyBoundedLowPortClassification keeps native details out of helper responses.
+func TestResponseForErrorExposesOnlyBoundedLowPortClassification(t *testing.T) {
+	for _, accepted := range []struct {
+		action string
+		kinds  []string
+	}{
+		{
+			action: "observe",
+			kinds: []string{
+				"invalid-request",
+				"observe-failed",
+				"invalid-facts",
+			},
+		},
+		{
+			action: "ensure",
+			kinds: []string{
+				"invalid-request",
+				"invalid-facts",
+				"observation-changed",
+				"conflict",
+				"indeterminate",
+				"mutation-failed",
+				"verification-failed",
+			},
+		},
+		{
+			action: "release",
+			kinds: []string{
+				"invalid-request",
+				"invalid-facts",
+				"observation-changed",
+				"conflict",
+				"indeterminate",
+				"mutation-failed",
+				"verification-failed",
+			},
+		},
+	} {
+		for _, kind := range accepted.kinds {
+			failure := testLowPortFailureDiagnostic{
+				action: accepted.action,
+				kind:   kind,
+			}
+			expected := "helper operation failed: low-port " + failure.action + " " + failure.kind
+			for _, err := range []error{
+				failure,
+				errors.Join(errors.New("outer diagnostic wrapper"), failure),
+			} {
+				response := responseForError(err)
+				if response.Error == nil || response.Error.Code != ErrorCodeMutationFailed || response.Error.Message != expected {
+					t.Fatalf("responseForError(%v) = %#v", err, response)
+				}
+			}
+		}
+	}
+
+	for _, failure := range []testLowPortFailureDiagnostic{
+		{
+			action: "forged",
+			kind:   "mutation-failed",
+		},
+		{
+			action: "observe",
+			kind:   "mutation-failed",
+		},
+		{
+			action: "ensure",
+			kind:   "forged",
+		},
+	} {
+		response := responseForError(failure)
+		if response.Error == nil || response.Error.Code != ErrorCodeMutationFailed || response.Error.Message != "helper operation failed" {
+			t.Fatalf("responseForError(%v) = %#v", failure, response)
+		}
+	}
+}
+
+// testLowPortFailureDiagnostic supplies finite adapter facts without importing the helper-dependent lowport package.
+type testLowPortFailureDiagnostic struct {
+	action string
+	kind   string
+}
+
+// Error implements the error boundary used by responseForError.
+func (diagnostic testLowPortFailureDiagnostic) Error() string {
+	return "test low-port failure"
+}
+
+// LowPortDiagnostic returns the configured finite test facts.
+func (diagnostic testLowPortFailureDiagnostic) LowPortDiagnostic() (string, string) {
+	return diagnostic.action, diagnostic.kind
+}
+
 // TestLowPortResponseCodecRoundTrip pins strict low-port evidence fields and postconditions.
 func TestLowPortResponseCodecRoundTrip(t *testing.T) {
 	evidence := LowPortMutationEvidence{Changed: true, PolicyFingerprint: testFingerprint(), OwnershipFingerprint: strings.Repeat("b", fingerprintLength), ObservationFingerprint: strings.Repeat("c", fingerprintLength), Postcondition: LowPortPostconditionExact}

@@ -893,8 +893,14 @@ func responseForError(err error) Response {
 		responseError.Code = ErrorCodeMutationUnavailable
 		responseError.Message = "helper platform mutation is unavailable"
 	default:
+		var lowPortError lowPortFailureDiagnostic
 		var trustError *trust.Error
-		if errors.As(err, &trustError) {
+		if errors.As(err, &lowPortError) {
+			action, kind := lowPortError.LowPortDiagnostic()
+			if message, ok := lowPortFailureDiagnosticMessage(action, kind); ok {
+				responseError.Message = message
+			}
+		} else if errors.As(err, &trustError) {
 			if stage, status, ok := trustError.AdministratorTrustDiagnostic(); ok {
 				if message, ok := administratorTrustDiagnosticMessage(stage, status); ok {
 					responseError.Message = message
@@ -943,6 +949,39 @@ func validTrustFailureOperationKind(operation string, kind trust.ErrorKind) bool
 			kind == trust.ErrorKindIndeterminate ||
 			kind == trust.ErrorKindMutationFailed ||
 			kind == trust.ErrorKindVerificationFailed
+	default:
+		return false
+	}
+}
+
+// lowPortFailureDiagnostic is implemented by the platform adapter without reversing package dependencies.
+type lowPortFailureDiagnostic interface {
+	LowPortDiagnostic() (string, string)
+}
+
+// lowPortFailureDiagnosticMessage exposes only the adapter's finite action and failure enums.
+func lowPortFailureDiagnosticMessage(action string, kind string) (string, bool) {
+	if !validLowPortFailureActionKind(action, kind) {
+		return "", false
+	}
+	return fmt.Sprintf("helper operation failed: low-port %s %s", action, kind), true
+}
+
+// validLowPortFailureActionKind rejects arbitrary text carried by an exported adapter error.
+func validLowPortFailureActionKind(action string, kind string) bool {
+	switch action {
+	case "observe":
+		return kind == "invalid-request" ||
+			kind == "observe-failed" ||
+			kind == "invalid-facts"
+	case "ensure", "release":
+		return kind == "invalid-request" ||
+			kind == "invalid-facts" ||
+			kind == "observation-changed" ||
+			kind == "conflict" ||
+			kind == "indeterminate" ||
+			kind == "mutation-failed" ||
+			kind == "verification-failed"
 	default:
 		return false
 	}

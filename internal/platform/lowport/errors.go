@@ -39,6 +39,14 @@ func (e *Error) Error() string { return fmt.Sprintf("low-port %s: %s", e.Action,
 // Unwrap returns the retained diagnostic cause.
 func (e *Error) Unwrap() error { return e.cause }
 
+// LowPortDiagnostic returns only the adapter's finite action and failure classifiers.
+func (e *Error) LowPortDiagnostic() (string, string) {
+	if e == nil {
+		return "", ""
+	}
+	return e.Action, string(e.Kind)
+}
+
 // operationError constructs a bounded adapter error.
 func operationError(kind ErrorKind, action string, cause error) error {
 	return &Error{Kind: kind, Action: action, cause: cause}

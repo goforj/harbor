@@ -230,6 +230,16 @@ jobs:
             report_presence "/Library/PrivilegedHelperTools/com.goforj.harbor.helper" helper
             report_presence "/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay" relay
           ' harbor-host-state
+          printf '%s\n' 'host-state launchd-service-begin'
+          sudo -n /bin/launchctl print system/com.goforj.harbor.launchdrelay 2>&1 |
+            /usr/bin/head -c 16384 || true
+          printf '\n%s\n' 'host-state launchd-service-end'
+          printf '%s\n' 'host-state low-port-listeners-begin'
+          sudo -n /usr/sbin/lsof -nP \
+            -iTCP:80 -iTCP:443 \
+            -sTCP:LISTEN 2>&1 |
+            /usr/bin/head -c 16384 || true
+          printf '\n%s\n' 'host-state low-port-listeners-end'
 
       - name: Restore system.privilege.admin authorization rule
         if: always()
