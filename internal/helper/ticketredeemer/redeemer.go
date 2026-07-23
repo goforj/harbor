@@ -230,10 +230,10 @@ func admitTicket(
 	postOwnershipFingerprint := observation.Fingerprint
 	if record.SchemaVersion == ownership.IdentitySchemaVersion &&
 		ticket.OwnershipSchemaVersion == ownership.NetworkPolicySchemaVersion {
-		if ticket.Operation != helper.OperationEnsureResolver {
+		if ticket.Operation != helper.OperationEnsureResolver && ticket.Operation != helper.OperationRetireResolver {
 			return helper.TicketAdmission{}, consumedFailure(
 				"bind resolver release to machine ownership",
-				errors.New("resolver release requires network-policy ownership to be already current"),
+				errors.New("resolver operation requires network-policy ownership to be already current"),
 			)
 		}
 		source := targetDerivedSchema1Record(ticket, record.TicketVerifierKey)
@@ -261,18 +261,22 @@ func admitTicket(
 	}
 	postOwnershipFingerprint = targetFingerprint
 	if ticket.Operation == helper.OperationRetireResolver {
-		if record.SchemaVersion != ownership.NetworkPolicySchemaVersion || observation.Fingerprint != targetFingerprint {
-			return helper.TicketAdmission{}, consumedFailure(
-				"bind resolver retirement to machine ownership",
-				errors.New("resolver retirement requires protected ownership to equal the signed schema-2 target"),
-			)
-		}
 		source := targetDerivedSchema1Record(ticket, record.TicketVerifierKey)
 		postOwnershipFingerprint, err = source.Fingerprint()
 		if err != nil {
 			return helper.TicketAdmission{}, consumedFailure("derive resolver retirement ownership", err)
 		}
-		state = helper.OwnershipAdmissionSchema2To1
+		switch {
+		case record.SchemaVersion == ownership.NetworkPolicySchemaVersion && observation.Fingerprint == targetFingerprint:
+			state = helper.OwnershipAdmissionSchema2To1
+		case record == source && observation.Fingerprint == postOwnershipFingerprint:
+			state = helper.OwnershipAdmissionAlreadyRetired
+		default:
+			return helper.TicketAdmission{}, consumedFailure(
+				"bind resolver retirement to machine ownership",
+				errors.New("resolver retirement requires protected ownership to equal the signed schema-2 target or derived schema-1 successor"),
+			)
+		}
 	}
 
 	return helper.TicketAdmission{

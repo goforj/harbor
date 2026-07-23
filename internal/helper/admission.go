@@ -12,6 +12,8 @@ const (
 	OwnershipAdmissionSchema1To2 OwnershipAdmissionState = "schema_1_to_2"
 	// OwnershipAdmissionSchema2To1 means a resolver retirement may transition the exact schema-2 target to its schema-1 form.
 	OwnershipAdmissionSchema2To1 OwnershipAdmissionState = "schema_2_to_1"
+	// OwnershipAdmissionAlreadyRetired means a resolver retirement already reached its exact schema-one successor.
+	OwnershipAdmissionAlreadyRetired OwnershipAdmissionState = "already_retired"
 )
 
 // TicketAdmission carries bindings established independently from the untrusted wire request.
@@ -76,6 +78,11 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 			return ErrTicketRedemptionFailed
 		}
 	case OwnershipAdmissionSchema2To1:
+		if r.Ticket.Operation != OperationRetireResolver ||
+			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+			return ErrTicketRedemptionFailed
+		}
+	case OwnershipAdmissionAlreadyRetired:
 		if r.Ticket.Operation != OperationRetireResolver ||
 			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
 			return ErrTicketRedemptionFailed

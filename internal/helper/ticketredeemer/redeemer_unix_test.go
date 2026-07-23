@@ -246,6 +246,23 @@ func TestRedeemerAdmitsResolverRetirementOnlyFromExactSchema2Target(t *testing.T
 	}
 }
 
+// TestRedeemerAdmitsResolverRetirementReplayFromDerivedSchema1 keeps a lost helper response safely retryable.
+func TestRedeemerAdmitsResolverRetirementReplayFromDerivedSchema1(t *testing.T) {
+	fixture := newUnixRedeemerFixture(t, false)
+	ticket := testRedeemerResolverTicket(fixture.now, fixture.owner, helper.OperationRetireResolver)
+	source := fixture.record()
+	source.NetworkPolicyFingerprint = ""
+	fixture.claimOwnership(t, source)
+	reference := fixture.writeTicket(t, ticket, '5', fixture.privateKey)
+	redemption, err := fixture.open(t).Redeem(t.Context(), reference)
+	if err != nil {
+		t.Fatalf("Redeem(retirement replay) error = %v", err)
+	}
+	if redemption.Admission.OwnershipState != helper.OwnershipAdmissionAlreadyRetired {
+		t.Fatalf("Redeem(retirement replay) ownership state = %q", redemption.Admission.OwnershipState)
+	}
+}
+
 // TestRedeemerBootstrapsExactPoolOwnership proves the first authenticated pool ticket pins authority before dispatch.
 func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 	fixture := newUnixRedeemerFixture(t, false)

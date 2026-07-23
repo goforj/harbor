@@ -261,6 +261,38 @@ func TestHandlerRetiresOwnershipOnlyAfterOwnedResolverAbsence(t *testing.T) {
 	}
 }
 
+// TestHandlerReplaysRetirementFromSchemaOneAbsence returns the helper proof needed after a lost response.
+func TestHandlerReplaysRetirementFromSchemaOneAbsence(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	absent := resolver.Observation{
+		Request:  request,
+		Complete: true,
+	}
+	expected, err := absent.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationRetireResolver, expected)
+	admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionAlreadyRetired)
+	store := &testOwnershipUpgrader{}
+	evidence, err := newHandler(
+		&testConditionalAdapter{
+			change: resolver.Change{
+				Before: absent,
+			},
+		},
+		store,
+	).RetireResolver(t.Context(), ticket, admission)
+	if err != nil {
+		t.Fatalf("RetireResolver() error = %v", err)
+	}
+	if evidence.Postcondition != helper.ResolverPostconditionOwnedAbsent ||
+		evidence.OwnershipFingerprint != admission.PostOwnershipFingerprint ||
+		store.downgrades != 1 {
+		t.Fatalf("RetireResolver() evidence = %#v; downgrades = %d", evidence, store.downgrades)
+	}
+}
+
 // TestHandlerDoesNotRetireOwnershipAfterUnverifiedResolverRemoval keeps schema-2 ownership when native state is indeterminate or still owned.
 func TestHandlerDoesNotRetireOwnershipAfterUnverifiedResolverRemoval(t *testing.T) {
 	request, policy := resolverHandlerTestRequest(t)
@@ -696,10 +728,17 @@ func resolverHandlerTestAdmission(
 		t.Fatalf("ownership admission fixture error = %v", err)
 	}
 	postOwnershipFingerprint := targetFingerprint
-	if state == helper.OwnershipAdmissionSchema2To1 {
+	if state == helper.OwnershipAdmissionSchema2To1 || state == helper.OwnershipAdmissionAlreadyRetired {
 		source := target
 		source.SchemaVersion = ownership.IdentitySchemaVersion
 		source.NetworkPolicyFingerprint = ""
+		if state == helper.OwnershipAdmissionAlreadyRetired {
+			protected = source
+			fingerprint, err = protected.Fingerprint()
+			if err != nil {
+				t.Fatalf("retired ownership admission fixture error = %v", err)
+			}
+		}
 		postOwnershipFingerprint, err = source.Fingerprint()
 		if err != nil {
 			t.Fatalf("retirement ownership admission fixture error = %v", err)
