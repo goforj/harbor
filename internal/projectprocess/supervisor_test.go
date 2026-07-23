@@ -1434,41 +1434,17 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	}
 }
 
-// TestDevelopmentEnvironmentReplacesAmbientArtifactRoot verifies a child receives only its Harbor-owned artifact directory.
-func TestDevelopmentEnvironmentReplacesAmbientArtifactRoot(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "dev-artifacts", "session")
-	result := withDevelopmentEnvironmentAndArtifactRoot([]string{
+// TestDevelopmentEnvironmentRemovesAmbientArtifactRoot prevents Harbor's own process configuration from redirecting project builds.
+func TestDevelopmentEnvironmentRemovesAmbientArtifactRoot(t *testing.T) {
+	result := withDevelopmentEnvironment([]string{
 		"FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root",
 		"UNRELATED=preserved",
-	}, projectProcessTestEnvironment(), root)
+	}, projectProcessTestEnvironment())
 	if strings.Contains(strings.Join(result, "\x00"), "FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root") {
 		t.Fatalf("development environment retained ambient artifact root: %#v", result)
 	}
-	if !strings.Contains(strings.Join(result, "\x00"), "FORJ_DEV_ARTIFACT_ROOT="+root) {
-		t.Fatalf("development environment omitted Harbor artifact root: %#v", result)
-	}
-}
-
-// TestStartRejectsUnsafeExternalArtifactRoots verifies artifact cleanup cannot be aimed at a checkout or ambiguous path.
-func TestStartRejectsUnsafeExternalArtifactRoots(t *testing.T) {
-	checkout := t.TempDir()
-	for _, artifactRoot := range []string{
-		"relative",
-		filepath.Join(checkout, "artifacts"),
-		string(filepath.Separator),
-	} {
-		t.Run(artifactRoot, func(t *testing.T) {
-			_, err := newTestSupervisor(Options{}).Start(t.Context(), StartRequest{
-				ProjectID:            "project-artifact-invalid",
-				SessionID:            "session-artifact-invalid",
-				CheckoutRoot:         checkout,
-				ExternalArtifactRoot: artifactRoot,
-				EnvironmentOverrides: projectProcessTestEnvironment(),
-			})
-			if !errors.Is(err, ErrInvalidRequest) {
-				t.Fatalf("Start() error = %v, want ErrInvalidRequest", err)
-			}
-		})
+	if !strings.Contains(strings.Join(result, "\x00"), "UNRELATED=preserved") {
+		t.Fatalf("development environment removed unrelated value: %#v", result)
 	}
 }
 

@@ -36,6 +36,7 @@ var developmentLaunchIsolationNames = []string{
 	"APP_NAME",
 	"FORJ_APP",
 	"FORJ_BUILD_PROGRESS",
+	developmentArtifactRootEnvironment,
 	legacyBuildEnvironmentOverridesEnvName,
 	legacyPrivateBuildEnvironmentOverridesName,
 	"FORJ_COMMAND_PREFIX",
@@ -95,8 +96,6 @@ type StartRequest struct {
 	ProjectID    domain.ProjectID
 	SessionID    domain.SessionID
 	CheckoutRoot string
-	// ExternalArtifactRoot is the Harbor-owned directory available to this development session for external artifacts.
-	ExternalArtifactRoot string
 	// GoForjExecutable binds a descriptor preflight to the exact executable image that will be launched.
 	GoForjExecutable     string
 	EnvironmentOverrides EnvironmentOverrides
@@ -520,11 +519,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			return nil, fmt.Errorf("%w: managed launch context project root does not match checkout", ErrInvalidRequest)
 		}
 	}
-	if request.ExternalArtifactRoot != "" {
-		if err := validateExternalArtifactRoot(request.ProjectID, request.SessionID, request.ExternalArtifactRoot); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
-		}
-	}
 	executable, err := supervisor.acceptedGoForjExecutable(request.GoForjExecutable)
 	if err != nil {
 		return nil, err
@@ -576,21 +570,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("prepare Harbor host environment: %w", err)
 	}
-	var artifactRoot *externalArtifactRootCapability
-	if request.ExternalArtifactRoot != "" {
-		artifactRoot, err = prepareExternalArtifactRoot(request.ProjectID, request.SessionID, request.ExternalArtifactRoot)
-		if err != nil {
-			return nil, err
-		}
-	}
-	artifactRootCleanup := artifactRoot != nil && artifactRoot.created
-	processStarted := false
-	startedTreeSettled := false
-	defer func() {
-		if artifactRootCleanup && (!processStarted || startedTreeSettled) {
-			resultErr = errors.Join(resultErr, removeExternalArtifactRoot(artifactRoot))
-		}
-	}()
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
 	managedLaunchPath := ""
@@ -606,7 +585,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = removeManagedLaunchContext(managedLaunchPath)
 		}
 	}()
-	command.Env = withDevelopmentEnvironmentAndArtifactRoot(supervisor.environment, managedOverrides, request.ExternalArtifactRoot, managedLaunchPath)
+	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -654,11 +633,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		relay.finish()
 		return nil, fmt.Errorf("start forj dev: %w", err)
 	}
-	processStarted = true
 	if supervisor.afterCommandStart != nil {
 		if err := supervisor.afterCommandStart(); err != nil {
 			cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
-			startedTreeSettled = cleanupErr == nil
 			_ = stdout.Close()
 			_ = stdoutChild.Close()
 			_ = stderr.Close()
@@ -717,7 +694,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
-		startedTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -734,7 +710,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
-		startedTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -750,7 +725,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
-		startedTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -766,7 +740,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
-		startedTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -797,20 +770,19 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		done: make(chan struct{}),
 	}
 	process := &managedProcess{
-		command:              command,
-		platform:             platform,
-		relay:                relay,
-		stdout:               stdout,
-		stderr:               stderr,
-		pipeReaders:          &pipeReaders,
-		handle:               handle,
-		gracePeriod:          supervisor.gracePeriod,
-		acceptingStop:        true,
-		forced:               make(chan struct{}),
-		signalsDone:          make(chan struct{}),
-		stopComplete:         make(chan struct{}),
-		managedLaunchPath:    managedLaunchPath,
-		externalArtifactRoot: artifactRoot,
+		command:           command,
+		platform:          platform,
+		relay:             relay,
+		stdout:            stdout,
+		stderr:            stderr,
+		pipeReaders:       &pipeReaders,
+		handle:            handle,
+		gracePeriod:       supervisor.gracePeriod,
+		acceptingStop:     true,
+		forced:            make(chan struct{}),
+		signalsDone:       make(chan struct{}),
+		stopComplete:      make(chan struct{}),
+		managedLaunchPath: managedLaunchPath,
 	}
 	supervisor.mu.Lock()
 	if supervisor.closed {
@@ -819,7 +791,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
-		startedTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -837,7 +808,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	promoted = true
 	supervisor.mu.Unlock()
 	traceCleanup = false
-	artifactRootCleanup = false
 	if brokerAttachment != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
@@ -1297,7 +1267,6 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	}
 	if treeSettlementErr == nil && stopRequested && process.retireLaunchTrace.Load() {
 		cleanupErr = errors.Join(cleanupErr, removeProjectLaunchTrace(info.CheckoutRoot))
-		cleanupErr = errors.Join(cleanupErr, removeExternalArtifactRoot(process.externalArtifactRoot))
 	}
 	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))
 
@@ -1333,29 +1302,28 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 
 // managedProcess retains the private handles needed to stop and reap one process tree.
 type managedProcess struct {
-	command              *exec.Cmd
-	platform             *platformProcess
-	relay                *outputRelay
-	stdout               *os.File
-	stderr               *os.File
-	pipeReaders          *sync.WaitGroup
-	handle               *Handle
-	gracePeriod          time.Duration
-	acceptingStop        bool
-	stopRequested        atomic.Bool
-	retireLaunchTrace    atomic.Bool
-	stopOnce             sync.Once
-	forceOnce            sync.Once
-	signalMu             sync.Mutex
-	signalsClosed        bool
-	treeSettled          bool
-	forceErr             error
-	forced               chan struct{}
-	signalsDone          chan struct{}
-	stopErr              error
-	stopComplete         chan struct{}
-	managedLaunchPath    string
-	externalArtifactRoot *externalArtifactRootCapability
+	command           *exec.Cmd
+	platform          *platformProcess
+	relay             *outputRelay
+	stdout            *os.File
+	stderr            *os.File
+	pipeReaders       *sync.WaitGroup
+	handle            *Handle
+	gracePeriod       time.Duration
+	acceptingStop     bool
+	stopRequested     atomic.Bool
+	retireLaunchTrace atomic.Bool
+	stopOnce          sync.Once
+	forceOnce         sync.Once
+	signalMu          sync.Mutex
+	signalsClosed     bool
+	treeSettled       bool
+	forceErr          error
+	forced            chan struct{}
+	signalsDone       chan struct{}
+	stopErr           error
+	stopComplete      chan struct{}
+	managedLaunchPath string
 }
 
 // requestStop starts the one bounded graceful-shutdown sequence shared by concurrent callers.
@@ -1497,24 +1465,6 @@ func validateStartRequest(request StartRequest) error {
 			return fmt.Errorf("%w: managed launch context: %v", ErrInvalidRequest, err)
 		}
 	}
-	if request.ExternalArtifactRoot != "" && (!filepath.IsAbs(request.ExternalArtifactRoot) || filepath.Clean(request.ExternalArtifactRoot) != request.ExternalArtifactRoot) {
-		return fmt.Errorf("%w: external artifact root must be an absolute clean path", ErrInvalidRequest)
-	}
-	return nil
-}
-
-// validateExternalArtifactRoot accepts only the exact capability-derived root for a Harbor project session.
-func validateExternalArtifactRoot(projectID domain.ProjectID, sessionID domain.SessionID, artifactRoot string) error {
-	if !filepath.IsAbs(artifactRoot) || filepath.Clean(artifactRoot) != artifactRoot {
-		return errors.New("external artifact root must be an absolute clean path")
-	}
-	expected, _, _, err := expectedExternalArtifactRoot(projectID, sessionID)
-	if err != nil {
-		return err
-	}
-	if artifactRoot != expected {
-		return errors.New("external artifact root does not match the Harbor project session")
-	}
 	return nil
 }
 
@@ -1647,13 +1597,8 @@ type environmentAssignment struct {
 
 // withDevelopmentEnvironment replaces ambient managed values with Harbor's validated assignments and selects non-interactive output.
 func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverrides, managedLaunchPath ...string) []string {
-	return withDevelopmentEnvironmentAndArtifactRoot(environment, overrides, "", managedLaunchPath...)
-}
-
-// withDevelopmentEnvironmentAndArtifactRoot replaces ambient managed values and passes Harbor's external artifact directory only to its owner.
-func withDevelopmentEnvironmentAndArtifactRoot(environment []string, overrides EnvironmentOverrides, externalArtifactRoot string, managedLaunchPath ...string) []string {
 	names := sortedEnvironmentOverrideNames(overrides)
-	replacedNames := append(append(append([]string(nil), names...), developmentLaunchIsolationNames...), developmentArtifactRootEnvironment)
+	replacedNames := append(append([]string(nil), names...), developmentLaunchIsolationNames...)
 	assignments := []environmentAssignment{
 		{
 			name:  developmentPlainEnvName,
@@ -1664,12 +1609,6 @@ func withDevelopmentEnvironmentAndArtifactRoot(environment []string, overrides E
 		assignments = append(assignments, environmentAssignment{
 			name:  name,
 			value: overrides[name],
-		})
-	}
-	if externalArtifactRoot != "" {
-		assignments = append(assignments, environmentAssignment{
-			name:  developmentArtifactRootEnvironment,
-			value: externalArtifactRoot,
 		})
 	}
 	if len(managedLaunchPath) > 0 && managedLaunchPath[0] != "" {
