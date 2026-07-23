@@ -12,104 +12,180 @@ import (
 
 // fakeDaemonControlClient records one-shot control calls and their cleanup.
 type fakeDaemonControlClient struct {
-	status                               control.DaemonStatus
-	snapshot                             domain.Snapshot
-	projectActivity                      control.ProjectActivity
-	serviceLogs                          control.ServiceLogs
-	registration                         control.ProjectRegistration
-	unregistration                       control.ProjectUnregistration
-	startLifecycle                       control.ProjectLifecycleOperation
-	stopLifecycle                        control.ProjectLifecycleOperation
-	restartLifecycle                     control.ProjectLifecycleOperation
-	networkSetup                         control.NetworkSetupOperation
-	networkSetupPreparation              control.NetworkSetupApprovalPreparation
-	networkSetupConfirmation             control.NetworkSetupApprovalConfirmation
-	resolverSetup                        control.NetworkResolverSetupOperation
-	resolverPreparation                  control.NetworkResolverSetupApprovalPreparation
-	resolverConfirmation                 control.NetworkResolverSetupApprovalConfirmation
-	dataPlaneSetup                       control.NetworkDataPlaneSetupOperation
-	dataPlaneTrustPreparation            control.NetworkDataPlaneTrustApprovalPreparation
-	dataPlaneTrustConfirmation           control.NetworkDataPlaneSetupOperation
-	dataPlaneLowPortPreparation          control.NetworkDataPlaneLowPortApprovalPreparation
-	dataPlaneLowPortConfirmation         control.NetworkDataPlaneSetupConfirmation
-	statusErr                            error
-	stopErr                              error
-	snapshotErr                          error
-	projectActivityErr                   error
-	serviceLogsErr                       error
-	registrationErr                      error
-	unregistrationErr                    error
-	startLifecycleErr                    error
-	stopLifecycleErr                     error
-	restartLifecycleErr                  error
-	networkSetupErr                      error
-	networkSetupPreparationErr           error
-	networkSetupConfirmationErr          error
-	resolverSetupErr                     error
-	resolverPreparationErr               error
-	resolverConfirmationErr              error
-	dataPlaneSetupErr                    error
-	dataPlaneTrustPreparationErr         error
-	dataPlaneTrustConfirmationErr        error
-	dataPlaneLowPortPreparationErr       error
-	dataPlaneLowPortConfirmationErr      error
-	closeErr                             error
-	statusCalls                          int
-	stopCalls                            int
-	snapshotCalls                        int
-	projectActivityCalls                 int
-	serviceLogsCalls                     int
-	projectActivityRequests              []control.ProjectActivityRequest
-	serviceLogsRequests                  []control.ServiceLogsRequest
-	projectActivityHook                  func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
-	serviceLogsHook                      func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
-	registrationCalls                    int
-	unregistrationCalls                  int
-	startLifecycleCalls                  int
-	stopLifecycleCalls                   int
-	restartLifecycleCalls                int
-	networkSetupCalls                    int
-	networkSetupPreparationCalls         int
-	networkSetupConfirmationCalls        int
-	resolverSetupCalls                   int
-	resolverPreparationCalls             int
-	resolverConfirmationCalls            int
-	dataPlaneSetupCalls                  int
-	dataPlaneTrustPreparationCalls       int
-	dataPlaneTrustConfirmationCalls      int
-	dataPlaneLowPortPreparationCalls     int
-	dataPlaneLowPortConfirmationCalls    int
-	registrationRequests                 []control.RegisterProjectRequest
-	unregistrationRequests               []control.UnregisterProjectRequest
-	startLifecycleRequests               []control.StartProjectRequest
-	stopLifecycleRequests                []control.StopProjectRequest
-	restartLifecycleRequests             []control.RestartProjectRequest
-	networkSetupRequests                 []control.StartNetworkSetupRequest
-	networkSetupPreparationRequests      []control.PrepareNetworkSetupApprovalRequest
-	networkSetupConfirmationRequests     []control.ConfirmNetworkSetupApprovalRequest
-	resolverSetupRequests                []control.StartNetworkResolverSetupRequest
-	resolverPreparationRequests          []control.PrepareNetworkResolverSetupApprovalRequest
-	resolverConfirmationRequests         []control.ConfirmNetworkResolverSetupApprovalRequest
-	dataPlaneSetupRequests               []control.StartNetworkDataPlaneSetupRequest
-	dataPlaneTrustPreparationRequests    []control.PrepareNetworkDataPlaneTrustApprovalRequest
-	dataPlaneTrustConfirmationRequests   []control.ConfirmNetworkDataPlaneTrustApprovalRequest
-	dataPlaneLowPortPreparationRequests  []control.PrepareNetworkDataPlaneLowPortApprovalRequest
-	dataPlaneLowPortConfirmationRequests []control.ConfirmNetworkDataPlaneLowPortApprovalRequest
-	networkSetupContexts                 []context.Context
-	networkSetupPreparationContexts      []context.Context
-	networkSetupConfirmationContexts     []context.Context
-	resolverSetupContexts                []context.Context
-	resolverPreparationContexts          []context.Context
-	resolverConfirmationContexts         []context.Context
-	dataPlaneSetupContexts               []context.Context
-	dataPlaneTrustPreparationContexts    []context.Context
-	dataPlaneTrustConfirmationContexts   []context.Context
-	dataPlaneLowPortPreparationContexts  []context.Context
-	dataPlaneLowPortConfirmationContexts []context.Context
-	networkSetupHook                     func(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
-	resolverSetupHook                    func(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
-	dataPlaneSetupHook                   func(context.Context, control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
-	closeCalls                           int
+	status                                 control.DaemonStatus
+	snapshot                               domain.Snapshot
+	projectActivity                        control.ProjectActivity
+	serviceLogs                            control.ServiceLogs
+	registration                           control.ProjectRegistration
+	unregistration                         control.ProjectUnregistration
+	startLifecycle                         control.ProjectLifecycleOperation
+	stopLifecycle                          control.ProjectLifecycleOperation
+	restartLifecycle                       control.ProjectLifecycleOperation
+	networkSetup                           control.NetworkSetupOperation
+	networkSetupPreparation                control.NetworkSetupApprovalPreparation
+	networkSetupConfirmation               control.NetworkSetupApprovalConfirmation
+	resolverSetup                          control.NetworkResolverSetupOperation
+	resolverPreparation                    control.NetworkResolverSetupApprovalPreparation
+	resolverConfirmation                   control.NetworkResolverSetupApprovalConfirmation
+	dataPlaneSetup                         control.NetworkDataPlaneSetupOperation
+	dataPlaneTrustPreparation              control.NetworkDataPlaneTrustApprovalPreparation
+	dataPlaneTrustConfirmation             control.NetworkDataPlaneSetupOperation
+	dataPlaneLowPortPreparation            control.NetworkDataPlaneLowPortApprovalPreparation
+	dataPlaneLowPortConfirmation           control.NetworkDataPlaneSetupConfirmation
+	networkRelease                         control.NetworkReleaseOperation
+	networkReleaseLowPortPreparation       control.NetworkReleaseApprovalPreparation
+	networkReleaseResolverPreparation      control.NetworkReleaseResolverApprovalPreparation
+	networkReleaseTrustPreparation         control.NetworkReleaseTrustApprovalPreparation
+	networkReleaseLoopbackPreparation      control.NetworkReleaseLoopbackApprovalPreparation
+	networkReleaseOwnershipConfirmation    control.NetworkReleaseOperation
+	statusErr                              error
+	stopErr                                error
+	snapshotErr                            error
+	projectActivityErr                     error
+	serviceLogsErr                         error
+	registrationErr                        error
+	unregistrationErr                      error
+	startLifecycleErr                      error
+	stopLifecycleErr                       error
+	restartLifecycleErr                    error
+	networkSetupErr                        error
+	networkSetupPreparationErr             error
+	networkSetupConfirmationErr            error
+	resolverSetupErr                       error
+	resolverPreparationErr                 error
+	resolverConfirmationErr                error
+	dataPlaneSetupErr                      error
+	dataPlaneTrustPreparationErr           error
+	dataPlaneTrustConfirmationErr          error
+	dataPlaneLowPortPreparationErr         error
+	dataPlaneLowPortConfirmationErr        error
+	networkReleaseErr                      error
+	networkReleaseLowPortPreparationErr    error
+	networkReleaseResolverPreparationErr   error
+	networkReleaseTrustPreparationErr      error
+	networkReleaseLoopbackPreparationErr   error
+	networkReleaseOwnershipConfirmationErr error
+	networkReleaseStartHook                func(context.Context, control.StartNetworkReleaseRequest) (control.NetworkReleaseOperation, error)
+	networkReleaseOwnershipConfirmations   []control.ConfirmNetworkReleaseOwnershipRequest
+	closeErr                               error
+	statusCalls                            int
+	stopCalls                              int
+	snapshotCalls                          int
+	projectActivityCalls                   int
+	serviceLogsCalls                       int
+	projectActivityRequests                []control.ProjectActivityRequest
+	serviceLogsRequests                    []control.ServiceLogsRequest
+	projectActivityHook                    func(context.Context, control.ProjectActivityRequest) (control.ProjectActivity, error)
+	serviceLogsHook                        func(context.Context, control.ServiceLogsRequest) (control.ServiceLogs, error)
+	registrationCalls                      int
+	unregistrationCalls                    int
+	startLifecycleCalls                    int
+	stopLifecycleCalls                     int
+	restartLifecycleCalls                  int
+	networkSetupCalls                      int
+	networkSetupPreparationCalls           int
+	networkSetupConfirmationCalls          int
+	resolverSetupCalls                     int
+	resolverPreparationCalls               int
+	resolverConfirmationCalls              int
+	dataPlaneSetupCalls                    int
+	dataPlaneTrustPreparationCalls         int
+	dataPlaneTrustConfirmationCalls        int
+	dataPlaneLowPortPreparationCalls       int
+	dataPlaneLowPortConfirmationCalls      int
+	registrationRequests                   []control.RegisterProjectRequest
+	unregistrationRequests                 []control.UnregisterProjectRequest
+	startLifecycleRequests                 []control.StartProjectRequest
+	stopLifecycleRequests                  []control.StopProjectRequest
+	restartLifecycleRequests               []control.RestartProjectRequest
+	networkSetupRequests                   []control.StartNetworkSetupRequest
+	networkSetupPreparationRequests        []control.PrepareNetworkSetupApprovalRequest
+	networkSetupConfirmationRequests       []control.ConfirmNetworkSetupApprovalRequest
+	resolverSetupRequests                  []control.StartNetworkResolverSetupRequest
+	resolverPreparationRequests            []control.PrepareNetworkResolverSetupApprovalRequest
+	resolverConfirmationRequests           []control.ConfirmNetworkResolverSetupApprovalRequest
+	dataPlaneSetupRequests                 []control.StartNetworkDataPlaneSetupRequest
+	dataPlaneTrustPreparationRequests      []control.PrepareNetworkDataPlaneTrustApprovalRequest
+	dataPlaneTrustConfirmationRequests     []control.ConfirmNetworkDataPlaneTrustApprovalRequest
+	dataPlaneLowPortPreparationRequests    []control.PrepareNetworkDataPlaneLowPortApprovalRequest
+	dataPlaneLowPortConfirmationRequests   []control.ConfirmNetworkDataPlaneLowPortApprovalRequest
+	networkSetupContexts                   []context.Context
+	networkSetupPreparationContexts        []context.Context
+	networkSetupConfirmationContexts       []context.Context
+	resolverSetupContexts                  []context.Context
+	resolverPreparationContexts            []context.Context
+	resolverConfirmationContexts           []context.Context
+	dataPlaneSetupContexts                 []context.Context
+	dataPlaneTrustPreparationContexts      []context.Context
+	dataPlaneTrustConfirmationContexts     []context.Context
+	dataPlaneLowPortPreparationContexts    []context.Context
+	dataPlaneLowPortConfirmationContexts   []context.Context
+	networkSetupHook                       func(context.Context, control.StartNetworkSetupRequest) (control.NetworkSetupOperation, error)
+	resolverSetupHook                      func(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
+	dataPlaneSetupHook                     func(context.Context, control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
+	closeCalls                             int
+}
+
+// StartNetworkRelease returns configured release progress.
+func (client *fakeDaemonControlClient) StartNetworkRelease(ctx context.Context, request control.StartNetworkReleaseRequest) (control.NetworkReleaseOperation, error) {
+	if client.networkReleaseStartHook != nil {
+		return client.networkReleaseStartHook(ctx, request)
+	}
+	return client.networkRelease, client.networkReleaseErr
+}
+
+// ReadNetworkRelease returns configured durable release progress.
+func (client *fakeDaemonControlClient) ReadNetworkRelease(context.Context, control.ReadNetworkReleaseRequest) (control.NetworkReleaseOperation, error) {
+	return client.networkRelease, client.networkReleaseErr
+}
+
+// PrepareNetworkReleaseApproval returns configured low-port release preparation.
+func (client *fakeDaemonControlClient) PrepareNetworkReleaseApproval(context.Context, control.PrepareNetworkReleaseApprovalRequest) (control.NetworkReleaseApprovalPreparation, error) {
+	return client.networkReleaseLowPortPreparation, client.networkReleaseLowPortPreparationErr
+}
+
+// ConfirmNetworkReleaseApproval returns configured release progress after low-port evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkReleaseApproval(context.Context, control.ConfirmNetworkReleaseApprovalRequest) (control.NetworkReleaseOperation, error) {
+	return client.networkRelease, client.networkReleaseErr
+}
+
+// PrepareNetworkReleaseResolverApproval returns configured resolver release preparation.
+func (client *fakeDaemonControlClient) PrepareNetworkReleaseResolverApproval(context.Context, control.PrepareNetworkReleaseResolverApprovalRequest) (control.NetworkReleaseResolverApprovalPreparation, error) {
+	return client.networkReleaseResolverPreparation, client.networkReleaseResolverPreparationErr
+}
+
+// ConfirmNetworkReleaseResolverApproval returns configured release progress after resolver evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkReleaseResolverApproval(context.Context, control.ConfirmNetworkReleaseResolverApprovalRequest) (control.NetworkReleaseOperation, error) {
+	return client.networkRelease, client.networkReleaseErr
+}
+
+// PrepareNetworkReleaseTrustApproval returns configured trust release preparation.
+func (client *fakeDaemonControlClient) PrepareNetworkReleaseTrustApproval(context.Context, control.PrepareNetworkReleaseTrustApprovalRequest) (control.NetworkReleaseTrustApprovalPreparation, error) {
+	return client.networkReleaseTrustPreparation, client.networkReleaseTrustPreparationErr
+}
+
+// ConfirmNetworkReleaseTrustApproval returns configured release progress after trust evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkReleaseTrustApproval(context.Context, control.ConfirmNetworkReleaseTrustApprovalRequest) (control.NetworkReleaseOperation, error) {
+	return client.networkRelease, client.networkReleaseErr
+}
+
+// PrepareNetworkReleaseLoopbackApproval returns configured loopback release preparation.
+func (client *fakeDaemonControlClient) PrepareNetworkReleaseLoopbackApproval(context.Context, control.PrepareNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseLoopbackApprovalPreparation, error) {
+	return client.networkReleaseLoopbackPreparation, client.networkReleaseLoopbackPreparationErr
+}
+
+// ConfirmNetworkReleaseLoopbackApproval returns configured release progress after loopback evidence.
+func (client *fakeDaemonControlClient) ConfirmNetworkReleaseLoopbackApproval(context.Context, control.ConfirmNetworkReleaseLoopbackApprovalRequest) (control.NetworkReleaseOperation, error) {
+	return client.networkRelease, client.networkReleaseErr
+}
+
+// ConfirmNetworkReleaseOwnership returns configured release progress after ownership confirmation.
+func (client *fakeDaemonControlClient) ConfirmNetworkReleaseOwnership(_ context.Context, request control.ConfirmNetworkReleaseOwnershipRequest) (control.NetworkReleaseOperation, error) {
+	client.networkReleaseOwnershipConfirmations = append(client.networkReleaseOwnershipConfirmations, request)
+	if client.networkReleaseOwnershipConfirmation != (control.NetworkReleaseOperation{}) || client.networkReleaseOwnershipConfirmationErr != nil {
+		return client.networkReleaseOwnershipConfirmation, client.networkReleaseOwnershipConfirmationErr
+	}
+	return client.networkRelease, client.networkReleaseErr
 }
 
 // StartNetworkResolverSetup returns configured resolver progress and records the selected intent.
@@ -408,6 +484,25 @@ func TestDaemonClientSnapshotUsesASeparateOneShotConnection(t *testing.T) {
 	}
 	if first.closeCalls != 1 || second.closeCalls != 1 || second.snapshotCalls != 1 {
 		t.Fatalf("calls = first close:%d second snapshot:%d close:%d, want 1 each", first.closeCalls, second.snapshotCalls, second.closeCalls)
+	}
+}
+
+// TestDaemonClientConfirmsNetworkReleaseOwnershipUsesOneShotConnection verifies the authenticated terminal confirmation keeps the CLI cleanup contract.
+func TestDaemonClientConfirmsNetworkReleaseOwnershipUsesOneShotConnection(t *testing.T) {
+	request := control.ConfirmNetworkReleaseOwnershipRequest{
+		OperationID:                "operation-network-release",
+		ExpectedCheckpointRevision: 6,
+	}
+	connection := &fakeDaemonControlClient{}
+	client := newDaemonClient(func(context.Context) (daemonControlClient, error) {
+		return connection, nil
+	})
+
+	if _, err := client.ConfirmNetworkReleaseOwnership(t.Context(), request); err != nil {
+		t.Fatalf("confirm network release ownership: %v", err)
+	}
+	if !reflect.DeepEqual(connection.networkReleaseOwnershipConfirmations, []control.ConfirmNetworkReleaseOwnershipRequest{request}) || connection.closeCalls != 1 {
+		t.Fatalf("confirmations = %#v, close calls = %d", connection.networkReleaseOwnershipConfirmations, connection.closeCalls)
 	}
 }
 

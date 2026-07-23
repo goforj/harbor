@@ -11,6 +11,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/launcher"
 	"github.com/goforj/harbor/internal/networkdataplaneapproval"
+	"github.com/goforj/harbor/internal/networkreleaseapproval"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
 	"github.com/goforj/harbor/internal/runtime"
 )
@@ -31,6 +32,14 @@ func provideNetworkDataPlaneSetupApprovalRunner(client *cmd.DaemonClient) cmd.Ne
 	)
 }
 
+// provideNetworkReleaseApprovalRunner keeps native release consent dormant until release runs.
+func provideNetworkReleaseApprovalRunner(client *cmd.DaemonClient) cmd.NetworkReleaseApprovalRunner {
+	return networkreleaseapproval.New(
+		client,
+		launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
+	)
+}
+
 // appSet is a wire set that provides application-level services and dependencies.
 var appSet = wire.NewSet(
 	app.NewLifecycleRegistry,
@@ -38,4 +47,5 @@ var appSet = wire.NewSet(
 	provideNetworkSetupApprovalRunner,
 	provideNetworkResolverSetupApprovalRunner,
 	provideNetworkDataPlaneSetupApprovalRunner,
+	provideNetworkReleaseApprovalRunner,
 )

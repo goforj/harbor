@@ -5,14 +5,16 @@ type DaemonCmd struct {
 	Status   DaemonStatusCmd   `cmd:""`
 	Stop     DaemonStopCmd     `cmd:""`
 	Snapshot DaemonSnapshotCmd `cmd:""`
+	Release  ReleaseCmd        `cmd:""`
 }
 
 // NewDaemonCmd assembles the daemon command group.
-func NewDaemonCmd(status *DaemonStatusCmd, stop *DaemonStopCmd, snapshot *DaemonSnapshotCmd) *DaemonCmd {
+func NewDaemonCmd(status *DaemonStatusCmd, stop *DaemonStopCmd, snapshot *DaemonSnapshotCmd, release *ReleaseCmd) *DaemonCmd {
 	return &DaemonCmd{
 		Status:   *status,
 		Stop:     *stop,
 		Snapshot: *snapshot,
+		Release:  *release,
 	}
 }
 

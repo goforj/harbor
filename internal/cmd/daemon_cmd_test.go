@@ -320,7 +320,14 @@ func TestDaemonCommandGroupRoutesLifecycleCommands(t *testing.T) {
 			stop, stopOutput := newDaemonStopCommandFixture(connection)
 			root := struct {
 				Daemon DaemonCmd `cmd:""`
-			}{Daemon: *NewDaemonCmd(status, stop, snapshot)}
+			}{
+				Daemon: *NewDaemonCmd(
+					status,
+					stop,
+					snapshot,
+					&ReleaseCmd{},
+				),
+			}
 			parser, err := kong.New(&root)
 			if err != nil {
 				t.Fatalf("create parser: %v", err)

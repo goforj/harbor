@@ -27,6 +27,26 @@ func TestInitializeApplicationWiresSetupCommand(t *testing.T) {
 	}
 }
 
+// TestInitializeApplicationWiresReleaseCommand proves the production CLI exposes daemon release without invoking native consent during assembly.
+func TestInitializeApplicationWiresReleaseCommand(t *testing.T) {
+	application, err := InitializeApplication()
+	if err != nil {
+		t.Fatalf("InitializeApplication() error = %v", err)
+	}
+
+	parser, err := kong.New(application.RootCmd(), kong.Name("harbor"))
+	if err != nil {
+		t.Fatalf("kong.New() error = %v", err)
+	}
+	parsed, err := parser.Parse([]string{"daemon", "release"})
+	if err != nil {
+		t.Fatalf("Parse(daemon release) error = %v", err)
+	}
+	if parsed.Command() != "daemon release" {
+		t.Fatalf("Parse(daemon release) command = %q, want daemon release", parsed.Command())
+	}
+}
+
 // TestInitializeApplicationWiresOpenCommand proves the resource-opening UX is registered without contacting harbord during assembly.
 func TestInitializeApplicationWiresOpenCommand(t *testing.T) {
 	application, err := InitializeApplication()
