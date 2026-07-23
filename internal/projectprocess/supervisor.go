@@ -204,6 +204,10 @@ type Supervisor struct {
 	projects              map[domain.ProjectID]*managedProcess
 	sessions              map[domain.SessionID]*managedProcess
 	checkouts             map[string]*managedProcess
+	launches              map[*launchReservation]struct{}
+	launchProjects        map[domain.ProjectID]*launchReservation
+	launchSessions        map[domain.SessionID]*launchReservation
+	launchCheckouts       map[string]*launchReservation
 	removeHostEnvironment func(string) error
 	containerRuntime      containerruntime.Runtime
 	runtimeCloseOnce      sync.Once
@@ -263,6 +267,10 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 		projects:              make(map[domain.ProjectID]*managedProcess),
 		sessions:              make(map[domain.SessionID]*managedProcess),
 		checkouts:             make(map[string]*managedProcess),
+		launches:              make(map[*launchReservation]struct{}),
+		launchProjects:        make(map[domain.ProjectID]*launchReservation),
+		launchSessions:        make(map[domain.SessionID]*launchReservation),
+		launchCheckouts:       make(map[string]*launchReservation),
 		removeHostEnvironment: removeManagedHostEnvironment,
 		containerRuntime:      containerRuntime,
 		serviceLogIdle:        serviceLogIdle,
@@ -273,6 +281,73 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 		resets:                make(map[*resetProcess]struct{}),
 		resetCheckouts:        make(map[string]*resetProcess),
 	}
+}
+
+// launchReservation keeps conflicting starts excluded while one launch performs blocking setup outside Supervisor.mu.
+type launchReservation struct {
+	projectID    domain.ProjectID
+	sessionID    domain.SessionID
+	checkoutRoot string
+	done         chan struct{}
+}
+
+// reserveLaunch atomically admits one launch identity before it performs filesystem or process work.
+func (supervisor *Supervisor) reserveLaunch(request StartRequest, checkoutRoot string) (*launchReservation, error) {
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	if supervisor.closed {
+		return nil, ErrClosed
+	}
+	if _, resetting := supervisor.resetCheckouts[checkoutRoot]; resetting {
+		return nil, fmt.Errorf("%w: %s", ErrResetInProgress, checkoutRoot)
+	}
+	if _, exists := supervisor.projects[request.ProjectID]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrProjectRunning, request.ProjectID)
+	}
+	if _, exists := supervisor.launchProjects[request.ProjectID]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrProjectRunning, request.ProjectID)
+	}
+	if _, exists := supervisor.sessions[request.SessionID]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
+	}
+	if _, exists := supervisor.launchSessions[request.SessionID]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
+	}
+	if _, exists := supervisor.checkouts[checkoutRoot]; exists {
+		return nil, fmt.Errorf("%w: checkout %s", ErrProjectRunning, checkoutRoot)
+	}
+	if _, exists := supervisor.launchCheckouts[checkoutRoot]; exists {
+		return nil, fmt.Errorf("%w: checkout %s", ErrProjectRunning, checkoutRoot)
+	}
+	reservation := &launchReservation{
+		projectID:    request.ProjectID,
+		sessionID:    request.SessionID,
+		checkoutRoot: checkoutRoot,
+		done:         make(chan struct{}),
+	}
+	supervisor.launches[reservation] = struct{}{}
+	supervisor.launchProjects[reservation.projectID] = reservation
+	supervisor.launchSessions[reservation.sessionID] = reservation
+	supervisor.launchCheckouts[reservation.checkoutRoot] = reservation
+	return reservation, nil
+}
+
+// releaseLaunchLocked removes exactly one pending launch reservation.
+func (supervisor *Supervisor) releaseLaunchLocked(reservation *launchReservation) {
+	if _, exists := supervisor.launches[reservation]; !exists {
+		return
+	}
+	delete(supervisor.launches, reservation)
+	if supervisor.launchProjects[reservation.projectID] == reservation {
+		delete(supervisor.launchProjects, reservation.projectID)
+	}
+	if supervisor.launchSessions[reservation.sessionID] == reservation {
+		delete(supervisor.launchSessions, reservation.sessionID)
+	}
+	if supervisor.launchCheckouts[reservation.checkoutRoot] == reservation {
+		delete(supervisor.launchCheckouts, reservation.checkoutRoot)
+	}
+	close(reservation.done)
 }
 
 // outputBrokerKey selects one live output relay without pretending it is a child-process handle.
@@ -435,22 +510,21 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		return nil, err
 	}
 
-	supervisor.mu.Lock()
-	defer supervisor.mu.Unlock()
-	if supervisor.closed {
-		return nil, ErrClosed
+	reservation, err := supervisor.reserveLaunch(request, checkoutRoot)
+	if err != nil {
+		return nil, err
 	}
-	if _, resetting := supervisor.resetCheckouts[checkoutRoot]; resetting {
-		return nil, fmt.Errorf("%w: %s", ErrResetInProgress, checkoutRoot)
-	}
-	if _, exists := supervisor.projects[request.ProjectID]; exists {
-		return nil, fmt.Errorf("%w: %s", ErrProjectRunning, request.ProjectID)
-	}
-	if _, exists := supervisor.sessions[request.SessionID]; exists {
-		return nil, fmt.Errorf("%w: %s", ErrSessionRunning, request.SessionID)
-	}
-	if _, exists := supervisor.checkouts[checkoutRoot]; exists {
-		return nil, fmt.Errorf("%w: checkout %s", ErrProjectRunning, checkoutRoot)
+	promoted := false
+	defer func() {
+		if promoted {
+			return
+		}
+		supervisor.mu.Lock()
+		supervisor.releaseLaunchLocked(reservation)
+		supervisor.mu.Unlock()
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	brokerLauncher := supervisor.outputBrokerLauncher
 	if brokerLauncher != nil {
@@ -702,9 +776,29 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		stopComplete:      make(chan struct{}),
 		managedLaunchPath: managedLaunchPath,
 	}
+	supervisor.mu.Lock()
+	if supervisor.closed {
+		supervisor.mu.Unlock()
+		if brokerAttachment != nil {
+			_ = brokerAttachment.Close()
+		}
+		cleanupErr := terminateStartedCommand(command, platform)
+		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
+		if cleanupErr != nil {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		}
+		pipeReaders.Wait()
+		relay.finish()
+		platform.close()
+		return nil, acceptedProcessStartError("cancel accepted forj process", ErrClosed, cleanupErr)
+	}
 	supervisor.projects[request.ProjectID] = process
 	supervisor.sessions[request.SessionID] = process
 	supervisor.checkouts[checkoutRoot] = process
+	supervisor.releaseLaunchLocked(reservation)
+	promoted = true
+	supervisor.mu.Unlock()
 	if brokerAttachment != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
@@ -769,6 +863,10 @@ func (supervisor *Supervisor) Down(ctx context.Context, request DownRequest) err
 	if reset := supervisor.resetCheckouts[checkoutRoot]; reset != nil {
 		supervisor.mu.Unlock()
 		return supervisor.settleReset(ctx, reset)
+	}
+	if _, launching := supervisor.launchCheckouts[checkoutRoot]; launching {
+		supervisor.mu.Unlock()
+		return fmt.Errorf("%w: checkout %s", ErrProjectRunning, checkoutRoot)
 	}
 	for _, process := range supervisor.projects {
 		if process.handle.info.CheckoutRoot == checkoutRoot {
@@ -1015,6 +1113,10 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 			process.requestStop()
 		}
 	}
+	launches := make([]*launchReservation, 0, len(supervisor.launches))
+	for reservation := range supervisor.launches {
+		launches = append(launches, reservation)
+	}
 	resets := make([]*resetProcess, 0, len(supervisor.resets))
 	for reset := range supervisor.resets {
 		resets = append(resets, reset)
@@ -1036,6 +1138,13 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 		}
 		if err := reset.platform.force(reset.command.Process.Pid); err != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("terminate forj reset: %w", err))
+		}
+	}
+	for _, reservation := range launches {
+		select {
+		case <-reservation.done:
+		case <-ctx.Done():
+			closeErr = errors.Join(closeErr, ctx.Err())
 		}
 	}
 	go func() {

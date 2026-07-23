@@ -983,6 +983,192 @@ func TestConcurrentDuplicateStartAllowsOneOwner(t *testing.T) {
 	}
 }
 
+// blockingOutputBrokerLauncher holds starts at the broker handoff so tests can observe supervisor admission separately from child lifetime.
+type blockingOutputBrokerLauncher struct {
+	entered chan OutputBrokerLaunchSpec
+	release chan struct{}
+}
+
+// Launch reports the handoff boundary before deliberately falling back to direct pipes.
+func (launcher *blockingOutputBrokerLauncher) Launch(_ context.Context, spec OutputBrokerLaunchSpec) (OutputBrokerAttachment, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	launcher.entered <- spec
+	<-launcher.release
+	return nil, errors.New("test broker handoff complete")
+}
+
+// TestSupervisorStartLaunchReservationsAllowIndependentLaunches proves unrelated launches do not wait for each other's slow setup.
+func TestSupervisorStartLaunchReservationsAllowIndependentLaunches(t *testing.T) {
+	installForjHelper(t, "wait")
+	launcher := &blockingOutputBrokerLauncher{
+		entered: make(chan OutputBrokerLaunchSpec, 2),
+		release: make(chan struct{}),
+	}
+	supervisor := newTestSupervisor(Options{
+		GracePeriod:          100 * time.Millisecond,
+		OutputSpoolDirectory: t.TempDir(),
+		OutputBrokerLauncher: launcher,
+	})
+	type launchResult struct {
+		handle *Handle
+		err    error
+	}
+	results := make(chan launchResult, 2)
+	requests := []StartRequest{
+		{
+			ProjectID:            "project-a",
+			SessionID:            "session-a",
+			CheckoutRoot:         t.TempDir(),
+			EnvironmentOverrides: projectProcessTestEnvironment(),
+		},
+		{
+			ProjectID:            "project-b",
+			SessionID:            "session-b",
+			CheckoutRoot:         t.TempDir(),
+			EnvironmentOverrides: projectProcessTestEnvironment(),
+		},
+	}
+	for _, request := range requests {
+		go func(request StartRequest) {
+			handle, err := supervisor.Start(t.Context(), request)
+			results <- launchResult{
+				handle: handle,
+				err:    err,
+			}
+		}(request)
+	}
+	for range 2 {
+		select {
+		case <-launcher.entered:
+		case <-time.After(time.Second):
+			t.Fatal("independent starts did not both reach the broker handoff")
+		}
+	}
+	_, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-a",
+		SessionID:            "session-other",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if !errors.Is(err, ErrProjectRunning) {
+		t.Fatalf("same-project Start() while reserved error = %v, want ErrProjectRunning", err)
+	}
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-other",
+		SessionID:            "session-a",
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if !errors.Is(err, ErrSessionRunning) {
+		t.Fatalf("same-session Start() while reserved error = %v, want ErrSessionRunning", err)
+	}
+	_, err = supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-other",
+		SessionID:            "session-other",
+		CheckoutRoot:         requests[0].CheckoutRoot,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if !errors.Is(err, ErrProjectRunning) {
+		t.Fatalf("same-checkout Start() while reserved error = %v, want ErrProjectRunning", err)
+	}
+	err = supervisor.Down(t.Context(), DownRequest{CheckoutRoot: requests[0].CheckoutRoot})
+	if !errors.Is(err, ErrProjectRunning) {
+		t.Fatalf("Down() while launch is reserved error = %v, want ErrProjectRunning", err)
+	}
+	close(launcher.release)
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("Start() error = %v", result.err)
+		}
+	}
+	if err := supervisor.Close(t.Context()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestSupervisorCloseJoinsPendingLaunch proves shutdown cannot return while a reserved child is still crossing the launch boundary.
+func TestSupervisorCloseJoinsPendingLaunch(t *testing.T) {
+	installForjHelper(t, "wait")
+	launcher := &blockingOutputBrokerLauncher{
+		entered: make(chan OutputBrokerLaunchSpec, 1),
+		release: make(chan struct{}),
+	}
+	supervisor := newTestSupervisor(Options{
+		GracePeriod:          100 * time.Millisecond,
+		OutputSpoolDirectory: t.TempDir(),
+		OutputBrokerLauncher: launcher,
+	})
+	type launchResult struct {
+		handle *Handle
+		err    error
+	}
+	checkoutRoot := t.TempDir()
+	startResult := make(chan launchResult, 1)
+	go func() {
+		handle, err := supervisor.Start(t.Context(), StartRequest{
+			ProjectID:            "project-close-pending",
+			SessionID:            "session-close-pending",
+			CheckoutRoot:         checkoutRoot,
+			EnvironmentOverrides: projectProcessTestEnvironment(),
+		})
+		startResult <- launchResult{
+			handle: handle,
+			err:    err,
+		}
+	}()
+	select {
+	case <-launcher.entered:
+	case <-time.After(time.Second):
+		t.Fatal("pending start did not reach the broker handoff")
+	}
+
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- supervisor.Close(t.Context())
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		supervisor.mu.Lock()
+		closed := supervisor.closed
+		supervisor.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close() did not close supervisor admission")
+		}
+		runtime.Gosched()
+	}
+	select {
+	case err := <-closeResult:
+		t.Fatalf("Close() returned before pending launch cleanup: %v", err)
+	default:
+	}
+
+	close(launcher.release)
+	result := <-startResult
+	if result.handle != nil || !errors.Is(result.err, ErrClosed) {
+		t.Fatalf("Start() racing Close() = %#v, %v, want nil handle and ErrClosed", result.handle, result.err)
+	}
+	if err := <-closeResult; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	if len(supervisor.launches) != 0 || len(supervisor.projects) != 0 || len(supervisor.sessions) != 0 || len(supervisor.checkouts) != 0 {
+		t.Fatalf(
+			"supervisor retained launch or process authority after Close(): launches=%d projects=%d sessions=%d checkouts=%d",
+			len(supervisor.launches),
+			len(supervisor.projects),
+			len(supervisor.sessions),
+			len(supervisor.checkouts),
+		)
+	}
+}
+
 // TestProjectAndSessionReservationsAreIndependent verifies neither identity can own two simultaneous processes.
 func TestProjectAndSessionReservationsAreIndependent(t *testing.T) {
 	installForjHelper(t, "wait")
