@@ -15,6 +15,19 @@ function installAppBindings() {
   const ResourceIconURL = vi.fn().mockResolvedValue('https://orders.test/favicon.ico')
   const WaitProjectActivity = vi.fn().mockResolvedValue(harborWireFixture.project_activity)
   const RemoveProject = vi.fn().mockResolvedValue(harborWireFixture.remove_project)
+  const RemoveOldNetworking = vi.fn().mockResolvedValue({
+    operation: {
+      id: 'operation-old-networking-removal',
+      intent_id: 'intent-old-networking-removal',
+      kind: 'network.resolver.policy-migration',
+      state: 'succeeded',
+      phase: 'completed',
+      requested_at: '2026-07-23T12:00:00Z',
+      started_at: '2026-07-23T12:00:01Z',
+      finished_at: '2026-07-23T12:00:02Z',
+    },
+    revision: 43,
+  })
   const SetupNetwork = vi.fn().mockResolvedValue({
     operation: {
       id: 'operation-network-setup',
@@ -31,8 +44,8 @@ function installAppBindings() {
   const StartProject = vi.fn().mockResolvedValue(harborWireFixture.start_project)
   const RestartProject = vi.fn().mockResolvedValue(harborWireFixture.restart_project)
   const StopProject = vi.fn().mockResolvedValue(harborWireFixture.stop_project)
-  window.go = { main: { App: { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, RestartProject, StopProject } } }
-  return { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, Snapshot, StartProject, RestartProject, Status, StopProject }
+  window.go = { main: { App: { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, Status, Snapshot, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, RemoveOldNetworking, SetupNetwork, StartProject, RestartProject, StopProject } } }
+  return { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, RemoveOldNetworking, SetupNetwork, Snapshot, StartProject, RestartProject, Status, StopProject }
 }
 
 function installEventRuntime() {
@@ -92,7 +105,7 @@ describe('Harbor bridge selection', () => {
     await expect(selection.bridge.getSnapshot()).rejects.toThrow('Harbor daemon bindings are not available')
   })
 
-  it.each(['ApproveProjectRemoval', 'ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'ResourceIconURL', 'WaitProjectActivity', 'SetupNetwork', 'StartProject', 'RestartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
+  it.each(['ApproveProjectRemoval', 'ConfirmProjectRuntimeRepair', 'InspectProjectRuntimeRepair', 'ProjectActivity', 'ResourceIconURL', 'WaitProjectActivity', 'RemoveOldNetworking', 'SetupNetwork', 'StartProject', 'RestartProject', 'StopProject'] as const)('does not select native mode without the %s binding', async (method) => {
     installAppBindings()
     delete window.go?.main?.App?.[method]
     installEventRuntime()
@@ -147,7 +160,7 @@ describe('Harbor bridge selection', () => {
   })
 
   it('uses native bindings in Wails development and packaged builds', async () => {
-    const { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, SetupNetwork, StartProject, RestartProject, StopProject } = installAppBindings()
+    const { AddProject, ApproveProjectRemoval, ConfirmProjectRuntimeRepair, InspectProjectRuntimeRepair, OpenResource, ProjectActivity, ResourceIconURL, WaitProjectActivity, RemoveProject, RemoveOldNetworking, SetupNetwork, StartProject, RestartProject, StopProject } = installAppBindings()
     installEventRuntime()
 
     for (const development of [true, false]) {
@@ -164,6 +177,7 @@ describe('Harbor bridge selection', () => {
       await selection.bridge.openResource('orders', 'application')
       await selection.bridge.getResourceIconURL('orders', 'application')
       await selection.bridge.removeProject('orders', 'desktop-remove-orders')
+      await selection.bridge.removeOldNetworking()
       await selection.bridge.setupNetwork()
       await selection.bridge.startProject('reports', 'desktop-start-reports')
       await selection.bridge.restartProject('billing', 'desktop-restart-billing')
@@ -178,6 +192,7 @@ describe('Harbor bridge selection', () => {
     expect(ConfirmProjectRuntimeRepair).toHaveBeenCalledWith('billing', 'inspection-1', 'fingerprint-1')
     expect(WaitProjectActivity).toHaveBeenCalledWith('orders-api', 'session-orders-api', 4, 20_000)
     expect(RemoveProject).toHaveBeenCalledWith('orders', 'desktop-remove-orders')
+    expect(RemoveOldNetworking).toHaveBeenCalledTimes(2)
     expect(SetupNetwork).toHaveBeenCalledTimes(2)
     expect(StartProject).toHaveBeenCalledWith('reports', 'desktop-start-reports')
     expect(RestartProject).toHaveBeenCalledWith('billing', 'desktop-restart-billing')

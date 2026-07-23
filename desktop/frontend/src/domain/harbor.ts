@@ -204,6 +204,11 @@ export interface NetworkSetupOperation {
   revision: number
 }
 
+export interface NetworkResolverPolicyMigrationOperation {
+  operation: Operation
+  revision: number
+}
+
 export interface Problem {
   code: string
   message: string

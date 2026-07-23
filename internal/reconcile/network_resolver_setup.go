@@ -210,6 +210,11 @@ func (coordinator *NetworkResolverSetupCoordinator) Start(
 		if err := validateExistingNetworkResolverSetupOperation(existing, request.IntentID); err != nil {
 			return state.OperationRecord{}, fmt.Errorf("start network resolver setup: replay operation: %w", err)
 		}
+		if existing.Operation.State == domain.OperationSucceeded {
+			if _, err := coordinator.terminalAuthority(ctx, 0); err != nil {
+				return state.OperationRecord{}, fmt.Errorf("start network resolver setup: replay terminal authority: %w", err)
+			}
+		}
 		return existing, nil
 	}
 	var missingIntent *state.OperationIntentNotFoundError

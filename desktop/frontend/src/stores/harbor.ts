@@ -6,6 +6,7 @@ import type {
   ConnectionState,
   DaemonStatus,
   HarborSnapshot,
+  NetworkResolverPolicyMigrationOperation,
   NetworkSetupOperation,
   Operation,
   OperationState,
@@ -62,8 +63,10 @@ export const useHarborStore = defineStore('harbor', () => {
   const refreshing = ref(false)
   const addingProject = ref(false)
   const settingUpNetwork = ref(false)
+  const removingOldNetworking = ref(false)
   const networkSetupResult = ref<NetworkSetupOperation | null>(null)
   const networkSetupError = ref<string | null>(null)
+  const oldNetworkingRemovalError = ref<string | null>(null)
   const removingProjectId = ref<string | null>(null)
   const projectRemovalApprovalProjectId = ref<string | null>(null)
   const projectLifecycleRequestProjectIds = ref<Record<string, true>>({})
@@ -132,6 +135,13 @@ export const useHarborStore = defineStore('harbor', () => {
   const projectRemovalApprovalBusy = computed(() => projectRemovalApprovalProjectId.value !== null)
   const networkSetupOnboarding = computed(() => snapshot.value !== null
     && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true)
+  const oldNetworkingRemovalAvailable = computed(() => daemonStatus.value?.capabilities
+    .includes('control.network-resolver-policy-migration.v1') === true)
+  const oldNetworkingRemovalBlocked = computed(() => !oldNetworkingRemovalAvailable.value
+    || connectionState.value !== 'connected'
+    || projectLifecycleBusy.value
+    || settingUpNetwork.value
+    || removingOldNetworking.value)
   const attentionCount = computed(() => projects.value.filter((project) =>
     project.state === 'failed' || project.state === 'degraded' || project.state === 'unavailable',
   ).length)
@@ -369,7 +379,7 @@ export const useHarborStore = defineStore('harbor', () => {
   }
 
   async function setupNetwork(): Promise<NetworkSetupOperation | null> {
-    if (settingUpNetwork.value) {
+    if (settingUpNetwork.value || removingOldNetworking.value) {
       return null
     }
     if (projectLifecycleBusy.value) {
@@ -398,6 +408,36 @@ export const useHarborStore = defineStore('harbor', () => {
     finally {
       await refresh()
       settingUpNetwork.value = false
+    }
+  }
+
+  async function removeOldNetworking(): Promise<NetworkResolverPolicyMigrationOperation | null> {
+    if (oldNetworkingRemovalBlocked.value) {
+      return null
+    }
+
+    removingOldNetworking.value = true
+    oldNetworkingRemovalError.value = null
+    try {
+      const result = await harborBridge.removeOldNetworking()
+      if (result.operation.kind !== 'network.resolver.policy-migration'
+        || result.operation.project_id
+        || result.operation.state !== 'succeeded'
+        || result.operation.phase !== 'completed') {
+        throw new Error('Harbor returned incomplete old networking removal progress.')
+      }
+      networkSetupError.value = null
+      return result
+    }
+    catch (cause) {
+      oldNetworkingRemovalError.value = cause instanceof Error
+        ? cause.message
+        : 'Harbor could not remove old networking.'
+      return null
+    }
+    finally {
+      await refresh()
+      removingOldNetworking.value = false
     }
   }
 
@@ -1266,8 +1306,10 @@ export const useHarborStore = defineStore('harbor', () => {
     refreshing,
     addingProject,
     settingUpNetwork,
+    removingOldNetworking,
     networkSetupResult,
     networkSetupError,
+    oldNetworkingRemovalError,
     removingProjectId,
     projectRemovalApprovalProjectId,
     projectRemovalApprovalBusy,
@@ -1292,6 +1334,8 @@ export const useHarborStore = defineStore('harbor', () => {
     recentResources,
     operations,
     networkSetupOnboarding,
+    oldNetworkingRemovalAvailable,
+    oldNetworkingRemovalBlocked,
     attentionCount,
     runningCount,
     refresh,
@@ -1301,6 +1345,7 @@ export const useHarborStore = defineStore('harbor', () => {
     serviceById,
     addProject,
     setupNetwork,
+    removeOldNetworking,
     projectRemovalNotice,
     removeProject,
     approveProjectRemoval,

@@ -29,6 +29,7 @@ type MethodMetadata struct {
 	WaitProjectActivity         string `json:"wait_project_activity"`
 	WaitServiceLogs             string `json:"wait_service_logs"`
 	RemoveProject               string `json:"remove_project"`
+	RemoveOldNetworking         string `json:"remove_old_networking"`
 	SetupNetwork                string `json:"setup_network"`
 	Snapshot                    string `json:"snapshot"`
 	StartProject                string `json:"start_project"`
@@ -52,25 +53,26 @@ type ConnectionPayloads struct {
 
 // Document is the complete frontend contract fixture as encoded by production Go wire types.
 type Document struct {
-	Methods                           MethodMetadata                           `json:"methods"`
-	Events                            EventMetadata                            `json:"events"`
-	ConnectionPayloads                ConnectionPayloads                       `json:"connection_payloads"`
-	Status                            control.DaemonStatus                     `json:"status"`
-	Snapshot                          domain.Snapshot                          `json:"snapshot"`
-	AddProject                        desktopwire.AddProjectResult             `json:"add_project"`
-	ApproveProjectRemoval             control.ProjectUnregistration            `json:"approve_project_removal"`
-	ProjectActivity                   control.ProjectActivity                  `json:"project_activity"`
-	ServiceLogs                       control.ServiceLogs                      `json:"service_logs"`
-	ProjectRuntimeRepairInspection    control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_inspection"`
-	ProjectRuntimeRepairNotActionable control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_not_actionable"`
-	ProjectRuntimeRepairUnsupported   control.ProjectRuntimeRepairInspection   `json:"project_runtime_repair_unsupported"`
-	ProjectRuntimeRepairConfirmation  control.ProjectRuntimeRepairConfirmation `json:"project_runtime_repair_confirmation"`
-	RemoveProject                     control.ProjectUnregistration            `json:"remove_project"`
-	SetupNetwork                      control.NetworkSetupOperation            `json:"setup_network"`
-	StartProject                      control.ProjectLifecycleOperation        `json:"start_project"`
-	StopProject                       control.ProjectLifecycleOperation        `json:"stop_project"`
-	RestartProject                    control.ProjectLifecycleOperation        `json:"restart_project"`
-	TerminalOperation                 domain.Operation                         `json:"terminal_operation"`
+	Methods                           MethodMetadata                                  `json:"methods"`
+	Events                            EventMetadata                                   `json:"events"`
+	ConnectionPayloads                ConnectionPayloads                              `json:"connection_payloads"`
+	Status                            control.DaemonStatus                            `json:"status"`
+	Snapshot                          domain.Snapshot                                 `json:"snapshot"`
+	AddProject                        desktopwire.AddProjectResult                    `json:"add_project"`
+	ApproveProjectRemoval             control.ProjectUnregistration                   `json:"approve_project_removal"`
+	ProjectActivity                   control.ProjectActivity                         `json:"project_activity"`
+	ServiceLogs                       control.ServiceLogs                             `json:"service_logs"`
+	ProjectRuntimeRepairInspection    control.ProjectRuntimeRepairInspection          `json:"project_runtime_repair_inspection"`
+	ProjectRuntimeRepairNotActionable control.ProjectRuntimeRepairInspection          `json:"project_runtime_repair_not_actionable"`
+	ProjectRuntimeRepairUnsupported   control.ProjectRuntimeRepairInspection          `json:"project_runtime_repair_unsupported"`
+	ProjectRuntimeRepairConfirmation  control.ProjectRuntimeRepairConfirmation        `json:"project_runtime_repair_confirmation"`
+	RemoveProject                     control.ProjectUnregistration                   `json:"remove_project"`
+	RemoveOldNetworking               control.NetworkResolverPolicyMigrationOperation `json:"remove_old_networking"`
+	SetupNetwork                      control.NetworkSetupOperation                   `json:"setup_network"`
+	StartProject                      control.ProjectLifecycleOperation               `json:"start_project"`
+	StopProject                       control.ProjectLifecycleOperation               `json:"stop_project"`
+	RestartProject                    control.ProjectLifecycleOperation               `json:"restart_project"`
+	TerminalOperation                 domain.Operation                                `json:"terminal_operation"`
 }
 
 // Fixture returns deterministic status and snapshot data rich enough to exercise every current desktop view.
@@ -100,6 +102,7 @@ func Fixture() Document {
 			WaitProjectActivity:         desktopwire.MethodWaitProjectActivity,
 			WaitServiceLogs:             desktopwire.MethodWaitServiceLogs,
 			RemoveProject:               desktopwire.MethodRemoveProject,
+			RemoveOldNetworking:         desktopwire.MethodRemoveOldNetworking,
 			SetupNetwork:                desktopwire.MethodSetupNetwork,
 			Snapshot:                    desktopwire.MethodSnapshot,
 			StartProject:                desktopwire.MethodStartProject,
@@ -121,6 +124,7 @@ func Fixture() Document {
 			Build:    control.Build{Version: "dev", Revision: "fixture"},
 			Protocol: rpc.Version{Major: 1, Minor: 0},
 			Capabilities: []rpc.Capability{
+				control.CapabilityNetworkResolverPolicyMigrationV1,
 				control.CapabilityProjectActivityWaitV1,
 				control.CapabilityProjectActivityV1,
 				control.CapabilityProjectLifecycleV1,
@@ -310,6 +314,19 @@ func Fixture() Document {
 			},
 			Revision: 46,
 		},
+		RemoveOldNetworking: control.NetworkResolverPolicyMigrationOperation{
+			Operation: domain.Operation{
+				ID:          "operation-network-resolver-policy-migration",
+				IntentID:    "intent-network-resolver-policy-migration",
+				Kind:        domain.OperationKindNetworkResolverPolicyMigration,
+				State:       domain.OperationSucceeded,
+				Phase:       "completed",
+				RequestedAt: removeRequestedAt,
+				StartedAt:   &removeStartedAt,
+				FinishedAt:  &lifecycleRequestedAt,
+			},
+			Revision: 46,
+		},
 		SetupNetwork: control.NetworkSetupOperation{
 			Operation: domain.Operation{
 				ID:          "operation-network-setup",
@@ -436,6 +453,7 @@ func (document Document) Validate() error {
 		desktopwire.MethodWaitProjectActivity:         document.Methods.WaitProjectActivity,
 		desktopwire.MethodWaitServiceLogs:             document.Methods.WaitServiceLogs,
 		desktopwire.MethodRemoveProject:               document.Methods.RemoveProject,
+		desktopwire.MethodRemoveOldNetworking:         document.Methods.RemoveOldNetworking,
 		desktopwire.MethodSetupNetwork:                document.Methods.SetupNetwork,
 		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
 		desktopwire.MethodStartProject:                document.Methods.StartProject,
@@ -529,6 +547,9 @@ func (document Document) Validate() error {
 	if err := document.SetupNetwork.Validate(); err != nil {
 		return fmt.Errorf("validate fixture network setup: %w", err)
 	}
+	if err := document.RemoveOldNetworking.Validate(); err != nil {
+		return fmt.Errorf("validate fixture old networking removal: %w", err)
+	}
 	if err := document.StartProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project start: %w", err)
 	}
@@ -561,7 +582,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -675,6 +696,8 @@ func typeScriptType(goType reflect.Type) (string, error) {
 		return "ServiceLogs", nil
 	case reflect.TypeFor[control.NetworkSetupOperation]():
 		return "NetworkSetupOperation", nil
+	case reflect.TypeFor[control.NetworkResolverPolicyMigrationOperation]():
+		return "NetworkResolverPolicyMigrationOperation", nil
 	case reflect.TypeFor[control.ProjectLifecycleOperation]():
 		return "ProjectLifecycleOperation", nil
 	case reflect.TypeFor[control.ProjectRuntimeRepairInspection]():

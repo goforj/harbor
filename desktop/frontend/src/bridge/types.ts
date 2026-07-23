@@ -1,4 +1,4 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
@@ -14,6 +14,7 @@ export interface HarborWireFixture {
     wait_service_logs: 'WaitServiceLogs'
     wait_project_activity: 'WaitProjectActivity'
     remove_project: 'RemoveProject'
+    remove_old_networking: 'RemoveOldNetworking'
     snapshot: 'Snapshot'
     setup_network: 'SetupNetwork'
     start_project: 'StartProject'
@@ -41,6 +42,7 @@ export interface HarborWireFixture {
   project_runtime_repair_unsupported: ProjectRuntimeRepairInspection & { disposition: 'unsupported' }
   project_runtime_repair_confirmation: ProjectRuntimeRepairConfirmation & { project: ProjectRuntimeRepairConfirmation['project'] & { state: 'stopped' } }
   remove_project: ProjectUnregistration & { operation: Operation & { state: 'requires_approval' } }
+  remove_old_networking: NetworkResolverPolicyMigrationOperation & { operation: Operation & { kind: 'network.resolver.policy-migration'; state: 'succeeded' } }
   setup_network: NetworkSetupOperation & { operation: Operation & { kind: 'network.setup'; state: 'succeeded' } }
   start_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.start'; state: 'queued' } }
   stop_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.stop'; state: 'queued' } }
@@ -68,6 +70,7 @@ export interface HarborBridge {
   openTerminalURL(url: string): Promise<void>
   getResourceIconURL(projectId: string, resourceId: string): Promise<string>
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
+  removeOldNetworking(): Promise<NetworkResolverPolicyMigrationOperation>
   setupNetwork(): Promise<NetworkSetupOperation>
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>

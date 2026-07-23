@@ -20,6 +20,7 @@ import (
 	"github.com/goforj/harbor/internal/helper/launcher"
 	"github.com/goforj/harbor/internal/networkdataplaneapproval"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
+	"github.com/goforj/harbor/internal/networkresolverpolicymigrationapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
@@ -28,15 +29,18 @@ import (
 )
 
 const (
-	desktopReconnectDelay        = time.Second
-	desktopPollInterval          = 2 * time.Second
-	networkSetupIntentBytes      = 16
-	connectionEventName          = desktopwire.ConnectionEventName
-	snapshotEventName            = desktopwire.SnapshotEventName
-	networkSetupIntentID         = domain.IntentID("intent-network-setup")
-	networkResolverSetupIntentID = domain.IntentID("intent-network-resolver-setup")
+	desktopReconnectDelay   = time.Second
+	desktopPollInterval     = 2 * time.Second
+	networkSetupIntentBytes = 16
+	connectionEventName     = desktopwire.ConnectionEventName
+	snapshotEventName       = desktopwire.SnapshotEventName
+	networkSetupIntentID    = domain.IntentID("intent-network-setup")
+	// networkResolverSetupIntentID advances the resolver setup replay generation after legacy resolver-policy retirement.
+	networkResolverSetupIntentID = domain.IntentID("intent-network-resolver-setup-v2")
 	// networkDataPlaneSetupIntentID is the stable replay identity for trusted-ingress setup.
 	networkDataPlaneSetupIntentID = domain.IntentID("intent-network-data-plane-setup")
+	// networkResolverPolicyMigrationIntentID is the stable replay identity for legacy resolver-policy retirement.
+	networkResolverPolicyMigrationIntentID = domain.IntentID("intent-network-resolver-policy-migration")
 )
 
 var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
@@ -52,6 +56,9 @@ type controlClient interface {
 	StartNetworkResolverSetup(context.Context, control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error)
 	PrepareNetworkResolverSetupApproval(context.Context, control.PrepareNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalPreparation, error)
 	ConfirmNetworkResolverSetupApproval(context.Context, control.ConfirmNetworkResolverSetupApprovalRequest) (control.NetworkResolverSetupApprovalConfirmation, error)
+	StartNetworkResolverPolicyMigration(context.Context, control.StartNetworkResolverPolicyMigrationRequest) (control.NetworkResolverPolicyMigrationOperation, error)
+	PrepareNetworkResolverPolicyMigrationApproval(context.Context, control.PrepareNetworkResolverPolicyMigrationApprovalRequest) (control.NetworkResolverPolicyMigrationApprovalPreparation, error)
+	ConfirmNetworkResolverPolicyMigrationApproval(context.Context, control.ConfirmNetworkResolverPolicyMigrationApprovalRequest) (control.NetworkResolverPolicyMigrationApprovalConfirmation, error)
 	StartNetworkDataPlaneSetup(context.Context, control.StartNetworkDataPlaneSetupRequest) (control.NetworkDataPlaneSetupOperation, error)
 	PrepareNetworkDataPlaneTrustApproval(context.Context, control.PrepareNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneTrustApprovalPreparation, error)
 	ConfirmNetworkDataPlaneTrustApproval(context.Context, control.ConfirmNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneSetupOperation, error)
@@ -104,6 +111,14 @@ type networkResolverSetupApprovalRunner interface {
 
 // networkResolverSetupApprovalFactory binds resolver approval to the same authenticated session that selected the operation.
 type networkResolverSetupApprovalFactory func(networkresolverapproval.Client) networkResolverSetupApprovalRunner
+
+// networkResolverPolicyMigrationApprovalRunner performs one exact legacy resolver-policy retirement attempt.
+type networkResolverPolicyMigrationApprovalRunner interface {
+	Execute(context.Context, networkresolverpolicymigrationapproval.Request) (networkresolverpolicymigrationapproval.Outcome, error)
+}
+
+// networkResolverPolicyMigrationApprovalFactory binds migration approval to the session that selected its exact revision.
+type networkResolverPolicyMigrationApprovalFactory func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner
 
 // networkDataPlaneSetupApprovalRunner performs the exact trust and low-port helper attempts selected by the daemon.
 type networkDataPlaneSetupApprovalRunner interface {
@@ -170,6 +185,7 @@ type App struct {
 	choose                directoryChooser
 	setupApproval         networkSetupApprovalFactory
 	resolverApproval      networkResolverSetupApprovalFactory
+	migrationApproval     networkResolverPolicyMigrationApprovalFactory
 	dataPlaneApproval     networkDataPlaneSetupApprovalFactory
 	projectApproval       projectRemovalApprovalFactory
 	setupPrerequisite     networkprerequisite.Ensurer
@@ -206,6 +222,12 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		},
 		resolverApproval: func(client networkresolverapproval.Client) networkResolverSetupApprovalRunner {
 			return networkresolverapproval.New(
+				client,
+				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
+			)
+		},
+		migrationApproval: func(client networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+			return networkresolverpolicymigrationapproval.New(
 				client,
 				launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}),
 			)
@@ -1259,6 +1281,182 @@ func (a *App) RemoveProject(projectID string, intentID string) (control.ProjectU
 	}
 
 	return result, nil
+}
+
+// RemoveOldNetworking starts or replays legacy resolver-policy retirement and completes its one required approval checkpoint.
+func (a *App) RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOperation, error) {
+	ctx, client, release, err := a.leaseCurrentConnection()
+	if err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, err
+	}
+	defer release()
+
+	operation, err := a.startNetworkResolverPolicyMigration(ctx, client)
+	if err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, err
+	}
+	if operation.Operation.State == domain.OperationSucceeded {
+		return operation, nil
+	}
+
+	result, err := a.approveNetworkResolverPolicyMigration(ctx, client, operation)
+	if err == nil {
+		return result, nil
+	}
+	if !networkResolverPolicyMigrationNeedsReplay(err) {
+		return control.NetworkResolverPolicyMigrationOperation{}, err
+	}
+
+	replayed, replayErr := a.startNetworkResolverPolicyMigration(ctx, client)
+	if replayErr != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("refresh Harbor old networking removal after uncertain helper result: %w", replayErr)
+	}
+	if replayed.Operation.State == domain.OperationSucceeded {
+		return replayed, nil
+	}
+	return control.NetworkResolverPolicyMigrationOperation{}, err
+}
+
+// startNetworkResolverPolicyMigration starts the stable migration intent and validates its exact daemon binding.
+func (a *App) startNetworkResolverPolicyMigration(ctx context.Context, client controlClient) (control.NetworkResolverPolicyMigrationOperation, error) {
+	operation, err := client.StartNetworkResolverPolicyMigration(ctx, control.StartNetworkResolverPolicyMigrationRequest{
+		IntentID: networkResolverPolicyMigrationIntentID,
+	})
+	if err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("start Harbor old networking removal: %w", err)
+	}
+	if err := validateNetworkResolverPolicyMigrationOperation(operation); err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, err
+	}
+	return operation, nil
+}
+
+// approveNetworkResolverPolicyMigration delegates only the exact daemon-selected migration revision to native consent.
+func (a *App) approveNetworkResolverPolicyMigration(
+	ctx context.Context,
+	client controlClient,
+	operation control.NetworkResolverPolicyMigrationOperation,
+) (control.NetworkResolverPolicyMigrationOperation, error) {
+	request := networkresolverpolicymigrationapproval.Request{
+		OperationID:               operation.Operation.ID,
+		ExpectedOperationRevision: operation.Revision,
+	}
+	runner := a.migrationApproval(client)
+	outcome, err := runner.Execute(ctx, request)
+	if networkResolverPolicyMigrationNeedsPrerequisiteRepair(outcome, err) {
+		if repairErr := a.setupPrerequisite.Ensure(ctx); repairErr != nil {
+			return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
+		}
+		outcome, err = runner.Execute(ctx, request)
+		if networkResolverPolicyMigrationNeedsPrerequisiteRepair(outcome, err) {
+			return control.NetworkResolverPolicyMigrationOperation{}, networkResolverPolicyMigrationPrerequisiteVerificationError(outcome, err)
+		}
+	}
+	if err != nil {
+		if outcome.State == networkresolverpolicymigrationapproval.Indeterminate || errors.Is(err, networkresolverpolicymigrationapproval.ErrInconsistentResponse) {
+			return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("%w: %v", networkResolverPolicyMigrationIndeterminateError, err)
+		}
+		return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("approve Harbor old networking removal: %w", err)
+	}
+	if outcome.State != networkresolverpolicymigrationapproval.Succeeded {
+		return control.NetworkResolverPolicyMigrationOperation{}, networkResolverPolicyMigrationApprovalError(outcome)
+	}
+	if outcome.Confirmation == nil || outcome.HelperFailure != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, errors.New("approve Harbor old networking removal: successful approval returned inconsistent evidence")
+	}
+
+	confirmation := *outcome.Confirmation
+	if err := confirmation.Validate(); err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("validate Harbor old networking removal confirmation: %w", err)
+	}
+	if confirmation.Operation.ID != operation.Operation.ID ||
+		confirmation.Operation.IntentID != networkResolverPolicyMigrationIntentID ||
+		confirmation.NetworkRevision < operation.Revision ||
+		confirmation.NetworkRevision-operation.Revision != 2 ||
+		confirmation.Revision < confirmation.NetworkRevision ||
+		confirmation.Revision-confirmation.NetworkRevision != 1 {
+		return control.NetworkResolverPolicyMigrationOperation{}, errors.New("validate Harbor old networking removal confirmation: result crossed the selected operation revision")
+	}
+	result := control.NetworkResolverPolicyMigrationOperation{
+		Operation: confirmation.Operation,
+		Revision:  confirmation.Revision,
+	}
+	if err := validateNetworkResolverPolicyMigrationOperation(result); err != nil {
+		return control.NetworkResolverPolicyMigrationOperation{}, err
+	}
+	return result, nil
+}
+
+// validateNetworkResolverPolicyMigrationOperation rejects malformed or misbound migration responses before they control native consent.
+func validateNetworkResolverPolicyMigrationOperation(operation control.NetworkResolverPolicyMigrationOperation) error {
+	if err := operation.Validate(); err != nil {
+		return fmt.Errorf("validate Harbor old networking removal: %w", err)
+	}
+	if operation.Operation.IntentID != networkResolverPolicyMigrationIntentID {
+		return errors.New("validate Harbor old networking removal: daemon result belongs to another intent")
+	}
+	return nil
+}
+
+// networkResolverPolicyMigrationNeedsPrerequisiteRepair recognizes only reviewed fixed-helper boundary failures.
+func networkResolverPolicyMigrationNeedsPrerequisiteRepair(outcome networkresolverpolicymigrationapproval.Outcome, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) &&
+			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
+	}
+	if outcome.State == networkresolverpolicymigrationapproval.HelperFailed && outcome.HelperFailure != nil {
+		return outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed
+	}
+	return outcome.State == networkresolverpolicymigrationapproval.Unavailable
+}
+
+// networkResolverPolicyMigrationNeedsReplay permits one coordinator replay only after uncertain helper progress.
+func networkResolverPolicyMigrationNeedsReplay(err error) bool {
+	return errors.Is(err, networkResolverPolicyMigrationIndeterminateError)
+}
+
+var networkResolverPolicyMigrationIndeterminateError = errors.New("Harbor old networking removal may have changed the host; refreshing operation")
+
+// networkResolverPolicyMigrationPrerequisiteVerificationError reports fixed diagnostics after one claimed helper repair.
+func networkResolverPolicyMigrationPrerequisiteVerificationError(outcome networkresolverpolicymigrationapproval.Outcome, err error) error {
+	if err != nil {
+		var wireError rpc.WireError
+		if errors.As(err, &wireError) {
+			switch wireError.Code {
+			case rpc.ErrorCodePrivilegedHelperRequired:
+				return errors.New("verify Harbor privileged networking support after installation: harbord still cannot find the ticket directory")
+			case rpc.ErrorCodePrivilegedHelperUnsafe:
+				return errors.New("verify Harbor privileged networking support after installation: harbord rejected the ticket directory's ownership, permissions, type, or ACLs")
+			}
+		}
+	}
+	if outcome.State == networkresolverpolicymigrationapproval.Unavailable {
+		return errors.New("verify Harbor privileged networking support after installation: the native helper is unavailable")
+	}
+	if outcome.State == networkresolverpolicymigrationapproval.HelperFailed && outcome.HelperFailure != nil && outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed {
+		return errors.New("verify Harbor privileged networking support after installation: the installed helper could not authenticate a newly issued ticket")
+	}
+	return errors.New("verify Harbor privileged networking support after installation: the result was inconsistent")
+}
+
+// networkResolverPolicyMigrationApprovalError preserves bounded retry guidance without exposing helper capabilities.
+func networkResolverPolicyMigrationApprovalError(outcome networkresolverpolicymigrationapproval.Outcome) error {
+	switch outcome.State {
+	case networkresolverpolicymigrationapproval.Declined:
+		return errors.New("Harbor old networking removal approval was declined; removal is safe to retry")
+	case networkresolverpolicymigrationapproval.Unavailable:
+		return errors.New("Harbor old networking removal approval is unavailable on this installation")
+	case networkresolverpolicymigrationapproval.HelperFailed:
+		if outcome.HelperFailure == nil {
+			return errors.New("Harbor old networking removal helper failed without a problem description")
+		}
+		return fmt.Errorf("Harbor old networking removal helper failed (%s): %s", outcome.HelperFailure.Code, outcome.HelperFailure.Message)
+	case networkresolverpolicymigrationapproval.Indeterminate:
+		return networkResolverPolicyMigrationIndeterminateError
+	default:
+		return fmt.Errorf("Harbor old networking removal approval returned unsupported state %q", outcome.State)
+	}
 }
 
 // ApproveProjectRemoval replays one retained removal identity before opening native consent for its exact current revision.

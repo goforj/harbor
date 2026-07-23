@@ -62,6 +62,15 @@ async function setupNetwork() {
     })
   }
 }
+
+async function removeOldNetworking() {
+  const result = await store.removeOldNetworking()
+  if (result) {
+    toast.success('Old networking was removed', {
+      description: 'Try setting up secure networking again.',
+    })
+  }
+}
 </script>
 
 <template>
@@ -116,18 +125,30 @@ async function setupNetwork() {
             <template v-else>
               <p class="font-medium">Set up secure local networking before you start a project.</p>
               <p v-if="store.networkSetupError" class="mt-1 text-xs text-destructive" role="alert">{{ store.networkSetupError }}</p>
+              <p v-if="store.oldNetworkingRemovalError" class="mt-1 text-xs text-destructive" role="alert">{{ store.oldNetworkingRemovalError }}</p>
             </template>
           </div>
-          <Button
-            v-if="!store.networkSetupResult"
-            class="shrink-0"
-            :disabled="store.settingUpNetwork || store.connectionState !== 'connected'"
-            @click="setupNetwork"
-          >
-            <Spinner v-if="store.settingUpNetwork" aria-hidden="true" />
-            <Network v-else class="size-4" aria-hidden="true" />
-            {{ store.settingUpNetwork ? 'Setting up secure networking…' : 'Set up secure networking' }}
-          </Button>
+          <div v-if="!store.networkSetupResult" class="flex shrink-0 flex-wrap gap-2">
+            <Button
+              :disabled="store.settingUpNetwork || store.removingOldNetworking || store.connectionState !== 'connected'"
+              @click="setupNetwork"
+            >
+              <Spinner v-if="store.settingUpNetwork" aria-hidden="true" />
+              <Network v-else class="size-4" aria-hidden="true" />
+              {{ store.settingUpNetwork ? 'Setting up secure networking…' : 'Set up secure networking' }}
+            </Button>
+            <Button
+              v-if="store.networkSetupError && store.oldNetworkingRemovalAvailable"
+              variant="outline"
+              class="border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              :disabled="store.oldNetworkingRemovalBlocked"
+              @click="removeOldNetworking"
+            >
+              <Spinner v-if="store.removingOldNetworking" aria-hidden="true" />
+              <Network v-else class="size-4" aria-hidden="true" />
+              {{ store.removingOldNetworking ? 'Removing old networking…' : 'Remove old networking' }}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

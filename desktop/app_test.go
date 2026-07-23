@@ -16,6 +16,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/networkdataplaneapproval"
 	"github.com/goforj/harbor/internal/networkresolverapproval"
+	"github.com/goforj/harbor/internal/networkresolverpolicymigrationapproval"
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
@@ -54,6 +55,10 @@ type fakeControlClient struct {
 	resolverConfirmation         control.NetworkResolverSetupApprovalConfirmation
 	resolverConfirmErr           error
 	resolverConfirmReq           control.ConfirmNetworkResolverSetupApprovalRequest
+	migration                    control.NetworkResolverPolicyMigrationOperation
+	migrationErr                 error
+	migrationReqs                []control.StartNetworkResolverPolicyMigrationRequest
+	migrationHook                func(control.StartNetworkResolverPolicyMigrationRequest) (control.NetworkResolverPolicyMigrationOperation, error)
 	dataPlaneSetup               control.NetworkDataPlaneSetupOperation
 	dataPlaneSetupErr            error
 	dataPlaneSetupReq            control.StartNetworkDataPlaneSetupRequest
@@ -123,6 +128,14 @@ type fakeNetworkResolverSetupApprovalRunner struct {
 	execute  func(context.Context, int, networkresolverapproval.Request) (networkresolverapproval.Outcome, error)
 }
 
+// fakeNetworkResolverPolicyMigrationApprovalRunner records one exact migration selection without opening native consent.
+type fakeNetworkResolverPolicyMigrationApprovalRunner struct {
+	requests []networkresolverpolicymigrationapproval.Request
+	outcome  networkresolverpolicymigrationapproval.Outcome
+	err      error
+	execute  func(context.Context, int, networkresolverpolicymigrationapproval.Request) (networkresolverpolicymigrationapproval.Outcome, error)
+}
+
 // fakeNetworkDataPlaneApprovalRunner records exact trust and low-port selections without opening native consent.
 type fakeNetworkDataPlaneApprovalRunner struct {
 	trustRequests   []networkdataplaneapproval.Request
@@ -154,6 +167,15 @@ func (runner *fakeNetworkSetupApprovalRunner) Execute(ctx context.Context, reque
 
 // Execute records the selected resolver revision without opening native consent.
 func (runner *fakeNetworkResolverSetupApprovalRunner) Execute(ctx context.Context, request networkresolverapproval.Request) (networkresolverapproval.Outcome, error) {
+	runner.requests = append(runner.requests, request)
+	if runner.execute != nil {
+		return runner.execute(ctx, len(runner.requests), request)
+	}
+	return runner.outcome, runner.err
+}
+
+// Execute records the selected migration revision without opening native consent.
+func (runner *fakeNetworkResolverPolicyMigrationApprovalRunner) Execute(ctx context.Context, request networkresolverpolicymigrationapproval.Request) (networkresolverpolicymigrationapproval.Outcome, error) {
 	runner.requests = append(runner.requests, request)
 	if runner.execute != nil {
 		return runner.execute(ctx, len(runner.requests), request)
@@ -273,6 +295,27 @@ func (client *fakeControlClient) StartNetworkResolverSetup(_ context.Context, re
 		return client.resolverSetupHook(request)
 	}
 	return client.resolverSetup, client.resolverSetupErr
+}
+
+// StartNetworkResolverPolicyMigration records the stable migration intent and returns its scripted durable operation.
+func (client *fakeControlClient) StartNetworkResolverPolicyMigration(_ context.Context, request control.StartNetworkResolverPolicyMigrationRequest) (control.NetworkResolverPolicyMigrationOperation, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.migrationReqs = append(client.migrationReqs, request)
+	if client.migrationHook != nil {
+		return client.migrationHook(request)
+	}
+	return client.migration, client.migrationErr
+}
+
+// PrepareNetworkResolverPolicyMigrationApproval is unreachable in app tests because the executor is replaced by a scripted runner.
+func (*fakeControlClient) PrepareNetworkResolverPolicyMigrationApproval(context.Context, control.PrepareNetworkResolverPolicyMigrationApprovalRequest) (control.NetworkResolverPolicyMigrationApprovalPreparation, error) {
+	return control.NetworkResolverPolicyMigrationApprovalPreparation{}, errors.New("migration approval executor is not configured")
+}
+
+// ConfirmNetworkResolverPolicyMigrationApproval is unreachable in app tests because the executor is replaced by a scripted runner.
+func (*fakeControlClient) ConfirmNetworkResolverPolicyMigrationApproval(context.Context, control.ConfirmNetworkResolverPolicyMigrationApprovalRequest) (control.NetworkResolverPolicyMigrationApprovalConfirmation, error) {
+	return control.NetworkResolverPolicyMigrationApprovalConfirmation{}, errors.New("migration approval executor is not configured")
 }
 
 // StartNetworkDataPlaneSetup records the stable trusted-ingress identity and returns its scripted durable operation.
@@ -4069,6 +4112,257 @@ func testNetworkResolverSetupConfirmation(
 	operation.FinishedAt = &finishedAt
 	return control.NetworkResolverSetupApprovalConfirmation{
 		Operation:       operation,
+		Revision:        revision,
+		NetworkRevision: networkRevision,
+	}
+}
+
+// TestRemoveOldNetworkingCompletesApproval binds native consent to the exact migration operation revision.
+func TestRemoveOldNetworkingCompletesApproval(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	confirmation := testNetworkResolverPolicyMigrationConfirmation(client.migration, 13, 14)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{outcome: networkresolverpolicymigrationapproval.Outcome{
+		State:        networkresolverpolicymigrationapproval.Succeeded,
+		Confirmation: &confirmation,
+	}}
+	app.migrationApproval = func(got networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		if got != client {
+			t.Fatalf("migration approval client = %T, want installed client", got)
+		}
+		return runner
+	}
+
+	result, err := app.RemoveOldNetworking()
+	if err != nil {
+		t.Fatalf("RemoveOldNetworking() error = %v", err)
+	}
+	expected := control.NetworkResolverPolicyMigrationOperation{
+		Operation: confirmation.Operation,
+		Revision:  confirmation.Revision,
+	}
+	if result != expected {
+		t.Fatalf("RemoveOldNetworking() = %#v", result)
+	}
+	if len(runner.requests) != 1 || runner.requests[0].OperationID != client.migration.Operation.ID || runner.requests[0].ExpectedOperationRevision != client.migration.Revision {
+		t.Fatalf("migration approval requests = %#v", runner.requests)
+	}
+	if len(client.migrationReqs) != 1 || client.migrationReqs[0].IntentID != networkResolverPolicyMigrationIntentID {
+		t.Fatalf("migration start requests = %#v", client.migrationReqs)
+	}
+}
+
+// TestRemoveOldNetworkingRejectsConfirmationOutsideSelectedRevision verifies desktop does not publish a migration completion from another transition.
+func TestRemoveOldNetworkingRejectsConfirmationOutsideSelectedRevision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*control.NetworkResolverPolicyMigrationApprovalConfirmation)
+	}{
+		{
+			name: "network revision skips one transition",
+			mutate: func(confirmation *control.NetworkResolverPolicyMigrationApprovalConfirmation) {
+				confirmation.NetworkRevision++
+				confirmation.Revision++
+			},
+		},
+		{
+			name: "terminal operation revision skips network revision",
+			mutate: func(confirmation *control.NetworkResolverPolicyMigrationApprovalConfirmation) {
+				confirmation.Revision++
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, client := connectedTestApp()
+			client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+			confirmation := testNetworkResolverPolicyMigrationConfirmation(client.migration, 13, 14)
+			test.mutate(&confirmation)
+			app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+				return &fakeNetworkResolverPolicyMigrationApprovalRunner{outcome: networkresolverpolicymigrationapproval.Outcome{
+					State:        networkresolverpolicymigrationapproval.Succeeded,
+					Confirmation: &confirmation,
+				}}
+			}
+
+			if _, err := app.RemoveOldNetworking(); err == nil || !strings.Contains(err.Error(), "confirmation") {
+				t.Fatalf("RemoveOldNetworking() error = %v, want confirmation validation failure", err)
+			}
+		})
+	}
+}
+
+// TestRemoveOldNetworkingReturnsSucceededReplay avoids reopening native consent for an already-completed durable operation.
+func TestRemoveOldNetworkingReturnsSucceededReplay(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationSucceeded, 14)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+
+	result, err := app.RemoveOldNetworking()
+	if err != nil {
+		t.Fatalf("RemoveOldNetworking() error = %v", err)
+	}
+	if result != client.migration || len(runner.requests) != 0 {
+		t.Fatalf("result/approval requests = %#v/%#v", result, runner.requests)
+	}
+}
+
+// TestRemoveOldNetworkingReturnsDeclineWithoutReplay preserves the user's explicit native-consent decision.
+func TestRemoveOldNetworkingReturnsDeclineWithoutReplay(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{outcome: networkresolverpolicymigrationapproval.Outcome{State: networkresolverpolicymigrationapproval.Declined}}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+
+	if _, err := app.RemoveOldNetworking(); err == nil || !strings.Contains(err.Error(), "declined") {
+		t.Fatalf("RemoveOldNetworking() error = %v, want declined result", err)
+	}
+	if len(client.migrationReqs) != 1 {
+		t.Fatalf("migration starts = %d, want 1", len(client.migrationReqs))
+	}
+}
+
+// TestRemoveOldNetworkingRepairsStaleHelperOnce refreshes only the reviewed fixed helper boundary.
+func TestRemoveOldNetworkingRepairsStaleHelperOnce(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	confirmation := testNetworkResolverPolicyMigrationConfirmation(client.migration, 13, 14)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{execute: func(_ context.Context, call int, _ networkresolverpolicymigrationapproval.Request) (networkresolverpolicymigrationapproval.Outcome, error) {
+		if call == 1 {
+			return networkresolverpolicymigrationapproval.Outcome{
+				State: networkresolverpolicymigrationapproval.HelperFailed,
+				HelperFailure: &networkresolverpolicymigrationapproval.HelperFailure{
+					Code:    helper.ErrorCodeAuthenticationFailed,
+					Message: "stale ticket",
+				},
+			}, nil
+		}
+		return networkresolverpolicymigrationapproval.Outcome{
+			State:        networkresolverpolicymigrationapproval.Succeeded,
+			Confirmation: &confirmation,
+		}, nil
+	}}
+	ensurer := &fakeNetworkPrerequisiteEnsurer{}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+	app.setupPrerequisite = ensurer
+
+	if _, err := app.RemoveOldNetworking(); err != nil {
+		t.Fatalf("RemoveOldNetworking() error = %v", err)
+	}
+	if ensurer.calls != 1 || len(runner.requests) != 2 || runner.requests[0] != runner.requests[1] {
+		t.Fatalf("repair/approval requests = %d/%#v", ensurer.calls, runner.requests)
+	}
+}
+
+// TestRemoveOldNetworkingRecoversIndeterminateApprovalByReplayingStart lets the coordinator report already-applied completion.
+func TestRemoveOldNetworkingRecoversIndeterminateApprovalByReplayingStart(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	awaiting := testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	completed := testNetworkResolverPolicyMigrationOperation(domain.OperationSucceeded, 14)
+	client.migrationHook = func(control.StartNetworkResolverPolicyMigrationRequest) (control.NetworkResolverPolicyMigrationOperation, error) {
+		if len(client.migrationReqs) == 1 {
+			return awaiting, nil
+		}
+		return completed, nil
+	}
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{outcome: networkresolverpolicymigrationapproval.Outcome{State: networkresolverpolicymigrationapproval.Indeterminate}}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+
+	result, err := app.RemoveOldNetworking()
+	if err != nil {
+		t.Fatalf("RemoveOldNetworking() error = %v", err)
+	}
+	if result != completed || len(client.migrationReqs) != 2 || len(runner.requests) != 1 {
+		t.Fatalf("result/start/approval = %#v/%d/%d", result, len(client.migrationReqs), len(runner.requests))
+	}
+}
+
+// TestRemoveOldNetworkingDoesNotReplayMutationFailure avoids blindly repeating a helper mutation after a bounded failure.
+func TestRemoveOldNetworkingDoesNotReplayMutationFailure(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{outcome: networkresolverpolicymigrationapproval.Outcome{
+		State: networkresolverpolicymigrationapproval.HelperFailed,
+		HelperFailure: &networkresolverpolicymigrationapproval.HelperFailure{
+			Code:    helper.ErrorCodeMutationFailed,
+			Message: "resolver retirement failed",
+		},
+	}}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+
+	if _, err := app.RemoveOldNetworking(); err == nil || !strings.Contains(err.Error(), "resolver retirement failed") {
+		t.Fatalf("RemoveOldNetworking() error = %v, want mutation failure", err)
+	}
+	if len(client.migrationReqs) != 1 || len(runner.requests) != 1 {
+		t.Fatalf("start/approval calls = %d/%d, want 1/1", len(client.migrationReqs), len(runner.requests))
+	}
+}
+
+// testNetworkResolverPolicyMigrationOperation returns one valid global retirement migration at the requested state and revision.
+func testNetworkResolverPolicyMigrationOperation(state domain.OperationState, revision domain.Sequence) control.NetworkResolverPolicyMigrationOperation {
+	requestedAt := time.Date(2026, time.July, 22, 12, 11, 0, 0, time.UTC)
+	startedAt := requestedAt.Add(time.Second)
+	operation := domain.Operation{
+		ID:          "operation-network-resolver-policy-migration",
+		IntentID:    networkResolverPolicyMigrationIntentID,
+		Kind:        domain.OperationKindNetworkResolverPolicyMigration,
+		State:       state,
+		RequestedAt: requestedAt,
+		StartedAt:   &startedAt,
+	}
+	if state == domain.OperationRequiresApproval {
+		operation.Phase = "awaiting resolver policy migration approval"
+	} else {
+		finishedAt := requestedAt.Add(2 * time.Second)
+		operation.Phase = "completed"
+		operation.FinishedAt = &finishedAt
+	}
+	return control.NetworkResolverPolicyMigrationOperation{
+		Operation: operation,
+		Revision:  revision,
+	}
+}
+
+// testNetworkResolverPolicyMigrationConfirmation advances one selected migration to a valid contiguous terminal result.
+func testNetworkResolverPolicyMigrationConfirmation(
+	operation control.NetworkResolverPolicyMigrationOperation,
+	networkRevision domain.Sequence,
+	revision domain.Sequence,
+) control.NetworkResolverPolicyMigrationApprovalConfirmation {
+	completed := operation.Operation
+	finishedAt := completed.RequestedAt.Add(2 * time.Second)
+	completed.State = domain.OperationSucceeded
+	completed.Phase = "completed"
+	completed.FinishedAt = &finishedAt
+	return control.NetworkResolverPolicyMigrationApprovalConfirmation{
+		Operation:       completed,
 		Revision:        revision,
 		NetworkRevision: networkRevision,
 	}

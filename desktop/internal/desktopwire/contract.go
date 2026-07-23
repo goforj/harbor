@@ -37,6 +37,8 @@ const (
 	MethodRemoveProject = "RemoveProject"
 	// MethodSetupNetwork is the generated Wails method that completes the machine-global network foundation.
 	MethodSetupNetwork = "SetupNetwork"
+	// MethodRemoveOldNetworking is the generated Wails method that retires legacy machine-global resolver networking.
+	MethodRemoveOldNetworking = "RemoveOldNetworking"
 	// MethodStartProject is the generated Wails method that starts one registered project.
 	MethodStartProject = "StartProject"
 	// MethodStopProject is the generated Wails method that stops one registered project.
@@ -85,6 +87,7 @@ type AppContract interface {
 	ProjectActivity(projectID string, sessionID string, cursor uint64) (control.ProjectActivity, error)
 	ServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64) (control.ServiceLogs, error)
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
+	RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOperation, error)
 	SetupNetwork() (control.NetworkSetupOperation, error)
 	Snapshot() (domain.Snapshot, error)
 	StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
@@ -116,6 +119,7 @@ func MethodContracts() []MethodContract {
 		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
 		MethodServiceLogs:                 []string{"projectId", "sessionId", "serviceId", "cursor"},
 		MethodRemoveProject:               []string{"projectId", "intentId"},
+		MethodRemoveOldNetworking:         {},
 		MethodSetupNetwork:                {},
 		MethodSnapshot:                    []string{},
 		MethodStartProject:                []string{"projectId", "intentId"},

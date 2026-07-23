@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot, mockStatus } from '@/bridge/mock'
-import type { ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectRuntimeRepairNotActionableReason, ProjectUnregistration } from '@/domain/harbor'
+import type { ConnectionEvent, ConnectionState, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectRuntimeRepairNotActionableReason, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
 function deferred<T>() {
@@ -33,6 +33,22 @@ function completedNetworkSetup(): NetworkSetupOperation {
       requested_at: '2026-07-19T12:00:00Z',
       started_at: '2026-07-19T12:00:01Z',
       finished_at: '2026-07-19T12:00:02Z',
+    },
+    revision: 43,
+  }
+}
+
+function completedOldNetworkingRemoval(): NetworkResolverPolicyMigrationOperation {
+  return {
+    operation: {
+      id: 'operation-old-networking-removal',
+      intent_id: 'intent-old-networking-removal',
+      kind: 'network.resolver.policy-migration',
+      state: 'succeeded',
+      phase: 'completed',
+      requested_at: '2026-07-23T12:00:00Z',
+      started_at: '2026-07-23T12:00:01Z',
+      finished_at: '2026-07-23T12:00:02Z',
     },
     revision: 43,
   }
@@ -463,6 +479,84 @@ describe('Harbor store', () => {
     expect(store.networkSetupError).toBe('Harbor returned incomplete network setup progress.')
     expect(store.settingUpNetwork).toBe(false)
     expect(getSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('serializes old networking removal, reports failures, and refreshes authoritative state', async () => {
+    const store = useHarborStore()
+    store.$patch({
+      daemonStatus: {
+        ...mockStatus(),
+        capabilities: ['control.network-resolver-policy-migration.v1'],
+      },
+      connectionState: 'connected',
+      networkSetupError: 'Harbor detected old networking.',
+    })
+    const pending = deferred<NetworkResolverPolicyMigrationOperation>()
+    const removeOldNetworking = vi.spyOn(harborBridge, 'removeOldNetworking').mockReturnValueOnce(pending.promise)
+    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
+
+    const removal = store.removeOldNetworking()
+    expect(store.removingOldNetworking).toBe(true)
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+    expect(removeOldNetworking).toHaveBeenCalledOnce()
+
+    const result = completedOldNetworkingRemoval()
+    pending.resolve(result)
+    await expect(removal).resolves.toEqual(result)
+    expect(store.removingOldNetworking).toBe(false)
+    expect(store.oldNetworkingRemovalError).toBeNull()
+    expect(store.networkSetupError).toBeNull()
+    expect(getSnapshot).toHaveBeenCalledOnce()
+
+    const incomplete = completedOldNetworkingRemoval()
+    incomplete.operation.state = 'requires_approval'
+    vi.spyOn(harborBridge, 'removeOldNetworking').mockResolvedValueOnce(incomplete)
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+    expect(store.oldNetworkingRemovalError).toBe('Harbor returned incomplete old networking removal progress.')
+    expect(getSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['missing capability', { capabilities: [] }, 'connected'],
+    ['disconnected', { capabilities: ['control.network-resolver-policy-migration.v1'] }, 'disconnected'],
+  ])('does not remove old networking when %s', async (_name, status, connectionState) => {
+    const store = useHarborStore()
+    store.$patch({
+      daemonStatus: {
+        ...mockStatus(),
+        ...status,
+      },
+      connectionState: connectionState as ConnectionState,
+    })
+    const removeOldNetworking = vi.spyOn(harborBridge, 'removeOldNetworking')
+
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+    expect(removeOldNetworking).not.toHaveBeenCalled()
+  })
+
+  it('does not remove old networking while a project lifecycle request is active', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    store.$patch({
+      daemonStatus: {
+        ...store.daemonStatus!,
+        capabilities: ['control.network-resolver-policy-migration.v1'],
+      },
+    })
+    const pending = deferred<ProjectLifecycleOperation>()
+    vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
+    const removeOldNetworking = vi.spyOn(harborBridge, 'removeOldNetworking')
+
+    const starting = store.startProject('reports')
+    await vi.waitFor(() => expect(store.projectLifecycleBusy).toBe(true))
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+    expect(removeOldNetworking).not.toHaveBeenCalled()
+
+    pending.resolve({
+      operation: lifecycleOperation('reports', 'start', 'desktop-start-reports', 'queued'),
+      revision: 43,
+    })
+    await starting
   })
 
   it('does not send a project lifecycle request while network setup is active', async () => {

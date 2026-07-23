@@ -38,6 +38,7 @@ describe('Harbor mock bridge', () => {
       wait_project_activity: 'WaitProjectActivity',
       wait_service_logs: 'WaitServiceLogs',
       remove_project: 'RemoveProject',
+      remove_old_networking: 'RemoveOldNetworking',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',
       start_project: 'StartProject',
@@ -100,6 +101,29 @@ describe('Harbor mock bridge', () => {
     expect(replayed).toEqual(completed)
     expect(snapshot.sequence).toBe(43)
     expect(snapshot.operations).not.toContainEqual(expect.objectContaining({ kind: 'network.setup' }))
+  })
+
+  it('removes old mock networking once and safely replays the result', async () => {
+    const bridge = createMockBridge()
+	const status = await bridge.getStatus()
+
+	expect(status.capabilities).toContain('control.network-resolver-policy-migration.v1')
+
+    const completed = await bridge.removeOldNetworking()
+    const replayed = await bridge.removeOldNetworking()
+    const snapshot = await bridge.getSnapshot()
+
+    expect(completed).toMatchObject({
+      revision: 43,
+      operation: {
+        intent_id: 'intent-old-networking-removal',
+        kind: 'network.resolver.policy-migration',
+        state: 'succeeded',
+        phase: 'completed',
+      },
+    })
+    expect(replayed).toEqual(completed)
+    expect(snapshot.sequence).toBe(43)
   })
 
   it('registers the generated pending project once and replays it without duplication', async () => {

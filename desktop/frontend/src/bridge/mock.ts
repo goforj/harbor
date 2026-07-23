@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
@@ -11,6 +11,7 @@ export function createMockBridge(): HarborBridge {
   const removals = new Map<string, ProjectUnregistration>()
   const lifecycles = new Map<string, ProjectLifecycleOperation>()
   let networkSetup: NetworkSetupOperation | null = null
+  let oldNetworkingRemoval: NetworkResolverPolicyMigrationOperation | null = null
   let runtimeRepairPlan: ConfirmableProjectRuntimeRepairInspection | null = null
 
   // projectActivity applies the fixture's byte-addressed current-session cursor contract.
@@ -335,6 +336,30 @@ export function createMockBridge(): HarborBridge {
       snapshot.sequence = revision
       status.sequence = revision
       return structuredClone(networkSetup)
+    },
+    async removeOldNetworking() {
+      if (oldNetworkingRemoval) {
+        return structuredClone(oldNetworkingRemoval)
+      }
+
+      const revision = snapshot.sequence + 1
+      const completedAt = new Date().toISOString()
+      oldNetworkingRemoval = {
+        operation: {
+          id: `operation-${revision}-old-networking-removal`,
+          intent_id: 'intent-old-networking-removal',
+          kind: 'network.resolver.policy-migration',
+          state: 'succeeded',
+          phase: 'completed',
+          requested_at: completedAt,
+          started_at: completedAt,
+          finished_at: completedAt,
+        },
+        revision,
+      }
+      snapshot.sequence = revision
+      status.sequence = revision
+      return structuredClone(oldNetworkingRemoval)
     },
     startProject(projectId, intentId) {
       return changeProjectLifecycle(projectId, intentId, 'start')

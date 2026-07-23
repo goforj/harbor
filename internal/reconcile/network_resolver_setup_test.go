@@ -232,6 +232,51 @@ func TestNetworkResolverSetupStartStagesCanonicalPolicyAndReplays(t *testing.T) 
 	}
 }
 
+// TestNetworkResolverSetupStartStagesFreshIntentAfterResolverRemoval requires a fresh durable resolver operation when retirement has returned the network to identity authority.
+func TestNetworkResolverSetupStartStagesFreshIntentAfterResolverRemoval(t *testing.T) {
+	fixture := newNetworkResolverSetupTestFixture(t)
+	completed := networkResolverSetupTestApprovalOperation(t, fixture.now, 3)
+	completed.Operation.IntentID = "intent-network-resolver-setup"
+	finishedAt := fixture.now
+	completed.Operation.State = domain.OperationSucceeded
+	completed.Operation.Phase = "completed"
+	completed.Operation.FinishedAt = &finishedAt
+	fixture.journal.byIntent = func(_ context.Context, intentID domain.IntentID) (state.OperationRecord, error) {
+		if intentID == completed.Operation.IntentID {
+			return completed, nil
+		}
+		return state.OperationRecord{}, &state.OperationIntentNotFoundError{IntentID: intentID}
+	}
+	fixture.journal.stage = func(_ context.Context, request state.StageNetworkResolverSetupRequest) (state.OperationRecord, error) {
+		if request.Operation.IntentID != "intent-network-resolver-setup-v2" {
+			t.Fatalf("StageNetworkResolverSetup() intent = %q, want resolver setup v2", request.Operation.IntentID)
+		}
+		return networkResolverSetupTestApproval(request.Operation, 7), nil
+	}
+
+	_, err := fixture.coordinator.Start(t.Context(), NetworkResolverSetupStartRequest{
+		OperationID:       "operation-resolver-replay",
+		IntentID:          completed.Operation.IntentID,
+		RequesterIdentity: fixture.source.Record.OwnerIdentity,
+	})
+	if err == nil || !strings.Contains(err.Error(), "terminal network stage") {
+		t.Fatalf("Start() error = %v, want retired resolver authority rejection", err)
+	}
+
+	started, err := fixture.coordinator.Start(t.Context(), NetworkResolverSetupStartRequest{
+		OperationID:       "operation-resolver-v2",
+		IntentID:          "intent-network-resolver-setup-v2",
+		RequesterIdentity: fixture.source.Record.OwnerIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Start() fresh resolver intent error = %v", err)
+	}
+	if started.Operation.IntentID != "intent-network-resolver-setup-v2" ||
+		started.Operation.State != domain.OperationRequiresApproval || started.Revision != 7 {
+		t.Fatalf("Start() fresh resolver intent = %#v", started)
+	}
+}
+
 // TestNetworkResolverSetupStartRejectsUnownedOrUnreadyAuthority covers failures before staging can create approval authority.
 func TestNetworkResolverSetupStartRejectsUnownedOrUnreadyAuthority(t *testing.T) {
 	tests := []struct {
