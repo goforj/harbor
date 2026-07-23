@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/goforj/harbor/internal/domain"
@@ -83,6 +84,42 @@ func TestExternalArtifactRootRejectsSymlinkedIntermediate(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("symlink target changed: %v", err)
+	}
+}
+
+// TestOpenOrCreateDirectDirectoryAdmitsConcurrentFreshNestedPath lets independent project launches share newly-created base components.
+func TestOpenOrCreateDirectDirectoryAdmitsConcurrentFreshNestedPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shared", "nested", "base")
+	const callers = 64
+	start := make(chan struct{})
+	errors := make(chan error, callers)
+	var callersWaitGroup sync.WaitGroup
+	callersWaitGroup.Add(callers)
+	for range callers {
+		go func() {
+			defer callersWaitGroup.Done()
+			<-start
+			directory, err := openOrCreateDirectDirectory(path)
+			if err == nil {
+				err = directory.Close()
+			}
+			errors <- err
+		}()
+	}
+	close(start)
+	callersWaitGroup.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("openOrCreateDirectDirectory() error = %v", err)
+		}
+	}
+	directory, err := openDirectDirectory(path)
+	if err != nil {
+		t.Fatalf("openDirectDirectory() error = %v", err)
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatalf("close direct directory: %v", err)
 	}
 }
 

@@ -222,7 +222,7 @@ func openOrCreateDirectDirectory(path string) (*os.Root, error) {
 	for _, segment := range segments {
 		information, statErr := root.Lstat(segment)
 		if errors.Is(statErr, fs.ErrNotExist) {
-			if err := root.Mkdir(segment, 0o700); err != nil {
+			if err := root.Mkdir(segment, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 				root.Close()
 				return nil, err
 			}
