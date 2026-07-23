@@ -685,6 +685,15 @@ func (a *App) approveNetworkDataPlaneSetup(
 		ExpectedOperationRevision: setup.Revision,
 	}
 	outcome, err := runner.ExecuteTrust(ctx, request)
+	if networkDataPlaneTrustNeedsPrerequisiteRepair(outcome, err) {
+		if repairErr := a.setupPrerequisite.Ensure(ctx); repairErr != nil {
+			return fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
+		}
+		outcome, err = runner.ExecuteTrust(ctx, request)
+		if networkDataPlaneTrustNeedsPrerequisiteRepair(outcome, err) {
+			return networkDataPlaneTrustPrerequisiteVerificationError(outcome, err)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("approve Harbor network data-plane trust: %w", err)
 	}
@@ -719,6 +728,15 @@ func (a *App) approveNetworkDataPlaneLowPorts(
 		ExpectedOperationRevision: setup.Revision,
 	}
 	outcome, err := runner.ExecuteLowPorts(ctx, request)
+	if networkDataPlaneLowPortNeedsPrerequisiteRepair(outcome, err) {
+		if repairErr := a.setupPrerequisite.Ensure(ctx); repairErr != nil {
+			return fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
+		}
+		outcome, err = runner.ExecuteLowPorts(ctx, request)
+		if networkDataPlaneLowPortNeedsPrerequisiteRepair(outcome, err) {
+			return networkDataPlaneLowPortPrerequisiteVerificationError(outcome, err)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("approve Harbor network data-plane low-port setup: %w", err)
 	}
@@ -739,6 +757,78 @@ func (a *App) approveNetworkDataPlaneLowPorts(
 		return errors.New("validate Harbor network data-plane low-port confirmation: result crossed the selected operation revision")
 	}
 	return nil
+}
+
+// networkDataPlaneTrustNeedsPrerequisiteRepair recognizes only reviewed evidence that the shared helper boundary needs repair.
+func networkDataPlaneTrustNeedsPrerequisiteRepair(outcome networkdataplaneapproval.TrustOutcome, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) &&
+			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
+	}
+	if outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil {
+		return outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed
+	}
+	return outcome.State == networkdataplaneapproval.Unavailable
+}
+
+// networkDataPlaneTrustPrerequisiteVerificationError reports fixed peer-safe diagnostics after one bounded trust repair.
+func networkDataPlaneTrustPrerequisiteVerificationError(outcome networkdataplaneapproval.TrustOutcome, err error) error {
+	if err != nil {
+		var wireError rpc.WireError
+		if errors.As(err, &wireError) {
+			switch wireError.Code {
+			case rpc.ErrorCodePrivilegedHelperRequired:
+				return errors.New("verify Harbor privileged networking support after installation: harbord still cannot find the ticket directory for data-plane trust")
+			case rpc.ErrorCodePrivilegedHelperUnsafe:
+				return errors.New("verify Harbor privileged networking support after installation: harbord rejected the ticket directory's ownership, permissions, type, or ACLs for data-plane trust")
+			}
+		}
+	}
+	if outcome.State == networkdataplaneapproval.Unavailable {
+		return errors.New("verify Harbor privileged networking support after installation: the native helper is unavailable for data-plane trust")
+	}
+	if outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil &&
+		outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed {
+		return errors.New("verify Harbor privileged networking support after installation: the installed helper could not authenticate a newly issued data-plane trust ticket")
+	}
+	return errors.New("verify Harbor privileged networking support after installation: the data-plane trust result was inconsistent")
+}
+
+// networkDataPlaneLowPortNeedsPrerequisiteRepair recognizes only reviewed evidence that the shared helper boundary needs repair.
+func networkDataPlaneLowPortNeedsPrerequisiteRepair(outcome networkdataplaneapproval.LowPortOutcome, err error) bool {
+	if err != nil {
+		var wireError rpc.WireError
+		return errors.As(err, &wireError) &&
+			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
+	}
+	if outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil {
+		return outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed
+	}
+	return outcome.State == networkdataplaneapproval.Unavailable
+}
+
+// networkDataPlaneLowPortPrerequisiteVerificationError reports fixed peer-safe diagnostics after one bounded low-port repair.
+func networkDataPlaneLowPortPrerequisiteVerificationError(outcome networkdataplaneapproval.LowPortOutcome, err error) error {
+	if err != nil {
+		var wireError rpc.WireError
+		if errors.As(err, &wireError) {
+			switch wireError.Code {
+			case rpc.ErrorCodePrivilegedHelperRequired:
+				return errors.New("verify Harbor privileged networking support after installation: harbord still cannot find the ticket directory for data-plane low-port approval")
+			case rpc.ErrorCodePrivilegedHelperUnsafe:
+				return errors.New("verify Harbor privileged networking support after installation: harbord rejected the ticket directory's ownership, permissions, type, or ACLs for data-plane low-port approval")
+			}
+		}
+	}
+	if outcome.State == networkdataplaneapproval.Unavailable {
+		return errors.New("verify Harbor privileged networking support after installation: the native helper is unavailable for data-plane low-port approval")
+	}
+	if outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil &&
+		outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed {
+		return errors.New("verify Harbor privileged networking support after installation: the installed helper could not authenticate a newly issued data-plane low-port ticket")
+	}
+	return errors.New("verify Harbor privileged networking support after installation: the data-plane low-port approval result was inconsistent")
 }
 
 // networkDataPlaneTrustApprovalError preserves phase-specific retry guidance without exposing helper capabilities or privileged details.

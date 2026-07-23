@@ -802,6 +802,147 @@ func TestNetworkDataPlaneApprovalOutcomeGuidance(t *testing.T) {
 	}
 }
 
+// TestSetupNetworkRepairsDataPlaneApprovalsThroughTheSharedPrerequisiteBoundary bounds data-plane installation to one exact retry per phase.
+func TestSetupNetworkRepairsDataPlaneApprovalsThroughTheSharedPrerequisiteBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, phase := range []string{"trust", "low port"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			app, client := connectedTestApp()
+			ensurer := &fakeNetworkPrerequisiteEnsurer{}
+			runner := &fakeNetworkDataPlaneApprovalRunner{}
+			app.setupPrerequisite = ensurer
+			app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner { return runner }
+
+			if phase == "trust" {
+				client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15)
+				trusted := testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16)
+				confirmation := testNetworkDataPlaneSetupConfirmation(trusted, 17, 18)
+				runner.trustExecute = func(_ context.Context, call int, _ networkdataplaneapproval.Request) (networkdataplaneapproval.TrustOutcome, error) {
+					if call == 1 {
+						return networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.HelperFailed, HelperFailure: &networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeAuthenticationFailed, Message: "helper ticket redemption failed"}}, nil
+					}
+					return networkdataplaneapproval.TrustOutcome{State: networkdataplaneapproval.Succeeded, Setup: &trusted}, nil
+				}
+				runner.lowPortOutcome = networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: &confirmation}
+			} else {
+				client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16)
+				confirmation := testNetworkDataPlaneSetupConfirmation(client.dataPlaneSetup, 17, 18)
+				runner.lowPortExecute = func(_ context.Context, call int, _ networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error) {
+					if call == 1 {
+						return networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.HelperFailed, HelperFailure: &networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeAuthenticationFailed, Message: "helper ticket redemption failed"}}, nil
+					}
+					return networkdataplaneapproval.LowPortOutcome{State: networkdataplaneapproval.Succeeded, Confirmation: &confirmation}, nil
+				}
+			}
+
+			if _, err := app.SetupNetwork(); err != nil {
+				t.Fatalf("SetupNetwork() error = %v", err)
+			}
+			if ensurer.calls != 1 {
+				t.Fatalf("repair calls = %d, want 1", ensurer.calls)
+			}
+			if phase == "trust" {
+				if len(runner.trustRequests) != 2 || runner.trustRequests[0] != runner.trustRequests[1] {
+					t.Fatalf("trust retry crossed request boundary: %#v", runner.trustRequests)
+				}
+			} else if len(runner.lowPortRequests) != 2 || runner.lowPortRequests[0] != runner.lowPortRequests[1] {
+				t.Fatalf("low-port retry crossed request boundary: %#v", runner.lowPortRequests)
+			}
+		})
+	}
+}
+
+// TestSetupNetworkBoundsDataPlanePrerequisiteRepairAndPreservesFailures prevents helper repair loops and preserves uncertain or mutation outcomes.
+func TestSetupNetworkBoundsDataPlanePrerequisiteRepairAndPreservesFailures(t *testing.T) {
+	t.Parallel()
+
+	type repairCase struct {
+		name      string
+		firstErr  error
+		first     networkdataplaneapproval.State
+		failure   *networkdataplaneapproval.HelperFailure
+		repairErr error
+		approvals int
+		want      string
+	}
+	for _, phase := range []string{"trust", "low port"} {
+		for _, test := range []repairCase{
+			{name: "declined repair", firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired), repairErr: networkprerequisite.ErrDeclined, approvals: 1, want: "declined"},
+			{name: "persistent missing helper", firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperRequired), approvals: 2, want: "still cannot find the ticket directory"},
+			{name: "persistent unsafe helper", firstErr: rpc.NewWireError(rpc.ErrorCodePrivilegedHelperUnsafe), approvals: 2, want: "ownership, permissions, type, or ACLs"},
+			{name: "persistent unavailable helper", first: networkdataplaneapproval.Unavailable, approvals: 2, want: "native helper is unavailable"},
+			{name: "persistent authentication failure", first: networkdataplaneapproval.HelperFailed, failure: &networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeAuthenticationFailed, Message: "helper ticket redemption failed"}, approvals: 2, want: "could not authenticate a newly issued"},
+		} {
+			t.Run(phase+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				app, client := connectedTestApp()
+				ensurer := &fakeNetworkPrerequisiteEnsurer{err: test.repairErr}
+				runner := &fakeNetworkDataPlaneApprovalRunner{}
+				app.setupPrerequisite = ensurer
+				app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner { return runner }
+				if phase == "trust" {
+					client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15)
+					runner.trustExecute = func(_ context.Context, _ int, _ networkdataplaneapproval.Request) (networkdataplaneapproval.TrustOutcome, error) {
+						return networkdataplaneapproval.TrustOutcome{State: test.first, HelperFailure: test.failure}, test.firstErr
+					}
+				} else {
+					client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16)
+					runner.lowPortExecute = func(_ context.Context, _ int, _ networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error) {
+						return networkdataplaneapproval.LowPortOutcome{State: test.first, HelperFailure: test.failure}, test.firstErr
+					}
+				}
+
+				if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+				}
+				if ensurer.calls != 1 {
+					t.Fatalf("repair calls = %d, want 1", ensurer.calls)
+				}
+				if phase == "trust" && len(runner.trustRequests) != test.approvals || phase == "low port" && len(runner.lowPortRequests) != test.approvals {
+					t.Fatalf("approval calls = %d/%d, want exactly %d in %s", len(runner.trustRequests), len(runner.lowPortRequests), test.approvals, phase)
+				}
+			})
+		}
+	}
+
+	for _, phase := range []string{"trust", "low port"} {
+		for _, test := range []struct {
+			name    string
+			state   networkdataplaneapproval.State
+			failure *networkdataplaneapproval.HelperFailure
+			want    string
+		}{
+			{name: "indeterminate", state: networkdataplaneapproval.Indeterminate, want: "refresh before retrying"},
+			{name: "mutation failure", state: networkdataplaneapproval.HelperFailed, failure: &networkdataplaneapproval.HelperFailure{Code: helper.ErrorCodeMutationFailed, Message: "mutation failed"}, want: "mutation failed"},
+		} {
+			t.Run(phase+" does not repair "+test.name, func(t *testing.T) {
+				t.Parallel()
+				app, client := connectedTestApp()
+				ensurer := &fakeNetworkPrerequisiteEnsurer{}
+				runner := &fakeNetworkDataPlaneApprovalRunner{}
+				app.setupPrerequisite = ensurer
+				app.dataPlaneApproval = func(networkdataplaneapproval.Client) networkDataPlaneSetupApprovalRunner { return runner }
+				if phase == "trust" {
+					client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting trust approval", 15)
+					runner.trustOutcome = networkdataplaneapproval.TrustOutcome{State: test.state, HelperFailure: test.failure}
+				} else {
+					client.dataPlaneSetup = testNetworkDataPlaneSetupOperation(domain.OperationRequiresApproval, "awaiting low-port approval", 16)
+					runner.lowPortOutcome = networkdataplaneapproval.LowPortOutcome{State: test.state, HelperFailure: test.failure}
+				}
+
+				if _, err := app.SetupNetwork(); err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("SetupNetwork() error = %v, want containing %q", err, test.want)
+				}
+				if ensurer.calls != 0 || phase == "trust" && len(runner.trustRequests) != 1 || phase == "low port" && len(runner.lowPortRequests) != 1 {
+					t.Fatalf("repair/approval calls = %d/%d/%d, want 0 and one phase approval", ensurer.calls, len(runner.trustRequests), len(runner.lowPortRequests))
+				}
+			})
+		}
+	}
+}
+
 // wrongIntentDataPlaneOperation returns an otherwise valid daemon reply for a different stable intent.
 func wrongIntentDataPlaneOperation() control.NetworkDataPlaneSetupOperation {
 	operation := testNetworkDataPlaneSetupOperation(domain.OperationSucceeded, "completed", 17)
