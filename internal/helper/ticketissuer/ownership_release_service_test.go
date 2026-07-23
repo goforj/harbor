@@ -36,6 +36,58 @@ func TestOwnershipReleaseServiceIssuesFromDurableProjection(t *testing.T) {
 	}
 }
 
+// TestOwnershipReleaseServiceAcceptsEquivalentDurableReread prevents pointer allocation from masquerading as authority drift.
+func TestOwnershipReleaseServiceAcceptsEquivalentDurableReread(t *testing.T) {
+	fixture := newOwnershipReleaseFixture(t)
+	fixture.plans.plans[1].Operation = cloneLowPortOperation(fixture.plans.plans[1].Operation)
+
+	if _, err := fixture.service.Issue(t.Context(), fixture.target.OwnerIdentity, fixture.request); err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if fixture.publisher.calls != 1 {
+		t.Fatalf("Publish() calls = %d, want 1", fixture.publisher.calls)
+	}
+}
+
+// TestSameOwnershipReleasePlanPinsEveryField verifies revalidation cannot omit any durable release authority dimension.
+func TestSameOwnershipReleasePlanPinsEveryField(t *testing.T) {
+	fixture := newOwnershipReleaseFixture(t)
+	equivalent := fixture.plan
+	equivalent.Operation = cloneLowPortOperation(equivalent.Operation)
+	if !sameOwnershipReleasePlan(fixture.plan, equivalent) {
+		t.Fatal("equivalent plans differ")
+	}
+
+	mutations := []func(*OwnershipReleasePlan){
+		func(plan *OwnershipReleasePlan) {
+			plan.Operation.ID = "operation-other"
+		},
+		func(plan *OwnershipReleasePlan) {
+			plan.OperationRevision++
+		},
+		func(plan *OwnershipReleasePlan) {
+			plan.CheckpointRevision++
+		},
+		func(plan *OwnershipReleasePlan) {
+			plan.Mutation = helper.OperationEnsureResolver
+		},
+		func(plan *OwnershipReleasePlan) {
+			plan.TargetOwnership.Generation++
+		},
+		func(plan *OwnershipReleasePlan) {
+			plan.ExpectedOwnershipFingerprint = strings.Repeat("f", 64)
+		},
+	}
+	for index, mutate := range mutations {
+		candidate := fixture.plan
+		candidate.Operation = cloneLowPortOperation(candidate.Operation)
+		mutate(&candidate)
+		if sameOwnershipReleasePlan(fixture.plan, candidate) {
+			t.Fatalf("plan mutation %d was ignored", index)
+		}
+	}
+}
+
 // TestOwnershipReleaseServiceRejectsPublicationRaces proves the second durable or projection read fences publication.
 func TestOwnershipReleaseServiceRejectsPublicationRaces(t *testing.T) {
 	for _, test := range []struct {

@@ -267,7 +267,7 @@ func (service *OwnershipReleaseService) Issue(ctx context.Context, requesterIden
 	if err != nil {
 		return OwnershipReleaseResult{}, fmt.Errorf("issue helper ownership-release ticket: revalidate approval plan: %w", err)
 	}
-	if plan != confirmed {
+	if !sameOwnershipReleasePlan(plan, confirmed) {
 		return OwnershipReleaseResult{}, errors.New("issue helper ownership-release ticket: durable approval plan changed before publication")
 	}
 	if err := service.observeOwnership(ctx, requesterIdentity, confirmed); err != nil {
@@ -365,4 +365,14 @@ func (service *OwnershipReleaseService) buildTicket(plan OwnershipReleasePlan, r
 		return helper.Ticket{}, fmt.Errorf("issue helper ownership-release ticket: signing key changed during construction: %w", err)
 	}
 	return ticket, nil
+}
+
+// sameOwnershipReleasePlan compares every durable authority field without treating optional pointer allocation as authority.
+func sameOwnershipReleasePlan(left OwnershipReleasePlan, right OwnershipReleasePlan) bool {
+	return sameLowPortOperation(left.Operation, right.Operation) &&
+		left.OperationRevision == right.OperationRevision &&
+		left.CheckpointRevision == right.CheckpointRevision &&
+		left.Mutation == right.Mutation &&
+		left.TargetOwnership == right.TargetOwnership &&
+		left.ExpectedOwnershipFingerprint == right.ExpectedOwnershipFingerprint
 }
