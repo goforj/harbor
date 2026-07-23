@@ -15,70 +15,59 @@ const props = withDefaults(defineProps<{
   fallback: 'initial',
 })
 
-const failed = ref(false)
-const candidateIndex = ref(0)
 const declaredFaviconURL = ref('')
-const faviconURLs = computed(() => {
+const fallbackLabel = computed(() => props.name.trim().slice(0, 1).toLocaleUpperCase() || '?')
+let lookupGeneration = 0
+
+function sameOriginIconURL(iconURL: string, resourceURL: string) {
   try {
-    const origin = new URL(props.url).origin
-    return [
-      '/logo.png',
-      '/logo.svg',
-      '/favicon.ico',
-      '/favicon.png',
-      '/favicon.svg',
-      '/public/img/fav32.png',
-      '/static/favicon.ico',
-      '/img/favicon.ico',
-    ].map((path) => new URL(path, origin).toString())
+    const resourceOrigin = new URL(resourceURL).origin
+    const parsedIconURL = new URL(iconURL.trim())
+    return parsedIconURL.origin === resourceOrigin ? parsedIconURL.toString() : ''
   }
   catch {
-    return []
+    return ''
   }
-})
-const faviconURL = computed(() => faviconURLs.value[candidateIndex.value] ?? '')
-const displayedFaviconURL = computed(() => declaredFaviconURL.value || faviconURL.value)
-const fallbackLabel = computed(() => props.name.trim().slice(0, 1).toLocaleUpperCase() || '?')
-
-watch(() => [props.url, props.projectId, props.resourceId], () => {
-  failed.value = false
-  candidateIndex.value = 0
-  declaredFaviconURL.value = ''
-  void discoverDeclaredFavicon()
-}, { immediate: true })
-
-// tryNextCandidate supports common local service icon conventions without adding a remote logo catalog.
-function tryNextCandidate() {
-  if (declaredFaviconURL.value) {
-    declaredFaviconURL.value = ''
-    return
-  }
-  if (candidateIndex.value + 1 < faviconURLs.value.length) {
-    candidateIndex.value += 1
-    return
-  }
-  failed.value = true
 }
 
+watch(() => [props.url, props.projectId, props.resourceId], () => {
+  const generation = ++lookupGeneration
+  const { projectId, resourceId, url } = props
+  declaredFaviconURL.value = ''
+  void discoverDeclaredFavicon(generation, projectId, resourceId, url)
+}, { immediate: true })
+
 // discoverDeclaredFavicon asks the desktop backend so resource-page metadata works without webview CORS access.
-async function discoverDeclaredFavicon() {
+async function discoverDeclaredFavicon(generation: number, projectId: string, resourceId: string, resourceURL: string) {
   try {
-    declaredFaviconURL.value = await harborBridge.getResourceIconURL(props.projectId, props.resourceId)
+    const iconURL = await harborBridge.getResourceIconURL(projectId, resourceId)
+    if (generation === lookupGeneration) {
+      declaredFaviconURL.value = sameOriginIconURL(iconURL, resourceURL)
+    }
   }
   catch {
-    // The image candidates below keep local services useful while the daemon or resource is unavailable.
+    if (generation === lookupGeneration) {
+      declaredFaviconURL.value = ''
+    }
+  }
+}
+
+function clearFailedFavicon(event: Event) {
+  const image = event.currentTarget
+  if (image instanceof HTMLImageElement && image.src === declaredFaviconURL.value) {
+    declaredFaviconURL.value = ''
   }
 }
 </script>
 
 <template>
   <img
-    v-if="displayedFaviconURL && !failed"
-    :src="displayedFaviconURL"
+    v-if="declaredFaviconURL"
+    :src="declaredFaviconURL"
     :alt="''"
     :class="[props.compact ? 'size-6' : 'size-8', 'shrink-0 rounded-md object-contain']"
     aria-hidden="true"
-    @error="tryNextCandidate"
+    @error="clearFailedFavicon"
   >
   <span
     v-else
