@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -370,23 +371,206 @@ func trustedHTTPSInvokeProjectLifecycle(
 		string(intentID),
 		"--json",
 	)
+	return trustedHTTPSDecodeProjectLifecycleResult(result, action, projectID, intentID)
+}
+
+// trustedHTTPSDecodeProjectLifecycleResult accepts authoritative lifecycle JSON even when a terminal CLI result exits nonzero.
+func trustedHTTPSDecodeProjectLifecycleResult(
+	result phase1CommandResult,
+	action string,
+	projectID domain.ProjectID,
+	intentID domain.IntentID,
+) (control.ProjectLifecycleOperation, error) {
 	var lifecycle control.ProjectLifecycleOperation
-	if err := result.decodeJSON(&lifecycle); err != nil {
-		return control.ProjectLifecycleOperation{}, err
+	stdoutResult := result
+	stdoutResult.err = nil
+	if err := stdoutResult.decodeJSON(&lifecycle); err != nil {
+		return control.ProjectLifecycleOperation{}, trustedHTTPSProjectLifecycleResultError(result, fmt.Errorf("decode lifecycle JSON: %w", err))
 	}
 	if err := lifecycle.Validate(); err != nil {
-		return control.ProjectLifecycleOperation{}, err
+		return control.ProjectLifecycleOperation{}, trustedHTTPSProjectLifecycleResultError(result, fmt.Errorf("validate lifecycle JSON: %w", err))
 	}
 	expectedKind, err := trustedHTTPSLifecycleKind(action)
 	if err != nil {
-		return control.ProjectLifecycleOperation{}, err
+		return control.ProjectLifecycleOperation{}, trustedHTTPSProjectLifecycleResultError(result, err)
 	}
 	if lifecycle.Operation.ProjectID != projectID ||
 		lifecycle.Operation.IntentID != intentID ||
 		lifecycle.Operation.Kind != expectedKind {
-		return control.ProjectLifecycleOperation{}, errors.New("project lifecycle result crossed its requested action, project, or intent")
+		return control.ProjectLifecycleOperation{}, trustedHTTPSProjectLifecycleResultError(
+			result,
+			errors.New("project lifecycle result crossed its requested action, project, or intent"),
+		)
+	}
+	if result.err != nil &&
+		lifecycle.Operation.State != domain.OperationFailed &&
+		lifecycle.Operation.State != domain.OperationCancelled {
+		return control.ProjectLifecycleOperation{}, trustedHTTPSProjectLifecycleResultError(
+			result,
+			fmt.Errorf("nonzero command returned nonterminal lifecycle state %q", lifecycle.Operation.State),
+		)
 	}
 	return lifecycle, nil
+}
+
+// trustedHTTPSProjectLifecycleResultError retains a command failure when its machine-readable result is not authoritative.
+func trustedHTTPSProjectLifecycleResultError(result phase1CommandResult, observation error) error {
+	if result.err == nil {
+		return observation
+	}
+	return fmt.Errorf(
+		"project lifecycle command failed: %w: %s (lifecycle result: %v)",
+		result.err,
+		strings.TrimSpace(result.stderr),
+		observation,
+	)
+}
+
+// TestTrustedHTTPSDecodeProjectLifecycleResult verifies terminal CLI failures retain their authoritative lifecycle JSON.
+func TestTrustedHTTPSDecodeProjectLifecycleResult(t *testing.T) {
+	t.Parallel()
+
+	projectID := domain.ProjectID("project-trusted-https")
+	intentID := domain.IntentID("intent-trusted-https")
+	commandFailure := errors.New("project command exited 1")
+	terminal := trustedHTTPSLifecycleResultFixture(t, projectID, intentID, domain.OperationFailed)
+	queued := trustedHTTPSLifecycleResultFixture(t, projectID, intentID, domain.OperationQueued)
+	running := trustedHTTPSLifecycleResultFixture(t, projectID, intentID, domain.OperationRunning)
+	mismatched := trustedHTTPSLifecycleResultFixture(t, projectID, "intent-other", domain.OperationFailed)
+
+	tests := []struct {
+		name               string
+		result             phase1CommandResult
+		wantState          domain.OperationState
+		wantCommandFailure bool
+		wantError          bool
+	}{
+		{
+			name:      "terminal JSON with nonzero exit",
+			result:    trustedHTTPSLifecycleCommandResult(t, terminal, commandFailure),
+			wantState: domain.OperationFailed,
+		},
+		{
+			name:               "malformed stdout retains command failure",
+			result:             phase1CommandResult{stdout: "{", err: commandFailure},
+			wantCommandFailure: true,
+			wantError:          true,
+		},
+		{
+			name:               "empty stdout retains command failure",
+			result:             phase1CommandResult{err: commandFailure},
+			wantCommandFailure: true,
+			wantError:          true,
+		},
+		{
+			name:               "correlation mismatch",
+			result:             trustedHTTPSLifecycleCommandResult(t, mismatched, commandFailure),
+			wantCommandFailure: true,
+			wantError:          true,
+		},
+		{
+			name:               "nonzero queued result",
+			result:             trustedHTTPSLifecycleCommandResult(t, queued, commandFailure),
+			wantCommandFailure: true,
+			wantError:          true,
+		},
+		{
+			name:      "queued",
+			result:    trustedHTTPSLifecycleCommandResult(t, queued, nil),
+			wantState: domain.OperationQueued,
+		},
+		{
+			name:      "running",
+			result:    trustedHTTPSLifecycleCommandResult(t, running, nil),
+			wantState: domain.OperationRunning,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			got, err := trustedHTTPSDecodeProjectLifecycleResult(test.result, "start", projectID, intentID)
+			if (err != nil) != test.wantError {
+				t.Fatalf("trustedHTTPSDecodeProjectLifecycleResult() error = %v, want error %t", err, test.wantError)
+			}
+			if test.wantCommandFailure && !errors.Is(err, commandFailure) {
+				t.Fatalf("trustedHTTPSDecodeProjectLifecycleResult() error = %v, want command failure", err)
+			}
+			if !test.wantCommandFailure && errors.Is(err, commandFailure) {
+				t.Fatalf("trustedHTTPSDecodeProjectLifecycleResult() error = %v, unexpectedly retained command failure", err)
+			}
+			if err == nil && got.Operation.State != test.wantState {
+				t.Fatalf("trustedHTTPSDecodeProjectLifecycleResult() state = %s, want %s", got.Operation.State, test.wantState)
+			}
+		})
+	}
+}
+
+// TestTrustedHTTPSProjectLifecycleTerminalErrorIncludesProblem verifies failed lifecycle diagnostics remain actionable.
+func TestTrustedHTTPSProjectLifecycleTerminalErrorIncludesProblem(t *testing.T) {
+	t.Parallel()
+
+	lifecycle := trustedHTTPSLifecycleResultFixture(
+		t,
+		domain.ProjectID("project-trusted-https"),
+		domain.IntentID("intent-trusted-https"),
+		domain.OperationFailed,
+	)
+	err := trustedHTTPSProjectLifecycleTerminalError(lifecycle.Operation)
+	for _, want := range []string{"code=\"project.start.failed\"", "retryable=true"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("trustedHTTPSProjectLifecycleTerminalError() = %q, want %q", err, want)
+		}
+	}
+}
+
+// trustedHTTPSLifecycleCommandResult encodes one CLI lifecycle result without mixing it with diagnostic output.
+func trustedHTTPSLifecycleCommandResult(t *testing.T, lifecycle control.ProjectLifecycleOperation, err error) phase1CommandResult {
+	t.Helper()
+
+	encoded, marshalErr := json.Marshal(lifecycle)
+	if marshalErr != nil {
+		t.Fatalf("marshal lifecycle result: %v", marshalErr)
+	}
+	return phase1CommandResult{stdout: string(encoded), err: err}
+}
+
+// trustedHTTPSLifecycleResultFixture constructs one validated lifecycle state for decoder tests.
+func trustedHTTPSLifecycleResultFixture(
+	t *testing.T,
+	projectID domain.ProjectID,
+	intentID domain.IntentID,
+	state domain.OperationState,
+) control.ProjectLifecycleOperation {
+	t.Helper()
+
+	requestedAt := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	operation, err := domain.NewOperation("operation-trusted-https", intentID, domain.OperationKindProjectStart, projectID, requestedAt)
+	if err != nil {
+		t.Fatalf("new lifecycle operation: %v", err)
+	}
+	if state == domain.OperationQueued {
+		return control.ProjectLifecycleOperation{Operation: operation, Revision: 1}
+	}
+	operation, err = operation.Transition(domain.OperationRunning, "starting project", requestedAt.Add(time.Second), nil)
+	if err != nil {
+		t.Fatalf("start lifecycle operation: %v", err)
+	}
+	if state == domain.OperationRunning {
+		return control.ProjectLifecycleOperation{Operation: operation, Revision: 2}
+	}
+	if state != domain.OperationFailed {
+		t.Fatalf("unsupported lifecycle fixture state %s", state)
+	}
+	operation, err = operation.Transition(domain.OperationFailed, "project failed", requestedAt.Add(2*time.Second), &domain.Problem{
+		Code:      "project.start.failed",
+		Message:   "project did not become ready",
+		Retryable: true,
+	})
+	if err != nil {
+		t.Fatalf("fail lifecycle operation: %v", err)
+	}
+	return control.ProjectLifecycleOperation{Operation: operation, Revision: 3}
 }
 
 // trustedHTTPSAwaitProjectLifecycle replays one action until its daemon-owned operation is terminal.
@@ -426,7 +610,7 @@ func trustedHTTPSAwaitProjectLifecycle(
 			case domain.OperationSucceeded:
 				return nil
 			case domain.OperationFailed, domain.OperationCancelled, domain.OperationRequiresApproval:
-				return fmt.Errorf("operation %s ended %s in phase %q", lifecycle.Operation.ID, lifecycle.Operation.State, lifecycle.Operation.Phase)
+				return trustedHTTPSProjectLifecycleTerminalError(lifecycle.Operation)
 			}
 		} else {
 			lastErr = err
@@ -440,6 +624,21 @@ func trustedHTTPSAwaitProjectLifecycle(
 		case <-ticker.C:
 		}
 	}
+}
+
+// trustedHTTPSProjectLifecycleTerminalError reports durable terminal state with its bounded failure details when available.
+func trustedHTTPSProjectLifecycleTerminalError(operation domain.Operation) error {
+	if operation.Problem != nil {
+		return fmt.Errorf(
+			"operation %s ended %s in phase %q (problem code=%q retryable=%t)",
+			operation.ID,
+			operation.State,
+			operation.Phase,
+			operation.Problem.Code,
+			operation.Problem.Retryable,
+		)
+	}
+	return fmt.Errorf("operation %s ended %s in phase %q", operation.ID, operation.State, operation.Phase)
 }
 
 // trustedHTTPSAwaitProjectState confirms lifecycle completion produced the exact public project projection.
