@@ -105,10 +105,18 @@ function protectDesktopControls(emulator: Terminal): Array<() => void> {
     emulator.parser.registerOscHandler(1, () => true),
     emulator.parser.registerOscHandler(2, () => true),
     emulator.parser.registerOscHandler(8, () => true),
+    emulator.parser.registerOscHandler(10, suppressColorQuery),
+    emulator.parser.registerOscHandler(11, suppressColorQuery),
+    emulator.parser.registerOscHandler(12, suppressColorQuery),
     emulator.parser.registerOscHandler(52, () => true),
     emulator.parser.registerCsiHandler({ final: 't' }, () => true),
   ]
   return handlers.map((handler) => () => handler.dispose())
+}
+
+// suppressColorQuery prevents a delayed emulator reply from reaching the shell after its query timeout.
+function suppressColorQuery(data: string) {
+  return data === '?'
 }
 
 // resizeToContainer keeps the PTY's grid in lockstep with the emulator's fitted viewport.

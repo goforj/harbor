@@ -99,7 +99,12 @@ describe('InteractiveTerminal', () => {
     const terminal = mocks.terminals[0]
     expect(terminal?.open).toHaveBeenCalledWith(wrapper.element.firstElementChild)
     expect(terminal?.focus).toHaveBeenCalledOnce()
-    expect(terminal?.parser.registerOscHandler.mock.calls.map((call) => call[0])).toEqual([0, 1, 2, 8, 52])
+    expect(terminal?.parser.registerOscHandler.mock.calls.map((call) => call[0])).toEqual([0, 1, 2, 8, 10, 11, 12, 52])
+    for (const identifier of [10, 11, 12]) {
+      const handler = terminal?.parser.registerOscHandler.mock.calls.find((call) => call[0] === identifier)?.[1]
+      expect(handler?.('?')).toBe(true)
+      expect(handler?.('#ffffff')).toBe(false)
+    }
     expect(terminal?.parser.registerCsiHandler).toHaveBeenCalledWith({ final: 't' }, expect.any(Function))
     expect(mocks.fits[0]?.fit).toHaveBeenCalledOnce()
     expect(session.resize).toHaveBeenCalledWith({ cols: 80, rows: 24 })

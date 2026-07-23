@@ -64,6 +64,9 @@ func TestTerminalEnvironmentExcludesHarborState(t *testing.T) {
 	if environment["TERM"] != "xterm-256color" {
 		t.Fatalf("TERM = %q, want xterm-256color", environment["TERM"])
 	}
+	if environment["COLORFGBG"] != "15;0" {
+		t.Fatalf("COLORFGBG = %q, want 15;0", environment["COLORFGBG"])
+	}
 	if environment["PATH"] != "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" {
 		t.Fatalf("PATH = %q, want fixed terminal path", environment["PATH"])
 	}

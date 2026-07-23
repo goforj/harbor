@@ -210,6 +210,7 @@ func terminalEnvironment(shell string) []string {
 	}
 	appendEnvironment("SHELL", shell)
 	appendEnvironment("TERM", "xterm-256color")
+	appendEnvironment("COLORFGBG", "15;0")
 	appendEnvironment("COLORTERM", os.Getenv("COLORTERM"))
 	appendEnvironment("LANG", os.Getenv("LANG"))
 	appendEnvironment("TMPDIR", os.Getenv("TMPDIR"))
