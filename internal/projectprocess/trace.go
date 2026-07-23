@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -122,4 +123,101 @@ func (trace *projectLaunchTrace) Close() error {
 // projectLaunchTracePath returns the stable ignored path used by runtime diagnostics and future desktop log views.
 func projectLaunchTracePath(checkoutRoot string) string {
 	return filepath.Join(checkoutRoot, filepath.FromSlash(projectLaunchTraceDirectory), projectLaunchTraceFilename)
+}
+
+// removeProjectLaunchTrace removes Harbor's settled-lifecycle diagnostic and empty Harbor-only parent directories.
+func removeProjectLaunchTrace(checkoutRoot string) error {
+	root, err := os.OpenRoot(checkoutRoot)
+	if err != nil {
+		return fmt.Errorf("open checkout root for project launch trace cleanup: %w", err)
+	}
+	defer root.Close()
+	dataRoot, err := openDirectProjectLaunchTraceDirectory(root, "_data")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer dataRoot.Close()
+	harborRoot, err := openDirectProjectLaunchTraceDirectory(dataRoot, "harbor")
+	if errors.Is(err, fs.ErrNotExist) {
+		return removeEmptyProjectLaunchTraceDirectory(root, "_data", dataRoot)
+	}
+	if err != nil {
+		return err
+	}
+	defer harborRoot.Close()
+	information, err := harborRoot.Lstat(projectLaunchTraceFilename)
+	if err == nil {
+		if !information.Mode().IsRegular() {
+			return fmt.Errorf("project launch trace %q must be a direct regular file", projectLaunchTraceFilename)
+		}
+		if err := harborRoot.Remove(projectLaunchTraceFilename); err != nil {
+			return fmt.Errorf("remove project launch trace %q: %w", projectLaunchTraceFilename, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect project launch trace %q: %w", projectLaunchTraceFilename, err)
+	}
+	if err := removeEmptyProjectLaunchTraceDirectory(dataRoot, "harbor", harborRoot); err != nil {
+		return err
+	}
+	return removeEmptyProjectLaunchTraceDirectory(root, "_data", dataRoot)
+}
+
+// openDirectProjectLaunchTraceDirectory retains one direct directory after proving its descriptor still names the observed entry.
+func openDirectProjectLaunchTraceDirectory(root *os.Root, path string) (*os.Root, error) {
+	information, err := root.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fs.ErrNotExist
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect project launch trace directory %q: %w", path, err)
+	}
+	if information.Mode()&os.ModeSymlink != 0 || !information.IsDir() {
+		return nil, fmt.Errorf("project launch trace directory %q must be a direct directory", path)
+	}
+	directory, err := root.OpenRoot(path)
+	if err != nil {
+		return nil, fmt.Errorf("open project launch trace directory %q: %w", path, err)
+	}
+	opened, err := directory.Open(".")
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("retain project launch trace directory %q: %w", path, err), directory.Close())
+	}
+	openedInformation, statErr := opened.Stat()
+	closeErr := opened.Close()
+	current, currentErr := root.Lstat(path)
+	if statErr != nil || closeErr != nil || currentErr != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(information, openedInformation) || !os.SameFile(openedInformation, current) {
+		return nil, errors.Join(fmt.Errorf("project launch trace directory %q changed while opening", path), directory.Close())
+	}
+	return directory, nil
+}
+
+// removeEmptyProjectLaunchTraceDirectory removes only a direct empty directory, preserving project files and links.
+func removeEmptyProjectLaunchTraceDirectory(parent *os.Root, path string, directory *os.Root) error {
+	openedDirectory, err := directory.Open(".")
+	if err != nil {
+		return fmt.Errorf("open project launch trace directory %q: %w", path, err)
+	}
+	opened, statErr := openedDirectory.Stat()
+	current, currentErr := parent.Lstat(path)
+	if statErr != nil || currentErr != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(opened, current) {
+		return errors.Join(fmt.Errorf("project launch trace directory %q changed before removal", path), openedDirectory.Close())
+	}
+	_, readErr := openedDirectory.ReadDir(1)
+	closeErr := openedDirectory.Close()
+	if readErr == nil {
+		return closeErr
+	}
+	if !errors.Is(readErr, io.EOF) {
+		return errors.Join(fmt.Errorf("inspect project launch trace directory %q: %w", path, readErr), closeErr)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := parent.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove empty project launch trace directory %q: %w", path, err)
+	}
+	return nil
 }

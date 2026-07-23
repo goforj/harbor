@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	managedHostEnvironmentBegin = "# harbor managed: begin"
-	managedHostEnvironmentEnd   = "# harbor managed: end"
+	managedHostEnvironmentBegin               = "# harbor managed: begin"
+	managedHostEnvironmentEnd                 = "# harbor managed: end"
+	managedHostEnvironmentRestoreFinalNewline = "# harbor managed: restore final newline"
 )
 
 var managedHostEnvironmentKeys = map[string]struct{}{
@@ -205,7 +206,25 @@ func removeManagedHostEnvironmentBlock(contents string) (string, error) {
 	if len(begins) != 1 || len(ends) != 1 || begins[0].start >= ends[0].start {
 		return "", errors.New("Harbor managed markers must contain one ordered begin/end pair")
 	}
-	return contents[:begins[0].start] + contents[ends[0].end:], nil
+	prefix := contents[:begins[0].start]
+	suffix := contents[ends[0].end:]
+	if managedHostEnvironmentNeedsFinalNewlineRestore(contents[begins[0].end:ends[0].start]) {
+		newline := "\n"
+		if strings.HasSuffix(prefix, "\r\n") {
+			newline = "\r\n"
+		}
+		if !strings.HasSuffix(prefix, newline) {
+			return "", errors.New("Harbor managed newline restoration marker does not follow an inserted separator")
+		}
+		prefix = strings.TrimSuffix(prefix, newline)
+	}
+	return prefix + suffix, nil
+}
+
+// managedHostEnvironmentNeedsFinalNewlineRestore recognizes the current ownership marker while leaving legacy blocks removable.
+func managedHostEnvironmentNeedsFinalNewlineRestore(block string) bool {
+	lines := strings.Split(strings.ReplaceAll(block, "\r\n", "\n"), "\n")
+	return len(lines) > 0 && strings.TrimSpace(lines[0]) == managedHostEnvironmentRestoreFinalNewline
 }
 
 // appendManagedHostEnvironmentBlock appends sorted dotenv assignments so duplicate user defaults cannot win later in the file.
@@ -219,20 +238,20 @@ func appendManagedHostEnvironmentBlock(base string, values EnvironmentOverrides)
 		newline = "\r\n"
 	}
 	encoded = strings.ReplaceAll(encoded, "\n", newline)
-	block := strings.Join([]string{
-		managedHostEnvironmentBegin,
-		encoded,
-		managedHostEnvironmentEnd,
-	}, newline)
+	blockLines := []string{managedHostEnvironmentBegin}
 	result := base
+	insertedSeparator := false
 	if result != "" {
 		if !strings.HasSuffix(result, "\n") {
 			result += newline
-		}
-		if !strings.HasSuffix(result, newline+newline) {
-			result += newline
+			insertedSeparator = true
 		}
 	}
+	if insertedSeparator {
+		blockLines = append(blockLines, managedHostEnvironmentRestoreFinalNewline)
+	}
+	blockLines = append(blockLines, encoded, managedHostEnvironmentEnd)
+	block := strings.Join(blockLines, newline)
 	return result + block + newline, nil
 }
 

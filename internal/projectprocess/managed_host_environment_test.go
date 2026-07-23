@@ -209,8 +209,68 @@ func TestRemoveManagedHostEnvironmentPreservesProjectContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read project environment: %v", err)
 	}
-	if string(contents) != original+"\n" {
-		t.Fatalf("contents = %q, want preserved project assignment plus separator", contents)
+	if string(contents) != original {
+		t.Fatalf("contents = %q, want original project content", contents)
+	}
+}
+
+// TestManagedHostEnvironmentRestoresExactProjectBytes verifies temporary separators do not survive a settled lifecycle.
+func TestManagedHostEnvironmentRestoresExactProjectBytes(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		original string
+	}{
+		{
+			name:     "LF without final newline",
+			original: "USER_SETTING=preserved",
+		},
+		{
+			name:     "LF with final newline",
+			original: "USER_SETTING=preserved\n",
+		},
+		{
+			name:     "CRLF without final newline",
+			original: "USER_SETTING=preserved\r\nSECOND=preserved",
+		},
+		{
+			name:     "CRLF with final newline",
+			original: "USER_SETTING=preserved\r\nSECOND=preserved\r\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, ".env.host")
+			if err := os.WriteFile(path, []byte(test.original), 0o640); err != nil {
+				t.Fatalf("write project environment: %v", err)
+			}
+			if _, err := writeManagedHostEnvironment(root, EnvironmentOverrides{"IP_ADDRESS": "127.77.0.32"}); err != nil {
+				t.Fatalf("write managed environment: %v", err)
+			}
+			if err := removeManagedHostEnvironment(root); err != nil {
+				t.Fatalf("remove managed environment: %v", err)
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil || string(actual) != test.original {
+				t.Fatalf("restored contents = %q, %v; want %q", actual, err, test.original)
+			}
+		})
+	}
+}
+
+// TestRemoveManagedHostEnvironmentAcceptsLegacyBlock verifies older Harbor markers can be retired without restoration metadata.
+func TestRemoveManagedHostEnvironmentAcceptsLegacyBlock(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env.host")
+	contents := "USER_SETTING=preserved\n\n" + managedHostEnvironmentBegin + "\nIP_ADDRESS=127.77.0.32\n" + managedHostEnvironmentEnd + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o640); err != nil {
+		t.Fatalf("write legacy managed environment: %v", err)
+	}
+	if err := removeManagedHostEnvironment(root); err != nil {
+		t.Fatalf("remove legacy managed environment: %v", err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil || string(actual) != "USER_SETTING=preserved\n\n" {
+		t.Fatalf("legacy removal = %q, %v", actual, err)
 	}
 }
 

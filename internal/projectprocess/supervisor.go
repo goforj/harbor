@@ -592,7 +592,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = removeManagedLaunchContext(managedLaunchPath)
 		}
 	}()
-	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
+	command.Env = withDevelopmentEnvironment(supervisor.environment, requestedManagedEnvironmentOverrides(request.EnvironmentOverrides, managedOverrides), managedLaunchPath)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -623,6 +623,12 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		platform.close()
 		return nil, err
 	}
+	traceCleanup := true
+	defer func() {
+		if traceCleanup {
+			_ = removeProjectLaunchTrace(checkoutRoot)
+		}
+	}()
 	relay := newOutputRelayWithTraceAndSpool(request.Stdout, request.Stderr, trace, spool, supervisor.outputLines)
 	spoolCleanup = false
 	if err := command.Start(); err != nil {
@@ -687,6 +693,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
+		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -703,6 +710,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
+		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -718,6 +726,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
+		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -733,6 +742,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
+		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -784,6 +794,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 		cleanupErr := terminateStartedCommand(command, platform)
 		managedHostEnvironmentCleanup = len(managedOverrides) > 0 && cleanupErr == nil
+		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
@@ -799,6 +810,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	supervisor.releaseLaunchLocked(reservation)
 	promoted = true
 	supervisor.mu.Unlock()
+	traceCleanup = false
 	if brokerAttachment != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
@@ -997,16 +1009,32 @@ func (supervisor *Supervisor) settleReset(ctx context.Context, reset *resetProce
 		supervisor.mu.Unlock()
 		return settlementErr
 	}
+	supervisor.mu.Lock()
+	waitErr := reset.waitErr
+	supervisor.mu.Unlock()
+	if waitErr != nil {
+		supervisor.finishReset(reset)
+		supervisor.mu.Lock()
+		reset.settling = false
+		reset.settlementErr = nil
+		close(reset.settlementDone)
+		supervisor.mu.Unlock()
+		return fmt.Errorf("forj down: %w", waitErr)
+	}
+	if err := removeProjectLaunchTrace(reset.checkoutRoot); err != nil {
+		supervisor.mu.Lock()
+		reset.settling = false
+		reset.settlementErr = err
+		close(reset.settlementDone)
+		supervisor.mu.Unlock()
+		return err
+	}
 	supervisor.finishReset(reset)
 	supervisor.mu.Lock()
 	reset.settling = false
 	reset.settlementErr = nil
 	close(reset.settlementDone)
-	waitErr := reset.waitErr
 	supervisor.mu.Unlock()
-	if waitErr != nil {
-		return fmt.Errorf("forj down: %w", waitErr)
-	}
 	return nil
 }
 
@@ -1238,6 +1266,9 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	}
 	if treeSettlementErr == nil {
 		cleanupErr = errors.Join(cleanupErr, supervisor.removeHostEnvironment(info.CheckoutRoot))
+		if stopRequested {
+			cleanupErr = errors.Join(cleanupErr, removeProjectLaunchTrace(info.CheckoutRoot))
+		}
 	}
 	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))
 
@@ -1502,6 +1533,17 @@ func cloneEnvironmentOverrides(overrides EnvironmentOverrides) EnvironmentOverri
 	return result
 }
 
+// requestedManagedEnvironmentOverrides keeps the child environment limited to caller-requested keys while using the persisted normalized values.
+func requestedManagedEnvironmentOverrides(requested EnvironmentOverrides, managed EnvironmentOverrides) EnvironmentOverrides {
+	result := make(EnvironmentOverrides, len(requested))
+	for name := range requested {
+		if value, present := managed[name]; present {
+			result[name] = value
+		}
+	}
+	return result
+}
+
 // canonicalDirectory resolves aliases before the path becomes a process working-directory identity.
 func canonicalDirectory(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
@@ -1558,11 +1600,17 @@ type environmentAssignment struct {
 	value string
 }
 
-// withDevelopmentEnvironment removes file-owned values from the ambient launch and selects non-interactive output.
-func withDevelopmentEnvironment(environment []string, fileValues EnvironmentOverrides, managedLaunchPath ...string) []string {
-	names := sortedEnvironmentOverrideNames(fileValues)
+// withDevelopmentEnvironment replaces ambient managed values with Harbor's validated assignments and selects non-interactive output.
+func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverrides, managedLaunchPath ...string) []string {
+	names := sortedEnvironmentOverrideNames(overrides)
 	replacedNames := append(append([]string(nil), names...), developmentLaunchIsolationNames...)
 	assignments := []environmentAssignment{{name: developmentPlainEnvName, value: "1"}}
+	for _, name := range names {
+		assignments = append(assignments, environmentAssignment{
+			name:  name,
+			value: overrides[name],
+		})
+	}
 	if len(managedLaunchPath) > 0 && managedLaunchPath[0] != "" {
 		assignments = append(assignments, environmentAssignment{name: ManagedLaunchContextEnvironment, value: managedLaunchPath[0]})
 	}

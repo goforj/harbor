@@ -2,6 +2,7 @@ package projectprocess
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,166 @@ func TestStartRetainsAndClosesProjectLaunchTrace(t *testing.T) {
 	}
 	if err := os.Rename(path, path+".closed"); err != nil {
 		t.Fatalf("rename completed project launch trace: %v", err)
+	}
+}
+
+// TestStopRemovesProjectLaunchTrace verifies an explicitly requested settled shutdown retires Harbor diagnostics.
+func TestStopRemovesProjectLaunchTrace(t *testing.T) {
+	checkout := t.TempDir()
+	installForjHelper(t, "wait")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-trace-stop",
+		SessionID:            "session-trace-stop",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := supervisor.Stop(t.Context(), "project-trace-stop", "session-trace-stop"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if _, err := os.Lstat(projectLaunchTracePath(checkout)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project launch trace stat error = %v, want not exist", err)
+	}
+	if _, err := os.Lstat(filepath.Join(checkout, "_data")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("trace parent directory stat error = %v, want not exist", err)
+	}
+}
+
+// TestDownRemovesProjectLaunchTrace verifies reset clears diagnostics only after its owned process scope settles.
+func TestDownRemovesProjectLaunchTrace(t *testing.T) {
+	checkout := t.TempDir()
+	installForjHelper(t, "exit")
+	if trace, err := openProjectLaunchTrace(checkout, "project-trace-down", "session-trace-down", time.Now()); err != nil {
+		t.Fatalf("openProjectLaunchTrace() error = %v", err)
+	} else if err := trace.Close(); err != nil {
+		t.Fatalf("close project launch trace: %v", err)
+	}
+	supervisor := newTestSupervisor(Options{})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	if err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: checkout}); err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+	if _, err := os.Lstat(projectLaunchTracePath(checkout)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project launch trace stat error = %v, want not exist", err)
+	}
+}
+
+// TestFailedDownRetainsProjectLaunchTrace preserves diagnostics when reset did not complete successfully.
+func TestFailedDownRetainsProjectLaunchTrace(t *testing.T) {
+	checkout := t.TempDir()
+	installForjHelper(t, "down-fail")
+	if trace, err := openProjectLaunchTrace(checkout, "project-trace-down-failed", "session-trace-down-failed", time.Now()); err != nil {
+		t.Fatalf("openProjectLaunchTrace() error = %v", err)
+	} else if err := trace.Close(); err != nil {
+		t.Fatalf("close project launch trace: %v", err)
+	}
+	supervisor := newTestSupervisor(Options{})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	if err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: checkout}); err == nil {
+		t.Fatal("Down() error = nil, want reset failure")
+	}
+	if _, err := os.Lstat(projectLaunchTracePath(checkout)); err != nil {
+		t.Fatalf("project launch trace stat error = %v, want retained trace", err)
+	}
+}
+
+// TestStartRollbackRemovesProjectLaunchTrace verifies a process rejected before acceptance leaves no diagnostic residue.
+func TestStartRollbackRemovesProjectLaunchTrace(t *testing.T) {
+	checkout := t.TempDir()
+	supervisor := newTestSupervisor(Options{})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	_, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-trace-rollback",
+		SessionID:            "session-trace-rollback",
+		CheckoutRoot:         checkout,
+		GoForjExecutable:     checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err == nil {
+		t.Fatal("Start() error = nil, want launch failure")
+	}
+	if _, err := os.Lstat(projectLaunchTracePath(checkout)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project launch trace stat error = %v, want not exist", err)
+	}
+}
+
+// TestRemoveProjectLaunchTracePreservesProjectFiles verifies cleanup never removes project-owned siblings or non-empty parents.
+func TestRemoveProjectLaunchTracePreservesProjectFiles(t *testing.T) {
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "_data", "harbor"), 0o700); err != nil {
+		t.Fatalf("create trace directory: %v", err)
+	}
+	if err := os.WriteFile(projectLaunchTracePath(checkout), []byte("trace"), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	projectFile := filepath.Join(checkout, "_data", "project-owned")
+	if err := os.WriteFile(projectFile, []byte("preserve"), 0o600); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	if err := removeProjectLaunchTrace(checkout); err != nil {
+		t.Fatalf("removeProjectLaunchTrace() error = %v", err)
+	}
+	if contents, err := os.ReadFile(projectFile); err != nil || string(contents) != "preserve" {
+		t.Fatalf("project file = %q, %v", contents, err)
+	}
+	if _, err := os.Lstat(filepath.Join(checkout, "_data")); err != nil {
+		t.Fatalf("non-empty _data stat error = %v", err)
+	}
+}
+
+// TestRemoveProjectLaunchTraceRejectsLinkedDirectory prevents cleanup from resolving Harbor's path through a project link.
+func TestRemoveProjectLaunchTraceRejectsLinkedDirectory(t *testing.T) {
+	checkout := t.TempDir()
+	target := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkout, "_data"), 0o700); err != nil {
+		t.Fatalf("create data directory: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(checkout, "_data", "harbor")); err != nil {
+		t.Skipf("create diagnostic directory symlink: %v", err)
+	}
+	if err := removeProjectLaunchTrace(checkout); err == nil || !strings.Contains(err.Error(), "direct directory") {
+		t.Fatalf("removeProjectLaunchTrace() error = %v", err)
+	}
+}
+
+// TestDownFencesCheckoutUntilTraceCleanup verifies reset admission remains owned when diagnostic cleanup is unsafe.
+func TestDownFencesCheckoutUntilTraceCleanup(t *testing.T) {
+	checkout := t.TempDir()
+	target := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkout, "_data"), 0o700); err != nil {
+		t.Fatalf("create data directory: %v", err)
+	}
+	link := filepath.Join(checkout, "_data", "harbor")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("create diagnostic directory symlink: %v", err)
+	}
+	installForjHelper(t, "exit")
+	supervisor := newTestSupervisor(Options{})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	if err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: checkout}); err == nil {
+		t.Fatal("Down() error = nil, want trace cleanup failure")
+	}
+	_, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            "project-trace-fence",
+		SessionID:            "session-trace-fence",
+		CheckoutRoot:         checkout,
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if !errors.Is(err, ErrResetInProgress) {
+		t.Fatalf("Start() error = %v, want ErrResetInProgress", err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatalf("remove unsafe trace link: %v", err)
+	}
+	if err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: checkout}); err != nil {
+		t.Fatalf("retry Down() error = %v", err)
 	}
 }
 

@@ -60,19 +60,27 @@ func init() {
 			waitForTerminationSignal()
 		case "orphan":
 			runDownOrphanHelper()
+		case "down-fail":
+			os.Exit(19)
 		}
 		os.Exit(0)
 	}
-	if err := godotenv.Overload(".env.host"); err != nil {
-		os.Exit(101)
-	}
 	mode := os.Getenv(helperModeEnvironment)
+	if mode != "environment-only" && mode != "precommand" && mode != "precommand-child" {
+		if err := godotenv.Overload(".env.host"); err != nil {
+			os.Exit(101)
+		}
+	}
 	if mode == "grandchild" {
 		runGrandchildHelper()
 		os.Exit(0)
 	}
 	if mode == "grandchild-ignore" {
 		runIgnoringGrandchildHelper()
+		os.Exit(0)
+	}
+	if mode == "precommand" {
+		runPrecommandHelper()
 		os.Exit(0)
 	}
 	if mode == "ignore" {
@@ -90,6 +98,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "dev-service-ip-address=%s\n", os.Getenv("DEV_SERVICE_IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "ip-address=%s\n", os.Getenv("IP_ADDRESS"))
 	fmt.Fprintf(os.Stdout, "api-http-host=%s\n", os.Getenv("API_HTTP_HOST"))
+	fmt.Fprintf(os.Stdout, "lighthouse-url=%s\n", os.Getenv("LIGHTHOUSE_URL"))
 	fmt.Fprintf(os.Stdout, "db-host=%s\n", os.Getenv("DB_HOST"))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
@@ -100,6 +109,8 @@ func init() {
 	switch mode {
 	case "exit":
 		os.Exit(17)
+	case "precommand-child":
+		os.Exit(0)
 	case "burst":
 		for index := 0; index < 4096; index++ {
 			fmt.Fprintf(os.Stdout, "line-%04d\n", index)
@@ -335,6 +346,17 @@ func runDownOrphanHelper() {
 	}
 }
 
+// runPrecommandHelper models a GoForj precommand inheriting the dev process environment.
+func runPrecommandHelper() {
+	command := exec.Command(os.Args[0], "dev")
+	command.Env = replaceEnvironment(os.Environ(), helperModeEnvironment, "precommand-child")
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		os.Exit(106)
+	}
+}
+
 // runTreeParentHelper creates a descendant in the inherited ownership boundary before waiting for shutdown.
 func runTreeParentHelper() {
 	command := exec.Command(os.Args[0], "dev")
@@ -533,8 +555,8 @@ func TestStartRollsBackManagedHostEnvironmentBeforeAcceptingProcess(t *testing.T
 	if err != nil {
 		t.Fatalf("read project host environment: %v", err)
 	}
-	if !bytes.Equal(actual, append(contents, '\n')) {
-		t.Fatalf("project host environment = %q, want preserved assignment and separator", actual)
+	if !bytes.Equal(actual, contents) {
+		t.Fatalf("project host environment = %q, want original project content", actual)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -709,8 +731,8 @@ func TestUnexpectedSettledExitRemovesManagedHostEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read project host environment: %v", err)
 	}
-	if !bytes.Equal(actual, append(contents, '\n')) {
-		t.Fatalf("project host environment = %q, want preserved assignment and separator", actual)
+	if !bytes.Equal(actual, contents) {
+		t.Fatalf("project host environment = %q, want original project content", actual)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -806,19 +828,20 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 	}
 }
 
-// TestStartLoadsManagedValuesFromHostEnvironment proves the child reads Harbor values from the final dotenv layer.
-func TestStartLoadsManagedValuesFromHostEnvironment(t *testing.T) {
+// TestStartInjectsManagedValuesIntoChildEnvironment proves ordinary GoForj children inherit Harbor's assignments without dotenv loading.
+func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, ".env.host"), []byte("DB_HOST=127.0.0.1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkout, ".env.host"), []byte("DB_HOST=127.0.0.1\nIP_ADDRESS=127.0.0.99\n"), 0o600); err != nil {
 		t.Fatalf("write project host environment: %v", err)
 	}
 	stdout := &synchronizedBuffer{}
-	installForjHelper(t, "exit")
+	installForjHelper(t, "precommand")
 
 	captured := CaptureEnvironment()
 	captured = replaceEnvironment(captured, "DEV_SERVICE_IP_ADDRESS", "127.0.0.7")
 	captured = replaceEnvironment(captured, "IP_ADDRESS", "127.0.0.8")
 	captured = replaceEnvironment(captured, "API_HTTP_HOST", "127.0.0.9")
+	captured = replaceEnvironment(captured, "LIGHTHOUSE_URL", "ws://127.0.0.9:3000/lighthouse/ws/agent")
 	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
 	captured = replaceEnvironment(captured, helperUnrelatedEnvironment, "preserved")
 	supervisor := newTestSupervisor(Options{Environment: captured})
@@ -833,6 +856,8 @@ func TestStartLoadsManagedValuesFromHostEnvironment(t *testing.T) {
 		EnvironmentOverrides: EnvironmentOverrides{
 			"DEV_SERVICE_IP_ADDRESS": "127.77.0.42",
 			"IP_ADDRESS":             "127.77.0.42",
+			"API_HTTP_HOST":          "127.77.0.99",
+			"LIGHTHOUSE_URL":         "ws://127.77.0.42:3000/lighthouse/ws/agent",
 		},
 		Stdout: stdout,
 	})
@@ -845,11 +870,12 @@ func TestStartLoadsManagedValuesFromHostEnvironment(t *testing.T) {
 	waitForOutput(t, stdout, "dev-service-ip-address=127.77.0.42")
 	waitForOutput(t, stdout, "ip-address=127.77.0.42")
 	waitForOutput(t, stdout, "api-http-host=127.77.0.42")
-	waitForOutput(t, stdout, "db-host=127.77.0.42")
+	waitForOutput(t, stdout, "lighthouse-url=ws://127.77.0.42:3000/lighthouse/ws/agent")
+	waitForOutput(t, stdout, "db-host=\n")
 	waitForOutput(t, stdout, "override=captured")
 	waitForOutput(t, stdout, "empty=false:")
 	waitForOutput(t, stdout, "unrelated=preserved")
-	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") {
+	if output := stdout.String(); strings.Contains(output, "127.0.0.7") || strings.Contains(output, "127.0.0.8") || strings.Contains(output, "127.0.0.9") {
 		t.Fatalf("managed project retained ambient network values: %q", output)
 	}
 }
@@ -888,8 +914,8 @@ func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read project host environment: %v", err)
 	}
-	if !bytes.Equal(actual, append(contents, '\n')) {
-		t.Fatalf("project host environment = %q, want preserved assignment and separator", actual)
+	if !bytes.Equal(actual, contents) {
+		t.Fatalf("project host environment = %q, want original project content", actual)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1429,7 +1455,7 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		want += "|ip_address=127.0.0.10"
 	}
-	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1"
+	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1|API_HTTP_HOST=127.77.0.42|DEV_SERVICE_IP_ADDRESS=127.0.0.42|IP_ADDRESS=127.0.0.42"
 	if strings.Join(result, "|") != want {
 		t.Fatalf("withDevelopmentEnvironment() = %q, want %q", strings.Join(result, "|"), want)
 	}
