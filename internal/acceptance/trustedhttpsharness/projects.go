@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +15,8 @@ import (
 const happyPathAppPort uint16 = 3000
 
 const generatedAppReadyPath = "bin/.app.ready"
+
+const maximumReadyMarkerBytes = 64 << 10
 
 // ProjectSpec binds one generated GoForj project to its expected public Harbor identity.
 type ProjectSpec struct {
@@ -32,14 +36,33 @@ type CheckoutBaseline struct {
 	Root string
 	// Snapshot is the recursive no-follow state captured before Harbor registration.
 	Snapshot goforjproject.Snapshot
+	// ReadyMarker contains the pre-session bytes and permissions that GoForj dev rewrites.
+	ReadyMarker []byte
+	// ReadyMarkerMode is the exact pre-session permission set for ReadyMarker.
+	ReadyMarkerMode fs.FileMode
 }
 
 // HappyPathProjects returns the single project set used by the native gate and every later platform adapter.
 func HappyPathProjects() []ProjectSpec {
 	return []ProjectSpec{
-		{Name: "Orders", Module: "example.test/harbor/orders", Domain: "orders.test", AppPort: happyPathAppPort},
-		{Name: "Billing", Module: "example.test/harbor/billing", Domain: "billing.test", AppPort: happyPathAppPort},
-		{Name: "Inventory", Module: "example.test/harbor/inventory", Domain: "inventory.test", AppPort: happyPathAppPort},
+		{
+			Name:    "Orders",
+			Module:  "example.test/harbor/orders",
+			Domain:  "orders.test",
+			AppPort: happyPathAppPort,
+		},
+		{
+			Name:    "Billing",
+			Module:  "example.test/harbor/billing",
+			Domain:  "billing.test",
+			AppPort: happyPathAppPort,
+		},
+		{
+			Name:    "Inventory",
+			Module:  "example.test/harbor/inventory",
+			Domain:  "inventory.test",
+			AppPort: happyPathAppPort,
+		},
 	}
 }
 
@@ -66,7 +89,10 @@ func ProbeEndpoints(projects []ProjectSpec) ([]Endpoint, error) {
 	}
 	endpoints := make([]Endpoint, 0, len(projects))
 	for _, project := range projects {
-		endpoints = append(endpoints, Endpoint{Domain: project.Domain, OpenAPITitle: project.Name})
+		endpoints = append(endpoints, Endpoint{
+			Domain:       project.Domain,
+			OpenAPITitle: project.Name,
+		})
 	}
 	return endpoints, nil
 }
@@ -93,9 +119,43 @@ func CaptureBaselines(projects []goforjproject.Project) ([]CheckoutBaseline, err
 		if err := validateGeneratedAppReady(snapshot); err != nil {
 			return nil, fmt.Errorf("validate generated checkout %q build readiness: %w", project.Name, err)
 		}
-		baselines = append(baselines, CheckoutBaseline{Root: project.Root, Snapshot: snapshot})
+		readyMarker, readyMarkerMode, err := captureReadyMarker(project.Root)
+		if err != nil {
+			return nil, fmt.Errorf("capture generated checkout %q build readiness: %w", project.Name, err)
+		}
+		baselines = append(baselines, CheckoutBaseline{
+			Root:            project.Root,
+			Snapshot:        snapshot,
+			ReadyMarker:     readyMarker,
+			ReadyMarkerMode: readyMarkerMode,
+		})
 	}
 	return baselines, nil
+}
+
+// RestoreReadyMarkers restores GoForj's rewritten readiness markers before exact checkout verification.
+func RestoreReadyMarkers(baselines []CheckoutBaseline) error {
+	var restoreErr error
+	for _, baseline := range baselines {
+		filename := filepath.Join(baseline.Root, filepath.FromSlash(generatedAppReadyPath))
+		information, err := os.Lstat(filename)
+		if err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("inspect readiness marker %q: %w", filename, err))
+			continue
+		}
+		if information.Mode()&os.ModeSymlink != 0 || !information.Mode().IsRegular() {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("readiness marker %q is not a direct regular file", filename))
+			continue
+		}
+		if err := os.WriteFile(filename, baseline.ReadyMarker, baseline.ReadyMarkerMode); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore readiness marker %q: %w", filename, err))
+			continue
+		}
+		if err := os.Chmod(filename, baseline.ReadyMarkerMode); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore readiness marker permissions %q: %w", filename, err))
+		}
+	}
+	return restoreErr
 }
 
 // VerifyBaselines proves Harbor start, stop, and cleanup restored every checkout byte-for-byte.
@@ -125,6 +185,45 @@ func VerifyBaselines(baselines []CheckoutBaseline) error {
 		}
 	}
 	return verificationErr
+}
+
+// VerifyBaselinesExact proves every checkout now exactly matches its pre-Harbor baseline.
+func VerifyBaselinesExact(baselines []CheckoutBaseline) error {
+	var verificationErr error
+	for _, baseline := range baselines {
+		current, err := goforjproject.CaptureSnapshot(baseline.Root)
+		if err != nil {
+			verificationErr = errors.Join(verificationErr, fmt.Errorf("capture final checkout %q: %w", baseline.Root, err))
+			continue
+		}
+		if difference := baseline.Snapshot.Diff(current); difference != "" {
+			verificationErr = errors.Join(verificationErr, fmt.Errorf("checkout %q changed:\n%s", baseline.Root, difference))
+		}
+	}
+	return verificationErr
+}
+
+// captureReadyMarker records the bounded direct readiness artifact before Harbor can launch a runtime.
+func captureReadyMarker(root string) ([]byte, fs.FileMode, error) {
+	filename := filepath.Join(root, filepath.FromSlash(generatedAppReadyPath))
+	information, err := os.Lstat(filename)
+	if err != nil {
+		return nil, 0, err
+	}
+	if information.Mode()&os.ModeSymlink != 0 || !information.Mode().IsRegular() {
+		return nil, 0, errors.New("readiness marker is not a direct regular file")
+	}
+	if information.Size() > maximumReadyMarkerBytes {
+		return nil, 0, fmt.Errorf("readiness marker exceeds %d-byte limit", maximumReadyMarkerBytes)
+	}
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(content) > maximumReadyMarkerBytes {
+		return nil, 0, fmt.Errorf("readiness marker exceeds %d-byte limit", maximumReadyMarkerBytes)
+	}
+	return content, information.Mode().Perm(), nil
 }
 
 // validateGeneratedAppReady requires the ordinary generated build's readiness marker before Harbor starts.

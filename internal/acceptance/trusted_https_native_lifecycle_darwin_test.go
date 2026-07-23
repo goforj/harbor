@@ -17,7 +17,11 @@ import (
 	"github.com/goforj/harbor/internal/acceptance/trustedhttpsharness"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/launcher"
+	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
+	"github.com/goforj/harbor/internal/rpc/local"
 	"github.com/goforj/harbor/internal/testkit/goforjproject"
 )
 
@@ -40,12 +44,16 @@ type trustedHTTPSNativeConfiguration struct {
 
 // trustedHTTPSNativeLifecycle tracks only the resources this intermediate native proof can safely retire.
 type trustedHTTPSNativeLifecycle struct {
-	configuration phase1Config
-	sandbox       phase1Sandbox
-	workspace     *goforjproject.Workspace
-	baselines     []trustedhttpsharness.CheckoutBaseline
-	projects      []trustedHTTPSNativeProject
-	daemon        *phase1DaemonProcess
+	configuration       phase1Config
+	sandbox             phase1Sandbox
+	workspace           *goforjproject.Workspace
+	baselines           []trustedhttpsharness.CheckoutBaseline
+	projects            []trustedHTTPSNativeProject
+	daemon              *phase1DaemonProcess
+	retainDiagnostics   bool
+	restoreReadyMarkers func([]trustedhttpsharness.CheckoutBaseline) error
+	verifyBaselines     func([]trustedhttpsharness.CheckoutBaseline) error
+	closeWorkspace      func(*goforjproject.Workspace) error
 }
 
 // trustedHTTPSNativeProject binds one generated public identity to its daemon registration and cleanup intents.
@@ -100,10 +108,8 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	}
 	lifecycle.workspace = workspace
 	t.Cleanup(func() {
-		if lifecycle.workspace != nil {
-			if err := lifecycle.workspace.Close(); err != nil {
-				t.Errorf("remove generated GoForj workspace: %v", err)
-			}
+		if err := lifecycle.closeFallbackWorkspace(); err != nil {
+			t.Errorf("remove generated GoForj workspace: %v", err)
 		}
 	})
 	if err := trustedhttpsharness.PrepareGeneratedResponses(
@@ -249,15 +255,30 @@ func trustedHTTPSPropagateGoCaches(t *testing.T, sandbox *phase1Sandbox) {
 func trustedHTTPSRequireControlCapabilities(t *testing.T, status control.DaemonStatus) {
 	t.Helper()
 
-	for _, capability := range []rpc.Capability{
+	for _, capability := range trustedHTTPSRequiredControlCapabilities() {
+		if !slices.Contains(status.Capabilities, capability) {
+			t.Fatalf("ready daemon does not advertise trusted HTTPS capability %s: %v", capability, status.Capabilities)
+		}
+	}
+}
+
+// trustedHTTPSRequiredControlCapabilities lists every daemon surface the native proof can exercise after setup starts.
+func trustedHTTPSRequiredControlCapabilities() []rpc.Capability {
+	return []rpc.Capability{
 		control.CapabilityNetworkSetupV1,
 		control.CapabilityNetworkResolverSetupV1,
 		control.CapabilityNetworkDataPlaneSetupV1,
 		control.CapabilityProjectLifecycleV1,
-	} {
-		if !slices.Contains(status.Capabilities, capability) {
-			t.Fatalf("ready daemon does not advertise trusted HTTPS capability %s: %v", capability, status.Capabilities)
-		}
+		control.CapabilityProjectUnregisterApprovalV1,
+	}
+}
+
+// TestTrustedHTTPSRequiredControlCapabilitiesIncludesRemovalApproval prevents native setup from entering a cleanup-incomplete daemon.
+func TestTrustedHTTPSRequiredControlCapabilitiesIncludesRemovalApproval(t *testing.T) {
+	t.Parallel()
+
+	if !slices.Contains(trustedHTTPSRequiredControlCapabilities(), control.CapabilityProjectUnregisterApprovalV1) {
+		t.Fatal("trusted HTTPS native proof does not require project unregister approval")
 	}
 }
 
@@ -451,14 +472,19 @@ func TestTrustedHTTPSDecodeProjectLifecycleResult(t *testing.T) {
 			wantState: domain.OperationFailed,
 		},
 		{
-			name:               "malformed stdout retains command failure",
-			result:             phase1CommandResult{stdout: "{", err: commandFailure},
+			name: "malformed stdout retains command failure",
+			result: phase1CommandResult{
+				stdout: "{",
+				err:    commandFailure,
+			},
 			wantCommandFailure: true,
 			wantError:          true,
 		},
 		{
-			name:               "empty stdout retains command failure",
-			result:             phase1CommandResult{err: commandFailure},
+			name: "empty stdout retains command failure",
+			result: phase1CommandResult{
+				err: commandFailure,
+			},
 			wantCommandFailure: true,
 			wantError:          true,
 		},
@@ -524,6 +550,190 @@ func TestTrustedHTTPSProjectLifecycleTerminalErrorIncludesProblem(t *testing.T) 
 	}
 }
 
+// TestTrustedHTTPSAwaitProjectRemovalApprovesAndReplays proves normal approval-bound cleanup does not abandon its removal intent.
+func TestTrustedHTTPSAwaitProjectRemovalApprovesAndReplays(t *testing.T) {
+	t.Parallel()
+
+	projectID := domain.ProjectID("project-trusted-https")
+	intentID := domain.IntentID("intent-trusted-https-remove")
+	operationID := domain.OperationID("operation-trusted-https-remove")
+	removals := []control.ProjectUnregistration{
+		{
+			Operation: domain.Operation{
+				ID:        operationID,
+				ProjectID: projectID,
+				IntentID:  intentID,
+				State:     domain.OperationRequiresApproval,
+			},
+		},
+		{
+			Operation: domain.Operation{
+				ID:        operationID,
+				ProjectID: projectID,
+				IntentID:  intentID,
+				State:     domain.OperationSucceeded,
+			},
+		},
+	}
+	invocations := 0
+	approvals := 0
+	err := trustedHTTPSAwaitProjectRemovalWith(
+		t.Context(),
+		projectID,
+		intentID,
+		&operationID,
+		func(context.Context) (control.ProjectUnregistration, error) {
+			removal := removals[invocations]
+			invocations++
+			return removal, nil
+		},
+		func(_ context.Context, removal control.ProjectUnregistration) error {
+			approvals++
+			if removal.Operation.ID != operationID || removal.Operation.State != domain.OperationRequiresApproval {
+				t.Fatalf("approval selected %#v, want requires-approval operation %s", removal.Operation, operationID)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("trustedHTTPSAwaitProjectRemovalWith() error = %v", err)
+	}
+	if approvals != 1 || invocations != 2 {
+		t.Fatalf("approval/replay calls = %d/%d, want 1/2", approvals, invocations)
+	}
+}
+
+// TestTrustedHTTPSApprovalClientConfigDialsSandboxEndpoint prevents approval from attaching to an ambient daemon.
+func TestTrustedHTTPSApprovalClientConfigDialsSandboxEndpoint(t *testing.T) {
+	t.Parallel()
+
+	const endpoint = "/tmp/harbor-trusted-https.sock"
+	dialFailure := errors.New("dial sentinel")
+	dialedEndpoint := ""
+	configuration := trustedHTTPSApprovalClientConfig(endpoint, func(_ context.Context, got string) (local.Conn, error) {
+		dialedEndpoint = got
+		return nil, dialFailure
+	})
+	if configuration.Role != rpc.RoleDesktop {
+		t.Fatalf("approval client role = %q, want desktop", configuration.Role)
+	}
+	if _, err := configuration.Dial(t.Context()); !errors.Is(err, dialFailure) {
+		t.Fatalf("approval dial error = %v, want %v", err, dialFailure)
+	}
+	if dialedEndpoint != endpoint {
+		t.Fatalf("approval dial endpoint = %q, want %q", dialedEndpoint, endpoint)
+	}
+}
+
+// TestTrustedHTTPSFinalizeCheckoutRetainsArtifactsAfterCleanupFailure proves a failed cleanup leaves exact diagnostic evidence untouched.
+func TestTrustedHTTPSFinalizeCheckoutRetainsArtifactsAfterCleanupFailure(t *testing.T) {
+	t.Parallel()
+
+	restored := false
+	verified := false
+	closed := false
+	lifecycle := &trustedHTTPSNativeLifecycle{
+		workspace: &goforjproject.Workspace{
+			Root: "/tmp/harbor-trusted-https-diagnostics",
+		},
+		baselines: []trustedhttpsharness.CheckoutBaseline{
+			{},
+		},
+		restoreReadyMarkers: func([]trustedhttpsharness.CheckoutBaseline) error {
+			restored = true
+			return nil
+		},
+		verifyBaselines: func([]trustedhttpsharness.CheckoutBaseline) error {
+			verified = true
+			return nil
+		},
+		closeWorkspace: func(*goforjproject.Workspace) error {
+			closed = true
+			return nil
+		},
+	}
+	cleanupFailure := errors.New("project removal failed")
+	err := lifecycle.finalizeCheckout(cleanupFailure, true)
+	if !errors.Is(err, cleanupFailure) {
+		t.Fatalf("finalizeCheckout() error = %v, want cleanup failure", err)
+	}
+	if restored || verified || closed {
+		t.Fatalf("finalizeCheckout() restore/verify/close = %t/%t/%t, want false/false/false", restored, verified, closed)
+	}
+	if !lifecycle.retainDiagnostics {
+		t.Fatal("finalizeCheckout() did not mark the failed cleanup workspace for diagnostic retention")
+	}
+	if err := lifecycle.closeFallbackWorkspace(); err != nil {
+		t.Fatalf("closeFallbackWorkspace() error = %v", err)
+	}
+	if closed {
+		t.Fatal("fallback cleanup removed a workspace retained by lifecycle cleanup")
+	}
+	if lifecycle.workspace == nil || len(lifecycle.baselines) != 1 {
+		t.Fatalf("finalizeCheckout() discarded diagnostic artifacts: workspace=%#v baselines=%#v", lifecycle.workspace, lifecycle.baselines)
+	}
+}
+
+// TestTrustedHTTPSFallbackWorkspaceCleanupReleasesPreLifecycleFailure proves rendering failures still clean up before lifecycle retention exists.
+func TestTrustedHTTPSFallbackWorkspaceCleanupReleasesPreLifecycleFailure(t *testing.T) {
+	t.Parallel()
+
+	closed := false
+	lifecycle := &trustedHTTPSNativeLifecycle{
+		workspace: &goforjproject.Workspace{
+			Root: "/tmp/harbor-trusted-https-pre-lifecycle",
+		},
+		closeWorkspace: func(*goforjproject.Workspace) error {
+			closed = true
+			return nil
+		},
+	}
+	if err := lifecycle.closeFallbackWorkspace(); err != nil {
+		t.Fatalf("closeFallbackWorkspace() error = %v", err)
+	}
+	if !closed || lifecycle.workspace != nil {
+		t.Fatalf("fallback cleanup close/workspace = %t/%#v, want true/nil", closed, lifecycle.workspace)
+	}
+}
+
+// TestTrustedHTTPSFinalizeCheckoutRestoresAndDeletesAfterSuccess proves exact checkout restoration remains part of successful cleanup.
+func TestTrustedHTTPSFinalizeCheckoutRestoresAndDeletesAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	restored := false
+	verified := false
+	closed := false
+	lifecycle := &trustedHTTPSNativeLifecycle{
+		workspace: &goforjproject.Workspace{
+			Root: "/tmp/harbor-trusted-https-success",
+		},
+		baselines: []trustedhttpsharness.CheckoutBaseline{
+			{},
+		},
+		restoreReadyMarkers: func([]trustedhttpsharness.CheckoutBaseline) error {
+			restored = true
+			return nil
+		},
+		verifyBaselines: func([]trustedhttpsharness.CheckoutBaseline) error {
+			verified = true
+			return nil
+		},
+		closeWorkspace: func(*goforjproject.Workspace) error {
+			closed = true
+			return nil
+		},
+	}
+	if err := lifecycle.finalizeCheckout(nil, true); err != nil {
+		t.Fatalf("finalizeCheckout() error = %v", err)
+	}
+	if !restored || !verified || !closed {
+		t.Fatalf("finalizeCheckout() restore/verify/close = %t/%t/%t, want true/true/true", restored, verified, closed)
+	}
+	if lifecycle.workspace != nil || lifecycle.baselines != nil {
+		t.Fatalf("finalizeCheckout() retained successful artifacts: workspace=%#v baselines=%#v", lifecycle.workspace, lifecycle.baselines)
+	}
+}
+
 // trustedHTTPSLifecycleCommandResult encodes one CLI lifecycle result without mixing it with diagnostic output.
 func trustedHTTPSLifecycleCommandResult(t *testing.T, lifecycle control.ProjectLifecycleOperation, err error) phase1CommandResult {
 	t.Helper()
@@ -532,7 +742,10 @@ func trustedHTTPSLifecycleCommandResult(t *testing.T, lifecycle control.ProjectL
 	if marshalErr != nil {
 		t.Fatalf("marshal lifecycle result: %v", marshalErr)
 	}
-	return phase1CommandResult{stdout: string(encoded), err: err}
+	return phase1CommandResult{
+		stdout: string(encoded),
+		err:    err,
+	}
 }
 
 // trustedHTTPSLifecycleResultFixture constructs one validated lifecycle state for decoder tests.
@@ -550,14 +763,20 @@ func trustedHTTPSLifecycleResultFixture(
 		t.Fatalf("new lifecycle operation: %v", err)
 	}
 	if state == domain.OperationQueued {
-		return control.ProjectLifecycleOperation{Operation: operation, Revision: 1}
+		return control.ProjectLifecycleOperation{
+			Operation: operation,
+			Revision:  1,
+		}
 	}
 	operation, err = operation.Transition(domain.OperationRunning, "starting project", requestedAt.Add(time.Second), nil)
 	if err != nil {
 		t.Fatalf("start lifecycle operation: %v", err)
 	}
 	if state == domain.OperationRunning {
-		return control.ProjectLifecycleOperation{Operation: operation, Revision: 2}
+		return control.ProjectLifecycleOperation{
+			Operation: operation,
+			Revision:  2,
+		}
 	}
 	if state != domain.OperationFailed {
 		t.Fatalf("unsupported lifecycle fixture state %s", state)
@@ -570,7 +789,10 @@ func trustedHTTPSLifecycleResultFixture(
 	if err != nil {
 		t.Fatalf("fail lifecycle operation: %v", err)
 	}
-	return control.ProjectLifecycleOperation{Operation: operation, Revision: 3}
+	return control.ProjectLifecycleOperation{
+		Operation: operation,
+		Revision:  3,
+	}
 }
 
 // trustedHTTPSAwaitProjectLifecycle replays one action until its daemon-owned operation is terminal.
@@ -816,7 +1038,7 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 			}
 		}
 	}
-	if lifecycle.daemon != nil && cleanupErr == nil {
+	if lifecycle.daemon != nil {
 		if err := trustedHTTPSVerifyEmptySnapshot(
 			parent,
 			lifecycle.configuration,
@@ -825,6 +1047,7 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
+	daemonStopped := lifecycle.daemon == nil
 	if lifecycle.daemon != nil {
 		ctx, cancel := context.WithTimeout(parent, phase1ShutdownTimeout)
 		stopErr := phase1StopDaemon(
@@ -834,32 +1057,87 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 			lifecycle.daemon,
 		)
 		cancel()
-		if stopErr != nil {
+		if stopErr == nil {
+			daemonStopped = true
+		} else {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("gracefully stop daemon: %w", stopErr))
 			terminateContext, cancelTerminate := context.WithTimeout(context.Background(), 5*time.Second)
 			terminateErr := lifecycle.daemon.terminate(terminateContext)
 			cancelTerminate()
 			if terminateErr != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("terminate daemon after graceful stop failure: %w", terminateErr))
+			} else {
+				daemonStopped = true
 			}
 		}
-		lifecycle.daemon = nil
+		if daemonStopped {
+			lifecycle.daemon = nil
+		}
+	}
+	return lifecycle.finalizeCheckout(cleanupErr, daemonStopped)
+}
+
+// finalizeCheckout restores and deletes generated checkouts only after every cleanup boundary completed successfully.
+func (lifecycle *trustedHTTPSNativeLifecycle) finalizeCheckout(cleanupErr error, daemonStopped bool) error {
+	if cleanupErr != nil || !daemonStopped {
+		return lifecycle.retainWorkspace(cleanupErr)
 	}
 	if len(lifecycle.baselines) != 0 {
-		if err := trustedhttpsharness.VerifyBaselines(lifecycle.baselines); err != nil {
-			cleanupErr = errors.Join(cleanupErr, err)
-		} else {
-			lifecycle.baselines = nil
+		restore := lifecycle.restoreReadyMarkers
+		if restore == nil {
+			restore = trustedhttpsharness.RestoreReadyMarkers
 		}
+		if err := restore(lifecycle.baselines); err != nil {
+			return lifecycle.retainWorkspace(err)
+		}
+		verify := lifecycle.verifyBaselines
+		if verify == nil {
+			verify = trustedhttpsharness.VerifyBaselinesExact
+		}
+		if err := verify(lifecycle.baselines); err != nil {
+			return lifecycle.retainWorkspace(err)
+		}
+		lifecycle.baselines = nil
 	}
 	if lifecycle.workspace != nil {
-		if err := lifecycle.workspace.Close(); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove generated GoForj workspace: %w", err))
-		} else {
-			lifecycle.workspace = nil
+		if err := lifecycle.closeGeneratedWorkspace(); err != nil {
+			return lifecycle.retainWorkspace(fmt.Errorf("remove generated GoForj workspace: %w", err))
+		}
+		lifecycle.workspace = nil
+	}
+	return nil
+}
+
+// closeFallbackWorkspace releases an early-render failure workspace unless a later lifecycle cleanup retained it for diagnosis.
+func (lifecycle *trustedHTTPSNativeLifecycle) closeFallbackWorkspace() error {
+	if lifecycle.workspace == nil || lifecycle.retainDiagnostics {
+		return nil
+	}
+	if err := lifecycle.closeGeneratedWorkspace(); err != nil {
+		return err
+	}
+	lifecycle.workspace = nil
+	return nil
+}
+
+// closeGeneratedWorkspace applies the injectable workspace closer used by both cleanup registrations.
+func (lifecycle *trustedHTTPSNativeLifecycle) closeGeneratedWorkspace() error {
+	closeWorkspace := lifecycle.closeWorkspace
+	if closeWorkspace == nil {
+		closeWorkspace = func(workspace *goforjproject.Workspace) error {
+			return workspace.Close()
 		}
 	}
-	return cleanupErr
+	return closeWorkspace(lifecycle.workspace)
+}
+
+// retainWorkspace joins an explicit diagnostic retention record to a cleanup failure without deleting the checkout.
+func (lifecycle *trustedHTTPSNativeLifecycle) retainWorkspace(cleanupErr error) error {
+	if lifecycle.workspace == nil {
+		return cleanupErr
+	}
+	lifecycle.retainDiagnostics = true
+	return errors.Join(cleanupErr, fmt.Errorf("retain generated GoForj workspace %q because cleanup did not complete", lifecycle.workspace.Root))
 }
 
 // trustedHTTPSAwaitProjectRemoval replays removal until the explicit intent is terminal and its local journal is cleared.
@@ -871,6 +1149,35 @@ func trustedHTTPSAwaitProjectRemoval(
 	intentID domain.IntentID,
 	operationID *domain.OperationID,
 ) error {
+	return trustedHTTPSAwaitProjectRemovalWith(
+		parent,
+		projectID,
+		intentID,
+		operationID,
+		func(ctx context.Context) (control.ProjectUnregistration, error) {
+			return trustedHTTPSInvokeProjectRemoval(ctx, configuration, sandbox, projectID, intentID)
+		},
+		func(ctx context.Context, removal control.ProjectUnregistration) error {
+			return trustedHTTPSApproveProjectRemoval(ctx, sandbox, removal)
+		},
+	)
+}
+
+// projectRemovalInvoker replays one exact removal request through its production transport boundary.
+type projectRemovalInvoker func(context.Context) (control.ProjectUnregistration, error)
+
+// projectRemovalApprover completes the native approval protocol for one daemon-selected removal revision.
+type projectRemovalApprover func(context.Context, control.ProjectUnregistration) error
+
+// trustedHTTPSAwaitProjectRemovalWith keeps approval replay observable without weakening the production protocol.
+func trustedHTTPSAwaitProjectRemovalWith(
+	parent context.Context,
+	projectID domain.ProjectID,
+	intentID domain.IntentID,
+	operationID *domain.OperationID,
+	invoke projectRemovalInvoker,
+	approve projectRemovalApprover,
+) error {
 	ctx, cancel := context.WithTimeout(parent, trustedHTTPSProjectLifecycleTimeout)
 	defer cancel()
 	ticker := time.NewTicker(trustedHTTPSPollInterval)
@@ -878,13 +1185,7 @@ func trustedHTTPSAwaitProjectRemoval(
 
 	var lastErr error
 	for {
-		removal, err := trustedHTTPSInvokeProjectRemoval(
-			ctx,
-			configuration,
-			sandbox,
-			projectID,
-			intentID,
-		)
+		removal, err := invoke(ctx)
 		if err == nil {
 			if *operationID == "" {
 				*operationID = removal.Operation.ID
@@ -899,7 +1200,11 @@ func trustedHTTPSAwaitProjectRemoval(
 			switch removal.Operation.State {
 			case domain.OperationSucceeded:
 				return nil
-			case domain.OperationFailed, domain.OperationCancelled, domain.OperationRequiresApproval:
+			case domain.OperationRequiresApproval:
+				if err := approve(ctx, removal); err != nil {
+					return fmt.Errorf("approve project removal %s: %w", projectID, err)
+				}
+			case domain.OperationFailed, domain.OperationCancelled:
 				return fmt.Errorf("operation %s ended %s in phase %q", removal.Operation.ID, removal.Operation.State, removal.Operation.Phase)
 			}
 		} else {
@@ -913,6 +1218,52 @@ func trustedHTTPSAwaitProjectRemoval(
 			return fmt.Errorf("await project %s removal: %w", projectID, ctx.Err())
 		case <-ticker.C:
 		}
+	}
+}
+
+// trustedHTTPSApproveProjectRemoval uses the same desktop-role approval executor and native helper protocol as the product client.
+func trustedHTTPSApproveProjectRemoval(ctx context.Context, sandbox phase1Sandbox, removal control.ProjectUnregistration) error {
+	client, err := control.NewClient(ctx, trustedHTTPSApprovalClientConfig(sandbox.endpointPath, local.DialAt))
+	if err != nil {
+		return fmt.Errorf("open desktop approval client: %w", err)
+	}
+	defer client.Close()
+
+	runner := projectapproval.New(client, launcher.New(launcher.NewNativeTransport(), helper.SystemClock{}))
+	outcome, err := runner.Execute(ctx, projectapproval.Request{
+		OperationID:               removal.Operation.ID,
+		ExpectedOperationRevision: removal.Revision,
+	})
+	if err != nil {
+		return err
+	}
+	if outcome.State != projectapproval.Succeeded || outcome.Confirmation == nil || outcome.HelperFailure != nil {
+		return fmt.Errorf("native project removal approval ended %s", outcome.State)
+	}
+	confirmation := *outcome.Confirmation
+	if err := confirmation.Validate(); err != nil {
+		return fmt.Errorf("validate project removal approval confirmation: %w", err)
+	}
+	if confirmation.Operation.ID != removal.Operation.ID ||
+		confirmation.Operation.ProjectID != removal.Operation.ProjectID ||
+		confirmation.Operation.IntentID != removal.Operation.IntentID ||
+		confirmation.Revision <= removal.Revision ||
+		confirmation.Operation.State != domain.OperationSucceeded {
+		return errors.New("project removal approval confirmation crossed the selected operation")
+	}
+	return nil
+}
+
+// localDialAt dials one exact acceptance-controlled endpoint.
+type localDialAt func(context.Context, string) (local.Conn, error)
+
+// trustedHTTPSApprovalClientConfig keeps approval bound to the daemon instance created inside this acceptance sandbox.
+func trustedHTTPSApprovalClientConfig(endpoint string, dialAt localDialAt) control.ClientConfig {
+	return control.ClientConfig{
+		Role: rpc.RoleDesktop,
+		Dial: func(ctx context.Context) (local.Conn, error) {
+			return dialAt(ctx, endpoint)
+		},
 	}
 }
 
