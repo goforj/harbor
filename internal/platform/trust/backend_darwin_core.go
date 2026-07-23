@@ -25,7 +25,6 @@ const (
 	darwinAdminTrustNativeIDPrefix     = "darwin-admin-trust-"
 	darwinTrustOwnerPrefix             = "v1|"
 	darwinAdministratorRootLabelPrefix = "com.goforj.harbor.admin-root.v1|"
-	darwinAdministratorOwnerNativeID   = "darwin-admin-trust-owner-marker"
 )
 
 // darwinTrustEntry is the bounded native certificate fact used by the portable trust adapter.
@@ -97,14 +96,11 @@ func (backend *darwinTrustBackend) observe(ctx context.Context, request Request)
 		observation.Entries = append(observation.Entries, fact)
 	}
 	if owned && request.Mechanism() == networkpolicy.DarwinAdministratorTrust && !darwinObservationHasAuthorityEntry(observation, request) {
-		marker := request.OwnerMarker()
-		observation.Entries = append(observation.Entries, Entry{
-			Mechanism:              request.Mechanism(),
-			NativeID:               darwinAdministratorOwnerNativeID,
-			CertificateFingerprint: request.AuthorityFingerprint(),
-			NativeAttributesSHA256: darwinTrustAttributesFingerprint(request.Mechanism(), false),
-			Owner:                  &marker,
-		})
+		markerObservation, err := NewRecoverableReleaseObservation(request)
+		if err != nil {
+			return Observation{}, err
+		}
+		observation.Entries = append(observation.Entries, markerObservation.Entries[0])
 	}
 	return observation, nil
 }
@@ -169,16 +165,7 @@ func (backend *darwinTrustBackend) release(ctx context.Context, request Request,
 
 // darwinAdministratorMarkerOnlyObservation recognizes the one synthetic fact used when an exact System.keychain owner marker outlives its certificate settings.
 func darwinAdministratorMarkerOnlyObservation(observation Observation, request Request) bool {
-	if !observation.Complete || observation.Truncated || len(observation.Entries) != 1 {
-		return false
-	}
-	entry := observation.Entries[0]
-	return entry.Mechanism == networkpolicy.DarwinAdministratorTrust &&
-		entry.NativeID == darwinAdministratorOwnerNativeID &&
-		entry.CertificateFingerprint == request.AuthorityFingerprint() &&
-		!entry.NativeExact &&
-		entry.NativeAttributesSHA256 == darwinTrustAttributesFingerprint(request.Mechanism(), false) &&
-		markerMatchesRequest(entry.Owner, request)
+	return sameRequest(observation.Request, request) && IsRecoverableReleaseObservation(observation)
 }
 
 // validateDarwinTrustRequest confines this backend to the macOS trust mechanisms.
@@ -213,6 +200,9 @@ func darwinRootDER(certificatePEM []byte) ([]byte, error) {
 
 // darwinTrustAttributesFingerprint binds exactness to the reviewed Security.framework trust-settings shape.
 func darwinTrustAttributesFingerprint(mechanism networkpolicy.TrustMechanism, exact bool) string {
+	if mechanism == networkpolicy.DarwinAdministratorTrust && !exact {
+		return darwinAdministratorMarkerAttributesFingerprint()
+	}
 	shape := "drifted"
 	if exact {
 		shape = "exact"

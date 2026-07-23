@@ -237,6 +237,73 @@ func TestDarwinAdministratorMarkerOnlyObservationKeepsInterruptedCleanupRetryabl
 	if !darwinAdministratorMarkerOnlyObservation(observation, request) {
 		t.Fatalf("observation = %#v, want exact administrator marker-only fact", observation)
 	}
+	if !IsRecoverableReleaseObservation(observation) {
+		t.Fatalf("IsRecoverableReleaseObservation(%#v) = false, want true", observation)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Observation)
+	}{
+		{
+			name: "native ID",
+			mutate: func(value *Observation) {
+				value.Entries[0].NativeID += "-near-miss"
+			},
+		},
+		{
+			name: "extra entry",
+			mutate: func(value *Observation) {
+				extra := cloneEntry(value.Entries[0])
+				extra.NativeID = "darwin-admin-trust-owner-marker-extra"
+				value.Entries = append(value.Entries, extra)
+			},
+		},
+		{
+			name: "wrong owner",
+			mutate: func(value *Observation) {
+				value.Entries[0].Owner.InstallationID = "installation-other"
+			},
+		},
+		{
+			name: "authority fingerprint",
+			mutate: func(value *Observation) {
+				value.Entries[0].CertificateFingerprint = strings.Repeat("a", 64)
+			},
+		},
+		{
+			name: "exact flag",
+			mutate: func(value *Observation) {
+				value.Entries[0].NativeExact = true
+			},
+		},
+		{
+			name: "attributes",
+			mutate: func(value *Observation) {
+				value.Entries[0].NativeAttributesSHA256 = strings.Repeat("a", 64)
+			},
+		},
+		{
+			name: "incomplete",
+			mutate: func(value *Observation) {
+				value.Complete = false
+			},
+		},
+		{
+			name: "truncated",
+			mutate: func(value *Observation) {
+				value.Complete = false
+				value.Truncated = true
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			nearMiss := cloneObservation(observation)
+			test.mutate(&nearMiss)
+			if IsRecoverableReleaseObservation(nearMiss) {
+				t.Fatalf("IsRecoverableReleaseObservation(%#v) = true, want false", nearMiss)
+			}
+		})
+	}
 	assessment := classifyValidated(observation)
 	if assessment.State != StateOwnedDrifted || assessment.Owned != OwnedStateDrifted {
 		t.Fatalf("assessment = %#v, want marker-only owned drift", assessment)

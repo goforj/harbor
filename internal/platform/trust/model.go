@@ -28,6 +28,11 @@ const (
 
 const observationFingerprintDomain = "goforj.harbor.trust-observation.v1\x00"
 
+const (
+	darwinAdministratorMarkerNativeID         = "darwin-admin-trust-owner-marker"
+	darwinAdministratorMarkerAttributesDomain = "goforj.harbor.darwin-admin-trust.v1|drifted"
+)
+
 // Request is the immutable trust authority derived from one installation and public CA.
 type Request struct {
 	installationID    string
@@ -245,6 +250,50 @@ func (observation Observation) Validate() error {
 		seenIDs[entry.NativeID] = struct{}{}
 	}
 	return nil
+}
+
+// IsRecoverableReleaseObservation recognizes the one exact Darwin administrator marker-only fact that can safely enter a release retry.
+func IsRecoverableReleaseObservation(observation Observation) bool {
+	if err := observation.Validate(); err != nil ||
+		observation.Request.Mechanism() != networkpolicy.DarwinAdministratorTrust ||
+		!observation.Complete || observation.Truncated || len(observation.Entries) != 1 {
+		return false
+	}
+	entry := observation.Entries[0]
+	return entry.Mechanism == networkpolicy.DarwinAdministratorTrust &&
+		entry.NativeID == darwinAdministratorMarkerNativeID &&
+		entry.CertificateFingerprint == observation.Request.AuthorityFingerprint() &&
+		!entry.NativeExact &&
+		entry.NativeAttributesSHA256 == darwinAdministratorMarkerAttributesFingerprint() &&
+		markerMatchesRequest(entry.Owner, observation.Request)
+}
+
+// NewRecoverableReleaseObservation constructs the exact administrator marker-only fact used after an interrupted native release.
+func NewRecoverableReleaseObservation(request Request) (Observation, error) {
+	if err := request.Validate(); err != nil {
+		return Observation{}, err
+	}
+	if request.Mechanism() != networkpolicy.DarwinAdministratorTrust {
+		return Observation{}, fmt.Errorf("recoverable release observation requires administrator trust")
+	}
+	marker := request.OwnerMarker()
+	return Observation{
+		Request:  request,
+		Complete: true,
+		Entries: []Entry{{
+			Mechanism:              request.Mechanism(),
+			NativeID:               darwinAdministratorMarkerNativeID,
+			CertificateFingerprint: request.AuthorityFingerprint(),
+			NativeAttributesSHA256: darwinAdministratorMarkerAttributesFingerprint(),
+			Owner:                  &marker,
+		}},
+	}, nil
+}
+
+// darwinAdministratorMarkerAttributesFingerprint returns the canonical attribute fingerprint of the synthetic marker-only fact.
+func darwinAdministratorMarkerAttributesFingerprint() string {
+	digest := sha256.Sum256([]byte(darwinAdministratorMarkerAttributesDomain))
+	return hex.EncodeToString(digest[:])
 }
 
 // Change reports the observations surrounding one conditional trust mutation.

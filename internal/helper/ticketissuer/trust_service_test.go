@@ -474,6 +474,69 @@ func TestTrustServiceReleaseObservationRequiresOwnedTrustOrConfirmedAbsence(t *t
 			}
 		})
 	}
+	t.Run("exact recoverable administrator marker", func(t *testing.T) {
+		administrator, err := platformtrust.NewRequestForRequester(
+			request.InstallationID(),
+			request.RequesterIdentity(),
+			networkpolicy.DarwinAdministratorTrust,
+			request.Root(),
+		)
+		if err != nil {
+			t.Fatalf("NewRequestForRequester() error = %v", err)
+		}
+		fixture.observer.observations = []platformtrust.Observation{recoverableAdministratorMarkerObservation(t, administrator)}
+		fingerprint, err := fixture.service.observeTrust(t.Context(), administrator, TrustPlanPurposeGlobalNetworkRelease)
+		if err != nil || !canonicalSHA256Fingerprint(fingerprint) {
+			t.Fatalf("observeTrust() = %q, %v", fingerprint, err)
+		}
+		nearMiss := recoverableAdministratorMarkerObservation(t, administrator)
+		nearMiss.Entries[0].NativeID = "darwin-admin-trust-owner-marker-near-miss"
+		fixture.observer.observations = []platformtrust.Observation{nearMiss}
+		if fingerprint, err := fixture.service.observeTrust(t.Context(), administrator, TrustPlanPurposeGlobalNetworkRelease); err == nil || fingerprint != "" {
+			t.Fatalf("observeTrust() near miss = %q, %v, want rejection", fingerprint, err)
+		}
+	})
+}
+
+// TestTrustServiceIssuesGlobalReleaseForRecoverableMarker rechecks the same exact synthetic observation before publishing release authority.
+func TestTrustServiceIssuesGlobalReleaseForRecoverableMarker(t *testing.T) {
+	fixture := newTrustIssuerFixture(t)
+	release := validGlobalReleaseTrustPlan(t, fixture.plan)
+	fixture.plan = release
+	fixture.request = TrustRequest{OperationID: release.Operation.ID}
+	fixture.plans.plans = []TrustPlan{cloneTrustPlan(release), cloneTrustPlan(release)}
+	request, err := platformtrust.NewRequestForRequester(
+		release.TargetOwnership.InstallationID,
+		release.TargetOwnership.OwnerIdentity,
+		networkpolicy.DarwinAdministratorTrust,
+		release.Root,
+	)
+	if err != nil {
+		t.Fatalf("NewRequestForRequester() error = %v", err)
+	}
+	observation := recoverableAdministratorMarkerObservation(t, request)
+	fixture.observer.observations = []platformtrust.Observation{observation, observation}
+	result, err := fixture.service.Issue(t.Context(), release.TargetOwnership.OwnerIdentity, fixture.request)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	fingerprint, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatalf("Observation.Fingerprint() error = %v", err)
+	}
+	if result.Reference == "" ||
+		fixture.publisher.calls != 1 ||
+		fixture.publisher.ticket.ExpectedTrustObservation == nil ||
+		fixture.publisher.ticket.ExpectedTrustObservation.Fingerprint != fingerprint ||
+		len(fixture.observer.requests) != 2 {
+		t.Fatalf(
+			"Issue() result/publisher/ticket/observations = %#v / %d / %#v / %d",
+			result,
+			fixture.publisher.calls,
+			fixture.publisher.ticket.ExpectedTrustObservation,
+			len(fixture.observer.requests),
+		)
+	}
 }
 
 // TestTrustPlanReleaseLifecycleValidation covers every release-only trust authority fence.
@@ -1475,6 +1538,19 @@ func trustObservationForState(t *testing.T, request platformtrust.Request, state
 	}
 	if assessment.State != state {
 		t.Fatalf("trust observation state = %q, want %q", assessment.State, state)
+	}
+	return observation
+}
+
+// recoverableAdministratorMarkerObservation constructs the one exact marker-only fact emitted by the Darwin backend after an interrupted release.
+func recoverableAdministratorMarkerObservation(t *testing.T, request platformtrust.Request) platformtrust.Observation {
+	t.Helper()
+	observation, err := platformtrust.NewRecoverableReleaseObservation(request)
+	if err != nil {
+		t.Fatalf("NewRecoverableReleaseObservation() error = %v", err)
+	}
+	if !platformtrust.IsRecoverableReleaseObservation(observation) {
+		t.Fatal("marker-only observation is not recoverable")
 	}
 	return observation
 }
