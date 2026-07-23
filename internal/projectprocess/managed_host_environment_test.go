@@ -40,6 +40,113 @@ func TestPrepareManagedHostEnvironmentLeavesUnmarkedFileUntouched(t *testing.T) 
 	}
 }
 
+// TestCompileBuildEnvironmentOverridesLimitsChildBuildInputs verifies builds receive only assigned endpoint hosts.
+func TestCompileBuildEnvironmentOverridesLimitsChildBuildInputs(t *testing.T) {
+	values := EnvironmentOverrides{
+		"API_HTTP_HOST":          "127.77.0.42",
+		"ARBITRARY":              "127.77.0.42",
+		"DATABASE_URL":           "mysql://127.77.0.42:3306/app",
+		"DB_HOST":                "127.77.0.42",
+		"DEV_SERVICE_IP_ADDRESS": "127.77.0.42",
+		"IP_ADDRESS":             "127.77.0.42",
+		"LIGHTHOUSE_URL":         "wss://127.77.0.42:03000/lighthouse/ws/agent",
+		"MAIL_SMTP_HOST":         "127.77.0.42",
+		"REDIS_DSN":              "redis://127.77.0.42:6379/0",
+		"SECRET_TOKEN":           "127.77.0.42",
+		"UNRELATED_HOST":         "127.77.0.99",
+	}
+	want := "API_HTTP_HOST=127.77.0.42,DB_HOST=127.77.0.42,DEV_SERVICE_IP_ADDRESS=127.77.0.42,IP_ADDRESS=127.77.0.42,LIGHTHOUSE_URL=wss://127.77.0.42:3000/lighthouse/ws/agent,MAIL_SMTP_HOST=127.77.0.42"
+	if got := compileBuildEnvironmentOverrides(values); got != want {
+		t.Fatalf("compileBuildEnvironmentOverrides() = %q, want %q", got, want)
+	}
+}
+
+// TestCompileBuildEnvironmentOverridesPreservesCaseInsensitiveEndpointKeys verifies Windows-compatible names retain their project spelling.
+func TestCompileBuildEnvironmentOverridesPreservesCaseInsensitiveEndpointKeys(t *testing.T) {
+	values := EnvironmentOverrides{
+		"api_http_host":          "127.77.0.42",
+		"db_host":                "127.77.0.42",
+		"dev_service_ip_address": "127.77.0.42",
+		"ip_address":             "127.77.0.42",
+		"lighthouse_url":         "ws://127.77.0.42:3000/lighthouse/ws/agent",
+	}
+	want := "api_http_host=127.77.0.42,db_host=127.77.0.42,dev_service_ip_address=127.77.0.42,ip_address=127.77.0.42,lighthouse_url=ws://127.77.0.42:3000/lighthouse/ws/agent"
+	if got := compileBuildEnvironmentOverrides(values); got != want {
+		t.Fatalf("compileBuildEnvironmentOverrides() = %q, want %q", got, want)
+	}
+}
+
+// TestCompileBuildEnvironmentOverridesRejectsUnsafeLighthouseURLs verifies project values cannot alter the Harbor agent endpoint.
+func TestCompileBuildEnvironmentOverridesRejectsUnsafeLighthouseURLs(t *testing.T) {
+	const assignedAddress = "127.77.0.42"
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{
+			name:  "credentials",
+			value: "ws://token@127.77.0.42:3000/lighthouse/ws/agent",
+		},
+		{
+			name:  "other host",
+			value: "ws://127.77.0.43:3000/lighthouse/ws/agent",
+		},
+		{
+			name:  "other path",
+			value: "ws://127.77.0.42:3000/lighthouse/ws/other",
+		},
+		{
+			name:  "query",
+			value: "ws://127.77.0.42:3000/lighthouse/ws/agent?token=value",
+		},
+		{
+			name:  "fragment",
+			value: "ws://127.77.0.42:3000/lighthouse/ws/agent#fragment",
+		},
+		{
+			name:  "invalid port",
+			value: "ws://127.77.0.42:65536/lighthouse/ws/agent",
+		},
+		{
+			name:  "comma equals",
+			value: "ws://127.77.0.42:3000/lighthouse/ws/agent,token=value",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := EnvironmentOverrides{
+				"IP_ADDRESS":     assignedAddress,
+				"LIGHTHOUSE_URL": test.value,
+			}
+			if got := compileBuildEnvironmentOverrides(values); got != "IP_ADDRESS="+assignedAddress {
+				t.Fatalf("compileBuildEnvironmentOverrides() = %q, want only IP_ADDRESS", got)
+			}
+		})
+	}
+}
+
+// TestPrepareManagedHostEnvironmentExcludesReservedBuildOverrideNames verifies dotenv cannot override Harbor's build contract.
+func TestPrepareManagedHostEnvironmentExcludesReservedBuildOverrideNames(t *testing.T) {
+	for _, name := range []string{buildEnvironmentOverridesEnvName, "FoRj_BuIlD_EnV_OvErRiDeS"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, ".env.host")
+			if err := os.WriteFile(path, []byte(name+"=localhost\n"), 0o600); err != nil {
+				t.Fatalf("write .env.host: %v", err)
+			}
+			values, err := prepareManagedHostEnvironment(root, EnvironmentOverrides{
+				"IP_ADDRESS": "127.77.0.42",
+			})
+			if err != nil {
+				t.Fatalf("prepareManagedHostEnvironment() error = %v", err)
+			}
+			if _, present := values[name]; present {
+				t.Fatalf("managed values contain reserved %q: %#v", name, values)
+			}
+		})
+	}
+}
+
 // TestPrepareManagedHostEnvironmentRemovesExactLegacyBlock verifies migration preserves surrounding bytes and file mode.
 func TestPrepareManagedHostEnvironmentRemovesExactLegacyBlock(t *testing.T) {
 	for _, test := range []struct {

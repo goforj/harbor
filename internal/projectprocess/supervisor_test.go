@@ -102,6 +102,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "lighthouse-url=%s\n", os.Getenv("LIGHTHOUSE_URL"))
 	fmt.Fprintf(os.Stdout, "db-host=%s\n", os.Getenv("DB_HOST"))
 	fmt.Fprintf(os.Stdout, "database-url=%s\n", os.Getenv("DATABASE_URL"))
+	fmt.Fprintf(os.Stdout, "build-environment-overrides=%s\n", os.Getenv(buildEnvironmentOverridesEnvName))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -783,6 +784,7 @@ func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	captured = replaceEnvironment(captured, "IP_ADDRESS", "127.0.0.8")
 	captured = replaceEnvironment(captured, "API_HTTP_HOST", "127.0.0.9")
 	captured = replaceEnvironment(captured, "LIGHTHOUSE_URL", "ws://127.0.0.9:3000/lighthouse/ws/agent")
+	captured = replaceEnvironment(captured, buildEnvironmentOverridesEnvName, "AMBIENT_HOST=127.0.0.9")
 	captured = replaceEnvironment(captured, helperOverrideEnvironment, "captured")
 	captured = replaceEnvironment(captured, helperUnrelatedEnvironment, "preserved")
 	supervisor := newTestSupervisor(Options{Environment: captured})
@@ -818,6 +820,7 @@ func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 	waitForOutput(t, stdout, "lighthouse-url=ws://127.77.0.42:3000/lighthouse/ws/agent")
 	waitForOutput(t, stdout, "db-host=127.77.0.42")
 	waitForOutput(t, stdout, "database-url=mysql://127.77.0.42:3306/app")
+	waitForOutput(t, stdout, "build-environment-overrides=API_HTTP_HOST=127.77.0.42,DB_HOST=127.77.0.42,DEV_SERVICE_IP_ADDRESS=127.77.0.42,IP_ADDRESS=127.77.0.42,LIGHTHOUSE_URL=ws://127.77.0.42:3000/lighthouse/ws/agent")
 	waitForOutput(t, stdout, "override=captured")
 	waitForOutput(t, stdout, "empty=false:")
 	waitForOutput(t, stdout, "unrelated=preserved")
@@ -1341,6 +1344,18 @@ func TestStartRejectsInvalidEnvironmentOverrides(t *testing.T) {
 		{name: "dotenv selector", overrides: EnvironmentOverrides{"APP_ENV": "testing"}},
 		{name: "GoForj app selector", overrides: EnvironmentOverrides{"FORJ_APP": "value"}},
 		{name: "plain launcher mode", overrides: EnvironmentOverrides{developmentPlainEnvName: "0"}},
+		{
+			name: "build environment overrides",
+			overrides: EnvironmentOverrides{
+				buildEnvironmentOverridesEnvName: "value",
+			},
+		},
+		{
+			name: "mixed case build environment overrides",
+			overrides: EnvironmentOverrides{
+				"FoRj_BuIlD_EnV_OvErRiDeS": "value",
+			},
+		},
 		{name: "unsupported setting", overrides: EnvironmentOverrides{"PROJECT_VALUE": "value"}},
 		{name: "portable case collision", overrides: EnvironmentOverrides{"IP_ADDRESS": "127.77.0.8", "ip_address": "127.77.0.9"}},
 	}
@@ -1388,20 +1403,21 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 		"DEV_SERVICE_IP_ADDRESS=127.0.0.7",
 		"IP_ADDRESS=127.0.0.8",
 		"API_HTTP_HOST=127.0.0.9",
+		"FORJ_BUILD_ENV_OVERRIDES=AMBIENT_HOST=127.0.0.9",
 		"ip_address=127.0.0.10",
 		"UNRELATED=preserved",
 	}
 	before := append([]string(nil), base...)
 	result := withDevelopmentEnvironment(base, EnvironmentOverrides{
 		"API_HTTP_HOST":          "127.77.0.42",
-		"DEV_SERVICE_IP_ADDRESS": "127.0.0.42",
-		"IP_ADDRESS":             "127.0.0.42",
+		"DEV_SERVICE_IP_ADDRESS": "127.77.0.42",
+		"IP_ADDRESS":             "127.77.0.42",
 	})
 	want := "HOME=/tmp/home|PATH=/bin"
 	if runtime.GOOS != "windows" {
 		want += "|ip_address=127.0.0.10"
 	}
-	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1|API_HTTP_HOST=127.77.0.42|DEV_SERVICE_IP_ADDRESS=127.0.0.42|IP_ADDRESS=127.0.0.42"
+	want += "|UNRELATED=preserved|FORJ_DEV_PLAIN=1|FORJ_BUILD_ENV_OVERRIDES=API_HTTP_HOST=127.77.0.42,DEV_SERVICE_IP_ADDRESS=127.77.0.42,IP_ADDRESS=127.77.0.42|API_HTTP_HOST=127.77.0.42|DEV_SERVICE_IP_ADDRESS=127.77.0.42|IP_ADDRESS=127.77.0.42"
 	if strings.Join(result, "|") != want {
 		t.Fatalf("withDevelopmentEnvironment() = %q, want %q", strings.Join(result, "|"), want)
 	}

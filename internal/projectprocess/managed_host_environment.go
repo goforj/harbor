@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -18,6 +19,7 @@ const (
 	managedHostEnvironmentBegin               = "# harbor managed: begin"
 	managedHostEnvironmentEnd                 = "# harbor managed: end"
 	managedHostEnvironmentRestoreFinalNewline = "# harbor managed: restore final newline"
+	lighthouseAgentPath                       = "/lighthouse/ws/agent"
 )
 
 var managedHostEnvironmentKeys = map[string]struct{}{
@@ -84,6 +86,95 @@ func managedHostEnvironmentValues(contents string, address string, overrides Env
 	}
 	values["API_HTTP_HOST"] = address
 	return values
+}
+
+// compileBuildEnvironmentOverrides limits child build overrides to assigned loopback endpoint hosts.
+func compileBuildEnvironmentOverrides(values EnvironmentOverrides) string {
+	names := sortedEnvironmentOverrideNames(values)
+	addressValue := ""
+	for _, name := range names {
+		if strings.EqualFold(name, "IP_ADDRESS") {
+			addressValue = values[name]
+			break
+		}
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(addressValue))
+	if err != nil || !address.IsLoopback() {
+		return ""
+	}
+	assignedAddress := address.String()
+	assignments := make([]string, 0, len(values))
+	for _, name := range names {
+		value := values[name]
+		if validateEnvironmentOverrideName(name) != nil {
+			continue
+		}
+		if isBuildEndpointHostName(name) && value == assignedAddress {
+			assignments = append(assignments, name+"="+assignedAddress)
+			continue
+		}
+		if strings.EqualFold(name, "LIGHTHOUSE_URL") {
+			if endpoint, safe := canonicalLighthouseAgentURL(value, assignedAddress); safe {
+				assignments = append(assignments, name+"="+endpoint)
+			}
+		}
+	}
+	return strings.Join(assignments, ",")
+}
+
+// isBuildEndpointHostName recognizes the case-insensitive host assignments passed to child builds.
+func isBuildEndpointHostName(name string) bool {
+	return strings.EqualFold(name, "IP_ADDRESS") ||
+		strings.EqualFold(name, "DEV_SERVICE_IP_ADDRESS") ||
+		strings.HasSuffix(strings.ToUpper(name), "_HOST")
+}
+
+// canonicalLighthouseAgentURL accepts only Harbor's delimiter-safe agent endpoint and serializes it canonically.
+func canonicalLighthouseAgentURL(value string, assignedAddress string) (string, bool) {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "ws" && scheme != "wss" {
+		return "", false
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	if parsed.Path != lighthouseAgentPath || parsed.RawPath != "" {
+		return "", false
+	}
+	if parsed.Hostname() != assignedAddress {
+		return "", false
+	}
+	portValue := parsed.Port()
+	if !isDecimalPort(portValue) {
+		return "", false
+	}
+	port, err := strconv.Atoi(portValue)
+	if err != nil || port < 1 || port > 65535 {
+		return "", false
+	}
+	endpoint := url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(assignedAddress, strconv.Itoa(port)),
+		Path:   lighthouseAgentPath,
+	}
+	return endpoint.String(), true
+}
+
+// isDecimalPort rejects URL port syntax that cannot be represented unambiguously in the child contract.
+func isDecimalPort(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index := range value {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // rewriteLocalEnvironmentValue moves literal localhost endpoints onto the project's assigned loopback address.

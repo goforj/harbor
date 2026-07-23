@@ -21,18 +21,20 @@ import (
 )
 
 const (
-	defaultGracePeriod       = 3 * time.Second
-	defaultOutputBufferLines = 256
-	defaultServiceLogIdle    = 40 * time.Second
-	forceSettlementPeriod    = time.Second
-	forceSettlementPoll      = 10 * time.Millisecond
-	developmentPlainEnvName  = "FORJ_DEV_PLAIN"
+	defaultGracePeriod               = 3 * time.Second
+	defaultOutputBufferLines         = 256
+	defaultServiceLogIdle            = 40 * time.Second
+	forceSettlementPeriod            = time.Second
+	forceSettlementPoll              = 10 * time.Millisecond
+	developmentPlainEnvName          = "FORJ_DEV_PLAIN"
+	buildEnvironmentOverridesEnvName = "FORJ_BUILD_ENV_OVERRIDES"
 )
 
 var developmentLaunchIsolationNames = []string{
 	"APP_NAME",
 	"FORJ_APP",
 	"FORJ_BUILD_PROGRESS",
+	buildEnvironmentOverridesEnvName,
 	"FORJ_COMMAND_PREFIX",
 	ManagedLaunchContextEnvironment,
 	developmentPlainEnvName,
@@ -1488,7 +1490,7 @@ func validateEnvironmentOverrideName(name string) error {
 		return fmt.Errorf("environment override name %q is reserved by the managed project launcher", name)
 	}
 	switch upperName {
-	case developmentPlainEnvName, "APP_ENV", "FORJ_APP", "FORJ_COMMAND_PREFIX", "FORJ_BUILD_PROGRESS":
+	case developmentPlainEnvName, "APP_ENV", "FORJ_APP", "FORJ_COMMAND_PREFIX", "FORJ_BUILD_PROGRESS", buildEnvironmentOverridesEnvName:
 		return fmt.Errorf("environment override name %q is reserved by the managed project launcher", name)
 	}
 	return nil
@@ -1563,7 +1565,16 @@ type environmentAssignment struct {
 func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverrides, managedLaunchPath ...string) []string {
 	names := sortedEnvironmentOverrideNames(overrides)
 	replacedNames := append(append([]string(nil), names...), developmentLaunchIsolationNames...)
-	assignments := []environmentAssignment{{name: developmentPlainEnvName, value: "1"}}
+	assignments := []environmentAssignment{
+		{
+			name:  developmentPlainEnvName,
+			value: "1",
+		},
+		{
+			name:  buildEnvironmentOverridesEnvName,
+			value: compileBuildEnvironmentOverrides(overrides),
+		},
+	}
 	for _, name := range names {
 		assignments = append(assignments, environmentAssignment{
 			name:  name,
