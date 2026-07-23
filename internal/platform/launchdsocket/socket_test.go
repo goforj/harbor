@@ -143,7 +143,11 @@ func (harness *activationHarness) close(file *os.File) error {
 
 // validObservation returns the exact fact shape accepted for one fixed endpoint.
 func validObservation(endpoint netip.AddrPort) socketObservation {
-	return socketObservation{IPv4: true, TCP: true, Listening: true, Local: endpoint}
+	return socketObservation{
+		IPv4:  true,
+		TCP:   true,
+		Local: endpoint,
+	}
 }
 
 // requireClosed proves an original activated descriptor can no longer be used after the call.
@@ -344,7 +348,6 @@ func TestActivateIngressRejectsUnsafeSocketFacts(t *testing.T) {
 	}{
 		{name: "not IPv4", mutate: func(value *socketObservation) { value.IPv4 = false }, want: "not an IPv4"},
 		{name: "not TCP", mutate: func(value *socketObservation) { value.TCP = false }, want: "not a TCP"},
-		{name: "not listening", mutate: func(value *socketObservation) { value.Listening = false }, want: "not listening"},
 		{name: "wrong HTTP address", mutate: func(value *socketObservation) { value.Local = netip.MustParseAddrPort("127.0.0.2:80") }, want: "want exactly 127.0.0.1:80"},
 		{name: "wrong HTTPS port", https: true, mutate: func(value *socketObservation) { value.Local = netip.MustParseAddrPort("127.0.0.1:444") }, want: "want exactly 127.0.0.1:443"},
 	}

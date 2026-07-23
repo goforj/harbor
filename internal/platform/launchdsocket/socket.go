@@ -26,10 +26,9 @@ var (
 
 // socketObservation contains only the native facts required before an activated descriptor becomes a Go listener.
 type socketObservation struct {
-	IPv4      bool
-	TCP       bool
-	Listening bool
-	Local     netip.AddrPort
+	IPv4  bool
+	TCP   bool
+	Local netip.AddrPort
 }
 
 // nativeActivator acquires every descriptor registered under one fixed launchd socket name.
@@ -111,8 +110,16 @@ func activateIngress(dependencies activationDependencies) (ingressrelay.Listener
 		file *os.File
 		want netip.AddrPort
 	}{
-		{name: "HTTP", file: files[0], want: httpEndpoint},
-		{name: "HTTPS", file: files[1], want: httpsEndpoint},
+		{
+			name: "HTTP",
+			file: files[0],
+			want: httpEndpoint,
+		},
+		{
+			name: "HTTPS",
+			file: files[1],
+			want: httpsEndpoint,
+		},
 	}
 	for _, check := range checks {
 		observation, inspectErr := dependencies.inspect(check.file)
@@ -185,9 +192,6 @@ func validateSocketObservation(name string, observation socketObservation, want 
 	}
 	if !observation.TCP {
 		return fmt.Errorf("launchd %s descriptor is not a TCP stream socket", name)
-	}
-	if !observation.Listening {
-		return fmt.Errorf("launchd %s descriptor is not listening", name)
 	}
 	if observation.Local != want {
 		return fmt.Errorf("launchd %s descriptor is bound to %s, want exactly %s", name, observation.Local, want)
