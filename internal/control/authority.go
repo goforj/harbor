@@ -77,6 +77,16 @@ type Authority interface {
 	ConfirmProjectUnregisterApproval(context.Context, Caller, ConfirmProjectUnregisterApprovalRequest) (ProjectUnregisterApprovalConfirmation, error)
 }
 
+// NetworkResolverPolicyMigrationAuthority owns the optional legacy resolver-policy retirement control surface.
+type NetworkResolverPolicyMigrationAuthority interface {
+	// StartNetworkResolverPolicyMigration starts or replays one bounded legacy resolver-policy retirement intent.
+	StartNetworkResolverPolicyMigration(context.Context, Caller, StartNetworkResolverPolicyMigrationRequest) (NetworkResolverPolicyMigrationOperation, error)
+	// PrepareNetworkResolverPolicyMigrationApproval publishes one caller-bound legacy resolver retirement capability.
+	PrepareNetworkResolverPolicyMigrationApproval(context.Context, Caller, PrepareNetworkResolverPolicyMigrationApprovalRequest) (NetworkResolverPolicyMigrationApprovalPreparation, error)
+	// ConfirmNetworkResolverPolicyMigrationApproval verifies retirement evidence and completes the migration.
+	ConfirmNetworkResolverPolicyMigrationApproval(context.Context, Caller, ConfirmNetworkResolverPolicyMigrationApprovalRequest) (NetworkResolverPolicyMigrationApprovalConfirmation, error)
+}
+
 // normalizeContext lets public control calls accept a nil context without weakening dependency wiring.
 func normalizeContext(ctx context.Context) context.Context {
 	if ctx == nil {

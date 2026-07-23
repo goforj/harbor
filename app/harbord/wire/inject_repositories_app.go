@@ -18,6 +18,7 @@ var repositorySet = wire.NewSet(
 	models.NewMachineOwnershipProjectionRepo,
 	models.NewNetworkPoolCandidateRepo,
 	models.NewNetworkProjectReleaseRepo,
+	models.NewNetworkResolverPolicyMigrationPlanRepo,
 	models.NewNetworkResolverSetupPlanRepo,
 	models.NewNetworkSetupEvidenceRepo,
 	models.NewNetworkSetupPlanRepo,

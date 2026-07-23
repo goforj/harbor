@@ -22,6 +22,8 @@ const (
 	CapabilityNetworkSetupV1 rpc.Capability = "control.network-setup.v1"
 	// CapabilityNetworkResolverSetupV1 identifies machine-global resolver setup initiation and approval.
 	CapabilityNetworkResolverSetupV1 rpc.Capability = "control.network-resolver-setup.v1"
+	// CapabilityNetworkResolverPolicyMigrationV1 identifies legacy machine-global resolver-policy retirement initiation and approval.
+	CapabilityNetworkResolverPolicyMigrationV1 rpc.Capability = "control.network-resolver-policy-migration.v1"
 	// CapabilityNetworkDataPlaneSetupV1 identifies machine-global trusted-ingress setup and approval.
 	CapabilityNetworkDataPlaneSetupV1 rpc.Capability = "control.network-data-plane-setup.v1"
 	// CapabilityNetworkReleaseV1 identifies machine-global network release initiation and progress reads.
@@ -55,43 +57,46 @@ const (
 	// CapabilityProjectUnregisterApprovalV1 identifies interactive project-release approval and confirmation.
 	CapabilityProjectUnregisterApprovalV1 rpc.Capability = "control.project-unregister-approval.v1"
 
-	methodDaemonStatus                        = "control.v1.daemon.status"
-	methodDaemonStop                          = "control.v1.daemon.stop"
-	methodSnapshot                            = "control.v1.snapshot"
-	methodNetworkSetupStart                   = "control.v1.network.setup.start"
-	methodNetworkSetupApprovalPrepare         = "control.v1.network.setup.approval.prepare"
-	methodNetworkSetupApprovalConfirm         = "control.v1.network.setup.approval.confirm"
-	methodNetworkResolverSetupStart           = "control.v1.network.resolver.setup.start"
-	methodNetworkResolverSetupApprovalPrepare = "control.v1.network.resolver.setup.approval.prepare"
-	methodNetworkResolverSetupApprovalConfirm = "control.v1.network.resolver.setup.approval.confirm"
-	methodNetworkDataPlaneSetupStart          = "control.v1.network.data-plane.setup.start"
-	methodNetworkDataPlaneSetupRead           = "control.v1.network.data-plane.setup.read"
-	methodNetworkDataPlaneTrustPrepare        = "control.v1.network.data-plane.setup.trust.prepare"
-	methodNetworkDataPlaneTrustConfirm        = "control.v1.network.data-plane.setup.trust.confirm"
-	methodNetworkDataPlaneLowPortPrepare      = "control.v1.network.data-plane.setup.low-port.prepare"
-	methodNetworkDataPlaneLowPortConfirm      = "control.v1.network.data-plane.setup.low-port.confirm"
-	methodNetworkReleaseStart                 = "control.v1.network.release.start"
-	methodNetworkReleaseRead                  = "control.v1.network.release.read"
-	methodNetworkReleaseLowPortPrepare        = "control.v1.network.release.low-port.prepare"
-	methodNetworkReleaseLowPortConfirm        = "control.v1.network.release.low-port.confirm"
-	methodNetworkReleaseResolverPrepare       = "control.v1.network.release.resolver.prepare"
-	methodNetworkReleaseResolverConfirm       = "control.v1.network.release.resolver.confirm"
-	methodNetworkReleaseTrustPrepare          = "control.v1.network.release.trust.prepare"
-	methodNetworkReleaseTrustConfirm          = "control.v1.network.release.trust.confirm"
-	methodNetworkReleaseLoopbackPrepare       = "control.v1.network.release.loopback.prepare"
-	methodNetworkReleaseLoopbackConfirm       = "control.v1.network.release.loopback.confirm"
-	methodProjectActivity                     = "control.v1.project.activity"
-	methodServiceLogs                         = "control.v1.project.service.logs"
-	methodProjectStart                        = "control.v1.project.start"
-	methodProjectStop                         = "control.v1.project.stop"
-	methodProjectRestart                      = "control.v1.project.restart"
-	methodProjectRegister                     = "control.v1.project.register"
-	methodProjectRuntimeRepairInspect         = "control.v1.project.runtime-repair.inspect"
-	methodProjectRuntimeRepairConfirm         = "control.v1.project.runtime-repair.confirm"
-	methodProjectUnregister                   = "control.v1.project.unregister"
-	methodProjectUnregisterApprovalPrepare    = "control.v1.project.unregister.approval.prepare"
-	methodProjectUnregisterApprovalConfirm    = "control.v1.project.unregister.approval.confirm"
-	maximumBuildToken                         = 128
+	methodDaemonStatus                                  = "control.v1.daemon.status"
+	methodDaemonStop                                    = "control.v1.daemon.stop"
+	methodSnapshot                                      = "control.v1.snapshot"
+	methodNetworkSetupStart                             = "control.v1.network.setup.start"
+	methodNetworkSetupApprovalPrepare                   = "control.v1.network.setup.approval.prepare"
+	methodNetworkSetupApprovalConfirm                   = "control.v1.network.setup.approval.confirm"
+	methodNetworkResolverSetupStart                     = "control.v1.network.resolver.setup.start"
+	methodNetworkResolverSetupApprovalPrepare           = "control.v1.network.resolver.setup.approval.prepare"
+	methodNetworkResolverSetupApprovalConfirm           = "control.v1.network.resolver.setup.approval.confirm"
+	methodNetworkResolverPolicyMigrationStart           = "control.v1.network.resolver.policy-migration.start"
+	methodNetworkResolverPolicyMigrationApprovalPrepare = "control.v1.network.resolver.policy-migration.approval.prepare"
+	methodNetworkResolverPolicyMigrationApprovalConfirm = "control.v1.network.resolver.policy-migration.approval.confirm"
+	methodNetworkDataPlaneSetupStart                    = "control.v1.network.data-plane.setup.start"
+	methodNetworkDataPlaneSetupRead                     = "control.v1.network.data-plane.setup.read"
+	methodNetworkDataPlaneTrustPrepare                  = "control.v1.network.data-plane.setup.trust.prepare"
+	methodNetworkDataPlaneTrustConfirm                  = "control.v1.network.data-plane.setup.trust.confirm"
+	methodNetworkDataPlaneLowPortPrepare                = "control.v1.network.data-plane.setup.low-port.prepare"
+	methodNetworkDataPlaneLowPortConfirm                = "control.v1.network.data-plane.setup.low-port.confirm"
+	methodNetworkReleaseStart                           = "control.v1.network.release.start"
+	methodNetworkReleaseRead                            = "control.v1.network.release.read"
+	methodNetworkReleaseLowPortPrepare                  = "control.v1.network.release.low-port.prepare"
+	methodNetworkReleaseLowPortConfirm                  = "control.v1.network.release.low-port.confirm"
+	methodNetworkReleaseResolverPrepare                 = "control.v1.network.release.resolver.prepare"
+	methodNetworkReleaseResolverConfirm                 = "control.v1.network.release.resolver.confirm"
+	methodNetworkReleaseTrustPrepare                    = "control.v1.network.release.trust.prepare"
+	methodNetworkReleaseTrustConfirm                    = "control.v1.network.release.trust.confirm"
+	methodNetworkReleaseLoopbackPrepare                 = "control.v1.network.release.loopback.prepare"
+	methodNetworkReleaseLoopbackConfirm                 = "control.v1.network.release.loopback.confirm"
+	methodProjectActivity                               = "control.v1.project.activity"
+	methodServiceLogs                                   = "control.v1.project.service.logs"
+	methodProjectStart                                  = "control.v1.project.start"
+	methodProjectStop                                   = "control.v1.project.stop"
+	methodProjectRestart                                = "control.v1.project.restart"
+	methodProjectRegister                               = "control.v1.project.register"
+	methodProjectRuntimeRepairInspect                   = "control.v1.project.runtime-repair.inspect"
+	methodProjectRuntimeRepairConfirm                   = "control.v1.project.runtime-repair.confirm"
+	methodProjectUnregister                             = "control.v1.project.unregister"
+	methodProjectUnregisterApprovalPrepare              = "control.v1.project.unregister.approval.prepare"
+	methodProjectUnregisterApprovalConfirm              = "control.v1.project.unregister.approval.confirm"
+	maximumBuildToken                                   = 128
 )
 
 var protocolV1 = rpc.Version{Major: 1, Minor: 0}
@@ -301,6 +306,7 @@ func capabilities() []rpc.Capability {
 		CapabilityNetworkReleaseLoopbackApprovalV1,
 		CapabilityNetworkReleaseResolverApprovalV1,
 		CapabilityNetworkReleaseTrustApprovalV1,
+		CapabilityNetworkResolverPolicyMigrationV1,
 		CapabilityNetworkResolverSetupV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
@@ -318,10 +324,11 @@ func capabilities() []rpc.Capability {
 }
 
 // daemonCapabilities returns the capabilities implemented by this server configuration.
-func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool, networkReleaseApproval bool) []rpc.Capability {
+func daemonCapabilities(networkDataPlaneSetup bool, networkRelease bool, networkReleaseApproval bool, networkResolverPolicyMigration bool) []rpc.Capability {
 	capabilities := capabilities()
 	capabilities = slices.DeleteFunc(capabilities, func(capability rpc.Capability) bool {
 		return (capability == CapabilityNetworkDataPlaneSetupV1 && !networkDataPlaneSetup) ||
+			(capability == CapabilityNetworkResolverPolicyMigrationV1 && !networkResolverPolicyMigration) ||
 			(capability == CapabilityNetworkReleaseV1 && !networkRelease) ||
 			(capability == CapabilityNetworkReleaseApprovalV1 && !networkReleaseApproval) ||
 			(capability == CapabilityNetworkReleaseResolverApprovalV1 && !networkReleaseApproval) ||

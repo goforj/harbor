@@ -54,6 +54,8 @@ type ServerConfig struct {
 	NetworkReleaseAuthority NetworkReleaseAuthority
 	// NetworkReleaseApprovalAuthority optionally enables machine-global low-port, resolver, trust, and loopback-pool release approval.
 	NetworkReleaseApprovalAuthority NetworkReleaseApprovalAuthority
+	// NetworkResolverPolicyMigrationAuthority optionally enables legacy resolver-policy retirement control.
+	NetworkResolverPolicyMigrationAuthority NetworkResolverPolicyMigrationAuthority
 }
 
 // Server adapts authenticated local connections to the typed Harbor control API.
@@ -114,10 +116,12 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 	dataPlaneSetupEnabled := !networkDataPlaneSetupAuthorityIsNil(server.config.NetworkDataPlaneSetupAuthority)
 	networkReleaseEnabled := !networkReleaseAuthorityIsNil(server.config.NetworkReleaseAuthority)
 	networkReleaseApprovalEnabled := !networkReleaseApprovalAuthorityIsNil(server.config.NetworkReleaseApprovalAuthority)
+	networkResolverPolicyMigrationEnabled := !networkResolverPolicyMigrationAuthorityIsNil(server.config.NetworkResolverPolicyMigrationAuthority)
 	serverCapabilities := daemonCapabilities(
 		dataPlaneSetupEnabled,
 		networkReleaseEnabled,
 		networkReleaseApprovalEnabled,
+		networkResolverPolicyMigrationEnabled,
 	)
 	serverAuthorize := authorizeControlHello
 	var roleHandlers map[rpc.Role]map[string]session.Handler
@@ -195,6 +199,11 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		handlers[methodNetworkReleaseTrustConfirm] = server.networkReleaseTrustConfirmHandler(transportPeer)
 		handlers[methodNetworkReleaseLoopbackPrepare] = server.networkReleaseLoopbackPrepareHandler(transportPeer)
 		handlers[methodNetworkReleaseLoopbackConfirm] = server.networkReleaseLoopbackConfirmHandler(transportPeer)
+	}
+	if networkResolverPolicyMigrationEnabled {
+		handlers[methodNetworkResolverPolicyMigrationStart] = server.networkResolverPolicyMigrationStartHandler(transportPeer)
+		handlers[methodNetworkResolverPolicyMigrationApprovalPrepare] = server.networkResolverPolicyMigrationApprovalPrepareHandler(transportPeer)
+		handlers[methodNetworkResolverPolicyMigrationApprovalConfirm] = server.networkResolverPolicyMigrationApprovalConfirmHandler(transportPeer)
 	}
 
 	controlSession, err := session.NewServer(session.ServerConfig{

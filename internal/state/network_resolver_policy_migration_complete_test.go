@@ -17,6 +17,38 @@ import (
 	"gorm.io/gorm"
 )
 
+// TestNetworkResolverPolicyMigrationRetirementReplayCrossesDurableState proves a lost helper response leaves the schema-two plan replayable until daemon confirmation atomically records schema-one retirement.
+func TestNetworkResolverPolicyMigrationRetirementReplayCrossesDurableState(t *testing.T) {
+	fixture, approval, confirmation := stagedNetworkResolverPolicyMigrationCompletionFixture(t)
+	store := networkResolverPolicyMigrationCompletionStore(fixture)
+
+	plan, err := fixture.source.Resolve(t.Context(), resolverPlanRequest(approval))
+	if err != nil {
+		t.Fatalf("Resolve() before helper retirement error = %v", err)
+	}
+	if plan.Mutation != helper.OperationRetireResolver ||
+		plan.TargetOwnership != fixture.request.SourceOwnership.Record ||
+		plan.TargetOwnership.SchemaVersion != ownership.NetworkPolicySchemaVersion {
+		t.Fatalf("schema-two retirement plan = %#v", plan)
+	}
+
+	// A helper can retire protected ownership before its response reaches the daemon, so the daemon must retain the schema-two plan until confirmation.
+	before := networkDataPlaneActivationTestProjection(t, fixture.database)
+	if before.observation != fixture.request.SourceOwnership ||
+		confirmation.ConfirmedOwnership.Record.SchemaVersion != ownership.IdentitySchemaVersion {
+		t.Fatalf("lost-response ownership facts = projection %#v, helper %#v", before.observation, confirmation.ConfirmedOwnership)
+	}
+	if _, err := fixture.source.Resolve(t.Context(), resolverPlanRequest(approval)); err != nil {
+		t.Fatalf("Resolve() during lost helper response error = %v", err)
+	}
+
+	completed, err := store.CompleteNetworkResolverPolicyMigration(t.Context(), confirmation)
+	if err != nil {
+		t.Fatalf("CompleteNetworkResolverPolicyMigration() error = %v", err)
+	}
+	assertNetworkResolverPolicyMigrationCompleted(t, fixture, approval, confirmation, completed)
+}
+
 // TestStoreCompletesNetworkResolverPolicyMigrationWithHelperEvidence retires only the resolver-bound authority.
 func TestStoreCompletesNetworkResolverPolicyMigrationWithHelperEvidence(t *testing.T) {
 	fixture, approval, request := stagedNetworkResolverPolicyMigrationCompletionFixture(t)
@@ -35,6 +67,20 @@ func TestStoreCompletesNetworkResolverPolicyMigrationWithHelperEvidence(t *testi
 		t.Fatalf("completion times = operation %v, network %v, want %v", result.Operation.Operation.FinishedAt, result.Network.Record.UpdatedAt, request.At)
 	}
 	assertNetworkResolverPolicyMigrationCompleted(t, fixture, approval, request, result)
+
+	replayed, err := store.ReplayNetworkResolverPolicyMigration(context.Background(), request.OperationID, request.ExpectedOperationRevision)
+	if err != nil {
+		t.Fatalf("ReplayNetworkResolverPolicyMigration() error = %v", err)
+	}
+	if !replayed.Network.Replayed ||
+		!reflect.DeepEqual(replayed.Operation, result.Operation) ||
+		replayed.NetworkRevision != result.NetworkRevision ||
+		!reflect.DeepEqual(replayed.Network.Record, result.Network.Record) {
+		t.Fatalf("ReplayNetworkResolverPolicyMigration() = %#v, want durable terminal result for %#v", replayed, result)
+	}
+	if _, err := store.ReplayNetworkResolverPolicyMigration(context.Background(), request.OperationID, request.ExpectedOperationRevision+1); err == nil {
+		t.Fatal("ReplayNetworkResolverPolicyMigration() stale revision error = nil")
+	}
 }
 
 // TestNetworkResolverPolicyMigrationRequestsValidateRejectsInvalidAdmissionFacts verifies completion and recovery share selection and post-state fences while only completion accepts helper evidence.

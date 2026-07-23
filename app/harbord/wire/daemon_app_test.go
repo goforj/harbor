@@ -697,13 +697,13 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	}
 	shutdown := daemon.NewShutdown()
 	appLogger := logger.NewSilentLogger()
-	if _, err := provideControlServer(nil, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown, appLogger); err == nil {
+	if _, err := provideControlServer(nil, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, networkResolverPolicyMigrationCapability{}, shutdown, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil) error = nil, want required authority error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, networkReleaseCapability{}, nil, appLogger); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, networkReleaseCapability{}, networkResolverPolicyMigrationCapability{}, nil, appLogger); err == nil {
 		t.Fatal("provideControlServer(nil shutdown) error = nil, want required shutdown coordinator error")
 	}
-	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown, nil); err == nil {
+	if _, err := provideControlServer(new(authority.Authority), networkDataPlaneSetupCapability{}, networkReleaseCapability{}, networkResolverPolicyMigrationCapability{}, shutdown, nil); err == nil {
 		t.Fatal("provideControlServer(nil logger) error = nil, want required application logger error")
 	}
 	if _, err := provideProjectUnregisterCoordinatorWithIssuerOpener(nil, operations, plans, ownership, runtimeController, openIssuer); err == nil {
@@ -744,6 +744,25 @@ func TestDaemonProvidersRejectIncompleteAssembly(t *testing.T) {
 	}
 	if _, err := provideDaemonRunner(new(control.Server), func(context.Context) error { return nil }, runtimeController, coordinator, new(reconcile.ProjectLifecycleCoordinator), nil, networkDataPlaneSetupCapability{}, networkReleaseCapability{}, shutdown); err == nil {
 		t.Fatal("provideDaemonRunner(nil operations) error = nil, want required operation journal error")
+	}
+}
+
+// TestProvideControlServerExposesResolverPolicyMigrationAuthority proves the optional capability reaches protocol negotiation.
+func TestProvideControlServerExposesResolverPolicyMigrationAuthority(t *testing.T) {
+	migration := &authority.NetworkResolverPolicyMigrationAuthority{}
+	server, err := provideControlServer(
+		new(authority.Authority),
+		networkDataPlaneSetupCapability{},
+		networkReleaseCapability{},
+		networkResolverPolicyMigrationCapability{authority: migration},
+		daemon.NewShutdown(),
+		logger.NewSilentLogger(),
+	)
+	if err != nil {
+		t.Fatalf("provideControlServer() error = %v", err)
+	}
+	if server == nil {
+		t.Fatal("provideControlServer() = nil, want server")
 	}
 }
 

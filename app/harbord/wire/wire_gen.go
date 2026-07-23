@@ -79,8 +79,14 @@ func InitializeApplication(environment projectprocess.Environment) (App, error) 
 	if err != nil {
 		return App{}, err
 	}
+	networkResolverPolicyMigrationPlanRepo := models.NewNetworkResolverPolicyMigrationPlanRepo(connections)
+	networkResolverPolicyMigrationPlanSource := state.NewNetworkResolverPolicyMigrationPlanSource(networkResolverPolicyMigrationPlanRepo)
+	wireNetworkResolverPolicyMigrationCapability, err := provideNetworkResolverPolicyMigrationCapability(operationJournal, store, networkResolverPolicyMigrationPlanSource, machineOwnershipProjectionSource, controller, networkResolverSetupResolverObserver)
+	if err != nil {
+		return App{}, err
+	}
 	shutdown := daemon.NewShutdown()
-	server, err := provideControlServer(authorityAuthority, wireNetworkDataPlaneSetupCapability, wireNetworkReleaseCapability, shutdown, appLogger)
+	server, err := provideControlServer(authorityAuthority, wireNetworkDataPlaneSetupCapability, wireNetworkReleaseCapability, wireNetworkResolverPolicyMigrationCapability, shutdown, appLogger)
 	if err != nil {
 		return App{}, err
 	}

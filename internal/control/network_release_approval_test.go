@@ -370,19 +370,19 @@ func TestNetworkReleaseApprovalValidation(t *testing.T) {
 
 // TestNetworkReleaseApprovalCapabilityIsIndependent keeps approval negotiation independent from start/read and rejects typed nil authorities.
 func TestNetworkReleaseApprovalCapabilityIsIndependent(t *testing.T) {
-	if containsCapability(daemonCapabilities(false, true, false), CapabilityNetworkReleaseApprovalV1) {
+	if containsCapability(daemonCapabilities(false, true, false, false), CapabilityNetworkReleaseApprovalV1) {
 		t.Fatal("release start/read enabled approval")
 	}
-	if !containsCapability(daemonCapabilities(false, false, true), CapabilityNetworkReleaseApprovalV1) {
+	if !containsCapability(daemonCapabilities(false, false, true, false), CapabilityNetworkReleaseApprovalV1) {
 		t.Fatal("approval was not independently enabled")
 	}
-	if !containsCapability(daemonCapabilities(false, false, true), CapabilityNetworkReleaseResolverApprovalV1) {
+	if !containsCapability(daemonCapabilities(false, false, true, false), CapabilityNetworkReleaseResolverApprovalV1) {
 		t.Fatal("resolver approval was not independently enabled")
 	}
-	if !containsCapability(daemonCapabilities(false, false, true), CapabilityNetworkReleaseTrustApprovalV1) {
+	if !containsCapability(daemonCapabilities(false, false, true, false), CapabilityNetworkReleaseTrustApprovalV1) {
 		t.Fatal("trust approval was not independently enabled")
 	}
-	if !containsCapability(daemonCapabilities(false, false, true), CapabilityNetworkReleaseLoopbackApprovalV1) {
+	if !containsCapability(daemonCapabilities(false, false, true, false), CapabilityNetworkReleaseLoopbackApprovalV1) {
 		t.Fatal("loopback approval was not independently enabled")
 	}
 	for _, authority := range []NetworkReleaseApprovalAuthority{

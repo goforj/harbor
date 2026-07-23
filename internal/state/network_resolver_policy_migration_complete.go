@@ -109,6 +109,54 @@ func (store *Store) CompleteNetworkResolverPolicyMigration(ctx context.Context, 
 	return store.completeNetworkResolverPolicyMigration(ctx, request.OperationID, request.ExpectedOperationRevision, request.ObservedResolver, request.ConfirmedOwnership, request.At, &request.ResolverEvidence)
 }
 
+// ReplayNetworkResolverPolicyMigration restores the durable terminal result for an exact approval retry.
+func (store *Store) ReplayNetworkResolverPolicyMigration(ctx context.Context, operationID domain.OperationID, revision domain.Sequence) (CompleteNetworkResolverPolicyMigrationResult, error) {
+	if err := operationID.Validate(); err != nil {
+		return CompleteNetworkResolverPolicyMigrationResult{}, fmt.Errorf("replay network resolver policy migration: %w", err)
+	}
+	if _, err := sequenceToModelInt("expected resolver policy migration operation revision", revision, false); err != nil {
+		return CompleteNetworkResolverPolicyMigrationResult{}, fmt.Errorf("replay network resolver policy migration: %w", err)
+	}
+	var result CompleteNetworkResolverPolicyMigrationResult
+	err := store.mutations.mutate(normalizeContext(ctx), "network resolver policy migration replay", func(tx *gorm.DB) error {
+		operation, found, err := findOperationByID(tx, operationID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return &OperationNotFoundError{OperationID: operationID}
+		}
+		record, err := operationRecordFromModel(operation)
+		if err != nil {
+			return err
+		}
+		if record.Operation.Kind != domain.OperationKindNetworkResolverPolicyMigration || record.Operation.ProjectID != "" || record.Operation.State != domain.OperationSucceeded {
+			return fmt.Errorf("network resolver policy migration %q is not completed", operationID)
+		}
+		history, err := operationHistoryInTransaction(tx, record)
+		if err != nil {
+			return err
+		}
+		_, planFound, err := readOptionalNetworkResolverPolicyMigrationPlan(tx, operationID)
+		if err != nil {
+			return err
+		}
+		if planFound {
+			return corruptNetworkResolverPolicyMigrationCompletion(operationID, fmt.Errorf("succeeded operation retains its singleton plan"))
+		}
+		replayed, err := replayCompletedNetworkResolverPolicyMigration(tx, record, history, operationID, revision, nil, nil, nil, nil)
+		if err != nil {
+			return err
+		}
+		result = replayed
+		return nil
+	})
+	if err != nil {
+		return CompleteNetworkResolverPolicyMigrationResult{}, fmt.Errorf("replay network resolver policy migration: %w", err)
+	}
+	return result, nil
+}
+
 // RecoverNetworkResolverPolicyMigration commits a fresh, independently proven post-state without helper evidence.
 func (store *Store) RecoverNetworkResolverPolicyMigration(ctx context.Context, request RecoverNetworkResolverPolicyMigrationRequest) (CompleteNetworkResolverPolicyMigrationResult, error) {
 	if err := request.Validate(); err != nil {
@@ -166,7 +214,7 @@ func completeNetworkResolverPolicyMigrationInTransaction(tx *gorm.DB, operationI
 		if planFound {
 			return CompleteNetworkResolverPolicyMigrationResult{}, corruptNetworkResolverPolicyMigrationCompletion(operationID, fmt.Errorf("succeeded operation retains its singleton plan"))
 		}
-		return replayCompletedNetworkResolverPolicyMigration(tx, record, history, operationID, revision, observed, confirmed, at, evidence)
+		return replayCompletedNetworkResolverPolicyMigration(tx, record, history, operationID, revision, &observed, &confirmed, &at, evidence)
 	}
 	if record.Operation.State != domain.OperationRequiresApproval || record.Operation.Phase != networkResolverPolicyMigrationApprovalPhase {
 		return CompleteNetworkResolverPolicyMigrationResult{}, fmt.Errorf("network resolver policy migration %q is not awaiting approval", operationID)
@@ -214,7 +262,7 @@ func completeNetworkResolverPolicyMigrationInTransaction(tx *gorm.DB, operationI
 	if err != nil {
 		return CompleteNetworkResolverPolicyMigrationResult{}, err
 	}
-	result, err := replayCompletedNetworkResolverPolicyMigration(tx, succeeded, completedHistory, operationID, revision, observed, confirmed, at, evidence)
+	result, err := replayCompletedNetworkResolverPolicyMigration(tx, succeeded, completedHistory, operationID, revision, &observed, &confirmed, &at, evidence)
 	if err != nil {
 		return CompleteNetworkResolverPolicyMigrationResult{}, err
 	}
@@ -342,8 +390,8 @@ func downgradeNetworkResolverPolicyMigrationOwnership(tx *gorm.DB, current machi
 }
 
 // replayCompletedNetworkResolverPolicyMigration validates an exact terminal replay and never mutates later setup state.
-func replayCompletedNetworkResolverPolicyMigration(tx *gorm.DB, record OperationRecord, history []OperationTransition, operationID domain.OperationID, revision domain.Sequence, observed resolver.Observation, confirmed ownership.Observation, at time.Time, evidence *helper.ResolverMutationEvidence) (CompleteNetworkResolverPolicyMigrationResult, error) {
-	if len(history) != 5 || history[2].Sequence != revision || history[3].State != domain.OperationRunning || history[3].Phase != networkResolverPolicyMigrationCompletionRunningPhase || !history[3].OccurredAt.Equal(at) || history[4].State != domain.OperationSucceeded || history[4].Phase != networkResolverPolicyMigrationCompletionSucceededPhase || !history[4].OccurredAt.Equal(at) || record.Revision != history[4].Sequence || history[4].Sequence != history[3].Sequence+2 {
+func replayCompletedNetworkResolverPolicyMigration(tx *gorm.DB, record OperationRecord, history []OperationTransition, operationID domain.OperationID, revision domain.Sequence, observed *resolver.Observation, confirmed *ownership.Observation, at *time.Time, evidence *helper.ResolverMutationEvidence) (CompleteNetworkResolverPolicyMigrationResult, error) {
+	if len(history) != 5 || history[2].Sequence != revision || history[3].State != domain.OperationRunning || history[3].Phase != networkResolverPolicyMigrationCompletionRunningPhase || at != nil && !history[3].OccurredAt.Equal(*at) || history[4].State != domain.OperationSucceeded || history[4].Phase != networkResolverPolicyMigrationCompletionSucceededPhase || at != nil && !history[4].OccurredAt.Equal(*at) || record.Revision != history[4].Sequence || history[4].Sequence != history[3].Sequence+2 {
 		return CompleteNetworkResolverPolicyMigrationResult{}, corruptNetworkResolverPolicyMigrationCompletion(operationID, fmt.Errorf("terminal history differs"))
 	}
 	historical := history[3].Sequence + 1
@@ -368,11 +416,14 @@ func replayCompletedNetworkResolverPolicyMigration(tx *gorm.DB, record Operation
 	if err != nil {
 		return CompleteNetworkResolverPolicyMigrationResult{}, err
 	}
-	if network.Stage == NetworkStageIdentity {
-		if projection.observation != confirmed || !projection.confirmedAt.Equal(at) {
+	if network.Stage == NetworkStageIdentity && confirmed != nil {
+		if projection.observation != *confirmed || at != nil && !projection.confirmedAt.Equal(*at) {
 			return CompleteNetworkResolverPolicyMigrationResult{}, networkResolverPolicyMigrationCompletionConflict(operationID, "confirmed ownership")
 		}
-		if err := validateNetworkResolverPolicyMigrationPostState(observed, confirmed); err != nil {
+		if observed == nil {
+			return CompleteNetworkResolverPolicyMigrationResult{}, corruptNetworkResolverPolicyMigrationCompletion(operationID, fmt.Errorf("terminal replay lacks resolver observation"))
+		}
+		if err := validateNetworkResolverPolicyMigrationPostState(*observed, *confirmed); err != nil {
 			return CompleteNetworkResolverPolicyMigrationResult{}, err
 		}
 	}
