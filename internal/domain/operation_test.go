@@ -16,6 +16,7 @@ func TestOperationKindsKeepStableWireValues(t *testing.T) {
 	}{
 		{name: "network setup", kind: OperationKindNetworkSetup, want: "network.setup"},
 		{name: "network resolver setup", kind: OperationKindNetworkResolverSetup, want: "network.resolver.setup"},
+		{name: "network resolver policy migration", kind: OperationKindNetworkResolverPolicyMigration, want: "network.resolver.policy-migration"},
 		{name: "network data-plane setup", kind: OperationKindNetworkDataPlaneSetup, want: "network.data-plane.setup"},
 		{name: "network release", kind: OperationKindNetworkRelease, want: "network.release"},
 		{name: "start", kind: OperationKindProjectStart, want: "project.start"},
@@ -43,6 +44,7 @@ func TestGlobalNetworkOperationsRequireGlobalScope(t *testing.T) {
 	}{
 		{kind: OperationKindNetworkSetup, want: "network setup operation"},
 		{kind: OperationKindNetworkResolverSetup, want: "network setup operation"},
+		{kind: OperationKindNetworkResolverPolicyMigration, want: "network setup operation"},
 		{kind: OperationKindNetworkDataPlaneSetup, want: "network setup operation"},
 		{kind: OperationKindNetworkRelease, want: "network release operation"},
 	}

@@ -14,6 +14,8 @@ const (
 	OperationKindNetworkSetup OperationKind = "network.setup"
 	// OperationKindNetworkResolverSetup identifies machine-global resolver policy setup after the address pool exists.
 	OperationKindNetworkResolverSetup OperationKind = "network.resolver.setup"
+	// OperationKindNetworkResolverPolicyMigration identifies machine-global resolver policy migration before policy replacement.
+	OperationKindNetworkResolverPolicyMigration OperationKind = "network.resolver.policy-migration"
 	// OperationKindNetworkDataPlaneSetup identifies trusted shared-ingress setup after resolver policy exists.
 	OperationKindNetworkDataPlaneSetup OperationKind = "network.data-plane.setup"
 	// OperationKindNetworkRelease identifies the machine-global network foundation teardown.
@@ -76,7 +78,7 @@ func (operation Operation) Validate() error {
 		return err
 	}
 	switch operation.Kind {
-	case OperationKindNetworkSetup, OperationKindNetworkResolverSetup, OperationKindNetworkDataPlaneSetup:
+	case OperationKindNetworkSetup, OperationKindNetworkResolverSetup, OperationKindNetworkResolverPolicyMigration, OperationKindNetworkDataPlaneSetup:
 		if operation.ProjectID != "" {
 			return fmt.Errorf("network setup operation %q must not identify a project", operation.Kind)
 		}

@@ -376,6 +376,18 @@ func TestResolverPlanValidationSeparatesSetupAndReleaseAuthority(t *testing.T) {
 			mutate: func(plan *ResolverPlan) {
 				plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("a", 64)
 			}},
+		{
+			name: "setup replacement policy fingerprint",
+			plan: setup,
+			mutate: func(plan *ResolverPlan) {
+				plan.ReplacementPolicyFingerprint = strings.Repeat("a", 64)
+			}},
+		{
+			name: "release replacement policy fingerprint",
+			plan: release,
+			mutate: func(plan *ResolverPlan) {
+				plan.ReplacementPolicyFingerprint = strings.Repeat("a", 64)
+			}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -430,6 +442,7 @@ func TestSameResolverPlanPinsEveryField(t *testing.T) {
 		func(plan *ResolverPlan) { plan.CheckpointPhase = ResolverCheckpointPhaseGlobalRelease },
 		func(plan *ResolverPlan) { plan.Mutation = helper.OperationReleaseResolver },
 		func(plan *ResolverPlan) { plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("b", 64) },
+		func(plan *ResolverPlan) { plan.ReplacementPolicyFingerprint = strings.Repeat("b", 64) },
 		func(plan *ResolverPlan) { plan.TargetOwnership.Generation++ },
 		func(plan *ResolverPlan) { plan.Policy.AuthorityFingerprint = strings.Repeat("b", 64) },
 	}
@@ -440,6 +453,121 @@ func TestSameResolverPlanPinsEveryField(t *testing.T) {
 		if sameResolverPlan(left, candidate) {
 			t.Fatalf("sameResolverPlan() accepted changed plan %#v", candidate)
 		}
+	}
+}
+
+// TestResolverServiceIssuesPolicyMigrationForEverySafeOwnershipShape admits retirement-safe resolver observations.
+func TestResolverServiceIssuesPolicyMigrationForEverySafeOwnershipShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		rules func(resolver.Request) []resolver.RuleFact
+	}{
+		{name: "owned absent", rules: func(resolver.Request) []resolver.RuleFact { return nil }},
+		{name: "owned exact", rules: func(request resolver.Request) []resolver.RuleFact {
+			return []resolver.RuleFact{resolverRuleFor(request, "owned", true, false)}
+		}},
+		{name: "owned drifted", rules: func(request resolver.Request) []resolver.RuleFact {
+			return []resolver.RuleFact{resolverRuleFor(request, "owned", true, true)}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPolicyMigrationResolverIssuerFixture(t)
+			observation := fixture.observation
+			observation.Rules = test.rules(observation.Request)
+			fixture.resolver.observations = []resolver.Observation{observation, observation}
+			result, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+			if err != nil {
+				t.Fatalf("Issue() error = %v", err)
+			}
+			_, wantOwnershipFingerprint, err := resolverPlanSourceOwnership(fixture.plan.TargetOwnership)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Operation != helper.OperationRetireResolver ||
+				fixture.publisher.ticket.Operation != helper.OperationRetireResolver ||
+				result.OwnershipFingerprint != wantOwnershipFingerprint {
+				t.Fatalf("migration ticket = %#v, result = %#v", fixture.publisher.ticket, result)
+			}
+		})
+	}
+}
+
+// TestResolverPlanPolicyMigrationValidationRejectsUnrelatedAuthority keeps retirement narrowly bound to legacy policy replacement.
+func TestResolverPlanPolicyMigrationValidationRejectsUnrelatedAuthority(t *testing.T) {
+	fixture := newPolicyMigrationResolverIssuerFixture(t)
+	tests := []struct {
+		name   string
+		mutate func(*ResolverPlan)
+	}{
+		{name: "checkpoint phase", mutate: func(plan *ResolverPlan) { plan.CheckpointPhase = ResolverCheckpointPhaseSetupApproval }},
+		{name: "operation kind", mutate: func(plan *ResolverPlan) { plan.Operation.Kind = domain.OperationKindNetworkResolverSetup }},
+		{name: "operation state", mutate: func(plan *ResolverPlan) { plan.Operation.State = domain.OperationRunning }},
+		{name: "operation phase", mutate: func(plan *ResolverPlan) { plan.Operation.Phase = "resolver" }},
+		{name: "mutation", mutate: func(plan *ResolverPlan) { plan.Mutation = helper.OperationReleaseResolver }},
+		{name: "source ownership", mutate: func(plan *ResolverPlan) { plan.ExpectedSourceOwnershipFingerprint = strings.Repeat("a", 64) }},
+		{name: "nonlegacy policy", mutate: func(plan *ResolverPlan) { plan.Policy.Mechanisms = networkpolicy.MacOSMechanisms() }},
+		{name: "replacement fingerprint", mutate: func(plan *ResolverPlan) { plan.ReplacementPolicyFingerprint = "bad" }},
+		{name: "arbitrary replacement fingerprint", mutate: func(plan *ResolverPlan) { plan.ReplacementPolicyFingerprint = strings.Repeat("b", 64) }},
+		{name: "same replacement fingerprint", mutate: func(plan *ResolverPlan) {
+			plan.ReplacementPolicyFingerprint = plan.TargetOwnership.NetworkPolicyFingerprint
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := fixture.plan
+			test.mutate(&plan)
+			if err := plan.Validate(); err == nil {
+				t.Fatal("ResolverPlan.Validate() error = nil")
+			}
+		})
+	}
+}
+
+// TestResolverServiceRejectsUnsafePolicyMigration keeps legacy retirement behind exact ownership and complete native facts.
+func TestResolverServiceRejectsUnsafePolicyMigration(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*resolverIssuerFixture)
+		want   string
+	}{
+		{
+			name: "ambiguous owned",
+			mutate: func(fixture *resolverIssuerFixture) {
+				observation := fixture.observation
+				rule := resolverRuleFor(observation.Request, "owned", true, false)
+				observation.Rules = []resolver.RuleFact{rule, rule}
+				fixture.resolver.observations = []resolver.Observation{observation}
+			},
+			want: "cannot be safely released",
+		},
+		{
+			name: "source ownership drift",
+			mutate: func(fixture *resolverIssuerFixture) {
+				drifted := fixture.ownership.observations[0]
+				drifted.Record.Generation++
+				fingerprint, err := drifted.Record.Fingerprint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				drifted.Fingerprint = fingerprint
+				fixture.ownership.observations = []ownership.Observation{drifted}
+			},
+			want: "does not match the approved ownership",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPolicyMigrationResolverIssuerFixture(t)
+			test.mutate(fixture)
+			_, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Issue() error = %v, want containing %q", err, test.want)
+			}
+			if fixture.publisher.calls != 0 {
+				t.Fatalf("publisher calls = %d, want 0", fixture.publisher.calls)
+			}
+		})
 	}
 }
 
@@ -581,6 +709,11 @@ func TestResolverResultValidationRejectsUncorrelatedMetadata(t *testing.T) {
 	}
 	if err := valid.Validate(fixture.now); err != nil {
 		t.Fatalf("valid ResolverResult error = %v", err)
+	}
+	retired := valid
+	retired.Operation = helper.OperationRetireResolver
+	if err := retired.Validate(fixture.now); err != nil {
+		t.Fatalf("retired ResolverResult error = %v", err)
 	}
 	tests := []struct {
 		name   string
@@ -981,6 +1114,58 @@ func newReleaseResolverIssuerFixture(t *testing.T) *resolverIssuerFixture {
 		owned,
 		owned,
 	}
+	return fixture
+}
+
+// newPolicyMigrationResolverIssuerFixture creates retirement authority for one exact legacy schema-two policy claim.
+func newPolicyMigrationResolverIssuerFixture(t *testing.T) *resolverIssuerFixture {
+	fixture := newResolverIssuerFixture(t)
+	plan := fixture.plan
+	plan.Purpose = ResolverPlanPurposePolicyMigration
+	plan.Operation.ID = "operation-resolver-policy-migration"
+	plan.Operation.IntentID = "intent-resolver-policy-migration"
+	plan.Operation.Kind = domain.OperationKindNetworkResolverPolicyMigration
+	plan.Operation.State = domain.OperationRequiresApproval
+	plan.Operation.Phase = string(ResolverCheckpointPhasePolicyMigrationApproval)
+	plan.CheckpointRevision = 0
+	plan.CheckpointPhase = ResolverCheckpointPhasePolicyMigrationApproval
+	plan.Mutation = helper.OperationRetireResolver
+	plan.Policy.Mechanisms = networkpolicy.LegacyMacOSMechanisms()
+	policyFingerprint, err := plan.Policy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.TargetOwnership.NetworkPolicyFingerprint = policyFingerprint
+	targetFingerprint, err := plan.TargetOwnership.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ExpectedSourceOwnershipFingerprint = targetFingerprint
+	replacementPolicy := plan.Policy
+	replacementPolicy.Mechanisms.Trust = networkpolicy.DarwinAdministratorTrust
+	plan.ReplacementPolicyFingerprint, err = replacementPolicy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("policy migration ResolverPlan.Validate() error = %v", err)
+	}
+	resolverRequest, err := resolver.NewRequest(plan.TargetOwnership.InstallationID, plan.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := resolver.Observation{Request: resolverRequest, Complete: true, Rules: []resolver.RuleFact{}}
+	owned := ownership.Observation{
+		Exists:      true,
+		Record:      plan.TargetOwnership,
+		Fingerprint: targetFingerprint,
+	}
+	fixture.plan = plan
+	fixture.request = ResolverRequest{OperationID: plan.Operation.ID}
+	fixture.plans.plans = []ResolverPlan{plan, plan}
+	fixture.ownership.observations = []ownership.Observation{owned, owned}
+	fixture.resolver.observations = []resolver.Observation{observation, observation}
+	fixture.observation = observation
 	return fixture
 }
 

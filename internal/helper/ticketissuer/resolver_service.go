@@ -43,6 +43,8 @@ const (
 	ResolverPlanPurposeSetup ResolverPlanPurpose = "network_resolver_setup"
 	// ResolverPlanPurposeGlobalRelease permits global release to remove the resolver route.
 	ResolverPlanPurposeGlobalRelease ResolverPlanPurpose = "global_network_release"
+	// ResolverPlanPurposePolicyMigration permits retiring a legacy resolver policy before replacement.
+	ResolverPlanPurposePolicyMigration ResolverPlanPurpose = "network_resolver_policy_migration"
 )
 
 // ResolverCheckpointPhase identifies the durable checkpoint that fences resolver ticket publication.
@@ -53,12 +55,14 @@ const (
 	ResolverCheckpointPhaseSetupApproval ResolverCheckpointPhase = "awaiting resolver approval"
 	// ResolverCheckpointPhaseGlobalRelease identifies the global release checkpoint after low-port release.
 	ResolverCheckpointPhaseGlobalRelease ResolverCheckpointPhase = "resolver"
+	// ResolverCheckpointPhasePolicyMigrationApproval identifies the approval checkpoint before legacy resolver retirement.
+	ResolverCheckpointPhasePolicyMigrationApproval ResolverCheckpointPhase = "awaiting resolver policy migration approval"
 )
 
 // Validate rejects lifecycle purposes that have no narrow resolver admission contract.
 func (purpose ResolverPlanPurpose) Validate() error {
 	switch purpose {
-	case ResolverPlanPurposeSetup, ResolverPlanPurposeGlobalRelease:
+	case ResolverPlanPurposeSetup, ResolverPlanPurposeGlobalRelease, ResolverPlanPurposePolicyMigration:
 		return nil
 	default:
 		return fmt.Errorf("resolver approval purpose %q is unsupported", purpose)
@@ -81,6 +85,8 @@ type ResolverPlan struct {
 	Mutation helper.Operation
 	// ExpectedSourceOwnershipFingerprint binds the admission record before ticket publication.
 	ExpectedSourceOwnershipFingerprint string
+	// ReplacementPolicyFingerprint identifies the distinct canonical policy that follows retirement.
+	ReplacementPolicyFingerprint string
 	// TargetOwnership supplies the schema and installation identity for native admission.
 	TargetOwnership ownership.Record
 	// Policy supplies the exact resolver policy that native observation must classify.
@@ -131,6 +137,9 @@ func (plan ResolverPlan) Validate() error {
 func validateResolverPlanLifecycle(plan ResolverPlan) error {
 	switch plan.Purpose {
 	case ResolverPlanPurposeSetup:
+		if plan.ReplacementPolicyFingerprint != "" {
+			return errors.New("resolver setup replacement policy fingerprint must be empty")
+		}
 		if plan.CheckpointRevision != 0 {
 			return fmt.Errorf("resolver setup checkpoint revision is %d, want 0", plan.CheckpointRevision)
 		}
@@ -157,6 +166,9 @@ func validateResolverPlanLifecycle(plan ResolverPlan) error {
 			return errors.New("resolver approval source ownership fingerprint does not match its target-derived schema-1 record")
 		}
 	case ResolverPlanPurposeGlobalRelease:
+		if plan.ReplacementPolicyFingerprint != "" {
+			return errors.New("resolver release replacement policy fingerprint must be empty")
+		}
 		if plan.CheckpointRevision == 0 || plan.CheckpointRevision > domain.MaximumSequence {
 			return fmt.Errorf("resolver release checkpoint revision must be between 1 and %d", domain.MaximumSequence)
 		}
@@ -181,6 +193,44 @@ func validateResolverPlanLifecycle(plan ResolverPlan) error {
 		}
 		if plan.ExpectedSourceOwnershipFingerprint != targetFingerprint {
 			return errors.New("resolver release source ownership fingerprint does not match its target record")
+		}
+	case ResolverPlanPurposePolicyMigration:
+		if plan.CheckpointRevision != 0 {
+			return fmt.Errorf("resolver policy migration checkpoint revision is %d, want 0", plan.CheckpointRevision)
+		}
+		if plan.CheckpointPhase != ResolverCheckpointPhasePolicyMigrationApproval {
+			return fmt.Errorf("resolver policy migration checkpoint phase is %q, want %q", plan.CheckpointPhase, ResolverCheckpointPhasePolicyMigrationApproval)
+		}
+		if plan.Operation.Kind != domain.OperationKindNetworkResolverPolicyMigration {
+			return fmt.Errorf("resolver policy migration operation kind is %q, want %q", plan.Operation.Kind, domain.OperationKindNetworkResolverPolicyMigration)
+		}
+		if plan.Operation.State != domain.OperationRequiresApproval {
+			return fmt.Errorf("resolver policy migration operation state is %q, want %q", plan.Operation.State, domain.OperationRequiresApproval)
+		}
+		if plan.Operation.Phase != string(ResolverCheckpointPhasePolicyMigrationApproval) {
+			return fmt.Errorf("resolver policy migration operation phase is %q, want %q", plan.Operation.Phase, ResolverCheckpointPhasePolicyMigrationApproval)
+		}
+		if plan.Mutation != helper.OperationRetireResolver {
+			return fmt.Errorf("resolver policy migration mutation is %q, want %q", plan.Mutation, helper.OperationRetireResolver)
+		}
+		targetFingerprint, err := plan.TargetOwnership.Fingerprint()
+		if err != nil {
+			return fmt.Errorf("resolver policy migration source ownership fingerprint: %w", err)
+		}
+		if plan.ExpectedSourceOwnershipFingerprint != targetFingerprint {
+			return errors.New("resolver policy migration source ownership fingerprint does not match its target record")
+		}
+		if plan.Policy.Mechanisms != networkpolicy.LegacyMacOSMechanisms() {
+			return errors.New("resolver policy migration policy must use legacy macOS mechanisms")
+		}
+		replacementPolicy := plan.Policy
+		replacementPolicy.Mechanisms.Trust = networkpolicy.DarwinAdministratorTrust
+		replacementFingerprint, err := replacementPolicy.Fingerprint()
+		if err != nil {
+			return fmt.Errorf("resolver policy migration replacement policy fingerprint: %w", err)
+		}
+		if plan.ReplacementPolicyFingerprint != replacementFingerprint {
+			return errors.New("resolver policy migration replacement policy fingerprint does not match the derived administrator-trust policy")
 		}
 	}
 	return nil
@@ -216,7 +266,7 @@ func (result ResolverResult) Validate(now time.Time) error {
 	if err := result.Reference.Validate(); err != nil {
 		return err
 	}
-	if result.Operation != helper.OperationEnsureResolver && result.Operation != helper.OperationReleaseResolver {
+	if result.Operation != helper.OperationEnsureResolver && result.Operation != helper.OperationReleaseResolver && result.Operation != helper.OperationRetireResolver {
 		return fmt.Errorf("resolver approval result operation %q is unsupported", result.Operation)
 	}
 	if !canonicalSHA256Fingerprint(result.PolicyFingerprint) {
@@ -427,9 +477,9 @@ func (service *ResolverService) Issue(
 	if confirmedResolverFingerprint != observationFingerprint {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: resolver observation changed before publication")
 	}
-	targetOwnershipFingerprint, err := plan.TargetOwnership.Fingerprint()
+	targetOwnershipFingerprint, err := resolverResultOwnershipFingerprint(plan)
 	if err != nil {
-		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: fingerprint target ownership: %w", err)
+		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: fingerprint result ownership: %w", err)
 	}
 
 	reference, publishErr := service.publisher.Publish(ctx, ticket, privateKey)
@@ -551,7 +601,7 @@ func (service *ResolverService) observeResolver(ctx context.Context, plan Resolv
 		default:
 			return "", fmt.Errorf("issue helper resolver ticket: resolver state %q is unsupported", assessment.State)
 		}
-	case ResolverPlanPurposeGlobalRelease:
+	case ResolverPlanPurposeGlobalRelease, ResolverPlanPurposePolicyMigration:
 		if assessment.State == resolver.StateIndeterminate || assessment.Owned == resolver.OwnedStateAmbiguous {
 			return "", fmt.Errorf("issue helper resolver ticket: resolver ownership state %q cannot be safely released", assessment.Owned)
 		}
@@ -621,6 +671,22 @@ func resolverPlanSourceOwnership(target ownership.Record) (ownership.Record, str
 	return source, fingerprint, nil
 }
 
+// resolverResultOwnershipFingerprint returns the ownership fingerprint expected after the approved mutation completes.
+func resolverResultOwnershipFingerprint(plan ResolverPlan) (string, error) {
+	if plan.Purpose != ResolverPlanPurposePolicyMigration {
+		fingerprint, err := plan.TargetOwnership.Fingerprint()
+		if err != nil {
+			return "", err
+		}
+		return fingerprint, nil
+	}
+	_, fingerprint, err := resolverPlanSourceOwnership(plan.TargetOwnership)
+	if err != nil {
+		return "", err
+	}
+	return fingerprint, nil
+}
+
 // canonicalSHA256Fingerprint accepts only the lowercase fixed-width spelling used by policy evidence.
 func canonicalSHA256Fingerprint(value string) bool {
 	if len(value) != 64 {
@@ -639,6 +705,7 @@ func sameResolverPlan(left ResolverPlan, right ResolverPlan) bool {
 		left.CheckpointPhase == right.CheckpointPhase &&
 		left.Mutation == right.Mutation &&
 		left.ExpectedSourceOwnershipFingerprint == right.ExpectedSourceOwnershipFingerprint &&
+		left.ReplacementPolicyFingerprint == right.ReplacementPolicyFingerprint &&
 		left.TargetOwnership == right.TargetOwnership &&
 		left.Policy == right.Policy
 }
