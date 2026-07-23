@@ -16,18 +16,35 @@ func TestPrepareGeneratedResponsesBuildsAndValidatesEveryProject(t *testing.T) {
 	executable := fixtureExecutable(t)
 	projects, rendered := fixtureRenderedProjects(t)
 	var invoked []string
-	err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(_ context.Context, gotExecutable string, root string) error {
+	err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(_ context.Context, gotExecutable string, root string, arguments ...string) error {
 		if gotExecutable != executable {
 			t.Fatalf("fixture executable = %q, want %q", gotExecutable, executable)
 		}
-		invoked = append(invoked, root)
-		return writeFixtureOpenAPI(root, rendered[len(invoked)-1].Name)
+		invoked = append(invoked, root+" "+strings.Join(arguments, " "))
+		project := rendered[(len(invoked)-1)/2]
+		switch strings.Join(arguments, " ") {
+		case "build:api-index":
+			return writeFixtureOpenAPI(root, project.Name)
+		case "build -o ./bin/app":
+			return writeFixtureAppReady(root, "initial")
+		default:
+			t.Fatalf("build arguments = %q", arguments)
+			return nil
+		}
 	})
 	if err != nil {
 		t.Fatalf("prepareGeneratedResponsesWith() error = %v", err)
 	}
-	if len(invoked) != 3 {
+	if len(invoked) != 6 {
 		t.Fatalf("fixture invocations = %#v", invoked)
+	}
+	for index, project := range rendered {
+		if got, want := invoked[index*2], project.Root+" build:api-index"; got != want {
+			t.Fatalf("API index invocation %d = %q, want %q", index, got, want)
+		}
+		if got, want := invoked[index*2+1], project.Root+" build -o ./bin/app"; got != want {
+			t.Fatalf("application invocation %d = %q, want %q", index, got, want)
+		}
 	}
 	if _, err := CaptureBaselines(rendered); err != nil {
 		t.Fatalf("CaptureBaselines(prepared) error = %v", err)
@@ -66,7 +83,7 @@ func TestPrepareGeneratedResponsesRejectsMismatchesBeforeLaterBuilds(t *testing.
 			projects, rendered := fixtureRenderedProjects(t)
 			projects, rendered = test.mutate(projects, rendered)
 			calls := 0
-			err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(context.Context, string, string) error {
+			err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(context.Context, string, string, ...string) error {
 				calls++
 				return nil
 			})
@@ -87,7 +104,7 @@ func TestPrepareGeneratedResponsesStopsOnBuildOrArtifactFailure(t *testing.T) {
 		projects, rendered := fixtureRenderedProjects(t)
 		cause := errors.New("build failed")
 		calls := 0
-		err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(context.Context, string, string) error {
+		err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(context.Context, string, string, ...string) error {
 			calls++
 			return cause
 		})
@@ -99,9 +116,12 @@ func TestPrepareGeneratedResponsesStopsOnBuildOrArtifactFailure(t *testing.T) {
 	t.Run("wrong identity", func(t *testing.T) {
 		projects, rendered := fixtureRenderedProjects(t)
 		calls := 0
-		err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(_ context.Context, _ string, root string) error {
+		err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(_ context.Context, _ string, root string, arguments ...string) error {
 			calls++
-			return writeFixtureOpenAPI(root, "Wrong Project")
+			if strings.Join(arguments, " ") == "build:api-index" {
+				return writeFixtureOpenAPI(root, "Wrong Project")
+			}
+			return nil
 		})
 		if err == nil || !strings.Contains(err.Error(), "generated OpenAPI title") || calls != 1 {
 			t.Fatalf("prepareGeneratedResponsesWith() = %v, calls = %d", err, calls)
@@ -111,7 +131,7 @@ func TestPrepareGeneratedResponsesStopsOnBuildOrArtifactFailure(t *testing.T) {
 	t.Run("missing artifact", func(t *testing.T) {
 		projects, rendered := fixtureRenderedProjects(t)
 		calls := 0
-		err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(context.Context, string, string) error {
+		err := prepareGeneratedResponsesWith(t.Context(), executable, projects, rendered, func(context.Context, string, string, ...string) error {
 			calls++
 			return nil
 		})
@@ -127,7 +147,7 @@ func TestPrepareGeneratedResponsesRejectsCancellationAndMissingDependencies(t *t
 	projects, rendered := fixtureRenderedProjects(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := prepareGeneratedResponsesWith(ctx, executable, projects, rendered, func(context.Context, string, string) error { return nil }); !errors.Is(err, context.Canceled) {
+	if err := prepareGeneratedResponsesWith(ctx, executable, projects, rendered, func(context.Context, string, string, ...string) error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("prepareGeneratedResponsesWith(cancelled) error = %v", err)
 	}
 	t.Run("nil invoker", func(t *testing.T) {
@@ -182,4 +202,13 @@ func writeFixtureOpenAPI(root string, title string) error {
 		[]byte(`{"openapi":"3.0.3","info":{"title":"`+title+`"}}`),
 		0o600,
 	)
+}
+
+// writeFixtureAppReady creates the generated build marker whose content GoForj refreshes for each dev session.
+func writeFixtureAppReady(root string, content string) error {
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(bin, ".app.ready"), []byte(content), 0o600)
 }

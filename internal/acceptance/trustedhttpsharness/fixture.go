@@ -15,8 +15,8 @@ import (
 
 const maximumFixtureBuildOutputBytes = 64 << 10
 
-// fixtureBuildInvoker runs one direct GoForj API-index build in an exact generated checkout.
-type fixtureBuildInvoker func(context.Context, string, string) error
+// fixtureBuildInvoker runs one direct GoForj build with exact arguments in an exact generated checkout.
+type fixtureBuildInvoker func(context.Context, string, string, ...string) error
 
 // PrepareGeneratedResponses creates each generated project's own OpenAPI identity
 // before checkout baselines are captured.
@@ -26,7 +26,7 @@ func PrepareGeneratedResponses(
 	projects []ProjectSpec,
 	rendered []goforjproject.Project,
 ) error {
-	return prepareGeneratedResponsesWith(ctx, forjExecutable, projects, rendered, invokeFixtureAPIIndex)
+	return prepareGeneratedResponsesWith(ctx, forjExecutable, projects, rendered, invokeFixtureBuild)
 }
 
 // prepareGeneratedResponsesWith keeps production validation and post-build
@@ -65,7 +65,7 @@ func prepareGeneratedResponsesWith(
 		if generated.Root == "" || !filepath.IsAbs(generated.Root) || filepath.Clean(generated.Root) != generated.Root {
 			return fmt.Errorf("rendered fixture %q root %q must be absolute and clean", generated.Name, generated.Root)
 		}
-		if err := invoke(ctx, forjExecutable, generated.Root); err != nil {
+		if err := invoke(ctx, forjExecutable, generated.Root, "build:api-index"); err != nil {
 			return fmt.Errorf("build generated OpenAPI identity for %q: %w", project.Name, err)
 		}
 		title, err := readGeneratedOpenAPITitle(generated.Root)
@@ -74,6 +74,9 @@ func prepareGeneratedResponsesWith(
 		}
 		if title != project.Name {
 			return fmt.Errorf("generated OpenAPI title for %q is %q", project.Name, title)
+		}
+		if err := invoke(ctx, forjExecutable, generated.Root, "build", "-o", "./bin/app"); err != nil {
+			return fmt.Errorf("build generated application for %q: %w", project.Name, err)
 		}
 	}
 	return nil
@@ -98,12 +101,12 @@ func validateFixtureExecutable(filename string) error {
 	return nil
 }
 
-// invokeFixtureAPIIndex runs only GoForj's derived API-index build before the
-// checkout snapshot; it does not modify generated source or add test handlers.
-func invokeFixtureAPIIndex(ctx context.Context, executable string, root string) error {
+// invokeFixtureBuild runs one pinned GoForj build before the checkout snapshot;
+// it does not modify generated source or add test handlers.
+func invokeFixtureBuild(ctx context.Context, executable string, root string, arguments ...string) error {
 	stdout := &boundedBuffer{maximum: maximumFixtureBuildOutputBytes}
 	stderr := &boundedBuffer{maximum: maximumFixtureBuildOutputBytes}
-	command := exec.CommandContext(ctx, executable, "build:api-index")
+	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = root
 	command.Env = os.Environ()
 	command.Stdin = strings.NewReader("")
@@ -111,14 +114,15 @@ func invokeFixtureAPIIndex(ctx context.Context, executable string, root string) 
 	command.Stderr = stderr
 	err := command.Run()
 	if stdout.overflow || stderr.overflow {
-		return errors.New("GoForj API-index build output exceeded the acceptance bound")
+		return errors.New("GoForj build output exceeded the acceptance bound")
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
 		return fmt.Errorf(
-			"forj build:api-index failed: %w (stdout: %q, stderr: %q)",
+			"forj %s failed: %w (stdout: %q, stderr: %q)",
+			strings.Join(arguments, " "),
 			err,
 			strings.TrimSpace(string(stdout.Bytes())),
 			strings.TrimSpace(string(stderr.Bytes())),

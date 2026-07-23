@@ -1,6 +1,7 @@
 package trustedhttpsharness
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 )
 
 const happyPathAppPort uint16 = 3000
+
+const generatedAppReadyPath = "bin/.app.ready"
 
 // ProjectSpec binds one generated GoForj project to its expected public Harbor identity.
 type ProjectSpec struct {
@@ -87,6 +90,9 @@ func CaptureBaselines(projects []goforjproject.Project) ([]CheckoutBaseline, err
 		if err != nil {
 			return nil, fmt.Errorf("capture generated checkout %q: %w", project.Name, err)
 		}
+		if err := validateGeneratedAppReady(snapshot); err != nil {
+			return nil, fmt.Errorf("validate generated checkout %q build readiness: %w", project.Name, err)
+		}
 		baselines = append(baselines, CheckoutBaseline{Root: project.Root, Snapshot: snapshot})
 	}
 	return baselines, nil
@@ -114,11 +120,66 @@ func VerifyBaselines(baselines []CheckoutBaseline) error {
 			verificationErr = errors.Join(verificationErr, fmt.Errorf("capture final checkout %q: %w", baseline.Root, err))
 			continue
 		}
-		if difference := baseline.Snapshot.Diff(current); difference != "" {
+		if difference := diffCheckoutBaseline(baseline.Snapshot, current); difference != "" {
 			verificationErr = errors.Join(verificationErr, fmt.Errorf("checkout %q changed:\n%s", baseline.Root, difference))
 		}
 	}
 	return verificationErr
+}
+
+// validateGeneratedAppReady requires the ordinary generated build's readiness marker before Harbor starts.
+func validateGeneratedAppReady(snapshot goforjproject.Snapshot) error {
+	for _, entry := range snapshot.Entries {
+		if entry.Path != generatedAppReadyPath {
+			continue
+		}
+		if entry.Type != goforjproject.SnapshotEntryRegularFile {
+			return fmt.Errorf("%s is %s, want regular_file", generatedAppReadyPath, entry.Type)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s is missing", generatedAppReadyPath)
+}
+
+// diffCheckoutBaseline retains exact checkout comparison except for the content
+// timestamp GoForj rewrites in its own readiness marker on every dev session.
+func diffCheckoutBaseline(baseline goforjproject.Snapshot, current goforjproject.Snapshot) string {
+	if !readyMarkerMatches(baseline, current) {
+		return baseline.Diff(current)
+	}
+	return normalizeReadyMarkerContent(baseline).Diff(normalizeReadyMarkerContent(current))
+}
+
+// readyMarkerMatches permits only a regular marker with its original permissions and existence.
+func readyMarkerMatches(baseline goforjproject.Snapshot, current goforjproject.Snapshot) bool {
+	baselineEntry, baselineFound := snapshotEntryAt(baseline, generatedAppReadyPath)
+	currentEntry, currentFound := snapshotEntryAt(current, generatedAppReadyPath)
+	return baselineFound && currentFound &&
+		baselineEntry.Type == goforjproject.SnapshotEntryRegularFile &&
+		currentEntry.Type == goforjproject.SnapshotEntryRegularFile &&
+		baselineEntry.Permissions == currentEntry.Permissions
+}
+
+// normalizeReadyMarkerContent removes only the expected readiness timestamp from an otherwise exact snapshot.
+func normalizeReadyMarkerContent(snapshot goforjproject.Snapshot) goforjproject.Snapshot {
+	normalized := snapshot
+	normalized.Entries = append([]goforjproject.SnapshotEntry(nil), snapshot.Entries...)
+	for index := range normalized.Entries {
+		if normalized.Entries[index].Path == generatedAppReadyPath {
+			normalized.Entries[index].SHA256 = [sha256.Size]byte{}
+		}
+	}
+	return normalized
+}
+
+// snapshotEntryAt returns the direct snapshot entry at one exact checkout-relative path.
+func snapshotEntryAt(snapshot goforjproject.Snapshot, path string) (goforjproject.SnapshotEntry, bool) {
+	for _, entry := range snapshot.Entries {
+		if entry.Path == path {
+			return entry, true
+		}
+	}
+	return goforjproject.SnapshotEntry{}, false
 }
 
 // validateProjectSpecs keeps fixture, DNS, certificate, SNI, and OpenAPI identities on one exact three-project contract.

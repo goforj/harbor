@@ -3,6 +3,7 @@ package trustedhttpsharness
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -70,6 +71,9 @@ func TestCheckoutBaselinesDetectAndAcceptExactCleanup(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_HTTP_PORT=3000\n"), 0o600); err != nil {
 			t.Fatalf("write generated checkout: %v", err)
 		}
+		if err := writeFixtureAppReady(root, "initial"); err != nil {
+			t.Fatalf("write generated build marker: %v", err)
+		}
 		projects = append(projects, goforjproject.Project{Name: name, Root: root})
 	}
 	baselines, err := CaptureBaselines(projects)
@@ -88,6 +92,46 @@ func TestCheckoutBaselinesDetectAndAcceptExactCleanup(t *testing.T) {
 	}
 	if err := VerifyBaselines(baselines); err != nil {
 		t.Fatalf("VerifyBaselines(restored) error = %v", err)
+	}
+}
+
+// TestCheckoutBaselinesPermitOnlyGoForjReadyMarkerContentRefresh keeps the exception scoped to GoForj's timestamp marker.
+func TestCheckoutBaselinesPermitOnlyGoForjReadyMarkerContentRefresh(t *testing.T) {
+	projects := make([]goforjproject.Project, 0, 3)
+	for _, name := range []string{"orders", "billing", "inventory"} {
+		root := filepath.Join(t.TempDir(), name)
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatalf("create generated checkout: %v", err)
+		}
+		if err := writeFixtureAppReady(root, "initial"); err != nil {
+			t.Fatalf("write generated build marker: %v", err)
+		}
+		projects = append(projects, goforjproject.Project{Name: name, Root: root})
+	}
+	baselines, err := CaptureBaselines(projects)
+	if err != nil {
+		t.Fatalf("CaptureBaselines() error = %v", err)
+	}
+	ready := filepath.Join(projects[0].Root, "bin", ".app.ready")
+	if err := os.WriteFile(ready, []byte("new dev-session timestamp"), 0o600); err != nil {
+		t.Fatalf("refresh generated build marker: %v", err)
+	}
+	if err := VerifyBaselines(baselines); err != nil {
+		t.Fatalf("VerifyBaselines(refreshed marker) error = %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(ready, 0o644); err != nil {
+			t.Fatalf("change generated build marker mode: %v", err)
+		}
+		if err := VerifyBaselines(baselines); err == nil || !strings.Contains(err.Error(), "changed bin/.app.ready") {
+			t.Fatalf("VerifyBaselines(changed marker mode) error = %v", err)
+		}
+	}
+	if err := os.Remove(ready); err != nil {
+		t.Fatalf("remove generated build marker: %v", err)
+	}
+	if err := VerifyBaselines(baselines); err == nil || !strings.Contains(err.Error(), "removed bin/.app.ready") {
+		t.Fatalf("VerifyBaselines(removed marker) error = %v", err)
 	}
 }
 
