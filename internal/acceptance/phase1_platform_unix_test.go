@@ -63,7 +63,14 @@ func phase1EndpointPath() (string, error) {
 func phase1TemporaryRoot(t *testing.T) string {
 	t.Helper()
 
-	root, err := os.MkdirTemp("/tmp", fmt.Sprintf("harbor-p1-%d-", os.Getpid()))
+	temporaryParent, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatalf("resolve phase 1 temporary parent: %v", err)
+	}
+	root, err := os.MkdirTemp(
+		filepath.Clean(temporaryParent),
+		fmt.Sprintf("harbor-p1-%d-", os.Getpid()),
+	)
 	if err != nil {
 		t.Fatalf("create phase 1 sandbox: %v", err)
 	}
@@ -77,4 +84,42 @@ func phase1TemporaryRoot(t *testing.T) string {
 		}
 	})
 	return root
+}
+
+// TestPhase1TemporaryRootReturnsCanonicalPath keeps descriptor-safe production paths valid on platforms where /tmp is a system symlink.
+func TestPhase1TemporaryRootReturnsCanonicalPath(t *testing.T) {
+	root := phase1TemporaryRoot(t)
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve phase 1 sandbox: %v", err)
+	}
+	if root != filepath.Clean(canonicalRoot) {
+		t.Fatalf("phase 1 sandbox = %q, want canonical path %q", root, canonicalRoot)
+	}
+}
+
+// TestPhase1TemporaryRootCleanupRejectsReplacement protects unrelated contents when a sandbox leaf is swapped before cleanup.
+func TestPhase1TemporaryRootCleanupRejectsReplacement(t *testing.T) {
+	sentinel := t.TempDir()
+	sentinelFile := filepath.Join(sentinel, "keep")
+	if err := os.WriteFile(sentinelFile, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	var root string
+	t.Run("sandbox", func(t *testing.T) {
+		root = phase1TemporaryRoot(t)
+		if err := os.Remove(root); err != nil {
+			t.Fatalf("remove sandbox leaf: %v", err)
+		}
+		if err := os.Symlink(sentinel, root); err != nil {
+			t.Fatalf("replace sandbox leaf: %v", err)
+		}
+	})
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("sandbox replacement remains after cleanup: %v", err)
+	}
+	contents, err := os.ReadFile(sentinelFile)
+	if err != nil || string(contents) != "keep" {
+		t.Fatalf("sentinel = %q, %v, want preserved", contents, err)
+	}
 }
