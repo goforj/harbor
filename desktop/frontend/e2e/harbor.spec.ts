@@ -105,6 +105,9 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this setup test')
           },
+          async RemoveOldNetworking() {
+            throw new Error('Legacy network removal is not exercised in this setup test')
+          },
           async SetupNetwork() {
             testWindow.networkSetupCalls += 1
             const revision = snapshot.sequence + 1
@@ -223,6 +226,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
           async ProjectActivity(projectId) { return { project_id: projectId } },
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() { throw new Error('Quarantined project removal is disabled') },
+          async RemoveOldNetworking() { throw new Error('Legacy network removal is not exercised in this recovery test') },
           async SetupNetwork() { throw new Error('Network setup is not exercised in this recovery test') },
           async StartProject() { throw new Error('Quarantined project start is disabled') },
           async RestartProject() { throw new Error('Quarantined project restart is disabled') },
@@ -328,6 +332,9 @@ test('leaves project detail when an active removal completes through a snapshot 
               listeners.get('harbor:snapshot')?.(structuredClone(snapshot))
             }, 50)
             return result
+          },
+          async RemoveOldNetworking() {
+            throw new Error('Legacy network removal is not exercised in this removal test')
           },
           async SetupNetwork() {
             throw new Error('Network setup is not exercised in this removal test')
@@ -569,6 +576,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
           },
+          async RemoveOldNetworking() {
+            throw new Error('Legacy network removal is not exercised in this connection test')
+          },
           async SetupNetwork() {
             throw new Error('Network setup is not exercised in this connection test')
           },
@@ -659,6 +669,9 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
           async WaitProjectActivity(projectId) { return { project_id: projectId } },
           async RemoveProject() {
             throw new Error('Project removal is not exercised in this connection test')
+          },
+          async RemoveOldNetworking() {
+            throw new Error('Legacy network removal is not exercised in this connection test')
           },
           async SetupNetwork() {
             throw new Error('Network setup is not exercised in this connection test')
