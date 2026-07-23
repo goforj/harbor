@@ -86,6 +86,34 @@ func TestStoreReplaceProjectNetworkReallocatesReferencedLeaseAtomically(t *testi
 	}
 }
 
+// TestStoreReplaceProjectNetworkRejectsActiveResolverPolicyMigration keeps native routes from drifting after migration staging.
+func TestStoreReplaceProjectNetworkRejectsActiveResolverPolicyMigration(t *testing.T) {
+	store, connection, request, _ := newNetworkReplaceTestHarness(t, 1)
+	globalNetworkReleaseStageInsertOperation(
+		t,
+		connection,
+		"operation-resolver-policy-migration",
+		"intent-resolver-policy-migration",
+		"",
+		domain.OperationKindNetworkResolverPolicyMigration,
+		domain.OperationRequiresApproval,
+		request.At,
+	)
+	before := networkReplaceTestRows(t, connection)
+
+	_, err := store.ReplaceProjectNetwork(context.Background(), request)
+	var active *NetworkResolverPolicyMigrationActiveError
+	if !errors.As(err, &active) ||
+		active.OperationID != "operation-resolver-policy-migration" ||
+		active.State != domain.OperationRequiresApproval {
+		t.Fatalf("ReplaceProjectNetwork() error = %v, want active resolver policy migration", err)
+	}
+	after := networkReplaceTestRows(t, connection)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("blocked project network replacement changed durable network state")
+	}
+}
+
 // TestStoreReplaceProjectNetworkCoexistsWithPendingRegistration verifies unrelated reconciliation does not require a fabricated lease.
 func TestStoreReplaceProjectNetworkCoexistsWithPendingRegistration(t *testing.T) {
 	store, _, request, _ := newNetworkReplaceTestHarness(t, 1)

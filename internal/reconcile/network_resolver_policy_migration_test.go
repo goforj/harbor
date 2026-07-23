@@ -2,6 +2,8 @@ package reconcile
 
 import (
 	"context"
+	"errors"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/host/ownership"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/platform/resolver"
 	"github.com/goforj/harbor/internal/state"
 )
@@ -76,6 +79,179 @@ func TestNetworkResolverPolicyMigrationStartReplayKeepsDerivedOwnershipApproval(
 	}
 	if got != fixture.operation {
 		t.Fatalf("operation = %#v, want %#v", got, fixture.operation)
+	}
+}
+
+// TestNetworkResolverPolicyMigrationStartRefreshesAuthorityAfterTransientDrift retries stage on exact authority drift.
+func TestNetworkResolverPolicyMigrationStartRefreshesAuthorityAfterTransientDrift(t *testing.T) {
+	fixture := newNetworkResolverSetupTestFixture(t)
+	fixture.network.Stage = state.NetworkStageResolver
+	reads := 0
+	fixture.networkSource.read = func(context.Context) (state.NetworkRecord, bool, error) {
+		reads++
+		return fixture.network, true, nil
+	}
+	policy, err := networkplan.BuildLegacyMacOS(networkplan.Request{
+		Platform:             networkplan.PlatformMacOS,
+		InstallationID:       fixture.network.Ownership.InstallationID,
+		Pool:                 fixture.network.Pool,
+		AuthorityFingerprint: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatalf("networkplan.BuildLegacyMacOS() error = %v", err)
+	}
+	policyFingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatalf("policy.Fingerprint() error = %v", err)
+	}
+	source := fixture.source
+	source.Record.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	source.Record.NetworkPolicyFingerprint = policyFingerprint
+	source.Fingerprint = networkResolverSetupTestOwnershipFingerprint(t, source.Record)
+	fixture.source = source
+
+	stageCalls := 0
+	journal := &networkResolverPolicyMigrationTestJournal{
+		byIntent: func(context.Context, domain.IntentID) (state.OperationRecord, error) {
+			return state.OperationRecord{}, &state.OperationIntentNotFoundError{IntentID: "intent-policy-migration"}
+		},
+		stage: func(_ context.Context, request state.StageNetworkResolverPolicyMigrationRequest) (state.OperationRecord, error) {
+			stageCalls++
+			if stageCalls == 1 {
+				return state.OperationRecord{}, errors.New("network resolver policy migration authority differs from the exact resolver stage")
+			}
+			return networkResolverPolicyMigrationTestApproval(request.Operation, 3), nil
+		},
+	}
+
+	coordinator := NewNetworkResolverPolicyMigrationCoordinator(
+		journal,
+		fixture.networkSource,
+		nil,
+		nil,
+		fixture.roots,
+		nil,
+		fixture.ownership,
+		nil,
+		networkplan.PlatformMacOS,
+		networkResolverSetupTestClock{now: fixture.now},
+	)
+	got, err := coordinator.Start(t.Context(), NetworkResolverPolicyMigrationStartRequest{
+		OperationID:       "operation-policy-migration",
+		IntentID:          "intent-policy-migration",
+		RequesterIdentity: fixture.source.Record.OwnerIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got.Operation.State != domain.OperationRequiresApproval || got.Operation.Phase != string(ticketissuer.ResolverCheckpointPhasePolicyMigrationApproval) || got.Revision != 3 {
+		t.Fatalf("Start() staged operation = %#v", got)
+	}
+	if stageCalls != 2 {
+		t.Fatalf("stage calls = %d, want 2", stageCalls)
+	}
+	if reads != 2 {
+		t.Fatalf("legacy authority reads = %d, want 2", reads)
+	}
+}
+
+// TestNetworkResolverPolicyMigrationStartClearsStoppedProjectNativeEndpoints makes the legacy migration reachable after projects have reserved native ports.
+func TestNetworkResolverPolicyMigrationStartClearsStoppedProjectNativeEndpoints(t *testing.T) {
+	fixture := newNetworkResolverSetupTestFixture(t)
+	fixture.network.Stage = state.NetworkStageResolver
+	policy, err := networkplan.BuildLegacyMacOS(networkplan.Request{
+		Platform:             networkplan.PlatformMacOS,
+		InstallationID:       fixture.network.Ownership.InstallationID,
+		Pool:                 fixture.network.Pool,
+		AuthorityFingerprint: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatalf("networkplan.BuildLegacyMacOS() error = %v", err)
+	}
+	policyFingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatalf("policy.Fingerprint() error = %v", err)
+	}
+	source := fixture.source
+	source.Record.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	source.Record.NetworkPolicyFingerprint = policyFingerprint
+	source.Fingerprint = networkResolverSetupTestOwnershipFingerprint(t, source.Record)
+	fixture.source = source
+
+	projectID := domain.ProjectID("project-alpha")
+	leaseKey, err := identity.NewPrimaryKey(projectID)
+	if err != nil {
+		t.Fatalf("identity.NewPrimaryKey() error = %v", err)
+	}
+	address := fixture.network.Pool.Candidates()[0]
+	fixture.network.Leases = []identity.Lease{{
+		Key:       leaseKey,
+		Address:   address,
+		Ownership: fixture.network.Ownership,
+	}}
+	fixture.network.Reservations.Endpoints = []state.EndpointReservation{{
+		Key:        state.EndpointReservationKey{ProjectID: projectID, EndpointID: "mysql"},
+		Protocol:   state.EndpointProtocolTCP,
+		Host:       "mysql.alpha.test",
+		Public:     netip.AddrPortFrom(address, 3306),
+		Identity:   &leaseKey,
+		Generation: 1,
+	}}
+	network := fixture.network
+	fixture.networkSource.read = func(context.Context) (state.NetworkRecord, bool, error) {
+		return network, true, nil
+	}
+
+	clearCalls := 0
+	store := &networkResolverPolicyMigrationReplayStore{
+		clear: func(_ context.Context, request state.ClearResolverStageNativeTCPEndpointsRequest) (state.NetworkMutationResult, error) {
+			clearCalls++
+			if request.ExpectedNetworkRevision != network.Revision {
+				t.Fatalf("clear expected network revision = %d, want %d", request.ExpectedNetworkRevision, network.Revision)
+			}
+			network.Revision++
+			network.UpdatedAt = request.At
+			network.Reservations.Endpoints = []state.EndpointReservation{}
+			return state.NetworkMutationResult{Record: network}, nil
+		},
+	}
+	journal := &networkResolverPolicyMigrationTestJournal{
+		byIntent: func(context.Context, domain.IntentID) (state.OperationRecord, error) {
+			return state.OperationRecord{}, &state.OperationIntentNotFoundError{IntentID: "intent-policy-migration"}
+		},
+		stage: func(_ context.Context, request state.StageNetworkResolverPolicyMigrationRequest) (state.OperationRecord, error) {
+			if request.ExpectedNetworkRevision != network.Revision {
+				t.Fatalf("staged network revision = %d, want refreshed %d", request.ExpectedNetworkRevision, network.Revision)
+			}
+			return networkResolverPolicyMigrationTestApproval(request.Operation, 4), nil
+		},
+	}
+	coordinator := NewNetworkResolverPolicyMigrationCoordinator(
+		journal,
+		fixture.networkSource,
+		nil,
+		store,
+		fixture.roots,
+		nil,
+		fixture.ownership,
+		nil,
+		networkplan.PlatformMacOS,
+		networkResolverSetupTestClock{now: fixture.now},
+	)
+
+	got, err := coordinator.Start(t.Context(), NetworkResolverPolicyMigrationStartRequest{
+		OperationID:       "operation-policy-migration",
+		IntentID:          "intent-policy-migration",
+		RequesterIdentity: fixture.source.Record.OwnerIdentity,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if clearCalls != 1 {
+		t.Fatalf("endpoint clear calls = %d, want 1", clearCalls)
+	}
+	if got.Operation.State != domain.OperationRequiresApproval || got.Revision != 4 {
+		t.Fatalf("Start() staged operation = %#v", got)
 	}
 }
 
@@ -316,6 +492,37 @@ type networkResolverPolicyMigrationReplayPlans struct {
 	plan ticketissuer.ResolverPlan
 }
 
+// networkResolverPolicyMigrationTestJournal scripts one migration operation read and stale-stage staging boundary.
+type networkResolverPolicyMigrationTestJournal struct {
+	operation func(context.Context, domain.OperationID) (state.OperationRecord, error)
+	byIntent  func(context.Context, domain.IntentID) (state.OperationRecord, error)
+	stage     func(context.Context, state.StageNetworkResolverPolicyMigrationRequest) (state.OperationRecord, error)
+}
+
+// Operation returns the fixture operation by operation ID.
+func (journal *networkResolverPolicyMigrationTestJournal) Operation(ctx context.Context, id domain.OperationID) (state.OperationRecord, error) {
+	return journal.operation(ctx, id)
+}
+
+// OperationByIntent returns the fixture operation by intent.
+func (journal *networkResolverPolicyMigrationTestJournal) OperationByIntent(ctx context.Context, id domain.IntentID) (state.OperationRecord, error) {
+	return journal.byIntent(ctx, id)
+}
+
+// StageNetworkResolverPolicyMigration returns the fixture staged operation.
+func (journal *networkResolverPolicyMigrationTestJournal) StageNetworkResolverPolicyMigration(ctx context.Context, request state.StageNetworkResolverPolicyMigrationRequest) (state.OperationRecord, error) {
+	return journal.stage(ctx, request)
+}
+
+// networkResolverPolicyMigrationTestApproval maps staged migration operation inputs to an approval lifecycle.
+func networkResolverPolicyMigrationTestApproval(operation domain.Operation, revision domain.Sequence) state.OperationRecord {
+	requestedAt := operation.RequestedAt
+	operation.State = domain.OperationRequiresApproval
+	operation.Phase = string(ticketissuer.ResolverCheckpointPhasePolicyMigrationApproval)
+	operation.StartedAt = &requestedAt
+	return state.OperationRecord{Operation: operation, Revision: revision}
+}
+
 // Resolve returns the fixture plan.
 func (plans networkResolverPolicyMigrationReplayPlans) Resolve(context.Context, ticketissuer.ResolverRequest) (ticketissuer.ResolverPlan, error) {
 	return plans.plan, nil
@@ -325,8 +532,17 @@ func (plans networkResolverPolicyMigrationReplayPlans) Resolve(context.Context, 
 type networkResolverPolicyMigrationReplayStore struct {
 	operation     state.OperationRecord
 	replay        state.CompleteNetworkResolverPolicyMigrationResult
+	clear         func(context.Context, state.ClearResolverStageNativeTCPEndpointsRequest) (state.NetworkMutationResult, error)
 	completeCalls int
 	replayCalls   int
+}
+
+// ClearResolverStageNativeTCPEndpoints delegates stopped-project endpoint retirement when a start fixture needs it.
+func (store *networkResolverPolicyMigrationReplayStore) ClearResolverStageNativeTCPEndpoints(
+	ctx context.Context,
+	request state.ClearResolverStageNativeTCPEndpointsRequest,
+) (state.NetworkMutationResult, error) {
+	return store.clear(ctx, request)
 }
 
 // CompleteNetworkResolverPolicyMigration records unexpected terminal replay completion calls.

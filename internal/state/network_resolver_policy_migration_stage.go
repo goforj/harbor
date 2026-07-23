@@ -152,6 +152,9 @@ func (journal *OperationJournal) StageNetworkResolverPolicyMigration(ctx context
 		} else if found {
 			return fmt.Errorf("network resolver policy migration operation %q is already active", active.Operation.ID)
 		}
+		if err := requireNoActiveProjectLifecycleOperation(tx); err != nil {
+			return err
+		}
 		queued, err := insertQueuedNetworkResolverPolicyMigrationOperation(tx, request.Operation)
 		if err != nil {
 			return err

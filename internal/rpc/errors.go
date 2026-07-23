@@ -38,6 +38,8 @@ const (
 	ErrorCodePrivilegedHelperRequired ErrorCode = "privileged_helper_required"
 	// ErrorCodePrivilegedHelperUnsafe reports installed privileged networking support that failed its security policy.
 	ErrorCodePrivilegedHelperUnsafe ErrorCode = "privileged_helper_unsafe"
+	// ErrorCodeResolverSetupLegacyMigration reports a resolver setup dependency on legacy networking cleanup.
+	ErrorCodeResolverSetupLegacyMigration ErrorCode = "network_resolver_setup_legacy_migration"
 	// ErrorCodeInternal reports an unexpected daemon failure without exposing its cause.
 	ErrorCodeInternal ErrorCode = "internal"
 )
@@ -197,6 +199,9 @@ var wireErrorSpecifications = map[ErrorCode]wireErrorSpecification{
 	ErrorCodeNetworkObservationFailed: {
 		message:   "Harbor could not inspect host networking. Check the daemon log for details.",
 		retryable: true,
+	},
+	ErrorCodeResolverSetupLegacyMigration: {
+		message: "Harbor network resolver setup is blocked by legacy resolver networking state. Remove old resolver policy artifacts and retry.",
 	},
 	ErrorCodePrivilegedHelperRequired: {
 		message: "Harbor's privileged networking support is missing. Harbor must install or repair it before setup can finish.",

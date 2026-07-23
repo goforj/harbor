@@ -42,6 +42,33 @@ func TestStageNetworkResolverPolicyMigrationStagesAndReplaysExactAuthority(t *te
 	}
 }
 
+// TestStageNetworkResolverPolicyMigrationRejectsActiveProjectLifecycle prevents a queued start from crossing endpoint retirement.
+func TestStageNetworkResolverPolicyMigrationRejectsActiveProjectLifecycle(t *testing.T) {
+	fixture := newNetworkResolverPolicyMigrationFixture(t)
+	globalNetworkReleaseStageInsertOperation(
+		t,
+		fixture.database,
+		"operation-project-start",
+		"intent-project-start",
+		"project-alpha",
+		domain.OperationKindProjectStart,
+		domain.OperationQueued,
+		fixture.request.Operation.RequestedAt,
+	)
+
+	_, err := fixture.journal.StageNetworkResolverPolicyMigration(context.Background(), fixture.request)
+	if err == nil || !strings.Contains(err.Error(), "project lifecycle to be idle") {
+		t.Fatalf("StageNetworkResolverPolicyMigration() error = %v, want active project lifecycle rejection", err)
+	}
+	var plans int64
+	if err := fixture.database.Model(&models.NetworkResolverPolicyMigrationPlan{}).Count(&plans).Error; err != nil {
+		t.Fatalf("count migration plans: %v", err)
+	}
+	if plans != 0 {
+		t.Fatalf("migration plan rows = %d, want 0", plans)
+	}
+}
+
 // TestStageNetworkResolverPolicyMigrationRequestValidateRejectsNonCanonicalAuthority verifies every stage boundary is explicit before database access.
 func TestStageNetworkResolverPolicyMigrationRequestValidateRejectsNonCanonicalAuthority(t *testing.T) {
 	for _, test := range []struct {

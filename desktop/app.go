@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,18 +30,21 @@ import (
 )
 
 const (
-	desktopReconnectDelay   = time.Second
-	desktopPollInterval     = 2 * time.Second
-	networkSetupIntentBytes = 16
-	connectionEventName     = desktopwire.ConnectionEventName
-	snapshotEventName       = desktopwire.SnapshotEventName
-	networkSetupIntentID    = domain.IntentID("intent-network-setup")
+	desktopReconnectDelay                             = time.Second
+	desktopPollInterval                               = 2 * time.Second
+	networkResolverPolicyMigrationAuthorityRetryDelay = 250 * time.Millisecond
+	networkSetupIntentBytes                           = 16
+	connectionEventName                               = desktopwire.ConnectionEventName
+	snapshotEventName                                 = desktopwire.SnapshotEventName
+	networkSetupIntentID                              = domain.IntentID("intent-network-setup")
 	// networkResolverSetupIntentID advances the resolver setup replay generation after legacy resolver-policy retirement.
 	networkResolverSetupIntentID = domain.IntentID("intent-network-resolver-setup-v2")
 	// networkDataPlaneSetupIntentID is the stable replay identity for trusted-ingress setup.
 	networkDataPlaneSetupIntentID = domain.IntentID("intent-network-data-plane-setup")
 	// networkResolverPolicyMigrationIntentID is the stable replay identity for legacy resolver-policy retirement.
 	networkResolverPolicyMigrationIntentID = domain.IntentID("intent-network-resolver-policy-migration")
+	// networkResolverPolicyMigrationMaxStartRetries sets a small bounded retry budget for authority-stage drift.
+	networkResolverPolicyMigrationMaxStartRetries = 3
 )
 
 var errDaemonDisconnected = errors.New("Harbor daemon is not connected")
@@ -311,32 +315,66 @@ func (a *App) completeNetworkSetup(ctx context.Context, client controlClient) (c
 // completeNetworkResolverSetup starts, replays, or approves the resolver policy only after the loopback pool exists.
 func (a *App) completeNetworkResolverSetup(ctx context.Context, client controlClient) error {
 	intentID := networkResolverSetupIntentID
-	setup, err := client.StartNetworkResolverSetup(ctx, control.StartNetworkResolverSetupRequest{IntentID: intentID})
-	if networkResolverSetupNeedsFreshIntent(setup, err) {
-		intentID, err = a.resolverIntent()
-		if err != nil {
-			return fmt.Errorf("create Harbor network resolver setup retry: %w", err)
+	legacyMigrationAttempted := false
+	for {
+		setup, err := client.StartNetworkResolverSetup(ctx, control.StartNetworkResolverSetupRequest{IntentID: intentID})
+		if networkResolverSetupNeedsFreshIntent(setup, err) {
+			intentID, err = a.resolverIntent()
+			if err != nil {
+				return fmt.Errorf("create Harbor network resolver setup retry: %w", err)
+			}
+			setup, err = client.StartNetworkResolverSetup(ctx, control.StartNetworkResolverSetupRequest{IntentID: intentID})
 		}
-		setup, err = client.StartNetworkResolverSetup(ctx, control.StartNetworkResolverSetupRequest{IntentID: intentID})
-	}
-	if err != nil {
+		if err == nil {
+			if err := setup.Validate(); err != nil {
+				return fmt.Errorf("validate Harbor network resolver setup: %w", err)
+			}
+			if setup.Operation.IntentID != intentID {
+				return errors.New("validate Harbor network resolver setup: daemon result belongs to another intent")
+			}
+
+			switch setup.Operation.State {
+			case domain.OperationSucceeded:
+				return nil
+			case domain.OperationRequiresApproval:
+				return a.approveNetworkResolverSetup(ctx, client, setup)
+			default:
+				return fmt.Errorf("Harbor network resolver setup is %s", setup.Operation.State)
+			}
+		}
+
+		if networkResolverSetupNeedsLegacyMigration(err) && !legacyMigrationAttempted {
+			if _, err := a.RemoveOldNetworking(); err != nil {
+				return fmt.Errorf("repair Harbor network resolver setup through legacy migration: %w", err)
+			}
+			legacyMigrationAttempted = true
+			continue
+		}
 		return fmt.Errorf("start Harbor network resolver setup: %w", err)
 	}
-	if err := setup.Validate(); err != nil {
-		return fmt.Errorf("validate Harbor network resolver setup: %w", err)
-	}
-	if setup.Operation.IntentID != intentID {
-		return errors.New("validate Harbor network resolver setup: daemon result belongs to another intent")
-	}
+}
 
-	switch setup.Operation.State {
-	case domain.OperationSucceeded:
-		return nil
-	case domain.OperationRequiresApproval:
-		return a.approveNetworkResolverSetup(ctx, client, setup)
-	default:
-		return fmt.Errorf("Harbor network resolver setup is %s", setup.Operation.State)
+func networkResolverSetupNeedsLegacyMigration(err error) bool {
+	if err == nil {
+		return false
 	}
+	var wireError rpc.WireError
+	if errors.As(err, &wireError) &&
+		wireError.Code == rpc.ErrorCodeResolverSetupLegacyMigration {
+		return true
+	}
+	return strings.Contains(err.Error(), "network resolver setup requires identity stage")
+}
+
+// networkResolverPolicyMigrationNeedsAuthorityRefresh recognizes stale resolver-stage authority that should be retried from a fresh snapshot.
+func networkResolverPolicyMigrationNeedsAuthorityRefresh(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "network resolver policy migration authority differs from the exact resolver stage") ||
+		strings.Contains(message, "network resolver policy migration source ownership differs from projection") ||
+		strings.Contains(message, "network resolver policy migration resolver proof has")
 }
 
 // completeNetworkDataPlaneSetup starts or replays trusted-ingress setup after its pool and resolver prerequisites are complete.
@@ -1294,9 +1332,16 @@ func (a *App) RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOpera
 		return control.NetworkResolverPolicyMigrationOperation{}, err
 	}
 
-	operation, err := a.startNetworkResolverPolicyMigration(ctx, client)
-	if err != nil {
-		return control.NetworkResolverPolicyMigrationOperation{}, err
+	var operation control.NetworkResolverPolicyMigrationOperation
+	for attempt := 0; ; attempt++ {
+		operation, err = a.startNetworkResolverPolicyMigration(ctx, client)
+		if err == nil {
+			break
+		}
+		if attempt+1 >= networkResolverPolicyMigrationMaxStartRetries || !networkResolverPolicyMigrationNeedsAuthorityRefresh(err) {
+			return control.NetworkResolverPolicyMigrationOperation{}, fmt.Errorf("start Harbor old networking removal: %w", err)
+		}
+		time.Sleep(networkResolverPolicyMigrationAuthorityRetryDelay)
 	}
 	if operation.Operation.State == domain.OperationSucceeded {
 		return operation, nil

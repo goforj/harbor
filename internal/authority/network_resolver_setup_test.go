@@ -636,6 +636,7 @@ func TestClassifyNetworkResolverSetupErrorCoversReviewedFailures(t *testing.T) {
 		{name: "network revision", cause: &state.NetworkRevisionConflictError{Expected: 4, Actual: 5}, wantCode: rpc.ErrorCodeConflict},
 		{name: "resolver activation", cause: &state.NetworkResolverActivationConflictError{ActualRevision: 5, Difference: "resolver proof"}, wantCode: rpc.ErrorCodeConflict},
 		{name: "completion conflict", cause: &state.NetworkResolverSetupCompletionConflictError{OperationID: operationID, Difference: "resolver evidence"}, wantCode: rpc.ErrorCodeConflict},
+		{name: "legacy migration", cause: errors.New(`network resolver setup requires identity stage, found "resolver"`), wantCode: rpc.ErrorCodeResolverSetupLegacyMigration},
 		{name: "publication indeterminate", cause: ticketissuer.ErrResolverPublicationIndeterminate, wantCode: rpc.ErrorCodeConflict},
 		{name: "operation missing", cause: &state.OperationNotFoundError{OperationID: operationID}, wantCode: rpc.ErrorCodeNotFound},
 		{name: "privileged helper missing", cause: fmt.Errorf("open resolver spool: %w", ticketspool.ErrNotInstalled), wantCode: rpc.ErrorCodePrivilegedHelperRequired},

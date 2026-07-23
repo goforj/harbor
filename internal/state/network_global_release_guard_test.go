@@ -95,6 +95,44 @@ func TestOperationJournalGlobalNetworkReleaseGuardRejectsReplay(t *testing.T) {
 	}
 }
 
+// TestOperationJournalResolverPolicyMigrationGuardRejectsNewRuntime prevents routes from reappearing during approval.
+func TestOperationJournalResolverPolicyMigrationGuardRejectsNewRuntime(t *testing.T) {
+	journal, connection := newOperationJournalTestHarness(t)
+	requestedAt := operationJournalTestTime()
+	globalNetworkReleaseStageInsertOperation(
+		t,
+		connection,
+		"operation-resolver-policy-migration",
+		"intent-resolver-policy-migration",
+		"",
+		domain.OperationKindNetworkResolverPolicyMigration,
+		domain.OperationRequiresApproval,
+		requestedAt,
+	)
+	if err := connection.Exec("UPDATE harbor_state SET sequence = 1 WHERE id = 1").Error; err != nil {
+		t.Fatalf("set resolver policy migration sequence: %v", err)
+	}
+	start := newOperationJournalTestOperation(
+		t,
+		"operation-project-start",
+		"intent-project-start",
+		"project-alpha",
+		domain.OperationKindProjectStart,
+		requestedAt.Add(time.Minute),
+	)
+
+	_, err := journal.Enqueue(context.Background(), start)
+	var active *NetworkResolverPolicyMigrationActiveError
+	if !errors.As(err, &active) ||
+		active.OperationID != "operation-resolver-policy-migration" ||
+		active.State != domain.OperationRequiresApproval {
+		t.Fatalf("Enqueue() error = %v, want active resolver policy migration", err)
+	}
+	if sequence := mustOperationJournalSequence(t, journal); sequence != 1 {
+		t.Fatalf("sequence after blocked project start = %d, want 1", sequence)
+	}
+}
+
 // TestGlobalNetworkReleaseCoordinatorFreezesOrdinaryWriters proves every ordinary writer stops before changing durable state.
 func TestGlobalNetworkReleaseCoordinatorFreezesOrdinaryWriters(t *testing.T) {
 	journal, connection, request := newGlobalNetworkReleaseStageFixture(t)

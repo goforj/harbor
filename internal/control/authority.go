@@ -214,6 +214,11 @@ func NewNetworkResolverSetupPrivilegedHelperRequiredError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperRequired, cause)
 }
 
+// NewNetworkResolverSetupLegacyMigrationError reports resolver setup blocked by legacy networking state.
+func NewNetworkResolverSetupLegacyMigrationError(cause error) error {
+	return session.NewHandlerError(rpc.ErrorCodeResolverSetupLegacyMigration, cause)
+}
+
 // NewNetworkResolverSetupPrivilegedHelperUnsafeError reports a resolver helper boundary that failed its fixed filesystem policy.
 func NewNetworkResolverSetupPrivilegedHelperUnsafeError(cause error) error {
 	return session.NewHandlerError(rpc.ErrorCodePrivilegedHelperUnsafe, cause)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,8 @@ type NetworkResolverPolicyMigrationOwnershipProjectionSource interface {
 
 // NetworkResolverPolicyMigrationStore completes a retirement or restores its exact durable terminal result.
 type NetworkResolverPolicyMigrationStore interface {
+	// ClearResolverStageNativeTCPEndpoints retires stopped-project reservations that cannot cross the identity-stage migration boundary.
+	ClearResolverStageNativeTCPEndpoints(context.Context, state.ClearResolverStageNativeTCPEndpointsRequest) (state.NetworkMutationResult, error)
 	// CompleteNetworkResolverPolicyMigration commits helper-correlated retirement evidence.
 	CompleteNetworkResolverPolicyMigration(context.Context, state.CompleteNetworkResolverPolicyMigrationRequest) (state.CompleteNetworkResolverPolicyMigrationResult, error)
 	// ReplayNetworkResolverPolicyMigration restores a durable terminal result for an exact approval retry.
@@ -147,6 +150,8 @@ type NetworkResolverPolicyMigrationCoordinator struct {
 	mutex      sync.Mutex
 }
 
+const networkResolverPolicyMigrationStartAttempts = 3
+
 // NewNetworkResolverPolicyMigrationCoordinator constructs the narrow legacy retirement coordinator.
 func NewNetworkResolverPolicyMigrationCoordinator(operations NetworkResolverPolicyMigrationJournal, network NetworkResolverSetupNetworkSource, plans NetworkResolverPolicyMigrationPlanSource, store NetworkResolverPolicyMigrationStore, roots NetworkResolverPolicyMigrationRootSource, issuers NetworkResolverPolicyMigrationIssuerFactory, projectionSource NetworkResolverPolicyMigrationOwnershipProjectionSource, resolverObserver NetworkResolverPolicyMigrationResolverObserver, platform networkplan.Platform, clock helper.Clock) *NetworkResolverPolicyMigrationCoordinator {
 	return &NetworkResolverPolicyMigrationCoordinator{
@@ -204,31 +209,71 @@ func (c *NetworkResolverPolicyMigrationCoordinator) Start(ctx context.Context, r
 	if !errors.As(err, &missing) {
 		return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: read intent: %w", err)
 	}
-	authority, err := c.legacyAuthority(ctx, request.RequesterIdentity)
-	if err != nil {
-		return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: %w", err)
-	}
-	replacement := authority.policy
-	replacement.Mechanisms.Trust = networkpolicy.DarwinAdministratorTrust
-	replacementFingerprint, err := replacement.Fingerprint()
-	if err != nil {
-		return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: fingerprint replacement policy: %w", err)
-	}
 	op, err := domain.NewOperation(request.OperationID, request.IntentID, domain.OperationKindNetworkResolverPolicyMigration, "", c.migrationTime(time.Time{}))
 	if err != nil {
 		return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: create operation: %w", err)
 	}
-	staged, err := c.operations.StageNetworkResolverPolicyMigration(ctx, state.StageNetworkResolverPolicyMigrationRequest{
-		Operation:                    op,
-		ExpectedNetworkRevision:      authority.network.Revision,
-		SourceOwnership:              authority.ownership,
-		Policy:                       authority.policy,
-		ReplacementPolicyFingerprint: replacementFingerprint,
-	})
+	authority, err := c.legacyAuthority(ctx, request.RequesterIdentity)
 	if err != nil {
-		return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: stage operation: %w", err)
+		return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: %w", err)
 	}
-	return validatePolicyMigrationStaged(staged, request.IntentID)
+	if len(authority.network.Reservations.Endpoints) != 0 {
+		cleared, err := c.store.ClearResolverStageNativeTCPEndpoints(
+			ctx,
+			state.ClearResolverStageNativeTCPEndpointsRequest{
+				ExpectedNetworkRevision: authority.network.Revision,
+				At:                      c.migrationTime(authority.network.UpdatedAt),
+			},
+		)
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: clear stopped-project native endpoints: %w", err)
+		}
+		if cleared.Record.Stage != state.NetworkStageResolver ||
+			len(cleared.Record.Reservations.Endpoints) != 0 {
+			return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: cleared network state is not an endpoint-free resolver stage")
+		}
+		authority, err = c.legacyAuthority(ctx, request.RequesterIdentity)
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: refresh authority after clearing stopped-project native endpoints: %w", err)
+		}
+	}
+	for attempt := 0; attempt < networkResolverPolicyMigrationStartAttempts; attempt++ {
+		replacement := authority.policy
+		replacement.Mechanisms.Trust = networkpolicy.DarwinAdministratorTrust
+		replacementFingerprint, err := replacement.Fingerprint()
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: fingerprint replacement policy: %w", err)
+		}
+		staged, err := c.operations.StageNetworkResolverPolicyMigration(ctx, state.StageNetworkResolverPolicyMigrationRequest{
+			Operation:                    op,
+			ExpectedNetworkRevision:      authority.network.Revision,
+			SourceOwnership:              authority.ownership,
+			Policy:                       authority.policy,
+			ReplacementPolicyFingerprint: replacementFingerprint,
+		})
+		if err == nil {
+			return validatePolicyMigrationStaged(staged, request.IntentID)
+		}
+		if attempt+1 >= networkResolverPolicyMigrationStartAttempts || !networkResolverPolicyMigrationAuthorityNeedsRefresh(err) {
+			return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: stage operation: %w", err)
+		}
+		authority, err = c.legacyAuthority(ctx, request.RequesterIdentity)
+		if err != nil {
+			return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: %w", err)
+		}
+	}
+	return state.OperationRecord{}, fmt.Errorf("start resolver policy migration: exhausted %d authority refresh attempts", networkResolverPolicyMigrationStartAttempts)
+}
+
+// networkResolverPolicyMigrationAuthorityNeedsRefresh keeps bounded retries for authority drift before retrying stage.
+func networkResolverPolicyMigrationAuthorityNeedsRefresh(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "network resolver policy migration authority differs from the exact resolver stage") ||
+		strings.Contains(message, "network resolver policy migration source ownership differs from projection") ||
+		strings.Contains(message, "network resolver policy migration resolver proof has")
 }
 
 // Prepare issues only OperationRetireResolver authority for the exact committed migration plan.

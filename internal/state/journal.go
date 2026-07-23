@@ -198,6 +198,9 @@ func enqueueOperationInTransaction(
 	if err := rejectGlobalNetworkReleaseEnqueue(tx, operation); err != nil {
 		return OperationRecord{}, err
 	}
+	if err := rejectNetworkResolverPolicyMigrationEnqueue(tx, operation); err != nil {
+		return OperationRecord{}, err
+	}
 	if enforceStartAdmission && operation.Kind == domain.OperationKindProjectStart {
 		if err := requireNoActiveProjectSession(tx, operation.ProjectID); err != nil {
 			return OperationRecord{}, fmt.Errorf("enqueue project start: %w", err)

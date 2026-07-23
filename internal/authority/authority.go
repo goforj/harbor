@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -1223,6 +1224,9 @@ func classifyNetworkResolverSetupError(err error) error {
 	var networkRevision *state.NetworkRevisionConflictError
 	var resolverActivation *state.NetworkResolverActivationConflictError
 	var completionConflict *state.NetworkResolverSetupCompletionConflictError
+	if strings.Contains(err.Error(), `network resolver setup requires identity stage`) {
+		return control.NewNetworkResolverSetupLegacyMigrationError(err)
+	}
 	if errors.As(err, &intentConflict) ||
 		errors.As(err, &staleRevision) ||
 		errors.As(err, &networkMissing) ||

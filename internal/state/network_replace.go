@@ -69,6 +69,9 @@ func (store *Store) ReplaceProjectNetwork(
 		if !initialized {
 			return &NetworkNotInitializedError{}
 		}
+		if err := requireNoActiveNetworkResolverPolicyMigrationMutation(tx, "replace project network"); err != nil {
+			return err
+		}
 		highWater, err := validateRetainedSequenceBounds(tx)
 		if err != nil {
 			return err

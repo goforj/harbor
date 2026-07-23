@@ -681,8 +681,9 @@ func newConfiguredNetworkResolverSetupClient(t *testing.T, method string, respon
 // TestNetworkResolverSetupAuthorityErrorsKeepSafeWireCodes verifies classified resolver failures survive authority mapping for all methods.
 func TestNetworkResolverSetupAuthorityErrorsKeepSafeWireCodes(t *testing.T) {
 	cause := errors.New("network resolver setup state changed")
+	legacyCause := errors.New(`network resolver setup requires identity stage, found "resolver"`)
 	authority := &recordingAuthority{
-		networkResolverSetupErr:        NewNetworkResolverSetupConflictError(cause),
+		networkResolverSetupErr:        NewNetworkResolverSetupLegacyMigrationError(legacyCause),
 		networkResolverSetupPrepareErr: NewNetworkResolverSetupNotFoundError(cause),
 		networkResolverSetupConfirmErr: NewNetworkResolverSetupConflictError(cause),
 	}
@@ -704,7 +705,7 @@ func TestNetworkResolverSetupAuthorityErrorsKeepSafeWireCodes(t *testing.T) {
 		{call: func() error {
 			_, err := running.client.StartNetworkResolverSetup(t.Context(), startRequest)
 			return err
-		}, want: rpc.ErrorCodeConflict},
+		}, want: rpc.ErrorCodeResolverSetupLegacyMigration},
 		{call: func() error {
 			_, err := running.client.PrepareNetworkResolverSetupApproval(t.Context(), prepareRequest)
 			return err

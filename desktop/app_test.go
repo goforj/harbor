@@ -1774,6 +1774,33 @@ func TestSetupNetworkSurfacesResolverRetryIdentityFailure(t *testing.T) {
 	}
 }
 
+// TestSetupNetworkRepairsLegacyResolverStageThroughPolicyMigration repairs the exact legacy resolver stage before retrying the flow.
+func TestSetupNetworkRepairsLegacyResolverStageThroughPolicyMigration(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationSucceeded, 15)
+	var startCount int
+	client.resolverSetupHook = func(_ control.StartNetworkResolverSetupRequest) (control.NetworkResolverSetupOperation, error) {
+		startCount++
+		if startCount == 1 {
+			return control.NetworkResolverSetupOperation{}, errors.New(`network resolver setup requires identity stage, found "resolver"`)
+		}
+		result := testNetworkResolverSetupOperation(domain.OperationSucceeded, 13)
+		return result, nil
+	}
+
+	if _, err := app.SetupNetwork(); err != nil {
+		t.Fatalf("SetupNetwork() error = %v", err)
+	}
+	if startCount != 2 {
+		t.Fatalf("resolver setup starts = %d, want 2", startCount)
+	}
+	if len(client.migrationReqs) != 1 {
+		t.Fatalf("legacy migration starts = %d, want 1", len(client.migrationReqs))
+	}
+}
+
 // TestSetupNetworkReplaysResolverSuccessAfterLostConfirmationResponse makes an uncertain first response safe to refresh.
 func TestSetupNetworkReplaysResolverSuccessAfterLostConfirmationResponse(t *testing.T) {
 	t.Parallel()
@@ -4321,6 +4348,55 @@ func TestRemoveOldNetworkingRecoversIndeterminateApprovalByReplayingStart(t *tes
 	}
 	if result != completed || len(client.migrationReqs) != 2 || len(runner.requests) != 1 {
 		t.Fatalf("result/start/approval = %#v/%d/%d", result, len(client.migrationReqs), len(runner.requests))
+	}
+}
+
+// TestRemoveOldNetworkingRetriesAuthorityDriftRetry starts migration once more after a stale authority response.
+func TestRemoveOldNetworkingRetriesAuthorityDriftRetry(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	migration := testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 14)
+	confirmation := testNetworkResolverPolicyMigrationConfirmation(migration, 16, 17)
+	client.migrationHook = func(control.StartNetworkResolverPolicyMigrationRequest) (control.NetworkResolverPolicyMigrationOperation, error) {
+		if len(client.migrationReqs) == 1 {
+			return control.NetworkResolverPolicyMigrationOperation{}, errors.New(`start resolver policy migration: stage network resolver policy migration authority differs from the exact resolver stage`)
+		}
+		return migration, nil
+	}
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{outcome: networkresolverpolicymigrationapproval.Outcome{
+		State:        networkresolverpolicymigrationapproval.Succeeded,
+		Confirmation: &confirmation,
+	}}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+
+	if _, err := app.RemoveOldNetworking(); err != nil {
+		t.Fatalf("RemoveOldNetworking() error = %v", err)
+	}
+	if len(client.migrationReqs) != 2 {
+		t.Fatalf("migration starts = %d, want 2", len(client.migrationReqs))
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("migration approval requests = %d, want 1", len(runner.requests))
+	}
+}
+
+// TestRemoveOldNetworkingAuthorityDriftRetriesAreBounded after repeated authority mismatch returns the final migration error.
+func TestRemoveOldNetworkingAuthorityDriftRetriesAreBounded(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migrationHook = func(control.StartNetworkResolverPolicyMigrationRequest) (control.NetworkResolverPolicyMigrationOperation, error) {
+		return control.NetworkResolverPolicyMigrationOperation{}, errors.New(`start resolver policy migration: stage operation: stage network resolver policy migration: network resolver policy migration authority differs from the exact resolver stage`)
+	}
+
+	if _, err := app.RemoveOldNetworking(); err == nil {
+		t.Fatalf("RemoveOldNetworking() error = %v, want authority drift error", err)
+	}
+	if len(client.migrationReqs) != 3 {
+		t.Fatalf("migration starts = %d, want 3", len(client.migrationReqs))
 	}
 }
 
