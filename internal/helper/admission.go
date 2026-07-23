@@ -10,6 +10,8 @@ const (
 	OwnershipAdmissionAlreadyCurrent OwnershipAdmissionState = "already_current"
 	// OwnershipAdmissionSchema1To2 means an ensure may transition the exact target-derived schema-1 claim to schema 2.
 	OwnershipAdmissionSchema1To2 OwnershipAdmissionState = "schema_1_to_2"
+	// OwnershipAdmissionSchema2To1 means a resolver retirement may transition the exact schema-2 target to its schema-1 form.
+	OwnershipAdmissionSchema2To1 OwnershipAdmissionState = "schema_2_to_1"
 )
 
 // TicketAdmission carries bindings established independently from the untrusted wire request.
@@ -24,6 +26,7 @@ type TicketAdmission struct {
 	OwnershipState             OwnershipAdmissionState
 	OwnershipFingerprint       string
 	TargetOwnershipFingerprint string
+	PostOwnershipFingerprint   string
 	TicketVerifierKey          string
 }
 
@@ -61,6 +64,7 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 	}
 	if !validFingerprint(admission.OwnershipFingerprint) ||
 		!validFingerprint(admission.TargetOwnershipFingerprint) ||
+		!validFingerprint(admission.PostOwnershipFingerprint) ||
 		admission.TicketVerifierKey == "" {
 		return ErrTicketRedemptionFailed
 	}
@@ -68,6 +72,11 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 	case OwnershipAdmissionAlreadyCurrent:
 	case OwnershipAdmissionSchema1To2:
 		if r.Ticket.Operation != OperationEnsureResolver ||
+			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
+			return ErrTicketRedemptionFailed
+		}
+	case OwnershipAdmissionSchema2To1:
+		if r.Ticket.Operation != OperationRetireResolver ||
 			r.Ticket.OwnershipSchemaVersion != networkPolicyOwnershipSchemaVersion {
 			return ErrTicketRedemptionFailed
 		}

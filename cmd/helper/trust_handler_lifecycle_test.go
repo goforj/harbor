@@ -721,6 +721,7 @@ func trustLifecycleRedemptionForMechanisms(t *testing.T, now time.Time, operatio
 			OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
 			OwnershipFingerprint:       strings.Repeat("d", 64),
 			TargetOwnershipFingerprint: strings.Repeat("d", 64),
+			PostOwnershipFingerprint:   strings.Repeat("d", 64),
 			TicketVerifierKey:          "trust-lifecycle-verifier",
 		},
 	}

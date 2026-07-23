@@ -52,6 +52,7 @@ func TestRedeemerConsumesAndAuthenticatesOneReference(t *testing.T) {
 		OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
 		OwnershipFingerprint:       ownedFingerprint,
 		TargetOwnershipFingerprint: ownedFingerprint,
+		PostOwnershipFingerprint:   ownedFingerprint,
 		TicketVerifierKey:          ownedRecord.TicketVerifierKey,
 	}
 	if redemption.Admission != wantAdmission {
@@ -213,6 +214,38 @@ func TestRedeemerRejectsResolverReleaseFromSchema1Ownership(t *testing.T) {
 	}
 }
 
+// TestRedeemerAdmitsResolverRetirementOnlyFromExactSchema2Target keeps the signed target while deriving its schema-1 successor.
+func TestRedeemerAdmitsResolverRetirementOnlyFromExactSchema2Target(t *testing.T) {
+	fixture := newUnixRedeemerFixture(t, false)
+	target := fixture.record()
+	target.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	resolverTicket := testRedeemerResolverTicket(fixture.now, fixture.owner, helper.OperationRetireResolver)
+	target.NetworkPolicyFingerprint = resolverTicket.NetworkPolicyFingerprint
+	fixture.claimOwnership(t, target)
+	reference := fixture.writeTicket(t, resolverTicket, '4', fixture.privateKey)
+	redemption, err := fixture.open(t).Redeem(t.Context(), reference)
+	if err != nil {
+		t.Fatalf("Redeem(retirement) error = %v", err)
+	}
+	source := target
+	source.SchemaVersion = ownership.IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	sourceFingerprint, err := source.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redemption.Admission.OwnershipState != helper.OwnershipAdmissionSchema2To1 ||
+		redemption.Admission.OwnershipFingerprint != targetFingerprint ||
+		redemption.Admission.TargetOwnershipFingerprint != targetFingerprint ||
+		redemption.Admission.PostOwnershipFingerprint != sourceFingerprint {
+		t.Fatalf("Redeem(retirement) admission = %#v", redemption.Admission)
+	}
+}
+
 // TestRedeemerBootstrapsExactPoolOwnership proves the first authenticated pool ticket pins authority before dispatch.
 func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 	fixture := newUnixRedeemerFixture(t, false)
@@ -256,6 +289,7 @@ func TestRedeemerBootstrapsExactPoolOwnership(t *testing.T) {
 		OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
 		OwnershipFingerprint:       observation.Fingerprint,
 		TargetOwnershipFingerprint: observation.Fingerprint,
+		PostOwnershipFingerprint:   observation.Fingerprint,
 		TicketVerifierKey:          wantRecord.TicketVerifierKey,
 	}
 	if redemption.Admission != wantAdmission {

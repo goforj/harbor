@@ -413,6 +413,7 @@ func newHandlerFixtureForOwner(t *testing.T, operation helper.Operation, owner s
 		OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
 		OwnershipFingerprint:       ownershipFingerprint,
 		TargetOwnershipFingerprint: ownershipFingerprint,
+		PostOwnershipFingerprint:   ownershipFingerprint,
 		TicketVerifierKey:          record.TicketVerifierKey,
 	}
 	return handlerFixture{ticket: ticket, admission: admission, request: request, record: record}

@@ -176,7 +176,7 @@ func validateCanonicalResultObject(body []byte) error {
 			return err
 		}
 		return validateCanonicalPoolMutationEvidenceObject(fields["pool_evidence"])
-	case OperationEnsureResolver, OperationReleaseResolver:
+	case OperationEnsureResolver, OperationReleaseResolver, OperationRetireResolver:
 		if err := requireCanonicalJSONFields(fields, "operation", "resolver_evidence"); err != nil {
 			return err
 		}
@@ -347,7 +347,7 @@ func validateOperationResult(result OperationResult) error {
 		}
 		return result.PoolEvidence.validateShape(result.Operation)
 	}
-	if result.Operation == OperationEnsureResolver || result.Operation == OperationReleaseResolver {
+	if result.Operation == OperationEnsureResolver || result.Operation == OperationReleaseResolver || result.Operation == OperationRetireResolver {
 		if result.Evidence != (MutationEvidence{}) || result.PoolEvidence != nil || result.ResolverEvidence == nil || result.TrustEvidence != nil || result.LowPortEvidence != nil {
 			return errors.New("resolver response must contain only resolver evidence")
 		}

@@ -127,6 +127,8 @@ type ResolverHandler interface {
 	EnsureResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error)
 	// ReleaseResolver removes only the signed policy's owned resolver rule and returns its verified postcondition.
 	ReleaseResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error)
+	// RetireResolver removes the signed policy's owned resolver rule and atomically retires policy-bound ownership.
+	RetireResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error)
 }
 
 // TrustHandler applies only the public-CA trust operations admitted by this protocol.
@@ -186,6 +188,11 @@ func (UnavailableResolverHandler) EnsureResolver(context.Context, Ticket, Ticket
 
 // ReleaseResolver rejects release operations because no resolver mutation authority is installed.
 func (UnavailableResolverHandler) ReleaseResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error) {
+	return ResolverMutationEvidence{}, ErrMutationUnavailable
+}
+
+// RetireResolver rejects retirement operations because no resolver mutation authority is installed.
+func (UnavailableResolverHandler) RetireResolver(context.Context, Ticket, TicketAdmission) (ResolverMutationEvidence, error) {
 	return ResolverMutationEvidence{}, ErrMutationUnavailable
 }
 
@@ -283,6 +290,8 @@ func (admitted AdmittedResolverOperation) ExecuteResolver(ctx context.Context, h
 		evidence, err = handler.EnsureResolver(ctx, admitted.ticket, admitted.admission)
 	case OperationReleaseResolver:
 		evidence, err = handler.ReleaseResolver(ctx, admitted.ticket, admitted.admission)
+	case OperationRetireResolver:
+		evidence, err = handler.RetireResolver(ctx, admitted.ticket, admitted.admission)
 	default:
 		return OperationResult{}, newRequestError(ErrorCodeInvalidTicket, "admitted operation is not a resolver operation")
 	}
@@ -630,7 +639,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 			d.replayGuard = nil
 		}
 		result, err = d.executors.Trust(operationContext, AdmittedTrustOperation{ticket: ticket})
-	case OperationEnsureResolver, OperationReleaseResolver:
+	case OperationEnsureResolver, OperationReleaseResolver, OperationRetireResolver:
 		result, err = d.executors.Resolver(operationContext, AdmittedResolverOperation{
 			ticket:    ticket,
 			admission: redemption.Admission,
@@ -675,7 +684,7 @@ func validateAdmittedOperationResult(ticket Ticket, admission TicketAdmission, r
 		return result.Evidence.validate(ticket)
 	case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
 		return result.PoolEvidence.validate(ticket)
-	case OperationEnsureResolver, OperationReleaseResolver:
+	case OperationEnsureResolver, OperationReleaseResolver, OperationRetireResolver:
 		return result.ResolverEvidence.validate(ticket, admission)
 	case OperationEnsureTrust, OperationReleaseTrust:
 		return result.TrustEvidence.validate(ticket)
@@ -694,7 +703,7 @@ func (e ResolverMutationEvidence) validate(ticket Ticket, admission TicketAdmiss
 	if e.PolicyFingerprint != ticket.NetworkPolicyFingerprint {
 		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence policy does not match the approved policy")
 	}
-	if e.OwnershipFingerprint != admission.TargetOwnershipFingerprint {
+	if e.OwnershipFingerprint != admission.PostOwnershipFingerprint {
 		return newRequestError(ErrorCodeMutationFailed, "resolver mutation evidence ownership does not match the approved target")
 	}
 	return nil
@@ -708,7 +717,7 @@ func (e ResolverMutationEvidence) validateShape(operation Operation) error {
 		return errors.New("resolver mutation evidence fingerprints are invalid")
 	}
 	want := ResolverPostconditionExact
-	if operation == OperationReleaseResolver {
+	if operation == OperationReleaseResolver || operation == OperationRetireResolver {
 		want = ResolverPostconditionOwnedAbsent
 	} else if operation != OperationEnsureResolver {
 		return errors.New("resolver mutation evidence operation is unsupported")

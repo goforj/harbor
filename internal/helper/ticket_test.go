@@ -90,7 +90,7 @@ func TestTicketValidateResolverAuthority(t *testing.T) {
 			ticket.ExpectedLoopbackPool = &ExpectedLoopbackPool{}
 		}},
 	}
-	for _, operation := range []Operation{OperationEnsureResolver, OperationReleaseResolver} {
+	for _, operation := range []Operation{OperationEnsureResolver, OperationReleaseResolver, OperationRetireResolver} {
 		t.Run(string(operation), func(t *testing.T) {
 			if err := validTestResolverTicket(now, operation).Validate(now); err != nil {
 				t.Fatalf("Ticket.Validate() valid resolver error = %v", err)

@@ -17,16 +17,17 @@ type conditionalAdapter interface {
 	ReleaseIfObserved(context.Context, resolver.Request, string) (resolver.Change, error)
 }
 
-// ownershipUpgrader is the only protected ownership mutation available to the resolver handler.
-type ownershipUpgrader interface {
+// ownershipStore is the protected ownership mutation surface available to the resolver handler.
+type ownershipStore interface {
 	Upgrade(context.Context, string, ownership.Record) (ownership.Observation, error)
+	Downgrade(context.Context, string, ownership.Record) (ownership.Observation, error)
 	Close() error
 }
 
 // Handler turns one admitted policy-bound ticket into an exact resolver effect.
 type Handler struct {
 	adapter   conditionalAdapter
-	ownership ownershipUpgrader
+	ownership ownershipStore
 }
 
 var _ helper.ResolverHandler = (*Handler)(nil)
@@ -48,12 +49,12 @@ func OpenDefault(adapter *resolver.Adapter) (*Handler, error) {
 }
 
 // newHandler keeps native effects replaceable in tests without expanding the production constructor.
-func newHandler(adapter conditionalAdapter, ownershipStore ownershipUpgrader) *Handler {
+func newHandler(adapter conditionalAdapter, ownershipStore ownershipStore) *Handler {
 	if adapter == nil {
 		panic("resolverhandler.newHandler requires a non-nil resolver adapter")
 	}
 	if ownershipStore == nil {
-		panic("resolverhandler.newHandler requires a non-nil ownership upgrader")
+		panic("resolverhandler.newHandler requires a non-nil ownership store")
 	}
 	return &Handler{adapter: adapter, ownership: ownershipStore}
 }
@@ -105,6 +106,38 @@ func (handler *Handler) ReleaseResolver(
 	return evidenceFromChange(ticket.Operation, ownershipFingerprint, request, change)
 }
 
+// RetireResolver removes one exact owned resolver rule before atomically removing its policy binding from ownership.
+func (handler *Handler) RetireResolver(
+	ctx context.Context,
+	ticket helper.Ticket,
+	admission helper.TicketAdmission,
+) (helper.ResolverMutationEvidence, error) {
+	request, expected, err := resolverRequestFromTicket(ticket, helper.OperationRetireResolver)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, err
+	}
+	source, sourceFingerprint, target, targetFingerprint, err := retirementOwnership(ticket, admission)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, fmt.Errorf("admit resolver retirement ownership: %w", err)
+	}
+	change, err := handler.adapter.ReleaseIfObserved(ctx, request, expected.Fingerprint)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, err
+	}
+	evidence, err := evidenceFromChange(ticket.Operation, sourceFingerprint, request, change)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, err
+	}
+	downgraded, err := handler.ownership.Downgrade(ctx, targetFingerprint, target)
+	if err != nil {
+		return helper.ResolverMutationEvidence{}, fmt.Errorf("downgrade resolver ownership: %w", err)
+	}
+	if !downgraded.Exists || downgraded.Record != source || downgraded.Fingerprint != sourceFingerprint {
+		return helper.ResolverMutationEvidence{}, fmt.Errorf("downgrade resolver ownership: protected store returned a different schema-1 source")
+	}
+	return evidence, nil
+}
+
 // ensureOwnership performs the one admitted schema transition before any resolver mutation.
 func (handler *Handler) ensureOwnership(
 	ctx context.Context,
@@ -124,11 +157,11 @@ func (handler *Handler) ensureOwnership(
 	}
 	switch admission.OwnershipState {
 	case helper.OwnershipAdmissionAlreadyCurrent:
-		if admission.OwnershipFingerprint != targetFingerprint {
+		if admission.OwnershipFingerprint != targetFingerprint || admission.PostOwnershipFingerprint != targetFingerprint {
 			return "", fmt.Errorf("admit resolver ensure ownership: protected ownership is not the signed schema-2 target")
 		}
 	case helper.OwnershipAdmissionSchema1To2:
-		if admission.OwnershipFingerprint != sourceFingerprint {
+		if admission.OwnershipFingerprint != sourceFingerprint || admission.PostOwnershipFingerprint != targetFingerprint {
 			return "", fmt.Errorf("admit resolver ownership transition: protected schema-1 source is not derived from the signed target")
 		}
 	default:
@@ -153,10 +186,35 @@ func currentOwnershipTarget(ticket helper.Ticket, admission helper.TicketAdmissi
 	if admission.OwnershipState != helper.OwnershipAdmissionAlreadyCurrent {
 		return ownership.Record{}, "", fmt.Errorf("resolver release requires ownership to be already current")
 	}
-	if admission.OwnershipFingerprint != targetFingerprint {
+	if admission.OwnershipFingerprint != targetFingerprint || admission.PostOwnershipFingerprint != targetFingerprint {
 		return ownership.Record{}, "", fmt.Errorf("protected ownership is not the signed schema-2 target")
 	}
 	return target, targetFingerprint, nil
+}
+
+// retirementOwnership verifies the protected schema-2 target and its ticket-derived schema-1 successor.
+func retirementOwnership(ticket helper.Ticket, admission helper.TicketAdmission) (ownership.Record, string, ownership.Record, string, error) {
+	target, targetFingerprint, err := ownershipTarget(ticket, admission)
+	if err != nil {
+		return ownership.Record{}, "", ownership.Record{}, "", err
+	}
+	if admission.OwnershipState != helper.OwnershipAdmissionSchema2To1 {
+		return ownership.Record{}, "", ownership.Record{}, "", fmt.Errorf("resolver retirement requires schema-2-to-1 ownership admission")
+	}
+	if admission.OwnershipFingerprint != targetFingerprint {
+		return ownership.Record{}, "", ownership.Record{}, "", fmt.Errorf("protected ownership is not the signed schema-2 target")
+	}
+	source := target
+	source.SchemaVersion = ownership.IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	sourceFingerprint, err := source.Fingerprint()
+	if err != nil {
+		return ownership.Record{}, "", ownership.Record{}, "", fmt.Errorf("fingerprint resolver retirement schema-1 source: %w", err)
+	}
+	if admission.PostOwnershipFingerprint != sourceFingerprint {
+		return ownership.Record{}, "", ownership.Record{}, "", fmt.Errorf("resolver retirement post-ownership fingerprint does not match the schema-1 source")
+	}
+	return source, sourceFingerprint, target, targetFingerprint, nil
 }
 
 // ownershipTarget reconstructs the exact schema-2 record from signed dimensions and independently admitted key material.
@@ -266,7 +324,7 @@ func evidenceFromChange(
 		if assessment.State != resolver.StateExact {
 			return helper.ResolverMutationEvidence{}, fmt.Errorf("resolver ensure did not produce an exact owned rule")
 		}
-	case helper.OperationReleaseResolver:
+	case helper.OperationReleaseResolver, helper.OperationRetireResolver:
 		if assessment.State == resolver.StateIndeterminate || assessment.Owned != resolver.OwnedStateAbsent {
 			return helper.ResolverMutationEvidence{}, fmt.Errorf("resolver release did not remove its owned rule")
 		}

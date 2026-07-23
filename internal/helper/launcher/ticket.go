@@ -329,7 +329,7 @@ func (ticket ResolverLaunchTicket) validateStructure() error {
 	if err := ticket.reference.Validate(); err != nil {
 		return fmt.Errorf("resolver launch ticket reference: %w", err)
 	}
-	if ticket.operation != helper.OperationEnsureResolver && ticket.operation != helper.OperationReleaseResolver {
+	if ticket.operation != helper.OperationEnsureResolver && ticket.operation != helper.OperationReleaseResolver && ticket.operation != helper.OperationRetireResolver {
 		return fmt.Errorf("resolver launch ticket helper operation %q is unsupported", ticket.operation)
 	}
 	decoded, err := hex.DecodeString(ticket.policyFingerprint)

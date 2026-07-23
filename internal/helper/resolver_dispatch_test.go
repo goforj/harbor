@@ -55,6 +55,42 @@ func TestResolverResponseCodecRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRetireResolverResponseCodecRejectsNoncanonicalEvidence keeps retirement responses within the resolver evidence schema.
+func TestRetireResolverResponseCodecRejectsNoncanonicalEvidence(t *testing.T) {
+	evidence := ResolverMutationEvidence{
+		Changed:                true,
+		PolicyFingerprint:      strings.Repeat("a", fingerprintLength),
+		OwnershipFingerprint:   strings.Repeat("b", fingerprintLength),
+		ObservationFingerprint: strings.Repeat("c", fingerprintLength),
+		Postcondition:          ResolverPostconditionOwnedAbsent,
+	}
+	response := Response{
+		Version: ProtocolVersion,
+		OK:      true,
+		Result: &OperationResult{
+			Operation:        OperationRetireResolver,
+			ResolverEvidence: &evidence,
+		},
+	}
+	var encoded bytes.Buffer
+	if err := WriteResponse(&encoded, response); err != nil {
+		t.Fatalf("WriteResponse() error = %v", err)
+	}
+	decoded, err := DecodeResponse(bytes.NewReader(encoded.Bytes()))
+	if err != nil || decoded.Result == nil || decoded.Result.ResolverEvidence == nil ||
+		*decoded.Result.ResolverEvidence != evidence {
+		t.Fatalf("DecodeResponse() = %#v, %v", decoded, err)
+	}
+	for _, body := range []string{
+		strings.Replace(encoded.String(), `"changed":true`, `"changed":true,"unexpected":true`, 1),
+		strings.Replace(encoded.String(), `"resolver_evidence":`, `"extra":true,"resolver_evidence":`, 1),
+	} {
+		if _, err := DecodeResponse(strings.NewReader(body)); err == nil {
+			t.Fatal("DecodeResponse() accepted a noncanonical retirement response")
+		}
+	}
+}
+
 // TestDispatcherDispatchResolverOperations verifies both resolver paths return only correlated bounded evidence.
 func TestDispatcherDispatchResolverOperations(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
@@ -94,6 +130,45 @@ func TestDispatcherDispatchResolverOperations(t *testing.T) {
 				t.Fatalf("resolver handler calls/operation = %d/%q", handler.calls, handler.operation)
 			}
 		})
+	}
+}
+
+// TestDispatcherDispatchRetireResolverRequiresSchema1PostOwnership proves retirement selects its dedicated handler and preserves post-state correlation.
+func TestDispatcherDispatchRetireResolverRequiresSchema1PostOwnership(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	ticket := validTestResolverTicket(now, OperationRetireResolver)
+	reference := testTicketReference()
+	redemption := redemptionForTicket(reference, ticket)
+	redemption.Admission.OwnershipState = OwnershipAdmissionSchema2To1
+	redemption.Admission.PostOwnershipFingerprint = strings.Repeat("b", fingerprintLength)
+	redeemer := newTestTicketRedeemer(reference, ticket)
+	redeemer.redemption = redemption
+	handler := &testResolverHandler{evidence: ResolverMutationEvidence{
+		PolicyFingerprint:      ticket.NetworkPolicyFingerprint,
+		OwnershipFingerprint:   redemption.Admission.PostOwnershipFingerprint,
+		ObservationFingerprint: strings.Repeat("c", fingerprintLength),
+		Postcondition:          ResolverPostconditionOwnedAbsent,
+	}}
+	dispatcher := NewDispatcherWithResolver(
+		redeemer,
+		newTestClock(now),
+		newTestReplayGuard(),
+		UnavailableLoopbackIdentityHandler{},
+		handler,
+	)
+	response, err := dispatcher.Dispatch(context.Background(), validTestRequest(reference))
+	if err != nil || !response.OK || response.Result == nil || response.Result.ResolverEvidence == nil ||
+		response.Result.ResolverEvidence.OwnershipFingerprint != redemption.Admission.PostOwnershipFingerprint ||
+		response.Result.ResolverEvidence.Postcondition != ResolverPostconditionOwnedAbsent ||
+		handler.calls != 1 || handler.operation != OperationRetireResolver {
+		t.Fatalf("Dispatch() = %#v, %v; handler = %#v", response, err, handler)
+	}
+	handler.evidence.OwnershipFingerprint = redemption.Admission.TargetOwnershipFingerprint
+	redeemer = newTestTicketRedeemer(reference, ticket)
+	redeemer.redemption = redemption
+	dispatcher = NewDispatcherWithResolver(redeemer, newTestClock(now), newTestReplayGuard(), UnavailableLoopbackIdentityHandler{}, handler)
+	if _, err := dispatcher.Dispatch(context.Background(), validTestRequest(reference)); err == nil {
+		t.Fatal("Dispatch() accepted schema-2 retirement evidence")
 	}
 }
 
@@ -242,6 +317,14 @@ func (handler *testResolverHandler) EnsureResolver(_ context.Context, _ Ticket, 
 func (handler *testResolverHandler) ReleaseResolver(_ context.Context, _ Ticket, admission TicketAdmission) (ResolverMutationEvidence, error) {
 	handler.calls++
 	handler.operation = OperationReleaseResolver
+	handler.admission = admission
+	return handler.evidence, handler.err
+}
+
+// RetireResolver records the retirement dispatch and returns the configured outcome.
+func (handler *testResolverHandler) RetireResolver(_ context.Context, _ Ticket, admission TicketAdmission) (ResolverMutationEvidence, error) {
+	handler.calls++
+	handler.operation = OperationRetireResolver
 	handler.admission = admission
 	return handler.evidence, handler.err
 }

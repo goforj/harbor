@@ -676,6 +676,7 @@ func redemptionForTicket(reference TicketReference, ticket Ticket) TicketRedempt
 			OwnershipState:             OwnershipAdmissionAlreadyCurrent,
 			OwnershipFingerprint:       strings.Repeat("a", fingerprintLength),
 			TargetOwnershipFingerprint: strings.Repeat("a", fingerprintLength),
+			PostOwnershipFingerprint:   strings.Repeat("a", fingerprintLength),
 			TicketVerifierKey:          "test-verifier-key",
 		},
 	}

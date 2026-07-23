@@ -232,6 +232,105 @@ func TestHandlerTransitionsOwnershipBeforeResolverEnsure(t *testing.T) {
 	}
 }
 
+// TestHandlerRetiresOwnershipOnlyAfterOwnedResolverAbsence proves retirement cannot discard policy binding before native removal is verified.
+func TestHandlerRetiresOwnershipOnlyAfterOwnedResolverAbsence(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	exact := resolverHandlerExactObservation(request)
+	expected, err := exact.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	absent := resolver.Observation{Request: request, Complete: true}
+	events := make([]string, 0, 2)
+	adapter := &testConditionalAdapter{
+		change: resolver.Change{Before: exact, After: absent},
+		events: &events,
+	}
+	store := &testOwnershipUpgrader{events: &events}
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationRetireResolver, expected)
+	admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema2To1)
+	evidence, err := newHandler(adapter, store).RetireResolver(t.Context(), ticket, admission)
+	if err != nil {
+		t.Fatalf("RetireResolver() error = %v", err)
+	}
+	if events[0] != "release resolver" || events[1] != "downgrade ownership" ||
+		store.downgrades != 1 || store.expected != admission.TargetOwnershipFingerprint ||
+		store.target.SchemaVersion != ownership.NetworkPolicySchemaVersion ||
+		evidence.OwnershipFingerprint != admission.PostOwnershipFingerprint {
+		t.Fatalf("retirement = events %#v, store %#v, evidence %#v", events, store, evidence)
+	}
+}
+
+// TestHandlerDoesNotRetireOwnershipAfterUnverifiedResolverRemoval keeps schema-2 ownership when native state is indeterminate or still owned.
+func TestHandlerDoesNotRetireOwnershipAfterUnverifiedResolverRemoval(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	exact := resolverHandlerExactObservation(request)
+	expected, err := exact.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []resolver.Change{
+		{Indeterminate: true, Before: exact},
+		{Before: exact, After: exact},
+	} {
+		adapter := &testConditionalAdapter{change: change}
+		store := &testOwnershipUpgrader{}
+		ticket := resolverHandlerTestTicket(t, policy, helper.OperationRetireResolver, expected)
+		admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema2To1)
+		if _, err := newHandler(adapter, store).RetireResolver(t.Context(), ticket, admission); err == nil {
+			t.Fatal("RetireResolver() accepted an unverified resolver removal")
+		}
+		if store.downgrades != 0 {
+			t.Fatalf("Downgrade() calls = %d, want 0", store.downgrades)
+		}
+	}
+	adapter := &testConditionalAdapter{err: errors.New("release failed")}
+	store := &testOwnershipUpgrader{}
+	ticket := resolverHandlerTestTicket(t, policy, helper.OperationRetireResolver, expected)
+	admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema2To1)
+	if _, err := newHandler(adapter, store).RetireResolver(t.Context(), ticket, admission); err == nil {
+		t.Fatal("RetireResolver() accepted a resolver mutation error")
+	}
+	if store.downgrades != 0 {
+		t.Fatalf("Downgrade() calls after resolver error = %d, want 0", store.downgrades)
+	}
+}
+
+// TestHandlerReturnsNoRetirementEvidenceWhenDowngradeFails keeps callers from treating a released rule as retired ownership.
+func TestHandlerReturnsNoRetirementEvidenceWhenDowngradeFails(t *testing.T) {
+	request, policy := resolverHandlerTestRequest(t)
+	exact := resolverHandlerExactObservation(request)
+	expected, err := exact.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "ordinary", err: errors.New("downgrade failed")},
+		{name: "durability uncertain", err: ownership.ErrDurabilityUncertain},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events := make([]string, 0, 2)
+			adapter := &testConditionalAdapter{
+				change: resolver.Change{Before: exact, After: resolver.Observation{Request: request, Complete: true}},
+				events: &events,
+			}
+			store := &testOwnershipUpgrader{events: &events, err: test.err}
+			ticket := resolverHandlerTestTicket(t, policy, helper.OperationRetireResolver, expected)
+			admission := resolverHandlerTestAdmission(t, ticket, helper.OwnershipAdmissionSchema2To1)
+			evidence, err := newHandler(adapter, store).RetireResolver(t.Context(), ticket, admission)
+			if !errors.Is(err, test.err) || evidence != (helper.ResolverMutationEvidence{}) {
+				t.Fatalf("RetireResolver() = %#v, %v", evidence, err)
+			}
+			if store.downgrades != 1 || len(events) != 2 || events[0] != "release resolver" || events[1] != "downgrade ownership" {
+				t.Fatalf("retirement events = %#v, downgrade calls = %d", events, store.downgrades)
+			}
+		})
+	}
+}
+
 // TestDispatcherReplayFailurePreventsOwnershipUpgrade proves the real handler receives no mutation authority before consumption.
 func TestDispatcherReplayFailurePreventsOwnershipUpgrade(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 2, 0, 0, 0, time.UTC)
@@ -405,17 +504,21 @@ func (adapter *testConditionalAdapter) ReleaseIfObserved(
 	adapter.operation = helper.OperationReleaseResolver
 	adapter.request = request
 	adapter.expected = expected
+	if adapter.events != nil {
+		*adapter.events = append(*adapter.events, "release resolver")
+	}
 	return adapter.change, adapter.err
 }
 
 // testOwnershipUpgrader records the protected compare-and-swap without opening a filesystem path.
 type testOwnershipUpgrader struct {
-	events   *[]string
-	err      error
-	calls    int
-	expected string
-	target   ownership.Record
-	closed   int
+	events     *[]string
+	err        error
+	calls      int
+	downgrades int
+	expected   string
+	target     ownership.Record
+	closed     int
 }
 
 // resolverHandlerRedemption returns one independently bound transition admission.
@@ -474,6 +577,31 @@ func (upgrader *testOwnershipUpgrader) Upgrade(
 		return ownership.Observation{}, err
 	}
 	return ownership.Observation{Exists: true, Record: target, Fingerprint: fingerprint}, nil
+}
+
+// Downgrade records one exact retirement transition and returns the canonical schema-1 observation.
+func (upgrader *testOwnershipUpgrader) Downgrade(
+	_ context.Context,
+	expected string,
+	target ownership.Record,
+) (ownership.Observation, error) {
+	upgrader.downgrades++
+	upgrader.expected = expected
+	upgrader.target = target
+	if upgrader.events != nil {
+		*upgrader.events = append(*upgrader.events, "downgrade ownership")
+	}
+	if upgrader.err != nil {
+		return ownership.Observation{}, upgrader.err
+	}
+	source := target
+	source.SchemaVersion = ownership.IdentitySchemaVersion
+	source.NetworkPolicyFingerprint = ""
+	fingerprint, err := source.Fingerprint()
+	if err != nil {
+		return ownership.Observation{}, err
+	}
+	return ownership.Observation{Exists: true, Record: source, Fingerprint: fingerprint}, nil
 }
 
 // Close records release of the injected ownership authority.
@@ -567,6 +695,16 @@ func resolverHandlerTestAdmission(
 	if err != nil {
 		t.Fatalf("ownership admission fixture error = %v", err)
 	}
+	postOwnershipFingerprint := targetFingerprint
+	if state == helper.OwnershipAdmissionSchema2To1 {
+		source := target
+		source.SchemaVersion = ownership.IdentitySchemaVersion
+		source.NetworkPolicyFingerprint = ""
+		postOwnershipFingerprint, err = source.Fingerprint()
+		if err != nil {
+			t.Fatalf("retirement ownership admission fixture error = %v", err)
+		}
+	}
 	return helper.TicketAdmission{
 		RequesterIdentity:          ticket.RequesterIdentity,
 		InstallationID:             ticket.InstallationID,
@@ -577,6 +715,7 @@ func resolverHandlerTestAdmission(
 		OwnershipState:             state,
 		OwnershipFingerprint:       fingerprint,
 		TargetOwnershipFingerprint: targetFingerprint,
+		PostOwnershipFingerprint:   postOwnershipFingerprint,
 		TicketVerifierKey:          verifierKey,
 	}
 }
@@ -603,7 +742,7 @@ func resolverHandlerExactObservation(request resolver.Request) resolver.Observat
 }
 
 var _ conditionalAdapter = (*testConditionalAdapter)(nil)
-var _ ownershipUpgrader = (*testOwnershipUpgrader)(nil)
+var _ ownershipStore = (*testOwnershipUpgrader)(nil)
 var _ helper.TicketRedeemer = resolverHandlerRedemption{}
 var _ helper.Clock = resolverHandlerClock{}
 var _ helper.ReplayGuard = resolverHandlerRejectedReplay{}

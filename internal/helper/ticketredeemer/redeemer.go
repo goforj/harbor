@@ -227,6 +227,7 @@ func admitTicket(
 	}
 
 	state := helper.OwnershipAdmissionAlreadyCurrent
+	postOwnershipFingerprint := observation.Fingerprint
 	if record.SchemaVersion == ownership.IdentitySchemaVersion &&
 		ticket.OwnershipSchemaVersion == ownership.NetworkPolicySchemaVersion {
 		if ticket.Operation != helper.OperationEnsureResolver {
@@ -258,6 +259,21 @@ func admitTicket(
 	if err != nil {
 		return helper.TicketAdmission{}, consumedFailure("bind ticket ownership target", err)
 	}
+	postOwnershipFingerprint = targetFingerprint
+	if ticket.Operation == helper.OperationRetireResolver {
+		if record.SchemaVersion != ownership.NetworkPolicySchemaVersion || observation.Fingerprint != targetFingerprint {
+			return helper.TicketAdmission{}, consumedFailure(
+				"bind resolver retirement to machine ownership",
+				errors.New("resolver retirement requires protected ownership to equal the signed schema-2 target"),
+			)
+		}
+		source := targetDerivedSchema1Record(ticket, record.TicketVerifierKey)
+		postOwnershipFingerprint, err = source.Fingerprint()
+		if err != nil {
+			return helper.TicketAdmission{}, consumedFailure("derive resolver retirement ownership", err)
+		}
+		state = helper.OwnershipAdmissionSchema2To1
+	}
 
 	return helper.TicketAdmission{
 		TicketReference:            reference,
@@ -270,6 +286,7 @@ func admitTicket(
 		OwnershipState:             state,
 		OwnershipFingerprint:       observation.Fingerprint,
 		TargetOwnershipFingerprint: targetFingerprint,
+		PostOwnershipFingerprint:   postOwnershipFingerprint,
 		TicketVerifierKey:          record.TicketVerifierKey,
 	}, nil
 }

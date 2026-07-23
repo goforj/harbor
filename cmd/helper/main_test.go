@@ -633,6 +633,7 @@ func testRedemption(now time.Time) (helper.TicketReference, helper.TicketRedempt
 			OwnershipState:             helper.OwnershipAdmissionAlreadyCurrent,
 			OwnershipFingerprint:       strings.Repeat("f", 64),
 			TargetOwnershipFingerprint: strings.Repeat("f", 64),
+			PostOwnershipFingerprint:   strings.Repeat("f", 64),
 			TicketVerifierKey:          "test-verifier-key",
 		},
 	}

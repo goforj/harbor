@@ -47,6 +47,8 @@ const (
 	OperationEnsureResolver Operation = "ensure_resolver"
 	// OperationReleaseResolver admits one exact policy-bound resolver release operation.
 	OperationReleaseResolver Operation = "release_resolver"
+	// OperationRetireResolver admits one exact policy-bound resolver release followed by ownership retirement.
+	OperationRetireResolver Operation = "retire_resolver"
 	// OperationEnsureTrust admits one exact public-CA trust ensure operation.
 	OperationEnsureTrust Operation = "ensure_trust"
 	// OperationReleaseTrust admits one exact public-CA trust release operation.
@@ -334,7 +336,7 @@ func (t Ticket) Validate(now time.Time) error {
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "approved pool must be a canonical IPv4 loopback prefix")
 	}
-	if t.Operation == OperationEnsureResolver || t.Operation == OperationReleaseResolver {
+	if t.Operation == OperationEnsureResolver || t.Operation == OperationReleaseResolver || t.Operation == OperationRetireResolver {
 		if err := t.validateResolverAuthority(); err != nil {
 			return err
 		}
@@ -397,6 +399,7 @@ func validOperation(operation Operation) bool {
 		OperationReleaseLoopbackIdentity,
 		OperationEnsureResolver,
 		OperationReleaseResolver,
+		OperationRetireResolver,
 		OperationEnsureTrust,
 		OperationReleaseTrust,
 		OperationEnsureLowPorts,
