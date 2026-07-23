@@ -248,6 +248,13 @@ jobs:
           sudo -n /bin/launchctl print system/com.goforj.harbor.launchdrelay 2>&1 |
             /usr/bin/head -c 16384 || true
           printf '\n%s\n' 'host-state launchd-service-end'
+          printf '%s\n' 'host-state launchd-relay-log-begin'
+          sudo -n /usr/bin/log show \
+            --last 10m \
+            --style compact \
+            --predicate 'process == "com.goforj.harbor.launchdrelay"' 2>&1 |
+            /usr/bin/tail -n 80 || true
+          printf '\n%s\n' 'host-state launchd-relay-log-end'
           printf '%s\n' 'host-state low-port-listeners-begin'
           sudo -n /usr/sbin/lsof -nP \
             -iTCP:80 -iTCP:443 \
