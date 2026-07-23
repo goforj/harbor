@@ -19,6 +19,117 @@ import (
 
 const commandTestFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+// TestFatalDiagnosticRedactsErrorDetails verifies host diagnostics expose only permitted error details.
+func TestFatalDiagnosticRedactsErrorDetails(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantPhase  string
+		wantDetail string
+	}{
+		{
+			name:       "configuration",
+			err:        errors.New("launchd relay HTTP upstream must be a canonical high 127.0.0.1 socket: 127.0.0.1:12345"),
+			wantPhase:  "configuration",
+			wantDetail: "configuration-rejected",
+		},
+		{
+			name:       "identity",
+			err:        errors.New("determine launchd relay identity: uid unavailable"),
+			wantPhase:  "identity",
+			wantDetail: "identity-rejected",
+		},
+		{
+			name:       "service identity",
+			err:        errors.New("validate launchd relay service identity: foreign service"),
+			wantPhase:  "service-identity",
+			wantDetail: "service-identity-rejected",
+		},
+		{
+			name:       "runtime construction",
+			err:        errors.New("construct launchd ingress relay for policy secret-fingerprint: unavailable"),
+			wantPhase:  "runtime-construction",
+			wantDetail: "runtime-construction-failed",
+		},
+		{
+			name:       "socket activation",
+			err:        errors.New("activate launchd ingress sockets: descriptor 7"),
+			wantPhase:  "socket-activation",
+			wantDetail: "activate launchd ingress sockets: descriptor 7",
+		},
+		{
+			name:       "environment cleanup",
+			err:        errors.New("clear launchd relay ambient environment: inherited-value"),
+			wantPhase:  "environment-cleanup",
+			wantDetail: "environment-cleanup-failed",
+		},
+		{
+			name:       "relay service",
+			err:        errors.New("serve launchd ingress relay: upstream failed"),
+			wantPhase:  "relay-service",
+			wantDetail: "serve launchd ingress relay: upstream failed",
+		},
+		{
+			name:       "shutdown",
+			err:        context.Canceled,
+			wantPhase:  "shutdown",
+			wantDetail: "context-terminated",
+		},
+		{
+			name:       "unknown",
+			err:        errors.New("secret-failure-detail"),
+			wantPhase:  "unknown",
+			wantDetail: "unclassified-failure",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := fatalDiagnostic(test.err)
+			if got.phase != test.wantPhase {
+				t.Fatalf("fatalDiagnostic(%v).phase = %q, want %q", test.err, got.phase, test.wantPhase)
+			}
+			if got.detail != test.wantDetail {
+				t.Fatalf("fatalDiagnostic(%v).detail = %q, want %q", test.err, got.detail, test.wantDetail)
+			}
+		})
+	}
+}
+
+// TestBoundedSingleLinePreventsDiagnosticFieldInjection verifies public error details stay bounded to one line.
+func TestBoundedSingleLinePreventsDiagnosticFieldInjection(t *testing.T) {
+	long := strings.Repeat("a", maximumFatalDiagnosticDetailBytes+12)
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "control characters",
+			value: "socket\nactivation\rfailed\t\x00",
+			want:  "socket activation failed",
+		},
+		{
+			name:  "blank",
+			value: "\n\t\r",
+			want:  "unavailable",
+		},
+		{
+			name:  "truncated",
+			value: long,
+			want:  strings.Repeat("a", maximumFatalDiagnosticDetailBytes-3) + "...",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := boundedSingleLine(test.value); got != test.want {
+				t.Fatalf("boundedSingleLine(%q) = %q, want %q", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 // TestClearAmbientEnvironmentRemovesEverySetting verifies activation-only context cannot reach the relay runtime.
 func TestClearAmbientEnvironmentRemovesEverySetting(t *testing.T) {
 	tests := []struct {

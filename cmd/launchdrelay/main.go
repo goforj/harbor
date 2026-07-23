@@ -59,6 +59,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 	if err := run(ctx, os.Args[1:], productionDependencies()); err != nil {
+		reportFatalDiagnostic(fatalDiagnostic(err))
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
