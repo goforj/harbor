@@ -199,6 +199,7 @@ func (server *Server) Serve(ctx context.Context, connection local.Conn) error {
 		handlers[methodNetworkReleaseTrustConfirm] = server.networkReleaseTrustConfirmHandler(transportPeer)
 		handlers[methodNetworkReleaseLoopbackPrepare] = server.networkReleaseLoopbackPrepareHandler(transportPeer)
 		handlers[methodNetworkReleaseLoopbackConfirm] = server.networkReleaseLoopbackConfirmHandler(transportPeer)
+		handlers[methodNetworkReleaseOwnershipConfirm] = server.networkReleaseOwnershipConfirmHandler(transportPeer)
 	}
 	if networkResolverPolicyMigrationEnabled {
 		handlers[methodNetworkResolverPolicyMigrationStart] = server.networkResolverPolicyMigrationStartHandler(transportPeer)

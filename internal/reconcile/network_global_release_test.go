@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -259,6 +260,76 @@ func TestGlobalNetworkReleaseStartRejectsMismatchedIntentReplayBeforeHostObserva
 	}
 }
 
+// TestGlobalNetworkReleaseStartReplaysTerminalOperationByValue preserves completed intents after SQLite normalizes lifecycle time locations.
+func TestGlobalNetworkReleaseStartReplaysTerminalOperationByValue(t *testing.T) {
+	existing := testGlobalNetworkReleaseOperation(t)
+	finished := existing.Operation.RequestedAt.Add(time.Second)
+	completed, err := existing.Operation.Transition(domain.OperationSucceeded, "network released", finished, nil)
+	if err != nil {
+		t.Fatalf("Transition() error = %v", err)
+	}
+	existing.Operation, existing.Revision = completed, 9
+	terminal := existing
+	location := time.FixedZone("canonical", 0)
+	requested := terminal.Operation.RequestedAt.In(location)
+	started := terminal.Operation.StartedAt.In(location)
+	finished = terminal.Operation.FinishedAt.In(location)
+	terminal.Operation.RequestedAt, terminal.Operation.StartedAt, terminal.Operation.FinishedAt = requested, &started, &finished
+	journal := &testGlobalNetworkReleaseJournal{
+		intent:        existing,
+		terminal:      state.GlobalNetworkReleaseTerminalRecord{Operation: terminal, OwnerIdentity: "501"},
+		terminalFound: true,
+	}
+	result, err := (&GlobalNetworkReleaseCoordinator{journal: journal}).Start(t.Context(), GlobalNetworkReleaseStartRequest{
+		OperationID:       "operation-retry",
+		IntentID:          existing.Operation.IntentID,
+		RequesterIdentity: "501",
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if result.Revision != existing.Revision || !sameGlobalNetworkReleaseOperation(result.Operation, existing.Operation) {
+		t.Fatalf("Start() = %#v, want replay %#v", result, existing)
+	}
+}
+
+// TestGlobalNetworkReleaseStartHidesWrongOwnerReplays keeps active and terminal intent ownership nondisclosing for the authority boundary.
+func TestGlobalNetworkReleaseStartHidesWrongOwnerReplays(t *testing.T) {
+	for _, terminalReplay := range []bool{false, true} {
+		t.Run(fmt.Sprintf("terminal=%t", terminalReplay), func(t *testing.T) {
+			existing := testGlobalNetworkReleaseOperation(t)
+			journal := &testGlobalNetworkReleaseJournal{intent: existing}
+			if terminalReplay {
+				finished := existing.Operation.RequestedAt.Add(time.Second)
+				completed, err := existing.Operation.Transition(domain.OperationSucceeded, "network released", finished, nil)
+				if err != nil {
+					t.Fatalf("Transition() error = %v", err)
+				}
+				existing.Operation = completed
+				journal.intent = existing
+				journal.terminal = state.GlobalNetworkReleaseTerminalRecord{Operation: existing, OwnerIdentity: "501"}
+				journal.terminalFound = true
+			} else {
+				journal.found = true
+				journal.plan = state.GlobalNetworkReleasePlanRecord{
+					Operation: existing,
+					Phase:     state.GlobalNetworkReleasePlanPhaseRuntimeRelease,
+				}
+				journal.plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity = "501"
+			}
+			_, err := (&GlobalNetworkReleaseCoordinator{journal: journal}).Start(t.Context(), GlobalNetworkReleaseStartRequest{
+				OperationID:       "operation-retry",
+				IntentID:          existing.Operation.IntentID,
+				RequesterIdentity: "different-owner",
+			})
+			var missing *state.OperationNotFoundError
+			if !errors.As(err, &missing) {
+				t.Fatalf("Start() error = %v, want not found", err)
+			}
+		})
+	}
+}
+
 // testGlobalNetworkReleaseOperation returns a valid globally-scoped durable operation record.
 func testGlobalNetworkReleaseOperation(t *testing.T) state.OperationRecord {
 	t.Helper()
@@ -278,16 +349,23 @@ func testGlobalNetworkReleaseOperation(t *testing.T) state.OperationRecord {
 
 // testGlobalNetworkReleaseJournal records the recovery plan read without accepting staging.
 type testGlobalNetworkReleaseJournal struct {
-	mu             sync.Mutex
-	found          bool
-	plan           state.GlobalNetworkReleasePlanRecord
-	err            error
-	reads          int
-	intent         state.OperationRecord
-	intentErr      error
-	effectsCalls   int
-	effectsRequest state.AdvanceGlobalNetworkReleaseEffectsRequest
-	effectsErr     error
+	mu              sync.Mutex
+	found           bool
+	plan            state.GlobalNetworkReleasePlanRecord
+	err             error
+	reads           int
+	intent          state.OperationRecord
+	intentErr       error
+	effectsCalls    int
+	effectsRequest  state.AdvanceGlobalNetworkReleaseEffectsRequest
+	effectsErr      error
+	finalizeCalls   int
+	finalizeRequest state.FinalizeGlobalNetworkReleaseProjectionRequest
+	finalizeResult  state.OperationRecord
+	finalizeErr     error
+	terminal        state.GlobalNetworkReleaseTerminalRecord
+	terminalFound   bool
+	terminalErr     error
 }
 
 // OperationByIntent is not exercised by recovery tests.
@@ -299,6 +377,11 @@ func (journal *testGlobalNetworkReleaseJournal) OperationByIntent(context.Contex
 		return journal.intent, nil
 	}
 	return state.OperationRecord{}, &state.OperationIntentNotFoundError{}
+}
+
+// ReadGlobalNetworkReleaseTerminal returns the configured completed replay fence.
+func (journal *testGlobalNetworkReleaseJournal) ReadGlobalNetworkReleaseTerminal(context.Context, domain.OperationID) (state.GlobalNetworkReleaseTerminalRecord, bool, error) {
+	return journal.terminal, journal.terminalFound, journal.terminalErr
 }
 
 // StageGlobalNetworkRelease is not exercised by recovery tests.
@@ -1161,6 +1244,12 @@ type globalNetworkReleaseJournal struct {
 	effectsCalls           int
 	effectsRequest         state.AdvanceGlobalNetworkReleaseEffectsRequest
 	effectsErr             error
+	ownershipCalls         int
+	ownershipRequest       state.AdvanceGlobalNetworkReleaseOwnershipRequest
+	ownershipErr           error
+	finalizeCalls          int
+	finalizeRequest        state.FinalizeGlobalNetworkReleaseProjectionRequest
+	finalizeErr            error
 	fixture                *globalNetworkReleaseStartFixture
 }
 
@@ -1277,6 +1366,43 @@ func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseEffects(
 	receipt := request.Receipt
 	journal.plan.EffectsReceipt = &receipt
 	return journal.plan, nil
+}
+
+// AdvanceGlobalNetworkReleaseOwnership records the final independently verified release receipt.
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseOwnership(
+	_ context.Context,
+	request state.AdvanceGlobalNetworkReleaseOwnershipRequest,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	journal.ownershipCalls++
+	journal.ownershipRequest = request
+	if journal.ownershipErr != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, journal.ownershipErr
+	}
+	journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseProjection
+	journal.plan.CheckpointRevision++
+	receipt := request.Receipt
+	journal.plan.OwnershipReceipt = &receipt
+	return journal.plan, nil
+}
+
+// FinalizeGlobalNetworkReleaseProjection records terminal projection retirement.
+func (journal *globalNetworkReleaseJournal) FinalizeGlobalNetworkReleaseProjection(
+	_ context.Context,
+	request state.FinalizeGlobalNetworkReleaseProjectionRequest,
+) (state.OperationRecord, error) {
+	journal.finalizeCalls++
+	journal.finalizeRequest = request
+	if journal.finalizeErr != nil {
+		return state.OperationRecord{}, journal.finalizeErr
+	}
+	completed, err := journal.plan.Operation.Operation.Transition(domain.OperationSucceeded, "network released", request.At, nil)
+	if err != nil {
+		return state.OperationRecord{}, err
+	}
+	return state.OperationRecord{
+		Operation: completed,
+		Revision:  journal.plan.Operation.Revision + 1,
+	}, nil
 }
 
 // globalNetworkReleaseState scripts coherent durable state and revision reads.

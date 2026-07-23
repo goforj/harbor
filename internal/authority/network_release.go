@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/goforj/harbor/internal/control"
@@ -19,6 +18,8 @@ import (
 type networkReleasePlanReader interface {
 	// ReadGlobalNetworkReleasePlan returns the plan owned by one daemon operation, if it remains active.
 	ReadGlobalNetworkReleasePlan(context.Context, domain.OperationID) (state.GlobalNetworkReleasePlanRecord, bool, error)
+	// ReadGlobalNetworkReleaseTerminal returns one completed release replay fence.
+	ReadGlobalNetworkReleaseTerminal(context.Context, domain.OperationID) (state.GlobalNetworkReleaseTerminalRecord, bool, error)
 }
 
 // networkReleaseCoordinator starts or resumes one authenticated global release operation.
@@ -41,6 +42,8 @@ type networkReleaseCoordinator interface {
 	PrepareLoopbacks(context.Context, reconcile.GlobalNetworkReleasePrepareLoopbacksRequest) (ticketissuer.PoolResult, error)
 	// ConfirmLoopbacks verifies complete loopback-pool removal and advances the retained release plan.
 	ConfirmLoopbacks(context.Context, reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest) (state.GlobalNetworkReleasePlanRecord, error)
+	// ConfirmOwnership independently verifies ownership absence and returns the completed terminal fence.
+	ConfirmOwnership(context.Context, reconcile.GlobalNetworkReleaseConfirmOwnershipRequest) (state.GlobalNetworkReleaseTerminalRecord, error)
 }
 
 // NetworkReleaseAuthority adapts the durable global release lifecycle to its optional control surface.
@@ -108,7 +111,7 @@ func (authority *NetworkReleaseAuthority) StartNetworkRelease(ctx context.Contex
 	if result.Operation.ID != started.Operation.ID ||
 		result.Operation.IntentID != request.IntentID ||
 		result.Revision != started.Revision ||
-		!reflect.DeepEqual(result.Operation, started.Operation) {
+		!sameNetworkReleaseOperation(result.Operation, started.Operation) {
 		return control.NetworkReleaseOperation{}, errors.New("network release result differs from its returned operation or requested intent")
 	}
 	return result, nil
@@ -407,6 +410,63 @@ func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseLoopbackApproval(
 	return result, nil
 }
 
+// ConfirmNetworkReleaseOwnership binds independent ownership absence confirmation to the authenticated transport user.
+func (authority *NetworkReleaseAuthority) ConfirmNetworkReleaseOwnership(ctx context.Context, caller control.Caller, request control.ConfirmNetworkReleaseOwnershipRequest) (control.NetworkReleaseOperation, error) {
+	ctx = normalizeContext(ctx)
+	if err := request.Validate(); err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	terminal, err := authority.coordinator.ConfirmOwnership(ctx, reconcile.GlobalNetworkReleaseConfirmOwnershipRequest{
+		OperationID:                request.OperationID,
+		ExpectedCheckpointRevision: request.ExpectedCheckpointRevision,
+		RequesterIdentity:          caller.Transport.UserID,
+	})
+	if err != nil {
+		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
+	}
+	result, err := networkReleaseTerminalOperation(terminal)
+	if err != nil {
+		return control.NetworkReleaseOperation{}, err
+	}
+	if result.Operation.ID != request.OperationID ||
+		result.Operation.State != domain.OperationSucceeded ||
+		result.Phase != control.NetworkReleasePhaseProjection ||
+		result.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return control.NetworkReleaseOperation{}, errors.New("network release ownership confirmation did not complete the requested terminal release")
+	}
+	return result, nil
+}
+
+// sameNetworkReleaseOperation compares operation facts by timestamp value so durable time locations do not affect replay correlation.
+func sameNetworkReleaseOperation(left domain.Operation, right domain.Operation) bool {
+	return left.ID == right.ID &&
+		left.IntentID == right.IntentID &&
+		left.Kind == right.Kind &&
+		left.ProjectID == right.ProjectID &&
+		left.State == right.State &&
+		left.Phase == right.Phase &&
+		left.RequestedAt.Equal(right.RequestedAt) &&
+		sameNetworkReleaseTime(left.StartedAt, right.StartedAt) &&
+		sameNetworkReleaseTime(left.FinishedAt, right.FinishedAt) &&
+		sameNetworkReleaseProblem(left.Problem, right.Problem)
+}
+
+// sameNetworkReleaseTime compares optional operation timestamps by instant.
+func sameNetworkReleaseTime(left *time.Time, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+// sameNetworkReleaseProblem compares optional immutable operation problems by value.
+func sameNetworkReleaseProblem(left *domain.Problem, right *domain.Problem) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
 // networkReleaseTrustApprovalPreparation projects trusted issuer metadata while preserving ownership and publication invariants.
 func networkReleaseTrustApprovalPreparation(request control.PrepareNetworkReleaseTrustApprovalRequest, result reconcile.GlobalNetworkReleaseTrustPreparation, publicationDisposition control.NetworkReleaseTrustPublicationDisposition) (control.NetworkReleaseTrustApprovalPreparation, error) {
 	preparation := control.NetworkReleaseTrustApprovalPreparation{
@@ -454,18 +514,47 @@ func (authority *NetworkReleaseAuthority) readNetworkRelease(ctx context.Context
 	if err != nil {
 		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(err)
 	}
-	if !found {
+	if found {
+		if plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity != requesterIdentity {
+			return control.NetworkReleaseOperation{}, control.NewNetworkReleaseNotFoundError(errors.New("network release operation was not found"))
+		}
+		result, projectionErr := networkReleaseOperation(plan)
+		if projectionErr != nil {
+			return control.NetworkReleaseOperation{}, projectionErr
+		}
+		if result.Operation.ID != operationID {
+			return control.NetworkReleaseOperation{}, errors.New("network release plan differs from its requested operation")
+		}
+		return result, nil
+	}
+	terminal, terminalFound, terminalErr := authority.plans.ReadGlobalNetworkReleaseTerminal(ctx, operationID)
+	if terminalErr != nil {
+		return control.NetworkReleaseOperation{}, classifyNetworkReleaseError(terminalErr)
+	}
+	if !terminalFound || terminal.OwnerIdentity != requesterIdentity {
 		return control.NetworkReleaseOperation{}, control.NewNetworkReleaseNotFoundError(errors.New("network release operation was not found"))
 	}
-	if plan.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity != requesterIdentity {
-		return control.NetworkReleaseOperation{}, control.NewNetworkReleaseNotFoundError(errors.New("network release operation was not found"))
-	}
-	result, err := networkReleaseOperation(plan)
+	result, err := networkReleaseTerminalOperation(terminal)
 	if err != nil {
 		return control.NetworkReleaseOperation{}, err
 	}
 	if result.Operation.ID != operationID {
 		return control.NetworkReleaseOperation{}, errors.New("network release plan differs from its requested operation")
+	}
+	return result, nil
+}
+
+// networkReleaseTerminalOperation projects only the compact replay fence retained after the active plan is deleted.
+func networkReleaseTerminalOperation(terminal state.GlobalNetworkReleaseTerminalRecord) (control.NetworkReleaseOperation, error) {
+	result := control.NetworkReleaseOperation{
+		Operation:          terminal.Operation.Operation,
+		Revision:           terminal.Operation.Revision,
+		Phase:              control.NetworkReleasePhaseProjection,
+		CheckpointRevision: terminal.SourceCheckpointRevision,
+		NetworkRevision:    terminal.NetworkRevision,
+	}
+	if err := result.Validate(); err != nil {
+		return control.NetworkReleaseOperation{}, fmt.Errorf("network release terminal: %w", err)
 	}
 	return result, nil
 }

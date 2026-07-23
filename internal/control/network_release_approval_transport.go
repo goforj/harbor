@@ -36,6 +36,27 @@ type NetworkReleaseApprovalAuthority interface {
 	// ConfirmNetworkReleaseLoopbackApproval verifies loopback-pool removal and its effects,
 	// then advances the retained release plan to ownership.
 	ConfirmNetworkReleaseLoopbackApproval(context.Context, Caller, ConfirmNetworkReleaseLoopbackApprovalRequest) (NetworkReleaseOperation, error)
+	// ConfirmNetworkReleaseOwnership independently verifies ownership absence and completes projection retirement.
+	ConfirmNetworkReleaseOwnership(context.Context, Caller, ConfirmNetworkReleaseOwnershipRequest) (NetworkReleaseOperation, error)
+}
+
+// ConfirmNetworkReleaseOwnership confirms one independently observed ownership-release checkpoint.
+func (client *Client) ConfirmNetworkReleaseOwnership(ctx context.Context, request ConfirmNetworkReleaseOwnershipRequest) (NetworkReleaseOperation, error) {
+	if err := request.Validate(); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	payload, err := client.networkReleaseApprovalCall(ctx, CapabilityNetworkReleaseOwnershipApprovalV1, methodNetworkReleaseOwnershipConfirm, request)
+	if err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	var response networkReleaseResponse
+	if err := decodeNetworkReleaseResponse(payload, &response); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	if err := validateNetworkReleaseOwnershipConfirmationCorrelation(request, response.Release); err != nil {
+		return NetworkReleaseOperation{}, err
+	}
+	return response.Release, nil
 }
 
 // networkReleaseApprovalAuthorityIsNil rejects typed-nil optional implementations before capability negotiation.
@@ -697,6 +718,26 @@ func (server *Server) networkReleaseLoopbackConfirmHandler(peer local.PeerIdenti
 	)
 }
 
+// networkReleaseOwnershipConfirmHandler admits one independently observed ownership-release checkpoint.
+func (server *Server) networkReleaseOwnershipConfirmHandler(peer local.PeerIdentity) session.Handler {
+	return networkReleaseApprovalHandler(
+		server,
+		peer,
+		CapabilityNetworkReleaseOwnershipApprovalV1,
+		decodeConfirmNetworkReleaseOwnershipRequest,
+		func(ctx context.Context, caller Caller, request ConfirmNetworkReleaseOwnershipRequest) (any, error) {
+			release, err := server.config.NetworkReleaseApprovalAuthority.ConfirmNetworkReleaseOwnership(ctx, caller, request)
+			if err != nil {
+				return nil, err
+			}
+			if err := validateNetworkReleaseOwnershipConfirmationCorrelation(request, release); err != nil {
+				return nil, err
+			}
+			return networkReleaseResponse{Release: release}, nil
+		},
+	)
+}
+
 // networkReleaseApprovalHandler establishes the caller and blocks every unnegotiated approval method.
 func networkReleaseApprovalHandler[T any](server *Server, peer local.PeerIdentity, capability rpc.Capability, decode func([]byte) (T, error), call func(context.Context, Caller, T) (any, error)) session.Handler {
 	return func(ctx context.Context, request session.Request) (any, error) {
@@ -794,6 +835,17 @@ func validateNetworkReleaseLoopbackApprovalConfirmationCorrelation(request Confi
 		release.Phase != NetworkReleasePhaseOwnership ||
 		release.CheckpointRevision <= request.ExpectedCheckpointRevision {
 		return errors.New("network release loopback confirmation does not match the requested checkpoint")
+	}
+	return nil
+}
+
+// validateNetworkReleaseOwnershipConfirmationCorrelation binds terminal release completion to its selected ownership checkpoint.
+func validateNetworkReleaseOwnershipConfirmationCorrelation(request ConfirmNetworkReleaseOwnershipRequest, release NetworkReleaseOperation) error {
+	if err := release.Validate(); err != nil {
+		return err
+	}
+	if release.Operation.ID != request.OperationID || release.Operation.State != domain.OperationSucceeded || release.Phase != NetworkReleasePhaseProjection || release.CheckpointRevision != request.ExpectedCheckpointRevision {
+		return errors.New("network release ownership confirmation does not match the requested checkpoint")
 	}
 	return nil
 }
@@ -930,6 +982,19 @@ func decodeConfirmNetworkReleaseLoopbackApprovalRequest(payload []byte) (Confirm
 	}
 	request.LoopbackEvidence, err = decodeNetworkReleaseLoopbackEvidence(fields["loopback_evidence"])
 	if err != nil {
+		return request, err
+	}
+	return request, request.Validate()
+}
+
+// decodeConfirmNetworkReleaseOwnershipRequest rejects authority beyond the selected ownership checkpoint.
+func decodeConfirmNetworkReleaseOwnershipRequest(payload []byte) (ConfirmNetworkReleaseOwnershipRequest, error) {
+	var request ConfirmNetworkReleaseOwnershipRequest
+	fields, err := decodeNetworkReleaseObject(payload, "network release ownership confirmation", "operation_id", "expected_checkpoint_revision")
+	if err != nil {
+		return request, err
+	}
+	if err := decodeNetworkReleaseApprovalSelection(fields, &request.OperationID, &request.ExpectedCheckpointRevision); err != nil {
 		return request, err
 	}
 	return request, request.Validate()

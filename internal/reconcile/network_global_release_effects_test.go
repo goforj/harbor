@@ -6,7 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/resolver"
@@ -64,6 +66,158 @@ func TestGlobalNetworkReleaseVerifyEffectsAdvancesFreshCompleteAbsence(t *testin
 		if fixture.loopback.addresses[index] != target.Address {
 			t.Fatalf("loopback observation %d = %s, want %s", index, fixture.loopback.addresses[index], target.Address)
 		}
+	}
+}
+
+// TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommittedCheckpoint keeps projection retirement fenced to one owner-confirmed absence.
+func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommittedCheckpoint(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		mutate       func(*globalNetworkReleaseEffectsFixture, *GlobalNetworkReleaseConfirmOwnershipRequest)
+		wantTerminal bool
+		wantNotFound bool
+	}{
+		{
+			name: "stale checkpoint",
+			mutate: func(_ *globalNetworkReleaseEffectsFixture, request *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				request.ExpectedCheckpointRevision++
+			},
+		},
+		{
+			name: "wrong requester",
+			mutate: func(_ *globalNetworkReleaseEffectsFixture, request *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				request.RequesterIdentity = "different-owner"
+			},
+			wantNotFound: true,
+		},
+		{
+			name: "missing plan",
+			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				fixture.journal.found = false
+			},
+			wantNotFound: true,
+		},
+		{
+			name: "ownership still present",
+			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				fixture.ownership.observation.Exists = true
+			},
+		},
+		{
+			name: "ownership observation error",
+			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				fixture.ownership.err = errors.New("ownership observation failed")
+			},
+		},
+		{
+			name: "successful terminal completion",
+			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				fixture.ownership.observation.Exists = false
+			},
+			wantTerminal: true,
+		},
+		{
+			name: "committed projection replay",
+			mutate: func(fixture *globalNetworkReleaseEffectsFixture, request *GlobalNetworkReleaseConfirmOwnershipRequest) {
+				fixture.journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseProjection
+				fixture.journal.plan.OwnershipReceipt = &state.GlobalNetworkReleaseOwnershipReceipt{
+					SourceCheckpointRevision:     request.ExpectedCheckpointRevision,
+					ReleasedOwnershipFingerprint: fixture.journal.plan.Authority.ExpectedOwnershipFingerprint,
+					VerifiedAt:                   fixture.clock.now,
+				}
+			},
+			wantTerminal: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGlobalNetworkReleaseEffectsFixture(t)
+			advanced, err := fixture.coordinator.verifyReleaseEffects(t.Context(), fixture.journal.plan)
+			if err != nil {
+				t.Fatalf("verifyReleaseEffects() error = %v", err)
+			}
+			fixture.journal.plan = advanced
+			request := GlobalNetworkReleaseConfirmOwnershipRequest{
+				OperationID:                advanced.Operation.Operation.ID,
+				ExpectedCheckpointRevision: advanced.CheckpointRevision,
+				RequesterIdentity:          advanced.Authority.Projection.ConfirmedOwnership.Record.OwnerIdentity,
+			}
+			test.mutate(fixture, &request)
+			result, err := fixture.coordinator.ConfirmOwnership(t.Context(), request)
+			if test.wantTerminal {
+				if err != nil || result.Operation.Operation.State != "succeeded" || result.SourceCheckpointRevision != request.ExpectedCheckpointRevision {
+					t.Fatalf("ConfirmOwnership() = %#v, %v", result, err)
+				}
+				if fixture.journal.finalizeCalls != 1 {
+					t.Fatalf("projection finalizations = %d, want 1", fixture.journal.finalizeCalls)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ConfirmOwnership() error = nil")
+			}
+			if test.wantNotFound {
+				var missing *state.OperationNotFoundError
+				if !errors.As(err, &missing) {
+					t.Fatalf("ConfirmOwnership() error = %v, want not found", err)
+				}
+			}
+		})
+	}
+}
+
+// TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence preserves client retries after the projection transaction deletes its active plan.
+func TestGlobalNetworkReleaseConfirmOwnershipReplaysOnlyItsTerminalFence(t *testing.T) {
+	operation := testGlobalNetworkReleaseOperation(t)
+	completed, err := operation.Operation.Transition(domain.OperationSucceeded, "network released", operation.Operation.RequestedAt.Add(time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := state.GlobalNetworkReleaseTerminalRecord{
+		Operation: state.OperationRecord{
+			Operation: completed,
+			Revision:  operation.Revision + 3,
+		},
+		OwnerIdentity:            "501",
+		SourceCheckpointRevision: 8,
+		NetworkRevision:          3,
+	}
+	for _, test := range []struct {
+		name         string
+		requester    string
+		wantNotFound bool
+	}{
+		{
+			name:      "exact replay",
+			requester: "501",
+		},
+		{
+			name:         "wrong owner",
+			requester:    "different-owner",
+			wantNotFound: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			journal := &testGlobalNetworkReleaseJournal{
+				terminal:      terminal,
+				terminalFound: true,
+			}
+			coordinator := &GlobalNetworkReleaseCoordinator{journal: journal}
+			result, confirmErr := coordinator.ConfirmOwnership(t.Context(), GlobalNetworkReleaseConfirmOwnershipRequest{
+				OperationID:                operation.Operation.ID,
+				ExpectedCheckpointRevision: terminal.SourceCheckpointRevision,
+				RequesterIdentity:          test.requester,
+			})
+			if test.wantNotFound {
+				var missing *state.OperationNotFoundError
+				if !errors.As(confirmErr, &missing) {
+					t.Fatalf("ConfirmOwnership() error = %v, want not found", confirmErr)
+				}
+				return
+			}
+			if confirmErr != nil || result != terminal {
+				t.Fatalf("ConfirmOwnership() = %#v, %v", result, confirmErr)
+			}
+		})
 	}
 }
 

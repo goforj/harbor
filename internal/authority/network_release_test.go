@@ -32,6 +32,7 @@ type recordingNetworkReleaseCoordinator struct {
 	confirmTrustRequest     reconcile.GlobalNetworkReleaseConfirmTrustRequest
 	prepareLoopbacksRequest reconcile.GlobalNetworkReleasePrepareLoopbacksRequest
 	confirmLoopbacksRequest reconcile.GlobalNetworkReleaseConfirmLoopbacksRequest
+	confirmOwnershipRequest reconcile.GlobalNetworkReleaseConfirmOwnershipRequest
 	record                  state.OperationRecord
 	prepareResult           ticketissuer.LowPortResult
 	confirmResult           state.GlobalNetworkReleasePlanRecord
@@ -41,6 +42,7 @@ type recordingNetworkReleaseCoordinator struct {
 	confirmTrustResult      state.GlobalNetworkReleasePlanRecord
 	prepareLoopbacksResult  ticketissuer.PoolResult
 	confirmLoopbacksResult  state.GlobalNetworkReleasePlanRecord
+	confirmOwnershipResult  state.GlobalNetworkReleaseTerminalRecord
 	err                     error
 }
 
@@ -98,12 +100,27 @@ func (c *recordingNetworkReleaseCoordinator) ConfirmLoopbacks(_ context.Context,
 	return c.confirmLoopbacksResult, c.err
 }
 
+// ConfirmOwnership records one authenticated ownership-release confirmation.
+func (c *recordingNetworkReleaseCoordinator) ConfirmOwnership(_ context.Context, request reconcile.GlobalNetworkReleaseConfirmOwnershipRequest) (state.GlobalNetworkReleaseTerminalRecord, error) {
+	c.confirmOwnershipRequest = request
+	return c.confirmOwnershipResult, c.err
+}
+
 // recordingNetworkReleasePlans records an exact durable plan selection before returning its scripted result.
 type recordingNetworkReleasePlans struct {
-	request domain.OperationID
-	plan    state.GlobalNetworkReleasePlanRecord
-	found   bool
-	err     error
+	request       domain.OperationID
+	plan          state.GlobalNetworkReleasePlanRecord
+	found         bool
+	err           error
+	terminal      state.GlobalNetworkReleaseTerminalRecord
+	terminalFound bool
+	terminalErr   error
+}
+
+// ReadGlobalNetworkReleaseTerminal records the requested terminal operation identity.
+func (r *recordingNetworkReleasePlans) ReadGlobalNetworkReleaseTerminal(_ context.Context, operationID domain.OperationID) (state.GlobalNetworkReleaseTerminalRecord, bool, error) {
+	r.request = operationID
+	return r.terminal, r.terminalFound, r.terminalErr
 }
 
 // ReadGlobalNetworkReleasePlan records the requested daemon operation identity.
@@ -195,6 +212,118 @@ func TestNetworkReleaseAuthorityBindsCallerAndProjectsExactPlan(t *testing.T) {
 	}
 	if strings.Contains(string(payload), "authority") || strings.Contains(string(payload), "host") {
 		t.Fatalf("control projection leaks durable authority: %s", payload)
+	}
+}
+
+// TestNetworkReleaseAuthorityReadsTerminalForItsOriginalOwner proves projection deletion preserves only owner-bound successful replay.
+func TestNetworkReleaseAuthorityReadsTerminalForItsOriginalOwner(t *testing.T) {
+	plan := validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseProjection)
+	completedAt := plan.Operation.Operation.RequestedAt.Add(time.Second)
+	operation, err := plan.Operation.Operation.Transition(domain.OperationSucceeded, "network released", completedAt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := state.GlobalNetworkReleaseTerminalRecord{
+		Operation: state.OperationRecord{
+			Operation: operation,
+			Revision:  plan.CheckpointRevision + 1,
+		},
+		OwnerIdentity:            "authenticated-user",
+		SourceCheckpointRevision: plan.CheckpointRevision,
+		NetworkRevision:          plan.NetworkRevision,
+	}
+	plans := &recordingNetworkReleasePlans{terminal: terminal, terminalFound: true}
+	authority := newNetworkReleaseAuthority(plans, &recordingNetworkReleaseCoordinator{}, func() (domain.OperationID, error) {
+		return "operation-unused", nil
+	})
+	caller := control.Caller{Transport: local.PeerIdentity{UserID: terminal.OwnerIdentity}}
+	result, err := authority.ReadNetworkRelease(t.Context(), caller, control.ReadNetworkReleaseRequest{OperationID: operation.ID})
+	if err != nil {
+		t.Fatalf("ReadNetworkRelease() error = %v", err)
+	}
+	if result.Operation != operation || result.Revision != terminal.Operation.Revision || result.Phase != control.NetworkReleasePhaseProjection || result.CheckpointRevision != terminal.SourceCheckpointRevision || result.NetworkRevision != terminal.NetworkRevision {
+		t.Fatalf("ReadNetworkRelease() = %#v", result)
+	}
+	other := control.Caller{Transport: local.PeerIdentity{UserID: "different-user"}}
+	if _, err := authority.ReadNetworkRelease(t.Context(), other, control.ReadNetworkReleaseRequest{OperationID: operation.ID}); err == nil {
+		t.Fatal("ReadNetworkRelease() allowed a different user to read the terminal")
+	}
+}
+
+// TestNetworkReleaseAuthorityStartsTerminalReplayAcrossEquivalentTimeLocations proves replay correlation compares operation timestamps by instant.
+func TestNetworkReleaseAuthorityStartsTerminalReplayAcrossEquivalentTimeLocations(t *testing.T) {
+	plan := validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseProjection)
+	completed, err := plan.Operation.Operation.Transition(domain.OperationSucceeded, "network released", plan.Operation.Operation.RequestedAt.Add(time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := state.OperationRecord{
+		Operation: completed,
+		Revision:  plan.CheckpointRevision + 1,
+	}
+	stored := completed
+	location := time.FixedZone("stored", 0)
+	requestedAt := stored.RequestedAt.In(location)
+	startedAt := stored.StartedAt.In(location)
+	finishedAt := stored.FinishedAt.In(location)
+	stored.RequestedAt = requestedAt
+	stored.StartedAt = &startedAt
+	stored.FinishedAt = &finishedAt
+	plans := &recordingNetworkReleasePlans{
+		terminal: state.GlobalNetworkReleaseTerminalRecord{
+			Operation: state.OperationRecord{
+				Operation: stored,
+				Revision:  started.Revision,
+			},
+			OwnerIdentity:            "authenticated-user",
+			SourceCheckpointRevision: plan.CheckpointRevision,
+			NetworkRevision:          plan.NetworkRevision,
+		},
+		terminalFound: true,
+	}
+	authority := newNetworkReleaseAuthority(plans, &recordingNetworkReleaseCoordinator{record: started}, func() (domain.OperationID, error) {
+		return "operation-unused", nil
+	})
+	caller := control.Caller{Transport: local.PeerIdentity{UserID: "authenticated-user"}}
+	if _, err := authority.StartNetworkRelease(t.Context(), caller, control.StartNetworkReleaseRequest{IntentID: started.Operation.IntentID}); err != nil {
+		t.Fatalf("StartNetworkRelease() error = %v", err)
+	}
+}
+
+// TestNetworkReleaseAuthorityConfirmsOwnershipAsTerminalOperation proves a successful confirmation returns the completed fence without requiring another start.
+func TestNetworkReleaseAuthorityConfirmsOwnershipAsTerminalOperation(t *testing.T) {
+	plan := validNetworkReleasePlan("operation-release", "intent-release", state.GlobalNetworkReleasePlanPhaseOwnership)
+	completed, err := plan.Operation.Operation.Transition(domain.OperationSucceeded, "network released", plan.Operation.Operation.RequestedAt.Add(time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &recordingNetworkReleaseCoordinator{
+		confirmOwnershipResult: state.GlobalNetworkReleaseTerminalRecord{
+			Operation: state.OperationRecord{
+				Operation: completed,
+				Revision:  plan.CheckpointRevision + 1,
+			},
+			OwnerIdentity:            "authenticated-user",
+			SourceCheckpointRevision: plan.CheckpointRevision,
+			NetworkRevision:          plan.NetworkRevision,
+		},
+	}
+	authority := newNetworkReleaseAuthority(&recordingNetworkReleasePlans{}, coordinator, func() (domain.OperationID, error) {
+		return "operation-unused", nil
+	})
+	result, err := authority.ConfirmNetworkReleaseOwnership(
+		t.Context(),
+		control.Caller{Transport: local.PeerIdentity{UserID: "authenticated-user"}},
+		control.ConfirmNetworkReleaseOwnershipRequest{
+			OperationID:                plan.Operation.Operation.ID,
+			ExpectedCheckpointRevision: plan.CheckpointRevision,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkReleaseOwnership() error = %v", err)
+	}
+	if result.Operation.State != domain.OperationSucceeded || result.CheckpointRevision != plan.CheckpointRevision {
+		t.Fatalf("ConfirmNetworkReleaseOwnership() = %#v", result)
 	}
 }
 

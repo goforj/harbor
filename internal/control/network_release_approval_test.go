@@ -20,25 +20,40 @@ import (
 
 // recordingNetworkReleaseApprovalAuthority records the narrow low-port and resolver approval calls made through a connected server.
 type recordingNetworkReleaseApprovalAuthority struct {
-	mu                    sync.Mutex
-	preparation           NetworkReleaseApprovalPreparation
-	resolverPreparation   NetworkReleaseResolverApprovalPreparation
-	trustPreparation      NetworkReleaseTrustApprovalPreparation
-	loopbackPreparation   NetworkReleaseLoopbackApprovalPreparation
-	release               NetworkReleaseOperation
-	resolverRelease       NetworkReleaseOperation
-	trustRelease          NetworkReleaseOperation
-	loopbackRelease       NetworkReleaseOperation
-	err                   error
-	callers               []Caller
-	prepares              []PrepareNetworkReleaseApprovalRequest
-	confirmations         []ConfirmNetworkReleaseApprovalRequest
-	resolverPrepares      []PrepareNetworkReleaseResolverApprovalRequest
-	resolverConfirmations []ConfirmNetworkReleaseResolverApprovalRequest
-	trustPrepares         []PrepareNetworkReleaseTrustApprovalRequest
-	trustConfirmations    []ConfirmNetworkReleaseTrustApprovalRequest
-	loopbackPrepares      []PrepareNetworkReleaseLoopbackApprovalRequest
-	loopbackConfirmations []ConfirmNetworkReleaseLoopbackApprovalRequest
+	mu                     sync.Mutex
+	preparation            NetworkReleaseApprovalPreparation
+	resolverPreparation    NetworkReleaseResolverApprovalPreparation
+	trustPreparation       NetworkReleaseTrustApprovalPreparation
+	loopbackPreparation    NetworkReleaseLoopbackApprovalPreparation
+	release                NetworkReleaseOperation
+	resolverRelease        NetworkReleaseOperation
+	trustRelease           NetworkReleaseOperation
+	loopbackRelease        NetworkReleaseOperation
+	ownershipRelease       NetworkReleaseOperation
+	err                    error
+	callers                []Caller
+	prepares               []PrepareNetworkReleaseApprovalRequest
+	confirmations          []ConfirmNetworkReleaseApprovalRequest
+	resolverPrepares       []PrepareNetworkReleaseResolverApprovalRequest
+	resolverConfirmations  []ConfirmNetworkReleaseResolverApprovalRequest
+	trustPrepares          []PrepareNetworkReleaseTrustApprovalRequest
+	trustConfirmations     []ConfirmNetworkReleaseTrustApprovalRequest
+	loopbackPrepares       []PrepareNetworkReleaseLoopbackApprovalRequest
+	loopbackConfirmations  []ConfirmNetworkReleaseLoopbackApprovalRequest
+	ownershipConfirmations []ConfirmNetworkReleaseOwnershipRequest
+}
+
+// ConfirmNetworkReleaseOwnership records the authenticated caller and returns the configured projection release.
+func (authority *recordingNetworkReleaseApprovalAuthority) ConfirmNetworkReleaseOwnership(
+	_ context.Context,
+	caller Caller,
+	request ConfirmNetworkReleaseOwnershipRequest,
+) (NetworkReleaseOperation, error) {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.callers = append(authority.callers, caller)
+	authority.ownershipConfirmations = append(authority.ownershipConfirmations, request)
+	return authority.ownershipRelease, authority.err
 }
 
 // PrepareNetworkReleaseApproval records the authenticated caller and returns the configured preparation.
@@ -159,6 +174,9 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 	if CapabilityNetworkReleaseLoopbackApprovalV1 != "control.network-release-loopback-approval.v1" {
 		t.Fatalf("loopback capability = %q", CapabilityNetworkReleaseLoopbackApprovalV1)
 	}
+	if CapabilityNetworkReleaseOwnershipApprovalV1 != "control.network-release-ownership-approval.v1" {
+		t.Fatalf("ownership capability = %q", CapabilityNetworkReleaseOwnershipApprovalV1)
+	}
 	if methodNetworkReleaseLowPortPrepare != "control.v1.network.release.low-port.prepare" ||
 		methodNetworkReleaseLowPortConfirm != "control.v1.network.release.low-port.confirm" ||
 		methodNetworkReleaseResolverPrepare != "control.v1.network.release.resolver.prepare" ||
@@ -166,9 +184,10 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 		methodNetworkReleaseTrustPrepare != "control.v1.network.release.trust.prepare" ||
 		methodNetworkReleaseTrustConfirm != "control.v1.network.release.trust.confirm" ||
 		methodNetworkReleaseLoopbackPrepare != "control.v1.network.release.loopback.prepare" ||
-		methodNetworkReleaseLoopbackConfirm != "control.v1.network.release.loopback.confirm" {
+		methodNetworkReleaseLoopbackConfirm != "control.v1.network.release.loopback.confirm" ||
+		methodNetworkReleaseOwnershipConfirm != "control.v1.network.release.ownership.confirm" {
 		t.Fatalf(
-			"methods = %q, %q, %q, %q, %q, %q, %q, %q",
+			"methods = %q, %q, %q, %q, %q, %q, %q, %q, %q",
 			methodNetworkReleaseLowPortPrepare,
 			methodNetworkReleaseLowPortConfirm,
 			methodNetworkReleaseResolverPrepare,
@@ -177,7 +196,33 @@ func TestNetworkReleaseApprovalStableProtocolNames(t *testing.T) {
 			methodNetworkReleaseTrustConfirm,
 			methodNetworkReleaseLoopbackPrepare,
 			methodNetworkReleaseLoopbackConfirm,
+			methodNetworkReleaseOwnershipConfirm,
 		)
+	}
+}
+
+// TestNetworkReleaseOwnershipConfirmationHidesMissingAndForeignOperations proves the approval transport exposes both cases as the same not-found boundary.
+func TestNetworkReleaseOwnershipConfirmationHidesMissingAndForeignOperations(t *testing.T) {
+	request := ConfirmNetworkReleaseOwnershipRequest{
+		OperationID:                "operation-network-release",
+		ExpectedCheckpointRevision: 6,
+	}
+	var responses []string
+	for _, name := range []string{"missing", "foreign owner"} {
+		t.Run(name, func(t *testing.T) {
+			authority := &recordingNetworkReleaseApprovalAuthority{
+				err: NewNetworkReleaseNotFoundError(errors.New("network release operation was not found")),
+			}
+			running := newNetworkReleaseApprovalRunningClient(t, authority)
+			_, err := running.client.ConfirmNetworkReleaseOwnership(t.Context(), request)
+			if err == nil {
+				t.Fatal("ConfirmNetworkReleaseOwnership() error = nil")
+			}
+			responses = append(responses, err.Error())
+		})
+	}
+	if len(responses) != 2 || responses[0] != responses[1] {
+		t.Fatalf("ownership confirmation responses = %#v", responses)
 	}
 }
 

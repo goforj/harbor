@@ -63,7 +63,7 @@ func (phase NetworkReleasePhase) Validate() error {
 	}
 }
 
-// NetworkReleaseOperation reports one running durable global network release and its retained recovery checkpoint.
+// NetworkReleaseOperation reports one durable global network release and its retained recovery checkpoint or successful terminal fence.
 type NetworkReleaseOperation struct {
 	Operation          domain.Operation    `json:"operation"`
 	Revision           domain.Sequence     `json:"revision"`
@@ -72,16 +72,13 @@ type NetworkReleaseOperation struct {
 	NetworkRevision    domain.Sequence     `json:"network_revision"`
 }
 
-// Validate reports whether the operation is a running global release aligned with its retained plan revisions.
+// Validate reports whether the operation is a running global release or its successful terminal projection.
 func (operation NetworkReleaseOperation) Validate() error {
 	if err := operation.Operation.Validate(); err != nil {
 		return err
 	}
-	if operation.Operation.Kind != domain.OperationKindNetworkRelease ||
-		operation.Operation.ProjectID != "" ||
-		operation.Operation.State != domain.OperationRunning ||
-		operation.Operation.Phase != networkReleaseRuntimeOperationPhase {
-		return errors.New("network release operation must be a running global retained-plan release")
+	if operation.Operation.Kind != domain.OperationKindNetworkRelease || operation.Operation.ProjectID != "" {
+		return errors.New("network release operation must be a global release")
 	}
 	if err := operation.Phase.Validate(); err != nil {
 		return err
@@ -95,8 +92,17 @@ func (operation NetworkReleaseOperation) Validate() error {
 	if err := validateNetworkReleaseRevision("network", operation.NetworkRevision); err != nil {
 		return err
 	}
-	if operation.CheckpointRevision < operation.Revision || operation.Revision <= operation.NetworkRevision {
-		return errors.New("network release revisions are not ordered")
+	switch operation.Operation.State {
+	case domain.OperationRunning:
+		if operation.Operation.Phase != networkReleaseRuntimeOperationPhase || operation.CheckpointRevision < operation.Revision || operation.Revision <= operation.NetworkRevision {
+			return errors.New("running network release revisions are not ordered")
+		}
+	case domain.OperationSucceeded:
+		if operation.Operation.Phase != "network released" || operation.Phase != NetworkReleasePhaseProjection || operation.CheckpointRevision >= operation.Revision || operation.NetworkRevision >= operation.Revision {
+			return errors.New("succeeded network release terminal fences are not ordered")
+		}
+	default:
+		return errors.New("network release operation must be running or succeeded")
 	}
 	return nil
 }

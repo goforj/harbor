@@ -101,6 +101,19 @@ type ConfirmNetworkReleaseApprovalRequest struct {
 	LowPortEvidence helper.LowPortMutationEvidence `json:"low_port_evidence"`
 }
 
+// ConfirmNetworkReleaseOwnershipRequest selects the ownership checkpoint whose independently observed absence may retire the projection.
+type ConfirmNetworkReleaseOwnershipRequest struct {
+	// OperationID identifies the durable global release operation.
+	OperationID domain.OperationID `json:"operation_id"`
+	// ExpectedCheckpointRevision fences confirmation to the ownership release checkpoint.
+	ExpectedCheckpointRevision domain.Sequence `json:"expected_checkpoint_revision"`
+}
+
+// Validate reports whether confirmation identifies one bounded ownership checkpoint.
+func (request ConfirmNetworkReleaseOwnershipRequest) Validate() error {
+	return validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision)
+}
+
 // Validate reports whether confirmation carries one owned-absent low-port release postcondition.
 func (request ConfirmNetworkReleaseApprovalRequest) Validate() error {
 	if err := validateNetworkReleaseApprovalSelection(request.OperationID, request.ExpectedCheckpointRevision); err != nil {
