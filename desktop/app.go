@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
 	"github.com/goforj/harbor/desktop/internal/networkprerequisite"
+	"github.com/goforj/harbor/desktop/internal/projectterminal"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
@@ -96,6 +98,16 @@ type directoryChooser func(context.Context, runtime.OpenDialogOptions) (string, 
 
 // waitFunc makes reconnect and polling boundaries cancellation-aware and deterministic in tests.
 type waitFunc func(context.Context, time.Duration) bool
+
+// projectTerminalManager is the desktop-owned PTY boundary and has no daemon or helper authority.
+type projectTerminalManager interface {
+	Start(projectDirectory string, rows, columns uint16) (string, error)
+	Attach(sessionID string) error
+	Write(sessionID string, data []byte) error
+	Resize(sessionID string, rows, columns uint16) error
+	Close(sessionID string) error
+	CloseAll()
+}
 
 // networkSetupApprovalRunner performs one exact interactive helper attempt for a daemon-selected setup revision.
 type networkSetupApprovalRunner interface {
@@ -201,6 +213,7 @@ type App struct {
 	reconnectDelay        time.Duration
 	pollInterval          time.Duration
 	resourceIconClient    *http.Client
+	terminals             projectTerminalManager
 }
 
 // App must remain exactly compatible with the Go-owned Wails method contract.
@@ -213,7 +226,7 @@ func NewApp() *App {
 
 // newApp keeps operating-system and timing effects replaceable without making them optional in production.
 func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait waitFunc) *App {
-	return &App{
+	app := &App{
 		clientFactory: factory,
 		events:        desktopwire.NewEmitter(emit),
 		open:          open,
@@ -258,6 +271,8 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		pollInterval:       desktopPollInterval,
 		resourceIconClient: &http.Client{},
 	}
+	app.terminals = projectterminal.NewManager(app.emitProjectTerminal)
+	return app
 }
 
 // SetupNetwork completes the address, resolver, and trusted-ingress foundations before reporting Harbor networking ready.
@@ -1736,6 +1751,7 @@ func (a *App) shutdown(_ context.Context) {
 	a.cancel = nil
 	a.mu.Unlock()
 
+	a.terminals.CloseAll()
 	if cancel != nil {
 		cancel()
 	}
@@ -1783,6 +1799,93 @@ func (a *App) Snapshot() (domain.Snapshot, error) {
 	}
 
 	return snapshot, nil
+}
+
+// StartProjectTerminal opens the user's login shell in one freshly resolved registered project.
+func (a *App) StartProjectTerminal(projectID string, columns uint16, rows uint16) (desktopwire.ProjectTerminalStarted, error) {
+	typedProjectID := domain.ProjectID(projectID)
+	if err := typedProjectID.Validate(); err != nil {
+		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("project: %w", err)
+	}
+
+	ctx, client, err := a.currentConnection()
+	if err != nil {
+		return desktopwire.ProjectTerminalStarted{}, err
+	}
+	snapshot, err := client.Snapshot(ctx)
+	if err != nil {
+		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("read Harbor snapshot: %w", err)
+	}
+	if err := snapshot.Validate(); err != nil {
+		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("validate Harbor snapshot: %w", err)
+	}
+	project, err := findProject(snapshot, typedProjectID)
+	if err != nil {
+		return desktopwire.ProjectTerminalStarted{}, err
+	}
+
+	sessionID, err := a.terminals.Start(project.Path, rows, columns)
+	if err != nil {
+		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("start project terminal: %w", err)
+	}
+	started := desktopwire.ProjectTerminalStarted{SessionID: sessionID}
+	if err := started.Validate(); err != nil {
+		_ = a.terminals.Close(sessionID)
+		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("validate project terminal start: %w", err)
+	}
+	return started, nil
+}
+
+// AttachProjectTerminal begins output only after the renderer can correlate the opaque session identity.
+func (a *App) AttachProjectTerminal(sessionID string) error {
+	return a.terminals.Attach(sessionID)
+}
+
+// WriteProjectTerminal sends one bounded renderer input frame to an opaque terminal session.
+func (a *App) WriteProjectTerminal(sessionID string, data string) error {
+	return a.terminals.Write(sessionID, []byte(data))
+}
+
+// ResizeProjectTerminal changes one opaque terminal session's character grid.
+func (a *App) ResizeProjectTerminal(sessionID string, columns uint16, rows uint16) error {
+	return a.terminals.Resize(sessionID, rows, columns)
+}
+
+// CloseProjectTerminal terminates one opaque terminal session and its owned process tree.
+func (a *App) CloseProjectTerminal(sessionID string) error {
+	err := a.terminals.Close(sessionID)
+	if errors.Is(err, projectterminal.ErrSessionNotFound) {
+		return nil
+	}
+	return err
+}
+
+// emitProjectTerminal translates raw PTY bytes only at the typed Wails event boundary.
+func (a *App) emitProjectTerminal(event projectterminal.Event) {
+	payload := desktopwire.ProjectTerminalEvent{
+		SessionID: event.SessionID,
+		Kind:      desktopwire.ProjectTerminalOutput,
+		Dropped:   event.Dropped,
+	}
+	if event.Exited {
+		payload.Kind = desktopwire.ProjectTerminalExited
+		if event.ExitError != nil {
+			payload.Error = event.ExitError.Error()
+		}
+	} else {
+		payload.DataBase64 = base64.StdEncoding.EncodeToString(event.Data)
+	}
+	if err := payload.Validate(); err != nil {
+		return
+	}
+
+	a.mu.RLock()
+	ctx := a.ctx
+	a.mu.RUnlock()
+	if ctx == nil {
+		return
+	}
+	a.events.ProjectTerminal(ctx, payload)
 }
 
 // OpenResource resolves a project-scoped resource from fresh daemon state before opening its reviewed URL.
@@ -2026,6 +2129,16 @@ func (a *App) retireClient(ctx context.Context, client controlClient) {
 		}
 	}
 	_ = client.Close()
+}
+
+// findProject resolves one registered project from a freshly validated snapshot.
+func findProject(snapshot domain.Snapshot, projectID domain.ProjectID) (domain.ProjectSnapshot, error) {
+	for _, project := range snapshot.Projects {
+		if project.ID == projectID {
+			return project, nil
+		}
+	}
+	return domain.ProjectSnapshot{}, fmt.Errorf("project %q was not found", projectID)
 }
 
 // findResource requires both identities because resource IDs are unique only inside a project snapshot.

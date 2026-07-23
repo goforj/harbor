@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
@@ -13,6 +13,15 @@ export function createMockBridge(): HarborBridge {
   let networkSetup: NetworkSetupOperation | null = null
   let oldNetworkingRemoval: NetworkResolverPolicyMigrationOperation | null = null
   let runtimeRepairPlan: ConfirmableProjectRuntimeRepairInspection | null = null
+  const terminalListeners = new Set<(event: ProjectTerminalEvent) => void>()
+  const terminals = new Map<string, string>()
+  const attachedTerminals = new Set<string>()
+  let terminalSequence = 0
+
+  // emitTerminal keeps browser fixtures on the same session-scoped event shape as native Wails.
+  function emitTerminal(event: ProjectTerminalEvent) {
+    for (const listener of terminalListeners) listener(structuredClone(event))
+  }
 
   // projectActivity applies the fixture's byte-addressed current-session cursor contract.
   function projectActivity(projectId: string, sessionId: string, cursor: number): ProjectActivity {
@@ -370,13 +379,68 @@ export function createMockBridge(): HarborBridge {
     restartProject(projectId, intentId) {
       return changeProjectLifecycle(projectId, intentId, 'restart')
     },
+    async startProjectTerminal(projectId) {
+      const project = snapshot.projects.find((entry) => entry.id === projectId)
+      if (!project) throw new Error(`Unknown project: ${projectId}`)
+
+      terminalSequence += 1
+      const sessionId = `terminal-${terminalSequence.toString(16).padStart(32, '0')}`
+      terminals.set(sessionId, `${project.path} % `)
+      return { session_id: sessionId }
+    },
+    async attachProjectTerminal(sessionId) {
+      const prompt = terminals.get(sessionId)
+      if (prompt == null) throw new Error('Project terminal session was not found.')
+      if (attachedTerminals.has(sessionId)) return
+      attachedTerminals.add(sessionId)
+      emitTerminal({
+        session_id: sessionId,
+        kind: 'output',
+        data_base64: encodeBase64(prompt),
+      })
+    },
+    async writeProjectTerminal(sessionId, data) {
+      if (!terminals.has(sessionId) || !attachedTerminals.has(sessionId)) {
+        throw new Error('Project terminal session was not found.')
+      }
+      emitTerminal({
+        session_id: sessionId,
+        kind: 'output',
+        data_base64: encodeBase64(data),
+      })
+    },
+    async resizeProjectTerminal(sessionId) {
+      if (!terminals.has(sessionId) || !attachedTerminals.has(sessionId)) {
+        throw new Error('Project terminal session was not found.')
+      }
+    },
+    async closeProjectTerminal(sessionId) {
+      if (!terminals.delete(sessionId)) return
+      attachedTerminals.delete(sessionId)
+      emitTerminal({
+        session_id: sessionId,
+        kind: 'exited',
+      })
+    },
     subscribe() {
       return () => undefined
     },
     subscribeConnection() {
       return () => undefined
     },
+    subscribeProjectTerminal(listener) {
+      terminalListeners.add(listener)
+      return () => terminalListeners.delete(listener)
+    },
   }
+}
+
+// encodeBase64 preserves terminal UTF-8 bytes across the browser fixture event boundary.
+function encodeBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
 }
 
 function isUTF8Boundary(value: Uint8Array, cursor: number): boolean {

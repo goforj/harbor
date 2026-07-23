@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -9,14 +9,17 @@ import {
   LoaderCircle,
   Network,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Square,
   SquareTerminal,
   Trash2,
   TriangleAlert,
+  X,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import InteractiveTerminal from '@/components/harbor/InteractiveTerminal.vue'
 import ProjectConnectPanel from '@/components/harbor/ProjectConnectPanel.vue'
 import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
@@ -42,6 +45,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useProjectActivity } from '@/composables/useProjectActivity'
 import { countReadyServices } from '@/lib/servicePresentation'
 import { terminalPlainText } from '@/lib/terminal'
+import { projectTerminalCleanup } from '@/lib/projectTerminalCleanup'
+import { ProjectTerminalSession } from '@/lib/projectTerminalSession'
 import { useHarborStore } from '@/stores/harbor'
 import { harborBridge } from '@/bridge'
 import type { ServicePort } from '@/domain/harbor'
@@ -59,6 +64,25 @@ let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
+const projectTerminalLimit = 8
+interface ProjectTerminalTab {
+  error: string | null
+  id: number
+  name: string
+  session: ProjectTerminalSession
+}
+
+const projectTerminalTabs = shallowRef<ProjectTerminalTab[]>([])
+const selectedProjectTerminalTabID = ref<number | null>(null)
+const selectedProjectTerminalTab = computed(() => projectTerminalTabs.value.find(
+  (tab) => tab.id === selectedProjectTerminalTabID.value,
+))
+const closingProjectTerminalCount = projectTerminalCleanup.pendingCount
+const closingProjectTerminalInFlight = projectTerminalCleanup.inFlightCount
+const failedProjectTerminalCloseCount = projectTerminalCleanup.failedCount
+const projectTerminalCleanupError = projectTerminalCleanup.error
+let pendingInitialProjectTerminalID = ''
+let nextProjectTerminalTabID = 1
 const selectedServiceId = ref('')
 const selectedServiceSurface = ref('logs')
 const projectId = computed(() => String(route.params.projectId ?? ''))
@@ -130,6 +154,83 @@ async function refreshSelectedServicePorts() {
 watch([selectedServiceId, selectedServiceSurface], ([, surface]) => {
   if (surface === 'ports') void refreshSelectedServicePorts()
 })
+watch([selectedDetailTab, projectId], ([tab, selectedProjectID], [previousTab, previousProjectID]) => {
+  if (selectedProjectID !== previousProjectID || (previousTab === 'terminal' && tab !== 'terminal')) {
+    closeProjectTerminalTabs()
+  }
+  if (tab === 'terminal' && projectTerminalTabs.value.length === 0) {
+    void createInitialProjectTerminalTab(selectedProjectID)
+  }
+  if (tab !== 'terminal') pendingInitialProjectTerminalID = ''
+}, { flush: 'sync' })
+watch(closingProjectTerminalCount, (count) => {
+  const selectedProjectID = pendingInitialProjectTerminalID
+  if (count === 0 && selectedProjectID) void createInitialProjectTerminalTab(selectedProjectID)
+})
+
+// createInitialProjectTerminalTab waits for shells from the previous surface to release their bounded manager slots.
+async function createInitialProjectTerminalTab(selectedProjectID: string) {
+  await projectTerminalCleanup.waitForInFlight()
+  if (
+    selectedDetailTab.value !== 'terminal'
+    || projectId.value !== selectedProjectID
+    || projectTerminalTabs.value.length > 0
+  ) return
+  if (closingProjectTerminalCount.value > 0) {
+    pendingInitialProjectTerminalID = selectedProjectID
+    return
+  }
+  pendingInitialProjectTerminalID = ''
+  createProjectTerminalTab()
+}
+
+// createProjectTerminalTab gives every tab its own PTY adapter and activates the new shell.
+function createProjectTerminalTab() {
+  if (closingProjectTerminalCount.value > 0 || projectTerminalTabs.value.length >= projectTerminalLimit) return
+  const id = nextProjectTerminalTabID
+  nextProjectTerminalTabID += 1
+  const tab = {
+    error: null,
+    id,
+    name: `Terminal ${id}`,
+    session: new ProjectTerminalSession(harborBridge, projectId.value),
+  }
+  projectTerminalTabs.value = [...projectTerminalTabs.value, tab]
+  selectedProjectTerminalTabID.value = id
+}
+
+// closeProjectTerminalTab terminates only the selected tab's desktop-owned shell.
+function closeProjectTerminalTab(id: number) {
+  const tabs = projectTerminalTabs.value
+  const index = tabs.findIndex((tab) => tab.id === id)
+  if (index === -1) return
+  const [closed] = tabs.splice(index, 1)
+  projectTerminalTabs.value = [...tabs]
+  if (selectedProjectTerminalTabID.value === id) {
+    selectedProjectTerminalTabID.value = tabs[index]?.id ?? tabs[index - 1]?.id ?? null
+  }
+  if (closed) projectTerminalCleanup.close(closed.session)
+}
+
+// closeProjectTerminalTabs releases every PTY when the project or terminal surface is left.
+function closeProjectTerminalTabs() {
+  for (const tab of projectTerminalTabs.value) projectTerminalCleanup.close(tab.session)
+  projectTerminalTabs.value = []
+  selectedProjectTerminalTabID.value = null
+  nextProjectTerminalTabID = 1
+}
+
+// retryProjectTerminalCleanup lets the user reconcile a close whose bridge result was indeterminate.
+function retryProjectTerminalCleanup() {
+  projectTerminalCleanup.retryFailed()
+}
+
+// reportProjectTerminalError keeps PTY transport failures inside the terminal surface.
+function reportProjectTerminalError(id: number, error: Error) {
+  projectTerminalTabs.value = projectTerminalTabs.value.map((tab) => (
+    tab.id === id ? { ...tab, error: error.message } : tab
+  ))
+}
 const removalNotice = computed(() => store.projectRemovalNotice(projectId.value))
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
@@ -281,6 +382,7 @@ watch(runtimeRepairInspection, (inspection) => {
 
 onBeforeUnmount(() => {
   if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
+  closeProjectTerminalTabs()
   if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
 })
 
@@ -556,12 +658,13 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
         <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
           <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
           <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
+          <TabsTrigger value="terminal" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Terminal</TabsTrigger>
           <TabsTrigger value="connect" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Connect</TabsTrigger>
           <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
           <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
-        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
+        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <Alert
           v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
@@ -621,6 +724,59 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
             <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Current activity</CardTitle></CardHeader>
             <CardContent class="p-0">
               <div class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="currentProjectOperation.state" /><div><p class="text-sm font-medium">{{ currentProjectOperation.kind }}</p><p class="text-xs text-muted-foreground">{{ currentProjectOperation.phase }}</p></div></div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="terminal" class="m-0 flex min-h-0 flex-1 flex-col">
+          <Card class="flex min-h-[28rem] flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
+            <CardHeader class="border-b px-4 py-0">
+              <div class="flex h-11 min-w-0 items-center gap-5 overflow-x-auto" role="tablist" aria-label="Project terminal sessions">
+                <div
+                  v-for="tab in projectTerminalTabs"
+                  :key="tab.id"
+                  class="flex h-11 shrink-0 items-center border-b-2 border-transparent text-muted-foreground"
+                  :class="selectedProjectTerminalTabID === tab.id ? '!border-primary text-primary' : 'hover:text-foreground'"
+                >
+                  <button type="button" role="tab" class="h-full text-sm" :aria-selected="selectedProjectTerminalTabID === tab.id" @click="selectedProjectTerminalTabID = tab.id">{{ tab.name }}</button>
+                  <button type="button" class="ml-1 rounded-sm p-1 hover:bg-muted hover:text-foreground" :aria-label="`Close ${tab.name}`" @click="closeProjectTerminalTab(tab.id)"><X class="size-3" /></button>
+                </div>
+                <button
+                  type="button"
+                  class="flex h-11 shrink-0 items-center border-b-2 border-transparent px-1 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="New terminal"
+                  :disabled="closingProjectTerminalCount > 0 || projectTerminalTabs.length >= projectTerminalLimit"
+                  :title="projectTerminalTabs.length >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
+                  @click="createProjectTerminalTab"
+                >
+                  <Plus class="size-4" />
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent class="flex min-h-0 flex-1 flex-col p-0">
+              <div v-if="selectedProjectTerminalTab?.error || projectTerminalCleanupError" class="flex items-center justify-between gap-3 border-b px-4 py-2 text-xs text-destructive">
+                <p>{{ selectedProjectTerminalTab?.error ?? projectTerminalCleanupError }}</p>
+                <Button
+                  v-if="projectTerminalCleanupError && failedProjectTerminalCloseCount > 0"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  :disabled="closingProjectTerminalInFlight > 0"
+                  @click="retryProjectTerminalCleanup"
+                >
+                  Retry cleanup
+                </Button>
+              </div>
+              <InteractiveTerminal
+                v-for="tab in projectTerminalTabs"
+                :key="`${project.id}:${tab.id}`"
+                v-show="selectedProjectTerminalTabID === tab.id"
+                :active="selectedProjectTerminalTabID === tab.id"
+                :session="tab.session"
+                :aria-label="`${project.name} ${tab.name.toLowerCase()}`"
+                class="min-h-0 flex-1"
+                @error="reportProjectTerminalError(tab.id, $event)"
+              />
             </CardContent>
           </Card>
         </TabsContent>

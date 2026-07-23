@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goforj/harbor/desktop/internal/desktopwire"
 	"github.com/goforj/harbor/desktop/internal/networkprerequisite"
+	"github.com/goforj/harbor/desktop/internal/projectterminal"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
@@ -110,6 +113,64 @@ type fakeControlClient struct {
 	done                         chan struct{}
 	closeOnce                    sync.Once
 	closeCount                   atomic.Int32
+}
+
+// fakeProjectTerminalManager records the narrow desktop PTY calls without launching a shell.
+type fakeProjectTerminalManager struct {
+	startDirectory string
+	startRows      uint16
+	startColumns   uint16
+	startSessionID string
+	startErr       error
+	attachSession  string
+	writeSessionID string
+	writeData      []byte
+	resizeSession  string
+	resizeRows     uint16
+	resizeColumns  uint16
+	closeSessionID string
+	closeErr       error
+	closeAllCount  int
+}
+
+// Start records one trusted project directory and initial grid.
+func (manager *fakeProjectTerminalManager) Start(directory string, rows, columns uint16) (string, error) {
+	manager.startDirectory = directory
+	manager.startRows = rows
+	manager.startColumns = columns
+	return manager.startSessionID, manager.startErr
+}
+
+// Attach records the exact opaque session whose output may begin.
+func (manager *fakeProjectTerminalManager) Attach(sessionID string) error {
+	manager.attachSession = sessionID
+	return nil
+}
+
+// Write records one opaque session input frame.
+func (manager *fakeProjectTerminalManager) Write(sessionID string, data []byte) error {
+	manager.writeSessionID = sessionID
+	manager.writeData = append([]byte(nil), data...)
+	return nil
+}
+
+// Resize records one opaque session grid.
+func (manager *fakeProjectTerminalManager) Resize(sessionID string, rows, columns uint16) error {
+	manager.resizeSession = sessionID
+	manager.resizeRows = rows
+	manager.resizeColumns = columns
+	return nil
+}
+
+// Close records the exact opaque session selected by the renderer.
+func (manager *fakeProjectTerminalManager) Close(sessionID string) error {
+	manager.closeSessionID = sessionID
+	return manager.closeErr
+}
+
+// CloseAll records desktop shutdown ownership.
+func (manager *fakeProjectTerminalManager) CloseAll() {
+	manager.closeAllCount++
 }
 
 // fakeNetworkSetupApprovalRunner records one exact setup selection and returns its configured bounded outcome.
@@ -1430,6 +1491,124 @@ func TestAppExportedReadsRequireAndUseCurrentConnection(t *testing.T) {
 	}
 	if _, err := app.Snapshot(); err == nil || !strings.Contains(err.Error(), "snapshot failed") {
 		t.Fatalf("Snapshot() error = %v, want wrapped failure", err)
+	}
+}
+
+// TestProjectTerminalUsesFreshRegisteredPathAndOpaqueSessionOperations proves JS cannot select a cwd or process.
+func TestProjectTerminalUsesFreshRegisteredPathAndOpaqueSessionOperations(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	terminalID := "terminal-" + strings.Repeat("a", 32)
+	manager := &fakeProjectTerminalManager{startSessionID: terminalID}
+	app.terminals = manager
+	project := client.snapshot.Projects[0]
+
+	started, err := app.StartProjectTerminal(string(project.ID), 117, 31)
+	if err != nil {
+		t.Fatalf("StartProjectTerminal() error = %v", err)
+	}
+	if started.SessionID != terminalID {
+		t.Fatalf("StartProjectTerminal() session ID = %q", started.SessionID)
+	}
+	if manager.startDirectory != project.Path || manager.startRows != 31 || manager.startColumns != 117 {
+		t.Fatalf(
+			"terminal start = directory %q, rows %d, columns %d",
+			manager.startDirectory,
+			manager.startRows,
+			manager.startColumns,
+		)
+	}
+	if err := app.AttachProjectTerminal(started.SessionID); err != nil {
+		t.Fatalf("AttachProjectTerminal() error = %v", err)
+	}
+
+	if err := app.WriteProjectTerminal(started.SessionID, "pwd\r"); err != nil {
+		t.Fatalf("WriteProjectTerminal() error = %v", err)
+	}
+	if err := app.ResizeProjectTerminal(started.SessionID, 120, 40); err != nil {
+		t.Fatalf("ResizeProjectTerminal() error = %v", err)
+	}
+	if err := app.CloseProjectTerminal(started.SessionID); err != nil {
+		t.Fatalf("CloseProjectTerminal() error = %v", err)
+	}
+	if manager.writeSessionID != started.SessionID || string(manager.writeData) != "pwd\r" {
+		t.Fatalf("terminal write = session %q, data %q", manager.writeSessionID, manager.writeData)
+	}
+	if manager.attachSession != started.SessionID {
+		t.Fatalf("terminal attach session = %q", manager.attachSession)
+	}
+	if manager.resizeSession != started.SessionID || manager.resizeRows != 40 || manager.resizeColumns != 120 {
+		t.Fatalf(
+			"terminal resize = session %q, rows %d, columns %d",
+			manager.resizeSession,
+			manager.resizeRows,
+			manager.resizeColumns,
+		)
+	}
+	if manager.closeSessionID != started.SessionID {
+		t.Fatalf("terminal close session = %q", manager.closeSessionID)
+	}
+}
+
+// TestProjectTerminalRejectsUnknownProjectsBeforePTYLaunch keeps cwd authority in the daemon snapshot.
+func TestProjectTerminalRejectsUnknownProjectsBeforePTYLaunch(t *testing.T) {
+	t.Parallel()
+
+	app, _ := connectedTestApp()
+	manager := &fakeProjectTerminalManager{startSessionID: "terminal-unexpected"}
+	app.terminals = manager
+
+	if _, err := app.StartProjectTerminal("unknown-project", 80, 24); err == nil || !strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("StartProjectTerminal() error = %v, want unknown project", err)
+	}
+	if manager.startDirectory != "" {
+		t.Fatalf("terminal start directory = %q, want no launch", manager.startDirectory)
+	}
+}
+
+// TestCloseProjectTerminalIsIdempotent lets renderer cleanup reconcile an already-released native session.
+func TestCloseProjectTerminalIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	manager := &fakeProjectTerminalManager{closeErr: projectterminal.ErrSessionNotFound}
+	app.terminals = manager
+
+	if err := app.CloseProjectTerminal("terminal-expired"); err != nil {
+		t.Fatalf("CloseProjectTerminal() error = %v, want idempotent success", err)
+	}
+	manager.closeErr = errors.New("close failed")
+	if err := app.CloseProjectTerminal("terminal-live"); err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("CloseProjectTerminal() error = %v, want close failure", err)
+	}
+}
+
+// TestProjectTerminalEventsPreserveRawPTYBytes proves JSON text never corrupts split UTF-8 or binary output.
+func TestProjectTerminalEventsPreserveRawPTYBytes(t *testing.T) {
+	t.Parallel()
+
+	app := testApp()
+	app.ctx = context.Background()
+	emitted := make(chan desktopwire.ProjectTerminalEvent, 1)
+	app.events = desktopwire.NewEmitter(func(_ context.Context, name string, values ...interface{}) {
+		if name == desktopwire.ProjectTerminalEventName {
+			emitted <- values[0].(desktopwire.ProjectTerminalEvent)
+		}
+	})
+	data := []byte{0xf0, 0x9f, 0x8c}
+
+	app.emitProjectTerminal(projectterminal.Event{
+		SessionID: "terminal-" + strings.Repeat("b", 32),
+		Data:      data,
+	})
+
+	event := <-emitted
+	if event.Kind != desktopwire.ProjectTerminalOutput {
+		t.Fatalf("terminal event kind = %q", event.Kind)
+	}
+	if event.DataBase64 != base64.StdEncoding.EncodeToString(data) {
+		t.Fatalf("terminal event data = %q", event.DataBase64)
 	}
 }
 

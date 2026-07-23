@@ -43,12 +43,18 @@ describe('Harbor mock bridge', () => {
       setup_network: 'SetupNetwork',
       start_project: 'StartProject',
       restart_project: 'RestartProject',
+      start_project_terminal: 'StartProjectTerminal',
+      attach_project_terminal: 'AttachProjectTerminal',
+      write_project_terminal: 'WriteProjectTerminal',
+      resize_project_terminal: 'ResizeProjectTerminal',
+      close_project_terminal: 'CloseProjectTerminal',
       status: 'Status',
       stop_project: 'StopProject',
     })
     expect(harborWireFixture.events).toEqual({
       connection: 'harbor:connection',
       snapshot: 'harbor:snapshot',
+      project_terminal: 'harbor:project-terminal',
     })
     expect(harborWireFixture.terminal_operation).toMatchObject({
       state: 'failed',

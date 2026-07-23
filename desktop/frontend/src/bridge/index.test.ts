@@ -200,7 +200,7 @@ describe('Harbor bridge selection', () => {
     expect(AddProject).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the authoritative native bridge when additive service-log bindings are absent', async () => {
+  it('keeps the authoritative native bridge when additive service-log and terminal bindings are absent', async () => {
     installAppBindings()
     installEventRuntime()
 
@@ -209,6 +209,11 @@ describe('Harbor bridge selection', () => {
     expect(selection.mode).toBe('native')
     await expect(selection.bridge.getSnapshot()).resolves.toMatchObject({ sequence: 7 })
     await expect(selection.bridge.getServiceLogs('orders-api', '', 'mysql', 0)).rejects.toThrow('Service log bindings are not available')
+    await expect(selection.bridge.startProjectTerminal('orders-api', 80, 24)).rejects.toThrow('Interactive terminal bindings are not available')
+    await expect(selection.bridge.attachProjectTerminal('terminal-unknown')).rejects.toThrow('Interactive terminal bindings are not available')
+    await expect(selection.bridge.writeProjectTerminal('terminal-unknown', 'pwd\r')).rejects.toThrow('Interactive terminal bindings are not available')
+    await expect(selection.bridge.resizeProjectTerminal('terminal-unknown', 80, 24)).rejects.toThrow('Interactive terminal bindings are not available')
+    await expect(selection.bridge.closeProjectTerminal('terminal-unknown')).rejects.toThrow('Interactive terminal bindings are not available')
   })
 
   it('subscribes to authoritative snapshot payloads and cancels the exact Wails listener', () => {
@@ -232,6 +237,18 @@ describe('Harbor bridge selection', () => {
     unsubscribe()
 
     expect(EventsOn).toHaveBeenCalledWith('harbor:connection', listener)
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('subscribes to session-scoped project terminal events', () => {
+    installAppBindings()
+    const { cancel, EventsOn } = installEventRuntime()
+    const listener = vi.fn()
+
+    const unsubscribe = selectHarborBridge(false).bridge.subscribeProjectTerminal(listener)
+    unsubscribe()
+
+    expect(EventsOn).toHaveBeenCalledWith('harbor:project-terminal', listener)
     expect(cancel).toHaveBeenCalledOnce()
   })
 })

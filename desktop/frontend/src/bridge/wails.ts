@@ -14,11 +14,16 @@ interface WailsRuntime extends WailsRuntimeEvents {
 type ReadyWailsRuntime = Partial<WailsRuntime> & WailsRuntimeEvents
 
 interface AdditiveWailsAppBindings {
+  AttachProjectTerminal(sessionId: string): ReturnType<HarborBridge['attachProjectTerminal']>
+  CloseProjectTerminal(sessionId: string): ReturnType<HarborBridge['closeProjectTerminal']>
   OpenTerminalURL(url: string): ReturnType<HarborBridge['openTerminalURL']>
   RemoveOldNetworking(): ReturnType<HarborBridge['removeOldNetworking']>
+  ResizeProjectTerminal(sessionId: string, columns: number, rows: number): ReturnType<HarborBridge['resizeProjectTerminal']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
+  StartProjectTerminal(projectId: string, columns: number, rows: number): ReturnType<HarborBridge['startProjectTerminal']>
   ResourceIconURL(projectId: string, resourceId: string): ReturnType<HarborBridge['getResourceIconURL']>
   WaitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): ReturnType<HarborBridge['waitServiceLogs']>
+  WriteProjectTerminal(sessionId: string, data: string): ReturnType<HarborBridge['writeProjectTerminal']>
 }
 
 type AvailableWailsAppBindings = Partial<WailsAppBindings> & Partial<AdditiveWailsAppBindings>
@@ -81,6 +86,11 @@ export function createWailsBridge(): HarborBridge {
   const startProject = app?.StartProject
   const stopProject = app?.StopProject
   const restartProject = app?.RestartProject
+  const startProjectTerminal = app?.StartProjectTerminal
+  const attachProjectTerminal = app?.AttachProjectTerminal
+  const writeProjectTerminal = app?.WriteProjectTerminal
+  const resizeProjectTerminal = app?.ResizeProjectTerminal
+  const closeProjectTerminal = app?.CloseProjectTerminal
   if (typeof addProject !== 'function'
     || typeof approveProjectRemoval !== 'function'
     || typeof confirmProjectRuntimeRepair !== 'function'
@@ -127,11 +137,29 @@ export function createWailsBridge(): HarborBridge {
     startProject: (projectId, intentId) => startProject(projectId, intentId),
     stopProject: (projectId, intentId) => stopProject(projectId, intentId),
     restartProject: (projectId, intentId) => restartProject(projectId, intentId),
+    startProjectTerminal: typeof startProjectTerminal === 'function'
+      ? (projectId, columns, rows) => startProjectTerminal(projectId, columns, rows)
+      : () => Promise.reject(new Error('Interactive terminal bindings are not available in this desktop build.')),
+    attachProjectTerminal: typeof attachProjectTerminal === 'function'
+      ? (sessionId) => attachProjectTerminal(sessionId)
+      : () => Promise.reject(new Error('Interactive terminal bindings are not available in this desktop build.')),
+    writeProjectTerminal: typeof writeProjectTerminal === 'function'
+      ? (sessionId, data) => writeProjectTerminal(sessionId, data)
+      : () => Promise.reject(new Error('Interactive terminal bindings are not available in this desktop build.')),
+    resizeProjectTerminal: typeof resizeProjectTerminal === 'function'
+      ? (sessionId, columns, rows) => resizeProjectTerminal(sessionId, columns, rows)
+      : () => Promise.reject(new Error('Interactive terminal bindings are not available in this desktop build.')),
+    closeProjectTerminal: typeof closeProjectTerminal === 'function'
+      ? (sessionId) => closeProjectTerminal(sessionId)
+      : () => Promise.reject(new Error('Interactive terminal bindings are not available in this desktop build.')),
     subscribe(listener) {
       return subscribeWailsEvent(runtime, harborWireFixture.events.snapshot, listener)
     },
     subscribeConnection(listener) {
       return subscribeWailsEvent(runtime, harborWireFixture.events.connection, listener)
+    },
+    subscribeProjectTerminal(listener) {
+      return subscribeWailsEvent(runtime, harborWireFixture.events.project_terminal, listener)
     },
   }
 }

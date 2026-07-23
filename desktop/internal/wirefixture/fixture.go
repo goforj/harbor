@@ -34,14 +34,20 @@ type MethodMetadata struct {
 	Snapshot                    string `json:"snapshot"`
 	StartProject                string `json:"start_project"`
 	RestartProject              string `json:"restart_project"`
+	StartProjectTerminal        string `json:"start_project_terminal"`
+	AttachProjectTerminal       string `json:"attach_project_terminal"`
+	WriteProjectTerminal        string `json:"write_project_terminal"`
+	ResizeProjectTerminal       string `json:"resize_project_terminal"`
+	CloseProjectTerminal        string `json:"close_project_terminal"`
 	Status                      string `json:"status"`
 	StopProject                 string `json:"stop_project"`
 }
 
 // EventMetadata records the Wails event names consumed by the bridge.
 type EventMetadata struct {
-	Connection string `json:"connection"`
-	Snapshot   string `json:"snapshot"`
+	Connection      string `json:"connection"`
+	Snapshot        string `json:"snapshot"`
+	ProjectTerminal string `json:"project_terminal"`
 }
 
 // ConnectionPayloads exercises every typed connection event variant.
@@ -72,6 +78,9 @@ type Document struct {
 	StartProject                      control.ProjectLifecycleOperation               `json:"start_project"`
 	StopProject                       control.ProjectLifecycleOperation               `json:"stop_project"`
 	RestartProject                    control.ProjectLifecycleOperation               `json:"restart_project"`
+	ProjectTerminalStarted            desktopwire.ProjectTerminalStarted              `json:"project_terminal_started"`
+	ProjectTerminalOutput             desktopwire.ProjectTerminalEvent                `json:"project_terminal_output"`
+	ProjectTerminalExited             desktopwire.ProjectTerminalEvent                `json:"project_terminal_exited"`
 	TerminalOperation                 domain.Operation                                `json:"terminal_operation"`
 }
 
@@ -107,12 +116,18 @@ func Fixture() Document {
 			Snapshot:                    desktopwire.MethodSnapshot,
 			StartProject:                desktopwire.MethodStartProject,
 			RestartProject:              desktopwire.MethodRestartProject,
+			StartProjectTerminal:        desktopwire.MethodStartProjectTerminal,
+			AttachProjectTerminal:       desktopwire.MethodAttachProjectTerminal,
+			WriteProjectTerminal:        desktopwire.MethodWriteProjectTerminal,
+			ResizeProjectTerminal:       desktopwire.MethodResizeProjectTerminal,
+			CloseProjectTerminal:        desktopwire.MethodCloseProjectTerminal,
 			Status:                      desktopwire.MethodStatus,
 			StopProject:                 desktopwire.MethodStopProject,
 		},
 		Events: EventMetadata{
-			Connection: desktopwire.ConnectionEventName,
-			Snapshot:   desktopwire.SnapshotEventName,
+			Connection:      desktopwire.ConnectionEventName,
+			Snapshot:        desktopwire.SnapshotEventName,
+			ProjectTerminal: desktopwire.ProjectTerminalEventName,
 		},
 		ConnectionPayloads: ConnectionPayloads{
 			Connecting:   desktopwire.ConnectionEvent{State: desktopwire.ConnectionConnecting},
@@ -376,6 +391,18 @@ func Fixture() Document {
 			},
 			Revision: 45,
 		},
+		ProjectTerminalStarted: desktopwire.ProjectTerminalStarted{
+			SessionID: "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		ProjectTerminalOutput: desktopwire.ProjectTerminalEvent{
+			SessionID:  "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Kind:       desktopwire.ProjectTerminalOutput,
+			DataBase64: "cmVhZHkNCg==",
+		},
+		ProjectTerminalExited: desktopwire.ProjectTerminalEvent{
+			SessionID: "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Kind:      desktopwire.ProjectTerminalExited,
+		},
 		TerminalOperation: domain.Operation{
 			ID:          "operation-terminal",
 			IntentID:    "intent-terminal",
@@ -458,6 +485,11 @@ func (document Document) Validate() error {
 		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
 		desktopwire.MethodStartProject:                document.Methods.StartProject,
 		desktopwire.MethodRestartProject:              document.Methods.RestartProject,
+		desktopwire.MethodStartProjectTerminal:        document.Methods.StartProjectTerminal,
+		desktopwire.MethodAttachProjectTerminal:       document.Methods.AttachProjectTerminal,
+		desktopwire.MethodWriteProjectTerminal:        document.Methods.WriteProjectTerminal,
+		desktopwire.MethodResizeProjectTerminal:       document.Methods.ResizeProjectTerminal,
+		desktopwire.MethodCloseProjectTerminal:        document.Methods.CloseProjectTerminal,
 		desktopwire.MethodStatus:                      document.Methods.Status,
 		desktopwire.MethodStopProject:                 document.Methods.StopProject,
 	}
@@ -472,8 +504,9 @@ func (document Document) Validate() error {
 	}
 
 	events := map[string]string{
-		desktopwire.ConnectionEventName: document.Events.Connection,
-		desktopwire.SnapshotEventName:   document.Events.Snapshot,
+		desktopwire.ConnectionEventName:      document.Events.Connection,
+		desktopwire.SnapshotEventName:        document.Events.Snapshot,
+		desktopwire.ProjectTerminalEventName: document.Events.ProjectTerminal,
 	}
 	eventContracts := desktopwire.EventContracts()
 	if len(events) != len(eventContracts) {
@@ -559,6 +592,15 @@ func (document Document) Validate() error {
 	if err := document.RestartProject.Validate(); err != nil {
 		return fmt.Errorf("validate fixture project restart: %w", err)
 	}
+	if err := document.ProjectTerminalStarted.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project terminal start: %w", err)
+	}
+	if err := document.ProjectTerminalOutput.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project terminal output: %w", err)
+	}
+	if err := document.ProjectTerminalExited.Validate(); err != nil {
+		return fmt.Errorf("validate fixture project terminal exit: %w", err)
+	}
 	if err := document.TerminalOperation.Validate(); err != nil {
 		return fmt.Errorf("validate fixture terminal operation: %w", err)
 	}
@@ -582,7 +624,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -682,10 +724,16 @@ func typeScriptType(goType reflect.Type) (string, error) {
 		return "string", nil
 	case reflect.TypeFor[uint64]():
 		return "number", nil
+	case reflect.TypeFor[uint16]():
+		return "number", nil
 	case reflect.TypeFor[desktopwire.AddProjectResult]():
 		return "AddProjectResult", nil
 	case reflect.TypeFor[desktopwire.ConnectionEvent]():
 		return "ConnectionEvent", nil
+	case reflect.TypeFor[desktopwire.ProjectTerminalStarted]():
+		return "ProjectTerminalStarted", nil
+	case reflect.TypeFor[desktopwire.ProjectTerminalEvent]():
+		return "ProjectTerminalEvent", nil
 	case reflect.TypeFor[control.DaemonStatus]():
 		return "DaemonStatus", nil
 	case reflect.TypeFor[control.ProjectUnregistration]():

@@ -9,8 +9,36 @@ import type { ProjectLifecycleOperation, ProjectRuntimeRepairInspection } from '
 import { useHarborStore } from '@/stores/harbor'
 import ProjectView from './ProjectView.vue'
 
-afterEach(() => {
+const terminalSessions = vi.hoisted(() => {
+  const sessions: Array<{ close: ReturnType<typeof vi.fn> }> = []
+
+  class ProjectTerminalSession {
+    readonly close = vi.fn()
+
+    constructor() {
+      sessions.push(this)
+    }
+  }
+
+  return { ProjectTerminalSession, sessions }
+})
+
+vi.mock('@/components/harbor/InteractiveTerminal.vue', () => ({
+  default: {
+    name: 'InteractiveTerminal',
+    props: ['session'],
+    template: '<div data-testid="interactive-terminal" />',
+  },
+}))
+
+vi.mock('@/lib/projectTerminalSession', () => ({
+  ProjectTerminalSession: terminalSessions.ProjectTerminalSession,
+}))
+
+afterEach(async () => {
   delete window.runtime
+  await flushPromises()
+  terminalSessions.sessions.length = 0
 })
 
 interface MountedProjectView {
@@ -58,7 +86,9 @@ async function mountRecoveryProject(): Promise<MountedProjectView> {
   await router.isReady()
   const wrapper = mount(ProjectView, {
     attachTo: document.body,
-    global: { plugins: [pinia, router] },
+    global: {
+      plugins: [pinia, router],
+    },
   })
   await flushPromises()
   return { pinia, router, store, wrapper }
@@ -81,7 +111,9 @@ async function mountProject(projectId = 'orders-api'): Promise<MountedProjectVie
   await router.isReady()
   const wrapper = mount(ProjectView, {
     attachTo: document.body,
-    global: { plugins: [pinia, router] },
+    global: {
+      plugins: [pinia, router],
+    },
   })
   await flushPromises()
   return { pinia, router, store, wrapper }
@@ -306,12 +338,170 @@ describe('ProjectView service connections', () => {
   })
 })
 
+describe('ProjectView interactive terminal', () => {
+  it('creates independent named terminal tabs, switches between their mounted emulators, and closes one shell at a time', async () => {
+    const { wrapper } = await mountProject('orders-api')
+
+    expect(wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(false)
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Terminal 1')
+    expect(terminalSessions.sessions).toHaveLength(1)
+
+    const newTerminal = wrapper.get('button[aria-label="New terminal"]')
+    await newTerminal.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Terminal 2')
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(2)
+    expect(terminalSessions.sessions).toHaveLength(2)
+
+    const terminalOne = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Terminal 1')
+    if (!terminalOne) throw new Error('Terminal 1 tab is missing')
+    await terminalOne.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(terminalOne.attributes('aria-selected')).toBe('true')
+
+    await wrapper.get('button[aria-label="Close Terminal 1"]').trigger('click')
+    await flushPromises()
+    expect(terminalSessions.sessions[0]?.close).toHaveBeenCalledOnce()
+    expect(terminalSessions.sessions[1]?.close).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('Terminal 1')
+
+    wrapper.unmount()
+  })
+
+  it('closes every terminal shell when leaving the terminal surface or project', async () => {
+    const { router, wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.get('button[aria-label="New terminal"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(terminalSessions.sessions).toHaveLength(2)
+
+    await detailTab(wrapper, 'Overview').trigger('mousedown', { button: 0 })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(false)
+    expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 1)).toBe(true)
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(true)
+    await router.push('/projects')
+    await router.isReady()
+    await flushPromises()
+    expect(terminalSessions.sessions[2]?.close).toHaveBeenCalledOnce()
+  })
+
+  it('prevents the UI from exceeding the desktop terminal session limit', async () => {
+    const { wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    const newTerminal = wrapper.get('button[aria-label="New terminal"]')
+    for (let index = 1; index < 8; index += 1) {
+      await newTerminal.trigger('click')
+    }
+    await wrapper.vm.$nextTick()
+
+    expect(terminalSessions.sessions).toHaveLength(8)
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(8)
+    expect(newTerminal.attributes('disabled')).toBeDefined()
+    expect(newTerminal.attributes('title')).toBe('Close a terminal tab before opening another.')
+
+    wrapper.unmount()
+  })
+
+  it('waits for a closing shell to release its backend slot before allowing a replacement', async () => {
+    const pendingClose = deferred<void>()
+    const { wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    const newTerminal = wrapper.get('button[aria-label="New terminal"]')
+    for (let index = 1; index < 8; index += 1) {
+      await newTerminal.trigger('click')
+    }
+    terminalSessions.sessions[0]?.close.mockReturnValue(pendingClose.promise)
+
+    await wrapper.get('button[aria-label="Close Terminal 1"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(newTerminal.attributes('disabled')).toBeDefined()
+    await newTerminal.trigger('click')
+    expect(terminalSessions.sessions).toHaveLength(8)
+
+    pendingClose.resolve(undefined)
+    await flushPromises()
+    expect(newTerminal.attributes('disabled')).toBeUndefined()
+    await newTerminal.trigger('click')
+    expect(terminalSessions.sessions).toHaveLength(9)
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(8)
+
+    wrapper.unmount()
+  })
+
+  it('retains a failed close reservation until terminal cleanup is retried', async () => {
+    const { wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    const newTerminal = wrapper.get('button[aria-label="New terminal"]')
+    for (let index = 1; index < 8; index += 1) {
+      await newTerminal.trigger('click')
+    }
+    terminalSessions.sessions[0]?.close
+      .mockRejectedValueOnce(new Error('desktop transport closed'))
+      .mockResolvedValueOnce(undefined)
+
+    await wrapper.get('button[aria-label="Close Terminal 1"]').trigger('click')
+    await flushPromises()
+    expect(newTerminal.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('desktop transport closed')
+
+    const retryCleanup = wrapper.findAll('button').find((button) => button.text() === 'Retry cleanup')
+    if (!retryCleanup) throw new Error('Retry cleanup action is missing')
+    await retryCleanup.trigger('click')
+    await flushPromises()
+
+    expect(terminalSessions.sessions[0]?.close).toHaveBeenCalledTimes(2)
+    expect(newTerminal.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('desktop transport closed')
+
+    wrapper.unmount()
+  })
+
+  it('shares failed cleanup reservations with the next project view instance', async () => {
+    const first = await mountProject('orders-api')
+
+    await detailTab(first.wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    terminalSessions.sessions[0]?.close
+      .mockRejectedValueOnce(new Error('desktop transport closed'))
+      .mockResolvedValueOnce(undefined)
+    await first.wrapper.get('button[aria-label="Close Terminal 1"]').trigger('click')
+    await flushPromises()
+    expect(terminalSessions.sessions[0]?.close).toHaveBeenCalledOnce()
+    first.wrapper.unmount()
+
+    const second = await mountProject('orders-api')
+    await detailTab(second.wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await second.wrapper.vm.$nextTick()
+    expect(terminalSessions.sessions).toHaveLength(1)
+    expect(second.wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(false)
+
+    await new Promise((resolve) => window.setTimeout(resolve, 550))
+    await flushPromises()
+
+    expect(terminalSessions.sessions[0]?.close).toHaveBeenCalledTimes(2)
+    expect(terminalSessions.sessions).toHaveLength(2)
+    expect(second.wrapper.find('[data-testid="interactive-terminal"]').exists()).toBe(true)
+    second.wrapper.unmount()
+  })
+})
+
 describe('ProjectView stale runtime recovery', () => {
   it('keeps project detail content in compact, task-focused tabs', async () => {
     const { wrapper } = await mountRecoveryProject()
 
     const tabLabels = wrapper.findAll('[role="tab"]').map((tab) => tab.text().replace(/\s+\d+$/, ''))
-    expect(tabLabels).toEqual(['Overview', 'Development output', 'Connect', 'Services', 'Resources'])
+    expect(tabLabels).toEqual(['Overview', 'Development output', 'Terminal', 'Connect', 'Services', 'Resources'])
     expect(wrapper.text()).toContain('Apps')
     expect(wrapper.text()).not.toContain('Reported services for this project.')
 

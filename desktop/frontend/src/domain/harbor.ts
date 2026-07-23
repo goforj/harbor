@@ -6,6 +6,18 @@ export interface ConnectionEvent {
   state: ConnectionState
 }
 
+export interface ProjectTerminalStarted {
+  session_id: string
+}
+
+export interface ProjectTerminalEvent {
+  session_id: string
+  kind: 'output' | 'exited'
+  data_base64?: string
+  error?: string
+  dropped?: boolean
+}
+
 export type ProjectState =
   | 'stopped'
   | 'starting'

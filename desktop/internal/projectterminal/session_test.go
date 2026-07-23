@@ -52,6 +52,7 @@ func TestTerminalEnvironmentExcludesHarborState(t *testing.T) {
 	t.Setenv("HARBOR_SESSION_TICKET", "secret")
 	t.Setenv("DYLD_INSERT_LIBRARIES", "/tmp/injected.dylib")
 	t.Setenv("MANAGED_SESSION_TOKEN", "secret")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
 	t.Setenv("LANG", "en_US.UTF-8")
 	t.Setenv("LC_CTYPE", "UTF-8")
 	t.Setenv("TERM", "unsafe")
@@ -66,7 +67,7 @@ func TestTerminalEnvironmentExcludesHarborState(t *testing.T) {
 	if environment["PATH"] != "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" {
 		t.Fatalf("PATH = %q, want fixed terminal path", environment["PATH"])
 	}
-	for _, name := range []string{"HARBOR_SESSION_TICKET", "DYLD_INSERT_LIBRARIES", "MANAGED_SESSION_TOKEN"} {
+	for _, name := range []string{"HARBOR_SESSION_TICKET", "DYLD_INSERT_LIBRARIES", "MANAGED_SESSION_TOKEN", "SSH_AUTH_SOCK"} {
 		if _, found := environment[name]; found {
 			t.Fatalf("terminal environment unexpectedly includes %s", name)
 		}

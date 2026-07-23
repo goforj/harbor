@@ -3,8 +3,11 @@ package desktopwire
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
@@ -45,6 +48,16 @@ const (
 	MethodStopProject = "StopProject"
 	// MethodRestartProject is the generated Wails method that replaces one registered project session.
 	MethodRestartProject = "RestartProject"
+	// MethodStartProjectTerminal is the generated Wails method that opens one interactive project shell.
+	MethodStartProjectTerminal = "StartProjectTerminal"
+	// MethodAttachProjectTerminal is the generated Wails method that begins one interactive project shell's output.
+	MethodAttachProjectTerminal = "AttachProjectTerminal"
+	// MethodWriteProjectTerminal is the generated Wails method that writes input to one interactive project shell.
+	MethodWriteProjectTerminal = "WriteProjectTerminal"
+	// MethodResizeProjectTerminal is the generated Wails method that resizes one interactive project shell.
+	MethodResizeProjectTerminal = "ResizeProjectTerminal"
+	// MethodCloseProjectTerminal is the generated Wails method that closes one interactive project shell.
+	MethodCloseProjectTerminal = "CloseProjectTerminal"
 	// MethodSnapshot is the generated Wails method that returns complete desktop-visible state.
 	MethodSnapshot = "Snapshot"
 	// MethodStatus is the generated Wails method that returns the daemon diagnostic.
@@ -53,12 +66,98 @@ const (
 	ConnectionEventName = "harbor:connection"
 	// SnapshotEventName carries validated complete replacement snapshots.
 	SnapshotEventName = "harbor:snapshot"
+	// ProjectTerminalEventName carries output and exit events for desktop-owned interactive project shells.
+	ProjectTerminalEventName       = "harbor:project-terminal"
+	projectTerminalSessionIDPrefix = "terminal-"
+	projectTerminalSessionIDBytes  = 16
+	projectTerminalOutputBytes     = 32 * 1024
+	projectTerminalErrorBytes      = 512
 )
 
 // AddProjectResult distinguishes a dismissed native picker from a completed daemon registration.
 type AddProjectResult struct {
 	Canceled     bool                         `json:"canceled"`
 	Registration *control.ProjectRegistration `json:"registration,omitempty"`
+}
+
+// ProjectTerminalStarted identifies the desktop-owned shell created for one project.
+type ProjectTerminalStarted struct {
+	SessionID string `json:"session_id"`
+}
+
+// Validate reports whether the started terminal has an opaque session identity.
+func (started ProjectTerminalStarted) Validate() error {
+	return validateProjectTerminalSessionID(started.SessionID)
+}
+
+// ProjectTerminalEventKind identifies one terminal stream event.
+type ProjectTerminalEventKind string
+
+const (
+	// ProjectTerminalOutput carries one base64-encoded PTY output frame.
+	ProjectTerminalOutput ProjectTerminalEventKind = "output"
+	// ProjectTerminalExited reports that the PTY shell has exited.
+	ProjectTerminalExited ProjectTerminalEventKind = "exited"
+)
+
+// ProjectTerminalEvent carries one session-scoped PTY output or exit event.
+type ProjectTerminalEvent struct {
+	SessionID  string                   `json:"session_id"`
+	Kind       ProjectTerminalEventKind `json:"kind"`
+	DataBase64 string                   `json:"data_base64,omitempty"`
+	Error      string                   `json:"error,omitempty"`
+	Dropped    bool                     `json:"dropped,omitempty"`
+}
+
+// Validate reports whether the terminal event contains exactly the payload for its kind.
+func (event ProjectTerminalEvent) Validate() error {
+	if err := validateProjectTerminalSessionID(event.SessionID); err != nil {
+		return err
+	}
+	switch event.Kind {
+	case ProjectTerminalOutput:
+		if event.DataBase64 == "" {
+			return fmt.Errorf("project terminal output data is required")
+		}
+		if len(event.DataBase64) > base64.StdEncoding.EncodedLen(projectTerminalOutputBytes) {
+			return fmt.Errorf("project terminal output exceeds %d bytes", projectTerminalOutputBytes)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(event.DataBase64)
+		if err != nil {
+			return fmt.Errorf("decode project terminal output: %w", err)
+		}
+		if len(decoded) > projectTerminalOutputBytes {
+			return fmt.Errorf("project terminal output exceeds %d bytes", projectTerminalOutputBytes)
+		}
+		if event.Error != "" {
+			return fmt.Errorf("project terminal output must not contain an exit error")
+		}
+	case ProjectTerminalExited:
+		if event.DataBase64 != "" {
+			return fmt.Errorf("project terminal exit must not contain output data")
+		}
+	default:
+		return fmt.Errorf("unknown project terminal event kind %q", event.Kind)
+	}
+	if len(event.Error) > projectTerminalErrorBytes {
+		return fmt.Errorf("project terminal exit error exceeds %d bytes", projectTerminalErrorBytes)
+	}
+	return nil
+}
+
+// validateProjectTerminalSessionID requires the exact random identity shape created by the PTY manager.
+func validateProjectTerminalSessionID(sessionID string) error {
+	if !strings.HasPrefix(sessionID, projectTerminalSessionIDPrefix) {
+		return fmt.Errorf("project terminal session ID has an invalid prefix")
+	}
+	encoded := strings.TrimPrefix(sessionID, projectTerminalSessionIDPrefix)
+	if len(encoded) != projectTerminalSessionIDBytes*2 {
+		return fmt.Errorf("project terminal session ID has an invalid length")
+	}
+	if _, err := hex.DecodeString(encoded); err != nil {
+		return fmt.Errorf("project terminal session ID is not hexadecimal: %w", err)
+	}
+	return nil
 }
 
 // Validate reports whether the picker outcome contains exactly the state appropriate to its disposition.
@@ -94,6 +193,11 @@ type AppContract interface {
 	Status() (control.DaemonStatus, error)
 	StopProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	RestartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
+	StartProjectTerminal(projectID string, columns uint16, rows uint16) (ProjectTerminalStarted, error)
+	AttachProjectTerminal(sessionID string) error
+	WriteProjectTerminal(sessionID string, data string) error
+	ResizeProjectTerminal(sessionID string, columns uint16, rows uint16) error
+	CloseProjectTerminal(sessionID string) error
 	WaitProjectActivity(projectID string, sessionID string, cursor uint64, waitMilliseconds uint64) (control.ProjectActivity, error)
 	WaitServiceLogs(projectID string, sessionID string, serviceID string, cursor uint64, waitMilliseconds uint64) (control.ServiceLogs, error)
 }
@@ -126,6 +230,11 @@ func MethodContracts() []MethodContract {
 		MethodStatus:                      []string{},
 		MethodStopProject:                 []string{"projectId", "intentId"},
 		MethodRestartProject:              []string{"projectId", "intentId"},
+		MethodStartProjectTerminal:        []string{"projectId", "columns", "rows"},
+		MethodAttachProjectTerminal:       []string{"sessionId"},
+		MethodWriteProjectTerminal:        []string{"sessionId", "data"},
+		MethodResizeProjectTerminal:       []string{"sessionId", "columns", "rows"},
+		MethodCloseProjectTerminal:        []string{"sessionId"},
 		MethodWaitProjectActivity:         []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
 		MethodWaitServiceLogs:             []string{"projectId", "sessionId", "serviceId", "cursor", "waitMilliseconds"},
 	}
@@ -196,6 +305,11 @@ func (emitter Emitter) Snapshot(ctx context.Context, payload domain.Snapshot) {
 	emitter.emit(ctx, SnapshotEventName, payload)
 }
 
+// ProjectTerminal publishes one typed interactive terminal stream payload.
+func (emitter Emitter) ProjectTerminal(ctx context.Context, payload ProjectTerminalEvent) {
+	emitter.emit(ctx, ProjectTerminalEventName, payload)
+}
+
 // EventContract binds one event name to its Go payload and typed emitter method.
 type EventContract struct {
 	Name          string
@@ -208,5 +322,6 @@ func EventContracts() []EventContract {
 	return []EventContract{
 		{Name: ConnectionEventName, EmitterMethod: "Connection", Payload: reflect.TypeFor[ConnectionEvent]()},
 		{Name: SnapshotEventName, EmitterMethod: "Snapshot", Payload: reflect.TypeFor[domain.Snapshot]()},
+		{Name: ProjectTerminalEventName, EmitterMethod: "ProjectTerminal", Payload: reflect.TypeFor[ProjectTerminalEvent]()},
 	}
 }

@@ -4,61 +4,121 @@ package projectterminal
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
 )
 
-// terminate kills every process in the private session created for the terminal.
-func terminate(process *os.Process) {
+// linuxProcessIdentity fences a process tree member against PID reuse.
+type linuxProcessIdentity struct {
+	PID        int
+	ParentPID  int
+	SessionID  int
+	StartTicks string
+}
+
+// terminate kills the exact shell and every descendant visible before signaling.
+func terminate(process *os.Process, expectedBirth string) {
 	if process == nil {
 		return
 	}
 
 	for range 3 {
-		terminateLinuxSession(process.Pid)
+		terminateLinuxTree(process.Pid, expectedBirth)
 	}
-	if err := syscall.Kill(-process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		_ = process.Kill()
+	if current, err := processBirthToken(process.Pid); err == nil && current == expectedBirth {
+		if err := syscall.Kill(process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			_ = process.Kill()
+		}
 	}
 }
 
-// terminateLinuxSession signals each process whose kernel session ID matches leaderPID.
-func terminateLinuxSession(leaderPID int) {
+// processBirthToken returns the kernel start tick for one live Linux PID.
+func processBirthToken(pid int) (string, error) {
+	identity, err := linuxProcessIdentityForPID(pid)
+	if err != nil {
+		return "", err
+	}
+	return identity.StartTicks, nil
+}
+
+// terminateLinuxTree signals birth-checked descendants even when they created another session.
+func terminateLinuxTree(leaderPID int, expectedBirth string) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return
 	}
 
+	processes := make(map[int]linuxProcessIdentity)
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
 			continue
 		}
-		sessionID, err := linuxSessionID(pid)
-		if err != nil || sessionID != leaderPID {
+		identity, err := linuxProcessIdentityForPID(pid)
+		if err != nil {
+			continue
+		}
+		processes[pid] = identity
+	}
+	leader, found := processes[leaderPID]
+	if !found || leader.StartTicks != expectedBirth {
+		return
+	}
+
+	owned := map[int]bool{leaderPID: true}
+	for changed := true; changed; {
+		changed = false
+		for pid, candidate := range processes {
+			if owned[pid] {
+				continue
+			}
+			if owned[candidate.ParentPID] || candidate.SessionID == leaderPID {
+				owned[pid] = true
+				changed = true
+			}
+		}
+	}
+	for pid := range owned {
+		candidate := processes[pid]
+		current, err := linuxProcessIdentityForPID(pid)
+		if err != nil || current.StartTicks != candidate.StartTicks {
 			continue
 		}
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
-// linuxSessionID reads the session field from Linux's proc stat record.
-func linuxSessionID(pid int) (int, error) {
+// linuxProcessIdentityForPID reads ownership fields from Linux's proc stat record.
+func linuxProcessIdentityForPID(pid int) (linuxProcessIdentity, error) {
 	contents, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return 0, err
+		return linuxProcessIdentity{}, err
 	}
 
 	closingName := strings.LastIndex(string(contents), ")")
 	if closingName < 0 {
-		return 0, errors.New("malformed proc stat")
+		return linuxProcessIdentity{}, errors.New("malformed proc stat")
 	}
 	fields := strings.Fields(string(contents)[closingName+1:])
-	if len(fields) < 4 {
-		return 0, errors.New("malformed proc stat")
+	if len(fields) <= 19 {
+		return linuxProcessIdentity{}, errors.New("malformed proc stat")
 	}
 
-	return strconv.Atoi(fields[3])
+	parentPID, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return linuxProcessIdentity{}, fmt.Errorf("parse proc parent PID: %w", err)
+	}
+	sessionID, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return linuxProcessIdentity{}, fmt.Errorf("parse proc session ID: %w", err)
+	}
+	return linuxProcessIdentity{
+		PID:        pid,
+		ParentPID:  parentPID,
+		SessionID:  sessionID,
+		StartTicks: fields[19],
+	}, nil
 }

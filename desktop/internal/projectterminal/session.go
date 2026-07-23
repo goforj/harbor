@@ -2,7 +2,6 @@
 package projectterminal
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -18,9 +17,9 @@ var ErrInvalidSize = errors.New("terminal size must have at least one row and co
 
 // Session owns the pseudo-terminal and login shell started for a project.
 type Session struct {
-	terminal io.ReadWriteCloser
-	process  *os.Process
-	resize   func(rows, columns uint16) error
+	terminal  io.ReadWriteCloser
+	resize    func(rows, columns uint16) error
+	terminate func()
 
 	terminalCloseOnce sync.Once
 	closeOnce         sync.Once
@@ -36,17 +35,12 @@ type Session struct {
 // the canonical spelling prevents a terminal from silently operating in a
 // different checkout through a relative path or symlink.
 func Start(projectDirectory string) (*Session, error) {
-	directory, err := canonicalProjectDirectory(projectDirectory)
-	if err != nil {
-		return nil, err
-	}
-
 	shell, err := loginShell()
 	if err != nil {
 		return nil, err
 	}
 
-	return startPlatform(directory, shell)
+	return startPlatform(projectDirectory, shell)
 }
 
 // Read reads terminal output.
@@ -85,14 +79,13 @@ func (session *Session) Wait() error {
 // retain a child process or file descriptor.
 func (session *Session) Close() error {
 	session.closeOnce.Do(func() {
-		session.closeTerminal()
-
 		session.lifecycleMu.Lock()
 		if !session.exited {
-			terminate(session.process)
+			session.terminate()
 		}
 		session.lifecycleMu.Unlock()
 
+		session.closeTerminal()
 		<-session.done
 	})
 
@@ -100,12 +93,17 @@ func (session *Session) Close() error {
 }
 
 // newSession begins reaping command after its pseudo-terminal has been created.
-func newSession(terminal io.ReadWriteCloser, process *os.Process, wait func() error, resize func(rows, columns uint16) error) *Session {
+func newSession(
+	terminal io.ReadWriteCloser,
+	wait func() error,
+	resize func(rows, columns uint16) error,
+	terminate func(),
+) *Session {
 	session := &Session{
-		terminal: terminal,
-		process:  process,
-		resize:   resize,
-		done:     make(chan struct{}),
+		terminal:  terminal,
+		resize:    resize,
+		terminate: terminate,
+		done:      make(chan struct{}),
 	}
 
 	go func() {
@@ -129,30 +127,49 @@ func (session *Session) closeTerminal() {
 	})
 }
 
-// canonicalProjectDirectory validates a caller's project directory boundary.
-func canonicalProjectDirectory(directory string) (string, error) {
+// openProjectDirectory pins the validated checkout to a directory handle for spawn.
+func openProjectDirectory(directory string) (*os.File, error) {
 	if !filepath.IsAbs(directory) {
-		return "", fmt.Errorf("project directory must be absolute: %q", directory)
+		return nil, fmt.Errorf("project directory must be absolute: %q", directory)
 	}
 
 	cleaned := filepath.Clean(directory)
 	resolved, err := filepath.EvalSymlinks(cleaned)
 	if err != nil {
-		return "", fmt.Errorf("resolve project directory %q: %w", directory, err)
+		return nil, fmt.Errorf("resolve project directory %q: %w", directory, err)
 	}
 	if resolved != cleaned {
-		return "", fmt.Errorf("project directory must be canonical: %q", directory)
+		return nil, fmt.Errorf("project directory must be canonical: %q", directory)
 	}
 
-	info, err := os.Stat(resolved)
+	before, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("stat project directory %q: %w", directory, err)
+		return nil, fmt.Errorf("stat project directory %q: %w", directory, err)
 	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("project directory is not a directory: %q", directory)
+	if !before.IsDir() {
+		return nil, fmt.Errorf("project directory is not a directory: %q", directory)
 	}
 
-	return resolved, nil
+	handle, err := os.Open(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("open project directory %q: %w", directory, err)
+	}
+	handleInfo, err := handle.Stat()
+	if err != nil {
+		_ = handle.Close()
+		return nil, fmt.Errorf("inspect project directory handle %q: %w", directory, err)
+	}
+	after, err := os.Stat(resolved)
+	if err != nil {
+		_ = handle.Close()
+		return nil, fmt.Errorf("recheck project directory %q: %w", directory, err)
+	}
+	if !os.SameFile(before, handleInfo) || !os.SameFile(handleInfo, after) {
+		_ = handle.Close()
+		return nil, fmt.Errorf("project directory changed while opening: %q", directory)
+	}
+
+	return handle, nil
 }
 
 // loginShell resolves the user's account shell without searching PATH.
@@ -172,33 +189,6 @@ func loginShell() (string, error) {
 	}
 
 	return executableShell(shell, "SHELL")
-}
-
-// accountLoginShell returns username's shell from the local account database when present.
-func accountLoginShell(username string) (string, bool, error) {
-	password, err := os.Open("/etc/passwd")
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("open local account database: %w", err)
-	}
-	defer func() { _ = password.Close() }()
-
-	scanner := bufio.NewScanner(password)
-	for scanner.Scan() {
-		fields := strings.Split(scanner.Text(), ":")
-		if len(fields) != 7 || fields[0] != username {
-			continue
-		}
-
-		return fields[6], true, nil
-	}
-	if err := scanner.Err(); err != nil {
-		return "", false, fmt.Errorf("read local account database: %w", err)
-	}
-
-	return "", false, nil
 }
 
 // terminalEnvironment returns only the environment required by an interactive user shell.
@@ -223,7 +213,6 @@ func terminalEnvironment(shell string) []string {
 	appendEnvironment("COLORTERM", os.Getenv("COLORTERM"))
 	appendEnvironment("LANG", os.Getenv("LANG"))
 	appendEnvironment("TMPDIR", os.Getenv("TMPDIR"))
-	appendEnvironment("SSH_AUTH_SOCK", os.Getenv("SSH_AUTH_SOCK"))
 	appendEnvironment("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
 	for _, entry := range os.Environ() {

@@ -2,6 +2,7 @@ package desktopwire
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,6 +55,121 @@ func TestAddProjectResultValidateRequiresExactlyOneOutcome(t *testing.T) {
 	}
 }
 
+// TestProjectTerminalEventValidateRejectsMixedOrMalformedPayloads keeps PTY output and exit frames unambiguous.
+func TestProjectTerminalEventValidateRejectsMixedOrMalformedPayloads(t *testing.T) {
+	t.Parallel()
+
+	output := base64.StdEncoding.EncodeToString([]byte("ready\r\n"))
+	sessionID := projectTerminalSessionIDPrefix + strings.Repeat("a", projectTerminalSessionIDBytes*2)
+	tests := []struct {
+		name  string
+		event ProjectTerminalEvent
+		want  string
+	}{
+		{
+			name: "output",
+			event: ProjectTerminalEvent{
+				SessionID:  sessionID,
+				Kind:       ProjectTerminalOutput,
+				DataBase64: output,
+			},
+		},
+		{
+			name: "exit",
+			event: ProjectTerminalEvent{
+				SessionID: sessionID,
+				Kind:      ProjectTerminalExited,
+			},
+		},
+		{
+			name: "missing session",
+			event: ProjectTerminalEvent{
+				Kind:       ProjectTerminalOutput,
+				DataBase64: output,
+			},
+			want: "session ID",
+		},
+		{
+			name: "malformed output",
+			event: ProjectTerminalEvent{
+				SessionID:  sessionID,
+				Kind:       ProjectTerminalOutput,
+				DataBase64: "not base64",
+			},
+			want: "decode",
+		},
+		{
+			name: "oversized output",
+			event: ProjectTerminalEvent{
+				SessionID:  sessionID,
+				Kind:       ProjectTerminalOutput,
+				DataBase64: base64.StdEncoding.EncodeToString(make([]byte, projectTerminalOutputBytes+1)),
+			},
+			want: "exceeds",
+		},
+		{
+			name: "mixed output",
+			event: ProjectTerminalEvent{
+				SessionID:  sessionID,
+				Kind:       ProjectTerminalOutput,
+				DataBase64: output,
+				Error:      "exited",
+			},
+			want: "must not contain",
+		},
+		{
+			name: "mixed exit",
+			event: ProjectTerminalEvent{
+				SessionID:  sessionID,
+				Kind:       ProjectTerminalExited,
+				DataBase64: output,
+			},
+			want: "must not contain",
+		},
+		{
+			name: "unknown kind",
+			event: ProjectTerminalEvent{
+				SessionID: sessionID,
+				Kind:      "other",
+			},
+			want: "unknown",
+		},
+		{
+			name: "oversized exit error",
+			event: ProjectTerminalEvent{
+				SessionID: sessionID,
+				Kind:      ProjectTerminalExited,
+				Error:     strings.Repeat("x", projectTerminalErrorBytes+1),
+			},
+			want: "exceeds",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.event.Validate()
+			if test.want == "" && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestProjectTerminalStartedValidateRequiresOpaqueIdentity keeps process details out of the start response.
+func TestProjectTerminalStartedValidateRequiresOpaqueIdentity(t *testing.T) {
+	t.Parallel()
+
+	if err := (ProjectTerminalStarted{}).Validate(); err == nil {
+		t.Fatal("Validate() missing session ID error = nil")
+	}
+	sessionID := projectTerminalSessionIDPrefix + strings.Repeat("a", projectTerminalSessionIDBytes*2)
+	if err := (ProjectTerminalStarted{SessionID: sessionID}).Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 // TestEmitterMethodsMatchEventContracts prevents an event name, payload, or typed emission method from drifting independently.
 func TestEmitterMethodsMatchEventContracts(t *testing.T) {
 	t.Parallel()
@@ -103,12 +219,19 @@ func TestEmitterPublishesDeclaredNamePayloadPairs(t *testing.T) {
 
 	connection := ConnectionEvent{State: ConnectionConnected}
 	snapshot := domain.Snapshot{SchemaVersion: domain.SnapshotSchemaVersion, Sequence: 1}
+	terminal := ProjectTerminalEvent{
+		SessionID:  projectTerminalSessionIDPrefix + strings.Repeat("a", projectTerminalSessionIDBytes*2),
+		Kind:       ProjectTerminalOutput,
+		DataBase64: base64.StdEncoding.EncodeToString([]byte("ready\r\n")),
+	}
 	emitter.Connection(context.Background(), connection)
 	emitter.Snapshot(context.Background(), snapshot)
+	emitter.ProjectTerminal(context.Background(), terminal)
 
 	want := []emission{
 		{name: ConnectionEventName, payload: connection},
 		{name: SnapshotEventName, payload: snapshot},
+		{name: ProjectTerminalEventName, payload: terminal},
 	}
 	if !reflect.DeepEqual(emissions, want) {
 		t.Fatalf("emissions = %#v, want %#v", emissions, want)

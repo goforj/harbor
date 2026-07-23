@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => {
     open: ReturnType<typeof vi.fn>
     loadAddon: ReturnType<typeof vi.fn>
     write: ReturnType<typeof vi.fn>
+    focus: ReturnType<typeof vi.fn>
+    parser: {
+      registerOscHandler: ReturnType<typeof vi.fn>
+      registerCsiHandler: ReturnType<typeof vi.fn>
+    }
     dispose: ReturnType<typeof vi.fn>
     onData(listener: (data: string) => void): { dispose: ReturnType<typeof vi.fn> }
     sendInput(data: string): void
@@ -25,6 +30,11 @@ const mocks = vi.hoisted(() => {
     readonly open = vi.fn()
     readonly loadAddon = vi.fn()
     readonly write = vi.fn()
+    readonly focus = vi.fn()
+    readonly parser = {
+      registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })),
+      registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })),
+    }
     readonly dispose = vi.fn()
     private inputListener: ((data: string) => void) | null = null
 
@@ -87,7 +97,10 @@ describe('InteractiveTerminal', () => {
     await nextTick()
 
     const terminal = mocks.terminals[0]
-    expect(terminal?.open).toHaveBeenCalledWith(wrapper.element)
+    expect(terminal?.open).toHaveBeenCalledWith(wrapper.element.firstElementChild)
+    expect(terminal?.focus).toHaveBeenCalledOnce()
+    expect(terminal?.parser.registerOscHandler.mock.calls.map((call) => call[0])).toEqual([0, 1, 2, 8, 52])
+    expect(terminal?.parser.registerCsiHandler).toHaveBeenCalledWith({ final: 't' }, expect.any(Function))
     expect(mocks.fits[0]?.fit).toHaveBeenCalledOnce()
     expect(session.resize).toHaveBeenCalledWith({ cols: 80, rows: 24 })
     expect(session.start).toHaveBeenCalledOnce()
@@ -115,6 +128,20 @@ describe('InteractiveTerminal', () => {
     expect(session.close).toHaveBeenCalledOnce()
     expect(mocks.terminals[0]?.dispose).toHaveBeenCalledOnce()
     expect(mocks.fits[0]?.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('refits and focuses a preserved emulator when its terminal tab becomes active', async () => {
+    vi.stubGlobal('ResizeObserver', MockResizeObserver)
+    const session = createSession()
+    const wrapper = mount(InteractiveTerminal, { props: { active: false, session } })
+    await nextTick()
+
+    expect(mocks.terminals[0]?.focus).toHaveBeenCalledOnce()
+    await wrapper.setProps({ active: true })
+    await nextTick()
+
+    expect(mocks.terminals[0]?.focus).toHaveBeenCalledTimes(2)
+    expect(mocks.fits[0]?.fit).toHaveBeenCalledTimes(2)
   })
 
   it('reports rejected session operations instead of leaking an asynchronous error', async () => {

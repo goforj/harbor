@@ -1,4 +1,4 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
@@ -21,10 +21,16 @@ export interface HarborWireFixture {
     restart_project: 'RestartProject'
     status: 'Status'
     stop_project: 'StopProject'
+    start_project_terminal: 'StartProjectTerminal'
+    attach_project_terminal: 'AttachProjectTerminal'
+    write_project_terminal: 'WriteProjectTerminal'
+    resize_project_terminal: 'ResizeProjectTerminal'
+    close_project_terminal: 'CloseProjectTerminal'
   }
   events: {
     connection: 'harbor:connection'
     snapshot: 'harbor:snapshot'
+    project_terminal: 'harbor:project-terminal'
   }
   connection_payloads: {
     connecting: ConnectionEvent & { state: 'connecting' }
@@ -47,6 +53,9 @@ export interface HarborWireFixture {
   start_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.start'; state: 'queued' } }
   stop_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.stop'; state: 'queued' } }
   restart_project: ProjectLifecycleOperation & { operation: Operation & { kind: 'project.restart'; state: 'queued' } }
+  project_terminal_started: ProjectTerminalStarted
+  project_terminal_output: ProjectTerminalEvent & { kind: 'output'; data_base64: string }
+  project_terminal_exited: ProjectTerminalEvent & { kind: 'exited' }
   terminal_operation: Operation & {
     state: 'failed'
     problem: Problem
@@ -75,6 +84,12 @@ export interface HarborBridge {
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   restartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
+  startProjectTerminal(projectId: string, columns: number, rows: number): Promise<ProjectTerminalStarted>
+  attachProjectTerminal(sessionId: string): Promise<void>
+  writeProjectTerminal(sessionId: string, data: string): Promise<void>
+  resizeProjectTerminal(sessionId: string, columns: number, rows: number): Promise<void>
+  closeProjectTerminal(sessionId: string): Promise<void>
   subscribe(listener: (snapshot: HarborSnapshot) => void): () => void
   subscribeConnection(listener: (event: ConnectionEvent) => void): () => void
+  subscribeProjectTerminal(listener: (event: ProjectTerminalEvent) => void): () => void
 }
