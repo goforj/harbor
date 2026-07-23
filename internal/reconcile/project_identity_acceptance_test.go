@@ -5,6 +5,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -29,8 +30,9 @@ import (
 const (
 	projectIdentityAcceptanceForjEnvironment             = "HARBOR_PROJECT_IDENTITY_FORJ_BINARY"
 	projectIdentityAcceptanceAddressesEnvironment        = "HARBOR_PROOF_ADDRESSES"
-	projectIdentityAcceptanceGoForjVersion               = "0.19.0"
+	projectIdentityAcceptanceGoForjVersion               = "0.21.0"
 	projectIdentityAcceptancePort                 uint16 = 3000
+	projectIdentityAcceptanceEndpointCheckTimeout        = 5 * time.Second
 	projectIdentityAcceptanceTimeout                     = 8 * time.Minute
 )
 
@@ -39,6 +41,12 @@ type projectIdentityAcceptanceProject struct {
 	id      domain.ProjectID
 	intent  domain.IntentID
 	project goforjproject.Project
+}
+
+// projectIdentityAcceptanceEndpoint preserves the generated App's exact direct loopback URL for lifecycle isolation checks.
+type projectIdentityAcceptanceEndpoint struct {
+	projectID domain.ProjectID
+	url       string
 }
 
 // TestGeneratedProjectsSharePortAcrossDistinctLoopbacks proves Harbor launches real generated Apps on one common port without host conflicts.
@@ -51,9 +59,21 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		ForjExecutable: configuration.forj,
 		GoForjVersion:  projectIdentityAcceptanceGoForjVersion,
 		Projects: []goforjproject.Spec{
-			{Name: "Harbor Orders", Module: "example.test/harbor/orders", Port: projectIdentityAcceptancePort},
-			{Name: "Harbor Billing", Module: "example.test/harbor/billing", Port: projectIdentityAcceptancePort},
-			{Name: "Harbor Inventory", Module: "example.test/harbor/inventory", Port: projectIdentityAcceptancePort},
+			{
+				Name:   "Harbor Orders",
+				Module: "example.test/harbor/orders",
+				Port:   projectIdentityAcceptancePort,
+			},
+			{
+				Name:   "Harbor Billing",
+				Module: "example.test/harbor/billing",
+				Port:   projectIdentityAcceptancePort,
+			},
+			{
+				Name:   "Harbor Inventory",
+				Module: "example.test/harbor/inventory",
+				Port:   projectIdentityAcceptancePort,
+			},
 		},
 	})
 	if err != nil {
@@ -68,9 +88,18 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 	t.Setenv("PATH", filepath.Dir(configuration.forj)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	projectEnvironment := projectprocess.CaptureEnvironment()
 	projects := []projectIdentityAcceptanceProject{
-		{id: "project-orders", intent: "intent-start-orders", project: workspace.Projects[0]},
-		{id: "project-billing", intent: "intent-start-billing", project: workspace.Projects[1]},
-		{id: "project-inventory", intent: "intent-start-inventory", project: workspace.Projects[2]},
+		{
+			id:      "project-orders",
+			project: workspace.Projects[0],
+		},
+		{
+			id:      "project-billing",
+			project: workspace.Projects[1],
+		},
+		{
+			id:      "project-inventory",
+			project: workspace.Projects[2],
+		},
 	}
 	store, journal := newProjectLifecycleIntegrationState(t)
 	registerProjectIdentityAcceptanceProjects(t, store, projects)
@@ -91,37 +120,9 @@ func TestGeneratedProjectsSharePortAcrossDistinctLoopbacks(t *testing.T) {
 		}
 	})
 
-	for index, project := range projects {
-		operationID := domain.OperationID(fmt.Sprintf("operation-start-generated-%d", index+1))
-		queued, err := coordinator.Start(ctx, ProjectStartRequest{
-			ProjectID:   project.id,
-			OperationID: operationID,
-			IntentID:    project.intent,
-		})
-		if err != nil || queued.Operation.State != domain.OperationQueued {
-			t.Fatalf("start generated project %q = %#v, %v", project.id, queued, err)
-		}
-	}
-
-	ready := make([]state.ProjectRecord, 0, len(projects))
-	for _, project := range projects {
-		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, project.intent, domain.ProjectReady))
-	}
-
-	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
-
-	for index := len(projects) - 1; index >= 0; index-- {
-		project := projects[index]
-		stopIntent := domain.IntentID(fmt.Sprintf("intent-stop-generated-%d", index+1))
-		queued, err := coordinator.Stop(ctx, ProjectStopRequest{
-			ProjectID:   project.id,
-			OperationID: domain.OperationID(fmt.Sprintf("operation-stop-generated-%d", index+1)),
-			IntentID:    stopIntent,
-		})
-		if err != nil || queued.Operation.State != domain.OperationQueued {
-			t.Fatalf("stop generated project %q = %#v, %v", project.id, queued, err)
-		}
-		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, stopIntent, domain.ProjectStopped)
+	for cycle := 1; cycle <= 2; cycle++ {
+		endpoints := startProjectIdentityAcceptanceCycle(t, ctx, coordinator, store, journal, supervisor, projects, configuration.addresses, cycle)
+		stopProjectIdentityAcceptanceCycle(t, ctx, coordinator, store, journal, supervisor, projects, endpoints, cycle)
 	}
 }
 
@@ -134,8 +135,18 @@ func TestGeneratedMySQLFixturesRender(t *testing.T) {
 		ForjExecutable: forj,
 		GoForjVersion:  projectIdentityAcceptanceGoForjVersion,
 		Projects: []goforjproject.Spec{
-			{Name: "Harbor MySQL Orders", Module: "example.test/harbor/mysql-orders", Port: projectIdentityAcceptancePort, MySQL: true},
-			{Name: "Harbor MySQL Billing", Module: "example.test/harbor/mysql-billing", Port: projectIdentityAcceptancePort, MySQL: true},
+			{
+				Name:   "Harbor MySQL Orders",
+				Module: "example.test/harbor/mysql-orders",
+				Port:   projectIdentityAcceptancePort,
+				MySQL:  true,
+			},
+			{
+				Name:   "Harbor MySQL Billing",
+				Module: "example.test/harbor/mysql-billing",
+				Port:   projectIdentityAcceptancePort,
+				MySQL:  true,
+			},
 		},
 	})
 	if err != nil {
@@ -302,6 +313,80 @@ func initializeProjectIdentityAcceptanceNetwork(
 	}
 }
 
+// startProjectIdentityAcceptanceCycle starts every generated App, then verifies their durable leases and direct readiness endpoints.
+func startProjectIdentityAcceptanceCycle(
+	t *testing.T,
+	ctx context.Context,
+	coordinator *ProjectLifecycleCoordinator,
+	store *state.Store,
+	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
+	projects []projectIdentityAcceptanceProject,
+	wantAddresses []netip.Addr,
+	cycle int,
+) []projectIdentityAcceptanceEndpoint {
+	t.Helper()
+	for index, project := range projects {
+		intentID := projectIdentityAcceptanceIntentID("start", cycle, index)
+		queued, err := coordinator.Start(ctx, ProjectStartRequest{
+			ProjectID:   project.id,
+			OperationID: projectIdentityAcceptanceOperationID("start", cycle, index),
+			IntentID:    intentID,
+		})
+		if err != nil || queued.Operation.State != domain.OperationQueued {
+			t.Fatalf("cycle %d start generated project %q = %#v, %v", cycle, project.id, queued, err)
+		}
+	}
+
+	ready := make([]state.ProjectRecord, 0, len(projects))
+	for index, project := range projects {
+		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, projectIdentityAcceptanceIntentID("start", cycle, index), domain.ProjectReady))
+	}
+	return assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, wantAddresses)
+}
+
+// stopProjectIdentityAcceptanceCycle stops generated Apps in reverse order while verifying listener isolation and peer readiness after each stop.
+func stopProjectIdentityAcceptanceCycle(
+	t *testing.T,
+	ctx context.Context,
+	coordinator *ProjectLifecycleCoordinator,
+	store *state.Store,
+	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
+	projects []projectIdentityAcceptanceProject,
+	endpoints []projectIdentityAcceptanceEndpoint,
+	cycle int,
+) {
+	t.Helper()
+	stoppedEndpoints := make([]projectIdentityAcceptanceEndpoint, 0, len(endpoints))
+	for index := len(projects) - 1; index >= 0; index-- {
+		project := projects[index]
+		intentID := projectIdentityAcceptanceIntentID("stop", cycle, index)
+		queued, err := coordinator.Stop(ctx, ProjectStopRequest{
+			ProjectID:   project.id,
+			OperationID: projectIdentityAcceptanceOperationID("stop", cycle, index),
+			IntentID:    intentID,
+		})
+		if err != nil || queued.Operation.State != domain.OperationQueued {
+			t.Fatalf("cycle %d stop generated project %q = %#v, %v", cycle, project.id, queued, err)
+		}
+		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, intentID, domain.ProjectStopped)
+		stoppedEndpoints = append(stoppedEndpoints, endpoints[index])
+		assertProjectIdentityAcceptanceEndpointsUnavailable(t, ctx, stoppedEndpoints)
+		assertProjectIdentityAcceptancePeerReadiness(t, ctx, endpoints[:index])
+	}
+}
+
+// projectIdentityAcceptanceOperationID creates a cycle-scoped operation identity so durable journal entries cannot collide.
+func projectIdentityAcceptanceOperationID(action string, cycle, index int) domain.OperationID {
+	return domain.OperationID(fmt.Sprintf("operation-%s-generated-cycle-%d-%d", action, cycle, index+1))
+}
+
+// projectIdentityAcceptanceIntentID creates a cycle-scoped intent identity so each lifecycle transition is independently observable.
+func projectIdentityAcceptanceIntentID(action string, cycle, index int) domain.IntentID {
+	return domain.IntentID(fmt.Sprintf("intent-%s-generated-cycle-%d-%d", action, cycle, index+1))
+}
+
 // waitForProjectIdentityAcceptanceState waits for durable lifecycle completion and surfaces terminal operation diagnostics immediately.
 func waitForProjectIdentityAcceptanceState(
 	t *testing.T,
@@ -398,7 +483,7 @@ func assertProjectIdentityAcceptanceEndpoints(
 	projects []projectIdentityAcceptanceProject,
 	ready []state.ProjectRecord,
 	wantAddresses []netip.Addr,
-) {
+) []projectIdentityAcceptanceEndpoint {
 	t.Helper()
 	network, initialized, err := store.Network(ctx)
 	if err != nil || !initialized {
@@ -420,6 +505,7 @@ func assertProjectIdentityAcceptanceEndpoints(
 	}
 	t.Cleanup(client.CloseIdleConnections)
 	observedAddresses := make([]netip.Addr, 0, len(projects))
+	endpoints := make([]projectIdentityAcceptanceEndpoint, 0, len(projects))
 	for index, project := range projects {
 		address := leaseByProject[project.id]
 		if !address.IsValid() {
@@ -444,6 +530,10 @@ func assertProjectIdentityAcceptanceEndpoints(
 		if parsed.Scheme != "http" || parsed.Host != fmt.Sprintf("%s:%d", address, projectIdentityAcceptancePort) || parsed.Path != "" {
 			t.Fatalf("project %q resource URL = %q, want http://%s:%d", project.id, resource.URL, address, projectIdentityAcceptancePort)
 		}
+		endpoints = append(endpoints, projectIdentityAcceptanceEndpoint{
+			projectID: project.id,
+			url:       resource.URL,
+		})
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, resource.URL+"/-/ready", nil)
 		if err != nil {
 			t.Fatalf("build project %q readiness request: %v", project.id, err)
@@ -464,5 +554,66 @@ func assertProjectIdentityAcceptanceEndpoints(
 	})
 	if !slices.Equal(observedAddresses, wantAddresses) {
 		t.Fatalf("allocated project addresses = %v, want %v", observedAddresses, wantAddresses)
+	}
+	return endpoints
+}
+
+// assertProjectIdentityAcceptanceEndpointsUnavailable proves each stopped App URL no longer owns its direct loopback listener.
+func assertProjectIdentityAcceptanceEndpointsUnavailable(
+	t *testing.T,
+	ctx context.Context,
+	endpoints []projectIdentityAcceptanceEndpoint,
+) {
+	t.Helper()
+	for _, endpoint := range endpoints {
+		parsed, err := url.Parse(endpoint.url)
+		if err != nil {
+			t.Fatalf("parse stopped project %q endpoint %q: %v", endpoint.projectID, endpoint.url, err)
+		}
+		checkContext, cancel := context.WithTimeout(ctx, projectIdentityAcceptanceEndpointCheckTimeout)
+		connection, err := (&net.Dialer{}).DialContext(checkContext, "tcp", parsed.Host)
+		cancel()
+		if err == nil {
+			if closeErr := connection.Close(); closeErr != nil {
+				t.Fatalf("close unexpected connection to stopped project %q endpoint %q: %v", endpoint.projectID, endpoint.url, closeErr)
+			}
+			t.Fatalf("stopped project %q endpoint %q still accepts direct TCP connections", endpoint.projectID, endpoint.url)
+		}
+	}
+}
+
+// assertProjectIdentityAcceptancePeerReadiness proves stopping one App leaves every remaining direct loopback peer ready.
+func assertProjectIdentityAcceptancePeerReadiness(
+	t *testing.T,
+	ctx context.Context,
+	endpoints []projectIdentityAcceptanceEndpoint,
+) {
+	t.Helper()
+	client := &http.Client{
+		Timeout: projectIdentityAcceptanceEndpointCheckTimeout,
+		Transport: &http.Transport{
+			Proxy:             nil,
+			DisableKeepAlives: true,
+		},
+	}
+	t.Cleanup(client.CloseIdleConnections)
+	for _, endpoint := range endpoints {
+		checkContext, cancel := context.WithTimeout(ctx, projectIdentityAcceptanceEndpointCheckTimeout)
+		request, err := http.NewRequestWithContext(checkContext, http.MethodGet, endpoint.url+"/-/ready", nil)
+		if err != nil {
+			cancel()
+			t.Fatalf("build remaining project %q readiness request: %v", endpoint.projectID, err)
+		}
+		response, err := client.Do(request)
+		cancel()
+		if err != nil {
+			t.Fatalf("request remaining project %q readiness: %v", endpoint.projectID, err)
+		}
+		if closeErr := response.Body.Close(); closeErr != nil {
+			t.Fatalf("close remaining project %q readiness response: %v", endpoint.projectID, closeErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("remaining project %q readiness status = %d, want 200", endpoint.projectID, response.StatusCode)
+		}
 	}
 }

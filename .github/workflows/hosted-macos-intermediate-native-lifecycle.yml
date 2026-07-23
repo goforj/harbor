@@ -30,7 +30,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HARBOR_INTERMEDIATE_NATIVE_FORJ_COMMIT: 55a1e57599565c9768627db016fc781e3c705f15
+  HARBOR_INTERMEDIATE_NATIVE_FORJ_COMMIT: bb3e88fa9055a2314e8d68587c80bdf7c528cac4
 
 jobs:
   intermediate-native-lifecycle:
@@ -183,7 +183,7 @@ jobs:
         env:
           HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
           HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/forj
-          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.19.0"
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
           HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/harbor
           HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbor-intermediate-native-bin/harbord
           HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-intermediate-native-lifecycle-evidence
