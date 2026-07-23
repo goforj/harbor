@@ -429,6 +429,97 @@ func (store *Store) Upgrade(ctx context.Context, expectedSchema1Fingerprint stri
 	return upgraded, nil
 }
 
+// Downgrade atomically replaces an exact schema-2 claim with its schema-1 identity-only form.
+// ErrDurabilityUncertain means the active name changed but must be reconciled before authority is granted.
+func (store *Store) Downgrade(ctx context.Context, expectedSchema2Fingerprint string, sourceSchema2 Record) (Observation, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return Observation{}, err
+	}
+	if err := validateFingerprint(expectedSchema2Fingerprint); err != nil {
+		return Observation{}, fmt.Errorf("downgrade machine ownership: %w", err)
+	}
+	if err := sourceSchema2.Validate(); err != nil {
+		return Observation{}, fmt.Errorf("downgrade machine ownership: %w", err)
+	}
+	if sourceSchema2.SchemaVersion != NetworkPolicySchemaVersion {
+		return Observation{}, fmt.Errorf(
+			"downgrade machine ownership: source schema version is %d, want %d",
+			sourceSchema2.SchemaVersion,
+			NetworkPolicySchemaVersion,
+		)
+	}
+	sourceFingerprint, err := sourceSchema2.Fingerprint()
+	if err != nil {
+		return Observation{}, fmt.Errorf("downgrade machine ownership: fingerprint source: %w", err)
+	}
+	if expectedSchema2Fingerprint != sourceFingerprint {
+		return Observation{}, fmt.Errorf(
+			"downgrade machine ownership: expected schema-%d fingerprint %s does not match source fingerprint %s",
+			NetworkPolicySchemaVersion,
+			expectedSchema2Fingerprint,
+			sourceFingerprint,
+		)
+	}
+
+	targetSchema1 := sourceSchema2
+	targetSchema1.SchemaVersion = IdentitySchemaVersion
+	targetSchema1.NetworkPolicyFingerprint = ""
+	targetFingerprint, err := targetSchema1.Fingerprint()
+	if err != nil {
+		return Observation{}, fmt.Errorf("downgrade machine ownership: derive schema-%d target: %w", IdentitySchemaVersion, err)
+	}
+	target := Observation{Exists: true, Record: targetSchema1, Fingerprint: targetFingerprint}
+
+	var downgraded Observation
+	mutationApplied := false
+	err = store.withLock(ctx, func() error {
+		existing, err := store.observeLocked()
+		if err != nil {
+			return err
+		}
+		if existing.Exists && existing.Record == targetSchema1 {
+			if err := store.operations.confirmEntry(store.root, filepath.Dir(store.path), store.name); err != nil {
+				return durabilityUncertain("confirm downgraded machine ownership claim", store.path, err)
+			}
+			downgraded = existing
+			return nil
+		}
+		if err := compareDowngradeSource(existing, expectedSchema2Fingerprint, sourceSchema2); err != nil {
+			return err
+		}
+
+		encoded, err := json.Marshal(targetSchema1)
+		if err != nil {
+			return fmt.Errorf("encode downgraded machine ownership claim: %w", err)
+		}
+		mutationApplied, err = store.writeReplaceLocked(encoded)
+		if err != nil {
+			return err
+		}
+		observed, err := store.observeLocked()
+		if err != nil {
+			return fmt.Errorf("verify downgraded machine ownership claim: %w", err)
+		}
+		if observed != target {
+			return fmt.Errorf(
+				"verify downgraded machine ownership claim: found fingerprint %s, want %s",
+				observed.Fingerprint,
+				target.Fingerprint,
+			)
+		}
+		downgraded = observed
+		return nil
+	})
+	if err != nil {
+		if mutationApplied && !errors.Is(err, ErrDurabilityUncertain) {
+			return Observation{}, durabilityUncertain("finish machine ownership downgrade", store.path, err)
+		}
+		return Observation{}, err
+	}
+	return downgraded, nil
+}
+
 // compareUpgradeSource requires both the expected digest and its exact source record before replacement.
 func compareUpgradeSource(existing Observation, expectedFingerprint string, source Record) error {
 	if !existing.Exists {
@@ -441,6 +532,11 @@ func compareUpgradeSource(existing Observation, expectedFingerprint string, sour
 		return &ConflictError{Requested: source, Existing: existing}
 	}
 	return nil
+}
+
+// compareDowngradeSource requires both the expected digest and its exact source record before replacement.
+func compareDowngradeSource(existing Observation, expectedFingerprint string, source Record) error {
+	return compareUpgradeSource(existing, expectedFingerprint, source)
 }
 
 // Release removes a claim only when the caller presents its exact current observation fingerprint.
