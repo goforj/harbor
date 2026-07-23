@@ -249,32 +249,72 @@ func matchesDarwinServiceContract(output []byte, request Request, username strin
 		return false
 	}
 	return exactlyOneScalar(text, "path", darwinPlistPath) &&
+		exactlyOneScalar(text, "type", "LaunchDaemon") &&
 		exactlyOneScalar(text, "program", launchdrelaypath.Executable()) &&
+		exactlyOneScalar(text, "domain", "system") &&
 		exactlyOneScalar(text, "username", username) &&
-		hasOnlyReviewedTopLevelFields(text) &&
+		hasNoUnownedDarwinServiceFields(text) &&
+		matchesDarwinDaemonSpawnType(text) &&
 		matchesOrderedDarwinArguments(text, request) &&
 		matchesDarwinEnvironment(text, request) &&
 		matchesDarwinSockets(text)
 }
 
-// hasOnlyReviewedTopLevelFields rejects plist-derived privilege and process-scope settings not in Harbor's contract.
-func hasOnlyReviewedTopLevelFields(text string) bool {
-	allowed := map[string]bool{
-		"path": true, "program": true, "username": true, "arguments": true, "environment": true, "sockets": true,
-		"state": true, "active count": true, "pid": true, "last exit code": true, "runs": true, "spawn count": true,
-	}
+// hasNoUnownedDarwinServiceFields rejects static process scope that cannot come from Harbor's canonical plist.
+func hasNoUnownedDarwinServiceFields(text string) bool {
 	depth := 0
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if depth == 0 && trimmed != "" {
+		if depth == 0 {
 			key, _, found := strings.Cut(trimmed, " =")
-			if !found || !allowed[key] {
+			if found {
+				normalized := strings.ReplaceAll(strings.ToLower(key), " ", "")
+				switch normalized {
+				case "groupname", "initgroups", "rootdirectory", "workingdirectory", "umask",
+					"standardinpath", "standardoutpath", "standarderrorpath", "machservices",
+					"keepalive", "startinterval", "startcalendarinterval", "throttleinterval",
+					"watchpaths", "queuedirectories", "startonmount", "processtype", "nice",
+					"softresourcelimits", "hardresourcelimits", "abandonprocessgroup", "sessioncreate",
+					"limitloadtohosts", "limitloadfromhosts", "limitloadtosessiontype", "launchonlyonce",
+					"enabletransactions", "launchevents", "securesocketwithkey", "inetdcompatibility":
+					return false
+				}
+			}
+		}
+		depth += strings.Count(trimmed, "{") - strings.Count(trimmed, "}")
+		if depth < 0 {
+			return false
+		}
+	}
+	return depth == 0
+}
+
+// matchesDarwinDaemonSpawnType rejects a loaded job whose configured process class changes relay scheduling.
+func matchesDarwinDaemonSpawnType(text string) bool {
+	lines := strings.Split(text, "\n")
+	found, depth := 0, 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if depth == 0 && strings.HasPrefix(trimmed, "spawn type =") {
+			found++
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, "spawn type ="))
+			if value == "daemon" {
+				continue
+			}
+			if !strings.HasPrefix(value, "daemon (") || !strings.HasSuffix(value, ")") {
+				return false
+			}
+			code := strings.TrimSuffix(strings.TrimPrefix(value, "daemon ("), ")")
+			if code == "" {
+				return false
+			}
+			if _, err := strconv.ParseUint(code, 10, 32); err != nil {
 				return false
 			}
 		}
 		depth += strings.Count(trimmed, "{") - strings.Count(trimmed, "}")
 	}
-	return depth == 0
+	return found == 1
 }
 
 // launchctlRoot requires one outer print object so decoy nested fields cannot become service facts.
@@ -313,48 +353,75 @@ func matchesOrderedDarwinArguments(text string, request Request) bool {
 	return slices.Equal(values, want)
 }
 
-// matchesDarwinEnvironment requires the exact sole installation marker rather than a string elsewhere in print output.
+// matchesDarwinEnvironment accepts only Harbor's marker and launchd's fixed service identity.
 func matchesDarwinEnvironment(text string, request Request) bool {
-	values, ok := launchctlBlockPairs(text, "environment")
-	return ok && len(values) == 1 && values["HARBOR_INSTALLATION_ID"] == request.InstallationID()
+	values, ok := launchctlBlockPairsWithSeparator(text, "environment", " => ")
+	return ok && len(values) == 2 &&
+		values["HARBOR_INSTALLATION_ID"] == request.InstallationID() &&
+		values["XPC_SERVICE_NAME"] == darwinLabel
 }
 
-// matchesDarwinSocket requires one named socket block with only the fixed loopback node and service port.
+// matchesDarwinSockets requires the two fixed named loopback listeners and no other socket declarations.
 func matchesDarwinSockets(text string) bool {
 	sockets, ok := launchctlBlock(text, "sockets")
 	if !ok || countLaunchctlHeaders(sockets) != 2 {
 		return false
 	}
 	for name, port := range map[string]string{"HTTP": "80", "HTTPS": "443"} {
-		values, found := launchctlBlockPairs(sockets, name)
-		if !found || !matchesDarwinSocketValues(values, port) {
+		block, found := launchctlNamedBlock(sockets, name)
+		if !found || !matchesDarwinSocketValues(block, port) {
 			return false
 		}
 	}
 	return true
 }
 
-// matchesDarwinSocketValues permits only launchd's reviewed derived TCP facts beside Harbor's fixed endpoint.
-func matchesDarwinSocketValues(values map[string]string, port string) bool {
-	if values["SockNodeName"] != "127.0.0.1" || values["SockServiceName"] != port {
-		return false
+// launchctlNamedBlock accepts launchctl's quoted socket labels while retaining compatibility with earlier output.
+func launchctlNamedBlock(text, name string) (string, bool) {
+	plain, plainFound := launchctlBlock(text, name)
+	quoted, quotedFound := launchctlBlock(text, `"`+name+`"`)
+	if plainFound == quotedFound {
+		return "", false
 	}
-	for key, value := range values {
-		switch key {
-		case "SockNodeName", "SockServiceName":
-		case "SockType":
-			if value != "stream" {
+	if plainFound {
+		return plain, true
+	}
+	return quoted, true
+}
+
+// matchesDarwinSocketValues binds the capability fields while leaving launchd's runtime telemetry out of ownership.
+func matchesDarwinSocketValues(text, port string) bool {
+	values := make(map[string]string)
+	depth := 0
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if depth == 0 {
+			if strings.HasSuffix(trimmed, " = {") {
+				depth = 1
+				continue
+			}
+			key, value, found := strings.Cut(trimmed, " = ")
+			if !found || key == "" || value == "" || strings.Contains(value, "{") || strings.Contains(value, "}") {
 				return false
 			}
-		case "SockProtocol":
-			if value != "tcp" {
+			if _, duplicate := values[key]; duplicate {
 				return false
 			}
-		default:
+			values[key] = value
+			continue
+		}
+		depth += strings.Count(trimmed, "{") - strings.Count(trimmed, "}")
+		if depth < 0 {
 			return false
 		}
 	}
-	return true
+	return depth == 0 &&
+		values["node name"] == "127.0.0.1" &&
+		values["service name"] == port &&
+		values["type"] == "stream"
 }
 
 // countLaunchctlHeaders counts only direct child blocks in a parsed parent.
@@ -389,13 +456,18 @@ func launchctlBlockValues(text, name string) ([]string, bool) {
 
 // launchctlBlockPairs parses a single brace-delimited key/value block and rejects duplicate or malformed entries.
 func launchctlBlockPairs(text, name string) (map[string]string, bool) {
+	return launchctlBlockPairsWithSeparator(text, name, " = ")
+}
+
+// launchctlBlockPairsWithSeparator parses one direct key/value block using launchctl's exact separator.
+func launchctlBlockPairsWithSeparator(text, name, separator string) (map[string]string, bool) {
 	block, ok := launchctlBlock(text, name)
 	if !ok {
 		return nil, false
 	}
 	values := make(map[string]string)
 	for _, line := range nonemptyBlockLines(block) {
-		key, value, found := strings.Cut(line, " = ")
+		key, value, found := strings.Cut(line, separator)
 		if !found || key == "" || value == "" || strings.Contains(value, "{") || strings.Contains(value, "}") {
 			return nil, false
 		}

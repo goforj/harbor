@@ -31,8 +31,8 @@ func TestDarwinServiceContractRejectsDuplicateAndMisplacedFacts(t *testing.T) {
 	username := "harbor-user"
 	for _, output := range []string{
 		strings.Replace(darwinServicePrint(request, username), "--owner-uid\n501", "--owner-uid\n0\n501", 1),
-		strings.Replace(darwinServicePrint(request, username), "SockServiceName = 80", "SockServiceName = 81\n\tcanonical = 80", 1),
-		strings.Replace(darwinServicePrint(request, username), "HARBOR_INSTALLATION_ID = "+request.InstallationID(), "HARBOR_INSTALLATION_ID = foreign\n\tcanonical = "+request.InstallationID(), 1),
+		strings.Replace(darwinServicePrint(request, username), "service name = 80", "service name = 81\n\tcanonical = 80", 1),
+		strings.Replace(darwinServicePrint(request, username), "HARBOR_INSTALLATION_ID => "+request.InstallationID(), "HARBOR_INSTALLATION_ID => foreign\n\tcanonical => "+request.InstallationID(), 1),
 		strings.Replace(darwinServicePrint(request, username), "--https-upstream\n"+request.HTTPSUpstream().String(), "--https-upstream\n127.0.0.1:29999\n"+request.HTTPSUpstream().String(), 1),
 	} {
 		if matchesDarwinServiceContract([]byte(output), request, username) {
@@ -46,8 +46,8 @@ func TestDarwinServiceContractRejectsDecoyAndExtraSocketBlocks(t *testing.T) {
 	request := testRequest(t)
 	username := "harbor-user"
 	for _, output := range []string{
-		strings.Replace(darwinServicePrint(request, username), "HTTP = {", "actualHTTP = {", 1),
-		strings.Replace(darwinServicePrint(request, username), "sockets = {", "sockets = {\nEXTERNAL = {\nSockNodeName = 0.0.0.0\nSockServiceName = 8080\n}", 1),
+		strings.Replace(darwinServicePrint(request, username), "\"HTTP\" = {", "\"actualHTTP\" = {", 1),
+		strings.Replace(darwinServicePrint(request, username), "\"HTTP\" = {", "\"EXTERNAL\" = {\n\ttype = stream\n\tnode name = 0.0.0.0\n\tservice name = 8080\n}\n\"HTTP\" = {", 1),
 		strings.Replace(darwinServicePrint(request, username), "arguments = {", "decoy = {\narguments = {", 1),
 	} {
 		if matchesDarwinServiceContract([]byte(output), request, username) {
@@ -59,7 +59,37 @@ func TestDarwinServiceContractRejectsDecoyAndExtraSocketBlocks(t *testing.T) {
 // TestDarwinServiceContractRejectsPrivilegeScope rejects static launchd fields absent from Harbor's canonical plist.
 func TestDarwinServiceContractRejectsPrivilegeScope(t *testing.T) {
 	request := testRequest(t)
-	for _, field := range []string{"GroupName = admin", "RootDirectory = /tmp/root", "WorkingDirectory = /tmp", "Umask = 0"} {
+	for _, field := range []string{
+		"GroupName = admin",
+		"group name = admin",
+		"InitGroups = true",
+		"RootDirectory = /tmp/root",
+		"WorkingDirectory = /tmp",
+		"Umask = 0",
+		"StandardErrorPath = /tmp/relay.log",
+		"MachServices = enabled",
+		"KeepAlive = true",
+		"StartInterval = 10",
+		"StartCalendarInterval = enabled",
+		"ThrottleInterval = 1",
+		"WatchPaths = enabled",
+		"QueueDirectories = enabled",
+		"StartOnMount = true",
+		"ProcessType = Interactive",
+		"Nice = -10",
+		"SoftResourceLimits = enabled",
+		"HardResourceLimits = enabled",
+		"AbandonProcessGroup = true",
+		"SessionCreate = true",
+		"LimitLoadToHosts = enabled",
+		"LimitLoadFromHosts = enabled",
+		"LimitLoadToSessionType = Aqua",
+		"LaunchOnlyOnce = true",
+		"EnableTransactions = true",
+		"LaunchEvents = enabled",
+		"SecureSocketWithKey = enabled",
+		"inetdCompatibility = enabled",
+	} {
 		output := strings.Replace(darwinServicePrint(request, "harbor-user"), "path = ", field+"\npath = ", 1)
 		if matchesDarwinServiceContract([]byte(output), request, "harbor-user") {
 			t.Fatalf("matchesDarwinServiceContract() accepted %q", field)
@@ -67,18 +97,140 @@ func TestDarwinServiceContractRejectsPrivilegeScope(t *testing.T) {
 	}
 }
 
-// darwinServicePrint returns the bounded strict launchctl grammar accepted by the parser.
+// TestDarwinServiceContractRejectsChangedCanonicalFacts keeps installation, socket, and launchd identity facts bound to their exact values.
+func TestDarwinServiceContractRejectsChangedCanonicalFacts(t *testing.T) {
+	request := testRequest(t)
+	username := "harbor-user"
+	output := darwinServicePrint(request, username)
+	for name, malformed := range map[string]string{
+		"changed installation ID": strings.Replace(output, "HARBOR_INSTALLATION_ID => "+request.InstallationID(), "HARBOR_INSTALLATION_ID => foreign", 1),
+		"missing installation ID": strings.Replace(output, "HARBOR_INSTALLATION_ID => "+request.InstallationID()+"\n", "", 1),
+		"changed XPC name":        strings.Replace(output, "XPC_SERVICE_NAME => "+darwinLabel, "XPC_SERVICE_NAME => com.example.foreign", 1),
+		"changed process type":    strings.Replace(output, "spawn type = daemon", "spawn type = interactive (1)", 1),
+		"wrong node":              strings.Replace(output, "node name = 127.0.0.1", "node name = 0.0.0.0", 1),
+		"wrong port":              strings.Replace(output, "service name = 80", "service name = 8080", 1),
+		"duplicate endpoint":      strings.Replace(output, "service name = 80", "service name = 80\nservice name = 80", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if matchesDarwinServiceContract([]byte(malformed), request, username) {
+				t.Fatal("matchesDarwinServiceContract() accepted a changed canonical fact")
+			}
+		})
+	}
+}
+
+// TestDarwinServiceContractAcceptsRuntimeFacts keeps launchd telemetry outside Harbor's ownership contract.
+func TestDarwinServiceContractAcceptsRuntimeFacts(t *testing.T) {
+	request := testRequest(t)
+	output := strings.Replace(
+		darwinServicePrint(request, "harbor-user"),
+		"state = not running",
+		"state = running\npid = 42\nspawn count = 1\nimmediate reason = speculative\nfuture launchd telemetry = enabled",
+		1,
+	)
+	output = strings.Replace(
+		output,
+		"PATH => /usr/bin:/bin:/usr/sbin:/sbin",
+		"PATH => /usr/bin:/bin:/usr/sbin:/sbin\nlaunchd default telemetry => enabled",
+		1,
+	)
+	output = strings.Replace(
+		output,
+		"receive_packet_info = 0",
+		"receive_packet_info = 0\nfuture socket telemetry = enabled\nruntime details = {\nvalue = 1\n}",
+		1,
+	)
+	if !matchesDarwinServiceContract([]byte(output), request, "harbor-user") {
+		t.Fatal("matchesDarwinServiceContract() rejected unrelated launchd runtime facts")
+	}
+}
+
+// TestDarwinServiceContractRejectsForeignEnvironment keeps pre-main process configuration exact.
+func TestDarwinServiceContractRejectsForeignEnvironment(t *testing.T) {
+	request := testRequest(t)
+	output := strings.Replace(
+		darwinServicePrint(request, "harbor-user"),
+		"XPC_SERVICE_NAME => "+darwinLabel,
+		"XPC_SERVICE_NAME => "+darwinLabel+"\nHOME => /var/empty",
+		1,
+	)
+	if matchesDarwinServiceContract([]byte(output), request, "harbor-user") {
+		t.Fatal("matchesDarwinServiceContract() accepted foreign process environment")
+	}
+}
+
+// darwinServicePrint returns the macOS 15 launchctl print shape accepted by the parser.
 func darwinServicePrint(request Request, username string) string {
 	return strings.Join([]string{
 		"system/" + darwinLabel + " = {",
+		"active count = 0",
 		"path = " + darwinPlistPath,
+		"type = LaunchDaemon",
+		"state = not running",
 		"program = /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay",
 		"username = " + username,
-		"arguments = {", "/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay", "--owner-uid", "501", "--policy-fingerprint", request.PolicyFingerprint(), "--http-upstream", request.HTTPUpstream().String(), "--https-upstream", request.HTTPSUpstream().String(), "}",
-		"environment = {", "HARBOR_INSTALLATION_ID = " + request.InstallationID(), "}",
-		// This fixture mirrors the reviewed launchctl print shape: the two TCP
-		// fields are launchd-derived, while node and service remain plist authority.
-		"sockets = {", "HTTP = {", "SockNodeName = 127.0.0.1", "SockServiceName = 80", "SockType = stream", "SockProtocol = tcp", "}", "HTTPS = {", "SockNodeName = 127.0.0.1", "SockServiceName = 443", "SockType = stream", "SockProtocol = tcp", "}", "}", "}",
+		"arguments = {",
+		"/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay",
+		"--owner-uid",
+		"501",
+		"--policy-fingerprint",
+		request.PolicyFingerprint(),
+		"--http-upstream",
+		request.HTTPUpstream().String(),
+		"--https-upstream",
+		request.HTTPSUpstream().String(),
+		"}",
+		"default environment = {",
+		"PATH => /usr/bin:/bin:/usr/sbin:/sbin",
+		"}",
+		"environment = {",
+		"HARBOR_INSTALLATION_ID => " + request.InstallationID(),
+		"XPC_SERVICE_NAME => " + darwinLabel,
+		"}",
+		"domain = system",
+		"minimum runtime = 10",
+		"exit timeout = 5",
+		"runs = 0",
+		"last exit code = 0",
+		"sockets = {",
+		"\"HTTP\" = {",
+		"type = stream",
+		"node name = 127.0.0.1",
+		"service name = 80",
+		"sockets = {",
+		"40 (no bytes to read)",
+		"}",
+		"active = 0",
+		"passive = 0",
+		"bonjour = 0",
+		"ipv4v6 = 0",
+		"receive_packet_info = 0",
+		"}",
+		"\"HTTPS\" = {",
+		"type = stream",
+		"node name = 127.0.0.1",
+		"service name = 443",
+		"sockets = {",
+		"41 (no bytes to read)",
+		"}",
+		"active = 0",
+		"passive = 0",
+		"bonjour = 0",
+		"ipv4v6 = 0",
+		"receive_packet_info = 0",
+		"}",
+		"}",
+		"spawn type = daemon",
+		"jetsam priority = 40",
+		"jetsam memory limit (active) = (unlimited)",
+		"jetsam memory limit (inactive) = (unlimited)",
+		"jetsamproperties category = daemon",
+		"jetsam thread limit = 32",
+		"cpumon = default",
+		"probabilistic guard malloc policy = {",
+		"}",
+		"properties = runatload | inferred program | system service | tle system",
+		"}",
 	}, "\n")
 }
 
