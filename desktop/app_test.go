@@ -4324,6 +4324,71 @@ func TestRemoveOldNetworkingRepairsStaleHelperOnce(t *testing.T) {
 	}
 }
 
+// TestRemoveOldNetworkingReplacesHelperMissingRetirementOperation upgrades a helper installed before the retirement ticket existed.
+func TestRemoveOldNetworkingReplacesHelperMissingRetirementOperation(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	confirmation := testNetworkResolverPolicyMigrationConfirmation(client.migration, 13, 14)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{execute: func(_ context.Context, call int, _ networkresolverpolicymigrationapproval.Request) (networkresolverpolicymigrationapproval.Outcome, error) {
+		if call == 1 {
+			return networkresolverpolicymigrationapproval.Outcome{
+				State: networkresolverpolicymigrationapproval.HelperFailed,
+				HelperFailure: &networkresolverpolicymigrationapproval.HelperFailure{
+					Code:    helper.ErrorCodeInvalidTicket,
+					Message: "ticket operation is not allowlisted",
+				},
+			}, nil
+		}
+		return networkresolverpolicymigrationapproval.Outcome{
+			State:        networkresolverpolicymigrationapproval.Succeeded,
+			Confirmation: &confirmation,
+		}, nil
+	}}
+	ensurer := &fakeNetworkPrerequisiteEnsurer{}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+	app.setupPrerequisite = ensurer
+
+	if _, err := app.RemoveOldNetworking(); err != nil {
+		t.Fatalf("RemoveOldNetworking() error = %v", err)
+	}
+	if ensurer.calls != 1 || len(runner.requests) != 2 || runner.requests[0] != runner.requests[1] {
+		t.Fatalf("repair/approval requests = %d/%#v", ensurer.calls, runner.requests)
+	}
+}
+
+// TestRemoveOldNetworkingDoesNotReplaceHelperForOtherInvalidTickets keeps issuer defects outside the installer repair boundary.
+func TestRemoveOldNetworkingDoesNotReplaceHelperForOtherInvalidTickets(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	client.migration = testNetworkResolverPolicyMigrationOperation(domain.OperationRequiresApproval, 11)
+	runner := &fakeNetworkResolverPolicyMigrationApprovalRunner{
+		outcome: networkresolverpolicymigrationapproval.Outcome{
+			State: networkresolverpolicymigrationapproval.HelperFailed,
+			HelperFailure: &networkresolverpolicymigrationapproval.HelperFailure{
+				Code:    helper.ErrorCodeInvalidTicket,
+				Message: "network-policy ownership requires a canonical policy fingerprint",
+			},
+		},
+	}
+	ensurer := &fakeNetworkPrerequisiteEnsurer{}
+	app.migrationApproval = func(networkresolverpolicymigrationapproval.Client) networkResolverPolicyMigrationApprovalRunner {
+		return runner
+	}
+	app.setupPrerequisite = ensurer
+
+	if _, err := app.RemoveOldNetworking(); err == nil || !strings.Contains(err.Error(), "canonical policy fingerprint") {
+		t.Fatalf("RemoveOldNetworking() error = %v, want original invalid ticket failure", err)
+	}
+	if ensurer.calls != 0 || len(runner.requests) != 1 {
+		t.Fatalf("repair/approval requests = %d/%#v, want 0/1", ensurer.calls, runner.requests)
+	}
+}
+
 // TestRemoveOldNetworkingRecoversIndeterminateApprovalByReplayingStart lets the coordinator report already-applied completion.
 func TestRemoveOldNetworkingRecoversIndeterminateApprovalByReplayingStart(t *testing.T) {
 	t.Parallel()

@@ -1468,9 +1468,15 @@ func networkResolverPolicyMigrationNeedsPrerequisiteRepair(outcome networkresolv
 			(wireError.Code == rpc.ErrorCodePrivilegedHelperRequired || wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe)
 	}
 	if outcome.State == networkresolverpolicymigrationapproval.HelperFailed && outcome.HelperFailure != nil {
-		return outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed
+		return networkResolverPolicyMigrationHelperNeedsRepair(*outcome.HelperFailure)
 	}
 	return outcome.State == networkresolverpolicymigrationapproval.Unavailable
+}
+
+// networkResolverPolicyMigrationHelperNeedsRepair confines replacement to failures that prove the installed fixed helper predates current authority.
+func networkResolverPolicyMigrationHelperNeedsRepair(failure networkresolverpolicymigrationapproval.HelperFailure) bool {
+	return failure.Code == helper.ErrorCodeAuthenticationFailed ||
+		(failure.Code == helper.ErrorCodeInvalidTicket && failure.Message == "ticket operation is not allowlisted")
 }
 
 // networkResolverPolicyMigrationNeedsReplay permits one coordinator replay only after uncertain helper progress.
@@ -1498,6 +1504,12 @@ func networkResolverPolicyMigrationPrerequisiteVerificationError(outcome network
 	}
 	if outcome.State == networkresolverpolicymigrationapproval.HelperFailed && outcome.HelperFailure != nil && outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed {
 		return errors.New("verify Harbor privileged networking support after installation: the installed helper could not authenticate a newly issued ticket")
+	}
+	if outcome.State == networkresolverpolicymigrationapproval.HelperFailed &&
+		outcome.HelperFailure != nil &&
+		outcome.HelperFailure.Code == helper.ErrorCodeInvalidTicket &&
+		outcome.HelperFailure.Message == "ticket operation is not allowlisted" {
+		return errors.New("verify Harbor privileged networking support after installation: the installed helper still does not recognize resolver retirement")
 	}
 	return errors.New("verify Harbor privileged networking support after installation: the result was inconsistent")
 }
