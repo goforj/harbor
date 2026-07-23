@@ -87,6 +87,10 @@ func init() {
 	if mode == "ignore" {
 		signalIgnoreTermination()
 	}
+	if mode == "silent-wait" {
+		waitForTerminationSignal()
+		os.Exit(0)
+	}
 	workingDirectory, err := os.Getwd()
 	if err != nil {
 		os.Exit(91)

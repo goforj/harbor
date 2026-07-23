@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -88,14 +87,14 @@ func (spec OutputBrokerLaunchSpec) Validate() error {
 
 // OutputBrokerAttachment receives journal records after a broker has adopted the child output pipes.
 //
-// Close retires the attachment transport and any broker process owned by that attachment. It must not
-// signal, kill, or reap the managed child.
+// Close retires only the attachment transport. The broker continues draining the child output pipes until
+// they reach EOF, so losing diagnostics cannot acquire either broker or child lifecycle authority.
 type OutputBrokerAttachment interface {
 	// Peer returns the exact broker process evidence authenticated by the launcher.
 	Peer() OutputBrokerPeer
 	// Receive waits for the next replay/live record or returns a terminal attachment error.
 	Receive(context.Context) (OutputBrokerRecord, error)
-	// Close retires the attachment transport and broker-owned process without acquiring child lifecycle authority.
+	// Close retires only the attachment transport.
 	Close() error
 }
 
@@ -124,23 +123,16 @@ func readOutputBrokerAttachment(
 	attachment OutputBrokerAttachment,
 	relay *outputRelay,
 	readers *sync.WaitGroup,
-	onFailure func(),
 ) {
 	defer readers.Done()
 	defer attachment.Close()
 	for {
 		record, err := attachment.Receive(ctx)
 		if err != nil {
-			if onFailure != nil && !errors.Is(err, io.EOF) {
-				onFailure()
-			}
 			return
 		}
 		if err := record.Validate(); err != nil {
 			relay.dropped.Add(1)
-			if onFailure != nil {
-				onFailure()
-			}
 			return
 		}
 		if record.Gap != nil {

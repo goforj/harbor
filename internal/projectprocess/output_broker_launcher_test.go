@@ -169,11 +169,12 @@ func TestOutputBrokerProcessLauncherTransfersRealInheritedPipes(t *testing.T) {
 	if err := client.Close(); err != nil {
 		t.Fatalf("client.Close() error = %v", err)
 	}
-	if _, err := os.Stat(peer.ManifestPath); !os.IsNotExist(err) {
-		t.Fatalf("broker manifest after attachment close error = %v, want removed", err)
+	if _, err := os.Stat(peer.ManifestPath); err != nil {
+		t.Fatalf("broker manifest disappeared when only transport closed: %v", err)
 	}
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
+	waitForOutputBrokerManifestRemoval(t, peer.ManifestPath)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		snapshot, available, readErr := readOutputSpool(outputRoot, "project-real-launcher", "session-real-launcher")
@@ -286,8 +287,27 @@ func TestOutputBrokerProcessLauncherAdoptsSurvivingBroker(t *testing.T) {
 	if err := attachment.Close(); err != nil {
 		t.Fatalf("original attachment cleanup error = %v", err)
 	}
-	if _, err := os.Stat(peer.ManifestPath); !os.IsNotExist(err) {
-		t.Fatalf("manifest after broker cleanup error = %v, want removed", err)
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	waitForOutputBrokerManifestRemoval(t, peer.ManifestPath)
+}
+
+// waitForOutputBrokerManifestRemoval waits for inherited pipe EOF to retire the independent broker.
+func waitForOutputBrokerManifestRemoval(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("stat output broker manifest: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("output broker manifest %q was not retired after pipe EOF", path)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

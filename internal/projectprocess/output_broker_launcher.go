@@ -18,8 +18,8 @@ const outputBrokerExecutableBaseName = "outputbroker"
 
 // OutputBrokerProcessLauncher starts the standalone broker beside the Harbor daemon and attaches its stream.
 //
-// It owns only the broker process it starts. The managed GoForj process remains under Supervisor's platform
-// process boundary, and the returned attachment's Close method retires only this broker transport/process.
+// It starts the broker without transferring its lifecycle to the returned transport. The broker drains the
+// inherited pipes until EOF, while the managed project remains under Supervisor's platform process boundary.
 type OutputBrokerProcessLauncher struct {
 	executable string
 }
@@ -147,7 +147,7 @@ func (launcher *OutputBrokerProcessLauncher) Launch(ctx context.Context, spec Ou
 	removeConfig = false
 	terminate = false
 	go func() { _ = command.Wait() }()
-	return &outputBrokerProcessAttachment{client: client, process: command, manifestPath: configPath}, nil
+	return &outputBrokerProcessAttachment{client: client}, nil
 }
 
 // Adopt reattaches Harbor to a broker that survived the daemon which launched it.
@@ -355,11 +355,9 @@ func (process *outputBrokerProcess) PID() int {
 	return process.command.Pid
 }
 
-// outputBrokerProcessAttachment couples transport cleanup to the broker process it launched without acquiring child authority.
+// outputBrokerProcessAttachment owns only Harbor's client connection to a newly launched broker.
 type outputBrokerProcessAttachment struct {
-	client       *OutputBrokerClient
-	process      outputBrokerCommand
-	manifestPath string
+	client *OutputBrokerClient
 }
 
 // outputBrokerAdoptedAttachment owns only a fresh reader transport; the surviving broker remains independent.
@@ -407,22 +405,10 @@ func (attachment *outputBrokerProcessAttachment) Receive(ctx context.Context) (O
 	return attachment.client.Receive(ctx)
 }
 
-// Close retires the broker transport and only the broker process launched for that transport.
+// Close retires only this transport so a diagnostic disconnect cannot stop the broker or its managed child.
 func (attachment *outputBrokerProcessAttachment) Close() error {
-	if attachment == nil {
+	if attachment == nil || attachment.client == nil {
 		return nil
 	}
-	var closeErr error
-	if attachment.client != nil {
-		closeErr = attachment.client.Close()
-	}
-	if attachment.manifestPath != "" {
-		if err := os.Remove(attachment.manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			closeErr = errors.Join(closeErr, fmt.Errorf("retire output broker manifest: %w", err))
-		}
-	}
-	if attachment.process != nil {
-		_ = attachment.process.Terminate()
-	}
-	return closeErr
+	return attachment.client.Close()
 }

@@ -16,10 +16,11 @@ import (
 
 // supervisorOutputBrokerAttachment is a bounded test attachment whose Close method only retires transport.
 type supervisorOutputBrokerAttachment struct {
-	peer      OutputBrokerPeer
-	records   chan OutputBrokerRecord
-	closeOnce sync.Once
-	closed    chan struct{}
+	peer       OutputBrokerPeer
+	records    chan OutputBrokerRecord
+	receiveErr error
+	closeOnce  sync.Once
+	closed     chan struct{}
 }
 
 // Peer returns the deterministic broker evidence used by the supervisor seam test.
@@ -29,6 +30,9 @@ func (attachment *supervisorOutputBrokerAttachment) Peer() OutputBrokerPeer {
 
 // Receive returns one queued broker record or the attachment's terminal boundary.
 func (attachment *supervisorOutputBrokerAttachment) Receive(ctx context.Context) (OutputBrokerRecord, error) {
+	if attachment.receiveErr != nil {
+		return OutputBrokerRecord{}, attachment.receiveErr
+	}
 	select {
 	case record := <-attachment.records:
 		return record, nil
@@ -211,6 +215,51 @@ func TestSupervisorUsesOptionalOutputBrokerAttachment(t *testing.T) {
 		t.Fatalf("handle.Wait() error = %v", err)
 	}
 	waitForOutput(t, stdout, "broker-output")
+}
+
+// TestSupervisorBrokerTransportFailureDoesNotStopProject keeps optional diagnostics outside lifecycle control.
+func TestSupervisorBrokerTransportFailureDoesNotStopProject(t *testing.T) {
+	projectID := domain.ProjectID("project-broker-trace")
+	sessionID := domain.SessionID("session-broker-trace")
+	attachment := &supervisorOutputBrokerAttachment{
+		peer:       outputBrokerSupervisorTestPeer(t, projectID, sessionID),
+		receiveErr: errors.New("broker transport failed"),
+		records:    make(chan OutputBrokerRecord),
+		closed:     make(chan struct{}),
+	}
+	installForjHelper(t, "silent-wait")
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond, OutputBrokerLauncher: &supervisorOutputBrokerLauncher{attachment: attachment}})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID:            projectID,
+		SessionID:            sessionID,
+		CheckoutRoot:         t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(),
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	select {
+	case <-attachment.closed:
+	case <-time.After(time.Second):
+		t.Fatal("broker transport did not close after receive failure")
+	}
+	select {
+	case result := <-handle.Done():
+		t.Fatalf("project exited after broker transport failure: %#v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := supervisor.Stop(t.Context(), projectID, sessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	exit, err := handle.Wait(t.Context())
+	if err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if !exit.StopRequested {
+		t.Fatalf("exit = %#v, want explicit stop", exit)
+	}
 }
 
 // TestSupervisorBrokerLaunchFailureFallsBackToDirectPipes proves an optional handoff cannot block a started process.

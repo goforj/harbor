@@ -474,7 +474,7 @@ func (supervisor *Supervisor) readAdoptedOutput(key outputBrokerKey, adopted *ad
 	defer close(adopted.done)
 	var readers sync.WaitGroup
 	readers.Add(1)
-	readOutputBrokerAttachment(context.Background(), adopted.attachment, adopted.relay, &readers, nil)
+	readOutputBrokerAttachment(context.Background(), adopted.attachment, adopted.relay, &readers)
 	readers.Wait()
 	adopted.relay.finish()
 	supervisor.mu.Lock()
@@ -797,12 +797,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		pipeReaders.Add(1)
 		// The request context ends with the Start RPC; broker observation must instead last until the
 		// inherited child pipes reach EOF so a normal client disconnect cannot retire live output.
-		go readOutputBrokerAttachment(context.Background(), brokerAttachment, relay, &pipeReaders, func() {
-			alive, observeErr := process.observeTree()
-			if observeErr == nil && alive {
-				process.requestStop()
-			}
-		})
+		go readOutputBrokerAttachment(context.Background(), brokerAttachment, relay, &pipeReaders)
 	}
 	managedLaunchCleanup = false
 	go supervisor.wait(process)
