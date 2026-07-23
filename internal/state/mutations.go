@@ -111,6 +111,16 @@ func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseOwnershipAdvan
 	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
 }
 
+// mutateGlobalNetworkReleaseProjectionFinalize admits the terminal mutation that retires a global release plan and its projection together.
+func (coordinator *MutationCoordinator) mutateGlobalNetworkReleaseProjectionFinalize(
+	ctx context.Context,
+	scope string,
+	mutation func(*gorm.DB) error,
+	validate func(*gorm.DB) error,
+) error {
+	return coordinator.mutateWithAdmission(ctx, scope, nil, mutation, validate)
+}
+
 // mutateWithAdmission serializes a mutation and runs its admission proof in the same immediate transaction.
 func (coordinator *MutationCoordinator) mutateWithAdmission(
 	ctx context.Context,

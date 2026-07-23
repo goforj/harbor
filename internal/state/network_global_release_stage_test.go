@@ -272,6 +272,8 @@ func newGlobalNetworkReleaseStageFixture(t *testing.T) (*OperationJournal, *gorm
 func globalNetworkReleaseStageApplyPlanMigration(t *testing.T, connection *gorm.DB) {
 	t.Helper()
 	for _, name := range []string{
+		"2026_07_19_001556_create_helper_approval_plans",
+		"2026_07_22_020000_create_network_dataplane_setup_plans",
 		"2026_07_22_040000_create_network_global_release_plans",
 		"2026_07_22_041000_add_network_global_release_plan_checkpoint_revision",
 		"2026_07_22_042000_create_network_global_release_low_port_receipts",
@@ -281,6 +283,7 @@ func globalNetworkReleaseStageApplyPlanMigration(t *testing.T, connection *gorm.
 		"2026_07_22_046000_create_network_global_release_effects_receipts",
 		"2026_07_22_047000_create_network_global_release_ownership_receipts",
 		"2026_07_22_048000_add_network_resolver_setup_administrator_trust",
+		"2026_07_22_049000_create_network_global_release_terminals",
 	} {
 		found := false
 		for _, migration := range migrations.GetMigrations() {
@@ -323,6 +326,7 @@ func globalNetworkReleaseStageSnapshot(t *testing.T, connection *gorm.DB) map[st
 		"network_global_release_loopback_receipts",
 		"network_global_release_effects_receipts",
 		"network_global_release_ownership_receipts",
+		"network_global_release_terminals",
 	} {
 		var rows []map[string]any
 		if err := connection.Table(table).Order("rowid ASC").Find(&rows).Error; err != nil {
