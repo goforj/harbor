@@ -136,6 +136,7 @@ func init() {
 func TestDownUsesCanonicalCheckoutAndStripsManagedLaunchContext(t *testing.T) {
 	installForjHelper(t, "")
 	checkout := t.TempDir()
+	canonicalCheckout := canonicalTestPath(t, checkout)
 	observation := filepath.Join(t.TempDir(), "down-observation")
 	t.Setenv(helperDownObservationFile, observation)
 	supervisor := newTestSupervisor(Options{Environment: append(os.Environ(), ManagedLaunchContextEnvironment+"=stale-ticket")})
@@ -146,7 +147,7 @@ func TestDownUsesCanonicalCheckoutAndStripsManagedLaunchContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read reset observation: %v", err)
 	}
-	if got, want := string(contents), "down\n"+checkout+"\n"; got != want {
+	if got, want := string(contents), "down\n"+canonicalCheckout+"\n"; got != want {
 		t.Fatalf("reset command observation = %q, want %q", got, want)
 	}
 }

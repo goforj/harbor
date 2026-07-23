@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joho/godotenv"
-
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/database"
 	"github.com/goforj/harbor/internal/domain"
@@ -374,12 +372,16 @@ func runProjectLifecycleHelper() {
 		_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"supported":true,"services":[{"id":"mysql","name":"MySQL","kind":"compose","state":"ready","active":true,"required":true,"containers":[]},{"id":"old","name":"Old","kind":"compose","state":"stopped","active":false,"required":false,"containers":[]}]}`)
 		return
 	}
-	if err := godotenv.Overload(".env.host"); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
 	address := os.Getenv("IP_ADDRESS")
 	port := os.Getenv("HARBOR_PROJECT_LIFECYCLE_PORT")
+	if address != "127.0.0.1" {
+		_, _ = fmt.Fprintf(os.Stderr, "IP_ADDRESS=%q, want 127.0.0.1\n", address)
+		os.Exit(2)
+	}
+	if got := os.Getenv("API_HTTP_HOST"); got != address {
+		_, _ = fmt.Fprintf(os.Stderr, "API_HTTP_HOST=%q, want %q\n", got, address)
+		os.Exit(2)
+	}
 	if got := os.Getenv("DEV_SERVICE_IP_ADDRESS"); got != address {
 		_, _ = fmt.Fprintf(os.Stderr, "DEV_SERVICE_IP_ADDRESS=%q, want %q\n", got, address)
 		os.Exit(2)
