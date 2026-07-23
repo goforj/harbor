@@ -153,10 +153,11 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByText('This action is safe to run again.', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: 'Set up project addressing', exact: true }).click()
+  await page.getByRole('button', { name: 'Set up secure networking', exact: true }).click()
 
-  await expect(page.getByText('Harbor’s loopback address pool is ready.', { exact: true })).toBeVisible()
-  await expect(page.getByText('Harbor verified or reserved its loopback address pool.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Harbor’s secure, trusted local ingress is ready.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Secure networking is ready', { exact: true })).toBeVisible()
+  await expect(page.getByText('Harbor completed trusted local DNS, HTTPS, and ingress.', { exact: true })).toBeVisible()
   await expect.poll(() => page.evaluate(() => (window as typeof window & { networkSetupCalls: number }).networkSetupCalls)).toBe(1)
 })
 
