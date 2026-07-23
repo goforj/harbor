@@ -210,6 +210,7 @@ export const useHarborStore = defineStore('harbor', () => {
     discardProjectRuntimeRepair()
     connectionEpoch += 1
     statusRequest += 1
+    daemonStatus.value = null
     connectionState.value = event.state
     snapshotStale.value = true
     snapshotNeedsBaseline = true
@@ -276,6 +277,7 @@ export const useHarborStore = defineStore('harbor', () => {
       && statusRequestForRefresh === statusRequest) {
       connectionEpoch += 1
       statusRequest += 1
+      daemonStatus.value = null
       connectionState.value = 'disconnected'
       snapshotStale.value = true
       snapshotNeedsBaseline = true

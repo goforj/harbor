@@ -341,9 +341,44 @@ describe('Harbor store', () => {
     previousConnection.resolve(statusWithSequence(99))
     await Promise.resolve()
 
-    expect(store.daemonStatus?.sequence).toBe(42)
+    expect(store.daemonStatus).toBeNull()
     expect(store.connectionState).toBe('disconnected')
     expect(store.snapshotStale).toBe(true)
+  })
+
+  it('does not retain old networking removal capability while a new connection status is pending', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    const store = useHarborStore()
+    await store.initialize()
+    store.$patch({
+      daemonStatus: {
+        ...store.daemonStatus!,
+        capabilities: ['control.network-resolver-policy-migration.v1'],
+      },
+    })
+    const freshStatus = deferred<DaemonStatus>()
+    vi.spyOn(harborBridge, 'getStatus').mockReturnValueOnce(freshStatus.promise)
+    const removeOldNetworking = vi.spyOn(harborBridge, 'removeOldNetworking')
+
+    expect(store.oldNetworkingRemovalAvailable).toBe(true)
+    connectionListener?.({ state: 'disconnected' })
+    connectionListener?.({ state: 'connected' })
+
+    expect(store.oldNetworkingRemovalAvailable).toBe(false)
+    await expect(store.removeOldNetworking()).resolves.toBeNull()
+    expect(removeOldNetworking).not.toHaveBeenCalled()
+
+    freshStatus.resolve({
+      ...mockStatus(),
+      capabilities: [],
+    })
+    await Promise.resolve()
+
+    expect(store.oldNetworkingRemovalAvailable).toBe(false)
   })
 
   it('clears a connection error when a valid event recovers state', async () => {
