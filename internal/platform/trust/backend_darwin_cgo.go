@@ -906,6 +906,39 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 		return trust_state;
 	}
 	OSStatus status = errSecSuccess;
+	if (root_state == 1) {
+		status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
+		if (status == errSecItemNotFound) {
+			*stale = 1;
+			CFRelease(certificate);
+			return errSecSuccess;
+		}
+		if (status != errSecSuccess) {
+			CFRelease(certificate);
+			return status;
+		}
+		root_state = harbor_admin_root_certificate_state(der, der_length, root_label, root_label_length);
+		if (root_state != 0) {
+			CFRelease(certificate);
+			if (root_state == 1 || root_state == errSecDuplicateItem) {
+				*stale = 1;
+				return errSecSuccess;
+			}
+			return root_state;
+		}
+		// Deleting the exact System.keychain item also deletes its trust settings.
+		// Avoiding a separate removal keeps headless cleanup out of Authorization Services UI.
+		trust_state = harbor_trust_admin_root_state(der, der_length);
+		if (trust_state == 2) {
+			*stale = 1;
+			CFRelease(certificate);
+			return errSecSuccess;
+		}
+		if (trust_state != 0 && trust_state != 1) {
+			CFRelease(certificate);
+			return trust_state;
+		}
+	}
 	if (trust_state == 1) {
 		trust_state = harbor_trust_admin_root_state(der, der_length);
 		if (trust_state != 1) {
@@ -917,18 +950,6 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 			return trust_state;
 		}
 		status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainAdmin);
-		if (status == errSecItemNotFound) {
-			*stale = 1;
-			CFRelease(certificate);
-			return errSecSuccess;
-		}
-		if (status != errSecSuccess) {
-			CFRelease(certificate);
-			return status;
-		}
-	}
-	if (root_state == 1) {
-		status = harbor_admin_root_delete_certificate(der, der_length, root_label, root_label_length);
 		if (status == errSecItemNotFound) {
 			*stale = 1;
 			CFRelease(certificate);

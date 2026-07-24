@@ -76,6 +76,7 @@ func darwinAdministratorCleanupPlanFor(root darwinAdministratorArtifactState, tr
 }
 
 // canDeleteMarker reports whether the fake native helper may delete the exact marker after its guarded artifact mutations.
+// System.keychain certificate deletion removes the attached trust settings, so an exact root does not require a second trust mutation.
 func (plan darwinAdministratorCleanupPlan) canDeleteMarker(
 	rootResult darwinAdministratorArtifactRemovalResult,
 	trustBeforeRemoval darwinAdministratorArtifactState,
@@ -83,6 +84,9 @@ func (plan darwinAdministratorCleanupPlan) canDeleteMarker(
 ) bool {
 	if plan.stale || (plan.removeRoot && rootResult != darwinAdministratorArtifactRemoved) {
 		return false
+	}
+	if plan.removeRoot {
+		return plan.removeMarker
 	}
 	if !plan.removeTrust {
 		return plan.removeMarker
@@ -401,11 +405,10 @@ func TestDarwinAdministratorCleanupDecisionRejectsConcurrentArtifactChanges(t *t
 			wantDeleteMarker:   true,
 		},
 		{
-			name:               "both exact",
-			root:               darwinAdministratorArtifactExact,
-			trust:              darwinAdministratorArtifactExact,
-			trustBeforeRemoval: darwinAdministratorArtifactExact,
-			wantDeleteMarker:   true,
+			name:             "root deletion cascades exact settings removal",
+			root:             darwinAdministratorArtifactExact,
+			trust:            darwinAdministratorArtifactExact,
+			wantDeleteMarker: true,
 		},
 		{
 			name: "drifted root",
