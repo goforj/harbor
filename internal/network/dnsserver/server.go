@@ -653,11 +653,11 @@ func (s *Server) responseFor(request *dns.Msg) *dns.Msg {
 	_, exists := snapshot.existing[name]
 	if !exists {
 		response.Rcode = dns.RcodeNameError
-		response.Ns = []dns.RR{soaRecord(snapshot.ttl)}
+		response.Ns = []dns.RR{negativeSOARecord()}
 		return response
 	}
 	if name == "test" && (question.Qtype == dns.TypeSOA || question.Qtype == dns.TypeANY) {
-		response.Answer = []dns.RR{soaRecord(snapshot.ttl)}
+		response.Answer = []dns.RR{soaRecord(snapshot.ttl, uint32(NegativeTTL/time.Second))}
 		return response
 	}
 	if found && (question.Qtype == dns.TypeA || question.Qtype == dns.TypeANY) {
@@ -672,12 +672,18 @@ func (s *Server) responseFor(request *dns.Msg) *dns.Msg {
 		}}
 		return response
 	}
-	response.Ns = []dns.RR{soaRecord(snapshot.ttl)}
+	response.Ns = []dns.RR{negativeSOARecord()}
 	return response
 }
 
-// soaRecord supplies the negative-cache boundary required by authoritative `.test` responses.
-func soaRecord(ttl uint32) *dns.SOA {
+// negativeSOARecord keeps dynamic name misses authoritative without retaining them across route publication.
+func negativeSOARecord() *dns.SOA {
+	ttl := uint32(NegativeTTL / time.Second)
+	return soaRecord(ttl, ttl)
+}
+
+// soaRecord supplies the cache boundaries required by authoritative `.test` responses.
+func soaRecord(ttl uint32, minimumTTL uint32) *dns.SOA {
 	return &dns.SOA{
 		Hdr: dns.RR_Header{
 			Name:   testZoneName,
@@ -691,7 +697,7 @@ func soaRecord(ttl uint32) *dns.SOA {
 		Refresh: 60,
 		Retry:   60,
 		Expire:  uint32(MaxTTL / time.Second),
-		Minttl:  ttl,
+		Minttl:  minimumTTL,
 	}
 }
 

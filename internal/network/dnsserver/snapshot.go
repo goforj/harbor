@@ -16,6 +16,8 @@ const (
 	MaxTTL = 5 * time.Minute
 	// DefaultTTL balances local endpoint changes with ordinary resolver traffic.
 	DefaultTTL = 30 * time.Second
+	// NegativeTTL prevents a startup miss from outliving a newly published local route.
+	NegativeTTL time.Duration = 0
 )
 
 // Record maps one canonical, exact .test name to an IPv4 loopback address.

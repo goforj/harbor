@@ -74,6 +74,13 @@ func TestServerResponsePolicy(t *testing.T) {
 			if gotSOA := len(response.Ns) == 1 && response.Ns[0].Header().Rrtype == dns.TypeSOA; gotSOA != test.wantSOA {
 				t.Errorf("SOA authority = %t, want %t; authority = %#v", gotSOA, test.wantSOA, response.Ns)
 			}
+			if test.wantSOA {
+				soa := response.Ns[0].(*dns.SOA)
+				wantNegativeTTL := uint32(NegativeTTL / time.Second)
+				if soa.Hdr.Ttl != wantNegativeTTL || soa.Minttl != wantNegativeTTL {
+					t.Errorf("negative SOA TTLs = %d/%d, want %d", soa.Hdr.Ttl, soa.Minttl, wantNegativeTTL)
+				}
+			}
 		})
 	}
 }
@@ -97,9 +104,43 @@ func TestServerPreservesZoneAndEmptyNonterminalExistence(t *testing.T) {
 		t.Fatalf("zone SOA response = %#v", response)
 	}
 	soa := response.Answer[0].(*dns.SOA)
-	if soa.Hdr.Ttl != uint32(DefaultTTL/time.Second) || soa.Minttl != uint32(DefaultTTL/time.Second) {
-		t.Errorf("zone SOA TTLs = %d/%d, want %d", soa.Hdr.Ttl, soa.Minttl, uint32(DefaultTTL/time.Second))
+	if soa.Hdr.Ttl != uint32(DefaultTTL/time.Second) || soa.Minttl != uint32(NegativeTTL/time.Second) {
+		t.Errorf(
+			"zone SOA TTLs = %d/%d, want %d/%d",
+			soa.Hdr.Ttl,
+			soa.Minttl,
+			uint32(DefaultTTL/time.Second),
+			uint32(NegativeTTL/time.Second),
+		)
 	}
+}
+
+// TestServerPublishesARecordImmediatelyAfterNameMiss proves a dynamic route is not held behind negative DNS caching.
+func TestServerPublishesARecordImmediatelyAfterNameMiss(t *testing.T) {
+	server, address := startTestServer(t, nil, DefaultTTL)
+	response := exchange(t, address, "udp", "orders.test.", dns.TypeA, dns.ClassINET)
+	if response.Rcode != dns.RcodeNameError || len(response.Ns) != 1 {
+		t.Fatalf("missing route response = %#v, want authoritative NXDOMAIN", response)
+	}
+	soa := response.Ns[0].(*dns.SOA)
+	if soa.Hdr.Ttl != 0 || soa.Minttl != 0 {
+		t.Fatalf("missing route SOA TTLs = %d/%d, want 0/0", soa.Hdr.Ttl, soa.Minttl)
+	}
+
+	replacement := mustSnapshot(
+		t,
+		[]Record{{Name: "orders.test", Address: netip.MustParseAddr("127.0.0.1")}},
+		DefaultTTL,
+	)
+	if err := server.Replace(replacement); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	assertAResponse(
+		t,
+		exchange(t, address, "udp", "orders.test.", dns.TypeA, dns.ClassINET),
+		"127.0.0.1",
+		uint32(DefaultTTL/time.Second),
+	)
 }
 
 // TestServerCompressesMaximumNameResponses keeps legacy UDP replies within their advertised limit.
