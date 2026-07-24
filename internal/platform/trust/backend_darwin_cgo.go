@@ -27,6 +27,7 @@ extern OSStatus SecTrustSettingsXPCWrite(CFStringRef domain, CFDataRef authoriza
 extern HarborSecTrustStoreRef SecTrustStoreForDomain(uint32_t domain);
 extern OSStatus SecTrustStoreRemoveCertificate(HarborSecTrustStoreRef store, SecCertificateRef certificate);
 extern CFStringRef SecTrustSettingsCertHashStrFromCert(SecCertificateRef certificate);
+extern void SecTrustSettingsPurgeCache(void);
 
 static int harbor_trust_append(uint8_t **buffer, size_t *length, size_t *capacity, const void *value, size_t value_length) {
 	if (value_length > SIZE_MAX - sizeof(uint32_t) || *length > SIZE_MAX - sizeof(uint32_t) - value_length) {
@@ -945,7 +946,7 @@ static int harbor_trust_remove_admin_root_with_config_right(SecCertificateRef ce
 			CFRelease(property_error);
 		}
 		if (updated_data == NULL) {
-			status = errSecEncode;
+			status = errSecDecode;
 			goto cleanup;
 		}
 	}
