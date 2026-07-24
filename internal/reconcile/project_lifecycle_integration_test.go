@@ -112,6 +112,7 @@ type projectLifecycleRecordingRouteReconciler struct {
 	store     *state.Store
 	projectID domain.ProjectID
 	mutex     sync.Mutex
+	events    []string
 	states    []domain.ProjectState
 }
 
@@ -122,18 +123,29 @@ func (reconciler *projectLifecycleRecordingRouteReconciler) Reconcile(ctx contex
 		return err
 	}
 	reconciler.mutex.Lock()
+	reconciler.events = append(reconciler.events, "http:"+string(record.Project.State))
 	reconciler.states = append(reconciler.states, record.Project.State)
 	reconciler.mutex.Unlock()
 	return nil
 }
 
-// ReconcileProjectNativeRoutes accepts native publication after the durable state recorder sees readiness.
-func (*projectLifecycleRecordingRouteReconciler) ReconcileProjectNativeRoutes(
+// ReconcileProjectNativeRoutes records native publication ordering after durable readiness.
+func (reconciler *projectLifecycleRecordingRouteReconciler) ReconcileProjectNativeRoutes(
 	context.Context,
 	domain.ProjectID,
 	[]dataplane.NativeRoute,
 ) error {
+	reconciler.mutex.Lock()
+	reconciler.events = append(reconciler.events, "native")
+	reconciler.mutex.Unlock()
 	return nil
+}
+
+// Events returns a defensive copy of route publication ordering.
+func (reconciler *projectLifecycleRecordingRouteReconciler) Events() []string {
+	reconciler.mutex.Lock()
+	defer reconciler.mutex.Unlock()
+	return slices.Clone(reconciler.events)
 }
 
 // States returns a defensive copy of the observed lifecycle edges.
@@ -695,6 +707,9 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 		t.Fatalf("start operation = %#v, %v", startOperation, err)
 	}
 	waitForProjectLifecycleRouteStates(t, routes, []domain.ProjectState{domain.ProjectStarting, domain.ProjectReady})
+	if events := routes.Events(); !slices.Equal(events, []string{"http:starting", "native", "http:ready"}) {
+		t.Fatalf("start route publication order = %v, want native DNS before ready HTTP publication", events)
+	}
 
 	restarting, err := coordinator.Restart(t.Context(), ProjectRestartRequest{
 		ProjectID: project.ID, OperationID: "operation-restart", IntentID: "intent-restart",

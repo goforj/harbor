@@ -843,9 +843,6 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				return
 			}
 			completionSession = *completed.Session
-			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
-				coordinator.recordAsyncError(err)
-			}
 			if err := coordinator.reconcileObservedNativeServiceRoutes(
 				coordinator.ctx,
 				completed.Project.Project,
@@ -854,6 +851,9 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				runtime.Services,
 				runtime.Resources,
 			); err != nil {
+				coordinator.recordAsyncError(err)
+			}
+			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
 				coordinator.recordAsyncError(err)
 			}
 			coordinator.startReadyServiceWatcher(completed.Project, completionSession, handle, plan)
