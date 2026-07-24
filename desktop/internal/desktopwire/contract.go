@@ -199,7 +199,7 @@ type AppContract interface {
 	Status() (control.DaemonStatus, error)
 	StopProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
 	RestartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
-	StartProjectTerminal(projectID string, columns uint16, rows uint16) (ProjectTerminalStarted, error)
+	StartProjectTerminal(projectID string, columns uint16, rows uint16, useEnvironmentOverrides bool) (ProjectTerminalStarted, error)
 	AttachProjectTerminal(sessionID string) error
 	WriteProjectTerminal(sessionID string, data string) error
 	ResizeProjectTerminal(sessionID string, columns uint16, rows uint16) error
@@ -238,7 +238,7 @@ func MethodContracts() []MethodContract {
 		MethodStatus:                      []string{},
 		MethodStopProject:                 []string{"projectId", "intentId"},
 		MethodRestartProject:              []string{"projectId", "intentId"},
-		MethodStartProjectTerminal:        []string{"projectId", "columns", "rows"},
+		MethodStartProjectTerminal:        []string{"projectId", "columns", "rows", "useEnvironmentOverrides"},
 		MethodAttachProjectTerminal:       []string{"sessionId"},
 		MethodWriteProjectTerminal:        []string{"sessionId", "data"},
 		MethodResizeProjectTerminal:       []string{"sessionId", "columns", "rows"},

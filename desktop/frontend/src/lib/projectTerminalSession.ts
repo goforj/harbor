@@ -19,6 +19,7 @@ export class ProjectTerminalSession implements TerminalSession {
   constructor(
     private readonly bridge: HarborBridge,
     private readonly projectId: string,
+    private readonly useEnvironmentOverrides: boolean,
   ) {}
 
   // start opens the native PTY once and catches events that race the Wails response.
@@ -82,6 +83,7 @@ export class ProjectTerminalSession implements TerminalSession {
         this.projectId,
         startedDimensions.cols,
         startedDimensions.rows,
+        this.useEnvironmentOverrides,
       )
       this.sessionId = started.session_id
 

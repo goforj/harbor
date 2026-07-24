@@ -10,14 +10,20 @@ import { useHarborStore } from '@/stores/harbor'
 import ProjectView from './ProjectView.vue'
 
 const terminalSessions = vi.hoisted(() => {
-  const sessions: Array<{ close: ReturnType<typeof vi.fn>, projectId: string }> = []
+  const sessions: Array<{
+    close: ReturnType<typeof vi.fn>
+    projectId: string
+    useEnvironmentOverrides: boolean
+  }> = []
 
   class ProjectTerminalSession {
     readonly close = vi.fn()
     readonly projectId: string
+    readonly useEnvironmentOverrides: boolean
 
-    constructor(_bridge: unknown, projectId: string) {
+    constructor(_bridge: unknown, projectId: string, useEnvironmentOverrides: boolean) {
       this.projectId = projectId
+      this.useEnvironmentOverrides = useEnvironmentOverrides
       sessions.push(this)
     }
   }
@@ -341,6 +347,24 @@ describe('ProjectView service connections', () => {
 })
 
 describe('ProjectView interactive terminal', () => {
+  it('uses project environment overrides by default and lets new terminals opt out from the title bar', async () => {
+    const { wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+    expect(terminalSessions.sessions[0]?.useEnvironmentOverrides).toBe(true)
+
+    const environmentOverrides = wrapper.get('[aria-label="Use environment overrides for new terminals"]')
+    expect(environmentOverrides.attributes('data-state')).toBe('checked')
+    await environmentOverrides.trigger('click')
+    await wrapper.get('button[aria-label="New terminal"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(environmentOverrides.attributes('data-state')).toBe('unchecked')
+    expect(terminalSessions.sessions[1]?.useEnvironmentOverrides).toBe(false)
+    wrapper.unmount()
+  })
+
   it('creates independent named terminal tabs, switches between their mounted emulators, and closes one shell at a time', async () => {
     const { wrapper } = await mountProject('orders-api')
 

@@ -41,6 +41,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useProjectActivity } from '@/composables/useProjectActivity'
@@ -80,6 +81,7 @@ interface ProjectTerminalWorkspace {
   projectName: string
   selectedTabID: number | null
   tabs: ProjectTerminalTab[]
+  useEnvironmentOverrides: boolean
 }
 
 const projectTerminalWorkspaces = shallowReactive(new Map<string, ProjectTerminalWorkspace>())
@@ -100,6 +102,12 @@ const selectedProjectTerminalTabID = computed<number | null>({
 const selectedProjectTerminalTab = computed(() => projectTerminalTabs.value.find(
   (tab) => tab.id === selectedProjectTerminalTabID.value,
 ))
+const projectTerminalUsesEnvironmentOverrides = computed({
+  get: () => currentProjectTerminalWorkspace.value?.useEnvironmentOverrides ?? true,
+  set: (enabled: boolean) => {
+    projectTerminalWorkspace(projectId.value).useEnvironmentOverrides = enabled
+  },
+})
 const closingProjectTerminalCount = projectTerminalCleanup.pendingCount
 const closingProjectTerminalInFlight = projectTerminalCleanup.inFlightCount
 const failedProjectTerminalCloseCount = projectTerminalCleanup.failedCount
@@ -214,6 +222,7 @@ function projectTerminalWorkspace(selectedProjectID: string) {
     projectName: store.projectById(selectedProjectID)?.name ?? selectedProjectID,
     selectedTabID: null,
     tabs: [],
+    useEnvironmentOverrides: true,
   })
   projectTerminalWorkspaces.set(selectedProjectID, workspace)
   return workspace
@@ -229,7 +238,11 @@ function createProjectTerminalTab(selectedProjectID = projectId.value) {
     error: null,
     id,
     name: `Terminal ${id}`,
-    session: new ProjectTerminalSession(harborBridge, selectedProjectID),
+    session: new ProjectTerminalSession(
+      harborBridge,
+      selectedProjectID,
+      workspace.useEnvironmentOverrides,
+    ),
   }
   workspace.tabs = [...workspace.tabs, tab]
   workspace.selectedTabID = id
@@ -781,26 +794,39 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
 
         <TabsContent value="terminal" force-mount class="m-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
           <Card class="flex min-h-[28rem] flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
-            <div class="flex h-11 w-full shrink-0 items-center justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7" role="tablist" aria-label="Project terminal sessions">
-              <div
-                v-for="tab in projectTerminalTabs"
-                :key="tab.id"
-                class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
-                :data-state="selectedProjectTerminalTabID === tab.id ? 'active' : 'inactive'"
-              >
-                <button type="button" role="tab" class="h-full text-sm font-medium" :aria-selected="selectedProjectTerminalTabID === tab.id" @click="selectedProjectTerminalTabID = tab.id">{{ tab.name }}</button>
-                <button type="button" class="ml-1 rounded-sm p-1 text-muted-foreground hover:text-foreground" :aria-label="`Close ${tab.name}`" @click="closeProjectTerminalTab(tab.id)"><X class="size-3" /></button>
+            <div class="flex h-11 w-full shrink-0 items-center rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
+              <div class="flex h-11 min-w-0 flex-1 items-center gap-5 overflow-x-auto" role="tablist" aria-label="Project terminal sessions">
+                <div
+                  v-for="tab in projectTerminalTabs"
+                  :key="tab.id"
+                  class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
+                  :data-state="selectedProjectTerminalTabID === tab.id ? 'active' : 'inactive'"
+                >
+                  <button type="button" role="tab" class="h-full text-sm font-medium" :aria-selected="selectedProjectTerminalTabID === tab.id" @click="selectedProjectTerminalTabID = tab.id">{{ tab.name }}</button>
+                  <button type="button" class="ml-1 rounded-sm p-1 text-muted-foreground hover:text-foreground" :aria-label="`Close ${tab.name}`" @click="closeProjectTerminalTab(tab.id)"><X class="size-3" /></button>
+                </div>
+                <button
+                  type="button"
+                  class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="New terminal"
+                  :disabled="closingProjectTerminalCount > 0 || projectTerminalCount >= projectTerminalLimit"
+                  :title="projectTerminalCount >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
+                  @click="createProjectTerminalTab()"
+                >
+                  <Plus class="size-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label="New terminal"
-                :disabled="closingProjectTerminalCount > 0 || projectTerminalCount >= projectTerminalLimit"
-                :title="projectTerminalCount >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
-                @click="createProjectTerminalTab()"
+              <label
+                class="ml-5 flex shrink-0 cursor-pointer items-center gap-2 text-xs text-muted-foreground"
+                title="Apply Harbor's resolved project environment to new terminal sessions."
               >
-                <Plus class="size-4" />
-              </button>
+                <Checkbox
+                  :model-value="projectTerminalUsesEnvironmentOverrides"
+                  aria-label="Use environment overrides for new terminals"
+                  @update:model-value="projectTerminalUsesEnvironmentOverrides = $event === true"
+                />
+                Environment overrides
+              </label>
             </div>
             <CardContent class="flex min-h-0 flex-1 flex-col p-0">
               <div v-if="selectedProjectTerminalTab?.error || projectTerminalCleanupError" class="flex items-center justify-between gap-3 border-b px-4 py-2 text-xs text-destructive">

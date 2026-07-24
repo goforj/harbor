@@ -8,12 +8,38 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
 
 // ErrInvalidSize reports an attempt to resize a terminal to an unusable size.
 var ErrInvalidSize = errors.New("terminal size must have at least one row and column")
+
+// EnvironmentOverrides contains the exact project values Harbor elects to add to a terminal.
+type EnvironmentOverrides map[string]string
+
+// Validate reports whether every override can cross the process environment boundary.
+func (overrides EnvironmentOverrides) Validate() error {
+	for name, value := range overrides {
+		if err := validateEnvironmentName(name); err != nil {
+			return err
+		}
+		if strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("project terminal environment override %q contains NUL", name)
+		}
+	}
+	return nil
+}
+
+// Clone prevents caller mutation from changing an accepted terminal launch.
+func (overrides EnvironmentOverrides) Clone() EnvironmentOverrides {
+	cloned := make(EnvironmentOverrides, len(overrides))
+	for name, value := range overrides {
+		cloned[name] = value
+	}
+	return cloned
+}
 
 // Session owns the pseudo-terminal and login shell started for a project.
 type Session struct {
@@ -34,13 +60,16 @@ type Session struct {
 // projectDirectory must be an existing canonical absolute directory. Requiring
 // the canonical spelling prevents a terminal from silently operating in a
 // different checkout through a relative path or symlink.
-func Start(projectDirectory string) (*Session, error) {
+func Start(projectDirectory string, overrides EnvironmentOverrides) (*Session, error) {
+	if err := overrides.Validate(); err != nil {
+		return nil, err
+	}
 	shell, err := loginShell()
 	if err != nil {
 		return nil, err
 	}
 
-	return startPlatform(projectDirectory, shell)
+	return startPlatform(projectDirectory, shell, overrides.Clone())
 }
 
 // Read reads terminal output.
@@ -191,12 +220,12 @@ func loginShell() (string, error) {
 	return executableShell(shell, "SHELL")
 }
 
-// terminalEnvironment returns only the environment required by an interactive user shell.
-func terminalEnvironment(shell string) []string {
-	environment := make([]string, 0, 12)
+// terminalEnvironment returns the minimal interactive shell environment plus explicit project overrides.
+func terminalEnvironment(shell string, overrides EnvironmentOverrides) []string {
+	environment := make(map[string]string, 12+len(overrides))
 	appendEnvironment := func(name string, value string) {
 		if value != "" {
-			environment = append(environment, name+"="+value)
+			environment[name] = value
 		}
 	}
 
@@ -205,7 +234,7 @@ func terminalEnvironment(shell string) []string {
 		appendEnvironment("USER", account.Username)
 		appendEnvironment("LOGNAME", account.Username)
 	}
-	if !environmentContains(environment, "HOME") {
+	if _, found := environment["HOME"]; !found {
 		appendEnvironment("HOME", os.Getenv("HOME"))
 	}
 	appendEnvironment("SHELL", shell)
@@ -223,19 +252,38 @@ func terminalEnvironment(shell string) []string {
 		}
 	}
 
-	return environment
-}
-
-// environmentContains reports whether environment already has name assigned.
-func environmentContains(environment []string, name string) bool {
-	prefix := name + "="
-	for _, entry := range environment {
-		if strings.HasPrefix(entry, prefix) {
-			return true
-		}
+	for name, value := range overrides {
+		environment[name] = value
 	}
 
-	return false
+	names := make([]string, 0, len(environment))
+	for name := range environment {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		result = append(result, name+"="+environment[name])
+	}
+	return result
+}
+
+// validateEnvironmentName requires portable process environment syntax.
+func validateEnvironmentName(name string) error {
+	if name == "" {
+		return errors.New("project terminal environment override name is required")
+	}
+	for index := range len(name) {
+		character := name[index]
+		if (character >= 'A' && character <= 'Z') ||
+			(character >= 'a' && character <= 'z') ||
+			character == '_' ||
+			(index > 0 && character >= '0' && character <= '9') {
+			continue
+		}
+		return fmt.Errorf("project terminal environment override name %q is not portable", name)
+	}
+	return nil
 }
 
 // executableShell validates a shell path before it is executed directly.

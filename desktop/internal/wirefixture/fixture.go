@@ -760,6 +760,8 @@ func typeScriptType(goType reflect.Type) (string, error) {
 	switch goType {
 	case reflect.TypeFor[string]():
 		return "string", nil
+	case reflect.TypeFor[bool]():
+		return "boolean", nil
 	case reflect.TypeFor[uint64]():
 		return "number", nil
 	case reflect.TypeFor[uint16]():

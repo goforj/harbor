@@ -14,7 +14,7 @@ func TestSessionCloseTerminatesAChildThatEscapesTheShellSession(t *testing.T) {
 		t.Skip("setsid is unavailable")
 	}
 
-	session, err := startPlatform(t.TempDir(), "/bin/sh")
+	session, err := startPlatform(t.TempDir(), "/bin/sh", nil)
 	if err != nil {
 		t.Fatalf("startPlatform() error = %v", err)
 	}

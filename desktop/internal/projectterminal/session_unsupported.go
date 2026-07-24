@@ -11,7 +11,7 @@ import (
 var ErrUnsupported = errors.New("project terminal is supported only on macOS and Linux")
 
 // startPlatform returns a clear error without starting a shell on unsupported platforms.
-func startPlatform(string, string) (*Session, error) {
+func startPlatform(string, string, EnvironmentOverrides) (*Session, error) {
 	return nil, ErrUnsupported
 }
 

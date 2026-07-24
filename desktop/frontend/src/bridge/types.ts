@@ -90,7 +90,7 @@ export interface HarborBridge {
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   restartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
-  startProjectTerminal(projectId: string, columns: number, rows: number): Promise<ProjectTerminalStarted>
+  startProjectTerminal(projectId: string, columns: number, rows: number, useEnvironmentOverrides: boolean): Promise<ProjectTerminalStarted>
   attachProjectTerminal(sessionId: string): Promise<void>
   writeProjectTerminal(sessionId: string, data: string): Promise<void>
   resizeProjectTerminal(sessionId: string, columns: number, rows: number): Promise<void>

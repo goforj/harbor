@@ -60,7 +60,7 @@ type terminalSession interface {
 }
 
 // sessionStarter opens one terminal in an already-authorized project directory.
-type sessionStarter func(string) (terminalSession, error)
+type sessionStarter func(string, EnvironmentOverrides) (terminalSession, error)
 
 // managedSession serializes input and records whether its exit was user-requested.
 type managedSession struct {
@@ -93,8 +93,8 @@ type Manager struct {
 
 // NewManager creates a desktop-local terminal owner.
 func NewManager(emit EventHandler) *Manager {
-	return newManager(func(directory string) (terminalSession, error) {
-		return Start(directory)
+	return newManager(func(directory string, overrides EnvironmentOverrides) (terminalSession, error) {
+		return Start(directory, overrides)
 	}, emit)
 }
 
@@ -111,9 +111,17 @@ func newManager(start sessionStarter, emit EventHandler) *Manager {
 	return manager
 }
 
-// Start opens one terminal in projectDirectory with an initial character grid.
-func (manager *Manager) Start(projectDirectory string, rows, columns uint16) (string, error) {
+// Start opens one terminal in projectDirectory with an initial character grid and explicit project overrides.
+func (manager *Manager) Start(
+	projectDirectory string,
+	overrides EnvironmentOverrides,
+	rows uint16,
+	columns uint16,
+) (string, error) {
 	if err := validateSize(rows, columns); err != nil {
+		return "", err
+	}
+	if err := overrides.Validate(); err != nil {
 		return "", err
 	}
 
@@ -136,7 +144,7 @@ func (manager *Manager) Start(projectDirectory string, rows, columns uint16) (st
 		manager.startWG.Done()
 	}()
 
-	session, err := manager.start(projectDirectory)
+	session, err := manager.start(projectDirectory, overrides.Clone())
 	if err != nil {
 		return "", err
 	}

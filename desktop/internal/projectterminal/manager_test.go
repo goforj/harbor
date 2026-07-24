@@ -75,9 +75,12 @@ func TestManagerRoutesBoundedSessionScopedIO(t *testing.T) {
 	terminal := newFakeTerminal()
 	events := make(chan Event, 2)
 	manager := newManager(
-		func(directory string) (terminalSession, error) {
+		func(directory string, overrides EnvironmentOverrides) (terminalSession, error) {
 			if directory != "/projects/orders" {
 				t.Fatalf("start directory = %q", directory)
+			}
+			if overrides["DB_HOST"] != "127.77.59.75" {
+				t.Fatalf("start environment DB_HOST = %q", overrides["DB_HOST"])
 			}
 			return terminal, nil
 		},
@@ -86,7 +89,12 @@ func TestManagerRoutesBoundedSessionScopedIO(t *testing.T) {
 		},
 	)
 
-	sessionID, err := manager.Start("/projects/orders", 31, 117)
+	sessionID, err := manager.Start(
+		"/projects/orders",
+		EnvironmentOverrides{"DB_HOST": "127.77.59.75"},
+		31,
+		117,
+	)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -150,13 +158,13 @@ func TestManagerExpiresAStartThatIsNeverAttached(t *testing.T) {
 
 	terminal := newFakeTerminal()
 	manager := newManager(
-		func(string) (terminalSession, error) {
+		func(string, EnvironmentOverrides) (terminalSession, error) {
 			return terminal, nil
 		},
 		func(Event) {},
 	)
 	manager.attachWait = 10 * time.Millisecond
-	sessionID, err := manager.Start("/projects/orders", 24, 80)
+	sessionID, err := manager.Start("/projects/orders", nil, 24, 80)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -185,12 +193,12 @@ func TestManagerCoalescesResizeFloods(t *testing.T) {
 
 	terminal := newFakeTerminal()
 	manager := newManager(
-		func(string) (terminalSession, error) {
+		func(string, EnvironmentOverrides) (terminalSession, error) {
 			return terminal, nil
 		},
 		func(Event) {},
 	)
-	sessionID, err := manager.Start("/projects/orders", 24, 80)
+	sessionID, err := manager.Start("/projects/orders", nil, 24, 80)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -233,7 +241,7 @@ func TestManagerCloseDoesNotWaitForBlockedEventDelivery(t *testing.T) {
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	manager := newManager(
-		func(string) (terminalSession, error) {
+		func(string, EnvironmentOverrides) (terminalSession, error) {
 			return terminal, nil
 		},
 		func(Event) {
@@ -245,7 +253,7 @@ func TestManagerCloseDoesNotWaitForBlockedEventDelivery(t *testing.T) {
 			<-releaseHandler
 		},
 	)
-	sessionID, err := manager.Start("/projects/orders", 24, 80)
+	sessionID, err := manager.Start("/projects/orders", nil, 24, 80)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -277,15 +285,15 @@ func TestManagerRejectsRendererResourceAbuse(t *testing.T) {
 	t.Parallel()
 
 	manager := newManager(
-		func(string) (terminalSession, error) {
+		func(string, EnvironmentOverrides) (terminalSession, error) {
 			return newFakeTerminal(), nil
 		},
 		func(Event) {},
 	)
-	if _, err := manager.Start("/projects/orders", 0, 80); !errors.Is(err, ErrInvalidSize) {
+	if _, err := manager.Start("/projects/orders", nil, 0, 80); !errors.Is(err, ErrInvalidSize) {
 		t.Fatalf("Start() zero size error = %v", err)
 	}
-	if _, err := manager.Start("/projects/orders", maxTerminalRows+1, 80); err == nil {
+	if _, err := manager.Start("/projects/orders", nil, maxTerminalRows+1, 80); err == nil {
 		t.Fatal("Start() oversized rows error = nil")
 	}
 	if err := manager.Write("unknown", nil); !errors.Is(err, ErrSessionNotFound) {
@@ -308,18 +316,18 @@ func TestManagerCloseAllRejectsNewSessionsAndSettlesExistingShells(t *testing.T)
 
 	terminal := newFakeTerminal()
 	manager := newManager(
-		func(string) (terminalSession, error) {
+		func(string, EnvironmentOverrides) (terminalSession, error) {
 			return terminal, nil
 		},
 		func(Event) {},
 	)
-	if _, err := manager.Start("/projects/orders", 24, 80); err != nil {
+	if _, err := manager.Start("/projects/orders", nil, 24, 80); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
 	manager.CloseAll()
 
-	if _, err := manager.Start("/projects/orders", 24, 80); !errors.Is(err, ErrManagerClosed) {
+	if _, err := manager.Start("/projects/orders", nil, 24, 80); !errors.Is(err, ErrManagerClosed) {
 		t.Fatalf("Start() after CloseAll() error = %v", err)
 	}
 }

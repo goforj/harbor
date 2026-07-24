@@ -24,7 +24,7 @@ export interface WailsAppBindings {
   SetupNetwork(): Promise<NetworkSetupOperation>
   Snapshot(): Promise<HarborSnapshot>
   StartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
-  StartProjectTerminal(projectId: string, columns: number, rows: number): Promise<ProjectTerminalStarted>
+  StartProjectTerminal(projectId: string, columns: number, rows: number, useEnvironmentOverrides: boolean): Promise<ProjectTerminalStarted>
   Status(): Promise<DaemonStatus>
   StopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   WaitProjectActivity(projectId: string, sessionId: string, cursor: number, waitMilliseconds: number): Promise<ProjectActivity>

@@ -21,7 +21,7 @@ interface AdditiveWailsAppBindings {
   RemoveOldNetworking(): ReturnType<HarborBridge['removeOldNetworking']>
   ResizeProjectTerminal(sessionId: string, columns: number, rows: number): ReturnType<HarborBridge['resizeProjectTerminal']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
-  StartProjectTerminal(projectId: string, columns: number, rows: number): ReturnType<HarborBridge['startProjectTerminal']>
+  StartProjectTerminal(projectId: string, columns: number, rows: number, useEnvironmentOverrides: boolean): ReturnType<HarborBridge['startProjectTerminal']>
   SaveProjectEnvironmentFile(projectId: string, name: string, contents: string, revision: string): ReturnType<HarborBridge['saveProjectEnvironmentFile']>
   ResourceIconURL(projectId: string, resourceId: string): ReturnType<HarborBridge['getResourceIconURL']>
   WaitServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number, waitMilliseconds: number): ReturnType<HarborBridge['waitServiceLogs']>
@@ -148,7 +148,12 @@ export function createWailsBridge(): HarborBridge {
     stopProject: (projectId, intentId) => stopProject(projectId, intentId),
     restartProject: (projectId, intentId) => restartProject(projectId, intentId),
     startProjectTerminal: typeof startProjectTerminal === 'function'
-      ? (projectId, columns, rows) => startProjectTerminal(projectId, columns, rows)
+      ? (projectId, columns, rows, useEnvironmentOverrides) => startProjectTerminal(
+          projectId,
+          columns,
+          rows,
+          useEnvironmentOverrides,
+        )
       : () => Promise.reject(new Error('Interactive terminal bindings are not available in this desktop build.')),
     attachProjectTerminal: typeof attachProjectTerminal === 'function'
       ? (sessionId) => attachProjectTerminal(sessionId)

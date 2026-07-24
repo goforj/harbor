@@ -124,6 +124,7 @@ type fakeControlClient struct {
 // fakeProjectTerminalManager records the narrow desktop PTY calls without launching a shell.
 type fakeProjectTerminalManager struct {
 	startDirectory string
+	startOverrides projectterminal.EnvironmentOverrides
 	startRows      uint16
 	startColumns   uint16
 	startSessionID string
@@ -139,9 +140,15 @@ type fakeProjectTerminalManager struct {
 	closeAllCount  int
 }
 
-// Start records one trusted project directory and initial grid.
-func (manager *fakeProjectTerminalManager) Start(directory string, rows, columns uint16) (string, error) {
+// Start records one trusted project directory, explicit environment, and initial grid.
+func (manager *fakeProjectTerminalManager) Start(
+	directory string,
+	overrides projectterminal.EnvironmentOverrides,
+	rows uint16,
+	columns uint16,
+) (string, error) {
 	manager.startDirectory = directory
+	manager.startOverrides = overrides.Clone()
 	manager.startRows = rows
 	manager.startColumns = columns
 	return manager.startSessionID, manager.startErr
@@ -1531,8 +1538,18 @@ func TestProjectTerminalUsesFreshRegisteredPathAndOpaqueSessionOperations(t *tes
 	manager := &fakeProjectTerminalManager{startSessionID: terminalID}
 	app.terminals = manager
 	project := client.snapshot.Projects[0]
+	client.environment = control.ProjectEnvironment{
+		ProjectID:          project.ID,
+		OverridesAvailable: true,
+		Overrides: []control.ProjectEnvironmentVariable{
+			{Name: "DB_HOST", Value: "127.77.59.75", Source: "project.address"},
+			{Name: "DB_PORT", Value: "3306", Source: "repository.binding"},
+		},
+		Bindings: []control.ProjectEnvironmentBinding{},
+		Files:    []control.ProjectEnvironmentFile{},
+	}
 
-	started, err := app.StartProjectTerminal(string(project.ID), 117, 31)
+	started, err := app.StartProjectTerminal(string(project.ID), 117, 31, true)
 	if err != nil {
 		t.Fatalf("StartProjectTerminal() error = %v", err)
 	}
@@ -1546,6 +1563,12 @@ func TestProjectTerminalUsesFreshRegisteredPathAndOpaqueSessionOperations(t *tes
 			manager.startRows,
 			manager.startColumns,
 		)
+	}
+	if manager.startOverrides["DB_HOST"] != "127.77.59.75" || manager.startOverrides["DB_PORT"] != "3306" {
+		t.Fatalf("terminal environment overrides = %#v", manager.startOverrides)
+	}
+	if client.environmentRequest.ProjectID != project.ID {
+		t.Fatalf("terminal environment request project = %q, want %q", client.environmentRequest.ProjectID, project.ID)
 	}
 	if err := app.AttachProjectTerminal(started.SessionID); err != nil {
 		t.Fatalf("AttachProjectTerminal() error = %v", err)
@@ -1587,8 +1610,55 @@ func TestProjectTerminalRejectsUnknownProjectsBeforePTYLaunch(t *testing.T) {
 	manager := &fakeProjectTerminalManager{startSessionID: "terminal-unexpected"}
 	app.terminals = manager
 
-	if _, err := app.StartProjectTerminal("unknown-project", 80, 24); err == nil || !strings.Contains(err.Error(), "was not found") {
+	if _, err := app.StartProjectTerminal("unknown-project", 80, 24, true); err == nil || !strings.Contains(err.Error(), "was not found") {
 		t.Fatalf("StartProjectTerminal() error = %v, want unknown project", err)
+	}
+	if manager.startDirectory != "" {
+		t.Fatalf("terminal start directory = %q, want no launch", manager.startDirectory)
+	}
+}
+
+// TestProjectTerminalCanOptOutOfEnvironmentOverrides starts a plain shell without environment inspection.
+func TestProjectTerminalCanOptOutOfEnvironmentOverrides(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	manager := &fakeProjectTerminalManager{startSessionID: "terminal-" + strings.Repeat("b", 32)}
+	app.terminals = manager
+	project := client.snapshot.Projects[0]
+	client.environmentErr = errors.New("environment inspection must not run")
+
+	if _, err := app.StartProjectTerminal(string(project.ID), 80, 24, false); err != nil {
+		t.Fatalf("StartProjectTerminal() error = %v", err)
+	}
+	if len(manager.startOverrides) != 0 {
+		t.Fatalf("terminal environment overrides = %#v, want empty", manager.startOverrides)
+	}
+	if client.environmentRequest.ProjectID != "" {
+		t.Fatalf("terminal environment request project = %q, want no request", client.environmentRequest.ProjectID)
+	}
+}
+
+// TestProjectTerminalFailsWhenRequestedOverridesAreUnavailable avoids silently launching the wrong environment.
+func TestProjectTerminalFailsWhenRequestedOverridesAreUnavailable(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	manager := &fakeProjectTerminalManager{startSessionID: "terminal-unexpected"}
+	app.terminals = manager
+	project := client.snapshot.Projects[0]
+	client.environment = control.ProjectEnvironment{
+		ProjectID:          project.ID,
+		OverridesAvailable: false,
+		OverrideError:      "project runtime environment management is unavailable",
+		Overrides:          []control.ProjectEnvironmentVariable{},
+		Bindings:           []control.ProjectEnvironmentBinding{},
+		Files:              []control.ProjectEnvironmentFile{},
+	}
+
+	_, err := app.StartProjectTerminal(string(project.ID), 80, 24, true)
+	if err == nil || !strings.Contains(err.Error(), "project runtime environment management is unavailable") {
+		t.Fatalf("StartProjectTerminal() error = %v, want unavailable override detail", err)
 	}
 	if manager.startDirectory != "" {
 		t.Fatalf("terminal start directory = %q, want no launch", manager.startDirectory)

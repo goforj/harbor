@@ -103,7 +103,12 @@ type waitFunc func(context.Context, time.Duration) bool
 
 // projectTerminalManager is the desktop-owned PTY boundary and has no daemon or helper authority.
 type projectTerminalManager interface {
-	Start(projectDirectory string, rows, columns uint16) (string, error)
+	Start(
+		projectDirectory string,
+		overrides projectterminal.EnvironmentOverrides,
+		rows uint16,
+		columns uint16,
+	) (string, error)
 	Attach(sessionID string) error
 	Write(sessionID string, data []byte) error
 	Resize(sessionID string, rows, columns uint16) error
@@ -1850,16 +1855,22 @@ func (a *App) SaveProjectEnvironmentFile(
 }
 
 // StartProjectTerminal opens the user's login shell in one freshly resolved registered project.
-func (a *App) StartProjectTerminal(projectID string, columns uint16, rows uint16) (desktopwire.ProjectTerminalStarted, error) {
+func (a *App) StartProjectTerminal(
+	projectID string,
+	columns uint16,
+	rows uint16,
+	useEnvironmentOverrides bool,
+) (desktopwire.ProjectTerminalStarted, error) {
 	typedProjectID := domain.ProjectID(projectID)
 	if err := typedProjectID.Validate(); err != nil {
 		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("project: %w", err)
 	}
 
-	ctx, client, err := a.currentConnection()
+	ctx, client, release, err := a.leaseCurrentConnection()
 	if err != nil {
 		return desktopwire.ProjectTerminalStarted{}, err
 	}
+	defer release()
 	snapshot, err := client.Snapshot(ctx)
 	if err != nil {
 		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("read Harbor snapshot: %w", err)
@@ -1872,7 +1883,11 @@ func (a *App) StartProjectTerminal(projectID string, columns uint16, rows uint16
 		return desktopwire.ProjectTerminalStarted{}, err
 	}
 
-	sessionID, err := a.terminals.Start(project.Path, rows, columns)
+	overrides, err := projectTerminalEnvironmentOverrides(ctx, client, typedProjectID, useEnvironmentOverrides)
+	if err != nil {
+		return desktopwire.ProjectTerminalStarted{}, err
+	}
+	sessionID, err := a.terminals.Start(project.Path, overrides, rows, columns)
 	if err != nil {
 		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("start project terminal: %w", err)
 	}
@@ -1882,6 +1897,46 @@ func (a *App) StartProjectTerminal(projectID string, columns uint16, rows uint16
 		return desktopwire.ProjectTerminalStarted{}, fmt.Errorf("validate project terminal start: %w", err)
 	}
 	return started, nil
+}
+
+// projectTerminalEnvironmentOverrides resolves only daemon-authorized project values for an opted-in shell.
+func projectTerminalEnvironmentOverrides(
+	ctx context.Context,
+	client controlClient,
+	projectID domain.ProjectID,
+	enabled bool,
+) (projectterminal.EnvironmentOverrides, error) {
+	if !enabled {
+		return projectterminal.EnvironmentOverrides{}, nil
+	}
+	environment, err := client.ProjectEnvironment(ctx, control.ProjectEnvironmentRequest{ProjectID: projectID})
+	if err != nil {
+		return nil, fmt.Errorf("read project terminal environment overrides: %w", err)
+	}
+	if err := environment.Validate(); err != nil {
+		return nil, fmt.Errorf("validate project terminal environment overrides: %w", err)
+	}
+	if environment.ProjectID != projectID {
+		return nil, fmt.Errorf(
+			"project terminal environment selected %q, want %q",
+			environment.ProjectID,
+			projectID,
+		)
+	}
+	if !environment.OverridesAvailable {
+		if environment.OverrideError != "" {
+			return nil, fmt.Errorf("project terminal environment overrides are unavailable: %s", environment.OverrideError)
+		}
+		return nil, errors.New("project terminal environment overrides are unavailable")
+	}
+	overrides := make(projectterminal.EnvironmentOverrides, len(environment.Overrides))
+	for _, variable := range environment.Overrides {
+		overrides[variable.Name] = variable.Value
+	}
+	if err := overrides.Validate(); err != nil {
+		return nil, fmt.Errorf("validate project terminal process environment: %w", err)
+	}
+	return overrides, nil
 }
 
 // AttachProjectTerminal begins output only after the renderer can correlate the opaque session identity.

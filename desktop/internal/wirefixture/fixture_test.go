@@ -93,6 +93,15 @@ func TestTypeScriptMethodDeclarationPreservesExactShape(t *testing.T) {
 			},
 			want: "  Snapshot(): Promise<HarborSnapshot>\n",
 		},
+		{
+			name: "boolean parameter",
+			contract: desktopwire.MethodContract{
+				Name:           "Open",
+				ParameterNames: []string{"enabled"},
+				Signature:      reflect.TypeOf(func(bool) error { return nil }),
+			},
+			want: "  Open(enabled: boolean): Promise<void>\n",
+		},
 	}
 
 	for _, test := range tests {

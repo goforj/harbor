@@ -31,7 +31,7 @@ func TestStartRejectsNonCanonicalProjectDirectories(t *testing.T) {
 	}
 
 	for _, projectDirectory := range []string{".", link, file} {
-		_, err := Start(projectDirectory)
+		_, err := Start(projectDirectory, nil)
 		if err == nil {
 			t.Fatalf("Start(%q) error = nil, want canonical-directory error", projectDirectory)
 		}
@@ -57,7 +57,7 @@ func TestTerminalEnvironmentExcludesHarborState(t *testing.T) {
 	t.Setenv("LC_CTYPE", "UTF-8")
 	t.Setenv("TERM", "unsafe")
 
-	environment := environmentMap(terminalEnvironment("/bin/sh"))
+	environment := environmentMap(terminalEnvironment("/bin/sh", nil))
 	if environment["SHELL"] != "/bin/sh" {
 		t.Fatalf("SHELL = %q, want /bin/sh", environment["SHELL"])
 	}
@@ -77,10 +77,49 @@ func TestTerminalEnvironmentExcludesHarborState(t *testing.T) {
 	}
 }
 
+// TestTerminalEnvironmentAddsOnlyExplicitProjectOverrides proves Harbor state cannot leak through ambient inheritance.
+func TestTerminalEnvironmentAddsOnlyExplicitProjectOverrides(t *testing.T) {
+	t.Setenv("DB_HOST", "ambient.invalid")
+	t.Setenv("HARBOR_SESSION_TICKET", "secret")
+
+	environment := environmentMap(terminalEnvironment(
+		"/bin/sh",
+		EnvironmentOverrides{
+			"DB_HOST": "127.77.59.75",
+			"DB_PORT": "3306",
+		},
+	))
+	if environment["DB_HOST"] != "127.77.59.75" || environment["DB_PORT"] != "3306" {
+		t.Fatalf("project overrides = DB_HOST %q, DB_PORT %q", environment["DB_HOST"], environment["DB_PORT"])
+	}
+	if _, found := environment["HARBOR_SESSION_TICKET"]; found {
+		t.Fatal("terminal environment unexpectedly includes ambient Harbor state")
+	}
+}
+
+// TestEnvironmentOverridesRejectInvalidProcessAssignments keeps the PTY boundary explicit and portable.
+func TestEnvironmentOverridesRejectInvalidProcessAssignments(t *testing.T) {
+	for name, overrides := range map[string]EnvironmentOverrides{
+		"empty name": {"": "value"},
+		"invalid name": {
+			"NOT-PORTABLE": "value",
+		},
+		"NUL value": {
+			"DB_HOST": "127.0.0.1\x00injected",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := overrides.Validate(); err == nil {
+				t.Fatal("Validate() error = nil, want invalid environment")
+			}
+		})
+	}
+}
+
 // TestSessionCarriesInputOutputSizeAndExit verifies the interactive terminal contract.
 func TestSessionCarriesInputOutputSizeAndExit(t *testing.T) {
 	directory := canonicalTempDir(t)
-	session, err := startPlatform(directory, "/bin/sh")
+	session, err := startPlatform(directory, "/bin/sh", nil)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -111,7 +150,7 @@ func TestSessionCarriesInputOutputSizeAndExit(t *testing.T) {
 // TestSessionUsesProjectDirectory verifies the login shell begins in the exact caller directory.
 func TestSessionUsesProjectDirectory(t *testing.T) {
 	directory := canonicalTempDir(t)
-	session, err := startPlatform(directory, "/bin/sh")
+	session, err := startPlatform(directory, "/bin/sh", nil)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -129,9 +168,38 @@ func TestSessionUsesProjectDirectory(t *testing.T) {
 	}
 }
 
+// TestSessionReceivesProjectOverrides verifies the spawned login shell inherits Harbor's exact project values.
+func TestSessionReceivesProjectOverrides(t *testing.T) {
+	t.Setenv("DB_HOST", "ambient.invalid")
+	t.Setenv("HARBOR_SESSION_TICKET", "secret")
+	session, err := startPlatform(
+		canonicalTempDir(t),
+		"/bin/sh",
+		EnvironmentOverrides{"DB_HOST": "127.77.59.75"},
+	)
+	if err != nil {
+		t.Fatalf("startPlatform() error = %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	if _, err := io.WriteString(
+		session,
+		"printf 'db=%s harbor=%s\\n' \"$DB_HOST\" \"${HARBOR_SESSION_TICKET-unset}\"; exit\n",
+	); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+	output, err := readUntilTerminalClose(session)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !bytes.Contains(output, []byte("db=127.77.59.75 harbor=unset")) {
+		t.Fatalf("terminal environment output = %q", output)
+	}
+}
+
 // TestSessionCloseIsIdempotent waits for the shell reaper on every Close call.
 func TestSessionCloseIsIdempotent(t *testing.T) {
-	session, err := startPlatform(canonicalTempDir(t), "/bin/sh")
+	session, err := startPlatform(canonicalTempDir(t), "/bin/sh", nil)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -180,7 +248,7 @@ func TestSessionCloseIsIdempotent(t *testing.T) {
 
 // TestResizeRejectsEmptyDimensions protects the terminal ioctl from invalid sizes.
 func TestResizeRejectsEmptyDimensions(t *testing.T) {
-	session, err := startPlatform(canonicalTempDir(t), "/bin/sh")
+	session, err := startPlatform(canonicalTempDir(t), "/bin/sh", nil)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -196,7 +264,7 @@ func TestResizeRejectsEmptyDimensions(t *testing.T) {
 
 // TestSessionCloseTerminatesTheTerminalProcessGroup keeps background jobs bounded.
 func TestSessionCloseTerminatesTheTerminalProcessGroup(t *testing.T) {
-	session, err := startPlatform(canonicalTempDir(t), "/bin/sh")
+	session, err := startPlatform(canonicalTempDir(t), "/bin/sh", nil)
 	if err != nil {
 		t.Fatalf("startPlatform() error = %v", err)
 	}

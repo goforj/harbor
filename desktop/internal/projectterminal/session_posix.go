@@ -11,7 +11,7 @@ import (
 )
 
 // startPlatform starts the configured shell with a controlling pseudo-terminal.
-func startPlatform(directory string, shell string) (*Session, error) {
+func startPlatform(directory string, shell string, overrides EnvironmentOverrides) (*Session, error) {
 	directoryHandle, err := openProjectDirectory(directory)
 	if err != nil {
 		return nil, err
@@ -22,7 +22,7 @@ func startPlatform(directory string, shell string) (*Session, error) {
 
 	command := exec.Command(shell, "-l")
 	command.Dir = directory
-	command.Env = terminalEnvironment(shell)
+	command.Env = terminalEnvironment(shell, overrides)
 
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {

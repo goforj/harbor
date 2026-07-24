@@ -209,7 +209,7 @@ describe('Harbor bridge selection', () => {
     expect(selection.mode).toBe('native')
     await expect(selection.bridge.getSnapshot()).resolves.toMatchObject({ sequence: 7 })
     await expect(selection.bridge.getServiceLogs('orders-api', '', 'mysql', 0)).rejects.toThrow('Service log bindings are not available')
-    await expect(selection.bridge.startProjectTerminal('orders-api', 80, 24)).rejects.toThrow('Interactive terminal bindings are not available')
+    await expect(selection.bridge.startProjectTerminal('orders-api', 80, 24, true)).rejects.toThrow('Interactive terminal bindings are not available')
     await expect(selection.bridge.attachProjectTerminal('terminal-unknown')).rejects.toThrow('Interactive terminal bindings are not available')
     await expect(selection.bridge.writeProjectTerminal('terminal-unknown', 'pwd\r')).rejects.toThrow('Interactive terminal bindings are not available')
     await expect(selection.bridge.resizeProjectTerminal('terminal-unknown', 80, 24)).rejects.toThrow('Interactive terminal bindings are not available')

@@ -38,7 +38,7 @@ describe('ProjectTerminalSession', () => {
   it('uses fitted dimensions and attaches output only after the opaque start response', async () => {
     const started = deferred<ProjectTerminalStarted>()
     const transport = terminalBridge(started.promise)
-    const session = new ProjectTerminalSession(transport.bridge, 'orders-api')
+    const session = new ProjectTerminalSession(transport.bridge, 'orders-api', true)
     const output: Array<string | Uint8Array> = []
     session.onOutput((data) => output.push(data))
     await session.resize({ cols: 117, rows: 31 })
@@ -52,7 +52,7 @@ describe('ProjectTerminalSession', () => {
       data_base64: btoa('ready\r\n'),
     })
 
-    expect(transport.bridge.startProjectTerminal).toHaveBeenCalledWith('orders-api', 117, 31)
+    expect(transport.bridge.startProjectTerminal).toHaveBeenCalledWith('orders-api', 117, 31, true)
     expect(transport.bridge.attachProjectTerminal).toHaveBeenCalledWith('terminal-1')
     expect([...output[0] as Uint8Array]).toEqual([...new TextEncoder().encode('ready\r\n')])
   })
@@ -60,14 +60,14 @@ describe('ProjectTerminalSession', () => {
   it('replays a resize that arrives while the native start response is pending', async () => {
     const started = deferred<ProjectTerminalStarted>()
     const transport = terminalBridge(started.promise)
-    const session = new ProjectTerminalSession(transport.bridge, 'orders-api')
+    const session = new ProjectTerminalSession(transport.bridge, 'orders-api', false)
 
     const opening = session.start()
     await session.resize({ cols: 132, rows: 42 })
     started.resolve({ session_id: 'terminal-4' })
     await opening
 
-    expect(transport.bridge.startProjectTerminal).toHaveBeenCalledWith('orders-api', 80, 24)
+    expect(transport.bridge.startProjectTerminal).toHaveBeenCalledWith('orders-api', 80, 24, false)
     expect(transport.bridge.attachProjectTerminal).toHaveBeenCalledWith('terminal-4')
     expect(transport.bridge.resizeProjectTerminal).toHaveBeenCalledWith('terminal-4', 132, 42)
   })
@@ -75,7 +75,7 @@ describe('ProjectTerminalSession', () => {
   it('waits for a pending start response and closes the unattached shell', async () => {
     const started = deferred<ProjectTerminalStarted>()
     const transport = terminalBridge(started.promise)
-    const session = new ProjectTerminalSession(transport.bridge, 'orders-api')
+    const session = new ProjectTerminalSession(transport.bridge, 'orders-api', true)
 
     void session.start()
     const closing = session.close()
@@ -89,7 +89,7 @@ describe('ProjectTerminalSession', () => {
   it('buffers early keyboard input and closes only its opaque native session', async () => {
     const started = deferred<ProjectTerminalStarted>()
     const transport = terminalBridge(started.promise)
-    const session = new ProjectTerminalSession(transport.bridge, 'orders-api')
+    const session = new ProjectTerminalSession(transport.bridge, 'orders-api', true)
 
     const opening = session.start()
     await session.write('pwd\r')
@@ -108,7 +108,7 @@ describe('ProjectTerminalSession', () => {
     vi.mocked(transport.bridge.closeProjectTerminal)
       .mockRejectedValueOnce(new Error('desktop transport closed'))
       .mockResolvedValueOnce(undefined)
-    const session = new ProjectTerminalSession(transport.bridge, 'orders-api')
+    const session = new ProjectTerminalSession(transport.bridge, 'orders-api', true)
     await session.start()
 
     await expect(session.close()).rejects.toThrow('desktop transport closed')
@@ -120,7 +120,7 @@ describe('ProjectTerminalSession', () => {
 
   it('renders an exit event and does not close an already-reaped shell', async () => {
     const transport = terminalBridge(Promise.resolve({ session_id: 'terminal-3' }))
-    const session = new ProjectTerminalSession(transport.bridge, 'orders-api')
+    const session = new ProjectTerminalSession(transport.bridge, 'orders-api', true)
     const output: Array<string | Uint8Array> = []
     session.onOutput((data) => output.push(data))
     await session.start()
