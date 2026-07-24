@@ -149,7 +149,7 @@ Lerd is more valuable to Harbor as a catalog of platform failures, tests, and go
 
 ## Wails
 
-Official sources include the Wails v2 [application options](https://wails.io/docs/reference/options/), [runtime](https://wails.io/docs/reference/runtime/intro/), [Linux build guidance](https://wails.io/docs/gettingstarted/building/), and [releases/status](https://github.com/wailsapp/wails). Wails' maintainer confirms the relevant [v2 tray/window limitation](https://github.com/wailsapp/wails/issues/2989). The maintained [`fyne.io/systray`](https://github.com/fyne-io/systray) library is the current tray candidate because it supports macOS, Linux, and Windows and exposes `RunWithExternalLoop` for another UI toolkit; selection still depends on a real three-platform integration proof.
+Official sources include the Wails v2 [application options](https://wails.io/docs/reference/options/), [runtime](https://wails.io/docs/reference/runtime/intro/), [Linux build guidance](https://wails.io/docs/gettingstarted/building/), and [releases/status](https://github.com/wailsapp/wails). Wails' maintainer confirms the relevant [v2 tray/window limitation](https://github.com/wailsapp/wails/issues/2989). The maintained [`fyne.io/systray`](https://github.com/fyne-io/systray) fork of [`getlantern/systray`](https://github.com/getlantern/systray) is the preferred tray candidate because it supports macOS, Linux, and Windows, removes the GTK dependency on Linux, and exposes `RunWithExternalLoop` for another UI toolkit. A reported [macOS application-delegate collision between Wails v2 and another Go tray implementation](https://github.com/wailsapp/wails/issues/3003) demonstrates why selection still depends on a real three-platform integration proof.
 
 As of the research date:
 
@@ -163,7 +163,7 @@ As of the research date:
 - Wails' updater does not coordinate a desktop, daemon, helper, service definitions, schema migration, and rollback as one product update.
 - The exact Wails and tray releases, module requirements, build tags, and native runtime requirements must be pinned and recorded.
 
-Decision: use a pinned stable Wails v2 release in `desktop/`. Prove same-process tray integration with the selected Go tray library on macOS, Linux, and Windows before freezing that process boundary; if the native loops cannot coexist reliably, use a stateless tray client over daemon IPC. The nested module isolates desktop Go, CGO, WebView, and frontend requirements from the headless binaries. The control plane must survive either a tray split or a future Wails replacement.
+Decision: use a pinned stable Wails v2 release in `desktop/` and evaluate `fyne.io/systray` as the preferred tray dependency. Pin its exact release only after same-process integration passes on macOS, Linux, and Windows. Do not maintain a native application-delegate fork to force compatibility and do not adopt alpha Wails v3 solely for its integrated tray API. If the native loops cannot coexist reliably, use a stateless `harbor-tray` client over daemon IPC. The nested module isolates desktop Go, CGO, WebView, and frontend requirements from the headless binaries. The control plane must survive either a tray split or a future Wails replacement.
 
 ## Platform sources
 

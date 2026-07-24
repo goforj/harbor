@@ -199,14 +199,14 @@ Deliver:
 - Overview/command-palette resource search that returns to the owning App or service;
 - start, stop, scoped restart, open, copy, registration, and removal flows;
 - ordered live logs with source filters and gap indicators;
-- a proved Go tray integration with aggregate status, recent/running projects, quick actions, doctor, and open-window action;
+- a proved `fyne.io/systray` integration with aggregate status, `Open Harbor`, and `Quit Harbor UI`;
 - a same-process tray/window event-loop decision on all three platforms, with a stateless `harbor-tray` daemon client only if those loops cannot coexist reliably;
 - default close-to-hide, native-menu/shortcut UI Quit, first-close explanation, no-tray recovery, and best-effort native notifications while the UI is alive;
 - accessible keyboard, screen-reader, contrast, and reduced-motion behavior;
 - responsive one/two/three-pane layouts;
 - UI/CLI parity tests against the same daemon API.
 
-Pin the exact stable Wails v2 and tray releases. The nested desktop module owns their Go, CGO, WebView, and native runtime requirements so they do not raise the headless binaries' minimum Go version or platform dependency floor.
+Keep stable Wails v2 rather than adopting alpha Wails v3 for its tray API. Prove the `fyne.io/systray` external-loop integration before pinning its exact release. Do not make a Harbor-specific Wails, native application-delegate, or tray-library fork to force same-process compatibility. The nested desktop module owns the selected Go, CGO, WebView, and native runtime requirements so they do not raise the headless binaries' minimum Go version or platform dependency floor. Recent-project menus, lifecycle actions, doctor, and other dynamic tray behavior are later product decisions rather than release blockers.
 
 ### Exit gate
 

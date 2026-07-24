@@ -64,6 +64,14 @@ The operating system may install these files in different locations and run them
 
 Database migrations are embedded in `harbord`. The Vue frontend is embedded in the desktop binary. Private CA keys, leaf certificates, project data, logs, and machine ownership records are generated at runtime and are never release payloads.
 
+## Tray packaging boundary
+
+Harbor remains on stable Wails v2 for the first release. [`fyne.io/systray`](https://github.com/fyne-io/systray) is the preferred tray candidate because its external-loop entrypoint is designed to coexist with another GUI toolkit. The exact tray version is not frozen until interactive macOS, Windows, and Linux smoke proves that it can share the desktop process without deadlocks, duplicate native application delegates, broken close-to-hide behavior, or unreliable shutdown.
+
+The first tray contains only aggregate status, `Open Harbor`, and `Quit Harbor UI`. It does not supervise projects, mutate durable state, or become necessary for daemon recovery. Harbor does not adopt alpha Wails v3 solely for tray support and does not maintain a custom Wails, native application-delegate, or tray-library fork to force same-process compatibility.
+
+If the native proof fails, the release gains a stateless `harbor-tray` executable. It is signed, versioned, installed, updated, and removed as part of the same indivisible release, connects through authenticated daemon IPC, and owns no durable state. The release manifest and platform launcher definitions must explicitly include it in that configuration; an independently installed or updated tray is not supported.
+
 ## Bundle structure
 
 The release build produces a platform- and architecture-specific component bundle before creating the outer native package:

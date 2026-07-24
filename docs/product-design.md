@@ -347,34 +347,23 @@ The project-scoped doctor checks the descriptor, GoForj compatibility, runtime o
 
 ## Tray
 
-The tray is for quick actions:
+The first tray is a small presence and recovery surface:
 
 ```text
-GoForj Harbor — 2 ready, 1 degraded
-
-orders-api        Ready
-  Open App
-  Open Lighthouse
-  Restart App
-  View Logs
-
-billing           Degraded
-  Redis unavailable
-  Open Diagnostics
-
+GoForj Harbor — Ready
 Open Harbor
-Start All Favorites
-Doctor
 Quit Harbor UI
 ```
 
-It shows running and recently used projects, a short failure reason, and low-risk actions. Rich logs, configuration, and destructive confirmation stay in the main window or terminal.
+Its status summarizes whether Harbor is ready, busy, degraded, or unavailable. `Open Harbor` activates the existing window or launches the desktop client, and `Quit Harbor UI` exits only that client. Project lists, project lifecycle actions, diagnostics, logs, configuration, and destructive confirmation remain in the main window or terminal. They may be considered later if actual use demonstrates that the tray benefits from more than status and window recovery.
 
 Closing the window hides it by default and keeps the desktop process alive. `Quit Harbor UI` exits that process only; the daemon and projects continue. Native failure/recovery notifications are best-effort while the UI process is alive and the user has granted permission. Harbor does not add a fifth background notifier merely to make notification delivery unconditional.
 
 `Quit Harbor UI` is also present in the native application menu and bound to `Cmd+Q` on macOS and `Ctrl+Q` on Windows/Linux, so it never depends on a tray. The first close explains once that Harbor remains available in the background and points to both the reopen and explicit Quit paths; this notice does not repeat after acknowledgment.
 
 Linux desktop environments differ in tray and notification support. Harbor must remain fully usable when no tray is available; relaunching the desktop focuses its hidden single instance, and the CLI exposes every essential action.
+
+The tray implementation follows the process and dependency decision in [Architecture](./architecture.md): `fyne.io/systray` is the preferred Wails v2 candidate, same-process integration requires native proof on all three platforms, and a stateless `harbor-tray` daemon client is the fallback if the native event loops conflict.
 
 ## CLI
 
