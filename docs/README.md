@@ -2,7 +2,7 @@
 
 Status: active development
 
-Last updated: 2026-07-20
+Last updated: 2026-07-24
 
 GoForj Harbor is a local development control plane for GoForj projects. It gives each project stable local domains, trusted HTTPS, and native service endpoints without forcing developers to edit project ports. A persistent daemon owns runtime state; the CLI, desktop window, and tray are clients of that daemon; GoForj remains the authority for project composition and the development lifecycle.
 
@@ -45,6 +45,7 @@ No repository port files need to change, and stopping or unregistering a project
 - [Illustration system](./illustrations.md) defines Harbor's original visual language, maritime metaphor, asset standard, placement rules, and reusable background-artwork contract.
 - [Frontend](./frontend.md) defines the inherited GoForj starter foundation, Harbor component boundary, Lerd styling adaptation, state bridge, and UI test strategy.
 - [Architecture](./architecture.md) defines processes, ownership, IPC, state, reconciliation, privilege, packaging, and recovery.
+- [Installation and release bundle](./installation-and-release.md) defines the multi-component product bundle, native package layouts, lifecycle transactions, signing, and release pipeline.
 - [Networking](./networking.md) defines loopback identities, DNS, TLS, HTTP ingress, native-port relays, and container connectivity.
 - [GoForj integration](./goforj-integration.md) defines the project descriptor, managed development session, runtime overlay, resource projection, and ownership split.
 - [Repository environment overrides](./environment-overrides.md) defines the bounded `.harbor.yml` fact-to-environment mapping contract.
