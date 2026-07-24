@@ -129,6 +129,7 @@ type projectRuntimeProjectionRefresher interface {
 // ProjectRouteReconciler projects durable project lifecycle changes into Harbor's live route table.
 type ProjectRouteReconciler interface {
 	Reconcile(context.Context) error
+	StageProjectNativeRoutes(context.Context, domain.ProjectID, []dataplane.NativeRoute) error
 	ReconcileProjectNativeRoutes(context.Context, domain.ProjectID, []dataplane.NativeRoute) error
 }
 
@@ -820,6 +821,23 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				return
 			}
 			completionSession := session
+			if err := coordinator.stageObservedNativeServiceRoutes(
+				coordinator.ctx,
+				mutation.Operation.Operation.ProjectID,
+				completionSession,
+				plan.NetworkAssignment.Address,
+				runtime.Services,
+				runtime.Resources,
+			); err != nil {
+				coordinator.stopAndFailAttached(
+					mutation,
+					session,
+					handle,
+					"project.routes.failed",
+					fmt.Errorf("stage project service routes: %w", err),
+				)
+				return
+			}
 			completed, err := retryLifecycleResult(func() (state.ProjectLifecycleMutation, error) {
 				current, currentErr := coordinator.state.ActiveProjectSession(coordinator.ctx, session.ProjectID)
 				if currentErr != nil {
@@ -839,20 +857,17 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 				})
 			})
 			if err != nil {
+				if withdrawErr := coordinator.routes.StageProjectNativeRoutes(
+					context.Background(),
+					mutation.Operation.Operation.ProjectID,
+					[]dataplane.NativeRoute{},
+				); withdrawErr != nil {
+					coordinator.recordAsyncError(fmt.Errorf("withdraw staged project service routes: %w", withdrawErr))
+				}
 				coordinator.stopAndFailAttached(mutation, session, handle, "project.state.failed", err)
 				return
 			}
 			completionSession = *completed.Session
-			if err := coordinator.reconcileObservedNativeServiceRoutes(
-				coordinator.ctx,
-				completed.Project.Project,
-				completionSession,
-				plan.NetworkAssignment.Address,
-				runtime.Services,
-				runtime.Resources,
-			); err != nil {
-				coordinator.recordAsyncError(err)
-			}
 			if err := coordinator.reconcileProjectRoutes(coordinator.ctx, "publish ready project routes"); err != nil {
 				coordinator.recordAsyncError(err)
 			}

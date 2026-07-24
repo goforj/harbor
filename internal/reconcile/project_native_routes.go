@@ -33,22 +33,89 @@ func (coordinator *ProjectLifecycleCoordinator) reconcileObservedNativeServiceRo
 	if session.ProjectID != project.ID {
 		return fmt.Errorf("publish observed native services: session does not belong to project %q", project.ID)
 	}
+	routes, err := coordinator.observedNativeServiceRoutes(
+		ctx,
+		project.ID,
+		project.Slug,
+		session,
+		primaryAddress,
+		services,
+		resources,
+	)
+	if err != nil {
+		return err
+	}
+	if err := coordinator.routes.ReconcileProjectNativeRoutes(ctx, project.ID, routes); err != nil {
+		return fmt.Errorf("publish observed native services for project %q: %w", project.ID, err)
+	}
+	return nil
+}
+
+// stageObservedNativeServiceRoutes publishes service DNS before the durable ready edge can become visible.
+func (coordinator *ProjectLifecycleCoordinator) stageObservedNativeServiceRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	session domain.ProjectSession,
+	primaryAddress netip.Addr,
+	services []domain.ServiceSnapshot,
+	resources []domain.ResourceSnapshot,
+) error {
+	if coordinator == nil {
+		panic("reconcile.ProjectLifecycleCoordinator.stageObservedNativeServiceRoutes requires a non-nil receiver")
+	}
+	project, err := coordinator.state.Project(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("stage observed native services: read project: %w", err)
+	}
+	if err := project.Project.Validate(); err != nil {
+		return fmt.Errorf("stage observed native services: validate project: %w", err)
+	}
+	if err := session.Validate(); err != nil {
+		return fmt.Errorf("stage observed native services: validate session: %w", err)
+	}
+	if session.ProjectID != projectID {
+		return fmt.Errorf("stage observed native services: session does not belong to project %q", projectID)
+	}
+	routes, err := coordinator.observedNativeServiceRoutes(
+		ctx,
+		projectID,
+		project.Project.Slug,
+		session,
+		primaryAddress,
+		services,
+		resources,
+	)
+	if err != nil {
+		return err
+	}
+	if err := coordinator.routes.StageProjectNativeRoutes(ctx, projectID, routes); err != nil {
+		return fmt.Errorf("stage observed native services for project %q: %w", projectID, err)
+	}
+	return nil
+}
+
+// observedNativeServiceRoutes derives the exact DNS and TCP routes from one live runtime observation.
+func (coordinator *ProjectLifecycleCoordinator) observedNativeServiceRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	projectSlug string,
+	session domain.ProjectSession,
+	primaryAddress netip.Addr,
+	services []domain.ServiceSnapshot,
+	resources []domain.ResourceSnapshot,
+) ([]dataplane.NativeRoute, error) {
 	primaryAddress = primaryAddress.Unmap()
 	if !primaryAddress.IsValid() || !primaryAddress.Is4() || !primaryAddress.IsLoopback() {
-		return fmt.Errorf("publish observed native services: project %q primary address %s is not canonical IPv4 loopback", project.ID, primaryAddress)
+		return nil, fmt.Errorf("publish observed native services: project %q primary address %s is not canonical IPv4 loopback", projectID, primaryAddress)
 	}
 
 	portReader, supported := coordinator.projectRuntimeCapabilities().(projectServicePortReader)
 	if !supported {
-		return coordinator.routes.ReconcileProjectNativeRoutes(
-			ctx,
-			project.ID,
-			[]dataplane.NativeRoute{},
-		)
+		return []dataplane.NativeRoute{}, nil
 	}
-	httpHosts, err := projectHTTPResourceHosts(project.Slug, resources)
+	httpHosts, err := projectHTTPResourceHosts(projectSlug, resources)
 	if err != nil {
-		return fmt.Errorf("publish observed native services for project %q: %w", project.ID, err)
+		return nil, fmt.Errorf("publish observed native services for project %q: %w", projectID, err)
 	}
 	routes := make([]dataplane.NativeRoute, 0, len(services))
 	for _, service := range services {
@@ -57,21 +124,21 @@ func (coordinator *ProjectLifecycleCoordinator) reconcileObservedNativeServiceRo
 			service.State != domain.EntityReady {
 			continue
 		}
-		host, err := projectServiceEndpointHost(project.Slug, string(service.ID))
+		host, err := projectServiceEndpointHost(projectSlug, string(service.ID))
 		if err != nil {
-			return fmt.Errorf("publish observed native service %q: %w", service.ID, err)
+			return nil, fmt.Errorf("publish observed native service %q: %w", service.ID, err)
 		}
 		if _, claimedByHTTP := httpHosts[host]; claimedByHTTP {
 			continue
 		}
 		observation, err := portReader.ObserveServicePorts(
 			ctx,
-			project.ID,
+			projectID,
 			session.ID,
 			service.ID,
 		)
 		if err != nil {
-			return fmt.Errorf("observe native service %q ports: %w", service.ID, err)
+			return nil, fmt.Errorf("observe native service %q ports: %w", service.ID, err)
 		}
 		if !observation.Supported || !observation.Available {
 			continue
@@ -83,17 +150,14 @@ func (coordinator *ProjectLifecycleCoordinator) reconcileObservedNativeServiceRo
 		listen := netip.AddrPortFrom(primaryAddress, port.Private)
 		upstream := netip.AddrPortFrom(address, port.Public)
 		routes = append(routes, dataplane.NativeRoute{
-			ID:       string(project.ID) + ":service:" + string(service.ID),
+			ID:       string(projectID) + ":service:" + string(service.ID),
 			Host:     host,
 			Listen:   listen,
 			Upstream: upstream,
 			Direct:   listen == upstream,
 		})
 	}
-	if err := coordinator.routes.ReconcileProjectNativeRoutes(ctx, project.ID, routes); err != nil {
-		return fmt.Errorf("publish observed native services for project %q: %w", project.ID, err)
-	}
-	return nil
+	return routes, nil
 }
 
 // projectHTTPResourceHosts returns names already owned by Harbor's shared HTTP proxy.

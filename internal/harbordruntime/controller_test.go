@@ -2209,6 +2209,50 @@ func TestControllerReconcileProjectNativeRoutesPreservesNeighborProjects(t *test
 	}
 }
 
+// TestControllerStageProjectNativeRoutesPublishesBeforeReady proves startup can make native DNS authoritative without exposing a ready project first.
+func TestControllerStageProjectNativeRoutesPublishesBeforeReady(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	runtimeState.Snapshot.Projects[0].State = domain.ProjectStarting
+	source := &testRuntimeStateSource{
+		snapshot:           runtimeState.Snapshot,
+		network:            runtimeState.Network,
+		networkInitialized: true,
+	}
+	mysql := dataplane.NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
+		Upstream: netip.MustParseAddrPort("127.77.0.10:3306"),
+		Direct:   true,
+	}
+	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
+		snapshot: dataplane.Snapshot{
+			State:   dataplane.StateReady,
+			Relays:  []dataplane.RelayStatus{},
+			Directs: []dataplane.DirectStatus{},
+		},
+	}}
+	controller := &Controller{
+		initialized: true,
+		source:      source,
+		state:       controllerStateReady,
+		dataPlane:   runtime,
+		dependencies: dependencies{
+			nativeSocketProbe: func(context.Context, netip.AddrPort) error { return nil },
+		},
+	}
+
+	if err := controller.StageProjectNativeRoutes(t.Context(), "orders", []dataplane.NativeRoute{mysql}); err != nil {
+		t.Fatalf("StageProjectNativeRoutes() error = %v", err)
+	}
+	if len(runtime.nativeReplacements) != 1 || !reflect.DeepEqual(runtime.nativeReplacements[0], []dataplane.NativeRoute{mysql}) {
+		t.Fatalf("native replacements = %#v, want staged MySQL route", runtime.nativeReplacements)
+	}
+	if err := controller.ReconcileProjectNativeRoutes(t.Context(), "orders", []dataplane.NativeRoute{mysql}); err == nil {
+		t.Fatal("ReconcileProjectNativeRoutes() error = nil for project that is still starting")
+	}
+}
+
 // TestControllerReconcileProjectNativeRoutesSerializesConcurrentProjects proves simultaneous starts cannot lose either route.
 func TestControllerReconcileProjectNativeRoutesSerializesConcurrentProjects(t *testing.T) {
 	runtimeState := initializedControllerRuntimeState()

@@ -534,6 +534,25 @@ func (controller *Controller) ReconcileProjectNativeRoutes(
 	projectID domain.ProjectID,
 	routes []dataplane.NativeRoute,
 ) error {
+	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectReady)
+}
+
+// StageProjectNativeRoutes publishes observed TCP routes while their exact project start still owns the durable lifecycle.
+func (controller *Controller) StageProjectNativeRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	routes []dataplane.NativeRoute,
+) error {
+	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectStarting)
+}
+
+// replaceProjectNativeRoutes atomically replaces one project's routes under the required durable lifecycle state.
+func (controller *Controller) replaceProjectNativeRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	routes []dataplane.NativeRoute,
+	requiredState domain.ProjectState,
+) error {
 	if controller == nil || !controller.initialized {
 		return ErrNotInitialized
 	}
@@ -559,7 +578,7 @@ func (controller *Controller) ReconcileProjectNativeRoutes(
 	if err != nil {
 		return fmt.Errorf("reconcile project native routes: read durable state: %w", err)
 	}
-	if err := validateProjectNativeRouteAuthority(runtimeState, projectID, routes); err != nil {
+	if err := validateProjectNativeRouteAuthority(runtimeState, projectID, routes, requiredState); err != nil {
 		return err
 	}
 	controller.mutex.RLock()
@@ -587,13 +606,21 @@ func validateProjectNativeRouteAuthority(
 	runtimeState state.RuntimeState,
 	projectID domain.ProjectID,
 	routes []dataplane.NativeRoute,
+	requiredState domain.ProjectState,
 ) error {
 	if err := runtimeState.Validate(); err != nil {
 		return fmt.Errorf("reconcile project native routes: invalid durable state: %w", err)
 	}
+	if len(routes) == 0 {
+		return nil
+	}
 	project, found := runtimeProject(runtimeState.Snapshot, projectID)
-	if !found || project.State != domain.ProjectReady {
-		return fmt.Errorf("reconcile project native routes: project %q is not ready", projectID)
+	if !found || project.State != requiredState {
+		return fmt.Errorf(
+			"reconcile project native routes: project %q state is not %q",
+			projectID,
+			requiredState,
+		)
 	}
 	var primary netip.Addr
 	for _, lease := range runtimeState.Network.Leases {

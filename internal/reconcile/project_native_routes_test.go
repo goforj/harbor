@@ -38,6 +38,15 @@ func (*projectNativeRouteTestReconciler) Reconcile(context.Context) error {
 	return nil
 }
 
+// StageProjectNativeRoutes captures one pre-readiness native replacement.
+func (reconciler *projectNativeRouteTestReconciler) StageProjectNativeRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	routes []dataplane.NativeRoute,
+) error {
+	return reconciler.ReconcileProjectNativeRoutes(ctx, projectID, routes)
+}
+
 // ReconcileProjectNativeRoutes captures the exact native replacement.
 func (reconciler *projectNativeRouteTestReconciler) ReconcileProjectNativeRoutes(
 	_ context.Context,

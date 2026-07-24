@@ -81,6 +81,15 @@ func (projectLifecycleTestRouteReconciler) Reconcile(context.Context) error {
 	return nil
 }
 
+// StageProjectNativeRoutes accepts observed native routes before the fixture publishes readiness.
+func (projectLifecycleTestRouteReconciler) StageProjectNativeRoutes(
+	context.Context,
+	domain.ProjectID,
+	[]dataplane.NativeRoute,
+) error {
+	return nil
+}
+
 // ReconcileProjectNativeRoutes accepts observed native routes without external publication.
 func (projectLifecycleTestRouteReconciler) ReconcileProjectNativeRoutes(
 	context.Context,
@@ -96,6 +105,15 @@ type projectLifecycleRouteReconcilerFunc func(context.Context) error
 // Reconcile invokes the deterministic route fixture.
 func (reconciler projectLifecycleRouteReconcilerFunc) Reconcile(ctx context.Context) error {
 	return reconciler(ctx)
+}
+
+// StageProjectNativeRoutes accepts observed native routes before fixtures concerned only with durable HTTP edges publish readiness.
+func (projectLifecycleRouteReconcilerFunc) StageProjectNativeRoutes(
+	context.Context,
+	domain.ProjectID,
+	[]dataplane.NativeRoute,
+) error {
+	return nil
 }
 
 // ReconcileProjectNativeRoutes accepts observed native routes for fixtures concerned only with durable HTTP edges.
@@ -125,6 +143,18 @@ func (reconciler *projectLifecycleRecordingRouteReconciler) Reconcile(ctx contex
 	reconciler.mutex.Lock()
 	reconciler.events = append(reconciler.events, "http:"+string(record.Project.State))
 	reconciler.states = append(reconciler.states, record.Project.State)
+	reconciler.mutex.Unlock()
+	return nil
+}
+
+// StageProjectNativeRoutes records native publication before the ready state becomes durable.
+func (reconciler *projectLifecycleRecordingRouteReconciler) StageProjectNativeRoutes(
+	context.Context,
+	domain.ProjectID,
+	[]dataplane.NativeRoute,
+) error {
+	reconciler.mutex.Lock()
+	reconciler.events = append(reconciler.events, "native:staged")
 	reconciler.mutex.Unlock()
 	return nil
 }
@@ -707,8 +737,8 @@ func TestProjectLifecycleCoordinatorBringsForjDevOnlineAndStopsIt(t *testing.T) 
 		t.Fatalf("start operation = %#v, %v", startOperation, err)
 	}
 	waitForProjectLifecycleRouteStates(t, routes, []domain.ProjectState{domain.ProjectStarting, domain.ProjectReady})
-	if events := routes.Events(); !slices.Equal(events, []string{"http:starting", "native", "http:ready"}) {
-		t.Fatalf("start route publication order = %v, want native DNS before ready HTTP publication", events)
+	if events := routes.Events(); !slices.Equal(events, []string{"http:starting", "native:staged", "http:ready"}) {
+		t.Fatalf("start route publication order = %v, want staged native DNS before ready HTTP publication", events)
 	}
 
 	restarting, err := coordinator.Restart(t.Context(), ProjectRestartRequest{

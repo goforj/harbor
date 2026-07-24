@@ -233,6 +233,15 @@ func (routes *projectServiceRefreshTestRoutes) Reconcile(context.Context) error 
 	return nil
 }
 
+// StageProjectNativeRoutes records the native publication prepared before readiness.
+func (routes *projectServiceRefreshTestRoutes) StageProjectNativeRoutes(
+	ctx context.Context,
+	projectID domain.ProjectID,
+	replacement []dataplane.NativeRoute,
+) error {
+	return routes.ReconcileProjectNativeRoutes(ctx, projectID, replacement)
+}
+
 // ReconcileProjectNativeRoutes records the latest project-scoped native publication.
 func (routes *projectServiceRefreshTestRoutes) ReconcileProjectNativeRoutes(
 	_ context.Context,
