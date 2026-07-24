@@ -21,11 +21,8 @@ static const char harbor_trust_owner_service[] = "com.goforj.harbor.trust-owner.
 static const char harbor_admin_trust_owner_service[] = "com.goforj.harbor.admin-trust-owner.v1";
 static const char harbor_system_keychain_path[] = "/Library/Keychains/System.keychain";
 
-typedef struct __SecTrustStore *HarborSecTrustStoreRef;
 extern CFStringRef SecTrustSettingsDomainName(SecTrustSettingsDomain domain);
 extern OSStatus SecTrustSettingsXPCWrite(CFStringRef domain, CFDataRef authorization, CFDataRef trust_settings);
-extern HarborSecTrustStoreRef SecTrustStoreForDomain(uint32_t domain);
-extern OSStatus SecTrustStoreRemoveCertificate(HarborSecTrustStoreRef store, SecCertificateRef certificate);
 extern CFStringRef SecTrustSettingsCertHashStrFromCert(SecCertificateRef certificate);
 extern void SecTrustSettingsPurgeCache(void);
 
@@ -949,15 +946,6 @@ static int harbor_trust_remove_admin_root_with_config_right(SecCertificateRef ce
 			status = errSecDecode;
 			goto cleanup;
 		}
-	}
-	HarborSecTrustStoreRef trust_store = SecTrustStoreForDomain(3);
-	if (trust_store == NULL) {
-		status = errSecInternalComponent;
-		goto cleanup;
-	}
-	status = SecTrustStoreRemoveCertificate(trust_store, certificate);
-	if (status != errSecSuccess && status != errSecItemNotFound) {
-		goto cleanup;
 	}
 	status = SecTrustSettingsXPCWrite(
 		SecTrustSettingsDomainName(kSecTrustSettingsDomainAdmin),
