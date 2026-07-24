@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowReactive, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -65,6 +65,7 @@ let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
+const projectId = computed(() => String(route.params.projectId ?? ''))
 const projectTerminalLimit = 8
 interface ProjectTerminalTab {
   error: string | null
@@ -73,8 +74,29 @@ interface ProjectTerminalTab {
   session: ProjectTerminalSession
 }
 
-const projectTerminalTabs = shallowRef<ProjectTerminalTab[]>([])
-const selectedProjectTerminalTabID = ref<number | null>(null)
+interface ProjectTerminalWorkspace {
+  nextTabID: number
+  projectID: string
+  projectName: string
+  selectedTabID: number | null
+  tabs: ProjectTerminalTab[]
+}
+
+const projectTerminalWorkspaces = shallowReactive(new Map<string, ProjectTerminalWorkspace>())
+const currentProjectTerminalWorkspace = computed(() => projectTerminalWorkspaces.get(projectId.value))
+const renderedProjectTerminalWorkspaces = computed(() => [...projectTerminalWorkspaces.values()])
+const projectTerminalTabs = computed(() => currentProjectTerminalWorkspace.value?.tabs ?? [])
+const projectTerminalCount = computed(() => renderedProjectTerminalWorkspaces.value.reduce(
+  (count, workspace) => count + workspace.tabs.length,
+  0,
+))
+const selectedProjectTerminalTabID = computed<number | null>({
+  get: () => currentProjectTerminalWorkspace.value?.selectedTabID ?? null,
+  set: (id) => {
+    const workspace = currentProjectTerminalWorkspace.value
+    if (workspace) workspace.selectedTabID = id
+  },
+})
 const selectedProjectTerminalTab = computed(() => projectTerminalTabs.value.find(
   (tab) => tab.id === selectedProjectTerminalTabID.value,
 ))
@@ -83,10 +105,8 @@ const closingProjectTerminalInFlight = projectTerminalCleanup.inFlightCount
 const failedProjectTerminalCloseCount = projectTerminalCleanup.failedCount
 const projectTerminalCleanupError = projectTerminalCleanup.error
 let pendingInitialProjectTerminalID = ''
-let nextProjectTerminalTabID = 1
 const selectedServiceId = ref('')
 const selectedServiceSurface = ref('logs')
-const projectId = computed(() => String(route.params.projectId ?? ''))
 const project = computed(() => store.projectById(projectId.value))
 const readyServiceCount = computed(() => countReadyServices(project.value?.services ?? []))
 const projectActivitySupported = computed(() => store.daemonStatus?.capabilities.includes('control.project-activity.v1') === true)
@@ -157,8 +177,8 @@ watch([selectedServiceId, selectedServiceSurface], ([, surface]) => {
   if (surface === 'ports') void refreshSelectedServicePorts()
 })
 watch([selectedDetailTab, projectId], ([tab, selectedProjectID], [, previousProjectID]) => {
-  if (selectedProjectID !== previousProjectID) closeProjectTerminalTabs()
-  if (tab === 'terminal' && projectTerminalTabs.value.length === 0) {
+  if (!selectedProjectID && previousProjectID) closeProjectTerminalWorkspaces()
+  if (selectedProjectID && tab === 'terminal' && projectTerminalTabs.value.length === 0) {
     void createInitialProjectTerminalTab(selectedProjectID)
   }
   if (tab !== 'terminal') pendingInitialProjectTerminalID = ''
@@ -181,43 +201,70 @@ async function createInitialProjectTerminalTab(selectedProjectID: string) {
     return
   }
   pendingInitialProjectTerminalID = ''
-  createProjectTerminalTab()
+  createProjectTerminalTab(selectedProjectID)
+}
+
+// projectTerminalWorkspace retains one project's tabs while another project is selected.
+function projectTerminalWorkspace(selectedProjectID: string) {
+  let workspace = projectTerminalWorkspaces.get(selectedProjectID)
+  if (workspace) return workspace
+  workspace = shallowReactive({
+    nextTabID: 1,
+    projectID: selectedProjectID,
+    projectName: store.projectById(selectedProjectID)?.name ?? selectedProjectID,
+    selectedTabID: null,
+    tabs: [],
+  })
+  projectTerminalWorkspaces.set(selectedProjectID, workspace)
+  return workspace
 }
 
 // createProjectTerminalTab gives every tab its own PTY adapter and activates the new shell.
-function createProjectTerminalTab() {
-  if (closingProjectTerminalCount.value > 0 || projectTerminalTabs.value.length >= projectTerminalLimit) return
-  const id = nextProjectTerminalTabID
-  nextProjectTerminalTabID += 1
+function createProjectTerminalTab(selectedProjectID = projectId.value) {
+  if (closingProjectTerminalCount.value > 0 || projectTerminalCount.value >= projectTerminalLimit) return
+  const workspace = projectTerminalWorkspace(selectedProjectID)
+  const id = workspace.nextTabID
+  workspace.nextTabID += 1
   const tab = {
     error: null,
     id,
     name: `Terminal ${id}`,
-    session: new ProjectTerminalSession(harborBridge, projectId.value),
+    session: new ProjectTerminalSession(harborBridge, selectedProjectID),
   }
-  projectTerminalTabs.value = [...projectTerminalTabs.value, tab]
-  selectedProjectTerminalTabID.value = id
+  workspace.tabs = [...workspace.tabs, tab]
+  workspace.selectedTabID = id
 }
 
 // closeProjectTerminalTab terminates only the selected tab's desktop-owned shell.
 function closeProjectTerminalTab(id: number) {
-  const tabs = projectTerminalTabs.value
+  const workspace = currentProjectTerminalWorkspace.value
+  if (!workspace) return
+  const tabs = [...workspace.tabs]
   const index = tabs.findIndex((tab) => tab.id === id)
   if (index === -1) return
   const [closed] = tabs.splice(index, 1)
-  projectTerminalTabs.value = [...tabs]
-  if (selectedProjectTerminalTabID.value === id) {
-    selectedProjectTerminalTabID.value = tabs[index]?.id ?? tabs[index - 1]?.id ?? null
+  workspace.tabs = tabs
+  if (workspace.selectedTabID === id) {
+    workspace.selectedTabID = tabs[index]?.id ?? tabs[index - 1]?.id ?? null
   }
   if (closed) projectTerminalCleanup.close(closed.session)
 }
 
-// closeProjectTerminalTabs releases every PTY when its project view is replaced or destroyed.
-function closeProjectTerminalTabs() {
-  for (const tab of projectTerminalTabs.value) projectTerminalCleanup.close(tab.session)
-  projectTerminalTabs.value = []
-  selectedProjectTerminalTabID.value = null
-  nextProjectTerminalTabID = 1
+// closeProjectTerminalWorkspace releases only the project that can no longer be revisited.
+function closeProjectTerminalWorkspace(selectedProjectID: string) {
+  const workspace = projectTerminalWorkspaces.get(selectedProjectID)
+  if (!workspace) return
+  projectTerminalWorkspaces.delete(selectedProjectID)
+  for (const tab of workspace.tabs) projectTerminalCleanup.close(tab.session)
+}
+
+// closeProjectTerminalWorkspaces releases every retained PTY when the project surface is destroyed.
+function closeProjectTerminalWorkspaces() {
+  const workspaces = [...projectTerminalWorkspaces.values()]
+  projectTerminalWorkspaces.clear()
+  for (const workspace of workspaces) {
+    for (const tab of workspace.tabs) projectTerminalCleanup.close(tab.session)
+  }
 }
 
 // retryProjectTerminalCleanup lets the user reconcile a close whose bridge result was indeterminate.
@@ -225,9 +272,11 @@ function retryProjectTerminalCleanup() {
   projectTerminalCleanup.retryFailed()
 }
 
-// reportProjectTerminalError keeps PTY transport failures inside the terminal surface.
-function reportProjectTerminalError(id: number, error: Error) {
-  projectTerminalTabs.value = projectTerminalTabs.value.map((tab) => (
+// reportProjectTerminalError keeps PTY transport failures inside their owning project surface.
+function reportProjectTerminalError(selectedProjectID: string, id: number, error: Error) {
+  const workspace = projectTerminalWorkspaces.get(selectedProjectID)
+  if (!workspace) return
+  workspace.tabs = workspace.tabs.map((tab) => (
     tab.id === id ? { ...tab, error: error.message } : tab
   ))
 }
@@ -356,6 +405,7 @@ watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, p
     if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
   }
   if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
+    closeProjectTerminalWorkspace(nextProjectId)
     void router.replace('/projects')
   }
 })
@@ -382,7 +432,7 @@ watch(runtimeRepairInspection, (inspection) => {
 
 onBeforeUnmount(() => {
   if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
-  closeProjectTerminalTabs()
+  closeProjectTerminalWorkspaces()
   if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
 })
 
@@ -745,9 +795,9 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                 type="button"
                 class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="New terminal"
-                :disabled="closingProjectTerminalCount > 0 || projectTerminalTabs.length >= projectTerminalLimit"
-                :title="projectTerminalTabs.length >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
-                @click="createProjectTerminalTab"
+                :disabled="closingProjectTerminalCount > 0 || projectTerminalCount >= projectTerminalLimit"
+                :title="projectTerminalCount >= projectTerminalLimit || closingProjectTerminalCount > 0 ? 'Close a terminal tab before opening another.' : 'New terminal'"
+                @click="createProjectTerminalTab()"
               >
                 <Plus class="size-4" />
               </button>
@@ -766,16 +816,18 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
                   Retry cleanup
                 </Button>
               </div>
-              <InteractiveTerminal
-                v-for="tab in projectTerminalTabs"
-                :key="`${project.id}:${tab.id}`"
-                v-show="selectedProjectTerminalTabID === tab.id"
-                :active="selectedDetailTab === 'terminal' && selectedProjectTerminalTabID === tab.id"
-                :session="tab.session"
-                :aria-label="`${project.name} ${tab.name.toLowerCase()}`"
-                class="min-h-0 flex-1"
-                @error="reportProjectTerminalError(tab.id, $event)"
-              />
+              <template v-for="workspace in renderedProjectTerminalWorkspaces" :key="workspace.projectID">
+                <InteractiveTerminal
+                  v-for="tab in workspace.tabs"
+                  :key="`${workspace.projectID}:${tab.id}`"
+                  v-show="project.id === workspace.projectID && selectedProjectTerminalTabID === tab.id"
+                  :active="selectedDetailTab === 'terminal' && project.id === workspace.projectID && selectedProjectTerminalTabID === tab.id"
+                  :session="tab.session"
+                  :aria-label="`${workspace.projectName} ${tab.name.toLowerCase()}`"
+                  class="min-h-0 flex-1"
+                  @error="reportProjectTerminalError(workspace.projectID, tab.id, $event)"
+                />
+              </template>
             </CardContent>
           </Card>
         </TabsContent>

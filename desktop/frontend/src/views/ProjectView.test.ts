@@ -10,12 +10,14 @@ import { useHarborStore } from '@/stores/harbor'
 import ProjectView from './ProjectView.vue'
 
 const terminalSessions = vi.hoisted(() => {
-  const sessions: Array<{ close: ReturnType<typeof vi.fn> }> = []
+  const sessions: Array<{ close: ReturnType<typeof vi.fn>, projectId: string }> = []
 
   class ProjectTerminalSession {
     readonly close = vi.fn()
+    readonly projectId: string
 
-    constructor() {
+    constructor(_bridge: unknown, projectId: string) {
+      this.projectId = projectId
       sessions.push(this)
     }
   }
@@ -391,6 +393,39 @@ describe('ProjectView interactive terminal', () => {
     expect(terminalSessions.sessions).toHaveLength(2)
     await router.push('/projects')
     await router.isReady()
+    await flushPromises()
+    expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('retains independent terminal workspaces while switching between projects', async () => {
+    const { router, wrapper } = await mountProject('orders-api')
+
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+    expect(terminalSessions.sessions.map((session) => session.projectId)).toEqual(['orders-api'])
+
+    await router.push('/projects/billing')
+    await router.isReady()
+    await flushPromises()
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+
+    expect(terminalSessions.sessions.map((session) => session.projectId)).toEqual(['orders-api', 'billing'])
+    expect(terminalSessions.sessions[0]?.close).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(2)
+
+    await router.push('/projects/orders-api')
+    await router.isReady()
+    await flushPromises()
+    await detailTab(wrapper, 'Terminal').trigger('mousedown', { button: 0 })
+    await wrapper.vm.$nextTick()
+
+    expect(terminalSessions.sessions).toHaveLength(2)
+    expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 0)).toBe(true)
+    expect(wrapper.findAll('[data-testid="interactive-terminal"]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('Terminal 1')
+
+    wrapper.unmount()
     await flushPromises()
     expect(terminalSessions.sessions.every((session) => session.close.mock.calls.length === 1)).toBe(true)
   })
