@@ -281,29 +281,42 @@ async function copyOverride(name: string, value: string) {
   <div class="flex min-h-0 flex-col">
     <Card class="min-h-0 flex-1 gap-0 overflow-hidden rounded-lg py-0 shadow-none">
       <CardHeader class="border-b px-4 py-0">
-        <div class="flex h-11 items-center gap-5 overflow-x-auto" role="tablist" aria-label="Project environment">
-          <button
-            v-for="file in environment?.files ?? []"
-            :key="file.name"
-            type="button"
-            role="tab"
-            class="h-11 flex-none border-b-2 border-transparent text-sm font-medium text-muted-foreground hover:text-foreground"
-            :class="selectedTab === file.name ? '!border-primary text-primary' : ''"
-            :aria-selected="selectedTab === file.name"
-            @click="selectedTab = file.name"
-          >
-            {{ file.name }}<span v-if="drafts[file.name]?.contents !== drafts[file.name]?.savedContents" class="ml-1 text-primary">●</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            class="h-11 flex-none border-b-2 border-transparent text-sm font-medium text-muted-foreground hover:text-foreground"
-            :class="overridesSelected ? '!border-primary text-primary' : ''"
-            :aria-selected="overridesSelected"
-            @click="selectedTab = environmentOverridesTab"
-          >
-            Environment overrides
-          </button>
+        <div class="flex h-11 min-w-0 items-center gap-4">
+          <div class="flex h-11 min-w-0 flex-1 items-center gap-5 overflow-x-auto" role="tablist" aria-label="Project environment">
+            <button
+              v-for="file in environment?.files ?? []"
+              :key="file.name"
+              type="button"
+              role="tab"
+              class="h-11 flex-none border-b-2 border-transparent text-sm font-medium text-muted-foreground hover:text-foreground"
+              :class="selectedTab === file.name ? '!border-primary text-primary' : ''"
+              :aria-selected="selectedTab === file.name"
+              @click="selectedTab = file.name"
+            >
+              {{ file.name }}<span v-if="drafts[file.name]?.contents !== drafts[file.name]?.savedContents" class="ml-1 text-primary">●</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="h-11 flex-none border-b-2 border-transparent text-sm font-medium text-muted-foreground hover:text-foreground"
+              :class="overridesSelected ? '!border-primary text-primary' : ''"
+              :aria-selected="overridesSelected"
+              @click="selectedTab = environmentOverridesTab"
+            >
+              Environment overrides
+            </button>
+          </div>
+          <div v-if="selectedDraft && !overridesSelected" class="flex shrink-0 items-center gap-2">
+            <Button variant="ghost" size="sm" :disabled="loading" @click="reloadSelectedFile">
+              <RefreshCw class="size-3.5" />
+              Reload
+            </Button>
+            <Button size="sm" :disabled="!selectedDirty || selectedDraft.saving" @click="saveSelectedFile">
+              <LoaderCircle v-if="selectedDraft.saving" class="size-3.5 animate-spin" />
+              <Save v-else class="size-3.5" />
+              {{ selectedDraft.saving ? 'Saving…' : 'Save' }}
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent class="flex min-h-0 flex-1 flex-col p-0">
@@ -419,23 +432,6 @@ async function copyOverride(name: string, value: string) {
           </div>
         </div>
         <div v-else-if="selectedDraft" class="flex min-h-0 flex-1 flex-col">
-          <div class="flex items-center justify-between gap-3 border-b px-4 py-2">
-            <p class="text-xs text-muted-foreground">
-              Editing <code>{{ selectedFileName }}</code>
-              <span v-if="selectedDirty"> · Unsaved changes</span>
-            </p>
-            <div class="flex items-center gap-2">
-              <Button variant="ghost" size="sm" :disabled="loading" @click="reloadSelectedFile">
-                <RefreshCw class="size-3.5" />
-                Reload
-              </Button>
-              <Button size="sm" :disabled="!selectedDirty || selectedDraft.saving" @click="saveSelectedFile">
-                <LoaderCircle v-if="selectedDraft.saving" class="size-3.5 animate-spin" />
-                <Save v-else class="size-3.5" />
-                {{ selectedDraft.saving ? 'Saving…' : 'Save' }}
-              </Button>
-            </div>
-          </div>
           <p v-if="selectedDraft.error" class="border-b px-4 py-2 text-xs text-destructive">{{ selectedDraft.error }}</p>
           <DotenvEditor
             v-model="selectedDraft.contents"

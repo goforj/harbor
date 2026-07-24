@@ -29,6 +29,7 @@ describe('ProjectEnvironmentPanel', () => {
     const tabs = wrapper.findAll('[role="tab"]')
     expect(tabs.map((tab) => tab.text())).toEqual(['.env', 'Environment overrides'])
     expect(wrapper.find('textarea[aria-label=".env contents"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('Editing .env')
     expect(wrapper.text()).not.toContain('IP_ADDRESS')
 
     await tabs[1]!.trigger('click')
