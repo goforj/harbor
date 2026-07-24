@@ -280,7 +280,7 @@ async function copyOverride(name: string, value: string) {
 <template>
   <div class="flex min-h-0 flex-col">
     <Card class="min-h-0 flex-1 gap-0 overflow-hidden rounded-lg py-0 shadow-none">
-      <CardHeader class="border-b px-4 py-0">
+      <CardHeader class="grid-rows-1 gap-0 border-b px-4 py-0 !pb-0">
         <div class="flex h-11 min-w-0 items-center gap-4">
           <div class="flex h-11 min-w-0 flex-1 items-center gap-5 overflow-x-auto" role="tablist" aria-label="Project environment">
             <button

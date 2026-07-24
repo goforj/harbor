@@ -28,6 +28,11 @@ describe('ProjectEnvironmentPanel', () => {
 
     const tabs = wrapper.findAll('[role="tab"]')
     expect(tabs.map((tab) => tab.text())).toEqual(['.env', 'Environment overrides'])
+    expect(wrapper.get('[data-slot="card-header"]').classes()).toEqual(expect.arrayContaining([
+      'grid-rows-1',
+      'gap-0',
+      '!pb-0',
+    ]))
     expect(wrapper.find('textarea[aria-label=".env contents"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('Editing .env')
     expect(wrapper.text()).not.toContain('IP_ADDRESS')
