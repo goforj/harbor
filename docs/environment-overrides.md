@@ -2,7 +2,7 @@
 
 Harbor can translate its runtime facts into project-specific environment variable names without requiring the project or its runtime provider to understand Harbor.
 
-A project opts in with a repository-owned `.harbor.yml`:
+A project opts in with a repository-owned `.harbor.yml`. The Environment tab can create and edit the same contract through **Environment overrides → Project mappings**:
 
 ```yaml
 version: 1
@@ -14,7 +14,9 @@ environment:
 
 Harbor resolves these bindings after it assigns the project runtime and supplies the resulting values after the project's dotenv files load. In this example, `MEILISEARCH_HOST` receives the project's dedicated loopback address.
 
-The Environment tab shows each resolved value and its source under **Environment overrides**. These values are read-only because Harbor owns the facts they represent; developers choose only which project environment names consume them.
+The mappings are editable because the repository owns the application variable names. Harbor saves them with revision checks so it cannot overwrite a `.harbor.yml` that changed outside the app.
+
+The same view shows the resolved values and their sources under **Effective read-only values**. These values are read-only because Harbor owns the facts they represent; developers choose only which project environment names consume them.
 
 ## Version 1 contract
 

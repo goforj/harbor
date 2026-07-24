@@ -24,6 +24,7 @@ import (
 	"github.com/goforj/harbor/internal/network/dataplane"
 	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectdiscovery"
+	"github.com/goforj/harbor/internal/projectenvironment"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/reconcile"
@@ -108,9 +109,9 @@ type projectLifecycleCoordinator interface {
 	Restart(context.Context, reconcile.ProjectRestartRequest) (state.OperationRecord, error)
 	// ProjectActivity reads bounded output only for the current durable session.
 	ProjectActivity(context.Context, reconcile.ProjectActivityRequest) (reconcile.ProjectActivity, error)
-	// ProjectEnvironment reads the runtime provider's environment inputs for one registered project.
-	ProjectEnvironment(context.Context, reconcile.ProjectEnvironmentRequest) (projectruntime.EnvironmentInspection, error)
-	// SaveProjectEnvironmentFile writes one revision-fenced runtime provider environment file.
+	// ProjectEnvironment reads repository bindings and runtime inputs for one registered project.
+	ProjectEnvironment(context.Context, reconcile.ProjectEnvironmentRequest) (reconcile.ProjectEnvironment, error)
+	// SaveProjectEnvironmentFile writes one revision-fenced repository or runtime environment file.
 	SaveProjectEnvironmentFile(context.Context, reconcile.ProjectEnvironmentFileSaveRequest) (projectruntime.EnvironmentFile, error)
 	// ServiceLogs reads bounded output for one Compose service in the current durable session.
 	ServiceLogs(context.Context, reconcile.ProjectServiceLogsRequest) (reconcile.ProjectServiceLogs, error)
@@ -862,7 +863,7 @@ func (authority *Authority) ProjectEnvironment(
 	if err := request.Validate(); err != nil {
 		return control.ProjectEnvironment{}, control.NewProjectEnvironmentInvalidError(err)
 	}
-	inspection, err := authority.lifecycle.ProjectEnvironment(ctx, reconcile.ProjectEnvironmentRequest{
+	environment, err := authority.lifecycle.ProjectEnvironment(ctx, reconcile.ProjectEnvironmentRequest{
 		ProjectID: request.ProjectID,
 	})
 	if err != nil {
@@ -874,19 +875,27 @@ func (authority *Authority) ProjectEnvironment(
 	}
 	result := control.ProjectEnvironment{
 		ProjectID:          request.ProjectID,
-		OverridesAvailable: inspection.OverridesAvailable,
-		OverrideError:      inspection.OverrideError,
-		Overrides:          make([]control.ProjectEnvironmentVariable, 0, len(inspection.Overrides)),
-		Files:              make([]control.ProjectEnvironmentFile, 0, len(inspection.Files)),
+		OverridesAvailable: environment.Runtime.OverridesAvailable,
+		OverrideError:      environment.Runtime.OverrideError,
+		Overrides:          make([]control.ProjectEnvironmentVariable, 0, len(environment.Runtime.Overrides)),
+		Bindings:           make([]control.ProjectEnvironmentBinding, 0, len(environment.Bindings)),
+		BindingsRevision:   environment.BindingsRevision,
+		Files:              make([]control.ProjectEnvironmentFile, 0, len(environment.Runtime.Files)),
 	}
-	for _, override := range inspection.Overrides {
+	for _, override := range environment.Runtime.Overrides {
 		result.Overrides = append(result.Overrides, control.ProjectEnvironmentVariable{
 			Name:   override.Name,
 			Value:  override.Value,
 			Source: override.Source,
 		})
 	}
-	for _, file := range inspection.Files {
+	for _, binding := range environment.Bindings {
+		result.Bindings = append(result.Bindings, control.ProjectEnvironmentBinding{
+			Name:   binding.Name,
+			Source: binding.Source,
+		})
+	}
+	for _, file := range environment.Runtime.Files {
 		result.Files = append(result.Files, control.ProjectEnvironmentFile{
 			Name:     file.Name,
 			Contents: file.Contents,
@@ -899,7 +908,7 @@ func (authority *Authority) ProjectEnvironment(
 	return result, nil
 }
 
-// SaveProjectEnvironmentFile writes one provider file only after daemon-side project resolution.
+// SaveProjectEnvironmentFile writes one repository or provider file only after daemon-side project resolution.
 func (authority *Authority) SaveProjectEnvironmentFile(
 	ctx context.Context,
 	_ control.Caller,
@@ -921,6 +930,9 @@ func (authority *Authority) SaveProjectEnvironmentFile(
 			return control.ProjectEnvironmentFile{}, control.NewProjectEnvironmentNotFoundError(err)
 		}
 		if errors.Is(err, projectprocess.ErrDotenvFileChanged) {
+			return control.ProjectEnvironmentFile{}, control.NewProjectEnvironmentConflictError(err)
+		}
+		if errors.Is(err, projectenvironment.ErrConfigurationChanged) {
 			return control.ProjectEnvironmentFile{}, control.NewProjectEnvironmentConflictError(err)
 		}
 		return control.ProjectEnvironmentFile{}, err

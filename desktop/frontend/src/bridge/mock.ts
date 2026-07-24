@@ -1,9 +1,21 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectEnvironment, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentBinding, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
+
+// harborBindings parses the canonical repository contract emitted by the visual mapping editor.
+function harborBindings(contents: string): ProjectEnvironmentBinding[] {
+  if (contents === 'version: 1\n\nenvironment: {}\n') return []
+  const prefix = 'version: 1\n\nenvironment:\n'
+  if (!contents.startsWith(prefix)) throw new Error('Harbor environment mapping is invalid.')
+  const bindings = [...contents.slice(prefix.length).matchAll(/^  ([A-Za-z_][A-Za-z0-9_]*):\n    from: (project\.address)\n/g)]
+    .map((match) => ({ name: match[1]!, source: match[2]! }))
+  const rendered = `${prefix}${bindings.map((binding) => `  ${binding.name}:\n    from: ${binding.source}\n`).join('')}`
+  if (rendered !== contents) throw new Error('Harbor environment mapping is invalid.')
+  return bindings
+}
 
 export function createMockBridge(): HarborBridge {
   const snapshot: HarborSnapshot = structuredClone(fixture.snapshot)
@@ -398,6 +410,28 @@ export function createMockBridge(): HarborBridge {
     },
     async saveProjectEnvironmentFile(projectId, name, contents, revision) {
       const environment = projectEnvironment(projectId)
+      if (name === '.harbor.yml') {
+        if (environment.bindings_revision !== revision) {
+          throw new Error('Harbor environment mapping changed outside Harbor; reload before saving')
+        }
+        const bindings = harborBindings(contents)
+        const projectAddress = environment.overrides.find((entry) => entry.name === 'IP_ADDRESS')?.value ?? '127.77.0.10'
+        environment.bindings = bindings
+        environment.bindings_revision = fixture.saved_project_environment_file.revision
+        environment.overrides = [
+          ...environment.overrides.filter((entry) => entry.source !== 'project.address'),
+          ...bindings.map((binding) => ({
+            name: binding.name,
+            value: projectAddress,
+            source: binding.source,
+          })),
+        ].sort((left, right) => left.name.localeCompare(right.name))
+        return {
+          name,
+          contents,
+          revision: environment.bindings_revision,
+        }
+      }
       const file = environment.files.find((entry) => entry.name === name)
       if (!file) throw new Error(`Unknown environment file: ${name}`)
       if (file.revision !== revision) {

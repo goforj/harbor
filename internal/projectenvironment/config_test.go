@@ -1,6 +1,7 @@
 package projectenvironment
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -32,6 +33,17 @@ environment:
 	}
 	if !reflect.DeepEqual(overrides, want) {
 		t.Fatalf("Resolve() = %#v, want %#v", overrides, want)
+	}
+	configuration, err := Inspect(root)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	wantBindings := []Binding{
+		{Name: "API_ADVERTISED_HOST", Source: SourceProjectAddress},
+		{Name: "MEILISEARCH_HOST", Source: SourceProjectAddress},
+	}
+	if !reflect.DeepEqual(configuration.Bindings, wantBindings) || len(configuration.Revision) != 64 {
+		t.Fatalf("Inspect() = %#v, want sorted bindings and revision", configuration)
 	}
 }
 
@@ -77,7 +89,7 @@ func TestResolveRejectsConfigOutsideItsResourceBounds(t *testing.T) {
 	if err := os.WriteFile(external, []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatalf("write external config: %v", err)
 	}
-	if err := os.Symlink(external, filepath.Join(root, configFilename)); err != nil {
+	if err := os.Symlink(external, filepath.Join(root, Filename)); err != nil {
 		t.Fatalf("symlink config: %v", err)
 	}
 	if _, err := Resolve(root, Facts{ProjectAddress: netip.MustParseAddr("127.77.0.18")}); err == nil {
@@ -85,7 +97,7 @@ func TestResolveRejectsConfigOutsideItsResourceBounds(t *testing.T) {
 	}
 
 	root = t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, configFilename), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(root, Filename), 0o700); err != nil {
 		t.Fatalf("create config directory: %v", err)
 	}
 	if _, err := Resolve(root, Facts{ProjectAddress: netip.MustParseAddr("127.77.0.18")}); err == nil {
@@ -93,7 +105,7 @@ func TestResolveRejectsConfigOutsideItsResourceBounds(t *testing.T) {
 	}
 
 	root = t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, configFilename), make([]byte, maximumConfigBytes+1), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, Filename), make([]byte, maximumConfigBytes+1), 0o600); err != nil {
 		t.Fatalf("write oversized config: %v", err)
 	}
 	if _, err := Resolve(root, Facts{ProjectAddress: netip.MustParseAddr("127.77.0.18")}); err == nil {
@@ -136,10 +148,56 @@ func TestResolveRejectsEnvironmentNamesOutsideThePortableBounds(t *testing.T) {
 	}
 }
 
+// TestSaveCreatesAndRevisionFencesTheRepositoryContract verifies the visual editor cannot overwrite external changes.
+func TestSaveCreatesAndRevisionFencesTheRepositoryContract(t *testing.T) {
+	root := t.TempDir()
+	missing, err := Inspect(root)
+	if err != nil || missing.Bindings == nil || missing.Revision != "" {
+		t.Fatalf("Inspect() missing = %#v, %v", missing, err)
+	}
+	contents := "version: 1\nenvironment:\n  MEILISEARCH_HOST:\n    from: project.address\n"
+	saved, err := Save(root, contents, missing.Revision)
+	if err != nil {
+		t.Fatalf("Save() create error = %v", err)
+	}
+	want := []Binding{{Name: "MEILISEARCH_HOST", Source: SourceProjectAddress}}
+	if !reflect.DeepEqual(saved.Bindings, want) || len(saved.Revision) != 64 {
+		t.Fatalf("Save() create = %#v, want binding and revision", saved)
+	}
+	info, err := os.Stat(filepath.Join(root, Filename))
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("created %s mode = %v, %v, want 0644", Filename, info, err)
+	}
+	if _, err := Save(root, "version: 1\nenvironment: {}\n", missing.Revision); !errors.Is(err, ErrConfigurationChanged) {
+		t.Fatalf("Save() stale error = %v, want ErrConfigurationChanged", err)
+	}
+	reloaded, err := Inspect(root)
+	if err != nil || !reflect.DeepEqual(reloaded, saved) {
+		t.Fatalf("Inspect() after stale save = %#v, %v, want %#v", reloaded, err, saved)
+	}
+}
+
+// TestSaveValidatesNewContentsBeforeReplacingTheRepositoryContract preserves the last valid file.
+func TestSaveValidatesNewContentsBeforeReplacingTheRepositoryContract(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, "version: 1\nenvironment: {}\n")
+	before, err := Inspect(root)
+	if err != nil {
+		t.Fatalf("Inspect() before invalid save error = %v", err)
+	}
+	if _, err := Save(root, "version: 1\ncommand: whoami\n", before.Revision); err == nil {
+		t.Fatal("Save() accepted executable configuration")
+	}
+	after, err := Inspect(root)
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("Inspect() after invalid save = %#v, %v, want %#v", after, err, before)
+	}
+}
+
 // writeConfig publishes one test repository contract.
 func writeConfig(t *testing.T, root string, contents string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(root, configFilename), []byte(strings.TrimSpace(contents)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(strings.TrimSpace(contents)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 }

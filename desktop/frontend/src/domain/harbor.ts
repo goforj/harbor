@@ -24,6 +24,11 @@ export interface ProjectEnvironmentVariable {
   source: string
 }
 
+export interface ProjectEnvironmentBinding {
+  name: string
+  source: string
+}
+
 export interface ProjectEnvironmentFile {
   name: string
   contents: string
@@ -35,6 +40,8 @@ export interface ProjectEnvironment {
   overrides_available: boolean
   override_error?: string
   overrides: ProjectEnvironmentVariable[]
+  bindings: ProjectEnvironmentBinding[]
+  bindings_revision: string
   files: ProjectEnvironmentFile[]
 }
 

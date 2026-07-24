@@ -372,8 +372,20 @@ export const harborWireFixture = {
         "name": "LIGHTHOUSE_URL",
         "value": "ws://127.77.0.10:3000/lighthouse/ws/agent",
         "source": "runtime.provider"
+      },
+      {
+        "name": "MEILISEARCH_HOST",
+        "value": "127.77.0.10",
+        "source": "project.address"
       }
     ],
+    "bindings": [
+      {
+        "name": "MEILISEARCH_HOST",
+        "source": "project.address"
+      }
+    ],
+    "bindings_revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "files": [
       {
         "name": ".env",

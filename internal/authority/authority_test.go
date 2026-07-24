@@ -59,7 +59,7 @@ type recordingProjectLifecycle struct {
 	restartErr         error
 	activity           reconcile.ProjectActivity
 	activityErr        error
-	environment        projectruntime.EnvironmentInspection
+	environment        reconcile.ProjectEnvironment
 	environmentErr     error
 	environmentFile    projectruntime.EnvironmentFile
 	environmentFileErr error
@@ -111,18 +111,18 @@ func (lifecycle *recordingProjectLifecycle) ProjectActivity(
 	return lifecycle.activity, lifecycle.activityErr
 }
 
-// ProjectEnvironment returns the configured provider environment while retaining the project selection.
+// ProjectEnvironment returns the configured project environment while retaining the project selection.
 func (lifecycle *recordingProjectLifecycle) ProjectEnvironment(
 	_ context.Context,
 	request reconcile.ProjectEnvironmentRequest,
-) (projectruntime.EnvironmentInspection, error) {
+) (reconcile.ProjectEnvironment, error) {
 	lifecycle.mutex.Lock()
 	lifecycle.environments = append(lifecycle.environments, request)
 	lifecycle.mutex.Unlock()
 	return lifecycle.environment, lifecycle.environmentErr
 }
 
-// SaveProjectEnvironmentFile returns the configured provider file while retaining the revision-fenced edit.
+// SaveProjectEnvironmentFile returns the configured environment file while retaining the revision-fenced edit.
 func (lifecycle *recordingProjectLifecycle) SaveProjectEnvironmentFile(
 	_ context.Context,
 	request reconcile.ProjectEnvironmentFileSaveRequest,

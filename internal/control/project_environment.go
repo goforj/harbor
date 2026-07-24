@@ -40,7 +40,7 @@ type SaveProjectEnvironmentFileRequest struct {
 	Revision  string           `json:"revision"`
 }
 
-// Validate reports whether the save request remains inside the bounded provider file surface.
+// Validate reports whether the save request remains inside the bounded environment file surface.
 func (request SaveProjectEnvironmentFileRequest) Validate() error {
 	if err := request.ProjectID.Validate(); err != nil {
 		return err
@@ -54,7 +54,7 @@ func (request SaveProjectEnvironmentFileRequest) Validate() error {
 	if len(request.Contents) > maximumProjectEnvironmentFileBytes {
 		return fmt.Errorf("project environment file exceeds %d bytes", maximumProjectEnvironmentFileBytes)
 	}
-	return validateProjectEnvironmentRevision(request.Revision, false)
+	return validateProjectEnvironmentRevision(request.Revision, request.Name == ".harbor.yml")
 }
 
 // ProjectEnvironmentVariable is one read-only value Harbor supplies to the project process.
@@ -75,18 +75,28 @@ func (variable ProjectEnvironmentVariable) Validate() error {
 	if len(variable.Value) > maximumProjectEnvironmentValueBytes {
 		return fmt.Errorf("project environment override %q exceeds %d bytes", variable.Name, maximumProjectEnvironmentValueBytes)
 	}
-	if variable.Source == "" || len(variable.Source) > maximumProjectEnvironmentSourceBytes || !utf8.ValidString(variable.Source) {
-		return fmt.Errorf("project environment override %q source must contain between 1 and %d UTF-8 bytes", variable.Name, maximumProjectEnvironmentSourceBytes)
+	if err := validateProjectEnvironmentSource(variable.Source); err != nil {
+		return fmt.Errorf("project environment override %q: %w", variable.Name, err)
 	}
-	for _, character := range variable.Source {
-		if (character >= 'a' && character <= 'z') ||
-			(character >= '0' && character <= '9') ||
-			character == '.' ||
-			character == '_' ||
-			character == '-' {
-			continue
-		}
-		return fmt.Errorf("project environment override %q source is not canonical", variable.Name)
+	return nil
+}
+
+// ProjectEnvironmentBinding is one repository-owned mapping from a project variable to a Harbor fact.
+type ProjectEnvironmentBinding struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// Validate reports whether the repository binding uses the current explicit contract.
+func (binding ProjectEnvironmentBinding) Validate() error {
+	if err := validateProjectEnvironmentVariableName(binding.Name); err != nil {
+		return err
+	}
+	if err := validateProjectEnvironmentSource(binding.Source); err != nil {
+		return fmt.Errorf("project environment binding %q: %w", binding.Name, err)
+	}
+	if binding.Source != "project.address" {
+		return fmt.Errorf("project environment binding %q uses unsupported source %q", binding.Name, binding.Source)
 	}
 	return nil
 }
@@ -118,6 +128,8 @@ type ProjectEnvironment struct {
 	OverridesAvailable bool                         `json:"overrides_available"`
 	OverrideError      string                       `json:"override_error,omitempty"`
 	Overrides          []ProjectEnvironmentVariable `json:"overrides"`
+	Bindings           []ProjectEnvironmentBinding  `json:"bindings"`
+	BindingsRevision   string                       `json:"bindings_revision"`
 	Files              []ProjectEnvironmentFile     `json:"files"`
 }
 
@@ -126,7 +138,7 @@ func (environment ProjectEnvironment) Validate() error {
 	if err := environment.ProjectID.Validate(); err != nil {
 		return err
 	}
-	if environment.Overrides == nil || environment.Files == nil {
+	if environment.Overrides == nil || environment.Bindings == nil || environment.Files == nil {
 		return errors.New("project environment collections must be initialized")
 	}
 	if len(environment.Overrides) > maximumProjectEnvironmentOverrides {
@@ -151,6 +163,25 @@ func (environment ProjectEnvironment) Validate() error {
 		}
 		previousOverride = override.Name
 	}
+	if len(environment.Bindings) > maximumProjectEnvironmentOverrides {
+		return fmt.Errorf("project environment contains more than %d repository bindings", maximumProjectEnvironmentOverrides)
+	}
+	if err := validateProjectEnvironmentRevision(environment.BindingsRevision, true); err != nil {
+		return fmt.Errorf("project environment bindings: %w", err)
+	}
+	if len(environment.Bindings) > 0 && environment.BindingsRevision == "" {
+		return errors.New("project environment bindings require a repository revision")
+	}
+	previousBinding := ""
+	for index, binding := range environment.Bindings {
+		if err := binding.Validate(); err != nil {
+			return err
+		}
+		if index > 0 && binding.Name <= previousBinding {
+			return errors.New("project environment bindings must be sorted without duplicates")
+		}
+		previousBinding = binding.Name
+	}
 	if len(environment.Files) > maximumProjectEnvironmentFiles {
 		return fmt.Errorf("project environment contains more than %d files", maximumProjectEnvironmentFiles)
 	}
@@ -168,6 +199,24 @@ func (environment ProjectEnvironment) Validate() error {
 	}
 	if totalBytes > maximumProjectEnvironmentTotalFileBytes {
 		return fmt.Errorf("project environment files exceed %d total bytes", maximumProjectEnvironmentTotalFileBytes)
+	}
+	return nil
+}
+
+// validateProjectEnvironmentSource requires one bounded canonical source identifier.
+func validateProjectEnvironmentSource(source string) error {
+	if source == "" || len(source) > maximumProjectEnvironmentSourceBytes || !utf8.ValidString(source) {
+		return fmt.Errorf("source must contain between 1 and %d UTF-8 bytes", maximumProjectEnvironmentSourceBytes)
+	}
+	for _, character := range source {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' ||
+			character == '_' ||
+			character == '-' {
+			continue
+		}
+		return errors.New("source is not canonical")
 	}
 	return nil
 }
@@ -198,8 +247,8 @@ func validateProjectEnvironmentFilename(name string) error {
 	if !utf8.ValidString(name) || strings.TrimSpace(name) != name || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 		return errors.New("project environment filename must be one canonical direct filename")
 	}
-	if name != ".env" && (!strings.HasPrefix(name, ".env.") || len(name) == len(".env.")) {
-		return errors.New(`project environment filename must be ".env" or a direct ".env.*" variant`)
+	if name != ".harbor.yml" && name != ".env" && (!strings.HasPrefix(name, ".env.") || len(name) == len(".env.")) {
+		return errors.New(`project environment filename must be ".harbor.yml", ".env", or a direct ".env.*" variant`)
 	}
 	return nil
 }

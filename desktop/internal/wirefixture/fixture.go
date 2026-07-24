@@ -404,7 +404,12 @@ func Fixture() Document {
 			Overrides: []control.ProjectEnvironmentVariable{
 				{Name: "IP_ADDRESS", Value: "127.77.0.10", Source: "runtime.provider"},
 				{Name: "LIGHTHOUSE_URL", Value: "ws://127.77.0.10:3000/lighthouse/ws/agent", Source: "runtime.provider"},
+				{Name: "MEILISEARCH_HOST", Value: "127.77.0.10", Source: "project.address"},
 			},
+			Bindings: []control.ProjectEnvironmentBinding{
+				{Name: "MEILISEARCH_HOST", Source: "project.address"},
+			},
+			BindingsRevision: strings.Repeat("c", 64),
 			Files: []control.ProjectEnvironmentFile{{
 				Name:     ".env",
 				Contents: "APP_NAME=Orders\n",

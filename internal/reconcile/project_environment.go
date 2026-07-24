@@ -17,7 +17,7 @@ type ProjectEnvironmentRequest struct {
 	ProjectID domain.ProjectID
 }
 
-// ProjectEnvironmentFileSaveRequest selects one provider-recognized file through its displayed revision.
+// ProjectEnvironmentFileSaveRequest selects one repository or provider environment file through its displayed revision.
 type ProjectEnvironmentFileSaveRequest struct {
 	ProjectID domain.ProjectID
 	Name      string
@@ -25,39 +25,58 @@ type ProjectEnvironmentFileSaveRequest struct {
 	Revision  string
 }
 
+// ProjectEnvironment combines repository bindings with the runtime provider's effective inputs.
+type ProjectEnvironment struct {
+	Runtime          projectruntime.EnvironmentInspection
+	Bindings         []projectenvironment.Binding
+	BindingsRevision string
+}
+
 // ProjectEnvironment inspects a registered project without allocating network authority or launching it.
 func (coordinator *ProjectLifecycleCoordinator) ProjectEnvironment(
 	ctx context.Context,
 	request ProjectEnvironmentRequest,
-) (projectruntime.EnvironmentInspection, error) {
+) (ProjectEnvironment, error) {
 	if err := request.ProjectID.Validate(); err != nil {
-		return projectruntime.EnvironmentInspection{}, err
+		return ProjectEnvironment{}, err
 	}
 	ctx = normalizeLifecycleContext(ctx)
 	project, err := coordinator.state.Project(ctx, request.ProjectID)
 	if err != nil {
-		return projectruntime.EnvironmentInspection{}, err
+		return ProjectEnvironment{}, err
+	}
+	configuration, err := projectenvironment.Inspect(project.Project.Path)
+	if err != nil {
+		return ProjectEnvironment{}, fmt.Errorf("inspect repository environment bindings: %w", err)
 	}
 	manager, ok := coordinator.projectRuntimeCapabilities().(projectruntime.EnvironmentManager)
 	if !ok {
-		return projectruntime.EnvironmentInspection{}, errors.New("project runtime environment management is unavailable")
+		return ProjectEnvironment{}, errors.New("project runtime environment management is unavailable")
 	}
 	address, err := coordinator.projectEnvironmentAddress(ctx, request.ProjectID)
 	if err != nil {
-		return projectruntime.EnvironmentInspection{}, err
+		return ProjectEnvironment{}, err
 	}
 	overrides, err := resolveProjectEnvironmentOverrides(project.Project.Path, address)
 	if err != nil {
-		return projectruntime.EnvironmentInspection{}, err
+		return ProjectEnvironment{}, err
 	}
-	return manager.InspectEnvironment(ctx, projectruntime.EnvironmentInspectionRequest{
+	inspection, err := manager.InspectEnvironment(ctx, projectruntime.EnvironmentInspectionRequest{
 		CheckoutRoot:         project.Project.Path,
 		Address:              address,
 		EnvironmentOverrides: overrides,
 	})
+	if err != nil {
+		return ProjectEnvironment{}, err
+	}
+	return ProjectEnvironment{
+		Runtime:          inspection,
+		Bindings:         configuration.Bindings,
+		BindingsRevision: configuration.Revision,
+	}, nil
 }
 
-// SaveProjectEnvironmentFile writes one provider-owned environment file after resolving the checkout from durable state.
+// SaveProjectEnvironmentFile writes one repository or provider environment file after resolving the checkout from durable state.
 func (coordinator *ProjectLifecycleCoordinator) SaveProjectEnvironmentFile(
 	ctx context.Context,
 	request ProjectEnvironmentFileSaveRequest,
@@ -69,6 +88,17 @@ func (coordinator *ProjectLifecycleCoordinator) SaveProjectEnvironmentFile(
 	project, err := coordinator.state.Project(ctx, request.ProjectID)
 	if err != nil {
 		return projectruntime.EnvironmentFile{}, err
+	}
+	if request.Name == projectenvironment.Filename {
+		configuration, err := projectenvironment.Save(project.Project.Path, request.Contents, request.Revision)
+		if err != nil {
+			return projectruntime.EnvironmentFile{}, err
+		}
+		return projectruntime.EnvironmentFile{
+			Name:     projectenvironment.Filename,
+			Contents: request.Contents,
+			Revision: configuration.Revision,
+		}, nil
 	}
 	manager, ok := coordinator.projectRuntimeCapabilities().(projectruntime.EnvironmentManager)
 	if !ok {

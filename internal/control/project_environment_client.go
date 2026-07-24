@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// ProjectEnvironment reads the runtime inputs for one registered project.
+// ProjectEnvironment reads repository mappings and effective runtime inputs for one registered project.
 func (client *Client) ProjectEnvironment(
 	ctx context.Context,
 	request ProjectEnvironmentRequest,
@@ -35,7 +35,7 @@ func (client *Client) ProjectEnvironment(
 	return response.Environment, nil
 }
 
-// SaveProjectEnvironmentFile writes one revision-fenced provider environment file.
+// SaveProjectEnvironmentFile writes one revision-fenced repository or provider environment file.
 func (client *Client) SaveProjectEnvironmentFile(
 	ctx context.Context,
 	request SaveProjectEnvironmentFileRequest,
