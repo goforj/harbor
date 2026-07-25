@@ -4,7 +4,6 @@ package projectprocess
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -32,7 +31,7 @@ func validateUnixProcessBirthToken(birthToken string) error {
 // unixProcessZombie reports whether one currently present Linux process has reached the inert zombie state.
 func unixProcessZombie(pid int) (bool, bool, error) {
 	contents, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if errors.Is(err, os.ErrNotExist) {
+	if linuxProcessAbsent(err) {
 		return false, false, nil
 	}
 	if err != nil {
@@ -58,7 +57,7 @@ func unixSessionMembers(sessionID int) ([]unixProcessMember, error) {
 			continue
 		}
 		contents, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-		if errors.Is(err, os.ErrNotExist) {
+		if linuxProcessAbsent(err) {
 			continue
 		}
 		if err != nil {
@@ -72,7 +71,7 @@ func unixSessionMembers(sessionID int) ([]unixProcessMember, error) {
 			continue
 		}
 		birthToken, err := processBirthToken(pid)
-		if errors.Is(err, os.ErrNotExist) {
+		if linuxProcessAbsent(err) {
 			continue
 		}
 		if err != nil {

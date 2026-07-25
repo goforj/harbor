@@ -8,12 +8,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 )
+
+// linuxProcessAbsent recognizes both filesystem and procfs process-disappearance errors.
+func linuxProcessAbsent(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
 
 // observeProcessBirthToken distinguishes a missing process from an observation failure.
 func observeProcessBirthToken(pid int) (string, bool, error) {
 	token, err := processBirthToken(pid)
-	if errors.Is(err, os.ErrNotExist) {
+	if linuxProcessAbsent(err) {
 		return "", false, nil
 	}
 	if err != nil {
