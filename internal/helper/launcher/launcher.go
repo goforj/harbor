@@ -86,7 +86,10 @@ const (
 	transportFailureWindowsLaunchAmbiguous
 	transportFailureWindowsInspectionClose
 	transportFailureWindowsListenerClose
-	transportFailureWindowsExchange
+	transportFailureWindowsRequestRead
+	transportFailureWindowsRequestWrite
+	transportFailureWindowsRequestHalfClose
+	transportFailureWindowsResponseRead
 	transportFailureWindowsConnectionClose
 	transportFailureWindowsWait
 	transportFailureWindowsProcessClose
@@ -264,8 +267,14 @@ func transportFailureLabel(stage transportFailureStage) string {
 		return "Windows helper inspection release"
 	case transportFailureWindowsListenerClose:
 		return "Windows pipe listener release"
-	case transportFailureWindowsExchange:
-		return "Windows helper exchange"
+	case transportFailureWindowsRequestRead:
+		return "Windows helper request preparation"
+	case transportFailureWindowsRequestWrite:
+		return "Windows helper request write"
+	case transportFailureWindowsRequestHalfClose:
+		return "Windows helper request half-close"
+	case transportFailureWindowsResponseRead:
+		return "Windows helper response read"
 	case transportFailureWindowsConnectionClose:
 		return "Windows pipe connection release"
 	case transportFailureWindowsWait:

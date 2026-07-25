@@ -192,7 +192,7 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	stopCancellation := context.AfterFunc(ctx, func() {
 		_ = accepted.connection.Close()
 	})
-	capturedResponse, exchangeErr := exchangeWindowsHelper(accepted.connection, request)
+	capturedResponse, exchangeErr, exchangeFailure := exchangeWindowsHelper(accepted.connection, request)
 	connectionCloseErr := accepted.connection.Close()
 	stopCancellation()
 	waitResult := <-waits
@@ -201,7 +201,7 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	case failure != transportFailureNone:
 		return indeterminateWindowsTransport(failure)
 	case exchangeErr != nil:
-		return indeterminateWindowsTransport(transportFailureWindowsExchange)
+		return indeterminateWindowsTransport(exchangeFailure)
 	case connectionCloseErr != nil:
 		return indeterminateWindowsTransport(transportFailureWindowsConnectionClose)
 	case waitResult.err != nil:
@@ -279,27 +279,27 @@ func indeterminateWindowsTransport(failure transportFailureStage) TransportResul
 }
 
 // exchangeWindowsHelper sends one bounded request message and captures one bounded response stream.
-func exchangeWindowsHelper(connection windowsPipeConnection, request io.Reader) (*boundedResponseWriter, error) {
+func exchangeWindowsHelper(connection windowsPipeConnection, request io.Reader) (*boundedResponseWriter, error, transportFailureStage) {
 	requestBody, err := io.ReadAll(io.LimitReader(request, helper.MaxRequestBytes+1))
 	if err != nil {
-		return &boundedResponseWriter{}, fmt.Errorf("read Windows helper request: %w", err)
+		return &boundedResponseWriter{}, fmt.Errorf("read Windows helper request: %w", err), transportFailureWindowsRequestRead
 	}
 	if len(requestBody) > helper.MaxRequestBytes {
-		return &boundedResponseWriter{}, errors.New("Windows helper request exceeds the protocol bound")
+		return &boundedResponseWriter{}, errors.New("Windows helper request exceeds the protocol bound"), transportFailureWindowsRequestRead
 	}
 	written, err := connection.Write(requestBody)
 	if err != nil || written != len(requestBody) {
-		return &boundedResponseWriter{}, errors.Join(err, io.ErrShortWrite)
+		return &boundedResponseWriter{}, errors.Join(err, io.ErrShortWrite), transportFailureWindowsRequestWrite
 	}
 	if err := connection.closeWrite(); err != nil {
-		return &boundedResponseWriter{}, fmt.Errorf("finish Windows helper request message: %w", err)
+		return &boundedResponseWriter{}, fmt.Errorf("finish Windows helper request message: %w", err), transportFailureWindowsRequestHalfClose
 	}
 
 	capturedResponse := &boundedResponseWriter{}
 	if _, err := io.Copy(capturedResponse, io.LimitReader(connection, helper.MaxResponseBytes+1)); err != nil {
-		return capturedResponse, fmt.Errorf("read Windows helper response: %w", err)
+		return capturedResponse, fmt.Errorf("read Windows helper response: %w", err), transportFailureWindowsResponseRead
 	}
-	return capturedResponse, nil
+	return capturedResponse, nil, transportFailureNone
 }
 
 // closeWindowsHelperInspection releases a retained pre-consent executable when no child exists.

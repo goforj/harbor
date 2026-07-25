@@ -118,9 +118,12 @@ func TestNativeWindowsInvocationPipeRoundTrip(t *testing.T) {
 		clientResults <- clientResult{request: string(body)}
 	}()
 
-	captured, err := exchangeWindowsHelper(accepted.connection, strings.NewReader(request))
+	captured, err, failure := exchangeWindowsHelper(accepted.connection, strings.NewReader(request))
 	if err != nil {
 		t.Fatalf("exchange over native Windows invocation pipe: %v", err)
+	}
+	if failure != transportFailureNone {
+		t.Fatalf("exchange over native Windows invocation pipe failure stage = %d", failure)
 	}
 	clientResultValue := <-clientResults
 	if clientResultValue.err != nil {
