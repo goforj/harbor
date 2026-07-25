@@ -4,6 +4,7 @@ package trust
 
 import (
 	"bytes"
+	"context"
 	"encoding/pem"
 	"errors"
 	"os"
@@ -69,7 +70,7 @@ func TestPrivilegedUbuntuTrustAdapterLifecycle(t *testing.T) {
 	}
 	adapter := newAdapter(newUbuntuTrustBackend(store))
 	t.Cleanup(func() {
-		observation, observeErr := adapter.Observe(t.Context(), request)
+		observation, observeErr := adapter.Observe(context.Background(), request)
 		if observeErr != nil {
 			t.Errorf("cleanup Observe() error = %v: %v", observeErr, errors.Unwrap(observeErr))
 			return
@@ -83,7 +84,7 @@ func TestPrivilegedUbuntuTrustAdapterLifecycle(t *testing.T) {
 			t.Errorf("cleanup Fingerprint() error = %v", fingerprintErr)
 			return
 		}
-		if _, releaseErr := adapter.ReleaseIfObserved(t.Context(), request, fingerprint); releaseErr != nil {
+		if _, releaseErr := adapter.ReleaseIfObserved(context.Background(), request, fingerprint); releaseErr != nil {
 			t.Errorf("cleanup ReleaseIfObserved() error = %v: %v", releaseErr, errors.Unwrap(releaseErr))
 		}
 	})
