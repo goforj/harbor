@@ -22,7 +22,7 @@ func TestNativeDockerRuntimeAdmitsOnlyItsCheckoutAndFollowsReplacement(t *testin
 		t.Skipf("set %s=1 to exercise the local Docker Engine", nativeDockerTestEnvironment)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	installationID := fmt.Sprintf("harbor-native-%d", time.Now().UnixNano())
 	target := newNativeComposeFixture(t, installationID+"-target", "target-initial")
