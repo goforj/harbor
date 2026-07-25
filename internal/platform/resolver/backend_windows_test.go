@@ -134,6 +134,20 @@ func TestWindowsNRPTPowerShellFingerprintProgramTracksEveryGoField(t *testing.T)
 	}
 }
 
+// TestWindowsNRPTPowerShellRepairOmitsDisabledFeatureDependents keeps Set from
+// passing parameters that Windows rejects when their parent feature is disabled.
+func TestWindowsNRPTPowerShellRepairOmitsDisabledFeatureDependents(t *testing.T) {
+	for _, parameter := range []string{
+		"-DAIPsecRequired",
+		"-DnsSecIPsecRequired",
+		"-DnsSecValidationRequired",
+	} {
+		if strings.Contains(windowsNRPTPowerShellProgram, parameter) {
+			t.Fatalf("Windows NRPT repair contains dependent parameter %s", parameter)
+		}
+	}
+}
+
 // TestPrivilegedWindowsNRPTAdapterLifecycle proves the fixed native PowerShell boundary creates, verifies, and removes only one fresh local rule.
 func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {

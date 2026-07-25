@@ -378,6 +378,31 @@ func TestWindowsNRPTNativeExactRejectsLatentSecurityState(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTLatentSecurityStateCoversDependentFields prevents repair from
+// retaining feature state that cannot accompany disabled DNSSEC or DirectAccess.
+func TestWindowsNRPTLatentSecurityStateCoversDependentFields(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
+	for _, mutate := range []func(*windowsNRPTRule){
+		func(rule *windowsNRPTRule) { rule.IPsecCARestriction = "CA" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessDNSServers = []string{"127.0.0.2"} },
+		func(rule *windowsNRPTRule) { rule.DirectAccessEnabled = true },
+		func(rule *windowsNRPTRule) { rule.DirectAccessProxyType = "NoProxy" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessProxyName = "proxy" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessQueryIPsecEncryption = "High" },
+		func(rule *windowsNRPTRule) { rule.DirectAccessQueryIPsecRequired = true },
+		func(rule *windowsNRPTRule) { rule.DNSSecEnabled = true },
+		func(rule *windowsNRPTRule) { rule.DNSSecQueryIPsecEncryption = "High" },
+		func(rule *windowsNRPTRule) { rule.DNSSecQueryIPsecRequired = true },
+		func(rule *windowsNRPTRule) { rule.DNSSecValidationRequired = true },
+	} {
+		candidate := windowsNRPTTestExactRule(request)
+		mutate(&candidate)
+		if !windowsNRPTRuleHasLatentSecurityState(candidate) {
+			t.Fatalf("windowsNRPTRuleHasLatentSecurityState() ignored %#v", candidate)
+		}
+	}
+}
+
 // TestWindowsNRPTBackendRejectsLatentSecurityRepair prevents an incomplete Set-DnsClientNrptRule call from touching latent security fields.
 func TestWindowsNRPTBackendRejectsLatentSecurityRepair(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)

@@ -455,10 +455,15 @@ func windowsNRPTRuleNativeExact(rule windowsNRPTRule, request Request) bool {
 func windowsNRPTRuleHasLatentSecurityState(rule windowsNRPTRule) bool {
 	return rule.IPsecCARestriction != "" ||
 		len(rule.DirectAccessDNSServers) != 0 ||
+		rule.DirectAccessEnabled ||
 		rule.DirectAccessProxyType != "" ||
 		rule.DirectAccessProxyName != "" ||
 		rule.DirectAccessQueryIPsecEncryption != "" ||
-		rule.DNSSecQueryIPsecEncryption != ""
+		rule.DirectAccessQueryIPsecRequired ||
+		rule.DNSSecEnabled ||
+		rule.DNSSecQueryIPsecEncryption != "" ||
+		rule.DNSSecQueryIPsecRequired ||
+		rule.DNSSecValidationRequired
 }
 
 // windowsNRPTDisplayName derives the stable local destination name from Harbor's installation identity.

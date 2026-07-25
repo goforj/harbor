@@ -581,7 +581,7 @@ try {
 
     if ([string]$request.operation -ceq 'ensure') {
         if ([bool]$guard.exists) {
-            Set-DnsClientNrptRule -Name ([string]$guard.name) -Namespace @([string]$request.suffix) -NameServers @([string]$request.server) -NameEncoding 'Disable' -DisplayName ([string]$request.display_name) -Comment ([string]$request.comment) -DAEnable $false -DAIPsecRequired $false -DnsSecEnable $false -DnsSecIPsecRequired $false -DnsSecValidationRequired $false -Confirm:$false -ErrorAction Stop | Out-Null
+            Set-DnsClientNrptRule -Name ([string]$guard.name) -Namespace @([string]$request.suffix) -NameServers @([string]$request.server) -NameEncoding 'Disable' -DisplayName ([string]$request.display_name) -Comment ([string]$request.comment) -DAEnable $false -DnsSecEnable $false -Confirm:$false -ErrorAction Stop | Out-Null
         } else {
             Add-DnsClientNrptRule -Namespace @([string]$request.suffix) -NameServers @([string]$request.server) -NameEncoding 'Disable' -DisplayName ([string]$request.display_name) -Comment ([string]$request.comment) -Confirm:$false -ErrorAction Stop | Out-Null
         }
