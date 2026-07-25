@@ -72,18 +72,6 @@ func resolverNativeDiagnostic(cause error) string {
 	}
 	message := strings.ToLower(cause.Error())
 	switch {
-	case strings.Contains(message, "harbor-progress=enumerating"):
-		return "enumeration-timeout"
-	case strings.Contains(message, "harbor-progress=module-imported"):
-		return "post-import-timeout"
-	}
-	switch {
-	case errors.Is(cause, context.DeadlineExceeded):
-		return "deadline"
-	case errors.Is(cause, context.Canceled):
-		return "canceled"
-	}
-	switch {
 	case strings.Contains(message, "harbor-stage=module-import"):
 		return "module-import"
 	case strings.Contains(message, "harbor-stage=input"):
@@ -100,6 +88,24 @@ func resolverNativeDiagnostic(cause error) string {
 		return "precondition-stage"
 	case strings.Contains(message, "harbor-stage=mutation"):
 		return "mutation-stage"
+	case strings.Contains(message, "harbor-progress=enumerating"):
+		return "enumeration-timeout"
+	case strings.Contains(message, "harbor-progress=module-imported"):
+		return "post-import-timeout"
+	case strings.Contains(message, "harbor-progress=importing-dnsclient"):
+		return "dnsclient-import-timeout"
+	case strings.Contains(message, "harbor-progress=importing-cimcmdlets"):
+		return "cimcmdlets-import-timeout"
+	case strings.Contains(message, "harbor-progress=importing-utility"):
+		return "utility-import-timeout"
+	}
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(cause, context.Canceled):
+		return "canceled"
+	}
+	switch {
 	case strings.Contains(message, "locate windows powershell system directory"):
 		return "system-directory"
 	case strings.Contains(message, "windows nrpt output exceeds"):

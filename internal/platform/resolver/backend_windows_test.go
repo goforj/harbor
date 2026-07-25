@@ -154,7 +154,7 @@ func TestWindowsNRPTPowerShellImportsOnlyInboxModules(t *testing.T) {
 	moduleRoot := "$moduleRoot = [IO.Path]::Combine($PSHOME, 'Modules')"
 	modulePath := "$env:PSModulePath = $moduleRoot"
 	autoload := "$PSModuleAutoLoadingPreference = 'None'"
-	importModules := "foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient'))"
+	importModules := "foreach ($module in @('Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient'))"
 	manifest := `$manifest = [IO.Path]::Combine($moduleRoot, $module, "$module.psd1")`
 	importModule := "Import-Module -Name $manifest -Force -ErrorAction Stop"
 	moduleRootIndex := strings.Index(windowsNRPTPowerShellProgram, moduleRoot)
@@ -204,14 +204,22 @@ func TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers(t *testing.T) {
 
 // TestWindowsNRPTProgressOnly accepts only the complete ordered marker sequence.
 func TestWindowsNRPTProgressOnly(t *testing.T) {
-	if !windowsNRPTProgressOnly("harbor-progress=module-imported\r\nharbor-progress=enumerating\r\n") {
+	complete := strings.Join([]string{
+		"harbor-progress=importing-utility",
+		"harbor-progress=importing-cimcmdlets",
+		"harbor-progress=importing-dnsclient",
+		"harbor-progress=module-imported",
+		"harbor-progress=enumerating",
+		"",
+	}, "\r\n")
+	if !windowsNRPTProgressOnly(complete) {
 		t.Fatal("windowsNRPTProgressOnly() rejected the complete marker sequence")
 	}
 	for _, value := range []string{
 		"",
 		"harbor-progress=module-imported",
 		"harbor-progress=enumerating\r\nharbor-progress=module-imported",
-		"harbor-progress=module-imported\r\nharbor-progress=enumerating\r\nprivate detail",
+		complete + "private detail",
 	} {
 		if windowsNRPTProgressOnly(value) {
 			t.Fatalf("windowsNRPTProgressOnly(%q) accepted an unsupported diagnostic", value)

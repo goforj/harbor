@@ -373,11 +373,22 @@ func windowsNRPTProgressOnly(value string) bool {
 	lines := strings.FieldsFunc(value, func(character rune) bool {
 		return character == '\r' || character == '\n'
 	})
-	if len(lines) != 2 {
+	expected := []string{
+		"harbor-progress=importing-utility",
+		"harbor-progress=importing-cimcmdlets",
+		"harbor-progress=importing-dnsclient",
+		"harbor-progress=module-imported",
+		"harbor-progress=enumerating",
+	}
+	if len(lines) != len(expected) {
 		return false
 	}
-	return strings.TrimSpace(lines[0]) == "harbor-progress=module-imported" &&
-		strings.TrimSpace(lines[1]) == "harbor-progress=enumerating"
+	for index := range expected {
+		if strings.TrimSpace(lines[index]) != expected[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // decodeWindowsNRPTSnapshot accepts only one bounded exact observation envelope.
@@ -441,7 +452,8 @@ $env:PSModulePath = $moduleRoot
 $PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 3.0
 try {
-    foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient')) {
+    foreach ($module in @('Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient')) {
+        [Console]::Error.WriteLine("harbor-progress=importing-$($module.ToLowerInvariant().Replace('microsoft.powershell.', ''))")
         $manifest = [IO.Path]::Combine($moduleRoot, $module, "$module.psd1")
         Import-Module -Name $manifest -Force -ErrorAction Stop
     }
