@@ -14,6 +14,8 @@ const networkResolverSetupPlansMigrationName = "2026_07_20_020000_create_network
 
 const networkResolverSetupAdministratorTrustMigrationName = "2026_07_22_048000_add_network_resolver_setup_administrator_trust"
 
+const networkResolverSetupWindowsMachineTrustMigrationName = "2026_07_25_010000_add_network_resolver_setup_windows_machine_trust"
+
 const networkResolverSetupVerifierKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 // TestNetworkResolverSetupPlansMigrationCreatesExactAuthoritySchema verifies every persisted plan dimension and owner index.
@@ -202,6 +204,96 @@ func TestNetworkResolverSetupAdministratorTrustMigrationRefusesUnsafeRollback(t 
 	}
 	if downgraded != legacy {
 		t.Fatalf("legacy plan after rollback = %#v, want %#v", downgraded, legacy)
+	}
+	assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
+}
+
+// TestNetworkResolverSetupWindowsMachineTrustMigrationPreservesPlansAndAdmitsOnlyCompleteProfiles verifies the Windows expansion.
+func TestNetworkResolverSetupWindowsMachineTrustMigrationPreservesPlansAndAdmitsOnlyCompleteProfiles(t *testing.T) {
+	databaseConnection, migration := newNetworkResolverSetupWindowsMachineTrustMigrationHarness(t)
+	seedNetworkResolverSetupMigrationOwners(t, databaseConnection, "operation-resolver", 3, 1)
+
+	legacy := defaultNetworkResolverSetupMigrationPlan("operation-resolver", 3, 1)
+	legacy.PolicyResolverMechanism = "windows-nrpt-v1"
+	legacy.PolicyLowPortsMechanism = "windows-direct-low-ports-v1"
+	legacy.PolicyTrustMechanism = "windows-current-user-trust-v1"
+	legacy.PolicyDnsAdvertisedAddress = "127.0.0.2"
+	legacy.PolicyDnsAdvertisedPort = 53
+	legacy.PolicyDnsBindAddress = "127.0.0.2"
+	legacy.PolicyDnsBindPort = 53
+	legacy.PolicyHttpBindPort = 80
+	legacy.PolicyHttpsBindPort = 443
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, legacy)
+
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply Windows machine trust migration: %v", err)
+	}
+	var read models.NetworkResolverSetupPlan
+	if err := databaseConnection.First(&read, 1).Error; err != nil {
+		t.Fatalf("read preserved Windows current-user plan: %v", err)
+	}
+	if read != legacy {
+		t.Fatalf("preserved Windows current-user plan = %#v, want %#v", read, legacy)
+	}
+	assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
+
+	mustExecNetworkResolverSetupMigration(t, databaseConnection, "DELETE FROM network_resolver_setup_plans")
+	machine := legacy
+	machine.PolicyTrustMechanism = "windows-machine-trust-v1"
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, machine)
+
+	mustExecNetworkResolverSetupMigration(t, databaseConnection, "DELETE FROM network_resolver_setup_plans")
+	mixed := machine
+	mixed.PolicyLowPortsMechanism = "ubuntu-nftables-v1"
+	if err := executeNetworkResolverSetupMigrationPlan(databaseConnection, mixed); err == nil {
+		t.Fatalf("mixed Windows machine-trust plan unexpectedly succeeded: %#v", mixed)
+	}
+}
+
+// TestNetworkResolverSetupWindowsMachineTrustMigrationRefusesUnsafeRollback protects active machine-trust approval.
+func TestNetworkResolverSetupWindowsMachineTrustMigrationRefusesUnsafeRollback(t *testing.T) {
+	databaseConnection, migration := newNetworkResolverSetupWindowsMachineTrustMigrationHarness(t)
+	seedNetworkResolverSetupMigrationOwners(t, databaseConnection, "operation-resolver", 3, 1)
+	if err := migration.Up(databaseConnection); err != nil {
+		t.Fatalf("apply Windows machine trust migration: %v", err)
+	}
+
+	machine := defaultNetworkResolverSetupMigrationPlan("operation-resolver", 3, 1)
+	machine.PolicyResolverMechanism = "windows-nrpt-v1"
+	machine.PolicyLowPortsMechanism = "windows-direct-low-ports-v1"
+	machine.PolicyTrustMechanism = "windows-machine-trust-v1"
+	machine.PolicyDnsAdvertisedAddress = "127.0.0.2"
+	machine.PolicyDnsAdvertisedPort = 53
+	machine.PolicyDnsBindAddress = "127.0.0.2"
+	machine.PolicyDnsBindPort = 53
+	machine.PolicyHttpBindPort = 80
+	machine.PolicyHttpsBindPort = 443
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, machine)
+
+	if err := migration.Down(databaseConnection); err == nil {
+		t.Fatal("Windows machine trust migration rollback unexpectedly succeeded")
+	}
+	var preserved models.NetworkResolverSetupPlan
+	if err := databaseConnection.First(&preserved, 1).Error; err != nil {
+		t.Fatalf("read Windows machine-trust plan after refused rollback: %v", err)
+	}
+	if preserved != machine {
+		t.Fatalf("Windows machine-trust plan after refused rollback = %#v, want %#v", preserved, machine)
+	}
+
+	mustExecNetworkResolverSetupMigration(t, databaseConnection, "DELETE FROM network_resolver_setup_plans")
+	legacy := machine
+	legacy.PolicyTrustMechanism = "windows-current-user-trust-v1"
+	insertNetworkResolverSetupMigrationPlan(t, databaseConnection, legacy)
+	if err := migration.Down(databaseConnection); err != nil {
+		t.Fatalf("rollback Windows machine trust migration after removing machine plan: %v", err)
+	}
+	var downgraded models.NetworkResolverSetupPlan
+	if err := databaseConnection.First(&downgraded, 1).Error; err != nil {
+		t.Fatalf("read Windows current-user plan after rollback: %v", err)
+	}
+	if downgraded != legacy {
+		t.Fatalf("Windows current-user plan after rollback = %#v, want %#v", downgraded, legacy)
 	}
 	assertNetworkResolverSetupForeignKeysClean(t, databaseConnection)
 }
@@ -423,6 +515,25 @@ func networkResolverSetupAdministratorTrustMigration(t *testing.T) Migration {
 	}
 	t.Fatalf("administrator trust migration %q is not registered", networkResolverSetupAdministratorTrustMigrationName)
 	return nil
+}
+
+// newNetworkResolverSetupWindowsMachineTrustMigrationHarness applies every production predecessor to the Windows expansion.
+func newNetworkResolverSetupWindowsMachineTrustMigrationHarness(t *testing.T) (*gorm.DB, Migration) {
+	t.Helper()
+	connections, databaseConnection := openOperationMigrationDatabase(t)
+	t.Cleanup(func() { closeOperationMigrationDatabase(t, connections) })
+	migrations := selectMigrations("harbord", "default", "sqlite")
+	sort.Slice(migrations, func(left, right int) bool { return migrations[left].Name() < migrations[right].Name() })
+	for _, migration := range migrations {
+		if migration.Name() == networkResolverSetupWindowsMachineTrustMigrationName {
+			return databaseConnection, migration
+		}
+		if err := migration.Up(databaseConnection); err != nil {
+			t.Fatalf("apply Windows machine trust prerequisite %s: %v", migration.Name(), err)
+		}
+	}
+	t.Fatalf("Windows machine trust migration %q is not registered", networkResolverSetupWindowsMachineTrustMigrationName)
+	return nil, nil
 }
 
 // seedNetworkResolverSetupMigrationOwners inserts the exact operation and network revision referenced by a plan.
