@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1327,24 +1328,7 @@ func trustedHTTPSObserveLoopbackIdentities(ctx context.Context, sandbox phase1Sa
 	case "linux":
 		output, err = trustedHTTPSRunCommand(ctx, sandbox, "/usr/sbin/ip", "-o", "-4", "address", "show", "dev", "lo")
 	case "windows":
-		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
-		if systemRoot == "" {
-			systemRoot = strings.TrimSpace(os.Getenv("WINDIR"))
-		}
-		if systemRoot == "" || !filepath.IsAbs(systemRoot) {
-			return nil, errors.New("observe Windows loopback identities: SystemRoot is unavailable")
-		}
-		powerShell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		output, err = trustedHTTPSRunCommand(
-			ctx,
-			sandbox,
-			powerShell,
-			"-NoLogo",
-			"-NoProfile",
-			"-NonInteractive",
-			"-Command",
-			`Import-Module (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules\NetTCPIP\NetTCPIP.psd1") -ErrorAction Stop; Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -like "127.77.*" } | Select-Object -ExpandProperty IPAddress`,
-		)
+		return trustedHTTPSObserveWindowsLoopbackIdentities()
 	default:
 		return nil, fmt.Errorf("observe loopback identities: platform %s is unsupported", runtime.GOOS)
 	}
@@ -1352,6 +1336,33 @@ func trustedHTTPSObserveLoopbackIdentities(ctx context.Context, sandbox phase1Sa
 		return nil, fmt.Errorf("inspect native loopback identities: %w: %s", err, strings.TrimSpace(output))
 	}
 	return trustedHTTPSParseLoopbackIdentities(runtime.GOOS, output), nil
+}
+
+// trustedHTTPSObserveWindowsLoopbackIdentities uses the native adapter API without PowerShell module state.
+func trustedHTTPSObserveWindowsLoopbackIdentities() ([]string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list Windows network interfaces: %w", err)
+	}
+	identities := make([]string, 0)
+	for _, networkInterface := range interfaces {
+		addresses, addressErr := networkInterface.Addrs()
+		if addressErr != nil {
+			return nil, fmt.Errorf("list Windows interface %q addresses: %w", networkInterface.Name, addressErr)
+		}
+		for _, address := range addresses {
+			ip, _, parseErr := net.ParseCIDR(address.String())
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse Windows interface %q address: %w", networkInterface.Name, parseErr)
+			}
+			ipv4 := ip.To4()
+			if ipv4 != nil && ipv4[0] == 127 && ipv4[1] == 77 {
+				identities = append(identities, ipv4.String())
+			}
+		}
+	}
+	slices.Sort(identities)
+	return slices.Compact(identities), nil
 }
 
 // trustedHTTPSParseLoopbackIdentities extracts a sorted address set from each native interface tool.
