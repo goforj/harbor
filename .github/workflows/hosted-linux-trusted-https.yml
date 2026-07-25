@@ -134,6 +134,21 @@ jobs:
             -test.count=1 \
             -test.run '^TestPrivilegedSystemdResolvedAdapterLifecycle$'
 
+      - name: Diagnose hosted Ubuntu resolver adapter
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n cat /etc/systemd/resolved.conf.d/90-goforj-harbor.conf || true
+          sudo -n /usr/bin/busctl --json=short get-property \
+            org.freedesktop.resolve1 \
+            /org/freedesktop/resolve1 \
+            org.freedesktop.resolve1.Manager \
+            Domains \
+            DNSEx || true
+          resolvectl status || true
+          sudo -n journalctl --unit systemd-resolved.service --no-pager --lines=100 || true
+
       - name: Build production Harbor and GoForj binaries
         shell: bash
         run: |
