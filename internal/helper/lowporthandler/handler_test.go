@@ -187,7 +187,16 @@ func TestHandlerRejectsInvalidOrCrossDomainAuthority(t *testing.T) {
 			refreshOwnershipFingerprints(t, fixture)
 		}},
 		{name: "unsupported platform mechanism", mutate: func(t *testing.T, fixture *handlerFixture) {
-			policy := mustPolicy(t, networkpolicy.UbuntuMechanisms())
+			policy, err := networkpolicy.New(
+				strings.Repeat("a", 64),
+				networkpolicy.WindowsMechanisms(),
+				networkpolicy.Listener{Advertised: netip.MustParseAddrPort("127.0.0.2:53"), Bind: netip.MustParseAddrPort("127.0.0.2:53")},
+				networkpolicy.Listener{Advertised: netip.MustParseAddrPort("127.0.0.1:80"), Bind: netip.MustParseAddrPort("127.0.0.1:80")},
+				networkpolicy.Listener{Advertised: netip.MustParseAddrPort("127.0.0.1:443"), Bind: netip.MustParseAddrPort("127.0.0.1:443")},
+			)
+			if err != nil {
+				t.Fatalf("networkpolicy.New() error = %v", err)
+			}
 			fixture.ticket.NetworkPolicy = &policy
 			fingerprint, err := policy.Fingerprint()
 			if err != nil {

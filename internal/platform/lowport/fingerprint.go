@@ -6,9 +6,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"slices"
+
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 const observationFingerprintDomain = "goforj.harbor.lowport-observation.v2\x00"
+const ubuntuObservationFingerprintDomain = "goforj.harbor.lowport-observation.ubuntu-nftables.v1\x00"
 
 // Fingerprint returns canonical compare-and-swap evidence for a validated observation.
 func (o Observation) Fingerprint() (string, error) {
@@ -20,9 +23,17 @@ func (o Observation) Fingerprint() (string, error) {
 
 // fingerprintValidated binds every request field and native fact after validation has succeeded.
 func fingerprintValidated(o Observation) string {
-	payload := append([]byte(nil), observationFingerprintDomain...)
+	domain := observationFingerprintDomain
+	if o.Request.mechanism == networkpolicy.UbuntuNFTables {
+		domain = ubuntuObservationFingerprintDomain
+	}
+	payload := append([]byte(nil), domain...)
 	payload = appendString(payload, o.Request.installationID)
 	payload = binary.AppendUvarint(payload, uint64(o.Request.ownerUID))
+	if o.Request.mechanism == networkpolicy.UbuntuNFTables {
+		payload = appendString(payload, string(o.Request.mechanism))
+		payload = appendString(payload, o.Request.loopbackPool.String())
+	}
 	payload = appendString(payload, o.Request.policyFingerprint)
 	payload = appendString(payload, o.Request.httpUpstream.String())
 	payload = appendString(payload, o.Request.httpsUpstream.String())
@@ -72,7 +83,8 @@ func classifyValidated(o Observation) State {
 			exact++
 		}
 	}
-	if kinds[ArtifactKindPlist] != 1 || kinds[ArtifactKindService] != 1 {
+	first, second := requiredArtifactKinds(o.Request.mechanism)
+	if kinds[first] != 1 || kinds[second] != 1 {
 		return StateAmbiguous
 	}
 	if present == 0 {

@@ -20,11 +20,13 @@ const (
 
 var canonicalLocalhost = netip.MustParseAddr("127.0.0.1")
 
-// Request is immutable low-port authority derived from validated schema-2 ownership and one Darwin policy.
+// Request is immutable low-port authority derived from validated schema-2 ownership and one native policy.
 type Request struct {
 	installationID    string
 	ownerUID          uint32
+	mechanism         networkpolicy.LowPortMechanism
 	policyFingerprint string
+	loopbackPool      netip.Prefix
 	httpUpstream      netip.AddrPort
 	httpsUpstream     netip.AddrPort
 }
@@ -40,7 +42,8 @@ func NewRequest(record ownership.Record, policy networkpolicy.Policy) (Request, 
 	if err := policy.Validate(); err != nil {
 		return Request{}, fmt.Errorf("low-port policy: %w", err)
 	}
-	if policy.Mechanisms.LowPorts != networkpolicy.DarwinLaunchdRelay {
+	if policy.Mechanisms.LowPorts != networkpolicy.DarwinLaunchdRelay &&
+		policy.Mechanisms.LowPorts != networkpolicy.UbuntuNFTables {
 		return Request{}, fmt.Errorf("low-port policy mechanism %q is unsupported", policy.Mechanisms.LowPorts)
 	}
 	fingerprint, err := policy.Fingerprint()
@@ -49,7 +52,7 @@ func NewRequest(record ownership.Record, policy networkpolicy.Policy) (Request, 
 	}
 	uid, err := strconv.ParseUint(record.OwnerIdentity, 10, 32)
 	if err != nil || strconv.FormatUint(uid, 10) != record.OwnerIdentity {
-		return Request{}, fmt.Errorf("low-port ownership owner identity is not a Darwin UID")
+		return Request{}, fmt.Errorf("low-port ownership owner identity is not a canonical UID")
 	}
 	if uid == 0 {
 		return Request{}, fmt.Errorf("low-port ownership owner UID must be non-root")
@@ -57,7 +60,19 @@ func NewRequest(record ownership.Record, policy networkpolicy.Policy) (Request, 
 	if policy.HTTP.Bind.Port() < 1024 || policy.HTTPS.Bind.Port() < 1024 {
 		return Request{}, fmt.Errorf("low-port upstreams must use unprivileged high ports")
 	}
-	request := Request{installationID: record.InstallationID, ownerUID: uint32(uid), policyFingerprint: fingerprint, httpUpstream: policy.HTTP.Bind, httpsUpstream: policy.HTTPS.Bind}
+	pool, err := netip.ParsePrefix(record.LoopbackPoolPrefix)
+	if err != nil {
+		return Request{}, fmt.Errorf("low-port ownership loopback pool: %w", err)
+	}
+	request := Request{
+		installationID:    record.InstallationID,
+		ownerUID:          uint32(uid),
+		mechanism:         policy.Mechanisms.LowPorts,
+		policyFingerprint: fingerprint,
+		loopbackPool:      pool,
+		httpUpstream:      policy.HTTP.Bind,
+		httpsUpstream:     policy.HTTPS.Bind,
+	}
 	return request, request.Validate()
 }
 
@@ -68,6 +83,9 @@ func (r Request) Validate() error {
 	}
 	if r.ownerUID == 0 {
 		return fmt.Errorf("low-port owner UID must be non-root")
+	}
+	if r.mechanism != networkpolicy.DarwinLaunchdRelay && r.mechanism != networkpolicy.UbuntuNFTables {
+		return fmt.Errorf("low-port mechanism %q is unsupported", r.mechanism)
 	}
 	if len(r.policyFingerprint) != canonicalFingerprintBytes {
 		return fmt.Errorf("low-port policy fingerprint is invalid")
@@ -83,17 +101,28 @@ func (r Request) Validate() error {
 	if r.httpUpstream == r.httpsUpstream {
 		return fmt.Errorf("low-port upstreams must differ")
 	}
+	if !r.loopbackPool.IsValid() || !r.loopbackPool.Addr().Is4() ||
+		!r.loopbackPool.Addr().IsLoopback() || r.loopbackPool.Bits() < 8 ||
+		r.loopbackPool != r.loopbackPool.Masked() {
+		return fmt.Errorf("low-port loopback pool is invalid")
+	}
 	return nil
 }
 
 // InstallationID returns the installation identity encoded into fixed service ownership.
 func (r Request) InstallationID() string { return r.installationID }
 
-// OwnerUID returns the Darwin service user derived from schema-2 ownership.
+// OwnerUID returns the service user derived from schema-2 ownership.
 func (r Request) OwnerUID() uint32 { return r.ownerUID }
+
+// Mechanism returns the exact native low-port integration selected by policy.
+func (r Request) Mechanism() networkpolicy.LowPortMechanism { return r.mechanism }
 
 // PolicyFingerprint returns the canonical policy digest bound to the service.
 func (r Request) PolicyFingerprint() string { return r.policyFingerprint }
+
+// LoopbackPool returns the canonical project address pool covered by low-port ingress.
+func (r Request) LoopbackPool() netip.Prefix { return r.loopbackPool }
 
 // HTTPUpstream returns the exact high HTTP upstream.
 func (r Request) HTTPUpstream() netip.AddrPort { return r.httpUpstream }
@@ -101,7 +130,7 @@ func (r Request) HTTPUpstream() netip.AddrPort { return r.httpUpstream }
 // HTTPSUpstream returns the exact high HTTPS upstream.
 func (r Request) HTTPSUpstream() netip.AddrPort { return r.httpsUpstream }
 
-// ArtifactKind identifies one fixed native object in the Darwin low-port contract.
+// ArtifactKind identifies one fixed native object in a low-port contract.
 type ArtifactKind string
 
 const (
@@ -109,6 +138,10 @@ const (
 	ArtifactKindPlist ArtifactKind = "plist"
 	// ArtifactKindService identifies the matching service currently loaded in launchd's system domain.
 	ArtifactKindService ArtifactKind = "service"
+	// ArtifactKindNFTTable identifies Harbor's fixed Ubuntu nftables table and owner comment.
+	ArtifactKindNFTTable ArtifactKind = "nft-table"
+	// ArtifactKindNFTRules identifies the complete canonical rules inside Harbor's nftables table.
+	ArtifactKindNFTRules ArtifactKind = "nft-rules"
 )
 
 // Artifact is one bounded native fact from the fixed low-port namespace.
@@ -130,7 +163,7 @@ type Artifact struct {
 // Validate rejects artifact facts whose flags cannot describe one native object safely.
 func (a Artifact) Validate() error {
 	switch a.Kind {
-	case ArtifactKindPlist, ArtifactKindService:
+	case ArtifactKindPlist, ArtifactKindService, ArtifactKindNFTTable, ArtifactKindNFTRules:
 	default:
 		return fmt.Errorf("low-port artifact kind %q is unsupported", a.Kind)
 	}
@@ -153,13 +186,13 @@ func (a Artifact) Validate() error {
 	return nil
 }
 
-// Observation is the bounded state around Harbor's fixed plist and loaded launchd service.
+// Observation is the bounded state around Harbor's fixed native low-port objects.
 type Observation struct {
 	// Request is the immutable authority against which native facts were observed.
 	Request Request
 	// Complete reports whether all required native facts were obtained.
 	Complete bool
-	// Artifacts contains typed plist and launchd service facts.
+	// Artifacts contains the exact typed pair selected by the request mechanism.
 	Artifacts []Artifact
 }
 
@@ -181,8 +214,9 @@ func (o Observation) Validate() error {
 		}
 		kinds[artifact.Kind]++
 	}
-	if o.Complete && (kinds[ArtifactKindPlist] == 0 || kinds[ArtifactKindService] == 0) {
-		return fmt.Errorf("complete low-port observation must include plist and service facts")
+	first, second := requiredArtifactKinds(o.Request.mechanism)
+	if o.Complete && (kinds[first] == 0 || kinds[second] == 0) {
+		return fmt.Errorf("complete low-port observation must include %s and %s facts", first, second)
 	}
 	return nil
 }
@@ -199,7 +233,7 @@ func (o Observation) State() (State, error) {
 type State string
 
 const (
-	// StateAbsent means neither canonical plist nor matching service is present.
+	// StateAbsent means neither canonical native object is present.
 	StateAbsent State = "absent"
 	// StateExact means both canonical artifacts are uniquely Harbor-owned.
 	StateExact State = "exact"
@@ -231,9 +265,19 @@ type Change struct {
 func sameRequest(left, right Request) bool {
 	return left.installationID == right.installationID &&
 		left.ownerUID == right.ownerUID &&
+		left.mechanism == right.mechanism &&
 		left.policyFingerprint == right.policyFingerprint &&
+		left.loopbackPool == right.loopbackPool &&
 		left.httpUpstream == right.httpUpstream &&
 		left.httpsUpstream == right.httpsUpstream
+}
+
+// requiredArtifactKinds returns the exact native object pair selected by one validated request.
+func requiredArtifactKinds(mechanism networkpolicy.LowPortMechanism) (ArtifactKind, ArtifactKind) {
+	if mechanism == networkpolicy.UbuntuNFTables {
+		return ArtifactKindNFTTable, ArtifactKindNFTRules
+	}
+	return ArtifactKindPlist, ArtifactKindService
 }
 
 // cloneObservation prevents backend-owned artifact slices from crossing adapter boundaries.

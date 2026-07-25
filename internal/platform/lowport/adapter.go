@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 )
 
 const postMutationObservationTimeout = 5 * time.Second
@@ -125,6 +127,9 @@ func (a *Adapter) mutateIfObserved(ctx context.Context, action string, request R
 // isExactPlistWithAbsentService identifies the sole safe launchd repair: a
 // canonical root-owned plist whose matching system service is not loaded.
 func isExactPlistWithAbsentService(observation Observation) bool {
+	if observation.Request.mechanism != networkpolicy.DarwinLaunchdRelay {
+		return false
+	}
 	var plist, service *Artifact
 	for index := range observation.Artifacts {
 		artifact := &observation.Artifacts[index]

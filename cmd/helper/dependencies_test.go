@@ -155,8 +155,10 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 			"golang.org/x/sys/unix",
 		},
 		"linux": {
+			"github.com/goforj/harbor/internal/helper/lowporthandler",
 			"github.com/goforj/harbor/internal/helper/resolverhandler",
 			"github.com/goforj/harbor/internal/platform/linuxnetlink",
+			"github.com/goforj/harbor/internal/platform/lowport",
 			"github.com/goforj/harbor/internal/platform/resolver",
 			"golang.org/x/sys/unix",
 		},

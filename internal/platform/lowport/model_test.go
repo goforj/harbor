@@ -49,6 +49,33 @@ func TestNewRequestBindsSchemaTwoOwnershipToCanonicalDarwinPolicy(t *testing.T) 
 	}
 }
 
+// TestNewRequestBindsUbuntuPoolAndMechanism proves nftables authority includes the selected project address range.
+func TestNewRequestBindsUbuntuPoolAndMechanism(t *testing.T) {
+	request := ubuntuNFTTestRequest(t)
+	if request.Mechanism() != networkpolicy.UbuntuNFTables ||
+		request.LoopbackPool() != netip.MustParsePrefix("127.77.0.0/24") {
+		t.Fatalf("Ubuntu request = %#v", request)
+	}
+	observation := observationFor(
+		request,
+		absentArtifact(ArtifactKindNFTTable),
+		absentArtifact(ArtifactKindNFTRules),
+	)
+	baseline, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := observation
+	changed.Request.loopbackPool = netip.MustParsePrefix("127.78.0.0/24")
+	updated, err := changed.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline == updated {
+		t.Fatal("Ubuntu observation fingerprint omitted the loopback pool")
+	}
+}
+
 // testPolicy returns one canonical Darwin low-port policy.
 func testPolicy(t *testing.T) networkpolicy.Policy {
 	t.Helper()

@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package main
 
@@ -10,7 +10,7 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 )
 
-// TestUnsupportedLowPortAdapterComposition proves non-Darwin builds fail closed without retaining resources.
+// TestUnsupportedLowPortAdapterComposition proves unsupported builds fail closed without retaining resources.
 func TestUnsupportedLowPortAdapterComposition(t *testing.T) {
 	handler, err := openPlatformLowPortHandler()
 	if err != nil {

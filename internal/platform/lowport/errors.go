@@ -1,6 +1,12 @@
 package lowport
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// errNativeMutationConflict marks a fixed native object that changed after admission.
+var errNativeMutationConflict = errors.New("native low-port mutation conflicts with current facts")
 
 // ErrorKind classifies bounded low-port adapter failures.
 type ErrorKind string
