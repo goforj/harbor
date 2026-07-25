@@ -89,7 +89,7 @@ func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request
 	return entries, nil
 }
 
-// ensure adds one absent certificate whose ownership property is already attached to the copied context.
+// ensure adds one absent certificate and rolls it back unless the returned stored context accepts Harbor ownership.
 func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Request) error {
 	if err := validateWindowsTrustRequest(request); err != nil {
 		return err
@@ -113,9 +113,6 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 		return fmt.Errorf("create Windows certificate context: %w", err)
 	}
 	defer windows.CertFreeCertificateContext(certificate)
-	if err := setWindowsCertificateFriendlyName(certificate, windowsTrustOwnerName(request)); err != nil {
-		return err
-	}
 
 	rootStore, err := openWindowsCurrentUserRootStore()
 	if err != nil {
@@ -126,6 +123,10 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 	var stored *windows.CertContext
 	if err := windows.CertAddCertificateContextToStore(rootStore, certificate, windows.CERT_STORE_ADD_NEW, &stored); err != nil {
 		return fmt.Errorf("add CurrentUser Root certificate: %w: %v", errNativeMutationConflict, err)
+	}
+	if err := setWindowsCertificateFriendlyName(stored, windowsTrustOwnerName(request)); err != nil {
+		rollbackErr := windows.CertDeleteCertificateFromStore(stored)
+		return errors.Join(err, rollbackErr)
 	}
 	defer windows.CertFreeCertificateContext(stored)
 	return nil
@@ -265,7 +266,7 @@ func windowsCertificateFriendlyName(certificate *windows.CertContext) (string, b
 	return windows.UTF16ToString(buffer), true, nil
 }
 
-// setWindowsCertificateFriendlyName writes the complete canonical owner marker before the context enters the store.
+// setWindowsCertificateFriendlyName writes the complete canonical owner marker to one stored context.
 func setWindowsCertificateFriendlyName(certificate *windows.CertContext, value string) error {
 	encoded, err := windows.UTF16FromString(value)
 	if err != nil {
