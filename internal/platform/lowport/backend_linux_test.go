@@ -32,8 +32,8 @@ func TestUbuntuNFTTableParserAcceptsOnlyTheCanonicalRuleset(t *testing.T) {
 		apply func(string) string
 	}{
 		{name: "owner", apply: func(value string) string { return strings.Replace(value, ubuntuNFTOwnerComment(request), "foreign", 1) }},
-		{name: "pool", apply: func(value string) string {
-			return strings.Replace(value, request.LoopbackPool().String(), "127.88.0.0/24", 1)
+		{name: "destination", apply: func(value string) string {
+			return strings.Replace(value, canonicalLocalhost.String(), "127.0.0.2", 1)
 		}},
 		{name: "port", apply: func(value string) string { return strings.Replace(value, ":25001", ":26001", 1) }},
 		{name: "extra rule", apply: func(value string) string {
@@ -52,14 +52,14 @@ func TestUbuntuNFTTableParserAcceptsOnlyTheCanonicalRuleset(t *testing.T) {
 	}
 }
 
-// TestUbuntuNFTRulesetContainsOnlyTheSelectedPoolAndUpstreams proves no caller-selected nft syntax enters the transaction.
-func TestUbuntuNFTRulesetContainsOnlyTheSelectedPoolAndUpstreams(t *testing.T) {
+// TestUbuntuNFTRulesetContainsOnlySharedIngressAndSelectedUpstreams proves no caller-selected nft syntax enters the transaction.
+func TestUbuntuNFTRulesetContainsOnlySharedIngressAndSelectedUpstreams(t *testing.T) {
 	request := ubuntuNFTTestRequest(t)
 	ruleset := ubuntuNFTRuleset(request)
 	for _, expected := range []string{
 		"table inet " + ubuntuNFTTableName,
-		"ip daddr " + request.LoopbackPool().String() + " tcp dport 80 redirect to :" + strconv.Itoa(int(request.HTTPUpstream().Port())),
-		"ip daddr " + request.LoopbackPool().String() + " tcp dport 443 redirect to :" + strconv.Itoa(int(request.HTTPSUpstream().Port())),
+		"ip daddr " + canonicalLocalhost.String() + " tcp dport 80 redirect to :" + strconv.Itoa(int(request.HTTPUpstream().Port())),
+		"ip daddr " + canonicalLocalhost.String() + " tcp dport 443 redirect to :" + strconv.Itoa(int(request.HTTPSUpstream().Port())),
 		ubuntuNFTOwnerComment(request),
 	} {
 		if !strings.Contains(ruleset, expected) {
@@ -153,7 +153,7 @@ func proveUbuntuNFTRedirect(request Request) error {
 		_, writeErr := connection.Write([]byte{0xa5})
 		serverResult <- writeErr
 	}()
-	target := netip.AddrPortFrom(request.LoopbackPool().Addr().Next(), 80)
+	target := netip.AddrPortFrom(canonicalLocalhost, 80)
 	connection, err := net.DialTimeout("tcp4", target.String(), time.Second)
 	if err != nil {
 		return err

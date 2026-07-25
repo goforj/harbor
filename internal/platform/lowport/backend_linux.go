@@ -279,10 +279,10 @@ func ubuntuNFTRuleset(request Request) string {
 		ubuntuNFTTableName,
 		ubuntuNFTOwnerComment(request),
 		ubuntuNFTChainName,
-		request.LoopbackPool(),
+		canonicalLocalhost,
 		request.HTTPUpstream().Port(),
 		ubuntuNFTHTTPComment,
-		request.LoopbackPool(),
+		canonicalLocalhost,
 		request.HTTPSUpstream().Port(),
 		ubuntuNFTHTTPSComment,
 	)
