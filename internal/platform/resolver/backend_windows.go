@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"golang.org/x/sys/windows"
@@ -255,6 +256,7 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		"-Command",
 		windowsNRPTProgramCommand,
 	)
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	command.Env = windowsNRPTCommandEnvironment(os.Environ())
 	command.Stdin = bytes.NewReader(input)
 	command.Stdout = stdout
