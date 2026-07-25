@@ -359,23 +359,13 @@ func sameStringSet(left, right []string) bool {
 	return slices.Equal(left, right)
 }
 
-// verifyDependencies requires pinned GoForj and Engine/Desktop facts before a generated project claim is admitted.
+// verifyDependencies requires pinned GoForj and a named compatible Engine provider before a generated project claim is admitted.
 func verifyDependencies(dependencies DependencyEvidence, platform string) error {
 	if dependencies.GoForjVersion == "" || dependencies.EngineKind == "" || dependencies.EngineVersion == "" {
 		return fmt.Errorf("%s evidence has incomplete dependency identity", platform)
 	}
-	if dependencies.EngineKind != "docker-engine" && dependencies.EngineKind != "docker-desktop" {
-		return fmt.Errorf("%s evidence has unsupported Docker engine kind %q", platform, dependencies.EngineKind)
-	}
-	switch platform {
-	case "linux":
-		if dependencies.EngineKind != "docker-engine" {
-			return fmt.Errorf("%s evidence requires docker-engine on Linux, got %q", platform, dependencies.EngineKind)
-		}
-	case "darwin", "windows":
-		if dependencies.EngineKind != "docker-desktop" {
-			return fmt.Errorf("%s evidence requires docker-desktop on %s, got %q", platform, platform, dependencies.EngineKind)
-		}
+	if !boundedEvidenceText(dependencies.EngineKind, maximumEngineVersionBytes) {
+		return fmt.Errorf("%s evidence has an invalid Docker engine provider", platform)
 	}
 	if err := verifyDockerEngineVersion(dependencies.EngineVersion, platform); err != nil {
 		return err

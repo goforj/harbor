@@ -447,7 +447,7 @@ Managed mode must preserve GoForj's service plan and lifecycle policy while addi
 
 Registration never changes an adopted Compose identity during ordinary start. Moving to another identity is a separate, explicit, data-aware migration that inventories volumes and offers rollback; otherwise existing databases can appear empty while their original volumes remain orphaned.
 
-GoForj should own detection and invocation of a supported Compose implementation instead of baking `docker-compose` v1 shell text into the Harbor contract. The cross-platform path must be tested with Docker Engine on Linux and Docker Desktop on macOS and Windows.
+GoForj should own detection and invocation of a supported Compose implementation instead of baking `docker-compose` v1 shell text into the Harbor contract. The cross-platform path must be tested against the user's selected local Docker-compatible Engine without making its provider a Harbor admission rule.
 
 Harbor's Docker adapter is observational only. It discovers containers through standard Compose labels, requires exact project, service, and working-directory labels to agree with the registered canonical checkout, and treats ambiguous, missing, stale, or foreign attribution as unavailable. It may list/inspect containers, read health and publication state, subscribe to lifecycle events, and stream bounded logs. It never creates, starts, stops, restarts, removes, executes in, attaches to, builds, pulls, or mutates containers, images, networks, or volumes. All such actions remain typed GoForj/Compose lifecycle requests.
 
@@ -500,7 +500,7 @@ Harbor's product target is macOS, Linux, and Windows, but current `forj dev` inc
 - provide Windows-safe terminal recovery;
 - define whether project shell tasks require an installed Bash or gain a portable command model;
 - test watcher roots, process groups/Job Objects, shutdown, environment reload, and managed IPC on Windows;
-- use a supported Compose invocation on Docker Desktop.
+- use a supported Compose invocation against the selected local Docker-compatible Engine.
 
 Windows cannot be called a full Harbor platform until an ordinary generated project's managed `forj dev` session passes the required Windows integration workflow.
 

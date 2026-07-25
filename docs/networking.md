@@ -273,13 +273,13 @@ Each project keeps its own Compose project and persistent volumes. Harbor does n
 
 Managed startup has an explicit route barrier. After GoForj's typed Compose phase reports completion and the accepted project identity, Harbor observes the actual private publications, verifies their ownership, starts the corresponding native relays, and acknowledges readiness. Only then does GoForj run host-side database setup or migrations using public names such as `mysql.<project>.test:3306`.
 
-Registration asks GoForj to discover the existing directory-derived Compose project identity and adopts it when a checkout already has containers or named volumes. A fresh project may use a stable Harbor-derived identity. Harbor never changes identity during ordinary start; doing so would create a new set of named volumes and make existing data appear lost. GoForj supplies the accepted identity and publication intent. Harbor's read-only Engine adapter corroborates the actual container, Compose labels, canonical working directory, and host publication before routing. Harbor fails if the observed binding is `0.0.0.0` or `::` and routes to the published host port, never a Docker container IP, because Docker Desktop places container networks inside a VM.
+Registration asks GoForj to discover the existing directory-derived Compose project identity and adopts it when a checkout already has containers or named volumes. A fresh project may use a stable Harbor-derived identity. Harbor never changes identity during ordinary start; doing so would create a new set of named volumes and make existing data appear lost. GoForj supplies the accepted identity and publication intent. Harbor's read-only Engine adapter corroborates the actual container, Compose labels, canonical working directory, and host publication before routing. Harbor fails if the observed binding is `0.0.0.0` or `::` and routes to the provider's published local host port, never a container IP.
 
 Containers cannot reach an App bound only to host `127.0.0.1` merely by resolving `host.docker.internal`; on native Linux that name normally reaches the bridge gateway, not loopback. For observability and any other required container-to-host callback, managed `forj dev` hosts a narrow in-process relay on the platform's proven container-only host interface and forwards only the session's registered loopback targets. GoForj owns this relay because it owns Compose and its network intent; Harbor plans its port and corroborates the resulting runtime through read-only Engine observation. Session scrape targets are mounted from runtime storage outside the checkout. The relay never binds a LAN interface and is torn down with the session. Containers continue to use Compose DNS for container-to-container traffic.
 
 Docker Engine access is security-sensitive. The unprivileged `harbord` process may open the selected per-user Engine endpoint only through its narrow observation adapter. The adapter permits list, inspect, events, and logs for exactly attributed containers; it offers no mutation, generic request, or project/client-supplied Engine path. GoForj still owns every Compose mutation. Generated Apps, the helper, the desktop frontend, and CLI clients never receive Docker access. On a rootful Linux socket, read-only is an enforced Harbor code boundary rather than a privilege boundary supplied by Docker, so the adapter remains small and its allowed request set is tested explicitly.
 
-Full mode requires Docker Engine 28.0.0 or a Docker Desktop release containing an equivalent or newer engine. Older engines have documented cases where localhost-published ports are reachable from the same L2 segment. Setup and doctor verify the engine and insecure direct-routing/firewall modes, and a peer-reachability test backs the version check.
+Full mode requires a local Docker-compatible Engine 28.0.0 or newer, regardless of provider. Older engines have documented cases where localhost-published ports are reachable from the same L2 segment. Setup and doctor verify the engine and insecure direct-routing/firewall modes, and a peer-reachability test backs the version check.
 
 ## Low ports
 
@@ -303,7 +303,7 @@ The address model is a product dependency, not an implementation detail. Before 
 2. bind the same TCP port on both identities simultaneously;
 3. route exact `.test` names through the system resolver to different identities;
 4. survive daemon restart and machine reboot with an owned, repairable configuration;
-5. bind Docker Engine or Docker Desktop services to private loopback high ports;
+5. bind services through the selected local Docker-compatible Engine to private loopback high ports;
 6. relay both services back to the same native public port on different identities;
 7. install, use, rotate, and remove an exact CA trust anchor;
 8. serve two trusted HTTPS domains through one ingress;
@@ -314,9 +314,9 @@ Candidate address mechanisms are:
 
 | Platform | Candidate | Unproven question that blocks support |
 |---|---|---|
-| macOS | `lo0` aliases managed through a typed helper and durable owned startup configuration. | Minimum durable alias mechanism and Docker Desktop interaction across reboot. |
+| macOS | `lo0` aliases managed through a typed helper and durable owned startup configuration. | Minimum durable alias mechanism and selected local Docker-provider interaction across reboot. |
 | Linux | The kernel's loopback range where bindable, with explicit `lo` addresses on systems that require them. | Behavior on the declared Ubuntu 24.04, NetworkManager/systemd-resolved, nftables, rootful Docker Engine profile. Rootless Docker, Podman, other firewall/resolver stacks, and non-systemd systems remain preview until separately proved. |
-| Windows | The helper uses the native IP Helper API against an interface verified as loopback by immutable native properties, with explicit persistence and `SkipAsSource` behavior. It never accepts an interface index/name from a request. | A supported, repeatable, removable method across supported Windows releases and Docker Desktop that never changes a physical NIC, DHCP, or its routes. |
+| Windows | The helper uses the native IP Helper API against an interface verified as loopback by immutable native properties, with explicit persistence and `SkipAsSource` behavior. It never accepts an interface index/name from a request. | A supported, repeatable, removable method across supported Windows releases and local Docker providers that never changes a physical NIC, DHCP, or its routes. |
 
 If Windows cannot meet the native same-port test, Harbor may ship an explicitly limited Windows preview with translated ports, but it must not call that mode feature parity. The first full cross-platform release remains blocked until the invariant passes.
 

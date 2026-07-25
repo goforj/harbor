@@ -51,6 +51,23 @@ func TestVerifyDockerProjectEvidenceRequiresValidInputs(t *testing.T) {
 	}
 }
 
+// TestVerifyMacOSWorkerProfileEvidenceRequiresValidInputs keeps an unbound worker artifact out of the product gate.
+func TestVerifyMacOSWorkerProfileEvidenceRequiresValidInputs(t *testing.T) {
+	t.Parallel()
+
+	for _, arguments := range [][]string{
+		{"--commit", macOSWorkerTestCLICommit},
+		{"--root", "evidence"},
+		{"--root", "evidence", "--commit", macOSWorkerTestCLICommit, "--product-major", "0"},
+	} {
+		if err := verifyMacOSWorkerProfileEvidence(arguments); err == nil {
+			t.Fatalf("expected arguments %v to fail", arguments)
+		}
+	}
+}
+
+const macOSWorkerTestCLICommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 // TestSplitNonEmpty normalizes workflow platform lists without inventing requirements.
 func TestSplitNonEmpty(t *testing.T) {
 	t.Parallel()

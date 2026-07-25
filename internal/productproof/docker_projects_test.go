@@ -46,12 +46,12 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 	}{
 		{name: "wrong commit", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) { lifecycle.Runtime.Commit = "other" }, want: "instead of"},
 		{name: "missing runner", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) { lifecycle.Runtime.RunnerImage = "" }, want: "missing runner identity"},
-		{name: "wrong engine", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
-			lifecycle.Dependencies.EngineKind = "remote-docker"
-		}, want: "unsupported Docker engine kind"},
-		{name: "Linux Docker Desktop", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
-			lifecycle.Dependencies.EngineKind = "docker-desktop"
-		}, want: "requires docker-engine on Linux"},
+		{name: "missing engine provider", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.Dependencies.EngineKind = ""
+		}, want: "incomplete dependency identity"},
+		{name: "invalid engine provider", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
+			lifecycle.Dependencies.EngineKind = " provider "
+		}, want: "invalid Docker engine provider"},
 		{name: "old engine", mutate: func(lifecycle *DockerProjectEvidence, _ *DockerCleanupEvidence) {
 			lifecycle.Dependencies.EngineVersion = "27.5.1"
 		}, want: "below the supported major version"},
@@ -128,20 +128,20 @@ func TestVerifyDockerProjectEvidenceDirectoryRejectsInvalidEvidence(t *testing.T
 	}
 }
 
-// TestVerifyDockerProjectEvidenceRequiresDesktopOnClientPlatforms prevents a hosted Engine result from standing in for Docker Desktop proof.
-func TestVerifyDockerProjectEvidenceRequiresDesktopOnClientPlatforms(t *testing.T) {
+// TestVerifyDockerProjectEvidenceAcceptsLocalProviderChoice keeps Harbor independent of the user's Docker runtime.
+func TestVerifyDockerProjectEvidenceAcceptsLocalProviderChoice(t *testing.T) {
 	t.Parallel()
-	for _, platform := range []string{"darwin", "windows"} {
+	for _, platform := range []string{"linux", "darwin", "windows"} {
 		platform := platform
 		t.Run(platform, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			lifecycle := validDockerProjectFixture(platform)
-			lifecycle.Dependencies.EngineKind = "docker-engine"
+			lifecycle.Dependencies.EngineKind = "user-selected-local-provider"
 			writeDockerProjectEvidenceFixture(t, root, lifecycle, validDockerCleanupFixture(platform))
 			err := VerifyDockerProjectEvidenceDirectory(root, DockerProjectRequirement{Commit: "abc123", Platforms: []string{platform}, AppPort: 3000, ServicePort: 3306})
-			if err == nil || !strings.Contains(err.Error(), "requires docker-desktop") {
-				t.Fatalf("expected Docker Desktop requirement, got %v", err)
+			if err != nil {
+				t.Fatalf("expected provider-neutral evidence to pass, got %v", err)
 			}
 		})
 	}

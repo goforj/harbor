@@ -6,7 +6,7 @@ Status: required release contract
 
 Harbor supports macOS, Linux, and Windows only when the same product invariant is exercised on the real operating system in GitHub Actions. Release evidence names exact OS builds, CPU architecture, resolver/trust implementation, browser versions, container engine, and desktop runtime; labels such as “current supported” or `*-latest` are not release evidence.
 
-Cross-compiling a binary, mocking a resolver, or running all tests on Linux does not establish platform support. DNS resolver integration, loopback identities, trust stores, low ports, process supervision, Docker Desktop, and installers are operating-system behavior and require OS-native jobs.
+Cross-compiling a binary, mocking a resolver, or running all tests on Linux does not establish platform support. DNS resolver integration, loopback identities, trust stores, low ports, process supervision, the user's selected local Docker-compatible Engine, and installers are operating-system behavior and require OS-native jobs.
 
 A required platform job must fail when its prerequisite is absent. It may not call `t.Skip`, turn a failed full-mode capability into translated-port mode, or mark the check green after testing only a mock.
 
@@ -19,7 +19,7 @@ Before Phase 0 can claim a platform result, Harbor needs a versioned test fleet 
 - infrastructure provisions a clean VM or supported dedicated host image, obtains a just-in-time one-job runner registration, and destroys or reprovisions the machine after the job; GitHub's `ephemeral` runner flag alone is not machine destruction;
 - runner groups are restricted to this repository and named workflows, and privileged jobs execute only a maintainer-approved exact head SHA;
 - workers expose no cloud metadata, internal network access, signing credentials, package-publishing credentials, or reusable GitHub token;
-- images, Docker Desktop/Engine versions, browsers, resolver backend, trust store, Wails v2, Node, Vue/Vite, GTK/WebKit, tray dependencies, and interactive-session setup are versioned;
+- images, local Docker provider and Engine versions, browsers, resolver backend, trust store, Wails v2, Node, Vue/Vite, GTK/WebKit, tray dependencies, and interactive-session setup are versioned;
 - capacity has a named maintainer, budget, provisioning timeout, and hosted control-plane preflight; a required product job is dispatched only after its exact JIT worker is provisioned and reserved;
 - provisioning, job, cleanup, and destruction evidence is retained out of band and tied to the exact head SHA.
 
@@ -64,11 +64,11 @@ The harness currently proves:
 
 This is a headless control-plane acceptance test. The desktop-role observer is a real authenticated control client, not a Wails window, and the project fixtures provide only `.goforj.yml` plus non-secret display metadata. The harness does not synthesize a GoForj managed worker, start Apps or containers, initialize project networking, mutate the system resolver or trust store, exercise interactive approval, or establish native desktop behavior. Those remain covered only when the later dedicated workflows described below are implemented.
 
-Trusted pull requests also run the real production helper/platform API on GitHub-hosted workers to install and remove resolver, loopback, trust, and low-port state. Hosted Linux and macOS workers provide passwordless `sudo`; hosted Windows runs as Administrator with UAC disabled. This is valuable API and cleanup coverage, but it is not evidence for the shipping consent boundary, Windows filtered-token/UAC behavior, Docker Desktop, reboot, or an interactive desktop.
+Trusted pull requests also run the real production helper/platform API on GitHub-hosted workers to install and remove resolver, loopback, trust, and low-port state. Hosted Linux and macOS workers provide passwordless `sudo`; hosted Windows runs as Administrator with UAC disabled. This is valuable API and cleanup coverage, but it is not evidence for the shipping consent boundary, Windows filtered-token/UAC behavior, a user-selected local Docker-compatible Engine, reboot, or an interactive desktop.
 
 ### Dedicated ephemeral integration workers
 
-Some crucial tests need administrator access, a clean resolver, actual low ports, Docker Desktop, or reboot control. Provide ephemeral workers registered with GitHub Actions and labeled by operating system, for example:
+Some crucial tests need administrator access, a clean resolver, actual low ports, a local Docker-compatible Engine, or reboot control. Provide ephemeral workers registered with GitHub Actions and labeled by operating system, for example:
 
 ```text
 self-hosted, ephemeral, harbor-integration, linux
@@ -76,9 +76,9 @@ self-hosted, ephemeral, harbor-integration, macos
 self-hosted, ephemeral, harbor-integration, windows
 ```
 
-Each worker starts from a versioned clean image, accepts one job, uploads diagnostics, and is destroyed or returned to a cryptographically/immutably known clean image. The image includes the supported Docker engine/Desktop and no user project state.
+Each worker starts from a versioned clean image, accepts one job, uploads diagnostics, and is destroyed or returned to a cryptographically/immutably known clean image. The image includes a supported local Docker-compatible Engine and no user project state.
 
-Product Windows workers are supported Windows 11 client builds whose interactive local-administrator account runs Harbor under its filtered medium-integrity token, with UAC enabled and Docker Desktop. Elevation uses that account's linked high token, preserving its SID and `CurrentUser\Root`; a true non-admin plus different consenting administrator is a separate preview profile. GitHub-hosted Windows Server/Administrator/UAC-off jobs cannot substitute. Product macOS workers use supported physical hardware or a supported virtualization arrangement with a licensed, initialized Docker Desktop user session; nested Docker Desktop on ordinary hosted macOS is not assumed. Linux desktop workers provide the declared display server, GTK/WebKit runtime, notification service, and tray environment.
+Product Windows workers are supported Windows 11 client builds whose interactive local-administrator account runs Harbor under its filtered medium-integrity token, with UAC enabled and one initialized local Docker-compatible Engine. Elevation uses that account's linked high token, preserving its SID and `CurrentUser\Root`; a true non-admin plus different consenting administrator is a separate preview profile. GitHub-hosted Windows Server/Administrator/UAC-off jobs cannot substitute. Product macOS workers use supported physical hardware or a supported virtualization arrangement with an initialized user-selected local Docker-compatible Engine. Linux desktop workers provide the declared display server, GTK/WebKit runtime, notification service, and tray environment.
 
 Consent tests are driven by an out-of-guest controller that can observe and interact with the genuine Windows secure desktop, macOS authorization UI, and Linux polkit/sudo UI. Administrator credentials and automation channels are held by the harness, never exposed to Harbor, the checked-out commit, process environment, logs, or test artifacts. The suite proves approval, cancellation, timeout, and no-UI `requires approval` behavior.
 
@@ -249,7 +249,7 @@ The platform-network jobs repeat the route through system DNS and real project i
 
 ## Docker and Compose tests
 
-Dedicated workers run Docker Engine on Linux and Docker Desktop on macOS and Windows. The test uses generated GoForj fixtures, not a Harbor-specific hand-written Compose file alone.
+Dedicated workers run the user's selected local Docker-compatible Engine. The test uses generated GoForj fixtures, not a Harbor-specific hand-written Compose file alone, and the provider name is evidence rather than an admission rule.
 
 Required scenario:
 
@@ -277,7 +277,7 @@ The largest supported generated composition is the fixture source. Generator/tem
 
 Image versions are pinned by the GoForj fixture. Updating them is a separate reviewed change with data-migration coverage where applicable.
 
-Adapter-focused tests record every Engine request and fail on any create, start, stop, restart, remove, exec, attach, build, pull, network, volume, or generic pass-through route. They cover container replacement, replica aggregation, event reconnect, bounded log cursors, cancellation, unavailable Engine access, label/path mismatch, symlink/case normalization on supported platforms, and a checkout move. Native jobs prove the selected Unix socket or Docker Desktop endpoint behavior without exposing that endpoint to a generated App, helper, frontend binding, or test fixture process.
+Adapter-focused tests record every Engine request and fail on any create, start, stop, restart, remove, exec, attach, build, pull, network, volume, or generic pass-through route. They cover container replacement, replica aggregation, event reconnect, bounded log cursors, cancellation, unavailable Engine access, label/path mismatch, symlink/case normalization on supported platforms, and a checkout move. Native jobs prove the selected local endpoint behavior without exposing that endpoint to a generated App, helper, frontend binding, or test fixture process.
 
 The product-proof verifier additionally requires a non-skipped event-refresh assertion and rejects Engine versions below the supported 28-equivalent floor before accepting uploaded lifecycle evidence.
 
@@ -393,9 +393,9 @@ The initial full-mode product profiles are deliberately narrow enough to prove:
 
 | Profile | Initial target family | Required product environment |
 |---|---|---|
-| macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, launchd socket activation and unprivileged relay lifecycle, system WebKit, Safari plus pinned Chrome/Firefox, Docker Desktop, interactive login session. |
+| macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, launchd socket activation and unprivileged relay lifecycle, system WebKit, Safari plus pinned Chrome/Firefox, a local Docker-compatible Engine 28+, interactive login session. |
 | Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v2's `webkit2_41` build tag, pinned Chrome/Firefox, rootful Docker Engine 28+, systemd user service. |
-| Windows | Windows 11 24H2 on x86-64 | NRPT, `CurrentUser\Root`, WebView2, pinned Edge/Chrome/Firefox, Docker Desktop with WSL2, interactive local-administrator account running Harbor at medium integrity with UAC. |
+| Windows | Windows 11 24H2 on x86-64 | NRPT, `CurrentUser\Root`, WebView2, pinned Edge/Chrome/Firefox, a local Docker-compatible Engine 28+, interactive local-administrator account running Harbor at medium integrity with UAC. |
 
 Intel macOS, Linux ARM64, and other distributions, desktops, resolver stacks, or Wails runtime combinations remain preview until equivalent dedicated evidence exists. This is an architecture/support statement, not a cross-compilation limitation.
 

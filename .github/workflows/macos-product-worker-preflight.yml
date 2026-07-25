@@ -1,0 +1,186 @@
+name: macOS product worker preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed default-branch commit SHA to admit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-product-worker-preflight
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: Admit reviewed source
+    runs-on: ubuntu-24.04
+    outputs:
+      approved_sha: ${{ steps.admit.outputs.approved_sha }}
+    steps:
+      - name: Check out protected workflow source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Require exact dispatched default-branch head
+        id: admit
+        env:
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$APPROVED_SHA" == "$WORKFLOW_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$APPROVED_SHA" ]]
+          printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
+
+  profile:
+    name: Prove macOS 15 Apple-silicon product profile
+    needs: admit
+    environment: macos-product-evidence
+    runs-on: [self-hosted, ephemeral, harbor-product, macos, arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Check out admitted source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.admit.outputs.approved_sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Prove interactive product prerequisites
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.admit.outputs.approved_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$APPROVED_SHA" ]]
+          [[ "$(uname -s)" == "Darwin" ]]
+          [[ "$(uname -m)" == "arm64" ]]
+
+          process_user="$(id -un)"
+          console_user="$(stat -f '%Su' /dev/console)"
+          [[ "$process_user" != "root" ]]
+          [[ "$console_user" == "$process_user" ]]
+          launchctl print "gui/$(id -u)" >/dev/null
+
+          product_version="$(sw_vers -productVersion)"
+          build_version="$(sw_vers -buildVersion)"
+          [[ "$product_version" =~ ^15\.[0-9]+(\.[0-9]+)?$ ]]
+          [[ -n "$build_version" ]]
+
+          user_keychain="$(security default-keychain -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')"
+          [[ "$user_keychain" == /* ]]
+          [[ -f "$user_keychain" ]]
+          security list-keychains -d user >/dev/null
+
+          [[ ! -e "/Library/Application Support/GoForj/Harbor/Privileged" ]]
+          [[ ! -e "/etc/resolver/test" ]]
+
+          docker_provider="$(docker info --format '{{.OperatingSystem}}')"
+          docker_endpoint="$(docker context inspect --format '{{(index .Endpoints "docker").Host}}' "$(docker context show)")"
+          docker_engine_version="$(docker version --format '{{.Server.Version}}')"
+          [[ -n "$docker_provider" ]]
+          [[ "$docker_endpoint" == unix:///* ]]
+          [[ -n "$docker_engine_version" ]]
+
+          evidence_directory="${RUNNER_TEMP}/harbor-macos-product-worker-evidence"
+          [[ ! -e "$evidence_directory" ]]
+          install -d -m 0700 "$evidence_directory"
+          jq -n \
+            --arg commit "$APPROVED_SHA" \
+            --arg runner_name "$RUNNER_NAME" \
+            --arg product_version "$product_version" \
+            --arg build_version "$build_version" \
+            --arg process_user "$process_user" \
+            --arg console_user "$console_user" \
+            --arg user_keychain "$user_keychain" \
+            --arg docker_provider "$docker_provider" \
+            --arg docker_endpoint "$docker_endpoint" \
+            --arg docker_engine_version "$docker_engine_version" \
+            '{
+              schema_version: 1,
+              capability: "macos_product_worker_profile",
+              scope: "preflight",
+              profile: "macos-15-arm64",
+              commit: $commit,
+              runner_name: $runner_name,
+              goos: "darwin",
+              goarch: "arm64",
+              product_version: $product_version,
+              build_version: $build_version,
+              process_user: $process_user,
+              console_user: $console_user,
+              interactive_session: true,
+              user_keychain: $user_keychain,
+              resolver_directory: "/etc/resolver",
+              low_port_mechanism: "launchd-socket",
+              docker_provider: $docker_provider,
+              docker_endpoint: $docker_endpoint,
+              docker_engine_version: $docker_engine_version,
+              assertions: [
+                {id: "worker.apple_silicon", passed: true, detail: "native arm64 kernel and process"},
+                {id: "worker.clean_harbor_state", passed: true, detail: "fixed Harbor resolver and privileged roots absent"},
+                {id: "worker.current_user_keychain", passed: true, detail: "direct current-user default keychain available"},
+                {id: "worker.interactive_login", passed: true, detail: "process user owns the active console GUI session"},
+                {id: "worker.local_docker", passed: true, detail: "user-selected local Docker-compatible Engine 28 or newer"}
+              ]
+            }' > "${evidence_directory}/macos-worker-profile.json"
+          chmod 0600 "${evidence_directory}/macos-worker-profile.json"
+          go run ./cmd/platformproof verify-macos-worker \
+            --root "$evidence_directory" \
+            --commit "$APPROVED_SHA" \
+            --product-major 15
+          printf 'HARBOR_MACOS_WORKER_EVIDENCE_DIRECTORY=%s\n' "$evidence_directory" >> "$GITHUB_ENV"
+
+      - name: Upload bounded worker profile evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-product-worker-profile
+          path: ${{ env.HARBOR_MACOS_WORKER_EVIDENCE_DIRECTORY }}/macos-worker-profile.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Verify macOS product-worker profile
+    needs: [admit, profile]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out verifier source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.admit.outputs.approved_sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download worker evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-product-worker-profile
+          path: macos-product-worker-evidence
+
+      - name: Enforce exact product profile
+        run: |
+          go run ./cmd/platformproof verify-macos-worker \
+            --root macos-product-worker-evidence \
+            --commit "${{ needs.admit.outputs.approved_sha }}" \
+            --product-major 15

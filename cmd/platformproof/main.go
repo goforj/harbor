@@ -38,7 +38,7 @@ func main() {
 // run dispatches only the fixed proof commands built into this test binary.
 func run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected project-identity, identity-absent, verify, or verify-docker-projects command")
+		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, or verify-macos-worker command")
 	}
 
 	switch arguments[0] {
@@ -66,9 +66,33 @@ func run(ctx context.Context, arguments []string) error {
 		return verifyEvidence(arguments[1:])
 	case "verify-docker-projects":
 		return verifyDockerProjectEvidence(arguments[1:])
+	case "verify-macos-worker":
+		return verifyMacOSWorkerProfileEvidence(arguments[1:])
 	default:
 		return fmt.Errorf("unknown platform proof command %q", arguments[0])
 	}
+}
+
+// verifyMacOSWorkerProfileEvidence enforces one exact protected macOS product-worker preflight.
+func verifyMacOSWorkerProfileEvidence(arguments []string) error {
+	flags := flag.NewFlagSet("verify-macos-worker", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	root := flags.String("root", "", "directory containing macOS product-worker profile evidence")
+	commit := flags.String("commit", "", "exact approved commit required by the gate")
+	productMajor := flags.Int("product-major", 15, "required macOS product major version")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if *root == "" || *commit == "" || *productMajor <= 0 {
+		return errors.New("verify-macos-worker requires an evidence root, commit, and positive product major")
+	}
+	return productproof.VerifyMacOSWorkerProfileEvidenceDirectory(*root, productproof.MacOSWorkerProfileRequirement{
+		Commit:       *commit,
+		ProductMajor: *productMajor,
+	})
 }
 
 // verifyDockerProjectEvidence enforces native generated-project lifecycle manifests from the protected product-worker fleet.
