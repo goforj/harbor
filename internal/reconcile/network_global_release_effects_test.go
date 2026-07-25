@@ -100,28 +100,25 @@ func TestGlobalNetworkReleaseConfirmOwnershipRejectsUnverifiedAndReplaysCommitte
 			wantNotFound: true,
 		},
 		{
-			name: "ownership still present",
+			name: "missing released proof",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.protectedOwnership.observation.Exists = true
+				fixture.coordinator.proofObserver = testGlobalNetworkReleaseAbsentProofObserver{}
 			},
 		},
 		{
-			name: "ownership observation error",
+			name: "released proof observation error",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.protectedOwnership.err = errors.New("ownership observation failed")
+				fixture.coordinator.proofObserver = testGlobalNetworkReleaseErrorProofObserver{}
 			},
 		},
 		{
-			name: "projection present and protected ownership absent",
-			mutate: func(fixture *globalNetworkReleaseEffectsFixture, _ *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.protectedOwnership.observation.Exists = false
-			},
+			name:         "projection present and released proof confirmed",
+			mutate:       func(*globalNetworkReleaseEffectsFixture, *GlobalNetworkReleaseConfirmOwnershipRequest) {},
 			wantTerminal: true,
 		},
 		{
 			name: "committed projection replay",
 			mutate: func(fixture *globalNetworkReleaseEffectsFixture, request *GlobalNetworkReleaseConfirmOwnershipRequest) {
-				fixture.protectedOwnership.observation.Exists = false
 				fixture.journal.plan.Phase = state.GlobalNetworkReleasePlanPhaseProjection
 				fixture.journal.plan.OwnershipReceipt = &state.GlobalNetworkReleaseOwnershipReceipt{
 					SourceCheckpointRevision:     request.ExpectedCheckpointRevision,
@@ -188,7 +185,6 @@ func TestGlobalNetworkReleaseResumeRecoversHelperCompletedOwnership(t *testing.T
 	}
 	fixture.journal.plan = advanced
 	fixture.coordinator.proofObserver = testGlobalNetworkReleaseProofObserver{}
-	fixture.protectedOwnership.observation.Exists = false
 	if !fixture.ownership.observation.Exists {
 		t.Fatal("durable ownership projection disappeared before recovery")
 	}
@@ -229,7 +225,6 @@ func TestGlobalNetworkReleaseResumeLeavesUnreleasedOwnershipAtApproval(t *testin
 	}
 	fixture.journal.plan = advanced
 	fixture.coordinator.proofObserver = testGlobalNetworkReleaseAbsentProofObserver{}
-	fixture.protectedOwnership.err = errors.New("ownership must not be observed without root proof")
 
 	current, err := fixture.coordinator.resume(
 		t.Context(),
@@ -376,6 +371,14 @@ type testGlobalNetworkReleaseAbsentProofObserver struct{}
 // ConfirmReleased returns the sentinel that keeps an ordinary ownership checkpoint waiting for approval.
 func (testGlobalNetworkReleaseAbsentProofObserver) ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error) {
 	return ownershipreleaseproof.Proof{}, ownershipreleaseproof.ErrAbsentProof
+}
+
+// testGlobalNetworkReleaseErrorProofObserver returns a non-absence proof read failure.
+type testGlobalNetworkReleaseErrorProofObserver struct{}
+
+// ConfirmReleased returns a storage failure from the root-authored proof boundary.
+func (testGlobalNetworkReleaseErrorProofObserver) ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error) {
+	return ownershipreleaseproof.Proof{}, errors.New("read released ownership proof")
 }
 
 // TestGlobalNetworkReleaseVerifyEffectsPreservesForeignReleasedNamespaces proves released ownership

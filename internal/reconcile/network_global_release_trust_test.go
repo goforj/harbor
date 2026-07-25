@@ -561,7 +561,6 @@ func newGlobalNetworkReleaseTrustFixtureFromBase(t *testing.T, base *globalNetwo
 		base.projections,
 		base.roots,
 		base.ownership,
-		base.protectedOwnership,
 		base.low,
 		globalNetworkReleaseUnavailableLowPortPlans{},
 		func() (GlobalNetworkReleaseLowPortIssuer, error) {

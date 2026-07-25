@@ -3,19 +3,16 @@
 package wire
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/goforj/harbor/internal/authority"
 	"github.com/goforj/harbor/internal/harbordruntime"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
-	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
-	"github.com/goforj/harbor/internal/platform/machinepaths"
 	"github.com/goforj/harbor/internal/platform/trust"
 	"github.com/goforj/harbor/internal/reconcile"
 	"github.com/goforj/harbor/internal/state"
@@ -52,18 +49,12 @@ func provideNetworkReleaseCapability(
 	if err != nil {
 		return networkReleaseCapability{}, fmt.Errorf("create network release ownership proof observer: %w", err)
 	}
-	paths, err := machinepaths.Resolve()
-	if err != nil {
-		return networkReleaseCapability{}, fmt.Errorf("resolve network release ownership path: %w", err)
-	}
-	protectedOwnership := globalNetworkReleaseProtectedOwnershipObserver{path: paths.OwnershipPath}
 	coordinator := reconcile.NewGlobalNetworkReleaseCoordinator(
 		operations,
 		store,
 		projection,
 		runtimeController,
 		ownershipProjection,
-		protectedOwnership,
 		lowPortAdapter,
 		lowPortPlans,
 		func() (reconcile.GlobalNetworkReleaseLowPortIssuer, error) {
@@ -97,14 +88,4 @@ func provideNetworkReleaseCapability(
 		authority: authority.NewNetworkReleaseAuthority(operations, coordinator),
 		recovery:  coordinator,
 	}, nil
-}
-
-// globalNetworkReleaseProtectedOwnershipObserver reads only the protected helper-owned record during terminal release confirmation.
-type globalNetworkReleaseProtectedOwnershipObserver struct {
-	path string
-}
-
-// Observe opens a short-lived protected store so terminal confirmation cannot retain a stale file handle.
-func (observer globalNetworkReleaseProtectedOwnershipObserver) Observe(ctx context.Context) (ownership.Observation, error) {
-	return ownership.ObservePath(ctx, observer.path)
 }

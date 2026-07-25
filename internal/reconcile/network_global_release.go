@@ -16,7 +16,6 @@ import (
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
-	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/host/ownershipreleaseproof"
 	"github.com/goforj/harbor/internal/platform/loopback"
 	"github.com/goforj/harbor/internal/platform/lowport"
@@ -110,12 +109,6 @@ type GlobalNetworkReleaseOwnershipProofObserver interface {
 	ConfirmReleased(context.Context, ownershipreleaseproof.Authority) (ownershipreleaseproof.Proof, error)
 }
 
-// GlobalNetworkReleaseProtectedOwnershipObserver reads the helper-owned machine claim after root proof confirms its release.
-type GlobalNetworkReleaseProtectedOwnershipObserver interface {
-	// Observe returns the current protected machine ownership record.
-	Observe(context.Context) (ownership.Observation, error)
-}
-
 // GlobalNetworkReleaseStateSource supplies the current network and stopped-project revisions.
 type GlobalNetworkReleaseStateSource interface {
 	// RuntimeState returns a coherent durable network and project snapshot.
@@ -157,7 +150,6 @@ type GlobalNetworkReleaseCoordinator struct {
 	projections         GlobalNetworkReleaseProjectionSource
 	roots               GlobalNetworkReleaseRootSource
 	ownershipProjection OwnershipObserver
-	protectedOwnership  GlobalNetworkReleaseProtectedOwnershipObserver
 	lowPorts            NetworkDataPlaneSetupLowPortObserver
 	lowPortPlans        ticketissuer.LowPortPlanSource
 	lowPortIssuers      func() (GlobalNetworkReleaseLowPortIssuer, error)
@@ -204,7 +196,6 @@ func NewGlobalNetworkReleaseCoordinator(
 	projections GlobalNetworkReleaseProjectionSource,
 	roots GlobalNetworkReleaseRootSource,
 	ownershipProjection OwnershipObserver,
-	protectedOwnership GlobalNetworkReleaseProtectedOwnershipObserver,
 	lowPorts NetworkDataPlaneSetupLowPortObserver,
 	lowPortPlans ticketissuer.LowPortPlanSource,
 	lowPortIssuers func() (GlobalNetworkReleaseLowPortIssuer, error),
@@ -229,7 +220,6 @@ func NewGlobalNetworkReleaseCoordinator(
 		nilDependency(projections) ||
 		nilDependency(roots) ||
 		nilDependency(ownershipProjection) ||
-		nilDependency(protectedOwnership) ||
 		nilDependency(lowPorts) ||
 		nilDependency(lowPortPlans) ||
 		nilDependency(lowPortIssuers) ||
@@ -255,7 +245,6 @@ func NewGlobalNetworkReleaseCoordinator(
 		projections:         projections,
 		roots:               roots,
 		ownershipProjection: ownershipProjection,
-		protectedOwnership:  protectedOwnership,
 		lowPorts:            lowPorts,
 		lowPortPlans:        lowPortPlans,
 		lowPortIssuers:      lowPortIssuers,
@@ -2210,17 +2199,10 @@ func (c *GlobalNetworkReleaseCoordinator) confirmReleasedOwnershipProof(ctx cont
 	return c.observeReleasedOwnership(ctx, plan)
 }
 
-// observeReleasedOwnership requires root proof and a fresh normal observation for one durable authority.
+// observeReleasedOwnership requires the root-authored proof created only after the protected store was observed absent.
 func (c *GlobalNetworkReleaseCoordinator) observeReleasedOwnership(ctx context.Context, plan state.GlobalNetworkReleasePlanRecord) error {
 	if _, err := c.proofObserver.ConfirmReleased(ctx, globalNetworkReleaseProofAuthority(plan)); err != nil {
 		return fmt.Errorf("confirm released ownership proof: %w", err)
-	}
-	observation, err := c.protectedOwnership.Observe(ctx)
-	if err != nil {
-		return fmt.Errorf("observe released ownership: %w", err)
-	}
-	if observation.Exists {
-		return errors.New("release ownership is still present")
 	}
 	return nil
 }

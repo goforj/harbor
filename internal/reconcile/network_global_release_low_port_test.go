@@ -217,7 +217,6 @@ func newGlobalNetworkReleaseLowPortFixture(t *testing.T) *globalNetworkReleaseLo
 		base.projections,
 		base.roots,
 		base.ownership,
-		base.protectedOwnership,
 		low,
 		fixture.plans,
 		func() (GlobalNetworkReleaseLowPortIssuer, error) {
