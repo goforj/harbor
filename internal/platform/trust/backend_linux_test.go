@@ -5,6 +5,9 @@ package trust
 import (
 	"bytes"
 	"encoding/pem"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -38,5 +41,82 @@ func TestUbuntuLimitedBufferDrainsWhileRetainingOnlyItsBound(t *testing.T) {
 	written, err := buffer.Write([]byte("abcdef"))
 	if err != nil || written != 6 || buffer.String() != "abcd" {
 		t.Fatalf("Write() = (%d, %v), output = %q", written, err, buffer.String())
+	}
+}
+
+// TestPrivilegedUbuntuTrustAdapterLifecycle exercises the production system bundle when explicitly opted in.
+func TestPrivilegedUbuntuTrustAdapterLifecycle(t *testing.T) {
+	if os.Getenv("HARBOR_PRIVILEGED_TRUST_TEST") != "1" {
+		t.Skip("set HARBOR_PRIVILEGED_TRUST_TEST=1 on a disposable Ubuntu host")
+	}
+	if os.Geteuid() != 0 {
+		t.Fatal("privileged Ubuntu trust lifecycle requires root")
+	}
+	for _, path := range []string{
+		filepath.Join(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName),
+		filepath.Join(ubuntuTrustSourceDirectory, ubuntuTrustSourceName),
+		filepath.Join(ubuntuTrustSourceDirectory, ubuntuTrustPendingName),
+	} {
+		if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
+			t.Fatalf("fixed Harbor trust path %q must be absent before lifecycle test: %v", path, err)
+		}
+	}
+
+	request := ubuntuTrustTestRequest(t)
+	store := ubuntuSystemTrust{}
+	if _, err := store.snapshot(t.Context(), request); err != nil {
+		t.Fatalf("native Ubuntu trust snapshot error = %v", err)
+	}
+	adapter := newAdapter(newUbuntuTrustBackend(store))
+	t.Cleanup(func() {
+		observation, observeErr := adapter.Observe(t.Context(), request)
+		if observeErr != nil {
+			t.Errorf("cleanup Observe() error = %v: %v", observeErr, errors.Unwrap(observeErr))
+			return
+		}
+		assessment, classifyErr := observation.Classify()
+		if classifyErr != nil || assessment.Owned == OwnedStateAbsent {
+			return
+		}
+		fingerprint, fingerprintErr := observation.Fingerprint()
+		if fingerprintErr != nil {
+			t.Errorf("cleanup Fingerprint() error = %v", fingerprintErr)
+			return
+		}
+		if _, releaseErr := adapter.ReleaseIfObserved(t.Context(), request, fingerprint); releaseErr != nil {
+			t.Errorf("cleanup ReleaseIfObserved() error = %v: %v", releaseErr, errors.Unwrap(releaseErr))
+		}
+	})
+	before, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Observe() before error = %v: %v", err, errors.Unwrap(err))
+	}
+	beforeAssessment, err := before.Classify()
+	if err != nil || beforeAssessment.State != StateAbsent {
+		t.Fatalf("Classify() before = %#v, %v", beforeAssessment, err)
+	}
+	beforeFingerprint, err := before.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint() before error = %v", err)
+	}
+	ensured, err := adapter.EnsureIfObserved(t.Context(), request, beforeFingerprint)
+	if err != nil {
+		t.Fatalf("EnsureIfObserved() error = %v: %v", err, errors.Unwrap(err))
+	}
+	ensuredAssessment, err := ensured.After.Classify()
+	if err != nil || ensuredAssessment.State != StateExact {
+		t.Fatalf("Classify() ensured = %#v, %v", ensuredAssessment, err)
+	}
+	ensuredFingerprint, err := ensured.After.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint() ensured error = %v", err)
+	}
+	released, err := adapter.ReleaseIfObserved(t.Context(), request, ensuredFingerprint)
+	if err != nil {
+		t.Fatalf("ReleaseIfObserved() error = %v: %v", err, errors.Unwrap(err))
+	}
+	releasedAssessment, err := released.After.Classify()
+	if err != nil || releasedAssessment.State != StateAbsent {
+		t.Fatalf("Classify() released = %#v, %v", releasedAssessment, err)
 	}
 }

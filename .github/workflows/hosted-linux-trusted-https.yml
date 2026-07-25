@@ -177,6 +177,19 @@ jobs:
             --user-id "$(id -u)" \
             --group-id "$(id -g)"
 
+      - name: Verify hosted Ubuntu trust adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          trust_test="${RUNNER_TEMP}/harbor-trust-platform.test"
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test -c \
+            -o "$trust_test" \
+            ./internal/platform/trust
+          sudo -n env HARBOR_PRIVILEGED_TRUST_TEST=1 \
+            "$trust_test" \
+            -test.count=1 \
+            -test.run '^TestPrivilegedUbuntuTrustAdapterLifecycle$'
+
       - name: Run three-project trusted HTTPS lifecycle
         shell: bash
         env:
