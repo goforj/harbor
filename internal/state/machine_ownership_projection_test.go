@@ -125,7 +125,22 @@ func TestNewMachineOwnershipProjectionSourceRequiresRepository(t *testing.T) {
 	_ = NewMachineOwnershipProjectionSource(nil)
 }
 
-// TestMachineOwnershipProjectionSourceFailsClosedOnDurableMismatch covers singleton absence, collisions, and network-root drift.
+// TestMachineOwnershipProjectionSourceReportsCleanAuthorityAbsence permits initial setup before any network root exists.
+func TestMachineOwnershipProjectionSourceReportsCleanAuthorityAbsence(t *testing.T) {
+	fixture := newMachineOwnershipProjectionFixture(t, false)
+	if err := fixture.database.Delete(&models.NetworkState{}, networkStateSingletonID).Error; err != nil {
+		t.Fatalf("delete machine ownership projection network root: %v", err)
+	}
+	observed, err := fixture.source.Observe(t.Context())
+	if err != nil {
+		t.Fatalf("Observe() error = %v", err)
+	}
+	if observed != (ownership.Observation{}) {
+		t.Fatalf("Observe() = %#v, want absent authority", observed)
+	}
+}
+
+// TestMachineOwnershipProjectionSourceFailsClosedOnDurableMismatch covers singleton loss, collisions, and network-root drift.
 func TestMachineOwnershipProjectionSourceFailsClosedOnDurableMismatch(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -133,7 +148,11 @@ func TestMachineOwnershipProjectionSourceFailsClosedOnDurableMismatch(t *testing
 		mutate         func(*testing.T, *machineOwnershipProjectionFixture)
 		want           string
 	}{
-		{name: "absent projection", want: "found 0 rows, expected 1"},
+		{name: "absent projection with network root", seedProjection: true, mutate: func(t *testing.T, fixture *machineOwnershipProjectionFixture) {
+			if err := fixture.database.Delete(&models.MachineOwnershipProjection{}, machineOwnershipProjectionSingletonID).Error; err != nil {
+				t.Fatalf("delete machine ownership projection: %v", err)
+			}
+		}, want: "found 0 rows, expected 1"},
 		{name: "duplicate projection", seedProjection: true, mutate: func(t *testing.T, fixture *machineOwnershipProjectionFixture) {
 			weakenMachineOwnershipProjectionSchema(t, fixture.database)
 			duplicate := machineOwnershipProjectionTestModel(fixture.observation, fixture.confirmedAt)

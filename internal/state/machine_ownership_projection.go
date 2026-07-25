@@ -54,6 +54,14 @@ func (source *MachineOwnershipProjectionSource) Observe(
 
 	var observation ownership.Observation
 	err = connection.Transaction(func(tx *gorm.DB) error {
+		absent, readErr := machineOwnershipProjectionAuthorityAbsent(tx)
+		if readErr != nil {
+			return readErr
+		}
+		if absent {
+			observation = ownership.Observation{}
+			return nil
+		}
 		projected, _, readErr := readMachineOwnershipProjectionInTransaction(tx)
 		if readErr != nil {
 			return readErr
@@ -65,6 +73,19 @@ func (source *MachineOwnershipProjectionSource) Observe(
 		return ownership.Observation{}, fmt.Errorf("observe machine ownership projection: %w", err)
 	}
 	return observation, nil
+}
+
+// machineOwnershipProjectionAuthorityAbsent recognizes only the clean pre-setup state as missing authority.
+func machineOwnershipProjectionAuthorityAbsent(tx *gorm.DB) (bool, error) {
+	var projectionCount int64
+	if err := tx.Model(&models.MachineOwnershipProjection{}).Count(&projectionCount).Error; err != nil {
+		return false, fmt.Errorf("count machine ownership projections: %w", err)
+	}
+	var networkCount int64
+	if err := tx.Model(&models.NetworkState{}).Count(&networkCount).Error; err != nil {
+		return false, fmt.Errorf("count network roots for machine ownership projection: %w", err)
+	}
+	return projectionCount == 0 && networkCount == 0, nil
 }
 
 // insertMachineOwnershipProjectionInTransaction persists only helper-confirmed authority after the network root exists.
