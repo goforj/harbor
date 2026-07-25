@@ -1500,36 +1500,65 @@ func trustedHTTPSVerifyNoWindowsMachineEffects(ctx context.Context, sandbox phas
 	if systemRoot == "" || !filepath.IsAbs(systemRoot) {
 		return errors.New("verify released Windows machine effects: SystemRoot is unavailable")
 	}
+	environment, err := trustedHTTPSWindowsVerificationEnvironment(systemRoot)
+	if err != nil {
+		return fmt.Errorf("verify released Windows machine effects: %w", err)
+	}
 	powerShell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 	script := `$ErrorActionPreference = "Stop"
-$privilegedRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "GoForj\Harbor\Privileged"
-$pendingTickets = Join-Path $privilegedRoot "tickets\pending"
-if (-not (Test-Path -LiteralPath $pendingTickets -PathType Container)) { throw "installed Harbor ticket topology disappeared" }
-if (@(Get-ChildItem -LiteralPath $pendingTickets -Force).Count -ne 0) { throw "retained Harbor pending helper ticket" }
-$rules = @(Get-DnsClientNrptRule | Where-Object {
-  $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
-})
-if ($rules.Count -ne 0) { throw "retained Harbor NRPT rule" }
-$tcp = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {
-  ($_.LocalPort -eq 80 -or $_.LocalPort -eq 443 -or $_.LocalPort -eq 53) -and
-  ($_.LocalAddress -eq "127.0.0.1" -or $_.LocalAddress -eq "127.0.0.2")
-})
-if ($tcp.Count -ne 0) { throw "retained Harbor TCP listener" }
-$udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object {
-  $_.LocalPort -eq 53 -and $_.LocalAddress -eq "127.0.0.2"
-})
-if ($udp.Count -ne 0) { throw "retained Harbor DNS listener" }
-$machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
-  $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
-})
-if ($machineRoots.Count -ne 0) { throw "retained Harbor LocalMachine root" }
-$userRoots = @(Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
-  $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
-})
-if ($userRoots.Count -ne 0) { throw "retained Harbor CurrentUser root" }`
-	output, err := trustedHTTPSRunCommand(
+$ProgressPreference = "SilentlyContinue"
+$InformationPreference = "SilentlyContinue"
+$WarningPreference = "Stop"
+$moduleRoot = [IO.Path]::Combine($PSHOME, "Modules")
+$env:PSModulePath = $moduleRoot
+$PSModuleAutoLoadingPreference = "None"
+Set-StrictMode -Version 3.0
+$stage = "module-import"
+try {
+  foreach ($module in @("Microsoft.PowerShell.Management", "Microsoft.PowerShell.Security", "Microsoft.PowerShell.Utility", "CimCmdlets", "DnsClient", "NetTCPIP")) {
+    $manifest = [IO.Path]::Combine($moduleRoot, $module, "$module.psd1")
+    Import-Module -Name $manifest -Force -ErrorAction Stop
+  }
+  $stage = "ticket-topology"
+  $privilegedRoot = [IO.Path]::Combine([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData), "GoForj", "Harbor", "Privileged")
+  $pendingTickets = [IO.Path]::Combine($privilegedRoot, "tickets", "pending")
+  if (-not (Test-Path -LiteralPath $pendingTickets -PathType Container)) { throw "installed Harbor ticket topology disappeared" }
+  if (@(Get-ChildItem -LiteralPath $pendingTickets -Force).Count -ne 0) { throw "retained Harbor pending helper ticket" }
+  $stage = "nrpt"
+  $rules = @(Get-DnsClientNrptRule | Where-Object {
+    $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+  })
+  if ($rules.Count -ne 0) { throw "retained Harbor NRPT rule" }
+  $stage = "tcp-listeners"
+  $tcp = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {
+    ($_.LocalPort -eq 80 -or $_.LocalPort -eq 443 -or $_.LocalPort -eq 53) -and
+    ($_.LocalAddress -eq "127.0.0.1" -or $_.LocalAddress -eq "127.0.0.2")
+  })
+  if ($tcp.Count -ne 0) { throw "retained Harbor TCP listener" }
+  $stage = "udp-listeners"
+  $udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object {
+    $_.LocalPort -eq 53 -and $_.LocalAddress -eq "127.0.0.2"
+  })
+  if ($udp.Count -ne 0) { throw "retained Harbor DNS listener" }
+  $stage = "machine-trust"
+  $machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+    $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
+  })
+  if ($machineRoots.Count -ne 0) { throw "retained Harbor LocalMachine root" }
+  $stage = "user-trust"
+  $userRoots = @(Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+    $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
+  })
+  if ($userRoots.Count -ne 0) { throw "retained Harbor CurrentUser root" }
+} catch {
+  [Console]::Error.WriteLine("harbor-stage=$stage error=$($_.Exception.Message)")
+  [Console]::Error.Flush()
+  exit 1
+}`
+	output, err := trustedHTTPSRunCommandWithEnvironment(
 		ctx,
 		sandbox,
+		environment,
 		powerShell,
 		"-NoLogo",
 		"-NoProfile",
@@ -1541,6 +1570,28 @@ if ($userRoots.Count -ne 0) { throw "retained Harbor CurrentUser root" }`
 		return fmt.Errorf("verify released Windows machine effects: %w: %s", err, strings.TrimSpace(output))
 	}
 	return nil
+}
+
+// trustedHTTPSWindowsVerificationEnvironment isolates native cleanup probes from the acceptance user's redirected profile.
+func trustedHTTPSWindowsVerificationEnvironment(systemRoot string) ([]string, error) {
+	if systemRoot == "" || !filepath.IsAbs(systemRoot) || filepath.Clean(systemRoot) != systemRoot {
+		return nil, errors.New("Windows verification environment requires a clean absolute SystemRoot")
+	}
+	systemDrive := filepath.VolumeName(systemRoot)
+	if len(systemDrive) != 2 || systemDrive[1] != ':' {
+		return nil, errors.New("Windows verification environment requires a drive-backed SystemRoot")
+	}
+	system32 := filepath.Join(systemRoot, "System32")
+	return []string{
+		"COMSPEC=" + filepath.Join(system32, "cmd.exe"),
+		"PATH=" + system32,
+		"PATHEXT=.COM;.EXE;.BAT;.CMD",
+		"SYSTEMDRIVE=" + systemDrive,
+		"SYSTEMROOT=" + systemRoot,
+		"TEMP=" + filepath.Join(systemRoot, "Temp"),
+		"TMP=" + filepath.Join(systemRoot, "Temp"),
+		"WINDIR=" + systemRoot,
+	}, nil
 }
 
 // trustedHTTPSRequirePrivilegedPathAbsent rejects either a surviving path or a failed privileged inspection.
@@ -1609,9 +1660,20 @@ func trustedHTTPSRunPrivileged(ctx context.Context, sandbox phase1Sandbox, comma
 
 // trustedHTTPSRunCommand executes one probe while keeping its working directory and environment reproducible.
 func trustedHTTPSRunCommand(ctx context.Context, sandbox phase1Sandbox, command string, arguments ...string) (string, error) {
+	return trustedHTTPSRunCommandWithEnvironment(ctx, sandbox, sandbox.environment, command, arguments...)
+}
+
+// trustedHTTPSRunCommandWithEnvironment executes one probe with an explicit reviewed environment.
+func trustedHTTPSRunCommandWithEnvironment(
+	ctx context.Context,
+	sandbox phase1Sandbox,
+	environment []string,
+	command string,
+	arguments ...string,
+) (string, error) {
 	process := exec.CommandContext(ctx, command, arguments...)
 	process.Dir = sandbox.root
-	process.Env = sandbox.environment
+	process.Env = environment
 	output, err := process.CombinedOutput()
 	return string(output), err
 }
