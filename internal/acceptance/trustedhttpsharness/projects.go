@@ -1,7 +1,6 @@
 package trustedhttpsharness
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,6 +16,12 @@ const happyPathAppPort uint16 = 3000
 const generatedAppReadyPath = "bin/.app.ready"
 
 const maximumReadyMarkerBytes = 64 << 10
+
+var generatedDerivedOutputPaths = map[string]struct{}{
+	"bin/app":                              {},
+	"bin/.forj-build-cache/app.target/app": {},
+	"bin/.app.ready":                       {},
+}
 
 // ProjectSpec binds one generated GoForj project to its expected public Harbor identity.
 type ProjectSpec struct {
@@ -116,8 +121,8 @@ func CaptureBaselines(projects []goforjproject.Project) ([]CheckoutBaseline, err
 		if err != nil {
 			return nil, fmt.Errorf("capture generated checkout %q: %w", project.Name, err)
 		}
-		if err := validateGeneratedAppReady(snapshot); err != nil {
-			return nil, fmt.Errorf("validate generated checkout %q build readiness: %w", project.Name, err)
+		if err := validateGeneratedDerivedOutputs(snapshot); err != nil {
+			return nil, fmt.Errorf("validate generated checkout %q build outputs: %w", project.Name, err)
 		}
 		readyMarker, readyMarkerMode, err := captureReadyMarker(project.Root)
 		if err != nil {
@@ -133,7 +138,7 @@ func CaptureBaselines(projects []goforjproject.Project) ([]CheckoutBaseline, err
 	return baselines, nil
 }
 
-// RestoreReadyMarkers restores GoForj's rewritten readiness markers before exact checkout verification.
+// RestoreReadyMarkers restores GoForj's rewritten readiness markers for callers that need exact diagnostic snapshots.
 func RestoreReadyMarkers(baselines []CheckoutBaseline) error {
 	var restoreErr error
 	for _, baseline := range baselines {
@@ -158,7 +163,49 @@ func RestoreReadyMarkers(baselines []CheckoutBaseline) error {
 	return restoreErr
 }
 
-// VerifyBaselines proves Harbor start, stop, and cleanup restored every checkout byte-for-byte.
+// captureReadyMarker records the bounded direct readiness artifact for exact diagnostic restoration.
+func captureReadyMarker(root string) ([]byte, fs.FileMode, error) {
+	filename := filepath.Join(root, filepath.FromSlash(generatedAppReadyPath))
+	information, err := os.Lstat(filename)
+	if err != nil {
+		return nil, 0, err
+	}
+	if information.Mode()&os.ModeSymlink != 0 || !information.Mode().IsRegular() {
+		return nil, 0, errors.New("readiness marker is not a direct regular file")
+	}
+	if information.Size() > maximumReadyMarkerBytes {
+		return nil, 0, fmt.Errorf("readiness marker exceeds %d-byte limit", maximumReadyMarkerBytes)
+	}
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(content) > maximumReadyMarkerBytes {
+		return nil, 0, fmt.Errorf("readiness marker exceeds %d-byte limit", maximumReadyMarkerBytes)
+	}
+	return content, information.Mode().Perm(), nil
+}
+
+// validateGeneratedDerivedOutputs requires every output whose later content refresh GoForj owns.
+func validateGeneratedDerivedOutputs(snapshot goforjproject.Snapshot) error {
+	entries := make(map[string]goforjproject.SnapshotEntry, len(snapshot.Entries))
+	for _, entry := range snapshot.Entries {
+		entries[entry.Path] = entry
+	}
+	for path := range generatedDerivedOutputPaths {
+		entry, found := entries[path]
+		if !found {
+			return fmt.Errorf("%s is missing", path)
+		}
+		if entry.Type != goforjproject.SnapshotEntryRegularFile {
+			return fmt.Errorf("%s is %s, want regular_file", path, entry.Type)
+		}
+	}
+	return nil
+}
+
+// VerifyBaselines proves Harbor cleanup left every checkout unchanged apart from
+// GoForj's regular derived outputs, whose content it refreshes during each dev session.
 func VerifyBaselines(baselines []CheckoutBaseline) error {
 	if len(baselines) != 3 {
 		return fmt.Errorf("checkout verification requires exactly three baselines, got %d", len(baselines))
@@ -187,7 +234,8 @@ func VerifyBaselines(baselines []CheckoutBaseline) error {
 	return verificationErr
 }
 
-// VerifyBaselinesExact proves every checkout now exactly matches its pre-Harbor baseline.
+// VerifyBaselinesExact proves every checkout exactly matches its pre-Harbor baseline.
+// It remains available for diagnostic assertions; lifecycle cleanup uses VerifyBaselines.
 func VerifyBaselinesExact(baselines []CheckoutBaseline) error {
 	var verificationErr error
 	for _, baseline := range baselines {
@@ -203,69 +251,25 @@ func VerifyBaselinesExact(baselines []CheckoutBaseline) error {
 	return verificationErr
 }
 
-// captureReadyMarker records the bounded direct readiness artifact before Harbor can launch a runtime.
-func captureReadyMarker(root string) ([]byte, fs.FileMode, error) {
-	filename := filepath.Join(root, filepath.FromSlash(generatedAppReadyPath))
-	information, err := os.Lstat(filename)
-	if err != nil {
-		return nil, 0, err
-	}
-	if information.Mode()&os.ModeSymlink != 0 || !information.Mode().IsRegular() {
-		return nil, 0, errors.New("readiness marker is not a direct regular file")
-	}
-	if information.Size() > maximumReadyMarkerBytes {
-		return nil, 0, fmt.Errorf("readiness marker exceeds %d-byte limit", maximumReadyMarkerBytes)
-	}
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, 0, err
-	}
-	if len(content) > maximumReadyMarkerBytes {
-		return nil, 0, fmt.Errorf("readiness marker exceeds %d-byte limit", maximumReadyMarkerBytes)
-	}
-	return content, information.Mode().Perm(), nil
+// diffCheckoutBaseline retains exact checkout comparison except for content
+// refreshes to the pre-existing direct regular outputs that GoForj owns.
+func diffCheckoutBaseline(baseline goforjproject.Snapshot, current goforjproject.Snapshot) string {
+	return normalizeGeneratedDerivedOutputContent(baseline, current).Diff(current)
 }
 
-// validateGeneratedAppReady requires the ordinary generated build's readiness marker before Harbor starts.
-func validateGeneratedAppReady(snapshot goforjproject.Snapshot) error {
-	for _, entry := range snapshot.Entries {
-		if entry.Path != generatedAppReadyPath {
+// normalizeGeneratedDerivedOutputContent removes a hash only when the same
+// permitted derived output remains a regular file with its original mode.
+func normalizeGeneratedDerivedOutputContent(baseline goforjproject.Snapshot, current goforjproject.Snapshot) goforjproject.Snapshot {
+	normalized := baseline
+	normalized.Entries = append([]goforjproject.SnapshotEntry(nil), baseline.Entries...)
+	for index := range normalized.Entries {
+		entry := normalized.Entries[index]
+		if _, permitted := generatedDerivedOutputPaths[entry.Path]; !permitted || entry.Type != goforjproject.SnapshotEntryRegularFile {
 			continue
 		}
-		if entry.Type != goforjproject.SnapshotEntryRegularFile {
-			return fmt.Errorf("%s is %s, want regular_file", generatedAppReadyPath, entry.Type)
-		}
-		return nil
-	}
-	return fmt.Errorf("%s is missing", generatedAppReadyPath)
-}
-
-// diffCheckoutBaseline retains exact checkout comparison except for the content
-// timestamp GoForj rewrites in its own readiness marker on every dev session.
-func diffCheckoutBaseline(baseline goforjproject.Snapshot, current goforjproject.Snapshot) string {
-	if !readyMarkerMatches(baseline, current) {
-		return baseline.Diff(current)
-	}
-	return normalizeReadyMarkerContent(baseline).Diff(normalizeReadyMarkerContent(current))
-}
-
-// readyMarkerMatches permits only a regular marker with its original permissions and existence.
-func readyMarkerMatches(baseline goforjproject.Snapshot, current goforjproject.Snapshot) bool {
-	baselineEntry, baselineFound := snapshotEntryAt(baseline, generatedAppReadyPath)
-	currentEntry, currentFound := snapshotEntryAt(current, generatedAppReadyPath)
-	return baselineFound && currentFound &&
-		baselineEntry.Type == goforjproject.SnapshotEntryRegularFile &&
-		currentEntry.Type == goforjproject.SnapshotEntryRegularFile &&
-		baselineEntry.Permissions == currentEntry.Permissions
-}
-
-// normalizeReadyMarkerContent removes only the expected readiness timestamp from an otherwise exact snapshot.
-func normalizeReadyMarkerContent(snapshot goforjproject.Snapshot) goforjproject.Snapshot {
-	normalized := snapshot
-	normalized.Entries = append([]goforjproject.SnapshotEntry(nil), snapshot.Entries...)
-	for index := range normalized.Entries {
-		if normalized.Entries[index].Path == generatedAppReadyPath {
-			normalized.Entries[index].SHA256 = [sha256.Size]byte{}
+		currentEntry, found := snapshotEntryAt(current, entry.Path)
+		if found && currentEntry.Type == goforjproject.SnapshotEntryRegularFile && currentEntry.Permissions == entry.Permissions {
+			normalized.Entries[index].SHA256 = currentEntry.SHA256
 		}
 	}
 	return normalized

@@ -154,16 +154,16 @@ func TestCheckoutBaselinesDetectAndAcceptExactCleanup(t *testing.T) {
 	}
 }
 
-// TestCheckoutBaselinesPermitOnlyGoForjReadyMarkerContentRefresh keeps the exception scoped to GoForj's timestamp marker.
-func TestCheckoutBaselinesPermitOnlyGoForjReadyMarkerContentRefresh(t *testing.T) {
+// TestCheckoutBaselinesPermitOnlyGeneratedDerivedOutputContentRefresh keeps GoForj's content exception narrowly scoped.
+func TestCheckoutBaselinesPermitOnlyGeneratedDerivedOutputContentRefresh(t *testing.T) {
 	projects := make([]goforjproject.Project, 0, 3)
 	for _, name := range []string{"orders", "billing", "inventory"} {
 		root := filepath.Join(t.TempDir(), name)
 		if err := os.Mkdir(root, 0o700); err != nil {
 			t.Fatalf("create generated checkout: %v", err)
 		}
-		if err := writeFixtureAppReady(root, "initial"); err != nil {
-			t.Fatalf("write generated build marker: %v", err)
+		if err := writeFixtureDerivedOutputs(root, "initial"); err != nil {
+			t.Fatalf("write generated outputs: %v", err)
 		}
 		projects = append(projects, goforjproject.Project{
 			Name: name,
@@ -174,13 +174,17 @@ func TestCheckoutBaselinesPermitOnlyGoForjReadyMarkerContentRefresh(t *testing.T
 	if err != nil {
 		t.Fatalf("CaptureBaselines() error = %v", err)
 	}
-	ready := filepath.Join(projects[0].Root, "bin", ".app.ready")
-	if err := os.WriteFile(ready, []byte("new dev-session timestamp"), 0o600); err != nil {
-		t.Fatalf("refresh generated build marker: %v", err)
+	for path := range generatedDerivedOutputPaths {
+		filename := filepath.Join(projects[0].Root, filepath.FromSlash(path))
+		if err := os.WriteFile(filename, []byte("new dev-session output"), 0o600); err != nil {
+			t.Fatalf("refresh generated output %q: %v", path, err)
+		}
 	}
 	if err := VerifyBaselines(baselines); err != nil {
-		t.Fatalf("VerifyBaselines(refreshed marker) error = %v", err)
+		t.Fatalf("VerifyBaselines(refreshed outputs) error = %v", err)
 	}
+
+	ready := filepath.Join(projects[0].Root, "bin", ".app.ready")
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(ready, 0o644); err != nil {
 			t.Fatalf("change generated build marker mode: %v", err)
@@ -197,31 +201,53 @@ func TestCheckoutBaselinesPermitOnlyGoForjReadyMarkerContentRefresh(t *testing.T
 	}
 }
 
-// TestRestoreReadyMarkersRestoresBytesAndMode proves cleanup does not mask GoForj's marker mutation.
-func TestRestoreReadyMarkersRestoresBytesAndMode(t *testing.T) {
-	projects := make([]goforjproject.Project, 0, 3)
-	for _, name := range []string{"orders", "billing", "inventory"} {
-		root := filepath.Join(t.TempDir(), name)
-		if err := os.Mkdir(root, 0o700); err != nil {
-			t.Fatalf("create generated checkout: %v", err)
-		}
-		if err := writeFixtureAppReady(root, "baseline"); err != nil {
-			t.Fatalf("write generated build marker: %v", err)
-		}
-		ready := filepath.Join(root, "bin", ".app.ready")
-		if err := os.Chmod(ready, 0o644); err != nil {
-			t.Fatalf("set baseline marker mode: %v", err)
-		}
-		projects = append(projects, goforjproject.Project{
-			Name: name,
-			Root: root,
+// TestCheckoutBaselinesRejectDerivedOutputDeletionAndTypeOrModeChanges keeps the content-only allowance from masking checkout drift.
+func TestCheckoutBaselinesRejectDerivedOutputDeletionAndTypeOrModeChanges(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		path    string
+		mutate  func(string) error
+		wantErr string
+	}{
+		{name: "deletion", path: "bin/app", mutate: os.Remove, wantErr: "removed bin/app"},
+		{name: "type", path: "bin/.app.ready", mutate: func(filename string) error {
+			if err := os.Remove(filename); err != nil {
+				return err
+			}
+			return os.Mkdir(filename, 0o700)
+		}, wantErr: "changed bin/.app.ready"},
+		{name: "mode", path: "bin/.forj-build-cache/app.target/app", mutate: func(filename string) error {
+			return os.Chmod(filename, 0o644)
+		}, wantErr: "changed bin/.forj-build-cache/app.target/app"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projects := fixtureProjectsWithDerivedOutputs(t)
+			baselines, err := CaptureBaselines(projects)
+			if err != nil {
+				t.Fatalf("CaptureBaselines() error = %v", err)
+			}
+			filename := filepath.Join(projects[0].Root, filepath.FromSlash(test.path))
+			if err := test.mutate(filename); err != nil {
+				t.Fatalf("mutate generated output: %v", err)
+			}
+			if err := VerifyBaselines(baselines); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("VerifyBaselines() error = %v, want %q", err, test.wantErr)
+			}
 		})
+	}
+}
+
+// TestRestoreReadyMarkersRestoresBytesAndMode proves the diagnostic restoration helper preserves an exact snapshot.
+func TestRestoreReadyMarkersRestoresBytesAndMode(t *testing.T) {
+	projects := fixtureProjectsWithDerivedOutputs(t)
+	ready := filepath.Join(projects[0].Root, filepath.FromSlash(generatedAppReadyPath))
+	if err := os.Chmod(ready, 0o644); err != nil {
+		t.Fatalf("set baseline marker mode: %v", err)
 	}
 	baselines, err := CaptureBaselines(projects)
 	if err != nil {
 		t.Fatalf("CaptureBaselines() error = %v", err)
 	}
-	ready := filepath.Join(projects[0].Root, "bin", ".app.ready")
 	if err := os.WriteFile(ready, []byte("changed marker"), 0o600); err != nil {
 		t.Fatalf("change generated build marker: %v", err)
 	}
@@ -234,22 +260,31 @@ func TestRestoreReadyMarkersRestoresBytesAndMode(t *testing.T) {
 	if err := RestoreReadyMarkers(baselines); err != nil {
 		t.Fatalf("RestoreReadyMarkers() error = %v", err)
 	}
-	content, err := os.ReadFile(ready)
-	if err != nil {
-		t.Fatalf("read restored marker: %v", err)
-	}
-	if string(content) != "baseline" {
-		t.Fatalf("restored marker content = %q, want baseline", content)
-	}
-	information, err := os.Stat(ready)
-	if err != nil {
-		t.Fatalf("stat restored marker: %v", err)
-	}
-	if information.Mode().Perm() != 0o644 {
-		t.Fatalf("restored marker permissions = %o, want 0644", information.Mode().Perm())
-	}
 	if err := VerifyBaselinesExact(baselines); err != nil {
 		t.Fatalf("VerifyBaselinesExact(restored marker) error = %v", err)
+	}
+}
+
+// TestCheckoutBaselinesRejectNonDerivedSourceAndEnvironmentChanges proves the derived-output exception cannot hide project mutations.
+func TestCheckoutBaselinesRejectNonDerivedSourceAndEnvironmentChanges(t *testing.T) {
+	projects := fixtureProjectsWithDerivedOutputs(t)
+	baselines, err := CaptureBaselines(projects)
+	if err != nil {
+		t.Fatalf("CaptureBaselines() error = %v", err)
+	}
+	for _, path := range []string{"main.go", ".env", ".env.host"} {
+		t.Run(path, func(t *testing.T) {
+			filename := filepath.Join(projects[0].Root, path)
+			if err := os.WriteFile(filename, []byte("changed\n"), 0o600); err != nil {
+				t.Fatalf("change %q: %v", path, err)
+			}
+			if err := VerifyBaselines(baselines); err == nil || !strings.Contains(err.Error(), "changed "+path) {
+				t.Fatalf("VerifyBaselines() error = %v, want changed %s", err, path)
+			}
+			if err := os.WriteFile(filename, []byte("baseline\n"), 0o600); err != nil {
+				t.Fatalf("restore %q: %v", path, err)
+			}
+		})
 	}
 }
 
@@ -276,4 +311,27 @@ func TestCheckoutBaselineValidationRejectsMissingAndDuplicatedRoots(t *testing.T
 	if err := VerifyBaselines(nil); err == nil {
 		t.Fatal("VerifyBaselines(nil) error = nil")
 	}
+}
+
+// fixtureProjectsWithDerivedOutputs creates three baseline-ready checkouts with generated outputs and protected project files.
+func fixtureProjectsWithDerivedOutputs(t *testing.T) []goforjproject.Project {
+	t.Helper()
+
+	projects := make([]goforjproject.Project, 0, 3)
+	for _, name := range []string{"orders", "billing", "inventory"} {
+		root := filepath.Join(t.TempDir(), name)
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatalf("create generated checkout: %v", err)
+		}
+		if err := writeFixtureDerivedOutputs(root, "baseline"); err != nil {
+			t.Fatalf("write generated outputs: %v", err)
+		}
+		for _, path := range []string{"main.go", ".env", ".env.host"} {
+			if err := os.WriteFile(filepath.Join(root, path), []byte("baseline\n"), 0o600); err != nil {
+				t.Fatalf("write baseline %q: %v", path, err)
+			}
+		}
+		projects = append(projects, goforjproject.Project{Name: name, Root: root})
+	}
+	return projects
 }

@@ -22,7 +22,7 @@ The managed runtime-plan reader remains capability-gated and optional, but the p
 
 Commit `e0c9773` is the hosted three-platform milestone. GitHub runs `30166963369`, `30166963384`, and `30166963379` passed the same lifecycle on Ubuntu, macOS, and Windows from clean Harbor-owned state: production full setup, three generated projects retaining port 3000, distinct literal system-resolved and default-trusted HTTPS identities on port 443, production stop/unregister/release, foreign-state preservation, and byte-for-byte checkout verification. Runs `30166963374` and `30166963368` passed CI and hosted cross-platform API smoke for the same commit.
 
-The available GitHub-hosted fleet was sufficient for the original observable trusted-HTTPS gate; no self-hosted runner or project VM was required. Harbor now externalizes GoForj runtime artifacts into Harbor-owned per-session roots and uses reviewed GoForj revision `32c1a06d45a92a3de6021ef2db5723e343268489` to share the caller-selected external Go cache without changing any generated checkout.
+The available GitHub-hosted fleet was sufficient for the original observable trusted-HTTPS gate; no self-hosted runner or project VM was required. Harbor retains GoForj's standard checkout-local `./bin` development outputs and uses reviewed GoForj revision `32c1a06d45a92a3de6021ef2db5723e343268489`. Acceptance verification permits content refreshes only for the pre-existing generated runtime binary, build-cache target, and readiness marker while continuing to reject path, type, permission, source, configuration, and environment drift.
 
 Hosted Linux and macOS use GitHub's passwordless `sudo`; the Linux workflow adds a temporary helper-specific polkit rule and the macOS workflow temporarily allows the Authorization Services execute right, restoring that policy afterward. Hosted Windows runs as Administrator with UAC disabled, so its workflow provisions a disposable locally signed helper and exact installer-style ACL topology before running the production launcher. These adapters are CI prerequisites, not product claims.
 
@@ -299,7 +299,7 @@ The active goal is now the three-project trusted-HTTPS happy path recorded in [C
 1. complete one macOS setup flow that proves resolver ownership, current-user CA trust, and Harbor ingress on public ports 80 and 443;
 2. promote the live resolver-only data plane to full HTTP/TLS authority and backfill exact `app-http` reservations for already admitted projects;
 3. run three generated GoForj projects concurrently on their unchanged configured App port and verify their distinct literal `https://<project>.test` URLs through system DNS and default trust;
-4. stop them, prove their checkouts are byte-for-byte unchanged, and remove only Harbor-owned host state;
+4. stop them, prove their source and configuration are unchanged while permitting only GoForj-owned ignored `./bin` content refreshes, and remove only Harbor-owned host state;
 5. freeze feature work after the macOS gate passes, then move that same acceptance test into the claimed GitHub Actions platform matrix.
 
 Do not substitute direct-IP requests, custom root pools, TLS bypasses, explicit resolver sockets, translated public ports, synthetic Store setup, or a second platform-specific test. A pinned mkcert-backed trust adapter is allowed only if it is the shortest safe way to produce the required observable trust behavior.

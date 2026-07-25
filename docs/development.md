@@ -19,6 +19,8 @@ forj dev
 
 GoForj builds and watches `harbord`, builds the optional sibling `outputbroker`, applies its embedded migrations, runs the daemon in the foreground, and starts Wails. The daemon uses the broker when that exact sibling artifact is available and keeps direct pipes when it is not. The Wails macOS pre-build hook runs `cmd/devartifacts`, which places architecture-specific development helper and broker binaries beneath `desktop/build/bin/devtools`. The desktop uses those artifacts when network setup needs to install or repair privileged support.
 
+Harbor launches registered projects with GoForj's standard checkout-local development layout. Generated runtime binaries and readiness state remain beneath each project's ignored `./bin` directory; Harbor does not redirect them into a separate runtime artifact tree.
+
 Harbor's durable SQLite state is outside the checkout. On macOS it is `~/Library/Application Support/GoForj/Harbor/harbor.db`; see [Current implementation state](./current-state.md) for all platform paths and validation commands.
 
 ## Current CLI surface

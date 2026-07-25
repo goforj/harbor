@@ -110,6 +110,11 @@ func init() {
 	fmt.Fprintf(os.Stdout, "legacy-private-build-environment-overrides=%s\n", os.Getenv(legacyPrivateBuildEnvironmentOverridesName))
 	fmt.Fprintf(os.Stdout, "development-artifact-root=%s\n", os.Getenv(developmentArtifactRootEnvironment))
 	fmt.Fprintf(os.Stdout, "development-gocache=%s\n", os.Getenv(developmentGoCacheEnvironment))
+	runtimeRoot := os.Getenv(developmentArtifactRootEnvironment)
+	if runtimeRoot == "" {
+		runtimeRoot = workingDirectory
+	}
+	fmt.Fprintf(os.Stdout, "runtime-binary=%s\n", filepath.Join(runtimeRoot, "bin", "app"))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -511,22 +516,10 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	waitForOutput(t, stdout, "argument=dev")
 	waitForOutput(t, stdout, "plain=1")
 	waitForOutput(t, stdout, "working-directory="+canonicalCheckout)
+	waitForOutput(t, stdout, "runtime-binary="+filepath.Join(canonicalCheckout, "bin", "app"))
+	waitForOutput(t, stdout, "development-artifact-root=\n")
+	waitForOutput(t, stdout, "development-gocache=\n")
 	waitForOutput(t, stderr, "ready")
-	artifactPath, _, err := developmentArtifactPath(
-		supervisor.developmentArtifactDirectory,
-		"project-one",
-		"session-one",
-	)
-	if err != nil {
-		t.Fatalf("developmentArtifactPath() error = %v", err)
-	}
-	waitForOutput(t, stdout, "development-artifact-root="+artifactPath)
-	if cache := developmentSharedGoCache(supervisor.environment); cache != "" {
-		waitForOutput(t, stdout, "development-gocache="+cache)
-	}
-	if _, err := os.Stat(artifactPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("development artifact root after process exit error = %v, want not exist", err)
-	}
 
 	info := handle.Info()
 	if info.ProjectID != "project-one" || info.SessionID != "session-one" {
@@ -1462,8 +1455,8 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 	}
 }
 
-// TestDevelopmentEnvironmentRemovesAmbientArtifactRoot prevents Harbor's own process configuration from redirecting project builds.
-func TestDevelopmentEnvironmentRemovesAmbientArtifactRoot(t *testing.T) {
+// TestDevelopmentEnvironmentRemovesAmbientArtifactControls keeps managed projects on GoForj's checkout-local build layout.
+func TestDevelopmentEnvironmentRemovesAmbientArtifactControls(t *testing.T) {
 	result := withDevelopmentEnvironment([]string{
 		"FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root",
 		"FORJ_DEV_GOCACHE=/ambient/build-cache",
@@ -1477,20 +1470,6 @@ func TestDevelopmentEnvironmentRemovesAmbientArtifactRoot(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(result, "\x00"), "UNRELATED=preserved") {
 		t.Fatalf("development environment removed unrelated value: %#v", result)
-	}
-}
-
-// TestDevelopmentSharedGoCacheAdmitsOnlyCleanAbsoluteCapturedPaths prevents managed cache authority from using ambiguous input.
-func TestDevelopmentSharedGoCacheAdmitsOnlyCleanAbsoluteCapturedPaths(t *testing.T) {
-	cache := filepath.Join(t.TempDir(), "gocache")
-	if got := developmentSharedGoCache([]string{"GOCACHE=relative"}); got != "" {
-		t.Fatalf("developmentSharedGoCache(relative) = %q", got)
-	}
-	if got := developmentSharedGoCache([]string{"GOCACHE=" + cache + string(os.PathSeparator) + ".."}); got != "" {
-		t.Fatalf("developmentSharedGoCache(unclean) = %q", got)
-	}
-	if got := developmentSharedGoCache([]string{"GOCACHE=" + cache}); got != cache {
-		t.Fatalf("developmentSharedGoCache() = %q, want %q", got, cache)
 	}
 }
 

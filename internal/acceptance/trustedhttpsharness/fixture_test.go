@@ -204,11 +204,21 @@ func writeFixtureOpenAPI(root string, title string) error {
 	)
 }
 
-// writeFixtureAppReady creates the generated build marker whose content GoForj refreshes for each dev session.
+// writeFixtureAppReady creates the generated outputs whose content GoForj refreshes for each dev session.
 func writeFixtureAppReady(root string, content string) error {
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		return err
+	return writeFixtureDerivedOutputs(root, content)
+}
+
+// writeFixtureDerivedOutputs creates every regular generated output that GoForj refreshes during dev sessions.
+func writeFixtureDerivedOutputs(root string, content string) error {
+	for _, path := range []string{"bin/app", "bin/.forj-build-cache/app.target/app", "bin/.app.ready"} {
+		filename := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(filename), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filename, []byte(content), 0o600); err != nil {
+			return err
+		}
 	}
-	return os.WriteFile(filepath.Join(bin, ".app.ready"), []byte(content), 0o600)
+	return nil
 }
