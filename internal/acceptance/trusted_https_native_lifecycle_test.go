@@ -1343,7 +1343,7 @@ func trustedHTTPSObserveLoopbackIdentities(ctx context.Context, sandbox phase1Sa
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -like "127.77.*" } | Select-Object -ExpandProperty IPAddress`,
+			`Import-Module (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules\NetTCPIP\NetTCPIP.psd1") -ErrorAction Stop; Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -like "127.77.*" } | Select-Object -ExpandProperty IPAddress`,
 		)
 	default:
 		return nil, fmt.Errorf("observe loopback identities: platform %s is unsupported", runtime.GOOS)
