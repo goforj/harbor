@@ -21,11 +21,7 @@ import (
 	"github.com/goforj/harbor/internal/trust/materialstore"
 )
 
-const (
-	cleanupTimeout                         = 35 * time.Second
-	managedNativeRouteStartupTimeout       = 20 * time.Second
-	managedNativeRouteStartupRetryInterval = 100 * time.Millisecond
-)
+const cleanupTimeout = 35 * time.Second
 
 var (
 	// ErrNotInitialized reports use of a zero-value or otherwise unconstructed Controller.
@@ -538,7 +534,7 @@ func (controller *Controller) ReconcileProjectNativeRoutes(
 	projectID domain.ProjectID,
 	routes []dataplane.NativeRoute,
 ) error {
-	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectReady)
+	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectReady, false)
 }
 
 // StageProjectNativeRoutes publishes observed TCP routes while their exact project start still owns the durable lifecycle.
@@ -547,46 +543,7 @@ func (controller *Controller) StageProjectNativeRoutes(
 	projectID domain.ProjectID,
 	routes []dataplane.NativeRoute,
 ) error {
-	if controller == nil || !controller.initialized {
-		return ErrNotInitialized
-	}
-	if err := controller.waitForManagedDirectRoutes(ctx, routes); err != nil {
-		return err
-	}
-	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectStarting)
-}
-
-// waitForManagedDirectRoutes allows newly running containers to open their published sockets before Harbor exposes DNS.
-func (controller *Controller) waitForManagedDirectRoutes(
-	ctx context.Context,
-	routes []dataplane.NativeRoute,
-) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	waitContext, cancel := context.WithTimeout(ctx, managedNativeRouteStartupTimeout)
-	defer cancel()
-	var probeErr error
-	for {
-		probeErr = controller.probeManagedDirectRoutes(waitContext, routes)
-		if probeErr == nil {
-			return nil
-		}
-		timer := time.NewTimer(managedNativeRouteStartupRetryInterval)
-		select {
-		case <-waitContext.Done():
-			timer.Stop()
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			return fmt.Errorf(
-				"%w after waiting %s for the startup listener",
-				probeErr,
-				managedNativeRouteStartupTimeout,
-			)
-		case <-timer.C:
-		}
-	}
+	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectStarting, true)
 }
 
 // replaceProjectNativeRoutes atomically replaces one project's routes under the required durable lifecycle state.
@@ -595,6 +552,7 @@ func (controller *Controller) replaceProjectNativeRoutes(
 	projectID domain.ProjectID,
 	routes []dataplane.NativeRoute,
 	requiredState domain.ProjectState,
+	withholdUnavailableDirect bool,
 ) error {
 	if controller == nil || !controller.initialized {
 		return ErrNotInitialized
@@ -624,6 +582,12 @@ func (controller *Controller) replaceProjectNativeRoutes(
 	if err := validateProjectNativeRouteAuthority(runtimeState, projectID, routes, requiredState); err != nil {
 		return err
 	}
+	if withholdUnavailableDirect {
+		routes, err = controller.availableManagedNativeRoutes(ctx, routes)
+		if err != nil {
+			return err
+		}
+	}
 	controller.mutex.RLock()
 	current := append([]dataplane.NativeRoute(nil), controller.managedNativeRoutes...)
 	controller.mutex.RUnlock()
@@ -638,10 +602,34 @@ func (controller *Controller) replaceProjectNativeRoutes(
 	if slices.Equal(current, replacement) {
 		return nil
 	}
-	if err := controller.probeManagedDirectRoutes(ctx, routes); err != nil {
-		return err
+	if !withholdUnavailableDirect {
+		if err := controller.probeManagedDirectRoutes(ctx, routes); err != nil {
+			return err
+		}
 	}
 	return controller.replaceNativeRoutesLocked(ctx, replacement)
+}
+
+// availableManagedNativeRoutes withholds DNS for unavailable direct sockets without making an optional service fatal to project startup.
+func (controller *Controller) availableManagedNativeRoutes(
+	ctx context.Context,
+	routes []dataplane.NativeRoute,
+) ([]dataplane.NativeRoute, error) {
+	available := make([]dataplane.NativeRoute, 0, len(routes))
+	for _, route := range routes {
+		if !route.Direct {
+			available = append(available, route)
+			continue
+		}
+		if err := controller.probeNativeSocket(ctx, route.Listen); err == nil {
+			available = append(available, route)
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return available, nil
 }
 
 // validateProjectNativeRouteAuthority binds observed routes to one ready project and its durable primary address.

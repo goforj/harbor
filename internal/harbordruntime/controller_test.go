@@ -2253,8 +2253,8 @@ func TestControllerStageProjectNativeRoutesPublishesBeforeReady(t *testing.T) {
 	}
 }
 
-// TestControllerStageProjectNativeRoutesWaitsForContainerListener proves normal post-Compose socket warm-up does not fail the project start.
-func TestControllerStageProjectNativeRoutesWaitsForContainerListener(t *testing.T) {
+// TestControllerStageProjectNativeRoutesWithholdsUnavailableOptionalListener proves one refused service route does not fail the project start.
+func TestControllerStageProjectNativeRoutesWithholdsUnavailableOptionalListener(t *testing.T) {
 	runtimeState := initializedControllerRuntimeState()
 	runtimeState.Snapshot.Projects[0].State = domain.ProjectStarting
 	source := &testRuntimeStateSource{
@@ -2269,6 +2269,13 @@ func TestControllerStageProjectNativeRoutesWaitsForContainerListener(t *testing.
 		Upstream: netip.MustParseAddrPort("127.77.0.10:80"),
 		Direct:   true,
 	}
+	mysql := dataplane.NativeRoute{
+		ID:       "orders:service:mysql",
+		Host:     "mysql.orders.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.10:3306"),
+		Upstream: netip.MustParseAddrPort("127.77.0.10:3306"),
+		Direct:   true,
+	}
 	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
 		snapshot: dataplane.Snapshot{
 			State:   dataplane.StateReady,
@@ -2276,16 +2283,14 @@ func TestControllerStageProjectNativeRoutesWaitsForContainerListener(t *testing.
 			Directs: []dataplane.DirectStatus{},
 		},
 	}}
-	probes := 0
 	controller := &Controller{
 		initialized: true,
 		source:      source,
 		state:       controllerStateReady,
 		dataPlane:   runtime,
 		dependencies: dependencies{
-			nativeSocketProbe: func(context.Context, netip.AddrPort) error {
-				probes++
-				if probes == 1 {
+			nativeSocketProbe: func(_ context.Context, address netip.AddrPort) error {
+				if address == traefik.Listen {
 					return errors.New("connection refused")
 				}
 				return nil
@@ -2293,14 +2298,11 @@ func TestControllerStageProjectNativeRoutesWaitsForContainerListener(t *testing.
 		},
 	}
 
-	if err := controller.StageProjectNativeRoutes(t.Context(), "orders", []dataplane.NativeRoute{traefik}); err != nil {
+	if err := controller.StageProjectNativeRoutes(t.Context(), "orders", []dataplane.NativeRoute{traefik, mysql}); err != nil {
 		t.Fatalf("StageProjectNativeRoutes() error = %v", err)
 	}
-	if probes < 2 {
-		t.Fatalf("native socket probes = %d, want a retry after the initial refusal", probes)
-	}
-	if len(runtime.nativeReplacements) != 1 || !reflect.DeepEqual(runtime.nativeReplacements[0], []dataplane.NativeRoute{traefik}) {
-		t.Fatalf("native replacements = %#v, want staged Traefik route", runtime.nativeReplacements)
+	if len(runtime.nativeReplacements) != 1 || !reflect.DeepEqual(runtime.nativeReplacements[0], []dataplane.NativeRoute{mysql}) {
+		t.Fatalf("native replacements = %#v, want only the live MySQL route", runtime.nativeReplacements)
 	}
 }
 
