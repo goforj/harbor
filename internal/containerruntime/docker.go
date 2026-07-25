@@ -608,6 +608,7 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 	}
 	results := make(chan sourceResult, maximumProjectContainers)
 	active := make(map[string]context.CancelFunc)
+	pendingErrors := make(map[string]error)
 	seen := make(map[string]struct{})
 	var sources sync.WaitGroup
 	start := func(observed admittedContainer, tail int) error {
@@ -654,7 +655,9 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 		case result := <-results:
 			delete(active, result.id)
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
-				return result.err
+				// Force recreation can break the old Engine response before the next
+				// reconciliation observes that its immutable ID disappeared.
+				pendingErrors[result.id] = result.err
 			}
 		case <-ticker.C:
 			containers, err := follower.runtime.serviceContainers(
@@ -688,6 +691,12 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 				if err := start(observed, tail); err != nil {
 					return err
 				}
+			}
+			for id, sourceErr := range pendingErrors {
+				if _, stillSelected := next[id]; stillSelected {
+					return sourceErr
+				}
+				delete(pendingErrors, id)
 			}
 			follower.setAvailable(len(next) > 0)
 			if len(next) > 1 {

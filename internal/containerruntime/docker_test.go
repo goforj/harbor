@@ -591,6 +591,53 @@ func TestDockerLogFollowerAddsAReplacementIDOnce(t *testing.T) {
 	}
 }
 
+// TestDockerLogFollowerDefersAnOldSourceErrorUntilReplacementReconciliation covers force-recreate stream teardown.
+func TestDockerLogFollowerDefersAnOldSourceErrorUntilReplacementReconciliation(t *testing.T) {
+	root := t.TempDir()
+	first := container.Summary{ID: "db-one", Labels: composeLabels(root, "orders", "db", "1")}
+	second := container.Summary{ID: "db-two", Labels: composeLabels(root, "orders", "db", "1")}
+	engine := &fakeDockerEngine{
+		listSequence: []client.ContainerListResult{
+			{Items: []container.Summary{first}},
+			{Items: []container.Summary{second}},
+		},
+		inspections: map[string]client.ContainerInspectResult{
+			"db-one": inspectResult("db-one", "orders-db-1", first.Labels, container.StateRunning, 0),
+			"db-two": inspectResult("db-two", "orders-db-1", second.Labels, container.StateRunning, 0),
+		},
+		logs: make(map[string]client.ContainerLogsResult),
+		logFactories: map[string]func(context.Context) client.ContainerLogsResult{
+			"db-one": func(context.Context) client.ContainerLogsResult {
+				return &testLogResult{Reader: &failingLogReader{
+					contents: strings.NewReader(rawTTYLog("old\n")),
+					err:      io.ErrUnexpectedEOF,
+				}}
+			},
+		},
+		logOutputs: map[string]string{"db-two": rawTTYLog("replacement\n")},
+	}
+	runtime := newDockerRuntime(engine)
+	runtime.logReconcilePeriod = 10 * time.Millisecond
+	follower, err := runtime.OpenServiceLogs(t.Context(), root, "db", 200)
+	if err != nil {
+		t.Fatalf("OpenServiceLogs() error = %v", err)
+	}
+	output := new(synchronizedTestBuffer)
+	done := make(chan error, 1)
+	go func() { done <- follower.CopyTo(output) }()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(output.String(), "replacement") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	_ = follower.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("CopyTo() error = %v", err)
+	}
+	if !strings.Contains(output.String(), "replacement") {
+		t.Fatalf("replacement output = %q", output.String())
+	}
+}
+
 // TestDockerLogFollowerCloseJoinsActiveReaders proves daemon shutdown cannot leave an Engine body behind.
 func TestDockerLogFollowerCloseJoinsActiveReaders(t *testing.T) {
 	root := t.TempDir()
@@ -730,6 +777,21 @@ type testLogResult struct {
 // Close is inert for an in-memory log response.
 func (*testLogResult) Close() error {
 	return nil
+}
+
+// failingLogReader emits its retained bytes before returning one configured transport failure.
+type failingLogReader struct {
+	contents *strings.Reader
+	err      error
+}
+
+// Read returns the configured failure only after all fixture bytes were delivered.
+func (reader *failingLogReader) Read(destination []byte) (int, error) {
+	count, err := reader.contents.Read(destination)
+	if errors.Is(err, io.EOF) {
+		return count, reader.err
+	}
+	return count, err
 }
 
 // cancellableTestLogResult models an HTTP response body whose request context owns an interrupted read.
