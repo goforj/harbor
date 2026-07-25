@@ -1162,6 +1162,10 @@ func validResolverNativeDiagnostic(native string) bool {
 		"precondition-changed",
 		"disabled-feature-parameters",
 		"access-denied",
+		"module-unavailable",
+		"cmdlet-unavailable",
+		"invalid-output",
+		"unexpected-diagnostics",
 		"native-failure":
 		return true
 	default:

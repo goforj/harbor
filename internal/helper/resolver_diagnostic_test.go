@@ -44,6 +44,21 @@ func TestResponseForResolverFailureExposesOnlyFiniteDiagnostics(t *testing.T) {
 		}
 	}
 
+	for _, native := range []string{
+		"module-unavailable",
+		"cmdlet-unavailable",
+		"invalid-output",
+		"unexpected-diagnostics",
+	} {
+		diagnostic := accepted
+		diagnostic.native = native
+		response := responseForError(diagnostic)
+		want := "helper operation failed: resolver ensure mutation-failed absent/absent " + native
+		if response.Error == nil || response.Error.Message != want {
+			t.Fatalf("responseForError(%q) = %#v, want %q", native, response, want)
+		}
+	}
+
 	for _, forged := range []testResolverFailureDiagnostic{
 		{operation: "forged", kind: "mutation-failed"},
 		{operation: "observe", kind: "mutation-failed"},

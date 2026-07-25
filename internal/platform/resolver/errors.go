@@ -38,12 +38,16 @@ type Error struct {
 	cause       error
 }
 
-// Error formats a stable summary without incorporating native command or API output.
+// Error formats a stable summary using only finite categories derived from native failures.
 func (e *Error) Error() string {
+	message := fmt.Sprintf("resolver %s: %s", e.Operation, e.Kind)
 	if e.Assessment.State != "" {
-		return fmt.Sprintf("resolver %s: %s (%s/%s)", e.Operation, e.Kind, e.Assessment.State, e.Assessment.Owned)
+		message += fmt.Sprintf(" (%s/%s)", e.Assessment.State, e.Assessment.Owned)
 	}
-	return fmt.Sprintf("resolver %s: %s", e.Operation, e.Kind)
+	if native := resolverNativeDiagnostic(e.cause); native != "" {
+		message += " (" + native + ")"
+	}
+	return message
 }
 
 // Unwrap preserves the native or validation cause for programmatic diagnostics.
@@ -74,6 +78,19 @@ func resolverNativeDiagnostic(cause error) string {
 	}
 	message := strings.ToLower(cause.Error())
 	switch {
+	case strings.Contains(message, "specified module 'dnsclient' was not loaded") ||
+		strings.Contains(message, "specified module \"dnsclient\" was not loaded") ||
+		(strings.Contains(message, "import-module") && strings.Contains(message, "dnsclient")):
+		return "module-unavailable"
+	case strings.Contains(message, "get-dnsclientnrptrule") &&
+		strings.Contains(message, "not recognized"):
+		return "cmdlet-unavailable"
+	case strings.Contains(message, "decode windows nrpt snapshot") ||
+		strings.Contains(message, "snapshot has an invalid size") ||
+		strings.Contains(message, "response must contain"):
+		return "invalid-output"
+	case strings.Contains(message, "wrote unexpected diagnostics"):
+		return "unexpected-diagnostics"
 	case strings.Contains(message, "nrpt relevant rule count changed before mutation") ||
 		strings.Contains(message, "nrpt relevant rule set changed before mutation"):
 		return "precondition-changed"
