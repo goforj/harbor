@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -344,28 +345,61 @@ func TestRunAdministratorTrustLifecycleStopsAfterIdentityFailure(t *testing.T) {
 	}
 }
 
-// TestRunTrustLifecycleRejectsUnsupportedMechanismBeforeHandlers proves a verified ticket cannot select an unreviewed native trust scope.
-func TestRunTrustLifecycleRejectsUnsupportedMechanismBeforeHandlers(t *testing.T) {
+// TestRunUbuntuSystemTrustLifecycleUsesOnlyLinuxSystemHandler proves the machine-wide adapter retains pkexec elevation only on Linux.
+func TestRunUbuntuSystemTrustLifecycleUsesOnlyLinuxSystemHandler(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	reference, redemption := trustLifecycleRedemptionForMechanisms(t, now, helper.OperationEnsureTrust, networkpolicy.UbuntuMechanisms())
-	events := make([]string, 0, 8)
+	events := make([]string, 0, 12)
+	handler := &lifecycleTrustHandler{events: &events, evidence: trustLifecycleEvidence(redemption.Ticket)}
 	dependencies := successfulTestDependencies(&events, redemption)
 	dependencies.transitionTrustIdentity = func(string) error {
-		t.Fatal("unsupported trust mechanism transitioned identity")
+		t.Fatal("Ubuntu system trust transitioned to the requester identity")
+		return nil
+	}
+	dependencies.transitionAdministratorTrustIdentity = func(string) error {
+		t.Fatal("Ubuntu system trust used the Darwin administrator identity transition")
+		return nil
+	}
+	dependencies.validateWindowsTrustIdentity = func(string) error {
+		t.Fatal("Ubuntu system trust used the Windows token validator")
 		return nil
 	}
 	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
-		t.Fatal("current-user trust handler opened for unsupported mechanism")
+		t.Fatal("current-user trust handler opened for Ubuntu system trust")
 		return nil, nil
 	}
 	dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
-		t.Fatal("administrator trust handler opened for unsupported mechanism")
-		return nil, nil
+		events = append(events, "open administrator trust handler")
+		return handler, nil
 	}
 
-	_, err := runTrustLifecycle(t, now, reference, dependencies)
-	if err == nil {
-		t.Fatal("run() accepted unsupported trust mechanism")
+	output, err := runTrustLifecycle(t, now, reference, dependencies)
+	if runtime.GOOS != "linux" {
+		if err == nil || handler.calls != 0 {
+			t.Fatalf("run() on %s = %#v, %v with %d handler calls, want platform rejection", runtime.GOOS, output, err, handler.calls)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !output.OK || handler.calls != 1 {
+		t.Fatalf("response = %#v, handler calls = %d", output, handler.calls)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"redeem ticket",
+		"consume replay claim",
+		"close replay guard",
+		"close ticket redeemer",
+		"open administrator trust handler",
+		"trust mutation",
+		"close trust handler",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
 	}
 }
 

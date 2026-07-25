@@ -265,9 +265,36 @@ func executeAdmittedTrust(
 		return executeAdmittedWindowsCurrentUserTrust(ctx, admitted, dependencies, authorities)
 	case networkpolicy.WindowsMachineTrust:
 		return executeAdmittedWindowsMachineTrust(ctx, admitted, dependencies, authorities)
+	case networkpolicy.UbuntuSystemTrust:
+		return executeAdmittedUbuntuSystemTrust(ctx, admitted, dependencies, authorities)
 	default:
 		return helper.OperationResult{}, fmt.Errorf("admitted trust mechanism is unsupported: %q", admitted.TrustMechanism())
 	}
+}
+
+// executeAdmittedUbuntuSystemTrust retains pkexec's root identity while ensuring no authenticated ticket authority remains open during machine trust mutation.
+func executeAdmittedUbuntuSystemTrust(
+	ctx context.Context,
+	admitted helper.AdmittedTrustOperation,
+	dependencies runtimeDependencies,
+	authorities *runtimeAuthorities,
+) (helper.OperationResult, error) {
+	if runtime.GOOS != "linux" {
+		return helper.OperationResult{}, fmt.Errorf("admitted Ubuntu system trust is unsupported on %s", runtime.GOOS)
+	}
+	if err := authorities.closePrivileged(); err != nil {
+		return helper.OperationResult{}, err
+	}
+
+	trustHandler, err := dependencies.openAdministratorTrustHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper Ubuntu system trust handler: %w", err)
+	}
+	if trustHandler == nil {
+		panic("helper Ubuntu system trust handler factory returned nil")
+	}
+	authorities.trustHandler = trustHandler
+	return admitted.ExecuteTrust(ctx, trustHandler)
 }
 
 // executeAdmittedWindowsMachineTrust retains the elevated token while binding machine trust ownership to the requester.
