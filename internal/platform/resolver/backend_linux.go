@@ -39,6 +39,7 @@ const (
 	systemdResolvedStableReadAttempts      = 3
 	systemdResolvedMutationNameRetries     = 128
 	systemdResolvedLockPoll                = 25 * time.Millisecond
+	systemdResolvedLoopbackInterfaceIndex  = int32(1)
 )
 
 // systemdResolvedNativeStore owns fixed-path Linux filesystem and resolve1 effects.
@@ -849,7 +850,10 @@ func joinSystemdResolvedRuntimeRules(
 		if domain.InterfaceIndex == 0 {
 			globalRelevantRoute = true
 		}
-		interfaceServers := slices.Clone(serversByInterface[domain.InterfaceIndex])
+		interfaceServers, err := systemdResolvedServersForDomain(serversByInterface, domain.InterfaceIndex)
+		if err != nil {
+			return nil, fmt.Errorf("systemd-resolved route %q: %w", namespace, err)
+		}
 		if len(interfaceServers) > maximumServersPerRule {
 			return nil, fmt.Errorf("systemd-resolved route %q has more than %d DNS servers", namespace, maximumServersPerRule)
 		}
@@ -860,11 +864,15 @@ func joinSystemdResolvedRuntimeRules(
 			Servers:        interfaceServers,
 		})
 	}
-	if !globalRelevantRoute && len(serversByInterface[0]) != 0 {
+	globalServers, err := systemdResolvedServersForDomain(serversByInterface, 0)
+	if err != nil {
+		return nil, fmt.Errorf("systemd-resolved global DNS servers: %w", err)
+	}
+	if !globalRelevantRoute && len(globalServers) != 0 {
 		// A new global Domains= route would make every preexisting global DNS server serve Harbor's suffix.
 		rules = append(rules, systemdResolvedRuntimeRule{
 			Namespace: request.Suffix(),
-			Servers:   slices.Clone(serversByInterface[0]),
+			Servers:   globalServers,
 		})
 	}
 	slices.SortFunc(rules, compareSystemdResolvedRuntimeRule)
@@ -875,6 +883,30 @@ func joinSystemdResolvedRuntimeRules(
 		}
 	}
 	return rules, nil
+}
+
+// systemdResolvedServersForDomain accounts for resolve1 reporting global loopback servers at the kernel loopback index.
+func systemdResolvedServersForDomain(
+	serversByInterface map[int32][]systemdResolvedRuntimeServer,
+	interfaceIndex int32,
+) ([]systemdResolvedRuntimeServer, error) {
+	result := slices.Clone(serversByInterface[interfaceIndex])
+	if interfaceIndex == 0 {
+		for _, server := range serversByInterface[systemdResolvedLoopbackInterfaceIndex] {
+			if !server.Endpoint.Addr().IsLoopback() {
+				continue
+			}
+			server.InterfaceIndex = 0
+			result = append(result, server)
+		}
+	}
+	slices.SortFunc(result, compareSystemdResolvedRuntimeServer)
+	for index := 1; index < len(result); index++ {
+		if compareSystemdResolvedRuntimeServer(result[index-1], result[index]) == 0 {
+			return nil, fmt.Errorf("DNSEx exposes an ambiguous server scope")
+		}
+	}
+	return result, nil
 }
 
 // systemdResolvedBusctlEndpoint converts one AF_INET or AF_INET6 byte vector into a canonical DNS socket.

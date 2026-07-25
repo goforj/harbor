@@ -140,6 +140,23 @@ func TestSystemdResolvedBusctlParserRetainsCompleteRelevantState(t *testing.T) {
 	}
 }
 
+// TestSystemdResolvedBusctlParserAssociatesGlobalLoopbackServer covers resolve1's effective loopback interface projection.
+func TestSystemdResolvedBusctlParserAssociatesGlobalLoopbackServer(t *testing.T) {
+	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
+	output := []byte(
+		`{"type":"a(isb)","data":[[0,"test",true],[2,"example",false]]}` + "\n" +
+			`{"type":"a(iiayqs)","data":[[1,2,[127,0,0,1],25000,""],[2,2,[192,0,2,53],53,""]]}` + "\n",
+	)
+	rules, err := parseSystemdResolvedBusctlProperties(output, request)
+	if err != nil {
+		t.Fatalf("parseSystemdResolvedBusctlProperties() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].InterfaceIndex != 0 || len(rules[0].Servers) != 1 ||
+		rules[0].Servers[0].InterfaceIndex != 0 || rules[0].Servers[0].Endpoint != request.Endpoint() {
+		t.Fatalf("parseSystemdResolvedBusctlProperties() = %#v", rules)
+	}
+}
+
 // TestSystemdResolvedBusctlParserRejectsMalformedOrAmbiguousState covers strict signatures, tuples, and bounds.
 func TestSystemdResolvedBusctlParserRejectsMalformedOrAmbiguousState(t *testing.T) {
 	request := resolverTestRequest(t, networkpolicy.UbuntuSystemdResolved)
@@ -163,6 +180,7 @@ func TestSystemdResolvedBusctlParserRejectsMalformedOrAmbiguousState(t *testing.
 		{name: "duplicate route", output: []byte(strings.Replace(domains, `]]}`, `],[0,"test",true]]}`, 1) + "\n" + servers)},
 		{name: "conflicting route flags", output: []byte(strings.Replace(domains, `]]}`, `],[0,"test",false]]}`, 1) + "\n" + servers)},
 		{name: "duplicate server", output: []byte(domains + "\n" + strings.Replace(servers, `]]}`, `],[0,2,[127,0,0,1],25000,""]]}`, 1))},
+		{name: "ambiguous global loopback scope", output: []byte(domains + "\n" + `{"type":"a(iiayqs)","data":[[0,2,[127,0,0,1],25000,""],[1,2,[127,0,0,1],25000,""]]}`)},
 		{name: "oversized", output: bytes.Repeat([]byte{'x'}, maximumSystemdCommandOutputBytes+1)},
 	}
 	for _, test := range tests {
