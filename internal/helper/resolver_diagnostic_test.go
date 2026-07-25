@@ -61,6 +61,7 @@ func TestResponseForResolverFailureExposesOnlyFiniteDiagnostics(t *testing.T) {
 		"system-directory",
 		"output-limit",
 		"diagnostic-limit",
+		"progress-invalid",
 		"process-exit",
 		"process-start",
 		"module-unavailable",

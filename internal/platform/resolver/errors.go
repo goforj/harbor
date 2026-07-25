@@ -112,6 +112,8 @@ func resolverNativeDiagnostic(cause error) string {
 		return "output-limit"
 	case strings.Contains(message, "windows nrpt diagnostic exceeds"):
 		return "diagnostic-limit"
+	case strings.Contains(message, "windows nrpt powershell progress sequence is invalid"):
+		return "progress-invalid"
 	case strings.Contains(message, "execute windows nrpt powershell") &&
 		strings.Contains(message, "exit status"):
 		return "process-exit"

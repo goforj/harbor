@@ -202,27 +202,28 @@ func TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers(t *testing.T) {
 	}
 }
 
-// TestWindowsNRPTProgressOnly accepts only the complete ordered marker sequence.
-func TestWindowsNRPTProgressOnly(t *testing.T) {
+// TestWindowsNRPTStripProgress accepts only the complete ordered marker prefix.
+func TestWindowsNRPTStripProgress(t *testing.T) {
 	complete := strings.Join([]string{
 		"harbor-progress=importing-utility",
 		"harbor-progress=importing-cimcmdlets",
 		"harbor-progress=importing-dnsclient",
 		"harbor-progress=module-imported",
 		"harbor-progress=enumerating",
-		"",
+		`{"rules":[]}`,
 	}, "\r\n")
-	if !windowsNRPTProgressOnly(complete) {
-		t.Fatal("windowsNRPTProgressOnly() rejected the complete marker sequence")
+	output, ok := windowsNRPTStripProgress([]byte(complete))
+	if !ok || string(output) != `{"rules":[]}` {
+		t.Fatalf("windowsNRPTStripProgress() = %q, %t", output, ok)
 	}
 	for _, value := range []string{
 		"",
 		"harbor-progress=module-imported",
 		"harbor-progress=enumerating\r\nharbor-progress=module-imported",
-		complete + "private detail",
+		"private detail\r\n" + complete,
 	} {
-		if windowsNRPTProgressOnly(value) {
-			t.Fatalf("windowsNRPTProgressOnly(%q) accepted an unsupported diagnostic", value)
+		if _, ok := windowsNRPTStripProgress([]byte(value)); ok {
+			t.Fatalf("windowsNRPTStripProgress(%q) accepted an unsupported prefix", value)
 		}
 	}
 }

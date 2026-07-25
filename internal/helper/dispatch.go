@@ -1175,6 +1175,7 @@ func validResolverNativeDiagnostic(native string) bool {
 		"system-directory",
 		"output-limit",
 		"diagnostic-limit",
+		"progress-invalid",
 		"process-exit",
 		"process-start",
 		"precondition-changed",

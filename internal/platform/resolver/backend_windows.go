@@ -266,8 +266,12 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		return nil, fmt.Errorf("Windows NRPT diagnostic exceeds %d bytes", maximumWindowsNRPTDiagnosticBytes)
 	}
 	if err != nil {
+		progress := windowsNRPTDisplayDiagnostic(stdout.String())
 		if contextErr := ctx.Err(); contextErr != nil {
 			detail := windowsNRPTDisplayDiagnostic(stderr.String())
+			if detail == "" {
+				detail = progress
+			}
 			if detail == "" {
 				return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w", contextErr)
 			}
@@ -275,14 +279,21 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		}
 		detail := windowsNRPTDisplayDiagnostic(stderr.String())
 		if detail == "" {
+			detail = progress
+		}
+		if detail == "" {
 			return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w", err)
 		}
 		return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w: %s", err, detail)
 	}
-	if stderr.Len() != 0 && !windowsNRPTProgressOnly(stderr.String()) {
+	if stderr.Len() != 0 {
 		return nil, fmt.Errorf("Windows NRPT PowerShell wrote unexpected diagnostics: %s", windowsNRPTDisplayDiagnostic(stderr.String()))
 	}
-	return append([]byte(nil), stdout.Bytes()...), nil
+	output, ok := windowsNRPTStripProgress(stdout.Bytes())
+	if !ok {
+		return nil, errors.New("Windows NRPT PowerShell progress sequence is invalid")
+	}
+	return output, nil
 }
 
 // windowsPowerShellExecutable resolves the fixed Windows PowerShell host without inheriting a caller-controlled PATH.
@@ -368,11 +379,8 @@ func windowsNRPTDisplayDiagnostic(value string) string {
 	return value
 }
 
-// windowsNRPTProgressOnly permits only the static stage markers used to diagnose a bounded native timeout.
-func windowsNRPTProgressOnly(value string) bool {
-	lines := strings.FieldsFunc(value, func(character rune) bool {
-		return character == '\r' || character == '\n'
-	})
+// windowsNRPTStripProgress removes only the complete ordered marker prefix from successful output.
+func windowsNRPTStripProgress(value []byte) ([]byte, bool) {
 	expected := []string{
 		"harbor-progress=importing-utility",
 		"harbor-progress=importing-cimcmdlets",
@@ -380,15 +388,15 @@ func windowsNRPTProgressOnly(value string) bool {
 		"harbor-progress=module-imported",
 		"harbor-progress=enumerating",
 	}
-	if len(lines) != len(expected) {
-		return false
-	}
-	for index := range expected {
-		if strings.TrimSpace(lines[index]) != expected[index] {
-			return false
+	remaining := value
+	for _, marker := range expected {
+		end := bytes.IndexByte(remaining, '\n')
+		if end < 0 || strings.TrimSpace(string(remaining[:end])) != marker {
+			return nil, false
 		}
+		remaining = remaining[end+1:]
 	}
-	return true
+	return append([]byte(nil), remaining...), true
 }
 
 // decodeWindowsNRPTSnapshot accepts only one bounded exact observation envelope.
@@ -453,7 +461,7 @@ $PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 3.0
 try {
     foreach ($module in @('Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient')) {
-        [Console]::Error.WriteLine("harbor-progress=importing-$($module.ToLowerInvariant().Replace('microsoft.powershell.', ''))")
+        [Console]::Out.WriteLine("harbor-progress=importing-$($module.ToLowerInvariant().Replace('microsoft.powershell.', ''))")
         $manifest = [IO.Path]::Combine($moduleRoot, $module, "$module.psd1")
         Import-Module -Name $manifest -Force -ErrorAction Stop
     }
@@ -461,7 +469,7 @@ try {
     [Console]::Error.Write('harbor-stage=module-import')
     exit 1
 }
-[Console]::Error.WriteLine('harbor-progress=module-imported')
+[Console]::Out.WriteLine('harbor-progress=module-imported')
 $script:HarborStage = 'input'
 
 function Require-Fields([object]$Value, [string[]]$Names, [string]$Label) {
@@ -566,7 +574,7 @@ function Get-RuleFingerprint([object]$Rule) {
 
 function Get-RelevantRules([string]$Suffix, [string]$DisplayName) {
     $script:HarborStage = 'enumerate'
-    [Console]::Error.WriteLine('harbor-progress=enumerating')
+    [Console]::Out.WriteLine('harbor-progress=enumerating')
     $result = New-Object 'Collections.Generic.List[object]'
     $names = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach ($native in @(Get-DnsClientNrptRule -ErrorAction Stop)) {

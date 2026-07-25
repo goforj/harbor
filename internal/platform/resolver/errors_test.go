@@ -33,6 +33,7 @@ func TestResolverDiagnosticClassifiesOnlyFiniteNativeCauses(t *testing.T) {
 		{name: "system directory", cause: errors.New("locate Windows PowerShell system directory: private detail"), want: "system-directory"},
 		{name: "output limit", cause: errors.New("Windows NRPT output exceeds 1 bytes"), want: "output-limit"},
 		{name: "diagnostic limit", cause: errors.New("Windows NRPT diagnostic exceeds 1 bytes"), want: "diagnostic-limit"},
+		{name: "invalid progress", cause: errors.New("Windows NRPT PowerShell progress sequence is invalid"), want: "progress-invalid"},
 		{name: "process exit", cause: errors.New("execute Windows NRPT PowerShell: exit status 1"), want: "process-exit"},
 		{name: "process start", cause: errors.New("execute Windows NRPT PowerShell: private detail"), want: "process-start"},
 		{name: "module unavailable", cause: errors.New("Import-Module: The specified module 'DnsClient' was not loaded"), want: "module-unavailable"},
