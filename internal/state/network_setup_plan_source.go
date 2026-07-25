@@ -67,7 +67,7 @@ func (source *NetworkSetupPlanSource) Resolve(
 	return result, nil
 }
 
-// resolveNetworkSetupPoolPlan validates the operation, singleton authority, and absent network root in read order.
+// resolveNetworkSetupPoolPlan validates bootstrap or exact ownership-preserving repair authority in read order.
 func resolveNetworkSetupPoolPlan(tx *gorm.DB, operationID domain.OperationID) (ticketissuer.PoolPlan, error) {
 	operation, err := readNetworkSetupOperation(tx, operationID)
 	if err != nil {
@@ -100,9 +100,51 @@ func resolveNetworkSetupPoolPlan(tx *gorm.DB, operationID domain.OperationID) (t
 	if err != nil {
 		return ticketissuer.PoolPlan{}, err
 	}
-	if err := requireNetworkStateAbsentForSetup(tx, operationID); err != nil {
+	plan, err = resolveNetworkSetupPoolMode(tx, operationID, plan)
+	if err != nil {
 		return ticketissuer.PoolPlan{}, err
 	}
+	if err := plan.Validate(); err != nil {
+		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(operationID, err)
+	}
+	return plan, nil
+}
+
+// resolveNetworkSetupPoolMode treats an initialized network as repair authority only when every durable owner agrees.
+func resolveNetworkSetupPoolMode(
+	tx *gorm.DB,
+	operationID domain.OperationID,
+	plan ticketissuer.PoolPlan,
+) (ticketissuer.PoolPlan, error) {
+	rows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return ticketissuer.PoolPlan{}, err
+	}
+	network, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		return ticketissuer.PoolPlan{}, err
+	}
+	if !initialized {
+		if plan.Ownership.SchemaVersion != ownership.CurrentSchemaVersion ||
+			plan.Ownership.Generation != networkSetupOwnershipGeneration {
+			return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(operationID, fmt.Errorf("bootstrap ownership is not generation-one identity authority"))
+		}
+		return plan, nil
+	}
+	projected, _, err := readMachineOwnershipProjectionInTransaction(tx)
+	if err != nil {
+		return ticketissuer.PoolPlan{}, err
+	}
+	if !projected.Exists || projected.Record != plan.Ownership {
+		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(operationID, fmt.Errorf("repair ownership differs from machine projection"))
+	}
+	if network.Pool.Prefix() != plan.Pool.Prefix() ||
+		string(network.Ownership.InstallationID) != plan.Ownership.InstallationID ||
+		network.Ownership.Generation != plan.Ownership.Generation {
+		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(operationID, fmt.Errorf("repair ownership differs from initialized network"))
+	}
+	plan.Mode = ticketissuer.PoolModeRepair
+	plan.Ownership = projected.Record
 	return plan, nil
 }
 
@@ -165,26 +207,40 @@ func networkSetupPoolPlanFromModel(
 			fmt.Errorf("plan revision is %d, operation revision is %d", row.OperationRevision, operation.Revision),
 		)
 	}
-	if row.OwnershipSchemaVersion != int(ownership.CurrentSchemaVersion) {
+	if row.OwnershipSchemaVersion != int(ownership.IdentitySchemaVersion) &&
+		row.OwnershipSchemaVersion != int(ownership.NetworkPolicySchemaVersion) {
 		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(
 			key,
-			fmt.Errorf("ownership schema version is %d, expected %d", row.OwnershipSchemaVersion, ownership.CurrentSchemaVersion),
+			fmt.Errorf("ownership schema version is %d, expected %d or %d", row.OwnershipSchemaVersion, ownership.IdentitySchemaVersion, ownership.NetworkPolicySchemaVersion),
 		)
 	}
-	if row.OwnershipGeneration != networkSetupOwnershipGeneration {
+	if row.OwnershipGeneration <= 0 || uint64(row.OwnershipGeneration) > uint64(domain.MaximumSequence) {
 		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(
 			key,
-			fmt.Errorf("ownership generation is %d, expected %d", row.OwnershipGeneration, networkSetupOwnershipGeneration),
+			fmt.Errorf("ownership generation is outside the durable sequence range"),
 		)
+	}
+	networkPolicyFingerprint := ""
+	switch uint32(row.OwnershipSchemaVersion) {
+	case ownership.IdentitySchemaVersion:
+		if row.NetworkPolicyFingerprint != nil {
+			return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(key, fmt.Errorf("identity ownership retains a network policy fingerprint"))
+		}
+	case ownership.NetworkPolicySchemaVersion:
+		if row.NetworkPolicyFingerprint == nil {
+			return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(key, fmt.Errorf("policy-bound ownership is missing its network policy fingerprint"))
+		}
+		networkPolicyFingerprint = *row.NetworkPolicyFingerprint
 	}
 
 	plannedOwnership := ownership.Record{
-		SchemaVersion:      ownership.CurrentSchemaVersion,
-		InstallationID:     row.InstallationId,
-		OwnerIdentity:      row.OwnerIdentity,
-		Generation:         networkSetupOwnershipGeneration,
-		LoopbackPoolPrefix: row.LoopbackPoolPrefix,
-		TicketVerifierKey:  row.TicketVerifierKey,
+		SchemaVersion:            uint32(row.OwnershipSchemaVersion),
+		InstallationID:           row.InstallationId,
+		OwnerIdentity:            row.OwnerIdentity,
+		Generation:               uint64(row.OwnershipGeneration),
+		LoopbackPoolPrefix:       row.LoopbackPoolPrefix,
+		NetworkPolicyFingerprint: networkPolicyFingerprint,
+		TicketVerifierKey:        row.TicketVerifierKey,
 	}
 	if err := plannedOwnership.Validate(); err != nil {
 		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(key, err)
@@ -201,9 +257,6 @@ func networkSetupPoolPlanFromModel(
 		Mode:              ticketissuer.PoolModeBootstrap,
 		Ownership:         plannedOwnership,
 		Pool:              pool,
-	}
-	if err := plan.Validate(); err != nil {
-		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(key, err)
 	}
 	return plan, nil
 }
@@ -230,20 +283,6 @@ func networkSetupIdentityPool(value string) (identity.Pool, error) {
 		return identity.Pool{}, fmt.Errorf("construct network setup pool: %w", err)
 	}
 	return pool, nil
-}
-
-// requireNetworkStateAbsentForSetup prevents pre-network approval authority from surviving initialization.
-func requireNetworkStateAbsentForSetup(tx *gorm.DB, operationID domain.OperationID) error {
-	var rows []struct {
-		ID int `gorm:"column:id"`
-	}
-	if err := tx.Table((&models.NetworkState{}).TableName()).Select("id").Order("id ASC").Limit(1).Find(&rows).Error; err != nil {
-		return fmt.Errorf("read network state for setup: %w", err)
-	}
-	if len(rows) != 0 {
-		return corruptNetworkSetupPlan(operationID, fmt.Errorf("network state already exists"))
-	}
-	return nil
 }
 
 // corruptNetworkSetupPlan applies one typed corruption identity to every durable authority mismatch.

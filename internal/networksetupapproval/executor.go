@@ -209,9 +209,13 @@ func (executor *Executor) confirm(
 	if err := confirmation.Validate(); err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("%w: validate confirmation: %w", ErrInconsistentResponse, err)
 	}
+	expectedRevision := request.ExpectedOperationRevision + 3
+	if confirmation.Repair {
+		expectedRevision = request.ExpectedOperationRevision + 2
+	}
 	if confirmation.Operation.ID != request.OperationID || confirmation.Pool != pool ||
-		confirmation.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		confirmation.Revision != request.ExpectedOperationRevision+3 {
+		(!confirmation.Repair && confirmation.NetworkRevision != request.ExpectedOperationRevision+2) ||
+		confirmation.Revision != expectedRevision {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("%w: confirmation crossed the requested operation, revision, or pool", ErrInconsistentResponse)
 	}
 	return confirmation, nil

@@ -8,15 +8,16 @@ import (
 
 // NetworkSetupPlan stores the singleton machine ownership authority selected before network state exists.
 type NetworkSetupPlan struct {
-	Id                     int    `gorm:"column:id" json:"id"`
-	OperationId            string `gorm:"column:operation_id" json:"operation_id"`
-	OperationRevision      int    `gorm:"column:operation_revision" json:"operation_revision"`
-	OwnershipSchemaVersion int    `gorm:"column:ownership_schema_version" json:"ownership_schema_version"`
-	InstallationId         string `gorm:"column:installation_id" json:"installation_id"`
-	OwnerIdentity          string `gorm:"column:owner_identity" json:"owner_identity"`
-	OwnershipGeneration    int    `gorm:"column:ownership_generation" json:"ownership_generation"`
-	LoopbackPoolPrefix     string `gorm:"column:loopback_pool_prefix" json:"loopback_pool_prefix"`
-	TicketVerifierKey      string `gorm:"column:ticket_verifier_key" json:"ticket_verifier_key"`
+	Id                       int     `gorm:"column:id" json:"id"`
+	OperationId              string  `gorm:"column:operation_id" json:"operation_id"`
+	OperationRevision        int     `gorm:"column:operation_revision" json:"operation_revision"`
+	OwnershipSchemaVersion   int     `gorm:"column:ownership_schema_version" json:"ownership_schema_version"`
+	InstallationId           string  `gorm:"column:installation_id" json:"installation_id"`
+	OwnerIdentity            string  `gorm:"column:owner_identity" json:"owner_identity"`
+	OwnershipGeneration      int     `gorm:"column:ownership_generation" json:"ownership_generation"`
+	LoopbackPoolPrefix       string  `gorm:"column:loopback_pool_prefix" json:"loopback_pool_prefix"`
+	NetworkPolicyFingerprint *string `gorm:"column:network_policy_fingerprint" json:"network_policy_fingerprint"`
+	TicketVerifierKey        string  `gorm:"column:ticket_verifier_key" json:"ticket_verifier_key"`
 }
 
 // TableName returns the database table name.

@@ -77,6 +77,22 @@ func TestOperationJournalStagesNetworkSetup(t *testing.T) {
 	assertNetworkSetupStageDurableState(t, fixture, 3, 1, 3, 1)
 }
 
+// TestStageNetworkSetupRequestAcceptsPolicyBoundRepairOwnership preserves upgraded installations without weakening bootstrap.
+func TestStageNetworkSetupRequestAcceptsPolicyBoundRepairOwnership(t *testing.T) {
+	request := networkSetupStageRequest(t, "operation-network-repair", "intent-network-repair")
+	request.Repair = true
+	request.Ownership.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	request.Ownership.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate(policy-bound repair) error = %v", err)
+	}
+
+	request.Repair = false
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "schema version") {
+		t.Fatalf("Validate(policy-bound bootstrap) error = %v", err)
+	}
+}
+
 // TestOperationJournalReplaysExactNetworkSetupAfterRestart proves retries do not consume sequence or duplicate authority.
 func TestOperationJournalReplaysExactNetworkSetupAfterRestart(t *testing.T) {
 	fixture := newNetworkSetupStageFixture(t)

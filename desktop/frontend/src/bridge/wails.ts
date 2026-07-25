@@ -19,6 +19,7 @@ interface AdditiveWailsAppBindings {
   OpenTerminalURL(url: string): ReturnType<HarborBridge['openTerminalURL']>
   ProjectEnvironment(projectId: string): ReturnType<HarborBridge['getProjectEnvironment']>
   RemoveOldNetworking(): ReturnType<HarborBridge['removeOldNetworking']>
+  RepairNetwork(): ReturnType<HarborBridge['repairNetwork']>
   ResizeProjectTerminal(sessionId: string, columns: number, rows: number): ReturnType<HarborBridge['resizeProjectTerminal']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
   StartProjectTerminal(projectId: string, columns: number, rows: number, useEnvironmentOverrides: boolean): ReturnType<HarborBridge['startProjectTerminal']>
@@ -86,6 +87,7 @@ export function createWailsBridge(): HarborBridge {
   const waitProjectActivity = app?.WaitProjectActivity
   const removeProject = app?.RemoveProject
   const removeOldNetworking = app?.RemoveOldNetworking
+  const repairNetwork = app?.RepairNetwork
   const setupNetwork = app?.SetupNetwork
   const startProject = app?.StartProject
   const stopProject = app?.StopProject
@@ -143,6 +145,9 @@ export function createWailsBridge(): HarborBridge {
     getResourceIconURL: (projectId, resourceId) => resourceIconURL(projectId, resourceId),
     removeProject: (projectId, intentId) => removeProject(projectId, intentId),
     removeOldNetworking: () => removeOldNetworking(),
+    repairNetwork: typeof repairNetwork === 'function'
+      ? () => repairNetwork()
+      : () => Promise.reject(new Error('Network repair bindings are not available in this desktop build.')),
     setupNetwork: () => setupNetwork(),
     startProject: (projectId, intentId) => startProject(projectId, intentId),
     stopProject: (projectId, intentId) => stopProject(projectId, intentId),

@@ -10,6 +10,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/platform/loopback"
@@ -127,6 +128,135 @@ func TestStoreReplaysExactNetworkSetupCompletionAfterRestart(t *testing.T) {
 	}
 }
 
+// TestStoreRepairsInitializedNetworkWithoutRewritingItsAuthority proves reboot recovery preserves every durable network fact.
+func TestStoreRepairsInitializedNetworkWithoutRewritingItsAuthority(t *testing.T) {
+	fixture := newNetworkSetupCompletionFixture(t)
+	store := networkSetupCompletionStore(fixture)
+	setupRequest := networkSetupStageRequest(t, "operation-network-bootstrap", "intent-network-bootstrap")
+	setupApproval, err := fixture.journal.StageNetworkSetup(t.Context(), setupRequest)
+	if err != nil {
+		t.Fatalf("StageNetworkSetup(bootstrap) error = %v", err)
+	}
+	setupCompletion := networkSetupCompletionRequest(t, setupApproval, setupRequest.Ownership)
+	bootstrapped, err := store.CompleteNetworkSetup(t.Context(), setupCompletion)
+	if err != nil {
+		t.Fatalf("CompleteNetworkSetup(bootstrap) error = %v", err)
+	}
+
+	repairOperation, err := domain.NewOperation(
+		"operation-network-repair",
+		"intent-network-repair",
+		domain.OperationKindNetworkSetup,
+		"",
+		setupCompletion.At.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("NewOperation(repair) error = %v", err)
+	}
+	repairApproval, err := fixture.journal.StageNetworkSetup(t.Context(), StageNetworkSetupRequest{
+		Operation: repairOperation,
+		Ownership: setupRequest.Ownership,
+		Repair:    true,
+	})
+	if err != nil {
+		t.Fatalf("StageNetworkSetup(repair) error = %v", err)
+	}
+	source := NewNetworkSetupPlanSource(models.NewNetworkSetupPlanRepo(fixture.connections))
+	plan, err := source.Resolve(t.Context(), ticketissuer.PoolRequest{OperationID: repairOperation.ID})
+	if err != nil {
+		t.Fatalf("Resolve(repair) error = %v", err)
+	}
+	if plan.Mode != ticketissuer.PoolModeRepair || plan.Ownership != setupRequest.Ownership {
+		t.Fatalf("repair plan = %#v", plan)
+	}
+
+	repairCompletion := networkSetupCompletionRequest(t, repairApproval, setupRequest.Ownership)
+	repairCompletion.At = repairOperation.RequestedAt.Add(time.Minute)
+	repaired, err := store.CompleteNetworkSetup(t.Context(), repairCompletion)
+	if err != nil {
+		t.Fatalf("CompleteNetworkSetup(repair) error = %v", err)
+	}
+	if !repaired.Repair || !repaired.Network.Replayed ||
+		repaired.Network.Record.Revision != bootstrapped.Network.Record.Revision ||
+		repaired.Operation.Operation.State != domain.OperationSucceeded {
+		t.Fatalf("CompleteNetworkSetup(repair) = %#v", repaired)
+	}
+
+	replayed, err := store.CompleteNetworkSetup(t.Context(), repairCompletion)
+	if err != nil {
+		t.Fatalf("CompleteNetworkSetup(repair replay) error = %v", err)
+	}
+	if !replayed.Repair || replayed.Operation.Revision != repaired.Operation.Revision ||
+		replayed.Network.Record.Revision != bootstrapped.Network.Record.Revision {
+		t.Fatalf("CompleteNetworkSetup(repair replay) = %#v", replayed)
+	}
+	if got := networkInitializeTestCount(t, fixture.database, "network_setup_evidence"); got != 2 {
+		t.Fatalf("network setup evidence count after repair = %d, want 2", got)
+	}
+	if got := networkInitializeTestCount(t, fixture.database, "machine_ownership_projections"); got != 1 {
+		t.Fatalf("machine ownership projection count after repair = %d, want 1", got)
+	}
+	assertNetworkSetupStageDurableState(t, fixture, 11, 2, 10, 0)
+}
+
+// TestNetworkSetupRepairPreservesPolicyBoundFullNetwork proves the production upgraded state seen after reboot is repairable.
+func TestNetworkSetupRepairPreservesPolicyBoundFullNetwork(t *testing.T) {
+	fixture, _ := newFullNetworkDataPlaneSetupProjectionFixture(t)
+	beforeRows, err := readNetworkModelRows(fixture.database)
+	if err != nil {
+		t.Fatalf("read full network fixture: %v", err)
+	}
+	before, initialized, err := networkRecordFromModels(beforeRows)
+	if err != nil || !initialized || before.Stage != NetworkStageFull {
+		t.Fatalf("full network fixture = %#v, %v, initialized %t", before, err, initialized)
+	}
+	projected, _, err := readMachineOwnershipProjectionInTransaction(fixture.database)
+	if err != nil {
+		t.Fatalf("read policy-bound ownership: %v", err)
+	}
+	if projected.Record.SchemaVersion != ownership.NetworkPolicySchemaVersion {
+		t.Fatalf("ownership schema = %d, want %d", projected.Record.SchemaVersion, ownership.NetworkPolicySchemaVersion)
+	}
+
+	operation, err := domain.NewOperation(
+		"operation-full-network-repair",
+		"intent-full-network-repair",
+		domain.OperationKindNetworkSetup,
+		"",
+		before.UpdatedAt.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("NewOperation(repair) error = %v", err)
+	}
+	approval, err := stageNetworkSetupInTransaction(fixture.database, StageNetworkSetupRequest{
+		Operation: operation,
+		Ownership: projected.Record,
+		Repair:    true,
+	})
+	if err != nil {
+		t.Fatalf("stage policy-bound full-network repair: %v", err)
+	}
+	plan, err := resolveNetworkSetupPoolPlan(fixture.database, operation.ID)
+	if err != nil {
+		t.Fatalf("resolve policy-bound full-network repair: %v", err)
+	}
+	if plan.Mode != ticketissuer.PoolModeRepair || plan.Ownership != projected.Record {
+		t.Fatalf("policy-bound repair plan = %#v", plan)
+	}
+
+	completion := networkSetupCompletionRequest(t, approval, projected.Record)
+	completion.At = operation.RequestedAt.Add(time.Minute)
+	repaired, err := completeNetworkSetupInTransaction(fixture.database, completion)
+	if err != nil {
+		t.Fatalf("complete policy-bound full-network repair: %v", err)
+	}
+	if !repaired.Repair || repaired.Network.Record.Stage != NetworkStageFull ||
+		repaired.Network.Record.Revision != before.Revision ||
+		repaired.Network.Record.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("policy-bound full-network repair = %#v", repaired)
+	}
+}
+
 // TestStoreRejectsNetworkSetupCompletionReplayProjectionConflict proves terminal replay remains bound to helper-confirmed authority.
 func TestStoreRejectsNetworkSetupCompletionReplayProjectionConflict(t *testing.T) {
 	fixture, store, request := stagedNetworkSetupCompletionFixture(t)
@@ -220,7 +350,7 @@ func TestStoreRejectsNetworkSetupCompletionConflicts(t *testing.T) {
 			dns_suffix, created_at, updated_at, revision)
 			VALUES (1, 'identity', 'installation-existing', 1, '127.90.0.8', 29, '.test', ?, ?, 3)`, at, at)
 		_, err := store.CompleteNetworkSetup(context.Background(), request)
-		if err == nil || !strings.Contains(err.Error(), "network state already exists") {
+		if err == nil || !strings.Contains(err.Error(), "at least one candidate is required") {
 			t.Fatalf("network-state conflict error = %v", err)
 		}
 		assertNetworkSetupStageDurableState(t, fixture, 3, 1, 3, 1)

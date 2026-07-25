@@ -25,6 +25,8 @@ const (
 	networkInitializeTestStageMigrationName = "2026_07_19_120000_add_network_stage"
 	// networkInitializeTestSetupPlanMigrationName supplies the composite operation revision key used by approval plans.
 	networkInitializeTestSetupPlanMigrationName = "2026_07_19_130000_create_network_setup_plans"
+	// networkInitializeTestSetupPlanRepairMigrationName expands setup plans for exact upgraded repair ownership.
+	networkInitializeTestSetupPlanRepairMigrationName = "2026_07_25_020000_expand_network_setup_plans_for_repair"
 	// networkInitializeTestOwnershipMigrationName identifies the daemon ownership projection schema.
 	networkInitializeTestOwnershipMigrationName = "2026_07_19_115139_create_machine_ownership_projections"
 	// networkInitializeTestOwnershipPolicyMigrationName identifies the policy-bound ownership projection upgrade.
@@ -867,6 +869,7 @@ func applyNetworkInitializeTestMigration(t *testing.T, connection *gorm.DB) {
 		networkInitializeTestDigestMigrationName,
 		networkInitializeTestStageMigrationName,
 		networkInitializeTestSetupPlanMigrationName,
+		networkInitializeTestSetupPlanRepairMigrationName,
 		networkInitializeTestOwnershipMigrationName,
 		networkInitializeTestOwnershipPolicyMigrationName,
 		networkInitializeTestResolverStageMigrationName,

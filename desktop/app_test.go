@@ -2374,6 +2374,37 @@ func TestSetupNetworkApprovesOnlyTheSelectedRevision(t *testing.T) {
 	}
 }
 
+// TestRepairNetworkUsesFreshIntentAndRepairConfirmation proves the desktop never replays completed bootstrap authority.
+func TestRepairNetworkUsesFreshIntentAndRepairConfirmation(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	const repairIntent domain.IntentID = "intent-network-repair"
+	app.setupIntent = func() (domain.IntentID, error) { return repairIntent, nil }
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	client.networkSetup.Operation.IntentID = repairIntent
+	confirmation := testNetworkSetupConfirmation(client.networkSetup, 5, 9)
+	confirmation.Repair = true
+	runner := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{
+		State:        networksetupapproval.Succeeded,
+		Confirmation: &confirmation,
+	}}
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+		return runner
+	}
+
+	result, err := app.RepairNetwork()
+	if err != nil {
+		t.Fatalf("RepairNetwork() error = %v", err)
+	}
+	if client.networkSetupReq.IntentID != repairIntent ||
+		result.Operation.IntentID != repairIntent ||
+		result.Operation.State != domain.OperationSucceeded ||
+		result.Revision != 9 {
+		t.Fatalf("RepairNetwork() = %#v, request = %#v", result, client.networkSetupReq)
+	}
+}
+
 // TestSetupNetworkRetainsSelectedConnectionThroughConfirmation prevents polling retirement from closing a session during native consent.
 func TestSetupNetworkRetainsSelectedConnectionThroughConfirmation(t *testing.T) {
 	t.Parallel()

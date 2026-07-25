@@ -27,6 +27,13 @@ func TestNetworkSetupContractsJSONRoundTrip(t *testing.T) {
 		{name: "preparation", value: NetworkSetupApprovalPreparation{OperationID: "operation-network-setup", OperationRevision: 7, Ticket: ticket}},
 		{name: "confirm", value: ConfirmNetworkSetupApprovalRequest{OperationID: "operation-network-setup", ExpectedOperationRevision: 7, PoolEvidence: validNetworkSetupPoolEvidence()}},
 		{name: "confirmation", value: validNetworkSetupApprovalConfirmation()},
+		{name: "repair confirmation", value: NetworkSetupApprovalConfirmation{
+			Operation:       validNetworkSetupOperation(domain.OperationSucceeded),
+			Revision:        10,
+			NetworkRevision: 7,
+			Pool:            "127.42.0.0/29",
+			Repair:          true,
+		}},
 	}
 
 	for _, test := range tests {

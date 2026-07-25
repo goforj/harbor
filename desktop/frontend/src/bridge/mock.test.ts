@@ -41,6 +41,7 @@ describe('Harbor mock bridge', () => {
       wait_service_logs: 'WaitServiceLogs',
       remove_project: 'RemoveProject',
       remove_old_networking: 'RemoveOldNetworking',
+      repair_network: 'RepairNetwork',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',
       start_project: 'StartProject',

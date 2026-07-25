@@ -217,25 +217,9 @@ func (coordinator *NetworkSetupCoordinator) Start(
 		return state.OperationRecord{}, fmt.Errorf("start network setup: missing operation intent differs from request")
 	}
 
-	verifierKey, err := coordinator.loadVerifierKey(ctx)
+	record, repair, err := coordinator.networkSetupOwnership(ctx, request)
 	if err != nil {
 		return state.OperationRecord{}, fmt.Errorf("start network setup: %w", err)
-	}
-	selection, err := coordinator.selector.Select(ctx, request.InstallationID, request.RequesterIdentity)
-	if err != nil {
-		return state.OperationRecord{}, fmt.Errorf("start network setup: select loopback pool: %w", err)
-	}
-	if err := validateNetworkSetupPool(selection.Pool); err != nil {
-		return state.OperationRecord{}, fmt.Errorf("start network setup: selected loopback pool: %w", err)
-	}
-
-	record := ownership.Record{
-		SchemaVersion:      ownership.CurrentSchemaVersion,
-		InstallationID:     string(request.InstallationID),
-		OwnerIdentity:      request.RequesterIdentity,
-		Generation:         1,
-		LoopbackPoolPrefix: selection.Pool.Prefix().String(),
-		TicketVerifierKey:  verifierKey,
 	}
 	if err := record.Validate(); err != nil {
 		return state.OperationRecord{}, fmt.Errorf("start network setup: construct ownership: %w", err)
@@ -253,6 +237,7 @@ func (coordinator *NetworkSetupCoordinator) Start(
 	staged, err := coordinator.operations.StageNetworkSetup(ctx, state.StageNetworkSetupRequest{
 		Operation: operation,
 		Ownership: record,
+		Repair:    repair,
 	})
 	if err != nil {
 		return state.OperationRecord{}, fmt.Errorf("start network setup: stage operation: %w", err)
@@ -263,7 +248,47 @@ func (coordinator *NetworkSetupCoordinator) Start(
 	return staged, nil
 }
 
-// Prepare validates one exact bootstrap plan before opening and issuing helper authority.
+// networkSetupOwnership reuses an established owner for repair and creates authority only for first setup.
+func (coordinator *NetworkSetupCoordinator) networkSetupOwnership(
+	ctx context.Context,
+	request NetworkSetupStartRequest,
+) (ownership.Record, bool, error) {
+	observed, err := coordinator.ownership.Observe(ctx)
+	if err != nil {
+		return ownership.Record{}, false, fmt.Errorf("observe machine ownership: %w", err)
+	}
+	if observed.Exists {
+		if err := validateNetworkSetupOwnershipObservation(observed); err != nil {
+			return ownership.Record{}, false, err
+		}
+		if observed.Record.OwnerIdentity != request.RequesterIdentity {
+			return ownership.Record{}, false, fmt.Errorf("established machine owner differs from authenticated requester")
+		}
+		return observed.Record, true, nil
+	}
+
+	verifierKey, err := coordinator.loadVerifierKey(ctx)
+	if err != nil {
+		return ownership.Record{}, false, err
+	}
+	selection, err := coordinator.selector.Select(ctx, request.InstallationID, request.RequesterIdentity)
+	if err != nil {
+		return ownership.Record{}, false, fmt.Errorf("select loopback pool: %w", err)
+	}
+	if err := validateNetworkSetupPool(selection.Pool); err != nil {
+		return ownership.Record{}, false, fmt.Errorf("selected loopback pool: %w", err)
+	}
+	return ownership.Record{
+		SchemaVersion:      ownership.CurrentSchemaVersion,
+		InstallationID:     string(request.InstallationID),
+		OwnerIdentity:      request.RequesterIdentity,
+		Generation:         1,
+		LoopbackPoolPrefix: selection.Pool.Prefix().String(),
+		TicketVerifierKey:  verifierKey,
+	}, false, nil
+}
+
+// Prepare validates one exact bootstrap or ownership-preserving repair plan before issuing helper authority.
 func (coordinator *NetworkSetupCoordinator) Prepare(
 	ctx context.Context,
 	request NetworkSetupPrepareRequest,
@@ -301,7 +326,7 @@ func (coordinator *NetworkSetupCoordinator) Prepare(
 	if result.OperationID != request.OperationID ||
 		result.Operation != helper.OperationEnsureLoopbackPool ||
 		result.Pool != plan.Pool.Prefix() {
-		return ticketissuer.PoolResult{}, fmt.Errorf("prepare network setup approval: helper pool result differs from the approved bootstrap")
+		return ticketissuer.PoolResult{}, fmt.Errorf("prepare network setup approval: helper pool result differs from the approved plan")
 	}
 	return result, nil
 }
@@ -495,7 +520,7 @@ func validateConfirmNetworkSetupOperation(record state.OperationRecord, operatio
 	return nil
 }
 
-// validateNetworkSetupPlan binds a resolved helper plan to one bootstrap approval revision.
+// validateNetworkSetupPlan binds a resolved helper plan to one setup or repair approval revision.
 func validateNetworkSetupPlan(plan ticketissuer.PoolPlan, operationID domain.OperationID, revision domain.Sequence) error {
 	if err := plan.Validate(); err != nil {
 		return fmt.Errorf("network setup plan is invalid: %w", err)
@@ -506,8 +531,8 @@ func validateNetworkSetupPlan(plan ticketissuer.PoolPlan, operationID domain.Ope
 	if plan.OperationRevision != revision {
 		return &state.StaleRevisionError{OperationID: operationID, Expected: revision, Actual: plan.OperationRevision}
 	}
-	if plan.Mode != ticketissuer.PoolModeBootstrap {
-		return fmt.Errorf("network setup plan mode is %q, want %q", plan.Mode, ticketissuer.PoolModeBootstrap)
+	if plan.Mode != ticketissuer.PoolModeBootstrap && plan.Mode != ticketissuer.PoolModeRepair {
+		return fmt.Errorf("network setup plan mode %q is unsupported", plan.Mode)
 	}
 	return nil
 }

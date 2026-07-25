@@ -1078,6 +1078,46 @@ describe('Harbor store', () => {
     expect(store.projectLifecycleProblemCodes.reports).toBe('project.process.exited')
   })
 
+  it('repairs missing owned aliases and retries from one Start action', async () => {
+    const store = useHarborStore()
+    await store.initialize()
+    const failed: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    failed.operation.state = 'failed'
+    failed.operation.phase = 'network identity unavailable'
+    failed.operation.problem = {
+      code: 'project.network.identity_unavailable',
+      message: 'The assigned Harbor address is not configured exactly on this machine.',
+      retryable: true,
+    }
+    failed.operation.started_at = '2026-07-19T18:00:01Z'
+    failed.operation.finished_at = '2026-07-19T18:00:02Z'
+    const queued: ProjectLifecycleOperation = structuredClone(harborWireFixture.start_project)
+    const intents: string[] = []
+    const startProject = vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => {
+      intents.push(intentId)
+      const result = structuredClone(intents.length === 1 ? failed : queued)
+      result.operation.project_id = projectId
+      result.operation.intent_id = intentId
+      return result
+    })
+    const repairNetwork = vi.spyOn(harborBridge, 'repairNetwork').mockResolvedValue(completedNetworkSetup())
+
+    await expect(store.startProject('reports')).resolves.toMatchObject({
+      operation: {
+        state: 'failed',
+        problem: { code: 'project.network.identity_unavailable' },
+      },
+    })
+    await vi.waitFor(() => {
+      expect(repairNetwork).toHaveBeenCalledOnce()
+      expect(startProject).toHaveBeenCalledTimes(2)
+    })
+
+    expect(intents[1]).not.toBe(intents[0])
+    expect(store.projectLifecycleProblemCodes.reports).toBeUndefined()
+    expect(store.networkSetupError).toBeNull()
+  })
+
   it('uses a bounded fallback when terminal lifecycle failure has no daemon problem', async () => {
     const store = useHarborStore()
     await store.initialize()

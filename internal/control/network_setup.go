@@ -124,6 +124,7 @@ type NetworkSetupApprovalConfirmation struct {
 	Revision        domain.Sequence  `json:"revision"`
 	NetworkRevision domain.Sequence  `json:"network_revision"`
 	Pool            string           `json:"pool"`
+	Repair          bool             `json:"repair,omitempty"`
 }
 
 // Validate reports whether confirmation contains one succeeded global setup and its contiguous network revision.
@@ -142,7 +143,11 @@ func (confirmation NetworkSetupApprovalConfirmation) Validate() error {
 	if err := validateNetworkSetupRevision(confirmation.NetworkRevision); err != nil {
 		return err
 	}
-	if confirmation.Revision != confirmation.NetworkRevision+1 {
+	if confirmation.Repair {
+		if confirmation.Revision <= confirmation.NetworkRevision {
+			return errors.New("network repair operation revision must follow the preserved network revision")
+		}
+	} else if confirmation.Revision != confirmation.NetworkRevision+1 {
 		return errors.New("network setup operation revision must immediately follow the network revision")
 	}
 	_, err := parseCanonicalNetworkSetupPool(confirmation.Pool)

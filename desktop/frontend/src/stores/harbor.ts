@@ -96,6 +96,7 @@ export const useHarborStore = defineStore('harbor', () => {
   const projectLifecycleIntents = new Map<string, TrackedProjectLifecycleIntent>()
   const projectLifecycleIntentCount = ref(0)
   const projectLifecycleProblemIntents = new Map<string, TrackedProjectLifecycleProblem>()
+  const automaticNetworkRepairProjectIds = new Set<string>()
 
   const projects = computed(() => snapshot.value?.projects ?? [])
   const services = computed<ProjectService[]>(() => projects.value.flatMap((project) =>
@@ -438,6 +439,79 @@ export const useHarborStore = defineStore('harbor', () => {
     }
   }
 
+  async function repairNetwork(): Promise<NetworkSetupOperation | null> {
+    if (settingUpNetwork.value || removingOldNetworking.value) {
+      return null
+    }
+    if (projectLifecycleBusy.value) {
+      networkSetupError.value = 'Wait for the current project action to finish, then repair Harbor networking again.'
+      return null
+    }
+
+    settingUpNetwork.value = true
+    networkSetupError.value = null
+    oldNetworkingRemovalError.value = null
+    try {
+      const result = await harborBridge.repairNetwork()
+      if (result.operation.kind !== 'network.setup'
+        || result.operation.project_id
+        || result.operation.state !== 'succeeded') {
+        throw new Error('Harbor returned incomplete network repair progress.')
+      }
+      networkSetupResult.value = result
+      return result
+    }
+    catch (cause) {
+      networkSetupError.value = cause instanceof Error
+        ? cause.message
+        : 'Harbor could not repair its local networking.'
+      return null
+    }
+    finally {
+      settingUpNetwork.value = false
+    }
+  }
+
+  // scheduleAutomaticNetworkRepair consumes the user's original Start intent without prompting on passive app launch.
+  function scheduleAutomaticNetworkRepair(projectId: string, failedIntentId: string) {
+    if (automaticNetworkRepairProjectIds.has(projectId)) {
+      return
+    }
+    automaticNetworkRepairProjectIds.add(projectId)
+    queueMicrotask(() => {
+      void repairNetworkAndRestartProject(projectId, failedIntentId)
+    })
+  }
+
+  // repairNetworkAndRestartProject retries once only while the exact failed Start remains current.
+  async function repairNetworkAndRestartProject(projectId: string, failedIntentId: string) {
+    try {
+      const problem = projectLifecycleProblemIntents.get(projectId)
+      if (!problem
+        || problem.id !== failedIntentId
+        || projectLifecycleProblemCodes.value[projectId] !== 'project.network.identity_unavailable'
+        || !projectById(projectId)) {
+        return
+      }
+      const repaired = await repairNetwork()
+      if (!repaired) {
+        return
+      }
+      await refresh()
+      if (
+        !projectById(projectId)
+        || connectionState.value !== 'connected'
+        || snapshotStale.value
+      ) {
+        return
+      }
+      await changeProjectLifecycle(projectId, 'start')
+    }
+    finally {
+      automaticNetworkRepairProjectIds.delete(projectId)
+    }
+  }
+
   async function removeOldNetworking(): Promise<NetworkResolverPolicyMigrationOperation | null> {
     if (oldNetworkingRemovalBlocked.value) {
       return null
@@ -598,11 +672,17 @@ export const useHarborStore = defineStore('harbor', () => {
         : tracked.action === 'stop' && project.state === 'stopped'
       if (!active && (matchesTrackedAction || reachedTarget)) {
         forgetProjectLifecycleIntent(projectId)
+        const problem = matchesTrackedAction && trackedOperation
+          ? projectLifecycleTerminalProblem(trackedOperation, tracked.action)
+          : null
         setProjectLifecycleProblem(
           projectId,
-          matchesTrackedAction && trackedOperation ? projectLifecycleTerminalProblem(trackedOperation, tracked.action) : null,
+          problem,
           trackedOperation?.intent_id,
         )
+        if (tracked.action === 'start' && problem?.code === 'project.network.identity_unavailable' && trackedOperation) {
+          scheduleAutomaticNetworkRepair(projectId, trackedOperation.intent_id)
+        }
       }
     }
 
@@ -738,13 +818,17 @@ export const useHarborStore = defineStore('harbor', () => {
       }
       else {
         forgetProjectLifecycleIntent(projectId)
+        const problem = projectLifecycleTerminalProblem(result.operation, action)
         setProjectLifecycleProblem(
           projectId,
-          projectLifecycleTerminalProblem(result.operation, action),
+          problem,
           result.operation.intent_id,
           false,
           result.revision,
         )
+        if (action === 'start' && problem?.code === 'project.network.identity_unavailable') {
+          scheduleAutomaticNetworkRepair(projectId, result.operation.intent_id)
+        }
       }
       return result
     }
@@ -1396,6 +1480,7 @@ export const useHarborStore = defineStore('harbor', () => {
     serviceById,
     addProject,
     setupNetwork,
+    repairNetwork,
     removeOldNetworking,
     projectRemovalNotice,
     removeProject,

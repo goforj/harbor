@@ -372,6 +372,9 @@ export function createMockBridge(): HarborBridge {
       status.sequence = revision
       return structuredClone(networkSetup)
     },
+    async repairNetwork() {
+      return structuredClone(networkSetup ?? fixture.setup_network)
+    },
     async removeOldNetworking() {
       if (oldNetworkingRemoval) {
         return structuredClone(oldNetworkingRemoval)

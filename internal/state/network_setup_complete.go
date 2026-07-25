@@ -10,6 +10,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketissuer"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/models"
 	"github.com/goforj/harbor/internal/network/identity"
@@ -72,6 +73,8 @@ type CompleteNetworkSetupResult struct {
 	Operation OperationRecord
 	// Network is the identity foundation and whether this call replayed its exact committed completion.
 	Network NetworkMutationResult
+	// Repair reports that the operation preserved the durable network while restoring its owned host pool.
+	Repair bool
 }
 
 // Validate rejects completion results whose operation and network revisions do not describe one atomic setup completion.
@@ -91,10 +94,13 @@ func (result CompleteNetworkSetupResult) Validate() error {
 	if err := result.Network.Validate(); err != nil {
 		return err
 	}
-	if result.Network.Record.Stage != NetworkStageIdentity {
+	if !result.Repair && result.Network.Record.Stage != NetworkStageIdentity {
 		return fmt.Errorf("completed network setup must create the identity network stage")
 	}
-	if result.Operation.Revision != result.Network.Record.Revision+1 {
+	if result.Repair && result.Operation.Revision <= result.Network.Record.Revision {
+		return fmt.Errorf("completed network repair operation must follow the preserved network revision")
+	}
+	if !result.Repair && result.Operation.Revision != result.Network.Record.Revision+1 {
 		return fmt.Errorf("completed network setup revisions are not contiguous")
 	}
 	return nil
@@ -155,21 +161,27 @@ func completeNetworkSetupInTransaction(
 	if err != nil {
 		return CompleteNetworkSetupResult{}, err
 	}
-	planRow, planFound, err := readOptionalNetworkSetupPlanForStaging(tx, request.OperationID)
+	_, planFound, err := readOptionalNetworkSetupPlanForStaging(tx, request.OperationID)
 	if err != nil {
 		return CompleteNetworkSetupResult{}, err
 	}
-	identityRequest, err := networkIdentityRequestFromSetupCompletion(request)
-	if err != nil {
-		return CompleteNetworkSetupResult{}, err
-	}
-
 	if record.Operation.State == domain.OperationSucceeded {
 		if planFound {
 			return CompleteNetworkSetupResult{}, corruptNetworkSetupPlan(
 				request.OperationID,
 				fmt.Errorf("succeeded operation retains its singleton plan"),
 			)
+		}
+		projectedOwnership, confirmedAt, err := readMachineOwnershipProjectionInTransaction(tx)
+		if err != nil {
+			return CompleteNetworkSetupResult{}, err
+		}
+		if confirmedAt.Before(record.Operation.RequestedAt) {
+			return replayCompletedNetworkSetupRepair(tx, record, history, request, projectedOwnership)
+		}
+		identityRequest, err := networkIdentityRequestFromSetupCompletion(request)
+		if err != nil {
+			return CompleteNetworkSetupResult{}, err
 		}
 		networkResult, err := initializeNetworkIdentityInTransaction(tx, identityRequest)
 		if err != nil {
@@ -181,10 +193,6 @@ func completeNetworkSetupInTransaction(
 				string(request.OperationID),
 				fmt.Errorf("succeeded operation had no durable network foundation"),
 			)
-		}
-		projectedOwnership, confirmedAt, err := readMachineOwnershipProjectionInTransaction(tx)
-		if err != nil {
-			return CompleteNetworkSetupResult{}, err
 		}
 		if err := requireExactCompletedMachineOwnershipProjection(
 			projectedOwnership,
@@ -231,11 +239,18 @@ func completeNetworkSetupInTransaction(
 			fmt.Errorf("singleton plan is missing"),
 		)
 	}
-	plan, err := networkSetupPoolPlanFromModel(planRow, record)
+	plan, err := resolveNetworkSetupPoolPlan(tx, request.OperationID)
 	if err != nil {
 		return CompleteNetworkSetupResult{}, err
 	}
 	if err := requireNetworkSetupCompletionMatchesPlan(request, plan.Ownership, plan.Pool); err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	if plan.Mode == ticketissuer.PoolModeRepair {
+		return completeNetworkSetupRepairInTransaction(tx, request, record, plan)
+	}
+	identityRequest, err := networkIdentityRequestFromSetupCompletion(request)
+	if err != nil {
 		return CompleteNetworkSetupResult{}, err
 	}
 	if err := requireNetworkStateAbsentForStaging(tx); err != nil {
@@ -319,6 +334,179 @@ func completeNetworkSetupInTransaction(
 		return CompleteNetworkSetupResult{}, err
 	}
 	return result, nil
+}
+
+// replayCompletedNetworkSetupRepair validates a lost-response retry without rewriting network or ownership state.
+func replayCompletedNetworkSetupRepair(
+	tx *gorm.DB,
+	record OperationRecord,
+	history []OperationTransition,
+	request CompleteNetworkSetupRequest,
+	projected ownership.Observation,
+) (CompleteNetworkSetupResult, error) {
+	if projected != request.ConfirmedOwnership {
+		return CompleteNetworkSetupResult{}, corruptStateError(
+			"network setup repair",
+			string(request.OperationID),
+			fmt.Errorf("machine ownership projection differs from completed repair"),
+		)
+	}
+	rows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	network, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	if !initialized || network.Pool.Prefix().String() != projected.Record.LoopbackPoolPrefix {
+		return CompleteNetworkSetupResult{}, corruptStateError(
+			"network setup repair",
+			string(request.OperationID),
+			fmt.Errorf("initialized network differs from completed repair"),
+		)
+	}
+	if err := requireExactCompletedNetworkRepairHistory(record, history, request); err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	result := CompleteNetworkSetupResult{
+		Operation: record,
+		Network: NetworkMutationResult{
+			Record:   network,
+			Replayed: true,
+		},
+		Repair: true,
+	}
+	if err := result.Validate(); err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	return result, nil
+}
+
+// completeNetworkSetupRepairInTransaction retires helper authority without rewriting initialized network state.
+func completeNetworkSetupRepairInTransaction(
+	tx *gorm.DB,
+	request CompleteNetworkSetupRequest,
+	record OperationRecord,
+	plan ticketissuer.PoolPlan,
+) (CompleteNetworkSetupResult, error) {
+	if request.At.Before(record.Operation.RequestedAt) {
+		return CompleteNetworkSetupResult{}, fmt.Errorf("network repair completion time precedes the operation request")
+	}
+	expectedModelRevision, err := sequenceToModelInt(
+		"expected network repair operation revision",
+		request.ExpectedOperationRevision,
+		false,
+	)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	deleted := tx.
+		Where(
+			"id = ? AND operation_id = ? AND operation_revision = ?",
+			1,
+			string(request.OperationID),
+			expectedModelRevision,
+		).
+		Delete(&models.NetworkSetupPlan{})
+	if err := requireOneMutation(deleted, "delete completed network repair plan", string(request.OperationID)); err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	running, err := transitionOperationInTransaction(
+		tx,
+		request.OperationID,
+		record.Revision,
+		domain.OperationRunning,
+		networkSetupCompletionRunningPhase,
+		request.At,
+		nil,
+	)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	succeeded, err := transitionOperationInTransaction(
+		tx,
+		request.OperationID,
+		running.Revision,
+		domain.OperationSucceeded,
+		networkSetupCompletionSucceededPhase,
+		request.At,
+		nil,
+	)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	projected, _, err := readMachineOwnershipProjectionInTransaction(tx)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	if projected != request.ConfirmedOwnership || projected.Record != plan.Ownership {
+		return CompleteNetworkSetupResult{}, corruptStateError(
+			"network setup repair",
+			string(request.OperationID),
+			fmt.Errorf("machine ownership projection changed during repair"),
+		)
+	}
+	rows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	network, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	if !initialized || network.Pool.Prefix() != plan.Pool.Prefix() {
+		return CompleteNetworkSetupResult{}, corruptStateError(
+			"network setup repair",
+			string(request.OperationID),
+			fmt.Errorf("initialized network changed during repair"),
+		)
+	}
+	completedHistory, err := operationHistoryInTransaction(tx, succeeded)
+	if err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	if err := requireExactCompletedNetworkRepairHistory(succeeded, completedHistory, request); err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	result := CompleteNetworkSetupResult{
+		Operation: succeeded,
+		Network: NetworkMutationResult{
+			Record:   network,
+			Replayed: true,
+		},
+		Repair: true,
+	}
+	if err := result.Validate(); err != nil {
+		return CompleteNetworkSetupResult{}, err
+	}
+	return result, nil
+}
+
+// requireExactCompletedNetworkRepairHistory proves repair added only its two terminal operation edges.
+func requireExactCompletedNetworkRepairHistory(
+	record OperationRecord,
+	history []OperationTransition,
+	request CompleteNetworkSetupRequest,
+) error {
+	if len(history) != 5 {
+		return fmt.Errorf("completed network repair operation %q has %d transitions, expected 5", record.Operation.ID, len(history))
+	}
+	if err := requireExactNetworkSetupHistory(record, history[:3]); err != nil {
+		return err
+	}
+	if history[2].Sequence != request.ExpectedOperationRevision {
+		return fmt.Errorf("network repair completion does not follow the expected approval revision")
+	}
+	if history[3].State != domain.OperationRunning || history[3].Phase != networkSetupCompletionRunningPhase ||
+		!history[3].OccurredAt.Equal(request.At) || history[3].Sequence != request.ExpectedOperationRevision+1 {
+		return fmt.Errorf("network repair running edge differs from the exact request")
+	}
+	if history[4].State != domain.OperationSucceeded || history[4].Phase != networkSetupCompletionSucceededPhase ||
+		!history[4].OccurredAt.Equal(request.At) || history[4].Sequence != history[3].Sequence+1 {
+		return fmt.Errorf("network repair succeeded edge differs from the exact request")
+	}
+	return nil
 }
 
 // requireExactCompletedMachineOwnershipProjection prevents terminal replay from accepting different helper authority.

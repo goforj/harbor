@@ -22,6 +22,8 @@ type StageNetworkSetupRequest struct {
 	Operation domain.Operation
 	// Ownership is the complete generation-one authority that the helper must establish.
 	Ownership ownership.Record
+	// Repair preserves an initialized network and re-establishes only its exact owned loopback pool.
+	Repair bool
 }
 
 // Validate rejects setup requests that cannot become the singleton generation-one loopback authority.
@@ -41,14 +43,14 @@ func (request StageNetworkSetupRequest) Validate() error {
 	if request.Operation.Phase != networkSetupQueuedPhase {
 		return fmt.Errorf("network setup queued phase must be %q", networkSetupQueuedPhase)
 	}
-	if request.Ownership.SchemaVersion != ownership.CurrentSchemaVersion {
+	if !request.Repair && request.Ownership.SchemaVersion != ownership.CurrentSchemaVersion {
 		return fmt.Errorf(
 			"network setup ownership schema version is %d, want %d",
 			request.Ownership.SchemaVersion,
 			ownership.CurrentSchemaVersion,
 		)
 	}
-	if request.Ownership.Generation != networkSetupOwnershipGeneration {
+	if !request.Repair && request.Ownership.Generation != networkSetupOwnershipGeneration {
 		return fmt.Errorf(
 			"network setup ownership generation is %d, want %d",
 			request.Ownership.Generation,
@@ -91,7 +93,7 @@ func (journal *OperationJournal) StageNetworkSetup(
 
 // stageNetworkSetupInTransaction keeps conflict detection, lifecycle writes, and plan binding in one writer instant.
 func stageNetworkSetupInTransaction(tx *gorm.DB, request StageNetworkSetupRequest) (OperationRecord, error) {
-	if err := requireNetworkStateAbsentForStaging(tx); err != nil {
+	if err := requireNetworkSetupStageBoundary(tx, request); err != nil {
 		return OperationRecord{}, err
 	}
 	planRow, planFound, err := readOptionalNetworkSetupPlanForStaging(tx, request.Operation.ID)
@@ -195,6 +197,37 @@ func stageNetworkSetupInTransaction(tx *gorm.DB, request StageNetworkSetupReques
 		return OperationRecord{}, err
 	}
 	return approval, nil
+}
+
+// requireNetworkSetupStageBoundary separates first-run authority from ownership-preserving host repair.
+func requireNetworkSetupStageBoundary(tx *gorm.DB, request StageNetworkSetupRequest) error {
+	if !request.Repair {
+		return requireNetworkStateAbsentForStaging(tx)
+	}
+	rows, err := readNetworkModelRows(tx)
+	if err != nil {
+		return err
+	}
+	network, initialized, err := networkRecordFromModels(rows)
+	if err != nil {
+		return err
+	}
+	if !initialized {
+		return fmt.Errorf("network repair requires initialized network state")
+	}
+	projected, _, err := readMachineOwnershipProjectionInTransaction(tx)
+	if err != nil {
+		return err
+	}
+	if !projected.Exists || projected.Record != request.Ownership {
+		return fmt.Errorf("network repair ownership differs from the durable machine projection")
+	}
+	if network.Pool.Prefix().String() != request.Ownership.LoopbackPoolPrefix ||
+		string(network.Ownership.InstallationID) != request.Ownership.InstallationID ||
+		network.Ownership.Generation != request.Ownership.Generation {
+		return fmt.Errorf("network repair ownership differs from the initialized network")
+	}
+	return nil
 }
 
 // requireNetworkStateAbsentForStaging prevents first-run authority from being introduced after network initialization.
@@ -372,15 +405,16 @@ func insertNetworkSetupPlan(tx *gorm.DB, approval OperationRecord, record owners
 		return err
 	}
 	row := models.NetworkSetupPlan{
-		Id:                     1,
-		OperationId:            string(approval.Operation.ID),
-		OperationRevision:      revision,
-		OwnershipSchemaVersion: int(record.SchemaVersion),
-		InstallationId:         record.InstallationID,
-		OwnerIdentity:          record.OwnerIdentity,
-		OwnershipGeneration:    int(record.Generation),
-		LoopbackPoolPrefix:     record.LoopbackPoolPrefix,
-		TicketVerifierKey:      record.TicketVerifierKey,
+		Id:                       1,
+		OperationId:              string(approval.Operation.ID),
+		OperationRevision:        revision,
+		OwnershipSchemaVersion:   int(record.SchemaVersion),
+		InstallationId:           record.InstallationID,
+		OwnerIdentity:            record.OwnerIdentity,
+		OwnershipGeneration:      int(record.Generation),
+		LoopbackPoolPrefix:       record.LoopbackPoolPrefix,
+		NetworkPolicyFingerprint: machineOwnershipNetworkPolicyModelValue(record),
+		TicketVerifierKey:        record.TicketVerifierKey,
 	}
 	if err := tx.Create(&row).Error; err != nil {
 		return fmt.Errorf("create network setup plan: %w", err)

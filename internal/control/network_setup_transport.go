@@ -239,9 +239,13 @@ func validateNetworkSetupApprovalConfirmationCorrelation(
 	request ConfirmNetworkSetupApprovalRequest,
 	confirmation NetworkSetupApprovalConfirmation,
 ) error {
+	expectedRevision := request.ExpectedOperationRevision + 3
+	if confirmation.Repair {
+		expectedRevision = request.ExpectedOperationRevision + 2
+	}
 	if confirmation.Operation.ID != request.OperationID ||
-		confirmation.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		confirmation.Revision != request.ExpectedOperationRevision+3 ||
+		(!confirmation.Repair && confirmation.NetworkRevision != request.ExpectedOperationRevision+2) ||
+		confirmation.Revision != expectedRevision ||
 		confirmation.Pool != request.PoolEvidence.Pool {
 		return errors.New("network setup approval confirmation does not match the requested operation revision")
 	}

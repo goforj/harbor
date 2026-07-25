@@ -533,13 +533,18 @@ func (authority *Authority) ConfirmNetworkSetupApproval(
 		Revision:        confirmed.Operation.Revision,
 		NetworkRevision: confirmed.Network.Record.Revision,
 		Pool:            confirmed.Network.Record.Pool.Prefix().String(),
+		Repair:          confirmed.Repair,
 	}
 	if err := result.Validate(); err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("network setup approval confirmation result: %w", err)
 	}
+	expectedRevision := request.ExpectedOperationRevision + 3
+	if result.Repair {
+		expectedRevision = request.ExpectedOperationRevision + 2
+	}
 	if result.Operation.ID != request.OperationID ||
-		result.NetworkRevision != request.ExpectedOperationRevision+2 ||
-		result.Revision != request.ExpectedOperationRevision+3 ||
+		(!result.Repair && result.NetworkRevision != request.ExpectedOperationRevision+2) ||
+		result.Revision != expectedRevision ||
 		result.Pool != request.PoolEvidence.Pool {
 		return control.NetworkSetupApprovalConfirmation{}, errors.New("network setup approval confirmation differs from its requested operation revision and pool")
 	}

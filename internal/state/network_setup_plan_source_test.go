@@ -22,7 +22,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const networkSetupPlanSourceMigrationName = "2026_07_19_130000_create_network_setup_plans"
+const networkSetupPlanSourceMigrationName = "2026_07_25_020000_expand_network_setup_plans_for_repair"
 
 const networkSetupPlanSourceVerifierKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
@@ -121,7 +121,8 @@ func TestNetworkSetupPlanSourceRejectsEveryDurableMismatch(t *testing.T) {
 		{name: "duplicate plan", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
 			networkSetupPlanSourceExec(t, fixture.database, `INSERT INTO network_setup_plans
 				SELECT 2, operation_id, operation_revision, ownership_schema_version, installation_id,
-				owner_identity, ownership_generation, loopback_pool_prefix, ticket_verifier_key
+				owner_identity, ownership_generation, loopback_pool_prefix, network_policy_fingerprint,
+				ticket_verifier_key
 				FROM network_setup_plans`)
 		}, want: "singleton plan has 2 rows"},
 		{name: "wrong singleton ID", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
@@ -137,8 +138,8 @@ func TestNetworkSetupPlanSourceRejectsEveryDurableMismatch(t *testing.T) {
 			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET operation_revision = 9007199254740992")
 		}, want: "operation revision is outside"},
 		{name: "ownership schema", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
-			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET ownership_schema_version = 2")
-		}, want: "ownership schema version is 2"},
+			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET ownership_schema_version = 3")
+		}, want: "ownership schema version is 3"},
 		{name: "installation", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
 			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET installation_id = '-unsafe'")
 		}, want: "installation ID"},
@@ -147,7 +148,7 @@ func TestNetworkSetupPlanSourceRejectsEveryDurableMismatch(t *testing.T) {
 		}, want: "canonical unsigned UID"},
 		{name: "ownership generation", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
 			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET ownership_generation = 2")
-		}, want: "ownership generation is 2"},
+		}, want: "bootstrap ownership is not generation-one"},
 		{name: "pool width", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
 			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET loopback_pool_prefix = '127.77.0.0/24'")
 		}, want: "canonical IPv4-loopback /29"},
@@ -163,7 +164,7 @@ func TestNetworkSetupPlanSourceRejectsEveryDurableMismatch(t *testing.T) {
 				(id, stage, installation_id, ownership_generation, pool_network, pool_prefix_length,
 				dns_suffix, created_at, updated_at, revision)
 				VALUES (1, 'identity', 'installation-a', 1, '127.77.0.8', 29, '.test', ?, ?, 2)`, at, at)
-		}, want: "network state already exists"},
+		}, want: "at least one candidate is required"},
 	}
 
 	for _, test := range tests {

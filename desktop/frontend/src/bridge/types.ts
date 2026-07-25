@@ -17,6 +17,7 @@ export interface HarborWireFixture {
     wait_project_activity: 'WaitProjectActivity'
     remove_project: 'RemoveProject'
     remove_old_networking: 'RemoveOldNetworking'
+    repair_network: 'RepairNetwork'
     snapshot: 'Snapshot'
     setup_network: 'SetupNetwork'
     start_project: 'StartProject'
@@ -86,6 +87,7 @@ export interface HarborBridge {
   getResourceIconURL(projectId: string, resourceId: string): Promise<string>
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
   removeOldNetworking(): Promise<NetworkResolverPolicyMigrationOperation>
+  repairNetwork(): Promise<NetworkSetupOperation>
   setupNetwork(): Promise<NetworkSetupOperation>
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>

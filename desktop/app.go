@@ -303,6 +303,34 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 	return setup, nil
 }
 
+// RepairNetwork re-establishes the exact loopback pool already owned by this Harbor installation.
+func (a *App) RepairNetwork() (control.NetworkSetupOperation, error) {
+	ctx, client, release, err := a.leaseCurrentConnection()
+	if err != nil {
+		return control.NetworkSetupOperation{}, err
+	}
+	defer release()
+
+	intentID, err := a.setupIntent()
+	if err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("create Harbor network repair: %w", err)
+	}
+	repair, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID})
+	if err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("start Harbor network repair: %w", err)
+	}
+	if err := repair.Validate(); err != nil {
+		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network repair: %w", err)
+	}
+	if repair.Operation.IntentID != intentID {
+		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network repair: daemon result belongs to another intent")
+	}
+	if repair.Operation.State != domain.OperationRequiresApproval {
+		return control.NetworkSetupOperation{}, fmt.Errorf("Harbor network repair is %s", repair.Operation.State)
+	}
+	return a.approveNetworkSetup(ctx, client, repair)
+}
+
 // completeNetworkSetup starts, replays, or approves the durable loopback pool setup phase.
 func (a *App) completeNetworkSetup(ctx context.Context, client controlClient) (control.NetworkSetupOperation, error) {
 	intentID := networkSetupIntentID
@@ -580,10 +608,14 @@ func (a *App) approveNetworkSetup(
 	if err := confirmation.Validate(); err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup confirmation: %w", err)
 	}
+	expectedRevision := setup.Revision + 3
+	if confirmation.Repair {
+		expectedRevision = setup.Revision + 2
+	}
 	if confirmation.Operation.ID != setup.Operation.ID ||
 		confirmation.Operation.IntentID != setup.Operation.IntentID ||
-		confirmation.NetworkRevision != setup.Revision+2 ||
-		confirmation.Revision != setup.Revision+3 {
+		(!confirmation.Repair && confirmation.NetworkRevision != setup.Revision+2) ||
+		confirmation.Revision != expectedRevision {
 		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup confirmation: result crossed the selected operation revision")
 	}
 
