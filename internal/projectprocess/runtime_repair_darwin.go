@@ -183,7 +183,10 @@ func observeDarwinRuntimeRepairSession(
 			continue
 		}
 		if process.Eproc.Ucred.Uid != daemonUID || process.Eproc.Pcred.P_ruid != daemonUID {
-			return runtimeRepairNativeObservation{}, RuntimeRepairInspectionForeign, nil
+			// The listener owner was already correlated to the daemon user. A
+			// mixed-identity session is unsafe because its scope is ambiguous,
+			// not evidence that the listener itself has a foreign owner.
+			return runtimeRepairNativeObservation{}, RuntimeRepairInspectionAmbiguous, nil
 		}
 		fact, err := observeDarwinRuntimeRepairProcess(process, observedSessionID)
 		if err != nil {
@@ -596,6 +599,13 @@ func observeDarwinRuntimeRepairSettlement(ctx context.Context, receipt runtimeRe
 			return false, fmt.Errorf("observe Darwin runtime repair settlement: %w", err)
 		}
 		if present && birth == member.BirthToken {
+			zombie, stillPresent, stateErr := unixProcessZombie(member.PID)
+			if stateErr != nil {
+				return false, fmt.Errorf("observe Darwin runtime repair member state: %w", stateErr)
+			}
+			if zombie || !stillPresent {
+				continue
+			}
 			return false, nil
 		}
 	}

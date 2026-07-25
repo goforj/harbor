@@ -33,7 +33,7 @@ func inspectStableDarwinUnattributedRuntime(ctx context.Context, target RuntimeR
 			return unattributedRuntimeNativeInspection{}, err
 		}
 		inspection, err := inspectDarwinUnattributedRuntimePass(ctx, target)
-		if errors.Is(err, errDarwinRuntimeRepairUnstable) {
+		if errors.Is(err, errDarwinRuntimeRepairUnstable) || errors.Is(err, errDarwinRuntimeRepairUnreadable) {
 			previous = nil
 			continue
 		}
@@ -292,6 +292,11 @@ func findDarwinUnattributedRuntimeRoots(
 			}
 			fact, err := observeDarwinRuntimeRepairProcess(process, sessionID)
 			if err != nil {
+				if pid != ownerPID && (projectListenerRoot != nil || projectAddressRoot != nil) {
+					// The exact same-user listener remains a bounded repair root
+					// even when an unrelated ancestor is opaque to libproc.
+					break
+				}
 				return nil, err
 			}
 			if fact.CommandExact && filepath.Base(fact.ExecutableIdentity) == "forj" {
@@ -449,6 +454,13 @@ func observeDarwinUnattributedRuntimeSettlement(ctx context.Context, receipt una
 			return false, fmt.Errorf("observe Darwin unattributed runtime settlement: %w", err)
 		}
 		if present && birth == member.BirthToken {
+			zombie, stillPresent, stateErr := unixProcessZombie(member.PID)
+			if stateErr != nil {
+				return false, fmt.Errorf("observe Darwin unattributed runtime member state: %w", stateErr)
+			}
+			if zombie || !stillPresent {
+				continue
+			}
 			return false, nil
 		}
 	}
