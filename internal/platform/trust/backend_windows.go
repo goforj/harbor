@@ -8,9 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -22,7 +19,7 @@ const (
 	windowsRootStoreName        = "ROOT"
 	windowsFriendlyNameProperty = 11
 	maximumWindowsFriendlyBytes = (maximumNativeIDLength + 1) * 2
-	maximumCertutilOutputBytes  = 16 << 10
+	windowsCertificateEncodings = windows.X509_ASN_ENCODING | windows.PKCS_7_ASN_ENCODING
 )
 
 var (
@@ -92,7 +89,7 @@ func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request
 	return entries, nil
 }
 
-// ensure uses Windows' noninteractive certificate utility because direct CryptoAPI insertion can invoke protected-root UI.
+// ensure writes through the unprotected current-user registry provider so headless setup cannot stall on protected-root UI.
 func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Request) error {
 	if err := validateWindowsTrustRequest(request); err != nil {
 		return err
@@ -111,135 +108,29 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 	if err != nil {
 		return err
 	}
-	if err := addWindowsCurrentUserRoot(ctx, der); err != nil {
+	certificate, err := windows.CertCreateCertificateContext(windowsCertificateEncodings, &der[0], uint32(len(der)))
+	if err != nil {
+		return fmt.Errorf("create Windows certificate context: %w", err)
+	}
+	defer windows.CertFreeCertificateContext(certificate)
+	if err := setWindowsCertificateFriendlyName(certificate, windowsTrustOwnerName(request)); err != nil {
 		return err
 	}
-
-	rootStore, err := openWindowsCurrentUserRootStore()
+	rootStore, err := openWindowsCurrentUserRootMutationStore()
 	if err != nil {
 		return err
 	}
 	defer windows.CertCloseStore(rootStore, 0)
 
-	stored, err := findWindowsCertificateByFingerprint(rootStore, request.AuthorityFingerprint())
-	if err != nil {
-		return err
+	var stored *windows.CertContext
+	if err := windows.CertAddCertificateContextToStore(rootStore, certificate, windows.CERT_STORE_ADD_NEW, &stored); err != nil {
+		return fmt.Errorf("add unprotected CurrentUser Root certificate: %w: %v", errNativeMutationConflict, err)
 	}
 	if stored == nil {
-		return fmt.Errorf("certutil did not add the expected CurrentUser Root certificate: %w", errNativeMutationConflict)
-	}
-	if err := setWindowsCertificateFriendlyName(stored, windowsTrustOwnerName(request)); err != nil {
-		rollbackErr := windows.CertDeleteCertificateFromStore(stored)
-		return errors.Join(err, rollbackErr)
+		return errors.New("unprotected CurrentUser Root insertion returned no certificate context")
 	}
 	defer windows.CertFreeCertificateContext(stored)
 	return nil
-}
-
-// addWindowsCurrentUserRoot invokes the fixed Windows utility with arguments that target only CurrentUser\Root.
-func addWindowsCurrentUserRoot(ctx context.Context, der []byte) error {
-	systemDirectory, err := windows.GetSystemDirectory()
-	if err != nil {
-		return fmt.Errorf("resolve Windows system directory: %w", err)
-	}
-	certutilPath := filepath.Join(systemDirectory, "certutil.exe")
-	file, err := os.CreateTemp("", "harbor-root-*.cer")
-	if err != nil {
-		return fmt.Errorf("create temporary Windows root certificate: %w", err)
-	}
-	path := file.Name()
-	defer os.Remove(path)
-	if _, err := file.Write(der); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("write temporary Windows root certificate: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close temporary Windows root certificate: %w", err)
-	}
-
-	output := &windowsCertutilOutput{remaining: maximumCertutilOutputBytes}
-	command := exec.CommandContext(ctx, certutilPath, "-user", "-f", "-addstore", windowsRootStoreName, path)
-	command.Stdout = output
-	command.Stderr = output
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("add CurrentUser Root certificate with certutil: %w: %s", err, output.String())
-	}
-	if output.exceeded {
-		return fmt.Errorf("certutil output exceeds %d bytes", maximumCertutilOutputBytes)
-	}
-	return nil
-}
-
-// findWindowsCertificateByFingerprint returns a duplicated context only when exactly one certificate matches.
-func findWindowsCertificateByFingerprint(store windows.Handle, fingerprint string) (*windows.CertContext, error) {
-	var selected *windows.CertContext
-	var previous *windows.CertContext
-	matches := 0
-	for {
-		certificate, enumErr := windows.CertEnumCertificatesInStore(store, previous)
-		previous = nil
-		if enumErr != nil {
-			if windowsCertificateEnumerationComplete(enumErr) {
-				break
-			}
-			if selected != nil {
-				_ = windows.CertFreeCertificateContext(selected)
-			}
-			return nil, fmt.Errorf("enumerate CurrentUser Root certificates after insertion: %w", enumErr)
-		}
-		previous = certificate
-		der, err := windowsCertificateDER(certificate)
-		if err != nil {
-			_ = windows.CertFreeCertificateContext(certificate)
-			if selected != nil {
-				_ = windows.CertFreeCertificateContext(selected)
-			}
-			return nil, err
-		}
-		digest := sha256.Sum256(der)
-		if hex.EncodeToString(digest[:]) != fingerprint {
-			continue
-		}
-		matches++
-		if matches == 1 {
-			selected = windows.CertDuplicateCertificateContext(certificate)
-			if selected == nil {
-				_ = windows.CertFreeCertificateContext(certificate)
-				return nil, errors.New("duplicate inserted CurrentUser Root certificate context")
-			}
-		}
-	}
-	if matches > 1 {
-		if selected != nil {
-			_ = windows.CertFreeCertificateContext(selected)
-		}
-		return nil, fmt.Errorf("certutil added ambiguous CurrentUser Root certificates: %w", errNativeMutationConflict)
-	}
-	return selected, nil
-}
-
-// windowsCertutilOutput bounds diagnostics from the fixed system utility.
-type windowsCertutilOutput struct {
-	bytes     []byte
-	remaining int
-	exceeded  bool
-}
-
-// Write retains only bounded certutil diagnostics while reporting complete writes to the child process.
-func (output *windowsCertutilOutput) Write(value []byte) (int, error) {
-	originalLength := len(value)
-	if len(value) > output.remaining {
-		value = value[:output.remaining]
-		output.exceeded = true
-	}
-	output.bytes = append(output.bytes, value...)
-	output.remaining -= len(value)
-	return originalLength, nil
-}
-
-// String returns the bounded certutil diagnostics without surrounding whitespace.
-func (output *windowsCertutilOutput) String() string {
-	return strings.TrimSpace(string(output.bytes))
 }
 
 // release revalidates one exact marked certificate immediately before deleting that context.
@@ -250,7 +141,7 @@ func (store windowsCurrentUserRootStore) release(ctx context.Context, request Re
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootStore()
+	rootStore, err := openWindowsCurrentUserRootMutationStore()
 	if err != nil {
 		return err
 	}
@@ -329,6 +220,26 @@ func openWindowsCurrentUserRootStore() (windows.Handle, error) {
 	store, err := windows.CertOpenSystemStore(0, name)
 	if err != nil {
 		return 0, fmt.Errorf("open CurrentUser Root certificate store: %w", err)
+	}
+	return store, nil
+}
+
+// openWindowsCurrentUserRootMutationStore bypasses interactive protected-root policy for this user's physical registry store.
+func openWindowsCurrentUserRootMutationStore() (windows.Handle, error) {
+	name, err := windows.UTF16PtrFromString(windowsRootStoreName)
+	if err != nil {
+		return 0, fmt.Errorf("encode CurrentUser Root mutation store name: %w", err)
+	}
+	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER | windows.CERT_SYSTEM_STORE_UNPROTECTED_FLAG)
+	store, err := windows.CertOpenStore(
+		uintptr(windows.CERT_STORE_PROV_SYSTEM_REGISTRY),
+		0,
+		0,
+		flags,
+		uintptr(unsafe.Pointer(name)),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("open unprotected CurrentUser Root registry store: %w", err)
 	}
 	return store, nil
 }
