@@ -102,10 +102,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n apt-get update
-          sudo -n apt-get install -y nftables policykit-1
+          sudo -n apt-get install -y libcap2-bin nftables policykit-1
           sudo -n systemctl enable --now systemd-resolved.service
           sudo -n ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           resolvectl status >/dev/null
+          sudo -n setcap cap_net_admin=ep /usr/sbin/nft
+          [[ "$(getcap /usr/sbin/nft)" == "/usr/sbin/nft cap_net_admin=ep" ]]
 
           rule=/etc/polkit-1/rules.d/49-goforj-harbor-hosted-ci.rules
           runner_user="$(id -un)"
@@ -220,6 +222,7 @@ jobs:
           set -euo pipefail
           sudo -n rm -f /etc/polkit-1/rules.d/49-goforj-harbor-hosted-ci.rules
           sudo -n systemctl restart polkit.service
+          sudo -n setcap -r /usr/sbin/nft 2>/dev/null || true
           if [[ "${{ job.status }}" != "success" ]]; then
             sudo -n /usr/sbin/nft delete table inet goforj_harbor 2>/dev/null || true
             sudo -n rm -f \
