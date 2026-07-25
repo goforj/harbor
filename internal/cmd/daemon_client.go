@@ -3,11 +3,14 @@ package cmd
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/rpc"
 )
+
+const daemonCLIRequestTimeout = 2 * time.Minute
 
 // daemonControlClient is the narrow control connection used for one CLI request.
 type daemonControlClient interface {
@@ -222,8 +225,16 @@ type DaemonClient struct {
 // NewDaemonClient creates a lazy CLI client without opening a daemon connection.
 func NewDaemonClient() *DaemonClient {
 	return newDaemonClient(func(ctx context.Context) (daemonControlClient, error) {
-		return control.NewClient(ctx, control.ClientConfig{Role: rpc.RoleCLI})
+		return control.NewClient(ctx, productionCLIControlConfig())
 	})
+}
+
+// productionCLIControlConfig allows native approval preparation to complete without changing desktop request bounds.
+func productionCLIControlConfig() control.ClientConfig {
+	return control.ClientConfig{
+		Role:           rpc.RoleCLI,
+		RequestTimeout: daemonCLIRequestTimeout,
+	}
 }
 
 // newDaemonClient keeps connection timing and cleanup observable in command tests.

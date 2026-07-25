@@ -8,6 +8,7 @@ import (
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/rpc"
 )
 
 // fakeDaemonControlClient records one-shot control calls and their cleanup.
@@ -446,6 +447,14 @@ func TestDaemonClientConnectsOnlyWhenRequested(t *testing.T) {
 	}
 	if connectCalls != 1 || connection.statusCalls != 1 || connection.closeCalls != 1 {
 		t.Fatalf("calls = connect:%d status:%d close:%d, want 1 each", connectCalls, connection.statusCalls, connection.closeCalls)
+	}
+}
+
+// TestProductionCLIControlConfigAllowsNativeApprovalObservation verifies the CLI-specific request bound.
+func TestProductionCLIControlConfigAllowsNativeApprovalObservation(t *testing.T) {
+	config := productionCLIControlConfig()
+	if config.Role != rpc.RoleCLI || config.RequestTimeout != daemonCLIRequestTimeout {
+		t.Fatalf("production CLI control config = %#v", config)
 	}
 }
 

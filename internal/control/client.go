@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/goforj/harbor/internal/buildinfo"
 	"github.com/goforj/harbor/internal/domain"
@@ -22,6 +23,8 @@ type ClientConfig struct {
 	Role rpc.Role
 	// Dial optionally replaces the platform transport for composition or tests; nil uses local.Dial.
 	Dial DialFunc
+	// RequestTimeout supplies a per-request deadline when the caller has none; zero uses the session default.
+	RequestTimeout time.Duration
 }
 
 // DaemonPeer combines the daemon identity authenticated by the operating system and session negotiation.
@@ -74,6 +77,7 @@ func newClient(ctx context.Context, config ClientConfig, build buildinfo.Info) (
 		ClientVersion:  build.Version,
 		ProtocolRanges: protocolRanges(),
 		Capabilities:   capabilities(),
+		RequestTimeout: config.RequestTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("negotiate Harbor control session: %w", err)
