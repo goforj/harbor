@@ -1254,6 +1254,9 @@ func createSystemdResolvedStaging(
 	if err := unix.Fchmod(descriptor, systemdResolvedFileMode); err != nil {
 		return "", systemdResolvedArtifact{}, fmt.Errorf("set systemd-resolved staging mode: %w", err)
 	}
+	if err := removeSystemdResolvedInheritedAccessACL(descriptor); err != nil {
+		return "", systemdResolvedArtifact{}, err
+	}
 	if err := file.Sync(); err != nil {
 		return "", systemdResolvedArtifact{}, fmt.Errorf("sync systemd-resolved staging file: %w", err)
 	}
@@ -1266,6 +1269,15 @@ func createSystemdResolvedStaging(
 	}
 	cleanup = false
 	return name, artifact, nil
+}
+
+// removeSystemdResolvedInheritedAccessACL prevents a trusted parent default ACL from widening a new owned artifact.
+func removeSystemdResolvedInheritedAccessACL(descriptor int) error {
+	err := unix.Fremovexattr(descriptor, "system.posix_acl_access")
+	if err == nil || errors.Is(err, unix.ENODATA) || errors.Is(err, unix.ENOTSUP) {
+		return nil
+	}
+	return fmt.Errorf("remove inherited systemd-resolved access ACL: %w", err)
 }
 
 // writeAllSystemdResolved rejects short writes while preserving the fixed content bound.

@@ -21,6 +21,7 @@ const (
 	projectRemovalIntentWindowsAdministratorsSID = "S-1-5-32-544"
 	projectRemovalIntentWindowsFileAllAccess     = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 	projectRemovalIntentLegacyMaximumACEs        = 8
+	projectRemovalIntentCreationWaitAttempts     = 20
 )
 
 // projectRemovalIntentWindowsTokenOwner matches the TOKEN_OWNER result returned by GetTokenInformation.
@@ -84,6 +85,16 @@ func prepareProjectRemovalIntentObject(file *os.File, directory bool, created bo
 		return nil
 	}
 	if !created {
+		for attempt := 1; attempt < projectRemovalIntentCreationWaitAttempts; attempt++ {
+			time.Sleep(projectRemovalIntentLockRetryInterval)
+			descriptor, err = projectRemovalIntentWindowsSecurity(file)
+			if err != nil {
+				return err
+			}
+			if validateProjectRemovalIntentWindowsDescriptor(descriptor, user, directory) == nil {
+				return nil
+			}
+		}
 		owner, err := currentProjectRemovalIntentWindowsOwnerSID()
 		if err != nil {
 			return err

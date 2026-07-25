@@ -634,6 +634,18 @@ func TestSystemdResolvedCapturedArtifactAllowsOnlyRenameMetadata(t *testing.T) {
 	}
 }
 
+// TestRemoveSystemdResolvedInheritedAccessACLAcceptsAPlainFile covers hosts without a parent default ACL.
+func TestRemoveSystemdResolvedInheritedAccessACLAcceptsAPlainFile(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "resolver-acl-")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer file.Close()
+	if err := removeSystemdResolvedInheritedAccessACL(int(file.Fd())); err != nil {
+		t.Fatalf("removeSystemdResolvedInheritedAccessACL() error = %v", err)
+	}
+}
+
 // TestPrivilegedSystemdResolvedAdapterLifecycle exercises the production fixed artifact and resolve1 state when opted in.
 func TestPrivilegedSystemdResolvedAdapterLifecycle(t *testing.T) {
 	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {
