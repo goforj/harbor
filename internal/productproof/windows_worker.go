@@ -21,6 +21,7 @@ var requiredWindowsWorkerAssertions = []string{
 	"worker.clean_harbor_state",
 	"worker.current_user_root",
 	"worker.filtered_administrator",
+	"worker.installed_helper",
 	"worker.interactive_login",
 	"worker.local_docker",
 	"worker.windows_11_24h2",

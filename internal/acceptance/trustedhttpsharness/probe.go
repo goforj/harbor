@@ -9,13 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 )
 
 const (
-	systemCurlPath          = "/usr/bin/curl"
 	maximumProbeOutputBytes = 1 << 20
 	maximumProbeErrorBytes  = 64 << 10
 )
@@ -117,8 +115,9 @@ func (ExecRunner) Run(ctx context.Context, specification Command) (CommandResult
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if specification.Path != systemCurlPath {
-		return CommandResult{}, fmt.Errorf("trusted HTTPS probe executable is %q, expected %q", specification.Path, systemCurlPath)
+	curlPath := systemCurlPath()
+	if specification.Path != curlPath {
+		return CommandResult{}, fmt.Errorf("trusted HTTPS probe executable is %q, expected %q", specification.Path, curlPath)
 	}
 	stdout := &boundedBuffer{maximum: maximumProbeOutputBytes}
 	stderr := &boundedBuffer{maximum: maximumProbeErrorBytes}
@@ -143,7 +142,7 @@ func (ExecRunner) Run(ctx context.Context, specification Command) (CommandResult
 // trust backend, and ambient proxy, curlrc, or CA overrides cannot help it pass.
 func curlCommand(domain string) Command {
 	return Command{
-		Path: systemCurlPath,
+		Path: systemCurlPath(),
 		Arguments: []string{
 			"--disable",
 			"--fail",
@@ -157,16 +156,6 @@ func curlCommand(domain string) Command {
 		},
 		Environment: nativeProbeEnvironment(),
 	}
-}
-
-// nativeProbeEnvironment preserves only the user identity needed by macOS's
-// trust backend while excluding every common proxy and alternate-CA variable.
-func nativeProbeEnvironment() []string {
-	environment := []string{"LANG=C", "LC_ALL=C", "PATH=/usr/bin:/bin"}
-	if home := os.Getenv("HOME"); home != "" {
-		environment = append(environment, "HOME="+home)
-	}
-	return environment
 }
 
 // validateEndpoints requires the exact three-project proof and rejects any

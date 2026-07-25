@@ -47,7 +47,7 @@ func TestProbeUsesOnlyLiteralSystemHTTPS(t *testing.T) {
 		t.Fatalf("results = %#v, commands = %#v", results, runner.commands)
 	}
 	for index, command := range runner.commands {
-		if command.Path != systemCurlPath || command.Arguments[0] != "--disable" {
+		if command.Path != systemCurlPath() || command.Arguments[0] != "--disable" {
 			t.Fatalf("command %d = %#v", index, command)
 		}
 		wantURL := "https://" + endpoints[index].Domain + "/swagger/doc.json"

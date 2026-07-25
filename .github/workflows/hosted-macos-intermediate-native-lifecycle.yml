@@ -230,7 +230,7 @@ jobs:
             -tags=phase1acceptance \
             -count=1 \
             -timeout=25m \
-            -run '^TestDarwinTrustedHTTPSIntermediateNativeLifecycle$' \
+            -run '^TestTrustedHTTPSIntermediateNativeLifecycle$' \
             ./internal/acceptance
           GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go run ./cmd/platformproof verify-trusted-https \
             --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \

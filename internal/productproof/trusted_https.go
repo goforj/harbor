@@ -18,7 +18,7 @@ const (
 
 var (
 	requiredTrustedHTTPSChecks = []string{
-		"full macOS network setup completed",
+		"full network setup completed",
 		"three generated projects reached distinct trusted HTTPS routes",
 		"literal system DNS and default trust returned three distinct OpenAPI identities",
 		"project processes and per-user daemon resources were removed",
@@ -48,7 +48,7 @@ func VerifyTrustedHTTPSLifecycleEvidenceDirectory(root string, requirement Trust
 	if root == "" {
 		return errors.New("trusted HTTPS evidence root is required")
 	}
-	if requirement.Platform != "darwin" {
+	if requirement.Platform != "darwin" && requirement.Platform != "windows" {
 		return fmt.Errorf("trusted HTTPS evidence platform %q is not implemented", requirement.Platform)
 	}
 

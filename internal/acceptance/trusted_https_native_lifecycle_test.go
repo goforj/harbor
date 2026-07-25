@@ -1,4 +1,4 @@
-//go:build darwin && phase1acceptance
+//go:build (darwin || windows) && phase1acceptance
 
 package acceptance
 
@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -72,10 +73,10 @@ type trustedHTTPSNativeProject struct {
 	removed         bool
 }
 
-// TestDarwinTrustedHTTPSIntermediateNativeLifecycle proves setup, three trusted HTTPS projects, and terminal product cleanup through production binaries.
-func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
+// TestTrustedHTTPSIntermediateNativeLifecycle proves setup, three trusted HTTPS projects, and terminal product cleanup through production binaries.
+func TestTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	if os.Getenv(trustedHTTPSAcceptanceEnvironment) != "1" {
-		t.Skipf("set %s=1 to run the Darwin trusted HTTPS acceptance", trustedHTTPSAcceptanceEnvironment)
+		t.Skipf("set %s=1 to run the native trusted HTTPS acceptance", trustedHTTPSAcceptanceEnvironment)
 	}
 
 	nativeConfiguration := trustedHTTPSLoadNativeConfiguration(t)
@@ -153,7 +154,7 @@ func TestDarwinTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	})
 
 	trustedHTTPSRequireSetup(t, testContext, configuration, sandbox, lifecycle.daemon, evidence)
-	evidence.check("full macOS network setup completed")
+	evidence.check("full network setup completed")
 
 	for index, project := range workspace.Projects {
 		registration := phase1AddProject(t, testContext, configuration, sandbox, project.Root)
@@ -308,16 +309,19 @@ func trustedHTTPSLoadNativeConfiguration(t *testing.T) trustedHTTPSNativeConfigu
 	if filename == "" || !filepath.IsAbs(filename) || filepath.Clean(filename) != filename {
 		t.Fatalf("%s must identify an absolute clean forj binary", trustedHTTPSForjBinaryEnvironment)
 	}
-	if filepath.Base(filename) != "forj" {
-		t.Fatalf("%s basename is %q, want forj", trustedHTTPSForjBinaryEnvironment, filepath.Base(filename))
+	expectedBase := "forj"
+	if runtime.GOOS == "windows" {
+		expectedBase = "forj.exe"
+	}
+	if filepath.Base(filename) != expectedBase {
+		t.Fatalf("%s basename is %q, want %q", trustedHTTPSForjBinaryEnvironment, filepath.Base(filename), expectedBase)
 	}
 	information, err := os.Lstat(filename)
 	if err != nil {
 		t.Fatalf("inspect %s: %v", trustedHTTPSForjBinaryEnvironment, err)
 	}
-	if information.Mode()&os.ModeSymlink != 0 ||
-		!information.Mode().IsRegular() ||
-		information.Mode().Perm()&0o111 == 0 {
+	if information.Mode()&os.ModeSymlink != 0 || !information.Mode().IsRegular() ||
+		(runtime.GOOS != "windows" && information.Mode().Perm()&0o111 == 0) {
 		t.Fatalf("%s must identify a direct executable regular file", trustedHTTPSForjBinaryEnvironment)
 	}
 	version := strings.TrimSpace(os.Getenv(trustedHTTPSForjVersionEnvironment))
@@ -330,7 +334,7 @@ func trustedHTTPSLoadNativeConfiguration(t *testing.T) trustedHTTPSNativeConfigu
 	}
 }
 
-// trustedHTTPSRequireSetup runs the one production setup command with enough time for explicit macOS approval.
+// trustedHTTPSRequireSetup runs the one production setup command with enough time for explicit platform approval.
 func trustedHTTPSRequireSetup(
 	t *testing.T,
 	parent context.Context,
@@ -1294,10 +1298,14 @@ func TestTrustedHTTPSValidateNetworkReleaseResultWithDiagnosticRetainsFailure(t 
 	}
 }
 
-// trustedHTTPSVerifyNoMachineEffects independently rejects retained Harbor-owned Darwin effects after product release.
+// trustedHTTPSVerifyNoMachineEffects independently rejects retained Harbor-owned effects after product release.
 func trustedHTTPSVerifyNoMachineEffects(parent context.Context, sandbox phase1Sandbox) error {
 	ctx, cancel := context.WithTimeout(parent, phase1CommandTimeout)
 	defer cancel()
+
+	if runtime.GOOS == "windows" {
+		return trustedHTTPSVerifyNoWindowsMachineEffects(ctx, sandbox)
+	}
 
 	for _, path := range []string{
 		"/etc/resolver/test",
@@ -1326,6 +1334,60 @@ func trustedHTTPSVerifyNoMachineEffects(parent context.Context, sandbox phase1Sa
 
 	if err := trustedHTTPSRequireSecurityItemAbsent(ctx, sandbox, "/usr/bin/security", "find-generic-password", "-s", "com.goforj.harbor.trust-owner.v1"); err != nil {
 		return err
+	}
+	return nil
+}
+
+// trustedHTTPSVerifyNoWindowsMachineEffects rejects retained machine state, trust, aliases, and direct listeners.
+func trustedHTTPSVerifyNoWindowsMachineEffects(ctx context.Context, sandbox phase1Sandbox) error {
+	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if systemRoot == "" {
+		systemRoot = strings.TrimSpace(os.Getenv("WINDIR"))
+	}
+	if systemRoot == "" || !filepath.IsAbs(systemRoot) {
+		return errors.New("verify released Windows machine effects: SystemRoot is unavailable")
+	}
+	powerShell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	script := `$ErrorActionPreference = "Stop"
+$privilegedRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "GoForj\Harbor\Privileged"
+if (Test-Path -LiteralPath $privilegedRoot) { throw "retained Harbor privileged state" }
+$rules = @(Get-DnsClientNrptRule | Where-Object {
+  $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+})
+if ($rules.Count -ne 0) { throw "retained Harbor NRPT rule" }
+$tcp = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {
+  ($_.LocalPort -eq 80 -or $_.LocalPort -eq 443 -or $_.LocalPort -eq 53) -and
+  ($_.LocalAddress -eq "127.0.0.1" -or $_.LocalAddress -eq "127.0.0.2")
+})
+if ($tcp.Count -ne 0) { throw "retained Harbor TCP listener" }
+$udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object {
+  $_.LocalPort -eq 53 -and $_.LocalAddress -eq "127.0.0.2"
+})
+if ($udp.Count -ne 0) { throw "retained Harbor DNS listener" }
+$aliases = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+  $_.IPAddress -like "127.77.*"
+})
+if ($aliases.Count -ne 0) { throw "retained Harbor loopback alias" }
+$machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+  $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
+})
+if ($machineRoots.Count -ne 0) { throw "retained Harbor LocalMachine root" }
+$userRoots = @(Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+  $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
+})
+if ($userRoots.Count -ne 0) { throw "retained Harbor CurrentUser root" }`
+	output, err := trustedHTTPSRunCommand(
+		ctx,
+		sandbox,
+		powerShell,
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		script,
+	)
+	if err != nil {
+		return fmt.Errorf("verify released Windows machine effects: %w: %s", err, strings.TrimSpace(output))
 	}
 	return nil
 }

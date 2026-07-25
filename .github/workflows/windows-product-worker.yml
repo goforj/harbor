@@ -118,6 +118,14 @@ jobs:
           if ($enableLUA -ne 1) { throw "UAC must be enabled" }
           if (-not (Test-Path -LiteralPath "Cert:\CurrentUser\Root")) { throw "current-user root certificate store is unavailable" }
 
+          $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+          $helperPath = Join-Path $programFiles "GoForj\Harbor\harbor-helper.exe"
+          if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) { throw "installed Harbor helper is unavailable" }
+          $helperSignature = Get-AuthenticodeSignature -LiteralPath $helperPath
+          if ($helperSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "installed Harbor helper signature is not valid"
+          }
+
           $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
           $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
           if (Test-Path -LiteralPath $privilegedRoot) { throw "preexisting Harbor privileged state" }
@@ -141,6 +149,7 @@ jobs:
             [ordered]@{ id = "worker.clean_harbor_state"; passed = $true; detail = "fixed Harbor privileged and NRPT state absent" },
             [ordered]@{ id = "worker.current_user_root"; passed = $true; detail = "direct current-user root certificate store available" },
             [ordered]@{ id = "worker.filtered_administrator"; passed = $true; detail = "local administrator runs at medium integrity with UAC enabled" },
+            [ordered]@{ id = "worker.installed_helper"; passed = $true; detail = "fixed Program Files helper has a valid Authenticode signature" },
             [ordered]@{ id = "worker.interactive_login"; passed = $true; detail = "runner process shares an interactive Explorer session" },
             [ordered]@{ id = "worker.local_docker"; passed = $true; detail = "user-selected local Docker-compatible Engine 28 or newer" },
             [ordered]@{ id = "worker.windows_11_24h2"; passed = $true; detail = "Windows 11 24H2 amd64 product profile" }
@@ -202,7 +211,7 @@ jobs:
             -run "^TestWindowsMediumIntegrityDirectLowPortLifecycle$" `
             ./internal/network/dataplane
 
-      - name: Build pinned GoForj tools
+      - name: Build product binaries and pinned GoForj tools
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -210,6 +219,8 @@ jobs:
           $binary = Join-Path $binaryDirectory "forj.exe"
           if (Test-Path -LiteralPath $binaryDirectory) { throw "binary directory already exists" }
           New-Item -ItemType Directory -Path $binaryDirectory | Out-Null
+          go build -trimpath -o (Join-Path $binaryDirectory "harbor.exe") ./cmd/app
+          go build -trimpath -o (Join-Path $binaryDirectory "harbord.exe") ./cmd/harbord
           Push-Location .ci/goforj
           try {
             go build -trimpath -o $binary ./cmd/forj
@@ -271,6 +282,36 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Exercise three-project trusted HTTPS lifecycle
+        shell: pwsh
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}\harbor-bin\forj.exe
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}\harbor-bin\harbor.exe
+          HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}\harbor-bin\harbord.exe
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ runner.temp }}\harbor-windows-trusted-https-evidence
+        run: |
+          $ErrorActionPreference = "Stop"
+          go test `
+            -tags=phase1acceptance `
+            -count=1 `
+            -timeout=25m `
+            -run "^TestTrustedHTTPSIntermediateNativeLifecycle$" `
+            ./internal/acceptance
+          go run ./cmd/platformproof verify-trusted-https `
+            --root $env:HARBOR_PHASE1_EVIDENCE_DIRECTORY `
+            --platform windows
+
+      - name: Upload bounded trusted HTTPS lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-trusted-https-product-lifecycle
+          path: ${{ runner.temp }}\harbor-windows-trusted-https-evidence
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
     name: Verify Windows product-worker evidence
     needs: [admit, profile]
@@ -301,6 +342,12 @@ jobs:
           name: windows-docker-product-lifecycle
           path: windows-docker-product-evidence
 
+      - name: Download trusted HTTPS lifecycle evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-trusted-https-product-lifecycle
+          path: windows-trusted-https-evidence
+
       - name: Enforce exact product evidence
         run: |
           go run ./cmd/platformproof verify-windows-worker \
@@ -313,3 +360,6 @@ jobs:
             --platforms windows \
             --app-port 3000 \
             --service-port 3306
+          go run ./cmd/platformproof verify-trusted-https \
+            --root windows-trusted-https-evidence \
+            --platform windows

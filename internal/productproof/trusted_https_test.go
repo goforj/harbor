@@ -11,9 +11,15 @@ import (
 
 // TestVerifyTrustedHTTPSLifecycleEvidenceDirectoryAcceptsExactArtifact proves the protected worker's native result.
 func TestVerifyTrustedHTTPSLifecycleEvidenceDirectoryAcceptsExactArtifact(t *testing.T) {
-	root := writeTrustedHTTPSEvidence(t, validTrustedHTTPSSummary())
-	if err := VerifyTrustedHTTPSLifecycleEvidenceDirectory(root, TrustedHTTPSLifecycleRequirement{Platform: "darwin"}); err != nil {
-		t.Fatalf("VerifyTrustedHTTPSLifecycleEvidenceDirectory() error = %v", err)
+	for _, platform := range []string{"darwin", "windows"} {
+		t.Run(platform, func(t *testing.T) {
+			summary := validTrustedHTTPSSummary()
+			summary.OperatingSystem = platform
+			root := writeTrustedHTTPSEvidence(t, summary)
+			if err := VerifyTrustedHTTPSLifecycleEvidenceDirectory(root, TrustedHTTPSLifecycleRequirement{Platform: platform}); err != nil {
+				t.Fatalf("VerifyTrustedHTTPSLifecycleEvidenceDirectory() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -27,7 +33,7 @@ func TestVerifyTrustedHTTPSLifecycleEvidenceDirectoryRejectsInvalidRequirements(
 		want        string
 	}{
 		{name: "missing root", requirement: TrustedHTTPSLifecycleRequirement{Platform: "darwin"}, want: "root is required"},
-		{name: "unsupported platform", root: root, requirement: TrustedHTTPSLifecycleRequirement{Platform: "linux"}, want: "not implemented"},
+		{name: "unsupported platform", root: root, requirement: TrustedHTTPSLifecycleRequirement{Platform: "plan9"}, want: "not implemented"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := VerifyTrustedHTTPSLifecycleEvidenceDirectory(test.root, test.requirement)
