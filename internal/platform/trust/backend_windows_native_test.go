@@ -4,10 +4,13 @@ package trust
 
 import (
 	"context"
+	"crypto/x509"
 	"os"
 	"testing"
 
 	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/trust/certificates"
+	"github.com/goforj/harbor/internal/trust/localca"
 	"golang.org/x/sys/windows"
 )
 
@@ -20,15 +23,7 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTokenUser() error = %v", err)
 	}
-	request, err := NewRequestForRequester(
-		"windows-native-trust-test",
-		user.User.Sid.String(),
-		networkpolicy.WindowsCurrentUserTrust,
-		trustTestRoot(t),
-	)
-	if err != nil {
-		t.Fatalf("NewRequestForRequester() error = %v", err)
-	}
+	request, authority := windowsNativeTrustFixture(t, user.User.Sid.String())
 	adapter, err := New()
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -86,6 +81,18 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 		ensuredAssessment.State != StateExact || ensuredAssessment.Owned != OwnedStateExact {
 		t.Fatalf("ensure change = %#v, assessment = %#v", ensured, ensuredAssessment)
 	}
+	t.Log("verifying issued leaf through the Windows system trust engine")
+	leaf, err := authority.Issue(t.Context(), []string{"harbor-native.test"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	leafCertificate, err := x509.ParseCertificate(leaf.TLSCertificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("ParseCertificate() error = %v", err)
+	}
+	if _, err := leafCertificate.Verify(x509.VerifyOptions{DNSName: "harbor-native.test"}); err != nil {
+		t.Fatalf("Verify(system roots) error = %v", err)
+	}
 
 	ensuredFingerprint, err := ensured.After.Fingerprint()
 	if err != nil {
@@ -104,4 +111,30 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 		releasedAssessment.State != StateAbsent || releasedAssessment.Owned != OwnedStateAbsent {
 		t.Fatalf("release change = %#v, assessment = %#v", released, releasedAssessment)
 	}
+}
+
+// windowsNativeTrustFixture retains the signer so the lifecycle can prove Windows system-chain trust.
+func windowsNativeTrustFixture(t *testing.T, requesterIdentity string) (Request, *localca.Authority) {
+	t.Helper()
+	authority, err := localca.New(localca.Config{})
+	if err != nil {
+		t.Fatalf("localca.New() error = %v", err)
+	}
+	material := authority.Material()
+	root := certificates.Root{
+		CertificatePEM: material.CertificatePEM,
+		Fingerprint:    material.Fingerprint,
+		NotBefore:      material.NotBefore,
+		NotAfter:       material.NotAfter,
+	}
+	request, err := NewRequestForRequester(
+		"windows-native-trust-test",
+		requesterIdentity,
+		networkpolicy.WindowsCurrentUserTrust,
+		root,
+	)
+	if err != nil {
+		t.Fatalf("NewRequestForRequester() error = %v", err)
+	}
+	return request, authority
 }

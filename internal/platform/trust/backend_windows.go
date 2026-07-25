@@ -41,20 +41,42 @@ func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request
 	if err := validateWindowsTrustRequest(request); err != nil {
 		return nil, err
 	}
-	store, err := openWindowsCurrentUserRootStore()
+	defaultStore, err := openWindowsCurrentUserRootStore()
 	if err != nil {
 		return nil, err
 	}
-	defer windows.CertCloseStore(store, 0)
-
+	defer windows.CertCloseStore(defaultStore, 0)
 	entries := make([]windowsTrustEntry, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	if err := appendWindowsTrustEntries(ctx, request, defaultStore, seen, &entries); err != nil {
+		return nil, err
+	}
+	policyStore, err := openWindowsCurrentUserRootPolicyStore()
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CertCloseStore(policyStore, 0)
+	if err := appendWindowsTrustEntries(ctx, request, policyStore, seen, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// appendWindowsTrustEntries adds bounded relevant facts while collapsing certificates exposed by multiple physical stores.
+func appendWindowsTrustEntries(
+	ctx context.Context,
+	request Request,
+	store windows.Handle,
+	seen map[string]struct{},
+	entries *[]windowsTrustEntry,
+) error {
 	var previous *windows.CertContext
 	for {
 		if err := ctx.Err(); err != nil {
 			if previous != nil {
 				_ = windows.CertFreeCertificateContext(previous)
 			}
-			return nil, err
+			return err
 		}
 		certificate, enumErr := windows.CertEnumCertificatesInStore(store, previous)
 		previous = nil
@@ -62,31 +84,37 @@ func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request
 			if windowsCertificateEnumerationComplete(enumErr) {
 				break
 			}
-			return nil, fmt.Errorf("enumerate CurrentUser Root certificates: %w", enumErr)
+			return fmt.Errorf("enumerate CurrentUser Root certificates: %w", enumErr)
 		}
 		previous = certificate
 		der, err := windowsCertificateDER(certificate)
 		if err != nil {
 			_ = windows.CertFreeCertificateContext(certificate)
-			return nil, err
+			return err
 		}
 		friendlyName, _, err := windowsCertificateFriendlyName(certificate)
 		if err != nil {
 			_ = windows.CertFreeCertificateContext(certificate)
-			return nil, err
+			return err
 		}
 		fingerprint := sha256.Sum256(der)
-		if hex.EncodeToString(fingerprint[:]) != request.AuthorityFingerprint() &&
+		fingerprintText := hex.EncodeToString(fingerprint[:])
+		if fingerprintText != request.AuthorityFingerprint() &&
 			!strings.HasPrefix(friendlyName, windowsTrustOwnerPrefix) {
 			continue
 		}
-		if len(entries) == maximumTrustEntries {
-			_ = windows.CertFreeCertificateContext(certificate)
-			return nil, fmt.Errorf("Windows trust store exceeds relevant entry limit %d", maximumTrustEntries)
+		key := fingerprintText + "\x00" + friendlyName
+		if _, ok := seen[key]; ok {
+			continue
 		}
-		entries = append(entries, windowsTrustEntry{CertificateDER: der, FriendlyName: friendlyName})
+		if len(*entries) == maximumTrustEntries {
+			_ = windows.CertFreeCertificateContext(certificate)
+			return fmt.Errorf("Windows trust store exceeds relevant entry limit %d", maximumTrustEntries)
+		}
+		seen[key] = struct{}{}
+		*entries = append(*entries, windowsTrustEntry{CertificateDER: der, FriendlyName: friendlyName})
 	}
-	return entries, nil
+	return nil
 }
 
 // ensure writes through the current-user policy store because Windows filters unconfirmed roots from the default physical store.
