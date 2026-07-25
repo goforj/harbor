@@ -148,24 +148,28 @@ func TestWindowsNRPTPowerShellRepairOmitsDisabledFeatureDependents(t *testing.T)
 	}
 }
 
-// TestWindowsNRPTPowerShellImportsOnlyTheInboxModule prevents elevated command
+// TestWindowsNRPTPowerShellImportsOnlyInboxModules prevents elevated command
 // discovery from consulting a caller-controlled PowerShell module path.
-func TestWindowsNRPTPowerShellImportsOnlyTheInboxModule(t *testing.T) {
+func TestWindowsNRPTPowerShellImportsOnlyInboxModules(t *testing.T) {
 	modulePath := "$env:PSModulePath = Join-Path $PSHOME 'Modules'"
 	autoload := "$PSModuleAutoLoadingPreference = 'None'"
-	importModule := "Import-Module -Name DnsClient -Force -ErrorAction Stop"
+	importModules := "foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient'))"
+	importModule := "Import-Module -Name $module -Force -ErrorAction Stop"
 	modulePathIndex := strings.Index(windowsNRPTPowerShellProgram, modulePath)
 	autoloadIndex := strings.Index(windowsNRPTPowerShellProgram, autoload)
+	importModulesIndex := strings.Index(windowsNRPTPowerShellProgram, importModules)
 	importIndex := strings.Index(windowsNRPTPowerShellProgram, importModule)
 	firstCmdletIndex := strings.Index(windowsNRPTPowerShellProgram, "Get-DnsClientNrptRule")
 	if modulePathIndex < 0 ||
 		autoloadIndex <= modulePathIndex ||
-		importIndex <= autoloadIndex ||
+		importModulesIndex <= autoloadIndex ||
+		importIndex <= importModulesIndex ||
 		firstCmdletIndex <= importIndex {
 		t.Fatalf(
-			"Windows NRPT module boundary ordering = %d/%d/%d/%d",
+			"Windows NRPT module boundary ordering = %d/%d/%d/%d/%d",
 			modulePathIndex,
 			autoloadIndex,
+			importModulesIndex,
 			importIndex,
 			firstCmdletIndex,
 		)
@@ -177,6 +181,8 @@ func TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers(t *testing.T) {
 	for _, marker := range []string{
 		"harbor-stage=module-import",
 		"$script:HarborStage = 'input'",
+		"$script:HarborStage = 'parse'",
+		"$script:HarborStage = 'validation'",
 		"$script:HarborStage = 'enumerate'",
 		"$script:HarborStage = 'output'",
 		"$script:HarborStage = 'precondition'",

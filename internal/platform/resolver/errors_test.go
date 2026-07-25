@@ -19,6 +19,8 @@ func TestResolverDiagnosticClassifiesOnlyFiniteNativeCauses(t *testing.T) {
 		{name: "canceled", cause: context.Canceled, want: "canceled"},
 		{name: "module import stage", cause: errors.New("harbor-stage=module-import"), want: "module-import"},
 		{name: "input stage", cause: errors.New("harbor-stage=input; private detail"), want: "input-stage"},
+		{name: "parse stage", cause: errors.New("harbor-stage=parse; private detail"), want: "parse-stage"},
+		{name: "validation stage", cause: errors.New("harbor-stage=validation; private detail"), want: "validation-stage"},
 		{name: "enumeration stage", cause: errors.New("harbor-stage=enumerate; private detail"), want: "enumeration-stage"},
 		{name: "output stage", cause: errors.New("harbor-stage=output; private detail"), want: "output-stage"},
 		{name: "precondition stage", cause: errors.New("harbor-stage=precondition; private detail"), want: "precondition-stage"},

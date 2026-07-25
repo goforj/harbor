@@ -47,6 +47,8 @@ func TestResponseForResolverFailureExposesOnlyFiniteDiagnostics(t *testing.T) {
 	for _, native := range []string{
 		"module-import",
 		"input-stage",
+		"parse-stage",
+		"validation-stage",
 		"enumeration-stage",
 		"output-stage",
 		"precondition-stage",

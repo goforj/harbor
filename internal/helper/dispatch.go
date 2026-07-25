@@ -1161,6 +1161,8 @@ func validResolverNativeDiagnostic(native string) bool {
 		"canceled",
 		"module-import",
 		"input-stage",
+		"parse-stage",
+		"validation-stage",
 		"enumeration-stage",
 		"output-stage",
 		"precondition-stage",

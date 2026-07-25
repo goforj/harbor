@@ -424,7 +424,9 @@ $env:PSModulePath = Join-Path $PSHOME 'Modules'
 $PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 3.0
 try {
-    Import-Module -Name DnsClient -Force -ErrorAction Stop
+    foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient')) {
+        Import-Module -Name $module -Force -ErrorAction Stop
+    }
 } catch {
     [Console]::Error.Write('harbor-stage=module-import')
     exit 1
@@ -561,7 +563,9 @@ function Assert-Expected([object[]]$Current, [object[]]$Expected) {
 try {
     $inputText = [Console]::In.ReadToEnd()
     if ($inputText.Length -eq 0 -or $inputText.Length -gt 262144) { throw 'NRPT command input has an invalid size' }
+    $script:HarborStage = 'parse'
     $request = $inputText | ConvertFrom-Json -ErrorAction Stop
+    $script:HarborStage = 'validation'
     Require-Fields $request @('operation', 'suffix', 'display_name', 'comment', 'server', 'expected', 'guard') 'request'
     Require-Fields $request.guard @('exists', 'name', 'native_attributes_sha256') 'guard'
     if ([string]$request.suffix -cne '.test') { throw 'NRPT suffix is not authorized' }

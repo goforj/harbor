@@ -82,6 +82,10 @@ func resolverNativeDiagnostic(cause error) string {
 		return "module-import"
 	case strings.Contains(message, "harbor-stage=input"):
 		return "input-stage"
+	case strings.Contains(message, "harbor-stage=parse"):
+		return "parse-stage"
+	case strings.Contains(message, "harbor-stage=validation"):
+		return "validation-stage"
 	case strings.Contains(message, "harbor-stage=enumerate"):
 		return "enumeration-stage"
 	case strings.Contains(message, "harbor-stage=output"):
