@@ -191,6 +191,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Exercise production direct low-port lifecycle
+        shell: pwsh
+        env:
+          HARBOR_WINDOWS_DIRECT_LOW_PORT_TEST: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          go test `
+            -count=1 `
+            -run "^TestWindowsMediumIntegrityDirectLowPortLifecycle$" `
+            ./internal/network/dataplane
+
       - name: Build pinned GoForj tools
         shell: pwsh
         run: |

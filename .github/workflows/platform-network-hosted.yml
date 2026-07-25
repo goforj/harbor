@@ -58,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           $env:HARBOR_WINDOWS_TRUST_TEST = '1'
-          go test -count=1 -run '^TestWindowsCurrentUserRootLifecycle$' ./internal/platform/trust
+          go test -v -count=1 -timeout=2m -run '^TestWindowsCurrentUserRootLifecycle$' ./internal/platform/trust
 
       - name: Build pinned GoForj tools on Unix
         if: runner.os != 'Windows'

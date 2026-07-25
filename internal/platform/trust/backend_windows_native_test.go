@@ -34,6 +34,7 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	t.Log("observing initial CurrentUser Root state")
 	before, err := adapter.Observe(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Observe(before) error = %v", err)
@@ -72,6 +73,7 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 			t.Errorf("cleanup ReleaseIfObserved() error = %v", releaseErr)
 		}
 	})
+	t.Log("ensuring marked CurrentUser Root certificate")
 	ensured, err := adapter.EnsureIfObserved(t.Context(), request, beforeFingerprint)
 	if err != nil {
 		t.Fatalf("EnsureIfObserved() error = %v", err)
@@ -89,6 +91,7 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fingerprint(ensured) error = %v", err)
 	}
+	t.Log("releasing marked CurrentUser Root certificate")
 	released, err := adapter.ReleaseIfObserved(t.Context(), request, ensuredFingerprint)
 	if err != nil {
 		t.Fatalf("ReleaseIfObserved() error = %v", err)
