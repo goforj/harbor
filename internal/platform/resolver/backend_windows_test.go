@@ -151,21 +151,21 @@ func TestWindowsNRPTPowerShellRepairOmitsDisabledFeatureDependents(t *testing.T)
 // TestWindowsNRPTPowerShellImportsOnlyTheInboxModule prevents elevated command
 // discovery from consulting a caller-controlled PowerShell module path.
 func TestWindowsNRPTPowerShellImportsOnlyTheInboxModule(t *testing.T) {
+	modulePath := "$env:PSModulePath = Join-Path $PSHOME 'Modules'"
 	autoload := "$PSModuleAutoLoadingPreference = 'None'"
-	module := "$dnsClientModule = Join-Path $PSHOME 'Modules\\DnsClient\\DnsClient.psd1'"
-	importModule := "Import-Module -Name $dnsClientModule -Force -ErrorAction Stop"
+	importModule := "Import-Module -Name DnsClient -Force -ErrorAction Stop"
+	modulePathIndex := strings.Index(windowsNRPTPowerShellProgram, modulePath)
 	autoloadIndex := strings.Index(windowsNRPTPowerShellProgram, autoload)
-	moduleIndex := strings.Index(windowsNRPTPowerShellProgram, module)
 	importIndex := strings.Index(windowsNRPTPowerShellProgram, importModule)
 	firstCmdletIndex := strings.Index(windowsNRPTPowerShellProgram, "Get-DnsClientNrptRule")
-	if autoloadIndex < 0 ||
-		moduleIndex <= autoloadIndex ||
-		importIndex <= moduleIndex ||
+	if modulePathIndex < 0 ||
+		autoloadIndex <= modulePathIndex ||
+		importIndex <= autoloadIndex ||
 		firstCmdletIndex <= importIndex {
 		t.Fatalf(
 			"Windows NRPT module boundary ordering = %d/%d/%d/%d",
+			modulePathIndex,
 			autoloadIndex,
-			moduleIndex,
 			importIndex,
 			firstCmdletIndex,
 		)
