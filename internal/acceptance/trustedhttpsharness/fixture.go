@@ -97,10 +97,18 @@ func validateFixtureExecutable(filename string) error {
 	if err != nil {
 		return fmt.Errorf("inspect GoForj fixture executable: %w", err)
 	}
-	if information.Mode()&os.ModeSymlink != 0 || !information.Mode().IsRegular() || information.Mode().Perm()&0o111 == 0 {
+	if !fixtureExecutableModeValid(runtime.GOOS, information.Mode()) {
 		return errors.New("GoForj fixture executable must be a direct executable regular file")
 	}
 	return nil
+}
+
+// fixtureExecutableModeValid preserves direct-file validation while recognizing that Windows has no POSIX execute bits.
+func fixtureExecutableModeValid(goos string, mode os.FileMode) bool {
+	if mode&os.ModeSymlink != 0 || !mode.IsRegular() {
+		return false
+	}
+	return goos == "windows" || mode.Perm()&0o111 != 0
 }
 
 // fixtureExecutableBase preserves the native executable name while rejecting caller-selected aliases.

@@ -975,8 +975,10 @@ func trustedHTTPSAwaitProjectState(
 					}
 					lastErr = fmt.Errorf("project has %d resources at %q, want exactly one", matches, wantURL)
 				}
+			} else {
+				lastErr = fmt.Errorf("project state is %q, want %q", project.State, wantState)
 			}
-		} else {
+		} else if lastErr == nil {
 			lastErr = err
 		}
 		select {
