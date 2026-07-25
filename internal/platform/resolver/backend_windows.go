@@ -420,12 +420,14 @@ const windowsNRPTPowerShellProgram = `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $InformationPreference = 'SilentlyContinue'
 $WarningPreference = 'Stop'
-$env:PSModulePath = Join-Path $PSHOME 'Modules'
+$moduleRoot = [IO.Path]::Combine($PSHOME, 'Modules')
+$env:PSModulePath = $moduleRoot
 $PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 3.0
 try {
     foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient')) {
-        Import-Module -Name $module -Force -ErrorAction Stop
+        $manifest = [IO.Path]::Combine($moduleRoot, $module, "$module.psd1")
+        Import-Module -Name $manifest -Force -ErrorAction Stop
     }
 } catch {
     [Console]::Error.Write('harbor-stage=module-import')

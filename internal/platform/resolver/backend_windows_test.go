@@ -151,25 +151,33 @@ func TestWindowsNRPTPowerShellRepairOmitsDisabledFeatureDependents(t *testing.T)
 // TestWindowsNRPTPowerShellImportsOnlyInboxModules prevents elevated command
 // discovery from consulting a caller-controlled PowerShell module path.
 func TestWindowsNRPTPowerShellImportsOnlyInboxModules(t *testing.T) {
-	modulePath := "$env:PSModulePath = Join-Path $PSHOME 'Modules'"
+	moduleRoot := "$moduleRoot = [IO.Path]::Combine($PSHOME, 'Modules')"
+	modulePath := "$env:PSModulePath = $moduleRoot"
 	autoload := "$PSModuleAutoLoadingPreference = 'None'"
 	importModules := "foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'DnsClient'))"
-	importModule := "Import-Module -Name $module -Force -ErrorAction Stop"
+	manifest := `$manifest = [IO.Path]::Combine($moduleRoot, $module, "$module.psd1")`
+	importModule := "Import-Module -Name $manifest -Force -ErrorAction Stop"
+	moduleRootIndex := strings.Index(windowsNRPTPowerShellProgram, moduleRoot)
 	modulePathIndex := strings.Index(windowsNRPTPowerShellProgram, modulePath)
 	autoloadIndex := strings.Index(windowsNRPTPowerShellProgram, autoload)
 	importModulesIndex := strings.Index(windowsNRPTPowerShellProgram, importModules)
+	manifestIndex := strings.Index(windowsNRPTPowerShellProgram, manifest)
 	importIndex := strings.Index(windowsNRPTPowerShellProgram, importModule)
 	firstCmdletIndex := strings.Index(windowsNRPTPowerShellProgram, "Get-DnsClientNrptRule")
-	if modulePathIndex < 0 ||
+	if moduleRootIndex < 0 ||
+		modulePathIndex <= moduleRootIndex ||
 		autoloadIndex <= modulePathIndex ||
 		importModulesIndex <= autoloadIndex ||
-		importIndex <= importModulesIndex ||
+		manifestIndex <= importModulesIndex ||
+		importIndex <= manifestIndex ||
 		firstCmdletIndex <= importIndex {
 		t.Fatalf(
-			"Windows NRPT module boundary ordering = %d/%d/%d/%d/%d",
+			"Windows NRPT module boundary ordering = %d/%d/%d/%d/%d/%d/%d",
+			moduleRootIndex,
 			modulePathIndex,
 			autoloadIndex,
 			importModulesIndex,
+			manifestIndex,
 			importIndex,
 			firstCmdletIndex,
 		)
