@@ -89,7 +89,7 @@ func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request
 	return entries, nil
 }
 
-// ensure writes through the unprotected current-user registry provider so headless setup cannot stall on protected-root UI.
+// ensure writes through the current-user policy store because Windows filters unconfirmed roots from the default physical store.
 func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Request) error {
 	if err := validateWindowsTrustRequest(request); err != nil {
 		return err
@@ -116,7 +116,7 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 	if err := setWindowsCertificateFriendlyName(certificate, windowsTrustOwnerName(request)); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootMutationStore()
+	rootStore, err := openWindowsCurrentUserRootPolicyStore()
 	if err != nil {
 		return err
 	}
@@ -124,10 +124,10 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 
 	var stored *windows.CertContext
 	if err := windows.CertAddCertificateContextToStore(rootStore, certificate, windows.CERT_STORE_ADD_NEW, &stored); err != nil {
-		return fmt.Errorf("add unprotected CurrentUser Root certificate: %w: %v", errNativeMutationConflict, err)
+		return fmt.Errorf("add CurrentUser policy Root certificate: %w: %v", errNativeMutationConflict, err)
 	}
 	if stored == nil {
-		return errors.New("unprotected CurrentUser Root insertion returned no certificate context")
+		return errors.New("CurrentUser policy Root insertion returned no certificate context")
 	}
 	defer windows.CertFreeCertificateContext(stored)
 	return nil
@@ -141,7 +141,7 @@ func (store windowsCurrentUserRootStore) release(ctx context.Context, request Re
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootMutationStore()
+	rootStore, err := openWindowsCurrentUserRootPolicyStore()
 	if err != nil {
 		return err
 	}
@@ -224,13 +224,13 @@ func openWindowsCurrentUserRootStore() (windows.Handle, error) {
 	return store, nil
 }
 
-// openWindowsCurrentUserRootMutationStore bypasses interactive protected-root policy for this user's physical registry store.
-func openWindowsCurrentUserRootMutationStore() (windows.Handle, error) {
+// openWindowsCurrentUserRootPolicyStore opens the current account's Root policy store without crossing into machine state.
+func openWindowsCurrentUserRootPolicyStore() (windows.Handle, error) {
 	name, err := windows.UTF16PtrFromString(windowsRootStoreName)
 	if err != nil {
-		return 0, fmt.Errorf("encode CurrentUser Root mutation store name: %w", err)
+		return 0, fmt.Errorf("encode CurrentUser policy Root store name: %w", err)
 	}
-	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER | windows.CERT_SYSTEM_STORE_UNPROTECTED_FLAG)
+	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY)
 	store, err := windows.CertOpenStore(
 		uintptr(windows.CERT_STORE_PROV_SYSTEM_REGISTRY),
 		0,
@@ -239,7 +239,7 @@ func openWindowsCurrentUserRootMutationStore() (windows.Handle, error) {
 		uintptr(unsafe.Pointer(name)),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("open unprotected CurrentUser Root registry store: %w", err)
+		return 0, fmt.Errorf("open CurrentUser policy Root registry store: %w", err)
 	}
 	return store, nil
 }
