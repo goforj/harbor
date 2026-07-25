@@ -1027,8 +1027,14 @@ func responseForError(err error) Response {
 		responseError.Message = "helper platform mutation is unavailable"
 	default:
 		var lowPortError lowPortFailureDiagnostic
+		var resolverError resolverFailureDiagnostic
 		var trustError *trust.Error
-		if errors.As(err, &lowPortError) {
+		if errors.As(err, &resolverError) {
+			operation, kind, state, owned, native := resolverError.ResolverDiagnostic()
+			if message, ok := resolverFailureDiagnosticMessage(operation, kind, state, owned, native); ok {
+				responseError.Message = message
+			}
+		} else if errors.As(err, &lowPortError) {
 			action, kind := lowPortError.LowPortDiagnostic()
 			if message, ok := lowPortFailureDiagnosticMessage(action, kind); ok {
 				responseError.Message = message
@@ -1082,6 +1088,82 @@ func validTrustFailureOperationKind(operation string, kind trust.ErrorKind) bool
 			kind == trust.ErrorKindIndeterminate ||
 			kind == trust.ErrorKindMutationFailed ||
 			kind == trust.ErrorKindVerificationFailed
+	default:
+		return false
+	}
+}
+
+// resolverFailureDiagnostic is implemented by the platform adapter without reversing package dependencies.
+type resolverFailureDiagnostic interface {
+	ResolverDiagnostic() (string, string, string, string, string)
+}
+
+// resolverFailureDiagnosticMessage exposes only finite resolver operation, classification, and native categories.
+func resolverFailureDiagnosticMessage(operation string, kind string, state string, owned string, native string) (string, bool) {
+	if !validResolverFailureOperationKind(operation, kind) ||
+		!validResolverFailureAssessment(state, owned) ||
+		!validResolverNativeDiagnostic(native) {
+		return "", false
+	}
+	message := fmt.Sprintf("helper operation failed: resolver %s %s", operation, kind)
+	if state != "" {
+		message += fmt.Sprintf(" %s/%s", state, owned)
+	}
+	if native != "" {
+		message += " " + native
+	}
+	return message, true
+}
+
+// validResolverFailureOperationKind rejects arbitrary text carried by an exported adapter error.
+func validResolverFailureOperationKind(operation string, kind string) bool {
+	switch operation {
+	case "observe":
+		return kind == "invalid-request" ||
+			kind == "observe-failed" ||
+			kind == "invalid-facts"
+	case "ensure", "release":
+		return kind == "invalid-request" ||
+			kind == "invalid-facts" ||
+			kind == "observation-changed" ||
+			kind == "resolver-conflict" ||
+			kind == "resolver-indeterminate" ||
+			kind == "mutation-failed" ||
+			kind == "verification-failed"
+	default:
+		return false
+	}
+}
+
+// validResolverFailureAssessment accepts either no classification or one finite state pair.
+func validResolverFailureAssessment(state string, owned string) bool {
+	if state == "" || owned == "" {
+		return state == "" && owned == ""
+	}
+	switch state {
+	case "absent", "exact", "owned-drifted", "foreign", "ambiguous", "indeterminate":
+	default:
+		return false
+	}
+	switch owned {
+	case "absent", "exact", "drifted", "ambiguous":
+		return true
+	default:
+		return false
+	}
+}
+
+// validResolverNativeDiagnostic accepts only categories derived without native error text.
+func validResolverNativeDiagnostic(native string) bool {
+	switch native {
+	case "",
+		"deadline",
+		"canceled",
+		"precondition-changed",
+		"disabled-feature-parameters",
+		"access-denied",
+		"native-failure":
+		return true
 	default:
 		return false
 	}

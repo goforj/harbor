@@ -1,6 +1,11 @@
 package resolver
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // ErrorKind classifies a resolver failure without exposing unbounded native diagnostics.
 type ErrorKind string
@@ -44,6 +49,41 @@ func (e *Error) Error() string {
 // Unwrap preserves the native or validation cause for programmatic diagnostics.
 func (e *Error) Unwrap() error {
 	return e.cause
+}
+
+// ResolverDiagnostic returns only finite adapter and native categories that are
+// safe to cross the privileged helper response boundary.
+func (e *Error) ResolverDiagnostic() (string, string, string, string, string) {
+	return e.Operation,
+		string(e.Kind),
+		string(e.Assessment.State),
+		string(e.Assessment.Owned),
+		resolverNativeDiagnostic(e.cause)
+}
+
+// resolverNativeDiagnostic classifies native causes without exposing their host-specific text.
+func resolverNativeDiagnostic(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(cause, context.Canceled):
+		return "canceled"
+	}
+	message := strings.ToLower(cause.Error())
+	switch {
+	case strings.Contains(message, "nrpt relevant rule count changed before mutation") ||
+		strings.Contains(message, "nrpt relevant rule set changed before mutation"):
+		return "precondition-changed"
+	case strings.Contains(message, "dnssec is not configured on the rule"):
+		return "disabled-feature-parameters"
+	case strings.Contains(message, "access is denied"):
+		return "access-denied"
+	default:
+		return "native-failure"
+	}
 }
 
 // operationError constructs one typed failure while keeping its display representation bounded.
