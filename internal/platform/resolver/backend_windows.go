@@ -417,7 +417,10 @@ const windowsNRPTPowerShellProgram = `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $InformationPreference = 'SilentlyContinue'
 $WarningPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 3.0
+$dnsClientModule = Join-Path $PSHOME 'Modules\DnsClient\DnsClient.psd1'
+Import-Module -Name $dnsClientModule -Force -ErrorAction Stop
 
 function Require-Fields([object]$Value, [string[]]$Names, [string]$Label) {
     if ($null -eq $Value) { throw "$Label is missing" }
