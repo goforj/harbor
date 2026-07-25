@@ -9,6 +9,11 @@ func systemCurlPath() string {
 	return "/usr/bin/curl"
 }
 
+// nativeCurlTLSArguments keeps Unix curl on its unmodified TLS policy.
+func nativeCurlTLSArguments() []string {
+	return nil
+}
+
 // nativeProbeEnvironment preserves only the user identity needed by the native trust backend.
 func nativeProbeEnvironment() []string {
 	environment := []string{"LANG=C", "LC_ALL=C", "PATH=/usr/bin:/bin"}

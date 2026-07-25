@@ -55,7 +55,7 @@ func TestProbeUsesOnlyLiteralSystemHTTPS(t *testing.T) {
 			t.Fatalf("command %d URL = %q, want %q", index, command.Arguments[len(command.Arguments)-1], wantURL)
 		}
 		joined := strings.Join(command.Arguments, " ")
-		for _, forbidden := range []string{"--resolve", "--connect-to", "--cacert", "--capath", "--insecure", "-k", ":443"} {
+		for _, forbidden := range []string{"--resolve", "--connect-to", "--cacert", "--capath", "--insecure", "--ssl-no-revoke", "-k", ":443"} {
 			if strings.Contains(joined, forbidden) {
 				t.Fatalf("command %d contains forbidden %q: %#v", index, forbidden, command.Arguments)
 			}

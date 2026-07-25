@@ -141,19 +141,23 @@ func (ExecRunner) Run(ctx context.Context, specification Command) (CommandResult
 // system resolver sees a literal name, curl uses implicit 443 and its default
 // trust backend, and ambient proxy, curlrc, or CA overrides cannot help it pass.
 func curlCommand(domain string) Command {
+	arguments := []string{
+		"--disable",
+		"--fail",
+		"--silent",
+		"--show-error",
+	}
+	arguments = append(arguments, nativeCurlTLSArguments()...)
+	arguments = append(arguments,
+		"--noproxy", "*",
+		"--proto", "=https",
+		"--connect-timeout", "10",
+		"--max-time", "30",
+		"https://"+domain+"/swagger/doc.json",
+	)
 	return Command{
-		Path: systemCurlPath(),
-		Arguments: []string{
-			"--disable",
-			"--fail",
-			"--silent",
-			"--show-error",
-			"--noproxy", "*",
-			"--proto", "=https",
-			"--connect-timeout", "10",
-			"--max-time", "30",
-			"https://" + domain + "/swagger/doc.json",
-		},
+		Path:        systemCurlPath(),
+		Arguments:   arguments,
 		Environment: nativeProbeEnvironment(),
 	}
 }

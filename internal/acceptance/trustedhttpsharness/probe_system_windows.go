@@ -19,6 +19,12 @@ func systemCurlPath() string {
 	return filepath.Join(root, "System32", "curl.exe")
 }
 
+// nativeCurlTLSArguments lets Schannel soft-fail only unavailable revocation data for Harbor's
+// short-lived local certificates while retaining its chain, hostname, lifetime, and trust checks.
+func nativeCurlTLSArguments() []string {
+	return []string{"--ssl-revoke-best-effort"}
+}
+
 // nativeProbeEnvironment preserves only Windows identity and system-path inputs needed by Schannel.
 func nativeProbeEnvironment() []string {
 	environment := make([]string, 0, 5)
