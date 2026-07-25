@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -495,6 +496,46 @@ func TestGlobalNetworkReleaseStartStagesCompleteAuthority(t *testing.T) {
 	fixture.roots.root.CertificatePEM[0] ^= 0xff
 	if !reflect.DeepEqual(fixture.stage.Authority.Root.CertificatePEM, before) {
 		t.Fatal("staged root aliases observer bytes")
+	}
+}
+
+// TestGlobalNetworkReleaseStartSkipsWindowsLowPortMutation proves runtime retirement advances directly to resolver cleanup.
+func TestGlobalNetworkReleaseStartSkipsWindowsLowPortMutation(t *testing.T) {
+	fixture := newGlobalNetworkReleaseStartFixture(t)
+	fixture.setWindowsDirectAuthority(t)
+	fixture.low.err = errors.New("Windows direct release must not observe Darwin low-port artifacts")
+	fixture.runtimeRelease.released = func() state.GlobalNetworkReleasePlanRecord {
+		released := fixture.journal.plan
+		released.Phase = state.GlobalNetworkReleasePlanPhaseLowPorts
+		released.CheckpointRevision++
+		return released
+	}
+	advanced := false
+	fixture.journal.lowPortAdvance = func(request state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+		advanced = true
+		digest, err := directLowPortEvidenceDigest(fixture.journal.plan.Authority.Policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.Receipt.LowPortEvidenceDigest != digest ||
+			request.Receipt.OwnedAbsentObservationFingerprint != digest {
+			t.Fatalf("direct release receipt = %#v", request)
+		}
+		result := fixture.runtimeRelease.released()
+		result.Phase = state.GlobalNetworkReleasePlanPhaseResolver
+		result.CheckpointRevision++
+		return result, nil
+	}
+
+	got, err := fixture.coordinator.Start(t.Context(), fixture.request)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got != fixture.staged || !advanced {
+		t.Fatalf("Start() = %#v, advanced = %t", got, advanced)
+	}
+	if slices.Contains(fixture.calls, "low") {
+		t.Fatalf("Windows direct release observed low-port artifacts: %v", fixture.calls)
 	}
 }
 
@@ -1235,6 +1276,33 @@ func (fixture *globalNetworkReleaseStartFixture) setLegacyMacOSAuthority(t *test
 	fixture.resolver.observation = networkResolverSetupTestExactObservation(t, target, policy)
 }
 
+// setWindowsDirectAuthority rewrites only test fixtures to model the Windows direct-listener product profile.
+func (fixture *globalNetworkReleaseStartFixture) setWindowsDirectAuthority(t *testing.T) {
+	t.Helper()
+	policy, err := networkplan.Build(networkplan.Request{
+		Platform:             networkplan.PlatformWindows11,
+		InstallationID:       fixture.runtime.Network.Ownership.InstallationID,
+		Pool:                 fixture.runtime.Network.Pool,
+		AuthorityFingerprint: fixture.roots.root.Fingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fixture.projection.ConfirmedOwnership.Record
+	target.OwnerIdentity = "S-1-5-21-100-200-300-1001"
+	target.NetworkPolicyFingerprint = fingerprint
+	fixture.request.RequesterIdentity = target.OwnerIdentity
+	fixture.projection.Listeners = networkResolverSetupTestListeners(policy, fixture.projection.NetworkUpdatedAt)
+	fixture.projection.ConfirmedOwnership = networkResolverSetupTestOwnershipObservation(t, target)
+	fixture.ownership.observation = fixture.projection.ConfirmedOwnership
+	fixture.resolver.observation = networkResolverSetupTestExactObservation(t, target, policy)
+	fixture.coordinator.platform = networkplan.PlatformWindows11
+}
+
 // refreshOwnership synchronizes the independent ownership observer after fixture record changes.
 func (fixture *globalNetworkReleaseStartFixture) refreshOwnership(t *testing.T) {
 	t.Helper()
@@ -1295,6 +1363,7 @@ type globalNetworkReleaseJournal struct {
 	ownershipCalls         int
 	ownershipRequest       state.AdvanceGlobalNetworkReleaseOwnershipRequest
 	ownershipErr           error
+	lowPortAdvance         func(state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error)
 	finalizeCalls          int
 	finalizeRequest        state.FinalizeGlobalNetworkReleaseProjectionRequest
 	finalizeErr            error
@@ -1379,7 +1448,10 @@ func (journal *globalNetworkReleaseJournal) ReadGlobalNetworkReleasePlan(_ conte
 }
 
 // AdvanceGlobalNetworkReleaseLowPorts is not exercised by start tests.
-func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPorts(context.Context, state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+func (journal *globalNetworkReleaseJournal) AdvanceGlobalNetworkReleaseLowPorts(_ context.Context, request state.AdvanceGlobalNetworkReleaseLowPortsRequest) (state.GlobalNetworkReleasePlanRecord, error) {
+	if journal.lowPortAdvance != nil {
+		return journal.lowPortAdvance(request)
+	}
 	return state.GlobalNetworkReleasePlanRecord{}, errors.New("unexpected low-port advance")
 }
 
@@ -1646,6 +1718,7 @@ type globalNetworkReleaseRuntime struct {
 	verifyNetwork    domain.Sequence
 	verifyDigest     string
 	verifyErr        error
+	released         func() state.GlobalNetworkReleasePlanRecord
 }
 
 // ReleaseNetworkRuntime records the runtime boundary.
@@ -1653,6 +1726,9 @@ func (runtime *globalNetworkReleaseRuntime) ReleaseNetworkRuntime(_ context.Cont
 	runtime.fixture.call("runtime")
 	runtime.calls++
 	runtime.operationID = operationID
+	if runtime.released != nil {
+		return runtime.released(), runtime.err
+	}
 	return state.GlobalNetworkReleasePlanRecord{}, runtime.err
 }
 

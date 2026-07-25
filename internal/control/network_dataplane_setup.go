@@ -51,6 +51,12 @@ func RequiresNetworkDataPlaneLowPortApproval(snapshot NetworkDataPlaneSetupOpera
 		snapshot.Operation.Phase == networkDataPlaneSetupLowPortApprovalPhase
 }
 
+// NetworkDataPlaneSetupCompleted reports whether trusted ingress reached its exact terminal state.
+func NetworkDataPlaneSetupCompleted(snapshot NetworkDataPlaneSetupOperation) bool {
+	return snapshot.Operation.State == domain.OperationSucceeded &&
+		snapshot.Operation.Phase == networkDataPlaneSetupCompletedPhase
+}
+
 // Validate reports whether the snapshot is one valid global data-plane setup operation at a bounded revision.
 func (snapshot NetworkDataPlaneSetupOperation) Validate() error {
 	if err := snapshot.Operation.Validate(); err != nil {

@@ -26,6 +26,7 @@ type recordingDataPlaneCoordinator struct {
 	trustConfirm   reconcile.NetworkDataPlaneSetupConfirmTrustRequest
 	lowPortPrepare reconcile.NetworkDataPlaneSetupPrepareLowPortsRequest
 	lowPortConfirm reconcile.NetworkDataPlaneSetupConfirmLowPortsRequest
+	trustResult    state.OperationRecord
 	err            error
 }
 
@@ -44,7 +45,7 @@ func (c *recordingDataPlaneCoordinator) PrepareTrust(_ context.Context, r reconc
 // ConfirmTrust records the trust confirmation request so the boundary test can inspect it.
 func (c *recordingDataPlaneCoordinator) ConfirmTrust(_ context.Context, r reconcile.NetworkDataPlaneSetupConfirmTrustRequest) (state.OperationRecord, error) {
 	c.trustConfirm = r
-	return state.OperationRecord{}, c.err
+	return c.trustResult, c.err
 }
 
 // PrepareLowPorts records the low-port preparation request so the boundary test can inspect it.
@@ -63,6 +64,47 @@ func (c *recordingDataPlaneCoordinator) ConfirmLowPorts(_ context.Context, r rec
 type recordingDataPlaneOperations struct {
 	request domain.OperationID
 	err     error
+}
+
+// TestNetworkDataPlaneAuthorityAcceptsDirectCompletionAfterTrust proves the authenticated boundary returns terminal Windows setup.
+func TestNetworkDataPlaneAuthorityAcceptsDirectCompletionAfterTrust(t *testing.T) {
+	now := time.Now().UTC()
+	finishedAt := now.Add(time.Second)
+	operation := domain.Operation{
+		ID:          "operation-data-plane",
+		IntentID:    "intent-data-plane",
+		Kind:        domain.OperationKindNetworkDataPlaneSetup,
+		State:       domain.OperationSucceeded,
+		Phase:       "completed",
+		RequestedAt: now,
+		StartedAt:   &now,
+		FinishedAt:  &finishedAt,
+	}
+	coordinator := &recordingDataPlaneCoordinator{trustResult: state.OperationRecord{Operation: operation, Revision: 9}}
+	authority := newNetworkDataPlaneSetupAuthority(&recordingDataPlaneOperations{}, coordinator, time.Now, func() (domain.OperationID, error) {
+		return "operation-generated", nil
+	})
+	evidence := helper.TrustMutationEvidence{
+		AuthorityFingerprint:   strings.Repeat("a", 64),
+		ObservationFingerprint: strings.Repeat("b", 64),
+		Mechanism:              networkpolicy.WindowsMachineTrust,
+		Postcondition:          helper.TrustPostconditionExact,
+	}
+	setup, err := authority.ConfirmNetworkDataPlaneTrustApproval(
+		t.Context(),
+		control.Caller{Transport: local.PeerIdentity{UserID: "S-1-5-21-100-200-300-1001"}},
+		control.ConfirmNetworkDataPlaneTrustApprovalRequest{
+			OperationID:               operation.ID,
+			ExpectedOperationRevision: 7,
+			TrustEvidence:             evidence,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ConfirmNetworkDataPlaneTrustApproval() error = %v", err)
+	}
+	if !control.NetworkDataPlaneSetupCompleted(setup) || setup.Revision != 9 {
+		t.Fatalf("direct trust confirmation = %#v", setup)
+	}
 }
 
 // Operation records the requested operation identity for the boundary test.

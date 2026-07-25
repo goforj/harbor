@@ -317,10 +317,13 @@ func (command *SetupCmd) completeDataPlane(ctx context.Context) error {
 		if trusted.Operation.ID != selected.Operation.ID ||
 			trusted.Operation.IntentID != selected.Operation.IntentID ||
 			trusted.Revision <= selected.Revision ||
-			!control.RequiresNetworkDataPlaneLowPortApproval(trusted) {
+			(!control.RequiresNetworkDataPlaneLowPortApproval(trusted) && !control.NetworkDataPlaneSetupCompleted(trusted)) {
 			return errors.New("validate network data-plane trust confirmation: result crossed the selected operation revision")
 		}
 		setup = trusted
+	}
+	if control.NetworkDataPlaneSetupCompleted(setup) {
+		return nil
 	}
 	if setup.Operation.Phase != "awaiting low-port approval" {
 		return fmt.Errorf("network data-plane setup requires approval in unsupported phase %q", setup.Operation.Phase)

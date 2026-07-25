@@ -101,7 +101,7 @@ func (authority *NetworkDataPlaneSetupAuthority) PrepareNetworkDataPlaneTrustApp
 	return preparation, nil
 }
 
-// ConfirmNetworkDataPlaneTrustApproval independently verifies trust and advances to low-port approval.
+// ConfirmNetworkDataPlaneTrustApproval independently verifies trust and advances to low-port approval or direct activation.
 func (authority *NetworkDataPlaneSetupAuthority) ConfirmNetworkDataPlaneTrustApproval(ctx context.Context, caller control.Caller, request control.ConfirmNetworkDataPlaneTrustApprovalRequest) (control.NetworkDataPlaneSetupOperation, error) {
 	if err := request.Validate(); err != nil {
 		return control.NetworkDataPlaneSetupOperation{}, err
@@ -114,8 +114,9 @@ func (authority *NetworkDataPlaneSetupAuthority) ConfirmNetworkDataPlaneTrustApp
 	if err != nil {
 		return control.NetworkDataPlaneSetupOperation{}, err
 	}
-	if setup.Revision <= request.ExpectedOperationRevision || !control.RequiresNetworkDataPlaneLowPortApproval(setup) {
-		return control.NetworkDataPlaneSetupOperation{}, errors.New("network data-plane trust confirmation did not reach low-port approval")
+	if setup.Revision <= request.ExpectedOperationRevision ||
+		(!control.RequiresNetworkDataPlaneLowPortApproval(setup) && !control.NetworkDataPlaneSetupCompleted(setup)) {
+		return control.NetworkDataPlaneSetupOperation{}, errors.New("network data-plane trust confirmation did not reach low-port approval or direct completion")
 	}
 	return setup, nil
 }

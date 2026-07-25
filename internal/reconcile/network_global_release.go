@@ -2275,6 +2275,16 @@ func (c *GlobalNetworkReleaseCoordinator) verifyReleaseLowPorts(
 	ctx context.Context,
 	durable state.GlobalNetworkReleasePlanRecord,
 ) (string, error) {
+	if directLowPortPolicy(durable.Authority.Policy) {
+		fingerprint, err := directLowPortEvidenceDigest(durable.Authority.Policy)
+		if err != nil {
+			return "", err
+		}
+		if durable.Authority.LowPortObservationFingerprint != fingerprint {
+			return "", errors.New("direct-listener release fingerprint differs from retained authority")
+		}
+		return fingerprint, nil
+	}
 	request, err := lowport.NewRequest(durable.Authority.Projection.ConfirmedOwnership.Record, durable.Authority.Policy)
 	if err != nil {
 		return "", fmt.Errorf("derive release low-port request: %w", err)
@@ -2451,8 +2461,16 @@ func (c *GlobalNetworkReleaseCoordinator) Recover(ctx context.Context) error {
 	}
 	switch plan.Phase {
 	case state.GlobalNetworkReleasePlanPhaseRuntimeRelease, state.GlobalNetworkReleasePlanPhaseLowPorts:
-		if _, err := c.runtime.ReleaseNetworkRuntime(ctx, plan.Operation.Operation.ID); err != nil {
-			return fmt.Errorf("recover global network release: release runtime: %w", err)
+		released, releaseErr := c.runtime.ReleaseNetworkRuntime(ctx, plan.Operation.Operation.ID)
+		if releaseErr != nil {
+			return fmt.Errorf("recover global network release: release runtime: %w", releaseErr)
+		}
+		if directLowPortPolicy(plan.Authority.Policy) &&
+			released.Phase == state.GlobalNetworkReleasePlanPhaseLowPorts &&
+			directLowPortPolicy(released.Authority.Policy) {
+			if _, err := c.advanceDirectReleaseLowPorts(ctx, released); err != nil {
+				return fmt.Errorf("recover global network release: advance direct listeners: %w", err)
+			}
 		}
 	case state.GlobalNetworkReleasePlanPhaseVerifyEffects:
 		if _, err := c.verifyReleaseEffects(ctx, plan); err != nil {
@@ -2485,8 +2503,18 @@ func (c *GlobalNetworkReleaseCoordinator) resume(ctx context.Context, operationI
 		return state.OperationRecord{}, &state.OperationNotFoundError{OperationID: operationID}
 	}
 	if plan.Phase == state.GlobalNetworkReleasePlanPhaseRuntimeRelease || plan.Phase == state.GlobalNetworkReleasePlanPhaseLowPorts {
-		if _, err := c.runtime.ReleaseNetworkRuntime(ctx, operationID); err != nil {
+		released, err := c.runtime.ReleaseNetworkRuntime(ctx, operationID)
+		if err != nil {
 			return state.OperationRecord{}, fmt.Errorf("release runtime: %w", err)
+		}
+		if directLowPortPolicy(plan.Authority.Policy) {
+			plan = released
+		}
+		if plan.Phase == state.GlobalNetworkReleasePlanPhaseLowPorts && directLowPortPolicy(plan.Authority.Policy) {
+			plan, err = c.advanceDirectReleaseLowPorts(ctx, plan)
+			if err != nil {
+				return state.OperationRecord{}, fmt.Errorf("advance direct-listener release: %w", err)
+			}
 		}
 	}
 	if plan.Phase == state.GlobalNetworkReleasePlanPhaseVerifyEffects {
@@ -2511,6 +2539,31 @@ func (c *GlobalNetworkReleaseCoordinator) resume(ctx context.Context, operationI
 		return completed, nil
 	}
 	return plan.Operation, nil
+}
+
+// advanceDirectReleaseLowPorts records that direct listeners were retired with the already-verified runtime.
+func (c *GlobalNetworkReleaseCoordinator) advanceDirectReleaseLowPorts(
+	ctx context.Context,
+	plan state.GlobalNetworkReleasePlanRecord,
+) (state.GlobalNetworkReleasePlanRecord, error) {
+	if plan.Phase != state.GlobalNetworkReleasePlanPhaseLowPorts || !directLowPortPolicy(plan.Authority.Policy) {
+		return state.GlobalNetworkReleasePlanRecord{}, errors.New("direct-listener release requires the low-port checkpoint")
+	}
+	digest, err := directLowPortEvidenceDigest(plan.Authority.Policy)
+	if err != nil {
+		return state.GlobalNetworkReleasePlanRecord{}, err
+	}
+	return c.journal.AdvanceGlobalNetworkReleaseLowPorts(ctx, state.AdvanceGlobalNetworkReleaseLowPortsRequest{
+		OperationID:        plan.Operation.Operation.ID,
+		CheckpointRevision: plan.CheckpointRevision,
+		NetworkRevision:    plan.NetworkRevision,
+		Receipt: state.GlobalNetworkReleaseLowPortReceipt{
+			SourceCheckpointRevision:          plan.CheckpointRevision,
+			LowPortEvidenceDigest:             digest,
+			OwnedAbsentObservationFingerprint: digest,
+			VerifiedAt:                        c.releaseNow(plan.NetworkUpdatedAt),
+		},
+	})
 }
 
 // recoverReleasedOwnership completes a checkpoint when the helper committed root proof before its client confirmation arrived.
@@ -2597,27 +2650,35 @@ func (c *GlobalNetworkReleaseCoordinator) authority(ctx context.Context, request
 	if observedOwnership != projection.ConfirmedOwnership {
 		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("ownership differs from full projection")
 	}
-	lowRequest, err := lowport.NewRequest(projection.ConfirmedOwnership.Record, policy)
-	if err != nil {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low-port request: %w", err)
-	}
-	low, err := c.lowPorts.Observe(ctx, lowRequest)
-	if err != nil {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low ports: %w", err)
-	}
-	if low.Request != lowRequest {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low-port observation belongs to another request")
-	}
-	lowState, err := low.State()
-	if err != nil {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("classify low ports: %w", err)
-	}
-	if lowState != lowport.StateExact {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low ports are not exact")
-	}
-	lowFingerprint, err := low.Fingerprint()
-	if err != nil {
-		return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("fingerprint low ports: %w", err)
+	var lowFingerprint string
+	if directLowPortPolicy(policy) {
+		lowFingerprint, err = directLowPortEvidenceDigest(policy)
+		if err != nil {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("fingerprint direct listeners: %w", err)
+		}
+	} else {
+		lowRequest, requestErr := lowport.NewRequest(projection.ConfirmedOwnership.Record, policy)
+		if requestErr != nil {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low-port request: %w", requestErr)
+		}
+		low, observeErr := c.lowPorts.Observe(ctx, lowRequest)
+		if observeErr != nil {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low ports: %w", observeErr)
+		}
+		if low.Request != lowRequest {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low-port observation belongs to another request")
+		}
+		lowState, stateErr := low.State()
+		if stateErr != nil {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("classify low ports: %w", stateErr)
+		}
+		if lowState != lowport.StateExact {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("low ports are not exact")
+		}
+		lowFingerprint, err = low.Fingerprint()
+		if err != nil {
+			return state.GlobalNetworkReleaseAuthority{}, fmt.Errorf("fingerprint low ports: %w", err)
+		}
 	}
 	resolverRequest, err := resolver.NewRequest(projection.ConfirmedOwnership.Record.InstallationID, policy)
 	if err != nil {

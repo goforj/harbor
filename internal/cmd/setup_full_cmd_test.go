@@ -429,6 +429,37 @@ func TestFullSetupCommandCompletesEveryApprovalInOrder(t *testing.T) {
 	}
 }
 
+// TestFullSetupCommandAcceptsDirectCompletionAfterTrust proves Windows setup skips the low-port approval runner.
+func TestFullSetupCommandAcceptsDirectCompletionAfterTrust(t *testing.T) {
+	fixture := newFullSetupCommandFixture(t)
+	trustSetup := setupCommandDataPlaneOperation(
+		t,
+		domain.OperationRequiresApproval,
+		"awaiting trust approval",
+		12,
+	)
+	completed := setupCommandDataPlaneOperation(t, domain.OperationSucceeded, "completed", 15)
+	fixture.connection.dataPlaneSetup = trustSetup
+	fixture.dataPlane.trust = networkdataplaneapproval.TrustOutcome{
+		State: networkdataplaneapproval.Succeeded,
+		Setup: &completed,
+	}
+	fixture.dataPlane.executeLow = func(context.Context, networkdataplaneapproval.Request) (networkdataplaneapproval.LowPortOutcome, error) {
+		t.Fatal("direct setup invoked low-port approval")
+		return networkdataplaneapproval.LowPortOutcome{}, nil
+	}
+
+	if err := fixture.command.Run(t.Context()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(fixture.dataPlane.trustRequests) != 1 || len(fixture.dataPlane.lowRequests) != 0 {
+		t.Fatalf("approval requests = trust %#v, low-port %#v", fixture.dataPlane.trustRequests, fixture.dataPlane.lowRequests)
+	}
+	if fixture.output.String() != "Network setup complete.\n" {
+		t.Fatalf("output = %q", fixture.output.String())
+	}
+}
+
 // TestFullSetupCommandReplaysCompletedPhasesWithoutApproval proves reruns read durable success instead of reopening consent.
 func TestFullSetupCommandReplaysCompletedPhasesWithoutApproval(t *testing.T) {
 	fixture := newFullSetupCommandFixture(t)

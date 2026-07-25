@@ -43,6 +43,25 @@ func TestExecuteTrustConfirmsExactEvidence(t *testing.T) {
 	}
 }
 
+// TestExecuteTrustAcceptsDirectListenerCompletion proves a successful trust launch need not open a low-port helper phase.
+func TestExecuteTrustAcceptsDirectListenerCompletion(t *testing.T) {
+	t.Parallel()
+	completed := lowPortSetup(t, testOperationID, 24)
+	completed.Operation.State = domain.OperationSucceeded
+	completed.Operation.Phase = "completed"
+	finishedAt := completed.Operation.RequestedAt.Add(time.Second)
+	completed.Operation.FinishedAt = &finishedAt
+	client := &fakeClient{trustPreparation: validTrustPreparation(t), trustConfirmation: completed}
+	helperLauncher := &fakeLauncher{trustOutcome: successfulTrustLaunch(validTrustEvidence())}
+	outcome, err := New(client, helperLauncher).ExecuteTrust(context.Background(), validRequest())
+	if err != nil || outcome.State != Succeeded || outcome.Setup == nil || !control.NetworkDataPlaneSetupCompleted(*outcome.Setup) {
+		t.Fatalf("ExecuteTrust(direct) = (%#v, %v)", outcome, err)
+	}
+	if helperLauncher.lowPortCalls != 0 || client.lowPortPrepareCalls != 0 || client.lowPortConfirmCalls != 0 {
+		t.Fatalf("direct trust completion touched low-port helper boundaries: %#v %#v", client, helperLauncher)
+	}
+}
+
 // TestExecuteLowPortsConfirmsExactEvidence verifies the low-port phase returns terminal full setup confirmation.
 func TestExecuteLowPortsConfirmsExactEvidence(t *testing.T) {
 	t.Parallel()

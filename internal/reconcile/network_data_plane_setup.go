@@ -105,6 +105,12 @@ type NetworkDataPlaneSetupCoordinator struct {
 	mutex          sync.Mutex
 }
 
+// directLowPortProof records why a policy needs no privileged low-port host mutation.
+type directLowPortProof struct {
+	Mechanism         networkpolicy.LowPortMechanism `json:"mechanism"`
+	PolicyFingerprint string                         `json:"policy_fingerprint"`
+}
+
 // NewNetworkDataPlaneSetupCoordinator constructs the complete fail-fast trusted-ingress lifecycle.
 func NewNetworkDataPlaneSetupCoordinator(operations NetworkDataPlaneSetupJournal, network NetworkDataPlaneSetupNetworkSource, projections NetworkDataPlaneSetupProjectionSource, store NetworkDataPlaneSetupStore, roots NetworkDataPlaneSetupRootSource, trustPlans ticketissuer.TrustPlanSource, lowPortPlans ticketissuer.LowPortPlanSource, trustIssuers func() (NetworkDataPlaneSetupTrustIssuer, error), lowPortIssuers func() (NetworkDataPlaneSetupLowPortIssuer, error), ownership OwnershipObserver, trust NetworkDataPlaneSetupTrustObserver, lowPorts NetworkDataPlaneSetupLowPortObserver, runtimeController NetworkDataPlaneSetupRuntime, endpoints NetworkDataPlaneSetupEndpointBackfill, platform networkplan.Platform, clock helper.Clock) *NetworkDataPlaneSetupCoordinator {
 	if nilDependency(operations) || nilDependency(network) || nilDependency(projections) || nilDependency(store) || nilDependency(roots) || nilDependency(trustPlans) || nilDependency(lowPortPlans) || nilDependency(trustIssuers) || nilDependency(lowPortIssuers) || nilDependency(ownership) || nilDependency(trust) || nilDependency(lowPorts) || nilDependency(runtimeController) || nilDependency(endpoints) || nilDependency(clock) {
@@ -143,6 +149,23 @@ func (c *NetworkDataPlaneSetupCoordinator) Start(ctx context.Context, request Ne
 				return state.OperationRecord{}, fmt.Errorf("start network data-plane setup: resume activation: %w", resumeErr)
 			}
 			return result.Operation, nil
+		}
+		if existing.Operation.State == domain.OperationRequiresApproval &&
+			existing.Operation.Phase == networkDataPlaneSetupLowPortApprovalPhase {
+			plan, found, readErr := c.operations.ReadNetworkDataPlaneSetupPlan(ctx, existing.Operation.ID)
+			if readErr != nil {
+				return state.OperationRecord{}, fmt.Errorf("start network data-plane setup: read direct-listener receipt: %w", readErr)
+			}
+			if !found {
+				return state.OperationRecord{}, errors.New("start network data-plane setup: direct-listener receipt is unavailable")
+			}
+			if directLowPortPolicy(plan.Policy) {
+				result, resumeErr := c.resumeDirectActivation(ctx, existing, request.RequesterIdentity, plan)
+				if resumeErr != nil {
+					return state.OperationRecord{}, fmt.Errorf("start network data-plane setup: resume direct-listener activation: %w", resumeErr)
+				}
+				return result.Operation, nil
+			}
 		}
 		return existing, nil
 	} else {
@@ -237,7 +260,22 @@ func (c *NetworkDataPlaneSetupCoordinator) ConfirmTrust(ctx context.Context, req
 	if err != nil {
 		return state.OperationRecord{}, err
 	}
-	return c.operations.AdvanceNetworkDataPlaneSetupTrust(ctx, state.AdvanceNetworkDataPlaneSetupTrustRequest{OperationID: request.OperationID, ExpectedOperationRevision: request.ExpectedOperationRevision, RequesterIdentity: request.RequesterIdentity, Projection: projection, Policy: plan.Policy, TrustEvidenceDigest: digest, TrustVerifiedAt: c.now(projection.NetworkUpdatedAt)})
+	advanced, err := c.operations.AdvanceNetworkDataPlaneSetupTrust(ctx, state.AdvanceNetworkDataPlaneSetupTrustRequest{OperationID: request.OperationID, ExpectedOperationRevision: request.ExpectedOperationRevision, RequesterIdentity: request.RequesterIdentity, Projection: projection, Policy: plan.Policy, TrustEvidenceDigest: digest, TrustVerifiedAt: c.now(projection.NetworkUpdatedAt)})
+	if err != nil || !directLowPortPolicy(plan.Policy) {
+		return advanced, err
+	}
+	durable, found, err := c.operations.ReadNetworkDataPlaneSetupPlan(ctx, request.OperationID)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("confirm trust: read direct-listener receipt: %w", err)
+	}
+	if !found {
+		return state.OperationRecord{}, errors.New("confirm trust: direct-listener receipt is unavailable")
+	}
+	result, err := c.resumeDirectActivation(ctx, advanced, request.RequesterIdentity, durable)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("confirm trust: activate direct listeners: %w", err)
+	}
+	return result.Operation, nil
 }
 
 // PrepareLowPorts validates one durable low-port approval before capability publication.
@@ -309,11 +347,20 @@ func (c *NetworkDataPlaneSetupCoordinator) ConfirmLowPorts(ctx context.Context, 
 	if err != nil {
 		return NetworkDataPlaneSetupResult{}, err
 	}
+	return c.completeStagedActivation(ctx, staged, request.RequesterIdentity)
+}
+
+// completeStagedActivation applies one durable activation receipt and completes runtime and endpoint effects.
+func (c *NetworkDataPlaneSetupCoordinator) completeStagedActivation(
+	ctx context.Context,
+	staged state.NetworkDataPlaneSetupActivationResult,
+	requesterIdentity string,
+) (NetworkDataPlaneSetupResult, error) {
 	full, err := c.store.ActivateNetworkDataPlane(ctx, staged.Activation)
 	if err != nil {
 		return NetworkDataPlaneSetupResult{}, fmt.Errorf("activate durable network: %w", err)
 	}
-	if _, err := c.operations.CompleteNetworkDataPlaneActivation(ctx, state.CompleteNetworkDataPlaneActivationRequest{OperationID: request.OperationID, ExpectedOperationRevision: staged.Operation.Revision, RequesterIdentity: request.RequesterIdentity}); err != nil {
+	if _, err := c.operations.CompleteNetworkDataPlaneActivation(ctx, state.CompleteNetworkDataPlaneActivationRequest{OperationID: staged.Operation.Operation.ID, ExpectedOperationRevision: staged.Operation.Revision, RequesterIdentity: requesterIdentity}); err != nil {
 		return NetworkDataPlaneSetupResult{}, err
 	}
 	if err := c.runtime.ActivateNetwork(ctx, full.Record.Revision); err != nil {
@@ -326,7 +373,7 @@ func (c *NetworkDataPlaneSetupCoordinator) ConfirmLowPorts(ctx context.Context, 
 	if err := c.runtime.ActivateNetwork(ctx, final.Revision); err != nil {
 		return NetworkDataPlaneSetupResult{}, fmt.Errorf("activate endpoint network runtime: %w", err)
 	}
-	completed, err := c.operations.CompleteNetworkDataPlaneSetup(ctx, state.CompleteNetworkDataPlaneSetupRequest{OperationID: request.OperationID, ExpectedOperationRevision: staged.Operation.Revision, RequesterIdentity: request.RequesterIdentity, At: c.now(staged.Operation.Operation.RequestedAt)})
+	completed, err := c.operations.CompleteNetworkDataPlaneSetup(ctx, state.CompleteNetworkDataPlaneSetupRequest{OperationID: staged.Operation.Operation.ID, ExpectedOperationRevision: staged.Operation.Revision, RequesterIdentity: requesterIdentity, At: c.now(staged.Operation.Operation.RequestedAt)})
 	if err != nil {
 		return NetworkDataPlaneSetupResult{}, err
 	}
@@ -387,16 +434,39 @@ func (c *NetworkDataPlaneSetupCoordinator) Recover(ctx context.Context, operatio
 	if err := validateExistingNetworkDataPlaneSetupOperation(operation, operation.Operation.IntentID); err != nil {
 		return state.OperationRecord{}, fmt.Errorf("recover network data-plane setup: %w", err)
 	}
-	if operation.Operation.State != domain.OperationRunning || operation.Operation.Phase != networkDataPlaneSetupActivationPhase {
+	activationPending := operation.Operation.State == domain.OperationRunning &&
+		operation.Operation.Phase == networkDataPlaneSetupActivationPhase
+	directActivationPending := operation.Operation.State == domain.OperationRequiresApproval &&
+		operation.Operation.Phase == networkDataPlaneSetupLowPortApprovalPhase &&
+		c.platform == networkplan.PlatformWindows11
+	if !activationPending && !directActivationPending {
 		return operation, nil
 	}
 	plan, found, err := c.operations.ReadNetworkDataPlaneSetupPlan(ctx, operationID)
-	if err != nil || !found || plan.Activation == nil {
-		return state.OperationRecord{}, fmt.Errorf("recover network data-plane setup: activation receipt is unavailable: %w", err)
+	if err != nil {
+		return state.OperationRecord{}, fmt.Errorf("recover network data-plane setup: receipt is unavailable: %w", err)
+	}
+	if !found {
+		return state.OperationRecord{}, errors.New("recover network data-plane setup: receipt is unavailable")
 	}
 	requester := plan.Projection.ConfirmedOwnership.Record.OwnerIdentity
 	if requester == "" {
 		return state.OperationRecord{}, fmt.Errorf("recover network data-plane setup: persisted ownership requester is empty")
+	}
+	if operation.Operation.State == domain.OperationRequiresApproval &&
+		operation.Operation.Phase == networkDataPlaneSetupLowPortApprovalPhase &&
+		directLowPortPolicy(plan.Policy) {
+		result, resumeErr := c.resumeDirectActivation(ctx, operation, requester, plan)
+		if resumeErr != nil {
+			return state.OperationRecord{}, fmt.Errorf("recover network data-plane setup: resume direct-listener activation: %w", resumeErr)
+		}
+		return result.Operation, nil
+	}
+	if operation.Operation.State != domain.OperationRunning || operation.Operation.Phase != networkDataPlaneSetupActivationPhase {
+		return operation, nil
+	}
+	if plan.Activation == nil {
+		return state.OperationRecord{}, fmt.Errorf("recover network data-plane setup: activation receipt is unavailable")
 	}
 	result, err := c.resumeActivation(ctx, operation, requester, plan)
 	if err != nil {
@@ -430,6 +500,128 @@ func (c *NetworkDataPlaneSetupCoordinator) resolverAuthority(ctx context.Context
 		return networkpolicy.Policy{}, state.NetworkDataPlaneSetupProjection{}, fmt.Errorf("authenticated requester does not own resolver authority")
 	}
 	return policy, projection, nil
+}
+
+// resumeDirectActivation converts a policy-proved no-mutation checkpoint into the ordinary durable activation path.
+func (c *NetworkDataPlaneSetupCoordinator) resumeDirectActivation(
+	ctx context.Context,
+	operation state.OperationRecord,
+	requesterIdentity string,
+	plan state.NetworkDataPlaneSetupPlanRecord,
+) (NetworkDataPlaneSetupResult, error) {
+	digest, err := directLowPortEvidenceDigest(plan.Policy)
+	if err != nil {
+		return NetworkDataPlaneSetupResult{}, err
+	}
+	activation, err := c.directActivation(ctx, plan.Policy, requesterIdentity, digest)
+	if err != nil {
+		return NetworkDataPlaneSetupResult{}, err
+	}
+	staged, err := c.operations.StageNetworkDataPlaneActivation(ctx, state.StageNetworkDataPlaneActivationRequest{
+		OperationID:               operation.Operation.ID,
+		ExpectedOperationRevision: operation.Revision,
+		RequesterIdentity:         requesterIdentity,
+		LowPortEvidenceDigest:     digest,
+		Activation:                activation,
+	})
+	if err != nil {
+		return NetworkDataPlaneSetupResult{}, err
+	}
+	return c.completeStagedActivation(ctx, staged, requesterIdentity)
+}
+
+// directActivation reobserves mutable ownership and trust while listener identity remains policy-derived.
+func (c *NetworkDataPlaneSetupCoordinator) directActivation(
+	ctx context.Context,
+	policy networkpolicy.Policy,
+	requesterIdentity string,
+	evidenceDigest string,
+) (state.ActivateNetworkDataPlaneRequest, error) {
+	if !directLowPortPolicy(policy) {
+		return state.ActivateNetworkDataPlaneRequest{}, errors.New("direct-listener activation requires a direct low-port policy")
+	}
+	projection, err := c.projections.Resolve(ctx, policy)
+	if err != nil {
+		return state.ActivateNetworkDataPlaneRequest{}, err
+	}
+	observedOwnership, err := c.ownership.Observe(ctx)
+	if err != nil {
+		return state.ActivateNetworkDataPlaneRequest{}, err
+	}
+	if observedOwnership != projection.ConfirmedOwnership ||
+		observedOwnership.Record.OwnerIdentity != requesterIdentity {
+		return state.ActivateNetworkDataPlaneRequest{}, errors.New("ownership drifted before direct-listener activation")
+	}
+	root, err := c.roots.PublicRoot()
+	if err != nil {
+		return state.ActivateNetworkDataPlaneRequest{}, err
+	}
+	trustRequest, err := trust.NewRequestForRequester(
+		projection.ConfirmedOwnership.Record.InstallationID,
+		requesterIdentity,
+		policy.Mechanisms.Trust,
+		root,
+	)
+	if err != nil {
+		return state.ActivateNetworkDataPlaneRequest{}, err
+	}
+	observedTrust, err := c.trust.Observe(ctx, trustRequest)
+	if err != nil {
+		return state.ActivateNetworkDataPlaneRequest{}, err
+	}
+	if err := observedTrust.Validate(); err != nil {
+		return state.ActivateNetworkDataPlaneRequest{}, fmt.Errorf("direct-listener trust observation is invalid: %w", err)
+	}
+	if !sameNetworkDataPlaneSetupTrustRequest(observedTrust.Request, trustRequest) {
+		return state.ActivateNetworkDataPlaneRequest{}, errors.New("direct-listener trust observation belongs to another request")
+	}
+	assessment, err := observedTrust.Classify()
+	if err != nil || (assessment.State != trust.StateExact &&
+		!(assessment.State == trust.StateForeign && assessment.Owned == trust.OwnedStateAbsent && identicalUnownedTrust(observedTrust))) {
+		return state.ActivateNetworkDataPlaneRequest{}, errors.New("trust drifted before direct-listener activation")
+	}
+	at := c.now(projection.NetworkUpdatedAt)
+	generation := projection.ConfirmedOwnership.Record.Generation
+	return state.ActivateNetworkDataPlaneRequest{
+		ExpectedNetworkRevision: projection.NetworkRevision,
+		ConfirmedOwnership:      projection.ConfirmedOwnership,
+		Policy:                  policy,
+		Setup: []state.NetworkSetupProof{
+			projection.ResolverProof,
+			{
+				Component:  state.NetworkSetupComponentLowPorts,
+				Evidence:   evidenceDigest,
+				Generation: generation,
+				VerifiedAt: at,
+			},
+		},
+		Listeners: listenersForPolicy(policy, generation, at),
+		At:        at,
+	}, nil
+}
+
+// directLowPortEvidenceDigest binds the durable no-mutation proof to one exact direct-listener policy.
+func directLowPortEvidenceDigest(policy networkpolicy.Policy) (string, error) {
+	if !directLowPortPolicy(policy) {
+		return "", errors.New("direct low-port evidence requires a direct-listener policy")
+	}
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		return "", err
+	}
+	return state.NetworkDataPlaneSetupEvidenceDigest(directLowPortProof{
+		Mechanism:         policy.Mechanisms.LowPorts,
+		PolicyFingerprint: fingerprint,
+	})
+}
+
+// directLowPortPolicy reports whether validated policy binds every advertised listener directly.
+func directLowPortPolicy(policy networkpolicy.Policy) bool {
+	return policy.Validate() == nil &&
+		policy.Mechanisms.LowPorts == networkpolicy.WindowsDirectLowPorts &&
+		policy.DNS.Advertised == policy.DNS.Bind &&
+		policy.HTTP.Advertised == policy.HTTP.Bind &&
+		policy.HTTPS.Advertised == policy.HTTPS.Bind
 }
 
 // activation reobserves all mutable host facts immediately before durable full activation.

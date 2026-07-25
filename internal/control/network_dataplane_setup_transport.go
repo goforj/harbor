@@ -321,13 +321,14 @@ func validateNetworkDataPlaneTrustPreparationCorrelation(request PrepareNetworkD
 	return nil
 }
 
-// validateNetworkDataPlaneTrustConfirmationCorrelation requires trust to advance the same operation to low-port approval.
+// validateNetworkDataPlaneTrustConfirmationCorrelation requires trust to advance the same operation to approval or direct completion.
 func validateNetworkDataPlaneTrustConfirmationCorrelation(request ConfirmNetworkDataPlaneTrustApprovalRequest, setup NetworkDataPlaneSetupOperation) error {
 	if err := setup.Validate(); err != nil {
 		return err
 	}
-	if setup.Operation.ID != request.OperationID || setup.Revision <= request.ExpectedOperationRevision || !RequiresNetworkDataPlaneLowPortApproval(setup) {
-		return errors.New("network data-plane trust confirmation does not match the selected low-port approval state")
+	if setup.Operation.ID != request.OperationID || setup.Revision <= request.ExpectedOperationRevision ||
+		(!RequiresNetworkDataPlaneLowPortApproval(setup) && !NetworkDataPlaneSetupCompleted(setup)) {
+		return errors.New("network data-plane trust confirmation does not match the selected approval or direct-completion state")
 	}
 	return nil
 }

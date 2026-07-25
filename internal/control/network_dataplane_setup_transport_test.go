@@ -137,6 +137,12 @@ func TestNetworkDataPlaneSetupCorrelationRejectsStaleAndMismatchedResponses(t *t
 	if err := validateNetworkDataPlaneTrustConfirmationCorrelation(trustRequest, setup); err == nil {
 		t.Fatal("trust confirmation accepted another operation")
 	}
+	direct := validNetworkDataPlaneSetupOperation(t, domain.OperationSucceeded, networkDataPlaneSetupCompletedPhase)
+	direct.Operation.ID = trustRequest.OperationID
+	direct.Revision = trustRequest.ExpectedOperationRevision + 1
+	if err := validateNetworkDataPlaneTrustConfirmationCorrelation(trustRequest, direct); err != nil {
+		t.Fatalf("trust confirmation rejected direct completion: %v", err)
+	}
 	completed := validNetworkDataPlaneSetupOperation(t, domain.OperationSucceeded, networkDataPlaneSetupCompletedPhase)
 	confirmation := NetworkDataPlaneSetupConfirmation{Operation: completed.Operation, Revision: 8, NetworkRevision: 7}
 	lowPortRequest := ConfirmNetworkDataPlaneLowPortApprovalRequest{OperationID: completed.Operation.ID, ExpectedOperationRevision: 8, LowPortEvidence: validNetworkDataPlaneLowPortEvidence()}

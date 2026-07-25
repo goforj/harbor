@@ -240,13 +240,14 @@ func validateLowPortPreparation(request Request, preparation control.NetworkData
 	return nil
 }
 
-// validateTrustConfirmation accepts only a monotonic transition of the same operation to the next approval phase.
+// validateTrustConfirmation accepts only a monotonic transition to low-port approval or direct completion.
 func validateTrustConfirmation(request Request, setup control.NetworkDataPlaneSetupOperation) error {
 	if err := setup.Validate(); err != nil {
 		return fmt.Errorf("%w: validate trust confirmation: %w", ErrInconsistentResponse, err)
 	}
-	if setup.Operation.ID != request.OperationID || setup.Revision <= request.ExpectedOperationRevision || !control.RequiresNetworkDataPlaneLowPortApproval(setup) {
-		return fmt.Errorf("%w: trust confirmation did not advance the selected operation to low-port approval", ErrInconsistentResponse)
+	if setup.Operation.ID != request.OperationID || setup.Revision <= request.ExpectedOperationRevision ||
+		(!control.RequiresNetworkDataPlaneLowPortApproval(setup) && !control.NetworkDataPlaneSetupCompleted(setup)) {
+		return fmt.Errorf("%w: trust confirmation did not advance the selected operation to low-port approval or direct completion", ErrInconsistentResponse)
 	}
 	return nil
 }

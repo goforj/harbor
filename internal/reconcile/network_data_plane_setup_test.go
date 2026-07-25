@@ -13,6 +13,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/helper/ticketissuer"
+	"github.com/goforj/harbor/internal/host/networkplan"
 	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"github.com/goforj/harbor/internal/host/ownership"
 	"github.com/goforj/harbor/internal/network/identity"
@@ -706,6 +707,156 @@ func TestNetworkDataPlaneSetupStartReplayAndConfirmTrustBoundary(t *testing.T) {
 	}
 	if advanced.OperationID != trustPlan.Operation.ID || advanced.ExpectedOperationRevision != trustPlan.OperationRevision || advanced.RequesterIdentity != trustPlan.TargetOwnership.OwnerIdentity {
 		t.Fatalf("AdvanceNetworkDataPlaneSetupTrust request = %#v", advanced)
+	}
+}
+
+// TestNetworkDataPlaneSetupConfirmTrustActivatesWindowsDirectListenersWithoutLowPortMutation proves the native no-host-effect path.
+func TestNetworkDataPlaneSetupConfirmTrustActivatesWindowsDirectListenersWithoutLowPortMutation(t *testing.T) {
+	basePlan, _ := networkDataPlaneSetupTestTrustPlan(t)
+	policy, err := networkpolicy.New(
+		basePlan.Root.Fingerprint,
+		networkpolicy.WindowsMechanisms(),
+		networkpolicy.Listener{Advertised: netip.MustParseAddrPort("127.0.0.2:53"), Bind: netip.MustParseAddrPort("127.0.0.2:53")},
+		networkpolicy.Listener{Advertised: netip.MustParseAddrPort("127.0.0.1:80"), Bind: netip.MustParseAddrPort("127.0.0.1:80")},
+		networkpolicy.Listener{Advertised: netip.MustParseAddrPort("127.0.0.1:443"), Bind: netip.MustParseAddrPort("127.0.0.1:443")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyFingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := basePlan.TargetOwnership
+	target.OwnerIdentity = "S-1-5-21-100-200-300-1001"
+	target.NetworkPolicyFingerprint = policyFingerprint
+	targetFingerprint, err := target.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := basePlan
+	plan.Policy = policy
+	plan.TargetOwnership = target
+	trustRequest, err := trust.NewRequestForRequester(target.InstallationID, target.OwnerIdentity, policy.Mechanisms.Trust, plan.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustObservation := networkDataPlaneSetupTrustObservation(t, trustRequest, true)
+	trustFingerprint, err := trustObservation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	projection := state.NetworkDataPlaneSetupProjection{
+		Stage:            state.NetworkStageResolver,
+		NetworkRevision:  70,
+		NetworkUpdatedAt: now,
+		ResolverProof: state.NetworkSetupProof{
+			Component:  state.NetworkSetupComponentResolver,
+			Evidence:   strings.Repeat("c", 64),
+			Generation: target.Generation,
+			VerifiedAt: now,
+		},
+		ConfirmedOwnership: ownership.Observation{Exists: true, Record: target, Fingerprint: targetFingerprint},
+	}
+	advancedOperation := plan.Operation
+	advancedOperation.State = domain.OperationRequiresApproval
+	advancedOperation.Phase = networkDataPlaneSetupLowPortApprovalPhase
+	advanced := state.OperationRecord{Operation: advancedOperation, Revision: plan.OperationRevision + 2}
+	var calls []string
+	call := func(name string) { calls = append(calls, name) }
+	journal := &networkDataPlaneSetupLifecycleJournal{}
+	journal.advance = func(context.Context, state.AdvanceNetworkDataPlaneSetupTrustRequest) (state.OperationRecord, error) {
+		call("advance")
+		return advanced, nil
+	}
+	journal.readPlan = func(context.Context, domain.OperationID) (state.NetworkDataPlaneSetupPlanRecord, bool, error) {
+		call("plan")
+		return state.NetworkDataPlaneSetupPlanRecord{Operation: advanced, Projection: projection, Policy: policy}, true, nil
+	}
+	journal.stage = func(_ context.Context, request state.StageNetworkDataPlaneActivationRequest) (state.NetworkDataPlaneSetupActivationResult, error) {
+		call("stage")
+		if request.ExpectedOperationRevision != advanced.Revision ||
+			request.Activation.Policy != policy ||
+			request.Activation.Listeners != listenersForPolicy(policy, target.Generation, request.Activation.At) {
+			t.Fatalf("direct activation staging = %#v", request)
+		}
+		return state.NetworkDataPlaneSetupActivationResult{Operation: state.OperationRecord{Operation: advancedOperation, Revision: advanced.Revision + 1}, Activation: request.Activation}, nil
+	}
+	journal.verify = func(context.Context, state.CompleteNetworkDataPlaneActivationRequest) (state.NetworkDataPlaneSetupActivationResult, error) {
+		call("verify")
+		return state.NetworkDataPlaneSetupActivationResult{}, nil
+	}
+	completedOperation := plan.Operation
+	completedOperation.State = domain.OperationSucceeded
+	completedOperation.Phase = networkDataPlaneSetupCompletedPhase
+	completedOperation.FinishedAt = &now
+	journal.complete = func(context.Context, state.CompleteNetworkDataPlaneSetupRequest) (state.OperationRecord, error) {
+		call("complete")
+		return state.OperationRecord{Operation: completedOperation, Revision: 103}, nil
+	}
+	fullRecord := networkDataPlaneSetupLifecycleFullRecord(t, ticketissuer.LowPortPlan{Policy: policy, TargetOwnership: target}, now, 102)
+	coordinator := NewNetworkDataPlaneSetupCoordinator(
+		journal,
+		networkDataPlaneSetupLifecycleNetwork{},
+		networkDataPlaneSetupLifecycleProjection{resolve: func(context.Context, networkpolicy.Policy) (state.NetworkDataPlaneSetupProjection, error) {
+			call("projection")
+			return projection, nil
+		}},
+		&networkDataPlaneSetupLifecycleStore{activate: func(context.Context, state.ActivateNetworkDataPlaneRequest) (state.NetworkMutationResult, error) {
+			call("store")
+			return state.NetworkMutationResult{Record: fullRecord}, nil
+		}},
+		networkDataPlaneSetupLifecycleRoots{root: plan.Root, call: func() { call("root") }},
+		networkDataPlaneSetupTestTrustPlans{plan},
+		networkDataPlaneSetupLifecycleLowPlans{resolve: func(context.Context, ticketissuer.LowPortRequest) (ticketissuer.LowPortPlan, error) {
+			t.Fatal("Windows direct activation resolved a low-port mutation plan")
+			return ticketissuer.LowPortPlan{}, nil
+		}},
+		func() (NetworkDataPlaneSetupTrustIssuer, error) { return nil, errors.New("unexpected trust issuer") },
+		func() (NetworkDataPlaneSetupLowPortIssuer, error) {
+			t.Fatal("Windows direct activation opened a low-port mutation issuer")
+			return nil, nil
+		},
+		networkDataPlaneSetupLifecycleOwnership{observe: func(context.Context) (ownership.Observation, error) {
+			call("ownership")
+			return projection.ConfirmedOwnership, nil
+		}},
+		networkDataPlaneSetupLifecycleTrust{observe: func(context.Context, trust.Request) (trust.Observation, error) {
+			call("trust")
+			return trustObservation, nil
+		}},
+		networkDataPlaneSetupLifecycleLowPorts{observe: func(context.Context, lowport.Request) (lowport.Observation, error) {
+			t.Fatal("Windows direct activation observed Darwin low-port artifacts")
+			return lowport.Observation{}, nil
+		}},
+		networkDataPlaneSetupLifecycleRuntime{activate: func(context.Context, domain.Sequence) error {
+			call("runtime")
+			return nil
+		}},
+		networkDataPlaneSetupLifecycleEndpoints{reconcile: func(context.Context) (state.NetworkRecord, error) {
+			call("endpoints")
+			return fullRecord, nil
+		}},
+		networkplan.PlatformWindows11,
+		networkDataPlaneSetupTestClock{now},
+	)
+	result, err := coordinator.ConfirmTrust(t.Context(), NetworkDataPlaneSetupConfirmTrustRequest{
+		OperationID:               plan.Operation.ID,
+		ExpectedOperationRevision: plan.OperationRevision,
+		RequesterIdentity:         target.OwnerIdentity,
+		TrustEvidence: helper.TrustMutationEvidence{
+			AuthorityFingerprint:   plan.Root.Fingerprint,
+			Mechanism:              policy.Mechanisms.Trust,
+			ObservationFingerprint: trustFingerprint,
+			Postcondition:          helper.TrustPostconditionExact,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ConfirmTrust() error = %v; calls = %v", err, calls)
+	}
+	if result.Operation.State != domain.OperationSucceeded || result.Operation.Phase != networkDataPlaneSetupCompletedPhase {
+		t.Fatalf("ConfirmTrust() = %#v; calls = %v", result, calls)
 	}
 }
 
