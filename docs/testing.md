@@ -27,7 +27,7 @@ For a public repository, fork code never reaches these workers through `pull_req
 
 ## Runner strategy
 
-All automation is orchestrated by GitHub Actions. Two worker classes are needed.
+All automation is orchestrated by GitHub Actions. The current three-platform trusted-HTTPS behavioral gate uses GitHub-hosted workers only. Dedicated ephemeral workers are a future requirement for stronger interactive product and release claims, not a prerequisite for that gate.
 
 ### GitHub-hosted workers
 
@@ -68,7 +68,7 @@ Trusted pull requests also run the real production helper/platform API on GitHub
 
 ### Dedicated ephemeral integration workers
 
-Some crucial tests need administrator access, a clean resolver, actual low ports, a local Docker-compatible Engine, or reboot control. Provide ephemeral workers registered with GitHub Actions and labeled by operating system, for example:
+Some stronger product and release tests need genuine interactive consent, a user-selected local Docker-compatible Engine on macOS or Windows, reboot control, or a versioned immutable product image. Those claims require ephemeral workers registered with GitHub Actions and labeled by operating system, for example:
 
 ```text
 self-hosted, ephemeral, harbor-integration, linux
