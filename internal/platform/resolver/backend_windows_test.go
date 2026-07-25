@@ -161,7 +161,7 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fingerprint(before) error = %v", err)
 	}
-	change, err := adapter.EnsureIfObserved(t.Context(), request, fingerprint)
+	change, err := ensurePrivilegedWindowsNRPT(t.Context(), adapter, request, fingerprint)
 	if err != nil {
 		t.Fatalf("EnsureIfObserved() error = %v", privilegedWindowsNRPTDiagnostic(err))
 	}
@@ -210,6 +210,52 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if err != nil || assessment.State != StateAbsent {
 		t.Fatalf("Classify(after release) = %#v, %v; want absent", assessment, err)
 	}
+}
+
+// ensurePrivilegedWindowsNRPT retries a fresh absent snapshot when Windows changes unrelated NRPT state between observation and mutation.
+func ensurePrivilegedWindowsNRPT(ctx context.Context, adapter *Adapter, request Request, fingerprint string) (Change, error) {
+	const maximumAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maximumAttempts; attempt++ {
+		change, err := adapter.EnsureIfObserved(ctx, request, fingerprint)
+		if err == nil || !windowsNRPTPreconditionChanged(err) {
+			return change, err
+		}
+		lastErr = err
+
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Change{}, ctx.Err()
+		case <-timer.C:
+		}
+
+		observation, err := adapter.Observe(ctx, request)
+		if err != nil {
+			return Change{}, err
+		}
+		assessment, err := observation.Classify()
+		if err != nil {
+			return Change{}, err
+		}
+		if assessment.State != StateAbsent {
+			return Change{}, lastErr
+		}
+		fingerprint, err = observation.Fingerprint()
+		if err != nil {
+			return Change{}, err
+		}
+	}
+	return Change{}, fmt.Errorf("Windows NRPT precondition did not stabilize: %w", lastErr)
+}
+
+// windowsNRPTPreconditionChanged reports the native optimistic-concurrency miss that is safe to retry from a new observation.
+func windowsNRPTPreconditionChanged(err error) bool {
+	var resolverError *Error
+	return errors.As(err, &resolverError) &&
+		resolverError.Unwrap() != nil &&
+		strings.Contains(resolverError.Unwrap().Error(), "NRPT relevant rule set changed before mutation")
 }
 
 // privilegedWindowsNRPTDiagnostic exposes a bounded native cause only inside the opt-in administrator test.
