@@ -3,6 +3,8 @@ package networkprerequisite
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -16,7 +18,9 @@ func TestSourceEnsurerDerivesExactSiblingArtifacts(t *testing.T) {
 	var inspected []string
 	var elevated sourceBootstrapRequest
 	ensurer := newSourceEnsurer(sourceEnsurerDependencies{
-		executable:              func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
+		executable: func() (string, error) {
+			return developmentTestPath("/workspace/harbor/desktop/build/bin/harbor-desktop"), nil
+		},
 		effectiveUID:            func() int { return 501 },
 		effectiveGID:            func() int { return 20 },
 		platformDirectoryExists: func(string) (bool, error) { return true, nil },
@@ -38,11 +42,11 @@ func TestSourceEnsurerDerivesExactSiblingArtifacts(t *testing.T) {
 	}
 	runtimeDirectory := developmentArtifactRuntimeDirectory(runtime.GOOS, runtime.GOARCH)
 	wantPaths := []string{
-		"/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/devbootstrap",
-		"/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/helper",
+		developmentTestPath("/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/devbootstrap"),
+		developmentTestPath("/workspace/harbor/desktop/build/bin/devtools/" + runtimeDirectory + "/helper"),
 	}
 	if runtime.GOOS == "darwin" {
-		wantPaths = append(wantPaths, "/workspace/harbor/desktop/build/bin/devtools/"+runtimeDirectory+"/launchdrelay")
+		wantPaths = append(wantPaths, developmentTestPath("/workspace/harbor/desktop/build/bin/devtools/"+runtimeDirectory+"/launchdrelay"))
 	}
 	if !reflect.DeepEqual(inspected, wantPaths) {
 		t.Fatalf("inspected paths = %#v, want %#v", inspected, wantPaths)
@@ -71,11 +75,11 @@ func TestSourceEnsurerRejectsUnsafeDiscoveryBeforeElevation(t *testing.T) {
 	}{
 		{name: "empty executable", uid: 501, gid: 20, want: "path is empty"},
 		{name: "relative executable", executable: "build/bin/harbor-desktop", uid: 501, gid: 20, want: "not absolute"},
-		{name: "noncanonical executable", executable: "/workspace/../harbor-desktop", uid: 501, gid: 20, want: "not absolute and canonical"},
-		{name: "root desktop", executable: "/workspace/harbor-desktop", gid: 20, want: "non-root"},
-		{name: "negative user", executable: "/workspace/harbor-desktop", uid: -1, gid: 20, want: "user ID"},
-		{name: "negative group", executable: "/workspace/harbor-desktop", uid: 501, gid: -1, want: "group ID"},
-		{name: "artifact", executable: "/workspace/harbor-desktop", uid: 501, gid: 20, inspectErr: sentinel, want: "unsafe artifact"},
+		{name: "noncanonical executable", executable: developmentTestPath("/workspace/../harbor-desktop"), uid: 501, gid: 20, want: "not absolute and canonical"},
+		{name: "root desktop", executable: developmentTestPath("/workspace/harbor-desktop"), gid: 20, want: "non-root"},
+		{name: "negative user", executable: developmentTestPath("/workspace/harbor-desktop"), uid: -1, gid: 20, want: "user ID"},
+		{name: "negative group", executable: developmentTestPath("/workspace/harbor-desktop"), uid: 501, gid: -1, want: "group ID"},
+		{name: "artifact", executable: developmentTestPath("/workspace/harbor-desktop"), uid: 501, gid: 20, inspectErr: sentinel, want: "unsafe artifact"},
 	}
 
 	for _, test := range tests {
@@ -110,7 +114,9 @@ func TestSourceEnsurerFallsBackOnlyWhenThePlatformDirectoryIsAbsent(t *testing.T
 	var inspected []string
 	var elevated sourceBootstrapRequest
 	ensurer := newSourceEnsurer(sourceEnsurerDependencies{
-		executable:              func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
+		executable: func() (string, error) {
+			return developmentTestPath("/workspace/harbor/desktop/build/bin/harbor-desktop"), nil
+		},
 		effectiveUID:            func() int { return 501 },
 		effectiveGID:            func() int { return 20 },
 		platformDirectoryExists: func(string) (bool, error) { return false, nil },
@@ -128,11 +134,11 @@ func TestSourceEnsurerFallsBackOnlyWhenThePlatformDirectoryIsAbsent(t *testing.T
 		t.Fatalf("Ensure() error = %v", err)
 	}
 	wantPaths := []string{
-		"/workspace/harbor/desktop/build/bin/devtools/devbootstrap",
-		"/workspace/harbor/desktop/build/bin/devtools/helper",
+		developmentTestPath("/workspace/harbor/desktop/build/bin/devtools/devbootstrap"),
+		developmentTestPath("/workspace/harbor/desktop/build/bin/devtools/helper"),
 	}
 	if runtime.GOOS == "darwin" {
-		wantPaths = append(wantPaths, "/workspace/harbor/desktop/build/bin/devtools/launchdrelay")
+		wantPaths = append(wantPaths, developmentTestPath("/workspace/harbor/desktop/build/bin/devtools/launchdrelay"))
 	}
 	if !reflect.DeepEqual(inspected, wantPaths) {
 		t.Fatalf("inspected paths = %#v, want %#v", inspected, wantPaths)
@@ -151,7 +157,9 @@ func TestSourceEnsurerNeverFallsBackFromAnInvalidPlatformArtifact(t *testing.T) 
 	var inspected []string
 	elevated := false
 	ensurer := newSourceEnsurer(sourceEnsurerDependencies{
-		executable:              func() (string, error) { return "/workspace/harbor/desktop/build/bin/harbor-desktop", nil },
+		executable: func() (string, error) {
+			return developmentTestPath("/workspace/harbor/desktop/build/bin/harbor-desktop"), nil
+		},
 		effectiveUID:            func() int { return 501 },
 		effectiveGID:            func() int { return 20 },
 		platformDirectoryExists: func(string) (bool, error) { return true, nil },
@@ -169,7 +177,7 @@ func TestSourceEnsurerNeverFallsBackFromAnInvalidPlatformArtifact(t *testing.T) 
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Ensure() error = %v, want wrong executable format", err)
 	}
-	if len(inspected) != 1 || strings.HasSuffix(inspected[0], "/devtools/devbootstrap") {
+	if len(inspected) != 1 || strings.HasSuffix(inspected[0], filepath.Join("devtools", "devbootstrap")) {
 		t.Fatalf("inspected paths = %#v, want only the scoped bootstrap", inspected)
 	}
 	if elevated {
@@ -198,27 +206,27 @@ func TestDevelopmentArtifactParentRecognizesWailsBundlesAndRawBinaries(t *testin
 	}{
 		{
 			name:       "Wails bundle",
-			executable: "/workspace/harbor/desktop/build/bin/Harbor.app/Contents/MacOS/Harbor",
-			want:       "/workspace/harbor/desktop/build/bin",
+			executable: developmentTestPath("/workspace/harbor/desktop/build/bin/Harbor.app/Contents/MacOS/Harbor"),
+			want:       developmentTestPath("/workspace/harbor/desktop/build/bin"),
 		},
 		{
 			name:       "raw binary",
-			executable: "/workspace/harbor/desktop/build/bin/harbor-desktop",
-			want:       "/workspace/harbor/desktop/build/bin",
+			executable: developmentTestPath("/workspace/harbor/desktop/build/bin/harbor-desktop"),
+			want:       developmentTestPath("/workspace/harbor/desktop/build/bin"),
 		},
 		{
 			name:       "missing Contents",
-			executable: "/workspace/harbor/desktop/build/bin/Harbor.app/Resources/MacOS/Harbor",
+			executable: developmentTestPath("/workspace/harbor/desktop/build/bin/Harbor.app/Resources/MacOS/Harbor"),
 			wantErr:    true,
 		},
 		{
 			name:       "missing app suffix",
-			executable: "/workspace/harbor/desktop/build/bin/Harbor/Contents/MacOS/Harbor",
+			executable: developmentTestPath("/workspace/harbor/desktop/build/bin/Harbor/Contents/MacOS/Harbor"),
 			wantErr:    true,
 		},
 		{
 			name:       "empty app name",
-			executable: "/workspace/harbor/desktop/build/bin/.app/Contents/MacOS/Harbor",
+			executable: developmentTestPath("/workspace/harbor/desktop/build/bin/.app/Contents/MacOS/Harbor"),
 			wantErr:    true,
 		},
 	}
@@ -272,11 +280,24 @@ func TestUnavailableEnsurerKeepsPackagedBuildsOnTheInstallerBoundary(t *testing.
 // newTestSourceEnsurer creates one fully admitted source fixture around a selected native result.
 func newTestSourceEnsurer(elevate func(context.Context, sourceBootstrapRequest) error) Ensurer {
 	return newSourceEnsurer(sourceEnsurerDependencies{
-		executable:              func() (string, error) { return "/workspace/harbor-desktop", nil },
+		executable:              func() (string, error) { return developmentTestPath("/workspace/harbor-desktop"), nil },
 		effectiveUID:            func() int { return 501 },
 		effectiveGID:            func() int { return 20 },
 		platformDirectoryExists: func(string) (bool, error) { return true, nil },
 		inspect:                 func(string, uint32, uint32) error { return nil },
 		elevate:                 elevate,
 	})
+}
+
+// developmentTestPath keeps authority-path fixtures absolute and canonical on the executing platform.
+func developmentTestPath(slashPath string) string {
+	native := filepath.FromSlash(slashPath)
+	if runtime.GOOS != "windows" {
+		return native
+	}
+	volume := filepath.VolumeName(os.TempDir())
+	if volume == "" {
+		volume = "C:"
+	}
+	return volume + native
 }

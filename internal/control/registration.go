@@ -3,6 +3,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -21,24 +22,51 @@ type RegisterProjectRequest struct {
 
 // Validate reports whether the request contains one bounded absolute local path.
 func (request RegisterProjectRequest) Validate() error {
-	if request.Path == "" || strings.TrimSpace(request.Path) != request.Path {
-		return errors.New("project path must be non-empty without surrounding whitespace")
-	}
-	if !utf8.ValidString(request.Path) {
-		return errors.New("project path must be valid UTF-8")
-	}
-	if len(request.Path) > maximumRegistrationPathBytes {
-		return fmt.Errorf("project path exceeds %d bytes", maximumRegistrationPathBytes)
-	}
-	for _, character := range request.Path {
-		if unicode.IsControl(character) {
-			return errors.New("project path must not contain control characters")
-		}
+	if err := validateProjectPathText(request.Path); err != nil {
+		return err
 	}
 	if !filepath.IsAbs(request.Path) {
 		return errors.New("project path must be absolute")
 	}
 	return nil
+}
+
+// validateProjectPathText enforces the transport-safe bounds shared by native requests and portable projections.
+func validateProjectPathText(projectPath string) error {
+	if projectPath == "" || strings.TrimSpace(projectPath) != projectPath {
+		return errors.New("project path must be non-empty without surrounding whitespace")
+	}
+	if !utf8.ValidString(projectPath) {
+		return errors.New("project path must be valid UTF-8")
+	}
+	if len(projectPath) > maximumRegistrationPathBytes {
+		return fmt.Errorf("project path exceeds %d bytes", maximumRegistrationPathBytes)
+	}
+	for _, character := range projectPath {
+		if unicode.IsControl(character) {
+			return errors.New("project path must not contain control characters")
+		}
+	}
+	return nil
+}
+
+// validatePortableAbsoluteProjectPath accepts a daemon-authored path independently of the desktop decoder's OS.
+func validatePortableAbsoluteProjectPath(projectPath string) error {
+	if err := validateProjectPathText(projectPath); err != nil {
+		return err
+	}
+	if filepath.IsAbs(projectPath) || path.IsAbs(projectPath) {
+		return nil
+	}
+	if len(projectPath) >= 3 &&
+		((projectPath[0] >= 'a' && projectPath[0] <= 'z') || (projectPath[0] >= 'A' && projectPath[0] <= 'Z')) &&
+		projectPath[1] == ':' && (projectPath[2] == '\\' || projectPath[2] == '/') {
+		return nil
+	}
+	if strings.HasPrefix(projectPath, `\\`) {
+		return nil
+	}
+	return errors.New("project path must be absolute")
 }
 
 // ProjectRegistration is the authoritative result of creating or replaying one project registration.

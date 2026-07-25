@@ -100,7 +100,7 @@ func (facts ProjectRuntimeRepairDisplayFacts) Validate() error {
 	if facts.Command != projectRuntimeRepairCommand && facts.Command != projectRuntimeRepairProjectListener {
 		return fmt.Errorf("project runtime repair command must be %q or %q", projectRuntimeRepairCommand, projectRuntimeRepairProjectListener)
 	}
-	if err := (RegisterProjectRequest{Path: facts.Checkout}).Validate(); err != nil {
+	if err := validatePortableAbsoluteProjectPath(facts.Checkout); err != nil {
 		return fmt.Errorf("project runtime repair checkout: %w", err)
 	}
 	endpoint, err := netip.ParseAddrPort(facts.Endpoint)
