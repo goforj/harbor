@@ -47,19 +47,17 @@ func (process *testWindowsProcess) close() error {
 
 // testWindowsConnection records one request message and exposes one response stream.
 type testWindowsConnection struct {
-	response       io.Reader
-	request        bytes.Buffer
-	pid            uint32
-	pidErr         error
-	writeErr       error
-	shortWrite     bool
-	closeWriteErr  error
-	closeErr       error
-	closeWriteCall atomic.Int32
-	writeCalls     atomic.Int32
-	closeCalls     atomic.Int32
-	finish         func()
-	finishOnce     sync.Once
+	response   io.Reader
+	request    bytes.Buffer
+	pid        uint32
+	pidErr     error
+	writeErr   error
+	shortWrite bool
+	closeErr   error
+	writeCalls atomic.Int32
+	closeCalls atomic.Int32
+	finish     func()
+	finishOnce sync.Once
 }
 
 // Read forwards the configured response and releases the process when the stream terminates.
@@ -86,12 +84,6 @@ func (connection *testWindowsConnection) Close() error {
 	connection.closeCalls.Add(1)
 	connection.finishOnce.Do(connection.finish)
 	return connection.closeErr
-}
-
-// closeWrite records the message-mode end marker sent after the request.
-func (connection *testWindowsConnection) closeWrite() error {
-	connection.closeWriteCall.Add(1)
-	return connection.closeWriteErr
 }
 
 // clientProcessID returns the kernel identity configured for the accepted client.
@@ -214,36 +206,11 @@ func TestWindowsNativeTransportUsesOneCorrelatedPipeAndExactProcess(t *testing.T
 	if connection.request.String() != "helper request" || response.String() != "helper response" {
 		t.Fatalf("request = %q, response = %q", connection.request.String(), response.String())
 	}
-	if connection.writeCalls.Load() != 1 || connection.closeWriteCall.Load() != 1 || connection.closeCalls.Load() != 1 {
-		t.Fatalf("connection calls = write:%d close-write:%d close:%d", connection.writeCalls.Load(), connection.closeWriteCall.Load(), connection.closeCalls.Load())
+	if connection.writeCalls.Load() != 1 || connection.closeCalls.Load() != 1 {
+		t.Fatalf("connection calls = write:%d close:%d", connection.writeCalls.Load(), connection.closeCalls.Load())
 	}
 	if process.waits.Load() != 1 || process.closes.Load() != 1 || inspectionCloses != 1 || listener.closes.Load() != 1 {
 		t.Fatalf("lifecycle = waits:%d process-close:%d inspection-close:%d listener-close:%d", process.waits.Load(), process.closes.Load(), inspectionCloses, listener.closes.Load())
-	}
-}
-
-// TestExchangeWindowsHelperAcceptsResponseAfterPeerClosedHalfClose proves correlated output resolves the EOF race.
-func TestExchangeWindowsHelperAcceptsResponseAfterPeerClosedHalfClose(t *testing.T) {
-	connection := &testWindowsConnection{
-		response:      strings.NewReader("helper response"),
-		closeWriteErr: errWindowsPeerClosedAfterHalfClose,
-		finish:        func() {},
-	}
-	captured, err, failure := exchangeWindowsHelper(connection, strings.NewReader("helper request"))
-	if err != nil || failure != transportFailureNone {
-		t.Fatalf("exchangeWindowsHelper() error = %v, failure = %d", err, failure)
-	}
-	if string(captured.Bytes()) != "helper response" {
-		t.Fatalf("exchangeWindowsHelper() response = %q", captured.Bytes())
-	}
-
-	connection = &testWindowsConnection{
-		response:      strings.NewReader(""),
-		closeWriteErr: errWindowsPeerClosedAfterHalfClose,
-		finish:        func() {},
-	}
-	if _, err, failure := exchangeWindowsHelper(connection, strings.NewReader("helper request")); err == nil || failure != transportFailureWindowsRequestHalfClose {
-		t.Fatalf("exchangeWindowsHelper(empty) error = %v, failure = %d", err, failure)
 	}
 }
 
@@ -351,9 +318,6 @@ func TestWindowsNativeTransportWaitsAfterEveryCreatedProcess(t *testing.T) {
 		}},
 		{name: "request write", configure: func(_ *testWindowsProcess, connection *testWindowsConnection, _ *testWindowsListener, _ *windowsHelperInspection) {
 			connection.writeErr = testErr
-		}},
-		{name: "request half-close", configure: func(_ *testWindowsProcess, connection *testWindowsConnection, _ *testWindowsListener, _ *windowsHelperInspection) {
-			connection.closeWriteErr = testErr
 		}},
 		{name: "response read", configure: func(_ *testWindowsProcess, connection *testWindowsConnection, _ *testWindowsListener, _ *windowsHelperInspection) {
 			connection.response = errorWindowsResponseReader{err: testErr}

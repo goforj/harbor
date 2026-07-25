@@ -70,15 +70,6 @@ func TestOpenWindowsHelperPipeAuthenticatesNativeServerAndPreservesMessageEOF(t 
 			serverResults <- serverResult{err: errors.Join(writeErr, io.ErrShortWrite)}
 			return
 		}
-		closeWriter, ok := connection.(interface{ CloseWrite() error })
-		if !ok {
-			serverResults <- serverResult{err: fmt.Errorf("native Windows helper server type %T does not support CloseWrite", connection)}
-			return
-		}
-		if closeErr := closeWriter.CloseWrite(); closeErr != nil {
-			serverResults <- serverResult{err: fmt.Errorf("finish native Windows helper request message: %w", closeErr)}
-			return
-		}
 		body, readErr := io.ReadAll(connection)
 		serverResults <- serverResult{response: string(body), clientProcessID: clientProcessID, err: readErr}
 	}()

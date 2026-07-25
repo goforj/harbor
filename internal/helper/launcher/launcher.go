@@ -88,7 +88,6 @@ const (
 	transportFailureWindowsListenerClose
 	transportFailureWindowsRequestRead
 	transportFailureWindowsRequestWrite
-	transportFailureWindowsRequestHalfClose
 	transportFailureWindowsResponseRead
 	transportFailureWindowsConnectionClose
 	transportFailureWindowsWait
@@ -271,8 +270,6 @@ func transportFailureLabel(stage transportFailureStage) string {
 		return "Windows helper request preparation"
 	case transportFailureWindowsRequestWrite:
 		return "Windows helper request write"
-	case transportFailureWindowsRequestHalfClose:
-		return "Windows helper request half-close"
 	case transportFailureWindowsResponseRead:
 		return "Windows helper response read"
 	case transportFailureWindowsConnectionClose:

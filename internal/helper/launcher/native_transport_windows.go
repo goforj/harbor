@@ -334,21 +334,6 @@ func (listener *nativeWindowsPipeListener) close() error {
 	return listener.listener.Close()
 }
 
-// closeWrite sends go-winio's zero-message EOF marker while preserving the response direction.
-func (connection *nativeWindowsPipeConnection) closeWrite() error {
-	writer, ok := connection.Conn.(interface{ CloseWrite() error })
-	if !ok {
-		return fmt.Errorf("Windows helper pipe connection type %T does not support request half-close", connection.Conn)
-	}
-	err := writer.CloseWrite()
-	if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
-		errors.Is(err, windows.ERROR_NO_DATA) ||
-		errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) {
-		return errWindowsPeerClosedAfterHalfClose
-	}
-	return err
-}
-
 // clientProcessID returns the kernel-authenticated process attached to the accepted pipe instance.
 func (connection *nativeWindowsPipeConnection) clientProcessID() (uint32, error) {
 	handle, ok := connection.Conn.(interface{ Fd() uintptr })

@@ -96,7 +96,8 @@ func TestNativeWindowsInvocationPipeRoundTrip(t *testing.T) {
 	}
 	clientResults := make(chan clientResult, 1)
 	go func() {
-		body, readErr := io.ReadAll(client)
+		body := make([]byte, len(request))
+		_, readErr := io.ReadFull(client, body)
 		if readErr != nil {
 			clientResults <- clientResult{err: fmt.Errorf("read request through native Windows invocation pipe: %w", readErr)}
 			return
@@ -106,13 +107,8 @@ func TestNativeWindowsInvocationPipeRoundTrip(t *testing.T) {
 			clientResults <- clientResult{err: errors.Join(writeErr, io.ErrShortWrite)}
 			return
 		}
-		closeWriter, ok := client.(interface{ CloseWrite() error })
-		if !ok {
-			clientResults <- clientResult{err: fmt.Errorf("native Windows invocation client type %T does not support CloseWrite", client)}
-			return
-		}
-		if err := closeWriter.CloseWrite(); err != nil {
-			clientResults <- clientResult{err: fmt.Errorf("finish native Windows invocation response: %w", err)}
+		if err := client.Close(); err != nil {
+			clientResults <- clientResult{err: fmt.Errorf("close native Windows invocation client: %w", err)}
 			return
 		}
 		clientResults <- clientResult{request: string(body)}

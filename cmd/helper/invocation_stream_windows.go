@@ -17,9 +17,10 @@ const (
 	windowsInvocationPipeAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 )
 
-// windowsHelperPipeConnection preserves message continuation while treating the launcher's zero message as EOF.
+// windowsHelperPipeConnection preserves message continuation and terminates the single-request stream at its message boundary.
 type windowsHelperPipeConnection struct {
 	*os.File
+	requestComplete bool
 }
 
 // openPlatformInvocation replaces non-inheritable standard streams with one authenticated local pipe.
@@ -73,9 +74,14 @@ func openWindowsHelperPipe(path string) (io.ReadWriteCloser, error) {
 
 // Read hides ERROR_MORE_DATA so the bounded codec can assemble one request message across buffer growth.
 func (connection *windowsHelperPipeConnection) Read(body []byte) (int, error) {
+	if connection.requestComplete {
+		return 0, io.EOF
+	}
 	written, err := connection.File.Read(body)
 	if errors.Is(err, windows.ERROR_MORE_DATA) {
 		err = nil
+	} else if err == nil {
+		connection.requestComplete = true
 	}
 	return written, err
 }
