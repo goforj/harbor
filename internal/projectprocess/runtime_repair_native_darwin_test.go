@@ -82,15 +82,7 @@ func TestNativeDarwinUnattributedRuntimeRepairSettlesCheckoutOwnedListener(t *te
 		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
 		runtimeRepairNativeProjectProcess+"=1",
 	)
-	if err := command.Start(); err != nil {
-		t.Fatalf("start checkout-owned app helper error = %v", err)
-	}
-	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			_ = command.Wait()
-		}
-	})
+	waitResult := startRuntimeRepairNativeCommand(t, command, "checkout-owned app helper")
 	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
 		t.Fatalf("wait for checkout-owned app listener error = %v", err)
 	}
@@ -110,7 +102,7 @@ func TestNativeDarwinUnattributedRuntimeRepairSettlesCheckoutOwnedListener(t *te
 	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
 		t.Fatalf("Confirm() = %#v, %v; want settled graceful signal", confirmation, err)
 	}
-	if err := command.Wait(); err != nil {
+	if err := waitResult.wait(); err != nil {
 		t.Fatalf("wait for terminated checkout-owned app helper error = %v", err)
 	}
 }
@@ -220,15 +212,7 @@ func TestNativeDarwinRuntimeRepairLifecycle(t *testing.T) {
 		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
 	)
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := command.Start(); err != nil {
-		t.Fatalf("start native forj helper error = %v", err)
-	}
-	defer func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			_ = command.Wait()
-		}
-	}()
+	waitResult := startRuntimeRepairNativeCommand(t, command, "native forj helper")
 	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
 		t.Fatalf("wait for native forj helper listener error = %v", err)
 	}
@@ -250,7 +234,7 @@ func TestNativeDarwinRuntimeRepairLifecycle(t *testing.T) {
 	if confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
 		t.Fatalf("Confirm() = %#v, want settled graceful signal", confirmation)
 	}
-	if err := command.Wait(); err != nil {
+	if err := waitResult.wait(); err != nil {
 		t.Fatalf("wait for terminated native forj helper error = %v", err)
 	}
 }
@@ -356,15 +340,7 @@ func TestNativeDarwinRuntimeRepairRejectsAmbiguousScopeWithoutSignal(t *testing.
 		runtimeRepairNativeHelperEnvironment+"=1",
 		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
 	)
-	if err := command.Start(); err != nil {
-		t.Fatalf("start non-dedicated native forj helper error = %v", err)
-	}
-	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			_ = command.Wait()
-		}
-	})
+	startRuntimeRepairNativeCommand(t, command, "ambiguous non-dedicated native forj helper")
 	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
 		t.Fatalf("wait for non-dedicated native listener error = %v", err)
 	}
@@ -414,15 +390,7 @@ func TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope(t *te
 		runtimeRepairNativeHelperEnvironment+"=1",
 		runtimeRepairNativeHelperAddress+"="+endpoint.String(),
 	)
-	if err := command.Start(); err != nil {
-		t.Fatalf("start non-dedicated native forj helper error = %v", err)
-	}
-	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			_ = command.Wait()
-		}
-	})
+	waitResult := startRuntimeRepairNativeCommand(t, command, "non-dedicated native forj helper")
 	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
 		t.Fatalf("wait for non-dedicated native listener error = %v", err)
 	}
@@ -442,7 +410,7 @@ func TestNativeDarwinUnattributedRuntimeInspectionAcceptsNonDedicatedScope(t *te
 	if err != nil || confirmation.State != RuntimeRepairConfirmationSettled || !confirmation.Signaled {
 		t.Fatalf("Confirm() = %#v, %v; want settled graceful signal", confirmation, err)
 	}
-	if err := command.Wait(); err != nil {
+	if err := waitResult.wait(); err != nil {
 		t.Fatalf("wait for terminated native forj helper error = %v", err)
 	}
 }
@@ -533,6 +501,45 @@ func TestNativeDarwinRuntimeRepairRejectsDriftWithoutSignal(t *testing.T) {
 	if err := waitForRuntimeRepairNativeListener(endpoint); err != nil {
 		t.Fatalf("drifted confirmation stopped the replacement listener: %v", err)
 	}
+}
+
+// runtimeRepairNativeCommandWait retains one asynchronously reaped child result for test and cleanup callers.
+type runtimeRepairNativeCommandWait struct {
+	done chan struct{}
+	err  error
+}
+
+// wait returns only after the child has been reaped.
+func (waiter *runtimeRepairNativeCommandWait) wait() error {
+	<-waiter.done
+	return waiter.err
+}
+
+// startRuntimeRepairNativeCommand mirrors Harbor's supervisor by reaping a child concurrently with settlement.
+func startRuntimeRepairNativeCommand(
+	t *testing.T,
+	command *exec.Cmd,
+	description string,
+) *runtimeRepairNativeCommandWait {
+	t.Helper()
+	if err := command.Start(); err != nil {
+		t.Fatalf("start %s error = %v", description, err)
+	}
+	waiter := &runtimeRepairNativeCommandWait{done: make(chan struct{})}
+	go func() {
+		waiter.err = command.Wait()
+		close(waiter.done)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-waiter.done:
+			return
+		default:
+		}
+		_ = command.Process.Kill()
+		<-waiter.done
+	})
+	return waiter
 }
 
 // copyRuntimeRepairNativeHelper copies the test executable so proc_pidpath and argv[0] share one canonical forj identity.

@@ -35,6 +35,7 @@ const (
 	defaultLogReconcilePeriod    = 500 * time.Millisecond
 	defaultLogClosePeriod        = 2 * time.Second
 	replacementContainerLogTail  = 200
+	containerLogErrorPolls       = 20
 )
 
 // dockerEngine limits the adapter to the Engine calls needed for observation and logs.
@@ -606,9 +607,13 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 		id  string
 		err error
 	}
+	type pendingSourceError struct {
+		err   error
+		polls int
+	}
 	results := make(chan sourceResult, maximumProjectContainers)
 	active := make(map[string]context.CancelFunc)
-	pendingErrors := make(map[string]error)
+	pendingErrors := make(map[string]pendingSourceError)
 	seen := make(map[string]struct{})
 	var sources sync.WaitGroup
 	start := func(observed admittedContainer, tail int) error {
@@ -657,7 +662,7 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
 				// Force recreation can break the old Engine response before the next
 				// reconciliation observes that its immutable ID disappeared.
-				pendingErrors[result.id] = result.err
+				pendingErrors[result.id] = pendingSourceError{err: result.err}
 			}
 		case <-ticker.C:
 			containers, err := follower.runtime.serviceContainers(
@@ -692,11 +697,17 @@ func (follower *dockerLogFollower) copyTo(destination io.Writer) error {
 					return err
 				}
 			}
-			for id, sourceErr := range pendingErrors {
-				if _, stillSelected := next[id]; stillSelected {
-					return sourceErr
+			for id, pending := range pendingErrors {
+				_, stillSelected := next[id]
+				if !stillSelected || len(next) > 1 {
+					delete(pendingErrors, id)
+					continue
 				}
-				delete(pendingErrors, id)
+				pending.polls++
+				if pending.polls >= containerLogErrorPolls {
+					return pending.err
+				}
+				pendingErrors[id] = pending
 			}
 			follower.setAvailable(len(next) > 0)
 			if len(next) > 1 {

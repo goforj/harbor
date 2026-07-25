@@ -70,7 +70,7 @@ func TestNativeDockerRuntimeAdmitsOnlyItsCheckoutAndFollowsReplacement(t *testin
 	transcript := new(synchronizedTestBuffer)
 	copyDone := make(chan error, 1)
 	go func() { copyDone <- follower.CopyTo(transcript) }()
-	nativeWaitForLog(t, ctx, transcript, "target-initial")
+	nativeWaitForLog(t, ctx, copyDone, transcript, "target-initial")
 	if strings.Contains(transcript.String(), "neighbor-only") {
 		t.Fatalf("target log follower admitted neighboring project output: %q", transcript.String())
 	}
@@ -80,7 +80,7 @@ func TestNativeDockerRuntimeAdmitsOnlyItsCheckoutAndFollowsReplacement(t *testin
 
 	target.writeCompose(t, "target-replacement")
 	target.recreate(ctx, t)
-	nativeWaitForLog(t, ctx, transcript, "target-replacement")
+	nativeWaitForLog(t, ctx, copyDone, transcript, "target-replacement")
 	if err := follower.Close(); err != nil {
 		t.Fatalf("LogFollower.Close() error = %v", err)
 	}
@@ -189,10 +189,18 @@ func nativeComposeContainerIDs(ctx context.Context, t *testing.T, target, neighb
 }
 
 // nativeWaitForLog waits only until the follower delivers the named fixture marker.
-func nativeWaitForLog(t *testing.T, ctx context.Context, transcript *synchronizedTestBuffer, marker string) {
+func nativeWaitForLog(
+	t *testing.T,
+	ctx context.Context,
+	copyDone <-chan error,
+	transcript *synchronizedTestBuffer,
+	marker string,
+) {
 	t.Helper()
 	for !strings.Contains(transcript.String(), marker) {
 		select {
+		case err := <-copyDone:
+			t.Fatalf("service log follower stopped before %q: %v; transcript: %q", marker, err, transcript.String())
 		case <-ctx.Done():
 			t.Fatalf("service log transcript did not contain %q before timeout: %q", marker, transcript.String())
 		case <-time.After(25 * time.Millisecond):
