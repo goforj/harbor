@@ -36,6 +36,10 @@ func TestPlatformValuesPinVersionedProfiles(t *testing.T) {
 // TestBuildConstructsEveryProductProfile pins the exact topology, port vector, and policy fingerprint for each profile.
 func TestBuildConstructsEveryProductProfile(t *testing.T) {
 	pool := mustPool(t, "127.77.0.8/29", "127.77.0.10", "127.77.0.11")
+	macOSFingerprint := "3b5224deda3bd9cf7b592c7a90dd63ffaa08d076713030a720daabf4caf4e0e1"
+	if macOSMechanismsForBuild() == networkpolicy.LegacyMacOSMechanisms() {
+		macOSFingerprint = "64c48e8a29796930f5aa0c7cfb5152a84e44c88e1d2b6cc6e038872145f61c93"
+	}
 	tests := []struct {
 		name        string
 		platform    Platform
@@ -48,11 +52,11 @@ func TestBuildConstructsEveryProductProfile(t *testing.T) {
 		{
 			name:        "macOS",
 			platform:    PlatformMacOS,
-			mechanisms:  networkpolicy.MacOSMechanisms(),
+			mechanisms:  macOSMechanismsForBuild(),
 			dns:         directListener("127.0.0.1:22656"),
 			http:        redirectedListener("127.0.0.1:80", "127.0.0.1:22657"),
 			https:       redirectedListener("127.0.0.1:443", "127.0.0.1:22658"),
-			fingerprint: "3b5224deda3bd9cf7b592c7a90dd63ffaa08d076713030a720daabf4caf4e0e1",
+			fingerprint: macOSFingerprint,
 		},
 		{
 			name:        "Ubuntu 24.04",
