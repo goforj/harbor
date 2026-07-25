@@ -53,6 +53,13 @@ jobs:
             go.sum
             .ci/goforj/go.sum
 
+      - name: Exercise Windows CurrentUser Root trust lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:HARBOR_WINDOWS_TRUST_TEST = '1'
+          go test -count=1 -run '^TestWindowsCurrentUserRootLifecycle$' ./internal/platform/trust
+
       - name: Build pinned GoForj tools on Unix
         if: runner.os != 'Windows'
         shell: bash

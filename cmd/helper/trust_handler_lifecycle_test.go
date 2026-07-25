@@ -142,6 +142,107 @@ func TestRunAdministratorTrustLifecycleRestoresRootIdentity(t *testing.T) {
 	}
 }
 
+// TestRunWindowsTrustLifecycleValidatesTokenBeforeOpeningCurrentUserRoot proves Windows does not reuse Darwin identity transitions.
+func TestRunWindowsTrustLifecycleValidatesTokenBeforeOpeningCurrentUserRoot(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := trustLifecycleRedemptionForMechanisms(
+		t,
+		now,
+		helper.OperationEnsureTrust,
+		networkpolicy.WindowsMechanisms(),
+	)
+	redemption.Ticket.RequesterIdentity = "S-1-5-21-100-200-300-1001"
+	redemption.Admission.RequesterIdentity = redemption.Ticket.RequesterIdentity
+	events := make([]string, 0, 12)
+	handler := &lifecycleTrustHandler{events: &events, evidence: trustLifecycleEvidence(redemption.Ticket)}
+	dependencies := successfulTestDependencies(&events, redemption)
+	dependencies.transitionTrustIdentity = func(string) error {
+		t.Fatal("Windows trust used the Darwin requester identity transition")
+		return nil
+	}
+	dependencies.transitionAdministratorTrustIdentity = func(string) error {
+		t.Fatal("Windows trust used the Darwin administrator identity transition")
+		return nil
+	}
+	dependencies.validateWindowsTrustIdentity = func(requester string) error {
+		events = append(events, "validate Windows trust identity")
+		if requester != redemption.Ticket.RequesterIdentity {
+			t.Fatalf("Windows identity requester = %q, want %q", requester, redemption.Ticket.RequesterIdentity)
+		}
+		return nil
+	}
+	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+		events = append(events, "open trust handler")
+		return handler, nil
+	}
+
+	output, err := runTrustLifecycle(t, now, reference, dependencies)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !output.OK || handler.calls != 1 {
+		t.Fatalf("response = %#v, handler calls = %d", output, handler.calls)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"redeem ticket",
+		"consume replay claim",
+		"close replay guard",
+		"close ticket redeemer",
+		"validate Windows trust identity",
+		"open trust handler",
+		"trust mutation",
+		"close trust handler",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+// TestRunWindowsTrustLifecycleStopsAfterTokenMismatch proves CurrentUser Root never opens for another requester.
+func TestRunWindowsTrustLifecycleStopsAfterTokenMismatch(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := trustLifecycleRedemptionForMechanisms(
+		t,
+		now,
+		helper.OperationEnsureTrust,
+		networkpolicy.WindowsMechanisms(),
+	)
+	redemption.Ticket.RequesterIdentity = "S-1-5-21-100-200-300-1001"
+	redemption.Admission.RequesterIdentity = redemption.Ticket.RequesterIdentity
+	events := make([]string, 0, 10)
+	dependencies := successfulTestDependencies(&events, redemption)
+	identityErr := errors.New("Windows token user mismatch")
+	dependencies.validateWindowsTrustIdentity = func(string) error {
+		events = append(events, "validate Windows trust identity")
+		return identityErr
+	}
+	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+		t.Fatal("Windows trust handler opened after token mismatch")
+		return nil, nil
+	}
+
+	_, err := runTrustLifecycle(t, now, reference, dependencies)
+	if !errors.Is(err, identityErr) {
+		t.Fatalf("run() error = %v, want %v", err, identityErr)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"redeem ticket",
+		"consume replay claim",
+		"close replay guard",
+		"close ticket redeemer",
+		"validate Windows trust identity",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
 // TestRunAdministratorTrustLifecycleStopsAfterIdentityFailure proves a consumed administrator ticket cannot open Security.framework without restored root identity.
 func TestRunAdministratorTrustLifecycleStopsAfterIdentityFailure(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
@@ -667,21 +768,33 @@ func trustLifecycleRedemptionForMechanisms(t *testing.T, now time.Time, operatio
 	t.Helper()
 	root := trustLifecycleRoot(t)
 	loopback := netip.MustParseAddr("127.0.0.1")
+	dnsListener := networkpolicy.Listener{
+		Advertised: netip.AddrPortFrom(loopback, 25000),
+		Bind:       netip.AddrPortFrom(loopback, 25000),
+	}
+	httpListener := networkpolicy.Listener{
+		Advertised: netip.AddrPortFrom(loopback, 80),
+		Bind:       netip.AddrPortFrom(loopback, 25001),
+	}
+	httpsListener := networkpolicy.Listener{
+		Advertised: netip.AddrPortFrom(loopback, 443),
+		Bind:       netip.AddrPortFrom(loopback, 25002),
+	}
+	if mechanisms == networkpolicy.WindowsMechanisms() {
+		dnsLoopback := netip.MustParseAddr("127.0.0.2")
+		dnsListener = networkpolicy.Listener{
+			Advertised: netip.AddrPortFrom(dnsLoopback, 53),
+			Bind:       netip.AddrPortFrom(dnsLoopback, 53),
+		}
+		httpListener.Bind = httpListener.Advertised
+		httpsListener.Bind = httpsListener.Advertised
+	}
 	policy, err := networkpolicy.New(
 		root.Fingerprint,
 		mechanisms,
-		networkpolicy.Listener{
-			Advertised: netip.AddrPortFrom(loopback, 25000),
-			Bind:       netip.AddrPortFrom(loopback, 25000),
-		},
-		networkpolicy.Listener{
-			Advertised: netip.AddrPortFrom(loopback, 80),
-			Bind:       netip.AddrPortFrom(loopback, 25001),
-		},
-		networkpolicy.Listener{
-			Advertised: netip.AddrPortFrom(loopback, 443),
-			Bind:       netip.AddrPortFrom(loopback, 25002),
-		},
+		dnsListener,
+		httpListener,
+		httpsListener,
 	)
 	if err != nil {
 		t.Fatal(err)

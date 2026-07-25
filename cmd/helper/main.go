@@ -86,6 +86,7 @@ type runtimeDependencies struct {
 	openOwnershipHandler                 func() (closingOwnershipHandler, error)
 	transitionTrustIdentity              func(string) error
 	transitionAdministratorTrustIdentity func(string) error
+	validateWindowsTrustIdentity         func(string) error
 }
 
 // runtimeAuthorities retains only resources opened for the single admitted helper operation.
@@ -139,6 +140,7 @@ func productionDependencies() runtimeDependencies {
 		},
 		transitionTrustIdentity:              irreversiblyDropTrustIdentity,
 		transitionAdministratorTrustIdentity: irreversiblyEnterAdministratorTrustIdentity,
+		validateWindowsTrustIdentity:         validateWindowsCurrentUserTrustIdentity,
 	}
 }
 
@@ -229,6 +231,9 @@ func validateRuntimeComposition(clock helper.Clock, dependencies runtimeDependen
 	if dependencies.transitionAdministratorTrustIdentity == nil {
 		panic("helper administrator trust identity transition is required")
 	}
+	if dependencies.validateWindowsTrustIdentity == nil {
+		panic("helper Windows trust identity validator is required")
+	}
 }
 
 // executeAdmittedOwnership opens only the ownership store after ticket and replay admission.
@@ -256,9 +261,38 @@ func executeAdmittedTrust(
 		return executeAdmittedCurrentUserTrust(ctx, admitted, dependencies, authorities)
 	case networkpolicy.DarwinAdministratorTrust:
 		return executeAdmittedAdministratorTrust(ctx, admitted, dependencies, authorities)
+	case networkpolicy.WindowsCurrentUserTrust:
+		return executeAdmittedWindowsCurrentUserTrust(ctx, admitted, dependencies, authorities)
 	default:
 		return helper.OperationResult{}, fmt.Errorf("admitted trust mechanism is unsupported: %q", admitted.TrustMechanism())
 	}
+}
+
+// executeAdmittedWindowsCurrentUserTrust opens CurrentUser Root only after admission authority closes and the elevated token matches the requester.
+func executeAdmittedWindowsCurrentUserTrust(
+	ctx context.Context,
+	admitted helper.AdmittedTrustOperation,
+	dependencies runtimeDependencies,
+	authorities *runtimeAuthorities,
+) (helper.OperationResult, error) {
+	if err := authorities.closePrivileged(); err != nil {
+		return helper.OperationResult{}, err
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := dependencies.validateWindowsTrustIdentity(admitted.RequesterIdentity()); err != nil {
+		return helper.OperationResult{}, fmt.Errorf("validate helper Windows trust identity: %w", err)
+	}
+	trustHandler, err := dependencies.openTrustHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper Windows trust handler: %w", err)
+	}
+	if trustHandler == nil {
+		panic("helper Windows trust handler factory returned nil")
+	}
+	authorities.trustHandler = trustHandler
+	return admitted.ExecuteTrust(ctx, trustHandler)
 }
 
 // executeAdmittedCurrentUserTrust closes privileged authority before the irreversible requester identity transition.
