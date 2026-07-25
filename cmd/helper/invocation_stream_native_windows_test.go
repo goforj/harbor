@@ -13,6 +13,7 @@ import (
 
 	"github.com/Microsoft/go-winio"
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketredeemer"
 	"golang.org/x/sys/windows"
 )
 
@@ -173,6 +174,16 @@ func TestPlatformRuntimeFailureExitCodeKeepsWindowsStartupStagesDistinct(t *test
 		{err: errRuntimeAuthorization, want: helper.WindowsInvocationExitAuthorization},
 		{err: errRuntimeTicketStore, want: helper.WindowsInvocationExitTicketStore},
 		{err: errRuntimeReplayStore, want: helper.WindowsInvocationExitReplayStore},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupProcessAdmission), want: helper.WindowsInvocationExitTicketProcess},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupRoot), want: helper.WindowsInvocationExitTicketRoot},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupTickets), want: helper.WindowsInvocationExitTicketsDirectory},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupPending), want: helper.WindowsInvocationExitPendingDirectory},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupClaims), want: helper.WindowsInvocationExitClaimsDirectory},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupState), want: helper.WindowsInvocationExitStateDirectory},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupPendingIdentity), want: helper.WindowsInvocationExitPendingIdentity},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupTopology), want: helper.WindowsInvocationExitTicketTopology},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupOwnership), want: helper.WindowsInvocationExitOwnershipStore},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupRevalidation), want: helper.WindowsInvocationExitTicketRevalidation},
 		{err: errors.New("unclassified"), want: 1},
 	}
 	for _, test := range tests {

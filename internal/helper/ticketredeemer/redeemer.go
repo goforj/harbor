@@ -27,6 +27,26 @@ var (
 	ErrReferenceConsumed = errors.New("helper ticket reference was consumed")
 	// ErrClaimDurabilityUncertain identifies a consumed reference whose directory barriers did not confirm persistence.
 	ErrClaimDurabilityUncertain = errors.New("helper ticket claim durability is uncertain")
+	// ErrStartupProcessAdmission identifies rejection of the privileged helper token before storage is opened.
+	ErrStartupProcessAdmission = errors.New("helper ticket startup process admission failed")
+	// ErrStartupRoot identifies failure to open the fixed protected ticket root.
+	ErrStartupRoot = errors.New("helper ticket startup root failed")
+	// ErrStartupTickets identifies failure to open the fixed tickets directory.
+	ErrStartupTickets = errors.New("helper ticket startup tickets directory failed")
+	// ErrStartupPending identifies failure to open the interactive pending directory.
+	ErrStartupPending = errors.New("helper ticket startup pending directory failed")
+	// ErrStartupClaims identifies failure to open the machine-only claims directory.
+	ErrStartupClaims = errors.New("helper ticket startup claims directory failed")
+	// ErrStartupState identifies failure to open the machine-only state directory.
+	ErrStartupState = errors.New("helper ticket startup state directory failed")
+	// ErrStartupPendingIdentity identifies rejection of the pending directory's requester boundary.
+	ErrStartupPendingIdentity = errors.New("helper ticket startup pending identity failed")
+	// ErrStartupTopology identifies rejection of the retained ticket directory topology.
+	ErrStartupTopology = errors.New("helper ticket startup topology failed")
+	// ErrStartupOwnership identifies failure to open the protected ownership store.
+	ErrStartupOwnership = errors.New("helper ticket startup ownership store failed")
+	// ErrStartupRevalidation identifies a topology change while protected authorities were opening.
+	ErrStartupRevalidation = errors.New("helper ticket startup revalidation failed")
 )
 
 // ownershipStore is the narrow protected-state authority needed after a reference has been consumed.
@@ -104,7 +124,7 @@ func open(paths machinepaths.Paths, dependencies dependencies) (*Redeemer, error
 		return nil, err
 	}
 	if err := dependencies.admitProcess(); err != nil {
-		return nil, fmt.Errorf("admit privileged helper process: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupProcessAdmission, err)
 	}
 	if err := validateLayout(paths); err != nil {
 		return nil, err
@@ -116,13 +136,13 @@ func open(paths machinepaths.Paths, dependencies dependencies) (*Redeemer, error
 	ownershipStore, err := dependencies.openOwnership(paths.OwnershipPath)
 	if err != nil {
 		return nil, errors.Join(
-			fmt.Errorf("open helper ticket ownership record: %w", err),
+			fmt.Errorf("%w: %w", ErrStartupOwnership, err),
 			topology.close(),
 		)
 	}
 	if err := topology.validate(); err != nil {
 		return nil, errors.Join(
-			fmt.Errorf("revalidate helper ticket topology after opening ownership: %w", err),
+			fmt.Errorf("%w: %w", ErrStartupRevalidation, err),
 			ownershipStore.Close(),
 			topology.close(),
 		)
@@ -809,7 +829,7 @@ func validateLayout(paths machinepaths.Paths) error {
 func openTopology(paths machinepaths.Paths) (*topology, error) {
 	root, err := openPlatformRootDirectory(paths.Root)
 	if err != nil {
-		return nil, fmt.Errorf("open helper ticket root: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupRoot, err)
 	}
 	topology := &topology{paths: paths, root: root}
 	failed := true
@@ -821,26 +841,26 @@ func openTopology(paths machinepaths.Paths) (*topology, error) {
 
 	topology.tickets, err = openPlatformDirectory(root, paths.Root, "tickets")
 	if err != nil {
-		return nil, fmt.Errorf("open helper tickets directory: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupTickets, err)
 	}
 	topology.pending, err = openPlatformDirectory(topology.tickets, paths.TicketsDirectory, "pending")
 	if err != nil {
-		return nil, fmt.Errorf("open pending tickets directory: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupPending, err)
 	}
 	topology.claims, err = openPlatformDirectory(topology.tickets, paths.TicketsDirectory, "claims")
 	if err != nil {
-		return nil, fmt.Errorf("open claimed tickets directory: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupClaims, err)
 	}
 	topology.state, err = openPlatformDirectory(root, paths.Root, "state")
 	if err != nil {
-		return nil, fmt.Errorf("open helper state directory: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupState, err)
 	}
 	topology.requesterIdentity, err = platformPendingIdentity(topology.pending)
 	if err != nil {
-		return nil, fmt.Errorf("derive admitted ticket requester: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartupPendingIdentity, err)
 	}
 	if err := topology.validateRetained(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrStartupTopology, err)
 	}
 	failed = false
 	return topology, nil

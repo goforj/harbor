@@ -177,6 +177,16 @@ func TestWindowsChildInvocationFailureMapsOnlyReviewedExitCodes(t *testing.T) {
 		{exitCode: helper.WindowsInvocationExitAuthorization, want: transportFailureWindowsChildAuthorization},
 		{exitCode: helper.WindowsInvocationExitTicketStore, want: transportFailureWindowsChildTicketStore},
 		{exitCode: helper.WindowsInvocationExitReplayStore, want: transportFailureWindowsChildReplayStore},
+		{exitCode: helper.WindowsInvocationExitTicketProcess, want: transportFailureWindowsChildTicketProcess},
+		{exitCode: helper.WindowsInvocationExitTicketRoot, want: transportFailureWindowsChildTicketRoot},
+		{exitCode: helper.WindowsInvocationExitTicketsDirectory, want: transportFailureWindowsChildTicketsDirectory},
+		{exitCode: helper.WindowsInvocationExitPendingDirectory, want: transportFailureWindowsChildPendingDirectory},
+		{exitCode: helper.WindowsInvocationExitClaimsDirectory, want: transportFailureWindowsChildClaimsDirectory},
+		{exitCode: helper.WindowsInvocationExitStateDirectory, want: transportFailureWindowsChildStateDirectory},
+		{exitCode: helper.WindowsInvocationExitPendingIdentity, want: transportFailureWindowsChildPendingIdentity},
+		{exitCode: helper.WindowsInvocationExitTicketTopology, want: transportFailureWindowsChildTicketTopology},
+		{exitCode: helper.WindowsInvocationExitOwnershipStore, want: transportFailureWindowsChildOwnershipStore},
+		{exitCode: helper.WindowsInvocationExitTicketRevalidation, want: transportFailureWindowsChildTicketRevalidation},
 		{exitCode: 73, want: transportFailureNone},
 	}
 	for _, test := range tests {

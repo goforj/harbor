@@ -19,4 +19,24 @@ const (
 	WindowsInvocationExitTicketStore = 17
 	// WindowsInvocationExitReplayStore identifies failure to open the protected replay topology.
 	WindowsInvocationExitReplayStore = 18
+	// WindowsInvocationExitTicketProcess identifies rejection of the elevated token by ticket storage.
+	WindowsInvocationExitTicketProcess = 19
+	// WindowsInvocationExitTicketRoot identifies failure to open the protected ticket root.
+	WindowsInvocationExitTicketRoot = 20
+	// WindowsInvocationExitTicketsDirectory identifies failure to open the protected tickets directory.
+	WindowsInvocationExitTicketsDirectory = 21
+	// WindowsInvocationExitPendingDirectory identifies failure to open the interactive pending directory.
+	WindowsInvocationExitPendingDirectory = 22
+	// WindowsInvocationExitClaimsDirectory identifies failure to open the machine claims directory.
+	WindowsInvocationExitClaimsDirectory = 23
+	// WindowsInvocationExitStateDirectory identifies failure to open the machine state directory.
+	WindowsInvocationExitStateDirectory = 24
+	// WindowsInvocationExitPendingIdentity identifies rejection of the pending directory identity policy.
+	WindowsInvocationExitPendingIdentity = 25
+	// WindowsInvocationExitTicketTopology identifies rejection of the retained ticket topology.
+	WindowsInvocationExitTicketTopology = 26
+	// WindowsInvocationExitOwnershipStore identifies failure to open the protected ownership store.
+	WindowsInvocationExitOwnershipStore = 27
+	// WindowsInvocationExitTicketRevalidation identifies a ticket topology change during startup.
+	WindowsInvocationExitTicketRevalidation = 28
 )

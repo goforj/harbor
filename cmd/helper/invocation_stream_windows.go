@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/goforj/harbor/internal/helper"
+	"github.com/goforj/harbor/internal/helper/ticketredeemer"
 	"golang.org/x/sys/windows"
 )
 
@@ -108,6 +109,28 @@ func platformRuntimeFailureExitCode(err error) int {
 	case errors.Is(err, errRuntimeAuthorization):
 		return helper.WindowsInvocationExitAuthorization
 	case errors.Is(err, errRuntimeTicketStore):
+		switch {
+		case errors.Is(err, ticketredeemer.ErrStartupProcessAdmission):
+			return helper.WindowsInvocationExitTicketProcess
+		case errors.Is(err, ticketredeemer.ErrStartupRoot):
+			return helper.WindowsInvocationExitTicketRoot
+		case errors.Is(err, ticketredeemer.ErrStartupTickets):
+			return helper.WindowsInvocationExitTicketsDirectory
+		case errors.Is(err, ticketredeemer.ErrStartupPending):
+			return helper.WindowsInvocationExitPendingDirectory
+		case errors.Is(err, ticketredeemer.ErrStartupClaims):
+			return helper.WindowsInvocationExitClaimsDirectory
+		case errors.Is(err, ticketredeemer.ErrStartupState):
+			return helper.WindowsInvocationExitStateDirectory
+		case errors.Is(err, ticketredeemer.ErrStartupPendingIdentity):
+			return helper.WindowsInvocationExitPendingIdentity
+		case errors.Is(err, ticketredeemer.ErrStartupTopology):
+			return helper.WindowsInvocationExitTicketTopology
+		case errors.Is(err, ticketredeemer.ErrStartupOwnership):
+			return helper.WindowsInvocationExitOwnershipStore
+		case errors.Is(err, ticketredeemer.ErrStartupRevalidation):
+			return helper.WindowsInvocationExitTicketRevalidation
+		}
 		return helper.WindowsInvocationExitTicketStore
 	case errors.Is(err, errRuntimeReplayStore):
 		return helper.WindowsInvocationExitReplayStore

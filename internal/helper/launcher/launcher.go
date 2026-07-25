@@ -105,6 +105,16 @@ const (
 	transportFailureWindowsChildAuthorization
 	transportFailureWindowsChildTicketStore
 	transportFailureWindowsChildReplayStore
+	transportFailureWindowsChildTicketProcess
+	transportFailureWindowsChildTicketRoot
+	transportFailureWindowsChildTicketsDirectory
+	transportFailureWindowsChildPendingDirectory
+	transportFailureWindowsChildClaimsDirectory
+	transportFailureWindowsChildStateDirectory
+	transportFailureWindowsChildPendingIdentity
+	transportFailureWindowsChildTicketTopology
+	transportFailureWindowsChildOwnershipStore
+	transportFailureWindowsChildTicketRevalidation
 )
 
 // Transport performs one native consent and helper-process exchange.
@@ -314,6 +324,26 @@ func transportFailureLabel(stage transportFailureStage) string {
 		return "Windows child ticket store"
 	case transportFailureWindowsChildReplayStore:
 		return "Windows child replay store"
+	case transportFailureWindowsChildTicketProcess:
+		return "Windows child ticket process admission"
+	case transportFailureWindowsChildTicketRoot:
+		return "Windows child ticket root"
+	case transportFailureWindowsChildTicketsDirectory:
+		return "Windows child tickets directory"
+	case transportFailureWindowsChildPendingDirectory:
+		return "Windows child pending directory"
+	case transportFailureWindowsChildClaimsDirectory:
+		return "Windows child claims directory"
+	case transportFailureWindowsChildStateDirectory:
+		return "Windows child state directory"
+	case transportFailureWindowsChildPendingIdentity:
+		return "Windows child pending identity"
+	case transportFailureWindowsChildTicketTopology:
+		return "Windows child ticket topology"
+	case transportFailureWindowsChildOwnershipStore:
+		return "Windows child ownership store"
+	case transportFailureWindowsChildTicketRevalidation:
+		return "Windows child ticket revalidation"
 	default:
 		return "unrecognized native lifecycle stage"
 	}

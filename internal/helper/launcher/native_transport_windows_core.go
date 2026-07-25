@@ -252,6 +252,26 @@ func windowsChildInvocationFailure(exitCode int) transportFailureStage {
 		return transportFailureWindowsChildTicketStore
 	case helper.WindowsInvocationExitReplayStore:
 		return transportFailureWindowsChildReplayStore
+	case helper.WindowsInvocationExitTicketProcess:
+		return transportFailureWindowsChildTicketProcess
+	case helper.WindowsInvocationExitTicketRoot:
+		return transportFailureWindowsChildTicketRoot
+	case helper.WindowsInvocationExitTicketsDirectory:
+		return transportFailureWindowsChildTicketsDirectory
+	case helper.WindowsInvocationExitPendingDirectory:
+		return transportFailureWindowsChildPendingDirectory
+	case helper.WindowsInvocationExitClaimsDirectory:
+		return transportFailureWindowsChildClaimsDirectory
+	case helper.WindowsInvocationExitStateDirectory:
+		return transportFailureWindowsChildStateDirectory
+	case helper.WindowsInvocationExitPendingIdentity:
+		return transportFailureWindowsChildPendingIdentity
+	case helper.WindowsInvocationExitTicketTopology:
+		return transportFailureWindowsChildTicketTopology
+	case helper.WindowsInvocationExitOwnershipStore:
+		return transportFailureWindowsChildOwnershipStore
+	case helper.WindowsInvocationExitTicketRevalidation:
+		return transportFailureWindowsChildTicketRevalidation
 	default:
 		return transportFailureNone
 	}
