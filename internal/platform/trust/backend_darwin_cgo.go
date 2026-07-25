@@ -1043,9 +1043,6 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 			return trust_state;
 		}
 		status = harbor_trust_remove_admin_root_with_config_right(certificate);
-		if (status == errAuthorizationDenied || status == errAuthorizationInteractionNotAllowed) {
-			status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainAdmin);
-		}
 		if (status == errSecItemNotFound) {
 			*stale = 1;
 			CFRelease(certificate);
