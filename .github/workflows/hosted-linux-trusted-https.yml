@@ -121,6 +121,19 @@ jobs:
           sudo -n chmod 0644 "$rule"
           sudo -n systemctl restart polkit.service
 
+      - name: Verify hosted Ubuntu resolver adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolver_test="${RUNNER_TEMP}/harbor-resolver-platform.test"
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test -c \
+            -o "$resolver_test" \
+            ./internal/platform/resolver
+          sudo -n env HARBOR_PRIVILEGED_RESOLVER_TEST=1 \
+            "$resolver_test" \
+            -test.count=1 \
+            -test.run '^TestPrivilegedSystemdResolvedAdapterLifecycle$'
+
       - name: Build production Harbor and GoForj binaries
         shell: bash
         run: |
