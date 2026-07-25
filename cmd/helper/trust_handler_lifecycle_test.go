@@ -403,6 +403,73 @@ func TestRunUbuntuSystemTrustLifecycleUsesOnlyLinuxSystemHandler(t *testing.T) {
 	}
 }
 
+// TestRunUbuntuSystemTrustLifecycleStopsAtAuthorityFailures proves no system trust mutation starts when root authority teardown or adapter construction fails.
+func TestRunUbuntuSystemTrustLifecycleStopsAtAuthorityFailures(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Ubuntu system trust execution is available only on Linux")
+	}
+
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name   string
+		mutate func(*runtimeDependencies, *[]string) error
+	}{
+		{
+			name: "privileged close",
+			mutate: func(dependencies *runtimeDependencies, events *[]string) error {
+				failure := errors.New("Ubuntu replay close failed")
+				dependencies.openReplayGuard = func() (closingReplayGuard, error) {
+					return &testReplayGuard{events: events, closeErr: failure}, nil
+				}
+				dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+					t.Fatal("Ubuntu trust handler opened after privileged close failure")
+					return nil, nil
+				}
+				return failure
+			},
+		},
+		{
+			name: "handler open",
+			mutate: func(dependencies *runtimeDependencies, events *[]string) error {
+				failure := errors.New("Ubuntu trust handler open failed")
+				dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+					*events = append(*events, "open administrator trust handler")
+					return nil, failure
+				}
+				return failure
+			},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			reference, redemption := trustLifecycleRedemptionForMechanisms(t, now, helper.OperationEnsureTrust, networkpolicy.UbuntuMechanisms())
+			events := make([]string, 0, 10)
+			dependencies := successfulTestDependencies(&events, redemption)
+			failure := test.mutate(&dependencies, &events)
+			dependencies.transitionTrustIdentity = func(string) error {
+				t.Fatal("Ubuntu system trust transitioned to the requester identity")
+				return nil
+			}
+			dependencies.transitionAdministratorTrustIdentity = func(string) error {
+				t.Fatal("Ubuntu system trust used the Darwin administrator identity transition")
+				return nil
+			}
+			dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+				t.Fatal("current-user trust handler opened for Ubuntu system trust")
+				return nil, nil
+			}
+
+			_, err := runTrustLifecycle(t, now, reference, dependencies)
+			if !errors.Is(err, failure) {
+				t.Fatalf("run() error = %v, want %v", err, failure)
+			}
+			if slices.Contains(events, "trust mutation") {
+				t.Fatalf("events = %#v, want no trust mutation", events)
+			}
+		})
+	}
+}
+
 // TestRunTrustLifecycleRejectsBeforeTransition proves failed redemption or replay admission never opens user trust authority.
 func TestRunTrustLifecycleRejectsBeforeTransition(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
