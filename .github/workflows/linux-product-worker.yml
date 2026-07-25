@@ -41,7 +41,7 @@ jobs:
           printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
 
   profile:
-    name: Prove Ubuntu 24.04 profile and Docker lifecycle
+    name: Prove Ubuntu 24.04 Docker and trusted HTTPS lifecycle
     needs: admit
     environment: linux-product-evidence
     runs-on: [self-hosted, ephemeral, harbor-product, linux, x64]
@@ -109,6 +109,13 @@ jobs:
 
           [[ ! -e /var/lib/goforj/harbor ]]
           [[ ! -e /etc/systemd/resolved.conf.d/90-goforj-harbor.conf ]]
+          [[ ! -e /usr/local/share/ca-certificates/goforj-harbor.crt ]]
+          [[ ! -e /usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release ]]
+          nft_tables="$(sudo -n /usr/sbin/nft list tables)"
+          if grep -Fqx 'table inet goforj_harbor' <<<"$nft_tables"; then
+            echo "product worker retained Harbor nftables state" >&2
+            exit 1
+          fi
 
           docker_provider="$(docker info --format '{{.OperatingSystem}}')"
           docker_endpoint="$(docker context inspect --format '{{(index .Endpoints "docker").Host}}' "$(docker context show)")"
@@ -191,7 +198,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Build pinned GoForj tools
+      - name: Build product binaries and pinned GoForj tools
         shell: bash
         run: |
           set -euo pipefail
@@ -199,12 +206,17 @@ jobs:
           binary="${binary_directory}/forj"
           [[ ! -e "$binary_directory" ]]
           install -d -m 0700 "$binary_directory"
+          go build -trimpath -o "${binary_directory}/harbor" ./cmd/app
+          go build -trimpath -o "${binary_directory}/harbord" ./cmd/harbord
+          go build -trimpath -o "${binary_directory}/helper" ./cmd/helper
+          go build -trimpath -o "${binary_directory}/devbootstrap" ./cmd/devbootstrap
           (
             cd .ci/goforj
             go build -trimpath -o "$binary" ./cmd/forj
           )
           GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf 'HARBOR_LINUX_PRODUCT_BINARY_DIRECTORY=%s\n' "$binary_directory" >> "$GITHUB_ENV"
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
 
       - name: Require provisioner-owned proof identities
@@ -264,6 +276,47 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Install reviewed development helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n "${HARBOR_LINUX_PRODUCT_BINARY_DIRECTORY}/devbootstrap" \
+            --helper "${HARBOR_LINUX_PRODUCT_BINARY_DIRECTORY}/helper" \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"
+
+      - name: Exercise three-project trusted HTTPS lifecycle
+        shell: bash
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-bin/forj
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor-bin/harbor
+          HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbor-bin/harbord
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-linux-trusted-https-evidence
+        run: |
+          set -euo pipefail
+          [[ "$(command -v forj)" == "${HARBOR_LINUX_PRODUCT_BINARY_DIRECTORY}/forj" ]]
+          [[ "$(command -v wire)" == "${HARBOR_LINUX_PRODUCT_BINARY_DIRECTORY}/wire" ]]
+          go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=25m \
+            -run '^TestTrustedHTTPSIntermediateNativeLifecycle$' \
+            ./internal/acceptance
+          go run ./cmd/platformproof verify-trusted-https \
+            --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \
+            --platform linux
+
+      - name: Upload bounded trusted HTTPS lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-trusted-https-product-lifecycle
+          path: ${{ runner.temp }}/harbor-linux-trusted-https-evidence
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
     name: Verify Linux product-worker evidence
     needs: [admit, profile]
@@ -294,6 +347,12 @@ jobs:
           name: linux-docker-product-lifecycle
           path: linux-docker-product-evidence
 
+      - name: Download trusted HTTPS lifecycle evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-trusted-https-product-lifecycle
+          path: linux-trusted-https-evidence
+
       - name: Enforce exact product evidence
         run: |
           go run ./cmd/platformproof verify-linux-worker \
@@ -306,3 +365,6 @@ jobs:
             --platforms linux \
             --app-port 3000 \
             --service-port 3306
+          go run ./cmd/platformproof verify-trusted-https \
+            --root linux-trusted-https-evidence \
+            --platform linux

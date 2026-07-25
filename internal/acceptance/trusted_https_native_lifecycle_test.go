@@ -1,4 +1,4 @@
-//go:build (darwin || windows) && phase1acceptance
+//go:build (darwin || linux || windows) && phase1acceptance
 
 package acceptance
 
@@ -54,6 +54,7 @@ type trustedHTTPSNativeLifecycle struct {
 	daemon            *phase1DaemonProcess
 	evidence          *phase1Evidence
 	retainDiagnostics bool
+	loopbackBaseline  []string
 	restoreMarkers    func([]trustedhttpsharness.CheckoutBaseline) error
 	verifyBaselines   func([]trustedhttpsharness.CheckoutBaseline) error
 	closeWorkspace    func(*goforjproject.Workspace) error
@@ -144,6 +145,7 @@ func TestTrustedHTTPSIntermediateNativeLifecycle(t *testing.T) {
 	status := phase1RequireReady(t, testContext, configuration, sandbox, lifecycle.daemon)
 	phase1RequireControlCapabilities(t, status)
 	trustedHTTPSRequireControlCapabilities(t, status)
+	lifecycle.loopbackBaseline = trustedHTTPSCaptureLoopbackBaseline(t, testContext, sandbox)
 
 	// This cleanup is registered after phase1StartDaemon so product release runs
 	// before the harness's final forced-process safety net can stop the daemon.
@@ -1142,7 +1144,7 @@ func (lifecycle *trustedHTTPSNativeLifecycle) cleanup(parent context.Context) er
 		} else if releaseID != "" && replayedReleaseID != releaseID {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("network release replay changed durable operation from %s to %s", releaseID, replayedReleaseID))
 		}
-		if err := trustedHTTPSVerifyNoMachineEffects(parent, lifecycle.sandbox); err != nil {
+		if err := trustedHTTPSVerifyNoMachineEffects(parent, lifecycle.sandbox, lifecycle.loopbackBaseline); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
@@ -1298,42 +1300,180 @@ func TestTrustedHTTPSValidateNetworkReleaseResultWithDiagnosticRetainsFailure(t 
 	}
 }
 
+// trustedHTTPSCaptureLoopbackBaseline records foreign worker-owned identities that product cleanup must preserve.
+func trustedHTTPSCaptureLoopbackBaseline(t *testing.T, parent context.Context, sandbox phase1Sandbox) []string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(parent, phase1CommandTimeout)
+	defer cancel()
+	identities, err := trustedHTTPSObserveLoopbackIdentities(ctx, sandbox)
+	if err != nil {
+		t.Fatalf("capture pre-setup loopback identities: %v", err)
+	}
+	return identities
+}
+
+// trustedHTTPSObserveLoopbackIdentities returns the canonical Harbor-range addresses currently attached to the native loopback interface.
+func trustedHTTPSObserveLoopbackIdentities(ctx context.Context, sandbox phase1Sandbox) ([]string, error) {
+	var (
+		output string
+		err    error
+	)
+	switch runtime.GOOS {
+	case "darwin":
+		output, err = trustedHTTPSRunCommand(ctx, sandbox, "/sbin/ifconfig", "lo0")
+	case "linux":
+		output, err = trustedHTTPSRunCommand(ctx, sandbox, "/usr/sbin/ip", "-o", "-4", "address", "show", "dev", "lo")
+	case "windows":
+		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+		if systemRoot == "" {
+			systemRoot = strings.TrimSpace(os.Getenv("WINDIR"))
+		}
+		if systemRoot == "" || !filepath.IsAbs(systemRoot) {
+			return nil, errors.New("observe Windows loopback identities: SystemRoot is unavailable")
+		}
+		powerShell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		output, err = trustedHTTPSRunCommand(
+			ctx,
+			sandbox,
+			powerShell,
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -like "127.77.*" } | Select-Object -ExpandProperty IPAddress`,
+		)
+	default:
+		return nil, fmt.Errorf("observe loopback identities: platform %s is unsupported", runtime.GOOS)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect native loopback identities: %w: %s", err, strings.TrimSpace(output))
+	}
+	return trustedHTTPSParseLoopbackIdentities(runtime.GOOS, output), nil
+}
+
+// trustedHTTPSParseLoopbackIdentities extracts a sorted address set from each native interface tool.
+func trustedHTTPSParseLoopbackIdentities(platform string, output string) []string {
+	identities := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		candidate := ""
+		switch platform {
+		case "darwin":
+			if len(fields) >= 2 && fields[0] == "inet" {
+				candidate = fields[1]
+			}
+		case "linux":
+			if len(fields) >= 4 && fields[2] == "inet" {
+				candidate = strings.SplitN(fields[3], "/", 2)[0]
+			}
+		case "windows":
+			if len(fields) == 1 {
+				candidate = fields[0]
+			}
+		}
+		if strings.HasPrefix(candidate, "127.77.") {
+			identities = append(identities, candidate)
+		}
+	}
+	slices.Sort(identities)
+	return slices.Compact(identities)
+}
+
+// TestTrustedHTTPSParseLoopbackIdentities keeps baseline comparison independent of platform-specific output ordering and unrelated addresses.
+func TestTrustedHTTPSParseLoopbackIdentities(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		platform string
+		output   string
+		want     []string
+	}{
+		{platform: "darwin", output: "inet 127.77.254.12 netmask 0xffffffff\ninet 127.0.0.1 netmask 0xff000000\ninet 127.77.254.10 netmask 0xffffffff\n", want: []string{"127.77.254.10", "127.77.254.12"}},
+		{platform: "linux", output: "1: lo inet 127.77.254.12/32 scope host lo\n1: lo inet 127.0.0.1/8 scope host lo\n1: lo inet 127.77.254.10/32 scope host lo\n", want: []string{"127.77.254.10", "127.77.254.12"}},
+		{platform: "windows", output: "127.77.254.12\r\n127.77.254.10\r\n127.77.254.10\r\n", want: []string{"127.77.254.10", "127.77.254.12"}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.platform, func(t *testing.T) {
+			t.Parallel()
+			if got := trustedHTTPSParseLoopbackIdentities(test.platform, test.output); !slices.Equal(got, test.want) {
+				t.Fatalf("trustedHTTPSParseLoopbackIdentities() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 // trustedHTTPSVerifyNoMachineEffects independently rejects retained Harbor-owned effects after product release.
-func trustedHTTPSVerifyNoMachineEffects(parent context.Context, sandbox phase1Sandbox) error {
+func trustedHTTPSVerifyNoMachineEffects(parent context.Context, sandbox phase1Sandbox, loopbackBaseline []string) error {
 	ctx, cancel := context.WithTimeout(parent, phase1CommandTimeout)
 	defer cancel()
 
 	if runtime.GOOS == "windows" {
-		return trustedHTTPSVerifyNoWindowsMachineEffects(ctx, sandbox)
+		if err := trustedHTTPSVerifyNoWindowsMachineEffects(ctx, sandbox); err != nil {
+			return err
+		}
+	} else if runtime.GOOS == "linux" {
+		if err := trustedHTTPSVerifyNoLinuxMachineEffects(ctx, sandbox); err != nil {
+			return err
+		}
+	} else {
+		for _, path := range []string{
+			"/etc/resolver/test",
+			"/Library/Application Support/GoForj/Harbor/Privileged/state/ownership.json",
+			"/Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist",
+		} {
+			if err := trustedHTTPSRequirePrivilegedPathAbsent(ctx, sandbox, path); err != nil {
+				return err
+			}
+		}
+		if err := trustedHTTPSRequireLaunchdLabelAbsent(ctx, sandbox, "com.goforj.harbor.launchdrelay"); err != nil {
+			return err
+		}
+		if err := trustedHTTPSRequireNoHTTPListeners(ctx, sandbox); err != nil {
+			return err
+		}
+		if err := trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx, sandbox, "find-generic-password", "-s", "com.goforj.harbor.admin-trust-owner.v1", "/Library/Keychains/System.keychain"); err != nil {
+			return err
+		}
+		if err := trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx, sandbox, "find-certificate", "-c", "com.goforj.harbor.admin-root.v1|", "/Library/Keychains/System.keychain"); err != nil {
+			return err
+		}
+		if err := trustedHTTPSRequireSecurityItemAbsent(ctx, sandbox, "/usr/bin/security", "find-generic-password", "-s", "com.goforj.harbor.trust-owner.v1"); err != nil {
+			return err
+		}
 	}
 
+	observed, err := trustedHTTPSObserveLoopbackIdentities(ctx, sandbox)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(observed, loopbackBaseline) {
+		return fmt.Errorf("verify released loopback identities: got %v, want pre-setup baseline %v", observed, loopbackBaseline)
+	}
+	return nil
+}
+
+// trustedHTTPSVerifyNoLinuxMachineEffects rejects retained privileged state, resolver policy, trust material, nftables projection, and loopback identities.
+func trustedHTTPSVerifyNoLinuxMachineEffects(ctx context.Context, sandbox phase1Sandbox) error {
 	for _, path := range []string{
-		"/etc/resolver/test",
-		"/Library/Application Support/GoForj/Harbor/Privileged/state/ownership.json",
-		"/Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist",
+		"/var/lib/goforj/harbor/state/ownership.json",
+		"/var/lib/goforj/harbor/state/host-projection.json",
+		"/var/lib/goforj/harbor/state/trust-owner.v1",
+		"/etc/systemd/resolved.conf.d/90-goforj-harbor.conf",
+		"/usr/local/share/ca-certificates/goforj-harbor.crt",
+		"/usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release",
 	} {
 		if err := trustedHTTPSRequirePrivilegedPathAbsent(ctx, sandbox, path); err != nil {
 			return err
 		}
 	}
-	if err := trustedHTTPSRequireLaunchdLabelAbsent(ctx, sandbox, "com.goforj.harbor.launchdrelay"); err != nil {
-		return err
+	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/usr/sbin/nft", "list", "tables")
+	if err != nil {
+		return fmt.Errorf("inspect released Linux nftables state: %w: %s", err, strings.TrimSpace(output))
 	}
-	if err := trustedHTTPSRequireNoHTTPListeners(ctx, sandbox); err != nil {
-		return err
-	}
-	if err := trustedHTTPSRequireNoLoopbackAlias(ctx, sandbox); err != nil {
-		return err
-	}
-	if err := trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx, sandbox, "find-generic-password", "-s", "com.goforj.harbor.admin-trust-owner.v1", "/Library/Keychains/System.keychain"); err != nil {
-		return err
-	}
-	if err := trustedHTTPSRequirePrivilegedSecurityItemAbsent(ctx, sandbox, "find-certificate", "-c", "com.goforj.harbor.admin-root.v1|", "/Library/Keychains/System.keychain"); err != nil {
-		return err
-	}
-
-	if err := trustedHTTPSRequireSecurityItemAbsent(ctx, sandbox, "/usr/bin/security", "find-generic-password", "-s", "com.goforj.harbor.trust-owner.v1"); err != nil {
-		return err
+	if strings.Contains(output, "table inet goforj_harbor") {
+		return errors.New("verify released Linux nftables state: retained Harbor table")
 	}
 	return nil
 }
@@ -1364,10 +1504,6 @@ $udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object {
   $_.LocalPort -eq 53 -and $_.LocalAddress -eq "127.0.0.2"
 })
 if ($udp.Count -ne 0) { throw "retained Harbor DNS listener" }
-$aliases = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
-  $_.IPAddress -like "127.77.*"
-})
-if ($aliases.Count -ne 0) { throw "retained Harbor loopback alias" }
 $machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
   $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
 })
@@ -1424,18 +1560,6 @@ func trustedHTTPSRequireNoHTTPListeners(ctx context.Context, sandbox phase1Sandb
 	}
 	if trustedHTTPSOutputHasListeningPort(output, "80") || trustedHTTPSOutputHasListeningPort(output, "443") {
 		return errors.New("verify released HTTP listeners: Harbor port 80 or 443 remains listening")
-	}
-	return nil
-}
-
-// trustedHTTPSRequireNoLoopbackAlias rejects a retained Harbor loopback alias and failed interface inspection.
-func trustedHTTPSRequireNoLoopbackAlias(ctx context.Context, sandbox phase1Sandbox) error {
-	output, err := trustedHTTPSRunPrivileged(ctx, sandbox, "/sbin/ifconfig", "lo0")
-	if err != nil {
-		return fmt.Errorf("inspect loopback aliases: %w: %s", err, strings.TrimSpace(output))
-	}
-	if strings.Contains(output, "inet 127.77.") {
-		return errors.New("verify released loopback aliases: retained Harbor 127.77.x.x alias")
 	}
 	return nil
 }

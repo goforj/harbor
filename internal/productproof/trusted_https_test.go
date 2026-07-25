@@ -11,7 +11,7 @@ import (
 
 // TestVerifyTrustedHTTPSLifecycleEvidenceDirectoryAcceptsExactArtifact proves the protected worker's native result.
 func TestVerifyTrustedHTTPSLifecycleEvidenceDirectoryAcceptsExactArtifact(t *testing.T) {
-	for _, platform := range []string{"darwin", "windows"} {
+	for _, platform := range []string{"darwin", "linux", "windows"} {
 		t.Run(platform, func(t *testing.T) {
 			summary := validTrustedHTTPSSummary()
 			summary.OperatingSystem = platform

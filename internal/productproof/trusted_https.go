@@ -48,7 +48,7 @@ func VerifyTrustedHTTPSLifecycleEvidenceDirectory(root string, requirement Trust
 	if root == "" {
 		return errors.New("trusted HTTPS evidence root is required")
 	}
-	if requirement.Platform != "darwin" && requirement.Platform != "windows" {
+	if requirement.Platform != "darwin" && requirement.Platform != "linux" && requirement.Platform != "windows" {
 		return fmt.Errorf("trusted HTTPS evidence platform %q is not implemented", requirement.Platform)
 	}
 
