@@ -146,18 +146,21 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	if requiredInterfaceIsNil(launch.process) {
 		closeWindowsPendingAccept(listener, accepts)
 		closeWindowsHelperInspection(inspection)
-		return TransportResult{State: TransportIndeterminate}
+		return indeterminateWindowsTransport(transportFailureWindowsMissingProcess)
 	}
 
-	ambiguous := launchErr != nil || launch.declined
+	failure := transportFailureNone
+	if launchErr != nil || launch.declined {
+		failure = transportFailureWindowsLaunchAmbiguous
+	}
 	if err := inspection.close(); err != nil {
-		ambiguous = true
+		failure = transportFailureWindowsInspectionClose
 	}
 	waits := waitForWindowsProcess(launch.process)
 	processID, err := launch.process.processID()
 	if err != nil || processID == 0 {
 		closeWindowsPendingAccept(listener, accepts)
-		return finishIndeterminateWindowsProcess(launch.process, waits, nil)
+		return finishIndeterminateWindowsProcess(launch.process, waits, nil, transportFailureWindowsProcessIdentity)
 	}
 
 	var accepted windowsAcceptResult
@@ -165,25 +168,25 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	case accepted = <-accepts:
 	case waitResult := <-waits:
 		closeWindowsPendingAccept(listener, accepts)
-		return finishIndeterminateWindowsProcess(launch.process, waits, &waitResult)
+		return finishIndeterminateWindowsProcess(launch.process, waits, &waitResult, transportFailureWindowsProcessExitedBeforePipe)
 	case <-ctx.Done():
 		closeWindowsPendingAccept(listener, accepts)
-		return finishIndeterminateWindowsProcess(launch.process, waits, nil)
+		return finishIndeterminateWindowsProcess(launch.process, waits, nil, transportFailureWindowsContextBeforePipe)
 	}
 	if err := listener.close(); err != nil {
-		ambiguous = true
+		failure = transportFailureWindowsListenerClose
 	}
 	if accepted.err != nil || requiredInterfaceIsNil(accepted.connection) {
 		if !requiredInterfaceIsNil(accepted.connection) {
 			_ = accepted.connection.Close()
 		}
-		return finishIndeterminateWindowsProcess(launch.process, waits, nil)
+		return finishIndeterminateWindowsProcess(launch.process, waits, nil, transportFailureWindowsPipeAccept)
 	}
 
 	clientProcessID, err := accepted.connection.clientProcessID()
 	if err != nil || clientProcessID == 0 || clientProcessID != processID {
 		_ = accepted.connection.Close()
-		return finishIndeterminateWindowsProcess(launch.process, waits, nil)
+		return finishIndeterminateWindowsProcess(launch.process, waits, nil, transportFailureWindowsPipePeerIdentity)
 	}
 
 	stopCancellation := context.AfterFunc(ctx, func() {
@@ -194,17 +197,28 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	stopCancellation()
 	waitResult := <-waits
 	processCloseErr := launch.process.close()
-	if ambiguous || exchangeErr != nil || connectionCloseErr != nil || waitResult.err != nil || processCloseErr != nil || ctx.Err() != nil {
-		return TransportResult{State: TransportIndeterminate}
+	switch {
+	case failure != transportFailureNone:
+		return indeterminateWindowsTransport(failure)
+	case exchangeErr != nil:
+		return indeterminateWindowsTransport(transportFailureWindowsExchange)
+	case connectionCloseErr != nil:
+		return indeterminateWindowsTransport(transportFailureWindowsConnectionClose)
+	case waitResult.err != nil:
+		return indeterminateWindowsTransport(transportFailureWindowsWait)
+	case processCloseErr != nil:
+		return indeterminateWindowsTransport(transportFailureWindowsProcessClose)
+	case ctx.Err() != nil:
+		return indeterminateWindowsTransport(transportFailureWindowsContextAfterExchange)
 	}
 	if waitResult.exitCode != ExitCodeSucceeded && waitResult.exitCode != ExitCodeHelperFailed {
-		return TransportResult{State: TransportIndeterminate}
+		return indeterminateWindowsTransport(transportFailureWindowsExitCode)
 	}
 	body := capturedResponse.Bytes()
 	if len(body) != 0 {
 		written, err := response.Write(body)
 		if err != nil || written != len(body) {
-			return TransportResult{State: TransportIndeterminate}
+			return indeterminateWindowsTransport(transportFailureWindowsResponseWrite)
 		}
 	}
 	return TransportResult{State: TransportCompleted, ExitCode: waitResult.exitCode}
@@ -250,12 +264,18 @@ func finishIndeterminateWindowsProcess(
 	process windowsElevatedProcess,
 	waits <-chan windowsWaitResult,
 	observed *windowsWaitResult,
+	failure transportFailureStage,
 ) TransportResult {
 	if observed == nil {
 		<-waits
 	}
 	_ = process.close()
-	return TransportResult{State: TransportIndeterminate}
+	return indeterminateWindowsTransport(failure)
+}
+
+// indeterminateWindowsTransport preserves one reviewed stage without exposing native error contents.
+func indeterminateWindowsTransport(failure transportFailureStage) TransportResult {
+	return TransportResult{State: TransportIndeterminate, failure: failure}
 }
 
 // exchangeWindowsHelper sends one bounded request message and captures one bounded response stream.

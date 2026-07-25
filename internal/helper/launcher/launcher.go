@@ -69,7 +69,31 @@ type TransportResult struct {
 	State TransportState
 	// ExitCode is meaningful only for TransportCompleted.
 	ExitCode int
+	failure  transportFailureStage
 }
+
+// transportFailureStage identifies a bounded non-secret native lifecycle boundary.
+type transportFailureStage uint8
+
+const (
+	transportFailureNone transportFailureStage = iota
+	transportFailureWindowsMissingProcess
+	transportFailureWindowsProcessIdentity
+	transportFailureWindowsProcessExitedBeforePipe
+	transportFailureWindowsContextBeforePipe
+	transportFailureWindowsPipeAccept
+	transportFailureWindowsPipePeerIdentity
+	transportFailureWindowsLaunchAmbiguous
+	transportFailureWindowsInspectionClose
+	transportFailureWindowsListenerClose
+	transportFailureWindowsExchange
+	transportFailureWindowsConnectionClose
+	transportFailureWindowsWait
+	transportFailureWindowsProcessClose
+	transportFailureWindowsContextAfterExchange
+	transportFailureWindowsExitCode
+	transportFailureWindowsResponseWrite
+)
 
 // Transport performs one native consent and helper-process exchange.
 type Transport interface {
@@ -212,7 +236,51 @@ func (launcher *Launcher) invoke(
 
 	response := &boundedResponseWriter{}
 	transportResult := launcher.transport.Invoke(ctx, bytes.NewReader(request.Bytes()), response)
-	return classify(ctx, transportResult, response.Bytes(), match), nil
+	outcome := classify(ctx, transportResult, response.Bytes(), match)
+	if transportResult.failure != transportFailureNone {
+		return outcome, fmt.Errorf("native helper transport became indeterminate at %s", transportFailureLabel(transportResult.failure))
+	}
+	return outcome, nil
+}
+
+// transportFailureLabel converts only reviewed native stages into client-safe diagnostics.
+func transportFailureLabel(stage transportFailureStage) string {
+	switch stage {
+	case transportFailureWindowsMissingProcess:
+		return "Windows process acquisition"
+	case transportFailureWindowsProcessIdentity:
+		return "Windows process identity"
+	case transportFailureWindowsProcessExitedBeforePipe:
+		return "Windows process exit before pipe admission"
+	case transportFailureWindowsContextBeforePipe:
+		return "Windows context cancellation before pipe admission"
+	case transportFailureWindowsPipeAccept:
+		return "Windows pipe admission"
+	case transportFailureWindowsPipePeerIdentity:
+		return "Windows pipe peer identity"
+	case transportFailureWindowsLaunchAmbiguous:
+		return "Windows elevated launch"
+	case transportFailureWindowsInspectionClose:
+		return "Windows helper inspection release"
+	case transportFailureWindowsListenerClose:
+		return "Windows pipe listener release"
+	case transportFailureWindowsExchange:
+		return "Windows helper exchange"
+	case transportFailureWindowsConnectionClose:
+		return "Windows pipe connection release"
+	case transportFailureWindowsWait:
+		return "Windows process wait"
+	case transportFailureWindowsProcessClose:
+		return "Windows process handle release"
+	case transportFailureWindowsContextAfterExchange:
+		return "Windows context cancellation after exchange"
+	case transportFailureWindowsExitCode:
+		return "Windows process exit classification"
+	case transportFailureWindowsResponseWrite:
+		return "Windows response forwarding"
+	default:
+		return "unrecognized native lifecycle stage"
+	}
 }
 
 // classify treats native no-child proofs separately from every state where an effect may have started.

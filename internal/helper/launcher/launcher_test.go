@@ -510,6 +510,24 @@ func TestInvokeClassifiesUncertainCompletions(t *testing.T) {
 	}
 }
 
+// TestInvokeReportsReviewedNativeFailureStage preserves actionable diagnostics without native error contents.
+func TestInvokeReportsReviewedNativeFailureStage(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	transport := transportFunc(func(context.Context, io.Reader, io.Writer) TransportResult {
+		return TransportResult{
+			State:   TransportIndeterminate,
+			failure: transportFailureWindowsPipePeerIdentity,
+		}
+	})
+	outcome, err := New(transport, fixedClock{now: now}).Invoke(context.Background(), validLaunchTicket(t, now))
+	if err == nil || !strings.Contains(err.Error(), "Windows pipe peer identity") {
+		t.Fatalf("Invoke() error = %v, want reviewed native stage", err)
+	}
+	if outcome.State != Indeterminate || outcome.Response != (helper.Response{}) {
+		t.Fatalf("Invoke() outcome = %#v, want empty indeterminate result", outcome)
+	}
+}
+
 // TestInvokeRejectsInvalidLaunchTicketBeforeTransport verifies invalid capabilities never reach native launch.
 func TestInvokeRejectsInvalidLaunchTicketBeforeTransport(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
