@@ -63,6 +63,18 @@ func TestWindowsNativePowerShellRunnerRejectsMissingLookup(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTCommandEnvironmentOverridesCallerProgram keeps elevated script authority inside the binary.
+func TestWindowsNRPTCommandEnvironmentOverridesCallerProgram(t *testing.T) {
+	environment := windowsNRPTCommandEnvironment([]string{
+		`SystemRoot=C:\Windows`,
+		`goforj_harbor_windows_nrpt_program=caller controlled`,
+	})
+	want := windowsNRPTProgramEnvironment + "=" + windowsNRPTPowerShellProgram
+	if len(environment) != 2 || environment[0] != `SystemRoot=C:\Windows` || environment[1] != want {
+		t.Fatalf("windowsNRPTCommandEnvironment() = %#v", environment)
+	}
+}
+
 // TestWindowsNRPTExpectedClonePreservesEmptyArray keeps an absent CAS precondition
 // from becoming JSON null, which Windows PowerShell binds as one expected object.
 func TestWindowsNRPTExpectedClonePreservesEmptyArray(t *testing.T) {

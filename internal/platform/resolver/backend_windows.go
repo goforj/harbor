@@ -5,17 +5,15 @@ package resolver
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"unicode/utf16"
 	"unicode/utf8"
 
 	"golang.org/x/sys/windows"
@@ -26,6 +24,8 @@ const (
 	maximumWindowsNRPTOutputBytes     = 2 << 20
 	maximumWindowsNRPTDiagnosticBytes = 16 << 10
 	maximumWindowsNRPTDisplayError    = 1024
+	windowsNRPTProgramEnvironment     = "GOFORJ_HARBOR_WINDOWS_NRPT_PROGRAM"
+	windowsNRPTProgramCommand         = "& ([ScriptBlock]::Create($env:GOFORJ_HARBOR_WINDOWS_NRPT_PROGRAM))"
 )
 
 // windowsNRPTCommandRequest is the exact JSON authority accepted by the static PowerShell program.
@@ -252,9 +252,10 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		"-NoLogo",
 		"-NoProfile",
 		"-NonInteractive",
-		"-EncodedCommand",
-		windowsNRPTEncodedPowerShell(),
+		"-Command",
+		windowsNRPTProgramCommand,
 	)
+	command.Env = windowsNRPTCommandEnvironment(os.Environ())
 	command.Stdin = bytes.NewReader(input)
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -294,6 +295,19 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		return nil, errors.New("Windows NRPT PowerShell progress sequence is invalid")
 	}
 	return output, nil
+}
+
+// windowsNRPTCommandEnvironment replaces any caller value with Harbor's immutable native program.
+func windowsNRPTCommandEnvironment(inherited []string) []string {
+	environment := make([]string, 0, len(inherited)+1)
+	for _, entry := range inherited {
+		key, _, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(key, windowsNRPTProgramEnvironment) {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, windowsNRPTProgramEnvironment+"="+windowsNRPTPowerShellProgram)
 }
 
 // windowsPowerShellExecutable resolves the fixed Windows PowerShell host without inheriting a caller-controlled PATH.
@@ -439,16 +453,6 @@ func requireWindowsNRPTJSONEnd(decoder *json.Decoder) error {
 		return fmt.Errorf("Windows NRPT response must contain exactly one JSON value")
 	}
 	return nil
-}
-
-// windowsNRPTEncodedPowerShell returns the immutable script in Windows PowerShell's UTF-16LE command format.
-func windowsNRPTEncodedPowerShell() string {
-	runes := utf16.Encode([]rune(windowsNRPTPowerShellProgram))
-	encoded := make([]byte, 0, len(runes)*2)
-	for _, value := range runes {
-		encoded = binary.LittleEndian.AppendUint16(encoded, value)
-	}
-	return base64.StdEncoding.EncodeToString(encoded)
 }
 
 const windowsNRPTPowerShellProgram = `$ErrorActionPreference = 'Stop'
