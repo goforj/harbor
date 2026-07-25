@@ -28,6 +28,7 @@ const (
 	forceSettlementPoll                        = 10 * time.Millisecond
 	developmentPlainEnvName                    = "FORJ_DEV_PLAIN"
 	developmentArtifactRootEnvironment         = "FORJ_DEV_ARTIFACT_ROOT"
+	developmentGoCacheEnvironment              = "FORJ_DEV_GOCACHE"
 	legacyBuildEnvironmentOverridesEnvName     = "FORJ_BUILD_ENV_OVERRIDES"
 	legacyPrivateBuildEnvironmentOverridesName = "FORJ_INTERNAL_LEGACY_BUILD_ENV_OVERRIDES"
 )
@@ -37,6 +38,7 @@ var developmentLaunchIsolationNames = []string{
 	"FORJ_APP",
 	"FORJ_BUILD_PROGRESS",
 	developmentArtifactRootEnvironment,
+	developmentGoCacheEnvironment,
 	legacyBuildEnvironmentOverridesEnvName,
 	legacyPrivateBuildEnvironmentOverridesName,
 	"FORJ_COMMAND_PREFIX",
@@ -609,13 +611,20 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 	}()
 	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
+	developmentAssignments := []environmentAssignment{{
+		name:  developmentArtifactRootEnvironment,
+		value: artifactRoot.path,
+	}}
+	if cache := developmentSharedGoCache(supervisor.environment); cache != "" {
+		developmentAssignments = append(developmentAssignments, environmentAssignment{
+			name:  developmentGoCacheEnvironment,
+			value: cache,
+		})
+	}
 	command.Env = mergeEnvironmentAssignments(
 		command.Env,
-		[]string{developmentArtifactRootEnvironment},
-		[]environmentAssignment{{
-			name:  developmentArtifactRootEnvironment,
-			value: artifactRoot.path,
-		}},
+		[]string{developmentArtifactRootEnvironment, developmentGoCacheEnvironment},
+		developmentAssignments,
 	)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
@@ -1668,6 +1677,21 @@ func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverr
 		})
 	}
 	return mergeEnvironmentAssignments(environment, replacedNames, assignments)
+}
+
+// developmentSharedGoCache returns only a clean absolute captured cache suitable for isolated artifact roots.
+func developmentSharedGoCache(environment []string) string {
+	value := ""
+	for _, entry := range environment {
+		name, candidate, ok := strings.Cut(entry, "=")
+		if ok && environmentNameEqual(name, "GOCACHE") {
+			value = strings.TrimSpace(candidate)
+		}
+	}
+	if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value {
+		return ""
+	}
+	return value
 }
 
 // sortedEnvironmentOverrideNames makes file-owned environment removal independent of map iteration order.

@@ -109,6 +109,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "legacy-build-environment-overrides=%s\n", os.Getenv(legacyBuildEnvironmentOverridesEnvName))
 	fmt.Fprintf(os.Stdout, "legacy-private-build-environment-overrides=%s\n", os.Getenv(legacyPrivateBuildEnvironmentOverridesName))
 	fmt.Fprintf(os.Stdout, "development-artifact-root=%s\n", os.Getenv(developmentArtifactRootEnvironment))
+	fmt.Fprintf(os.Stdout, "development-gocache=%s\n", os.Getenv(developmentGoCacheEnvironment))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -520,6 +521,9 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 		t.Fatalf("developmentArtifactPath() error = %v", err)
 	}
 	waitForOutput(t, stdout, "development-artifact-root="+artifactPath)
+	if cache := developmentSharedGoCache(supervisor.environment); cache != "" {
+		waitForOutput(t, stdout, "development-gocache="+cache)
+	}
 	if _, err := os.Stat(artifactPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("development artifact root after process exit error = %v, want not exist", err)
 	}
@@ -1462,13 +1466,31 @@ func TestEnvironmentReplacementPreservesUnrelatedValues(t *testing.T) {
 func TestDevelopmentEnvironmentRemovesAmbientArtifactRoot(t *testing.T) {
 	result := withDevelopmentEnvironment([]string{
 		"FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root",
+		"FORJ_DEV_GOCACHE=/ambient/build-cache",
 		"UNRELATED=preserved",
 	}, projectProcessTestEnvironment())
 	if strings.Contains(strings.Join(result, "\x00"), "FORJ_DEV_ARTIFACT_ROOT=/ambient/parent-root") {
 		t.Fatalf("development environment retained ambient artifact root: %#v", result)
 	}
+	if strings.Contains(strings.Join(result, "\x00"), "FORJ_DEV_GOCACHE=/ambient/build-cache") {
+		t.Fatalf("development environment retained ambient build cache: %#v", result)
+	}
 	if !strings.Contains(strings.Join(result, "\x00"), "UNRELATED=preserved") {
 		t.Fatalf("development environment removed unrelated value: %#v", result)
+	}
+}
+
+// TestDevelopmentSharedGoCacheAdmitsOnlyCleanAbsoluteCapturedPaths prevents managed cache authority from using ambiguous input.
+func TestDevelopmentSharedGoCacheAdmitsOnlyCleanAbsoluteCapturedPaths(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "gocache")
+	if got := developmentSharedGoCache([]string{"GOCACHE=relative"}); got != "" {
+		t.Fatalf("developmentSharedGoCache(relative) = %q", got)
+	}
+	if got := developmentSharedGoCache([]string{"GOCACHE=" + cache + string(os.PathSeparator) + ".."}); got != "" {
+		t.Fatalf("developmentSharedGoCache(unclean) = %q", got)
+	}
+	if got := developmentSharedGoCache([]string{"GOCACHE=" + cache}); got != cache {
+		t.Fatalf("developmentSharedGoCache() = %q, want %q", got, cache)
 	}
 }
 
