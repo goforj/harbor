@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/goforj/harbor/internal/testkit/goforjproject"
@@ -88,8 +89,9 @@ func validateFixtureExecutable(filename string) error {
 	if filename == "" || !filepath.IsAbs(filename) || filepath.Clean(filename) != filename {
 		return fmt.Errorf("GoForj fixture executable %q must be absolute and clean", filename)
 	}
-	if filepath.Base(filename) != "forj" {
-		return fmt.Errorf("GoForj fixture executable basename is %q, want %q", filepath.Base(filename), "forj")
+	expectedBase := fixtureExecutableBase(runtime.GOOS)
+	if filepath.Base(filename) != expectedBase {
+		return fmt.Errorf("GoForj fixture executable basename is %q, want %q", filepath.Base(filename), expectedBase)
 	}
 	information, err := os.Lstat(filename)
 	if err != nil {
@@ -99,6 +101,14 @@ func validateFixtureExecutable(filename string) error {
 		return errors.New("GoForj fixture executable must be a direct executable regular file")
 	}
 	return nil
+}
+
+// fixtureExecutableBase preserves the native executable name while rejecting caller-selected aliases.
+func fixtureExecutableBase(goos string) string {
+	if goos == "windows" {
+		return "forj.exe"
+	}
+	return "forj"
 }
 
 // invokeFixtureBuild runs one pinned GoForj build before the checkout snapshot;
