@@ -17,9 +17,9 @@ func platformRoot() (string, error) {
 	return platformRootFromKnownFolder(windows.KnownFolderPath)
 }
 
-// platformRootFromKnownFolder rejects missing or relative native results before deriving privileged descendants.
+// platformRootFromKnownFolder resolves the fixed native location without requiring optional installer topology to exist.
 func platformRootFromKnownFolder(lookup knownFolderLookup) (string, error) {
-	programData, err := lookup(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	programData, err := lookup(windows.FOLDERID_ProgramData, windows.KF_FLAG_DONT_VERIFY)
 	if err != nil {
 		return "", fmt.Errorf("resolve Windows ProgramData known folder: %w", err)
 	}
