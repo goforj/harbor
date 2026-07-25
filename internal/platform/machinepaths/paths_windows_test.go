@@ -13,10 +13,14 @@ import (
 
 // TestWindowsPlatformRootUsesProgramDataKnownFolder verifies the production resolver invokes the native machine-global API.
 func TestWindowsPlatformRootUsesProgramDataKnownFolder(t *testing.T) {
-	flags := uint32(windows.KF_FLAG_DONT_VERIFY | windows.KF_FLAG_DONT_UNEXPAND)
+	flags := uint32(windows.KF_FLAG_DONT_VERIFY)
 	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, flags)
 	if err != nil {
 		t.Fatalf("windows.KnownFolderPath() error = %v", err)
+	}
+	programData, err = expandWindowsEnvironment(programData)
+	if err != nil {
+		t.Fatalf("expandWindowsEnvironment() error = %v", err)
 	}
 	root, err := platformRoot()
 	if err != nil {
@@ -36,7 +40,7 @@ func TestWindowsPlatformRootRequestsProgramData(t *testing.T) {
 		if folderID != windows.FOLDERID_ProgramData {
 			t.Fatalf("folder ID = %v, want FOLDERID_ProgramData", folderID)
 		}
-		wantFlags := uint32(windows.KF_FLAG_DONT_VERIFY | windows.KF_FLAG_DONT_UNEXPAND)
+		wantFlags := uint32(windows.KF_FLAG_DONT_VERIFY)
 		if flags != wantFlags {
 			t.Fatalf("flags = %d, want %d", flags, wantFlags)
 		}
@@ -50,6 +54,27 @@ func TestWindowsPlatformRootRequestsProgramData(t *testing.T) {
 	}
 	if want := filepath.Join(programData, "GoForj", "Harbor", "Privileged"); root != want {
 		t.Fatalf("platformRootFromKnownFolder() = %q, want %q", root, want)
+	}
+}
+
+// TestWindowsPlatformRootExpandsNativeProgramData proves expandable Known Folder results become canonical absolute paths.
+func TestWindowsPlatformRootExpandsNativeProgramData(t *testing.T) {
+	root, err := platformRootFromNative(
+		func(*windows.KNOWNFOLDERID, uint32) (string, error) {
+			return `%SystemDrive%\ProgramData`, nil
+		},
+		func(value string) (string, error) {
+			if value != `%SystemDrive%\ProgramData` {
+				t.Fatalf("expand value = %q", value)
+			}
+			return `C:\ProgramData`, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("platformRootFromNative() error = %v", err)
+	}
+	if want := `C:\ProgramData\GoForj\Harbor\Privileged`; root != want {
+		t.Fatalf("platformRootFromNative() = %q, want %q", root, want)
 	}
 }
 
