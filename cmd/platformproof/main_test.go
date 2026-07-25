@@ -68,6 +68,23 @@ func TestVerifyMacOSWorkerProfileEvidenceRequiresValidInputs(t *testing.T) {
 
 const macOSWorkerTestCLICommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+// TestVerifyLinuxWorkerProfileEvidenceRequiresValidInputs keeps an unbound worker artifact out of the product gate.
+func TestVerifyLinuxWorkerProfileEvidenceRequiresValidInputs(t *testing.T) {
+	t.Parallel()
+
+	for _, arguments := range [][]string{
+		{"--commit", linuxWorkerTestCLICommit},
+		{"--root", "evidence"},
+		{"--root", "evidence", "--commit", linuxWorkerTestCLICommit, "--distribution-version", ""},
+	} {
+		if err := verifyLinuxWorkerProfileEvidence(arguments); err == nil {
+			t.Fatalf("expected arguments %v to fail", arguments)
+		}
+	}
+}
+
+const linuxWorkerTestCLICommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 // TestVerifyWindowsWorkerProfileEvidenceRequiresValidInputs keeps an unbound worker artifact out of the product gate.
 func TestVerifyWindowsWorkerProfileEvidenceRequiresValidInputs(t *testing.T) {
 	t.Parallel()

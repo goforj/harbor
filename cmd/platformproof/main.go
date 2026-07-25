@@ -38,7 +38,7 @@ func main() {
 // run dispatches only the fixed proof commands built into this test binary.
 func run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, verify-macos-worker, or verify-windows-worker command")
+		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, verify-linux-worker, verify-macos-worker, or verify-windows-worker command")
 	}
 
 	switch arguments[0] {
@@ -66,6 +66,8 @@ func run(ctx context.Context, arguments []string) error {
 		return verifyEvidence(arguments[1:])
 	case "verify-docker-projects":
 		return verifyDockerProjectEvidence(arguments[1:])
+	case "verify-linux-worker":
+		return verifyLinuxWorkerProfileEvidence(arguments[1:])
 	case "verify-macos-worker":
 		return verifyMacOSWorkerProfileEvidence(arguments[1:])
 	case "verify-windows-worker":
@@ -73,6 +75,28 @@ func run(ctx context.Context, arguments []string) error {
 	default:
 		return fmt.Errorf("unknown platform proof command %q", arguments[0])
 	}
+}
+
+// verifyLinuxWorkerProfileEvidence enforces one exact protected Linux product-worker profile.
+func verifyLinuxWorkerProfileEvidence(arguments []string) error {
+	flags := flag.NewFlagSet("verify-linux-worker", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	root := flags.String("root", "", "directory containing Linux product-worker profile evidence")
+	commit := flags.String("commit", "", "exact approved commit required by the gate")
+	distributionVersion := flags.String("distribution-version", "24.04", "required Ubuntu distribution version")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if *root == "" || *commit == "" || *distributionVersion == "" {
+		return errors.New("verify-linux-worker requires an evidence root, commit, and distribution version")
+	}
+	return productproof.VerifyLinuxWorkerProfileEvidenceDirectory(*root, productproof.LinuxWorkerProfileRequirement{
+		Commit:              *commit,
+		DistributionVersion: *distributionVersion,
+	})
 }
 
 // verifyWindowsWorkerProfileEvidence enforces one exact protected Windows product-worker profile.

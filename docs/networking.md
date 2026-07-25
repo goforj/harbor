@@ -315,7 +315,7 @@ Candidate address mechanisms are:
 | Platform | Candidate | Unproven question that blocks support |
 |---|---|---|
 | macOS | `lo0` aliases managed through a typed helper and durable owned startup configuration. | Minimum durable alias mechanism and selected local Docker-provider interaction across reboot. |
-| Linux | The kernel's loopback range where bindable, with explicit `lo` addresses on systems that require them. | Behavior on the declared Ubuntu 24.04, NetworkManager/systemd-resolved, nftables, rootful Docker Engine profile. Rootless Docker, Podman, other firewall/resolver stacks, and non-systemd systems remain preview until separately proved. |
+| Linux | The kernel's loopback range where bindable, with explicit `lo` addresses on systems that require them. | Behavior on the declared Ubuntu 24.04, NetworkManager/systemd-resolved, nftables profile with a reachable local Docker-compatible Engine. The Engine provider is not an admission rule; other firewall/resolver stacks and non-systemd systems remain preview until separately proved. |
 | Windows | The helper uses the native IP Helper API against an interface verified as loopback by immutable native properties, with explicit persistence and `SkipAsSource` behavior. It never accepts an interface index/name from a request. | A supported, repeatable, removable method across supported Windows releases and local Docker providers that never changes a physical NIC, DHCP, or its routes. |
 
 If Windows cannot meet the native same-port test, Harbor may ship an explicitly limited Windows preview with translated ports, but it must not call that mode feature parity. The first full cross-platform release remains blocked until the invariant passes.

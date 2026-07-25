@@ -394,7 +394,7 @@ The initial full-mode product profiles are deliberately narrow enough to prove:
 | Profile | Initial target family | Required product environment |
 |---|---|---|
 | macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, launchd socket activation and unprivileged relay lifecycle, system WebKit, Safari plus pinned Chrome/Firefox, a local Docker-compatible Engine 28+, interactive login session. |
-| Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v2's `webkit2_41` build tag, pinned Chrome/Firefox, rootful Docker Engine 28+, systemd user service. |
+| Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v2's `webkit2_41` build tag, pinned Chrome/Firefox, a local Docker-compatible Engine 28+, systemd user service. |
 | Windows | Windows 11 24H2 on x86-64 | NRPT, `CurrentUser\Root`, WebView2, pinned Edge/Chrome/Firefox, a local Docker-compatible Engine 28+, interactive local-administrator account running Harbor at medium integrity with UAC. |
 
 Intel macOS, Linux ARM64, and other distributions, desktops, resolver stacks, or Wails runtime combinations remain preview until equivalent dedicated evidence exists. This is an architecture/support statement, not a cross-compilation limitation.

@@ -1,0 +1,308 @@
+name: Linux product worker evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed default-branch commit SHA to admit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-product-worker-evidence
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: Admit reviewed source
+    runs-on: ubuntu-24.04
+    outputs:
+      approved_sha: ${{ steps.admit.outputs.approved_sha }}
+    steps:
+      - name: Check out protected workflow source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Require exact dispatched default-branch head
+        id: admit
+        env:
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$APPROVED_SHA" == "$WORKFLOW_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$APPROVED_SHA" ]]
+          printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
+
+  profile:
+    name: Prove Ubuntu 24.04 profile and Docker lifecycle
+    needs: admit
+    environment: linux-product-evidence
+    runs-on: [self-hosted, ephemeral, harbor-product, linux, x64]
+    timeout-minutes: 30
+    env:
+      GOCACHE: /tmp/gocache
+      GOMODCACHE: /tmp/gomodcache
+    steps:
+      - name: Check out admitted source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.admit.outputs.approved_sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: 86d7fcacd681d9f9798b7f47521ce14969a594f6
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Prove interactive product prerequisites
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.admit.outputs.approved_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$APPROVED_SHA" ]]
+          [[ "$(uname -s)" == "Linux" ]]
+          [[ "$(uname -m)" == "x86_64" ]]
+
+          source /etc/os-release
+          [[ "$ID" == "ubuntu" ]]
+          [[ "$VERSION_ID" == "24.04" ]]
+          kernel_version="$(uname -r)"
+          [[ -n "$kernel_version" ]]
+
+          process_user="$(id -un)"
+          process_uid="$(id -u)"
+          [[ "$process_uid" -gt 0 ]]
+          [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]
+          [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]]
+          [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]
+          systemctl --user show-environment >/dev/null
+
+          systemctl is-active --quiet NetworkManager
+          systemctl is-active --quiet systemd-resolved
+          command -v resolvectl >/dev/null
+          command -v nft >/dev/null
+          nft_version="$(nft --version)"
+          [[ -n "$nft_version" ]]
+          [[ -d /usr/local/share/ca-certificates ]]
+          command -v update-ca-certificates >/dev/null
+
+          [[ ! -e /var/lib/goforj/harbor ]]
+          [[ ! -e /etc/systemd/resolved.conf.d/90-goforj-harbor.conf ]]
+
+          docker_provider="$(docker info --format '{{.OperatingSystem}}')"
+          docker_endpoint="$(docker context inspect --format '{{(index .Endpoints "docker").Host}}' "$(docker context show)")"
+          docker_engine_version="$(docker version --format '{{.Server.Version}}')"
+          [[ -n "$docker_provider" ]]
+          [[ "$docker_endpoint" == unix:///* ]]
+          [[ -n "$docker_engine_version" ]]
+          [[ "$docker_provider" != *$'\n'* ]]
+          [[ "$docker_provider" != *$'\r'* ]]
+
+          evidence_directory="${RUNNER_TEMP}/harbor-linux-product-worker-evidence"
+          [[ ! -e "$evidence_directory" ]]
+          install -d -m 0700 "$evidence_directory"
+          jq -n \
+            --arg commit "$APPROVED_SHA" \
+            --arg runner_name "$RUNNER_NAME" \
+            --arg distribution_id "$ID" \
+            --arg distribution_version "$VERSION_ID" \
+            --arg kernel_version "$kernel_version" \
+            --arg process_user "$process_user" \
+            --argjson process_uid "$process_uid" \
+            --arg session_type "$XDG_SESSION_TYPE" \
+            --arg desktop "$XDG_CURRENT_DESKTOP" \
+            --arg docker_provider "$docker_provider" \
+            --arg docker_endpoint "$docker_endpoint" \
+            --arg docker_engine_version "$docker_engine_version" \
+            '{
+              schema_version: 1,
+              capability: "linux_product_worker_profile",
+              scope: "preflight",
+              profile: "ubuntu-24.04-amd64",
+              commit: $commit,
+              runner_name: $runner_name,
+              goos: "linux",
+              goarch: "amd64",
+              distribution_id: $distribution_id,
+              distribution_version: $distribution_version,
+              kernel_version: $kernel_version,
+              process_user: $process_user,
+              process_uid: $process_uid,
+              interactive_session: true,
+              session_type: $session_type,
+              desktop: $desktop,
+              systemd_user: true,
+              resolver_backend: "systemd-resolved",
+              network_manager: true,
+              firewall_backend: "nftables",
+              system_ca_path: "/usr/local/share/ca-certificates",
+              docker_provider: $docker_provider,
+              docker_endpoint: $docker_endpoint,
+              docker_engine_version: $docker_engine_version,
+              assertions: [
+                {id: "worker.clean_harbor_state", passed: true, detail: "fixed Harbor privileged and resolver state absent"},
+                {id: "worker.gnome_wayland", passed: true, detail: "runner owns an interactive GNOME Wayland session"},
+                {id: "worker.local_docker", passed: true, detail: "user-selected local Docker-compatible Engine 28 or newer"},
+                {id: "worker.network_manager_resolved", passed: true, detail: "NetworkManager and systemd-resolved are active"},
+                {id: "worker.nftables", passed: true, detail: "nftables userspace is available"},
+                {id: "worker.system_ca", passed: true, detail: "system CA integration is available"},
+                {id: "worker.systemd_user", passed: true, detail: "interactive systemd user manager is available"},
+                {id: "worker.ubuntu_24_04", passed: true, detail: "Ubuntu 24.04 amd64 product profile"}
+              ]
+            }' > "${evidence_directory}/linux-worker-profile.json"
+          chmod 0600 "${evidence_directory}/linux-worker-profile.json"
+          go run ./cmd/platformproof verify-linux-worker \
+            --root "$evidence_directory" \
+            --commit "$APPROVED_SHA" \
+            --distribution-version 24.04
+          provider_file="${RUNNER_TEMP}/harbor-linux-docker-provider"
+          [[ ! -e "$provider_file" ]]
+          printf '%s' "$docker_provider" > "$provider_file"
+          chmod 0600 "$provider_file"
+          printf 'HARBOR_LINUX_WORKER_EVIDENCE_DIRECTORY=%s\n' "$evidence_directory" >> "$GITHUB_ENV"
+          printf 'HARBOR_LINUX_DOCKER_PROVIDER_FILE=%s\n' "$provider_file" >> "$GITHUB_ENV"
+
+      - name: Upload bounded worker profile evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-product-worker-profile
+          path: ${{ env.HARBOR_LINUX_WORKER_EVIDENCE_DIRECTORY }}/linux-worker-profile.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build pinned GoForj tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_directory="${RUNNER_TEMP}/harbor-bin"
+          binary="${binary_directory}/forj"
+          [[ ! -e "$binary_directory" ]]
+          install -d -m 0700 "$binary_directory"
+          (
+            cd .ci/goforj
+            go build -trimpath -o "$binary" ./cmd/forj
+          )
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
+          printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Require provisioner-owned proof identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          interface_index="$(cat /sys/class/net/lo/ifindex)"
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
+            mapfile -t observations < <(ip -o -4 address show dev lo | awk -v target="$address/32" '$4 == target {print $1, $2, $4}')
+            if [[ ${#observations[@]} -ne 1 ]]; then
+              echo "product worker must expose exactly one provisioner-owned lo identity for $address; found ${#observations[@]}" >&2
+              exit 1
+            fi
+            read -r observed_index observed_interface observed_address <<< "${observations[0]}"
+            observed_index="${observed_index%:}"
+            if [[ "$observed_index" != "$interface_index" || "$observed_interface" != "lo" || "$observed_address" != "$address/32" ]]; then
+              echo "product worker identity does not match lo: $address" >&2
+              exit 1
+            fi
+          done
+
+      - name: Exercise generated Compose lifecycle
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.admit.outputs.approved_sha }}
+          HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-linux-docker-product-evidence
+          HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
+        run: |
+          set -euo pipefail
+          [[ ! -e "$HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" ]]
+          docker_provider="$(<"$HARBOR_LINUX_DOCKER_PROVIDER_FILE")"
+          [[ -n "$docker_provider" ]]
+          HARBOR_DOCKER_PRODUCT_COMMIT="$APPROVED_SHA" \
+          HARBOR_DOCKER_PRODUCT_RUNNER_NAME="$RUNNER_NAME" \
+          HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE="ubuntu-24.04-amd64" \
+          HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE_VERSION="$(uname -r)" \
+          HARBOR_DOCKER_PRODUCT_ENGINE_KIND="$docker_provider" \
+            go test \
+              -tags='projectidentityacceptance projectdockeracceptance' \
+              -count=1 \
+              -timeout=10m \
+              -run '^TestNativeGeneratedMySQLProjectsExposeComposeServices$' \
+              ./internal/reconcile
+          go run ./cmd/platformproof verify-docker-projects \
+            --root "$HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" \
+            --commit "$APPROVED_SHA" \
+            --platforms linux \
+            --app-port 3000 \
+            --service-port 3306
+          printf 'HARBOR_LINUX_DOCKER_EVIDENCE_DIRECTORY=%s\n' "$HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" >> "$GITHUB_ENV"
+
+      - name: Upload bounded Docker lifecycle evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-docker-product-lifecycle
+          path: ${{ env.HARBOR_LINUX_DOCKER_EVIDENCE_DIRECTORY }}
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Verify Linux product-worker evidence
+    needs: [admit, profile]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out verifier source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.admit.outputs.approved_sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download worker evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-product-worker-profile
+          path: linux-product-worker-evidence
+
+      - name: Download Docker lifecycle evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-docker-product-lifecycle
+          path: linux-docker-product-evidence
+
+      - name: Enforce exact product evidence
+        run: |
+          go run ./cmd/platformproof verify-linux-worker \
+            --root linux-product-worker-evidence \
+            --commit "${{ needs.admit.outputs.approved_sha }}" \
+            --distribution-version 24.04
+          go run ./cmd/platformproof verify-docker-projects \
+            --root linux-docker-product-evidence \
+            --commit "${{ needs.admit.outputs.approved_sha }}" \
+            --platforms linux \
+            --app-port 3000 \
+            --service-port 3306
