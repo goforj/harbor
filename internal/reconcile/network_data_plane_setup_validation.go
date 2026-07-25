@@ -167,7 +167,8 @@ func validateNetworkDataPlaneSetupTrustEvidence(evidence helper.TrustMutationEvi
 	case networkpolicy.DarwinAdministratorTrust,
 		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
-		networkpolicy.WindowsCurrentUserTrust:
+		networkpolicy.WindowsCurrentUserTrust,
+		networkpolicy.WindowsMachineTrust:
 	default:
 		return fmt.Errorf("trust evidence mechanism %q is unsupported", evidence.Mechanism)
 	}

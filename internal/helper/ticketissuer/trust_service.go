@@ -224,7 +224,8 @@ func (result TrustResult) Validate(now time.Time) error {
 	case networkpolicy.DarwinAdministratorTrust,
 		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
-		networkpolicy.WindowsCurrentUserTrust:
+		networkpolicy.WindowsCurrentUserTrust,
+		networkpolicy.WindowsMachineTrust:
 	default:
 		return fmt.Errorf("trust approval result mechanism %q is unsupported", result.Mechanism)
 	}

@@ -149,7 +149,7 @@ func TestRunWindowsTrustLifecycleValidatesTokenBeforeOpeningCurrentUserRoot(t *t
 		t,
 		now,
 		helper.OperationEnsureTrust,
-		networkpolicy.WindowsMechanisms(),
+		networkpolicy.LegacyWindowsMechanisms(),
 	)
 	redemption.Ticket.RequesterIdentity = "S-1-5-21-100-200-300-1001"
 	redemption.Admission.RequesterIdentity = redemption.Ticket.RequesterIdentity
@@ -201,7 +201,66 @@ func TestRunWindowsTrustLifecycleValidatesTokenBeforeOpeningCurrentUserRoot(t *t
 	}
 }
 
-// TestRunWindowsTrustLifecycleStopsAfterTokenMismatch proves CurrentUser Root never opens for another requester.
+// TestRunWindowsMachineTrustLifecycleRetainsElevatedIdentity proves machine Root uses the administrator handler without Darwin transitions.
+func TestRunWindowsMachineTrustLifecycleRetainsElevatedIdentity(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	reference, redemption := trustLifecycleRedemptionForMechanisms(
+		t,
+		now,
+		helper.OperationEnsureTrust,
+		networkpolicy.WindowsMechanisms(),
+	)
+	redemption.Ticket.RequesterIdentity = "S-1-5-21-100-200-300-1001"
+	redemption.Admission.RequesterIdentity = redemption.Ticket.RequesterIdentity
+	events := make([]string, 0, 12)
+	handler := &lifecycleTrustHandler{events: &events, evidence: trustLifecycleEvidence(redemption.Ticket)}
+	dependencies := successfulTestDependencies(&events, redemption)
+	dependencies.transitionTrustIdentity = func(string) error {
+		t.Fatal("Windows machine trust used the Darwin requester identity transition")
+		return nil
+	}
+	dependencies.transitionAdministratorTrustIdentity = func(string) error {
+		t.Fatal("Windows machine trust used the Darwin administrator identity transition")
+		return nil
+	}
+	dependencies.validateWindowsTrustIdentity = func(requester string) error {
+		events = append(events, "validate Windows trust identity")
+		if requester != redemption.Ticket.RequesterIdentity {
+			t.Fatalf("Windows identity requester = %q, want %q", requester, redemption.Ticket.RequesterIdentity)
+		}
+		return nil
+	}
+	dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
+		events = append(events, "open administrator trust handler")
+		return handler, nil
+	}
+
+	output, err := runTrustLifecycle(t, now, reference, dependencies)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !output.OK || handler.calls != 1 {
+		t.Fatalf("response = %#v, handler calls = %d", output, handler.calls)
+	}
+	wantEvents := []string{
+		"authorize invocation",
+		"open ticket redeemer",
+		"open replay guard",
+		"redeem ticket",
+		"consume replay claim",
+		"close replay guard",
+		"close ticket redeemer",
+		"validate Windows trust identity",
+		"open administrator trust handler",
+		"trust mutation",
+		"close trust handler",
+	}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+// TestRunWindowsTrustLifecycleStopsAfterTokenMismatch proves machine Root never opens for another requester.
 func TestRunWindowsTrustLifecycleStopsAfterTokenMismatch(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	reference, redemption := trustLifecycleRedemptionForMechanisms(
@@ -219,7 +278,7 @@ func TestRunWindowsTrustLifecycleStopsAfterTokenMismatch(t *testing.T) {
 		events = append(events, "validate Windows trust identity")
 		return identityErr
 	}
-	dependencies.openTrustHandler = func() (closingTrustHandler, error) {
+	dependencies.openAdministratorTrustHandler = func() (closingTrustHandler, error) {
 		t.Fatal("Windows trust handler opened after token mismatch")
 		return nil, nil
 	}
@@ -780,7 +839,7 @@ func trustLifecycleRedemptionForMechanisms(t *testing.T, now time.Time, operatio
 		Advertised: netip.AddrPortFrom(loopback, 443),
 		Bind:       netip.AddrPortFrom(loopback, 25002),
 	}
-	if mechanisms == networkpolicy.WindowsMechanisms() {
+	if mechanisms == networkpolicy.WindowsMechanisms() || mechanisms == networkpolicy.LegacyWindowsMechanisms() {
 		dnsLoopback := netip.MustParseAddr("127.0.0.2")
 		dnsListener = networkpolicy.Listener{
 			Advertised: netip.AddrPortFrom(dnsLoopback, 53),

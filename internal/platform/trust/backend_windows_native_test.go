@@ -19,12 +19,30 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 	if os.Getenv("HARBOR_WINDOWS_TRUST_TEST") != "1" {
 		t.Skip("set HARBOR_WINDOWS_TRUST_TEST=1 to mutate CurrentUser Root")
 	}
+	runWindowsRootLifecycle(t, networkpolicy.WindowsCurrentUserTrust, New)
+}
+
+// TestWindowsMachineRootLifecycle proves the elevated production boundary establishes system trust and cleans up exactly.
+func TestWindowsMachineRootLifecycle(t *testing.T) {
+	if os.Getenv("HARBOR_WINDOWS_MACHINE_TRUST_TEST") != "1" {
+		t.Skip("set HARBOR_WINDOWS_MACHINE_TRUST_TEST=1 from an elevated process to mutate LocalMachine Root")
+	}
+	runWindowsRootLifecycle(t, networkpolicy.WindowsMachineTrust, NewMachine)
+}
+
+// runWindowsRootLifecycle proves one exact Windows trust scope through ownership, system verification, and release.
+func runWindowsRootLifecycle(
+	t *testing.T,
+	mechanism networkpolicy.TrustMechanism,
+	newAdapter func() (*Adapter, error),
+) {
+	t.Helper()
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatalf("GetTokenUser() error = %v", err)
 	}
-	request, authority := windowsNativeTrustFixture(t, user.User.Sid.String())
-	adapter, err := New()
+	request, authority := windowsNativeTrustFixture(t, user.User.Sid.String(), mechanism)
+	adapter, err := newAdapter()
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -114,7 +132,11 @@ func TestWindowsCurrentUserRootLifecycle(t *testing.T) {
 }
 
 // windowsNativeTrustFixture retains the signer so the lifecycle can prove Windows system-chain trust.
-func windowsNativeTrustFixture(t *testing.T, requesterIdentity string) (Request, *localca.Authority) {
+func windowsNativeTrustFixture(
+	t *testing.T,
+	requesterIdentity string,
+	mechanism networkpolicy.TrustMechanism,
+) (Request, *localca.Authority) {
 	t.Helper()
 	authority, err := localca.New(localca.Config{})
 	if err != nil {
@@ -130,7 +152,7 @@ func windowsNativeTrustFixture(t *testing.T, requesterIdentity string) (Request,
 	request, err := NewRequestForRequester(
 		"windows-native-trust-test",
 		requesterIdentity,
-		networkpolicy.WindowsCurrentUserTrust,
+		mechanism,
 		root,
 	)
 	if err != nil {

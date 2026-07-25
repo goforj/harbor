@@ -140,7 +140,7 @@ func productionDependencies() runtimeDependencies {
 		},
 		transitionTrustIdentity:              irreversiblyDropTrustIdentity,
 		transitionAdministratorTrustIdentity: irreversiblyEnterAdministratorTrustIdentity,
-		validateWindowsTrustIdentity:         validateWindowsCurrentUserTrustIdentity,
+		validateWindowsTrustIdentity:         validateWindowsTrustRequesterIdentity,
 	}
 }
 
@@ -263,9 +263,38 @@ func executeAdmittedTrust(
 		return executeAdmittedAdministratorTrust(ctx, admitted, dependencies, authorities)
 	case networkpolicy.WindowsCurrentUserTrust:
 		return executeAdmittedWindowsCurrentUserTrust(ctx, admitted, dependencies, authorities)
+	case networkpolicy.WindowsMachineTrust:
+		return executeAdmittedWindowsMachineTrust(ctx, admitted, dependencies, authorities)
 	default:
 		return helper.OperationResult{}, fmt.Errorf("admitted trust mechanism is unsupported: %q", admitted.TrustMechanism())
 	}
+}
+
+// executeAdmittedWindowsMachineTrust retains the elevated token while binding machine trust ownership to the requester.
+func executeAdmittedWindowsMachineTrust(
+	ctx context.Context,
+	admitted helper.AdmittedTrustOperation,
+	dependencies runtimeDependencies,
+	authorities *runtimeAuthorities,
+) (helper.OperationResult, error) {
+	if err := authorities.closePrivileged(); err != nil {
+		return helper.OperationResult{}, err
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := dependencies.validateWindowsTrustIdentity(admitted.RequesterIdentity()); err != nil {
+		return helper.OperationResult{}, fmt.Errorf("validate helper Windows trust identity: %w", err)
+	}
+	trustHandler, err := dependencies.openAdministratorTrustHandler()
+	if err != nil {
+		return helper.OperationResult{}, fmt.Errorf("open helper Windows machine trust handler: %w", err)
+	}
+	if trustHandler == nil {
+		panic("helper Windows machine trust handler factory returned nil")
+	}
+	authorities.trustHandler = trustHandler
+	return admitted.ExecuteTrust(ctx, trustHandler)
 }
 
 // executeAdmittedWindowsCurrentUserTrust opens CurrentUser Root only after admission authority closes and the elevated token matches the requester.

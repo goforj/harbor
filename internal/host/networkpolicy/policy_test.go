@@ -16,6 +16,7 @@ func TestMechanismsValidateAcceptsOnlyCompleteProfiles(t *testing.T) {
 		legacyMacOSMechanisms(),
 		UbuntuMechanisms(),
 		WindowsMechanisms(),
+		LegacyWindowsMechanisms(),
 	}
 	for _, mechanisms := range valid {
 		if err := mechanisms.Validate(); err != nil {
@@ -86,6 +87,36 @@ func TestPolicyValidateAcceptsSupportedTopologies(t *testing.T) {
 				t.Fatalf("Policy.Fingerprint() = %q, want lowercase SHA-256", fingerprint)
 			}
 		})
+	}
+}
+
+// TestPolicyFingerprintPreservesLegacyWindowsEvidence proves persisted CurrentUser plans retain canonical evidence after the default changes.
+func TestPolicyFingerprintPreservesLegacyWindowsEvidence(t *testing.T) {
+	policy := validWindowsPolicy()
+	policy.Mechanisms = LegacyWindowsMechanisms()
+
+	payload, err := policy.canonicalJSON()
+	if err != nil {
+		t.Fatalf("canonicalJSON() error = %v", err)
+	}
+	const wantJSON = `{"suffix":".test","authority_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mechanisms":{"resolver":"windows-nrpt-v1","low_ports":"windows-direct-low-ports-v1","trust":"windows-current-user-trust-v1"},"dns":{"advertised":"127.0.0.2:53","bind":"127.0.0.2:53"},"http":{"advertised":"127.0.0.1:80","bind":"127.0.0.1:80"},"https":{"advertised":"127.0.0.1:443","bind":"127.0.0.1:443"}}`
+	if string(payload) != wantJSON {
+		t.Fatalf("canonicalJSON() = %s, want %s", payload, wantJSON)
+	}
+
+	fingerprint, err := policy.Fingerprint()
+	if err != nil {
+		t.Fatalf("Policy.Fingerprint() error = %v", err)
+	}
+	if fingerprint == "" {
+		t.Fatal("Policy.Fingerprint() returned an empty digest")
+	}
+	machineFingerprint, err := validWindowsPolicy().Fingerprint()
+	if err != nil {
+		t.Fatalf("machine Policy.Fingerprint() error = %v", err)
+	}
+	if fingerprint == machineFingerprint {
+		t.Fatal("legacy and machine Windows profiles share a fingerprint")
 	}
 }
 

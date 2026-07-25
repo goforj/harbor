@@ -17,7 +17,11 @@ func openPlatformTrustHandler() (closingTrustHandler, error) {
 	return trusthandler.New(adapter), nil
 }
 
-// openPlatformAdministratorTrustHandler keeps administrator trust effects unavailable until a reviewed administrator store adapter is installed.
+// openPlatformAdministratorTrustHandler binds elevated Windows trust operations to the machine Root registry store.
 func openPlatformAdministratorTrustHandler() (closingTrustHandler, error) {
-	return helper.UnavailableTrustHandler{}, nil
+	adapter, err := trust.NewMachine()
+	if err != nil {
+		return helper.UnavailableTrustHandler{}, nil
+	}
+	return trusthandler.New(adapter), nil
 }

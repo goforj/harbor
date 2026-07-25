@@ -102,6 +102,7 @@ func TestNewRequestValidatesRootAndTrustScope(t *testing.T) {
 		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
 		networkpolicy.WindowsCurrentUserTrust,
+		networkpolicy.WindowsMachineTrust,
 	} {
 		t.Run(string(mechanism), func(t *testing.T) {
 			request, err := NewRequest("installation-test", mechanism, root)

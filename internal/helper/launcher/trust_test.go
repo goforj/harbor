@@ -139,6 +139,11 @@ func TestNewTrustLaunchTicketValidatesMetadata(t *testing.T) {
 	if _, err := newTrustLaunchTicket(administrator); err != nil {
 		t.Fatalf("administrator newTrustLaunchTicket() error = %v", err)
 	}
+	windowsMachine := valid
+	windowsMachine.mechanism = string(networkpolicy.WindowsMachineTrust)
+	if _, err := newTrustLaunchTicket(windowsMachine); err != nil {
+		t.Fatalf("Windows machine newTrustLaunchTicket() error = %v", err)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*trustLaunchTicketFixture)

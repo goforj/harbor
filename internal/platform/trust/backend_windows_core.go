@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	windowsTrustNativeIDPrefix = "windows-current-user-root-"
-	windowsTrustOwnerPrefix    = "goforj.harbor.windows-current-user-root.v1|"
+	windowsCurrentUserTrustNativeIDPrefix = "windows-current-user-root-"
+	windowsMachineTrustNativeIDPrefix     = "windows-machine-root-"
+	windowsCurrentUserTrustOwnerPrefix    = "goforj.harbor.windows-current-user-root.v1|"
+	windowsMachineTrustOwnerPrefix        = "goforj.harbor.windows-machine-root.v1|"
 )
 
-// windowsTrustEntry is one bounded certificate and ownership-property fact from CurrentUser\Root.
+// windowsTrustEntry is one bounded certificate and ownership-property fact from an exact Windows Root store.
 type windowsTrustEntry struct {
 	CertificateDER []byte
 	FriendlyName   string
@@ -30,22 +32,26 @@ type windowsTrustNative interface {
 	release(context.Context, Request) error
 }
 
-// windowsTrustBackend translates bounded CurrentUser\Root facts into the portable trust model.
+// windowsTrustBackend translates bounded Windows Root facts into the portable trust model.
 type windowsTrustBackend struct {
-	native windowsTrustNative
+	mechanism networkpolicy.TrustMechanism
+	native    windowsTrustNative
 }
 
 // newWindowsTrustBackend injects the native boundary for portable ownership and CAS tests.
-func newWindowsTrustBackend(native windowsTrustNative) backend {
+func newWindowsTrustBackend(mechanism networkpolicy.TrustMechanism, native windowsTrustNative) backend {
 	if native == nil {
 		panic("trust.newWindowsTrustBackend requires a non-nil native store")
 	}
-	return &windowsTrustBackend{native: native}
+	if mechanism != networkpolicy.WindowsCurrentUserTrust && mechanism != networkpolicy.WindowsMachineTrust {
+		panic("trust.newWindowsTrustBackend requires a Windows trust mechanism")
+	}
+	return &windowsTrustBackend{mechanism: mechanism, native: native}
 }
 
-// observe converts one complete CurrentUser\Root snapshot into canonical facts.
+// observe converts one complete Windows Root snapshot into canonical facts.
 func (backend *windowsTrustBackend) observe(ctx context.Context, request Request) (Observation, error) {
-	if err := validateWindowsTrustRequest(request); err != nil {
+	if err := validateWindowsTrustRequest(request, backend.mechanism); err != nil {
 		return Observation{}, err
 	}
 	entries, err := backend.native.snapshot(ctx, request)
@@ -68,12 +74,12 @@ func (backend *windowsTrustBackend) observe(ctx context.Context, request Request
 		fingerprintText := hex.EncodeToString(fingerprint[:])
 		fact := Entry{
 			Mechanism:              request.Mechanism(),
-			NativeID:               windowsTrustNativeIDPrefix + fingerprintText + "-" + strconv.Itoa(index),
+			NativeID:               windowsTrustNativeIDPrefix(request.Mechanism()) + fingerprintText + "-" + strconv.Itoa(index),
 			CertificateFingerprint: fingerprintText,
 			NativeExact:            true,
-			NativeAttributesSHA256: windowsTrustAttributesFingerprint(entry.FriendlyName),
+			NativeAttributesSHA256: windowsTrustAttributesFingerprint(request.Mechanism(), entry.FriendlyName),
 		}
-		if marker, ok := parseWindowsTrustOwner(entry.FriendlyName); ok {
+		if marker, ok := parseWindowsTrustOwner(entry.FriendlyName, request.Mechanism()); ok {
 			fact.Owner = &marker
 		}
 		observation.Entries = append(observation.Entries, fact)
@@ -81,9 +87,9 @@ func (backend *windowsTrustBackend) observe(ctx context.Context, request Request
 	return observation, nil
 }
 
-// ensure adds one owned root only while CurrentUser\Root remains absent for this authority.
+// ensure adds one owned root only while the selected Root store remains absent for this authority.
 func (backend *windowsTrustBackend) ensure(ctx context.Context, request Request, before Observation) error {
-	if err := validateWindowsTrustRequest(request); err != nil {
+	if err := validateWindowsTrustRequest(request, backend.mechanism); err != nil {
 		return err
 	}
 	if err := before.Validate(); err != nil {
@@ -101,7 +107,7 @@ func (backend *windowsTrustBackend) ensure(ctx context.Context, request Request,
 
 // release removes only one exact certificate carrying the request's complete owner marker.
 func (backend *windowsTrustBackend) release(ctx context.Context, request Request, before Observation) error {
-	if err := validateWindowsTrustRequest(request); err != nil {
+	if err := validateWindowsTrustRequest(request, backend.mechanism); err != nil {
 		return err
 	}
 	if err := before.Validate(); err != nil {
@@ -117,12 +123,12 @@ func (backend *windowsTrustBackend) release(ctx context.Context, request Request
 	return backend.native.release(ctx, request)
 }
 
-// validateWindowsTrustRequest confines this backend to one canonical local-user SID and store mechanism.
-func validateWindowsTrustRequest(request Request) error {
+// validateWindowsTrustRequest confines this backend to one canonical requester SID and exact store mechanism.
+func validateWindowsTrustRequest(request Request, mechanism networkpolicy.TrustMechanism) error {
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	if request.Mechanism() != networkpolicy.WindowsCurrentUserTrust {
+	if request.Mechanism() != mechanism {
 		return fmt.Errorf("Windows trust backend rejected mechanism %q", request.Mechanism())
 	}
 	if !canonicalWindowsTrustRequester(request.RequesterIdentity()) {
@@ -177,18 +183,19 @@ func parseWindowsTrustCertificate(der []byte) ([]byte, error) {
 // windowsTrustOwnerName encodes the complete owner marker in the certificate's friendly-name property.
 func windowsTrustOwnerName(request Request) string {
 	marker := request.OwnerMarker()
-	return windowsTrustOwnerPrefix +
+	return windowsTrustOwnerPrefix(request.Mechanism()) +
 		marker.InstallationID + "|" +
 		marker.RequesterIdentity + "|" +
 		marker.AuthorityFingerprint
 }
 
-// parseWindowsTrustOwner accepts only the exact bounded marker shape written by this adapter.
-func parseWindowsTrustOwner(value string) (OwnerMarker, bool) {
-	if !strings.HasPrefix(value, windowsTrustOwnerPrefix) || len(value) > maximumNativeIDLength {
+// parseWindowsTrustOwner accepts only the exact bounded marker shape written for one Windows trust scope.
+func parseWindowsTrustOwner(value string, mechanism networkpolicy.TrustMechanism) (OwnerMarker, bool) {
+	prefix := windowsTrustOwnerPrefix(mechanism)
+	if prefix == "" || !strings.HasPrefix(value, prefix) || len(value) > maximumNativeIDLength {
 		return OwnerMarker{}, false
 	}
-	parts := strings.Split(strings.TrimPrefix(value, windowsTrustOwnerPrefix), "|")
+	parts := strings.Split(strings.TrimPrefix(value, prefix), "|")
 	if len(parts) != 3 {
 		return OwnerMarker{}, false
 	}
@@ -196,7 +203,7 @@ func parseWindowsTrustOwner(value string) (OwnerMarker, bool) {
 		Version:              ownerMarkerVersion,
 		InstallationID:       parts[0],
 		RequesterIdentity:    parts[1],
-		Mechanism:            networkpolicy.WindowsCurrentUserTrust,
+		Mechanism:            mechanism,
 		AuthorityFingerprint: parts[2],
 	}
 	if !canonicalWindowsTrustRequester(marker.RequesterIdentity) || marker.Validate() != nil {
@@ -205,8 +212,32 @@ func parseWindowsTrustOwner(value string) (OwnerMarker, bool) {
 	return marker, true
 }
 
-// windowsTrustAttributesFingerprint binds CAS evidence to the complete friendly-name property.
-func windowsTrustAttributesFingerprint(friendlyName string) string {
-	digest := sha256.Sum256([]byte("goforj.harbor.windows-current-user-root.attributes.v1\x00" + friendlyName))
+// windowsTrustNativeIDPrefix returns the stable native identity namespace for one Windows trust scope.
+func windowsTrustNativeIDPrefix(mechanism networkpolicy.TrustMechanism) string {
+	if mechanism == networkpolicy.WindowsMachineTrust {
+		return windowsMachineTrustNativeIDPrefix
+	}
+	return windowsCurrentUserTrustNativeIDPrefix
+}
+
+// windowsTrustOwnerPrefix returns the stable ownership namespace for one Windows trust scope.
+func windowsTrustOwnerPrefix(mechanism networkpolicy.TrustMechanism) string {
+	switch mechanism {
+	case networkpolicy.WindowsCurrentUserTrust:
+		return windowsCurrentUserTrustOwnerPrefix
+	case networkpolicy.WindowsMachineTrust:
+		return windowsMachineTrustOwnerPrefix
+	default:
+		return ""
+	}
+}
+
+// windowsTrustAttributesFingerprint binds CAS evidence to the mechanism and complete friendly-name property.
+func windowsTrustAttributesFingerprint(mechanism networkpolicy.TrustMechanism, friendlyName string) string {
+	namespace := "goforj.harbor.windows-current-user-root.attributes.v1\x00"
+	if mechanism == networkpolicy.WindowsMachineTrust {
+		namespace = "goforj.harbor.windows-machine-root.attributes.v1\x00"
+	}
+	digest := sha256.Sum256([]byte(namespace + friendlyName))
 	return hex.EncodeToString(digest[:])
 }

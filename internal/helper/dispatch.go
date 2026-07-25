@@ -904,7 +904,8 @@ func (e TrustMutationEvidence) validateShape(operation Operation) error {
 	if e.Mechanism != networkpolicy.DarwinCurrentUserTrust &&
 		e.Mechanism != networkpolicy.DarwinAdministratorTrust &&
 		e.Mechanism != networkpolicy.UbuntuSystemTrust &&
-		e.Mechanism != networkpolicy.WindowsCurrentUserTrust {
+		e.Mechanism != networkpolicy.WindowsCurrentUserTrust &&
+		e.Mechanism != networkpolicy.WindowsMachineTrust {
 		return errors.New("trust mutation evidence mechanism is unsupported")
 	}
 	switch operation {

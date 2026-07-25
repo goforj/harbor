@@ -61,7 +61,7 @@ func (store *windowsTrustFakeStore) release(_ context.Context, request Request) 
 func TestWindowsTrustBackendOwnsOnlyItsExactFriendlyName(t *testing.T) {
 	request := windowsTrustTestRequest(t)
 	store := &windowsTrustFakeStore{}
-	adapter := newAdapter(newWindowsTrustBackend(store))
+	adapter := newAdapter(windowsTrustTestBackend(store))
 
 	absent, err := adapter.Observe(t.Context(), request)
 	if err != nil {
@@ -92,6 +92,45 @@ func TestWindowsTrustBackendOwnsOnlyItsExactFriendlyName(t *testing.T) {
 	}
 }
 
+// TestWindowsMachineTrustBackendUsesIndependentOwnership proves machine trust cannot claim legacy current-user entries.
+func TestWindowsMachineTrustBackendUsesIndependentOwnership(t *testing.T) {
+	currentUserRequest := windowsTrustTestRequest(t)
+	machineRequest, err := NewRequestForRequester(
+		"installation-test",
+		windowsTrustTestRequester,
+		networkpolicy.WindowsMachineTrust,
+		currentUserRequest.Root(),
+	)
+	if err != nil {
+		t.Fatalf("NewRequestForRequester(machine) error = %v", err)
+	}
+	store := &windowsTrustFakeStore{}
+	adapter := newAdapter(newWindowsTrustBackend(networkpolicy.WindowsMachineTrust, store))
+	absent, err := adapter.Observe(t.Context(), machineRequest)
+	if err != nil {
+		t.Fatalf("Observe(machine absent) error = %v", err)
+	}
+	ensured, err := adapter.EnsureIfObserved(t.Context(), machineRequest, fingerprintValidated(absent))
+	if err != nil {
+		t.Fatalf("EnsureIfObserved(machine) error = %v", err)
+	}
+	assessment, err := ensured.After.Classify()
+	if err != nil || assessment.State != StateExact || assessment.Owned != OwnedStateExact {
+		t.Fatalf("machine assessment = %#v, error = %v", assessment, err)
+	}
+	machineName := windowsTrustOwnerName(machineRequest)
+	if !strings.HasPrefix(machineName, windowsMachineTrustOwnerPrefix) {
+		t.Fatalf("machine owner name = %q", machineName)
+	}
+	if _, ok := parseWindowsTrustOwner(machineName, networkpolicy.WindowsCurrentUserTrust); ok {
+		t.Fatal("legacy current-user parser claimed machine ownership")
+	}
+	if _, err := newAdapter(newWindowsTrustBackend(networkpolicy.WindowsMachineTrust, store)).
+		Observe(t.Context(), currentUserRequest); err == nil {
+		t.Fatal("machine backend accepted a current-user request")
+	}
+}
+
 // TestWindowsTrustBackendPreservesPreexistingIdenticalRoot proves an unmarked authority is reused without being claimed or removed.
 func TestWindowsTrustBackendPreservesPreexistingIdenticalRoot(t *testing.T) {
 	request := windowsTrustTestRequest(t)
@@ -103,7 +142,7 @@ func TestWindowsTrustBackendPreservesPreexistingIdenticalRoot(t *testing.T) {
 		CertificateDER: der,
 		FriendlyName:   "installed by the user",
 	}}}
-	adapter := newAdapter(newWindowsTrustBackend(store))
+	adapter := newAdapter(windowsTrustTestBackend(store))
 	before, err := adapter.Observe(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Observe() error = %v", err)
@@ -141,7 +180,7 @@ func TestWindowsTrustBackendRejectsInvalidScopeAndChangedMutationFacts(t *testin
 		if err != nil {
 			t.Fatalf("NewRequestForRequester(%q) fixture error = %v", requester, err)
 		}
-		if _, err := newAdapter(newWindowsTrustBackend(&windowsTrustFakeStore{})).Observe(t.Context(), request); err == nil {
+		if _, err := newAdapter(windowsTrustTestBackend(&windowsTrustFakeStore{})).Observe(t.Context(), request); err == nil {
 			t.Fatalf("Observe() accepted requester %q", requester)
 		}
 	}
@@ -149,7 +188,7 @@ func TestWindowsTrustBackendRejectsInvalidScopeAndChangedMutationFacts(t *testin
 	if err != nil {
 		t.Fatalf("NewRequest() fixture error = %v", err)
 	}
-	if _, err := newAdapter(newWindowsTrustBackend(&windowsTrustFakeStore{})).Observe(t.Context(), unbound); err == nil {
+	if _, err := newAdapter(windowsTrustTestBackend(&windowsTrustFakeStore{})).Observe(t.Context(), unbound); err == nil {
 		t.Fatal("Observe() accepted an unbound Windows requester")
 	}
 
@@ -162,13 +201,13 @@ func TestWindowsTrustBackendRejectsInvalidScopeAndChangedMutationFacts(t *testin
 	if err != nil {
 		t.Fatalf("NewRequestForRequester(Darwin) fixture error = %v", err)
 	}
-	if _, err := newAdapter(newWindowsTrustBackend(&windowsTrustFakeStore{})).Observe(t.Context(), darwin); err == nil {
+	if _, err := newAdapter(windowsTrustTestBackend(&windowsTrustFakeStore{})).Observe(t.Context(), darwin); err == nil {
 		t.Fatal("Observe() accepted a Darwin trust mechanism")
 	}
 
-	backend := newWindowsTrustBackend(&windowsTrustFakeStore{})
+	backend := windowsTrustTestBackend(&windowsTrustFakeStore{})
 	ownedStore := &windowsTrustFakeStore{}
-	ownedBackend := newWindowsTrustBackend(ownedStore)
+	ownedBackend := windowsTrustTestBackend(ownedStore)
 	absent, err := backend.observe(t.Context(), valid)
 	if err != nil {
 		t.Fatalf("observe(absent) error = %v", err)
@@ -179,7 +218,7 @@ func TestWindowsTrustBackendRejectsInvalidScopeAndChangedMutationFacts(t *testin
 		NativeID:               "windows-owned",
 		CertificateFingerprint: valid.AuthorityFingerprint(),
 		NativeExact:            true,
-		NativeAttributesSHA256: windowsTrustAttributesFingerprint(windowsTrustOwnerName(valid)),
+		NativeAttributesSHA256: windowsTrustAttributesFingerprint(valid.Mechanism(), windowsTrustOwnerName(valid)),
 		Owner:                  &owner,
 	}}}
 	if err := backend.ensure(t.Context(), valid, exact); err == nil {
@@ -197,7 +236,7 @@ func TestWindowsTrustBackendRejectsInvalidScopeAndChangedMutationFacts(t *testin
 func TestWindowsTrustOwnershipEncodingRejectsNearMarkers(t *testing.T) {
 	request := windowsTrustTestRequest(t)
 	name := windowsTrustOwnerName(request)
-	marker, ok := parseWindowsTrustOwner(name)
+	marker, ok := parseWindowsTrustOwner(name, request.Mechanism())
 	if !ok || marker != request.OwnerMarker() {
 		t.Fatalf("parseWindowsTrustOwner() = %#v, %t", marker, ok)
 	}
@@ -209,11 +248,12 @@ func TestWindowsTrustOwnershipEncodingRejectsNearMarkers(t *testing.T) {
 		strings.Replace(name, request.AuthorityFingerprint(), strings.Repeat("z", 64), 1),
 		strings.Repeat("x", maximumNativeIDLength+1),
 	} {
-		if marker, ok := parseWindowsTrustOwner(candidate); ok {
+		if marker, ok := parseWindowsTrustOwner(candidate, request.Mechanism()); ok {
 			t.Fatalf("parseWindowsTrustOwner(%q) = %#v, true", candidate, marker)
 		}
 	}
-	if windowsTrustAttributesFingerprint(name) == windowsTrustAttributesFingerprint(name+"x") {
+	if windowsTrustAttributesFingerprint(request.Mechanism(), name) ==
+		windowsTrustAttributesFingerprint(request.Mechanism(), name+"x") {
 		t.Fatal("friendly-name drift did not change native attributes")
 	}
 }
@@ -252,4 +292,9 @@ func windowsTrustTestRequest(t *testing.T) Request {
 		t.Fatalf("NewRequestForRequester() fixture error = %v", err)
 	}
 	return request
+}
+
+// windowsTrustTestBackend constructs the legacy current-user backend used by existing compatibility fixtures.
+func windowsTrustTestBackend(store windowsTrustNative) backend {
+	return newWindowsTrustBackend(networkpolicy.WindowsCurrentUserTrust, store)
 }

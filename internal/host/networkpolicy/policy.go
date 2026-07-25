@@ -62,6 +62,8 @@ const (
 	UbuntuSystemTrust TrustMechanism = "ubuntu-system-trust-v1"
 	// WindowsCurrentUserTrust installs trust for only the interactive Windows user.
 	WindowsCurrentUserTrust TrustMechanism = "windows-current-user-trust-v1"
+	// WindowsMachineTrust installs trust for all Windows users through Harbor's elevated helper contract.
+	WindowsMachineTrust TrustMechanism = "windows-machine-trust-v1"
 )
 
 // Mechanisms is the indivisible resolver, low-port, and trust-store profile for
@@ -75,7 +77,9 @@ type Mechanisms struct {
 // Validate rejects partial and mixed-platform profiles because each supported
 // profile is proven and repaired as one host-integration unit.
 func (mechanisms Mechanisms) Validate() error {
-	if mechanisms == MacOSMechanisms() || mechanisms == legacyMacOSMechanisms() || mechanisms == UbuntuMechanisms() || mechanisms == WindowsMechanisms() {
+	if mechanisms == MacOSMechanisms() || mechanisms == legacyMacOSMechanisms() ||
+		mechanisms == UbuntuMechanisms() || mechanisms == WindowsMechanisms() ||
+		mechanisms == legacyWindowsMechanisms() {
 		return nil
 	}
 
@@ -116,6 +120,20 @@ func UbuntuMechanisms() Mechanisms {
 
 // WindowsMechanisms returns Harbor's complete supported Windows integration profile.
 func WindowsMechanisms() Mechanisms {
+	return Mechanisms{
+		Resolver: WindowsNRPT,
+		LowPorts: WindowsDirectLowPorts,
+		Trust:    WindowsMachineTrust,
+	}
+}
+
+// LegacyWindowsMechanisms returns the persisted Windows profile used before machine trust.
+func LegacyWindowsMechanisms() Mechanisms {
+	return legacyWindowsMechanisms()
+}
+
+// legacyWindowsMechanisms returns the persisted Windows profile used before machine trust.
+func legacyWindowsMechanisms() Mechanisms {
 	return Mechanisms{
 		Resolver: WindowsNRPT,
 		LowPorts: WindowsDirectLowPorts,
@@ -202,7 +220,7 @@ func (policy Policy) Validate() error {
 		return err
 	}
 
-	if policy.Mechanisms == WindowsMechanisms() {
+	if policy.Mechanisms == WindowsMechanisms() || policy.Mechanisms == legacyWindowsMechanisms() {
 		return validateWindowsPolicy(policy)
 	}
 

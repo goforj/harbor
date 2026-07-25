@@ -363,7 +363,8 @@ func validateMechanism(mechanism networkpolicy.TrustMechanism) error {
 	case networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.DarwinAdministratorTrust,
 		networkpolicy.UbuntuSystemTrust,
-		networkpolicy.WindowsCurrentUserTrust:
+		networkpolicy.WindowsCurrentUserTrust,
+		networkpolicy.WindowsMachineTrust:
 		return nil
 	default:
 		return fmt.Errorf("trust mechanism %q is unsupported", mechanism)

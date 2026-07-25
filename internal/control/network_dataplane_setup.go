@@ -322,7 +322,8 @@ func validNetworkDataPlaneTrustMechanism(mechanism networkpolicy.TrustMechanism)
 	case networkpolicy.DarwinAdministratorTrust,
 		networkpolicy.DarwinCurrentUserTrust,
 		networkpolicy.UbuntuSystemTrust,
-		networkpolicy.WindowsCurrentUserTrust:
+		networkpolicy.WindowsCurrentUserTrust,
+		networkpolicy.WindowsMachineTrust:
 		return true
 	default:
 		return false

@@ -70,7 +70,7 @@ func TestBuildConstructsEveryProductProfile(t *testing.T) {
 			dns:         directListener("127.0.0.2:53"),
 			http:        directListener("127.0.0.1:80"),
 			https:       directListener("127.0.0.1:443"),
-			fingerprint: "94979ccd290a8c7e77243a9776fd0413b377808f0b30670053bed87f19ffc21a",
+			fingerprint: "9f41eeac5eccc4d647ba970ba93e680af749903c180964e0b1b658315b563e4f",
 		},
 	}
 

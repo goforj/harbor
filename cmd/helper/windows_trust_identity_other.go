@@ -4,7 +4,7 @@ package main
 
 import "fmt"
 
-// validateWindowsCurrentUserTrustIdentity keeps the Windows-only identity boundary unavailable on other platforms.
-func validateWindowsCurrentUserTrustIdentity(string) error {
-	return fmt.Errorf("Windows CurrentUser trust identity validation is unavailable")
+// validateWindowsTrustRequesterIdentity keeps the Windows-only identity boundary unavailable on other platforms.
+func validateWindowsTrustRequesterIdentity(string) error {
+	return fmt.Errorf("Windows trust requester identity validation is unavailable")
 }

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/host/networkpolicy"
 	"golang.org/x/sys/windows"
 )
 
@@ -28,20 +29,29 @@ var (
 	windowsCertSetCertificateContextProperty = windowsCrypt32.NewProc("CertSetCertificateContextProperty")
 )
 
-// windowsCurrentUserRootStore implements the exact CurrentUser\Root certificate and marker boundary.
-type windowsCurrentUserRootStore struct{}
+// windowsRootStore implements one exact Windows Root certificate and marker boundary.
+type windowsRootStore struct {
+	mechanism networkpolicy.TrustMechanism
+}
 
 // New returns the reviewed Windows CurrentUser\Root trust adapter.
 func New() (*Adapter, error) {
-	return newAdapter(newWindowsTrustBackend(windowsCurrentUserRootStore{})), nil
+	store := windowsRootStore{mechanism: networkpolicy.WindowsCurrentUserTrust}
+	return newAdapter(newWindowsTrustBackend(store.mechanism, store)), nil
+}
+
+// NewMachine returns the reviewed Windows LocalMachine\Root trust adapter.
+func NewMachine() (*Adapter, error) {
+	store := windowsRootStore{mechanism: networkpolicy.WindowsMachineTrust}
+	return newAdapter(newWindowsTrustBackend(store.mechanism, store)), nil
 }
 
 // snapshot returns only the authority certificate or Harbor-marked entries relevant to this request.
-func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request) ([]windowsTrustEntry, error) {
-	if err := validateWindowsTrustRequest(request); err != nil {
+func (store windowsRootStore) snapshot(ctx context.Context, request Request) ([]windowsTrustEntry, error) {
+	if err := validateWindowsTrustRequest(request, store.mechanism); err != nil {
 		return nil, err
 	}
-	defaultStore, err := openWindowsCurrentUserRootStore()
+	defaultStore, err := store.open()
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +102,7 @@ func appendWindowsTrustEntries(
 		fingerprint := sha256.Sum256(der)
 		fingerprintText := hex.EncodeToString(fingerprint[:])
 		if fingerprintText != request.AuthorityFingerprint() &&
-			!strings.HasPrefix(friendlyName, windowsTrustOwnerPrefix) {
+			!strings.HasPrefix(friendlyName, windowsTrustOwnerPrefix(request.Mechanism())) {
 			continue
 		}
 		key := fingerprintText + "\x00" + friendlyName
@@ -109,9 +119,9 @@ func appendWindowsTrustEntries(
 	return nil
 }
 
-// ensure writes one marked certificate through the interactive account's standard Root store.
-func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Request) error {
-	if err := validateWindowsTrustRequest(request); err != nil {
+// ensure writes one marked certificate through the backend's exact Root store.
+func (store windowsRootStore) ensure(ctx context.Context, request Request) error {
+	if err := validateWindowsTrustRequest(request, store.mechanism); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -136,7 +146,7 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 	if err := setWindowsCertificateFriendlyName(certificate, windowsTrustOwnerName(request)); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootStore()
+	rootStore, err := store.open()
 	if err != nil {
 		return err
 	}
@@ -154,14 +164,14 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 }
 
 // release revalidates one exact marked certificate immediately before deleting that context.
-func (store windowsCurrentUserRootStore) release(ctx context.Context, request Request) error {
-	if err := validateWindowsTrustRequest(request); err != nil {
+func (store windowsRootStore) release(ctx context.Context, request Request) error {
+	if err := validateWindowsTrustRequest(request, store.mechanism); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootStore()
+	rootStore, err := store.open()
 	if err != nil {
 		return err
 	}
@@ -240,6 +250,37 @@ func openWindowsCurrentUserRootStore() (windows.Handle, error) {
 	store, err := windows.CertOpenSystemStore(0, name)
 	if err != nil {
 		return 0, fmt.Errorf("open CurrentUser Root certificate store: %w", err)
+	}
+	return store, nil
+}
+
+// open returns only the physical Root store selected by the backend's reviewed trust scope.
+func (store windowsRootStore) open() (windows.Handle, error) {
+	switch store.mechanism {
+	case networkpolicy.WindowsCurrentUserTrust:
+		return openWindowsCurrentUserRootStore()
+	case networkpolicy.WindowsMachineTrust:
+		return openWindowsMachineRootStore()
+	default:
+		return 0, fmt.Errorf("open Windows Root store for unsupported mechanism %q", store.mechanism)
+	}
+}
+
+// openWindowsMachineRootStore opens only the machine registry Root store used by the elevated helper.
+func openWindowsMachineRootStore() (windows.Handle, error) {
+	name, err := windows.UTF16PtrFromString(windowsRootStoreName)
+	if err != nil {
+		return 0, fmt.Errorf("encode LocalMachine Root store name: %w", err)
+	}
+	store, err := windows.CertOpenStore(
+		uintptr(windows.CERT_STORE_PROV_SYSTEM_REGISTRY),
+		0,
+		0,
+		uint32(windows.CERT_SYSTEM_STORE_LOCAL_MACHINE),
+		uintptr(unsafe.Pointer(name)),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("open LocalMachine Root registry store: %w", err)
 	}
 	return store, nil
 }
