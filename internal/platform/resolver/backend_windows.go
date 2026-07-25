@@ -25,7 +25,7 @@ const (
 	maximumWindowsNRPTDiagnosticBytes = 16 << 10
 	maximumWindowsNRPTDisplayError    = 1024
 	windowsNRPTProgramEnvironment     = "GOFORJ_HARBOR_WINDOWS_NRPT_PROGRAM"
-	windowsNRPTProgramCommand         = "& ([ScriptBlock]::Create($env:GOFORJ_HARBOR_WINDOWS_NRPT_PROGRAM))"
+	windowsNRPTProgramCommand         = "[Console]::Out.WriteLine('harbor-progress=host-started'); [Console]::Out.Flush(); & ([ScriptBlock]::Create($env:GOFORJ_HARBOR_WINDOWS_NRPT_PROGRAM))"
 )
 
 // windowsNRPTCommandRequest is the exact JSON authority accepted by the static PowerShell program.
@@ -396,6 +396,7 @@ func windowsNRPTDisplayDiagnostic(value string) string {
 // windowsNRPTStripProgress removes only the complete ordered marker prefix from successful output.
 func windowsNRPTStripProgress(value []byte) ([]byte, bool) {
 	expected := []string{
+		"harbor-progress=host-started",
 		"harbor-progress=importing-utility",
 		"harbor-progress=importing-cimcmdlets",
 		"harbor-progress=importing-dnsclient",

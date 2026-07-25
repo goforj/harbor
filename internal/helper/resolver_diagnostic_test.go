@@ -58,6 +58,7 @@ func TestResponseForResolverFailureExposesOnlyFiniteDiagnostics(t *testing.T) {
 		"dnsclient-import-timeout",
 		"cimcmdlets-import-timeout",
 		"utility-import-timeout",
+		"program-start-timeout",
 		"system-directory",
 		"output-limit",
 		"diagnostic-limit",

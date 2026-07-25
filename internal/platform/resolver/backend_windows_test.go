@@ -217,6 +217,7 @@ func TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers(t *testing.T) {
 // TestWindowsNRPTStripProgress accepts only the complete ordered marker prefix.
 func TestWindowsNRPTStripProgress(t *testing.T) {
 	complete := strings.Join([]string{
+		"harbor-progress=host-started",
 		"harbor-progress=importing-utility",
 		"harbor-progress=importing-cimcmdlets",
 		"harbor-progress=importing-dnsclient",

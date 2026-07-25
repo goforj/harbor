@@ -98,6 +98,8 @@ func resolverNativeDiagnostic(cause error) string {
 		return "cimcmdlets-import-timeout"
 	case strings.Contains(message, "harbor-progress=importing-utility"):
 		return "utility-import-timeout"
+	case strings.Contains(message, "harbor-progress=host-started"):
+		return "program-start-timeout"
 	}
 	switch {
 	case errors.Is(cause, context.DeadlineExceeded):

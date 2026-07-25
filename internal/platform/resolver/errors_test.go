@@ -30,6 +30,7 @@ func TestResolverDiagnosticClassifiesOnlyFiniteNativeCauses(t *testing.T) {
 		{name: "DnsClient import timeout", cause: errors.New("harbor-progress=importing-dnsclient"), want: "dnsclient-import-timeout"},
 		{name: "CimCmdlets import timeout", cause: errors.New("harbor-progress=importing-cimcmdlets"), want: "cimcmdlets-import-timeout"},
 		{name: "utility import timeout", cause: errors.New("harbor-progress=importing-utility"), want: "utility-import-timeout"},
+		{name: "program start timeout", cause: errors.New("harbor-progress=host-started"), want: "program-start-timeout"},
 		{name: "system directory", cause: errors.New("locate Windows PowerShell system directory: private detail"), want: "system-directory"},
 		{name: "output limit", cause: errors.New("Windows NRPT output exceeds 1 bytes"), want: "output-limit"},
 		{name: "diagnostic limit", cause: errors.New("Windows NRPT diagnostic exceeds 1 bytes"), want: "diagnostic-limit"},
