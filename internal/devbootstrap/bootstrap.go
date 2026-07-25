@@ -56,6 +56,19 @@ type plan struct {
 	directories             []directoryPlan
 }
 
+// platformArtifacts derives the exact fixed artifact set after platform-specific plan validation.
+func platformArtifacts(prepared plan) []plan {
+	artifacts := []plan{prepared}
+	if prepared.launchdRelayDestination != "" {
+		relay := prepared
+		relay.helperSource = prepared.launchdRelaySource
+		relay.helperDestination = prepared.launchdRelayDestination
+		relay.helperMode = prepared.launchdRelayMode
+		artifacts = append(artifacts, relay)
+	}
+	return artifacts
+}
+
 // dependencies keeps root admission and compiled destination lookup directly testable.
 type dependencies struct {
 	effectiveUID            func() int

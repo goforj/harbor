@@ -141,19 +141,6 @@ type openedArtifact struct {
 	snapshot sourceSnapshot
 }
 
-// platformArtifacts derives the exact fixed artifact set after platform-specific plan validation.
-func platformArtifacts(prepared plan) []plan {
-	artifacts := []plan{prepared}
-	if prepared.launchdRelayDestination != "" {
-		relay := prepared
-		relay.helperSource = prepared.launchdRelaySource
-		relay.helperDestination = prepared.launchdRelayDestination
-		relay.helperMode = prepared.launchdRelayMode
-		artifacts = append(artifacts, relay)
-	}
-	return artifacts
-}
-
 // revalidateInstalledPlan proves retained metadata and every fixed direct name still describe the complete installed graph.
 func (transaction *unixTransaction) revalidateInstalledPlan(
 	prepared plan,
