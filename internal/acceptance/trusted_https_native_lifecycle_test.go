@@ -1461,7 +1461,7 @@ func trustedHTTPSVerifyNoLinuxMachineEffects(ctx context.Context, sandbox phase1
 	for _, path := range []string{
 		"/var/lib/goforj/harbor/state/ownership.json",
 		"/var/lib/goforj/harbor/state/host-projection.json",
-		"/var/lib/goforj/harbor/state/trust-owner.v1",
+		"/var/lib/goforj/harbor/trust-owner.v1",
 		"/etc/systemd/resolved.conf.d/90-goforj-harbor.conf",
 		"/usr/local/share/ca-certificates/goforj-harbor.crt",
 		"/usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release",

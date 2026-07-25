@@ -23,8 +23,9 @@ const (
 	ubuntuTrustSourceDirectory = "/usr/local/share/ca-certificates"
 	ubuntuTrustSourceName      = "goforj-harbor.crt"
 	ubuntuTrustPendingName     = "goforj-harbor.crt.harbor-release"
-	ubuntuTrustMarkerDirectory = "/var/lib/goforj/harbor/state"
+	ubuntuTrustMarkerDirectory = "/var/lib/goforj/harbor"
 	ubuntuTrustMarkerName      = "trust-owner.v1"
+	ubuntuTrustMarkerMode      = 0o644
 	ubuntuTrustBundlePath      = "/etc/ssl/certs/ca-certificates.crt"
 	ubuntuTrustUpdateCommand   = "/usr/sbin/update-ca-certificates"
 	maximumUbuntuTrustBundle   = 16 << 20
@@ -56,7 +57,7 @@ func (ubuntuSystemTrust) snapshot(ctx context.Context, request Request) (ubuntuT
 	if err := ctx.Err(); err != nil {
 		return ubuntuTrustSnapshot{}, err
 	}
-	marker, err := readLinuxTrustFile(filepath.Join(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName), maximumNativeIDLength, 0o600)
+	marker, err := readLinuxTrustFile(filepath.Join(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName), maximumNativeIDLength, ubuntuTrustMarkerMode)
 	if err != nil {
 		return ubuntuTrustSnapshot{}, fmt.Errorf("observe Ubuntu trust owner marker: %w", err)
 	}
@@ -122,12 +123,12 @@ func (store ubuntuSystemTrust) ensure(ctx context.Context, request Request) erro
 	createdSource := false
 	switch {
 	case !snapshot.MarkerPresent && !snapshot.SourcePresent:
-		if err := createLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), 0o600); err != nil {
+		if err := createLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), ubuntuTrustMarkerMode); err != nil {
 			return fmt.Errorf("create Ubuntu trust owner marker: %w", err)
 		}
 		createdMarker = true
 		if err := createLinuxTrustFile(ubuntuTrustSourceDirectory, ubuntuTrustSourceName, request.Root().CertificatePEM, 0o644); err != nil {
-			rollbackErr := removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), 0o600)
+			rollbackErr := removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), ubuntuTrustMarkerMode)
 			return errors.Join(fmt.Errorf("create Ubuntu trust source: %w", err), rollbackErr)
 		}
 		createdSource = true
@@ -146,7 +147,7 @@ func (store ubuntuSystemTrust) ensure(ctx context.Context, request Request) erro
 			rollbackErr = removeExactLinuxTrustFile(ubuntuTrustSourceDirectory, ubuntuTrustSourceName, request.Root().CertificatePEM, 0o644)
 		}
 		if rollbackErr == nil && createdMarker {
-			rollbackErr = errors.Join(rollbackErr, removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), 0o600))
+			rollbackErr = errors.Join(rollbackErr, removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), ubuntuTrustMarkerMode))
 		}
 		rollbackErr = errors.Join(rollbackErr, runUbuntuTrustUpdate(context.Background()))
 		return errors.Join(err, rollbackErr)
@@ -173,7 +174,7 @@ func (store ubuntuSystemTrust) release(ctx context.Context, request Request) err
 		}
 	case !snapshot.SourcePresent && snapshot.PendingPresent && snapshot.PendingExact:
 	case !snapshot.SourcePresent && !snapshot.PendingPresent && snapshot.ActiveMatches == 0:
-		return removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), 0o600)
+		return removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), ubuntuTrustMarkerMode)
 	default:
 		return fmt.Errorf("Ubuntu trust fixed paths changed before release: %w", errNativeMutationConflict)
 	}
@@ -185,7 +186,7 @@ func (store ubuntuSystemTrust) release(ctx context.Context, request Request) err
 	if err := removeExactLinuxTrustFile(ubuntuTrustSourceDirectory, ubuntuTrustPendingName, request.Root().CertificatePEM, 0o600); err != nil {
 		return err
 	}
-	return removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), 0o600)
+	return removeExactLinuxTrustFile(ubuntuTrustMarkerDirectory, ubuntuTrustMarkerName, []byte(ubuntuTrustOwnerText(request)), ubuntuTrustMarkerMode)
 }
 
 // readLinuxTrustFile reads one fixed regular file without following its final component.
