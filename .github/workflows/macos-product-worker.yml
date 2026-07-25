@@ -1,4 +1,4 @@
-name: macOS product worker preflight
+name: macOS product worker evidence
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-product-worker-preflight
+  group: macos-product-worker-evidence
   cancel-in-progress: false
 
 jobs:
@@ -41,11 +41,14 @@ jobs:
           printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
 
   profile:
-    name: Prove macOS 15 Apple-silicon product profile
+    name: Prove macOS 15 profile and Docker lifecycle
     needs: admit
     environment: macos-product-evidence
     runs-on: [self-hosted, ephemeral, harbor-product, macos, arm64]
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      GOCACHE: /tmp/gocache
+      GOMODCACHE: /tmp/gomodcache
     steps:
       - name: Check out admitted source
         uses: actions/checkout@v7
@@ -54,12 +57,22 @@ jobs:
           persist-credentials: false
           clean: true
 
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: 86d7fcacd681d9f9798b7f47521ce14969a594f6
+          path: .ci/goforj
+          persist-credentials: false
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
 
       - name: Prove interactive product prerequisites
         shell: bash
@@ -96,6 +109,8 @@ jobs:
           [[ -n "$docker_provider" ]]
           [[ "$docker_endpoint" == unix:///* ]]
           [[ -n "$docker_engine_version" ]]
+          [[ "$docker_provider" != *$'\n'* ]]
+          [[ "$docker_provider" != *$'\r'* ]]
 
           evidence_directory="${RUNNER_TEMP}/harbor-macos-product-worker-evidence"
           [[ ! -e "$evidence_directory" ]]
@@ -144,7 +159,12 @@ jobs:
             --root "$evidence_directory" \
             --commit "$APPROVED_SHA" \
             --product-major 15
+          provider_file="${RUNNER_TEMP}/harbor-macos-docker-provider"
+          [[ ! -e "$provider_file" ]]
+          printf '%s' "$docker_provider" > "$provider_file"
+          chmod 0600 "$provider_file"
           printf 'HARBOR_MACOS_WORKER_EVIDENCE_DIRECTORY=%s\n' "$evidence_directory" >> "$GITHUB_ENV"
+          printf 'HARBOR_MACOS_DOCKER_PROVIDER_FILE=%s\n' "$provider_file" >> "$GITHUB_ENV"
 
       - name: Upload bounded worker profile evidence
         uses: actions/upload-artifact@v7
@@ -154,8 +174,74 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Build pinned GoForj tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_directory="${RUNNER_TEMP}/harbor-bin"
+          binary="${binary_directory}/forj"
+          [[ ! -e "$binary_directory" ]]
+          install -d -m 0700 "$binary_directory"
+          (
+            cd .ci/goforj
+            go build -trimpath -o "$binary" ./cmd/forj
+          )
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
+          printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Require provisioner-owned proof identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          for address in 127.77.254.10 127.77.254.11 127.77.254.12; do
+            count="$(ifconfig lo0 inet | awk -v target="$address" '$1 == "inet" && $2 == target {count++} END {print count+0}')"
+            if [[ "$count" != "1" ]]; then
+              echo "product worker must expose exactly one provisioner-owned lo0 identity for $address; found $count" >&2
+              exit 1
+            fi
+          done
+
+      - name: Exercise generated Compose lifecycle
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ needs.admit.outputs.approved_sha }}
+          HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-macos-docker-product-evidence
+          HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
+        run: |
+          set -euo pipefail
+          [[ ! -e "$HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" ]]
+          docker_provider="$(<"$HARBOR_MACOS_DOCKER_PROVIDER_FILE")"
+          [[ -n "$docker_provider" ]]
+          HARBOR_DOCKER_PRODUCT_COMMIT="$APPROVED_SHA" \
+          HARBOR_DOCKER_PRODUCT_RUNNER_NAME="$RUNNER_NAME" \
+          HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE="macos-15-arm64" \
+          HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE_VERSION="$(sw_vers -buildVersion)" \
+          HARBOR_DOCKER_PRODUCT_ENGINE_KIND="$docker_provider" \
+            go test \
+              -tags='projectidentityacceptance projectdockeracceptance' \
+              -count=1 \
+              -timeout=10m \
+              -run '^TestNativeGeneratedMySQLProjectsExposeComposeServices$' \
+              ./internal/reconcile
+          go run ./cmd/platformproof verify-docker-projects \
+            --root "$HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" \
+            --commit "$APPROVED_SHA" \
+            --platforms darwin \
+            --app-port 3000 \
+            --service-port 3306
+          printf 'HARBOR_MACOS_DOCKER_EVIDENCE_DIRECTORY=%s\n' "$HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" >> "$GITHUB_ENV"
+
+      - name: Upload bounded Docker lifecycle evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-docker-product-lifecycle
+          path: ${{ env.HARBOR_MACOS_DOCKER_EVIDENCE_DIRECTORY }}
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
-    name: Verify macOS product-worker profile
+    name: Verify macOS product-worker evidence
     needs: [admit, profile]
     runs-on: ubuntu-24.04
     steps:
@@ -178,9 +264,21 @@ jobs:
           name: macos-product-worker-profile
           path: macos-product-worker-evidence
 
-      - name: Enforce exact product profile
+      - name: Download Docker lifecycle evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-docker-product-lifecycle
+          path: macos-docker-product-evidence
+
+      - name: Enforce exact product evidence
         run: |
           go run ./cmd/platformproof verify-macos-worker \
             --root macos-product-worker-evidence \
             --commit "${{ needs.admit.outputs.approved_sha }}" \
             --product-major 15
+          go run ./cmd/platformproof verify-docker-projects \
+            --root macos-docker-product-evidence \
+            --commit "${{ needs.admit.outputs.approved_sha }}" \
+            --platforms darwin \
+            --app-port 3000 \
+            --service-port 3306
