@@ -251,14 +251,12 @@ func VerifyBaselinesExact(baselines []CheckoutBaseline) error {
 	return verificationErr
 }
 
-// diffCheckoutBaseline retains exact checkout comparison except for content
-// refreshes to the pre-existing direct regular outputs that GoForj owns.
+// diffCheckoutBaseline retains exact checkout comparison except for the bounded regular outputs that GoForj owns.
 func diffCheckoutBaseline(baseline goforjproject.Snapshot, current goforjproject.Snapshot) string {
 	return normalizeGeneratedDerivedOutputContent(baseline, current).Diff(current)
 }
 
-// normalizeGeneratedDerivedOutputContent removes a hash only when the same
-// permitted derived output remains a regular file with its original mode.
+// normalizeGeneratedDerivedOutputContent admits content refreshes and Windows execution snapshots without masking other drift.
 func normalizeGeneratedDerivedOutputContent(baseline goforjproject.Snapshot, current goforjproject.Snapshot) goforjproject.Snapshot {
 	normalized := baseline
 	normalized.Entries = append([]goforjproject.SnapshotEntry(nil), baseline.Entries...)
@@ -272,7 +270,29 @@ func normalizeGeneratedDerivedOutputContent(baseline goforjproject.Snapshot, cur
 			normalized.Entries[index].SHA256 = currentEntry.SHA256
 		}
 	}
+	for _, currentEntry := range current.Entries {
+		if _, found := snapshotEntryAt(baseline, currentEntry.Path); found ||
+			currentEntry.Type != goforjproject.SnapshotEntryRegularFile ||
+			!isGeneratedRuntimeSnapshotPath(currentEntry.Path) {
+			continue
+		}
+		normalized.Entries = append(normalized.Entries, currentEntry)
+	}
 	return normalized
+}
+
+// isGeneratedRuntimeSnapshotPath recognizes only GoForj's direct executable copy naming convention.
+func isGeneratedRuntimeSnapshotPath(path string) bool {
+	suffix, found := strings.CutPrefix(path, "bin/.app.run-")
+	if !found || suffix == "" {
+		return false
+	}
+	for _, character := range suffix {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // snapshotEntryAt returns the direct snapshot entry at one exact checkout-relative path.

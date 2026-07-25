@@ -180,6 +180,10 @@ func TestCheckoutBaselinesPermitOnlyGeneratedDerivedOutputContentRefresh(t *test
 			t.Fatalf("refresh generated output %q: %v", path, err)
 		}
 	}
+	runtimeSnapshot := filepath.Join(projects[0].Root, "bin", ".app.run-123456")
+	if err := os.WriteFile(runtimeSnapshot, []byte("prepared executable"), 0o700); err != nil {
+		t.Fatalf("write generated runtime snapshot: %v", err)
+	}
 	if err := VerifyBaselines(baselines); err != nil {
 		t.Fatalf("VerifyBaselines(refreshed outputs) error = %v", err)
 	}
@@ -232,6 +236,46 @@ func TestCheckoutBaselinesRejectDerivedOutputDeletionAndTypeOrModeChanges(t *tes
 			}
 			if err := VerifyBaselines(baselines); err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("VerifyBaselines() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+// TestCheckoutBaselinesRejectUnrecognizedRuntimeSnapshots keeps the Windows allowance on one exact regular-file convention.
+func TestCheckoutBaselinesRejectUnrecognizedRuntimeSnapshots(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		path   string
+		create func(string) error
+	}{
+		{name: "missing suffix", path: "bin/.app.run-", create: func(filename string) error {
+			return os.WriteFile(filename, []byte("snapshot"), 0o700)
+		}},
+		{name: "nondecimal suffix", path: "bin/.app.run-current", create: func(filename string) error {
+			return os.WriteFile(filename, []byte("snapshot"), 0o700)
+		}},
+		{name: "nested path", path: "bin/nested/.app.run-123", create: func(filename string) error {
+			if err := os.MkdirAll(filepath.Dir(filename), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filename, []byte("snapshot"), 0o700)
+		}},
+		{name: "directory", path: "bin/.app.run-123", create: func(filename string) error {
+			return os.Mkdir(filename, 0o700)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projects := fixtureProjectsWithDerivedOutputs(t)
+			baselines, err := CaptureBaselines(projects)
+			if err != nil {
+				t.Fatalf("CaptureBaselines() error = %v", err)
+			}
+			filename := filepath.Join(projects[0].Root, filepath.FromSlash(test.path))
+			if err := test.create(filename); err != nil {
+				t.Fatalf("create unrecognized runtime snapshot: %v", err)
+			}
+			if err := VerifyBaselines(baselines); err == nil || !strings.Contains(err.Error(), "added "+test.path) {
+				t.Fatalf("VerifyBaselines() error = %v, want added %s", err, test.path)
 			}
 		})
 	}
