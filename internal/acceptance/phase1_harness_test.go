@@ -50,6 +50,7 @@ var phase1InheritedEnvironmentAllowlist = []string{
 	"PATHEXT",
 	"SSL_CERT_DIR",
 	"SSL_CERT_FILE",
+	"SYSTEMDRIVE",
 	"SYSTEMROOT",
 	"TZ",
 	"WINDIR",

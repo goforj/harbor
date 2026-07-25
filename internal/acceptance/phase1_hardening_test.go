@@ -100,17 +100,17 @@ func TestPhase1ChildEnvironmentUsesWindowsKeyEquality(t *testing.T) {
 	environment := phase1TestEnvironmentMap(
 		t,
 		phase1ChildEnvironmentForPlatform(
-			[]string{"Path=C:\\parent", "systemroot=C:\\Windows", "App_Key=secret"},
+			[]string{"Path=C:\\parent", "systemdrive=C:", "systemroot=C:\\Windows", "App_Key=secret"},
 			map[string]string{"PATH": `C:\sandbox`, "SYSTEMROOT": `C:\Windows`},
 			true,
 		),
 		true,
 	)
-	if len(environment) != 2 {
-		t.Fatalf("Windows child environment = %#v, want two reviewed keys", environment)
+	if len(environment) != 3 {
+		t.Fatalf("Windows child environment = %#v, want three reviewed keys", environment)
 	}
-	if environment["PATH"] != `C:\sandbox` || environment["SYSTEMROOT"] != `C:\Windows` {
-		t.Fatalf("Windows child environment = %#v, want explicit overrides", environment)
+	if environment["PATH"] != `C:\sandbox` || environment["SYSTEMDRIVE"] != `C:` || environment["SYSTEMROOT"] != `C:\Windows` {
+		t.Fatalf("Windows child environment = %#v, want reviewed Windows process variables", environment)
 	}
 	if _, found := environment["APP_KEY"]; found {
 		t.Fatal("Windows child environment retained differently cased APP_KEY")
