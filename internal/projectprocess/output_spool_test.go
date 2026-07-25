@@ -103,6 +103,42 @@ func TestReadOutputHistoryMarksPersistedBytesNonLive(t *testing.T) {
 	}
 }
 
+// TestRemoveOutputSpoolRetiresOnlyTheSelectedSession proves controlled cleanup preserves unrelated history.
+func TestRemoveOutputSpoolRetiresOnlyTheSelectedSession(t *testing.T) {
+	directory := t.TempDir()
+	projectID := domain.ProjectID("project-retired")
+	sessionID := domain.SessionID("session-retired")
+	retired, err := openOutputSpool(directory, projectID, sessionID)
+	if err != nil {
+		t.Fatalf("open retired output spool: %v", err)
+	}
+	if err := retired.close(); err != nil {
+		t.Fatalf("close retired output spool: %v", err)
+	}
+	foreignProjectID := domain.ProjectID("project-preserved")
+	foreignSessionID := domain.SessionID("session-preserved")
+	preserved, err := openOutputSpool(directory, foreignProjectID, foreignSessionID)
+	if err != nil {
+		t.Fatalf("open preserved output spool: %v", err)
+	}
+	if err := preserved.close(); err != nil {
+		t.Fatalf("close preserved output spool: %v", err)
+	}
+
+	if err := removeOutputSpool(directory, projectID, sessionID); err != nil {
+		t.Fatalf("removeOutputSpool() error = %v", err)
+	}
+	if _, err := os.Stat(retired.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired output spool stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(preserved.path); err != nil {
+		t.Fatalf("preserved output spool stat error = %v", err)
+	}
+	if err := removeOutputSpool(directory, projectID, sessionID); err != nil {
+		t.Fatalf("replayed removeOutputSpool() error = %v", err)
+	}
+}
+
 // TestOutputSpoolIgnoresOneIncompleteCrashTail proves a daemon crash cannot expose a torn frame as output.
 func TestOutputSpoolIgnoresOneIncompleteCrashTail(t *testing.T) {
 	directory := t.TempDir()

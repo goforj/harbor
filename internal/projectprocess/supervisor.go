@@ -1266,7 +1266,11 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 		}
 	}
 	if treeSettlementErr == nil && stopRequested && process.retireLaunchTrace.Load() {
-		cleanupErr = errors.Join(cleanupErr, removeProjectLaunchTrace(info.CheckoutRoot))
+		cleanupErr = errors.Join(
+			cleanupErr,
+			removeProjectLaunchTrace(info.CheckoutRoot),
+			removeOutputSpool(supervisor.outputSpoolDirectory, info.ProjectID, info.SessionID),
+		)
 	}
 	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))
 

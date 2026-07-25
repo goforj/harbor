@@ -840,7 +840,11 @@ func TestStartInjectsManagedValuesIntoChildEnvironment(t *testing.T) {
 func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	installForjHelper(t, "wait")
 	output := &synchronizedBuffer{}
-	supervisor := newTestSupervisor(Options{GracePeriod: 500 * time.Millisecond})
+	outputDirectory := t.TempDir()
+	supervisor := newTestSupervisor(Options{
+		GracePeriod:          500 * time.Millisecond,
+		OutputSpoolDirectory: outputDirectory,
+	})
 	checkout := t.TempDir()
 	path := filepath.Join(checkout, ".env.host")
 	contents := []byte("DB_HOST=127.0.0.1\n")
@@ -861,6 +865,13 @@ func TestStopGracefullyStopsRealProcess(t *testing.T) {
 	waitForOutput(t, output, "ready")
 	if err := supervisor.Stop(t.Context(), "project-stop", "session-stop"); err != nil {
 		t.Fatalf("Stop() error = %v", err)
+	}
+	spoolPath, err := outputSpoolPath(outputDirectory, "project-stop", "session-stop")
+	if err != nil {
+		t.Fatalf("resolve stopped output spool: %v", err)
+	}
+	if _, err := os.Stat(spoolPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stopped output spool stat error = %v, want not exist", err)
 	}
 	result, ok := handle.Result()
 	if !ok || !result.StopRequested {

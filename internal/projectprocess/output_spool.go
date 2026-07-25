@@ -98,6 +98,21 @@ func outputSpoolPath(directory string, projectID domain.ProjectID, sessionID dom
 	return filepath.Join(directory, outputSpoolDirectoryName, hex.EncodeToString(digest[:])+outputSpoolFilenameSuffix), nil
 }
 
+// removeOutputSpool retires only the exact completed session transcript selected by its opaque identity hash.
+func removeOutputSpool(directory string, projectID domain.ProjectID, sessionID domain.SessionID) error {
+	if directory == "" {
+		return nil
+	}
+	path, err := outputSpoolPath(directory, projectID, sessionID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove output spool: %w", err)
+	}
+	return nil
+}
+
 // prepareOutputSpoolDirectory creates one owner-private directory without following a symbolic link.
 func prepareOutputSpoolDirectory(directory string) (string, error) {
 	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
