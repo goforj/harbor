@@ -63,6 +63,34 @@ func TestWindowsNativePowerShellRunnerRejectsMissingLookup(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTExpectedClonePreservesEmptyArray keeps an absent CAS precondition
+// from becoming JSON null, which Windows PowerShell binds as one expected object.
+func TestWindowsNRPTExpectedClonePreservesEmptyArray(t *testing.T) {
+	expected := slicesCloneWindowsNRPTExpected([]windowsNRPTExpectedRule{})
+	if expected == nil {
+		t.Fatal("empty Windows NRPT expected clone is nil")
+	}
+	body, err := json.Marshal(windowsNRPTCommandRequest{Expected: expected})
+	if err != nil {
+		t.Fatalf("marshal empty Windows NRPT expected clone: %v", err)
+	}
+	if !strings.Contains(string(body), `"expected":[]`) {
+		t.Fatalf("empty Windows NRPT expected clone JSON = %s, want array", body)
+	}
+
+	request := resolverTestRequest(t, networkpolicy.WindowsNRPT)
+	err = validateWindowsNRPTCommandRequest(windowsNRPTCommandRequest{
+		Operation:   "observe",
+		Suffix:      request.Suffix(),
+		DisplayName: windowsNRPTDisplayName(request),
+		Comment:     windowsNRPTOwnerComment(request),
+		Server:      request.Endpoint().Addr().String(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected rules must be an array") {
+		t.Fatalf("null Windows NRPT expected rules error = %v", err)
+	}
+}
+
 // TestWindowsNRPTPowerShellFingerprintProgramTracksEveryGoField keeps the static native CAS program aligned with Go's reviewed rule identity.
 func TestWindowsNRPTPowerShellFingerprintProgramTracksEveryGoField(t *testing.T) {
 	orderedLines := []string{

@@ -133,7 +133,9 @@ func (store windowsNativeNRPTStore) release(
 
 // slicesCloneWindowsNRPTExpected prevents caller-owned preconditions from crossing the process boundary by alias.
 func slicesCloneWindowsNRPTExpected(expected []windowsNRPTExpectedRule) []windowsNRPTExpectedRule {
-	return append([]windowsNRPTExpectedRule(nil), expected...)
+	cloned := make([]windowsNRPTExpectedRule, len(expected))
+	copy(cloned, expected)
+	return cloned
 }
 
 // invoke validates and marshals one fixed-schema request before handing it to the static runner.
@@ -182,6 +184,9 @@ func validateWindowsNRPTCommandRequest(request windowsNRPTCommandRequest) error 
 	}
 	if len(request.Expected) > maximumRuleFacts {
 		return fmt.Errorf("Windows NRPT expected rules exceed limit %d", maximumRuleFacts)
+	}
+	if request.Expected == nil {
+		return fmt.Errorf("Windows NRPT expected rules must be an array")
 	}
 	previous := ""
 	for _, expected := range request.Expected {
