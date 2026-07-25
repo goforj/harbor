@@ -1490,7 +1490,9 @@ func trustedHTTPSVerifyNoWindowsMachineEffects(ctx context.Context, sandbox phas
 	powerShell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 	script := `$ErrorActionPreference = "Stop"
 $privilegedRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "GoForj\Harbor\Privileged"
-if (Test-Path -LiteralPath $privilegedRoot) { throw "retained Harbor privileged state" }
+$pendingTickets = Join-Path $privilegedRoot "tickets\pending"
+if (-not (Test-Path -LiteralPath $pendingTickets -PathType Container)) { throw "installed Harbor ticket topology disappeared" }
+if (@(Get-ChildItem -LiteralPath $pendingTickets -Force).Count -ne 0) { throw "retained Harbor pending helper ticket" }
 $rules = @(Get-DnsClientNrptRule | Where-Object {
   $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
 })

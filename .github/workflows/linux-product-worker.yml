@@ -45,7 +45,7 @@ jobs:
     needs: admit
     environment: linux-product-evidence
     runs-on: [self-hosted, ephemeral, harbor-product, linux, x64]
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       GOCACHE: /tmp/gocache
       GOMODCACHE: /tmp/gomodcache

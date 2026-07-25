@@ -41,11 +41,11 @@ jobs:
           printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
 
   profile:
-    name: Prove Windows 11 profile and Docker lifecycle
+    name: Prove Windows 11 Docker and trusted HTTPS lifecycle
     needs: admit
     environment: windows-product-evidence
     runs-on: [self-hosted, ephemeral, harbor-product, windows, x64]
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Check out admitted source
         uses: actions/checkout@v7
@@ -128,7 +128,21 @@ jobs:
 
           $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
           $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
-          if (Test-Path -LiteralPath $privilegedRoot) { throw "preexisting Harbor privileged state" }
+          $pendingTickets = Join-Path $privilegedRoot "tickets\pending"
+          if (-not (Test-Path -LiteralPath $pendingTickets -PathType Container)) {
+            throw "installer-owned Harbor ticket topology is unavailable"
+          }
+          if (@(Get-ChildItem -LiteralPath $pendingTickets -Force).Count -ne 0) {
+            throw "preexisting Harbor pending helper tickets"
+          }
+          $machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+            $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
+          })
+          if ($machineRoots.Count -ne 0) { throw "preexisting Harbor LocalMachine root" }
+          $userRoots = @(Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+            $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
+          })
+          if ($userRoots.Count -ne 0) { throw "preexisting Harbor CurrentUser root" }
           $harborNRPT = @(Get-DnsClientNrptRule | Where-Object {
             $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
           })
@@ -146,10 +160,10 @@ jobs:
           if (Test-Path -LiteralPath $evidenceDirectory) { throw "worker evidence path already exists" }
           New-Item -ItemType Directory -Path $evidenceDirectory | Out-Null
           $assertions = @(
-            [ordered]@{ id = "worker.clean_harbor_state"; passed = $true; detail = "fixed Harbor privileged and NRPT state absent" },
+            [ordered]@{ id = "worker.clean_harbor_state"; passed = $true; detail = "installer ticket topology is empty and Harbor NRPT and trust state are absent" },
             [ordered]@{ id = "worker.current_user_root"; passed = $true; detail = "direct current-user root certificate store available" },
             [ordered]@{ id = "worker.filtered_administrator"; passed = $true; detail = "local administrator runs at medium integrity with UAC enabled" },
-            [ordered]@{ id = "worker.installed_helper"; passed = $true; detail = "fixed Program Files helper has a valid Authenticode signature" },
+            [ordered]@{ id = "worker.installed_helper"; passed = $true; detail = "fixed signed helper and empty installer-owned ticket topology are available" },
             [ordered]@{ id = "worker.interactive_login"; passed = $true; detail = "runner process shares an interactive Explorer session" },
             [ordered]@{ id = "worker.local_docker"; passed = $true; detail = "user-selected local Docker-compatible Engine 28 or newer" },
             [ordered]@{ id = "worker.windows_11_24h2"; passed = $true; detail = "Windows 11 24H2 amd64 product profile" }
