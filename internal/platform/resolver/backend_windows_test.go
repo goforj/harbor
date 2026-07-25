@@ -163,7 +163,7 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	}
 	change, err := adapter.EnsureIfObserved(t.Context(), request, fingerprint)
 	if err != nil {
-		t.Fatalf("EnsureIfObserved() error = %v", err)
+		t.Fatalf("EnsureIfObserved() error = %v", privilegedWindowsNRPTDiagnostic(err))
 	}
 	if !change.Attempted || !change.Changed {
 		t.Fatalf("EnsureIfObserved() = %#v, want a published rule", change)
@@ -192,7 +192,7 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	}
 	change, err = adapter.EnsureIfObserved(t.Context(), request, fingerprint)
 	if err != nil {
-		t.Fatalf("EnsureIfObserved(after drift) error = %v", err)
+		t.Fatalf("EnsureIfObserved(after drift) error = %v", privilegedWindowsNRPTDiagnostic(err))
 	}
 	assessment, err = change.After.Classify()
 	if err != nil || assessment.State != StateExact {
@@ -210,6 +210,23 @@ func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if err != nil || assessment.State != StateAbsent {
 		t.Fatalf("Classify(after release) = %#v, %v; want absent", assessment, err)
 	}
+}
+
+// privilegedWindowsNRPTDiagnostic exposes a bounded native cause only inside the opt-in administrator test.
+func privilegedWindowsNRPTDiagnostic(err error) error {
+	if err == nil {
+		return nil
+	}
+	var resolverError *Error
+	if !errors.As(err, &resolverError) || resolverError.Unwrap() == nil {
+		return err
+	}
+	cause := resolverError.Unwrap().Error()
+	const maximumDiagnosticBytes = 4096
+	if len(cause) > maximumDiagnosticBytes {
+		cause = cause[:maximumDiagnosticBytes] + "...[truncated]"
+	}
+	return fmt.Errorf("%w; native cause: %s", err, cause)
 }
 
 // driftWindowsNRPTNameServers changes only a freshly admitted test rule so the shipping Set path must restore its exact server list.
