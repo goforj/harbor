@@ -5,6 +5,7 @@ package machinepaths
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -67,5 +68,22 @@ func expandWindowsEnvironment(value string) (string, error) {
 	if written == 0 || written > required {
 		return "", fmt.Errorf("expanded path size changed from %d to %d", required, written)
 	}
-	return windows.UTF16ToString(buffer), nil
+	return resolveWindowsSystemDrive(windows.UTF16ToString(buffer), windows.GetSystemWindowsDirectory)
+}
+
+// resolveWindowsSystemDrive handles the machine token returned when the caller environment omits SystemDrive.
+func resolveWindowsSystemDrive(value string, windowsDirectory func() (string, error)) (string, error) {
+	const token = "%SystemDrive%"
+	if len(value) < len(token) || !strings.EqualFold(value[:len(token)], token) {
+		return value, nil
+	}
+	directory, err := windowsDirectory()
+	if err != nil {
+		return "", fmt.Errorf("resolve Windows system directory: %w", err)
+	}
+	volume := filepath.VolumeName(directory)
+	if volume == "" || !filepath.IsAbs(directory) {
+		return "", fmt.Errorf("Windows system directory %q has no absolute volume", directory)
+	}
+	return volume + value[len(token):], nil
 }

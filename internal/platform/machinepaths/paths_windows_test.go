@@ -78,6 +78,28 @@ func TestWindowsPlatformRootExpandsNativeProgramData(t *testing.T) {
 	}
 }
 
+// TestResolveWindowsSystemDriveUsesNativeWindowsDirectory covers hosted processes without a SystemDrive variable.
+func TestResolveWindowsSystemDriveUsesNativeWindowsDirectory(t *testing.T) {
+	resolved, err := resolveWindowsSystemDrive(`%SystemDrive%\ProgramData`, func() (string, error) {
+		return `C:\Windows`, nil
+	})
+	if err != nil {
+		t.Fatalf("resolveWindowsSystemDrive() error = %v", err)
+	}
+	if resolved != `C:\ProgramData` {
+		t.Fatalf("resolveWindowsSystemDrive() = %q, want C:\\ProgramData", resolved)
+	}
+}
+
+// TestResolveWindowsSystemDriveRejectsInvalidNativeDirectory prevents relative fallback state from becoming authority.
+func TestResolveWindowsSystemDriveRejectsInvalidNativeDirectory(t *testing.T) {
+	if _, err := resolveWindowsSystemDrive(`%SystemDrive%\ProgramData`, func() (string, error) {
+		return `Windows`, nil
+	}); err == nil {
+		t.Fatal("resolveWindowsSystemDrive() accepted a relative Windows directory")
+	}
+}
+
 // TestWindowsPlatformRootPreservesNativeFailure keeps installer diagnostics attached to API failures.
 func TestWindowsPlatformRootPreservesNativeFailure(t *testing.T) {
 	want := errors.New("known folder unavailable")
