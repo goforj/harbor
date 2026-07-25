@@ -51,18 +51,10 @@ func (windowsCurrentUserRootStore) snapshot(ctx context.Context, request Request
 	if err := appendWindowsTrustEntries(ctx, request, defaultStore, seen, &entries); err != nil {
 		return nil, err
 	}
-	policyStore, err := openWindowsCurrentUserRootPolicyStore()
-	if err != nil {
-		return nil, err
-	}
-	defer windows.CertCloseStore(policyStore, 0)
-	if err := appendWindowsTrustEntries(ctx, request, policyStore, seen, &entries); err != nil {
-		return nil, err
-	}
 	return entries, nil
 }
 
-// appendWindowsTrustEntries adds bounded relevant facts while collapsing certificates exposed by multiple physical stores.
+// appendWindowsTrustEntries adds bounded relevant facts while collapsing duplicate logical-store entries.
 func appendWindowsTrustEntries(
 	ctx context.Context,
 	request Request,
@@ -117,7 +109,7 @@ func appendWindowsTrustEntries(
 	return nil
 }
 
-// ensure writes through the current-user policy store because Windows filters unconfirmed roots from the default physical store.
+// ensure writes one marked certificate through the interactive account's standard Root store.
 func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Request) error {
 	if err := validateWindowsTrustRequest(request); err != nil {
 		return err
@@ -144,7 +136,7 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 	if err := setWindowsCertificateFriendlyName(certificate, windowsTrustOwnerName(request)); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootPolicyStore()
+	rootStore, err := openWindowsCurrentUserRootStore()
 	if err != nil {
 		return err
 	}
@@ -152,10 +144,10 @@ func (store windowsCurrentUserRootStore) ensure(ctx context.Context, request Req
 
 	var stored *windows.CertContext
 	if err := windows.CertAddCertificateContextToStore(rootStore, certificate, windows.CERT_STORE_ADD_NEW, &stored); err != nil {
-		return fmt.Errorf("add CurrentUser policy Root certificate: %w: %v", errNativeMutationConflict, err)
+		return fmt.Errorf("add CurrentUser Root certificate: %w: %v", errNativeMutationConflict, err)
 	}
 	if stored == nil {
-		return errors.New("CurrentUser policy Root insertion returned no certificate context")
+		return errors.New("CurrentUser Root insertion returned no certificate context")
 	}
 	defer windows.CertFreeCertificateContext(stored)
 	return nil
@@ -169,7 +161,7 @@ func (store windowsCurrentUserRootStore) release(ctx context.Context, request Re
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rootStore, err := openWindowsCurrentUserRootPolicyStore()
+	rootStore, err := openWindowsCurrentUserRootStore()
 	if err != nil {
 		return err
 	}
@@ -248,26 +240,6 @@ func openWindowsCurrentUserRootStore() (windows.Handle, error) {
 	store, err := windows.CertOpenSystemStore(0, name)
 	if err != nil {
 		return 0, fmt.Errorf("open CurrentUser Root certificate store: %w", err)
-	}
-	return store, nil
-}
-
-// openWindowsCurrentUserRootPolicyStore opens the current account's Root policy store without crossing into machine state.
-func openWindowsCurrentUserRootPolicyStore() (windows.Handle, error) {
-	name, err := windows.UTF16PtrFromString(windowsRootStoreName)
-	if err != nil {
-		return 0, fmt.Errorf("encode CurrentUser policy Root store name: %w", err)
-	}
-	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY)
-	store, err := windows.CertOpenStore(
-		uintptr(windows.CERT_STORE_PROV_SYSTEM_REGISTRY),
-		0,
-		0,
-		flags,
-		uintptr(unsafe.Pointer(name)),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("open CurrentUser policy Root registry store: %w", err)
 	}
 	return store, nil
 }
