@@ -6,8 +6,6 @@ package trust
 #cgo LDFLAGS: -framework Security -framework CoreFoundation
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
-#include <Security/Authorization.h>
-#include <Security/AuthorizationTags.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,11 +18,6 @@ enum { harborErrSecSuccess = errSecSuccess, harborErrSecItemNotFound = errSecIte
 static const char harbor_trust_owner_service[] = "com.goforj.harbor.trust-owner.v1";
 static const char harbor_admin_trust_owner_service[] = "com.goforj.harbor.admin-trust-owner.v1";
 static const char harbor_system_keychain_path[] = "/Library/Keychains/System.keychain";
-
-extern CFStringRef SecTrustSettingsDomainName(SecTrustSettingsDomain domain);
-extern OSStatus SecTrustSettingsXPCWrite(CFStringRef domain, CFDataRef authorization, CFDataRef trust_settings);
-extern CFStringRef SecTrustSettingsCertHashStrFromCert(SecCertificateRef certificate);
-extern void SecTrustSettingsPurgeCache(void);
 
 static int harbor_trust_append(uint8_t **buffer, size_t *length, size_t *capacity, const void *value, size_t value_length) {
 	if (value_length > SIZE_MAX - sizeof(uint32_t) || *length > SIZE_MAX - sizeof(uint32_t) - value_length) {
@@ -857,125 +850,6 @@ static int harbor_trust_remove_user_root_if_owned_exact(
 	return harbor_trust_delete_owner(account, account_length, fingerprint, fingerprint_length);
 }
 
-// harbor_trust_remove_admin_root_with_config_right preserves foreign settings while avoiding the interactive final-entry authorization path.
-static int harbor_trust_remove_admin_root_with_config_right(SecCertificateRef certificate) {
-	if (certificate == NULL) {
-		return errSecParam;
-	}
-	AuthorizationRef authorization = NULL;
-	OSStatus status = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment, kAuthorizationFlagDefaults, &authorization);
-	if (status != errAuthorizationSuccess || authorization == NULL) {
-		return status == errAuthorizationSuccess ? errAuthorizationInvalidRef : status;
-	}
-	AuthorizationItem item = {"config.modify.trust-settings", 0, NULL, 0};
-	AuthorizationRights rights = {1, &item};
-	status = AuthorizationCopyRights(
-		authorization,
-		&rights,
-		kAuthorizationEmptyEnvironment,
-		kAuthorizationFlagExtendRights | kAuthorizationFlagPreAuthorize,
-		NULL
-	);
-	if (status != errAuthorizationSuccess) {
-		AuthorizationFree(authorization, kAuthorizationFlagDestroyRights);
-		return status;
-	}
-	AuthorizationExternalForm external_form;
-	status = AuthorizationMakeExternalForm(authorization, &external_form);
-	if (status != errAuthorizationSuccess) {
-		AuthorizationFree(authorization, kAuthorizationFlagDestroyRights);
-		return status;
-	}
-	CFDataRef authorization_data = CFDataCreate(
-		kCFAllocatorDefault,
-		(const UInt8 *)&external_form,
-		(CFIndex)sizeof(external_form)
-	);
-	CFDataRef settings_data = NULL;
-	CFPropertyListRef settings = NULL;
-	CFStringRef certificate_hash = NULL;
-	CFDataRef updated_data = NULL;
-	if (authorization_data == NULL) {
-		status = errSecAllocate;
-		goto cleanup;
-	}
-	status = SecTrustSettingsCreateExternalRepresentation(kSecTrustSettingsDomainAdmin, &settings_data);
-	if (status != errSecSuccess) {
-		goto cleanup;
-	}
-	CFErrorRef property_error = NULL;
-	settings = CFPropertyListCreateWithData(
-		kCFAllocatorDefault,
-		settings_data,
-		kCFPropertyListMutableContainersAndLeaves,
-		NULL,
-		&property_error
-	);
-	if (property_error != NULL) {
-		CFRelease(property_error);
-	}
-	if (settings == NULL || CFGetTypeID(settings) != CFDictionaryGetTypeID()) {
-		status = errSecDecode;
-		goto cleanup;
-	}
-	CFTypeRef trust_list_value = CFDictionaryGetValue((CFDictionaryRef)settings, CFSTR("trustList"));
-	if (trust_list_value == NULL || CFGetTypeID(trust_list_value) != CFDictionaryGetTypeID()) {
-		status = errSecDecode;
-		goto cleanup;
-	}
-	CFMutableDictionaryRef trust_list = (CFMutableDictionaryRef)trust_list_value;
-	certificate_hash = SecTrustSettingsCertHashStrFromCert(certificate);
-	if (certificate_hash == NULL || !CFDictionaryContainsKey(trust_list, certificate_hash)) {
-		status = errSecItemNotFound;
-		goto cleanup;
-	}
-	CFDictionaryRemoveValue(trust_list, certificate_hash);
-	if (CFDictionaryGetCount(trust_list) != 0) {
-		property_error = NULL;
-		updated_data = CFPropertyListCreateData(
-			kCFAllocatorDefault,
-			settings,
-			kCFPropertyListXMLFormat_v1_0,
-			0,
-			&property_error
-		);
-		if (property_error != NULL) {
-			CFRelease(property_error);
-		}
-		if (updated_data == NULL) {
-			status = errSecDecode;
-			goto cleanup;
-		}
-	}
-	status = SecTrustSettingsXPCWrite(
-		SecTrustSettingsDomainName(kSecTrustSettingsDomainAdmin),
-		authorization_data,
-		updated_data
-	);
-	if (status == errSecSuccess) {
-		SecTrustSettingsPurgeCache();
-	}
-
-cleanup:
-	if (updated_data != NULL) {
-		CFRelease(updated_data);
-	}
-	if (certificate_hash != NULL) {
-		CFRelease(certificate_hash);
-	}
-	if (settings != NULL) {
-		CFRelease(settings);
-	}
-	if (settings_data != NULL) {
-		CFRelease(settings_data);
-	}
-	if (authorization_data != NULL) {
-		CFRelease(authorization_data);
-	}
-	AuthorizationFree(authorization, kAuthorizationFlagDestroyRights);
-	return status;
-}
-
 static int harbor_trust_remove_admin_root_if_owned_exact(
 	const uint8_t *der,
 	size_t der_length,
@@ -1042,7 +916,7 @@ static int harbor_trust_remove_admin_root_if_owned_exact(
 			}
 			return trust_state;
 		}
-		status = harbor_trust_remove_admin_root_with_config_right(certificate);
+		status = SecTrustSettingsRemoveTrustSettings(certificate, kSecTrustSettingsDomainAdmin);
 		if (status == errSecItemNotFound) {
 			*stale = 1;
 			CFRelease(certificate);

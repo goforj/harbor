@@ -34,7 +34,7 @@ env:
 jobs:
   intermediate-native-lifecycle:
     name: Intermediate hosted native lifecycle evidence
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -157,15 +157,13 @@ jobs:
             --user-id "$(id -u)" \
             --group-id "$(id -g)"
 
-      - name: Capture and allow hosted-runner authorization rights
+      - name: Capture and allow kAuthorizationRightExecute system.privilege.admin
         shell: bash
         run: |
           set -euo pipefail
           authorization_directory="/var/root/harbor-intermediate-native-authorizationdb"
-          system_rule="${authorization_directory}/system.privilege.admin.original.plist"
-          system_digest="${authorization_directory}/system.privilege.admin.original.sha256"
-          trust_rule="${authorization_directory}/config.modify.trust-settings.original.plist"
-          trust_digest="${authorization_directory}/config.modify.trust-settings.original.sha256"
+          authorization_rule="${authorization_directory}/original.plist"
+          authorization_digest="${authorization_directory}/original.sha256"
           authorization_marker="${authorization_directory}/capture-complete"
           sudo -n test ! -e "$authorization_directory"
           sudo -n install -d -m 0700 -o root -g wheel "$authorization_directory"
@@ -175,19 +173,29 @@ jobs:
             /usr/bin/plutil -lint "$1" >/dev/null
             /bin/test -s "$1"
             /usr/bin/shasum -a 256 "$1" > "$2"
-            /usr/bin/security authorizationdb read config.modify.trust-settings > "$3"
-            /usr/bin/plutil -lint "$3" >/dev/null
-            /bin/test -s "$3"
-            /usr/bin/shasum -a 256 "$3" > "$4"
-            /usr/bin/touch "$5"
-          ' harbor-authorization-capture \
-            "$system_rule" \
-            "$system_digest" \
-            "$trust_rule" \
-            "$trust_digest" \
-            "$authorization_marker"
+            /usr/bin/touch "$3"
+          ' harbor-authorization-capture "$authorization_rule" "$authorization_digest" "$authorization_marker"
           sudo -n security authorizationdb write system.privilege.admin allow
-          sudo -n security authorizationdb write config.modify.trust-settings allow
+
+      - name: Capture and allow administrator trust settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          authorization_directory="/var/root/harbor-intermediate-native-trust-authorizationdb"
+          authorization_rule="${authorization_directory}/original.plist"
+          authorization_digest="${authorization_directory}/original.sha256"
+          authorization_marker="${authorization_directory}/capture-complete"
+          sudo -n test ! -e "$authorization_directory"
+          sudo -n install -d -m 0700 -o root -g wheel "$authorization_directory"
+          sudo -n /bin/sh -ceu '
+            umask 077
+            /usr/bin/security authorizationdb read com.apple.trust-settings.admin > "$1"
+            /usr/bin/plutil -lint "$1" >/dev/null
+            /bin/test -s "$1"
+            /usr/bin/shasum -a 256 "$1" > "$2"
+            /usr/bin/touch "$3"
+          ' harbor-trust-authorization-capture "$authorization_rule" "$authorization_digest" "$authorization_marker"
+          sudo -n security authorizationdb write com.apple.trust-settings.admin allow
 
       - name: Run Darwin Authorization Services preflight diagnostic
         shell: bash
@@ -273,63 +281,113 @@ jobs:
             /usr/bin/head -c 16384 || true
           printf '\n%s\n' 'host-state low-port-listeners-end'
 
-      - name: Restore hosted-runner authorization rights
+      - name: Restore administrator trust settings authorization
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          authorization_directory="/var/root/harbor-intermediate-native-authorizationdb"
+          authorization_directory="/var/root/harbor-intermediate-native-trust-authorizationdb"
+          authorization_rule="${authorization_directory}/original.plist"
+          authorization_digest="${authorization_directory}/original.sha256"
           authorization_marker="${authorization_directory}/capture-complete"
+          authorization_restored="${authorization_directory}/restored.plist"
+          authorization_normalized_original="${authorization_directory}/original.normalized.json"
+          authorization_normalized_restored="${authorization_directory}/restored.normalized.json"
           if ! sudo -n test -e "$authorization_directory"; then
             exit 0
           fi
           if ! sudo -n test -f "$authorization_marker"; then
-            sudo -n find "$authorization_directory" -type f -delete
+            sudo -n rm -f \
+              "$authorization_rule" \
+              "$authorization_digest" \
+              "$authorization_restored" \
+              "$authorization_normalized_original" \
+              "$authorization_normalized_restored"
             sudo -n rmdir "$authorization_directory"
             exit 0
           fi
           sudo -n /bin/sh -ceu '
             normalize_authorization_policy() {
-              /bin/cp "$1" "$2" || return 1
+              /bin/cp "$1" "$2"
               for metadata in created modified; do
                 if /usr/bin/plutil -type "$metadata" "$2" >/dev/null 2>&1; then
-                  /usr/bin/plutil -remove "$metadata" "$2" || return 1
+                  /usr/bin/plutil -remove "$metadata" "$2"
                 fi
               done
-              /usr/bin/plutil -convert json -r "$2" || return 1
+              /usr/bin/plutil -convert json -r "$2"
             }
-            restore_rule() {
-              right="$1"
-              original="$2"
-              digest="$3"
-              restored="${original}.restored"
-              normalized_original="${original}.normalized.json"
-              normalized_restored="${restored}.normalized.json"
-              /usr/bin/shasum -a 256 -c "$digest" || return 1
-              /usr/bin/security authorizationdb write "$right" < "$original" || return 1
-              umask 077
-              /usr/bin/security authorizationdb read "$right" > "$restored" || return 1
-              # AuthorizationDB refreshes timestamps on write; every policy field remains compared.
-              normalize_authorization_policy "$original" "$normalized_original" || return 1
-              normalize_authorization_policy "$restored" "$normalized_restored" || return 1
-              /usr/bin/cmp -s "$normalized_original" "$normalized_restored" || return 1
-              /bin/rm -f "$normalized_restored" "$normalized_original" "$restored" "$digest" "$original" || return 1
+            /usr/bin/shasum -a 256 -c "$2"
+            /usr/bin/security authorizationdb write com.apple.trust-settings.admin < "$1"
+            umask 077
+            /usr/bin/security authorizationdb read com.apple.trust-settings.admin > "$4"
+            # AuthorizationDB refreshes timestamps on write; every policy field remains compared.
+            normalize_authorization_policy "$1" "$5"
+            normalize_authorization_policy "$4" "$6"
+            /usr/bin/cmp -s "$5" "$6"
+            /bin/rm -f "$6" "$5" "$4" "$3" "$2" "$1"
+            /bin/rmdir "$7"
+          ' harbor-trust-authorization-restore \
+            "$authorization_rule" \
+            "$authorization_digest" \
+            "$authorization_marker" \
+            "$authorization_restored" \
+            "$authorization_normalized_original" \
+            "$authorization_normalized_restored" \
+            "$authorization_directory"
+
+      - name: Restore system.privilege.admin authorization rule
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          authorization_directory="/var/root/harbor-intermediate-native-authorizationdb"
+          authorization_rule="${authorization_directory}/original.plist"
+          authorization_digest="${authorization_directory}/original.sha256"
+          authorization_marker="${authorization_directory}/capture-complete"
+          authorization_restored="${authorization_directory}/restored.plist"
+          authorization_normalized_original="${authorization_directory}/original.normalized.json"
+          authorization_normalized_restored="${authorization_directory}/restored.normalized.json"
+          if ! sudo -n test -e "$authorization_directory"; then
+            exit 0
+          fi
+          if ! sudo -n test -f "$authorization_marker"; then
+            sudo -n rm -f \
+              "$authorization_rule" \
+              "$authorization_digest" \
+              "$authorization_restored" \
+              "$authorization_normalized_original" \
+              "$authorization_normalized_restored"
+            sudo -n rmdir "$authorization_directory"
+            exit 0
+          fi
+          sudo -n /bin/sh -ceu '
+            normalize_authorization_policy() {
+              /bin/cp "$1" "$2"
+              for metadata in created modified; do
+                if /usr/bin/plutil -type "$metadata" "$2" >/dev/null 2>&1; then
+                  /usr/bin/plutil -remove "$metadata" "$2"
+                fi
+              done
+              /usr/bin/plutil -convert json -r "$2"
             }
-            restore_status=0
-            restore_rule \
-              config.modify.trust-settings \
-              "$1/config.modify.trust-settings.original.plist" \
-              "$1/config.modify.trust-settings.original.sha256" || restore_status=1
-            restore_rule \
-              system.privilege.admin \
-              "$1/system.privilege.admin.original.plist" \
-              "$1/system.privilege.admin.original.sha256" || restore_status=1
-            if [ "$restore_status" -eq 0 ]; then
-              /bin/rm -f "$2"
-              /bin/rmdir "$1"
-            fi
-            exit "$restore_status"
-          ' harbor-authorization-restore "$authorization_directory" "$authorization_marker"
+            /usr/bin/shasum -a 256 -c "$2"
+            /usr/bin/security authorizationdb write system.privilege.admin < "$1"
+            umask 077
+            /usr/bin/security authorizationdb read system.privilege.admin > "$4"
+            # AuthorizationDB refreshes timestamps on write; every policy field remains compared.
+            normalize_authorization_policy "$1" "$5"
+            normalize_authorization_policy "$4" "$6"
+            /usr/bin/cmp -s "$5" "$6"
+            /bin/rm -f "$6" "$5" "$4" "$3" "$2" "$1"
+            /bin/rmdir "$7"
+          ' harbor-authorization-restore \
+            "$authorization_rule" \
+            "$authorization_digest" \
+            "$authorization_marker" \
+            "$authorization_restored" \
+            "$authorization_normalized_original" \
+            "$authorization_normalized_restored" \
+            "$authorization_directory"
 
       - name: Remove development bootstrap artifacts
         if: failure() || cancelled()
