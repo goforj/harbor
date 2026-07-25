@@ -223,6 +223,10 @@ type Supervisor struct {
 	serviceLogs                  map[serviceLogKey]*serviceLogStream
 	outputSpoolDirectory         string
 	developmentArtifactDirectory string
+	developmentCacheMu           sync.Mutex
+	developmentCache             *developmentBuildCache
+	developmentCacheUsers        int
+	developmentCacheUncertain    bool
 	outputBrokerLauncher         OutputBrokerLauncher
 	adoptedOutputs               map[outputBrokerKey]*adoptedOutput
 	resets                       map[*resetProcess]struct{}
@@ -595,6 +599,16 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 		_ = artifactRoot.retain()
 	}()
+	buildCache, err := supervisor.acquireDevelopmentBuildCache()
+	if err != nil {
+		return nil, fmt.Errorf("prepare Harbor development build cache: %w", err)
+	}
+	buildCacheTransferred := false
+	defer func() {
+		if !buildCacheTransferred {
+			_ = buildCache.release(!artifactProcessStarted || artifactTreeSettled)
+		}
+	}()
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
 	managedLaunchPath := ""
@@ -615,12 +629,10 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		name:  developmentArtifactRootEnvironment,
 		value: artifactRoot.path,
 	}}
-	if cache := developmentSharedGoCache(supervisor.environment); cache != "" {
-		developmentAssignments = append(developmentAssignments, environmentAssignment{
-			name:  developmentGoCacheEnvironment,
-			value: cache,
-		})
-	}
+	developmentAssignments = append(developmentAssignments, environmentAssignment{
+		name:  developmentGoCacheEnvironment,
+		value: buildCache.path,
+	})
 	command.Env = mergeEnvironmentAssignments(
 		command.Env,
 		[]string{developmentArtifactRootEnvironment, developmentGoCacheEnvironment},
@@ -830,6 +842,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		stopComplete:      make(chan struct{}),
 		managedLaunchPath: managedLaunchPath,
 		artifactRoot:      artifactRoot,
+		buildCache:        buildCache,
 	}
 	supervisor.mu.Lock()
 	if supervisor.closed {
@@ -856,6 +869,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	promoted = true
 	supervisor.mu.Unlock()
 	artifactTransferred = true
+	buildCacheTransferred = true
 	traceCleanup = false
 	if brokerAttachment != nil {
 		_ = stdout.Close()
@@ -1319,6 +1333,7 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	} else {
 		cleanupErr = errors.Join(cleanupErr, process.artifactRoot.retain())
 	}
+	cleanupErr = errors.Join(cleanupErr, process.buildCache.release(treeSettlementErr == nil))
 	if treeSettlementErr == nil && stopRequested && process.retireLaunchTrace.Load() {
 		cleanupErr = errors.Join(
 			cleanupErr,
@@ -1383,6 +1398,7 @@ type managedProcess struct {
 	stopComplete      chan struct{}
 	managedLaunchPath string
 	artifactRoot      *developmentArtifactRoot
+	buildCache        *developmentBuildCacheLease
 }
 
 // requestStop starts the one bounded graceful-shutdown sequence shared by concurrent callers.
@@ -1677,21 +1693,6 @@ func withDevelopmentEnvironment(environment []string, overrides EnvironmentOverr
 		})
 	}
 	return mergeEnvironmentAssignments(environment, replacedNames, assignments)
-}
-
-// developmentSharedGoCache returns only a clean absolute captured cache suitable for isolated artifact roots.
-func developmentSharedGoCache(environment []string) string {
-	value := ""
-	for _, entry := range environment {
-		name, candidate, ok := strings.Cut(entry, "=")
-		if ok && environmentNameEqual(name, "GOCACHE") {
-			value = strings.TrimSpace(candidate)
-		}
-	}
-	if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value {
-		return ""
-	}
-	return value
 }
 
 // sortedEnvironmentOverrideNames makes file-owned environment removal independent of map iteration order.
