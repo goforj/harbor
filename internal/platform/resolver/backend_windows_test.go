@@ -172,6 +172,22 @@ func TestWindowsNRPTPowerShellImportsOnlyTheInboxModule(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers keeps native failures classifiable without exposing their text.
+func TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers(t *testing.T) {
+	for _, marker := range []string{
+		"harbor-stage=module-import",
+		"$script:HarborStage = 'input'",
+		"$script:HarborStage = 'enumerate'",
+		"$script:HarborStage = 'output'",
+		"$script:HarborStage = 'precondition'",
+		"$script:HarborStage = 'mutation'",
+	} {
+		if !strings.Contains(windowsNRPTPowerShellProgram, marker) {
+			t.Fatalf("Windows NRPT PowerShell program lacks bounded marker %q", marker)
+		}
+	}
+}
+
 // TestPrivilegedWindowsNRPTAdapterLifecycle proves the fixed native PowerShell boundary creates, verifies, and removes only one fresh local rule.
 func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {

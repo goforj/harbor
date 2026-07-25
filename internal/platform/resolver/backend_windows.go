@@ -266,6 +266,9 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		return nil, fmt.Errorf("Windows NRPT diagnostic exceeds %d bytes", maximumWindowsNRPTDiagnosticBytes)
 	}
 	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w", contextErr)
+		}
 		detail := windowsNRPTDisplayDiagnostic(stderr.String())
 		if detail == "" {
 			return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w", err)
@@ -420,7 +423,13 @@ $WarningPreference = 'Stop'
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
 $PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 3.0
-Import-Module -Name DnsClient -Force -ErrorAction Stop
+try {
+    Import-Module -Name DnsClient -Force -ErrorAction Stop
+} catch {
+    [Console]::Error.Write('harbor-stage=module-import')
+    exit 1
+}
+$script:HarborStage = 'input'
 
 function Require-Fields([object]$Value, [string[]]$Names, [string]$Label) {
     if ($null -eq $Value) { throw "$Label is missing" }
@@ -523,6 +532,7 @@ function Get-RuleFingerprint([object]$Rule) {
 }
 
 function Get-RelevantRules([string]$Suffix, [string]$DisplayName) {
+    $script:HarborStage = 'enumerate'
     $result = New-Object 'Collections.Generic.List[object]'
     $names = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach ($native in @(Get-DnsClientNrptRule -ErrorAction Stop)) {
@@ -565,12 +575,14 @@ try {
 
     $current = @(Get-RelevantRules ([string]$request.suffix) ([string]$request.display_name))
     if ([string]$request.operation -ceq 'observe') {
+        $script:HarborStage = 'output'
         $response = [ordered]@{ rules = @($current) }
         [Console]::Out.Write(($response | ConvertTo-Json -Depth 5 -Compress))
         exit 0
     }
 
     $expected = @($request.expected)
+    $script:HarborStage = 'precondition'
     Assert-Expected $current $expected
     $guard = $request.guard
     if ([bool]$guard.exists) {
@@ -583,12 +595,14 @@ try {
     }
 
     if ([string]$request.operation -ceq 'ensure') {
+        $script:HarborStage = 'mutation'
         if ([bool]$guard.exists) {
             Set-DnsClientNrptRule -Name ([string]$guard.name) -Namespace @([string]$request.suffix) -NameServers @([string]$request.server) -NameEncoding 'Disable' -DisplayName ([string]$request.display_name) -Comment ([string]$request.comment) -DAEnable $false -DnsSecEnable $false -Confirm:$false -ErrorAction Stop | Out-Null
         } else {
             Add-DnsClientNrptRule -Namespace @([string]$request.suffix) -NameServers @([string]$request.server) -NameEncoding 'Disable' -DisplayName ([string]$request.display_name) -Comment ([string]$request.comment) -Confirm:$false -ErrorAction Stop | Out-Null
         }
     } else {
+        $script:HarborStage = 'mutation'
         if (-not [bool]$guard.exists) { throw 'NRPT release requires an existing guard' }
         Remove-DnsClientNrptRule -Name ([string]$guard.name) -Force -Confirm:$false -ErrorAction Stop | Out-Null
     }
@@ -596,6 +610,6 @@ try {
 } catch {
     $message = [string]$_.Exception.Message
     if ($message.Length -gt 4096) { $message = $message.Substring(0, 4096) }
-    [Console]::Error.Write($message)
+    [Console]::Error.Write("harbor-stage=$script:HarborStage; $message")
     exit 1
 }`

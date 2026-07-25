@@ -78,6 +78,18 @@ func resolverNativeDiagnostic(cause error) string {
 	}
 	message := strings.ToLower(cause.Error())
 	switch {
+	case strings.Contains(message, "harbor-stage=module-import"):
+		return "module-import"
+	case strings.Contains(message, "harbor-stage=input"):
+		return "input-stage"
+	case strings.Contains(message, "harbor-stage=enumerate"):
+		return "enumeration-stage"
+	case strings.Contains(message, "harbor-stage=output"):
+		return "output-stage"
+	case strings.Contains(message, "harbor-stage=precondition"):
+		return "precondition-stage"
+	case strings.Contains(message, "harbor-stage=mutation"):
+		return "mutation-stage"
 	case strings.Contains(message, "specified module 'dnsclient' was not loaded") ||
 		strings.Contains(message, "specified module \"dnsclient\" was not loaded") ||
 		(strings.Contains(message, "import-module") && strings.Contains(message, "dnsclient")):
