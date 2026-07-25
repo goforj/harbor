@@ -153,6 +153,10 @@ func (s *Server) negotiate(
 		)
 	}
 	if err := connection.SetDeadline(noDeadline); err != nil {
+		// A peer may close immediately after accepting welcome; the read loop owns that normal terminal state.
+		if isClosedConnectionError(err) {
+			return hello, welcome, nil
+		}
 		return rpc.Hello{}, rpc.Welcome{}, fmt.Errorf("clear server handshake deadline: %w", err)
 	}
 
@@ -220,7 +224,7 @@ func (s *serverConnection) run(ctx context.Context) error {
 	defer s.stopIdleTimeout()
 
 	readErr := s.readLoop()
-	if errors.Is(readErr, io.EOF) {
+	if errors.Is(readErr, io.EOF) || isClosedConnectionError(readErr) {
 		s.terminate(nil)
 	} else if readErr != nil {
 		s.terminate(readErr)

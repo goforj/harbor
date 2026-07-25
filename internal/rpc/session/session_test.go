@@ -907,6 +907,24 @@ func TestAuthorizedSessionRoleNegotiates(t *testing.T) {
 	}
 }
 
+// TestServerTreatsPeerCloseAfterWelcomeAsClean verifies transport-specific close
+// errors do not turn an accepted session into a daemon failure.
+func TestServerTreatsPeerCloseAfterWelcomeAsClean(t *testing.T) {
+	peer := newRawServerPeer(t, testServerConfig(nil))
+
+	if err := peer.connection.Close(); err != nil {
+		t.Fatalf("close accepted peer: %v", err)
+	}
+	select {
+	case err := <-peer.done:
+		if err != nil {
+			t.Fatalf("server error = %v, want clean peer close", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop after peer close")
+	}
+}
+
 // TestOversizedFrameTerminatesConnection verifies a hostile length is not drained or retried.
 func TestOversizedFrameTerminatesConnection(t *testing.T) {
 	pair := newTestPair(t, testServerConfig(nil), testClientConfig())
