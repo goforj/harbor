@@ -214,11 +214,12 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 		return indeterminateWindowsTransport(transportFailureWindowsExitCode)
 	}
 	body := capturedResponse.Bytes()
-	if len(body) != 0 {
-		written, err := response.Write(body)
-		if err != nil || written != len(body) {
-			return indeterminateWindowsTransport(transportFailureWindowsResponseWrite)
-		}
+	if len(body) == 0 {
+		return indeterminateWindowsTransport(transportFailureWindowsEmptyResponse)
+	}
+	written, err := response.Write(body)
+	if err != nil || written != len(body) {
+		return indeterminateWindowsTransport(transportFailureWindowsResponseWrite)
 	}
 	return TransportResult{State: TransportCompleted, ExitCode: waitResult.exitCode}
 }

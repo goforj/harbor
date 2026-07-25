@@ -322,6 +322,9 @@ func TestWindowsNativeTransportWaitsAfterEveryCreatedProcess(t *testing.T) {
 		{name: "response read", configure: func(_ *testWindowsProcess, connection *testWindowsConnection, _ *testWindowsListener, _ *windowsHelperInspection) {
 			connection.response = errorWindowsResponseReader{err: testErr}
 		}},
+		{name: "empty response", configure: func(_ *testWindowsProcess, connection *testWindowsConnection, _ *testWindowsListener, _ *windowsHelperInspection) {
+			connection.response = strings.NewReader("")
+		}},
 		{name: "wait", configure: func(process *testWindowsProcess, _ *testWindowsConnection, _ *testWindowsListener, _ *windowsHelperInspection) {
 			process.waitErr = testErr
 		}},

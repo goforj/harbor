@@ -94,6 +94,7 @@ const (
 	transportFailureWindowsProcessClose
 	transportFailureWindowsContextAfterExchange
 	transportFailureWindowsExitCode
+	transportFailureWindowsEmptyResponse
 	transportFailureWindowsResponseWrite
 )
 
@@ -282,6 +283,8 @@ func transportFailureLabel(stage transportFailureStage) string {
 		return "Windows context cancellation after exchange"
 	case transportFailureWindowsExitCode:
 		return "Windows process exit classification"
+	case transportFailureWindowsEmptyResponse:
+		return "Windows empty helper response"
 	case transportFailureWindowsResponseWrite:
 		return "Windows response forwarding"
 	default:
