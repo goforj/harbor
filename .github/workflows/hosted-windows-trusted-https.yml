@@ -98,19 +98,6 @@ jobs:
           })
           if ($harborNRPT.Count -ne 0) { throw "preexisting Harbor NRPT state" }
 
-      - name: Verify hosted Windows resolver adapter
-        shell: pwsh
-        env:
-          HARBOR_PRIVILEGED_RESOLVER_TEST: "1"
-        run: |
-          $ErrorActionPreference = "Stop"
-          go test `
-            -count=1 `
-            -run "^TestPrivilegedWindowsNRPTAdapterLifecycle$" `
-            -timeout=2m `
-            -v `
-            ./internal/platform/resolver
-
       - name: Build production Harbor and GoForj binaries
         shell: pwsh
         run: |
@@ -212,6 +199,19 @@ jobs:
           go run ./cmd/platformproof verify-trusted-https `
             --root $env:HARBOR_PHASE1_EVIDENCE_DIRECTORY `
             --platform windows
+
+      - name: Verify hosted Windows resolver adapter
+        shell: pwsh
+        env:
+          HARBOR_PRIVILEGED_RESOLVER_TEST: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          go test `
+            -count=1 `
+            -run "^TestPrivilegedWindowsNRPTAdapterLifecycle$" `
+            -timeout=2m `
+            -v `
+            ./internal/platform/resolver
 
       - name: Remove disposable Windows prerequisites and failed Harbor state
         if: always()
