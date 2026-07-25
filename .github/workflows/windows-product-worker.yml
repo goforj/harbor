@@ -1,0 +1,304 @@
+name: Windows product worker evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed default-branch commit SHA to admit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-worker-evidence
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: Admit reviewed source
+    runs-on: ubuntu-24.04
+    outputs:
+      approved_sha: ${{ steps.admit.outputs.approved_sha }}
+    steps:
+      - name: Check out protected workflow source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Require exact dispatched default-branch head
+        id: admit
+        env:
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$APPROVED_SHA" == "$WORKFLOW_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$APPROVED_SHA" ]]
+          printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
+
+  profile:
+    name: Prove Windows 11 profile and Docker lifecycle
+    needs: admit
+    environment: windows-product-evidence
+    runs-on: [self-hosted, ephemeral, harbor-product, windows, x64]
+    timeout-minutes: 35
+    steps:
+      - name: Check out admitted source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.admit.outputs.approved_sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: 86d7fcacd681d9f9798b7f47521ce14969a594f6
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Prepare isolated Go caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $buildCache = Join-Path $env:RUNNER_TEMP "harbor-gocache"
+          $moduleCache = Join-Path $env:RUNNER_TEMP "harbor-gomodcache"
+          foreach ($path in @($buildCache, $moduleCache)) {
+            if (Test-Path -LiteralPath $path) { throw "Go cache path already exists: $path" }
+            New-Item -ItemType Directory -Path $path | Out-Null
+          }
+          "GOCACHE=$buildCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOMODCACHE=$moduleCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Prove interactive product prerequisites
+        shell: pwsh
+        env:
+          APPROVED_SHA: ${{ needs.admit.outputs.approved_sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ((git rev-parse HEAD).Trim() -cne $env:APPROVED_SHA) { throw "checked-out commit drifted" }
+          if ($env:PROCESSOR_ARCHITECTURE -cne "AMD64") { throw "Windows product worker must be amd64" }
+
+          $os = Get-CimInstance -ClassName Win32_OperatingSystem
+          $productName = ([string]$os.Caption).Trim()
+          $productVersion = ([string]$os.Version).Trim()
+          $buildNumber = [int]$os.BuildNumber
+          if ($productName -notlike "*Windows 11*" -or $productVersion -cne "10.0.26100" -or $buildNumber -ne 26100) {
+            throw "Windows product worker must be Windows 11 24H2 build 26100"
+          }
+
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $administrator = [Security.Principal.WindowsBuiltInRole]::Administrator
+          if ($principal.IsInRole($administrator)) { throw "Harbor must run under the filtered medium-integrity token" }
+          $groups = @(whoami /groups /fo csv /nh | ConvertFrom-Csv -Header Name,Type,SID,Attributes)
+          if ($groups.SID -notcontains "S-1-5-32-544") { throw "interactive user is not a filtered local administrator" }
+          if ($groups.SID -notcontains "S-1-16-8192") { throw "Harbor process is not medium integrity" }
+
+          $sessionID = (Get-Process -Id $PID).SessionId
+          if ($sessionID -le 0) { throw "runner is not in an interactive user session" }
+          $explorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object SessionId -eq $sessionID)
+          if ($explorer.Count -eq 0) { throw "interactive session has no Explorer shell" }
+
+          $enableLUA = [int](Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name EnableLUA)
+          if ($enableLUA -ne 1) { throw "UAC must be enabled" }
+          if (-not (Test-Path -LiteralPath "Cert:\CurrentUser\Root")) { throw "current-user root certificate store is unavailable" }
+
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
+          if (Test-Path -LiteralPath $privilegedRoot) { throw "preexisting Harbor privileged state" }
+          $harborNRPT = @(Get-DnsClientNrptRule | Where-Object {
+            $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+          })
+          if ($harborNRPT.Count -ne 0) { throw "preexisting Harbor NRPT state" }
+
+          $dockerProvider = (docker info --format "{{.OperatingSystem}}").Trim()
+          $dockerContext = (docker context show).Trim()
+          $dockerEndpoint = (docker context inspect --format "{{(index .Endpoints `"docker`").Host}}" $dockerContext).Trim()
+          $dockerEngineVersion = (docker version --format "{{.Server.Version}}").Trim()
+          if ([string]::IsNullOrWhiteSpace($dockerProvider)) { throw "Docker provider identity is empty" }
+          if (-not $dockerEndpoint.StartsWith("npipe:////./pipe/", [StringComparison]::Ordinal)) { throw "Docker endpoint is not a local named pipe" }
+          if ([string]::IsNullOrWhiteSpace($dockerEngineVersion)) { throw "Docker Engine version is empty" }
+
+          $evidenceDirectory = Join-Path $env:RUNNER_TEMP "harbor-windows-product-worker-evidence"
+          if (Test-Path -LiteralPath $evidenceDirectory) { throw "worker evidence path already exists" }
+          New-Item -ItemType Directory -Path $evidenceDirectory | Out-Null
+          $assertions = @(
+            [ordered]@{ id = "worker.clean_harbor_state"; passed = $true; detail = "fixed Harbor privileged and NRPT state absent" },
+            [ordered]@{ id = "worker.current_user_root"; passed = $true; detail = "direct current-user root certificate store available" },
+            [ordered]@{ id = "worker.filtered_administrator"; passed = $true; detail = "local administrator runs at medium integrity with UAC enabled" },
+            [ordered]@{ id = "worker.interactive_login"; passed = $true; detail = "runner process shares an interactive Explorer session" },
+            [ordered]@{ id = "worker.local_docker"; passed = $true; detail = "user-selected local Docker-compatible Engine 28 or newer" },
+            [ordered]@{ id = "worker.windows_11_24h2"; passed = $true; detail = "Windows 11 24H2 amd64 product profile" }
+          )
+          $evidence = [ordered]@{
+            schema_version = 1
+            capability = "windows_product_worker_profile"
+            scope = "preflight"
+            profile = "windows-11-24h2-amd64"
+            commit = $env:APPROVED_SHA
+            runner_name = $env:RUNNER_NAME
+            goos = "windows"
+            goarch = "amd64"
+            product_name = $productName
+            product_version = $productVersion
+            build_number = $buildNumber
+            process_user = $identity.Name
+            user_sid = $identity.User.Value
+            session_id = $sessionID
+            interactive_session = $true
+            medium_integrity = $true
+            uac_enabled = $true
+            current_user_root = $true
+            docker_provider = $dockerProvider
+            docker_endpoint = $dockerEndpoint
+            docker_engine_version = $dockerEngineVersion
+            assertions = $assertions
+          }
+          $profilePath = Join-Path $evidenceDirectory "windows-worker-profile.json"
+          $json = $evidence | ConvertTo-Json -Depth 5
+          [IO.File]::WriteAllText($profilePath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+          go run ./cmd/platformproof verify-windows-worker `
+            --root $evidenceDirectory `
+            --commit $env:APPROVED_SHA `
+            --product-build 26100
+
+          $providerFile = Join-Path $env:RUNNER_TEMP "harbor-windows-docker-provider"
+          if (Test-Path -LiteralPath $providerFile) { throw "Docker provider path already exists" }
+          [IO.File]::WriteAllText($providerFile, $dockerProvider, [Text.UTF8Encoding]::new($false))
+          "HARBOR_WINDOWS_WORKER_EVIDENCE_DIRECTORY=$evidenceDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HARBOR_WINDOWS_DOCKER_PROVIDER_FILE=$providerFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload bounded worker profile evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-product-worker-profile
+          path: ${{ env.HARBOR_WINDOWS_WORKER_EVIDENCE_DIRECTORY }}\windows-worker-profile.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build pinned GoForj tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binaryDirectory = Join-Path $env:RUNNER_TEMP "harbor-bin"
+          $binary = Join-Path $binaryDirectory "forj.exe"
+          if (Test-Path -LiteralPath $binaryDirectory) { throw "binary directory already exists" }
+          New-Item -ItemType Directory -Path $binaryDirectory | Out-Null
+          Push-Location .ci/goforj
+          try {
+            go build -trimpath -o $binary ./cmd/forj
+          } finally {
+            Pop-Location
+          }
+          $env:GOBIN = $binaryDirectory
+          go install github.com/goforj/wire/cmd/wire@v1.2.0
+          "HARBOR_PROJECT_IDENTITY_FORJ_BINARY=$binary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $binaryDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Require provisioner-owned proof identities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($address in @("127.77.254.10", "127.77.254.11", "127.77.254.12")) {
+            $observations = @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress $address -ErrorAction SilentlyContinue)
+            if ($observations.Count -ne 1) {
+              throw "product worker must expose exactly one provisioner-owned loopback identity for ${address}; found $($observations.Count)"
+            }
+          }
+
+      - name: Exercise generated Compose lifecycle
+        shell: pwsh
+        env:
+          APPROVED_SHA: ${{ needs.admit.outputs.approved_sha }}
+          HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY: ${{ runner.temp }}\harbor-windows-docker-product-evidence
+          HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path -LiteralPath $env:HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY) { throw "Docker evidence path already exists" }
+          $dockerProvider = [IO.File]::ReadAllText($env:HARBOR_WINDOWS_DOCKER_PROVIDER_FILE)
+          if ([string]::IsNullOrWhiteSpace($dockerProvider)) { throw "Docker provider identity is empty" }
+          $os = Get-CimInstance -ClassName Win32_OperatingSystem
+          $env:HARBOR_DOCKER_PRODUCT_COMMIT = $env:APPROVED_SHA
+          $env:HARBOR_DOCKER_PRODUCT_RUNNER_NAME = $env:RUNNER_NAME
+          $env:HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE = "windows-11-24h2-amd64"
+          $env:HARBOR_DOCKER_PRODUCT_RUNNER_IMAGE_VERSION = [string]$os.BuildNumber
+          $env:HARBOR_DOCKER_PRODUCT_ENGINE_KIND = $dockerProvider
+          go test `
+            -tags="projectidentityacceptance projectdockeracceptance" `
+            -count=1 `
+            -timeout=10m `
+            -run "^TestNativeGeneratedMySQLProjectsExposeComposeServices$" `
+            ./internal/reconcile
+          go run ./cmd/platformproof verify-docker-projects `
+            --root $env:HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY `
+            --commit $env:APPROVED_SHA `
+            --platforms windows `
+            --app-port 3000 `
+            --service-port 3306
+          "HARBOR_WINDOWS_DOCKER_EVIDENCE_DIRECTORY=$env:HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload bounded Docker lifecycle evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-docker-product-lifecycle
+          path: ${{ env.HARBOR_WINDOWS_DOCKER_EVIDENCE_DIRECTORY }}
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Verify Windows product-worker evidence
+    needs: [admit, profile]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out verifier source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.admit.outputs.approved_sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download worker evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-product-worker-profile
+          path: windows-product-worker-evidence
+
+      - name: Download Docker lifecycle evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-docker-product-lifecycle
+          path: windows-docker-product-evidence
+
+      - name: Enforce exact product evidence
+        run: |
+          go run ./cmd/platformproof verify-windows-worker \
+            --root windows-product-worker-evidence \
+            --commit "${{ needs.admit.outputs.approved_sha }}" \
+            --product-build 26100
+          go run ./cmd/platformproof verify-docker-projects \
+            --root windows-docker-product-evidence \
+            --commit "${{ needs.admit.outputs.approved_sha }}" \
+            --platforms windows \
+            --app-port 3000 \
+            --service-port 3306

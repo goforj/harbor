@@ -38,7 +38,7 @@ func main() {
 // run dispatches only the fixed proof commands built into this test binary.
 func run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, or verify-macos-worker command")
+		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, verify-macos-worker, or verify-windows-worker command")
 	}
 
 	switch arguments[0] {
@@ -68,9 +68,33 @@ func run(ctx context.Context, arguments []string) error {
 		return verifyDockerProjectEvidence(arguments[1:])
 	case "verify-macos-worker":
 		return verifyMacOSWorkerProfileEvidence(arguments[1:])
+	case "verify-windows-worker":
+		return verifyWindowsWorkerProfileEvidence(arguments[1:])
 	default:
 		return fmt.Errorf("unknown platform proof command %q", arguments[0])
 	}
+}
+
+// verifyWindowsWorkerProfileEvidence enforces one exact protected Windows product-worker profile.
+func verifyWindowsWorkerProfileEvidence(arguments []string) error {
+	flags := flag.NewFlagSet("verify-windows-worker", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	root := flags.String("root", "", "directory containing Windows product-worker profile evidence")
+	commit := flags.String("commit", "", "exact approved commit required by the gate")
+	productBuild := flags.Int("product-build", 26100, "required Windows product build")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if *root == "" || *commit == "" || *productBuild <= 0 {
+		return errors.New("verify-windows-worker requires an evidence root, commit, and positive product build")
+	}
+	return productproof.VerifyWindowsWorkerProfileEvidenceDirectory(*root, productproof.WindowsWorkerProfileRequirement{
+		Commit:       *commit,
+		ProductBuild: *productBuild,
+	})
 }
 
 // verifyMacOSWorkerProfileEvidence enforces one exact protected macOS product-worker preflight.
