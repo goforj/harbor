@@ -9,6 +9,8 @@ import (
 	"github.com/goforj/harbor/internal/helper"
 )
 
+var errWindowsPeerClosedAfterHalfClose = errors.New("Windows helper peer closed after request half-close")
+
 // windowsNativeTransport binds one request to one elevated process and one kernel-authenticated pipe client.
 type windowsNativeTransport struct {
 	helperExecutable string
@@ -291,13 +293,20 @@ func exchangeWindowsHelper(connection windowsPipeConnection, request io.Reader) 
 	if err != nil || written != len(requestBody) {
 		return &boundedResponseWriter{}, errors.Join(err, io.ErrShortWrite), transportFailureWindowsRequestWrite
 	}
+	peerClosedAfterHalfClose := false
 	if err := connection.closeWrite(); err != nil {
-		return &boundedResponseWriter{}, fmt.Errorf("finish Windows helper request message: %w", err), transportFailureWindowsRequestHalfClose
+		if !errors.Is(err, errWindowsPeerClosedAfterHalfClose) {
+			return &boundedResponseWriter{}, fmt.Errorf("finish Windows helper request message: %w", err), transportFailureWindowsRequestHalfClose
+		}
+		peerClosedAfterHalfClose = true
 	}
 
 	capturedResponse := &boundedResponseWriter{}
 	if _, err := io.Copy(capturedResponse, io.LimitReader(connection, helper.MaxResponseBytes+1)); err != nil {
 		return capturedResponse, fmt.Errorf("read Windows helper response: %w", err), transportFailureWindowsResponseRead
+	}
+	if peerClosedAfterHalfClose && capturedResponse.body.Len() == 0 {
+		return capturedResponse, errWindowsPeerClosedAfterHalfClose, transportFailureWindowsRequestHalfClose
 	}
 	return capturedResponse, nil, transportFailureNone
 }

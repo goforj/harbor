@@ -340,7 +340,13 @@ func (connection *nativeWindowsPipeConnection) closeWrite() error {
 	if !ok {
 		return fmt.Errorf("Windows helper pipe connection type %T does not support request half-close", connection.Conn)
 	}
-	return writer.CloseWrite()
+	err := writer.CloseWrite()
+	if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
+		errors.Is(err, windows.ERROR_NO_DATA) ||
+		errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) {
+		return errWindowsPeerClosedAfterHalfClose
+	}
+	return err
 }
 
 // clientProcessID returns the kernel-authenticated process attached to the accepted pipe instance.

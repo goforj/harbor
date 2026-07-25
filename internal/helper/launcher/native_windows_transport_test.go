@@ -222,6 +222,31 @@ func TestWindowsNativeTransportUsesOneCorrelatedPipeAndExactProcess(t *testing.T
 	}
 }
 
+// TestExchangeWindowsHelperAcceptsResponseAfterPeerClosedHalfClose proves correlated output resolves the EOF race.
+func TestExchangeWindowsHelperAcceptsResponseAfterPeerClosedHalfClose(t *testing.T) {
+	connection := &testWindowsConnection{
+		response:      strings.NewReader("helper response"),
+		closeWriteErr: errWindowsPeerClosedAfterHalfClose,
+		finish:        func() {},
+	}
+	captured, err, failure := exchangeWindowsHelper(connection, strings.NewReader("helper request"))
+	if err != nil || failure != transportFailureNone {
+		t.Fatalf("exchangeWindowsHelper() error = %v, failure = %d", err, failure)
+	}
+	if string(captured.Bytes()) != "helper response" {
+		t.Fatalf("exchangeWindowsHelper() response = %q", captured.Bytes())
+	}
+
+	connection = &testWindowsConnection{
+		response:      strings.NewReader(""),
+		closeWriteErr: errWindowsPeerClosedAfterHalfClose,
+		finish:        func() {},
+	}
+	if _, err, failure := exchangeWindowsHelper(connection, strings.NewReader("helper request")); err == nil || failure != transportFailureWindowsRequestHalfClose {
+		t.Fatalf("exchangeWindowsHelper(empty) error = %v, failure = %d", err, failure)
+	}
+}
+
 // TestWindowsNativeTransportClassifiesOnlyProvedNoChildFailures verifies consent dismissal is the sole Declined path.
 func TestWindowsNativeTransportClassifiesOnlyProvedNoChildFailures(t *testing.T) {
 	testErr := errors.New("native failure")
