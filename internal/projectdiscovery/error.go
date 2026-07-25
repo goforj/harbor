@@ -5,6 +5,31 @@ import (
 	"io/fs"
 )
 
+// ProjectRootNotFoundError identifies a registered project whose checkout path no longer resolves.
+type ProjectRootNotFoundError struct {
+	Path  string
+	cause error
+}
+
+// Error preserves a bounded diagnostic for daemon logs without misclassifying the project configuration.
+func (err *ProjectRootNotFoundError) Error() string {
+	if err == nil {
+		return "project root was not found"
+	}
+	if err.Path == "" {
+		return "project root was not found"
+	}
+	return "project root " + err.Path + " was not found"
+}
+
+// Unwrap retains the native filesystem cause for local diagnostics.
+func (err *ProjectRootNotFoundError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
 // InvalidProjectError identifies a selected path or project metadata shape that the user can correct.
 type InvalidProjectError struct {
 	cause error
@@ -36,6 +61,11 @@ func invalidProjectError(err error) error {
 		return err
 	}
 	return &InvalidProjectError{cause: err}
+}
+
+// projectRootNotFoundError separates a missing checkout from malformed files inside an existing checkout.
+func projectRootNotFoundError(path string, cause error) error {
+	return &ProjectRootNotFoundError{Path: path, cause: cause}
 }
 
 // isInvalidProjectFilesystemError limits user classification to absent or unreadable selected files.

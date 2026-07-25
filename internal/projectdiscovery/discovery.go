@@ -277,6 +277,9 @@ func canonicalProjectRoot(selectedPath string) (string, error) {
 	canonical, err := filepath.EvalSymlinks(filepath.Clean(absolute))
 	if err != nil {
 		resolveErr := fmt.Errorf("resolve project path %q: %w", absolute, err)
+		if os.IsNotExist(err) {
+			return "", invalidProjectError(projectRootNotFoundError(absolute, resolveErr))
+		}
 		if isInvalidProjectFilesystemError(err) {
 			return "", invalidProjectError(resolveErr)
 		}
@@ -289,6 +292,9 @@ func canonicalProjectRoot(selectedPath string) (string, error) {
 	info, err := os.Stat(canonical)
 	if err != nil {
 		inspectErr := fmt.Errorf("inspect project path %q: %w", canonical, err)
+		if os.IsNotExist(err) {
+			return "", invalidProjectError(projectRootNotFoundError(absolute, inspectErr))
+		}
 		if isInvalidProjectFilesystemError(err) {
 			return "", invalidProjectError(inspectErr)
 		}

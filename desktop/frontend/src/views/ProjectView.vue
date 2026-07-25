@@ -297,6 +297,7 @@ const removalNotice = computed(() => store.projectRemovalNotice(projectId.value)
 const activeLifecycle = computed(() => store.activeProjectLifecycle(projectId.value))
 const lifecycleError = computed(() => store.projectLifecycleErrors[projectId.value])
 const lifecycleProblemCode = computed(() => store.projectLifecycleProblemCodes[projectId.value])
+const checkoutMissing = computed(() => lifecycleProblemCode.value === 'project.checkout.missing')
 const needsNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.setup_required'
   || lifecycleProblemCode.value === 'project.network.full_setup_required')
 const needsFullNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.full_setup_required')
@@ -692,7 +693,7 @@ function scheduleRuntimeRepairExpiry(expiresAt: string) {
       <div v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" class="px-5 pt-5 lg:px-7">
         <Alert :variant="recoveryRequired || needsNetworkSetup ? 'default' : 'destructive'">
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : needsNetworkSetup ? 'Secure networking is not ready' : 'Project action failed' }}</AlertTitle>
+          <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : needsNetworkSetup ? 'Secure networking is not ready' : checkoutMissing ? 'Project folder is missing' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
             <p v-if="recoveryRequired">Starting again will reconcile the previous runtime and launch a fresh process.</p>
             <p v-else-if="needsFullNetworkSetup">Harbor's DNS foundation is active, but secure, trusted local ingress is not ready. Set up networking to finish HTTPS and ingress, then start this project.</p>

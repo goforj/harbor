@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,12 +141,29 @@ func TestEquivalentHTTPResourceURLPreservesPrimaryDeduplication(t *testing.T) {
 
 // TestGoForjPreparationErrorPreservesActionableProblems proves provider diagnostics cross the neutral admission boundary safely.
 func TestGoForjPreparationErrorPreservesActionableProblems(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "removed")
+	_, missingRootErr := projectdiscovery.NewDiscoverer().DiscoverDefaultRuntimeAtAddress(
+		t.Context(),
+		missingPath,
+		netip.MustParseAddr("127.77.0.18"),
+	)
+	if missingRootErr == nil {
+		t.Fatal("missing project root discovery error = nil")
+	}
 	tests := []struct {
-		name      string
-		input     error
-		wantCode  string
-		retryable bool
+		name        string
+		input       error
+		wantCode    string
+		wantMessage string
+		retryable   bool
 	}{
+		{
+			name:        "missing project root",
+			input:       missingRootErr,
+			wantCode:    "project.checkout.missing",
+			wantMessage: "The project folder no longer exists.",
+			retryable:   true,
+		},
 		{
 			name:      "render update",
 			input:     &projectdiscovery.RenderUpdateRequiredError{},
@@ -167,6 +186,9 @@ func TestGoForjPreparationErrorPreservesActionableProblems(t *testing.T) {
 			}
 			if string(preparation.Problem.Code) != test.wantCode || preparation.Problem.Retryable != test.retryable {
 				t.Fatalf("GoForj preparation problem = %#v, want code %q retryable %t", preparation.Problem, test.wantCode, test.retryable)
+			}
+			if test.wantMessage != "" && !strings.Contains(preparation.Problem.Message, test.wantMessage) {
+				t.Fatalf("GoForj preparation message = %q, want %q", preparation.Problem.Message, test.wantMessage)
 			}
 			if !errors.Is(err, test.input) {
 				t.Fatalf("GoForj preparation error no longer wraps %T", test.input)

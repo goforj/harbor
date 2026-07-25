@@ -147,6 +147,14 @@ func (runtime *Runtime) Prepare(ctx context.Context, request projectruntime.Prep
 
 // goForjPreparationError keeps generated-project remediation actionable without exposing GoForj types to lifecycle code.
 func goForjPreparationError(err error) error {
+	var missingRoot *projectdiscovery.ProjectRootNotFoundError
+	if errors.As(err, &missingRoot) {
+		return &projectruntime.PreparationError{Problem: domain.Problem{
+			Code:      "project.checkout.missing",
+			Message:   "The project folder no longer exists. Restore it at its registered path or remove the project from Harbor.",
+			Retryable: true,
+		}, Cause: err}
+	}
 	var updateRequired *projectdiscovery.RenderUpdateRequiredError
 	if errors.As(err, &updateRequired) {
 		return &projectruntime.PreparationError{Problem: domain.Problem{

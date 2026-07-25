@@ -726,6 +726,7 @@ describe('ProjectView stale runtime recovery', () => {
 describe('ProjectView network admission', () => {
   it.each([
     ['network readiness', 'project.network.setup_required', 'Secure networking is not ready', 'Set up Harbor\'s secure, trusted local DNS, HTTPS, and ingress before starting this project.'],
+    ['missing checkout', 'project.checkout.missing', 'Project folder is missing', 'The project folder no longer exists. Restore it at its registered path or remove the project from Harbor.'],
     ['runtime', 'project.process.exited', 'Project action failed', 'The development runtime exited unexpectedly.'],
   ])('keeps the %s lifecycle error above the primary tabs across project surfaces', async (_, problemCode, title, message) => {
     const { store, wrapper } = await mountProject()

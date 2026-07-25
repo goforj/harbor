@@ -354,16 +354,18 @@ func TestDiscoverRejectsInvalidSelections(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(directoryMarker, ".goforj.yml"), 0o700); err != nil {
 		t.Fatalf("create marker directory: %v", err)
 	}
+	missingPath := filepath.Join(t.TempDir(), "missing")
 
 	for _, test := range []struct {
-		name string
-		path string
-		want string
+		name            string
+		path            string
+		want            string
+		wantRootMissing bool
 	}{
 		{name: "empty", path: "", want: "non-empty"},
 		{name: "whitespace", path: " " + missingMarker, want: "surrounding whitespace"},
 		{name: "control", path: missingMarker + "\n", want: "surrounding whitespace"},
-		{name: "missing path", path: filepath.Join(t.TempDir(), "missing"), want: "resolve project path"},
+		{name: "missing path", path: missingPath, want: "was not found", wantRootMissing: true},
 		{name: "file", path: file, want: "not a directory"},
 		{name: "missing marker", path: missingMarker, want: ".goforj.yml was not found"},
 		{name: "non-file marker", path: directoryMarker, want: "regular file"},
@@ -376,6 +378,13 @@ func TestDiscoverRejectsInvalidSelections(t *testing.T) {
 			var invalid *InvalidProjectError
 			if !errors.As(err, &invalid) {
 				t.Fatalf("Discover(%q) error = %T, want InvalidProjectError", test.path, err)
+			}
+			var missing *ProjectRootNotFoundError
+			if errors.As(err, &missing) != test.wantRootMissing {
+				t.Fatalf("Discover(%q) ProjectRootNotFoundError = %#v, want presence %t", test.path, missing, test.wantRootMissing)
+			}
+			if test.wantRootMissing && missing.Path != missingPath {
+				t.Fatalf("Discover(%q) missing path = %q, want %q", test.path, missing.Path, missingPath)
 			}
 		})
 	}
