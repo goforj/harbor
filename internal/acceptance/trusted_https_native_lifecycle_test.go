@@ -765,8 +765,8 @@ func TestTrustedHTTPSFinalizeCheckoutRetainsArtifactsAfterMarkerRestoreFailure(t
 	}
 }
 
-// TestTrustedHTTPSFinalizeCheckoutVerifiesExactCheckoutAndDeletesAfterSuccess proves exact checkout verification remains part of successful cleanup.
-func TestTrustedHTTPSFinalizeCheckoutVerifiesExactCheckoutAndDeletesAfterSuccess(t *testing.T) {
+// TestTrustedHTTPSFinalizeCheckoutVerifiesCheckoutAndDeletesAfterSuccess proves bounded checkout verification remains part of cleanup.
+func TestTrustedHTTPSFinalizeCheckoutVerifiesCheckoutAndDeletesAfterSuccess(t *testing.T) {
 	t.Parallel()
 
 	events := make([]string, 0, 3)
@@ -800,6 +800,46 @@ func TestTrustedHTTPSFinalizeCheckoutVerifiesExactCheckoutAndDeletesAfterSuccess
 	}
 	if lifecycle.workspace != nil || lifecycle.baselines != nil {
 		t.Fatalf("finalizeCheckout() retained successful artifacts: workspace=%#v baselines=%#v", lifecycle.workspace, lifecycle.baselines)
+	}
+}
+
+// TestTrustedHTTPSFinalizeCheckoutPermitsGeneratedOutputRefresh proves lifecycle cleanup uses the bounded checkout verifier.
+func TestTrustedHTTPSFinalizeCheckoutPermitsGeneratedOutputRefresh(t *testing.T) {
+	projects := make([]goforjproject.Project, 0, 3)
+	for _, name := range []string{"orders", "billing", "inventory"} {
+		root := filepath.Join(t.TempDir(), name)
+		for _, path := range []string{"bin/app", "bin/.forj-build-cache/app.target/app", "bin/.app.ready"} {
+			filename := filepath.Join(root, filepath.FromSlash(path))
+			if err := os.MkdirAll(filepath.Dir(filename), 0o700); err != nil {
+				t.Fatalf("create generated output directory: %v", err)
+			}
+			if err := os.WriteFile(filename, []byte("baseline"), 0o600); err != nil {
+				t.Fatalf("write generated output %q: %v", path, err)
+			}
+		}
+		projects = append(projects, goforjproject.Project{Name: name, Root: root})
+	}
+	baselines, err := trustedhttpsharness.CaptureBaselines(projects)
+	if err != nil {
+		t.Fatalf("CaptureBaselines() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projects[0].Root, "bin", "app"), []byte("rebuilt"), 0o600); err != nil {
+		t.Fatalf("refresh generated runtime binary: %v", err)
+	}
+	closed := false
+	lifecycle := &trustedHTTPSNativeLifecycle{
+		workspace: &goforjproject.Workspace{Root: t.TempDir()},
+		baselines: baselines,
+		closeWorkspace: func(*goforjproject.Workspace) error {
+			closed = true
+			return nil
+		},
+	}
+	if err := lifecycle.finalizeCheckout(nil, true); err != nil {
+		t.Fatalf("finalizeCheckout() error = %v", err)
+	}
+	if !closed {
+		t.Fatal("finalizeCheckout() did not close successful workspace")
 	}
 }
 
@@ -1741,7 +1781,7 @@ func TestTrustedHTTPSProbeExitStatusesAcceptOnlyDocumentedAbsenceValues(t *testi
 	}
 }
 
-// finalizeCheckout restores GoForj's session marker before proving every generated checkout exactly matches its pre-Harbor state.
+// finalizeCheckout restores GoForj's session marker before proving only bounded generated outputs changed.
 func (lifecycle *trustedHTTPSNativeLifecycle) finalizeCheckout(cleanupErr error, daemonStopped bool) error {
 	if cleanupErr != nil || !daemonStopped {
 		return lifecycle.retainWorkspace(cleanupErr)
@@ -1756,7 +1796,7 @@ func (lifecycle *trustedHTTPSNativeLifecycle) finalizeCheckout(cleanupErr error,
 		}
 		verify := lifecycle.verifyBaselines
 		if verify == nil {
-			verify = trustedhttpsharness.VerifyBaselinesExact
+			verify = trustedhttpsharness.VerifyBaselines
 		}
 		if err := verify(lifecycle.baselines); err != nil {
 			return lifecycle.retainWorkspace(err)
