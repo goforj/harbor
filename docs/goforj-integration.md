@@ -4,7 +4,7 @@ Status: approved target design; implementation tracked in [Current implementatio
 
 Original design-research baseline: `goforj/goforj` commit `6422f32eb3013c44ce3b18d236a90158dc8e7f16`
 
-The current tactical launcher has a temporary exact compatibility gate: it accepts the canonical GoForj pseudo-version `v0.21.1-0.20260722203521-55a1e5759956`, or a clean binary built from revision `55a1e57599565c9768627db016fc781e3c705f15`. No released tag currently contains the combined descriptor, managed-session, and conventional-task compatibility contract, so development and CI use that reviewed revision. Other versioned and unversioned builds are rejected until their wire behavior is reviewed. The `goforj_version: 0.19.0` field in Harbor's `.goforj.yml` is render metadata, not the runtime CLI admission rule.
+The production launcher accepts a GoForj executable only when its embedded build information identifies the canonical `github.com/goforj/goforj/cmd/forj` command and `github.com/goforj/goforj` main module, with no main-module replacement. It does not require an exact version, revision, or clean source tree. The reviewed GoForj revision used in development and CI is a deterministic source pin for those tests, not the runtime CLI admission rule. The `goforj_version: 0.19.0` field in Harbor's `.goforj.yml` is render metadata, not runtime admission.
 
 ## Boundary
 
@@ -182,18 +182,7 @@ Harbor stores the schema version and normalized topology digest. A digest change
 
 GoForj should add a managed mode to `forj dev`. The transport remains domain-neutral even though Harbor is its first consumer.
 
-Harbor now has the transport-neutral v1 message contract and authenticated handler seam that this mode uses. GoForj
-contains a private transport adapter that mirrors the v1 frame, envelope, handshake, and typed calls because Harbor's
-implementation packages are intentionally not importable across modules. Production Start/Restart supplies GoForj an
-owner-only inherited context; GoForj consumes it before project environment loading, negotiates
-`managed-session.v1` plus `managed-session.launch-context.v1`, and retries only the short planned-to-awaiting process
-attachment race. Registration carries the canonical project/session identity, descriptor digest, client nonce, owner,
-the negotiated capabilities, and a bounded launch ticket. Harbor hashes that exact ticket against the durable session
-digest and never stores the raw value. The publication and Compose-barrier methods are bounded complete replacements
-fenced by the exact attached-session generation. In the current vertical slice, GoForj sends an empty replacement and
-starts a retrying Compose barrier when the initial watcher graph is online; Harbor ignores invented client ports and
-re-observes the supervised Compose services before activating native routes. The contract rejects unknown or duplicate JSON fields, trailing values, unsorted identities, invalid
-digests, and cross-session publication facts before an authority handler is called.
+Harbor contains a transport-neutral v1 message contract and authenticated handler seam, and GoForj contains a private adapter that mirrors the frame, envelope, handshake, and typed calls because Harbor's implementation packages are intentionally not importable across modules. This managed-session path remains dormant in production: `NewProjectLifecycleCoordinator` does not provide a managed-launch factory, so Start and Restart supply no launch context, ticket, capability negotiation, registration, publication, or Compose barrier. The schema and handler seam remain pending activation or deletion as the integration contract settles.
 
 Conceptual invocation:
 
@@ -203,16 +192,7 @@ forj dev --managed --control-endpoint <inherited-or-owner-only-reference>
 
 The control credential is inherited or stored in an owner-only runtime file. It is not printed or placed in an argument visible to other processes.
 
-Harbor's authenticated barrier now has a live native-route activator: once the inherited GoForj session reaches its
-initial watcher graph, GoForj sends a complete empty client replacement and retries the barrier while Harbor waits for
-readiness, fresh service-port observations, Harbor-owned TCP reservations, and live native relay evidence. Harbor does
-not trust client-supplied ports; it replaces the registry with its own exact observation before acknowledging. The
-Compose barrier may now perform that service-only join while the exact project is still `Starting`; public App
-readiness and default publication planning remain `Ready`-gated. Managed startup now executes the explicit pre-Compose,
-Compose, post-Compose, and post-migrate task buckets around that barrier, and Harbor-owned `down_on_exit` cleanup
-executes typed pre-Compose-down, Compose-down, and post-Compose-down buckets. The semantic runtime-plan/overlay
-handshake and full process/action event delivery remain later slices, while ordinary standalone
-`forj dev` remains unchanged.
+Until that path is activated, Harbor launches ordinary `forj dev`, writes its leased loopback override through the marked `.env.host` block, probes App readiness itself, and owns process supervision, observed route publication, and TLS. The design's managed barriers, semantic runtime plans, overlays, and process/action events are not production behavior; ordinary standalone `forj dev` remains unchanged.
 
 Startup ordering matters:
 
