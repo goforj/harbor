@@ -140,7 +140,7 @@ func TestResolverServiceIssueBindsTargetOwnershipAndNativeObservation(t *testing
 	}
 	if ticket.ExpectedResolverObservation.Fingerprint != wantObservationFingerprint ||
 		ticket.Nonce != strings.Repeat("5a", ticketNonceBytes) ||
-		ticket.ExpiresAt != fixture.now.Add(ticketLifetime) ||
+		ticket.ExpiresAt != fixture.now.Add(resolverTicketLifetime) ||
 		!bytes.Equal(fixture.publisher.key, fixture.private) {
 		t.Fatalf("published resolver correlation = %#v", ticket)
 	}
@@ -162,7 +162,7 @@ func TestResolverServiceStartsTicketLifetimeAfterNativeRevalidation(t *testing.T
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	if want := revalidatedAt.Add(ticketLifetime); !result.ExpiresAt.Equal(want) {
+	if want := revalidatedAt.Add(resolverTicketLifetime); !result.ExpiresAt.Equal(want) {
 		t.Fatalf("Issue() expiry = %v, want %v", result.ExpiresAt, want)
 	}
 }

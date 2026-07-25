@@ -25,6 +25,9 @@ var (
 	ErrResolverPublicationIndeterminate = errors.New("resolver capability publication is indeterminate")
 )
 
+// resolverTicketLifetime leaves enough time for Windows to initialize its elevated inbox PowerShell host.
+const resolverTicketLifetime = 90 * time.Second
+
 // ResolverRequest selects one durable resolver approval plan without carrying host authority.
 type ResolverRequest struct {
 	OperationID domain.OperationID
@@ -496,7 +499,7 @@ func (service *ResolverService) Issue(
 		if !errors.Is(publishErr, ticketspool.ErrDurabilityUncertain) {
 			return ResolverResult{}, wrapped
 		}
-		if err := result.Validate(ticket.ExpiresAt.Add(-ticketLifetime)); err != nil {
+		if err := result.Validate(ticket.ExpiresAt.Add(-resolverTicketLifetime)); err != nil {
 			return ResolverResult{}, errors.Join(
 				ErrResolverPublicationIndeterminate,
 				wrapped,
@@ -657,7 +660,7 @@ func (service *ResolverService) buildResolverTicket(
 		ApprovedPool:                plan.TargetOwnership.LoopbackPoolPrefix,
 		ExpectedResolverObservation: &helper.ExpectedResolverObservation{Fingerprint: observationFingerprint},
 		Nonce:                       hex.EncodeToString(nonce),
-		ExpiresAt:                   now.Add(ticketLifetime),
+		ExpiresAt:                   now.Add(resolverTicketLifetime),
 	}
 	if err := ticket.Validate(now); err != nil {
 		return helper.Ticket{}, fmt.Errorf("issue helper resolver ticket: constructed ticket is invalid: %w", err)
