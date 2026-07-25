@@ -951,29 +951,42 @@ func phase1AssertCleanup(t *testing.T, sandbox phase1Sandbox) {
 		names = append(names, entry.Name())
 	}
 	sort.Strings(names)
-	// The spool directory is reusable infrastructure; successful shutdown must still retire every session file within it.
-	if !slices.Equal(names, []string{"harbord.lock"}) && !slices.Equal(names, []string{"harbord.lock", "output-spool"}) {
+	// Artifact and spool directories are reusable infrastructure; successful shutdown must still retire every session entry.
+	allowedRuntimeEntries := map[string]struct{}{
+		"development-artifacts": {},
+		"harbord.lock":          {},
+		"output-spool":          {},
+	}
+	if !slices.Contains(names, "harbord.lock") || len(names) > len(allowedRuntimeEntries) {
 		t.Fatalf("runtime artifacts after shutdown = %v, want only reusable runtime infrastructure", names)
 	}
-	if slices.Contains(names, "output-spool") {
-		outputSpoolPath := filepath.Join(sandbox.runtimeDirectory, "output-spool")
-		outputSpoolInformation, err := os.Lstat(outputSpoolPath)
+	for _, name := range names {
+		if _, allowed := allowedRuntimeEntries[name]; !allowed {
+			t.Fatalf("runtime artifacts after shutdown = %v, want only reusable runtime infrastructure", names)
+		}
+	}
+	for _, directoryName := range []string{"development-artifacts", "output-spool"} {
+		if !slices.Contains(names, directoryName) {
+			continue
+		}
+		directoryPath := filepath.Join(sandbox.runtimeDirectory, directoryName)
+		directoryInformation, err := os.Lstat(directoryPath)
 		if err != nil {
-			t.Fatalf("inspect reusable output spool directory after shutdown: %v", err)
+			t.Fatalf("inspect reusable %s directory after shutdown: %v", directoryName, err)
 		}
-		if outputSpoolInformation.Mode()&os.ModeSymlink != 0 || !outputSpoolInformation.IsDir() {
-			t.Fatalf("reusable output spool path is not a direct directory: %v", outputSpoolInformation.Mode())
+		if directoryInformation.Mode()&os.ModeSymlink != 0 || !directoryInformation.IsDir() {
+			t.Fatalf("reusable %s path is not a direct directory: %v", directoryName, directoryInformation.Mode())
 		}
-		outputSpoolEntries, err := os.ReadDir(outputSpoolPath)
+		directoryEntries, err := os.ReadDir(directoryPath)
 		if err != nil {
-			t.Fatalf("read reusable output spool directory after shutdown: %v", err)
+			t.Fatalf("read reusable %s directory after shutdown: %v", directoryName, err)
 		}
-		if len(outputSpoolEntries) != 0 {
-			outputSpoolNames := make([]string, 0, len(outputSpoolEntries))
-			for _, entry := range outputSpoolEntries {
-				outputSpoolNames = append(outputSpoolNames, entry.Name())
+		if len(directoryEntries) != 0 {
+			entryNames := make([]string, 0, len(directoryEntries))
+			for _, entry := range directoryEntries {
+				entryNames = append(entryNames, entry.Name())
 			}
-			t.Fatalf("output spool artifacts after shutdown = %v, want empty reusable directory", outputSpoolNames)
+			t.Fatalf("%s artifacts after shutdown = %v, want empty reusable directory", directoryName, entryNames)
 		}
 	}
 
