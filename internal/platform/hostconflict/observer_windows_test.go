@@ -287,7 +287,6 @@ func TestNormalizeWindowsRouteRejectsMalformedNativeFacts(t *testing.T) {
 		{name: "destination family", mutate: func(row *windows.MibIpForwardRow2) { row.DestinationPrefix.Prefix.Family = windows.AF_INET6 }},
 		{name: "next hop family", mutate: func(row *windows.MibIpForwardRow2) { row.NextHop.Family = windows.AF_INET6 }},
 		{name: "interface mismatch", mutate: func(row *windows.MibIpForwardRow2) { row.InterfaceIndex = 4 }},
-		{name: "loopback disagreement", mutate: func(row *windows.MibIpForwardRow2) { row.Loopback = 0 }},
 		{name: "invalid boolean", mutate: func(row *windows.MibIpForwardRow2) { row.Publish = 2 }},
 	}
 	for _, test := range tests {
@@ -298,6 +297,28 @@ func TestNormalizeWindowsRouteRejectsMalformedNativeFacts(t *testing.T) {
 				t.Fatalf("normalizeWindowsRoute() = %#v, %#v, want error", fact, authority)
 			}
 		})
+	}
+}
+
+// TestNormalizeWindowsRouteKeepsRouteAndInterfaceLoopbackSemanticsIndependent covers IP Helper's distinct native facts.
+func TestNormalizeWindowsRouteKeepsRouteAndInterfaceLoopbackSemanticsIndependent(t *testing.T) {
+	interfaces := windowsTestInterfaceSnapshot()
+	route := windowsTestRouteRow(interfaces.loopback.Interface, netip.MustParsePrefix("127.0.0.0/8"), netip.IPv4Unspecified(), false)
+	fact, _, err := normalizeWindowsRoute(route, interfaces)
+	if err != nil {
+		t.Fatalf("normalizeWindowsRoute() error = %v", err)
+	}
+	if !fact.NativeLoopback {
+		t.Fatalf("normalizeWindowsRoute() = %#v, want native loopback interface", fact)
+	}
+
+	route = windowsTestRouteRow(interfaces.byIndex[4], netip.MustParsePrefix("192.0.2.0/24"), netip.IPv4Unspecified(), true)
+	fact, _, err = normalizeWindowsRoute(route, interfaces)
+	if err != nil {
+		t.Fatalf("normalizeWindowsRoute() error = %v", err)
+	}
+	if fact.NativeLoopback {
+		t.Fatalf("normalizeWindowsRoute() = %#v, want ordinary interface", fact)
 	}
 }
 

@@ -163,9 +163,6 @@ func normalizeWindowsRoute(row windows.MibIpForwardRow2, interfaces windowsInter
 		return RouteFact{}, windowsRouteAuthority{}, fmt.Errorf("route contains a non-boolean native flag")
 	}
 	nativeLoopback := sameInterfaceAuthority(PlatformWindows, identity, interfaces.loopback.Interface)
-	if (row.Loopback != 0) != nativeLoopback {
-		return RouteFact{}, windowsRouteAuthority{}, fmt.Errorf("route loopback flag disagrees with native interface identity")
-	}
 	gateway := nextHop
 	if nextHop.IsUnspecified() {
 		gateway = netip.Addr{}
