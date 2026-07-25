@@ -1,0 +1,201 @@
+name: Hosted Linux trusted HTTPS lifecycle evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hosted-linux-trusted-https.yml
+      - app/**
+      - cmd/app/**
+      - cmd/devbootstrap/**
+      - cmd/harbord/**
+      - cmd/helper/**
+      - go.mod
+      - go.sum
+      - internal/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-linux-trusted-https-lifecycle
+  cancel-in-progress: false
+
+env:
+  HARBOR_HOSTED_LINUX_FORJ_COMMIT: 86d7fcacd681d9f9798b7f47521ce14969a594f6
+
+jobs:
+  trusted-https:
+    name: Prove Ubuntu 24.04 three-project trusted HTTPS lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Admit default-branch GitHub-hosted execution
+        shell: bash
+        env:
+          HARBOR_EXPECTED_REF: refs/heads/${{ github.event.repository.default_branch }}
+          HARBOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          [[ "$HARBOR_RUNNER_ENVIRONMENT" == "github-hosted" ]]
+          [[ "$GITHUB_REF" == "$HARBOR_EXPECTED_REF" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+
+      - name: Require clean Harbor-owned host state
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              printf 'preexisting Harbor-owned path: %s\n' "$path" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          /var/lib/goforj/harbor
+          /usr/libexec/harbor-helper
+          /etc/systemd/resolved.conf.d/90-goforj-harbor.conf
+          /usr/local/share/ca-certificates/goforj-harbor.crt
+          /usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release
+          EOF
+          if sudo -n /usr/sbin/nft list tables 2>/dev/null | grep -Fqx 'table inet goforj_harbor'; then
+            printf 'preexisting Harbor nftables table\n' >&2
+            exit 1
+          fi
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: ${{ env.HARBOR_HOSTED_LINUX_FORJ_COMMIT }}
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Prepare isolated Go caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_identity="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_cache="${RUNNER_TEMP}/harbor-gocache-${cache_identity}"
+          module_cache="${RUNNER_TEMP}/harbor-gomodcache-${cache_identity}"
+          install -d -m 0700 "$build_cache" "$module_cache"
+          printf 'GOCACHE=%s\n' "$build_cache" >> "$GITHUB_ENV"
+          printf 'GOMODCACHE=%s\n' "$module_cache" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Prepare hosted Ubuntu network prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n apt-get update
+          sudo -n apt-get install -y nftables policykit-1
+          sudo -n systemctl enable --now systemd-resolved.service
+          sudo -n ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          resolvectl status >/dev/null
+
+          rule=/etc/polkit-1/rules.d/49-goforj-harbor-hosted-ci.rules
+          runner_user="$(id -un)"
+          printf '%s\n' \
+            'polkit.addRule(function(action, subject) {' \
+            '  if (action.id == "org.freedesktop.policykit.exec" &&' \
+            '      action.lookup("program") == "/usr/libexec/harbor-helper" &&' \
+            "      subject.user == \"${runner_user}\") {" \
+            '    return polkit.Result.YES;' \
+            '  }' \
+            '});' |
+            sudo -n tee "$rule" >/dev/null
+          sudo -n chmod 0644 "$rule"
+          sudo -n systemctl restart polkit.service
+
+      - name: Build production Harbor and GoForj binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_directory="${RUNNER_TEMP}/harbor-hosted-linux-bin"
+          install -d -m 0700 "$binary_directory"
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/harbor" ./cmd/app
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/harbord" ./cmd/harbord
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/helper" ./cmd/helper
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/devbootstrap" ./cmd/devbootstrap
+          (
+            cd .ci/goforj
+            GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go build -trimpath -o "${binary_directory}/forj" ./cmd/forj
+          )
+          GOBIN="$binary_directory" GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" \
+            go install github.com/goforj/wire/cmd/wire@v1.2.0
+          printf 'HARBOR_HOSTED_LINUX_BINARY_DIRECTORY=%s\n' "$binary_directory" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Install development helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n "${HARBOR_HOSTED_LINUX_BINARY_DIRECTORY}/devbootstrap" \
+            --helper "${HARBOR_HOSTED_LINUX_BINARY_DIRECTORY}/helper" \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"
+
+      - name: Run three-project trusted HTTPS lifecycle
+        shell: bash
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-hosted-linux-bin/forj
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor-hosted-linux-bin/harbor
+          HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbor-hosted-linux-bin/harbord
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-hosted-linux-trusted-https-evidence
+        run: |
+          set -euo pipefail
+          [[ "$(command -v forj)" == "${HARBOR_HOSTED_LINUX_BINARY_DIRECTORY}/forj" ]]
+          [[ "$(command -v wire)" == "${HARBOR_HOSTED_LINUX_BINARY_DIRECTORY}/wire" ]]
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=25m \
+            -run '^TestTrustedHTTPSIntermediateNativeLifecycle$' \
+            ./internal/acceptance
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go run ./cmd/platformproof verify-trusted-https \
+            --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \
+            --platform linux
+
+      - name: Remove hosted prerequisite and failed Harbor state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n rm -f /etc/polkit-1/rules.d/49-goforj-harbor-hosted-ci.rules
+          sudo -n systemctl restart polkit.service
+          if [[ "${{ job.status }}" != "success" ]]; then
+            sudo -n /usr/sbin/nft delete table inet goforj_harbor 2>/dev/null || true
+            sudo -n rm -f \
+              /etc/systemd/resolved.conf.d/90-goforj-harbor.conf \
+              /usr/local/share/ca-certificates/goforj-harbor.crt \
+              /usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release \
+              /usr/libexec/harbor-helper
+            sudo -n rm -rf /var/lib/goforj/harbor
+            sudo -n update-ca-certificates
+            sudo -n systemctl restart systemd-resolved.service
+          fi
+
+      - name: Upload bounded trusted HTTPS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-linux-trusted-https-lifecycle
+          path: harbor-hosted-linux-trusted-https-evidence/summary.json
+          if-no-files-found: error
+          retention-days: 7

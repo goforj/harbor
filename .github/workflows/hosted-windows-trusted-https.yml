@@ -1,0 +1,237 @@
+name: Hosted Windows trusted HTTPS lifecycle evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hosted-windows-trusted-https.yml
+      - app/**
+      - cmd/app/**
+      - cmd/harbord/**
+      - cmd/helper/**
+      - go.mod
+      - go.sum
+      - internal/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-windows-trusted-https-lifecycle
+  cancel-in-progress: false
+
+env:
+  HARBOR_HOSTED_WINDOWS_FORJ_COMMIT: 86d7fcacd681d9f9798b7f47521ce14969a594f6
+
+jobs:
+  trusted-https:
+    name: Prove Windows Server 2025 three-project trusted HTTPS lifecycle
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Admit default-branch GitHub-hosted execution
+        shell: pwsh
+        env:
+          HARBOR_EXPECTED_REF: refs/heads/${{ github.event.repository.default_branch }}
+          HARBOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:HARBOR_RUNNER_ENVIRONMENT -cne "github-hosted") { throw "runner is not GitHub-hosted" }
+          if ($env:GITHUB_REF -cne $env:HARBOR_EXPECTED_REF) { throw "workflow did not run from the default branch" }
+          if ((git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) { throw "checked-out commit drifted" }
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: ${{ env.HARBOR_HOSTED_WINDOWS_FORJ_COMMIT }}
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Prepare isolated Go caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cacheIdentity = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $buildCache = Join-Path $env:RUNNER_TEMP "harbor-gocache-$cacheIdentity"
+          $moduleCache = Join-Path $env:RUNNER_TEMP "harbor-gomodcache-$cacheIdentity"
+          New-Item -ItemType Directory -Path $buildCache, $moduleCache | Out-Null
+          "GOCACHE=$buildCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOMODCACHE=$moduleCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Require clean Harbor-owned host state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          $helperPath = Join-Path $programFiles "GoForj\Harbor\harbor-helper.exe"
+          $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
+          if (Test-Path -LiteralPath $helperPath) { throw "preexisting Harbor helper" }
+          if (Test-Path -LiteralPath $privilegedRoot) { throw "preexisting Harbor privileged state" }
+          $machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+            $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
+          })
+          $userRoots = @(Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+            $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
+          })
+          if ($machineRoots.Count -ne 0 -or $userRoots.Count -ne 0) { throw "preexisting Harbor trust state" }
+          $harborNRPT = @(Get-DnsClientNrptRule | Where-Object {
+            $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+          })
+          if ($harborNRPT.Count -ne 0) { throw "preexisting Harbor NRPT state" }
+
+      - name: Build production Harbor and GoForj binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binaryDirectory = Join-Path $env:RUNNER_TEMP "harbor-hosted-windows-bin"
+          New-Item -ItemType Directory -Path $binaryDirectory | Out-Null
+          go build -trimpath -o (Join-Path $binaryDirectory "harbor.exe") ./cmd/app
+          go build -trimpath -o (Join-Path $binaryDirectory "harbord.exe") ./cmd/harbord
+          go build -trimpath -o (Join-Path $binaryDirectory "helper.exe") ./cmd/helper
+          Push-Location .ci/goforj
+          try {
+            go build -trimpath -o (Join-Path $binaryDirectory "forj.exe") ./cmd/forj
+          } finally {
+            Pop-Location
+          }
+          $env:GOBIN = $binaryDirectory
+          go install github.com/goforj/wire/cmd/wire@v1.2.0
+          "HARBOR_HOSTED_WINDOWS_BINARY_DIRECTORY=$binaryDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $binaryDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Provision disposable signed helper topology
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          $helperDirectory = Join-Path $programFiles "GoForj\Harbor"
+          $helperPath = Join-Path $helperDirectory "harbor-helper.exe"
+          $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
+          $tickets = Join-Path $privilegedRoot "tickets"
+          $pending = Join-Path $tickets "pending"
+          $claims = Join-Path $tickets "claims"
+          $state = Join-Path $privilegedRoot "state"
+          $replay = Join-Path $state "replay"
+          $userSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+          New-Item -ItemType Directory -Path $helperDirectory, $pending, $claims, $replay -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:HARBOR_HOSTED_WINDOWS_BINARY_DIRECTORY "helper.exe") -Destination $helperPath
+
+          function Set-DirectorySDDL([string]$Path, [string]$SDDL) {
+            $security = [Security.AccessControl.DirectorySecurity]::new()
+            $security.SetSecurityDescriptorSddlForm($SDDL)
+            Set-Acl -LiteralPath $Path -AclObject $security
+          }
+          function Set-FileSDDL([string]$Path, [string]$SDDL) {
+            $security = [Security.AccessControl.FileSecurity]::new()
+            $security.SetSecurityDescriptorSddlForm($SDDL)
+            Set-Acl -LiteralPath $Path -AclObject $security
+          }
+
+          $gatewaySDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;GX;;;$userSID)"
+          $machineSDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+          $pendingSDDL = "O:${userSID}D:P(A;OICI;FA;;;$userSID)(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+          Set-DirectorySDDL $privilegedRoot $gatewaySDDL
+          Set-DirectorySDDL $tickets $gatewaySDDL
+          Set-DirectorySDDL $pending $pendingSDDL
+          Set-DirectorySDDL $claims $machineSDDL
+          Set-DirectorySDDL $state $machineSDDL
+          Set-DirectorySDDL $replay $machineSDDL
+
+          $certificate = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject "CN=Harbor Hosted CI Helper" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -KeyExportPolicy NonExportable `
+            -NotAfter (Get-Date).AddHours(8)
+          $certificatePath = Join-Path $env:RUNNER_TEMP "harbor-hosted-helper-signing.cer"
+          Export-Certificate -Cert $certificate -FilePath $certificatePath | Out-Null
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\LocalMachine\TrustedPublisher" | Out-Null
+          $signature = Set-AuthenticodeSignature -FilePath $helperPath -Certificate $certificate -HashAlgorithm SHA256
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "disposable helper signature is not trusted: $($signature.Status)"
+          }
+          Set-FileSDDL $helperPath "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;BU)"
+          [IO.File]::WriteAllText(
+            (Join-Path $env:RUNNER_TEMP "harbor-hosted-helper-signing-thumbprint"),
+            $certificate.Thumbprint,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Run three-project trusted HTTPS lifecycle
+        shell: pwsh
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}\harbor-hosted-windows-bin\forj.exe
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}\harbor-hosted-windows-bin\harbor.exe
+          HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}\harbor-hosted-windows-bin\harbord.exe
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}\harbor-hosted-windows-trusted-https-evidence
+        run: |
+          $ErrorActionPreference = "Stop"
+          go test `
+            -tags=phase1acceptance `
+            -count=1 `
+            -timeout=25m `
+            -run "^TestTrustedHTTPSIntermediateNativeLifecycle$" `
+            ./internal/acceptance
+          go run ./cmd/platformproof verify-trusted-https `
+            --root $env:HARBOR_PHASE1_EVIDENCE_DIRECTORY `
+            --platform windows
+
+      - name: Remove disposable Windows prerequisites and failed Harbor state
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $thumbprintPath = Join-Path $env:RUNNER_TEMP "harbor-hosted-helper-signing-thumbprint"
+          if (Test-Path -LiteralPath $thumbprintPath) {
+            $thumbprint = [IO.File]::ReadAllText($thumbprintPath).Trim()
+            foreach ($store in @("Cert:\CurrentUser\My", "Cert:\LocalMachine\Root", "Cert:\LocalMachine\TrustedPublisher")) {
+              Remove-Item -LiteralPath (Join-Path $store $thumbprint) -Force -ErrorAction SilentlyContinue
+            }
+          }
+          if ("${{ job.status }}" -ne "success") {
+            Get-DnsClientNrptRule | Where-Object {
+              $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+            } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+              $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
+            } | Remove-Item -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+              $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
+            } | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+          $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          Remove-Item -LiteralPath (Join-Path $programFiles "GoForj\Harbor") -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $programData "GoForj\Harbor") -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: Upload bounded trusted HTTPS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-windows-trusted-https-lifecycle
+          path: harbor-hosted-windows-trusted-https-evidence/summary.json
+          if-no-files-found: error
+          retention-days: 7
