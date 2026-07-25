@@ -199,6 +199,17 @@ jobs:
             }
           }
 
+          $httpServiceState = @(netsh http show servicestate view=requestq)
+          $httpServiceState | Where-Object {
+            $_ -match "Request queue name|Process IDs|Controller process ID|Registered URLs|https?://"
+          }
+          foreach ($serviceName in @("W3SVC", "WAS", "nginx")) {
+            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if ($null -ne $service) {
+              "web-service=$($service.Name) status=$($service.Status) start=$($service.StartType)"
+            }
+          }
+
           netsh interface ipv4 show excludedportrange protocol=tcp
           foreach ($port in @(80, 443)) {
             $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
