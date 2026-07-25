@@ -201,31 +201,32 @@ func (handle *Handle) complete(result Exit) {
 
 // Supervisor owns every process tree it launches until exit or shutdown.
 type Supervisor struct {
-	mu                   sync.Mutex
-	closed               bool
-	gracePeriod          time.Duration
-	outputLines          int
-	environment          Environment
-	verifyExecutable     ExecutableVerifier
-	projects             map[domain.ProjectID]*managedProcess
-	sessions             map[domain.SessionID]*managedProcess
-	checkouts            map[string]*managedProcess
-	launches             map[*launchReservation]struct{}
-	launchProjects       map[domain.ProjectID]*launchReservation
-	launchSessions       map[domain.SessionID]*launchReservation
-	launchCheckouts      map[string]*launchReservation
-	containerRuntime     containerruntime.Runtime
-	runtimeCloseOnce     sync.Once
-	runtimeCloseErr      error
-	serviceLogIdle       time.Duration
-	serviceLogs          map[serviceLogKey]*serviceLogStream
-	outputSpoolDirectory string
-	outputBrokerLauncher OutputBrokerLauncher
-	adoptedOutputs       map[outputBrokerKey]*adoptedOutput
-	resets               map[*resetProcess]struct{}
-	resetCheckouts       map[string]*resetProcess
-	afterCommandStart    func() error
-	terminateAccepted    func(*exec.Cmd, *platformProcess) error
+	mu                           sync.Mutex
+	closed                       bool
+	gracePeriod                  time.Duration
+	outputLines                  int
+	environment                  Environment
+	verifyExecutable             ExecutableVerifier
+	projects                     map[domain.ProjectID]*managedProcess
+	sessions                     map[domain.SessionID]*managedProcess
+	checkouts                    map[string]*managedProcess
+	launches                     map[*launchReservation]struct{}
+	launchProjects               map[domain.ProjectID]*launchReservation
+	launchSessions               map[domain.SessionID]*launchReservation
+	launchCheckouts              map[string]*launchReservation
+	containerRuntime             containerruntime.Runtime
+	runtimeCloseOnce             sync.Once
+	runtimeCloseErr              error
+	serviceLogIdle               time.Duration
+	serviceLogs                  map[serviceLogKey]*serviceLogStream
+	outputSpoolDirectory         string
+	developmentArtifactDirectory string
+	outputBrokerLauncher         OutputBrokerLauncher
+	adoptedOutputs               map[outputBrokerKey]*adoptedOutput
+	resets                       map[*resetProcess]struct{}
+	resetCheckouts               map[string]*resetProcess
+	afterCommandStart            func() error
+	terminateAccepted            func(*exec.Cmd, *platformProcess) error
 }
 
 // New constructs an empty project process supervisor.
@@ -267,25 +268,26 @@ func NewWithExecutableVerifier(options Options, verifier ExecutableVerifier) *Su
 	}
 	outputSpoolDirectory := resolveOutputSpoolDirectory(options.OutputSpoolDirectory)
 	return &Supervisor{
-		gracePeriod:          gracePeriod,
-		outputLines:          outputLines,
-		environment:          environment,
-		verifyExecutable:     verifier,
-		projects:             make(map[domain.ProjectID]*managedProcess),
-		sessions:             make(map[domain.SessionID]*managedProcess),
-		checkouts:            make(map[string]*managedProcess),
-		launches:             make(map[*launchReservation]struct{}),
-		launchProjects:       make(map[domain.ProjectID]*launchReservation),
-		launchSessions:       make(map[domain.SessionID]*launchReservation),
-		launchCheckouts:      make(map[string]*launchReservation),
-		containerRuntime:     containerRuntime,
-		serviceLogIdle:       serviceLogIdle,
-		serviceLogs:          make(map[serviceLogKey]*serviceLogStream),
-		outputSpoolDirectory: outputSpoolDirectory,
-		outputBrokerLauncher: options.OutputBrokerLauncher,
-		adoptedOutputs:       make(map[outputBrokerKey]*adoptedOutput),
-		resets:               make(map[*resetProcess]struct{}),
-		resetCheckouts:       make(map[string]*resetProcess),
+		gracePeriod:                  gracePeriod,
+		outputLines:                  outputLines,
+		environment:                  environment,
+		verifyExecutable:             verifier,
+		projects:                     make(map[domain.ProjectID]*managedProcess),
+		sessions:                     make(map[domain.SessionID]*managedProcess),
+		checkouts:                    make(map[string]*managedProcess),
+		launches:                     make(map[*launchReservation]struct{}),
+		launchProjects:               make(map[domain.ProjectID]*launchReservation),
+		launchSessions:               make(map[domain.SessionID]*launchReservation),
+		launchCheckouts:              make(map[string]*launchReservation),
+		containerRuntime:             containerRuntime,
+		serviceLogIdle:               serviceLogIdle,
+		serviceLogs:                  make(map[serviceLogKey]*serviceLogStream),
+		outputSpoolDirectory:         outputSpoolDirectory,
+		developmentArtifactDirectory: resolveDevelopmentArtifactDirectory(),
+		outputBrokerLauncher:         options.OutputBrokerLauncher,
+		adoptedOutputs:               make(map[outputBrokerKey]*adoptedOutput),
+		resets:                       make(map[*resetProcess]struct{}),
+		resetCheckouts:               make(map[string]*resetProcess),
 	}
 }
 
@@ -570,6 +572,27 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("prepare Harbor host environment: %w", err)
 	}
+	artifactRoot, err := prepareDevelopmentArtifactRoot(
+		supervisor.developmentArtifactDirectory,
+		request.ProjectID,
+		request.SessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("prepare Harbor development artifact root: %w", err)
+	}
+	artifactProcessStarted := false
+	artifactTreeSettled := false
+	artifactTransferred := false
+	defer func() {
+		if artifactTransferred {
+			return
+		}
+		if !artifactProcessStarted || artifactTreeSettled {
+			_ = artifactRoot.remove()
+			return
+		}
+		_ = artifactRoot.retain()
+	}()
 	command := exec.Command(executable, "dev")
 	command.Dir = checkoutRoot
 	managedLaunchPath := ""
@@ -586,6 +609,14 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		}
 	}()
 	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
+	command.Env = mergeEnvironmentAssignments(
+		command.Env,
+		[]string{developmentArtifactRootEnvironment},
+		[]environmentAssignment{{
+			name:  developmentArtifactRootEnvironment,
+			value: artifactRoot.path,
+		}},
+	)
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -633,9 +664,11 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		relay.finish()
 		return nil, fmt.Errorf("start forj dev: %w", err)
 	}
+	artifactProcessStarted = true
 	if supervisor.afterCommandStart != nil {
 		if err := supervisor.afterCommandStart(); err != nil {
 			cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
+			artifactTreeSettled = cleanupErr == nil
 			_ = stdout.Close()
 			_ = stdoutChild.Close()
 			_ = stderr.Close()
@@ -694,6 +727,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
+		artifactTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -710,6 +744,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
+		artifactTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -725,6 +760,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
+		artifactTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -740,6 +776,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
+		artifactTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -783,6 +820,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		signalsDone:       make(chan struct{}),
 		stopComplete:      make(chan struct{}),
 		managedLaunchPath: managedLaunchPath,
+		artifactRoot:      artifactRoot,
 	}
 	supervisor.mu.Lock()
 	if supervisor.closed {
@@ -791,6 +829,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = brokerAttachment.Close()
 		}
 		cleanupErr := supervisor.terminateAcceptedCommand(command, platform)
+		artifactTreeSettled = cleanupErr == nil
 		traceCleanup = cleanupErr == nil
 		if cleanupErr != nil {
 			_ = stdout.Close()
@@ -807,6 +846,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	supervisor.releaseLaunchLocked(reservation)
 	promoted = true
 	supervisor.mu.Unlock()
+	artifactTransferred = true
 	traceCleanup = false
 	if brokerAttachment != nil {
 		_ = stdout.Close()
@@ -1265,6 +1305,11 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 			supervisor.removeSettledServiceLogStream(stream.key, stream)
 		}
 	}
+	if treeSettlementErr == nil {
+		cleanupErr = errors.Join(cleanupErr, process.artifactRoot.remove())
+	} else {
+		cleanupErr = errors.Join(cleanupErr, process.artifactRoot.retain())
+	}
 	if treeSettlementErr == nil && stopRequested && process.retireLaunchTrace.Load() {
 		cleanupErr = errors.Join(
 			cleanupErr,
@@ -1328,6 +1373,7 @@ type managedProcess struct {
 	stopErr           error
 	stopComplete      chan struct{}
 	managedLaunchPath string
+	artifactRoot      *developmentArtifactRoot
 }
 
 // requestStop starts the one bounded graceful-shutdown sequence shared by concurrent callers.

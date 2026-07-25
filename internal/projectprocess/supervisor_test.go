@@ -108,6 +108,7 @@ func init() {
 	fmt.Fprintf(os.Stdout, "database-url=%s\n", os.Getenv("DATABASE_URL"))
 	fmt.Fprintf(os.Stdout, "legacy-build-environment-overrides=%s\n", os.Getenv(legacyBuildEnvironmentOverridesEnvName))
 	fmt.Fprintf(os.Stdout, "legacy-private-build-environment-overrides=%s\n", os.Getenv(legacyPrivateBuildEnvironmentOverridesName))
+	fmt.Fprintf(os.Stdout, "development-artifact-root=%s\n", os.Getenv(developmentArtifactRootEnvironment))
 	fmt.Fprintf(os.Stdout, "override=%s\n", os.Getenv(helperOverrideEnvironment))
 	emptyValue, emptyPresent := os.LookupEnv(helperEmptyEnvironment)
 	fmt.Fprintf(os.Stdout, "empty=%t:%s\n", emptyPresent, emptyValue)
@@ -510,6 +511,18 @@ func TestStartLaunchesExactForjDevelopmentCommand(t *testing.T) {
 	waitForOutput(t, stdout, "plain=1")
 	waitForOutput(t, stdout, "working-directory="+canonicalCheckout)
 	waitForOutput(t, stderr, "ready")
+	artifactPath, _, err := developmentArtifactPath(
+		supervisor.developmentArtifactDirectory,
+		"project-one",
+		"session-one",
+	)
+	if err != nil {
+		t.Fatalf("developmentArtifactPath() error = %v", err)
+	}
+	waitForOutput(t, stdout, "development-artifact-root="+artifactPath)
+	if _, err := os.Stat(artifactPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("development artifact root after process exit error = %v, want not exist", err)
+	}
 
 	info := handle.Info()
 	if info.ProjectID != "project-one" || info.SessionID != "session-one" {
@@ -768,7 +781,7 @@ func TestStartUsesCapturedEnvironment(t *testing.T) {
 	}
 	waitForOutput(t, stdout, "app-name=\n")
 	waitForOutput(t, stdout, "forj-app=\n")
-	if output := stdout.String(); strings.Contains(output, "harbor") {
+	if output := stdout.String(); strings.Contains(output, "app-name=harbor") || strings.Contains(output, "forj-app=harbord") {
 		t.Fatalf("managed project inherited Harbor app identity: %q", output)
 	}
 }
