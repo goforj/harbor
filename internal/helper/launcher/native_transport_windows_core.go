@@ -167,7 +167,11 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	case accepted = <-accepts:
 	case waitResult := <-waits:
 		closeWindowsPendingAccept(listener, accepts)
-		return finishIndeterminateWindowsProcess(launch.process, waits, &waitResult, transportFailureWindowsProcessExitedBeforePipe)
+		failure := windowsChildInvocationFailure(waitResult.exitCode)
+		if failure == transportFailureNone {
+			failure = transportFailureWindowsProcessExitedBeforePipe
+		}
+		return finishIndeterminateWindowsProcess(launch.process, waits, &waitResult, failure)
 	case <-ctx.Done():
 		closeWindowsPendingAccept(listener, accepts)
 		return finishIndeterminateWindowsProcess(launch.process, waits, nil, transportFailureWindowsContextBeforePipe)
@@ -210,6 +214,9 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 	case ctx.Err() != nil:
 		return indeterminateWindowsTransport(transportFailureWindowsContextAfterExchange)
 	}
+	if failure := windowsChildInvocationFailure(waitResult.exitCode); failure != transportFailureNone {
+		return indeterminateWindowsTransport(failure)
+	}
 	if waitResult.exitCode != ExitCodeSucceeded && waitResult.exitCode != ExitCodeHelperFailed {
 		return indeterminateWindowsTransport(transportFailureWindowsExitCode)
 	}
@@ -222,6 +229,26 @@ func (transport *windowsNativeTransport) Invoke(ctx context.Context, request io.
 		return indeterminateWindowsTransport(transportFailureWindowsResponseWrite)
 	}
 	return TransportResult{State: TransportCompleted, ExitCode: waitResult.exitCode}
+}
+
+// windowsChildInvocationFailure converts only the helper's reviewed pre-dispatch statuses into safe stages.
+func windowsChildInvocationFailure(exitCode int) transportFailureStage {
+	switch exitCode {
+	case helper.WindowsInvocationExitPipeConnection:
+		return transportFailureWindowsChildPipeConnection
+	case helper.WindowsInvocationExitMessageMode:
+		return transportFailureWindowsChildMessageMode
+	case helper.WindowsInvocationExitTokenIdentity:
+		return transportFailureWindowsChildTokenIdentity
+	case helper.WindowsInvocationExitPipeSecurity:
+		return transportFailureWindowsChildPipeSecurity
+	case helper.WindowsInvocationExitServerIdentity:
+		return transportFailureWindowsChildServerIdentity
+	case helper.WindowsInvocationExitRetainConnection:
+		return transportFailureWindowsChildRetainConnection
+	default:
+		return transportFailureNone
+	}
 }
 
 // validInstalledWindowsHelper accepts only a trusted, immutable, direct installation object.

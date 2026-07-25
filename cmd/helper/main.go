@@ -105,7 +105,7 @@ func main() {
 	os.Clearenv()
 	invocation, err := openPlatformInvocation(os.Args, os.Stdin, os.Stdout)
 	if err != nil {
-		os.Exit(1)
+		os.Exit(platformInvocationFailureExitCode(err))
 	}
 	runErr := runWithPlatformParentLiveness(func(ctx context.Context) error {
 		return run(ctx, invocation.reader, invocation.writer, helper.SystemClock{}, productionDependencies())

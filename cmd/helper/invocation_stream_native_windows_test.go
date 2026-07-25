@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/goforj/harbor/internal/helper"
 	"golang.org/x/sys/windows"
 )
 
@@ -139,6 +140,27 @@ func TestOpenWindowsHelperPipeAuthenticatesNativeServerAndPreservesMessageEOF(t 
 	}
 	if result.response != response {
 		t.Fatalf("native Windows helper response length = %d, want %d", len(result.response), len(response))
+	}
+}
+
+// TestPlatformInvocationFailureExitCodeKeepsWindowsAdmissionStagesDistinct verifies bounded child evidence.
+func TestPlatformInvocationFailureExitCodeKeepsWindowsAdmissionStagesDistinct(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{err: errWindowsInvocationPipeConnection, want: helper.WindowsInvocationExitPipeConnection},
+		{err: errWindowsInvocationMessageMode, want: helper.WindowsInvocationExitMessageMode},
+		{err: errWindowsInvocationTokenIdentity, want: helper.WindowsInvocationExitTokenIdentity},
+		{err: errWindowsInvocationPipeSecurity, want: helper.WindowsInvocationExitPipeSecurity},
+		{err: errWindowsInvocationServerIdentity, want: helper.WindowsInvocationExitServerIdentity},
+		{err: errWindowsInvocationRetain, want: helper.WindowsInvocationExitRetainConnection},
+		{err: errors.New("unclassified"), want: 1},
+	}
+	for _, test := range tests {
+		if got := platformInvocationFailureExitCode(fmt.Errorf("wrapped: %w", test.err)); got != test.want {
+			t.Fatalf("platformInvocationFailureExitCode(%v) = %d, want %d", test.err, got, test.want)
+		}
 	}
 }
 

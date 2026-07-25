@@ -12,3 +12,8 @@ func openPlatformInvocation(_ []string, standardInput io.Reader, standardOutput 
 		close:  func() error { return nil },
 	}, nil
 }
+
+// platformInvocationFailureExitCode keeps inherited-stream failures on the ordinary helper failure status.
+func platformInvocationFailureExitCode(error) int {
+	return 1
+}

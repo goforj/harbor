@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/goforj/harbor/internal/helper"
 )
 
 const windowsTestHelperExecutable = `C:\Program Files\GoForj\Harbor\harbor-helper.exe`
@@ -157,6 +159,27 @@ func validWindowsTestMetadata() windowsHelperMetadata {
 		daclProtected:    true,
 		daclRestricted:   true,
 		signatureTrusted: true,
+	}
+}
+
+// TestWindowsChildInvocationFailureMapsOnlyReviewedExitCodes rejects arbitrary process statuses.
+func TestWindowsChildInvocationFailureMapsOnlyReviewedExitCodes(t *testing.T) {
+	tests := []struct {
+		exitCode int
+		want     transportFailureStage
+	}{
+		{exitCode: helper.WindowsInvocationExitPipeConnection, want: transportFailureWindowsChildPipeConnection},
+		{exitCode: helper.WindowsInvocationExitMessageMode, want: transportFailureWindowsChildMessageMode},
+		{exitCode: helper.WindowsInvocationExitTokenIdentity, want: transportFailureWindowsChildTokenIdentity},
+		{exitCode: helper.WindowsInvocationExitPipeSecurity, want: transportFailureWindowsChildPipeSecurity},
+		{exitCode: helper.WindowsInvocationExitServerIdentity, want: transportFailureWindowsChildServerIdentity},
+		{exitCode: helper.WindowsInvocationExitRetainConnection, want: transportFailureWindowsChildRetainConnection},
+		{exitCode: 73, want: transportFailureNone},
+	}
+	for _, test := range tests {
+		if got := windowsChildInvocationFailure(test.exitCode); got != test.want {
+			t.Fatalf("windowsChildInvocationFailure(%d) = %d, want %d", test.exitCode, got, test.want)
+		}
 	}
 }
 

@@ -9,12 +9,22 @@ import (
 	"os"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/helper"
 	"golang.org/x/sys/windows"
 )
 
 const (
 	windowsInvocationSystemSID     = "S-1-5-18"
 	windowsInvocationPipeAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+)
+
+var (
+	errWindowsInvocationPipeConnection = errors.New("Windows helper pipe connection failed")
+	errWindowsInvocationMessageMode    = errors.New("Windows helper pipe message mode failed")
+	errWindowsInvocationTokenIdentity  = errors.New("Windows helper token identity failed")
+	errWindowsInvocationPipeSecurity   = errors.New("Windows helper pipe security failed")
+	errWindowsInvocationServerIdentity = errors.New("Windows helper server identity failed")
+	errWindowsInvocationRetain         = errors.New("Windows helper pipe retention failed")
 )
 
 // windowsHelperPipeConnection preserves message continuation and terminates the single-request stream at its message boundary.
@@ -32,7 +42,7 @@ func openPlatformInvocation(arguments []string, _ io.Reader, _ io.Writer) (invoc
 func openWindowsHelperPipe(path string) (io.ReadWriteCloser, error) {
 	pathPointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return nil, fmt.Errorf("encode Windows helper invocation pipe: %w", err)
+		return nil, fmt.Errorf("%w: encode pipe path: %v", errWindowsInvocationPipeConnection, err)
 	}
 	handle, err := windows.CreateFile(
 		pathPointer,
@@ -44,7 +54,7 @@ func openWindowsHelperPipe(path string) (io.ReadWriteCloser, error) {
 		0,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errWindowsInvocationPipeConnection, err)
 	}
 	closeOnError := func(openErr error) (io.ReadWriteCloser, error) {
 		return nil, errors.Join(openErr, windows.CloseHandle(handle))
@@ -52,24 +62,44 @@ func openWindowsHelperPipe(path string) (io.ReadWriteCloser, error) {
 
 	readMode := uint32(windows.PIPE_READMODE_MESSAGE)
 	if err := windows.SetNamedPipeHandleState(handle, &readMode, nil, nil); err != nil {
-		return closeOnError(fmt.Errorf("set Windows helper invocation pipe message mode: %w", err))
+		return closeOnError(fmt.Errorf("%w: %v", errWindowsInvocationMessageMode, err))
 	}
 	userID, err := currentWindowsInvocationUserID()
 	if err != nil {
-		return closeOnError(err)
+		return closeOnError(fmt.Errorf("%w: %v", errWindowsInvocationTokenIdentity, err))
 	}
 	if err := validateWindowsInvocationPipeSecurity(handle, userID); err != nil {
-		return closeOnError(err)
+		return closeOnError(fmt.Errorf("%w: %v", errWindowsInvocationPipeSecurity, err))
 	}
 	if err := validateWindowsInvocationServer(handle, userID); err != nil {
-		return closeOnError(err)
+		return closeOnError(fmt.Errorf("%w: %v", errWindowsInvocationServerIdentity, err))
 	}
 
 	file := os.NewFile(uintptr(handle), path)
 	if file == nil {
-		return closeOnError(errors.New("retain Windows helper invocation pipe"))
+		return closeOnError(errWindowsInvocationRetain)
 	}
 	return &windowsHelperPipeConnection{File: file}, nil
+}
+
+// platformInvocationFailureExitCode maps only reviewed pre-dispatch admission stages to bounded process evidence.
+func platformInvocationFailureExitCode(err error) int {
+	switch {
+	case errors.Is(err, errWindowsInvocationPipeConnection):
+		return helper.WindowsInvocationExitPipeConnection
+	case errors.Is(err, errWindowsInvocationMessageMode):
+		return helper.WindowsInvocationExitMessageMode
+	case errors.Is(err, errWindowsInvocationTokenIdentity):
+		return helper.WindowsInvocationExitTokenIdentity
+	case errors.Is(err, errWindowsInvocationPipeSecurity):
+		return helper.WindowsInvocationExitPipeSecurity
+	case errors.Is(err, errWindowsInvocationServerIdentity):
+		return helper.WindowsInvocationExitServerIdentity
+	case errors.Is(err, errWindowsInvocationRetain):
+		return helper.WindowsInvocationExitRetainConnection
+	default:
+		return 1
+	}
 }
 
 // Read hides ERROR_MORE_DATA so the bounded codec can assemble one request message across buffer growth.

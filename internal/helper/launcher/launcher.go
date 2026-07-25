@@ -96,6 +96,12 @@ const (
 	transportFailureWindowsExitCode
 	transportFailureWindowsEmptyResponse
 	transportFailureWindowsResponseWrite
+	transportFailureWindowsChildPipeConnection
+	transportFailureWindowsChildMessageMode
+	transportFailureWindowsChildTokenIdentity
+	transportFailureWindowsChildPipeSecurity
+	transportFailureWindowsChildServerIdentity
+	transportFailureWindowsChildRetainConnection
 )
 
 // Transport performs one native consent and helper-process exchange.
@@ -287,6 +293,18 @@ func transportFailureLabel(stage transportFailureStage) string {
 		return "Windows empty helper response"
 	case transportFailureWindowsResponseWrite:
 		return "Windows response forwarding"
+	case transportFailureWindowsChildPipeConnection:
+		return "Windows child pipe connection"
+	case transportFailureWindowsChildMessageMode:
+		return "Windows child pipe message mode"
+	case transportFailureWindowsChildTokenIdentity:
+		return "Windows child token identity"
+	case transportFailureWindowsChildPipeSecurity:
+		return "Windows child pipe security"
+	case transportFailureWindowsChildServerIdentity:
+		return "Windows child server identity"
+	case transportFailureWindowsChildRetainConnection:
+		return "Windows child pipe retention"
 	default:
 		return "unrecognized native lifecycle stage"
 	}
