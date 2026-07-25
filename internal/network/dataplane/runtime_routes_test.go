@@ -537,8 +537,9 @@ func TestRuntimeReplaceHTTPRoutesRejectsInvalidLifecycleAndTopology(t *testing.T
 		t.Fatalf("ReplaceHTTPRoutes(forged) error = %v", err)
 	}
 
-	changedPorts := reserveTCPPorts(t, 2)
-	changedListeners := ListenerPlan{DNS: reserveDNSPort(t), HTTP: changedPorts[0], HTTPS: changedPorts[1]}
+	changedDNS := reserveDNSPort(t)
+	changedPorts := reserveDistinctTCPPorts(t, 2, changedDNS)
+	changedListeners := ListenerPlan{DNS: changedDNS, HTTP: changedPorts[0], HTTPS: changedPorts[1]}
 	changedListenerState := mustDesiredState(t, changedListeners, fixture.next.HTTPRoutes(), fixture.native)
 	if err := fixture.runtime.ReplaceHTTPRoutes(changedListenerState); err == nil || !strings.Contains(err.Error(), "listener topology") {
 		t.Fatalf("ReplaceHTTPRoutes(changed listeners) error = %v", err)
