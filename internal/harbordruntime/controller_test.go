@@ -2253,6 +2253,57 @@ func TestControllerStageProjectNativeRoutesPublishesBeforeReady(t *testing.T) {
 	}
 }
 
+// TestControllerStageProjectNativeRoutesWaitsForContainerListener proves normal post-Compose socket warm-up does not fail the project start.
+func TestControllerStageProjectNativeRoutesWaitsForContainerListener(t *testing.T) {
+	runtimeState := initializedControllerRuntimeState()
+	runtimeState.Snapshot.Projects[0].State = domain.ProjectStarting
+	source := &testRuntimeStateSource{
+		snapshot:           runtimeState.Snapshot,
+		network:            runtimeState.Network,
+		networkInitialized: true,
+	}
+	traefik := dataplane.NativeRoute{
+		ID:       "orders:service:traefik",
+		Host:     "traefik.orders.test",
+		Listen:   netip.MustParseAddrPort("127.77.0.10:80"),
+		Upstream: netip.MustParseAddrPort("127.77.0.10:80"),
+		Direct:   true,
+	}
+	runtime := &directPublicationDataPlane{testDataPlane: &testDataPlane{
+		snapshot: dataplane.Snapshot{
+			State:   dataplane.StateReady,
+			Relays:  []dataplane.RelayStatus{},
+			Directs: []dataplane.DirectStatus{},
+		},
+	}}
+	probes := 0
+	controller := &Controller{
+		initialized: true,
+		source:      source,
+		state:       controllerStateReady,
+		dataPlane:   runtime,
+		dependencies: dependencies{
+			nativeSocketProbe: func(context.Context, netip.AddrPort) error {
+				probes++
+				if probes == 1 {
+					return errors.New("connection refused")
+				}
+				return nil
+			},
+		},
+	}
+
+	if err := controller.StageProjectNativeRoutes(t.Context(), "orders", []dataplane.NativeRoute{traefik}); err != nil {
+		t.Fatalf("StageProjectNativeRoutes() error = %v", err)
+	}
+	if probes < 2 {
+		t.Fatalf("native socket probes = %d, want a retry after the initial refusal", probes)
+	}
+	if len(runtime.nativeReplacements) != 1 || !reflect.DeepEqual(runtime.nativeReplacements[0], []dataplane.NativeRoute{traefik}) {
+		t.Fatalf("native replacements = %#v, want staged Traefik route", runtime.nativeReplacements)
+	}
+}
+
 // TestControllerReconcileProjectNativeRoutesSerializesConcurrentProjects proves simultaneous starts cannot lose either route.
 func TestControllerReconcileProjectNativeRoutesSerializesConcurrentProjects(t *testing.T) {
 	runtimeState := initializedControllerRuntimeState()

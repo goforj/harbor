@@ -21,7 +21,11 @@ import (
 	"github.com/goforj/harbor/internal/trust/materialstore"
 )
 
-const cleanupTimeout = 35 * time.Second
+const (
+	cleanupTimeout                         = 35 * time.Second
+	managedNativeRouteStartupTimeout       = 20 * time.Second
+	managedNativeRouteStartupRetryInterval = 100 * time.Millisecond
+)
 
 var (
 	// ErrNotInitialized reports use of a zero-value or otherwise unconstructed Controller.
@@ -543,7 +547,46 @@ func (controller *Controller) StageProjectNativeRoutes(
 	projectID domain.ProjectID,
 	routes []dataplane.NativeRoute,
 ) error {
+	if controller == nil || !controller.initialized {
+		return ErrNotInitialized
+	}
+	if err := controller.waitForManagedDirectRoutes(ctx, routes); err != nil {
+		return err
+	}
 	return controller.replaceProjectNativeRoutes(ctx, projectID, routes, domain.ProjectStarting)
+}
+
+// waitForManagedDirectRoutes allows newly running containers to open their published sockets before Harbor exposes DNS.
+func (controller *Controller) waitForManagedDirectRoutes(
+	ctx context.Context,
+	routes []dataplane.NativeRoute,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitContext, cancel := context.WithTimeout(ctx, managedNativeRouteStartupTimeout)
+	defer cancel()
+	var probeErr error
+	for {
+		probeErr = controller.probeManagedDirectRoutes(waitContext, routes)
+		if probeErr == nil {
+			return nil
+		}
+		timer := time.NewTimer(managedNativeRouteStartupRetryInterval)
+		select {
+		case <-waitContext.Done():
+			timer.Stop()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf(
+				"%w after waiting %s for the startup listener",
+				probeErr,
+				managedNativeRouteStartupTimeout,
+			)
+		case <-timer.C:
+		}
+	}
 }
 
 // replaceProjectNativeRoutes atomically replaces one project's routes under the required durable lifecycle state.
