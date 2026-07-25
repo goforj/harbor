@@ -184,6 +184,12 @@ func TestPlatformRuntimeFailureExitCodeKeepsWindowsStartupStagesDistinct(t *test
 		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupTopology), want: helper.WindowsInvocationExitTicketTopology},
 		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupOwnership), want: helper.WindowsInvocationExitOwnershipStore},
 		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupRevalidation), want: helper.WindowsInvocationExitTicketRevalidation},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupRootPolicy), want: helper.WindowsInvocationExitTicketRootPolicy},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupTicketsPolicy), want: helper.WindowsInvocationExitTicketsPolicy},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupPendingPolicy), want: helper.WindowsInvocationExitPendingPolicy},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupClaimsPolicy), want: helper.WindowsInvocationExitClaimsPolicy},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupStatePolicy), want: helper.WindowsInvocationExitStatePolicy},
+		{err: errors.Join(errRuntimeTicketStore, ticketredeemer.ErrStartupVolumePolicy), want: helper.WindowsInvocationExitTicketVolume},
 		{err: errors.New("unclassified"), want: 1},
 	}
 	for _, test := range tests {

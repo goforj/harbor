@@ -124,6 +124,18 @@ func platformRuntimeFailureExitCode(err error) int {
 			return helper.WindowsInvocationExitStateDirectory
 		case errors.Is(err, ticketredeemer.ErrStartupPendingIdentity):
 			return helper.WindowsInvocationExitPendingIdentity
+		case errors.Is(err, ticketredeemer.ErrStartupRootPolicy):
+			return helper.WindowsInvocationExitTicketRootPolicy
+		case errors.Is(err, ticketredeemer.ErrStartupTicketsPolicy):
+			return helper.WindowsInvocationExitTicketsPolicy
+		case errors.Is(err, ticketredeemer.ErrStartupPendingPolicy):
+			return helper.WindowsInvocationExitPendingPolicy
+		case errors.Is(err, ticketredeemer.ErrStartupClaimsPolicy):
+			return helper.WindowsInvocationExitClaimsPolicy
+		case errors.Is(err, ticketredeemer.ErrStartupStatePolicy):
+			return helper.WindowsInvocationExitStatePolicy
+		case errors.Is(err, ticketredeemer.ErrStartupVolumePolicy):
+			return helper.WindowsInvocationExitTicketVolume
 		case errors.Is(err, ticketredeemer.ErrStartupTopology):
 			return helper.WindowsInvocationExitTicketTopology
 		case errors.Is(err, ticketredeemer.ErrStartupOwnership):

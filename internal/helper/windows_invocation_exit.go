@@ -39,4 +39,16 @@ const (
 	WindowsInvocationExitOwnershipStore = 27
 	// WindowsInvocationExitTicketRevalidation identifies a ticket topology change during startup.
 	WindowsInvocationExitTicketRevalidation = 28
+	// WindowsInvocationExitTicketRootPolicy identifies rejection of the root gateway policy.
+	WindowsInvocationExitTicketRootPolicy = 29
+	// WindowsInvocationExitTicketsPolicy identifies rejection of the tickets gateway policy.
+	WindowsInvocationExitTicketsPolicy = 30
+	// WindowsInvocationExitPendingPolicy identifies rejection of the pending requester policy.
+	WindowsInvocationExitPendingPolicy = 31
+	// WindowsInvocationExitClaimsPolicy identifies rejection of the claims machine policy.
+	WindowsInvocationExitClaimsPolicy = 32
+	// WindowsInvocationExitStatePolicy identifies rejection of the state machine policy.
+	WindowsInvocationExitStatePolicy = 33
+	// WindowsInvocationExitTicketVolume identifies rejection of the ticket volume boundary.
+	WindowsInvocationExitTicketVolume = 34
 )

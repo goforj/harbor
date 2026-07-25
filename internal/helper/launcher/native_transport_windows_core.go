@@ -272,6 +272,18 @@ func windowsChildInvocationFailure(exitCode int) transportFailureStage {
 		return transportFailureWindowsChildOwnershipStore
 	case helper.WindowsInvocationExitTicketRevalidation:
 		return transportFailureWindowsChildTicketRevalidation
+	case helper.WindowsInvocationExitTicketRootPolicy:
+		return transportFailureWindowsChildTicketRootPolicy
+	case helper.WindowsInvocationExitTicketsPolicy:
+		return transportFailureWindowsChildTicketsPolicy
+	case helper.WindowsInvocationExitPendingPolicy:
+		return transportFailureWindowsChildPendingPolicy
+	case helper.WindowsInvocationExitClaimsPolicy:
+		return transportFailureWindowsChildClaimsPolicy
+	case helper.WindowsInvocationExitStatePolicy:
+		return transportFailureWindowsChildStatePolicy
+	case helper.WindowsInvocationExitTicketVolume:
+		return transportFailureWindowsChildTicketVolume
 	default:
 		return transportFailureNone
 	}

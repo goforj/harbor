@@ -43,6 +43,18 @@ var (
 	ErrStartupPendingIdentity = errors.New("helper ticket startup pending identity failed")
 	// ErrStartupTopology identifies rejection of the retained ticket directory topology.
 	ErrStartupTopology = errors.New("helper ticket startup topology failed")
+	// ErrStartupRootPolicy identifies rejection of the protected root's exact gateway policy.
+	ErrStartupRootPolicy = errors.New("helper ticket startup root policy failed")
+	// ErrStartupTicketsPolicy identifies rejection of the tickets directory's exact gateway policy.
+	ErrStartupTicketsPolicy = errors.New("helper ticket startup tickets policy failed")
+	// ErrStartupPendingPolicy identifies rejection of the pending directory's exact requester policy.
+	ErrStartupPendingPolicy = errors.New("helper ticket startup pending policy failed")
+	// ErrStartupClaimsPolicy identifies rejection of the claims directory's exact machine policy.
+	ErrStartupClaimsPolicy = errors.New("helper ticket startup claims policy failed")
+	// ErrStartupStatePolicy identifies rejection of the state directory's exact machine policy.
+	ErrStartupStatePolicy = errors.New("helper ticket startup state policy failed")
+	// ErrStartupVolumePolicy identifies rejection of the pending-to-claims volume boundary.
+	ErrStartupVolumePolicy = errors.New("helper ticket startup volume policy failed")
 	// ErrStartupOwnership identifies failure to open the protected ownership store.
 	ErrStartupOwnership = errors.New("helper ticket startup ownership store failed")
 	// ErrStartupRevalidation identifies a topology change while protected authorities were opening.
@@ -904,26 +916,26 @@ func (topology *topology) validate() error {
 // validateRetained applies exact gateway, interactive, and machine policies to the already opened topology.
 func (topology *topology) validateRetained() error {
 	if err := validatePlatformGatewayDirectory(topology.root, topology.requesterIdentity); err != nil {
-		return errors.Join(ErrUnsafePath, fmt.Errorf("validate helper ticket root: %w", err))
+		return errors.Join(ErrUnsafePath, fmt.Errorf("%w: %w", ErrStartupRootPolicy, err))
 	}
 	if err := validatePlatformGatewayDirectory(topology.tickets, topology.requesterIdentity); err != nil {
-		return errors.Join(ErrUnsafePath, fmt.Errorf("validate helper tickets directory: %w", err))
+		return errors.Join(ErrUnsafePath, fmt.Errorf("%w: %w", ErrStartupTicketsPolicy, err))
 	}
 	identity, err := platformPendingIdentity(topology.pending)
 	if err != nil {
-		return errors.Join(ErrUnsafePath, fmt.Errorf("validate pending tickets directory: %w", err))
+		return errors.Join(ErrUnsafePath, fmt.Errorf("%w: %w", ErrStartupPendingPolicy, err))
 	}
 	if identity != topology.requesterIdentity {
-		return errors.Join(ErrUnsafePath, errors.New("pending ticket owner changed after admission"))
+		return errors.Join(ErrUnsafePath, ErrStartupPendingPolicy, errors.New("pending ticket owner changed after admission"))
 	}
 	if err := validatePlatformMachineDirectory(topology.claims); err != nil {
-		return errors.Join(ErrUnsafePath, fmt.Errorf("validate claimed tickets directory: %w", err))
+		return errors.Join(ErrUnsafePath, fmt.Errorf("%w: %w", ErrStartupClaimsPolicy, err))
 	}
 	if err := validatePlatformMachineDirectory(topology.state); err != nil {
-		return errors.Join(ErrUnsafePath, fmt.Errorf("validate helper state directory: %w", err))
+		return errors.Join(ErrUnsafePath, fmt.Errorf("%w: %w", ErrStartupStatePolicy, err))
 	}
 	if err := validatePlatformTopology(topology.tickets, topology.pending, topology.claims); err != nil {
-		return errors.Join(ErrUnsafePath, fmt.Errorf("validate ticket filesystem topology: %w", err))
+		return errors.Join(ErrUnsafePath, fmt.Errorf("%w: %w", ErrStartupVolumePolicy, err))
 	}
 	return nil
 }
