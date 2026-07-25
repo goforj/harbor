@@ -72,7 +72,7 @@ func Build(request Request) (networkpolicy.Policy, error) {
 
 	switch request.Platform {
 	case PlatformMacOS:
-		return buildRedirectedPolicy(request, macOSMechanismsForBuild())
+		return buildRedirectedPolicy(request, networkpolicy.MacOSMechanisms())
 	case PlatformUbuntu2404:
 		return buildRedirectedPolicy(request, networkpolicy.UbuntuMechanisms())
 	case PlatformWindows11:
