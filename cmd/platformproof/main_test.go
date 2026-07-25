@@ -85,6 +85,21 @@ func TestVerifyLinuxWorkerProfileEvidenceRequiresValidInputs(t *testing.T) {
 
 const linuxWorkerTestCLICommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+// TestVerifyTrustedHTTPSLifecycleEvidenceRequiresValidInputs keeps an unbound lifecycle artifact out of the product gate.
+func TestVerifyTrustedHTTPSLifecycleEvidenceRequiresValidInputs(t *testing.T) {
+	t.Parallel()
+
+	for _, arguments := range [][]string{
+		{"--root", "evidence"},
+		{"--platform", "darwin"},
+		{"--root", "evidence", "--platform", "linux"},
+	} {
+		if err := verifyTrustedHTTPSLifecycleEvidence(arguments); err == nil {
+			t.Fatalf("expected arguments %v to fail", arguments)
+		}
+	}
+}
+
 // TestVerifyWindowsWorkerProfileEvidenceRequiresValidInputs keeps an unbound worker artifact out of the product gate.
 func TestVerifyWindowsWorkerProfileEvidenceRequiresValidInputs(t *testing.T) {
 	t.Parallel()

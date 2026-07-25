@@ -41,11 +41,11 @@ jobs:
           printf 'approved_sha=%s\n' "$APPROVED_SHA" >> "$GITHUB_OUTPUT"
 
   profile:
-    name: Prove macOS 15 profile and Docker lifecycle
+    name: Prove macOS 15 Docker and trusted HTTPS lifecycle
     needs: admit
     environment: macos-product-evidence
     runs-on: [self-hosted, ephemeral, harbor-product, macos, arm64]
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       GOCACHE: /tmp/gocache
       GOMODCACHE: /tmp/gomodcache
@@ -174,7 +174,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Build pinned GoForj tools
+      - name: Build product binaries and pinned GoForj tools
         shell: bash
         run: |
           set -euo pipefail
@@ -182,12 +182,18 @@ jobs:
           binary="${binary_directory}/forj"
           [[ ! -e "$binary_directory" ]]
           install -d -m 0700 "$binary_directory"
+          go build -trimpath -o "${binary_directory}/harbor" ./cmd/app
+          go build -trimpath -o "${binary_directory}/harbord" ./cmd/harbord
+          go build -trimpath -o "${binary_directory}/helper" ./cmd/helper
+          go build -trimpath -o "${binary_directory}/devbootstrap" ./cmd/devbootstrap
+          go build -trimpath -o "${binary_directory}/launchdrelay" ./cmd/launchdrelay
           (
             cd .ci/goforj
             go build -trimpath -o "$binary" ./cmd/forj
           )
           GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           printf 'HARBOR_PROJECT_IDENTITY_FORJ_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf 'HARBOR_MACOS_PRODUCT_BINARY_DIRECTORY=%s\n' "$binary_directory" >> "$GITHUB_ENV"
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
 
       - name: Require provisioner-owned proof identities
@@ -240,6 +246,93 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Install reviewed development helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n "${HARBOR_MACOS_PRODUCT_BINARY_DIRECTORY}/devbootstrap" \
+            --helper "${HARBOR_MACOS_PRODUCT_BINARY_DIRECTORY}/helper" \
+            --launchd-relay "${HARBOR_MACOS_PRODUCT_BINARY_DIRECTORY}/launchdrelay" \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"
+
+      - name: Exercise genuine Authorization Services approval
+        shell: bash
+        env:
+          HARBOR_DARWIN_AUTHORIZATION_PREFLIGHT: "1"
+        run: |
+          set -euo pipefail
+          go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=5m \
+            -run '^TestDarwinAuthorizationPreflight$' \
+            ./internal/helper/launcher
+
+      - name: Exercise three-project trusted HTTPS lifecycle
+        shell: bash
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-bin/forj
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}/harbor-bin/harbor
+          HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}/harbor-bin/harbord
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ runner.temp }}/harbor-macos-trusted-https-evidence
+        run: |
+          set -euo pipefail
+          [[ "$(command -v forj)" == "${HARBOR_MACOS_PRODUCT_BINARY_DIRECTORY}/forj" ]]
+          [[ "$(command -v wire)" == "${HARBOR_MACOS_PRODUCT_BINARY_DIRECTORY}/wire" ]]
+          go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=25m \
+            -run '^TestDarwinTrustedHTTPSIntermediateNativeLifecycle$' \
+            ./internal/acceptance
+          go run ./cmd/platformproof verify-trusted-https \
+            --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \
+            --platform darwin
+
+      - name: Remove development bootstrap artifacts after failure
+        if: failure() || cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if sudo -n launchctl print system/com.goforj.harbor.launchdrelay >/dev/null 2>&1; then
+            sudo -n launchctl bootout system/com.goforj.harbor.launchdrelay
+          fi
+          sudo -n rm -f \
+            /Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist \
+            /Library/PrivilegedHelperTools/com.goforj.harbor.helper \
+            /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay \
+            /etc/resolver/test
+          if sudo -n test -e "/Library/Application Support/GoForj/Harbor/Privileged"; then
+            sudo -n rm -rf "/Library/Application Support/GoForj/Harbor/Privileged"
+          fi
+          sudo -n rmdir "/Library/Application Support/GoForj/Harbor" 2>/dev/null || true
+          sudo -n rmdir "/Library/Application Support/GoForj" 2>/dev/null || true
+          sudo -n rmdir /etc/resolver 2>/dev/null || true
+          while IFS= read -r path; do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              printf 'Harbor bootstrap cleanup left path: %s\n' "$path" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          /Library/Application Support/GoForj/Harbor/Privileged
+          /Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist
+          /Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
+          /etc/resolver/test
+          EOF
+
+      - name: Upload bounded trusted HTTPS lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-trusted-https-product-lifecycle
+          path: ${{ runner.temp }}/harbor-macos-trusted-https-evidence
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
     name: Verify macOS product-worker evidence
     needs: [admit, profile]
@@ -270,6 +363,12 @@ jobs:
           name: macos-docker-product-lifecycle
           path: macos-docker-product-evidence
 
+      - name: Download trusted HTTPS lifecycle evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-trusted-https-product-lifecycle
+          path: macos-trusted-https-evidence
+
       - name: Enforce exact product evidence
         run: |
           go run ./cmd/platformproof verify-macos-worker \
@@ -282,3 +381,6 @@ jobs:
             --platforms darwin \
             --app-port 3000 \
             --service-port 3306
+          go run ./cmd/platformproof verify-trusted-https \
+            --root macos-trusted-https-evidence \
+            --platform darwin

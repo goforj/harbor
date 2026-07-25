@@ -38,7 +38,7 @@ func main() {
 // run dispatches only the fixed proof commands built into this test binary.
 func run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, verify-linux-worker, verify-macos-worker, or verify-windows-worker command")
+		return errors.New("expected project-identity, identity-absent, verify, verify-docker-projects, verify-linux-worker, verify-macos-worker, verify-trusted-https, or verify-windows-worker command")
 	}
 
 	switch arguments[0] {
@@ -70,11 +70,33 @@ func run(ctx context.Context, arguments []string) error {
 		return verifyLinuxWorkerProfileEvidence(arguments[1:])
 	case "verify-macos-worker":
 		return verifyMacOSWorkerProfileEvidence(arguments[1:])
+	case "verify-trusted-https":
+		return verifyTrustedHTTPSLifecycleEvidence(arguments[1:])
 	case "verify-windows-worker":
 		return verifyWindowsWorkerProfileEvidence(arguments[1:])
 	default:
 		return fmt.Errorf("unknown platform proof command %q", arguments[0])
 	}
+}
+
+// verifyTrustedHTTPSLifecycleEvidence enforces one exact native trusted-HTTPS behavioral result.
+func verifyTrustedHTTPSLifecycleEvidence(arguments []string) error {
+	flags := flag.NewFlagSet("verify-trusted-https", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	root := flags.String("root", "", "directory containing native trusted-HTTPS lifecycle evidence")
+	platform := flags.String("platform", "", "native platform required by the gate")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if *root == "" || *platform == "" {
+		return errors.New("verify-trusted-https requires an evidence root and platform")
+	}
+	return productproof.VerifyTrustedHTTPSLifecycleEvidenceDirectory(*root, productproof.TrustedHTTPSLifecycleRequirement{
+		Platform: *platform,
+	})
 }
 
 // verifyLinuxWorkerProfileEvidence enforces one exact protected Linux product-worker profile.

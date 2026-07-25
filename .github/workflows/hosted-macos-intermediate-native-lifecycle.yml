@@ -232,6 +232,9 @@ jobs:
             -timeout=25m \
             -run '^TestDarwinTrustedHTTPSIntermediateNativeLifecycle$' \
             ./internal/acceptance
+          GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" go run ./cmd/platformproof verify-trusted-https \
+            --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \
+            --platform darwin
 
       - name: Report bounded Harbor host state before cleanup
         if: always()
