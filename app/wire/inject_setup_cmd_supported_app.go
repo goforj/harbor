@@ -1,10 +1,10 @@
-//go:build darwin && cgo
+//go:build (darwin && cgo) || linux || windows
 
 package wire
 
 import "github.com/goforj/harbor/internal/cmd"
 
-// provideSetupCmd assembles complete setup only where trusted-ingress authority is available.
+// provideSetupCmd assembles complete setup on every platform with reviewed trusted-ingress authority.
 func provideSetupCmd(
 	client *cmd.DaemonClient,
 	setup cmd.NetworkSetupApprovalRunner,

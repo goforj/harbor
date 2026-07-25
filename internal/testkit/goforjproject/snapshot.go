@@ -19,7 +19,7 @@ type Snapshot struct {
 
 // SnapshotEntry records one checkout path without following symbolic links.
 type SnapshotEntry struct {
-	// Path is the relative checkout path, with "." representing the root.
+	// Path is the slash-separated relative checkout path, with "." representing the root.
 	Path string
 	// Type identifies the direct filesystem object kind.
 	Type SnapshotEntryType
@@ -62,6 +62,7 @@ func CaptureSnapshot(root string) (Snapshot, error) {
 		if err != nil {
 			return fmt.Errorf("derive snapshot path: %w", err)
 		}
+		relative = filepath.ToSlash(relative)
 		information, err := os.Lstat(filename)
 		if err != nil {
 			return fmt.Errorf("inspect snapshot path %q: %w", relative, err)

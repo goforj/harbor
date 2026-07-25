@@ -1,4 +1,4 @@
-//go:build !darwin || !cgo
+//go:build (!darwin || !cgo) && !linux && !windows
 
 package wire
 
@@ -9,8 +9,8 @@ import (
 	"github.com/goforj/harbor/internal/cmd"
 )
 
-// TestProvideSetupCmdRetainsPoolOnlySetupOutsideDarwin preserves the existing cross-platform CLI boundary.
-func TestProvideSetupCmdRetainsPoolOnlySetupOutsideDarwin(t *testing.T) {
+// TestProvideSetupCmdRetainsPoolOnlySetupWithoutTrustedIngress preserves the unsupported-platform CLI boundary.
+func TestProvideSetupCmdRetainsPoolOnlySetupWithoutTrustedIngress(t *testing.T) {
 	client := cmd.NewDaemonClient()
 	command := provideSetupCmd(
 		client,
@@ -19,6 +19,6 @@ func TestProvideSetupCmdRetainsPoolOnlySetupOutsideDarwin(t *testing.T) {
 		provideNetworkDataPlaneSetupApprovalRunner(client),
 	)
 	if reflect.ValueOf(command).Elem().FieldByName("fullSetup").Bool() {
-		t.Fatal("provideSetupCmd() selected unsupported full setup outside Darwin with cgo")
+		t.Fatal("provideSetupCmd() selected full setup without trusted-ingress authority")
 	}
 }

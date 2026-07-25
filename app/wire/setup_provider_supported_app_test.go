@@ -1,4 +1,4 @@
-//go:build darwin && cgo
+//go:build (darwin && cgo) || linux || windows
 
 package wire
 
@@ -9,8 +9,8 @@ import (
 	"github.com/goforj/harbor/internal/cmd"
 )
 
-// TestProvideSetupCmdUsesFullSetupOnDarwin proves the shipping macOS build selects every network phase.
-func TestProvideSetupCmdUsesFullSetupOnDarwin(t *testing.T) {
+// TestProvideSetupCmdUsesFullSetupOnSupportedPlatforms proves shipping builds select every network phase.
+func TestProvideSetupCmdUsesFullSetupOnSupportedPlatforms(t *testing.T) {
 	client := cmd.NewDaemonClient()
 	command := provideSetupCmd(
 		client,
@@ -19,6 +19,6 @@ func TestProvideSetupCmdUsesFullSetupOnDarwin(t *testing.T) {
 		provideNetworkDataPlaneSetupApprovalRunner(client),
 	)
 	if !reflect.ValueOf(command).Elem().FieldByName("fullSetup").Bool() {
-		t.Fatal("provideSetupCmd() selected pool-only setup on Darwin with cgo")
+		t.Fatal("provideSetupCmd() selected pool-only setup on a trusted-ingress platform")
 	}
 }

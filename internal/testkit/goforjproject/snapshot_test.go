@@ -33,7 +33,7 @@ func TestCaptureSnapshotRecordsDirectCheckoutEntries(t *testing.T) {
 	if entries["nested"].Type != SnapshotEntryDirectory || entries["nested"].Permissions != 0o750 {
 		t.Fatalf("nested entry = %#v", entries["nested"])
 	}
-	file := entries[filepath.Join("nested", "application.txt")]
+	file := entries["nested/application.txt"]
 	if file.Type != SnapshotEntryRegularFile || file.Permissions != 0o640 || file.SHA256 == ([32]byte{}) {
 		t.Fatalf("file entry = %#v", file)
 	}
