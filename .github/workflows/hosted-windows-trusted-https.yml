@@ -179,48 +179,40 @@ jobs:
             [Text.UTF8Encoding]::new($false)
           )
 
-      - name: Report canonical ingress socket prerequisites
+      - name: Release hosted runner canonical ingress sockets
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-          $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          "identity=$($identity.Name) elevated=$isAdministrator"
-
-          $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {
-            $_.LocalPort -in @(80, 443)
-          } | Sort-Object LocalPort, OwningProcess)
-          if ($listeners.Count -eq 0) {
-            "canonical-listeners=none"
-          } else {
-            foreach ($listener in $listeners) {
-              "canonical-listener=$($listener.LocalAddress):$($listener.LocalPort) pid=$($listener.OwningProcess)"
-            }
+          $webService = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+          if ($null -ne $webService -and $webService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+            Stop-Service -Name W3SVC -Force
           }
 
-          $httpServiceState = @(netsh http show servicestate view=requestq)
-          $httpServiceState | Where-Object {
-            $_ -match "Request queue name|Process IDs|Controller process ID|Registered URLs|https?://"
-          }
-          foreach ($serviceName in @("W3SVC", "WAS", "nginx")) {
-            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-            if ($null -ne $service) {
-              "web-service=$($service.Name) status=$($service.Status) start=$($service.StartType)"
-            }
-          }
-
-          netsh interface ipv4 show excludedportrange protocol=tcp
-          foreach ($port in @(80, 443)) {
-            $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+          function Test-LoopbackPort([int]$Port) {
+            $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
             try {
               $probe.Start()
-              "bind-probe=127.0.0.1:$port available"
+              return $true
             } catch {
-              "bind-probe=127.0.0.1:$port unavailable type=$($_.Exception.GetType().FullName) socket=$($_.Exception.InnerException.SocketErrorCode)"
+              return $false
             } finally {
               $probe.Stop()
             }
+          }
+
+          foreach ($port in @(80, 443)) {
+            $available = $false
+            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+              if (Test-LoopbackPort $port) {
+                $available = $true
+                break
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $available) {
+              throw "canonical ingress socket 127.0.0.1:$port is unavailable"
+            }
+            "canonical ingress socket 127.0.0.1:$port is available"
           }
 
       - name: Run three-project trusted HTTPS lifecycle
