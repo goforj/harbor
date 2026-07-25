@@ -246,6 +246,12 @@ func windowsChildInvocationFailure(exitCode int) transportFailureStage {
 		return transportFailureWindowsChildServerIdentity
 	case helper.WindowsInvocationExitRetainConnection:
 		return transportFailureWindowsChildRetainConnection
+	case helper.WindowsInvocationExitAuthorization:
+		return transportFailureWindowsChildAuthorization
+	case helper.WindowsInvocationExitTicketStore:
+		return transportFailureWindowsChildTicketStore
+	case helper.WindowsInvocationExitReplayStore:
+		return transportFailureWindowsChildReplayStore
 	default:
 		return transportFailureNone
 	}

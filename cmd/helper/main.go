@@ -99,6 +99,12 @@ type runtimeAuthorities struct {
 	ownershipHandler closingOwnershipHandler
 }
 
+var (
+	errRuntimeAuthorization = errors.New("helper runtime authorization failed")
+	errRuntimeTicketStore   = errors.New("helper runtime ticket store failed")
+	errRuntimeReplayStore   = errors.New("helper runtime replay store failed")
+)
+
 // main runs one request with only the fixed durable stores and reviewed platform mutation authority.
 func main() {
 	// The privileged helper must not let inherited ambient configuration influence its authority.
@@ -114,7 +120,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err := errors.Join(runErr, invocation.close()); err != nil {
-		os.Exit(1)
+		os.Exit(platformRuntimeFailureExitCode(err))
 	}
 }
 
@@ -148,12 +154,12 @@ func productionDependencies() runtimeDependencies {
 func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.Clock, dependencies runtimeDependencies) (runErr error) {
 	validateRuntimeComposition(clock, dependencies)
 	if err := dependencies.authorizeInvocation(); err != nil {
-		return fmt.Errorf("authorize helper invocation: %w", err)
+		return fmt.Errorf("%w: %w", errRuntimeAuthorization, err)
 	}
 
 	redeemer, err := dependencies.openTicketRedeemer()
 	if err != nil {
-		return fmt.Errorf("open helper ticket redeemer: %w", err)
+		return fmt.Errorf("%w: %w", errRuntimeTicketStore, err)
 	}
 	authorities := &runtimeAuthorities{
 		redeemer: redeemer,
@@ -164,7 +170,7 @@ func run(ctx context.Context, reader io.Reader, writer io.Writer, clock helper.C
 
 	replayGuard, err := dependencies.openReplayGuard()
 	if err != nil {
-		return fmt.Errorf("open helper replay guard: %w", err)
+		return fmt.Errorf("%w: %w", errRuntimeReplayStore, err)
 	}
 	authorities.replayGuard = replayGuard
 

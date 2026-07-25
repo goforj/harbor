@@ -102,6 +102,9 @@ const (
 	transportFailureWindowsChildPipeSecurity
 	transportFailureWindowsChildServerIdentity
 	transportFailureWindowsChildRetainConnection
+	transportFailureWindowsChildAuthorization
+	transportFailureWindowsChildTicketStore
+	transportFailureWindowsChildReplayStore
 )
 
 // Transport performs one native consent and helper-process exchange.
@@ -305,6 +308,12 @@ func transportFailureLabel(stage transportFailureStage) string {
 		return "Windows child server identity"
 	case transportFailureWindowsChildRetainConnection:
 		return "Windows child pipe retention"
+	case transportFailureWindowsChildAuthorization:
+		return "Windows child authorization"
+	case transportFailureWindowsChildTicketStore:
+		return "Windows child ticket store"
+	case transportFailureWindowsChildReplayStore:
+		return "Windows child replay store"
 	default:
 		return "unrecognized native lifecycle stage"
 	}

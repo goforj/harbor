@@ -13,4 +13,10 @@ const (
 	WindowsInvocationExitServerIdentity = 14
 	// WindowsInvocationExitRetainConnection identifies failure to retain the authenticated pipe handle.
 	WindowsInvocationExitRetainConnection = 15
+	// WindowsInvocationExitAuthorization identifies failure of the helper's post-launch authorization gate.
+	WindowsInvocationExitAuthorization = 16
+	// WindowsInvocationExitTicketStore identifies failure to open the protected ticket redemption topology.
+	WindowsInvocationExitTicketStore = 17
+	// WindowsInvocationExitReplayStore identifies failure to open the protected replay topology.
+	WindowsInvocationExitReplayStore = 18
 )

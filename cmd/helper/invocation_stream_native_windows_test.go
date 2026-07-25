@@ -164,6 +164,24 @@ func TestPlatformInvocationFailureExitCodeKeepsWindowsAdmissionStagesDistinct(t 
 	}
 }
 
+// TestPlatformRuntimeFailureExitCodeKeepsWindowsStartupStagesDistinct verifies bounded pre-serve evidence.
+func TestPlatformRuntimeFailureExitCodeKeepsWindowsStartupStagesDistinct(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{err: errRuntimeAuthorization, want: helper.WindowsInvocationExitAuthorization},
+		{err: errRuntimeTicketStore, want: helper.WindowsInvocationExitTicketStore},
+		{err: errRuntimeReplayStore, want: helper.WindowsInvocationExitReplayStore},
+		{err: errors.New("unclassified"), want: 1},
+	}
+	for _, test := range tests {
+		if got := platformRuntimeFailureExitCode(fmt.Errorf("wrapped: %w", test.err)); got != test.want {
+			t.Fatalf("platformRuntimeFailureExitCode(%v) = %d, want %d", test.err, got, test.want)
+		}
+	}
+}
+
 // nativeWindowsHelperTestPipePath returns one valid collision-resistant invocation route for native tests.
 func nativeWindowsHelperTestPipePath() string {
 	randomSuffix := fmt.Sprintf("%064x", uint64(time.Now().UnixNano())^uint64(os.Getpid()))

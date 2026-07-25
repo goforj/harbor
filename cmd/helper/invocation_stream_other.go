@@ -17,3 +17,8 @@ func openPlatformInvocation(_ []string, standardInput io.Reader, standardOutput 
 func platformInvocationFailureExitCode(error) int {
 	return 1
 }
+
+// platformRuntimeFailureExitCode keeps ordinary helper runtime failures on the protocol failure status.
+func platformRuntimeFailureExitCode(error) int {
+	return 1
+}

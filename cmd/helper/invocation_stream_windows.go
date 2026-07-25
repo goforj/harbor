@@ -102,6 +102,20 @@ func platformInvocationFailureExitCode(err error) int {
 	}
 }
 
+// platformRuntimeFailureExitCode maps only reviewed pre-serve startup stages to bounded process evidence.
+func platformRuntimeFailureExitCode(err error) int {
+	switch {
+	case errors.Is(err, errRuntimeAuthorization):
+		return helper.WindowsInvocationExitAuthorization
+	case errors.Is(err, errRuntimeTicketStore):
+		return helper.WindowsInvocationExitTicketStore
+	case errors.Is(err, errRuntimeReplayStore):
+		return helper.WindowsInvocationExitReplayStore
+	default:
+		return 1
+	}
+}
+
 // Read hides ERROR_MORE_DATA so the bounded codec can assemble one request message across buffer growth.
 func (connection *windowsHelperPipeConnection) Read(body []byte) (int, error) {
 	if connection.requestComplete {
