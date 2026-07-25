@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	// darwinRuntimeRepairObservationAttempts bounds instability retries before evidence becomes unreadable.
-	darwinRuntimeRepairObservationAttempts = 4
+	// darwinRuntimeRepairObservationAttempts bounds transient census retries before evidence becomes unreadable.
+	darwinRuntimeRepairObservationAttempts = 8
 	// darwinRuntimeRepairMaximumSystemProcesses bounds the process-global session census.
 	darwinRuntimeRepairMaximumSystemProcesses = 32768
 )
@@ -57,7 +57,7 @@ func inspectStableDarwinRuntimeRepair(ctx context.Context, target RuntimeRepairT
 			return runtimeRepairNativeInspection{}, err
 		}
 		inspection, err := inspectDarwinRuntimeRepairPass(ctx, target)
-		if errors.Is(err, errDarwinRuntimeRepairUnstable) {
+		if errors.Is(err, errDarwinRuntimeRepairUnstable) || errors.Is(err, errDarwinRuntimeRepairUnreadable) {
 			previous = nil
 			continue
 		}
