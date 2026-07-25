@@ -147,7 +147,7 @@ jobs:
             Set-Acl -LiteralPath $Path -AclObject $security
           }
 
-          $gatewaySDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;GX;;;$userSID)"
+          $gatewaySDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a0;;;$userSID)"
           $machineSDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
           $pendingSDDL = "O:${userSID}D:P(A;OICI;FA;;;$userSID)(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
           Set-DirectorySDDL $privilegedRoot $gatewaySDDL
