@@ -94,6 +94,17 @@ func resolverNativeDiagnostic(cause error) string {
 		return "precondition-stage"
 	case strings.Contains(message, "harbor-stage=mutation"):
 		return "mutation-stage"
+	case strings.Contains(message, "locate windows powershell system directory"):
+		return "system-directory"
+	case strings.Contains(message, "windows nrpt output exceeds"):
+		return "output-limit"
+	case strings.Contains(message, "windows nrpt diagnostic exceeds"):
+		return "diagnostic-limit"
+	case strings.Contains(message, "execute windows nrpt powershell") &&
+		strings.Contains(message, "exit status"):
+		return "process-exit"
+	case strings.Contains(message, "execute windows nrpt powershell"):
+		return "process-start"
 	case strings.Contains(message, "specified module 'dnsclient' was not loaded") ||
 		strings.Contains(message, "specified module \"dnsclient\" was not loaded") ||
 		(strings.Contains(message, "import-module") && strings.Contains(message, "dnsclient")):
