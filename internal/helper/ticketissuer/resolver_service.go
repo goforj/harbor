@@ -455,10 +455,6 @@ func (service *ResolverService) Issue(
 	if err != nil {
 		return ResolverResult{}, err
 	}
-	ticket, err := service.buildResolverTicket(requesterIdentity, plan, observationFingerprint, privateKey)
-	if err != nil {
-		return ResolverResult{}, err
-	}
 
 	confirmedPlan, err := service.resolvePlan(ctx, request)
 	if err != nil {
@@ -480,6 +476,10 @@ func (service *ResolverService) Issue(
 	targetOwnershipFingerprint, err := resolverResultOwnershipFingerprint(plan)
 	if err != nil {
 		return ResolverResult{}, fmt.Errorf("issue helper resolver ticket: fingerprint result ownership: %w", err)
+	}
+	ticket, err := service.buildResolverTicket(requesterIdentity, plan, observationFingerprint, privateKey)
+	if err != nil {
+		return ResolverResult{}, err
 	}
 
 	reference, publishErr := service.publisher.Publish(ctx, ticket, privateKey)

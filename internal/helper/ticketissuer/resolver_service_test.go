@@ -47,22 +47,28 @@ type scriptedResolverObserver struct {
 	observations []resolver.Observation
 	errors       []error
 	requests     []resolver.Request
+	afterObserve func(int)
 }
 
 // Observe records the exact request and returns the next scripted native result.
 func (observer *scriptedResolverObserver) Observe(_ context.Context, request resolver.Request) (resolver.Observation, error) {
-	index := len(observer.requests)
+	callIndex := len(observer.requests)
 	observer.requests = append(observer.requests, request)
-	if index < len(observer.errors) && observer.errors[index] != nil {
-		return resolver.Observation{}, observer.errors[index]
+	if callIndex < len(observer.errors) && observer.errors[callIndex] != nil {
+		return resolver.Observation{}, observer.errors[callIndex]
 	}
 	if len(observer.observations) == 0 {
 		return resolver.Observation{}, errors.New("resolver observation script is empty")
 	}
+	index := callIndex
 	if index >= len(observer.observations) {
 		index = len(observer.observations) - 1
 	}
-	return observer.observations[index], nil
+	observation := observer.observations[index]
+	if observer.afterObserve != nil {
+		observer.afterObserve(callIndex)
+	}
+	return observation, nil
 }
 
 // resolverIssuerFixture contains one valid transition and every replaceable authority boundary.
@@ -137,6 +143,27 @@ func TestResolverServiceIssueBindsTargetOwnershipAndNativeObservation(t *testing
 		ticket.ExpiresAt != fixture.now.Add(ticketLifetime) ||
 		!bytes.Equal(fixture.publisher.key, fixture.private) {
 		t.Fatalf("published resolver correlation = %#v", ticket)
+	}
+}
+
+// TestResolverServiceStartsTicketLifetimeAfterNativeRevalidation preserves the full helper execution window.
+func TestResolverServiceStartsTicketLifetimeAfterNativeRevalidation(t *testing.T) {
+	fixture := newResolverIssuerFixture(t)
+	clock := &advancingLowPortClock{now: fixture.now}
+	fixture.service.clock = clock
+	revalidatedAt := fixture.now.Add(45 * time.Second)
+	fixture.resolver.afterObserve = func(index int) {
+		if index == 1 {
+			clock.Set(revalidatedAt)
+		}
+	}
+
+	result, err := fixture.service.Issue(t.Context(), fixture.plan.TargetOwnership.OwnerIdentity, fixture.request)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if want := revalidatedAt.Add(ticketLifetime); !result.ExpiresAt.Equal(want) {
+		t.Fatalf("Issue() expiry = %v, want %v", result.ExpiresAt, want)
 	}
 }
 
