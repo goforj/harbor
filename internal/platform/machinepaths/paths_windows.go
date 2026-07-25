@@ -19,7 +19,8 @@ func platformRoot() (string, error) {
 
 // platformRootFromKnownFolder resolves the fixed native location without requiring optional installer topology to exist.
 func platformRootFromKnownFolder(lookup knownFolderLookup) (string, error) {
-	programData, err := lookup(windows.FOLDERID_ProgramData, windows.KF_FLAG_DONT_VERIFY)
+	flags := uint32(windows.KF_FLAG_DONT_VERIFY | windows.KF_FLAG_DONT_UNEXPAND)
+	programData, err := lookup(windows.FOLDERID_ProgramData, flags)
 	if err != nil {
 		return "", fmt.Errorf("resolve Windows ProgramData known folder: %w", err)
 	}

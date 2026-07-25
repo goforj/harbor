@@ -13,7 +13,8 @@ import (
 
 // TestWindowsPlatformRootUsesProgramDataKnownFolder verifies the production resolver invokes the native machine-global API.
 func TestWindowsPlatformRootUsesProgramDataKnownFolder(t *testing.T) {
-	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DONT_VERIFY)
+	flags := uint32(windows.KF_FLAG_DONT_VERIFY | windows.KF_FLAG_DONT_UNEXPAND)
+	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, flags)
 	if err != nil {
 		t.Fatalf("windows.KnownFolderPath() error = %v", err)
 	}
@@ -35,8 +36,9 @@ func TestWindowsPlatformRootRequestsProgramData(t *testing.T) {
 		if folderID != windows.FOLDERID_ProgramData {
 			t.Fatalf("folder ID = %v, want FOLDERID_ProgramData", folderID)
 		}
-		if flags != windows.KF_FLAG_DONT_VERIFY {
-			t.Fatalf("flags = %d, want KF_FLAG_DONT_VERIFY", flags)
+		wantFlags := uint32(windows.KF_FLAG_DONT_VERIFY | windows.KF_FLAG_DONT_UNEXPAND)
+		if flags != wantFlags {
+			t.Fatalf("flags = %d, want %d", flags, wantFlags)
 		}
 		return programData, nil
 	})
