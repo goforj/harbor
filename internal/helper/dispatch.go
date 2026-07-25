@@ -1174,6 +1174,7 @@ func validResolverNativeDiagnostic(native string) bool {
 		"utility-import-timeout",
 		"program-start-timeout",
 		"system-directory",
+		"system-environment",
 		"output-limit",
 		"diagnostic-limit",
 		"progress-invalid",

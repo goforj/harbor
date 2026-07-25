@@ -32,6 +32,7 @@ func TestResolverDiagnosticClassifiesOnlyFiniteNativeCauses(t *testing.T) {
 		{name: "utility import timeout", cause: errors.New("harbor-progress=importing-utility"), want: "utility-import-timeout"},
 		{name: "program start timeout", cause: errors.New("harbor-progress=host-started"), want: "program-start-timeout"},
 		{name: "system directory", cause: errors.New("locate Windows PowerShell system directory: private detail"), want: "system-directory"},
+		{name: "system environment", cause: errors.New("construct Windows NRPT PowerShell environment: private detail"), want: "system-environment"},
 		{name: "output limit", cause: errors.New("Windows NRPT output exceeds 1 bytes"), want: "output-limit"},
 		{name: "diagnostic limit", cause: errors.New("Windows NRPT diagnostic exceeds 1 bytes"), want: "diagnostic-limit"},
 		{name: "invalid progress", cause: errors.New("Windows NRPT PowerShell progress sequence is invalid"), want: "progress-invalid"},

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -257,7 +256,14 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		windowsNRPTProgramCommand,
 	)
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
-	command.Env = windowsNRPTCommandEnvironment(os.Environ())
+	windowsRoot, err := windows.GetWindowsDirectory()
+	if err != nil {
+		return nil, fmt.Errorf("resolve Windows directory for NRPT PowerShell: %w", err)
+	}
+	command.Env, err = windowsNRPTCommandEnvironment(windowsRoot)
+	if err != nil {
+		return nil, err
+	}
 	command.Stdin = bytes.NewReader(input)
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -299,17 +305,27 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 	return output, nil
 }
 
-// windowsNRPTCommandEnvironment replaces any caller value with Harbor's immutable native program.
-func windowsNRPTCommandEnvironment(inherited []string) []string {
-	environment := make([]string, 0, len(inherited)+1)
-	for _, entry := range inherited {
-		key, _, found := strings.Cut(entry, "=")
-		if found && strings.EqualFold(key, windowsNRPTProgramEnvironment) {
-			continue
-		}
-		environment = append(environment, entry)
+// windowsNRPTCommandEnvironment constructs only native system paths and Harbor's immutable program.
+func windowsNRPTCommandEnvironment(windowsRoot string) ([]string, error) {
+	if windowsRoot == "" || !filepath.IsAbs(windowsRoot) || filepath.Clean(windowsRoot) != windowsRoot {
+		return nil, errors.New("construct Windows NRPT PowerShell environment: invalid Windows directory")
 	}
-	return append(environment, windowsNRPTProgramEnvironment+"="+windowsNRPTPowerShellProgram)
+	systemDrive := filepath.VolumeName(windowsRoot)
+	if len(systemDrive) != 2 || systemDrive[1] != ':' {
+		return nil, errors.New("construct Windows NRPT PowerShell environment: invalid system drive")
+	}
+	system32 := filepath.Join(windowsRoot, "System32")
+	return []string{
+		"COMSPEC=" + filepath.Join(system32, "cmd.exe"),
+		"PATH=" + system32,
+		"PATHEXT=.COM;.EXE;.BAT;.CMD",
+		"SYSTEMDRIVE=" + systemDrive,
+		"SYSTEMROOT=" + windowsRoot,
+		"TEMP=" + filepath.Join(windowsRoot, "Temp"),
+		"TMP=" + filepath.Join(windowsRoot, "Temp"),
+		"WINDIR=" + windowsRoot,
+		windowsNRPTProgramEnvironment + "=" + windowsNRPTPowerShellProgram,
+	}, nil
 }
 
 // windowsPowerShellExecutable resolves the fixed Windows PowerShell host without inheriting a caller-controlled PATH.

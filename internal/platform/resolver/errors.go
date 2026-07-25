@@ -110,6 +110,9 @@ func resolverNativeDiagnostic(cause error) string {
 	switch {
 	case strings.Contains(message, "locate windows powershell system directory"):
 		return "system-directory"
+	case strings.Contains(message, "windows directory for nrpt powershell") ||
+		strings.Contains(message, "windows nrpt powershell environment"):
+		return "system-environment"
 	case strings.Contains(message, "windows nrpt output exceeds"):
 		return "output-limit"
 	case strings.Contains(message, "windows nrpt diagnostic exceeds"):

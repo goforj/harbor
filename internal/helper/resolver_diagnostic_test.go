@@ -60,6 +60,7 @@ func TestResponseForResolverFailureExposesOnlyFiniteDiagnostics(t *testing.T) {
 		"utility-import-timeout",
 		"program-start-timeout",
 		"system-directory",
+		"system-environment",
 		"output-limit",
 		"diagnostic-limit",
 		"progress-invalid",

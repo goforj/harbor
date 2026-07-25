@@ -63,15 +63,21 @@ func TestWindowsNativePowerShellRunnerRejectsMissingLookup(t *testing.T) {
 	}
 }
 
-// TestWindowsNRPTCommandEnvironmentOverridesCallerProgram keeps elevated script authority inside the binary.
-func TestWindowsNRPTCommandEnvironmentOverridesCallerProgram(t *testing.T) {
-	environment := windowsNRPTCommandEnvironment([]string{
-		`SystemRoot=C:\Windows`,
-		`goforj_harbor_windows_nrpt_program=caller controlled`,
-	})
-	want := windowsNRPTProgramEnvironment + "=" + windowsNRPTPowerShellProgram
-	if len(environment) != 2 || environment[0] != `SystemRoot=C:\Windows` || environment[1] != want {
+// TestWindowsNRPTCommandEnvironmentUsesOnlyNativePaths keeps elevated startup independent of caller state.
+func TestWindowsNRPTCommandEnvironmentUsesOnlyNativePaths(t *testing.T) {
+	environment, err := windowsNRPTCommandEnvironment(`C:\Windows`)
+	if err != nil {
+		t.Fatalf("windowsNRPTCommandEnvironment() error = %v", err)
+	}
+	if len(environment) != 9 ||
+		environment[0] != `COMSPEC=C:\Windows\System32\cmd.exe` ||
+		environment[3] != `SYSTEMDRIVE=C:` ||
+		environment[4] != `SYSTEMROOT=C:\Windows` ||
+		environment[8] != windowsNRPTProgramEnvironment+"="+windowsNRPTPowerShellProgram {
 		t.Fatalf("windowsNRPTCommandEnvironment() = %#v", environment)
+	}
+	if _, err := windowsNRPTCommandEnvironment(`Windows`); err == nil {
+		t.Fatal("windowsNRPTCommandEnvironment() accepted a relative Windows directory")
 	}
 }
 
