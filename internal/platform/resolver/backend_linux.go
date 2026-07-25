@@ -251,17 +251,11 @@ func (store systemdResolvedNativeStore) replace(
 		if verifyErr == nil {
 			assessment := classifyValidated(verifiedObservation)
 			if assessment.State != StateExact {
-				contentExact := bytes.Equal(verified.Artifact.Content, marshalSystemdResolvedValidated(request))
-				metadataSecure := secureSystemdResolvedArtifact(verified.Artifact.Metadata)
 				verifyErr = fmt.Errorf(
-					"systemd-resolved publication did not produce one exact owned route: state=%q owned=%q foreign=%d content_exact=%t metadata_secure=%t artifact=%#v runtime=%#v rules=%#v",
+					"systemd-resolved publication did not produce one exact owned route: state=%q owned=%q foreign=%d rules=%#v",
 					assessment.State,
 					assessment.Owned,
 					assessment.ForeignCount,
-					contentExact,
-					metadataSecure,
-					verified.Artifact.Metadata,
-					verified.Runtime,
 					verifiedObservation.Rules,
 				)
 			}

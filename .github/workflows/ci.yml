@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   root-go:
     name: Root Go (${{ matrix.name }})
@@ -185,7 +189,7 @@ jobs:
 
   docker-adapter:
     name: Docker adapter and generated projects (Linux)
-    if: ${{ false }}
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
