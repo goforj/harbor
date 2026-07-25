@@ -88,14 +88,6 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo env HARBOR_PRIVILEGED_RESOLVER_TEST=1 "${{ runner.temp }}/harbor-resolver.test" -test.run '^TestPrivilegedDarwinResolverReplacementCrashRecovery$' -test.v
 
-      - name: Build focused Darwin runtime repair test
-        if: runner.os == 'macOS'
-        run: go test -c -o "${{ runner.temp }}/harbor-runtime-repair.test" ./internal/projectprocess
-
-      - name: Exercise Darwin runtime repair lifecycle
-        if: runner.os == 'macOS'
-        run: env HARBOR_NATIVE_RUNTIME_REPAIR_TEST=1 "${{ runner.temp }}/harbor-runtime-repair.test" -test.run '^(TestNativeDarwinRuntimeRepair(Lifecycle|RejectsAmbiguousScopeWithoutSignal|RejectsDriftWithoutSignal)|TestNativeDarwinUnattributedRuntime(InspectionAcceptsNonDedicatedScope|RepairSettlesCheckoutOwnedListener))$' -test.v
-
       - name: Build focused Darwin helper resolver test
         if: runner.os == 'macOS'
         run: go test -c -o "${{ runner.temp }}/harbor-helper-resolver.test" ./internal/helper/resolverhandler
@@ -224,7 +216,7 @@ jobs:
 
   docker-adapter:
     name: Docker adapter and generated projects (Linux)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:

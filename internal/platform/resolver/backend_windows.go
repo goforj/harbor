@@ -528,7 +528,9 @@ function Get-RelevantRules([string]$Suffix, [string]$DisplayName) {
 }
 
 function Assert-Expected([object[]]$Current, [object[]]$Expected) {
-    if ($Current.Count -ne $Expected.Count) { throw 'NRPT relevant rule set changed before mutation' }
+    if ($Current.Count -ne $Expected.Count) {
+        throw "NRPT relevant rule count changed before mutation: current=$($Current.Count) expected=$($Expected.Count)"
+    }
     for ($index = 0; $index -lt $Expected.Count; $index++) {
         Require-Fields $Expected[$index] @('name', 'native_attributes_sha256') 'expected rule'
         if ([string]$Current[$index].name -cne [string]$Expected[$index].name -or
