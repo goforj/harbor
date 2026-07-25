@@ -179,6 +179,39 @@ jobs:
             [Text.UTF8Encoding]::new($false)
           )
 
+      - name: Report canonical ingress socket prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          "identity=$($identity.Name) elevated=$isAdministrator"
+
+          $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {
+            $_.LocalPort -in @(80, 443)
+          } | Sort-Object LocalPort, OwningProcess)
+          if ($listeners.Count -eq 0) {
+            "canonical-listeners=none"
+          } else {
+            foreach ($listener in $listeners) {
+              "canonical-listener=$($listener.LocalAddress):$($listener.LocalPort) pid=$($listener.OwningProcess)"
+            }
+          }
+
+          netsh interface ipv4 show excludedportrange protocol=tcp
+          foreach ($port in @(80, 443)) {
+            $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+            try {
+              $probe.Start()
+              "bind-probe=127.0.0.1:$port available"
+            } catch {
+              "bind-probe=127.0.0.1:$port unavailable type=$($_.Exception.GetType().FullName) socket=$($_.Exception.InnerException.SocketErrorCode)"
+            } finally {
+              $probe.Stop()
+            }
+          }
+
       - name: Run three-project trusted HTTPS lifecycle
         shell: pwsh
         env:
