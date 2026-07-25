@@ -1167,6 +1167,8 @@ func validResolverNativeDiagnostic(native string) bool {
 		"output-stage",
 		"precondition-stage",
 		"mutation-stage",
+		"enumeration-timeout",
+		"post-import-timeout",
 		"system-directory",
 		"output-limit",
 		"diagnostic-limit",

@@ -25,6 +25,8 @@ func TestResolverDiagnosticClassifiesOnlyFiniteNativeCauses(t *testing.T) {
 		{name: "output stage", cause: errors.New("harbor-stage=output; private detail"), want: "output-stage"},
 		{name: "precondition stage", cause: errors.New("harbor-stage=precondition; private detail"), want: "precondition-stage"},
 		{name: "mutation stage", cause: errors.New("harbor-stage=mutation; private detail"), want: "mutation-stage"},
+		{name: "enumeration timeout", cause: errors.New("harbor-progress=module-imported harbor-progress=enumerating"), want: "enumeration-timeout"},
+		{name: "post import timeout", cause: errors.New("harbor-progress=module-imported"), want: "post-import-timeout"},
 		{name: "system directory", cause: errors.New("locate Windows PowerShell system directory: private detail"), want: "system-directory"},
 		{name: "output limit", cause: errors.New("Windows NRPT output exceeds 1 bytes"), want: "output-limit"},
 		{name: "diagnostic limit", cause: errors.New("Windows NRPT diagnostic exceeds 1 bytes"), want: "diagnostic-limit"},

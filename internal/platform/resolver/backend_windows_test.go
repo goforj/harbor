@@ -202,6 +202,23 @@ func TestWindowsNRPTPowerShellEmitsOnlyFiniteStageMarkers(t *testing.T) {
 	}
 }
 
+// TestWindowsNRPTProgressOnly accepts only the complete ordered marker sequence.
+func TestWindowsNRPTProgressOnly(t *testing.T) {
+	if !windowsNRPTProgressOnly("harbor-progress=module-imported\r\nharbor-progress=enumerating\r\n") {
+		t.Fatal("windowsNRPTProgressOnly() rejected the complete marker sequence")
+	}
+	for _, value := range []string{
+		"",
+		"harbor-progress=module-imported",
+		"harbor-progress=enumerating\r\nharbor-progress=module-imported",
+		"harbor-progress=module-imported\r\nharbor-progress=enumerating\r\nprivate detail",
+	} {
+		if windowsNRPTProgressOnly(value) {
+			t.Fatalf("windowsNRPTProgressOnly(%q) accepted an unsupported diagnostic", value)
+		}
+	}
+}
+
 // TestPrivilegedWindowsNRPTAdapterLifecycle proves the fixed native PowerShell boundary creates, verifies, and removes only one fresh local rule.
 func TestPrivilegedWindowsNRPTAdapterLifecycle(t *testing.T) {
 	if os.Getenv("HARBOR_PRIVILEGED_RESOLVER_TEST") != "1" {

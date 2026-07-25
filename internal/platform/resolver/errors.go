@@ -70,13 +70,19 @@ func resolverNativeDiagnostic(cause error) string {
 	if cause == nil {
 		return ""
 	}
+	message := strings.ToLower(cause.Error())
+	switch {
+	case strings.Contains(message, "harbor-progress=enumerating"):
+		return "enumeration-timeout"
+	case strings.Contains(message, "harbor-progress=module-imported"):
+		return "post-import-timeout"
+	}
 	switch {
 	case errors.Is(cause, context.DeadlineExceeded):
 		return "deadline"
 	case errors.Is(cause, context.Canceled):
 		return "canceled"
 	}
-	message := strings.ToLower(cause.Error())
 	switch {
 	case strings.Contains(message, "harbor-stage=module-import"):
 		return "module-import"

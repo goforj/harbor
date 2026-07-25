@@ -267,7 +267,11 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 	}
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
-			return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w", contextErr)
+			detail := windowsNRPTDisplayDiagnostic(stderr.String())
+			if detail == "" {
+				return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w", contextErr)
+			}
+			return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w: %s", contextErr, detail)
 		}
 		detail := windowsNRPTDisplayDiagnostic(stderr.String())
 		if detail == "" {
@@ -275,7 +279,7 @@ func (runner windowsNativePowerShellRunner) run(ctx context.Context, input []byt
 		}
 		return nil, fmt.Errorf("execute Windows NRPT PowerShell: %w: %s", err, detail)
 	}
-	if stderr.Len() != 0 {
+	if stderr.Len() != 0 && !windowsNRPTProgressOnly(stderr.String()) {
 		return nil, fmt.Errorf("Windows NRPT PowerShell wrote unexpected diagnostics: %s", windowsNRPTDisplayDiagnostic(stderr.String()))
 	}
 	return append([]byte(nil), stdout.Bytes()...), nil
@@ -364,6 +368,18 @@ func windowsNRPTDisplayDiagnostic(value string) string {
 	return value
 }
 
+// windowsNRPTProgressOnly permits only the static stage markers used to diagnose a bounded native timeout.
+func windowsNRPTProgressOnly(value string) bool {
+	lines := strings.FieldsFunc(value, func(character rune) bool {
+		return character == '\r' || character == '\n'
+	})
+	if len(lines) != 2 {
+		return false
+	}
+	return strings.TrimSpace(lines[0]) == "harbor-progress=module-imported" &&
+		strings.TrimSpace(lines[1]) == "harbor-progress=enumerating"
+}
+
 // decodeWindowsNRPTSnapshot accepts only one bounded exact observation envelope.
 func decodeWindowsNRPTSnapshot(body []byte) (windowsNRPTSnapshotResponse, error) {
 	if len(body) == 0 || len(body) > maximumWindowsNRPTOutputBytes {
@@ -433,6 +449,7 @@ try {
     [Console]::Error.Write('harbor-stage=module-import')
     exit 1
 }
+[Console]::Error.WriteLine('harbor-progress=module-imported')
 $script:HarborStage = 'input'
 
 function Require-Fields([object]$Value, [string[]]$Names, [string]$Label) {
@@ -537,6 +554,7 @@ function Get-RuleFingerprint([object]$Rule) {
 
 function Get-RelevantRules([string]$Suffix, [string]$DisplayName) {
     $script:HarborStage = 'enumerate'
+    [Console]::Error.WriteLine('harbor-progress=enumerating')
     $result = New-Object 'Collections.Generic.List[object]'
     $names = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach ($native in @(Get-DnsClientNrptRule -ErrorAction Stop)) {
