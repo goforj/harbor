@@ -230,6 +230,7 @@ func assertGeneratedComposeEventRefresh(
 	beforeAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 
 	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "stop", string(service.ID))
+	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "rm", "--force", string(service.ID))
 	stopped := waitForGeneratedComposeServiceProjection(t, ctx, store, target.id, service.ID, false)
 	if stopped.Project.State != domain.ProjectReady {
 		t.Fatalf("event-refresh target %q state after service stop = %q, want ready", target.id, stopped.Project.State)
