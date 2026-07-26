@@ -426,7 +426,7 @@ jobs:
           fi
           cat "$mismatch_log"
           grep -Fq \
-            "admit installed Harbor helper: file digest differs from the sealed identity" \
+            "admit installed Harbor helper: file size or mode differs from the sealed identity" \
             "$mismatch_log"
           test "$(sudo -n cat "$installed_helper")" = "foreign helper ${GITHUB_RUN_ID}"
           sudo -n install \
