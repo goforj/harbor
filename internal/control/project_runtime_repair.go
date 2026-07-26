@@ -125,7 +125,7 @@ type ProjectRuntimeRepairConfirmable struct {
 	Candidate            ProjectRuntimeRepairDisplayFacts         `json:"candidate"`
 	InspectionID         ProjectRuntimeRepairInspectionID         `json:"inspection_id"`
 	CandidateFingerprint ProjectRuntimeRepairCandidateFingerprint `json:"candidate_fingerprint"`
-	ExpiresAt            time.Time                                `json:"expires_at"`
+	ExpiresAt            time.Time                                `json:"expires_at" ts_type:"string"`
 }
 
 // Validate reports whether a confirmable result contains one complete short-lived selection.
