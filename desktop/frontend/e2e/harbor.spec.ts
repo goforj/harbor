@@ -168,14 +168,14 @@ test('starts a stopped project from its selected detail view', async ({ page }) 
   await page.goto('/#/projects/reports', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Start project', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toBeDisabled()
+  await expect(page.getByRole('status', { name: 'Starting…', exact: true })).toBeVisible()
 })
 
 test('stops a running project from its selected detail view', async ({ page }) => {
   await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('button', { name: 'Stop project', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled()
+  await expect(page.getByRole('status', { name: 'Stopping…', exact: true })).toBeVisible()
 })
 
 test('shows live output from the current project session', async ({ page }) => {
