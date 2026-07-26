@@ -53,6 +53,17 @@ jobs:
           path: .ci/goforj
           persist-credentials: false
 
+      - name: Prepare isolated Go caches
+        run: |
+          cache_identity="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_cache="${RUNNER_TEMP}/harbor-gocache-${cache_identity}"
+          module_cache="${RUNNER_TEMP}/harbor-gomodcache-${cache_identity}"
+          install -d -m 0700 "$build_cache" "$module_cache"
+          test "$(stat -f '%u:%g %Lp' "$build_cache")" = "$(id -u):$(id -g) 700"
+          test "$(stat -f '%u:%g %Lp' "$module_cache")" = "$(id -u):$(id -g) 700"
+          printf 'GOCACHE=%s\n' "$build_cache" >> "$GITHUB_ENV"
+          printf 'GOMODCACHE=%s\n' "$module_cache" >> "$GITHUB_ENV"
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -61,6 +72,13 @@ jobs:
             go.sum
             desktop/go.sum
             .ci/goforj/go.sum
+
+      - name: Verify isolated Go caches
+        run: |
+          test "$(go env GOCACHE)" = "$GOCACHE"
+          test "$(go env GOMODCACHE)" = "$GOMODCACHE"
+          test "$(stat -f '%u:%g %Lp' "$GOCACHE")" = "$(id -u):$(id -g) 700"
+          test "$(stat -f '%u:%g %Lp' "$GOMODCACHE")" = "$(id -u):$(id -g) 700"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
