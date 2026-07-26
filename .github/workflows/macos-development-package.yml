@@ -29,7 +29,10 @@ jobs:
 
       - name: Configure package paths
         run: |
-          echo "HARBOR_PAYLOAD_ROOT=${RUNNER_TEMP}/harbor-payload" >> "${GITHUB_ENV}"
+          payload_root="/private/var/tmp/goforj-harbor-payload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sudo -n test ! -e "$payload_root"
+          sudo -n install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$payload_root"
+          echo "HARBOR_PAYLOAD_ROOT=${payload_root}" >> "${GITHUB_ENV}"
           echo "HARBOR_PACKAGE_PATH=${RUNNER_TEMP}/GoForj-Harbor-macos-arm64-development.pkg" >> "${GITHUB_ENV}"
 
       - name: Set up Go
@@ -74,10 +77,12 @@ jobs:
       - name: Stage fixed macOS payload
         run: |
           release_root="${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}"
+          privileged_root="${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools"
           mkdir -p \
             "${HARBOR_PAYLOAD_ROOT}/Applications" \
             "${release_root}/bin" \
             "${release_root}/libexec" \
+            "${privileged_root}" \
             "${HARBOR_PAYLOAD_ROOT}/usr/local/bin"
           cp -R desktop/build/bin/Harbor.app "${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${HARBOR_RELEASE_VERSION}" "${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/Info.plist"
@@ -92,6 +97,13 @@ jobs:
           go build -trimpath -ldflags "$ldflags" -o "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher" ./cmd/daemonlauncher
           go build -trimpath -ldflags "$ldflags" -o "${release_root}/libexec/com.goforj.harbor.helper" ./cmd/helper
           go build -trimpath -ldflags "$ldflags" -o "${release_root}/libexec/com.goforj.harbor.launchdrelay" ./cmd/launchdrelay
+          cp "${release_root}/libexec/com.goforj.harbor.helper" "${privileged_root}/com.goforj.harbor.helper"
+          cp "${release_root}/libexec/com.goforj.harbor.launchdrelay" "${privileged_root}/com.goforj.harbor.launchdrelay"
+          sudo -n chown root:wheel \
+            "${privileged_root}/com.goforj.harbor.helper" \
+            "${privileged_root}/com.goforj.harbor.launchdrelay"
+          sudo -n chmod 4755 "${privileged_root}/com.goforj.harbor.helper"
+          sudo -n chmod 0755 "${privileged_root}/com.goforj.harbor.launchdrelay"
 
           ln -s "releases/${HARBOR_RELEASE_SEQUENCE}" "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/current"
           ln -s "/Library/Application Support/GoForj/Harbor/current/bin/harbor" "${HARBOR_PAYLOAD_ROOT}/usr/local/bin/harbor"
@@ -125,7 +137,12 @@ jobs:
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbor-installer
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/libexec/com.goforj.harbor.helper
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/libexec/com.goforj.harbor.launchdrelay
+          ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
           EOF
+          helper_identity="$(stat -f '%u:%g %Lp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")"
+          printf 'staged fixed helper identity: %s\n' "$helper_identity"
+          test "$helper_identity" = "0:0 4755"
 
       - name: Assemble unsigned installer package
         run: |
@@ -144,6 +161,8 @@ jobs:
           grep -Fq "Library/Application Support/GoForj/Harbor/daemon-launcher" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "libexec/com.goforj.harbor.helper" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "libexec/com.goforj.harbor.launchdrelay" "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.helper" "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay" "${RUNNER_TEMP}/payload-files.txt"
           package_directory="$(dirname "${HARBOR_PACKAGE_PATH}")"
           package_name="$(basename "${HARBOR_PACKAGE_PATH}")"
           (
