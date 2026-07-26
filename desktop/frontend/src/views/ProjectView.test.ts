@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { harborBridge } from '@/bridge'
 import { harborWireFixture } from '@/bridge/harbor.fixture'
 import { mockSnapshot } from '@/bridge/mock'
-import type { ProjectLifecycleOperation, ProjectRuntimeRepairInspection } from '@/domain/harbor'
+import type { ProjectLifecycleOperation } from '@/domain/harbor'
 import { useHarborStore } from '@/stores/harbor'
 import ProjectView from './ProjectView.vue'
 
@@ -127,18 +127,6 @@ async function mountProject(projectId = 'orders-api'): Promise<MountedProjectVie
   return { pinia, router, store, wrapper }
 }
 
-async function mountStaleRuntimeProject(projectId = 'billing'): Promise<MountedProjectView> {
-  const mounted = await mountProject(projectId)
-  const project = mounted.store.projectById(projectId)
-  if (!project) throw new Error(`${projectId} fixture project is missing`)
-  project.state = 'stopped'
-  project.apps = project.apps.map((app) => ({ ...app, state: 'stopped', active: false }))
-  project.services = project.services.map((service) => ({ ...service, state: 'stopped' }))
-  project.resources = []
-  await mounted.wrapper.vm.$nextTick()
-  return mounted
-}
-
 async function mountFullNetworkBlockedProject(projectId = 'orders-api'): Promise<MountedProjectView> {
   const mounted = await mountProject(projectId)
   mounted.store.$patch({
@@ -153,13 +141,9 @@ async function mountFullNetworkBlockedProject(projectId = 'orders-api'): Promise
   return mounted
 }
 
-function confirmableInspection(): Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }> {
-  return structuredClone(harborWireFixture.project_runtime_repair_inspection)
-}
-
 function bodyButton(label: string): HTMLButtonElement {
   const button = [...document.body.querySelectorAll('button')]
-    .find((candidate) => candidate.textContent?.trim() === label)
+    .find((candidate) => candidate.textContent?.trim() === label || candidate.getAttribute('aria-label') === label)
   if (!(button instanceof HTMLButtonElement)) throw new Error(`Button not found: ${label}`)
   return button
 }
@@ -570,18 +554,20 @@ describe('ProjectView stale runtime recovery', () => {
 
   it('keeps the ordinary start action available for a recovered project', async () => {
     const { store, wrapper } = await mountRecoveryProject()
-    const recover = wrapper.findAll('button').find((button) => button.text().includes('Start project'))
-    expect(recover).toBeDefined()
-    expect(recover?.attributes('disabled')).toBeUndefined()
-    expect(wrapper.findAll('button').some((button) => button.text().includes('Inspect stale runtime'))).toBe(false)
+    const recover = bodyButton('Start project')
+    expect(recover.disabled).toBe(false)
+    expect(recover.dataset.variant).toBe('ghost')
+    expect(wrapper.get('[data-testid="project-address-bar"]').text()).toContain('https://billing.test')
+    expect(wrapper.get('[data-testid="project-address-bar"] span').classes()).toContain('text-muted-foreground')
+    expect(wrapper.findAll('button').some((button) => button.attributes('aria-label') === 'Check for stale runtime')).toBe(false)
 
     store.$patch({ snapshotStale: true })
     await wrapper.vm.$nextTick()
-    expect(recover?.attributes('disabled')).toBeDefined()
+    expect(recover.disabled).toBe(true)
 
     store.$patch({ snapshotStale: false, connectionState: 'disconnected' })
     await wrapper.vm.$nextTick()
-    expect(recover?.attributes('disabled')).toBeDefined()
+    expect(recover.disabled).toBe(true)
 
     const snapshot = mockSnapshot()
     snapshot.operations.push({
@@ -593,7 +579,7 @@ describe('ProjectView stale runtime recovery', () => {
     })
     store.$patch({ connectionState: 'connected', snapshot })
     await wrapper.vm.$nextTick()
-    expect(recover?.attributes('disabled')).toBeDefined()
+    expect(recover.disabled).toBe(true)
 
     wrapper.unmount()
   })
@@ -608,117 +594,11 @@ describe('ProjectView stale runtime recovery', () => {
     })
     const { wrapper } = await mountRecoveryProject()
 
-    const recover = wrapper.findAll('button').find((button) => button.text().includes('Start project'))
-    if (!recover) throw new Error('Start project action is missing')
-    await recover.trigger('click')
+    await bodyButton('Start project').click()
     await flushPromises()
 
     expect(start).toHaveBeenCalledWith('billing', expect.any(String))
     expect(inspect).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('offers a read-only stale-runtime check for an otherwise stopped route-free project', async () => {
-    const { wrapper } = await mountStaleRuntimeProject()
-
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
-    expect(inspect).toBeDefined()
-    expect(inspect?.attributes('disabled')).toBeUndefined()
-
-    wrapper.unmount()
-  })
-
-  it('opens a destructive review dialog with only the bounded candidate facts and never auto-confirms', async () => {
-    const inspection = confirmableInspection()
-    const inspectRuntime = vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
-    const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
-    const { store, wrapper } = await mountStaleRuntimeProject('billing')
-
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
-    if (!inspect) throw new Error('Inspect stale runtime action is missing')
-    await inspect.trigger('click')
-    await flushPromises()
-
-    expect(inspectRuntime).toHaveBeenCalledWith('billing')
-    expect(confirmRuntime).not.toHaveBeenCalled()
-    const dialog = document.body.querySelector('[role="alertdialog"]')
-    expect(dialog).not.toBeNull()
-    const text = dialog?.textContent ?? ''
-    expect(text).toContain('Harbor no longer has its launch receipt. This process is a candidate, not proven Harbor-owned. Continue only if you recognize it as this project.')
-    expect(text).toContain('Commandforj dev')
-    expect(text).toContain(`Checkout${inspection.confirmable.candidate.checkout}`)
-    expect(text).toContain(`Endpoint${inspection.confirmable.candidate.endpoint}`)
-    expect(text).toContain(`Root PID${inspection.confirmable.candidate.root_pid}`)
-    expect(text).toContain(`Member count${inspection.confirmable.candidate.member_count}`)
-    expect(text).not.toContain(inspection.confirmable.inspection_id)
-    expect(text).not.toContain(inspection.confirmable.candidate_fingerprint)
-    expect(text).not.toContain(inspection.confirmable.expires_at)
-    expect(bodyButton('Stop this process and reset project').disabled).toBe(false)
-
-    await bodyButton('Cancel').click()
-    await flushPromises()
-    expect(store.projectRuntimeRepairInspection).toBeNull()
-    expect(confirmRuntime).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('submits opaque selectors only after confirmation and refreshes while consuming the plan', async () => {
-    const inspection = confirmableInspection()
-    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
-    const confirmation = structuredClone(harborWireFixture.project_runtime_repair_confirmation)
-    const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair').mockResolvedValueOnce(confirmation)
-    const { store, wrapper } = await mountStaleRuntimeProject('billing')
-    const getSnapshot = vi.spyOn(harborBridge, 'getSnapshot')
-
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
-    if (!inspect) throw new Error('Inspect stale runtime action is missing')
-    await inspect.trigger('click')
-    await flushPromises()
-    bodyButton('Stop this process and reset project').click()
-    await flushPromises()
-
-    expect(confirmRuntime).toHaveBeenCalledWith(
-      'billing',
-      inspection.confirmable.inspection_id,
-      inspection.confirmable.candidate_fingerprint,
-    )
-    expect(store.projectRuntimeRepairInspection).toBeNull()
-    expect(getSnapshot).toHaveBeenCalledOnce()
-    expect(store.projectById('billing')?.state).toBe('stopped')
-    wrapper.unmount()
-  })
-
-  it('keeps confirmation disabled after expiry or while connection state is unsafe', async () => {
-    const inspection = confirmableInspection()
-    vi.spyOn(harborBridge, 'inspectProjectRuntimeRepair').mockResolvedValueOnce(inspection)
-    const confirmRuntime = vi.spyOn(harborBridge, 'confirmProjectRuntimeRepair')
-    const { store, wrapper } = await mountStaleRuntimeProject('billing')
-
-    const inspect = wrapper.findAll('button').find((button) => button.text().includes('Check for stale runtime'))
-    if (!inspect) throw new Error('Inspect stale runtime action is missing')
-    await inspect.trigger('click')
-    await flushPromises()
-    const confirm = bodyButton('Stop this process and reset project')
-
-    store.$patch({ snapshotStale: true })
-    await wrapper.vm.$nextTick()
-    expect(confirm.disabled).toBe(true)
-
-    store.$patch({ snapshotStale: false, connectionState: 'disconnected' })
-    await wrapper.vm.$nextTick()
-    expect(confirm.disabled).toBe(true)
-
-    store.$patch({ connectionState: 'connected', settingUpNetwork: true })
-    await wrapper.vm.$nextTick()
-    expect(confirm.disabled).toBe(true)
-
-    const expired = confirmableInspection()
-    expired.confirmable.expires_at = '2020-01-01T00:00:00Z'
-    store.$patch({ settingUpNetwork: false, projectRuntimeRepairInspection: expired })
-    await flushPromises()
-    expect(bodyButton('Stop this process and reset project').disabled).toBe(true)
-    expect(document.body.textContent).toContain('This inspection has expired.')
-    expect(confirmRuntime).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })
@@ -881,6 +761,21 @@ describe('ProjectView project removal approval', () => {
 })
 
 describe('ProjectView project restart', () => {
+  it('keeps ready-project header actions compact and accessible', async () => {
+    const { wrapper } = await mountProject('orders-api')
+
+    expect(wrapper.get('[data-testid="project-address-bar"]').text()).toContain('https://orders.test')
+    expect(bodyButton('Copy project URL').dataset.size).toBe('icon-sm')
+
+    for (const label of ['Stop project', 'Restart project', 'Remove project', 'Open resource']) {
+      const button = bodyButton(label)
+      expect(button.dataset.size).toBe('icon-sm')
+      expect(button.textContent?.trim()).toBe('')
+    }
+
+    wrapper.unmount()
+  })
+
   it('exposes restart for a ready project and sends the typed intent', async () => {
     const { wrapper } = await mountProject('orders-api')
     const restart = vi.spyOn(harborBridge, 'restartProject').mockImplementationOnce(async (projectId, intentId) => {
@@ -896,6 +791,26 @@ describe('ProjectView project restart', () => {
     await flushPromises()
 
     expect(restart).toHaveBeenCalledWith('orders-api', expect.stringMatching(/^desktop-project-restart-/))
+    wrapper.unmount()
+  })
+
+  it('shows a rotating progress arc while the restart request is pending', async () => {
+    let resolveRestart: ((value: typeof harborWireFixture.restart_project) => void) | undefined
+    vi.spyOn(harborBridge, 'restartProject').mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRestart = resolve
+    }))
+    const { wrapper } = await mountProject('orders-api')
+
+    bodyButton('Restart project').click()
+    await wrapper.vm.$nextTick()
+
+    const progress = document.body.querySelector('[role="status"][aria-label="Restarting…"] .animate-spin')
+    expect(progress).not.toBeNull()
+    expect(progress?.classList.contains('border-r-transparent')).toBe(true)
+    expect(progress?.classList.contains('border-b-transparent')).toBe(true)
+
+    resolveRestart?.(structuredClone(harborWireFixture.restart_project))
+    await flushPromises()
     wrapper.unmount()
   })
 

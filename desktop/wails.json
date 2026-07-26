@@ -15,6 +15,9 @@
   "preBuildHooks": {
     "darwin/*": "go run github.com/goforj/harbor/cmd/devartifacts"
   },
+  "postBuildHooks": {
+    "darwin/*": "go run github.com/goforj/harbor/cmd/packageappicon ${bin}"
+  },
   "author": {
     "name": "Chris Miles",
     "email": "chris@milestech.co"

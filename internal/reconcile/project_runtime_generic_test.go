@@ -242,6 +242,23 @@ func TestGenericRuntimeCompletesLifecycleWithoutGoForj(t *testing.T) {
 	prober := &primaryLeaseTestPortProber{
 		results: make(map[netip.Addr]identity.ProbeResult),
 		errs:    make(map[netip.Addr]error),
+		probe: func(request identity.ProbeRequest) (identity.ProbeResult, error) {
+			runtime.mutex.Lock()
+			runtimeActive := len(runtime.handles) != 0
+			runtime.mutex.Unlock()
+			result := identity.ProbeResult{
+				Address: request.Address,
+				Ports:   make([]identity.PortProbe, 0, len(request.Ports)),
+			}
+			for _, port := range request.Ports {
+				result.Ports = append(result.Ports, identity.PortProbe{
+					Port:      port,
+					Available: !runtimeActive,
+					Evidence:  "fixture project listener state",
+				})
+			}
+			return result, nil
+		},
 	}
 	coordinator := newProjectLifecycleCoordinator(
 		store,

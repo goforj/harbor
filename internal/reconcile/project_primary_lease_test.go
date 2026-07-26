@@ -309,6 +309,7 @@ type primaryLeaseTestPortProber struct {
 	results map[netip.Addr]identity.ProbeResult
 	errs    map[netip.Addr]error
 	calls   []identity.ProbeRequest
+	probe   func(identity.ProbeRequest) (identity.ProbeResult, error)
 }
 
 // primaryLeaseTestRuntimeRepairer models an optional runtime-owned listener settlement capability.
@@ -355,6 +356,9 @@ func (prober *primaryLeaseTestPortProber) Probe(_ context.Context, request ident
 	prober.mu.Lock()
 	defer prober.mu.Unlock()
 	prober.calls = append(prober.calls, request)
+	if prober.probe != nil {
+		return prober.probe(request)
+	}
 	if err := prober.errs[request.Address]; err != nil {
 		return identity.ProbeResult{}, err
 	}

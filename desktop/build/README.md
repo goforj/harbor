@@ -2,9 +2,18 @@
 
 The build directory is used to house all the build files and assets for your application.
 
-`appicon.png` is Harbor's canonical transparent application mark consumed by
-Wails. Keep the checked-in Windows icon generated from that same PNG so native
+`appicon.png` is Harbor's canonical full-bleed application icon consumed by
+Wails. Keep its canvas opaque so macOS applies the platform mask only once.
+Keep the checked-in Windows icon generated from that same PNG so native
 application and installer surfaces use the same mark.
+
+On macOS, the Wails post-build hook compiles the canonical image into a split
+`Assets.car` app-icon catalog with an Icon Composer rendition for macOS 26 and
+bitmap renditions for earlier releases, then re-signs the development bundle.
+The catalog prevents current macOS releases from presenting Wails' legacy
+`.icns` fallback inside an additional system-colored frame. This enhancement
+requires full Xcode's `actool`; source development keeps the legacy icon without
+failing when only Apple's command-line tools are installed.
 
 The structure is:
 

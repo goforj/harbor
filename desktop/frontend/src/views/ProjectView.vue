@@ -6,12 +6,13 @@ import {
   Check,
   Clipboard,
   ExternalLink,
+  Globe2,
+  LockKeyhole,
   LoaderCircle,
   Network,
   Play,
   Plus,
   RefreshCw,
-  Search,
   Square,
   SquareTerminal,
   Trash2,
@@ -44,6 +45,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { useProjectActivity } from '@/composables/useProjectActivity'
 import { countReadyServices } from '@/lib/servicePresentation'
 import { terminalPlainText } from '@/lib/terminal'
@@ -57,12 +64,10 @@ const route = useRoute()
 const router = useRouter()
 const store = useHarborStore()
 const copiedPath = ref(false)
+const copiedProjectAddress = ref(false)
 const copiedDevelopmentOutput = ref(false)
 const developmentOutputCopyError = ref<string | null>(null)
 const removeOpen = ref(false)
-const runtimeRepairOpen = ref(false)
-const runtimeRepairNow = ref(Date.now())
-let runtimeRepairExpiryTimer: number | undefined
 const developmentOutputViewport = ref<HTMLElement | null>(null)
 const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
@@ -161,6 +166,9 @@ const currentProjectOperation = computed(() => {
   return undefined
 })
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
+const projectAddress = computed(() => primaryResource.value?.url ?? (project.value ? `https://${project.value.slug}.test` : ''))
+const projectAddressPublished = computed(() => primaryResource.value != null)
+const projectAddressSecure = computed(() => projectAddress.value.startsWith('https://'))
 const selectedServicePorts = ref<ServicePort[]>([])
 const selectedServicePortsError = ref<string | null>(null)
 
@@ -305,26 +313,6 @@ const needsFullNetworkSetup = computed(() => lifecycleProblemCode.value === 'pro
 const needsNetworkRepair = computed(() => lifecycleProblemCode.value === 'project.network.identity_unavailable')
 const recoveryRequired = computed(() => lifecycleProblemCode.value === 'project.recovery.ambiguous_launch')
 const runtimeRepairNotice = computed(() => store.projectRuntimeRepairNotice(projectId.value))
-const runtimeRepairInspection = computed(() => {
-  const inspection = store.projectRuntimeRepairInspection
-  return inspection?.project_id === projectId.value && inspection.disposition === 'confirmable'
-    ? inspection
-    : undefined
-})
-const runtimeRepairCandidate = computed(() => runtimeRepairInspection.value?.confirmable.candidate)
-const runtimeRepairEligible = computed(() => {
-  const current = project.value
-  return current != null
-    && (current.state === 'stopped' || current.state === 'failed' || current.state === 'unavailable')
-    && current.resources.length === 0
-    && current.apps.every((app) => app.state === 'stopped' && !app.active)
-    && current.services.every((service) => service.state === 'stopped')
-})
-const runtimeRepairExpired = computed(() => {
-  const now = runtimeRepairNow.value
-  const expiresAt = runtimeRepairInspection.value?.confirmable.expires_at
-  return expiresAt ? Date.parse(expiresAt) <= now : false
-})
 const lifecycleInFlight = computed(() => store.projectLifecycleBusyFor(projectId.value))
 const starting = computed(() => project.value?.state === 'starting' || activeLifecycle.value?.kind === 'project.start')
 const stopping = computed(() => project.value?.state === 'stopping' || activeLifecycle.value?.kind === 'project.stop')
@@ -392,23 +380,6 @@ const removalApprovalDisabled = computed(() => removalNotice.value?.state !== 'r
   || store.removingProjectId !== null
   || store.projectLifecycleBusy
   || store.projectRuntimeRepairBusy)
-const runtimeRepairInspecting = computed(() => store.projectRuntimeRepairProjectId === projectId.value
-  && store.projectRuntimeRepairAction === 'inspect')
-const runtimeRepairInspectionDisabled = computed(() => !runtimeRepairEligible.value
-  || store.connectionState !== 'connected'
-  || store.snapshotStale
-  || store.settingUpNetwork
-  || store.projectLifecycleBusy
-  || store.removingProjectId !== null
-  || store.projectRuntimeRepairBusy)
-const runtimeRepairConfirmationDisabled = computed(() => runtimeRepairCandidate.value == null
-  || runtimeRepairExpired.value
-  || store.connectionState !== 'connected'
-  || store.snapshotStale
-  || store.settingUpNetwork
-  || store.projectLifecycleBusy
-  || store.removingProjectId !== null
-  || store.projectRuntimeRepairBusy)
 const updatedAt = computed(() => project.value
   ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(project.value.updated_at))
   : '')
@@ -417,8 +388,6 @@ watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, p
   if (nextProjectId !== previousProjectId) {
     followDevelopmentOutput.value = true
     selectedDetailTab.value = 'overview'
-    runtimeRepairOpen.value = false
-    if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
   }
   if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
     closeProjectTerminalWorkspace(nextProjectId)
@@ -436,20 +405,8 @@ watch(selectedServiceId, () => {
   selectedServiceSurface.value = 'logs'
 })
 
-watch(() => runtimeRepairInspection.value?.confirmable.expires_at, (expiresAt) => {
-  if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
-  runtimeRepairNow.value = Date.now()
-  if (expiresAt) scheduleRuntimeRepairExpiry(expiresAt)
-}, { immediate: true })
-
-watch(runtimeRepairInspection, (inspection) => {
-  if (!inspection) runtimeRepairOpen.value = false
-})
-
 onBeforeUnmount(() => {
-  if (runtimeRepairExpiryTimer !== undefined) window.clearTimeout(runtimeRepairExpiryTimer)
   closeProjectTerminalWorkspaces()
-  if (store.projectRuntimeRepairAction !== 'confirm') store.discardProjectRuntimeRepair()
 })
 
 async function scrollDevelopmentOutput() {
@@ -471,6 +428,13 @@ async function copyPath() {
   await copyText(project.value.path)
   copiedPath.value = true
   window.setTimeout(() => { copiedPath.value = false }, 1600)
+}
+
+async function copyProjectAddress() {
+  if (!projectAddress.value) return
+  await copyText(projectAddress.value)
+  copiedProjectAddress.value = true
+  window.setTimeout(() => { copiedProjectAddress.value = false }, 1600)
 }
 
 async function copyDevelopmentOutput() {
@@ -546,151 +510,156 @@ async function setupNetworkAndStartProject() {
   await startProject(requestedProjectId)
 }
 
-async function inspectStaleRuntime() {
-  const requestedProjectId = projectId.value
-  if (runtimeRepairInspectionDisabled.value) return
-  const inspection = await store.inspectProjectRuntimeRepair(requestedProjectId)
-  if (projectId.value === requestedProjectId && inspection?.disposition === 'confirmable') {
-    runtimeRepairOpen.value = true
-  }
-}
-
-async function confirmStaleRuntime() {
-  if (runtimeRepairConfirmationDisabled.value) return
-  await store.confirmProjectRuntimeRepair(projectId.value)
-}
-
-function updateRuntimeRepairOpen(open: boolean) {
-  runtimeRepairOpen.value = open
-  if (open) return
-
-  queueMicrotask(() => {
-    if (!runtimeRepairOpen.value && store.projectRuntimeRepairAction !== 'confirm') {
-      store.discardProjectRuntimeRepair()
-    }
-  })
-}
-
-function scheduleRuntimeRepairExpiry(expiresAt: string) {
-  const remaining = Date.parse(expiresAt) - Date.now()
-  if (remaining <= 0) {
-    runtimeRepairNow.value = Date.now()
-    return
-  }
-  runtimeRepairExpiryTimer = window.setTimeout(() => {
-    runtimeRepairNow.value = Date.now()
-    scheduleRuntimeRepairExpiry(expiresAt)
-  }, Math.min(remaining, 2_147_483_647))
-}
 </script>
 
 <template>
   <main class="flex h-full min-w-0 flex-col overflow-y-auto" :aria-labelledby="project ? 'project-title' : 'project-empty-title'">
     <template v-if="project">
       <header class="border-b px-5 py-4 lg:px-7">
-        <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
-          <div class="flex min-w-0 items-start gap-2">
-            <Button variant="ghost" size="icon-sm" class="-ml-2 shrink-0 min-[1100px]:hidden" as-child>
-              <RouterLink to="/projects" aria-label="Back to projects"><ArrowLeft class="size-4" /></RouterLink>
-            </Button>
-            <div class="min-w-0">
-              <div class="flex min-w-0 items-center gap-2"><h1 id="project-title" class="truncate text-base font-semibold tracking-tight">{{ project.name }}</h1><StatusBadge :status="project.state" /></div>
-              <p class="mt-1 truncate text-xs text-muted-foreground">{{ project.path }}</p>
-            </div>
-          </div>
-          <div class="flex items-center gap-2">
-            <Button
-              :variant="lifecycleAction === 'start' ? 'default' : 'outline'"
-              size="sm"
-              :disabled="lifecycleDisabled"
-              @click="changeProjectLifecycle"
-            >
-              <LoaderCircle v-if="lifecycleInFlight || starting || stopping || restarting" class="size-3.5 animate-spin" />
-              <Play v-else-if="lifecycleAction === 'start'" class="size-3.5 fill-current" />
-              <Square v-else class="size-3.5 fill-current" />
-              {{ lifecycleLabel }}
-            </Button>
-            <Button
-              v-if="restartAvailable"
-              variant="outline"
-              size="sm"
-              :disabled="restartDisabled"
-              @click="restartProject"
-            >
-              <LoaderCircle v-if="restarting || lifecycleInFlight" class="size-3.5 animate-spin" />
-              <RefreshCw v-else class="size-3.5" />
-              {{ restarting || lifecycleInFlight ? 'Restarting…' : 'Restart project' }}
-            </Button>
-            <AlertDialog v-model:open="removeOpen">
-              <AlertDialogTrigger as-child>
-                <Button variant="outline" size="sm" :disabled="removalDisabled">
-                  <Trash2 class="size-3.5" />{{ removalLabel }}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Remove {{ project.name }}?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Harbor will remove this project from its local registry and release any Harbor-owned networking. The project files at {{ project.path }} will stay on disk.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep project</AlertDialogCancel>
-                  <AlertDialogAction class="bg-destructive text-white hover:bg-destructive/90" :disabled="removalDisabled" @click="removeProject">
-                    Remove project
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            <AlertDialog :open="runtimeRepairOpen" @update:open="updateRuntimeRepairOpen">
-              <AlertDialogContent v-if="runtimeRepairCandidate">
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Stop this stale runtime?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Harbor no longer has its launch receipt. This process is a candidate, not proven Harbor-owned. Continue only if you recognize it as this project.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <dl class="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-[7rem_minmax(0,1fr)]">
-                  <dt class="text-muted-foreground">Command</dt><dd><code>{{ runtimeRepairCandidate.command }}</code></dd>
-                  <dt class="text-muted-foreground">Checkout</dt><dd class="min-w-0 break-all"><code>{{ runtimeRepairCandidate.checkout }}</code></dd>
-                  <dt class="text-muted-foreground">Endpoint</dt><dd><code>{{ runtimeRepairCandidate.endpoint }}</code></dd>
-                  <dt class="text-muted-foreground">Root PID</dt><dd>{{ runtimeRepairCandidate.root_pid }}</dd>
-                  <dt class="text-muted-foreground">Member count</dt><dd>{{ runtimeRepairCandidate.member_count }}</dd>
-                </dl>
-                <p v-if="runtimeRepairExpired" class="text-sm text-destructive">This inspection has expired. Close this dialog and inspect the stale runtime again.</p>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    class="bg-destructive text-white hover:bg-destructive/90"
-                    :disabled="runtimeRepairConfirmationDisabled"
-                    @click="confirmStaleRuntime"
+        <div class="flex min-w-0 flex-wrap items-center gap-3">
+          <Button variant="ghost" size="icon-sm" class="-ml-2 shrink-0 min-[1100px]:hidden" as-child>
+            <RouterLink to="/projects" aria-label="Back to projects"><ArrowLeft class="size-4" /></RouterLink>
+          </Button>
+          <div
+            data-testid="project-address-bar"
+            class="flex h-9 min-w-60 max-w-3xl flex-[1_1_32rem] items-center gap-2 rounded-full border bg-muted/20 px-3 text-sm shadow-xs"
+          >
+            <LockKeyhole
+              v-if="projectAddressSecure"
+              class="size-4 shrink-0"
+              :class="projectAddressPublished ? 'text-emerald-500' : 'text-muted-foreground'"
+              aria-hidden="true"
+            />
+            <Globe2 v-else class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate font-medium" :class="{ 'text-muted-foreground': !projectAddressPublished }">{{ projectAddress }}</span>
+            <TooltipProvider :delay-duration="300">
+              <Tooltip>
+                <TooltipTrigger as-child>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    class="-mr-2 size-7 text-muted-foreground hover:text-foreground"
+                    :aria-label="copiedProjectAddress ? 'Project URL copied' : 'Copy project URL'"
+                    @click="copyProjectAddress"
                   >
-                    Stop this process and reset project
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            <Button
-              v-if="runtimeRepairEligible && !recoveryRequired"
-              variant="outline"
-              size="sm"
-              :disabled="runtimeRepairInspectionDisabled"
-              @click="inspectStaleRuntime"
-            >
-              <LoaderCircle v-if="runtimeRepairInspecting" class="size-3.5 animate-spin" aria-hidden="true" />
-              <Search v-else class="size-3.5" aria-hidden="true" />
-              {{ runtimeRepairInspecting ? 'Checking stale runtime…' : 'Check for stale runtime' }}
-            </Button>
-            <Button v-if="resourceOpenAvailable" size="sm" @click="primaryResource && openResource(primaryResource.id)">Open resource<ExternalLink class="size-3.5" /></Button>
+                    <Check v-if="copiedProjectAddress" aria-hidden="true" />
+                    <Clipboard v-else aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{{ copiedProjectAddress ? 'Project URL copied' : 'Copy project URL' }}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
+          <TooltipProvider :delay-duration="300">
+            <div class="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger as-child>
+                  <span
+                    v-if="lifecycleInFlight || starting || stopping || restarting"
+                    class="flex size-8 items-center justify-center text-primary"
+                    :aria-label="lifecycleLabel"
+                    role="status"
+                  >
+                    <span
+                      class="size-4 animate-spin rounded-full border-2 border-current border-r-transparent border-b-transparent [animation-duration:700ms]"
+                      aria-hidden="true"
+                    />
+                  </span>
+                  <Button
+                    v-else
+                    variant="ghost"
+                    size="icon-sm"
+                    :class="lifecycleAction === 'start' ? 'text-primary hover:text-primary' : undefined"
+                    :aria-label="lifecycleLabel"
+                    :disabled="lifecycleDisabled"
+                    @click="changeProjectLifecycle"
+                  >
+                    <Play v-if="lifecycleAction === 'start'" class="fill-current" aria-hidden="true" />
+                    <Square v-else class="fill-current" aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{{ lifecycleLabel }}</TooltipContent>
+              </Tooltip>
+              <Tooltip v-if="restartAvailable">
+                <TooltipTrigger as-child>
+                  <span
+                    v-if="restarting || lifecycleInFlight"
+                    class="flex size-8 items-center justify-center text-muted-foreground"
+                    aria-label="Restarting…"
+                    role="status"
+                  >
+                    <span
+                      class="size-4 animate-spin rounded-full border-2 border-current border-r-transparent border-b-transparent [animation-duration:700ms]"
+                      aria-hidden="true"
+                    />
+                  </span>
+                  <Button
+                    v-else
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Restart project"
+                    :disabled="restartDisabled"
+                    @click="restartProject"
+                  >
+                    <RefreshCw aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{{ restarting || lifecycleInFlight ? 'Restarting…' : 'Restart project' }}</TooltipContent>
+              </Tooltip>
+              <AlertDialog v-model:open="removeOpen">
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <AlertDialogTrigger as-child>
+                      <Button variant="ghost" size="icon-sm" class="hover:text-destructive" :aria-label="removalLabel" :disabled="removalDisabled">
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </AlertDialogTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>{{ removalLabel }}</TooltipContent>
+                </Tooltip>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Remove {{ project.name }}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Harbor will remove this project from its local registry and release any Harbor-owned networking. The project files at {{ project.path }} will stay on disk.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Keep project</AlertDialogCancel>
+                    <AlertDialogAction class="bg-destructive text-white hover:bg-destructive/90" :disabled="removalDisabled" @click="removeProject">
+                      Remove project
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <Tooltip v-if="resourceOpenAvailable">
+                <TooltipTrigger as-child>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Open resource"
+                    @click="primaryResource && openResource(primaryResource.id)"
+                  >
+                    <ExternalLink aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Open resource</TooltipContent>
+              </Tooltip>
+            </div>
+          </TooltipProvider>
         </div>
 
-        <div class="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        <div class="mt-3 flex min-w-0 flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          <div class="flex min-w-0 items-center gap-2">
+            <h1 id="project-title" class="truncate text-sm font-semibold tracking-tight text-foreground">{{ project.name }}</h1>
+            <StatusBadge :status="project.state" />
+          </div>
           <Badge variant="outline">Slug: {{ project.slug }}</Badge>
           <button type="button" class="inline-flex min-w-0 items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" @click="copyPath">
-            <Check v-if="copiedPath" class="size-3.5" /><Clipboard v-else class="size-3.5" />{{ copiedPath ? 'Path copied' : 'Copy path' }}
+            <Check v-if="copiedPath" class="size-3.5 shrink-0" /><Clipboard v-else class="size-3.5 shrink-0" />
+            <span class="max-w-80 truncate">{{ copiedPath ? 'Path copied' : project.path }}</span>
           </button>
-          <span>Updated {{ updatedAt }}</span>
+          <span class="ml-auto">Updated {{ updatedAt }}</span>
         </div>
       </header>
 

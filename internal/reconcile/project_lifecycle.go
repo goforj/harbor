@@ -1448,17 +1448,8 @@ func (coordinator *ProjectLifecycleCoordinator) runRestart(record state.Operatio
 
 // runQueuedRestart takes the currently healthy project offline before launching its replacement.
 func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.OperationRecord) {
-	admission, err := coordinator.primaryLeases.Ensure(coordinator.ctx, record.Operation.ProjectID)
+	project, err := coordinator.state.Project(coordinator.ctx, record.Operation.ProjectID)
 	if err != nil {
-		if ctxErr := coordinator.ctx.Err(); ctxErr != nil {
-			coordinator.cancelQueued(record, ctxErr)
-			return
-		}
-		var rejection *projectPrimaryLeaseRejection
-		if errors.As(err, &rejection) {
-			coordinator.failQueuedAdmission(record, rejection.Problem())
-			return
-		}
 		coordinator.cancelQueued(record, err)
 		return
 	}
@@ -1493,7 +1484,7 @@ func (coordinator *ProjectLifecycleCoordinator) runQueuedRestart(record state.Op
 		return
 	}
 	at := lifecycleTime(coordinator.now())
-	for _, lowerBound := range []time.Time{admission.Project.Project.UpdatedAt, session.UpdatedAt} {
+	for _, lowerBound := range []time.Time{project.Project.UpdatedAt, session.UpdatedAt} {
 		if at.Before(lowerBound) {
 			at = lowerBound
 		}

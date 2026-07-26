@@ -411,6 +411,14 @@ The retained-runtime slice passed full root and desktop Go tests and vet, focuse
 
 The Linux resolver checkpoint passed isolated root-module tests and vet, focused resolver/helper/wire tests, and source formatting, but its hosted `systemd-resolved` lifecycle does not yet produce the required exact runtime route. The Windows checkpoint covers daemon/helper provider wiring, focused resolver tests, vet, and Windows cross-compiles, but its elevated NRPT lifecycle still encounters a deterministic native precondition mismatch. Both native executions are outside required CI until their platform claims are completed; neither platform is supported from build evidence alone.
 
+## 2026-07-26 project restart admission correction
+
+Project Restart now crosses the exact stop boundary before asking the primary-lease coordinator to re-admit the App port. The previous ordering ran retained-lease admission while the active project still owned its assigned listener, allowing Harbor to report the project's own port as a foreign conflict even though separate Stop then Start succeeded. The framework-neutral lifecycle regression keeps the port unavailable for as long as the old runtime handle exists and proves Restart still reaches a replacement Ready session.
+
+## 2026-07-26 macOS 26 app-icon packaging
+
+Wails v2's generated `.icns` is a legacy icon on macOS 26, which causes the system to shrink Harbor's artwork inside an additional system-colored frame. When full Xcode's `actool` is available, the Darwin post-build hook generates the required bitmap wells, combines them with an Icon Composer document into `Assets.car`, and ad-hoc re-signs the development bundle. A missing `actool` leaves the legacy icon in place without failing source development. Both Darwin plists select `AppIcon` through `CFBundleIconName` while retaining `iconfile.icns` for older compatibility, and development uses the distinct `com.goforj.harbor.dev` bundle identity.
+
 ## Things not to do
 
 - Do not infer process ownership from a busy port.
