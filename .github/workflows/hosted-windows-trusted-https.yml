@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HARBOR_HOSTED_WINDOWS_FORJ_COMMIT: b29535e2bcba65642f6d97bb4463cd2cb57170a0
+  HARBOR_HOSTED_WINDOWS_FORJ_COMMIT: v0.22.0
 
 jobs:
   trusted-https:
@@ -220,7 +220,7 @@ jobs:
         env:
           HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
           HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}\harbor-hosted-windows-bin\forj.exe
-          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.22.0"
           HARBOR_PHASE1_CLI_BINARY: ${{ runner.temp }}\harbor-hosted-windows-bin\harbor.exe
           HARBOR_PHASE1_DAEMON_BINARY: ${{ runner.temp }}\harbor-hosted-windows-bin\harbord.exe
           HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}\harbor-hosted-windows-trusted-https-evidence

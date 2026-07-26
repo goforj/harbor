@@ -208,7 +208,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: goforj/goforj
-          ref: b29535e2bcba65642f6d97bb4463cd2cb57170a0
+          ref: v0.22.0
           path: .ci/goforj
           persist-credentials: false
 

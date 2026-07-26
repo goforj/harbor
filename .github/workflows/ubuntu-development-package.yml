@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  HARBOR_PACKAGED_FORJ_COMMIT: b29535e2bcba65642f6d97bb4463cd2cb57170a0
+  HARBOR_PACKAGED_FORJ_COMMIT: v0.22.0
 
 jobs:
   package:
@@ -287,7 +287,7 @@ jobs:
         env:
           HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
           HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-packaged-acceptance-bin/forj
-          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.22.0"
           HARBOR_PHASE1_CLI_BINARY: /usr/bin/harbor
           HARBOR_PHASE1_DAEMON_BINARY: /usr/lib/goforj-harbor/harbord
           HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-packaged-ubuntu-evidence
