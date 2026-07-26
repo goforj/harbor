@@ -19,6 +19,46 @@ trap {
 }
 Remove-Item -LiteralPath $diagnosticPath -Force -ErrorAction SilentlyContinue
 
+function Get-StoreCertificates {
+    param(
+        [Security.Cryptography.X509Certificates.StoreName]$Name,
+        [Security.Cryptography.X509Certificates.StoreLocation]$Location
+    )
+
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($Name, $Location)
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        return @($store.Certificates)
+    }
+    finally {
+        $store.Dispose()
+    }
+}
+
+function Remove-StoreCertificate {
+    param(
+        [Security.Cryptography.X509Certificates.StoreName]$Name,
+        [Security.Cryptography.X509Certificates.StoreLocation]$Location,
+        [string]$Thumbprint
+    )
+
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($Name, $Location)
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $matches = $store.Certificates.Find(
+            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $Thumbprint,
+            $false
+        )
+        foreach ($certificate in $matches) {
+            $store.Remove($certificate)
+        }
+    }
+    finally {
+        $store.Dispose()
+    }
+}
+
 $signerCertificatePath = Join-Path $installRoot "harbor-helper-signing.cer"
 $signerThumbprintPath = Join-Path $installRoot "harbor-helper-signing-thumbprint.txt"
 if (-not (Test-Path -LiteralPath $signerCertificatePath -PathType Leaf) -or
@@ -33,19 +73,28 @@ $sealedCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::
 if ($sealedCertificate.Thumbprint -cne $signerThumbprint) {
     throw "Harbor helper signing certificate differs from its sealed identity."
 }
-$signerStorePaths = @()
-foreach ($store in @("Cert:\LocalMachine\Root", "Cert:\LocalMachine\TrustedPublisher")) {
-    $installedCertificate = Join-Path $store $signerThumbprint
-    if (-not (Test-Path -LiteralPath $installedCertificate)) {
-        throw "Harbor helper signing certificate is missing from $store."
+$signerStores = @(
+    [Security.Cryptography.X509Certificates.StoreName]::Root,
+    [Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher
+)
+foreach ($storeName in $signerStores) {
+    $installedCertificates = @(Get-StoreCertificates `
+        -Name $storeName `
+        -Location ([Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine) |
+        Where-Object { $_.Thumbprint -ceq $signerThumbprint })
+    if ($installedCertificates.Count -eq 0) {
+        throw "Harbor helper signing certificate is missing from LocalMachine\$storeName."
     }
-    $signerStorePaths += $installedCertificate
 }
 
-$machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+$machineRoots = @(Get-StoreCertificates `
+    -Name ([Security.Cryptography.X509Certificates.StoreName]::Root) `
+    -Location ([Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine) | Where-Object {
     $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
 })
-$userRoots = @(Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+$userRoots = @(Get-StoreCertificates `
+    -Name ([Security.Cryptography.X509Certificates.StoreName]::Root) `
+    -Location ([Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser) | Where-Object {
     $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
 })
 if ($machineRoots.Count -ne 0 -or $userRoots.Count -ne 0) {
@@ -115,8 +164,11 @@ if ($ValidateOnly) {
     exit 0
 }
 
-foreach ($installedCertificate in $signerStorePaths) {
-    Remove-Item -LiteralPath $installedCertificate -Force
+foreach ($storeName in $signerStores) {
+    Remove-StoreCertificate `
+        -Name $storeName `
+        -Location ([Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine) `
+        -Thumbprint $signerThumbprint
 }
 if (Test-Path -LiteralPath $privilegedRoot) {
     Remove-Item -LiteralPath $privilegedRoot -Recurse -Force
