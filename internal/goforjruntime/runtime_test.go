@@ -80,6 +80,17 @@ func TestNormalizeServiceChangeWaitErrorDistinguishesPollAndCallerDeadlines(t *t
 	}
 }
 
+// TestObserveResourcesDefersAnEmptyServiceTopologyToTheServiceOnlyRefresh keeps last-service removal valid.
+func TestObserveResourcesDefersAnEmptyServiceTopologyToTheServiceOnlyRefresh(t *testing.T) {
+	runtime := &Runtime{}
+	observation, err := runtime.ObserveResources(t.Context(), projectruntime.ResourceObservationRequest{
+		Services: []domain.ServiceSnapshot{},
+	})
+	if err != nil || observation.Supported || observation.Resources == nil || len(observation.Resources) != 0 {
+		t.Fatalf("ObserveResources(empty services) = %#v, %v, want unsupported non-nil empty resources", observation, err)
+	}
+}
+
 // TestGoForjEnvironmentOverridesKeepsProviderKeysInsideTheAdapter proves core network facts are translated only at the GoForj boundary.
 func TestGoForjEnvironmentOverridesKeepsProviderKeysInsideTheAdapter(t *testing.T) {
 	assignment := projectruntime.NetworkAssignment{
