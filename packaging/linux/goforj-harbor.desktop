@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GoForj Harbor
+Comment=Local development environments for GoForj projects
+Exec=/usr/lib/goforj-harbor/harbor-desktop
+Icon=goforj-harbor
+Terminal=false
+Categories=Development;

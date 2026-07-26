@@ -1,0 +1,101 @@
+#!/bin/sh
+
+set -eu
+
+if [ "${1:-}" != "remove" ]; then
+  exit 0
+fi
+
+root=/var/lib/goforj/harbor
+
+for active in \
+  "$root/state/ownership.json" \
+  "$root/state/host-projection.json" \
+  /etc/systemd/resolved.conf.d/90-goforj-harbor.conf \
+  /usr/local/share/ca-certificates/goforj-harbor.crt \
+  /usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release
+do
+  if [ -e "$active" ] || [ -L "$active" ]; then
+    echo "Harbor host integration remains at $active; run network release before removing the package." >&2
+    exit 1
+  fi
+done
+
+if /usr/sbin/nft list tables 2>/dev/null | /usr/bin/grep -Fqx 'table inet goforj_harbor'; then
+  echo "Harbor nftables state remains; run network release before removing the package." >&2
+  exit 1
+fi
+
+if [ ! -e "$root" ] && [ ! -L "$root" ]; then
+  exit 0
+fi
+if [ -L "$root" ] || [ ! -d "$root" ]; then
+  echo "Harbor privileged runtime root has a foreign identity: $root" >&2
+  exit 1
+fi
+
+/usr/bin/find "$root" -xdev -print |
+while IFS= read -r path; do
+  if [ -L "$path" ]; then
+    echo "Harbor privileged runtime contains a symlink: $path" >&2
+    exit 1
+  fi
+  case "$path" in
+    "$root"|"$root/tickets")
+      expected=0:0:711:directory
+      ;;
+    "$root/state"|"$root/state/replay"|"$root/tickets/claims")
+      expected=0:0:700:directory
+      ;;
+    "$root/tickets/pending")
+      identity=$(/usr/bin/stat -c '%u:%a:%F' "$path")
+      owner=${identity%%:*}
+      remainder=${identity#*:}
+      if [ "$owner" -eq 0 ] || [ "$remainder" != "700:directory" ]; then
+        echo "Harbor pending ticket directory has a foreign identity: $path ($identity)" >&2
+        exit 1
+      fi
+      if [ -n "$(/usr/bin/find "$path" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        echo "Harbor pending ticket directory is not empty: $path" >&2
+        exit 1
+      fi
+      continue
+      ;;
+    "$root/tickets/claims/"*|"$root/state/replay/"*)
+      identity=$(/usr/bin/stat -c '%u:%a:%h:%F' "$path")
+      if [ "$identity" != "0:600:1:regular file" ]; then
+        echo "Harbor runtime tombstone has a foreign identity: $path ($identity)" >&2
+        exit 1
+      fi
+      continue
+      ;;
+    "$root/ownership-release-proof.json")
+      identity=$(/usr/bin/stat -c '%u:%a:%h:%F' "$path")
+      if [ "$identity" != "0:644:1:regular file" ]; then
+        echo "Harbor release proof has a foreign identity: $path ($identity)" >&2
+        exit 1
+      fi
+      continue
+      ;;
+    "$root/ownership-release-proof.lock")
+      identity=$(/usr/bin/stat -c '%u:%a:%h:%F' "$path")
+      if [ "$identity" != "0:600:1:regular file" ]; then
+        echo "Harbor release proof has a foreign identity: $path ($identity)" >&2
+        exit 1
+      fi
+      continue
+      ;;
+    *)
+      echo "Harbor privileged runtime contains an unrecognized artifact: $path" >&2
+      exit 1
+      ;;
+  esac
+
+  identity=$(/usr/bin/stat -c '%u:%g:%a:%F' "$path")
+  if [ "$identity" != "$expected" ]; then
+    echo "Harbor privileged runtime directory has a foreign identity: $path ($identity)" >&2
+    exit 1
+  fi
+done
+
+/bin/rm -rf -- "$root"

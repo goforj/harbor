@@ -1,0 +1,376 @@
+name: Ubuntu packaged-product gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Three-part semantic base version for this unsigned development package
+        required: true
+        default: 0.1.0
+  push:
+    tags:
+      - "v*.*.*-rc.*"
+
+permissions:
+  contents: read
+
+env:
+  HARBOR_PACKAGED_FORJ_COMMIT: 32c1a06d45a92a3de6021ef2db5723e343268489
+
+jobs:
+  package:
+    name: Ubuntu 24.04 amd64 DEB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure package identity
+        env:
+          HARBOR_REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              if [[ ! "$HARBOR_REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "manual package version must contain exactly three numeric parts" >&2
+                exit 1
+              fi
+              release_version="${HARBOR_REQUESTED_VERSION}-dev.${GITHUB_RUN_NUMBER}"
+              debian_version="${HARBOR_REQUESTED_VERSION}~dev.${GITHUB_RUN_NUMBER}-1"
+              ;;
+            push)
+              if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
+                echo "release-candidate tag must match vMAJOR.MINOR.PATCH-rc.NUMBER" >&2
+                exit 1
+              fi
+              release_version="${BASH_REMATCH[1]}-rc.${BASH_REMATCH[2]}"
+              debian_version="${BASH_REMATCH[1]}~rc.${BASH_REMATCH[2]}-1"
+              ;;
+            *)
+              echo "unsupported package event ${GITHUB_EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
+          package_root="${RUNNER_TEMP}/goforj-harbor-package-root"
+          package_path="${RUNNER_TEMP}/goforj-harbor_${debian_version}_amd64.deb"
+          test ! -e "$package_root"
+          test ! -e "$package_path"
+          printf 'HARBOR_RELEASE_VERSION=%s\n' "$release_version" >> "$GITHUB_ENV"
+          printf 'HARBOR_DEBIAN_VERSION=%s\n' "$debian_version" >> "$GITHUB_ENV"
+          printf 'HARBOR_PACKAGE_ROOT=%s\n' "$package_root" >> "$GITHUB_ENV"
+          printf 'HARBOR_PACKAGE_PATH=%s\n' "$package_path" >> "$GITHUB_ENV"
+
+      - name: Verify native package worker
+        run: |
+          set -euo pipefail
+          [[ "$(uname -s)" == "Linux" ]]
+          [[ "$(uname -m)" == "x86_64" ]]
+          [[ "$(git status --porcelain)" == "" ]]
+          [[ "${{ runner.environment }}" == "github-hosted" ]]
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: ${{ env.HARBOR_PACKAGED_FORJ_COMMIT }}
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Prepare isolated Go caches
+        run: |
+          set -euo pipefail
+          cache_identity="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_cache="${RUNNER_TEMP}/harbor-gocache-${cache_identity}"
+          module_cache="${RUNNER_TEMP}/harbor-gomodcache-${cache_identity}"
+          install -d -m 0700 "$build_cache" "$module_cache"
+          printf 'GOCACHE=%s\n' "$build_cache" >> "$GITHUB_ENV"
+          printf 'GOMODCACHE=%s\n' "$module_cache" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+            .ci/goforj/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install Ubuntu package and runtime prerequisites
+        run: |
+          set -euo pipefail
+          sudo -n apt-get update
+          sudo -n apt-get install --yes \
+            build-essential \
+            ca-certificates \
+            libcap2-bin \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            nftables \
+            pkg-config \
+            policykit-1 \
+            systemd-resolved
+          sudo -n systemctl enable --now systemd-resolved.service
+          sudo -n ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          resolvectl status >/dev/null
+          sudo -n setcap cap_net_admin=ep /usr/sbin/nft
+          [[ "$(getcap /usr/sbin/nft)" == "/usr/sbin/nft cap_net_admin=ep" ]]
+
+      - name: Build production frontend
+        working-directory: desktop/frontend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Install pinned Wails CLI
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "${RUNNER_TEMP}/harbor-build-tools"
+          GOBIN="${RUNNER_TEMP}/harbor-build-tools" go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build Linux desktop
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          export PATH="${RUNNER_TEMP}/harbor-build-tools:${PATH}"
+          wails build \
+            -s \
+            -clean \
+            -platform linux/amd64 \
+            -tags release,webkit2_41 \
+            -trimpath \
+            -o harbor-desktop
+          test -x build/bin/harbor-desktop
+          file build/bin/harbor-desktop | grep -Fq 'ELF 64-bit LSB'
+          file build/bin/harbor-desktop | grep -Fq 'x86-64'
+
+      - name: Stage native Debian package
+        run: |
+          set -euo pipefail
+          product_root="${HARBOR_PACKAGE_ROOT}/usr/lib/goforj-harbor"
+          mkdir -p \
+            "${HARBOR_PACKAGE_ROOT}/DEBIAN" \
+            "${HARBOR_PACKAGE_ROOT}/usr/bin" \
+            "${HARBOR_PACKAGE_ROOT}/usr/libexec" \
+            "$product_root" \
+            "${HARBOR_PACKAGE_ROOT}/usr/share/applications" \
+            "${HARBOR_PACKAGE_ROOT}/usr/share/icons/hicolor/512x512/apps"
+          ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
+          go build -trimpath -ldflags "$ldflags" -o "${HARBOR_PACKAGE_ROOT}/usr/bin/harbor" ./cmd/app
+          go build -trimpath -ldflags "$ldflags" -o "${product_root}/harbord" ./cmd/harbord
+          go build -trimpath -ldflags "$ldflags" -o "${product_root}/outputbroker" ./cmd/outputbroker
+          go build -trimpath -o "${product_root}/harbor-installer" ./cmd/devbootstrap
+          go build -trimpath -ldflags "$ldflags" -o "${product_root}/harbor-helper" ./cmd/helper
+          install -m 0755 desktop/build/bin/harbor-desktop "${product_root}/harbor-desktop"
+          install -m 0755 "${product_root}/harbor-helper" "${HARBOR_PACKAGE_ROOT}/usr/libexec/harbor-helper"
+          install -m 0644 packaging/linux/goforj-harbor.desktop \
+            "${HARBOR_PACKAGE_ROOT}/usr/share/applications/goforj-harbor.desktop"
+          install -m 0644 desktop/build/appicon.png \
+            "${HARBOR_PACKAGE_ROOT}/usr/share/icons/hicolor/512x512/apps/goforj-harbor.png"
+          install -m 0755 packaging/linux/prerm "${HARBOR_PACKAGE_ROOT}/DEBIAN/prerm"
+          {
+            printf 'Package: goforj-harbor\n'
+            printf 'Version: %s\n' "$HARBOR_DEBIAN_VERSION"
+            printf 'Section: devel\n'
+            printf 'Priority: optional\n'
+            printf 'Architecture: amd64\n'
+            printf 'Maintainer: GoForj <chris@milestech.co>\n'
+            printf 'Depends: ca-certificates, libgtk-3-0, libwebkit2gtk-4.1-0, nftables, policykit-1, systemd-resolved\n'
+            printf 'Description: Trusted local HTTPS environments for GoForj projects\n'
+          } > "${HARBOR_PACKAGE_ROOT}/DEBIAN/control"
+          (
+            cd "$HARBOR_PACKAGE_ROOT"
+            find usr -type f -printf '%P\0' |
+              sort -z |
+              xargs -0 md5sum > DEBIAN/md5sums
+          )
+          chmod 0644 "${HARBOR_PACKAGE_ROOT}/DEBIAN/control" "${HARBOR_PACKAGE_ROOT}/DEBIAN/md5sums"
+
+      - name: Assemble and inspect Debian package
+        run: |
+          set -euo pipefail
+          dpkg-deb --root-owner-group --build "$HARBOR_PACKAGE_ROOT" "$HARBOR_PACKAGE_PATH"
+          dpkg-deb --info "$HARBOR_PACKAGE_PATH"
+          dpkg-deb --contents "$HARBOR_PACKAGE_PATH" > "${RUNNER_TEMP}/debian-package-contents.txt"
+          grep -Fq './usr/bin/harbor' "${RUNNER_TEMP}/debian-package-contents.txt"
+          grep -Fq './usr/lib/goforj-harbor/harbor-desktop' "${RUNNER_TEMP}/debian-package-contents.txt"
+          grep -Fq './usr/lib/goforj-harbor/harbord' "${RUNNER_TEMP}/debian-package-contents.txt"
+          grep -Fq './usr/libexec/harbor-helper' "${RUNNER_TEMP}/debian-package-contents.txt"
+          (
+            cd "$(dirname "$HARBOR_PACKAGE_PATH")"
+            package_name="$(basename "$HARBOR_PACKAGE_PATH")"
+            sha256sum "$package_name" > "${package_name}.sha256"
+            sha256sum --check "${package_name}.sha256"
+          )
+
+      - name: Require clean package and Harbor-owned host state
+        run: |
+          set -euo pipefail
+          if dpkg-query --show goforj-harbor >/dev/null 2>&1; then
+            echo "preexisting Harbor Debian package" >&2
+            exit 1
+          fi
+          for path in \
+            /usr/bin/harbor \
+            /usr/lib/goforj-harbor \
+            /usr/libexec/harbor-helper \
+            /var/lib/goforj/harbor \
+            /etc/systemd/resolved.conf.d/90-goforj-harbor.conf \
+            /usr/local/share/ca-certificates/goforj-harbor.crt \
+            /usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release
+          do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              echo "preexisting Harbor path: $path" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install and verify exact Debian package
+        run: |
+          set -euo pipefail
+          sudo -n dpkg --install "$HARBOR_PACKAGE_PATH"
+          [[ "$(dpkg-query --showformat='${Status}' --show goforj-harbor)" == "install ok installed" ]]
+          [[ "$(dpkg-query --showformat='${Version}' --show goforj-harbor)" == "$HARBOR_DEBIAN_VERSION" ]]
+          test -z "$(sudo -n dpkg --verify goforj-harbor)"
+          test -x /usr/bin/harbor
+          test -x /usr/lib/goforj-harbor/harbor-desktop
+          test -x /usr/lib/goforj-harbor/harbord
+          test -x /usr/libexec/harbor-helper
+
+      - name: Activate packaged Harbor prerequisites
+        run: |
+          set -euo pipefail
+          sudo -n /usr/lib/goforj-harbor/harbor-installer \
+            --helper /usr/lib/goforj-harbor/harbor-helper \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"
+          rule=/etc/polkit-1/rules.d/49-goforj-harbor-packaged-ci.rules
+          runner_user="$(id -un)"
+          printf '%s\n' \
+            'polkit.addRule(function(action, subject) {' \
+            '  if (action.id == "org.freedesktop.policykit.exec" &&' \
+            '      action.lookup("program") == "/usr/libexec/harbor-helper" &&' \
+            "      subject.user == \"${runner_user}\") {" \
+            '    return polkit.Result.YES;' \
+            '  }' \
+            '});' |
+            sudo -n tee "$rule" >/dev/null
+          sudo -n chmod 0644 "$rule"
+          sudo -n systemctl restart polkit.service
+
+      - name: Build external acceptance prerequisites
+        run: |
+          set -euo pipefail
+          binary_directory="${RUNNER_TEMP}/harbor-packaged-acceptance-bin"
+          install -d -m 0700 "$binary_directory"
+          (
+            cd .ci/goforj
+            go build -trimpath -o "${binary_directory}/forj" ./cmd/forj
+          )
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
+          printf 'HARBOR_PACKAGED_ACCEPTANCE_BINARY_DIRECTORY=%s\n' "$binary_directory" >> "$GITHUB_ENV"
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Run installed-package trusted HTTPS acceptance
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-packaged-acceptance-bin/forj
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+          HARBOR_PHASE1_CLI_BINARY: /usr/bin/harbor
+          HARBOR_PHASE1_DAEMON_BINARY: /usr/lib/goforj-harbor/harbord
+          HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-packaged-ubuntu-evidence
+        run: |
+          set -euo pipefail
+          [[ "$(command -v forj)" == "${HARBOR_PACKAGED_ACCEPTANCE_BINARY_DIRECTORY}/forj" ]]
+          [[ "$(command -v wire)" == "${HARBOR_PACKAGED_ACCEPTANCE_BINARY_DIRECTORY}/wire" ]]
+          go test \
+            -tags=phase1acceptance \
+            -count=1 \
+            -timeout=25m \
+            -run '^TestTrustedHTTPSIntermediateNativeLifecycle$' \
+            ./internal/acceptance
+          go run ./cmd/platformproof verify-trusted-https \
+            --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \
+            --platform linux
+
+      - name: Purge admitted package and prove zero Harbor state
+        run: |
+          set -euo pipefail
+          foreign_sentinel="/usr/lib/goforj-harbor/foreign-package-sentinel-${GITHUB_RUN_ID}"
+          printf '%s\n' "foreign package state ${GITHUB_RUN_ID}" |
+            sudo -n tee "$foreign_sentinel" >/dev/null
+          sudo -n chmod 0644 "$foreign_sentinel"
+          sudo -n dpkg --purge goforj-harbor
+          if dpkg-query --show goforj-harbor >/dev/null 2>&1; then
+            echo "retained Harbor Debian package receipt" >&2
+            exit 1
+          fi
+          for path in \
+            /usr/bin/harbor \
+            /usr/lib/goforj-harbor/harbor-desktop \
+            /usr/lib/goforj-harbor/harbord \
+            /usr/lib/goforj-harbor/outputbroker \
+            /usr/lib/goforj-harbor/harbor-helper \
+            /usr/lib/goforj-harbor/harbor-installer \
+            /usr/libexec/harbor-helper \
+            /var/lib/goforj/harbor \
+            /etc/systemd/resolved.conf.d/90-goforj-harbor.conf \
+            /usr/local/share/ca-certificates/goforj-harbor.crt \
+            /usr/local/share/ca-certificates/goforj-harbor.crt.harbor-release
+          do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              echo "retained Harbor path: $path" >&2
+              exit 1
+            fi
+          done
+          [[ "$(sudo -n cat "$foreign_sentinel")" == "foreign package state ${GITHUB_RUN_ID}" ]]
+          evidence="${HARBOR_PHASE1_EVIDENCE_DIRECTORY}/package-uninstall.txt"
+          {
+            printf 'package_sha256=%s\n' "$(sha256sum "$HARBOR_PACKAGE_PATH" | awk '{print $1}')"
+            printf 'package_receipt=absent\n'
+            printf 'installed_product_paths=absent\n'
+            printf 'harbor_host_projection=absent\n'
+            printf 'foreign_package_sentinel=preserved\n'
+          } > "$evidence"
+          sudo -n rm -f "$foreign_sentinel"
+          sudo -n rmdir /usr/lib/goforj-harbor
+
+      - name: Remove hosted Ubuntu prerequisites
+        if: always()
+        run: |
+          sudo -n rm -f /etc/polkit-1/rules.d/49-goforj-harbor-packaged-ci.rules
+          sudo -n systemctl restart polkit.service
+          sudo -n setcap -r /usr/sbin/nft 2>/dev/null || true
+
+      - name: Upload exact tested unsigned Debian package
+        uses: actions/upload-artifact@v7
+        with:
+          name: GoForj-Harbor-ubuntu-amd64-tested-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/goforj-harbor_*_amd64.deb
+            ${{ runner.temp }}/goforj-harbor_*_amd64.deb.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload packaged-product acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GoForj-Harbor-ubuntu-amd64-packaged-evidence-${{ github.run_number }}
+          path: |
+            harbor-packaged-ubuntu-evidence/summary.json
+            harbor-packaged-ubuntu-evidence/package-uninstall.txt
+          if-no-files-found: error
+          retention-days: 14
