@@ -115,6 +115,9 @@ jobs:
             --version "${HARBOR_RELEASE_VERSION}" \
             --sequence "${HARBOR_RELEASE_SEQUENCE}" \
             --revision "${GITHUB_SHA}"
+          sudo -n chown -R root:wheel "${HARBOR_PAYLOAD_ROOT}"
+          sudo -n chmod 0755 "${HARBOR_PAYLOAD_ROOT}"
+          sudo -n chmod 4755 "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper"
 
       - name: Validate staged payload
         run: |
