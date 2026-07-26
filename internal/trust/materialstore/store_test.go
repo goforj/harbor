@@ -94,7 +94,7 @@ func TestConcurrentAuthorityInitializationUsesFirstManifest(t *testing.T) {
 			ready := make(chan struct{})
 			release := make(chan struct{})
 			checkpoint := func(checkpoint writeCheckpoint) error {
-				if checkpoint != checkpointGenerationSynced {
+				if checkpoint != checkpointGenerationCommit {
 					return nil
 				}
 				if arrivals.Add(1) == 2 {
