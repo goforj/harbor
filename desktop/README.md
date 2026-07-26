@@ -65,6 +65,8 @@ Ubuntu 24.04 requires GTK3, WebKit2GTK 4.1, and the `webkit2_41` Wails build tag
 
 The Harbor application mark is wired into native Wails application and window surfaces. The native tray, signed installers, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
 
+The `macOS development package` workflow assembles the first complete Apple-silicon package payload: the desktop, daemon, CLI, output broker, privileged helper, low-port relay, stable daemon launcher, release manifest, and installation record. It is deliberately unsigned and uploaded as a development artifact; it is not a notarized public release. The release-tagged desktop activates the fixed per-user LaunchAgent on first launch, while ordinary source builds continue to use the daemon started by `forj dev`.
+
 ## Continuous integration
 
 The repository workflow runs root Go tests on Ubuntu, macOS, and Windows. It separately builds the frontend, runs its browser tests, and then tests, vets, and compiles the nested Wails module on all three operating systems.

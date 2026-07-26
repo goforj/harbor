@@ -2,6 +2,12 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "Harbor",
   "outputfilename": "harbor-desktop",
+  "info": {
+    "productName": "GoForj Harbor",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026 Chris Miles",
+    "comments": "Local development environments for GoForj projects."
+  },
   "frontend:install": "npm ci",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",

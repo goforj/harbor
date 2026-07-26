@@ -6,7 +6,7 @@ Last updated: 2026-07-24
 
 This document defines how Harbor's desktop, daemon, command-line client, helper, relay, service definitions, and installer ship as one compatible product. It refines the release boundary in [Architecture](./architecture.md), the user-facing update behavior in [Product design](./product-design.md), and the native evidence required by [Cross-platform testing](./testing.md).
 
-The first implementation target is macOS. Windows and Ubuntu layouts are normative contracts for later platform work, not claims that those packages exist today.
+The first implementation target is macOS. Windows and Ubuntu layouts are normative contracts for later platform work, not claims that those packages exist today. Harbor's initial macOS build is an architecture-specific Apple-silicon development package; Intel and universal packages remain unclaimed until separately built and tested.
 
 ## Decision
 
@@ -496,13 +496,13 @@ Cross-compilation, a successful `wails build`, or installation under an administ
 7. Implement the Ubuntu package, systemd user lifecycle, package admission, and cleanup behavior.
 8. Add isolated signing, native product workers, build-once promotion, and release support-table generation.
 
-An unsigned three-platform artifact workflow may be added earlier for developer previews. Its artifacts must be labeled development builds and must not imply that installer, host integration, update, or uninstall support has passed.
+The unsigned Apple-silicon development-package workflow is the first packaging implementation. Its artifacts are labeled development builds and do not imply that signing, notarization, update, rollback, uninstall, or full native installation evidence has passed.
 
 ## Open decisions
 
 These choices must be closed with native prototypes before their platform package is implemented:
 
-- the exact macOS user-agent installation API and whether release binaries are universal or architecture-specific;
+- whether a later macOS release should add a separately tested Intel package or merge independently sealed slices into a universal package;
 - whether the Windows transactional requirements remain practical in NSIS or require MSI/MSIX plus a separate updater;
 - the exact Windows current-version indirection that survives locked executables;
 - the Ubuntu helper consent/admission mechanism and the initial repository-signing channel;

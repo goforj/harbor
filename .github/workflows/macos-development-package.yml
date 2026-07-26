@@ -1,0 +1,150 @@
+name: macOS development package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Three-part semantic base version for this unsigned development package
+        required: true
+        default: 0.1.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-development-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Apple silicon PKG
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      HARBOR_RELEASE_SEQUENCE: ${{ github.run_number }}
+      HARBOR_RELEASE_VERSION: ${{ inputs.version }}-dev.${{ github.run_number }}
+      HARBOR_PAYLOAD_ROOT: ${{ runner.temp }}/harbor-payload
+      HARBOR_PACKAGE_PATH: ${{ runner.temp }}/GoForj-Harbor-macos-arm64-development.pkg
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Verify native package worker
+        run: |
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${GITHUB_SHA}"
+          test "$(git status --porcelain)" = ""
+
+      - name: Build production frontend
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build release desktop
+        working-directory: desktop
+        run: |
+          ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
+          wails build -s -clean -platform darwin/arm64 -tags release -trimpath -ldflags "$ldflags" -o Harbor
+          test -x build/bin/Harbor.app/Contents/MacOS/Harbor
+          test "$(lipo -archs build/bin/Harbor.app/Contents/MacOS/Harbor)" = "arm64"
+
+      - name: Stage fixed macOS payload
+        run: |
+          release_root="${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}"
+          privileged_root="${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools"
+          mkdir -p \
+            "${HARBOR_PAYLOAD_ROOT}/Applications" \
+            "${release_root}/bin" \
+            "${privileged_root}" \
+            "${HARBOR_PAYLOAD_ROOT}/usr/local/bin"
+          cp -R desktop/build/bin/Harbor.app "${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${HARBOR_RELEASE_VERSION}" "${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${HARBOR_RELEASE_SEQUENCE}" "${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 15.0" "${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/Info.plist"
+
+          ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
+          go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/harbor" ./cmd/app
+          go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/harbord" ./cmd/harbord
+          go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/outputbroker" ./cmd/outputbroker
+          go build -trimpath -ldflags "$ldflags" -o "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher" ./cmd/daemonlauncher
+          go build -trimpath -ldflags "$ldflags" -o "${privileged_root}/com.goforj.harbor.helper" ./cmd/helper
+          go build -trimpath -ldflags "$ldflags" -o "${privileged_root}/com.goforj.harbor.launchdrelay" ./cmd/launchdrelay
+
+          ln -s "releases/${HARBOR_RELEASE_SEQUENCE}" "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/current"
+          ln -s "/Library/Application Support/GoForj/Harbor/current/bin/harbor" "${HARBOR_PAYLOAD_ROOT}/usr/local/bin/harbor"
+
+      - name: Seal development release manifest
+        run: |
+          go run ./cmd/releasebundle \
+            --payload "${HARBOR_PAYLOAD_ROOT}" \
+            --version "${HARBOR_RELEASE_VERSION}" \
+            --sequence "${HARBOR_RELEASE_SEQUENCE}" \
+            --revision "${GITHUB_SHA}"
+
+      - name: Validate staged payload
+        run: |
+          plist="${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = "com.goforj.harbor"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "${HARBOR_RELEASE_VERSION}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "${HARBOR_RELEASE_SEQUENCE}"
+          test "$(readlink "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/current")" = "releases/${HARBOR_RELEASE_SEQUENCE}"
+
+          while IFS= read -r executable; do
+            test "$(lipo -archs "$executable")" = "arm64"
+          done <<EOF
+          ${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/MacOS/Harbor
+          ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher
+          ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbor
+          ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbord
+          ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/outputbroker
+          ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
+          EOF
+
+      - name: Assemble unsigned installer package
+        run: |
+          pkgbuild \
+            --root "${HARBOR_PAYLOAD_ROOT}" \
+            --identifier com.goforj.harbor \
+            --version "${HARBOR_RELEASE_VERSION}" \
+            --install-location / \
+            "${HARBOR_PACKAGE_PATH}"
+
+      - name: Inspect installer payload
+        run: |
+          pkgutil --payload-files "${HARBOR_PACKAGE_PATH}" > "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Applications/Harbor.app/Contents/MacOS/Harbor" "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Library/Application Support/GoForj/Harbor/daemon-launcher" "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.helper" "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay" "${RUNNER_TEMP}/payload-files.txt"
+          shasum -a 256 "${HARBOR_PACKAGE_PATH}" > "${HARBOR_PACKAGE_PATH}.sha256"
+
+      - name: Upload unsigned development package
+        uses: actions/upload-artifact@v7
+        with:
+          name: GoForj-Harbor-macos-arm64-development-${{ github.run_number }}
+          path: |
+            ${{ env.HARBOR_PACKAGE_PATH }}
+            ${{ env.HARBOR_PACKAGE_PATH }}.sha256
+          if-no-files-found: error
+          retention-days: 14

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goforj/harbor/desktop/internal/daemonprerequisite"
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
 	"github.com/goforj/harbor/desktop/internal/networkprerequisite"
 	"github.com/goforj/harbor/desktop/internal/projectterminal"
@@ -203,6 +204,7 @@ type App struct {
 	clientLeases          int
 	clientDrain           chan struct{}
 	clientFactory         clientFactory
+	daemonPrerequisite    daemonprerequisite.Ensurer
 	events                desktopwire.Emitter
 	open                  resourceOpener
 	choose                directoryChooser
@@ -234,10 +236,11 @@ func NewApp() *App {
 // newApp keeps operating-system and timing effects replaceable without making them optional in production.
 func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait waitFunc) *App {
 	app := &App{
-		clientFactory: factory,
-		events:        desktopwire.NewEmitter(emit),
-		open:          open,
-		choose:        runtime.OpenDirectoryDialog,
+		clientFactory:      factory,
+		daemonPrerequisite: daemonprerequisite.New(),
+		events:             desktopwire.NewEmitter(emit),
+		open:               open,
+		choose:             runtime.OpenDirectoryDialog,
 		setupApproval: func(client networksetupapproval.Client) networkSetupApprovalRunner {
 			return networksetupapproval.New(
 				client,
@@ -2076,6 +2079,11 @@ func (a *App) run(ctx context.Context, done chan struct{}) {
 	defer close(done)
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// A running daemon remains usable when launchd activation is unavailable or races another desktop launch.
+		_ = a.daemonPrerequisite.Ensure(ctx)
 		if ctx.Err() != nil {
 			return
 		}
