@@ -320,6 +320,14 @@ jobs:
             -out "$fixture_certificate"
           chmod 0600 "$fixture_key"
           chmod 0644 "$fixture_certificate"
+          fixture_fingerprint="$(
+            openssl x509 -in "$fixture_certificate" -noout -fingerprint -sha1 |
+              cut -d= -f2 |
+              tr -d :
+          )"
+          test -n "$fixture_fingerprint"
+          printf 'HARBOR_PACKAGED_FOREIGN_CERTIFICATE=%s\n' "$fixture_certificate" >> "$GITHUB_ENV"
+          printf 'HARBOR_PACKAGED_FOREIGN_CERTIFICATE_FINGERPRINT=%s\n' "$fixture_fingerprint" >> "$GITHUB_ENV"
           sudo -n security add-trusted-cert \
             -d \
             -r trustRoot \
@@ -411,6 +419,101 @@ jobs:
             "$authorization_normalized_restored" \
             "$authorization_directory"
 
+      - name: Exercise ownership-aware package uninstall
+        run: |
+          installed_helper="/Library/PrivilegedHelperTools/com.goforj.harbor.helper"
+          immutable_helper="/Library/Application Support/GoForj/Harbor/current/libexec/com.goforj.harbor.helper"
+          printf '%s\n' "foreign helper ${GITHUB_RUN_ID}" |
+            sudo -n tee "$installed_helper" >/dev/null
+          sudo -n chown root:wheel "$installed_helper"
+          sudo -n chmod 4755 "$installed_helper"
+          if sudo -n "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
+            uninstall \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"; then
+            echo "uninstaller removed a mismatched fixed helper" >&2
+            exit 1
+          fi
+          test "$(sudo -n cat "$installed_helper")" = "foreign helper ${GITHUB_RUN_ID}"
+          sudo -n install \
+            -m 4755 \
+            -o root \
+            -g wheel \
+            "$immutable_helper" \
+            "$installed_helper"
+
+          foreign_parent="/Library/Application Support/GoForj"
+          foreign_sentinel="${foreign_parent}/foreign-package-sentinel-${GITHUB_RUN_ID}"
+          sudo -n install -d -m 0755 -o root -g wheel "$foreign_parent"
+          printf '%s\n' "foreign package state ${GITHUB_RUN_ID}" |
+            sudo -n tee "$foreign_sentinel" >/dev/null
+          sudo -n chown root:wheel "$foreign_sentinel"
+          sudo -n chmod 0644 "$foreign_sentinel"
+
+          sudo -n "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
+            uninstall \
+            --user-id "$(id -u)" \
+            --group-id "$(id -g)"
+
+          while IFS= read -r path; do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              printf 'retained Harbor package path: %s\n' "$path" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          /Applications/Harbor.app
+          /Library/Application Support/GoForj/Harbor
+          /Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
+          /usr/local/bin/harbor
+          /etc/resolver/test
+          /Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist
+          EOF
+          if pkgutil --pkg-info com.goforj.harbor >/dev/null 2>&1; then
+            echo "retained Harbor package receipt" >&2
+            exit 1
+          fi
+          if sudo -n launchctl print system/com.goforj.harbor.launchdrelay >/dev/null 2>&1; then
+            echo "retained Harbor launchd relay" >&2
+            exit 1
+          fi
+          test "$(sudo -n cat "$foreign_sentinel")" = "foreign package state ${GITHUB_RUN_ID}"
+          sudo -n security verify-cert -c "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE" -p ssl
+
+          evidence="${HARBOR_PHASE1_EVIDENCE_DIRECTORY}/package-uninstall.txt"
+          {
+            printf 'package_sha256=%s\n' "$(shasum -a 256 "$HARBOR_PACKAGE_PATH" | awk '{print $1}')"
+            printf 'package_receipt=absent\n'
+            printf 'installed_product_paths=absent\n'
+            printf 'harbor_host_projection=absent\n'
+            printf 'mismatched_fixed_helper=preserved\n'
+            printf 'foreign_package_sentinel=preserved\n'
+            printf 'foreign_administrator_trust=preserved\n'
+          } > "$evidence"
+
+          sudo -n rm -f "$foreign_sentinel"
+          sudo -n rmdir "$foreign_parent"
+
+      - name: Remove foreign administrator trust fixture
+        if: always()
+        run: |
+          if test -z "${HARBOR_PACKAGED_FOREIGN_CERTIFICATE:-}" ||
+            test ! -f "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE"; then
+            exit 0
+          fi
+          sudo -n security remove-trusted-cert \
+            -d \
+            "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE"
+          if sudo -n security find-certificate \
+            -Z \
+            -a \
+            /Library/Keychains/System.keychain |
+            grep -Fq "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE_FINGERPRINT"; then
+            sudo -n security delete-certificate \
+              -Z "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE_FINGERPRINT" \
+              /Library/Keychains/System.keychain
+          fi
+
       - name: Upload unsigned development package
         uses: actions/upload-artifact@v7
         with:
@@ -426,6 +529,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: GoForj-Harbor-macos-arm64-packaged-evidence-${{ github.run_number }}
-          path: harbor-packaged-macos-evidence/summary.json
+          path: |
+            harbor-packaged-macos-evidence/summary.json
+            harbor-packaged-macos-evidence/package-uninstall.txt
           if-no-files-found: error
           retention-days: 14
