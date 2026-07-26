@@ -23,11 +23,14 @@ jobs:
     env:
       HARBOR_RELEASE_SEQUENCE: ${{ github.run_number }}
       HARBOR_RELEASE_VERSION: ${{ inputs.version }}-dev.${{ github.run_number }}
-      HARBOR_PAYLOAD_ROOT: ${{ runner.temp }}/harbor-payload
-      HARBOR_PACKAGE_PATH: ${{ runner.temp }}/GoForj-Harbor-macos-arm64-development.pkg
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Configure package paths
+        run: |
+          echo "HARBOR_PAYLOAD_ROOT=${RUNNER_TEMP}/harbor-payload" >> "${GITHUB_ENV}"
+          echo "HARBOR_PACKAGE_PATH=${RUNNER_TEMP}/GoForj-Harbor-macos-arm64-development.pkg" >> "${GITHUB_ENV}"
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -144,7 +147,7 @@ jobs:
         with:
           name: GoForj-Harbor-macos-arm64-development-${{ github.run_number }}
           path: |
-            ${{ env.HARBOR_PACKAGE_PATH }}
-            ${{ env.HARBOR_PACKAGE_PATH }}.sha256
+            ${{ runner.temp }}/GoForj-Harbor-macos-arm64-development.pkg
+            ${{ runner.temp }}/GoForj-Harbor-macos-arm64-development.pkg.sha256
           if-no-files-found: error
           retention-days: 14
