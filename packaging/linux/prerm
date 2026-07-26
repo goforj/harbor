@@ -69,6 +69,14 @@ while IFS= read -r path; do
       fi
       continue
       ;;
+    "$root/state/ownership.json.lock"|"$root/state/host-projection.json.lock")
+      identity=$(/usr/bin/stat -c '%u:%a:%h' "$path")
+      if [ ! -f "$path" ] || [ "$identity" != "0:600:1" ]; then
+        echo "Harbor inactive state lock has a foreign identity: $path ($identity)" >&2
+        exit 1
+      fi
+      continue
+      ;;
     "$root/ownership-release-proof.json")
       identity=$(/usr/bin/stat -c '%u:%a:%h' "$path")
       if [ ! -f "$path" ] || [ "$identity" != "0:644:1" ]; then
