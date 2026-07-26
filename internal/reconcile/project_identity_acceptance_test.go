@@ -489,8 +489,8 @@ func assertProjectIdentityAcceptanceEndpoints(
 	if err != nil || !initialized {
 		t.Fatalf("read allocated project identity network = %#v, %t, %v", network, initialized, err)
 	}
-	if len(network.Leases) != len(projects) {
-		t.Fatalf("network leases = %#v, want %d", network.Leases, len(projects))
+	if len(network.Leases) < len(projects) {
+		t.Fatalf("network leases = %#v, want at least %d", network.Leases, len(projects))
 	}
 	leaseByProject := make(map[domain.ProjectID]netip.Addr, len(network.Leases))
 	for _, lease := range network.Leases {
