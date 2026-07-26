@@ -23,6 +23,7 @@ import (
 const (
 	defaultGracePeriod                         = 3 * time.Second
 	defaultOutputBufferLines                   = 256
+	resetDiagnosticBytes                       = 4096
 	defaultServiceLogIdle                      = 40 * time.Second
 	forceSettlementPeriod                      = time.Second
 	forceSettlementPoll                        = 10 * time.Millisecond
@@ -828,6 +829,7 @@ type resetProcess struct {
 	command      *exec.Cmd
 	platform     *platformProcess
 	checkoutRoot string
+	diagnostic   *resetDiagnostic
 	done         chan struct{}
 	waitDone     chan struct{}
 
@@ -839,6 +841,36 @@ type resetProcess struct {
 	settlementDone chan struct{}
 	settlementErr  error
 	finished       bool
+}
+
+// resetDiagnostic retains only the bounded tail needed to explain a failed owner-defined teardown.
+type resetDiagnostic struct {
+	data []byte
+}
+
+// Write discards the oldest diagnostic bytes so an untrusted checkout cannot grow Harbor's memory without bound.
+func (diagnostic *resetDiagnostic) Write(contents []byte) (int, error) {
+	written := len(contents)
+	if len(contents) >= resetDiagnosticBytes {
+		diagnostic.data = append(diagnostic.data[:0], contents[len(contents)-resetDiagnosticBytes:]...)
+		return written, nil
+	}
+	overflow := len(diagnostic.data) + len(contents) - resetDiagnosticBytes
+	if overflow > 0 {
+		copy(diagnostic.data, diagnostic.data[overflow:])
+		diagnostic.data = diagnostic.data[:len(diagnostic.data)-overflow]
+	}
+	diagnostic.data = append(diagnostic.data, contents...)
+	return written, nil
+}
+
+// Error joins a non-empty UTF-8-safe diagnostic tail to the reset process failure.
+func (diagnostic *resetDiagnostic) Error(waitErr error) error {
+	detail := strings.TrimSpace(strings.ToValidUTF8(string(diagnostic.data), "\uFFFD"))
+	if detail == "" {
+		return fmt.Errorf("forj down: %w", waitErr)
+	}
+	return fmt.Errorf("forj down: %w: %s", waitErr, detail)
 }
 
 // Down withdraws any runtime left by a prior GoForj invocation before Harbor starts a new development session.
@@ -884,8 +916,9 @@ func (supervisor *Supervisor) Down(ctx context.Context, request DownRequest) err
 	command.Dir = checkoutRoot
 	// Reset must never inherit the one-use launch credential of a different session.
 	command.Env = withDevelopmentEnvironment(supervisor.environment, EnvironmentOverrides{})
+	diagnostic := &resetDiagnostic{}
 	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	command.Stderr = diagnostic
 	platform, err := preparePlatformProcess(command)
 	if err != nil {
 		supervisor.mu.Unlock()
@@ -895,6 +928,7 @@ func (supervisor *Supervisor) Down(ctx context.Context, request DownRequest) err
 		command:      command,
 		platform:     platform,
 		checkoutRoot: checkoutRoot,
+		diagnostic:   diagnostic,
 		done:         make(chan struct{}),
 		waitDone:     make(chan struct{}),
 	}
@@ -950,7 +984,7 @@ func (supervisor *Supervisor) settleReset(ctx context.Context, reset *resetProce
 		waitErr := reset.waitErr
 		supervisor.mu.Unlock()
 		if waitErr != nil {
-			return fmt.Errorf("forj down: %w", waitErr)
+			return reset.diagnostic.Error(waitErr)
 		}
 		return nil
 	}
@@ -968,7 +1002,7 @@ func (supervisor *Supervisor) settleReset(ctx context.Context, reset *resetProce
 				return err
 			}
 			if finished && waitErr != nil {
-				return fmt.Errorf("forj down: %w", waitErr)
+				return reset.diagnostic.Error(waitErr)
 			}
 			return nil
 		case <-ctx.Done():
@@ -1008,7 +1042,7 @@ func (supervisor *Supervisor) settleReset(ctx context.Context, reset *resetProce
 		reset.settlementErr = nil
 		close(reset.settlementDone)
 		supervisor.mu.Unlock()
-		return fmt.Errorf("forj down: %w", waitErr)
+		return reset.diagnostic.Error(waitErr)
 	}
 	if err := removeProjectLaunchTrace(reset.checkoutRoot); err != nil {
 		supervisor.mu.Lock()

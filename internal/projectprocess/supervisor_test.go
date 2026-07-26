@@ -62,6 +62,7 @@ func init() {
 		case "orphan":
 			runDownOrphanHelper()
 		case "down-fail":
+			fmt.Fprintln(os.Stderr, "compose cleanup failed")
 			os.Exit(19)
 		}
 		os.Exit(0)
@@ -162,6 +163,16 @@ func TestDownUsesCanonicalCheckoutAndStripsManagedLaunchContext(t *testing.T) {
 	}
 	if got, want := string(contents), "down\n"+canonicalCheckout+"\n"; got != want {
 		t.Fatalf("reset command observation = %q, want %q", got, want)
+	}
+}
+
+// TestDownReportsBoundedTeardownDiagnostics keeps actionable owner-command failures visible to lifecycle callers.
+func TestDownReportsBoundedTeardownDiagnostics(t *testing.T) {
+	installForjHelper(t, "down-fail")
+	supervisor := newTestSupervisor(Options{})
+	err := supervisor.Down(t.Context(), DownRequest{CheckoutRoot: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "forj down: exit status 19: compose cleanup failed") {
+		t.Fatalf("Down() error = %v, want bounded teardown diagnostic", err)
 	}
 }
 
