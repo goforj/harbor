@@ -336,7 +336,7 @@ jobs:
             fi
           done
           [[ "$(sudo -n cat "$foreign_sentinel")" == "foreign package state ${GITHUB_RUN_ID}" ]]
-          evidence="${HARBOR_PHASE1_EVIDENCE_DIRECTORY}/package-uninstall.txt"
+          evidence="${GITHUB_WORKSPACE}/harbor-packaged-ubuntu-evidence/package-uninstall.txt"
           {
             printf 'package_sha256=%s\n' "$(sha256sum "$HARBOR_PACKAGE_PATH" | awk '{print $1}')"
             printf 'package_receipt=absent\n'
