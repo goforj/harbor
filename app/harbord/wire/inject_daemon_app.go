@@ -369,14 +369,29 @@ func provideProjectUnregisterCoordinator(
 }
 
 // provideProjectProcessSupervisor creates the one process-tree owner shared by all managed projects.
-func provideProjectProcessSupervisor(environment projectprocess.Environment) *projectprocess.Supervisor {
-	options := projectprocess.Options{Environment: environment}
+func provideProjectProcessSupervisor(environment projectprocess.Environment) (*projectprocess.Supervisor, error) {
+	projectEnvironment, err := sourceDevelopmentProjectEnvironment(environment, ".")
+	if err != nil {
+		return nil, fmt.Errorf("isolate source development environment: %w", err)
+	}
+	options := projectprocess.Options{Environment: projectEnvironment}
 	// The broker is an additive artifact during development and packaging. Until it is installed beside
 	// harbord, retaining direct pipes keeps ordinary project lifecycle behavior available.
 	if launcher, err := projectprocess.NewSiblingOutputBrokerProcessLauncher(); err == nil {
 		options.OutputBrokerLauncher = launcher
 	}
-	return projectprocess.New(options)
+	return projectprocess.New(options), nil
+}
+
+// sourceDevelopmentProjectEnvironment excludes Harbor's own dotenv variables only for its structured source runtime.
+func sourceDevelopmentProjectEnvironment(
+	environment projectprocess.Environment,
+	checkoutRoot string,
+) (projectprocess.Environment, error) {
+	if !sourceDevelopmentEnvironmentEnabled(environment) {
+		return append(projectprocess.Environment(nil), environment...), nil
+	}
+	return projectprocess.EnvironmentWithoutDotenv(environment, checkoutRoot)
 }
 
 // provideGoForjProjectRuntime adapts the ordinary GoForj process supervisor to Harbor's project-neutral lifecycle boundary.

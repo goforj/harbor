@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +31,54 @@ func TestListDotenvFilesConfinesReadsToRegularRootDotenvFiles(t *testing.T) {
 	}
 	if got := []string{files[0].Name, files[1].Name}; !reflect.DeepEqual(got, []string{".env", ".env.local"}) {
 		t.Fatalf("dotenv files = %#v", got)
+	}
+}
+
+// TestEnvironmentWithoutDotenvKeepsOnlyLauncherOwnedValues prevents one managed application's config from entering another.
+func TestEnvironmentWithoutDotenvKeepsOnlyLauncherOwnedValues(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("DB_DRIVER=sqlite\nAPP_NAME=harbor\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env.local"), []byte("DB_QUERY_LOGGING=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environment := Environment{
+		"PATH=/tools",
+		"DB_DRIVER=sqlite",
+		"APP_NAME=harbor",
+		"DB_QUERY_LOGGING=1",
+		"UNRELATED=preserved",
+	}
+	if runtime.GOOS == "windows" {
+		environment[1] = "db_driver=sqlite"
+	}
+
+	got, err := EnvironmentWithoutDotenv(environment, root)
+	if err != nil {
+		t.Fatalf("EnvironmentWithoutDotenv() error = %v", err)
+	}
+	joined := strings.Join(got, "\x00")
+	for _, removed := range []string{"DB_DRIVER=", "db_driver=", "APP_NAME=", "DB_QUERY_LOGGING="} {
+		if strings.Contains(joined, removed) {
+			t.Fatalf("environment retained dotenv value %q: %#v", removed, got)
+		}
+	}
+	for _, preserved := range []string{"PATH=/tools", "UNRELATED=preserved"} {
+		if !strings.Contains(joined, preserved) {
+			t.Fatalf("environment removed launcher value %q: %#v", preserved, got)
+		}
+	}
+}
+
+// TestEnvironmentWithoutDotenvRejectsMalformedFiles prevents partial isolation from launching a contaminated child.
+func TestEnvironmentWithoutDotenvRejectsMalformedFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("INVALID='unterminated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnvironmentWithoutDotenv(Environment{"PATH=/tools"}, root); err == nil {
+		t.Fatal("EnvironmentWithoutDotenv() accepted malformed dotenv content")
 	}
 }
 

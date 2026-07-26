@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 const maximumDotenvFileBytes = 1024 * 1024
@@ -48,6 +50,31 @@ func ListDotenvFiles(checkoutRoot string) ([]DotenvFile, error) {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
+}
+
+// EnvironmentWithoutDotenv removes values declared by one checkout's direct dotenv files from a captured child environment.
+func EnvironmentWithoutDotenv(environment Environment, checkoutRoot string) (Environment, error) {
+	files, err := ListDotenvFiles(checkoutRoot)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, file := range files {
+		values, err := godotenv.Unmarshal(file.Contents)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", file.Name, err)
+		}
+		for name := range values {
+			if _, exists := seen[name]; exists {
+				continue
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return Environment(mergeEnvironmentAssignments(environment, names, nil)), nil
 }
 
 // SaveDotenvFile replaces one direct dotenv file only if its displayed revision

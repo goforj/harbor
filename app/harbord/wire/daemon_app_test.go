@@ -871,6 +871,45 @@ func TestSourceDevelopmentDaemonHandoffUsesCapturedEnvironment(t *testing.T) {
 	}
 }
 
+// TestSourceDevelopmentProjectEnvironmentExcludesHarborDotenv prevents source configuration from entering managed projects.
+func TestSourceDevelopmentProjectEnvironmentExcludesHarborDotenv(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("DB_DRIVER=sqlite\nDB_SUPPORTED_DRIVERS=sqlite\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environment := projectprocess.Environment{
+		sourceDevelopmentAppEnvironment + "=" + sourceDevelopmentApp,
+		sourceDevelopmentCommandPrefixEnvironment + "=" + sourceDevelopmentCommandPrefix,
+		"DB_DRIVER=sqlite",
+		"DB_SUPPORTED_DRIVERS=sqlite",
+		"PATH=/tools",
+	}
+
+	got, err := sourceDevelopmentProjectEnvironment(environment, root)
+	if err != nil {
+		t.Fatalf("sourceDevelopmentProjectEnvironment() error = %v", err)
+	}
+	joined := strings.Join(got, "\x00")
+	if strings.Contains(joined, "DB_DRIVER=") || strings.Contains(joined, "DB_SUPPORTED_DRIVERS=") {
+		t.Fatalf("source project environment retained Harbor database config: %#v", got)
+	}
+	if !strings.Contains(joined, "PATH=/tools") {
+		t.Fatalf("source project environment removed launcher PATH: %#v", got)
+	}
+}
+
+// TestPackagedProjectEnvironmentDoesNotReadTheWorkingCheckout keeps packaged daemons independent from their launch directory.
+func TestPackagedProjectEnvironmentDoesNotReadTheWorkingCheckout(t *testing.T) {
+	environment := projectprocess.Environment{"DB_DRIVER=operator-value", "PATH=/tools"}
+	got, err := sourceDevelopmentProjectEnvironment(environment, filepath.Join(t.TempDir(), "missing"))
+	if err != nil {
+		t.Fatalf("sourceDevelopmentProjectEnvironment() error = %v", err)
+	}
+	if strings.Join(got, "\x00") != strings.Join(environment, "\x00") {
+		t.Fatalf("packaged project environment = %#v, want %#v", got, environment)
+	}
+}
+
 // TestDaemonRuntimeCloseTimeoutExceedsControllerBudget keeps outer authority beyond nested cleanup.
 func TestDaemonRuntimeCloseTimeoutExceedsControllerBudget(t *testing.T) {
 	runtimeController, err := harbordruntime.NewController(new(state.Store), new(state.OperationJournal))
