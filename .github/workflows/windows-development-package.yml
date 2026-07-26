@@ -361,8 +361,7 @@ jobs:
           $startInfo = [Diagnostics.ProcessStartInfo]::new()
           $startInfo.FileName = $uninstallRunner
           $startInfo.UseShellExecute = $false
-          $startInfo.ArgumentList.Add("/S")
-          $startInfo.ArgumentList.Add("_?=$env:HARBOR_INSTALL_ROOT")
+          $startInfo.Arguments = "/S _?=$env:HARBOR_INSTALL_ROOT"
           $process = [Diagnostics.Process]::Start($startInfo)
           $process.WaitForExit()
           $uninstallExitCode = $process.ExitCode
