@@ -29,7 +29,7 @@ jobs:
 
       - name: Configure package paths
         run: |
-          payload_root="/private/var/tmp/goforj-harbor-payload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          payload_root="/Library/PrivilegedHelperTools/.goforj-harbor-payload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           sudo -n test ! -e "$payload_root"
           sudo -n install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$payload_root"
           echo "HARBOR_PAYLOAD_ROOT=${payload_root}" >> "${GITHUB_ENV}"
