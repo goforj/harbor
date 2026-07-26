@@ -221,6 +221,9 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 			t.Fatalf("final stop generated Compose project %q = %#v, %v", project.id, queued, stopErr)
 		}
 		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, intentID, domain.ProjectStopped)
+		if resetErr := supervisor.Down(ctx, projectprocess.DownRequest{CheckoutRoot: project.project.Root}); resetErr != nil {
+			t.Fatalf("final reset generated Compose project %q: %v", project.id, resetErr)
+		}
 	}
 }
 
