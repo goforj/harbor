@@ -5,14 +5,15 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$installRoot = Split-Path -LiteralPath $PSCommandPath -Parent
+$installRoot = $PSScriptRoot
 $diagnosticPath = Join-Path $installRoot "harbor-uninstall-error.txt"
 trap {
     $message = $_.Exception.Message -replace "[`r`n]+", " "
     if ($message.Length -gt 2048) {
         $message = $message.Substring(0, 2048)
     }
-    [IO.File]::WriteAllText($diagnosticPath, $message, [Text.UTF8Encoding]::new($false))
+    $trapDiagnosticPath = Join-Path $PSScriptRoot "harbor-uninstall-error.txt"
+    [IO.File]::WriteAllText($trapDiagnosticPath, $message, [Text.UTF8Encoding]::new($false))
     [Console]::Error.WriteLine($message)
     exit 1
 }
