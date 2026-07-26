@@ -15,12 +15,16 @@ import (
 func TestSealDarwinDevelopmentPayloadWritesOneCompleteIdentity(t *testing.T) {
 	root := t.TempDir()
 	const sequence = uint64(42)
-	for _, component := range darwinComponents(sequence) {
-		path := filepath.Join(root, filepath.FromSlash(component.Destination[1:]))
+	for _, plan := range darwinComponentPlans(sequence) {
+		source := plan.source
+		if source == "" {
+			source = plan.component.Destination
+		}
+		path := filepath.Join(root, filepath.FromSlash(source[1:]))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(component.Role), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte(plan.component.Role), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -40,6 +44,9 @@ func TestSealDarwinDevelopmentPayloadWritesOneCompleteIdentity(t *testing.T) {
 		manifest.SnapshotSchema != domain.SnapshotSchemaVersion ||
 		manifest.HelperProtocol != helper.ProtocolVersion {
 		t.Fatalf("manifest protocol identity = %#v", manifest)
+	}
+	if manifest.Components[6].Mode != "4755" || manifest.Components[7].Mode != "0755" {
+		t.Fatalf("manifest privileged component modes = %#v", manifest.Components[6:])
 	}
 	digest, err := manifestDigest(manifest)
 	if err != nil {

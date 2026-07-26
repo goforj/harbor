@@ -10,11 +10,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/goforj/harbor/internal/devbootstrap"
-	"github.com/goforj/harbor/internal/platform/helperpath"
-	"github.com/goforj/harbor/internal/platform/launchdrelaypath"
+	"github.com/goforj/harbor/internal/platform/installpaths"
 )
 
 // main applies one package-selected installation operation without ambient path authority.
@@ -49,9 +49,13 @@ func run(arguments []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	currentRelease, err := installpaths.CurrentRelease()
+	if err != nil {
+		return err
+	}
 	if err := devbootstrap.Bootstrap(devbootstrap.Config{
-		HelperSource:       helperpath.Executable(),
-		LaunchdRelaySource: launchdrelaypath.Executable(),
+		HelperSource:       filepath.Join(currentRelease, "libexec", "com.goforj.harbor.helper"),
+		LaunchdRelaySource: filepath.Join(currentRelease, "libexec", "com.goforj.harbor.launchdrelay"),
 		UserID:             parsedUserID,
 		GroupID:            parsedGroupID,
 	}); err != nil {

@@ -115,6 +115,13 @@ type DarwinConfig struct {
 	SourceRevision string
 }
 
+// componentPlan binds one staged source to its final installed identity.
+type componentPlan struct {
+	component Component
+	source    string
+	mode      string
+}
+
 // SealDarwinDevelopmentPayload verifies and records Harbor's fixed Apple-silicon package payload.
 func SealDarwinDevelopmentPayload(payloadRoot string, config DarwinConfig) (Manifest, error) {
 	if err := validateDarwinConfig(config); err != nil {
@@ -124,13 +131,14 @@ func SealDarwinDevelopmentPayload(payloadRoot string, config DarwinConfig) (Mani
 	if err != nil {
 		return Manifest{}, err
 	}
-	components := darwinComponents(config.ReleaseSequence)
-	for index := range components {
-		sealed, sealErr := sealComponent(root, components[index])
+	plans := darwinComponentPlans(config.ReleaseSequence)
+	components := make([]Component, 0, len(plans))
+	for _, plan := range plans {
+		sealed, sealErr := sealComponent(root, plan)
 		if sealErr != nil {
 			return Manifest{}, sealErr
 		}
-		components[index] = sealed
+		components = append(components, sealed)
 	}
 	manifest := Manifest{
 		SchemaVersion:      ManifestSchemaVersion,
@@ -191,45 +199,61 @@ func canonicalPayloadRoot(path string) (string, error) {
 	return absolute, nil
 }
 
-// darwinComponents enumerates every executable role instead of accepting caller-selected paths.
-func darwinComponents(sequence uint64) []Component {
+// darwinComponentPlans enumerate every executable role instead of accepting caller-selected paths.
+func darwinComponentPlans(sequence uint64) []componentPlan {
 	releaseRoot := "/Library/Application Support/GoForj/Harbor/releases/" + strconv.FormatUint(sequence, 10)
-	return []Component{
-		{Role: "desktop", Destination: "/Applications/Harbor.app/Contents/MacOS/harbor-desktop"},
-		{Role: "daemon-launcher", Destination: "/Library/Application Support/GoForj/Harbor/daemon-launcher"},
-		{Role: "cli", Destination: releaseRoot + "/bin/harbor"},
-		{Role: "daemon", Destination: releaseRoot + "/bin/harbord"},
-		{Role: "output-broker", Destination: releaseRoot + "/bin/outputbroker"},
-		{Role: "installer", Destination: releaseRoot + "/bin/harbor-installer"},
-		{Role: "helper", Destination: "/Library/PrivilegedHelperTools/com.goforj.harbor.helper"},
-		{Role: "low-port-relay", Destination: "/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay"},
+	return []componentPlan{
+		{component: Component{Role: "desktop", Destination: "/Applications/Harbor.app/Contents/MacOS/harbor-desktop"}},
+		{component: Component{Role: "daemon-launcher", Destination: "/Library/Application Support/GoForj/Harbor/daemon-launcher"}},
+		{component: Component{Role: "cli", Destination: releaseRoot + "/bin/harbor"}},
+		{component: Component{Role: "daemon", Destination: releaseRoot + "/bin/harbord"}},
+		{component: Component{Role: "output-broker", Destination: releaseRoot + "/bin/outputbroker"}},
+		{component: Component{Role: "installer", Destination: releaseRoot + "/bin/harbor-installer"}},
+		{
+			component: Component{Role: "helper", Destination: "/Library/PrivilegedHelperTools/com.goforj.harbor.helper"},
+			source:    releaseRoot + "/libexec/com.goforj.harbor.helper",
+			mode:      "4755",
+		},
+		{
+			component: Component{Role: "low-port-relay", Destination: "/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay"},
+			source:    releaseRoot + "/libexec/com.goforj.harbor.launchdrelay",
+			mode:      "0755",
+		},
 	}
 }
 
 // sealComponent verifies a fixed regular executable and records its immutable content facts.
-func sealComponent(root string, component Component) (Component, error) {
-	path := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(component.Destination, "/")))
+func sealComponent(root string, plan componentPlan) (Component, error) {
+	source := plan.source
+	if source == "" {
+		source = plan.component.Destination
+	}
+	path := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(source, "/")))
 	information, err := os.Lstat(path)
 	if err != nil {
-		return Component{}, fmt.Errorf("inspect release component %q: %w", component.Role, err)
+		return Component{}, fmt.Errorf("inspect release component %q: %w", plan.component.Role, err)
 	}
 	if !information.Mode().IsRegular() || information.Mode()&os.ModeSymlink != 0 || information.Mode().Perm()&0o111 == 0 {
-		return Component{}, fmt.Errorf("release component %q is not a regular executable", component.Role)
+		return Component{}, fmt.Errorf("release component %q is not a regular executable", plan.component.Role)
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return Component{}, fmt.Errorf("open release component %q: %w", component.Role, err)
+		return Component{}, fmt.Errorf("open release component %q: %w", plan.component.Role, err)
 	}
 	defer func() {
 		_ = file.Close()
 	}()
 	digest := sha256.New()
 	if _, err := io.Copy(digest, file); err != nil {
-		return Component{}, fmt.Errorf("hash release component %q: %w", component.Role, err)
+		return Component{}, fmt.Errorf("hash release component %q: %w", plan.component.Role, err)
 	}
+	component := plan.component
 	component.Size = information.Size()
 	component.SHA256 = hex.EncodeToString(digest.Sum(nil))
-	component.Mode = fmt.Sprintf("%04o", nativeMode(information.Mode()))
+	component.Mode = plan.mode
+	if component.Mode == "" {
+		component.Mode = fmt.Sprintf("%04o", nativeMode(information.Mode()))
+	}
 	return component, nil
 }
 
