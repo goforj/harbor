@@ -195,7 +195,7 @@ func canonicalPayloadRoot(path string) (string, error) {
 func darwinComponents(sequence uint64) []Component {
 	releaseRoot := "/Library/Application Support/GoForj/Harbor/releases/" + strconv.FormatUint(sequence, 10)
 	return []Component{
-		{Role: "desktop", Destination: "/Applications/Harbor.app/Contents/MacOS/Harbor"},
+		{Role: "desktop", Destination: "/Applications/Harbor.app/Contents/MacOS/harbor-desktop"},
 		{Role: "daemon-launcher", Destination: "/Library/Application Support/GoForj/Harbor/daemon-launcher"},
 		{Role: "cli", Destination: releaseRoot + "/bin/harbor"},
 		{Role: "daemon", Destination: releaseRoot + "/bin/harbord"},

@@ -68,8 +68,8 @@ jobs:
         run: |
           ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
           wails build -s -clean -platform darwin/arm64 -tags release -trimpath -ldflags "$ldflags" -o Harbor
-          test -x build/bin/Harbor.app/Contents/MacOS/Harbor
-          test "$(lipo -archs build/bin/Harbor.app/Contents/MacOS/Harbor)" = "arm64"
+          test -x build/bin/Harbor.app/Contents/MacOS/harbor-desktop
+          test "$(lipo -archs build/bin/Harbor.app/Contents/MacOS/harbor-desktop)" = "arm64"
 
       - name: Stage fixed macOS payload
         run: |
@@ -115,7 +115,7 @@ jobs:
           while IFS= read -r executable; do
             test "$(lipo -archs "$executable")" = "arm64"
           done <<EOF
-          ${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/MacOS/Harbor
+          ${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/MacOS/harbor-desktop
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbor
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbord
@@ -136,7 +136,7 @@ jobs:
       - name: Inspect installer payload
         run: |
           pkgutil --payload-files "${HARBOR_PACKAGE_PATH}" > "${RUNNER_TEMP}/payload-files.txt"
-          grep -Fq "Applications/Harbor.app/Contents/MacOS/Harbor" "${RUNNER_TEMP}/payload-files.txt"
+          grep -Fq "Applications/Harbor.app/Contents/MacOS/harbor-desktop" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "Library/Application Support/GoForj/Harbor/daemon-launcher" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.helper" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay" "${RUNNER_TEMP}/payload-files.txt"
