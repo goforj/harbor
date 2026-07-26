@@ -164,15 +164,15 @@ jobs:
             -NotAfter (Get-Date).AddHours(8)
           $certificatePath = Join-Path $env:RUNNER_TEMP "harbor-packaged-helper-signing.cer"
           Export-Certificate -Cert $certificate -FilePath $certificatePath | Out-Null
-          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
-          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher" | Out-Null
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\LocalMachine\TrustedPublisher" | Out-Null
           $helper = Join-Path $env:HARBOR_COMPONENT_ROOT "harbor-helper.exe"
           $signature = Set-AuthenticodeSignature -FilePath $helper -Certificate $certificate -HashAlgorithm SHA256
           if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
             throw "disposable packaged helper signature is not trusted: $($signature.Status)"
           }
-          Remove-Item -LiteralPath (Join-Path "Cert:\CurrentUser\Root" $certificate.Thumbprint) -Force
-          Remove-Item -LiteralPath (Join-Path "Cert:\CurrentUser\TrustedPublisher" $certificate.Thumbprint) -Force
+          Remove-Item -LiteralPath (Join-Path "Cert:\LocalMachine\Root" $certificate.Thumbprint) -Force
+          Remove-Item -LiteralPath (Join-Path "Cert:\LocalMachine\TrustedPublisher" $certificate.Thumbprint) -Force
           Copy-Item -LiteralPath $certificatePath -Destination (Join-Path $env:HARBOR_COMPONENT_ROOT "harbor-helper-signing.cer")
           $certificate.Thumbprint |
             Out-File (Join-Path $env:HARBOR_COMPONENT_ROOT "harbor-helper-signing-thumbprint.txt") -Encoding ascii -NoNewline
@@ -356,8 +356,19 @@ jobs:
           $foreignSentinel = Join-Path $env:HARBOR_INSTALL_ROOT "foreign-package-sentinel-$env:GITHUB_RUN_ID"
           [IO.File]::WriteAllText($foreignSentinel, "foreign package state $env:GITHUB_RUN_ID", [Text.UTF8Encoding]::new($false))
           $uninstaller = Join-Path $env:HARBOR_INSTALL_ROOT "Uninstall.exe"
-          $process = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "uninstaller exited with $($process.ExitCode)" }
+          $uninstallRunner = Join-Path $env:RUNNER_TEMP "goforj-harbor-uninstall-$env:GITHUB_RUN_ID.exe"
+          Copy-Item -LiteralPath $uninstaller -Destination $uninstallRunner
+          $startInfo = [Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $uninstallRunner
+          $startInfo.UseShellExecute = $false
+          $startInfo.ArgumentList.Add("/S")
+          $startInfo.ArgumentList.Add("_?=$env:HARBOR_INSTALL_ROOT")
+          $process = [Diagnostics.Process]::Start($startInfo)
+          $process.WaitForExit()
+          $uninstallExitCode = $process.ExitCode
+          $process.Dispose()
+          Remove-Item -LiteralPath $uninstallRunner -Force
+          if ($uninstallExitCode -ne 0) { throw "uninstaller exited with $uninstallExitCode" }
           $componentNames = @("harbor-desktop.exe", "harbor.exe", "harbord.exe", "outputbroker.exe", "harbor-helper.exe", "harbor-helper-signing.cer", "harbor-helper-signing-thumbprint.txt", "harbor-uninstall.ps1", "Uninstall.exe")
           for ($attempt = 0; $attempt -lt 150; $attempt++) {
             $receiptExists = Test-Path -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor"
