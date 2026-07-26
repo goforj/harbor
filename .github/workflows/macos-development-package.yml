@@ -227,7 +227,7 @@ jobs:
           cmp \
             "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/installation.json" \
             "/Library/Application Support/GoForj/Harbor/installation.json"
-          "${release_root}/bin/harbor-installer" install --user-id "$(id -u)" --group-id "$(id -g)"
+          sudo -n "${release_root}/bin/harbor-installer" install --user-id "$(id -u)" --group-id "$(id -g)"
 
       - name: Upload unsigned development package
         uses: actions/upload-artifact@v7
