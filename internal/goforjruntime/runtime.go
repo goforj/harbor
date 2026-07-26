@@ -22,8 +22,9 @@ import (
 
 // Runtime adapts a GoForj process supervisor to Harbor's neutral project runtime contract.
 type Runtime struct {
-	supervisor      *projectprocess.Supervisor
-	runtimeRepairer projectprocess.UnattributedRuntimeRepairer
+	supervisor              *projectprocess.Supervisor
+	runtimeRepairer         projectprocess.UnattributedRuntimeRepairer
+	serviceChangePollPeriod time.Duration
 }
 
 // New creates a GoForj runtime adapter around the process supervisor.
@@ -32,8 +33,9 @@ func New(supervisor *projectprocess.Supervisor) *Runtime {
 		panic("goforjruntime.New requires a supervisor")
 	}
 	return &Runtime{
-		supervisor:      supervisor,
-		runtimeRepairer: projectprocess.NewUnattributedRuntimeRepairer(),
+		supervisor:              supervisor,
+		runtimeRepairer:         projectprocess.NewUnattributedRuntimeRepairer(),
+		serviceChangePollPeriod: defaultServiceChangePollPeriod,
 	}
 }
 
@@ -42,6 +44,8 @@ const (
 	listenerRepairAttempts = 3
 	// listenerRepairRetryDelay gives a terminating listener a short window to publish its new state.
 	listenerRepairRetryDelay = 50 * time.Millisecond
+	// defaultServiceChangePollPeriod repairs an Engine event lost between observation and resubscription.
+	defaultServiceChangePollPeriod = 2 * time.Second
 )
 
 // RepairListener settles one exact GoForj listener only after native inspection proves checkout-scoped authority.
@@ -391,7 +395,20 @@ func (runtime *Runtime) ObserveResources(ctx context.Context, request projectrun
 
 // WaitServiceChange delegates runtime wake hints while preserving neutral retry semantics.
 func (runtime *Runtime) WaitServiceChange(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) error {
-	err := runtime.supervisor.WaitServiceChange(ctx, projectID, sessionID)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pollPeriod := runtime.serviceChangePollPeriod
+	if pollPeriod <= 0 {
+		pollPeriod = defaultServiceChangePollPeriod
+	}
+	waitContext, cancelWait := context.WithTimeout(ctx, pollPeriod)
+	err := runtime.supervisor.WaitServiceChange(waitContext, projectID, sessionID)
+	cancelWait()
+	err = normalizeServiceChangeWaitError(err, ctx.Err())
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, projectprocess.ErrNotRunning) {
 		return fmt.Errorf("%w: %v", projectruntime.ErrNotRunning, err)
 	}
@@ -400,6 +417,14 @@ func (runtime *Runtime) WaitServiceChange(ctx context.Context, projectID domain.
 	}
 	if errors.Is(err, containerruntime.ErrProjectChangeTransient) {
 		return fmt.Errorf("%w: %v", projectruntime.ErrServiceChangeTransient, err)
+	}
+	return err
+}
+
+// normalizeServiceChangeWaitError turns only an adapter-owned poll deadline into a fresh-observation wake hint.
+func normalizeServiceChangeWaitError(err error, parentErr error) error {
+	if errors.Is(err, context.DeadlineExceeded) && parentErr == nil {
+		return nil
 	}
 	return err
 }

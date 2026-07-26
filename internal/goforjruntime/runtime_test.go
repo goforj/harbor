@@ -3,6 +3,7 @@ package goforjruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,21 @@ func TestRuntimeRepairListenerRequiresConfirmationForMissingListener(t *testing.
 	})
 	if err != nil || result.Settled {
 		t.Fatalf("RepairListener() = %#v, %v, want unresolved missing listener", result, err)
+	}
+}
+
+// TestNormalizeServiceChangeWaitErrorDistinguishesPollAndCallerDeadlines keeps cancellation ownership intact.
+func TestNormalizeServiceChangeWaitErrorDistinguishesPollAndCallerDeadlines(t *testing.T) {
+	if err := normalizeServiceChangeWaitError(fmt.Errorf("wait: %w", context.DeadlineExceeded), nil); err != nil {
+		t.Fatalf("adapter poll deadline = %v, want wake hint", err)
+	}
+	callerErr := context.DeadlineExceeded
+	if err := normalizeServiceChangeWaitError(fmt.Errorf("wait: %w", context.DeadlineExceeded), callerErr); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("caller deadline = %v, want preserved deadline", err)
+	}
+	sentinel := errors.New("event stream failed")
+	if err := normalizeServiceChangeWaitError(sentinel, nil); !errors.Is(err, sentinel) {
+		t.Fatalf("event stream error = %v, want sentinel", err)
 	}
 }
 
