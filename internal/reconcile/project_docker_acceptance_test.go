@@ -209,6 +209,19 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		lifecycleEvidence = &lifecycle
 		cleanupEvidence = &cleanup
 	}
+	for index := len(projects) - 1; index >= 0; index-- {
+		project := projects[index]
+		intentID := domain.IntentID(fmt.Sprintf("intent-final-stop-compose-%d", index+1))
+		queued, stopErr := coordinator.Stop(ctx, ProjectStopRequest{
+			ProjectID:   project.id,
+			OperationID: domain.OperationID(fmt.Sprintf("operation-final-stop-compose-%d", index+1)),
+			IntentID:    intentID,
+		})
+		if stopErr != nil || queued.Operation.State != domain.OperationQueued {
+			t.Fatalf("final stop generated Compose project %q = %#v, %v", project.id, queued, stopErr)
+		}
+		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, intentID, domain.ProjectStopped)
+	}
 }
 
 // assertGeneratedComposeEventRefresh proves a test-controlled Compose replacement reaches Harbor through the event wake path.
