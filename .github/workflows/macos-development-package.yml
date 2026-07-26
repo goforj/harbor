@@ -146,9 +146,9 @@ jobs:
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
           EOF
-          helper_identity="$(stat -f '%u:%g %Lp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")"
+          helper_identity="$(stat -f '%u:%g %Sp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")"
           printf 'staged fixed helper identity: %s\n' "$helper_identity"
-          test "$helper_identity" = "0:0 4755"
+          test "$helper_identity" = "0:0 -rwsr-xr-x"
 
       - name: Assemble unsigned installer package
         run: |
@@ -203,13 +203,13 @@ jobs:
         run: |
           release_root="/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}"
           pkgutil --pkg-info com.goforj.harbor
-          app_identity="$(stat -f '%u:%g %Lp' /Applications/Harbor.app/Contents/MacOS/harbor-desktop)"
+          app_identity="$(stat -f '%u:%g %Sp' /Applications/Harbor.app/Contents/MacOS/harbor-desktop)"
           current_target="$(readlink "/Library/Application Support/GoForj/Harbor/current")"
           cli_target="$(readlink /usr/local/bin/harbor)"
-          helper_identity="$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.helper)"
-          relay_identity="$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay)"
-          privileged_identity="$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged")"
-          pending_identity="$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged/tickets/pending")"
+          helper_identity="$(stat -f '%u:%g %Sp' /Library/PrivilegedHelperTools/com.goforj.harbor.helper)"
+          relay_identity="$(stat -f '%u:%g %Sp' /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay)"
+          privileged_identity="$(stat -f '%u:%g %Sp' "/Library/Application Support/GoForj/Harbor/Privileged")"
+          pending_identity="$(stat -f '%u:%g %Sp' "/Library/Application Support/GoForj/Harbor/Privileged/tickets/pending")"
           printf 'installed app identity: %s\n' "$app_identity"
           printf 'installed current target: %s\n' "$current_target"
           printf 'installed CLI target: %s\n' "$cli_target"
@@ -220,10 +220,10 @@ jobs:
           test -x /Applications/Harbor.app/Contents/MacOS/harbor-desktop
           test "$current_target" = "releases/${HARBOR_RELEASE_SEQUENCE}"
           test "$cli_target" = "/Library/Application Support/GoForj/Harbor/current/bin/harbor"
-          test "$helper_identity" = "0:0 4755"
-          test "$relay_identity" = "0:0 755"
-          test "$privileged_identity" = "0:0 711"
-          test "$pending_identity" = "$(id -u):$(id -g) 700"
+          test "$helper_identity" = "0:0 -rwsr-xr-x"
+          test "$relay_identity" = "0:0 -rwxr-xr-x"
+          test "$privileged_identity" = "0:0 drwx--x--x"
+          test "$pending_identity" = "$(id -u):$(id -g) drwx------"
           cmp \
             "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/installation.json" \
             "/Library/Application Support/GoForj/Harbor/installation.json"
