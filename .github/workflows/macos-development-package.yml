@@ -93,7 +93,8 @@ jobs:
           go build -trimpath -ldflags "$ldflags" -o "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher" ./cmd/daemonlauncher
           go build -trimpath -ldflags "$ldflags" -o "${privileged_root}/com.goforj.harbor.helper" ./cmd/helper
           go build -trimpath -ldflags "$ldflags" -o "${privileged_root}/com.goforj.harbor.launchdrelay" ./cmd/launchdrelay
-          chmod 4755 "${privileged_root}/com.goforj.harbor.helper"
+          sudo -n chown root:wheel "${privileged_root}/com.goforj.harbor.helper"
+          sudo -n chmod 4755 "${privileged_root}/com.goforj.harbor.helper"
 
           ln -s "releases/${HARBOR_RELEASE_SEQUENCE}" "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/current"
           ln -s "/Library/Application Support/GoForj/Harbor/current/bin/harbor" "${HARBOR_PAYLOAD_ROOT}/usr/local/bin/harbor"
@@ -129,7 +130,9 @@ jobs:
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
           EOF
           helper_mode="$(stat -f '%Lp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")"
-          printf 'staged helper mode: %s\n' "$helper_mode"
+          helper_owner="$(stat -f '%u:%g' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")"
+          printf 'staged helper identity: owner=%s mode=%s\n' "$helper_owner" "$helper_mode"
+          test "$helper_owner" = "0:0"
           test "$helper_mode" = "4755"
 
       - name: Assemble unsigned installer package
