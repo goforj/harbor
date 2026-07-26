@@ -306,6 +306,7 @@ func verifyDarwinRemovalTree(
 		if pendingTickets != "" && strings.HasPrefix(path, pendingTickets+string(os.PathSeparator)) {
 			return fmt.Errorf("unexpected pending ticket artifact %q", path)
 		}
+		// Claims and replay records intentionally do not bind GID because their exact 0600 policy grants the group no access.
 		for directory := range runtimeFileDirectories {
 			if !strings.HasPrefix(path, directory+string(os.PathSeparator)) {
 				continue
@@ -314,7 +315,6 @@ func verifyDarwinRemovalTree(
 				!information.Mode().IsRegular() ||
 				information.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0o600 ||
 				status.Uid != 0 ||
-				status.Gid != groupID ||
 				status.Nlink != 1 {
 				return fmt.Errorf("Harbor runtime tombstone %q has a foreign identity", path)
 			}
