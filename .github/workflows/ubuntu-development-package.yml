@@ -192,7 +192,7 @@ jobs:
           } > "${HARBOR_PACKAGE_ROOT}/DEBIAN/control"
           (
             cd "$HARBOR_PACKAGE_ROOT"
-            find usr -type f -printf '%P\0' |
+            find usr -type f -print0 |
               sort -z |
               xargs -0 md5sum > DEBIAN/md5sums
           )
