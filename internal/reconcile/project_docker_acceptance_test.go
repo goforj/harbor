@@ -153,7 +153,17 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	if !sameGeneratedComposeContainerIDs(before, after) {
 		t.Fatalf("generated Compose container IDs changed across Harbor observation: before=%v after=%v", before, after)
 	}
-	eventRefreshEvidence := assertGeneratedComposeEventRefresh(t, ctx, store, runtime, supervisor, projects, projects[0], observations[projects[0].id])
+	eventRefreshEvidence := assertGeneratedComposeEventRefresh(
+		t,
+		ctx,
+		store,
+		runtime,
+		supervisor,
+		projects,
+		projects[0],
+		configuration.addresses[0],
+		observations[projects[0].id],
+	)
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
 
 	stopped := projects[0]
@@ -209,6 +219,7 @@ func assertGeneratedComposeEventRefresh(
 	supervisor *projectprocess.Supervisor,
 	projects []projectIdentityAcceptanceProject,
 	target projectIdentityAcceptanceProject,
+	targetAddress netip.Addr,
 	initial projectprocess.ServiceObservation,
 ) productproof.EventRefreshEvidence {
 	t.Helper()
@@ -229,8 +240,8 @@ func assertGeneratedComposeEventRefresh(
 	composeProject := generatedComposeServiceProject(t, ctx, runtime, target, service.ID)
 	beforeAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 
-	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "stop", string(service.ID))
-	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "rm", "--force", string(service.ID))
+	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, targetAddress, "stop", string(service.ID))
+	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, targetAddress, "rm", "--force", string(service.ID))
 	stopped := waitForGeneratedComposeServiceProjection(t, ctx, store, target.id, service.ID, false)
 	if stopped.Project.State != domain.ProjectReady {
 		t.Fatalf("event-refresh target %q state after service stop = %q, want ready", target.id, stopped.Project.State)
@@ -238,7 +249,7 @@ func assertGeneratedComposeEventRefresh(
 	duringAll := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 	assertGeneratedComposeNeighborContainerIDs(t, beforeAll, duringAll, target.id)
 
-	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, "up", "--detach", "--force-recreate", string(service.ID))
+	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, targetAddress, "up", "--detach", "--force-recreate", string(service.ID))
 	refreshed := waitForGeneratedComposeServiceProjection(t, ctx, store, target.id, service.ID, true)
 	if refreshed.Revision <= beforeProject.Revision {
 		t.Fatalf("event-refresh target %q revision = %d, want greater than %d", target.id, refreshed.Revision, beforeProject.Revision)
@@ -655,11 +666,13 @@ func runGeneratedComposeCommand(
 	ctx context.Context,
 	checkoutRoot string,
 	composeProject string,
+	address netip.Addr,
 	arguments ...string,
 ) {
 	t.Helper()
 	base := []string{"compose", "--project-directory", checkoutRoot, "--project-name", composeProject}
 	command := exec.CommandContext(ctx, "docker", append(base, arguments...)...)
+	command.Env = append(os.Environ(), "IP_ADDRESS="+address.String())
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker %s: %v\n%s", strings.Join(append(base, arguments...), " "), err, output)
