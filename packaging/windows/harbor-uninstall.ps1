@@ -1,7 +1,23 @@
+param(
+    [switch]$ValidateOnly
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $installRoot = Split-Path -LiteralPath $PSCommandPath -Parent
+$diagnosticPath = Join-Path $installRoot "harbor-uninstall-error.txt"
+trap {
+    $message = $_.Exception.Message -replace "[`r`n]+", " "
+    if ($message.Length -gt 2048) {
+        $message = $message.Substring(0, 2048)
+    }
+    [IO.File]::WriteAllText($diagnosticPath, $message, [Text.UTF8Encoding]::new($false))
+    [Console]::Error.WriteLine($message)
+    exit 1
+}
+Remove-Item -LiteralPath $diagnosticPath -Force -ErrorAction SilentlyContinue
+
 $signerCertificatePath = Join-Path $installRoot "harbor-helper-signing.cer"
 $signerThumbprintPath = Join-Path $installRoot "harbor-helper-signing-thumbprint.txt"
 if (-not (Test-Path -LiteralPath $signerCertificatePath -PathType Leaf) -or
@@ -92,6 +108,10 @@ if (Test-Path -LiteralPath $privilegedRoot) {
         @(Get-ChildItem -LiteralPath $pending -Force).Count -ne 0) {
         throw "Harbor still has pending privileged operations."
     }
+}
+
+if ($ValidateOnly) {
+    exit 0
 }
 
 foreach ($installedCertificate in $signerStorePaths) {

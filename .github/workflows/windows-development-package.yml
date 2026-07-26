@@ -355,6 +355,15 @@ jobs:
           $ErrorActionPreference = "Stop"
           $foreignSentinel = Join-Path $env:HARBOR_INSTALL_ROOT "foreign-package-sentinel-$env:GITHUB_RUN_ID"
           [IO.File]::WriteAllText($foreignSentinel, "foreign package state $env:GITHUB_RUN_ID", [Text.UTF8Encoding]::new($false))
+          $systemPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $systemPowerShell `
+            -NoLogo `
+            -NoProfile `
+            -NonInteractive `
+            -ExecutionPolicy Bypass `
+            -File (Join-Path $env:HARBOR_INSTALL_ROOT "harbor-uninstall.ps1") `
+            -ValidateOnly
+          if ($LASTEXITCODE -ne 0) { throw "uninstaller validation exited with $LASTEXITCODE" }
           $uninstaller = Join-Path $env:HARBOR_INSTALL_ROOT "Uninstall.exe"
           $uninstallRunner = Join-Path $env:RUNNER_TEMP "goforj-harbor-uninstall-$env:GITHUB_RUN_ID.exe"
           Copy-Item -LiteralPath $uninstaller -Destination $uninstallRunner
@@ -367,7 +376,13 @@ jobs:
           $uninstallExitCode = $process.ExitCode
           $process.Dispose()
           Remove-Item -LiteralPath $uninstallRunner -Force
-          if ($uninstallExitCode -ne 0) { throw "uninstaller exited with $uninstallExitCode" }
+          if ($uninstallExitCode -ne 0) {
+            $diagnosticPath = Join-Path $env:HARBOR_INSTALL_ROOT "harbor-uninstall-error.txt"
+            if (Test-Path -LiteralPath $diagnosticPath) {
+              Write-Error "uninstaller diagnostic: $([IO.File]::ReadAllText($diagnosticPath))"
+            }
+            throw "uninstaller exited with $uninstallExitCode"
+          }
           $componentNames = @("harbor-desktop.exe", "harbor.exe", "harbord.exe", "outputbroker.exe", "harbor-helper.exe", "harbor-helper-signing.cer", "harbor-helper-signing-thumbprint.txt", "harbor-uninstall.ps1", "Uninstall.exe")
           for ($attempt = 0; $attempt -lt 150; $attempt++) {
             $receiptExists = Test-Path -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor"
