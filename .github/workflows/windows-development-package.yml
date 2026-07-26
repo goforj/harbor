@@ -140,7 +140,7 @@ jobs:
           $ldflags = "-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=$env:HARBOR_RELEASE_VERSION"
           Push-Location desktop
           try {
-            wails build -s -clean -platform windows/amd64 -tags release -trimpath -ldflags $ldflags -o harbor-desktop
+            wails build -s -clean -platform windows/amd64 -tags release -trimpath -ldflags $ldflags -o harbor-desktop.exe
           } finally {
             Pop-Location
           }
