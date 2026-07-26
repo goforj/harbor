@@ -1,0 +1,418 @@
+name: Windows packaged-product gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Three-part semantic base version for this unsigned development installer
+        required: true
+        default: 0.1.0
+  push:
+    tags:
+      - "v*.*.*-rc.*"
+
+permissions:
+  contents: read
+
+env:
+  HARBOR_PACKAGED_FORJ_COMMIT: 32c1a06d45a92a3de6021ef2db5723e343268489
+
+jobs:
+  package:
+    name: Windows Server 2025 amd64 NSIS
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure package identity
+        shell: pwsh
+        env:
+          HARBOR_REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          switch ($env:GITHUB_EVENT_NAME) {
+            "workflow_dispatch" {
+              if ($env:HARBOR_REQUESTED_VERSION -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+$") {
+                throw "manual package version must contain exactly three numeric parts"
+              }
+              $baseVersion = $env:HARBOR_REQUESTED_VERSION
+              $releaseVersion = "$baseVersion-dev.$env:GITHUB_RUN_NUMBER"
+            }
+            "push" {
+              if ($env:GITHUB_REF_NAME -cnotmatch "^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$") {
+                throw "release-candidate tag must match vMAJOR.MINOR.PATCH-rc.NUMBER"
+              }
+              $baseVersion = $Matches[1]
+              $releaseVersion = "$baseVersion-rc.$($Matches[2])"
+            }
+            default {
+              throw "unsupported package event $env:GITHUB_EVENT_NAME"
+            }
+          }
+          $componentRoot = Join-Path $env:RUNNER_TEMP "goforj-harbor-windows-components"
+          $packagePath = Join-Path $env:RUNNER_TEMP "GoForj-Harbor-windows-amd64-$releaseVersion-unsigned.exe"
+          if ((Test-Path -LiteralPath $componentRoot) -or (Test-Path -LiteralPath $packagePath)) {
+            throw "package staging path already exists"
+          }
+          $fileVersion = "$baseVersion.0"
+          "HARBOR_RELEASE_VERSION=$releaseVersion" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "HARBOR_FILE_VERSION=$fileVersion" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "HARBOR_COMPONENT_ROOT=$componentRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "HARBOR_PACKAGE_PATH=$packagePath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify native package worker
+        shell: pwsh
+        env:
+          HARBOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:HARBOR_RUNNER_ENVIRONMENT -cne "github-hosted") { throw "runner is not GitHub-hosted" }
+          if (-not [Environment]::Is64BitOperatingSystem) { throw "runner is not 64-bit Windows" }
+          if (@(git status --porcelain).Count -ne 0) { throw "checkout is not clean" }
+          if ((git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) { throw "checked-out commit drifted" }
+
+      - name: Check out pinned GoForj source
+        uses: actions/checkout@v7
+        with:
+          repository: goforj/goforj
+          ref: ${{ env.HARBOR_PACKAGED_FORJ_COMMIT }}
+          path: .ci/goforj
+          persist-credentials: false
+
+      - name: Prepare isolated Go caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cacheIdentity = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $buildCache = Join-Path $env:RUNNER_TEMP "harbor-gocache-$cacheIdentity"
+          $moduleCache = Join-Path $env:RUNNER_TEMP "harbor-gomodcache-$cacheIdentity"
+          New-Item -ItemType Directory -Path $buildCache, $moduleCache | Out-Null
+          "GOCACHE=$buildCache" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "GOMODCACHE=$moduleCache" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .ci/goforj/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --no-progress --yes
+
+      - name: Build production frontend
+        working-directory: desktop/frontend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm ci
+          npm run build
+
+      - name: Install pinned Wails CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tools = Join-Path $env:RUNNER_TEMP "harbor-build-tools"
+          New-Item -ItemType Directory -Path $tools | Out-Null
+          $env:GOBIN = $tools
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          $tools | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows desktop and product components
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path $env:HARBOR_COMPONENT_ROOT | Out-Null
+          $ldflags = "-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=$env:HARBOR_RELEASE_VERSION"
+          Push-Location desktop
+          try {
+            wails build -s -clean -platform windows/amd64 -tags release -trimpath -ldflags $ldflags -o harbor-desktop
+          } finally {
+            Pop-Location
+          }
+          Copy-Item -LiteralPath desktop\build\bin\harbor-desktop.exe -Destination (Join-Path $env:HARBOR_COMPONENT_ROOT "harbor-desktop.exe")
+          Copy-Item -LiteralPath desktop\build\windows\icon.ico -Destination (Join-Path $env:HARBOR_COMPONENT_ROOT "icon.ico")
+          go build -trimpath -ldflags $ldflags -o (Join-Path $env:HARBOR_COMPONENT_ROOT "harbor.exe") ./cmd/app
+          go build -trimpath -ldflags $ldflags -o (Join-Path $env:HARBOR_COMPONENT_ROOT "harbord.exe") ./cmd/harbord
+          go build -trimpath -ldflags $ldflags -o (Join-Path $env:HARBOR_COMPONENT_ROOT "outputbroker.exe") ./cmd/outputbroker
+          go build -trimpath -ldflags $ldflags -o (Join-Path $env:HARBOR_COMPONENT_ROOT "harbor-helper.exe") ./cmd/helper
+          Copy-Item -LiteralPath packaging\windows\harbor-uninstall.ps1 -Destination $env:HARBOR_COMPONENT_ROOT
+
+      - name: Sign the packaged helper with a disposable CI identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $certificate = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject "CN=GoForj Harbor Packaged CI Helper" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -KeyExportPolicy NonExportable `
+            -NotAfter (Get-Date).AddHours(8)
+          $certificatePath = Join-Path $env:RUNNER_TEMP "harbor-packaged-helper-signing.cer"
+          Export-Certificate -Cert $certificate -FilePath $certificatePath | Out-Null
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\LocalMachine\TrustedPublisher" | Out-Null
+          $helper = Join-Path $env:HARBOR_COMPONENT_ROOT "harbor-helper.exe"
+          $signature = Set-AuthenticodeSignature -FilePath $helper -Certificate $certificate -HashAlgorithm SHA256
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "disposable packaged helper signature is not trusted: $($signature.Status)"
+          }
+          $certificate.Thumbprint | Out-File (Join-Path $env:RUNNER_TEMP "harbor-packaged-signing-thumbprint") -Encoding ascii -NoNewline
+
+      - name: Assemble and inspect unsigned NSIS installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path -LiteralPath $makensis)) { throw "NSIS compiler is missing" }
+          & $makensis `
+            "/DHARBOR_COMPONENT_ROOT=$env:HARBOR_COMPONENT_ROOT" `
+            "/DHARBOR_PACKAGE_PATH=$env:HARBOR_PACKAGE_PATH" `
+            "/DHARBOR_DISPLAY_VERSION=$env:HARBOR_RELEASE_VERSION" `
+            "/DHARBOR_FILE_VERSION=$env:HARBOR_FILE_VERSION" `
+            packaging\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "NSIS compilation failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $env:HARBOR_PACKAGE_PATH -PathType Leaf)) {
+            throw "NSIS did not create the requested installer"
+          }
+          $hash = (Get-FileHash -LiteralPath $env:HARBOR_PACKAGE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($env:HARBOR_PACKAGE_PATH))" |
+            Out-File "$env:HARBOR_PACKAGE_PATH.sha256" -Encoding ascii
+
+      - name: Require clean package and Harbor-owned host state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          foreach ($path in @(
+            (Join-Path $programFiles "GoForj\Harbor"),
+            (Join-Path $programData "GoForj\Harbor")
+          )) {
+            if (Test-Path -LiteralPath $path) { throw "preexisting Harbor path: $path" }
+          }
+          if (Test-Path -LiteralPath "HKLM:\Software\GoForj\Harbor") { throw "preexisting Harbor registry state" }
+          if (Test-Path -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor") {
+            throw "preexisting Harbor uninstall receipt"
+          }
+          if (@(Get-DnsClientNrptRule | Where-Object {
+            $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+          }).Count -ne 0) { throw "preexisting Harbor NRPT state" }
+
+      - name: Install and verify exact NSIS package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $process = Start-Process -FilePath $env:HARBOR_PACKAGE_PATH -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "installer exited with $($process.ExitCode)" }
+          $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+          $installRoot = Join-Path $programFiles "GoForj\Harbor"
+          foreach ($name in @("harbor-desktop.exe", "harbor.exe", "harbord.exe", "outputbroker.exe", "harbor-helper.exe", "harbor-uninstall.ps1")) {
+            $source = Join-Path $env:HARBOR_COMPONENT_ROOT $name
+            $installed = Join-Path $installRoot $name
+            if ((Get-FileHash $source -Algorithm SHA256).Hash -cne (Get-FileHash $installed -Algorithm SHA256).Hash) {
+              throw "installed component differs from the package staging component: $name"
+            }
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $installRoot "Uninstall.exe") -PathType Leaf)) {
+            throw "installed uninstaller is missing"
+          }
+          $receipt = Get-ItemProperty -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor"
+          if ($receipt.DisplayVersion -cne $env:HARBOR_RELEASE_VERSION) { throw "installed package receipt version drifted" }
+          $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $installRoot "harbor-helper.exe")
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "installed packaged helper signature is not trusted: $($signature.Status)"
+          }
+          "HARBOR_INSTALL_ROOT=$installRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Activate packaged Harbor prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
+          $tickets = Join-Path $privilegedRoot "tickets"
+          $pending = Join-Path $tickets "pending"
+          $claims = Join-Path $tickets "claims"
+          $state = Join-Path $privilegedRoot "state"
+          $replay = Join-Path $state "replay"
+          $userSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          New-Item -ItemType Directory -Path $pending, $claims, $replay -Force | Out-Null
+
+          function Set-DirectorySDDL([string]$Path, [string]$SDDL) {
+            $security = [Security.AccessControl.DirectorySecurity]::new()
+            $security.SetSecurityDescriptorSddlForm($SDDL)
+            Set-Acl -LiteralPath $Path -AclObject $security
+          }
+          function Set-FileSDDL([string]$Path, [string]$SDDL) {
+            $security = [Security.AccessControl.FileSecurity]::new()
+            $security.SetSecurityDescriptorSddlForm($SDDL)
+            Set-Acl -LiteralPath $Path -AclObject $security
+          }
+
+          $gatewaySDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a0;;;$userSID)"
+          $machineSDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+          $pendingSDDL = "O:${userSID}D:P(A;OICI;FA;;;$userSID)(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+          Set-DirectorySDDL $privilegedRoot $gatewaySDDL
+          Set-DirectorySDDL $tickets $gatewaySDDL
+          Set-DirectorySDDL $pending $pendingSDDL
+          Set-DirectorySDDL $claims $machineSDDL
+          Set-DirectorySDDL $state $machineSDDL
+          Set-DirectorySDDL $replay $machineSDDL
+          Set-FileSDDL (Join-Path $env:HARBOR_INSTALL_ROOT "harbor-helper.exe") "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;BU)"
+
+      - name: Release hosted runner canonical ingress sockets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $webService = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+          if ($null -ne $webService -and $webService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+            Stop-Service -Name W3SVC -Force
+          }
+          foreach ($port in @(80, 443)) {
+            $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+            try {
+              $probe.Start()
+            } catch {
+              throw "canonical ingress socket 127.0.0.1:$port is unavailable"
+            } finally {
+              $probe.Stop()
+            }
+          }
+
+      - name: Build external acceptance prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binaryDirectory = Join-Path $env:RUNNER_TEMP "harbor-packaged-acceptance-bin"
+          New-Item -ItemType Directory -Path $binaryDirectory | Out-Null
+          Push-Location .ci\goforj
+          try {
+            go build -trimpath -o (Join-Path $binaryDirectory "forj.exe") ./cmd/forj
+          } finally {
+            Pop-Location
+          }
+          $env:GOBIN = $binaryDirectory
+          go install github.com/goforj/wire/cmd/wire@v1.2.0
+          "HARBOR_ACCEPTANCE_BINARY_DIRECTORY=$binaryDirectory" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $binaryDirectory | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Run installed-package trusted HTTPS acceptance
+        shell: pwsh
+        env:
+          HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
+          HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}\harbor-packaged-acceptance-bin\forj.exe
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.21.0"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:HARBOR_PHASE1_CLI_BINARY = Join-Path $env:HARBOR_INSTALL_ROOT "harbor.exe"
+          $env:HARBOR_PHASE1_DAEMON_BINARY = Join-Path $env:HARBOR_INSTALL_ROOT "harbord.exe"
+          $env:HARBOR_PHASE1_EVIDENCE_DIRECTORY = Join-Path $env:GITHUB_WORKSPACE "harbor-packaged-windows-evidence"
+          go test `
+            -tags=phase1acceptance `
+            -count=1 `
+            -timeout=25m `
+            -run "^TestTrustedHTTPSIntermediateNativeLifecycle$" `
+            ./internal/acceptance
+          go run ./cmd/platformproof verify-trusted-https `
+            --root $env:HARBOR_PHASE1_EVIDENCE_DIRECTORY `
+            --platform windows
+
+      - name: Uninstall admitted package and prove zero Harbor state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $foreignSentinel = Join-Path $env:HARBOR_INSTALL_ROOT "foreign-package-sentinel-$env:GITHUB_RUN_ID"
+          [IO.File]::WriteAllText($foreignSentinel, "foreign package state $env:GITHUB_RUN_ID", [Text.UTF8Encoding]::new($false))
+          $uninstaller = Join-Path $env:HARBOR_INSTALL_ROOT "Uninstall.exe"
+          $process = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "uninstaller exited with $($process.ExitCode)" }
+          if (Test-Path -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor") {
+            throw "Harbor uninstall receipt remains"
+          }
+          foreach ($name in @("harbor-desktop.exe", "harbor.exe", "harbord.exe", "outputbroker.exe", "harbor-helper.exe", "harbor-uninstall.ps1", "Uninstall.exe")) {
+            if (Test-Path -LiteralPath (Join-Path $env:HARBOR_INSTALL_ROOT $name)) {
+              throw "installed Harbor component remains: $name"
+            }
+          }
+          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+          if (Test-Path -LiteralPath (Join-Path $programData "GoForj\Harbor")) { throw "Harbor machine data remains" }
+          if (@(Get-DnsClientNrptRule | Where-Object {
+            $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+          }).Count -ne 0) { throw "Harbor NRPT state remains" }
+          if ([IO.File]::ReadAllText($foreignSentinel) -cne "foreign package state $env:GITHUB_RUN_ID") {
+            throw "foreign package sentinel changed"
+          }
+          $evidence = Join-Path $env:GITHUB_WORKSPACE "harbor-packaged-windows-evidence\package-uninstall.txt"
+          @(
+            "package_sha256=$((Get-FileHash $env:HARBOR_PACKAGE_PATH -Algorithm SHA256).Hash.ToLowerInvariant())"
+            "package_receipt=absent"
+            "installed_product_paths=absent"
+            "harbor_host_projection=absent"
+            "foreign_package_sentinel=preserved"
+          ) | Out-File $evidence -Encoding ascii
+          Remove-Item -LiteralPath $foreignSentinel -Force
+          Remove-Item -LiteralPath $env:HARBOR_INSTALL_ROOT -Force
+          $productParent = Split-Path $env:HARBOR_INSTALL_ROOT -Parent
+          if ((Test-Path -LiteralPath $productParent) -and @(Get-ChildItem $productParent -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $productParent -Force
+          }
+
+      - name: Remove hosted Windows prerequisites
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $thumbprintPath = Join-Path $env:RUNNER_TEMP "harbor-packaged-signing-thumbprint"
+          if (Test-Path -LiteralPath $thumbprintPath) {
+            $thumbprint = [IO.File]::ReadAllText($thumbprintPath).Trim()
+            foreach ($store in @("Cert:\CurrentUser\My", "Cert:\LocalMachine\Root", "Cert:\LocalMachine\TrustedPublisher")) {
+              Remove-Item -LiteralPath (Join-Path $store $thumbprint) -Force -ErrorAction SilentlyContinue
+            }
+          }
+          if ("${{ job.status }}" -ne "success") {
+            Get-DnsClientNrptRule | Where-Object {
+              $_.DisplayName -like "GoForj Harbor Resolver *" -or $_.Comment -like "goforj.harbor.resolver *"
+            } | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
+              $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
+            } | Remove-Item -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath "Cert:\CurrentUser\Root" | Where-Object {
+              $_.FriendlyName -like "goforj.harbor.windows-current-user-root.v1|*"
+            } | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload exact tested unsigned Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: GoForj-Harbor-windows-amd64-${{ env.HARBOR_RELEASE_VERSION }}-tested
+          path: |
+            ${{ env.HARBOR_PACKAGE_PATH }}
+            ${{ env.HARBOR_PACKAGE_PATH }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload packaged-product acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: GoForj-Harbor-windows-amd64-packaged-evidence-${{ github.run_number }}
+          path: |
+            harbor-packaged-windows-evidence/summary.json
+            harbor-packaged-windows-evidence/package-uninstall.txt
+          if-no-files-found: error
+          retention-days: 14
