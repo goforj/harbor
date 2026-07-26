@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -251,6 +252,7 @@ func assertGeneratedComposeEventRefresh(
 
 	runGeneratedComposeCommand(t, ctx, target.project.Root, composeProject, targetAddress, "up", "--detach", "--force-recreate", string(service.ID))
 	refreshed := waitForGeneratedComposeServiceProjection(t, ctx, store, target.id, service.ID, true)
+	waitForGeneratedComposeReadiness(t, ctx, target.id, targetAddress)
 	if refreshed.Revision <= beforeProject.Revision {
 		t.Fatalf("event-refresh target %q revision = %d, want greater than %d", target.id, refreshed.Revision, beforeProject.Revision)
 	}
@@ -274,6 +276,49 @@ func assertGeneratedComposeEventRefresh(
 		BeforeContainerIDs: sortedContainerIDs(beforeServiceIDs),
 		AfterContainerIDs:  sortedContainerIDs(afterServiceIDs),
 		Peers:              generatedComposeEventRefreshPeers(beforeAll, afterAll, target.id),
+	}
+}
+
+// waitForGeneratedComposeReadiness allows the running App to reconnect after its database container is replaced.
+func waitForGeneratedComposeReadiness(
+	t *testing.T,
+	ctx context.Context,
+	projectID domain.ProjectID,
+	address netip.Addr,
+) {
+	t.Helper()
+	waitContext, cancelWait := context.WithTimeout(ctx, 20*time.Second)
+	defer cancelWait()
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+	}
+	defer client.CloseIdleConnections()
+	endpoint := fmt.Sprintf("http://%s:%d/-/ready", address, projectIdentityAcceptancePort)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		request, err := http.NewRequestWithContext(waitContext, http.MethodGet, endpoint, nil)
+		if err != nil {
+			t.Fatalf("build reconnected project %q readiness request: %v", projectID, err)
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			closeErr := response.Body.Close()
+			if closeErr != nil {
+				t.Fatalf("close reconnected project %q readiness response: %v", projectID, closeErr)
+			}
+			if response.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		select {
+		case <-waitContext.Done():
+			t.Fatalf("wait for reconnected project %q readiness: %v", projectID, waitContext.Err())
+		case <-ticker.C:
+		}
 	}
 }
 
