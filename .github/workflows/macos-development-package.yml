@@ -140,7 +140,13 @@ jobs:
           grep -Fq "Library/Application Support/GoForj/Harbor/daemon-launcher" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.helper" "${RUNNER_TEMP}/payload-files.txt"
           grep -Fq "Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay" "${RUNNER_TEMP}/payload-files.txt"
-          shasum -a 256 "${HARBOR_PACKAGE_PATH}" > "${HARBOR_PACKAGE_PATH}.sha256"
+          package_directory="$(dirname "${HARBOR_PACKAGE_PATH}")"
+          package_name="$(basename "${HARBOR_PACKAGE_PATH}")"
+          (
+            cd "${package_directory}"
+            shasum -a 256 "${package_name}" > "${package_name}.sha256"
+            shasum -a 256 -c "${package_name}.sha256"
+          )
 
       - name: Upload unsigned development package
         uses: actions/upload-artifact@v7
