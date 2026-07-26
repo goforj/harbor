@@ -134,6 +134,8 @@ type darwinUninstallPaths struct {
 	resolver          string
 	launchDaemon      string
 	pendingTickets    string
+	claimedTickets    string
+	replayTombstones  string
 	currentSelection  string
 	packageIdentifier string
 }
@@ -179,6 +181,8 @@ func productionUninstallPaths() darwinUninstallPaths {
 		resolver:          "/etc/resolver/test",
 		launchDaemon:      "/Library/LaunchDaemons/com.goforj.harbor.launchdrelay.plist",
 		pendingTickets:    filepath.Join(machineRoot, "Privileged", "tickets", "pending"),
+		claimedTickets:    filepath.Join(machineRoot, "Privileged", "tickets", "claims"),
+		replayTombstones:  filepath.Join(machineRoot, "Privileged", "state", "replay"),
 		currentSelection:  filepath.Join(machineRoot, "current"),
 		packageIdentifier: installpaths.ProductID,
 	}
@@ -243,10 +247,21 @@ func requireDarwinHostIntegrationReleased(paths darwinUninstallPaths, dependenci
 
 // verifyDarwinRemovalTrees rejects redirects, foreign ownership, and pending user input before recursive removal.
 func verifyDarwinRemovalTrees(paths darwinUninstallPaths, userID uint32, groupID uint32) error {
-	if err := verifyDarwinRemovalTree(paths.application, "", "", userID, groupID); err != nil {
+	if err := verifyDarwinRemovalTree(paths.application, "", "", nil, userID, groupID); err != nil {
 		return fmt.Errorf("admit Harbor application removal: %w", err)
 	}
-	if err := verifyDarwinRemovalTree(paths.machineRoot, paths.currentSelection, paths.pendingTickets, userID, groupID); err != nil {
+	runtimeFileDirectories := map[string]struct{}{
+		paths.claimedTickets:   {},
+		paths.replayTombstones: {},
+	}
+	if err := verifyDarwinRemovalTree(
+		paths.machineRoot,
+		paths.currentSelection,
+		paths.pendingTickets,
+		runtimeFileDirectories,
+		userID,
+		groupID,
+	); err != nil {
 		return fmt.Errorf("admit Harbor machine-root removal: %w", err)
 	}
 	return nil
@@ -257,6 +272,7 @@ func verifyDarwinRemovalTree(
 	root string,
 	allowedSymlink string,
 	pendingTickets string,
+	runtimeFileDirectories map[string]struct{},
 	userID uint32,
 	groupID uint32,
 ) error {
@@ -289,6 +305,20 @@ func verifyDarwinRemovalTree(
 		}
 		if pendingTickets != "" && strings.HasPrefix(path, pendingTickets+string(os.PathSeparator)) {
 			return fmt.Errorf("unexpected pending ticket artifact %q", path)
+		}
+		for directory := range runtimeFileDirectories {
+			if !strings.HasPrefix(path, directory+string(os.PathSeparator)) {
+				continue
+			}
+			if filepath.Dir(path) != directory ||
+				!information.Mode().IsRegular() ||
+				information.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0o600 ||
+				status.Uid != 0 ||
+				status.Gid != groupID ||
+				status.Nlink != 1 {
+				return fmt.Errorf("Harbor runtime tombstone %q has a foreign identity", path)
+			}
+			return nil
 		}
 		if status.Uid != 0 || status.Gid != 0 {
 			return fmt.Errorf("package tree object %q is owned by %d:%d, want 0:0", path, status.Uid, status.Gid)
