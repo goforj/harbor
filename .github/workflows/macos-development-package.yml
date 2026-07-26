@@ -99,6 +99,9 @@ jobs:
           go build -trimpath -ldflags "$ldflags" -o "${release_root}/libexec/com.goforj.harbor.launchdrelay" ./cmd/launchdrelay
           cp "${release_root}/libexec/com.goforj.harbor.helper" "${privileged_root}/com.goforj.harbor.helper"
           cp "${release_root}/libexec/com.goforj.harbor.launchdrelay" "${privileged_root}/com.goforj.harbor.launchdrelay"
+          sudo -n chmod -N \
+            "${privileged_root}/com.goforj.harbor.helper" \
+            "${privileged_root}/com.goforj.harbor.launchdrelay"
           sudo -n chown root:wheel \
             "${privileged_root}/com.goforj.harbor.helper" \
             "${privileged_root}/com.goforj.harbor.launchdrelay"
