@@ -178,13 +178,27 @@ jobs:
         run: |
           release_root="/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}"
           pkgutil --pkg-info com.goforj.harbor
+          app_identity="$(stat -f '%u:%g %Lp' /Applications/Harbor.app/Contents/MacOS/harbor-desktop)"
+          current_target="$(readlink "/Library/Application Support/GoForj/Harbor/current")"
+          cli_target="$(readlink /usr/local/bin/harbor)"
+          helper_identity="$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.helper)"
+          relay_identity="$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay)"
+          privileged_identity="$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged")"
+          pending_identity="$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged/tickets/pending")"
+          printf 'installed app identity: %s\n' "$app_identity"
+          printf 'installed current target: %s\n' "$current_target"
+          printf 'installed CLI target: %s\n' "$cli_target"
+          printf 'installed helper identity: %s\n' "$helper_identity"
+          printf 'installed relay identity: %s\n' "$relay_identity"
+          printf 'installed privileged identity: %s\n' "$privileged_identity"
+          printf 'installed pending identity: %s\n' "$pending_identity"
           test -x /Applications/Harbor.app/Contents/MacOS/harbor-desktop
-          test "$(readlink "/Library/Application Support/GoForj/Harbor/current")" = "releases/${HARBOR_RELEASE_SEQUENCE}"
-          test "$(readlink /usr/local/bin/harbor)" = "/Library/Application Support/GoForj/Harbor/current/bin/harbor"
-          test "$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.helper)" = "0:0 4755"
-          test "$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay)" = "0:0 755"
-          test "$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged")" = "0:0 711"
-          test "$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged/tickets/pending")" = "$(id -u):$(id -g) 700"
+          test "$current_target" = "releases/${HARBOR_RELEASE_SEQUENCE}"
+          test "$cli_target" = "/Library/Application Support/GoForj/Harbor/current/bin/harbor"
+          test "$helper_identity" = "0:0 4755"
+          test "$relay_identity" = "0:0 755"
+          test "$privileged_identity" = "0:0 711"
+          test "$pending_identity" = "$(id -u):$(id -g) 700"
           cmp \
             "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/installation.json" \
             "/Library/Application Support/GoForj/Harbor/installation.json"
