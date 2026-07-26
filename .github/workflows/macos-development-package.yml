@@ -7,6 +7,9 @@ on:
         description: Three-part semantic base version for this unsigned development package
         required: true
         default: 0.1.0
+  push:
+    tags:
+      - "v*.*.*-rc.*"
 
 permissions:
   contents: read
@@ -21,18 +24,41 @@ jobs:
     timeout-minutes: 60
     env:
       HARBOR_RELEASE_SEQUENCE: ${{ github.run_number }}
-      HARBOR_RELEASE_VERSION: ${{ inputs.version }}-dev.${{ github.run_number }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Configure package paths
+        env:
+          HARBOR_REQUESTED_VERSION: ${{ inputs.version }}
         run: |
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              if [[ ! "$HARBOR_REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "manual package version must contain exactly three numeric parts" >&2
+                exit 1
+              fi
+              release_version="${HARBOR_REQUESTED_VERSION}-dev.${GITHUB_RUN_NUMBER}"
+              ;;
+            push)
+              if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+)$ ]]; then
+                echo "release-candidate tag must match vMAJOR.MINOR.PATCH-rc.NUMBER" >&2
+                exit 1
+              fi
+              release_version="${BASH_REMATCH[1]}"
+              ;;
+            *)
+              echo "unsupported package event ${GITHUB_EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
           payload_root="/Library/PrivilegedHelperTools/.goforj-harbor-payload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          package_path="${RUNNER_TEMP}/GoForj-Harbor-macos-arm64-${release_version}.pkg"
           sudo -n test ! -e "$payload_root"
           sudo -n install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$payload_root"
+          echo "HARBOR_RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
           echo "HARBOR_PAYLOAD_ROOT=${payload_root}" >> "${GITHUB_ENV}"
-          echo "HARBOR_PACKAGE_PATH=${RUNNER_TEMP}/GoForj-Harbor-macos-arm64-development.pkg" >> "${GITHUB_ENV}"
+          echo "HARBOR_PACKAGE_PATH=${package_path}" >> "${GITHUB_ENV}"
 
       - name: Verify native package worker
         run: |
@@ -488,13 +514,13 @@ jobs:
           sudo -n rm -f "$foreign_sentinel"
           sudo -n rmdir "$foreign_parent"
 
-      - name: Upload unsigned development package
+      - name: Upload exact tested unsigned package
         uses: actions/upload-artifact@v7
         with:
-          name: GoForj-Harbor-macos-arm64-development-${{ github.run_number }}
+          name: GoForj-Harbor-macos-arm64-tested-${{ github.run_number }}
           path: |
-            ${{ runner.temp }}/GoForj-Harbor-macos-arm64-development.pkg
-            ${{ runner.temp }}/GoForj-Harbor-macos-arm64-development.pkg.sha256
+            ${{ runner.temp }}/GoForj-Harbor-macos-arm64-*.pkg
+            ${{ runner.temp }}/GoForj-Harbor-macos-arm64-*.pkg.sha256
           if-no-files-found: error
           retention-days: 14
 
