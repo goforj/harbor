@@ -1,6 +1,30 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$installRoot = Split-Path -LiteralPath $PSCommandPath -Parent
+$signerCertificatePath = Join-Path $installRoot "harbor-helper-signing.cer"
+$signerThumbprintPath = Join-Path $installRoot "harbor-helper-signing-thumbprint.txt"
+if (-not (Test-Path -LiteralPath $signerCertificatePath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $signerThumbprintPath -PathType Leaf)) {
+    throw "Harbor helper signing identity is missing."
+}
+$signerThumbprint = [IO.File]::ReadAllText($signerThumbprintPath).Trim()
+if ($signerThumbprint -cnotmatch "^[0-9A-F]{40}$") {
+    throw "Harbor helper signing thumbprint is invalid."
+}
+$sealedCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($signerCertificatePath)
+if ($sealedCertificate.Thumbprint -cne $signerThumbprint) {
+    throw "Harbor helper signing certificate differs from its sealed identity."
+}
+$signerStorePaths = @()
+foreach ($store in @("Cert:\LocalMachine\Root", "Cert:\LocalMachine\TrustedPublisher")) {
+    $installedCertificate = Join-Path $store $signerThumbprint
+    if (-not (Test-Path -LiteralPath $installedCertificate)) {
+        throw "Harbor helper signing certificate is missing from $store."
+    }
+    $signerStorePaths += $installedCertificate
+}
+
 $machineRoots = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\Root" | Where-Object {
     $_.FriendlyName -like "goforj.harbor.windows-machine-root.v1|*"
 })
@@ -68,6 +92,12 @@ if (Test-Path -LiteralPath $privilegedRoot) {
         @(Get-ChildItem -LiteralPath $pending -Force).Count -ne 0) {
         throw "Harbor still has pending privileged operations."
     }
+}
+
+foreach ($installedCertificate in $signerStorePaths) {
+    Remove-Item -LiteralPath $installedCertificate -Force
+}
+if (Test-Path -LiteralPath $privilegedRoot) {
     Remove-Item -LiteralPath $privilegedRoot -Recurse -Force
 }
 

@@ -53,8 +53,21 @@ Section "GoForj Harbor" SEC_HARBOR
   File /oname=harbord.exe "${HARBOR_COMPONENT_ROOT}\harbord.exe"
   File /oname=outputbroker.exe "${HARBOR_COMPONENT_ROOT}\outputbroker.exe"
   File /oname=harbor-helper.exe "${HARBOR_COMPONENT_ROOT}\harbor-helper.exe"
+  File /oname=harbor-helper-signing.cer "${HARBOR_COMPONENT_ROOT}\harbor-helper-signing.cer"
+  File /oname=harbor-helper-signing-thumbprint.txt "${HARBOR_COMPONENT_ROOT}\harbor-helper-signing-thumbprint.txt"
   File /oname=harbor-uninstall.ps1 "${HARBOR_COMPONENT_ROOT}\harbor-uninstall.ps1"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  nsExec::ExecToLog '"$SYSDIR\certutil.exe" -addstore -f Root "$INSTDIR\harbor-helper-signing.cer"'
+  Pop $0
+  ${If} $0 != 0
+    Abort "Could not install the Harbor helper signing certificate."
+  ${EndIf}
+  nsExec::ExecToLog '"$SYSDIR\certutil.exe" -addstore -f TrustedPublisher "$INSTDIR\harbor-helper-signing.cer"'
+  Pop $0
+  ${If} $0 != 0
+    Abort "Could not install the Harbor helper publisher certificate."
+  ${EndIf}
 
   CreateDirectory "$SMPROGRAMS\GoForj"
   CreateShortcut "$SMPROGRAMS\GoForj\GoForj Harbor.lnk" "$INSTDIR\harbor-desktop.exe"
@@ -86,6 +99,8 @@ Section "Uninstall"
   Delete "$INSTDIR\harbord.exe"
   Delete "$INSTDIR\outputbroker.exe"
   Delete "$INSTDIR\harbor-helper.exe"
+  Delete "$INSTDIR\harbor-helper-signing.cer"
+  Delete "$INSTDIR\harbor-helper-signing-thumbprint.txt"
   Delete "$INSTDIR\harbor-uninstall.ps1"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
