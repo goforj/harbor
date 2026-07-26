@@ -381,7 +381,12 @@ func (runtime *Runtime) ObserveServices(ctx context.Context, projectID domain.Pr
 	if errors.Is(err, projectprocess.ErrNotRunning) {
 		err = fmt.Errorf("%w: %v", projectruntime.ErrNotRunning, err)
 	}
-	return projectruntime.ServiceObservation{Supported: observation.Supported, Services: append([]domain.ServiceSnapshot(nil), observation.Services...)}, err
+	return projectruntime.ServiceObservation{Supported: observation.Supported, Services: copyServiceSnapshots(observation.Services)}, err
+}
+
+// copyServiceSnapshots preserves the observed distinction between an empty topology and no observation.
+func copyServiceSnapshots(services []domain.ServiceSnapshot) []domain.ServiceSnapshot {
+	return append(make([]domain.ServiceSnapshot, 0, len(services)), services...)
 }
 
 // ObserveResources translates GoForj resource reports into runtime-neutral, ownership-admitted snapshots.

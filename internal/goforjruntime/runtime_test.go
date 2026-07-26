@@ -91,6 +91,20 @@ func TestObserveResourcesDefersAnEmptyServiceTopologyToTheServiceOnlyRefresh(t *
 	}
 }
 
+// TestCopyServiceSnapshotsPreservesEmptyObservationAndIsolation prevents adapter copies from erasing topology meaning.
+func TestCopyServiceSnapshotsPreservesEmptyObservationAndIsolation(t *testing.T) {
+	empty := copyServiceSnapshots([]domain.ServiceSnapshot{})
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("copyServiceSnapshots(empty) = %#v, want non-nil empty slice", empty)
+	}
+	source := []domain.ServiceSnapshot{{ID: "mysql"}}
+	copied := copyServiceSnapshots(source)
+	source[0].ID = "changed"
+	if len(copied) != 1 || copied[0].ID != "mysql" {
+		t.Fatalf("copyServiceSnapshots() = %#v after source mutation", copied)
+	}
+}
+
 // TestGoForjEnvironmentOverridesKeepsProviderKeysInsideTheAdapter proves core network facts are translated only at the GoForj boundary.
 func TestGoForjEnvironmentOverridesKeepsProviderKeysInsideTheAdapter(t *testing.T) {
 	assignment := projectruntime.NetworkAssignment{
