@@ -374,11 +374,15 @@ func renderConfiguration(specification Spec, version string) []byte {
 
 // projectEnvironment pins discovery to one port while leaving the loopback address for Harbor to inject.
 func projectEnvironment(specification Spec) []byte {
-	return []byte(fmt.Sprintf(
+	environment := fmt.Sprintf(
 		"APP_NAME=%s\nAPP_ENV=testing\nAPP_DEBUG=0\nAPI_HTTP_PORT=%d\n",
 		strconv.Quote(specification.Name),
 		specification.Port,
-	))
+	)
+	if specification.MySQL {
+		environment += "DB_DRIVER=mysql\nDB_HOST=mysql\nDB_PORT=3306\nDB_DATABASE=db\nDB_USERNAME=user\nDB_PASSWORD=password\nDB_ROOT_PASSWORD=root\n"
+	}
+	return []byte(environment)
 }
 
 // writeExclusiveFile prevents an unexpected renderer artifact from being adopted as test input.

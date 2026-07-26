@@ -171,6 +171,32 @@ func TestRenderCreatesThreeUniquePort3000Projects(t *testing.T) {
 	}
 }
 
+// TestProjectEnvironmentIncludesGeneratedMySQLInputs keeps the immutable acceptance checkout runnable by Compose.
+func TestProjectEnvironmentIncludesGeneratedMySQLInputs(t *testing.T) {
+	environment := string(projectEnvironment(Spec{
+		Name:   "Harbor Orders",
+		Port:   3000,
+		MySQL:  true,
+		Module: "example.test/harbor/orders",
+	}))
+	for _, assignment := range []string{
+		"DB_DRIVER=mysql\n",
+		"DB_HOST=mysql\n",
+		"DB_PORT=3306\n",
+		"DB_DATABASE=db\n",
+		"DB_USERNAME=user\n",
+		"DB_PASSWORD=password\n",
+		"DB_ROOT_PASSWORD=root\n",
+	} {
+		if !strings.Contains(environment, assignment) {
+			t.Fatalf("projectEnvironment() = %q, want assignment %q", environment, assignment)
+		}
+	}
+	if plain := string(projectEnvironment(Spec{Name: "Harbor Plain", Port: 3000})); strings.Contains(plain, "DB_") {
+		t.Fatalf("plain projectEnvironment() = %q, want no database assignments", plain)
+	}
+}
+
 // TestRenderConfigurationSelectsTheGeneratedAppRuntime prevents a successful render from producing an inert forj dev graph.
 func TestRenderConfigurationSelectsTheGeneratedAppRuntime(t *testing.T) {
 	configuration := string(renderConfiguration(
