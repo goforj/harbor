@@ -115,7 +115,9 @@ jobs:
           test "$(readlink "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/current")" = "releases/${HARBOR_RELEASE_SEQUENCE}"
 
           while IFS= read -r executable; do
-            test "$(lipo -archs "$executable")" = "arm64"
+            architecture="$(lipo -archs "$executable")"
+            printf 'staged executable architecture: %s=%s\n' "$executable" "$architecture"
+            test "$architecture" = "arm64"
           done <<EOF
           ${HARBOR_PAYLOAD_ROOT}/Applications/Harbor.app/Contents/MacOS/harbor-desktop
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher
@@ -126,7 +128,9 @@ jobs:
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
           EOF
-          test "$(stat -f '%Lp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")" = "4755"
+          helper_mode="$(stat -f '%Lp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")"
+          printf 'staged helper mode: %s\n' "$helper_mode"
+          test "$helper_mode" = "4755"
 
       - name: Assemble unsigned installer package
         run: |
