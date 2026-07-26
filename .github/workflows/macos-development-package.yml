@@ -14,10 +14,6 @@ permissions:
 env:
   HARBOR_PACKAGED_FORJ_COMMIT: 32c1a06d45a92a3de6021ef2db5723e343268489
 
-concurrency:
-  group: macos-development-package-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   package:
     name: Apple silicon PKG
@@ -320,14 +316,7 @@ jobs:
             -out "$fixture_certificate"
           chmod 0600 "$fixture_key"
           chmod 0644 "$fixture_certificate"
-          fixture_fingerprint="$(
-            openssl x509 -in "$fixture_certificate" -noout -fingerprint -sha1 |
-              cut -d= -f2 |
-              tr -d :
-          )"
-          test -n "$fixture_fingerprint"
           printf 'HARBOR_PACKAGED_FOREIGN_CERTIFICATE=%s\n' "$fixture_certificate" >> "$GITHUB_ENV"
-          printf 'HARBOR_PACKAGED_FOREIGN_CERTIFICATE_FINGERPRINT=%s\n' "$fixture_fingerprint" >> "$GITHUB_ENV"
           sudo -n security add-trusted-cert \
             -d \
             -r trustRoot \
@@ -427,13 +416,18 @@ jobs:
             sudo -n tee "$installed_helper" >/dev/null
           sudo -n chown root:wheel "$installed_helper"
           sudo -n chmod 4755 "$installed_helper"
+          mismatch_log="${RUNNER_TEMP}/harbor-uninstall-mismatch.log"
           if sudo -n "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
             uninstall \
             --user-id "$(id -u)" \
-            --group-id "$(id -g)"; then
+            --group-id "$(id -g)" >"$mismatch_log" 2>&1; then
             echo "uninstaller removed a mismatched fixed helper" >&2
             exit 1
           fi
+          cat "$mismatch_log"
+          grep -Fq \
+            "admit installed Harbor helper: file digest differs from the sealed identity" \
+            "$mismatch_log"
           test "$(sudo -n cat "$installed_helper")" = "foreign helper ${GITHUB_RUN_ID}"
           sudo -n install \
             -m 4755 \
@@ -493,26 +487,6 @@ jobs:
 
           sudo -n rm -f "$foreign_sentinel"
           sudo -n rmdir "$foreign_parent"
-
-      - name: Remove foreign administrator trust fixture
-        if: always()
-        run: |
-          if test -z "${HARBOR_PACKAGED_FOREIGN_CERTIFICATE:-}" ||
-            test ! -f "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE"; then
-            exit 0
-          fi
-          sudo -n security remove-trusted-cert \
-            -d \
-            "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE"
-          if sudo -n security find-certificate \
-            -Z \
-            -a \
-            /Library/Keychains/System.keychain |
-            grep -Fq "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE_FINGERPRINT"; then
-            sudo -n security delete-certificate \
-              -Z "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE_FINGERPRINT" \
-              /Library/Keychains/System.keychain
-          fi
 
       - name: Upload unsigned development package
         uses: actions/upload-artifact@v7
