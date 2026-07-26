@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -eu
+
+console_uid=$(/usr/bin/stat -f '%u' /dev/console)
+console_gid=$(/usr/bin/stat -f '%g' /dev/console)
+
+if [ "$console_uid" -le 0 ]; then
+  echo "Harbor requires a logged-in non-root console user during installation." >&2
+  exit 1
+fi
+
+exec "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
+  install \
+  --user-id "$console_uid" \
+  --group-id "$console_gid"

@@ -5,8 +5,18 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+// TestDaemonArgumentsPreservesInstallerSelectedDaemonOperations keeps migration and lifecycle commands usable through the stable launcher.
+func TestDaemonArgumentsPreservesInstallerSelectedDaemonOperations(t *testing.T) {
+	got := daemonArguments("/installed/harbord", []string{"migrate", "--example"})
+	want := []string{"/installed/harbord", "migrate", "--example"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("daemonArguments() = %q, want %q", got, want)
+	}
+}
 
 // TestResolveInstalledDaemonAtAdmitsOnlyOneSelectedRelease pins launcher execution beneath the release root.
 func TestResolveInstalledDaemonAtAdmitsOnlyOneSelectedRelease(t *testing.T) {

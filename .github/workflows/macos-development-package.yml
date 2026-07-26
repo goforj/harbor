@@ -89,9 +89,11 @@ jobs:
           go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/harbor" ./cmd/app
           go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/harbord" ./cmd/harbord
           go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/outputbroker" ./cmd/outputbroker
+          go build -trimpath -ldflags "$ldflags" -o "${release_root}/bin/harbor-installer" ./cmd/installer
           go build -trimpath -ldflags "$ldflags" -o "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/daemon-launcher" ./cmd/daemonlauncher
           go build -trimpath -ldflags "$ldflags" -o "${privileged_root}/com.goforj.harbor.helper" ./cmd/helper
           go build -trimpath -ldflags "$ldflags" -o "${privileged_root}/com.goforj.harbor.launchdrelay" ./cmd/launchdrelay
+          chmod 4755 "${privileged_root}/com.goforj.harbor.helper"
 
           ln -s "releases/${HARBOR_RELEASE_SEQUENCE}" "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/current"
           ln -s "/Library/Application Support/GoForj/Harbor/current/bin/harbor" "${HARBOR_PAYLOAD_ROOT}/usr/local/bin/harbor"
@@ -120,14 +122,17 @@ jobs:
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbor
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbord
           ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/outputbroker
+          ${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}/bin/harbor-installer
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper
           ${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
           EOF
+          test "$(stat -f '%Lp' "${HARBOR_PAYLOAD_ROOT}/Library/PrivilegedHelperTools/com.goforj.harbor.helper")" = "4755"
 
       - name: Assemble unsigned installer package
         run: |
           pkgbuild \
             --root "${HARBOR_PAYLOAD_ROOT}" \
+            --scripts packaging/darwin/scripts \
             --identifier com.goforj.harbor \
             --version "${HARBOR_RELEASE_VERSION}" \
             --install-location / \
@@ -147,6 +152,44 @@ jobs:
             shasum -a 256 "${package_name}" > "${package_name}.sha256"
             shasum -a 256 -c "${package_name}.sha256"
           )
+
+      - name: Require clean package-owned installation state
+        run: |
+          while IFS= read -r path; do
+            if sudo -n test -e "$path" || sudo -n test -L "$path"; then
+              printf 'preexisting Harbor package path: %s\n' "$path" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          /Applications/Harbor.app
+          /Library/Application Support/GoForj/Harbor
+          /Library/PrivilegedHelperTools/com.goforj.harbor.helper
+          /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay
+          /usr/local/bin/harbor
+          EOF
+          if pkgutil --pkg-info com.goforj.harbor >/dev/null 2>&1; then
+            echo "preexisting Harbor package receipt" >&2
+            exit 1
+          fi
+
+      - name: Install the assembled package
+        run: sudo -n installer -pkg "${HARBOR_PACKAGE_PATH}" -target /
+
+      - name: Verify installed product boundary
+        run: |
+          release_root="/Library/Application Support/GoForj/Harbor/releases/${HARBOR_RELEASE_SEQUENCE}"
+          pkgutil --pkg-info com.goforj.harbor
+          test -x /Applications/Harbor.app/Contents/MacOS/harbor-desktop
+          test "$(readlink "/Library/Application Support/GoForj/Harbor/current")" = "releases/${HARBOR_RELEASE_SEQUENCE}"
+          test "$(readlink /usr/local/bin/harbor)" = "/Library/Application Support/GoForj/Harbor/current/bin/harbor"
+          test "$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.helper)" = "0:0 4755"
+          test "$(stat -f '%u:%g %Lp' /Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay)" = "0:0 755"
+          test "$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged")" = "0:0 711"
+          test "$(stat -f '%u:%g %Lp' "/Library/Application Support/GoForj/Harbor/Privileged/tickets/pending")" = "$(id -u):$(id -g) 700"
+          cmp \
+            "${HARBOR_PAYLOAD_ROOT}/Library/Application Support/GoForj/Harbor/installation.json" \
+            "/Library/Application Support/GoForj/Harbor/installation.json"
+          "${release_root}/bin/harbor-installer" install --user-id "$(id -u)" --group-id "$(id -g)"
 
       - name: Upload unsigned development package
         uses: actions/upload-artifact@v7

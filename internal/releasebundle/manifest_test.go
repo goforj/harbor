@@ -33,7 +33,7 @@ func TestSealDarwinDevelopmentPayloadWritesOneCompleteIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SealDarwinDevelopmentPayload() error = %v", err)
 	}
-	if manifest.BundleDigest == "" || len(manifest.Components) != 7 {
+	if manifest.BundleDigest == "" || len(manifest.Components) != 8 {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 	if manifest.ControlProtocol != 1 ||
@@ -67,6 +67,13 @@ func TestSealDarwinDevelopmentPayloadWritesOneCompleteIdentity(t *testing.T) {
 	}
 	if decoded.BundleDigest != manifest.BundleDigest {
 		t.Fatalf("written bundle digest = %q", decoded.BundleDigest)
+	}
+}
+
+// TestNativeModeRetainsPrivilegedExecutableBits keeps helper admission facts in the sealed manifest.
+func TestNativeModeRetainsPrivilegedExecutableBits(t *testing.T) {
+	if got := nativeMode(0o755 | os.ModeSetuid); got != 0o4755 {
+		t.Fatalf("nativeMode() = %04o, want 4755", got)
 	}
 }
 

@@ -17,12 +17,17 @@ import (
 func main() {
 	daemon, err := resolveInstalledDaemon()
 	if err == nil {
-		err = syscall.Exec(daemon, []string{daemon}, os.Environ())
+		err = syscall.Exec(daemon, daemonArguments(daemon, os.Args[1:]), os.Environ())
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "start installed Harbor daemon: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// daemonArguments preserves daemon subcommands while replacing only the launcher's process identity.
+func daemonArguments(daemon string, arguments []string) []string {
+	return append([]string{daemon}, arguments...)
 }
 
 // resolveInstalledDaemon admits only one regular executable beneath the selected release directory.

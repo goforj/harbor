@@ -200,6 +200,7 @@ func darwinComponents(sequence uint64) []Component {
 		{Role: "cli", Destination: releaseRoot + "/bin/harbor"},
 		{Role: "daemon", Destination: releaseRoot + "/bin/harbord"},
 		{Role: "output-broker", Destination: releaseRoot + "/bin/outputbroker"},
+		{Role: "installer", Destination: releaseRoot + "/bin/harbor-installer"},
 		{Role: "helper", Destination: "/Library/PrivilegedHelperTools/com.goforj.harbor.helper"},
 		{Role: "low-port-relay", Destination: "/Library/PrivilegedHelperTools/com.goforj.harbor.launchdrelay"},
 	}
@@ -228,8 +229,23 @@ func sealComponent(root string, component Component) (Component, error) {
 	}
 	component.Size = information.Size()
 	component.SHA256 = hex.EncodeToString(digest.Sum(nil))
-	component.Mode = fmt.Sprintf("%04o", information.Mode().Perm())
+	component.Mode = fmt.Sprintf("%04o", nativeMode(information.Mode()))
 	return component, nil
+}
+
+// nativeMode retains security-significant set-ID and sticky bits omitted by FileMode.Perm.
+func nativeMode(mode fs.FileMode) uint32 {
+	value := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		value |= 0o4000
+	}
+	if mode&os.ModeSetgid != 0 {
+		value |= 0o2000
+	}
+	if mode&os.ModeSticky != 0 {
+		value |= 0o1000
+	}
+	return value
 }
 
 // manifestDigest computes the bundle commitment without a self-referential digest value.
