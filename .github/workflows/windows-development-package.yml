@@ -341,10 +341,19 @@ jobs:
           $uninstaller = Join-Path $env:HARBOR_INSTALL_ROOT "Uninstall.exe"
           $process = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "uninstaller exited with $($process.ExitCode)" }
+          $componentNames = @("harbor-desktop.exe", "harbor.exe", "harbord.exe", "outputbroker.exe", "harbor-helper.exe", "harbor-uninstall.ps1", "Uninstall.exe")
+          for ($attempt = 0; $attempt -lt 150; $attempt++) {
+            $receiptExists = Test-Path -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor"
+            $componentExists = @($componentNames | Where-Object {
+              Test-Path -LiteralPath (Join-Path $env:HARBOR_INSTALL_ROOT $_)
+            }).Count -ne 0
+            if (-not $receiptExists -and -not $componentExists) { break }
+            Start-Sleep -Milliseconds 200
+          }
           if (Test-Path -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor") {
             throw "Harbor uninstall receipt remains"
           }
-          foreach ($name in @("harbor-desktop.exe", "harbor.exe", "harbord.exe", "outputbroker.exe", "harbor-helper.exe", "harbor-uninstall.ps1", "Uninstall.exe")) {
+          foreach ($name in $componentNames) {
             if (Test-Path -LiteralPath (Join-Path $env:HARBOR_INSTALL_ROOT $name)) {
               throw "installed Harbor component remains: $name"
             }
