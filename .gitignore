@@ -9,3 +9,4 @@ storage/
 .env.production
 .env.testing
 !.env.example
+.DS_Store
