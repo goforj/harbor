@@ -87,7 +87,7 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 		t.Fatalf("run icon packager: %v", err)
 	}
 
-	if got, want := len(commands), 4; got != want {
+	if got, want := len(commands), 5; got != want {
 		t.Fatalf("command count = %d, want %d", got, want)
 	}
 	if got, want := commands[0], (recordedCommand{
@@ -118,7 +118,26 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(resourcesDirectory, "iconfile.icns")); !os.IsNotExist(err) {
 		t.Fatalf("legacy icon exists after modern packaging: %v", err)
 	}
-	plutil := commands[2]
+	partialInfoPath := ""
+	for index, argument := range actool.arguments {
+		if argument == "--output-partial-info-plist" && index+1 < len(actool.arguments) {
+			partialInfoPath = actool.arguments[index+1]
+		}
+	}
+	if partialInfoPath == "" {
+		t.Fatalf("catalog command omitted partial information plist: %#v", actool)
+	}
+	plistBuddy := commands[2]
+	if !reflect.DeepEqual(plistBuddy, recordedCommand{
+		name: "/usr/libexec/PlistBuddy",
+		arguments: []string{
+			"-c", "Merge " + partialInfoPath,
+			filepath.Join(appBundle, "Contents", "Info.plist"),
+		},
+	}) {
+		t.Fatalf("plist merge command = %#v, want compiled icon metadata merge", plistBuddy)
+	}
+	plutil := commands[3]
 	if !reflect.DeepEqual(plutil, recordedCommand{
 		name:      "/usr/bin/plutil",
 		arguments: []string{"-remove", "CFBundleIconFile", filepath.Join(appBundle, "Contents", "Info.plist")},

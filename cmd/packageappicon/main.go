@@ -142,6 +142,15 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		return fmt.Errorf("remove legacy macOS icon: %w", err)
 	}
 	infoPath := filepath.Join(appBundle, "Contents", "Info.plist")
+	if err := runner(
+		ctx,
+		temporaryDirectory,
+		"/usr/libexec/PlistBuddy",
+		"-c", "Merge "+partialInfoPath,
+		infoPath,
+	); err != nil {
+		return fmt.Errorf("merge compiled macOS icon metadata: %w", err)
+	}
 	if err := runner(ctx, temporaryDirectory, "/usr/bin/plutil", "-remove", "CFBundleIconFile", infoPath); err != nil {
 		return fmt.Errorf("remove legacy macOS icon selector: %w", err)
 	}
