@@ -146,10 +146,19 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		ctx,
 		temporaryDirectory,
 		"/usr/libexec/PlistBuddy",
-		"-c", "Merge "+partialInfoPath,
+		"-c", "Set :CFBundleIconFile AppIcon",
 		infoPath,
 	); err != nil {
-		return fmt.Errorf("merge compiled macOS icon metadata: %w", err)
+		return fmt.Errorf("select compiled macOS icon file: %w", err)
+	}
+	if err := runner(
+		ctx,
+		temporaryDirectory,
+		"/usr/libexec/PlistBuddy",
+		"-c", "Set :CFBundleIconName AppIcon",
+		infoPath,
+	); err != nil {
+		return fmt.Errorf("select compiled macOS icon name: %w", err)
 	}
 
 	if err := runner(ctx, temporaryDirectory, "/usr/bin/codesign", "--force", "--deep", "--sign", "-", appBundle); err != nil {

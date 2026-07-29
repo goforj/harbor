@@ -87,7 +87,7 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 		t.Fatalf("run icon packager: %v", err)
 	}
 
-	if got, want := len(commands), 4; got != want {
+	if got, want := len(commands), 5; got != want {
 		t.Fatalf("command count = %d, want %d", got, want)
 	}
 	if got, want := commands[0], (recordedCommand{
@@ -127,15 +127,25 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	if partialInfoPath == "" {
 		t.Fatalf("catalog command omitted partial information plist: %#v", actool)
 	}
-	plistBuddy := commands[2]
-	if !reflect.DeepEqual(plistBuddy, recordedCommand{
+	iconFileSelector := commands[2]
+	if !reflect.DeepEqual(iconFileSelector, recordedCommand{
 		name: "/usr/libexec/PlistBuddy",
 		arguments: []string{
-			"-c", "Merge " + partialInfoPath,
+			"-c", "Set :CFBundleIconFile AppIcon",
 			filepath.Join(appBundle, "Contents", "Info.plist"),
 		},
 	}) {
-		t.Fatalf("plist merge command = %#v, want compiled icon metadata merge", plistBuddy)
+		t.Fatalf("icon file selector command = %#v, want AppIcon selection", iconFileSelector)
+	}
+	iconNameSelector := commands[3]
+	if !reflect.DeepEqual(iconNameSelector, recordedCommand{
+		name: "/usr/libexec/PlistBuddy",
+		arguments: []string{
+			"-c", "Set :CFBundleIconName AppIcon",
+			filepath.Join(appBundle, "Contents", "Info.plist"),
+		},
+	}) {
+		t.Fatalf("icon name selector command = %#v, want AppIcon selection", iconNameSelector)
 	}
 	codesign := commands[len(commands)-1]
 	if !reflect.DeepEqual(codesign, recordedCommand{
