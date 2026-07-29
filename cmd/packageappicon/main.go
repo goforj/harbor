@@ -124,6 +124,13 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	); err != nil {
 		return fmt.Errorf("compile app icon catalog: %w", err)
 	}
+	bundledComposerDirectory := filepath.Join(resourcesDirectory, "AppIcon.icon")
+	if err := os.RemoveAll(bundledComposerDirectory); err != nil {
+		return fmt.Errorf("replace bundled Icon Composer document: %w", err)
+	}
+	if err := os.Rename(iconComposerDirectory, bundledComposerDirectory); err != nil {
+		return fmt.Errorf("install bundled Icon Composer document: %w", err)
+	}
 
 	if err := runner(ctx, temporaryDirectory, "/usr/bin/codesign", "--force", "--deep", "--sign", "-", appBundle); err != nil {
 		return fmt.Errorf("sign app bundle after icon packaging: %w", err)

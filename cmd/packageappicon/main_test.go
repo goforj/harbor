@@ -96,6 +96,13 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 			t.Fatalf("catalog command retained competing app-icon input: %#v", actool)
 		}
 	}
+	bundledArtwork, err := os.ReadFile(filepath.Join(resourcesDirectory, "AppIcon.icon", "Assets", "harbor.svg"))
+	if err != nil {
+		t.Fatalf("read bundled Icon Composer artwork: %v", err)
+	}
+	if string(bundledArtwork) != "symbol" {
+		t.Fatalf("bundled Icon Composer artwork = %q, want symbol", bundledArtwork)
+	}
 	codesign := commands[len(commands)-1]
 	if !reflect.DeepEqual(codesign, recordedCommand{
 		name:      "/usr/bin/codesign",
