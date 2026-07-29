@@ -126,6 +126,8 @@ jobs:
           test -x build/bin/Harbor.app/Contents/MacOS/harbor-desktop
           test -f build/bin/Harbor.app/Contents/Resources/AppIcon.icon/icon.json
           test -f build/bin/Harbor.app/Contents/Resources/AppIcon.icon/Assets/harbor.svg
+          test ! -e build/bin/Harbor.app/Contents/Resources/iconfile.icns
+          ! /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" build/bin/Harbor.app/Contents/Info.plist
           test "$(lipo -archs build/bin/Harbor.app/Contents/MacOS/harbor-desktop)" = "arm64"
 
       - name: Stage fixed macOS payload

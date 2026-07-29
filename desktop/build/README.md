@@ -16,6 +16,11 @@ competing assets named `AppIcon`. This enhancement requires full Xcode's
 `actool`; source development keeps the legacy icon without failing when only
 Apple's command-line tools are installed.
 
+After modern compilation succeeds, the hook removes Wails' legacy
+`CFBundleIconFile` selector and `iconfile.icns`. Before compilation it clears
+prior generated icon outputs because `wails dev` reuses its application bundle
+and would otherwise retain resources from an older icon layout.
+
 The structure is:
 
 * bin - Output directory

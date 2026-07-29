@@ -58,6 +58,11 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	if err := os.MkdirAll(resourcesDirectory, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"AppIcon.icns", "Assets.car", "iconfile.icns"} {
+		if err := os.WriteFile(filepath.Join(resourcesDirectory, name), []byte("legacy"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(desktopDirectory, "build", "appicon.png"), []byte("icon"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +72,13 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 
 	var commands []recordedCommand
 	runner := func(_ context.Context, _ string, name string, arguments ...string) error {
+		if name == "/usr/bin/xcrun" && len(arguments) > 0 && arguments[0] == "actool" {
+			for _, stale := range []string{"AppIcon.icns", "Assets.car"} {
+				if _, err := os.Stat(filepath.Join(resourcesDirectory, stale)); !os.IsNotExist(err) {
+					t.Fatalf("stale icon resource %s exists before actool: %v", stale, err)
+				}
+			}
+		}
 		commands = append(commands, recordedCommand{name: name, arguments: append([]string(nil), arguments...)})
 		return nil
 	}
@@ -75,7 +87,7 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 		t.Fatalf("run icon packager: %v", err)
 	}
 
-	if got, want := len(commands), 3; got != want {
+	if got, want := len(commands), 4; got != want {
 		t.Fatalf("command count = %d, want %d", got, want)
 	}
 	if got, want := commands[0], (recordedCommand{
@@ -102,6 +114,16 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	}
 	if string(bundledArtwork) != "symbol" {
 		t.Fatalf("bundled Icon Composer artwork = %q, want symbol", bundledArtwork)
+	}
+	if _, err := os.Stat(filepath.Join(resourcesDirectory, "iconfile.icns")); !os.IsNotExist(err) {
+		t.Fatalf("legacy icon exists after modern packaging: %v", err)
+	}
+	plutil := commands[2]
+	if !reflect.DeepEqual(plutil, recordedCommand{
+		name:      "/usr/bin/plutil",
+		arguments: []string{"-remove", "CFBundleIconFile", filepath.Join(appBundle, "Contents", "Info.plist")},
+	}) {
+		t.Fatalf("plist command = %#v, want legacy selector removal", plutil)
 	}
 	codesign := commands[len(commands)-1]
 	if !reflect.DeepEqual(codesign, recordedCommand{

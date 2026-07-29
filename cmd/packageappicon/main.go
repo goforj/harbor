@@ -93,6 +93,12 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		_ = os.RemoveAll(temporaryDirectory)
 	}()
 
+	for _, name := range []string{"AppIcon.icon", "AppIcon.icns", "Assets.car"} {
+		if err := os.RemoveAll(filepath.Join(resourcesDirectory, name)); err != nil {
+			return fmt.Errorf("remove stale macOS icon resource %s: %w", name, err)
+		}
+	}
+
 	iconComposerDirectory := filepath.Join(temporaryDirectory, "AppIcon.icon")
 	iconComposerAssetsDirectory := filepath.Join(iconComposerDirectory, "Assets")
 	if err := os.MkdirAll(iconComposerAssetsDirectory, 0o755); err != nil {
@@ -130,6 +136,14 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	}
 	if err := os.Rename(iconComposerDirectory, bundledComposerDirectory); err != nil {
 		return fmt.Errorf("install bundled Icon Composer document: %w", err)
+	}
+	legacyIconPath := filepath.Join(resourcesDirectory, "iconfile.icns")
+	if err := os.Remove(legacyIconPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove legacy macOS icon: %w", err)
+	}
+	infoPath := filepath.Join(appBundle, "Contents", "Info.plist")
+	if err := runner(ctx, temporaryDirectory, "/usr/bin/plutil", "-remove", "CFBundleIconFile", infoPath); err != nil {
+		return fmt.Errorf("remove legacy macOS icon selector: %w", err)
 	}
 
 	if err := runner(ctx, temporaryDirectory, "/usr/bin/codesign", "--force", "--deep", "--sign", "-", appBundle); err != nil {
