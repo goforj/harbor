@@ -123,12 +123,17 @@ jobs:
         run: |
           ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
           wails build -s -clean -platform darwin/arm64 -tags release -trimpath -ldflags "$ldflags" -o Harbor
+          find build/bin/Harbor.app/Contents/Resources -maxdepth 3 -print | sort
+          plutil -p build/bin/Harbor.app/Contents/Info.plist
           test -x build/bin/Harbor.app/Contents/MacOS/harbor-desktop
           test -f build/bin/Harbor.app/Contents/Resources/Assets.car
           test ! -e build/bin/Harbor.app/Contents/Resources/AppIcon.icon
           test ! -e build/bin/Harbor.app/Contents/Resources/AppIcon.icns
           test ! -e build/bin/Harbor.app/Contents/Resources/iconfile.icns
-          ! /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" build/bin/Harbor.app/Contents/Info.plist
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" build/bin/Harbor.app/Contents/Info.plist; then
+            echo "CFBundleIconFile still selects a competing legacy icon" >&2
+            exit 1
+          fi
           test "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconName" build/bin/Harbor.app/Contents/Info.plist)" = "AppIcon"
           test "$(lipo -archs build/bin/Harbor.app/Contents/MacOS/harbor-desktop)" = "arm64"
 
