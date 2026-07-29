@@ -7,13 +7,13 @@ Wails. Keep its canvas opaque so macOS applies the platform mask only once.
 Keep the checked-in Windows icon generated from that same PNG so native
 application and installer surfaces use the same mark.
 
-On macOS, the Wails post-build hook compiles the canonical image into a split
-`Assets.car` app-icon catalog with an Icon Composer rendition for macOS 26 and
-bitmap renditions for earlier releases, then re-signs the development bundle.
-The catalog prevents current macOS releases from presenting Wails' legacy
-`.icns` fallback inside an additional system-colored frame. This enhancement
-requires full Xcode's `actool`; source development keeps the legacy icon without
-failing when only Apple's command-line tools are installed.
+`appicon-symbol.svg` is the transparent anchor layer used only by Icon Composer.
+On macOS, the Wails post-build hook combines that layer with Harbor's red
+background in one `Assets.car` app-icon catalog, then re-signs the development
+bundle. A single Composer input lets Xcode produce both the current macOS icon
+and its older-system fallbacks without competing assets named `AppIcon`. This
+enhancement requires full Xcode's `actool`; source development keeps the legacy
+icon without failing when only Apple's command-line tools are installed.
 
 The structure is:
 

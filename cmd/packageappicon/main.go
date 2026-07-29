@@ -8,25 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 )
-
-const appIconContents = `{
-  "images": [
-    {"filename":"icon_16x16.png","idiom":"mac","scale":"1x","size":"16x16"},
-    {"filename":"icon_16x16@2x.png","idiom":"mac","scale":"2x","size":"16x16"},
-    {"filename":"icon_32x32.png","idiom":"mac","scale":"1x","size":"32x32"},
-    {"filename":"icon_32x32@2x.png","idiom":"mac","scale":"2x","size":"32x32"},
-    {"filename":"icon_128x128.png","idiom":"mac","scale":"1x","size":"128x128"},
-    {"filename":"icon_128x128@2x.png","idiom":"mac","scale":"2x","size":"128x128"},
-    {"filename":"icon_256x256.png","idiom":"mac","scale":"1x","size":"256x256"},
-    {"filename":"icon_256x256@2x.png","idiom":"mac","scale":"2x","size":"256x256"},
-    {"filename":"icon_512x512.png","idiom":"mac","scale":"1x","size":"512x512"},
-    {"filename":"icon_512x512@2x.png","idiom":"mac","scale":"2x","size":"512x512"}
-  ],
-  "info": {"author":"com.goforj.harbor","version":1}
-}
-`
 
 const iconComposerContents = `{
   "fill": {
@@ -36,7 +18,7 @@ const iconComposerContents = `{
     {
       "layers": [
         {
-          "image-name": "harbor.png",
+          "image-name": "harbor.svg",
           "name": "Harbor"
         }
       ],
@@ -58,27 +40,8 @@ const iconComposerContents = `{
 }
 `
 
-// iconVariant describes one required macOS app-icon image well.
-type iconVariant struct {
-	name   string
-	pixels int
-}
-
 // commandRunner executes one native packaging command.
 type commandRunner func(context.Context, string, string, ...string) error
-
-var iconVariants = []iconVariant{
-	{name: "icon_16x16.png", pixels: 16},
-	{name: "icon_16x16@2x.png", pixels: 32},
-	{name: "icon_32x32.png", pixels: 32},
-	{name: "icon_32x32@2x.png", pixels: 64},
-	{name: "icon_128x128.png", pixels: 128},
-	{name: "icon_128x128@2x.png", pixels: 256},
-	{name: "icon_256x256.png", pixels: 256},
-	{name: "icon_256x256@2x.png", pixels: 512},
-	{name: "icon_512x512.png", pixels: 512},
-	{name: "icon_512x512@2x.png", pixels: 1024},
-}
 
 // main packages the modern icon after Wails has assembled the macOS app bundle.
 func main() {
@@ -109,6 +72,10 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	if _, err := os.Stat(sourceIcon); err != nil {
 		return fmt.Errorf("read canonical app icon: %w", err)
 	}
+	composerArtwork := filepath.Join(desktopDirectory, "build", "appicon-symbol.svg")
+	if _, err := os.Stat(composerArtwork); err != nil {
+		return fmt.Errorf("read Icon Composer artwork: %w", err)
+	}
 
 	if err := runner(ctx, workingDirectory, "/usr/bin/xcrun", "--find", "actool"); err != nil {
 		_, _ = fmt.Fprintln(
@@ -126,14 +93,6 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		_ = os.RemoveAll(temporaryDirectory)
 	}()
 
-	iconSetDirectory := filepath.Join(temporaryDirectory, "Assets.xcassets", "AppIcon.appiconset")
-	if err := os.MkdirAll(iconSetDirectory, 0o755); err != nil {
-		return fmt.Errorf("create app icon set: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(iconSetDirectory, "Contents.json"), []byte(appIconContents), 0o644); err != nil {
-		return fmt.Errorf("write app icon catalog: %w", err)
-	}
-
 	iconComposerDirectory := filepath.Join(temporaryDirectory, "AppIcon.icon")
 	iconComposerAssetsDirectory := filepath.Join(iconComposerDirectory, "Assets")
 	if err := os.MkdirAll(iconComposerAssetsDirectory, 0o755); err != nil {
@@ -142,24 +101,15 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	if err := os.WriteFile(filepath.Join(iconComposerDirectory, "icon.json"), []byte(iconComposerContents), 0o644); err != nil {
 		return fmt.Errorf("write Icon Composer document: %w", err)
 	}
-	sourceBytes, err := os.ReadFile(sourceIcon)
+	sourceBytes, err := os.ReadFile(composerArtwork)
 	if err != nil {
 		return fmt.Errorf("read Icon Composer artwork: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(iconComposerAssetsDirectory, "harbor.png"), sourceBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(iconComposerAssetsDirectory, "harbor.svg"), sourceBytes, 0o644); err != nil {
 		return fmt.Errorf("write Icon Composer artwork: %w", err)
 	}
 
-	for _, variant := range iconVariants {
-		dimension := strconv.Itoa(variant.pixels)
-		outputPath := filepath.Join(iconSetDirectory, variant.name)
-		if err := runner(ctx, temporaryDirectory, "/usr/bin/sips", "-z", dimension, dimension, sourceIcon, "--out", outputPath); err != nil {
-			return fmt.Errorf("render %s: %w", variant.name, err)
-		}
-	}
-
 	partialInfoPath := filepath.Join(temporaryDirectory, "asset-info.plist")
-	catalogPath := filepath.Join(temporaryDirectory, "Assets.xcassets")
 	if err := runner(
 		ctx,
 		temporaryDirectory,
@@ -171,7 +121,6 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		"--app-icon", "AppIcon",
 		"--output-partial-info-plist", partialInfoPath,
 		iconComposerDirectory,
-		catalogPath,
 	); err != nil {
 		return fmt.Errorf("compile app icon catalog: %w", err)
 	}

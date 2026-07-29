@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,12 +14,28 @@ import (
 // TestIconDocumentsAreValidJSON keeps the generated Apple asset inputs parseable.
 func TestIconDocumentsAreValidJSON(t *testing.T) {
 	for name, document := range map[string]string{
-		"asset catalog": appIconContents,
 		"Icon Composer": iconComposerContents,
 	} {
 		if !json.Valid([]byte(document)) {
 			t.Fatalf("%s document is not valid JSON", name)
 		}
+	}
+}
+
+// TestIconComposerArtworkIsValidSVG keeps the checked-in foreground layer usable by Apple's compiler.
+func TestIconComposerArtworkIsValidSVG(t *testing.T) {
+	artwork, err := os.ReadFile(filepath.Join("..", "..", "desktop", "build", "appicon-symbol.svg"))
+	if err != nil {
+		t.Fatalf("read Icon Composer artwork: %v", err)
+	}
+	var document struct {
+		XMLName xml.Name
+	}
+	if err := xml.Unmarshal(artwork, &document); err != nil {
+		t.Fatalf("parse Icon Composer artwork: %v", err)
+	}
+	if document.XMLName.Local != "svg" {
+		t.Fatalf("Icon Composer artwork root = %q, want svg", document.XMLName.Local)
 	}
 }
 
@@ -44,6 +61,9 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(desktopDirectory, "build", "appicon.png"), []byte("icon"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(desktopDirectory, "build", "appicon-symbol.svg"), []byte("symbol"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var commands []recordedCommand
 	runner := func(_ context.Context, _ string, name string, arguments ...string) error {
@@ -55,7 +75,7 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 		t.Fatalf("run icon packager: %v", err)
 	}
 
-	if got, want := len(commands), len(iconVariants)+3; got != want {
+	if got, want := len(commands), 3; got != want {
 		t.Fatalf("command count = %d, want %d", got, want)
 	}
 	if got, want := commands[0], (recordedCommand{
@@ -64,22 +84,17 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("capability command = %#v, want %#v", got, want)
 	}
-	for index, variant := range iconVariants {
-		command := commands[index+1]
-		if command.name != "/usr/bin/sips" {
-			t.Fatalf("command %d = %q, want sips", index, command.name)
-		}
-		if got := command.arguments[len(command.arguments)-1]; !strings.HasSuffix(got, variant.name) {
-			t.Fatalf("command %d output = %q, want suffix %q", index, got, variant.name)
-		}
-	}
-
-	actool := commands[len(iconVariants)+1]
+	actool := commands[1]
 	if actool.name != "/usr/bin/xcrun" || actool.arguments[0] != "actool" {
 		t.Fatalf("catalog command = %#v, want xcrun actool", actool)
 	}
-	if got := actool.arguments[len(actool.arguments)-2]; !strings.HasSuffix(got, "AppIcon.icon") {
+	if got := actool.arguments[len(actool.arguments)-1]; !strings.HasSuffix(got, "AppIcon.icon") {
 		t.Fatalf("Icon Composer input = %q, want AppIcon.icon", got)
+	}
+	for _, argument := range actool.arguments {
+		if strings.HasSuffix(argument, "Assets.xcassets") {
+			t.Fatalf("catalog command retained competing app-icon input: %#v", actool)
+		}
 	}
 	codesign := commands[len(commands)-1]
 	if !reflect.DeepEqual(codesign, recordedCommand{
@@ -99,6 +114,9 @@ func TestRunKeepsLegacyIconWhenActoolIsUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(desktopDirectory, "build", "appicon.png"), []byte("icon"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(desktopDirectory, "build", "appicon-symbol.svg"), []byte("symbol"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

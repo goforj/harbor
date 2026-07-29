@@ -124,6 +124,7 @@ jobs:
           ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
           wails build -s -clean -platform darwin/arm64 -tags release -trimpath -ldflags "$ldflags" -o Harbor
           test -x build/bin/Harbor.app/Contents/MacOS/harbor-desktop
+          test -f build/bin/Harbor.app/Contents/Resources/Assets.car
           test "$(lipo -archs build/bin/Harbor.app/Contents/MacOS/harbor-desktop)" = "arm64"
 
       - name: Stage fixed macOS payload
