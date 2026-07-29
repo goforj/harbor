@@ -87,7 +87,7 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 		t.Fatalf("run icon packager: %v", err)
 	}
 
-	if got, want := len(commands), 5; got != want {
+	if got, want := len(commands), 4; got != want {
 		t.Fatalf("command count = %d, want %d", got, want)
 	}
 	if got, want := commands[0], (recordedCommand{
@@ -136,13 +136,6 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 		},
 	}) {
 		t.Fatalf("plist merge command = %#v, want compiled icon metadata merge", plistBuddy)
-	}
-	plutil := commands[3]
-	if !reflect.DeepEqual(plutil, recordedCommand{
-		name:      "/usr/bin/plutil",
-		arguments: []string{"-remove", "CFBundleIconFile", filepath.Join(appBundle, "Contents", "Info.plist")},
-	}) {
-		t.Fatalf("plist command = %#v, want legacy selector removal", plutil)
 	}
 	codesign := commands[len(commands)-1]
 	if !reflect.DeepEqual(codesign, recordedCommand{

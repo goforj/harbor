@@ -151,9 +151,6 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	); err != nil {
 		return fmt.Errorf("merge compiled macOS icon metadata: %w", err)
 	}
-	if err := runner(ctx, temporaryDirectory, "/usr/bin/plutil", "-remove", "CFBundleIconFile", infoPath); err != nil {
-		return fmt.Errorf("remove legacy macOS icon selector: %w", err)
-	}
 
 	if err := runner(ctx, temporaryDirectory, "/usr/bin/codesign", "--force", "--deep", "--sign", "-", appBundle); err != nil {
 		return fmt.Errorf("sign app bundle after icon packaging: %w", err)

@@ -17,12 +17,12 @@ competing assets named `AppIcon`. This enhancement requires full Xcode's
 Apple's command-line tools are installed.
 
 After modern compilation succeeds, the hook removes Wails' legacy
-`CFBundleIconFile` selector and `iconfile.icns`. Before compilation it clears
-prior generated icon outputs because `wails dev` reuses its application bundle
-and would otherwise retain resources from an older icon layout. The hook also
-merges `actool`'s partial information property list into the application plist;
-ordinary Xcode targets perform that required app-icon metadata step as part of
-their build system.
+`iconfile.icns` and replaces its `CFBundleIconFile` value by merging `actool`'s
+generated `AppIcon` metadata into the application plist. Before compilation it
+clears prior generated icon outputs because `wails dev` reuses its application
+bundle and would otherwise retain resources from an older icon layout.
+Ordinary Xcode targets perform that metadata merge as part of their build
+system.
 
 The structure is:
 
