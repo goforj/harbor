@@ -116,12 +116,16 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	}
 
 	partialInfoPath := filepath.Join(temporaryDirectory, "asset-info.plist")
+	compiledDirectory := filepath.Join(temporaryDirectory, "compiled")
+	if err := os.Mkdir(compiledDirectory, 0o755); err != nil {
+		return fmt.Errorf("create compiled icon staging directory: %w", err)
+	}
 	if err := runner(
 		ctx,
 		temporaryDirectory,
 		"/usr/bin/xcrun",
 		"actool",
-		"--compile", resourcesDirectory,
+		"--compile", compiledDirectory,
 		"--platform", "macosx",
 		"--minimum-deployment-target", "10.13",
 		"--app-icon", "AppIcon",
@@ -129,6 +133,13 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 		iconComposerDirectory,
 	); err != nil {
 		return fmt.Errorf("compile app icon catalog: %w", err)
+	}
+	compiledCatalog, err := os.ReadFile(filepath.Join(compiledDirectory, "Assets.car"))
+	if err != nil {
+		return fmt.Errorf("read compiled macOS icon catalog: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(resourcesDirectory, "Assets.car"), compiledCatalog, 0o644); err != nil {
+		return fmt.Errorf("install compiled macOS icon catalog: %w", err)
 	}
 	for _, name := range []string{"AppIcon.icon", "AppIcon.icns", "iconfile.icns"} {
 		if err := os.RemoveAll(filepath.Join(resourcesDirectory, name)); err != nil {

@@ -10,10 +10,11 @@ application and installer surfaces use the same mark.
 `appicon-symbol.svg` is the transparent anchor layer used only by Icon Composer.
 On macOS, the Wails post-build hook combines that layer with Harbor's red
 background in a temporary `AppIcon.icon` document, asks `actool` to generate
-the applicable compiled resources, then re-signs the development bundle. The
-temporary source document is not a runtime resource. This enhancement requires
-full Xcode's `actool`; source development keeps the legacy icon without failing
-when only Apple's command-line tools are installed.
+the applicable compiled resources in an isolated staging directory, installs
+only `Assets.car`, then re-signs the development bundle. The temporary source
+and fallback outputs are not runtime resources. This enhancement requires full
+Xcode's `actool`; source development keeps the legacy icon without failing when
+only Apple's command-line tools are installed.
 
 After modern compilation succeeds, the hook removes Wails' legacy
 `iconfile.icns`, `actool`'s legacy `AppIcon.icns` fallback, the raw Composer

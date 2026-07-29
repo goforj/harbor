@@ -78,8 +78,17 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 					t.Fatalf("stale icon resource %s exists before actool: %v", stale, err)
 				}
 			}
+			compileDirectory := ""
+			for index, argument := range arguments {
+				if argument == "--compile" && index+1 < len(arguments) {
+					compileDirectory = arguments[index+1]
+				}
+			}
+			if compileDirectory == "" {
+				t.Fatalf("catalog command omitted compiled output directory: %#v", arguments)
+			}
 			for _, generated := range []string{"AppIcon.icns", "Assets.car"} {
-				if err := os.WriteFile(filepath.Join(resourcesDirectory, generated), []byte("compiled"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(compileDirectory, generated), []byte("compiled"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
