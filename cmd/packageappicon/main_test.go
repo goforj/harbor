@@ -78,6 +78,11 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 					t.Fatalf("stale icon resource %s exists before actool: %v", stale, err)
 				}
 			}
+			for _, generated := range []string{"AppIcon.icns", "Assets.car"} {
+				if err := os.WriteFile(filepath.Join(resourcesDirectory, generated), []byte("compiled"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 		commands = append(commands, recordedCommand{name: name, arguments: append([]string(nil), arguments...)})
 		return nil
@@ -108,15 +113,13 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 			t.Fatalf("catalog command retained competing app-icon input: %#v", actool)
 		}
 	}
-	bundledArtwork, err := os.ReadFile(filepath.Join(resourcesDirectory, "AppIcon.icon", "Assets", "harbor.svg"))
-	if err != nil {
-		t.Fatalf("read bundled Icon Composer artwork: %v", err)
+	if _, err := os.Stat(filepath.Join(resourcesDirectory, "Assets.car")); err != nil {
+		t.Fatalf("compiled asset catalog is unavailable: %v", err)
 	}
-	if string(bundledArtwork) != "symbol" {
-		t.Fatalf("bundled Icon Composer artwork = %q, want symbol", bundledArtwork)
-	}
-	if _, err := os.Stat(filepath.Join(resourcesDirectory, "iconfile.icns")); !os.IsNotExist(err) {
-		t.Fatalf("legacy icon exists after modern packaging: %v", err)
+	for _, name := range []string{"AppIcon.icon", "AppIcon.icns", "iconfile.icns"} {
+		if _, err := os.Stat(filepath.Join(resourcesDirectory, name)); !os.IsNotExist(err) {
+			t.Fatalf("competing icon resource %s exists after modern packaging: %v", name, err)
+		}
 	}
 	partialInfoPath := ""
 	for index, argument := range actool.arguments {
@@ -127,15 +130,15 @@ func TestRunBuildsModernCatalogAndResignsBundle(t *testing.T) {
 	if partialInfoPath == "" {
 		t.Fatalf("catalog command omitted partial information plist: %#v", actool)
 	}
-	iconFileSelector := commands[2]
-	if !reflect.DeepEqual(iconFileSelector, recordedCommand{
+	legacySelectorRemoval := commands[2]
+	if !reflect.DeepEqual(legacySelectorRemoval, recordedCommand{
 		name: "/usr/libexec/PlistBuddy",
 		arguments: []string{
-			"-c", "Set :CFBundleIconFile AppIcon",
+			"-c", "Delete :CFBundleIconFile",
 			filepath.Join(appBundle, "Contents", "Info.plist"),
 		},
 	}) {
-		t.Fatalf("icon file selector command = %#v, want AppIcon selection", iconFileSelector)
+		t.Fatalf("legacy selector removal command = %#v, want CFBundleIconFile deletion", legacySelectorRemoval)
 	}
 	iconNameSelector := commands[3]
 	if !reflect.DeepEqual(iconNameSelector, recordedCommand{

@@ -130,26 +130,20 @@ func run(ctx context.Context, workingDirectory string, arguments []string, runne
 	); err != nil {
 		return fmt.Errorf("compile app icon catalog: %w", err)
 	}
-	bundledComposerDirectory := filepath.Join(resourcesDirectory, "AppIcon.icon")
-	if err := os.RemoveAll(bundledComposerDirectory); err != nil {
-		return fmt.Errorf("replace bundled Icon Composer document: %w", err)
-	}
-	if err := os.Rename(iconComposerDirectory, bundledComposerDirectory); err != nil {
-		return fmt.Errorf("install bundled Icon Composer document: %w", err)
-	}
-	legacyIconPath := filepath.Join(resourcesDirectory, "iconfile.icns")
-	if err := os.Remove(legacyIconPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove legacy macOS icon: %w", err)
+	for _, name := range []string{"AppIcon.icon", "AppIcon.icns", "iconfile.icns"} {
+		if err := os.RemoveAll(filepath.Join(resourcesDirectory, name)); err != nil {
+			return fmt.Errorf("remove competing macOS icon resource %s: %w", name, err)
+		}
 	}
 	infoPath := filepath.Join(appBundle, "Contents", "Info.plist")
 	if err := runner(
 		ctx,
 		temporaryDirectory,
 		"/usr/libexec/PlistBuddy",
-		"-c", "Set :CFBundleIconFile AppIcon",
+		"-c", "Delete :CFBundleIconFile",
 		infoPath,
 	); err != nil {
-		return fmt.Errorf("select compiled macOS icon file: %w", err)
+		return fmt.Errorf("remove legacy macOS icon selector: %w", err)
 	}
 	if err := runner(
 		ctx,

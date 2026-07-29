@@ -417,7 +417,7 @@ Project Restart now crosses the exact stop boundary before asking the primary-le
 
 ## 2026-07-26 macOS 26 app-icon packaging
 
-Wails v2's generated `.icns` is a legacy icon on macOS 26, which causes the system to shrink Harbor's artwork inside an additional system-colored frame. When full Xcode's `actool` is available, the Darwin post-build hook generates the required bitmap wells, combines them with an Icon Composer document into `Assets.car`, and ad-hoc re-signs the development bundle. A missing `actool` leaves the legacy icon in place without failing source development. Both Darwin plists select `AppIcon` through `CFBundleIconName` while retaining `iconfile.icns` for older compatibility, and development uses the distinct `com.goforj.harbor.dev` bundle identity.
+Wails v2's generated `.icns` is a legacy icon on macOS 26, which causes the system to shrink Harbor's artwork inside an additional system-colored frame. When full Xcode's `actool` is available, the Darwin post-build hook compiles a temporary Icon Composer document into `Assets.car`, removes the raw document and every `.icns` fallback, deletes `CFBundleIconFile`, selects only the catalog's `AppIcon` through `CFBundleIconName`, and ad-hoc re-signs the bundle. This exact catalog-only runtime shape is required because retaining the raw or legacy resources can make Tahoe choose the framed bitmap despite a valid `IconImageStack`. A missing `actool` leaves Wails' legacy icon in place without failing source development, and development uses the distinct `com.goforj.harbor.dev` bundle identity.
 
 ## Things not to do
 
