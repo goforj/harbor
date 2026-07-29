@@ -20,7 +20,7 @@ env:
 jobs:
   package:
     name: Apple silicon PKG
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       HARBOR_RELEASE_SEQUENCE: ${{ github.run_number }}
@@ -64,6 +64,8 @@ jobs:
         run: |
           test "$(uname -s)" = "Darwin"
           test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" = "26"
+          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 26([.]|$)'
           test -n "${GITHUB_SHA}"
           test "$(git status --porcelain)" = ""
 
