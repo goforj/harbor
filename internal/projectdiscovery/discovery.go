@@ -331,7 +331,10 @@ func validateProjectMarker(root string) error {
 	info, err := os.Stat(marker)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return invalidProjectError(fmt.Errorf("%s is not a GoForj project: .goforj.yml was not found", root))
+			return invalidProjectError(fmt.Errorf(
+				"the project folder exists, but %s is missing; restore .goforj.yml or remove and re-add the correct project folder",
+				marker,
+			))
 		}
 		inspectErr := fmt.Errorf("inspect GoForj project marker: %w", err)
 		if isInvalidProjectFilesystemError(err) {

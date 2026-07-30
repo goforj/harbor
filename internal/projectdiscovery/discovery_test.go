@@ -367,7 +367,7 @@ func TestDiscoverRejectsInvalidSelections(t *testing.T) {
 		{name: "control", path: missingMarker + "\n", want: "surrounding whitespace"},
 		{name: "missing path", path: missingPath, want: "was not found", wantRootMissing: true},
 		{name: "file", path: file, want: "not a directory"},
-		{name: "missing marker", path: missingMarker, want: ".goforj.yml was not found"},
+		{name: "missing marker", path: missingMarker, want: "project folder exists, but " + filepath.Join(missingMarker, ".goforj.yml") + " is missing"},
 		{name: "non-file marker", path: directoryMarker, want: "regular file"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

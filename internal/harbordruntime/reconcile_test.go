@@ -160,8 +160,8 @@ func TestDesiredHTTPStateFromRuntimeStateDoesNotPublishUnreservedResource(t *tes
 	}
 }
 
-// TestDesiredHTTPStateFromRuntimeStateRejectsUnmatchedOrUnreadyReservedResources keeps stale endpoint authority fail-closed.
-func TestDesiredHTTPStateFromRuntimeStateRejectsUnmatchedOrUnreadyReservedResources(t *testing.T) {
+// TestDesiredHTTPStateFromRuntimeStateRejectsUnmatchedReservedResources keeps stale endpoint authority fail-closed.
+func TestDesiredHTTPStateFromRuntimeStateRejectsUnmatchedReservedResources(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*state.RuntimeState)
@@ -178,30 +178,6 @@ func TestDesiredHTTPStateFromRuntimeStateRejectsUnmatchedOrUnreadyReservedResour
 			},
 			want: "has no matching resource",
 		},
-		{
-			name: "service not ready",
-			mutate: func(runtimeState *state.RuntimeState) {
-				project := &runtimeState.Snapshot.Projects[0]
-				project.Services = []domain.ServiceSnapshot{{
-					ID: "mysql", Name: "MySQL", Kind: "compose", State: domain.EntityWorking,
-					Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected,
-				}}
-				project.Resources = append(project.Resources, domain.ResourceSnapshot{
-					ID: "mysql-admin", Name: "MySQL Admin", Kind: "dashboard",
-					Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: "mysql"},
-					URL:   "http://127.77.0.10:8080",
-				})
-				runtimeState.Network.Reservations.Endpoints = []state.EndpointReservation{
-					{
-						Key:      state.EndpointReservationKey{ProjectID: "orders", EndpointID: "mysql-admin"},
-						Protocol: state.EndpointProtocolHTTP, Host: "mysql.orders.test",
-						Public: runtimeState.Network.Reservations.Listeners.HTTPS.Advertised, Generation: 9,
-					},
-					runtimeState.Network.Reservations.Endpoints[0],
-				}
-			},
-			want: "not a ready selected Compose service",
-		},
 	}
 
 	for _, test := range tests {
@@ -215,6 +191,45 @@ func TestDesiredHTTPStateFromRuntimeStateRejectsUnmatchedOrUnreadyReservedResour
 				t.Fatalf("desiredHTTPStateFromRuntimeState() error = %v, want containing %q", err, test.want)
 			}
 		})
+	}
+}
+
+// TestDesiredHTTPStateFromRuntimeStateWithdrawsUnreadyServiceResource keeps transient Compose states out of ingress without failing unrelated routes.
+func TestDesiredHTTPStateFromRuntimeStateWithdrawsUnreadyServiceResource(t *testing.T) {
+	runtimeState := readyHTTPRuntimeState()
+	project := &runtimeState.Snapshot.Projects[0]
+	project.Services = []domain.ServiceSnapshot{{
+		ID: "mailpit", Name: "Mailpit", Kind: "compose", State: domain.EntityWorking,
+		Owner: domain.ServiceOwnerCompose, Selection: domain.ServiceSelected,
+	}}
+	project.Resources = append(project.Resources, domain.ResourceSnapshot{
+		ID: "mailpit", Name: "Mailpit", Kind: "dashboard",
+		Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByService, ServiceID: "mailpit"},
+		URL:   "http://127.77.0.10:8025",
+	})
+	runtimeState.Network.Reservations.Endpoints = []state.EndpointReservation{
+		{
+			Key:      state.EndpointReservationKey{ProjectID: "orders", EndpointID: "mailpit"},
+			Protocol: state.EndpointProtocolHTTP, Host: "mailpit.orders.test",
+			Public: runtimeState.Network.Reservations.Listeners.HTTPS.Advertised, Generation: 9,
+		},
+		runtimeState.Network.Reservations.Endpoints[0],
+	}
+	if err := runtimeState.Validate(); err != nil {
+		t.Fatalf("test runtime state is invalid: %v", err)
+	}
+
+	desired, err := desiredHTTPStateFromRuntimeState(runtimeState)
+	if err != nil {
+		t.Fatalf("desiredHTTPStateFromRuntimeState() error = %v", err)
+	}
+	want := []dataplane.HTTPRoute{{
+		ID:       "orders:app-http",
+		Host:     "orders.test",
+		Upstream: netip.MustParseAddrPort("127.77.0.10:3000"),
+	}}
+	if got := desired.HTTPRoutes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("HTTPRoutes() = %#v, want %#v", got, want)
 	}
 }
 

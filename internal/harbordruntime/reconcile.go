@@ -367,8 +367,12 @@ func readyProjectHTTPRoutes(
 				)
 			}
 		}
-		if err := readyHTTPResourceOwner(resource, apps, services); err != nil {
-			return nil, fmt.Errorf("resource %q: %w", resource.ID, err)
+		publish, ownerErr := readyHTTPResourceOwner(resource, apps, services)
+		if ownerErr != nil {
+			return nil, fmt.Errorf("resource %q: %w", resource.ID, ownerErr)
+		}
+		if !publish {
+			continue
 		}
 		if reservation.Key.EndpointID == string(appHTTPResourceID) {
 			app := apps[resource.Owner.AppID]
@@ -406,33 +410,39 @@ func readyProjectHTTPRoutes(
 	return routes, nil
 }
 
-// readyHTTPResourceOwner requires a live lifecycle owner before a reserved resource can enter public ingress.
+// readyHTTPResourceOwner admits only resources whose lifecycle owner currently authorizes public ingress.
 func readyHTTPResourceOwner(
 	resource domain.ResourceSnapshot,
 	apps map[domain.AppID]domain.AppSnapshot,
 	services map[domain.ServiceID]domain.ServiceSnapshot,
-) error {
+) (bool, error) {
 	switch resource.Owner.Kind {
 	case domain.ResourceOwnedByApp:
 		app, exists := apps[resource.Owner.AppID]
 		if !exists {
-			return fmt.Errorf("App owner %q is missing", resource.Owner.AppID)
+			return false, fmt.Errorf("App owner %q is missing", resource.Owner.AppID)
 		}
 		if !app.Active || app.State != domain.EntityReady {
-			return fmt.Errorf("App %q is not ready and active", app.ID)
+			return false, fmt.Errorf("App %q is not ready and active", app.ID)
 		}
 	case domain.ResourceOwnedByService:
 		service, exists := services[resource.Owner.ServiceID]
 		if !exists {
-			return fmt.Errorf("service owner %q is missing", resource.Owner.ServiceID)
+			return false, fmt.Errorf("service owner %q is missing", resource.Owner.ServiceID)
 		}
-		if service.Owner != domain.ServiceOwnerCompose || service.Selection != domain.ServiceSelected || service.State != domain.EntityReady {
-			return fmt.Errorf("service %q is not a ready selected Compose service", service.ID)
+		if service.Owner != domain.ServiceOwnerCompose {
+			return false, fmt.Errorf("service %q is not Compose-owned", service.ID)
+		}
+		if service.Selection != domain.ServiceSelected {
+			return false, fmt.Errorf("service %q is not selected", service.ID)
+		}
+		if service.State != domain.EntityReady {
+			return false, nil
 		}
 	default:
-		return fmt.Errorf("resource owner kind %q is unsupported", resource.Owner.Kind)
+		return false, fmt.Errorf("resource owner kind %q is unsupported", resource.Owner.Kind)
 	}
-	return nil
+	return true, nil
 }
 
 // resourceHTTPUpstream extracts the private origin from a named resource URL while preserving its browser path.
