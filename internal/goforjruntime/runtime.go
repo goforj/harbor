@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
@@ -46,6 +48,8 @@ const (
 	listenerRepairRetryDelay = 50 * time.Millisecond
 	// defaultServiceChangePollPeriod repairs an Engine event lost between observation and resubscription.
 	defaultServiceChangePollPeriod = 2 * time.Second
+	// maximumPreparationProblemDetailBytes leaves room for guidance inside domain.Problem's transport bound.
+	maximumPreparationProblemDetailBytes = 2048
 )
 
 // RepairListener settles one exact GoForj listener only after native inspection proves checkout-scoped authority.
@@ -169,13 +173,38 @@ func goForjPreparationError(err error) error {
 	}
 	var invalid *projectdiscovery.InvalidProjectError
 	if errors.As(err, &invalid) {
+		detail := boundedPreparationProblemDetail(invalid.Error())
+		message := "The project runtime configuration is invalid. Fix it and try again."
+		if detail != "" && detail != "invalid GoForj project selection" {
+			message = "Harbor could not use this project's runtime configuration: " + detail
+		}
 		return &projectruntime.PreparationError{Problem: domain.Problem{
 			Code:      "project.runtime.invalid",
-			Message:   "The project runtime configuration is invalid. Fix it and try again.",
+			Message:   message,
 			Retryable: true,
 		}, Cause: err}
 	}
 	return err
+}
+
+// boundedPreparationProblemDetail makes allowlisted local validation failures safe for durable UI transport.
+func boundedPreparationProblemDetail(detail string) string {
+	detail = strings.ToValidUTF8(detail, "�")
+	detail = strings.Map(func(character rune) rune {
+		if unicode.IsControl(character) {
+			return ' '
+		}
+		return character
+	}, detail)
+	detail = strings.Join(strings.Fields(detail), " ")
+	if len(detail) <= maximumPreparationProblemDetailBytes {
+		return detail
+	}
+	limit := maximumPreparationProblemDetailBytes - len("…")
+	for limit > 0 && !utf8.ValidString(detail[:limit]) {
+		limit--
+	}
+	return strings.TrimSpace(detail[:limit]) + "…"
 }
 
 // goForjReadinessProbe adapts the generated GoForj JSON endpoint to the neutral runtime readiness boundary.

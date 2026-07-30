@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectdiscovery"
@@ -191,6 +193,17 @@ func TestGoForjPreparationErrorPreservesActionableProblems(t *testing.T) {
 	if missingRootErr == nil {
 		t.Fatal("missing project root discovery error = nil")
 	}
+	invalidRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(invalidRoot, ".goforj.yml"), []byte("project_name: invalid-runtime\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalidRoot, ".env"), []byte("APP_NAME='unterminated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, detailedInvalidErr := projectdiscovery.NewDiscoverer().Discover(t.Context(), invalidRoot)
+	if detailedInvalidErr == nil {
+		t.Fatal("invalid project discovery error = nil")
+	}
 	tests := []struct {
 		name        string
 		input       error
@@ -217,6 +230,13 @@ func TestGoForjPreparationErrorPreservesActionableProblems(t *testing.T) {
 			wantCode:  "project.runtime.invalid",
 			retryable: true,
 		},
+		{
+			name:        "detailed invalid project",
+			input:       detailedInvalidErr,
+			wantCode:    "project.runtime.invalid",
+			wantMessage: "Harbor could not use this project's runtime configuration: parse APP_NAME",
+			retryable:   true,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -239,6 +259,20 @@ func TestGoForjPreparationErrorPreservesActionableProblems(t *testing.T) {
 	sentinel := errors.New("host discovery failed")
 	if goForjPreparationError(sentinel) != sentinel {
 		t.Fatal("unclassified preparation error identity changed")
+	}
+}
+
+// TestBoundedPreparationProblemDetailNormalizesUnsafeAndOversizedDiagnostics protects the durable problem contract.
+func TestBoundedPreparationProblemDetailNormalizesUnsafeAndOversizedDiagnostics(t *testing.T) {
+	detail := boundedPreparationProblemDetail("invalid\n\t" + strings.Repeat("é", maximumPreparationProblemDetailBytes))
+	if strings.ContainsAny(detail, "\n\t") {
+		t.Fatalf("bounded preparation detail retained control whitespace: %q", detail)
+	}
+	if !strings.HasPrefix(detail, "invalid ") || !strings.HasSuffix(detail, "…") {
+		t.Fatalf("bounded preparation detail = %q, want normalized truncation", detail)
+	}
+	if !utf8.ValidString(detail) || len(detail) > maximumPreparationProblemDetailBytes {
+		t.Fatalf("bounded preparation detail is invalid or oversized: %d bytes", len(detail))
 	}
 }
 
