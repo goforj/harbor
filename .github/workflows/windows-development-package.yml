@@ -141,7 +141,7 @@ jobs:
           Push-Location desktop
           try {
             $env:HARBOR_DESKTOP_LDFLAGS = $ldflags
-            wails3 build
+            wails3 build RELEASE=true
           } finally {
             Pop-Location
           }

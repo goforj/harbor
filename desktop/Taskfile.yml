@@ -4,7 +4,7 @@ tasks:
   build:
     desc: Build the native application from the production frontend
     cmds:
-      - go run github.com/goforj/harbor/cmd/desktopbuild {{if .DEV}}-dev{{end}}
+      - go run github.com/goforj/harbor/cmd/desktopbuild {{if .DEV}}-dev{{end}} {{if .RELEASE}}-release{{end}}
   frontend:
     dir: frontend
     cmds:

@@ -72,7 +72,7 @@ Ubuntu 24.04 requires GTK3 and WebKit2GTK 4.1. The build command supplies the v3
 
 The Harbor application mark is used by the window and native tray. The tray shows connection status, opens Harbor, and quits only the UI. Closing the window hides it; reopening the application restores it even when a Linux desktop does not display a tray. Interactive tray behavior on each supported desktop and signed distribution remain release gates. The root Harbor module remains independent of Wails and its native dependencies.
 
-The `macOS development package` workflow assembles the first complete Apple-silicon package payload: the desktop, daemon, CLI, output broker, privileged helper, low-port relay, stable daemon launcher, release manifest, and installation record. It is deliberately unsigned and uploaded as a development artifact; it is not a notarized public release. The release-tagged desktop activates the fixed per-user LaunchAgent on first launch, while ordinary source builds continue to use the daemon started by `forj dev`.
+The `macOS development package` workflow assembles the first complete Apple-silicon package payload: the desktop, daemon, CLI, output broker, privileged helper, low-port relay, stable daemon launcher, release manifest, and installation record. It is deliberately unsigned and uploaded as a development artifact; it is not a notarized public release. `wails3 build RELEASE=true` enables the package-only release behavior. Ordinary `wails3 build` and `wails3 dev` do not activate installed services. The release-tagged desktop activates the fixed per-user LaunchAgent on first launch, while ordinary source builds continue to use the daemon started by `forj dev`.
 
 ## Continuous integration
 

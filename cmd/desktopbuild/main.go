@@ -14,15 +14,16 @@ import (
 // main keeps platform packaging in one command shared by development and CI.
 func main() {
 	dev := flag.Bool("dev", false, "build with the Wails development runtime")
+	release := flag.Bool("release", false, "enable installed-product daemon activation")
 	flag.Parse()
-	if err := build(*dev); err != nil {
+	if err := build(*dev, *release); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 // build runs from desktop so embedded assets and installed payload paths remain unchanged.
-func build(dev bool) error {
+func build(dev, release bool) error {
 	if _, err := os.Stat("go.mod"); err != nil {
 		return err
 	}
@@ -36,7 +37,7 @@ func build(dev bool) error {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return err
 	}
-	if dev {
+	if dev || !release {
 		if err := command("go", "run", "github.com/goforj/harbor/cmd/devartifacts"); err != nil {
 			return err
 		}
@@ -48,7 +49,7 @@ func build(dev bool) error {
 			return err
 		}
 	}
-	args := buildArguments(runtime.GOOS, output, os.Getenv("HARBOR_DESKTOP_LDFLAGS"), dev)
+	args := buildArguments(runtime.GOOS, output, os.Getenv("HARBOR_DESKTOP_LDFLAGS"), dev, release)
 	if err := command("go", args...); err != nil {
 		return err
 	}
@@ -85,8 +86,11 @@ func build(dev bool) error {
 }
 
 // buildArguments keeps Linux on the existing GTK3/WebKit 4.1 package baseline during the beta trial.
-func buildArguments(platform, output, extraLDFlags string, dev bool) []string {
-	tags := "production,release"
+func buildArguments(platform, output, extraLDFlags string, dev, release bool) []string {
+	tags := "production"
+	if release {
+		tags += ",release"
+	}
 	ldflags := "-w -s"
 	if dev {
 		tags = "dev"

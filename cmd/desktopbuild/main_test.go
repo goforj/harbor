@@ -12,22 +12,24 @@ import (
 func TestBuildArguments(t *testing.T) {
 	for _, platform := range []string{"darwin", "linux", "windows"} {
 		for _, dev := range []bool{false, true} {
-			args := buildArguments(platform, "output with spaces", "-X example.version=1.2.3", dev)
-			if !reflect.DeepEqual(args[:3], []string{"build", "-trimpath", "-buildvcs=false"}) || args[len(args)-2] != "output with spaces" {
-				t.Fatal(args)
-			}
-			tags, flags := args[4], args[6]
-			if dev == strings.Contains(tags, "production") || dev == strings.Contains(tags, "release") {
-				t.Fatal(args)
-			}
-			if strings.Contains(tags, "gtk3") != (platform == "linux") {
-				t.Fatal(args)
-			}
-			if strings.Contains(flags, "windowsgui") != (platform == "windows" && !dev) {
-				t.Fatal(args)
-			}
-			if !strings.Contains(flags, "-X example.version=1.2.3") {
-				t.Fatal(args)
+			for _, release := range []bool{false, true} {
+				args := buildArguments(platform, "output with spaces", "-X example.version=1.2.3", dev, release)
+				if !reflect.DeepEqual(args[:3], []string{"build", "-trimpath", "-buildvcs=false"}) || args[len(args)-2] != "output with spaces" {
+					t.Fatal(args)
+				}
+				tags, flags := args[4], args[6]
+				if dev == strings.Contains(tags, "production") || strings.Contains(tags, "release") != (!dev && release) {
+					t.Fatal(args)
+				}
+				if strings.Contains(tags, "gtk3") != (platform == "linux") {
+					t.Fatal(args)
+				}
+				if strings.Contains(flags, "windowsgui") != (platform == "windows" && !dev) {
+					t.Fatal(args)
+				}
+				if !strings.Contains(flags, "-X example.version=1.2.3") {
+					t.Fatal(args)
+				}
 			}
 		}
 	}

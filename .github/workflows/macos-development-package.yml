@@ -124,7 +124,7 @@ jobs:
         working-directory: desktop
         run: |
           ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
-          HARBOR_DESKTOP_LDFLAGS="$ldflags" wails3 build
+          HARBOR_DESKTOP_LDFLAGS="$ldflags" wails3 build RELEASE=true
           find build/bin/Harbor.app/Contents/Resources -maxdepth 3 -print | sort
           plutil -p build/bin/Harbor.app/Contents/Info.plist
           test -x build/bin/Harbor.app/Contents/MacOS/harbor-desktop

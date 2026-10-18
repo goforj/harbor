@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${RUNNER_TEMP}/harbor-build-tools:${PATH}"
-          wails3 build
+          wails3 build RELEASE=true
           test -x build/bin/harbor-desktop
           file build/bin/harbor-desktop | grep -Fq 'ELF 64-bit LSB'
           file build/bin/harbor-desktop | grep -Fq 'x86-64'
