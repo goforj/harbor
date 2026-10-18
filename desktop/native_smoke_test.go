@@ -40,8 +40,13 @@ func runNativeDesktopSmoke() int {
 			native.Event.Emit(desktopwire.ConnectionEventName, desktopwire.ConnectionEvent{State: ConnectionConnected})
 			w.WriteHeader(http.StatusNoContent)
 		case "/smoke/result":
-			passed.Store(r.URL.Query().Get("result") == "ok")
-			fmt.Println("native desktop smoke:", r.URL.Query().Get("result"))
+			result := r.URL.Query().Get("result")
+			fmt.Println("native desktop smoke:", result)
+			// Cocoa may terminate before App.Run returns, so failures must exit explicitly.
+			if result != "ok" {
+				os.Exit(1)
+			}
+			passed.Store(true)
 			w.WriteHeader(http.StatusNoContent)
 			go client.presentation.quitUI()
 		default:
@@ -88,7 +93,7 @@ func runNativeDesktopSmoke() int {
    } catch (error) { await fetch('/smoke/result?result=' + encodeURIComponent(String(error))); }
   })();`)
 	})
-	timer := time.AfterFunc(25*time.Second, func() { fmt.Println("native desktop smoke: timeout"); native.Quit() })
+	timer := time.AfterFunc(25*time.Second, func() { fmt.Println("native desktop smoke: timeout"); os.Exit(1) })
 	defer timer.Stop()
 	if err := native.Run(); err != nil {
 		fmt.Println(err)

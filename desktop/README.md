@@ -86,6 +86,7 @@ An explicit local native smoke uses the production SPA with a fake daemon and ma
 cd desktop
 go test -c -o /tmp/harbor-native-smoke.test .
 HARBOR_NATIVE_DESKTOP_SMOKE=1 /tmp/harbor-native-smoke.test
+# Expected: native desktop smoke: ok
 ```
 
 Run this only in an interactive desktop session. It opens and restores a window, checks real bindings and event delivery, and exits automatically.
