@@ -3,7 +3,6 @@ import type { RouteLocationRaw } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import { ChevronRight } from '@lucide/vue'
 import type { HarborStatus } from '@/domain/harbor'
-import StatusBadge from './StatusBadge.vue'
 
 const props = withDefaults(defineProps<{
   label: string
@@ -46,12 +45,12 @@ function activate(event: MouseEvent) {
     :aria-current="selected ? 'page' : undefined"
     :aria-disabled="disabled ? 'true' : undefined"
     :data-selected="selected ? '' : undefined"
-    class="group flex min-h-12 w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left outline-none transition-colors hover:bg-accent/70 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 data-[selected]:border-border data-[selected]:bg-accent disabled:pointer-events-none disabled:opacity-50"
+    class="harbor-entity-row group flex min-h-12 w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left outline-none transition-colors hover:bg-accent/70 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 data-[selected]:border-border data-[selected]:bg-accent disabled:pointer-events-none disabled:opacity-50"
     @click="activate"
   >
     <span
       v-if="$slots.leading"
-      class="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground [&_svg]:size-3.5"
+      class="flex size-7 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground [&_svg]:size-3.5"
       aria-hidden="true"
     >
       <slot name="leading" />
@@ -59,7 +58,7 @@ function activate(event: MouseEvent) {
 
     <span class="min-w-0 flex-1">
       <span class="flex items-center gap-1.5">
-        <span class="truncate text-sm font-medium text-foreground">{{ label }}</span>
+        <span :title="label" class="entity-label line-clamp-2 text-[13px] leading-5 font-medium text-foreground">{{ label }}</span>
         <slot name="label" />
       </span>
       <span
@@ -74,7 +73,7 @@ function activate(event: MouseEvent) {
       <span v-if="trailingLabel" class="text-[0.6875rem] text-muted-foreground">
         {{ trailingLabel }}
       </span>
-      <StatusBadge v-if="status" :status="status" compact />
+      <span v-if="status" role="img" class="entity-status-dot" :data-status="status" :aria-label="`Status: ${status}`" />
       <slot name="trailing">
         <ChevronRight
           v-if="to"

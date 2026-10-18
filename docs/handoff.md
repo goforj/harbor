@@ -16,6 +16,43 @@ Commit `bd54830` closes a managed-session restart gap: the authenticated Compose
 
 The follow-up barrier hardening reports resolver-stage network ownership as a retryable readiness condition rather than “no exact durable reservation.” GoForj commit `a4b35cd5` bounds an un-deadlined managed Compose barrier to 30 seconds, failing fast while Harbor still has time to observe and settle the child inside its two-minute readiness budget. Harbor's launch, attachment, stop, and join calls are bounded as well; an unresolved process scope enters the existing unavailable/quarantine boundary instead of leaving a durable project in `starting` forever. Focused and full Harbor tests pass; native local-Docker proof remains outstanding.
 
+## Harbor project tracking
+
+[Harbor in Plane](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/) uses identifier `HARBOR` and
+mirrors Ship's product-area modules, separate Working Now focus, parent/subtasks,
+and type/area/stage labels. The initial board has 9 modules and 37 tasks, with
+four evidence-backed completed items. Plane tracks prioritization; repository
+source and the documented proof gates remain authoritative for behavior and
+support claims. Do not infer that a queued verification task means its feature
+is unimplemented.
+
+The initial Working Now shortlist is:
+
+- [HARBOR-1](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/ee891c06-3968-429b-bb4f-9a34272c4afb): Carry the accepted Harbor desktop design through the product.
+- [HARBOR-5](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/8b747b2f-8561-4f2a-b802-af4661c14273): Expose structured GoForj startup progress to Harbor.
+- [HARBOR-10](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/5345f49a-4022-4a74-b406-f10faf31fe4e): Explain wildcard port conflicts with the actual service and competing listener.
+- [HARBOR-17](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/e459f1af-47e4-457a-ac76-9ac188b0d4dd): Verify native desktop interactions on macOS.
+
+The accepted UI implementation is on
+`feat/project-workspace-design`; HARBOR-1 and HARBOR-2 are In Progress rather
+than Done. The structured startup-event work is planned and has not been
+implemented. Completed package work covers unsigned development artifacts,
+not signed stable installers or the full native consent matrix. Leave task
+dates and assignees unset until an actual commitment is made.
+
+## Local project workspace design preview (2026-10-18)
+
+Branch `feat/project-workspace-design` contains the accepted visual implementation of
+the project detail screen and shared project browser. It prioritizes the project
+name, status, and labeled actions; adds snapshot-backed overview shortcuts and
+service summaries; gives development output the full working area; and removes
+the illustration from project working screens. Shared shadcn primitives and
+native/daemon contracts are unchanged. The user accepted this visual direction
+on 2026-10-18; merging and distribution remain pending. Frontend build, 237 unit tests, and 25 Chromium checks pass. Browser
+inspection covers dark/light desktop and a 430-pixel layout without horizontal
+overflow. The isolated fixture preview is served on `127.0.0.1:39517` while this
+session remains running.
+
 ## Wails v3 desktop trial (2026-10-18)
 
 Initial startup now restores and focuses Harbor once both the native application and window are ready, regardless of event ordering. Later frontend reloads do not reactivate a hidden or background window. Lifecycle tests cover ordering and repeated ready events; the native smoke now verifies initial focus before checking hide/restore, bindings, and events.

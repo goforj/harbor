@@ -252,7 +252,7 @@ test('shows an ambiguous recovered launch without leaving the project spinning',
   await expect(page.getByRole('button', { name: 'Open resource', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Starting…', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Current activity' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Project summary' }).getByText('recovery required', { exact: true })).toBeVisible()
+  await expect(page.getByText('recovery required', { exact: true })).toBeVisible()
 })
 
 test('confirms project removal and offers the administrator approval action', async ({ page }) => {
