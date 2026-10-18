@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"image/png"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -17,7 +19,7 @@ func TestApplicationOptionsPinNativeLifecycle(t *testing.T) {
 	t.Parallel()
 	app := testApp()
 	options := newApplicationOptions(app, fstest.MapFS{})
-	if options.Name != "GoForj Harbor" || len(options.Icon) == 0 || len(options.Services) != 1 || options.Assets.Handler == nil || options.OnShutdown == nil {
+	if options.Name != "GoForj Harbor" || len(options.Services) != 1 || options.Assets.Handler == nil || options.OnShutdown == nil {
 		t.Fatal("incomplete native application contract")
 	}
 	if options.SingleInstance == nil || options.SingleInstance.UniqueID != desktopSingleInstanceID || options.SingleInstance.OnSecondInstanceLaunch == nil {
@@ -32,6 +34,51 @@ func TestApplicationOptionsPinNativeLifecycle(t *testing.T) {
 	}
 	if window.Linux.WebviewGpuPolicy != application.WebviewGpuPolicyNever {
 		t.Fatal("Linux rendering policy changed")
+	}
+}
+
+// TestNativeApplicationIconPreservesBundleArtwork prevents the raw tile from replacing macOS catalog rendering.
+func TestNativeApplicationIconPreservesBundleArtwork(t *testing.T) {
+	for _, platform := range []string{"darwin", "windows", "linux"} {
+		icon := nativeApplicationIcon(platform)
+		if platform == "darwin" {
+			if icon != nil {
+				t.Fatal("macOS must retain the bundle icon")
+			}
+		} else if len(icon) == 0 || !bytes.Equal(icon, applicationIcon) {
+			t.Fatalf("missing application artwork on %s", platform)
+		}
+	}
+	if !bytes.Equal(newApplicationOptions(testApp(), fstest.MapFS{}).Icon, nativeApplicationIcon(runtime.GOOS)) {
+		t.Fatal("native application options bypassed platform icon policy")
+	}
+}
+
+// TestTrayTemplateHasTransparentMonochromeArtwork rejects opaque application tiles in the macOS menu bar.
+func TestTrayTemplateHasTransparentMonochromeArtwork(t *testing.T) {
+	icon, err := png.Decode(bytes.NewReader(trayTemplateIcon))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if icon.Bounds().Dx() != 48 || icon.Bounds().Dy() != 48 {
+		t.Fatal("template must retain its high-density menu bar dimensions")
+	}
+	var transparent, opaque int
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 48; x++ {
+			r, g, b, a := icon.At(x, y).RGBA()
+			if r != 0 || g != 0 || b != 0 {
+				t.Fatal("template must contain only black alpha-mask artwork")
+			}
+			if a == 0 {
+				transparent++
+			} else if a == 65535 {
+				opaque++
+			}
+		}
+	}
+	if transparent < 48*48/2 || opaque == 0 {
+		t.Fatal("template needs a transparent surround and a visible anchor")
 	}
 }
 

@@ -20,10 +20,15 @@ const desktopWindowName = "harbor"
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// applicationIcon preserves Harbor's native identity across the window and tray.
+// applicationIcon supplies Harbor's identity on platforms without the macOS asset catalog.
 //
 //go:embed build/appicon.png
 var applicationIcon []byte
+
+// trayTemplateIcon lets macOS tint the transparent anchor for the current menu bar appearance.
+//
+//go:embed build/tray-template.png
+var trayTemplateIcon []byte
 
 // main runs the replaceable desktop client while harbord retains durable authority.
 func main() {
@@ -51,7 +56,7 @@ func newDesktopWindow(native *application.App) *application.WebviewWindow {
 // newApplicationOptions binds only Harbor's client and keeps UI shutdown separate from daemon shutdown.
 func newApplicationOptions(client *App, appAssets fs.FS) application.Options {
 	return application.Options{
-		Name: "GoForj Harbor", Icon: applicationIcon,
+		Name: "GoForj Harbor", Icon: nativeApplicationIcon(runtime.GOOS),
 		Assets:         application.AssetOptions{Handler: application.AssetFileServerFS(appAssets)},
 		Services:       []application.Service{application.NewService(client)},
 		SingleInstance: &application.SingleInstanceOptions{UniqueID: desktopSingleInstanceID, OnSecondInstanceLaunch: client.onSecondInstanceLaunch},
@@ -60,6 +65,14 @@ func newApplicationOptions(client *App, appAssets fs.FS) application.Options {
 		Windows:        application.WindowsOptions{DisableQuitOnLastWindowClosed: true},
 		Linux:          application.LinuxOptions{DisableQuitOnLastWindowClosed: true, ProgramName: "goforj-harbor", ApplicationID: "com.goforj.harbor"},
 	}
+}
+
+// nativeApplicationIcon leaves the macOS Dock icon to the compiled bundle catalog instead of overriding it with a square bitmap.
+func nativeApplicationIcon(platform string) []byte {
+	if platform == "darwin" {
+		return nil
+	}
+	return applicationIcon
 }
 
 // newWindowOptions preserves the existing desktop geometry and rendering policy.
@@ -99,7 +112,11 @@ func newTrayMenu(presentation *presentationController) *application.Menu {
 // configureTray projects validated daemon connection events into the native status menu.
 func configureTray(native *application.App, client *App) {
 	tray := native.SystemTray.New()
-	tray.SetIcon(applicationIcon)
+	if runtime.GOOS == "darwin" {
+		tray.SetTemplateIcon(trayTemplateIcon)
+	} else {
+		tray.SetIcon(applicationIcon)
+	}
 	tray.SetTooltip("GoForj Harbor")
 	tray.OnClick(client.presentation.activate)
 	menu := newTrayMenu(client.presentation)

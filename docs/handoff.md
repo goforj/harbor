@@ -18,6 +18,8 @@ The follow-up barrier hardening reports resolver-stage network ownership as a re
 
 ## Wails v3 desktop trial (2026-10-18)
 
+macOS icon presentation now keeps the application runtime icon unset, preserving the compiled asset catalog used by the Dock rather than replacing it with the opaque square PNG. Its menu bar uses a separate transparent monochrome anchor template generated from the canonical SVG; Windows/Linux retain the existing application and tray artwork. Asset regeneration is documented in `desktop/build/README.md`. Desktop tests/vet, repeat-generation parity, and the local native smoke pass; the running development bundle needs a restart for visual verification.
+
 The development server binds to `127.0.0.1` so Wails' IPv4 asset proxy can connect even when `localhost` resolves to IPv6 first. The frontend install task reruns `npm ci` when either package manifest changes or the installed lockfile is absent; unchanged dependencies are reused. Darwin builds explicitly align cgo, the external linker, and bundle metadata with the compiler's supported minimum: macOS 12 for Go 1.26 and macOS 13 for Go 1.27. This does not increase the module's minimum Go version or change the existing macOS 15 installer baseline. Focused builder tests/vet, helper/relay/desktop native builds without deployment-target warnings, and an isolated IPv4 Vite HTTP probe pass. Restart the development graph to use the updated task.
 
 The migration pins the Go module, CLI, and JavaScript runtime to v3.0.0-beta.32. A native tray projects daemon connection state and offers Open Harbor and Quit Harbor UI. Closing the window hides it; explicit activation restores and focuses it. Desktop shutdown still joins its client goroutine and does not stop projects or the daemon.
