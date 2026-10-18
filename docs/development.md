@@ -6,7 +6,7 @@ The current checkout requires:
 
 - Go 1.26.1 for both Go modules;
 - Node.js 22 for the frontend;
-- Wails v2.13 and its native platform prerequisites;
+- Wails v3.0.0-beta.32 and its native platform prerequisites;
 - a GoForj executable whose embedded build information identifies the canonical `github.com/goforj/goforj/cmd/forj` command and `github.com/goforj/goforj` module.
 
 Runtime admission does not pin a GoForj version, revision, replacement, or working-tree state. Harbor rejects a binary whose embedded command or main-module identity is not canonical (including a replaced main module). The reviewed GoForj revision used by generated-project CI is a deterministic test input, not a runtime compatibility requirement. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
@@ -25,7 +25,11 @@ Run the complete development graph from the repository root:
 forj dev
 ```
 
-GoForj builds and watches `harbord`, builds the optional sibling `outputbroker`, applies its embedded migrations, runs the daemon in the foreground, and starts Wails. The daemon uses the broker when that exact sibling artifact is available and keeps direct pipes when it is not. The Wails macOS pre-build hook runs `cmd/devartifacts`, which places architecture-specific development helper and broker binaries beneath `desktop/build/bin/devtools`. The desktop uses those artifacts when network setup needs to install or repair privileged support.
+GoForj builds and watches `harbord`, builds the optional sibling `outputbroker`, applies its embedded migrations, runs the daemon in the foreground, and starts Wails. The daemon uses the broker when that exact sibling artifact is available and keeps direct pipes when it is not. The Wails desktop builder runs `cmd/devartifacts` on macOS, which places architecture-specific development helper and broker binaries beneath `desktop/build/bin/devtools`. The desktop uses those artifacts when network setup needs to install or repair privileged support.
+
+The frontend dev server binds to `127.0.0.1` for Wails' IPv4 proxy. Its install task reuses unchanged dependencies, running `npm ci` when `package.json` or `package-lock.json` changes or the installed lockfile is missing. Restart `forj dev` after changing its Taskfile.
+
+On macOS, the desktop builder aligns native compilation, linking, and bundle metadata with the toolchain: macOS 12 for Go 1.26, or macOS 13 for Go 1.27. The packaged installer retains its macOS 15 minimum.
 
 Harbor launches registered projects with GoForj's standard checkout-local development layout. Generated runtime binaries and readiness state remain beneath each project's ignored `./bin` directory; Harbor does not redirect them into a separate runtime artifact tree.
 
