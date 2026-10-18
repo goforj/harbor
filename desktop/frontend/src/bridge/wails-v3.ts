@@ -27,8 +27,8 @@ export function installWailsV3Bridge(native: NativeRuntime): void {
 
 /** Loads the native runtime only inside Wails, keeping browser fixtures independent of native IPC. */
 export async function bootstrapWailsV3(): Promise<void> {
-  // Wails injects its bootstrap marker before page scripts, including through the Vite proxy.
+  // Packaged windows have platform-specific origins; native development may expose the bootstrap marker.
   const nativeWindow = window as Window & { _wails?: unknown }
-  if (location.hostname !== 'wails.localhost' && nativeWindow._wails === undefined) return
+  if (location.protocol !== 'wails:' && location.hostname !== 'wails.localhost' && nativeWindow._wails === undefined) return
   installWailsV3Bridge(await import('@wailsio/runtime'))
 }

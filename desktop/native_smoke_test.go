@@ -51,7 +51,7 @@ func runNativeDesktopSmoke() int {
 			go client.presentation.quitUI()
 		default:
 			// Go test compiles package main under its module path; release binaries use main.App.
-			if strings.HasSuffix(r.URL.Path, ".js") {
+			if strings.HasSuffix(r.URL.Path, ".js") || r.URL.Path == "/" || r.URL.Path == "/index.html" {
 				response := httptest.NewRecorder()
 				handler.ServeHTTP(response, r)
 				for key, values := range response.Header() {
@@ -59,7 +59,13 @@ func runNativeDesktopSmoke() int {
 				}
 				w.Header().Del("Content-Length")
 				w.WriteHeader(response.Code)
-				_, _ = w.Write(bytes.ReplaceAll(response.Body.Bytes(), []byte("main.App."), []byte(reflect.TypeFor[App]().PkgPath()+".App.")))
+				body := response.Body.Bytes()
+				if strings.HasSuffix(r.URL.Path, ".js") {
+					body = bytes.ReplaceAll(body, []byte("main.App."), []byte(reflect.TypeFor[App]().PkgPath()+".App."))
+				} else {
+					body = bytes.Replace(body, []byte("</body>"), []byte("<script type=\"module\">"+nativeSmokeProbe+"</script></body>"), 1)
+				}
+				_, _ = w.Write(body)
 			} else {
 				handler.ServeHTTP(w, r)
 			}
@@ -75,23 +81,6 @@ func runNativeDesktopSmoke() int {
 	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
 		window.Close()
 		client.presentation.activate()
-		window.ExecJS(`(async () => {
-   const deadline = Date.now() + 15000;
-   while (!window.go?.main?.App || !document.querySelector('.harbor-workspace')) {
-    if (Date.now() > deadline) { await fetch('/smoke/result?result=bootstrap-timeout'); return; }
-    await new Promise(resolve => setTimeout(resolve, 100));
-   }
-   try {
-    const status = await window.go.main.App.Status();
-    const snapshot = await window.go.main.App.Snapshot();
-    if (status.state !== 'ready' || !snapshot.projects.length) throw new Error('invalid native response');
-    if (document.body.textContent.includes('Development fixture')) throw new Error('native page selected fixture');
-    window.runtime.EventsOn('harbor:connection', event => {
-     fetch('/smoke/result?result=' + (event.state === 'connected' ? 'ok' : 'invalid-event'));
-    });
-    await fetch('/smoke/ready');
-   } catch (error) { await fetch('/smoke/result?result=' + encodeURIComponent(String(error))); }
-  })();`)
 	})
 	timer := time.AfterFunc(25*time.Second, func() { fmt.Println("native desktop smoke: timeout"); os.Exit(1) })
 	defer timer.Stop()
@@ -104,3 +93,22 @@ func runNativeDesktopSmoke() int {
 	}
 	return 0
 }
+
+// nativeSmokeProbe waits for the application in the same document that loads its production modules.
+const nativeSmokeProbe = `(async () => {
+   const deadline = Date.now() + 15000;
+   while (!window.go?.main?.App || !document.querySelector('.harbor-workspace')) {
+    if (Date.now() > deadline) { await fetch('/smoke/result?result=bootstrap-timeout'); return; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+   }
+   try {
+    const status = await window.go.main.App.Status();
+    const snapshot = await window.go.main.App.Snapshot();
+    if (status.state !== 'ready' || !snapshot.projects.length) throw new Error('invalid native response');
+    if (Array.from(document.querySelectorAll('[data-slot=badge]')).some(node => node.textContent.trim() === 'Development fixture')) throw new Error('native page selected fixture');
+    window.runtime.EventsOn('harbor:connection', event => {
+     fetch('/smoke/result?result=' + (event.state === 'connected' ? 'ok' : 'invalid-event'));
+    });
+    await fetch('/smoke/ready');
+   } catch (error) { await fetch('/smoke/result?result=' + encodeURIComponent(String(error))); }
+  })();`

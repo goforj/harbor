@@ -14,6 +14,7 @@ afterEach(() => {
   delete window.runtime
   delete (window as Window & { _wails?: unknown })._wails
   vi.resetAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('Wails v3 transport', () => {
@@ -54,6 +55,12 @@ describe('Wails v3 transport', () => {
   it('leaves ordinary browser fixtures independent of the native bridge', async () => {
     await bootstrapWailsV3()
     expect(window.go).toBeUndefined()
+  })
+
+  it.each(['wails://localhost/', 'https://wails.localhost/'])('initializes packaged pages at %s before a runtime marker exists', async url => {
+    vi.stubGlobal('location', new URL(url))
+    await bootstrapWailsV3()
+    expect(window.go!.main!.App).toBeDefined()
   })
 
   it('initializes native pages through the injected marker, including the Vite proxy', async () => {
