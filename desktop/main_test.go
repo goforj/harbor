@@ -2,144 +2,87 @@ package main
 
 import (
 	"context"
-	"io/fs"
-	"reflect"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/goforj/harbor/internal/control"
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/menu/keys"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/linux"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// TestApplicationOptionsPinNativeLifecycle verifies close-to-hide, single-instance, assets, bindings, and native menu ownership together.
+// TestApplicationOptionsPinNativeLifecycle keeps services, identity, and joined UI shutdown independent of the daemon.
 func TestApplicationOptionsPinNativeLifecycle(t *testing.T) {
 	t.Parallel()
-
 	app := testApp()
-	appAssets := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("Harbor")}}
-	applicationOptions := newApplicationOptions(app, appAssets, "linux")
-
-	if applicationOptions.Title != "GoForj Harbor" || applicationOptions.Width != 1280 || applicationOptions.Height != 820 {
-		t.Fatalf("window identity and size = (%q, %d, %d)", applicationOptions.Title, applicationOptions.Width, applicationOptions.Height)
+	options := newApplicationOptions(app, fstest.MapFS{})
+	if options.Name != "GoForj Harbor" || len(options.Icon) == 0 || len(options.Services) != 1 || options.Assets.Handler == nil || options.OnShutdown == nil {
+		t.Fatal("incomplete native application contract")
 	}
-	if applicationOptions.MinWidth != 420 || applicationOptions.MinHeight != 520 {
-		t.Fatalf("minimum window size = (%d, %d), want (420, 520)", applicationOptions.MinWidth, applicationOptions.MinHeight)
+	if options.SingleInstance == nil || options.SingleInstance.UniqueID != desktopSingleInstanceID || options.SingleInstance.OnSecondInstanceLaunch == nil {
+		t.Fatal("single-instance identity or activation missing")
 	}
-	if !applicationOptions.HideWindowOnClose || applicationOptions.StartHidden {
-		t.Fatalf("window visibility options = hide-on-close %t, start-hidden %t", applicationOptions.HideWindowOnClose, applicationOptions.StartHidden)
+	if options.Mac.ApplicationShouldTerminateAfterLastWindowClosed || !options.Windows.DisableQuitOnLastWindowClosed || !options.Linux.DisableQuitOnLastWindowClosed {
+		t.Fatal("closing a window may terminate the desktop")
 	}
-	if applicationOptions.BackgroundColour == nil || *applicationOptions.BackgroundColour != (options.RGBA{R: 13, G: 13, B: 13, A: 255}) {
-		t.Fatalf("background = %+v, want Harbor dark background", applicationOptions.BackgroundColour)
+	window := newWindowOptions()
+	if window.Name != desktopWindowName || window.Title != "GoForj Harbor" || window.Width != 1280 || window.Height != 820 || window.MinWidth != 420 || window.MinHeight != 520 || window.Hidden {
+		t.Fatalf("unexpected window geometry: %+v", window)
 	}
-	if applicationOptions.Linux == nil || !reflect.DeepEqual(applicationOptions.Linux.Icon, applicationIcon) || len(applicationOptions.Linux.Icon) == 0 {
-		t.Fatalf("Linux icon options = %+v, want embedded Harbor icon", applicationOptions.Linux)
-	}
-	if applicationOptions.Linux.WebviewGpuPolicy != linux.WebviewGpuPolicyNever {
-		t.Fatalf("Linux GPU policy = %v, want preserved software rendering policy", applicationOptions.Linux.WebviewGpuPolicy)
-	}
-	if applicationOptions.AssetServer == nil {
-		t.Fatal("asset server options = nil")
-	}
-	asset, err := fs.ReadFile(applicationOptions.AssetServer.Assets, "index.html")
-	if err != nil || string(asset) != "Harbor" {
-		t.Fatalf("embedded asset = (%q, %v), want Harbor", asset, err)
-	}
-	if applicationOptions.OnStartup == nil || applicationOptions.OnShutdown == nil {
-		t.Fatal("Wails lifecycle callbacks are incomplete")
-	}
-	if applicationOptions.SingleInstanceLock == nil || applicationOptions.SingleInstanceLock.UniqueId != desktopSingleInstanceID || applicationOptions.SingleInstanceLock.OnSecondInstanceLaunch == nil {
-		t.Fatalf("single-instance options = %+v, want Harbor callback and stable ID", applicationOptions.SingleInstanceLock)
-	}
-	if len(applicationOptions.Bind) != 1 || applicationOptions.Bind[0] != app {
-		t.Fatalf("bindings = %v, want only the Harbor app", applicationOptions.Bind)
+	if window.Linux.WebviewGpuPolicy != application.WebviewGpuPolicyNever {
+		t.Fatal("Linux rendering policy changed")
 	}
 }
 
-// TestApplicationMenuPinsPlatformShape verifies Harbor actions stay identical while only macOS receives its native edit and window roles.
-func TestApplicationMenuPinsPlatformShape(t *testing.T) {
+// TestNativeMenusKeepProjectMutationsOutOfTheTray verifies the bounded status and presentation-only menu contract.
+func TestNativeMenusKeepProjectMutationsOutOfTheTray(t *testing.T) {
 	t.Parallel()
-
-	for _, test := range []struct {
-		platform string
-		roles    []menu.Role
-	}{
-		{platform: "darwin", roles: []menu.Role{menu.EditMenuRole, menu.WindowMenuRole}},
-		{platform: "linux", roles: nil},
-		{platform: "windows", roles: nil},
-	} {
-		test := test
-		t.Run(test.platform, func(t *testing.T) {
-			t.Parallel()
-
-			applicationMenu := newApplicationMenu(testApp().presentation, test.platform)
-			if len(applicationMenu.Items) != 1+len(test.roles) {
-				t.Fatalf("top-level item count = %d, want %d", len(applicationMenu.Items), 1+len(test.roles))
-			}
-			harbor := applicationMenu.Items[0]
-			if harbor.Label != "Harbor" || harbor.Type != menu.SubmenuType || harbor.SubMenu == nil {
-				t.Fatalf("Harbor menu = %+v, want named submenu", harbor)
-			}
-			if len(harbor.SubMenu.Items) != 3 {
-				t.Fatalf("Harbor item count = %d, want 3", len(harbor.SubMenu.Items))
-			}
-			open := harbor.SubMenu.Items[0]
-			separator := harbor.SubMenu.Items[1]
-			quit := harbor.SubMenu.Items[2]
-			if open.Label != "Open Harbor" || open.Type != menu.TextType || open.Accelerator != nil || open.Click == nil {
-				t.Fatalf("open item = %+v, want unaccelerated Open Harbor callback", open)
-			}
-			if separator.Type != menu.SeparatorType {
-				t.Fatalf("separator type = %v, want separator", separator.Type)
-			}
-			if quit.Label != "Quit Harbor UI" || quit.Type != menu.TextType || quit.Click == nil || !reflect.DeepEqual(quit.Accelerator, keys.CmdOrCtrl("Q")) {
-				t.Fatalf("quit item = %+v, want Cmd/Ctrl+Q Quit Harbor UI callback", quit)
-			}
-			for index, role := range test.roles {
-				if applicationMenu.Items[index+1].Role != role {
-					t.Fatalf("native role %d = %v, want %v", index, applicationMenu.Items[index+1].Role, role)
-				}
-			}
-		})
+	for _, platform := range []string{"darwin", "linux", "windows"} {
+		menu := newApplicationMenu(testApp().presentation, platform)
+		if menu.FindByLabel("Open Harbor") == nil || menu.FindByLabel("Quit Harbor UI") == nil {
+			t.Fatalf("missing native actions on %s", platform)
+		}
+		expectedShortcut := "Ctrl+Q"
+		if runtime.GOOS == "darwin" {
+			expectedShortcut = "Cmd+Q"
+		}
+		if menu.FindByLabel("Quit Harbor UI").GetAccelerator() != expectedShortcut {
+			t.Fatal("quit accelerator changed")
+		}
+		if platform == "darwin" && (menu.FindByRole(application.EditMenu) == nil || menu.FindByRole(application.WindowMenu) == nil) {
+			t.Fatal("macOS native menu roles missing")
+		}
+	}
+	tray := newTrayMenu(testApp().presentation)
+	if tray.ItemAt(0).Label() != "Harbor: connecting" || tray.ItemAt(0).Enabled() {
+		t.Fatal("tray status must be informational")
+	}
+	if !tray.ItemAt(1).IsSeparator() || tray.ItemAt(2).Label() != "Open Harbor" || tray.ItemAt(3).Label() != "Quit Harbor UI" || tray.ItemAt(4) != nil {
+		t.Fatal("tray must contain only status and UI actions")
 	}
 }
 
-// TestApplicationMenuAndRelaunchShareActivation proves every native reopen path uses the same restore-and-focus sequence.
-func TestApplicationMenuAndRelaunchShareActivation(t *testing.T) {
+// TestSecondInstanceUsesTheExistingPresentationLifecycle keeps duplicate processes from creating another control client.
+func TestSecondInstanceUsesTheExistingPresentationLifecycle(t *testing.T) {
 	t.Parallel()
-
-	var unminimises atomic.Int32
-	var shows atomic.Int32
+	var activations atomic.Int32
 	app := testApp()
-	app.presentation = newPresentationController(
-		func(context.Context) { unminimises.Add(1) },
-		func(context.Context) { shows.Add(1) },
-		func(context.Context) {},
-	)
-	applicationMenu := newApplicationMenu(app.presentation, "linux")
-
-	applicationMenu.Items[0].SubMenu.Items[0].Click(nil)
-	app.onSecondInstanceLaunch(options.SecondInstanceData{})
-	if unminimises.Load() != 0 || shows.Load() != 0 {
-		t.Fatalf("restore calls before startup = (%d unminimise, %d show), want none", unminimises.Load(), shows.Load())
+	app.presentation = newPresentationController(func(context.Context) {}, func(context.Context) { activations.Add(1) }, func(context.Context) {})
+	options := newApplicationOptions(app, fstest.MapFS{})
+	options.SingleInstance.OnSecondInstanceLaunch(application.SecondInstanceData{})
+	if activations.Load() != 0 {
+		t.Fatal("activated before native startup")
 	}
-
 	app.presentation.startup(context.Background())
-	applicationMenu.Items[0].SubMenu.Items[0].Click(nil)
-	app.onSecondInstanceLaunch(options.SecondInstanceData{})
-	if unminimises.Load() != 2 || shows.Load() != 2 {
-		t.Fatalf("restore calls = (%d unminimise, %d show), want two shared activations", unminimises.Load(), shows.Load())
+	options.SingleInstance.OnSecondInstanceLaunch(application.SecondInstanceData{})
+	if activations.Load() != 1 {
+		t.Fatal("second instance did not activate the existing window")
 	}
-
 	app.presentation.shutdown()
-	applicationMenu.Items[0].SubMenu.Items[0].Click(nil)
-	app.onSecondInstanceLaunch(options.SecondInstanceData{})
-	if unminimises.Load() != 2 || shows.Load() != 2 {
-		t.Fatalf("restore calls after shutdown = (%d unminimise, %d show), want no new activations", unminimises.Load(), shows.Load())
+	options.SingleInstance.OnSecondInstanceLaunch(application.SecondInstanceData{})
+	if activations.Load() != 1 {
+		t.Fatal("activated after native shutdown")
 	}
 }
 
@@ -171,16 +114,16 @@ func TestQuitMenuLeavesDaemonSessionUntilJoinedWailsShutdown(t *testing.T) {
 		func(context.Context) {},
 		func(context.Context) { quits.Add(1) },
 	)
-	applicationOptions := newApplicationOptions(app, fstest.MapFS{}, "linux")
-	applicationOptions.OnStartup(context.Background())
+	applicationOptions := newApplicationOptions(app, fstest.MapFS{})
+	app.startup(context.Background())
 	select {
 	case <-connected:
 	case <-time.After(time.Second):
-		applicationOptions.OnShutdown(context.Background())
+		applicationOptions.OnShutdown()
 		t.Fatal("desktop session did not connect")
 	}
 
-	applicationOptions.Menu.Items[0].SubMenu.Items[2].Click(nil)
+	app.presentation.quitUI()
 	if quits.Load() != 1 {
 		t.Fatalf("Wails quit count = %d, want 1", quits.Load())
 	}
@@ -191,7 +134,7 @@ func TestQuitMenuLeavesDaemonSessionUntilJoinedWailsShutdown(t *testing.T) {
 		t.Fatalf("native quit action changed daemon connection: %v", err)
 	}
 
-	applicationOptions.OnShutdown(context.Background())
+	applicationOptions.OnShutdown()
 	if client.closeCount.Load() != 1 {
 		t.Fatalf("desktop session close count after joined shutdown = %d, want 1", client.closeCount.Load())
 	}

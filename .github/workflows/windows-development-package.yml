@@ -129,7 +129,7 @@ jobs:
           $tools = Join-Path $env:RUNNER_TEMP "harbor-build-tools"
           New-Item -ItemType Directory -Path $tools | Out-Null
           $env:GOBIN = $tools
-          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
           $tools | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build Windows desktop and product components
@@ -140,7 +140,8 @@ jobs:
           $ldflags = "-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=$env:HARBOR_RELEASE_VERSION"
           Push-Location desktop
           try {
-            wails build -s -clean -platform windows/amd64 -tags release -trimpath -ldflags $ldflags -o harbor-desktop.exe
+            $env:HARBOR_DESKTOP_LDFLAGS = $ldflags
+            wails3 build RELEASE=true
           } finally {
             Pop-Location
           }

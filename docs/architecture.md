@@ -160,21 +160,22 @@ Interfaces are owned by the consumer package and describe semantic operations su
 
 The helper and installer deliberately do not use GoForj's generated App main, environment loader, preboot path, Wire composition, or generic RootCmd. Those surfaces load project configuration and inherit the project-wide component envelope, which is incompatible with a privileged boundary. They are bespoke minimal entrypoints represented as build-only custom dev nodes. Each has a separate dependency allowlist proving that networking clients, Docker, project execution, desktop, dotenv/compiled environment, and generic command dispatch cannot enter the binary.
 
-The nested module is deliberate: Wails, WebView, CGO, frontend, and tray requirements must not raise the minimum Go version or native dependency floor of `harbor`, `harbord`, `harbor-helper`, or `harbor-installer`. [`fyne.io/systray`](https://github.com/fyne-io/systray), the maintained fork of `getlantern/systray`, is the preferred Wails v2 tray candidate. Its `RunWithExternalLoop` entrypoint is intended for applications whose GUI toolkit already owns the main loop, but that API is not proof that Wails and the tray coexist correctly on every native platform. The focused desktop proof therefore decides both the dependency pin and the tray process boundary:
+The nested module is deliberate: Wails, WebView, CGO, frontend, and tray requirements must not raise the minimum Go version or native dependency floor of `harbor`, `harbord`, `harbor-helper`, or `harbor-installer`. The 2026-10-18 desktop trial pins Wails v3.0.0-beta.32 and uses its integrated native tray without a second GUI toolkit.
 
-1. evaluate and then pin an exact `fyne.io/systray` release alongside the stable Wails v2 release;
-2. prove their native event loops, close/hide behavior, single-instance focus, menus, and packaging together on macOS, Linux, and Windows;
-3. prefer one desktop process when the integration is reliable;
-4. do not carry a Harbor-specific Wails, Cocoa application-delegate, or tray-library fork merely to force same-process integration;
-5. if the native loops cannot coexist safely, move only the tray into a stateless `harbor-tray` daemon client;
-6. do not move Harbor to the alpha Wails v3 line solely for integrated tray support;
-7. keep daemon IPC as the authority boundary in either shape.
+The native proof still determines whether the beta is suitable for distribution:
+
+1. verify event delivery, close-to-hide, single-instance focus, menus, UI-only quit, and packaging on macOS, Linux, and Windows;
+2. retain authenticated daemon IPC as the authority boundary and keep essential operations available without a tray;
+3. preserve Linux's GTK3/WebKit2GTK 4.1 baseline through the supported compatibility tag;
+4. avoid Harbor-specific Wails, application-delegate, or tray-library forks;
+5. treat successful compilation as build evidence, not a substitute for interactive platform verification.
+
 
 Harbor has a bootstrap rule: developing Harbor itself uses ordinary standalone `forj dev` before attachment exists and explicit `forj dev --no-harbor` once that capability ships, unless a separately installed Harbor is intentionally selected. Builds, tests, setup repair, and release must never require the checkout's in-progress daemon to already manage itself.
 
 ## Desktop boundary
 
-A pinned stable Wails v2 release owns the native window, menus, WebView, single-instance behavior, and narrow Go bindings. Wails v2 does not own the tray. Harbor's preferred tray candidate is `fyne.io/systray`, using its external-loop integration in the desktop process only after the three-platform native proof passes. The initial tray surface is intentionally limited to aggregate Harbor status, `Open Harbor`, and `Quit Harbor UI`; project lists and lifecycle actions remain deferred until the basic lifecycle is proven useful and reliable. A stateless `harbor-tray` client is the fallback when native loops conflict, not a second runtime authority.
+Pinned Wails v3.0.0-beta.32 owns the native window, menus, WebView, single-instance behavior, narrow Go bindings, and tray in the desktop trial. The tray surface is limited to connection status, `Open Harbor`, and `Quit Harbor UI`; project lists and lifecycle actions remain deferred. It is a replaceable daemon client with no durable authority. Interactive verification across supported desktops remains a release gate.
 
 The embedded frontend is a plain Vue 3, TypeScript, Vite, and Tailwind CSS 4 SPA based on a pinned import of GoForj's source-owned shadcn-vue starter. Harbor preserves that primitive layer, uses Pinia for daemon snapshot/event presentation, and speaks through a typed bridge with a matching browser-test mock. Hash history keeps packaged navigation independent of a web-server fallback. [Frontend](./frontend.md) defines the source ownership and visual adaptation boundary.
 

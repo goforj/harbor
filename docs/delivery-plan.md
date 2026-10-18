@@ -184,7 +184,7 @@ Goal: add the Lerd-influenced visual control surface without moving authority in
 Deliver:
 
 - a nested `desktop/` module wired into the same `.goforj.yml` development graph;
-- a pinned stable Wails v2 dependency and native build matrix;
+- the pinned Wails v3.0.0-beta.32 trial and native build matrix;
 - the recorded GoForj starter source commit, Vue 3, TypeScript, Vite, Tailwind CSS 4, app-owned shadcn-vue components backed by Reka UI, and Lucide icons;
 - the Phase 0 production-bound frontend source embedded without replacing its primitive layer;
 - WebView-safe hash routing, a typed Wails bridge, a matching mock bridge, and Pinia snapshot/event stores;
@@ -199,14 +199,14 @@ Deliver:
 - Overview/command-palette resource search that returns to the owning App or service;
 - start, stop, scoped restart, open, copy, registration, and removal flows;
 - ordered live logs with source filters and gap indicators;
-- a proved `fyne.io/systray` integration with aggregate status, `Open Harbor`, and `Quit Harbor UI`;
-- a same-process tray/window event-loop decision on all three platforms, with a stateless `harbor-tray` daemon client only if those loops cannot coexist reliably;
+- a proved Wails-native tray with connection status, `Open Harbor`, and `Quit Harbor UI`;
+- native tray/window lifecycle verification on all three platforms, retaining daemon IPC as the process boundary;
 - default close-to-hide, native-menu/shortcut UI Quit, first-close explanation, no-tray recovery, and best-effort native notifications while the UI is alive;
 - accessible keyboard, screen-reader, contrast, and reduced-motion behavior;
 - responsive one/two/three-pane layouts;
 - UI/CLI parity tests against the same daemon API.
 
-Keep stable Wails v2 rather than adopting alpha Wails v3 for its tray API. Prove the `fyne.io/systray` external-loop integration before pinning its exact release. Do not make a Harbor-specific Wails, native application-delegate, or tray-library fork to force same-process compatibility. The nested desktop module owns the selected Go, CGO, WebView, and native runtime requirements so they do not raise the headless binaries' minimum Go version or platform dependency floor. Recent-project menus, lifecycle actions, doctor, and other dynamic tray behavior are later product decisions rather than release blockers.
+The desktop trial uses pinned Wails v3.0.0-beta.32 and its integrated tray. Its beta status requires explicit native verification before release. Do not introduce a second GUI toolkit or a Harbor-specific Wails, application-delegate, or tray-library fork to force compatibility. The nested module keeps desktop Go, CGO, and WebView requirements out of the headless binaries; Linux retains GTK3/WebKit2GTK 4.1 during the trial. Recent-project menus and dynamic lifecycle actions remain later product decisions.
 
 ### Exit gate
 

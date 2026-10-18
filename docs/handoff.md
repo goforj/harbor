@@ -16,6 +16,14 @@ Commit `bd54830` closes a managed-session restart gap: the authenticated Compose
 
 The follow-up barrier hardening reports resolver-stage network ownership as a retryable readiness condition rather than “no exact durable reservation.” GoForj commit `a4b35cd5` bounds an un-deadlined managed Compose barrier to 30 seconds, failing fast while Harbor still has time to observe and settle the child inside its two-minute readiness budget. Harbor's launch, attachment, stop, and join calls are bounded as well; an unresolved process scope enters the existing unavailable/quarantine boundary instead of leaving a durable project in `starting` forever. Focused and full Harbor tests pass; native local-Docker proof remains outstanding.
 
+## Wails v3 desktop trial (2026-10-18)
+
+The migration pins the Go module, CLI, and JavaScript runtime to v3.0.0-beta.32. A native tray projects daemon connection state and offers Open Harbor and Quit Harbor UI. Closing the window hides it; explicit activation restores and focuses it. Desktop shutdown still joins its client goroutine and does not stop projects or the daemon.
+
+The v3 transport is installed before Vue imports select the bridge. It exposes the existing generated method whitelist, unwraps native event envelopes, and preserves clipboard errors. Taskfile-based development and `cmd/desktopbuild` replace `wails.json`, while package outputs retain their existing paths and identities. Linux uses v3's `gtk3` compatibility tag with its existing GTK3/WebKit2GTK 4.1 runtime.
+
+Local macOS native smoke passes with the production SPA and a fake daemon, covering service calls, event delivery, and restoration without host mutations. Interactive tray clicks, directory dialogs, and WebView behavior on every supported desktop remain release gates. This is a beta trial, not a stable-distribution claim. Desktop Go tests/vet, frontend unit tests/build, all 25 Chromium checks, and generated-contract parity pass locally. The full headless suite still encounters existing macOS setgid-mode and host-conflict-observation failures, reproduced on the unmodified base commit; they are not attributed to Wails.
+
 ## GoForj update (2026-10-18)
 
 The active CI and development-package baseline is now GoForj `v0.30.0`, with matching generated-project fixture metadata. Earlier source revisions in this handoff describe historical validation. The fixture now supplies the renderer's explicit defaults and validates YAML values instead of byte formatting, without accepting additional fields or multiple documents.
@@ -89,7 +97,7 @@ Do not expand scope before reading [Current implementation state](./current-stat
 - Projects reuse ordinary ports by receiving distinct loopback identities. Port offsets are not the product model.
 - One shared DNS and HTTP/TLS ingress serves stable `.test` names.
 - GoForj owns project composition and `forj dev`; Harbor orchestrates it instead of reproducing `.goforj.yml` semantics.
-- Wails v2 remains the stable desktop host. Vue 3, TypeScript, Vite, Tailwind 4, Pinia, Reka/shadcn primitives, and Lucide are the frontend foundation.
+- Wails v3.0.0-beta.32 is the pinned desktop trial with an integrated native tray. Vue 3, TypeScript, Vite, Tailwind 4, Pinia, Reka/shadcn primitives, and Lucide are the frontend foundation.
 - The GoForj Vue starter's component bones were preserved; Harbor's information architecture and visual density are adapted toward Lerd, not constrained to the starter's original page layout.
 - Current activity matters more than a long operation-history wall. Project detail shows live state, the actionable failure, and current bounded `forj dev` output. Output delivery is wake-driven over the authenticated control connection and terminal redraw controls update existing rows instead of becoming noisy history.
 - Harbor never parses Compose YAML or `forj dev` prose. GoForj owns Compose intent and every mutation. Only `harbord` receives the read-only local Docker Engine boundary. The current adapter uses list, inspect, log-stream, and event-wake calls attributed through exact Compose project/service/working-directory labels and canonical checkout ownership; event payloads never become durable facts, generated Apps and frontend clients never inspect Docker. Publication routing requires an explicit durable endpoint reservation plus a matching ready resource; container observation remains a wake/readiness fact, not publication permission.
@@ -134,7 +142,7 @@ go build -o ./bin/harbord ./cmd/harbord
 ./bin/harbord --foreground
 ```
 
-The desktop can be run separately with `wails dev` from `desktop` when a daemon is already available.
+The desktop can be run separately with `wails3 dev` from `desktop` when a daemon is already available.
 
 The project contains two Go modules. Root `go test ./...` does not validate `desktop`.
 

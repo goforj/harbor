@@ -9,7 +9,7 @@ This design was informed by:
 - the public Laravel Herd product and documentation;
 - a local, pinned audit of Yerd;
 - a local, pinned audit of Lerd;
-- current official Wails v2 documentation, with v3 evaluated as the alpha alternative;
+- official Wails documentation, with the desktop trial updated to v3 beta on 2026-10-18;
 - a clean worktree of current `goforj/goforj` main, including its Vue/shadcn starter.
 
 The repositories were studied for architecture, process ownership, IPC, privilege, DNS, TLS, proxying, service orchestration, persistence, UI, updates, tests, and cross-platform behavior. The research phase copied no Yerd or Lerd source or visual asset. The implementation design now deliberately allows a narrow, attributed adaptation of Lerd's MIT-licensed visual shell through GoForj's Vue/shadcn foundation.
@@ -149,21 +149,17 @@ Lerd is more valuable to Harbor as a catalog of platform failures, tests, and go
 
 ## Wails
 
-Official sources include the Wails v2 [application options](https://wails.io/docs/reference/options/), [runtime](https://wails.io/docs/reference/runtime/intro/), [Linux build guidance](https://wails.io/docs/gettingstarted/building/), and [releases/status](https://github.com/wailsapp/wails). Wails' maintainer confirms the relevant [v2 tray/window limitation](https://github.com/wailsapp/wails/issues/2989). The maintained [`fyne.io/systray`](https://github.com/fyne-io/systray) fork of [`getlantern/systray`](https://github.com/getlantern/systray) is the preferred tray candidate because it supports macOS, Linux, and Windows, removes the GTK dependency on Linux, and exposes `RunWithExternalLoop` for another UI toolkit. A reported [macOS application-delegate collision between Wails v2 and another Go tray implementation](https://github.com/wailsapp/wails/issues/3003) demonstrates why selection still depends on a real three-platform integration proof.
+Updated 2026-10-18. Sources: [beta.32 release](https://github.com/wailsapp/wails/releases/tag/v3.0.0-beta.32), [status](https://v3.wails.io/status/), [v2 migration](https://v3.wails.io/migration/v2-to-v3/), [native tray](https://v3.wails.io/features/menus/systray/), and [build system](https://v3.wails.io/concepts/build-system/).
 
-As of the research date:
+The desktop trial pins Go module, CLI, and `@wailsio/runtime` to v3.0.0-beta.32. Wails v3 is beta, so its stable desktop API is not a claim that all platform defects are resolved. The existing Go 1.26.1 module floor satisfies this version's Go requirement.
 
-- Wails v2 is the stable line and v3 remains alpha.
-- Wails v2 provides the window, menu, hide-on-close, single-instance, event, and Go/frontend binding primitives Harbor needs.
-- Wails v2 does not provide Harbor's tray integration. The tray's native event loop and window visibility synchronization therefore require an explicit proof rather than an assumed same-process composition.
-- On Ubuntu 24.04, Wails v2 uses GTK3 and WebKit2GTK 4.1 with the documented `webkit2_41` build tag.
-- The current tray candidate requires CGO and uses StatusNotifier/AppIndicator over D-Bus on Linux; older or tray-less desktop environments may not display it.
-- Tray support varies by Linux desktop and cannot be reliably detected as a universal capability.
-- Wails services live inside the desktop process and are not OS services.
-- Wails' updater does not coordinate a desktop, daemon, helper, service definitions, schema migration, and rollback as one product update.
-- The exact Wails and tray releases, module requirements, build tags, and native runtime requirements must be pinned and recorded.
+- Wails owns native windows, menus, single-instance activation, dialogs, bindings, events, and the tray in one GUI toolkit.
+- Harbor adapts v3 service calls and event envelopes to its generated Go-owned frontend contract. No daemon socket or privileged capability moves into Vue.
+- Linux retains GTK3 and WebKit2GTK 4.1 using `gtk3`; GTK4 adoption is a separate decision. Tray display still depends on desktop support.
+- Wails services are desktop-process objects, not OS services. Product update, state, project supervision, and recovery remain Harbor concerns.
+- Native compilation and unit tests are necessary but do not replace interactive WebView, tray, close-to-hide, restoration, dialog, and shutdown checks on all three platforms.
 
-Decision: use a pinned stable Wails v2 release in `desktop/` and evaluate `fyne.io/systray` as the preferred tray dependency. Pin its exact release only after same-process integration passes on macOS, Linux, and Windows. Do not maintain a native application-delegate fork to force compatibility and do not adopt alpha Wails v3 solely for its integrated tray API. If the native loops cannot coexist reliably, use a stateless `harbor-tray` client over daemon IPC. The nested module isolates desktop Go, CGO, WebView, and frontend requirements from the headless binaries. The control plane must survive either a tray split or a future Wails replacement.
+Decision: trial the integrated v3 tray without an additional tray dependency or native delegate fork. Keep the existing package layout and headless module boundary. The beta is not promoted to a public stable release solely on build success.
 
 ## Platform sources
 
