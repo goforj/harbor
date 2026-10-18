@@ -56,3 +56,17 @@ func TestCopyFilePreservesPayload(t *testing.T) {
 		t.Fatal("invalid destination accepted")
 	}
 }
+
+// TestBuildRequiresDesktopSources prevents a build from accidentally targeting another module or an unprepared frontend.
+func TestBuildRequiresDesktopSources(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := build(false, false); err == nil {
+		t.Fatal("accepted a directory without go.mod")
+	}
+	if err := os.WriteFile("go.mod", []byte("module example.invalid/fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := build(false, false); err == nil || !strings.Contains(err.Error(), "after building the frontend") {
+		t.Fatalf("missing frontend error = %v", err)
+	}
+}
