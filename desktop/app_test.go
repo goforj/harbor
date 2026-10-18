@@ -23,8 +23,7 @@ import (
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // fakeControlClient keeps lifecycle and response behavior explicit in desktop adapter tests.
@@ -1235,7 +1234,7 @@ func TestStartupRejectsCompetingLifecycle(t *testing.T) {
 func TestSecondInstanceBeforeStartupIsInert(t *testing.T) {
 	t.Parallel()
 
-	testApp().onSecondInstanceLaunch(options.SecondInstanceData{})
+	testApp().onSecondInstanceLaunch(application.SecondInstanceData{})
 }
 
 // TestSecondInstanceRestoresTheOwnedWindow verifies relaunch remains presentation-only.
@@ -1250,7 +1249,7 @@ func TestSecondInstanceRestoresTheOwnedWindow(t *testing.T) {
 		func(context.Context) {},
 	)
 	app.presentation.startup(context.Background())
-	app.onSecondInstanceLaunch(options.SecondInstanceData{})
+	app.onSecondInstanceLaunch(application.SecondInstanceData{})
 	if !restored {
 		t.Fatal("onSecondInstanceLaunch() did not restore the Wails window")
 	}
@@ -2836,7 +2835,7 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 	t.Run("disconnected", func(t *testing.T) {
 		app := testApp()
 		chosen := false
-		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+		app.choose = func(context.Context, directoryDialogOptions) (string, error) {
 			chosen = true
 			return "/workspace/orders", nil
 		}
@@ -2851,7 +2850,7 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 
 	t.Run("canceled", func(t *testing.T) {
 		app, client := connectedTestApp()
-		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) { return "", nil }
+		app.choose = func(context.Context, directoryDialogOptions) (string, error) { return "", nil }
 
 		result, err := app.AddProject()
 		if err != nil {
@@ -2867,7 +2866,7 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 
 	t.Run("picker failure", func(t *testing.T) {
 		app, _ := connectedTestApp()
-		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+		app.choose = func(context.Context, directoryDialogOptions) (string, error) {
 			return "", errors.New("dialog unavailable")
 		}
 
@@ -2879,7 +2878,7 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 	t.Run("registration failure", func(t *testing.T) {
 		app, client := connectedTestApp()
 		client.registerErr = errors.New("not a GoForj project")
-		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+		app.choose = func(context.Context, directoryDialogOptions) (string, error) {
 			return "/workspace/orders", nil
 		}
 
@@ -2891,7 +2890,7 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 	t.Run("invalid daemon result", func(t *testing.T) {
 		app, client := connectedTestApp()
 		client.registration = control.ProjectRegistration{}
-		app.choose = func(context.Context, runtime.OpenDialogOptions) (string, error) {
+		app.choose = func(context.Context, directoryDialogOptions) (string, error) {
 			return "/workspace/orders", nil
 		}
 
@@ -2902,8 +2901,8 @@ func TestAddProjectPreservesPickerAndRegistrationOutcomes(t *testing.T) {
 
 	t.Run("registered", func(t *testing.T) {
 		app, client := connectedTestApp()
-		var options runtime.OpenDialogOptions
-		app.choose = func(_ context.Context, selectedOptions runtime.OpenDialogOptions) (string, error) {
+		var options directoryDialogOptions
+		app.choose = func(_ context.Context, selectedOptions directoryDialogOptions) (string, error) {
 			options = selectedOptions
 			return "/workspace/orders", nil
 		}

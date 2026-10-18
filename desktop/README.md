@@ -6,15 +6,21 @@ The nested module uses Go 1.26.1 because it imports Harbor's root control and do
 
 ## Development
 
-Install the [Wails v2 prerequisites](https://wails.io/docs/gettingstarted/installation) for your platform and Wails v2.13. Start Harbor's daemon and desktop development loops together from the repository root:
+Harbor is trialing **Wails v3.0.0-beta.32**, including its native tray. This is a pinned prerelease, not a stable-release claim. Install the [Wails v3 prerequisites](https://v3.wails.io/getting-started/installation/) and the matching CLI:
+
+```sh
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
+```
+
+Linux deliberately uses the supported `gtk3` compatibility tag with GTK3 and WebKit2GTK 4.1. Start Harbor's daemon and desktop development loops together from the repository root:
 
 ```sh
 forj dev
 ```
 
-GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. On macOS, Wails' pre-build hook creates the native development helper artifacts for the current architecture, so they do not need a separate build command. Linux and Windows source hooks are not implemented yet. Wails watches the desktop's direct Harbor API and approval packages for native rebuilds; unrelated daemon-only packages no longer respawn the window. Frontend asset changes still refresh the webview in place.
+GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. `desktop/Taskfile.yml` and `cmd/desktopbuild` replace the v2 CLI hooks. Development builds create the adjacent helper artifacts without installing or elevating them. Wails watches root and desktop Go sources; Vite refreshes frontend changes in place.
 
-To run only the desktop while an existing daemon is already running, use `wails dev` from `desktop/`.
+To run only the desktop while an existing daemon is already running, use `wails3 dev` from `desktop/`.
 
 For frontend-only development, run the SPA against its deterministic browser fixture:
 
@@ -24,7 +30,7 @@ npm ci
 npm run dev
 ```
 
-`wails dev` uses the native desktop bindings and connects to `harbord`. Browser-only development uses a Go-generated, TypeScript-checked fixture for the exact daemon wire shape and marks the page `Development fixture`. Production fails closed when native bindings or the event runtime are incomplete. A browser production build may opt into fixture data explicitly with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is for browser builds and cannot override a detected Wails runtime with incomplete bindings.
+`wails3 dev` uses the native desktop bindings and connects to `harbord`. Browser-only development uses a Go-generated, TypeScript-checked fixture for the exact daemon wire shape and marks the page `Development fixture`. Production fails closed when native bindings or the event runtime are incomplete. A browser production build may opt into fixture data explicitly with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is for browser builds and cannot override a detected Wails runtime with incomplete bindings.
 
 The Overview's **Add project** action opens the operating system's directory picker and asks the connected daemon to register the selected GoForj checkout. The CLI equivalent is `harbor add [path] [--json]`. Registration records a stopped project; it does not start containers or configure DNS, certificates, or routing.
 
@@ -58,12 +64,13 @@ Build the desktop application from this module:
 
 ```sh
 cd desktop
-wails build
+wails3 task frontend
+wails3 build
 ```
 
-Ubuntu 24.04 requires GTK3, WebKit2GTK 4.1, and the `webkit2_41` Wails build tag. Native packaging also depends on the platform prerequisites documented by Wails.
+Ubuntu 24.04 requires GTK3 and WebKit2GTK 4.1. The build command supplies the v3 `gtk3` tag; use `go test -tags gtk3 ./...` and `go vet -tags gtk3 ./...` on Linux. Native packaging also depends on the platform prerequisites documented by Wails.
 
-The Harbor application mark is wired into native Wails application and window surfaces. The native tray, signed installers, and native installation/runtime verification remain release work. The root Harbor module remains independent of Wails and its native dependencies.
+The Harbor application mark is used by the window and native tray. The tray shows connection status, opens Harbor, and quits only the UI. Closing the window hides it; reopening the application restores it even when a Linux desktop does not display a tray. Interactive tray behavior on each supported desktop and signed distribution remain release gates. The root Harbor module remains independent of Wails and its native dependencies.
 
 The `macOS development package` workflow assembles the first complete Apple-silicon package payload: the desktop, daemon, CLI, output broker, privileged helper, low-port relay, stable daemon launcher, release manifest, and installation record. It is deliberately unsigned and uploaded as a development artifact; it is not a notarized public release. The release-tagged desktop activates the fixed per-user LaunchAgent on first launch, while ordinary source builds continue to use the daemon started by `forj dev`.
 
@@ -71,4 +78,14 @@ The `macOS development package` workflow assembles the first complete Apple-sili
 
 The repository workflow runs root Go tests on Ubuntu, macOS, and Windows. It separately builds the frontend, runs its browser tests, and then tests, vets, and compiles the nested Wails module on all three operating systems.
 
-These hosted builds prove source compilation and Wails' unsigned application-bundle step. They do not produce release installers or replace interactive native smoke for WebView behavior, close-to-hide, relaunch, tray integration, or platform trust and networking operations.
+The CI matrix builds the native desktop on all three operating systems. Separate development-package workflows retain the existing `.pkg`, `.deb`, and NSIS payload layouts and installer lifecycle checks. Passing compilation does not replace interactive tray/WebView proof or signed-release verification.
+
+An explicit local native smoke uses the production SPA with a fake daemon and makes no networking, trust, project, or installer changes:
+
+```sh
+cd desktop
+go test -c -o /tmp/harbor-native-smoke.test .
+HARBOR_NATIVE_DESKTOP_SMOKE=1 /tmp/harbor-native-smoke.test
+```
+
+Run this only in an interactive desktop session. It opens and restores a window, checks real bindings and event delivery, and exits automatically.

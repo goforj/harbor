@@ -66,9 +66,9 @@ Database migrations are embedded in `harbord`. The Vue frontend is embedded in t
 
 ## Tray packaging boundary
 
-Harbor remains on stable Wails v2 for the first release. [`fyne.io/systray`](https://github.com/fyne-io/systray) is the preferred tray candidate because its external-loop entrypoint is designed to coexist with another GUI toolkit. The exact tray version is not frozen until interactive macOS, Windows, and Linux smoke proves that it can share the desktop process without deadlocks, duplicate native application delegates, broken close-to-hide behavior, or unreliable shutdown.
+Harbor is trialing pinned Wails v3.0.0-beta.32 with the matching CLI and JavaScript runtime. The integrated native tray avoids composing a second GUI toolkit. This is a beta migration; stable-release readiness still depends on interactive macOS, Windows, and Linux verification of restoration, close-to-hide, menu interactions, and shutdown.
 
-The first tray contains only aggregate status, `Open Harbor`, and `Quit Harbor UI`. It does not supervise projects, mutate durable state, or become necessary for daemon recovery. Harbor does not adopt alpha Wails v3 solely for tray support and does not maintain a custom Wails, native application-delegate, or tray-library fork to force same-process compatibility.
+The tray contains only connection status, `Open Harbor`, and `Quit Harbor UI`. It does not supervise projects, mutate durable state, or become necessary for daemon recovery. Linux retains GTK3/WebKit2GTK 4.1 through the v3 `gtk3` compatibility tag, and users can reopen the application when their desktop does not display a tray. Native builds retain the existing bundle and installer payload paths.
 
 If the native proof fails, the release gains a stateless `harbor-tray` executable. It is signed, versioned, installed, updated, and removed as part of the same indivisible release, connects through authenticated daemon IPC, and owns no durable state. The release manifest and platform launcher definitions must explicitly include it in that configuration; an independently installed or updated tray is not supported.
 
@@ -468,7 +468,7 @@ A platform artifact is publishable only after a clean native worker proves:
 - preservation of project source, volumes, and neighboring foreign state;
 - no signing credentials or reusable package credentials on the product worker.
 
-Cross-compilation, a successful `wails build`, or installation under an administrative CI account without the shipping consent boundary is not release evidence.
+Cross-compilation, a successful `wails3 build`, or installation under an administrative CI account without the shipping consent boundary is not release evidence.
 
 ## Failure behavior
 

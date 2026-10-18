@@ -118,13 +118,13 @@ jobs:
           npm run build
 
       - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
 
       - name: Build release desktop
         working-directory: desktop
         run: |
           ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
-          wails build -s -clean -platform darwin/arm64 -tags release -trimpath -ldflags "$ldflags" -o Harbor
+          HARBOR_DESKTOP_LDFLAGS="$ldflags" wails3 build
           find build/bin/Harbor.app/Contents/Resources -maxdepth 3 -print | sort
           plutil -p build/bin/Harbor.app/Contents/Info.plist
           test -x build/bin/Harbor.app/Contents/MacOS/harbor-desktop

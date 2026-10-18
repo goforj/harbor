@@ -472,6 +472,7 @@ test('shows ready service counts without treating failed services as ready', asy
 
 test('searches authoritative project metadata that is not rendered in item labels', async ({ page }) => {
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('button', { name: 'Open command menu' })).toBeVisible()
   await page.keyboard.press('Control+k')
 
   const dialog = page.getByRole('dialog', { name: 'Command Menu' })

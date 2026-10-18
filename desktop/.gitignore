@@ -5,3 +5,5 @@ frontend/dist/*
 frontend/playwright-report/
 frontend/test-results/
 frontend/package.json.md5
+
+*.syso

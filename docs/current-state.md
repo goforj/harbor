@@ -4,6 +4,14 @@ Status: active development
 
 Last updated: 2026-10-18
 
+## Wails v3 desktop trial (2026-10-18)
+
+The migration pins the Go module, CLI, and JavaScript runtime to v3.0.0-beta.32. A native tray projects daemon connection state and offers Open Harbor and Quit Harbor UI. Closing the window hides it; explicit activation restores and focuses it. Desktop shutdown still joins its client goroutine and does not stop projects or the daemon.
+
+The v3 transport is installed before Vue imports select the bridge. It exposes the existing generated method whitelist, unwraps native event envelopes, and preserves clipboard errors. Taskfile-based development and `cmd/desktopbuild` replace `wails.json`, while package outputs retain their existing paths and identities. Linux uses v3's `gtk3` compatibility tag with its existing GTK3/WebKit2GTK 4.1 runtime.
+
+Local macOS native smoke passes with the production SPA and a fake daemon, covering service calls, event delivery, and restoration without host mutations. Interactive tray clicks, directory dialogs, and WebView behavior on every supported desktop remain release gates. This is a beta trial, not a stable-distribution claim. Desktop Go tests/vet, frontend unit tests/build, all 25 Chromium checks, and generated-contract parity pass locally. The full headless suite still encounters existing macOS setgid-mode and host-conflict-observation failures, reproduced on the unmodified base commit; they are not attributed to Wails.
+
 ## GoForj tooling baseline (2026-10-18)
 
 Generated-project CI, hosted lifecycle workflows, and development-package workflows now select GoForj `v0.30.0` (release commit `f46e5010b75ebcde3c0251d23ea3650b58ca0922`). The generated-project acceptance fixture records `0.30.0` as well. The isolated fixture explicitly supplies current renderer defaults and compares the resulting single-document YAML by value, allowing formatting and renderer-owned timestamp changes while rejecting added fields, changed values, duplicate keys, and extra documents.
@@ -115,7 +123,7 @@ The Linux `systemd-resolved` recovery path reconciles only bounded, root-owned H
 | `cmd/devartifacts` | Builds the current platform's desktop development helper artifacts. |
 | `cmd/platformproof` | Hosted-runner proof executable for native loopback identity behavior. |
 | `cmd/launchdrelay` | Darwin launchd relay primitive; not yet a complete low-port product path. |
-| `desktop` | Nested Wails v2 Go module. |
+| `desktop` | Nested Wails v3.0.0-beta.32 Go module. |
 | `desktop/frontend` | Vue 3, TypeScript, Vite, Tailwind 4, Pinia, and shadcn/Reka-based SPA. |
 | `internal/authority` | Daemon-side authorization boundary for control operations. |
 | `internal/control` | Versioned local control protocol and client/server transport. |
@@ -148,8 +156,8 @@ The checked-in `.goforj.yml` does the following:
 2. builds `./cmd/outputbroker` as the optional sibling `./bin/outputbroker`;
 3. runs embedded migrations;
 4. runs `harbord --foreground`;
-5. starts `wails dev` in `desktop`;
-6. lets Wails build the current macOS development helper artifacts through its pre-build hook.
+5. starts `wails3 dev` in `desktop`;
+6. lets Wails build the current macOS development helper artifacts through `cmd/desktopbuild`.
 
 The daemon watcher is intentionally non-terminal: a failed daemon run remains visible and waits for the next successful build instead of taking down the entire `forj dev` graph.
 
@@ -166,7 +174,7 @@ go build -o ./bin/harbord ./cmd/harbord
 
 # Desktop only, against an existing daemon
 cd desktop
-wails dev
+wails3 dev
 
 # User-facing CLI
 go run ./cmd/app --help
@@ -331,7 +339,7 @@ No phase in `delivery-plan.md` has met its full exit gate.
 | Headless control plane | Partial but substantial: SQLite, authenticated IPC, operations, registration/removal, recovery, and acceptance coverage exist. |
 | Network data plane | Partial: servers, planning, setup, activation, and routes exist; full cross-platform host integration is incomplete. |
 | GoForj contract | Early/partial: discovery, strict static `forj project:describe --json` validation and session-digest capture, descriptor-constrained framework resource enrichment, readiness-edge and event-driven fenced HTTP endpoint assignment, `forj dev` supervision, direct read-only Docker service observation, daemon-owned service-log streaming, selected service-publication normalization, reserved-resource HTTP route projection, a pure Harbor-owned session/network-fenced managed-publication-to-native-route boundary, a strict transport-neutral managed-session v1 request/response schema, exclusive role-scoped handler routing, exact awaiting-session attachment, capability-gated launch proof and retry, fenced publication replacement authority, exact durable attached-session replay without a generation bump, bounded reconnect/heartbeat republishing for inherited dev sessions, exact live attached-process preservation during daemon recovery, capability-gated runtime-plan production and HTTP overlay consumption, additive stable generated-task IDs and typed lifecycle metadata, and managed admission validation that preserves exact generated legacy tasks while rejecting ambiguous custom lifecycle tasks and cross-scope phase assignments before session registration. Harbor still lacks process/action event delivery and native macOS local-Engine evidence; broker output re-adoption is implemented for Linux/macOS with unsupported platforms failing closed. |
-| Desktop experience | Partial: the working Wails/Vue client covers the main development slice; tray, packaging, and several approvals remain. |
+| Desktop experience | Partial: the working Wails/Vue client covers the main development slice; interactive tray verification, signing, and several approvals remain. |
 | Release | Not started. |
 
 ## Validation

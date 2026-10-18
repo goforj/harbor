@@ -138,20 +138,14 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 0700 "${RUNNER_TEMP}/harbor-build-tools"
-          GOBIN="${RUNNER_TEMP}/harbor-build-tools" go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          GOBIN="${RUNNER_TEMP}/harbor-build-tools" go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
 
       - name: Build Linux desktop
         working-directory: desktop
         run: |
           set -euo pipefail
           export PATH="${RUNNER_TEMP}/harbor-build-tools:${PATH}"
-          wails build \
-            -s \
-            -clean \
-            -platform linux/amd64 \
-            -tags release,webkit2_41 \
-            -trimpath \
-            -o harbor-desktop
+          wails3 build
           test -x build/bin/harbor-desktop
           file build/bin/harbor-desktop | grep -Fq 'ELF 64-bit LSB'
           file build/bin/harbor-desktop | grep -Fq 'x86-64'

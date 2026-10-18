@@ -1,0 +1,25 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the native application from the production frontend
+    cmds:
+      - go run github.com/goforj/harbor/cmd/desktopbuild {{if .DEV}}-dev{{end}}
+  frontend:
+    dir: frontend
+    cmds:
+      - npm ci
+      - npm run build
+  common:dev:frontend:
+    dir: frontend
+    cmds:
+      - npm ci
+      - npm run dev -- --host localhost --port {{.WAILS_VITE_PORT | default "9245"}} --strictPort
+  run:
+    cmds:
+      - cmd: ./build/bin/Harbor.app/Contents/MacOS/harbor-desktop
+        platforms: [darwin]
+      - cmd: ./build/bin/harbor-desktop
+        platforms: [linux]
+      - cmd: ./build/bin/harbor-desktop.exe
+        platforms: [windows]

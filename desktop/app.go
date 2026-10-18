@@ -28,8 +28,7 @@ import (
 	"github.com/goforj/harbor/internal/networksetupapproval"
 	"github.com/goforj/harbor/internal/projectapproval"
 	"github.com/goforj/harbor/internal/rpc"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 const (
@@ -96,8 +95,15 @@ type eventEmitter = desktopwire.RawEmitter
 // resourceOpener delegates a reviewed resource URL to the operating system browser.
 type resourceOpener func(context.Context, string)
 
+// directoryDialogOptions keeps the project picker independent of the desktop framework.
+type directoryDialogOptions struct {
+	Title                string
+	ResolvesAliases      bool
+	CanCreateDirectories bool
+}
+
 // directoryChooser keeps the native folder picker deterministic in adapter tests.
-type directoryChooser func(context.Context, runtime.OpenDialogOptions) (string, error)
+type directoryChooser func(context.Context, directoryDialogOptions) (string, error)
 
 // waitFunc makes reconnect and polling boundaries cancellation-aware and deterministic in tests.
 type waitFunc func(context.Context, time.Duration) bool
@@ -230,7 +236,7 @@ var _ desktopwire.AppContract = (*App)(nil)
 
 // NewApp creates a desktop client wired to Harbor's local control transport and the Wails runtime.
 func NewApp() *App {
-	return newApp(newDesktopClient, runtime.EventsEmit, runtime.BrowserOpenURL, waitForContext)
+	return newApp(newDesktopClient, emitNativeEvent, openNativeURL, waitForContext)
 }
 
 // newApp keeps operating-system and timing effects replaceable without making them optional in production.
@@ -240,7 +246,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		daemonPrerequisite: daemonprerequisite.New(),
 		events:             desktopwire.NewEmitter(emit),
 		open:               open,
-		choose:             runtime.OpenDirectoryDialog,
+		choose:             chooseNativeDirectory,
 		setupApproval: func(client networksetupapproval.Client) networkSetupApprovalRunner {
 			return networksetupapproval.New(
 				client,
@@ -275,7 +281,7 @@ func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait 
 		setupIntent:        newNetworkSetupIntent,
 		resolverIntent:     newNetworkResolverSetupIntent,
 		dataPlaneIntent:    newNetworkDataPlaneSetupIntent,
-		presentation:       newPresentationController(runtime.WindowUnminimise, runtime.Show, runtime.Quit),
+		presentation:       newPresentationController(restoreNativeWindow, showNativeWindow, quitNativeUI),
 		wait:               wait,
 		reconnectDelay:     desktopReconnectDelay,
 		pollInterval:       desktopPollInterval,
@@ -1012,7 +1018,7 @@ func (a *App) AddProject() (desktopwire.AddProjectResult, error) {
 		return desktopwire.AddProjectResult{}, err
 	}
 
-	path, err := a.choose(ctx, runtime.OpenDialogOptions{
+	path, err := a.choose(ctx, directoryDialogOptions{
 		Title:                "Add a GoForj project",
 		ResolvesAliases:      true,
 		CanCreateDirectories: false,
@@ -1806,7 +1812,7 @@ func (a *App) shutdown(_ context.Context) {
 }
 
 // onSecondInstanceLaunch restores the existing client because a second desktop must not become another runtime authority.
-func (a *App) onSecondInstanceLaunch(_ options.SecondInstanceData) {
+func (a *App) onSecondInstanceLaunch(_ application.SecondInstanceData) {
 	a.presentation.activate()
 }
 

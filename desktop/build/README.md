@@ -1,57 +1,29 @@
-# Build Directory
+# Harbor native build assets
 
-The build directory is used to house all the build files and assets for your application.
+Wails v3 uses `desktop/Taskfile.yml`, `build/config.yml`, and the root
+`cmd/desktopbuild` command. Build the frontend first with `wails3 task frontend`,
+then run `wails3 build` from `desktop`. Native outputs retain the installer-owned
+`build/bin/Harbor.app/Contents/MacOS/harbor-desktop` path on macOS and
+`build/bin/harbor-desktop[.exe]` on Linux and Windows.
 
-`appicon.png` is Harbor's canonical full-bleed application icon consumed by
-Wails. Keep its canvas opaque so macOS applies the platform mask only once.
-Keep the checked-in Windows icon generated from that same PNG so native
-application and installer surfaces use the same mark.
+`appicon.png` is Harbor's canonical opaque application and tray icon. The
+checked-in Windows `windows/icon.ico` comes from the same artwork.
+`appicon-symbol.svg` is the transparent anchor layer for macOS Icon Composer.
 
-`appicon-symbol.svg` is the transparent anchor layer used only by Icon Composer.
-On macOS, the Wails post-build hook combines that layer with Harbor's red
-background in a temporary `AppIcon.icon` document, asks `actool` to generate
-the applicable compiled resources in an isolated staging directory, installs
-only `Assets.car`, then re-signs the development bundle. The temporary source
-and fallback outputs are not runtime resources. This enhancement requires full
-Xcode's `actool`; source development keeps the legacy icon without failing when
-only Apple's command-line tools are installed.
+The builder invokes `cmd/packageappicon` from its fixed `build/bin` directory.
+With full Xcode, that command compiles a temporary Composer document into
+`Assets.car`, removes legacy `.icns` and raw Composer resources, selects
+`CFBundleIconName=AppIcon`, and re-signs the bundle. When `actool` is unavailable,
+source development keeps the legacy icon fallback. Package CI requires Xcode 26
+and the compiled catalog.
 
-After modern compilation succeeds, the hook removes Wails' legacy
-`iconfile.icns`, `actool`'s legacy `AppIcon.icns` fallback, the raw Composer
-document, and `CFBundleIconFile`. This leaves `Assets.car` selected solely
-through `CFBundleIconName`; retaining either legacy file can make macOS 26 choose
-the framed bitmap instead of the Icon Composer stack. Before compilation the
-hook clears prior generated icon outputs because `wails dev` reuses its
-application bundle and would otherwise retain resources from an older layout.
+The Darwin plists and Windows JSON/manifest are Harbor-owned literal build
+inputs, not v2 CLI templates. The development plist retains
+`com.goforj.harbor.dev`; the packaged plist retains `com.goforj.harbor`.
+`cmd/desktopbuild` passes the checked-in Windows icon, manifest, and version
+metadata to the pinned v3 resource generator before compiling the executable.
 
-The structure is:
-
-* bin - Output directory
-* darwin - macOS specific files
-* windows - Windows specific files
-
-## Mac
-
-The `darwin` directory holds files specific to Mac builds.
-These may be customised and used as part of the build. To return these files to the default state, simply delete them
-and
-build with `wails build`.
-
-The directory contains the following files:
-
-- `Info.plist` - the main plist file used for Mac builds. It is used when building using `wails build`.
-- `Info.dev.plist` - same as the main plist file but used when building using `wails dev`.
-
-## Windows
-
-The `windows` directory contains the manifest and rc files used when building with `wails build`.
-These may be customised for your application. To return these files to the default state, simply delete them and
-build with `wails build`.
-
-- `icon.ico` - The icon used for the application. This is used when building using `wails build`. If you wish to
-  use a different icon, simply replace this file with your own. If it is missing, a new `icon.ico` file
-  will be created using the `appicon.png` file in the build directory.
-- `installer/*` - The files used to create the Windows installer. These are used when building using `wails build`.
-- `info.json` - Application details used for Windows builds. The data here will be used by the Windows installer,
-  as well as the application itself (right click the exe -> properties -> details)
-- `wails.exe.manifest` - The main application manifest file.
+Product installer definitions live under root `packaging/`; the historical
+`windows/installer` files are not used by Harbor's package workflows.
+Do not regenerate this directory from generic Wails templates, which would
+replace Harbor's identity and artwork.

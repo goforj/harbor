@@ -1,0 +1,23 @@
+version: '3'
+
+# Watch the root module too: the desktop imports Harbor's control and domain contracts.
+dev_mode:
+  root_path: ..
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir: [.git, node_modules, frontend, bin, .tmp]
+    file: [.DS_Store, .gitignore, .gitkeep, '*_test.go']
+    watched_extension: ['*.go']
+    git_ignore: true
+  executes:
+    - cmd: wails3 build DEV=true
+      dir: desktop
+      type: blocking
+    - cmd: wails3 task common:dev:frontend
+      dir: desktop
+      type: background
+    - cmd: wails3 task run
+      dir: desktop
+      type: primary
+      exit_policy: shutdown
