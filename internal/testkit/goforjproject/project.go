@@ -10,12 +10,15 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -364,7 +367,7 @@ func renderConfiguration(specification Spec, version string) []byte {
 		componentLines = append(componentLines, "    - "+component)
 	}
 	return []byte(fmt.Sprintf(
-		"project_name: %s\nmodule_name: %s\ndev:\n  apps:\n    app: true\nrender:\n  components:\n%s\n  help_format: framework\n  goforj_version: %s\n",
+		"project_name: %s\nmodule_name: %s\ndev:\n  pre: []\n  down: []\n  auto_migrate: false\n  down_on_exit: false\n  sound_on_watch_error: false\n  wire_paths:\n    - app/wire\n  apps:\n    app: true\nrender:\n  components:\n%s\n  starter_kit: none\n  help_format: framework\n  agent_guidance: none\n  goforj_version: %s\n",
 		strconv.Quote(specification.Name),
 		strconv.Quote(specification.Module),
 		strings.Join(componentLines, "\n"),
@@ -488,22 +491,40 @@ func matchesProjectEnvironment(contents []byte, expected []byte) bool {
 	return true
 }
 
-// matchesRenderConfiguration permits only GoForj's generated top-level updated_at metadata.
+// matchesRenderConfiguration accepts YAML formatting changes while preserving every explicit fixture value.
 func matchesRenderConfiguration(contents []byte, expected []byte) bool {
-	lines := strings.Split(string(contents), "\n")
-	normalized := make([]string, 0, len(lines))
-	metadataFound := false
-	for _, line := range lines {
-		if strings.HasPrefix(line, "updated_at:") {
-			if metadataFound || strings.TrimSpace(strings.TrimPrefix(line, "updated_at:")) == "" {
-				return false
-			}
-			metadataFound = true
-			continue
-		}
-		normalized = append(normalized, line)
+	actual, err := decodeRenderConfiguration(contents)
+	if err != nil {
+		return false
 	}
-	return bytes.Equal([]byte(strings.Join(normalized, "\n")), expected)
+	want, err := decodeRenderConfiguration(expected)
+	if err != nil {
+		return false
+	}
+	return reflect.DeepEqual(actual, want)
+}
+
+// decodeRenderConfiguration excludes only the renderer-owned timestamp from a single unambiguous YAML document.
+func decodeRenderConfiguration(contents []byte) (map[string]any, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	var configuration map[string]any
+	if err := decoder.Decode(&configuration); err != nil {
+		return nil, err
+	}
+	if configuration == nil {
+		return nil, errors.New("render configuration must be a mapping")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New("render configuration must contain exactly one YAML document")
+	}
+	if timestamp, exists := configuration["updated_at"]; exists {
+		if _, ok := timestamp.(string); !ok {
+			return nil, errors.New("render timestamp must be a string")
+		}
+		delete(configuration, "updated_at")
+	}
+	return configuration, nil
 }
 
 // readDirectBoundedFile accepts only one small direct regular output artifact.

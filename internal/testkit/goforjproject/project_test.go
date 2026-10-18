@@ -203,7 +203,7 @@ func TestRenderConfigurationSelectsTheGeneratedAppRuntime(t *testing.T) {
 		Spec{Name: "Harbor Orders", Module: "example.test/harbor/orders", Port: 3000},
 		"0.19.0",
 	))
-	if !strings.Contains(configuration, "dev:\n  apps:\n    app: true\n") {
+	if !strings.Contains(configuration, "  apps:\n    app: true\n") {
 		t.Fatalf("render configuration does not select the generated App runtime:\n%s", configuration)
 	}
 	if strings.Contains(configuration, "dev:\n  run:") {
@@ -404,4 +404,35 @@ func testPathContains(parent string, candidate string) bool {
 		return false
 	}
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+// TestMatchesRenderConfigurationPreservesIntentAcrossYAMLFormatting covers the current renderer without accepting configuration drift.
+func TestMatchesRenderConfigurationPreservesIntentAcrossYAMLFormatting(t *testing.T) {
+	expected := []byte("project_name: \"Orders\"\nrender:\n  components:\n    - cli\n")
+	for _, test := range []struct {
+		name, contents string
+		want           bool
+	}{
+		{"same", string(expected), true},
+		{"normalized", "project_name: Orders\nupdated_at: \"\"\nrender:\n  components: [cli]\n", true},
+		{"timestamp", "project_name: Orders\nupdated_at: \"2026-10-18\"\nrender:\n  components: [cli]\n", true},
+		{"changed project", "project_name: Billing\nrender:\n  components: [cli]\n", false},
+		{"extra key", string(expected) + "unexpected: true\n", false},
+		{"changed components", "project_name: Orders\nrender:\n  components: [cli, docker]\n", false},
+		{"duplicate timestamp", string(expected) + "updated_at: one\nupdated_at: two\n", false},
+		{"numeric timestamp", string(expected) + "updated_at: 1\n", false},
+		{"multiple documents", string(expected) + "---\nextra: value\n", false},
+		{"malformed", "project_name: [\n", false},
+		{"empty", "", false},
+		{"null", "null\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := matchesRenderConfiguration([]byte(test.contents), expected); got != test.want {
+				t.Fatalf("matchesRenderConfiguration() = %t, want %t", got, test.want)
+			}
+		})
+	}
+	if matchesRenderConfiguration(expected, []byte("invalid: [")) {
+		t.Fatal("accepted invalid expected configuration")
+	}
 }
