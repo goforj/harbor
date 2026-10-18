@@ -7,3 +7,5 @@ frontend/test-results/
 frontend/package.json.md5
 
 *.syso
+
+.task/

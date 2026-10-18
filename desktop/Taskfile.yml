@@ -5,16 +5,22 @@ tasks:
     desc: Build the native application from the production frontend
     cmds:
       - go run github.com/goforj/harbor/cmd/desktopbuild {{if .DEV}}-dev{{end}} {{if .RELEASE}}-release{{end}}
+  frontend:install:
+    dir: frontend
+    sources: [package.json, package-lock.json]
+    generates: [node_modules/.package-lock.json]
+    cmds:
+      - npm ci
   frontend:
     dir: frontend
     cmds:
-      - npm ci
+      - task: frontend:install
       - npm run build
   common:dev:frontend:
     dir: frontend
     cmds:
-      - npm ci
-      - npm run dev -- --host localhost --port {{.WAILS_VITE_PORT | default "9245"}} --strictPort
+      - task: frontend:install
+      - npm run dev -- --host 127.0.0.1 --port {{.WAILS_VITE_PORT | default "9245"}} --strictPort
   run:
     cmds:
       - cmd: ./build/bin/Harbor.app/Contents/MacOS/harbor-desktop

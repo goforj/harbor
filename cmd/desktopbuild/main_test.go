@@ -27,6 +27,9 @@ func TestBuildArguments(t *testing.T) {
 				if strings.Contains(flags, "windowsgui") != (platform == "windows" && !dev) {
 					t.Fatal(args)
 				}
+				if platform == "darwin" && !strings.Contains(flags, "-extldflags=-mmacosx-version-min=") {
+					t.Fatal("missing explicit native linker target", args)
+				}
 				if !strings.Contains(flags, "-X example.version=1.2.3") {
 					t.Fatal(args)
 				}
@@ -88,6 +91,54 @@ func TestDevelopmentArtifactsStayDarwinOnly(t *testing.T) {
 	} {
 		if got := needsDevelopmentArtifacts(test.platform, test.dev, test.release); got != test.want {
 			t.Fatalf("%+v: got %t", test, got)
+		}
+	}
+}
+
+// TestDarwinDeploymentTarget follows the supported OS minimum of the selected Go toolchain.
+func TestDarwinDeploymentTarget(t *testing.T) {
+	for _, test := range []struct{ goVersion, target string }{
+		{"go1.26.1", "12.0"}, {"go1.27.0", "13.0"}, {"go1.27rc1", "13.0"},
+	} {
+		if got := darwinDeploymentTarget(test.goVersion); got != test.target {
+			t.Fatalf("%s: got %s, want %s", test.goVersion, got, test.target)
+		}
+	}
+}
+
+// TestDarwinBuildEnvironment preserves user flags and changes cgo cache inputs without mutating the caller's environment.
+func TestDarwinBuildEnvironment(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		base := []string{"PATH=/tools", "MACOSX_DEPLOYMENT_TARGET=11.0"}
+		if custom {
+			base = append(base, "CGO_CFLAGS=-O0 -DLOCAL_TEST", "CGO_CXXFLAGS=-O1", "CGO_LDFLAGS=-framework Security")
+		}
+		original := append([]string(nil), base...)
+		got := darwinBuildEnvironment(base, "go1.27.0")
+		if !reflect.DeepEqual(base, original) {
+			t.Fatal("modified caller environment")
+		}
+		values := map[string]string{}
+		for _, entry := range got {
+			key, value, _ := strings.Cut(entry, "=")
+			if _, exists := values[key]; exists {
+				t.Fatalf("duplicate variable: %s", key)
+			}
+			values[key] = value
+		}
+		if values["PATH"] != "/tools" || values["MACOSX_DEPLOYMENT_TARGET"] != "13.0" {
+			t.Fatal(values)
+		}
+		for _, key := range []string{"CGO_CFLAGS", "CGO_CXXFLAGS", "CGO_LDFLAGS"} {
+			if !strings.HasSuffix(values[key], "-mmacosx-version-min=13.0") {
+				t.Fatal(values)
+			}
+			if !custom && !strings.HasPrefix(values[key], "-O2 -g ") {
+				t.Fatal(values)
+			}
+		}
+		if custom && (!strings.Contains(values["CGO_CFLAGS"], "-DLOCAL_TEST") || !strings.Contains(values["CGO_CXXFLAGS"], "-O1") || !strings.Contains(values["CGO_LDFLAGS"], "-framework Security")) {
+			t.Fatal(values)
 		}
 	}
 }
