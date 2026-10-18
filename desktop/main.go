@@ -34,7 +34,8 @@ var trayTemplateIcon []byte
 func main() {
 	client := NewApp()
 	native := application.New(newApplicationOptions(client, assets))
-	newDesktopWindow(native)
+	window := newDesktopWindow(native)
+	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { client.presentation.windowReady() })
 	native.Menu.SetApplicationMenu(newApplicationMenu(client.presentation, runtime.GOOS))
 	configureTray(native, client)
 	native.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { client.startup(native.Context()) })

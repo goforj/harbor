@@ -36,7 +36,15 @@ func runNativeDesktopSmoke() int {
 	var passed atomic.Bool
 	options.Assets.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/smoke/focus":
+			if !nativeWindow().IsFocused() {
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case "/smoke/ready":
+			nativeWindow().Close()
+			client.presentation.activate()
 			native.Event.Emit(desktopwire.ConnectionEventName, desktopwire.ConnectionEvent{State: ConnectionConnected})
 			w.WriteHeader(http.StatusNoContent)
 		case "/smoke/result":
@@ -79,8 +87,7 @@ func runNativeDesktopSmoke() int {
 		client.presentation.startup(native.Context())
 	})
 	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
-		window.Close()
-		client.presentation.activate()
+		client.presentation.windowReady()
 	})
 	timer := time.AfterFunc(25*time.Second, func() { fmt.Println("native desktop smoke: timeout"); os.Exit(1) })
 	defer timer.Stop()
@@ -102,6 +109,10 @@ const nativeSmokeProbe = `(async () => {
     await new Promise(resolve => setTimeout(resolve, 100));
    }
    try {
+    while (!(await fetch('/smoke/focus')).ok) {
+     if (Date.now() > deadline) throw new Error('initial-window-focus-timeout');
+     await new Promise(resolve => setTimeout(resolve, 100));
+    }
     const status = await window.go.main.App.Status();
     const snapshot = await window.go.main.App.Snapshot();
     if (status.state !== 'ready' || !snapshot.projects.length) throw new Error('invalid native response');
