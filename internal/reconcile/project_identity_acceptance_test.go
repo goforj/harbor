@@ -30,7 +30,7 @@ import (
 const (
 	projectIdentityAcceptanceForjEnvironment             = "HARBOR_PROJECT_IDENTITY_FORJ_BINARY"
 	projectIdentityAcceptanceAddressesEnvironment        = "HARBOR_PROOF_ADDRESSES"
-	projectIdentityAcceptanceGoForjVersion               = "0.21.0"
+	projectIdentityAcceptanceGoForjVersion               = "0.30.0"
 	projectIdentityAcceptancePort                 uint16 = 3000
 	projectIdentityAcceptanceEndpointCheckTimeout        = 5 * time.Second
 	projectIdentityAcceptanceTimeout                     = 8 * time.Minute
@@ -144,6 +144,12 @@ func TestGeneratedMySQLFixturesRender(t *testing.T) {
 			{
 				Name:   "Harbor MySQL Billing",
 				Module: "example.test/harbor/mysql-billing",
+				Port:   projectIdentityAcceptancePort,
+				MySQL:  true,
+			},
+			{
+				Name:   "Harbor MySQL Inventory",
+				Module: "example.test/harbor/mysql-inventory",
 				Port:   projectIdentityAcceptancePort,
 				MySQL:  true,
 			},

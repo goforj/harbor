@@ -2,7 +2,7 @@
 
 Status: GitHub-hosted macOS, Linux, and Windows three-project trusted-HTTPS lifecycle proved
 
-Last updated: 2026-07-25
+Last updated: 2026-10-18
 
 The opening implementation notes below are retained as historical context. The authoritative continuation and evidence boundary begins at [Read this first](#read-this-first).
 
@@ -15,6 +15,14 @@ The root and nested desktop Go modules pass their complete tests and vet checks,
 Commit `bd54830` closes a managed-session restart gap: the authenticated Compose barrier now idempotently reconciles descriptor-declared host service reservations before joining observed ports. An already-attached GoForj process therefore converges after a daemon restart even when its original Start admission did not write the reservation; the focused regression and full root test suite pass. Native local-Docker proof remains outstanding.
 
 The follow-up barrier hardening reports resolver-stage network ownership as a retryable readiness condition rather than “no exact durable reservation.” GoForj commit `a4b35cd5` bounds an un-deadlined managed Compose barrier to 30 seconds, failing fast while Harbor still has time to observe and settle the child inside its two-minute readiness budget. Harbor's launch, attachment, stop, and join calls are bounded as well; an unresolved process scope enters the existing unavailable/quarantine boundary instead of leaving a durable project in `starting` forever. Focused and full Harbor tests pass; native local-Docker proof remains outstanding.
+
+## GoForj update (2026-10-18)
+
+The active CI and development-package baseline is now GoForj `v0.30.0`, with matching generated-project fixture metadata. Earlier source revisions in this handoff describe historical validation. The fixture now supplies the renderer's explicit defaults and validates YAML values instead of byte formatting, without accepting additional fields or multiple documents.
+
+The installed local `forj` is now the published `v0.30.0` binary; its prior `v0.28.0` executable is backed up outside the checkout. Both module vet checks, the desktop suite, fixture unit/race checks, real generated MySQL rendering, descriptor inspection, and repeat-render idempotence pass. The full root suite still reports native host-observation, hardcoded shared-cache, and non-UTC fixture failures; canonical temporary paths resolve its daemon-launcher and discovery path failures. The next goal is to resolve those test-environment issues and run the hosted lifecycle checks against this updated baseline before making new platform-support claims.
+
+This update covers the eight workflow pins, the acceptance fixture version, isolated render fixture compatibility and regression cases, and integration notes. Harbor's own render provenance stays at `0.19.0`; do not rerender the customized app or frontend to change that field. No privileged lifecycle, native project start, or hosted cross-platform proof has been run for this update.
 
 ## Read this first
 

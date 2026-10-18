@@ -208,7 +208,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: goforj/goforj
-          ref: v0.22.0
+          ref: v0.30.0
           path: .ci/goforj
           persist-credentials: false
 
@@ -368,7 +368,7 @@ jobs:
             go_tags: -tags=webkit2_41
             build_args: -tags webkit2_41
           - name: macOS
-            os: macos-14
+            os: macos-26
             go_tags: ""
             build_args: ""
           - name: Windows
@@ -396,6 +396,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes build-essential libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Verify modern macOS icon toolchain
+        if: runner.os == 'macOS'
+        run: |
+          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 26([.]|$)'
+          xcrun --find actool
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
