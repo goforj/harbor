@@ -66,6 +66,8 @@ func runNativeDesktopSmoke() int {
 	configureTray(native, client)
 	native.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		client.presentation.startup(native.Context())
+	})
+	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
 		window.Close()
 		client.presentation.activate()
 		window.ExecJS(`(async () => {
