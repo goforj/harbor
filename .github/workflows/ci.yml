@@ -401,7 +401,7 @@ jobs:
           xcrun --find actool
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
+        run: go install ${{ matrix.go_tags }} github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
 
       - name: Test desktop module
         working-directory: desktop

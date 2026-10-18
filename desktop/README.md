@@ -12,7 +12,7 @@ Harbor is trialing **Wails v3.0.0-beta.32**, including its native tray. This is 
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32
 ```
 
-Linux deliberately uses the supported `gtk3` compatibility tag with GTK3 and WebKit2GTK 4.1. Start Harbor's daemon and desktop development loops together from the repository root:
+Linux deliberately uses the supported `gtk3` compatibility tag with GTK3 and WebKit2GTK 4.1. On Linux, install the CLI with `go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.32` too. Start Harbor's daemon and desktop development loops together from the repository root:
 
 ```sh
 forj dev
