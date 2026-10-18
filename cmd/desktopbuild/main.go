@@ -5,10 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/version"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // main keeps platform packaging in one command shared by development and CI.
@@ -74,6 +76,9 @@ func build(dev, release bool) error {
 			return err
 		}
 	}
+	if err := command("/usr/libexec/PlistBuddy", "-c", "Set :LSMinimumSystemVersion "+darwinDeploymentTarget(runtime.Version()), filepath.Join(bundle, "Info.plist")); err != nil {
+		return err
+	}
 	// Retain the legacy source-development fallback when full Xcode is unavailable.
 	if err := command("wails3", "generate", "icons", "-input", "build/appicon.png", "-macfilename", filepath.Join(bundle, "Resources", "iconfile.icns"), "-windowsfilename", filepath.Join("build", "bin", "icon.ico")); err != nil {
 		return err
@@ -110,6 +115,9 @@ func buildArguments(platform, output, extraLDFlags string, dev, release bool) []
 	if extraLDFlags != "" {
 		ldflags += " " + extraLDFlags
 	}
+	if platform == "darwin" {
+		ldflags += " -extldflags=-mmacosx-version-min=" + darwinDeploymentTarget(runtime.Version())
+	}
 	return []string{"build", "-trimpath", "-buildvcs=false", "-tags", tags, "-ldflags", ldflags, "-o", output, "."}
 }
 
@@ -124,12 +132,47 @@ func commandIn(directory, name string, arguments ...string) error {
 	cmd.Dir = directory
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	if runtime.GOOS == "darwin" && name == "go" {
-		cmd.Env = append(os.Environ(), "MACOSX_DEPLOYMENT_TARGET=12.0")
+		cmd.Env = darwinBuildEnvironment(os.Environ(), runtime.Version())
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s %v: %w", name, arguments, err)
 	}
 	return nil
+}
+
+// darwinDeploymentTarget follows the compiler's supported OS floor without raising the module's Go requirement.
+func darwinDeploymentTarget(goVersion string) string {
+	if version.Compare(goVersion, "go1.27") >= 0 {
+		return "13.0"
+	}
+	return "12.0"
+}
+
+// darwinBuildEnvironment puts deployment targets in cgo's cache inputs as well as the native compiler environment.
+func darwinBuildEnvironment(environment []string, goVersion string) []string {
+	target := darwinDeploymentTarget(goVersion)
+	result := append([]string(nil), environment...)
+	for _, key := range []string{"CGO_CFLAGS", "CGO_CXXFLAGS", "CGO_LDFLAGS", "MACOSX_DEPLOYMENT_TARGET"} {
+		value := ""
+		filtered := make([]string, 0, len(result)+1)
+		for _, entry := range result {
+			if strings.HasPrefix(entry, key+"=") {
+				value = strings.TrimPrefix(entry, key+"=")
+			} else {
+				filtered = append(filtered, entry)
+			}
+		}
+		if key == "MACOSX_DEPLOYMENT_TARGET" {
+			value = target
+		} else {
+			if value == "" {
+				value = "-O2 -g"
+			}
+			value += " -mmacosx-version-min=" + target
+		}
+		result = append(filtered, key+"="+value)
+	}
+	return result
 }
 
 // copyFile preserves executable permissions when assembling Harbor's app bundle.
