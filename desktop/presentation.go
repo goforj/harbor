@@ -11,6 +11,8 @@ type presentationAction func(context.Context)
 // presentationController owns only the native window and UI-process lifecycle.
 type presentationController struct {
 	actionMu   sync.Mutex
+	ready      bool
+	activated  bool
 	mu         sync.Mutex
 	ctx        context.Context
 	quitting   bool
@@ -37,6 +39,28 @@ func (controller *presentationController) startup(ctx context.Context) {
 	controller.ctx = ctx
 	controller.quitting = false
 	controller.mu.Unlock()
+	controller.activateOnStartup(ctx)
+}
+
+// windowReady admits initial activation only once the native window and application lifecycle are both ready.
+func (controller *presentationController) windowReady() {
+	controller.actionMu.Lock()
+	defer controller.actionMu.Unlock()
+	controller.ready = true
+	controller.mu.Lock()
+	ctx := controller.ctx
+	controller.mu.Unlock()
+	controller.activateOnStartup(ctx)
+}
+
+// activateOnStartup runs under actionMu so frontend reloads cannot steal focus after the first activation.
+func (controller *presentationController) activateOnStartup(ctx context.Context) {
+	if ctx == nil || !controller.ready || controller.activated {
+		return
+	}
+	controller.activated = true
+	controller.unminimise(ctx)
+	controller.show(ctx)
 }
 
 // shutdown withdraws the Wails context after every in-flight native presentation action has completed.
@@ -47,6 +71,8 @@ func (controller *presentationController) shutdown() {
 	controller.mu.Lock()
 	controller.ctx = nil
 	controller.quitting = false
+	controller.ready = false
+	controller.activated = false
 	controller.mu.Unlock()
 }
 

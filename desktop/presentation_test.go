@@ -8,6 +8,41 @@ import (
 	"time"
 )
 
+// TestInitialActivationWaitsForBothLifecycles restores focus once regardless of application/window event ordering.
+func TestInitialActivationWaitsForBothLifecycles(t *testing.T) {
+	for _, windowFirst := range []bool{false, true} {
+		var actions []string
+		controller := newPresentationController(
+			func(context.Context) { actions = append(actions, "restore") },
+			func(context.Context) { actions = append(actions, "focus") },
+			func(context.Context) {},
+		)
+		if windowFirst {
+			controller.windowReady()
+		} else {
+			controller.startup(context.Background())
+		}
+		if len(actions) != 0 {
+			t.Fatal("activated before both lifecycles were ready")
+		}
+		if windowFirst {
+			controller.startup(context.Background())
+		} else {
+			controller.windowReady()
+		}
+		controller.windowReady()
+		controller.windowReady()
+		if len(actions) != 2 || actions[0] != "restore" || actions[1] != "focus" {
+			t.Fatalf("startup must restore/focus exactly once: %v", actions)
+		}
+		controller.shutdown()
+		controller.windowReady()
+		if len(actions) != 2 {
+			t.Fatal("activated after shutdown")
+		}
+	}
+}
+
 // TestPresentationCallbacksRespectLifecycle keeps native runtime calls inside the Wails lifecycle that supplies their context.
 func TestPresentationCallbacksRespectLifecycle(t *testing.T) {
 	t.Parallel()
