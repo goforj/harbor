@@ -70,3 +70,24 @@ func TestBuildRequiresDesktopSources(t *testing.T) {
 		t.Fatalf("missing frontend error = %v", err)
 	}
 }
+
+// TestDevelopmentArtifactsStayDarwinOnly prevents unsupported bootstrap commands from entering other native builds.
+func TestDevelopmentArtifactsStayDarwinOnly(t *testing.T) {
+	for _, test := range []struct {
+		platform           string
+		dev, release, want bool
+	}{
+		{"darwin", true, false, true},
+		{"darwin", false, false, true},
+		{"darwin", false, true, false},
+		{"darwin", true, true, true},
+		{"linux", true, false, false},
+		{"linux", false, false, false},
+		{"windows", true, false, false},
+		{"windows", false, false, false},
+	} {
+		if got := needsDevelopmentArtifacts(test.platform, test.dev, test.release); got != test.want {
+			t.Fatalf("%+v: got %t", test, got)
+		}
+	}
+}

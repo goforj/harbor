@@ -37,7 +37,7 @@ func build(dev, release bool) error {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return err
 	}
-	if dev || !release {
+	if needsDevelopmentArtifacts(runtime.GOOS, dev, release) {
 		if err := command("go", "run", "github.com/goforj/harbor/cmd/devartifacts"); err != nil {
 			return err
 		}
@@ -83,6 +83,11 @@ func build(dev, release bool) error {
 		return err
 	}
 	return commandIn(filepath.Join("build", "bin"), "go", "run", "github.com/goforj/harbor/cmd/packageappicon", executable)
+}
+
+// needsDevelopmentArtifacts retains the Darwin-only source bootstrap supported before the Wails migration.
+func needsDevelopmentArtifacts(platform string, dev, release bool) bool {
+	return platform == "darwin" && (dev || !release)
 }
 
 // buildArguments keeps Linux on the existing GTK3/WebKit 4.1 package baseline during the beta trial.

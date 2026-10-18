@@ -18,7 +18,7 @@ Linux deliberately uses the supported `gtk3` compatibility tag with GTK3 and Web
 forj dev
 ```
 
-GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. `desktop/Taskfile.yml` and `cmd/desktopbuild` replace the v2 CLI hooks. Development builds create the adjacent helper artifacts without installing or elevating them. Wails watches root and desktop Go sources; Vite refreshes frontend changes in place.
+GoForj rebuilds and restarts `harbord`, applies its embedded migrations before each start, and runs Wails. `desktop/Taskfile.yml` and `cmd/desktopbuild` replace the v2 CLI hooks. macOS source builds create the adjacent helper artifacts without installing or elevating them. Linux and Windows retain their existing source-bootstrap limitations; the installer workflows build their product components separately. Wails watches root and desktop Go sources; Vite refreshes frontend changes in place.
 
 To run only the desktop while an existing daemon is already running, use `wails3 dev` from `desktop/`.
 
