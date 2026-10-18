@@ -7,9 +7,6 @@ on:
         description: Three-part semantic base version for this unsigned development installer
         required: true
         default: 0.1.0
-  push:
-    tags:
-      - "v*.*.*-rc.*"
 
 permissions:
   contents: read

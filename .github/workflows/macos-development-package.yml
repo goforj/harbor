@@ -7,9 +7,12 @@ on:
         description: Three-part semantic base version for this unsigned development package
         required: true
         default: 0.1.0
-  push:
-    tags:
-      - "v*.*.*-rc.*"
+  workflow_call:
+    inputs:
+      release_version:
+        description: Full beta or release-candidate version selected by the release workflow
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -27,31 +30,26 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Configure package paths
         env:
           HARBOR_REQUESTED_VERSION: ${{ inputs.version }}
+          HARBOR_CALLED_VERSION: ${{ inputs.release_version }}
         run: |
-          case "$GITHUB_EVENT_NAME" in
-            workflow_dispatch)
-              if [[ ! "$HARBOR_REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "manual package version must contain exactly three numeric parts" >&2
-                exit 1
-              fi
-              release_version="${HARBOR_REQUESTED_VERSION}-dev.${GITHUB_RUN_NUMBER}"
-              ;;
-            push)
-              if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+)$ ]]; then
-                echo "release-candidate tag must match vMAJOR.MINOR.PATCH-rc.NUMBER" >&2
-                exit 1
-              fi
-              release_version="${BASH_REMATCH[1]}"
-              ;;
-            *)
-              echo "unsupported package event ${GITHUB_EVENT_NAME}" >&2
+          if [[ -n "$HARBOR_CALLED_VERSION" ]]; then
+            if [[ ! "$HARBOR_CALLED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(beta|rc)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "release version must match MAJOR.MINOR.PATCH-(beta|rc).NUMBER" >&2
               exit 1
-              ;;
-          esac
+            fi
+            release_version="$HARBOR_CALLED_VERSION"
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$HARBOR_REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            release_version="${HARBOR_REQUESTED_VERSION}-dev.${GITHUB_RUN_NUMBER}"
+          else
+            echo "unsupported package request" >&2
+            exit 1
+          fi
           payload_root="/Library/PrivilegedHelperTools/.goforj-harbor-payload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           package_path="${RUNNER_TEMP}/GoForj-Harbor-macos-arm64-${release_version}.pkg"
           sudo -n test ! -e "$payload_root"
