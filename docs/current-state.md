@@ -4,6 +4,23 @@ Status: active development
 
 Last updated: 2026-10-18
 
+Project work is organized in [Harbor in Plane](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/)
+with identifier `HARBOR`. The board distinguishes completed foundations from
+remaining product verification and release gates; see the handoff for priorities.
+
+## Local project workspace design preview (2026-10-18)
+
+Branch `feat/project-workspace-design` contains the accepted visual implementation of
+the project detail screen and shared project browser. It prioritizes the project
+name, status, and labeled actions; adds snapshot-backed overview shortcuts and
+service summaries; gives development output the full working area; and removes
+the illustration from project working screens. Shared shadcn primitives and
+native/daemon contracts are unchanged. The user accepted this visual direction
+on 2026-10-18; merging and distribution remain pending. Frontend build, 237 unit tests, and 25 Chromium checks pass. Browser
+inspection covers dark/light desktop and a 430-pixel layout without horizontal
+overflow. The isolated fixture preview is served on `127.0.0.1:39517` while this
+session remains running.
+
 ## Wails v3 desktop trial (2026-10-18)
 
 Initial startup now restores and focuses Harbor once both the native application and window are ready, regardless of event ordering. Later frontend reloads do not reactivate a hidden or background window. Lifecycle tests cover ordering and repeated ready events; the native smoke now verifies initial focus before checking hide/restore, bindings, and events.

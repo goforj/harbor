@@ -39,6 +39,22 @@ The first desktop foundation is present under `desktop/`:
 
 Frontend-only browser development uses the fixture adapter, with an explicit `Development fixture` marker in the UI. `wails3 dev` and packaged builds use the native status, snapshot, project lifecycle, current project activity, current service logs, resource, and network setup bindings plus typed `harbor:connection` and `harbor:snapshot` events. `AddProject` returns a stopped registration. `SetupNetwork` keeps the fixed machine-global intent in Go and exposes neither helper tickets nor the three-step approval protocol to TypeScript. Current project activity exposes neither historical sessions nor process ownership; a capability-gated request waits on the current cursor until output arrives, closes, or reaches its bounded timeout. The frontend immediately continues that stream, falls back to 750 ms cursor reads with older daemons, and keeps at most 256 KiB visible. A replacement activity read cancels the prior held desktop request, and an invalid early response without cursor progress backs off instead of creating a request loop. Service logs use an independent capability-gated held cursor so switching a service or reconnecting cannot mix output across project sessions. `harbord`, not GoForj or the frontend, opens the local Docker log streams; Wails transports only the bounded typed result. The shared incremental terminal model handles ANSI presentation, carriage-return loaders, multiline cursor redraws, and split Unicode without interpreting process text as HTML; automatic tailing pauses while the user inspects earlier output. `RemoveProject` can complete an inert registration immediately or display durable queued, running, failed, cancelled, and approval-required operation state; project removal does not implement its interactive approval handoff yet. Production fails visibly when bindings or the event runtime are incomplete. A browser production build can request fixture data with `VITE_HARBOR_BROWSER_FIXTURE=true`; the flag is browser-only and cannot override a detected Wails runtime with incomplete bindings. The native tray projects connection status and exposes only Open Harbor and Quit Harbor UI. Interactive tray behavior on macOS, Windows, and supported Linux desktops remains a release gate.
 
+## Project workspace design preview
+
+The local project detail preview makes project identity and lifecycle actions the
+header's primary hierarchy. The URL and checkout path remain secondary, with
+copy and resource-open behavior preserved. Project navigation uses readable
+names and accessible status dots rather than repeated boxed status controls.
+
+The overview uses snapshot-backed application and ready-service counts, resource
+shortcuts, an update timestamp, and application/service summaries. Development
+output fills the workspace below a compact toolbar; its terminal model, copy,
+retained-output notices, and scroll-follow behavior remain intact. Background
+artwork is restricted to the global overview rather than project working screens.
+The neutral surface hierarchy supports light and dark themes and narrow layouts.
+The user accepted this visual direction on 2026-10-18. The implementation
+is being prepared for merge; acceptance is not a claim that the design has shipped.
+
 ## Preserved starter foundation
 
 These files and conventions form the preserved starter boundary. Harbor currently has one documented primitive-level exception: `CommandItem` prefers an explicit `value` when indexing search text so the command palette can find relevant metadata without rendering it in the visible label. The remaining primitive source should stay verbatim until a concrete Harbor requirement forces a change:

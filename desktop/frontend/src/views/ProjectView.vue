@@ -7,6 +7,10 @@ import {
   Clipboard,
   ExternalLink,
   Globe2,
+  Folder,
+  Clock3,
+  Server,
+  ArrowUpRight,
   LockKeyhole,
   LoaderCircle,
   Network,
@@ -165,6 +169,22 @@ const currentProjectOperation = computed(() => {
   }
   return undefined
 })
+const currentOperationLabel = computed(() => {
+  const labels: Record<string, string> = {
+    'project.start': 'Start project',
+    'project.stop': 'Stop project',
+    'project.restart': 'Restart project',
+    'project.remove': 'Remove project',
+    'project.reconcile': 'Project reconciliation',
+  }
+  return labels[currentProjectOperation.value?.kind ?? ''] ?? 'Project operation'
+})
+const updatedTime = computed(() => project.value
+  ? new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(project.value.updated_at))
+  : '')
+const updatedDate = computed(() => project.value
+  ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(project.value.updated_at))
+  : '')
 const primaryResource = computed(() => project.value?.resources.find((resource) => resource.kind === 'application'))
 const projectAddress = computed(() => primaryResource.value?.url ?? (project.value ? `https://${project.value.slug}.test` : ''))
 const projectAddressPublished = computed(() => primaryResource.value != null)
@@ -513,45 +533,31 @@ async function setupNetworkAndStartProject() {
 </script>
 
 <template>
-  <main class="flex h-full min-w-0 flex-col overflow-y-auto" :aria-labelledby="project ? 'project-title' : 'project-empty-title'">
+  <main class="harbor-project flex h-full min-w-0 flex-col overflow-y-auto" :aria-labelledby="project ? 'project-title' : 'project-empty-title'">
     <template v-if="project">
-      <header class="border-b px-5 py-4 lg:px-7">
-        <div class="flex min-w-0 flex-wrap items-center gap-3">
+      <header class="project-header shrink-0 border-b px-5 py-5 lg:px-7">
+        <div class="project-heading flex min-w-0 flex-wrap items-center gap-4">
           <Button variant="ghost" size="icon-sm" class="-ml-2 shrink-0 min-[1100px]:hidden" as-child>
             <RouterLink to="/projects" aria-label="Back to projects"><ArrowLeft class="size-4" /></RouterLink>
           </Button>
-          <div
-            data-testid="project-address-bar"
-            class="flex h-9 min-w-60 max-w-3xl flex-[1_1_32rem] items-center gap-2 rounded-full border bg-muted/20 px-3 text-sm shadow-xs"
-          >
-            <LockKeyhole
-              v-if="projectAddressSecure"
-              class="size-4 shrink-0"
-              :class="projectAddressPublished ? 'text-emerald-500' : 'text-muted-foreground'"
-              aria-hidden="true"
-            />
-            <Globe2 v-else class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate font-medium" :class="{ 'text-muted-foreground': !projectAddressPublished }">{{ projectAddress }}</span>
-            <TooltipProvider :delay-duration="300">
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    class="-mr-2 size-7 text-muted-foreground hover:text-foreground"
-                    :aria-label="copiedProjectAddress ? 'Project URL copied' : 'Copy project URL'"
-                    @click="copyProjectAddress"
-                  >
-                    <Check v-if="copiedProjectAddress" aria-hidden="true" />
-                    <Clipboard v-else aria-hidden="true" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{{ copiedProjectAddress ? 'Project URL copied' : 'Copy project URL' }}</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+          <div class="project-identity flex min-w-0 flex-1 items-center gap-3">
+            <div class="project-emblem flex size-11 shrink-0 items-center justify-center rounded-xl border bg-card">
+              <ResourceFavicon v-if="primaryResource" :name="project.name" :url="primaryResource.url" :project-id="project.id" :resource-id="primaryResource.id" />
+              <Folder v-else class="size-5 text-muted-foreground" />
+            </div>
+            <div class="min-w-0">
+              <div class="flex min-w-0 flex-wrap items-center gap-2.5">
+                <h1 id="project-title" class="truncate text-xl font-semibold tracking-tight">{{ project.name }}</h1>
+                <StatusBadge :status="project.state" />
+              </div>
+              <button type="button" class="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" :title="project.path" @click="copyPath">
+                <Check v-if="copiedPath" class="size-3 shrink-0" /><Folder v-else class="size-3 shrink-0" />
+                <span class="truncate">{{ copiedPath ? 'Path copied' : project.path }}</span>
+              </button>
+            </div>
           </div>
           <TooltipProvider :delay-duration="300">
-            <div class="flex items-center gap-1">
+            <div class="project-actions flex shrink-0 items-center gap-1.5">
               <Tooltip>
                 <TooltipTrigger as-child>
                   <span
@@ -567,15 +573,16 @@ async function setupNetworkAndStartProject() {
                   </span>
                   <Button
                     v-else
-                    variant="ghost"
-                    size="icon-sm"
+                    variant="outline"
+                    size="sm"
                     :class="lifecycleAction === 'start' ? 'text-primary hover:text-primary' : undefined"
                     :aria-label="lifecycleLabel"
                     :disabled="lifecycleDisabled"
                     @click="changeProjectLifecycle"
                   >
                     <Play v-if="lifecycleAction === 'start'" class="fill-current" aria-hidden="true" />
-                    <Square v-else class="fill-current" aria-hidden="true" />
+                    <Square v-else class="size-3 fill-current" aria-hidden="true" />
+                    {{ lifecycleAction === 'start' ? 'Start project' : 'Stop' }}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>{{ lifecycleLabel }}</TooltipContent>
@@ -635,12 +642,14 @@ async function setupNetworkAndStartProject() {
               <Tooltip v-if="resourceOpenAvailable">
                 <TooltipTrigger as-child>
                   <Button
-                    variant="ghost"
-                    size="icon-sm"
+                    variant="default"
+                    size="sm"
+                    class="ml-1"
                     aria-label="Open resource"
                     @click="primaryResource && openResource(primaryResource.id)"
                   >
-                    <ExternalLink aria-hidden="true" />
+                    <ArrowUpRight aria-hidden="true" />
+                    Open app
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Open resource</TooltipContent>
@@ -648,18 +657,38 @@ async function setupNetworkAndStartProject() {
             </div>
           </TooltipProvider>
         </div>
-
-        <div class="mt-3 flex min-w-0 flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <div class="flex min-w-0 items-center gap-2">
-            <h1 id="project-title" class="truncate text-sm font-semibold tracking-tight text-foreground">{{ project.name }}</h1>
-            <StatusBadge :status="project.state" />
+        <div class="project-location mt-4 flex min-w-0 items-center justify-between gap-4">
+          <div
+            data-testid="project-address-bar"
+            class="project-address flex h-8 min-w-0 items-center gap-2 text-xs"
+          >
+            <LockKeyhole
+              v-if="projectAddressSecure"
+              class="size-4 shrink-0"
+              :class="projectAddressPublished ? 'text-emerald-500' : 'text-muted-foreground'"
+              aria-hidden="true"
+            />
+            <Globe2 v-else class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate font-mono" :class="{ 'text-muted-foreground': !projectAddressPublished }">{{ projectAddress }}</span>
+            <TooltipProvider :delay-duration="300">
+              <Tooltip>
+                <TooltipTrigger as-child>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    class="-mr-2 size-7 text-muted-foreground hover:text-foreground"
+                    :aria-label="copiedProjectAddress ? 'Project URL copied' : 'Copy project URL'"
+                    @click="copyProjectAddress"
+                  >
+                    <Check v-if="copiedProjectAddress" aria-hidden="true" />
+                    <Clipboard v-else aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{{ copiedProjectAddress ? 'Project URL copied' : 'Copy project URL' }}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
-          <Badge variant="outline">Slug: {{ project.slug }}</Badge>
-          <button type="button" class="inline-flex min-w-0 items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" @click="copyPath">
-            <Check v-if="copiedPath" class="size-3.5 shrink-0" /><Clipboard v-else class="size-3.5 shrink-0" />
-            <span class="max-w-80 truncate">{{ copiedPath ? 'Path copied' : project.path }}</span>
-          </button>
-          <span class="ml-auto">Updated {{ updatedAt }}</span>
+          <span class="hidden shrink-0 text-[11px] text-muted-foreground sm:block" :title="`Updated ${updatedAt}`">{{ project.slug }}</span>
         </div>
       </header>
 
@@ -692,18 +721,18 @@ async function setupNetworkAndStartProject() {
         </Alert>
       </div>
 
-      <Tabs v-model="selectedDetailTab" class="min-h-0 min-w-0 flex-1 gap-0">
+      <Tabs v-model="selectedDetailTab" class="project-tabs min-h-0 min-w-0 flex-1 gap-0" :data-surface="selectedDetailTab">
         <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
-          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
-          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
-          <TabsTrigger value="terminal" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Terminal</TabsTrigger>
-          <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
-          <TabsTrigger value="connect" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Connect</TabsTrigger>
-          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
-          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
+          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
+          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
+          <TabsTrigger value="terminal" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Terminal</TabsTrigger>
+          <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
+          <TabsTrigger value="connect" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Connect</TabsTrigger>
+          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
+          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
-        <div :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
+        <div class="project-tab-body" :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <Alert
           v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
@@ -739,13 +768,25 @@ async function setupNetworkAndStartProject() {
         </Alert>
 
         <TabsContent value="overview" class="m-0 space-y-5">
-          <section aria-label="Project summary" class="grid overflow-hidden rounded-lg border sm:grid-cols-4">
-            <div class="p-4 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Apps</p><p class="mt-1 text-xl font-semibold">{{ project.apps.length }}</p></div>
-            <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Services</p><p class="mt-1 text-xl font-semibold">{{ readyServiceCount }} ready</p><p class="mt-0.5 text-xs text-muted-foreground">{{ project.services.length }} reported</p></div>
-            <div class="border-t p-4 sm:border-t-0 sm:border-r"><p class="text-xs font-medium text-muted-foreground">Resources</p><p class="mt-1 text-xl font-semibold">{{ project.resources.length }}</p></div>
-            <div class="border-t p-4 sm:border-t-0"><p class="text-xs font-medium text-muted-foreground">Activity</p><p class="mt-1 truncate text-sm font-semibold">{{ currentProjectOperation?.phase ?? 'Idle' }}</p></div>
+          <section aria-label="Project summary" class="project-summary grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <div class="summary-stat"><span class="summary-label"><SquareTerminal />Applications</span><strong>{{ project.apps.length }}</strong><span class="summary-note">{{ project.apps.filter(app => app.active).length }} active</span></div>
+            <div class="summary-stat"><span class="summary-label"><Server />Services</span><strong>{{ readyServiceCount }}<span class="summary-total"> ready</span></strong><span class="summary-note">{{ project.services.length }} reported</span></div>
+            <div class="summary-stat"><span class="summary-label"><Globe2 />Resources</span><strong>{{ project.resources.length }}</strong><span class="summary-note">Available endpoints</span></div>
+            <div class="summary-stat"><span class="summary-label"><Clock3 />Last updated</span><strong class="!text-base">{{ updatedTime }}</strong><span class="summary-note">{{ updatedDate }}</span></div>
           </section>
 
+          <section v-if="project.resources.length" aria-label="Quick access" class="project-quick-access">
+            <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">Quick access</h2><button type="button" class="text-xs text-muted-foreground hover:text-foreground" @click="selectedDetailTab = 'resources'">All resources <ArrowUpRight class="ml-1 inline size-3" /></button></div>
+            <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              <button v-for="resource in project.resources.slice(0, 6)" :key="resource.id" type="button" class="quick-resource group flex min-w-0 items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-muted-foreground/40 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" @click="openResource(resource.id)">
+                <ResourceFavicon :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" compact />
+                <div class="min-w-0 flex-1"><p class="truncate text-xs font-medium">{{ resource.name }}</p><p class="mt-1 truncate font-mono text-[11px] text-muted-foreground">{{ resource.url.replace(/^https?:\/\//, '') }}</p></div>
+                <ArrowUpRight class="size-3.5 text-muted-foreground group-hover:text-foreground" />
+              </button>
+            </div>
+          </section>
+
+          <div class="project-runtime-grid grid gap-4 xl:grid-cols-2">
           <Card class="gap-0 rounded-lg py-0 shadow-none">
             <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Apps</CardTitle></div></CardHeader>
             <CardContent class="p-0">
@@ -759,10 +800,25 @@ async function setupNetworkAndStartProject() {
             </CardContent>
           </Card>
 
+          <Card class="gap-0 rounded-lg py-0 shadow-none">
+            <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Services</CardTitle><button type="button" class="ml-auto text-xs text-muted-foreground hover:text-foreground" @click="selectedDetailTab = 'services'">View all <ArrowUpRight class="ml-1 inline size-3" /></button></div></CardHeader>
+            <CardContent class="p-0">
+              <div v-if="project.services.length" class="divide-y">
+                <button v-for="service in project.services.slice(0, 6)" :key="service.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" :aria-label="`View ${service.name} service`" @click="selectedServiceId = service.id; selectedDetailTab = 'services'">
+                  <div class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted"><Server class="size-3.5 text-muted-foreground" /></div>
+                  <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ service.name }}</p><p class="text-xs text-muted-foreground">{{ service.kind }}</p></div>
+                  <StatusBadge :status="service.state" />
+                </button>
+              </div>
+              <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No services are reported.</p>
+            </CardContent>
+          </Card>
+          </div>
+
           <Card v-if="currentProjectOperation" class="gap-0 rounded-lg py-0 shadow-none">
             <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Current activity</CardTitle></CardHeader>
             <CardContent class="p-0">
-              <div class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="currentProjectOperation.state" /><div><p class="text-sm font-medium">{{ currentProjectOperation.kind }}</p><p class="text-xs text-muted-foreground">{{ currentProjectOperation.phase }}</p></div></div>
+              <div class="flex items-center gap-3 px-4 py-3"><StatusBadge :status="currentProjectOperation.state" /><div><p class="text-sm font-medium">{{ currentOperationLabel }}</p><p class="text-xs text-muted-foreground">{{ currentProjectOperation.phase }}</p></div></div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -774,7 +830,7 @@ async function setupNetworkAndStartProject() {
                 <div
                   v-for="tab in projectTerminalTabs"
                   :key="tab.id"
-                  class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
+                  class="flex h-11 flex-none items-center rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
                   :data-state="selectedProjectTerminalTabID === tab.id ? 'active' : 'inactive'"
                 >
                   <button type="button" role="tab" class="h-full text-sm font-medium" :aria-selected="selectedProjectTerminalTabID === tab.id" @click="selectedProjectTerminalTabID = tab.id">{{ tab.name }}</button>
@@ -851,14 +907,17 @@ async function setupNetworkAndStartProject() {
         </TabsContent>
 
         <TabsContent value="output" class="m-0 flex min-h-0 flex-1 flex-col">
-        <Card v-if="showDevelopmentOutput" class="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden rounded-lg py-0 shadow-none">
-          <CardHeader class="!flex !items-center !justify-between border-b px-4 py-2"><div class="flex items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Development output</CardTitle></div><Button variant="ghost" size="sm" :disabled="!developmentOutput" @click="copyDevelopmentOutput"><Check v-if="copiedDevelopmentOutput" class="size-3.5" /><Clipboard v-else class="size-3.5" />{{ copiedDevelopmentOutput ? 'Copied' : 'Copy' }}</Button></CardHeader>
-          <CardContent class="flex min-h-0 flex-1 flex-col p-0">
+        <section v-if="showDevelopmentOutput" aria-label="Development output panel" class="project-log flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div class="project-log-toolbar flex min-h-11 shrink-0 flex-wrap items-center justify-between gap-2 border-b px-5 lg:px-7">
+            <div class="flex items-center gap-2 text-xs text-muted-foreground"><SquareTerminal class="size-3.5" /><span class="font-mono">forj dev</span><span class="mx-1 text-border">/</span><span>{{ project.name }}</span></div>
+            <div class="flex items-center gap-3"><span class="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="size-1.5 rounded-full" :class="followDevelopmentOutput ? 'bg-status-ready' : 'bg-status-stopped'" />{{ followDevelopmentOutput ? 'Following output' : 'Scroll paused' }}</span><Button variant="ghost" size="sm" class="h-7 text-xs" :disabled="!developmentOutput" @click="copyDevelopmentOutput"><Check v-if="copiedDevelopmentOutput" class="size-3" /><Clipboard v-else class="size-3" />{{ copiedDevelopmentOutput ? 'Copied' : 'Copy' }}</Button></div>
+          </div>
+          <div class="flex min-h-0 flex-1 flex-col">
             <p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p>
             <p v-if="developmentOutputCopyError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputCopyError }}</p>
             <div
               ref="developmentOutputViewport"
-              class="min-h-0 flex-1 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none"
+              class="min-h-0 flex-1 overflow-auto project-log-viewport bg-zinc-950 px-5 py-4 lg:px-7 font-mono text-xs leading-5 text-zinc-200 outline-none"
               tabindex="0"
               aria-label="Current project development output"
               @scroll="updateDevelopmentOutputFollow"
@@ -876,8 +935,8 @@ async function setupNetworkAndStartProject() {
               <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
               <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
         <Empty v-else class="min-h-0 flex-1 rounded-lg border">
           <EmptyHeader><EmptyTitle>No development output yet</EmptyTitle><EmptyDescription>Harbor will show the current <code>forj dev</code> session here when the project starts.</EmptyDescription></EmptyHeader>
         </Empty>
@@ -890,7 +949,7 @@ async function setupNetworkAndStartProject() {
                 v-for="service in project.services"
                 :key="service.id"
                 :value="service.id"
-                class="h-9 flex-none gap-2 rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
+                class="h-9 flex-none gap-2 rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"
               >
                 <span
                   class="size-1.5 rounded-full"
@@ -914,9 +973,9 @@ async function setupNetworkAndStartProject() {
             >
               <Tabs v-model="selectedServiceSurface" class="flex min-h-0 flex-1 flex-col gap-2">
                 <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
-                  <TabsTrigger value="logs" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Logs</TabsTrigger>
-                  <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
-                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-primary data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServicePorts.length }}</span></TabsTrigger>
+                  <TabsTrigger value="logs" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Logs</TabsTrigger>
+                  <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
+                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServicePorts.length }}</span></TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="logs" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">

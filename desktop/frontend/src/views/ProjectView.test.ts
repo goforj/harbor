@@ -556,7 +556,7 @@ describe('ProjectView stale runtime recovery', () => {
     const { store, wrapper } = await mountRecoveryProject()
     const recover = bodyButton('Start project')
     expect(recover.disabled).toBe(false)
-    expect(recover.dataset.variant).toBe('ghost')
+    expect(recover.textContent).toContain('Start project')
     expect(wrapper.get('[data-testid="project-address-bar"]').text()).toContain('https://billing.test')
     expect(wrapper.get('[data-testid="project-address-bar"] span').classes()).toContain('text-muted-foreground')
     expect(wrapper.findAll('button').some((button) => button.attributes('aria-label') === 'Check for stale runtime')).toBe(false)
@@ -767,10 +767,12 @@ describe('ProjectView project restart', () => {
     expect(wrapper.get('[data-testid="project-address-bar"]').text()).toContain('https://orders.test')
     expect(bodyButton('Copy project URL').dataset.size).toBe('icon-sm')
 
-    for (const label of ['Stop project', 'Restart project', 'Remove project', 'Open resource']) {
+    expect(bodyButton('Stop project').textContent).toContain('Stop')
+    expect(bodyButton('Open resource').textContent).toContain('Open app')
+    for (const label of ['Restart project', 'Remove project']) {
       const button = bodyButton(label)
       expect(button.dataset.size).toBe('icon-sm')
-      expect(button.textContent?.trim()).toBe('')
+      expect(button.disabled).toBe(false)
     }
 
     wrapper.unmount()

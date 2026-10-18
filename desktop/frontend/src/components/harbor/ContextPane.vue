@@ -94,8 +94,8 @@ function primaryProjectResource(project: ProjectSnapshot) {
 </script>
 
 <template>
-  <aside class="flex h-full w-full min-w-0 flex-col bg-card/35" :aria-label="`${navigationItem.label} browser`">
-    <header class="flex h-12 shrink-0 items-center gap-2 px-3">
+  <aside class="harbor-context flex h-full w-full min-w-0 flex-col" :aria-label="`${navigationItem.label} browser`">
+    <header class="flex h-16 shrink-0 items-center gap-2 px-4">
       <component :is="navigationItem.icon" aria-hidden="true" class="size-4 text-muted-foreground" />
       <h1 class="min-w-0 flex-1 truncate text-sm font-semibold">{{ navigationItem.label }}</h1>
       <Badge v-if="store.snapshot" variant="outline" class="h-5 min-w-5 rounded-md px-1.5 text-[0.6875rem] text-muted-foreground shadow-none">
@@ -113,7 +113,7 @@ function primaryProjectResource(project: ProjectSnapshot) {
       </Button>
     </header>
 
-    <div class="relative px-3 pb-3">
+    <div class="relative px-3 pb-4">
       <Search aria-hidden="true" class="pointer-events-none absolute top-2.5 left-5.5 size-3.5 text-muted-foreground" />
       <Input
         :model-value="query"
@@ -145,7 +145,7 @@ function primaryProjectResource(project: ProjectSnapshot) {
       </div>
 
       <ScrollArea class="min-h-0 flex-1">
-      <div class="space-y-4 p-2">
+      <div class="space-y-5 px-2 py-4">
         <template v-if="destination === 'overview'">
           <section v-if="overviewProjects.length" aria-labelledby="overview-projects-heading">
             <h2 id="overview-projects-heading" class="mb-1 flex items-center gap-1.5 px-2 text-[0.6875rem] font-medium tracking-wide text-muted-foreground uppercase">
