@@ -146,5 +146,8 @@ func showNativeWindow(context.Context) {
 	nativeWindow().Focus()
 }
 
-// quitNativeUI requests desktop shutdown without issuing any daemon lifecycle operation.
-func quitNativeUI(context.Context) { application.Get().Quit() }
+// quitNativeUI releases the presentation lock before v3 synchronously invokes shutdown hooks.
+func quitNativeUI(context.Context) {
+	native := application.Get()
+	go native.Quit()
+}

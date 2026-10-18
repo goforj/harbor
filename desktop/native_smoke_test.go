@@ -43,7 +43,7 @@ func runNativeDesktopSmoke() int {
 			passed.Store(r.URL.Query().Get("result") == "ok")
 			fmt.Println("native desktop smoke:", r.URL.Query().Get("result"))
 			w.WriteHeader(http.StatusNoContent)
-			go native.Quit()
+			go client.presentation.quitUI()
 		default:
 			// Go test compiles package main under its module path; release binaries use main.App.
 			if strings.HasSuffix(r.URL.Path, ".js") {
