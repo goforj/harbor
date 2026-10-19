@@ -1,0 +1,108 @@
+name: Prerelease artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Full version for a build-only rehearsal, for example 0.1.0-beta.1
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate release identity and exact source CI
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: python3 scripts/release/prepare.py identity
+
+  macos:
+    needs: preflight
+    uses: ./.github/workflows/macos-development-package.yml
+    with:
+      release_version: ${{ needs.preflight.outputs.version }}
+
+  ubuntu:
+    needs: preflight
+    uses: ./.github/workflows/ubuntu-development-package.yml
+    with:
+      release_version: ${{ needs.preflight.outputs.version }}
+
+  assemble:
+    needs: [preflight, macos, ubuntu]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download only the packages that passed native acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "GoForj-Harbor-macos-arm64-tested-$GITHUB_RUN_NUMBER" --dir release-assets
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "GoForj-Harbor-ubuntu-amd64-tested-$GITHUB_RUN_NUMBER" --dir release-assets
+      - name: Verify package digests and prepare release notes
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: python3 scripts/release/prepare.py assets
+      - name: Retain the exact publication set for review or promotion
+        uses: actions/upload-artifact@v7
+        with:
+          name: Harbor-prerelease-publication
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [preflight, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download the verified publication set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name Harbor-prerelease-publication --dir release-assets
+      - name: Publish a prerelease after every asset is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --prerelease --latest=false \
+            --title "Harbor $RELEASE_VERSION (unsigned preview)" --notes-file RELEASE-NOTES.md \
+            -- *.pkg *.deb *.sha256 SHA256SUMS provenance.json
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease --latest=false

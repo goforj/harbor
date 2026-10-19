@@ -10,3 +10,6 @@ storage/
 .env.testing
 !.env.example
 .DS_Store
+
+# Python release tooling
+__pycache__/

@@ -8,7 +8,7 @@ Project work is organized in [Harbor in Plane](https://plane.goforj.dev/goforj/p
 with identifier `HARBOR`. The board distinguishes completed foundations from
 remaining product verification and release gates; see the handoff for priorities.
 
-## Local project workspace design preview (2026-10-18)
+## Accepted project workspace design (2026-10-18)
 
 Branch `feat/project-workspace-design` contains the accepted visual implementation of
 the project detail screen and shared project browser. It prioritizes the project
@@ -16,10 +16,13 @@ name, status, and labeled actions; adds snapshot-backed overview shortcuts and
 service summaries; gives development output the full working area; and removes
 the illustration from project working screens. Shared shadcn primitives and
 native/daemon contracts are unchanged. The user accepted this visual direction
-on 2026-10-18; merging and distribution remain pending. Frontend build, 237 unit tests, and 25 Chromium checks pass. Browser
+on 2026-10-18; PR #6 is merged. Distribution remains pending. Frontend build, 237 unit tests, and 25 Chromium checks pass. Browser
 inspection covers dark/light desktop and a 430-pixel layout without horizontal
 overflow. The isolated fixture preview is served on `127.0.0.1:39517` while this
 session remains running.
+## Prerelease publication (2026-10-18)
+
+The tag-driven `Prerelease artifacts` workflow admits beta/RC tags only after successful CI for the exact main commit. It reuses native macOS and Ubuntu package gates, verifies the tested bytes, and publishes them together with checksums and provenance as an unsigned GitHub prerelease. Manual dispatch performs the same build and sealing without publication. Windows public installers remain gated on production signing; its short-lived CI helper certificate must not leave the development acceptance workflow. Stable releases, genuine consent, reboot recovery, signing, and update proof remain separate gates. See [Publishing development previews](./releases.md).
 
 ## Wails v3 desktop trial (2026-10-18)
 
