@@ -504,12 +504,13 @@
 }
 
 .project-log-toolbar {
-  background: color-mix(in srgb, var(--muted) 35%, var(--background));
+  background: #100d14;
+  border-bottom-color: #29232f;
 }
 
 .project-log-viewport,
 .harbor-log-viewport {
-  background: #101010;
+  background: #0a080d;
   color: #e2e2e2;
   font-size: 12px;
 }

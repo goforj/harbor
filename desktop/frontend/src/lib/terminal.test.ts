@@ -70,7 +70,7 @@ describe('TerminalModel', () => {
       { text: ' ', style: { color: 'rgb(255 175 0)' } },
       {
         text: 'inverse',
-        style: { backgroundColor: 'rgb(12 34 56)', color: '#101010' },
+        style: { backgroundColor: 'rgb(12 34 56)', color: '#0a080d' },
       },
     ])
   })

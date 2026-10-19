@@ -1,6 +1,6 @@
 // terminalTheme keeps hosted logs and interactive shells on the same restrained dark palette.
 export const terminalTheme = {
-  background: '#101010',
+  background: '#0a080d',
   foreground: '#e2e2e2',
   black: '#262626', red: '#e98b85', green: '#76c69c', yellow: '#dfbd78',
   blue: '#7eb1e2', magenta: '#c19ddd', cyan: '#7dc6cf', white: '#dedede',
