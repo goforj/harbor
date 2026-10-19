@@ -5,6 +5,8 @@ import { ArrowLeft, ArrowUpRight, Database, ExternalLink, Server } from '@lucide
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import KindIcon from '@/components/harbor/KindIcon.vue'
+import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
@@ -34,6 +36,7 @@ async function openResource(resourceId: string) {
           <Button variant="ghost" size="icon-sm" class="-ml-2 shrink-0 min-[1100px]:hidden" as-child>
             <RouterLink to="/services" aria-label="Back to services"><ArrowLeft class="size-4" /></RouterLink>
           </Button>
+          <KindIcon :kind="service.kind" />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2"><h1 id="service-title" class="truncate text-base font-semibold tracking-tight">{{ service.name }}</h1><StatusBadge :status="service.state" /></div>
             <p class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><span>{{ service.project_name }} · {{ service.kind }}</span><span aria-hidden="true">·</span><ServiceOwnership :owner="service.owner" /></p>
@@ -67,7 +70,7 @@ async function openResource(resourceId: string) {
             <CardHeader class="border-b px-4 py-3"><CardTitle class="text-sm">Project</CardTitle></CardHeader>
             <CardContent class="p-0">
               <RouterLink v-if="project" :to="`/projects/${encodeURIComponent(project.id)}`" class="group flex items-center gap-3 px-4 py-3 hover:bg-muted/50">
-                <StatusBadge :status="project.state" /><div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ project.name }}</p><p class="truncate text-xs text-muted-foreground">Slug: {{ project.slug }}</p></div><ArrowUpRight class="size-3.5 text-muted-foreground" />
+                <ProjectIcon :project="project" compact /><StatusBadge :status="project.state" /><div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ project.name }}</p><p class="truncate text-xs text-muted-foreground">Slug: {{ project.slug }}</p></div><ArrowUpRight class="size-3.5 text-muted-foreground" />
               </RouterLink>
             </CardContent>
           </Card>

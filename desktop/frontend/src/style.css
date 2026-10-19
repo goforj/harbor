@@ -3,6 +3,48 @@
 
 @custom-variant dark (&:is(.dark *));
 
+:root {
+  --icon-application: #c84627;
+  --icon-docs: #0279a3;
+  --icon-data: #7950bc;
+  --icon-cache: #a66808;
+  --icon-mail: #087d72;
+  --icon-service: #5966b8;
+}
+
+.dark {
+  --icon-application: #ff936b;
+  --icon-docs: #74c9eb;
+  --icon-data: #bfa1ee;
+  --icon-cache: #ebc16f;
+  --icon-mail: #74cbb8;
+  --icon-service: #a5b1ed;
+}
+
+.kind-icon {
+  --kind-icon-color: var(--icon-service);
+  color: var(--kind-icon-color);
+  background: color-mix(in srgb, var(--kind-icon-color) 11%, transparent);
+  border-color: color-mix(in srgb, var(--kind-icon-color) 19%, transparent);
+}
+
+.kind-icon[data-tone="application"] { --kind-icon-color: var(--icon-application); }
+.kind-icon[data-tone="docs"] { --kind-icon-color: var(--icon-docs); }
+.kind-icon[data-tone="data"] { --kind-icon-color: var(--icon-data); }
+.kind-icon[data-tone="cache"] { --kind-icon-color: var(--icon-cache); }
+.kind-icon[data-tone="mail"] { --kind-icon-color: var(--icon-mail); }
+
+.project-tab-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.project-tabs [role="tab"][data-state="active"] .project-tab-icon {
+  color: var(--primary);
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

@@ -4,12 +4,16 @@ Status: GitHub-hosted macOS, Linux, and Windows three-project trusted-HTTPS life
 
 Last updated: 2026-10-18
 
+## Semantic icon continuation (2026-10-18)
+
+`feat/semantic-ui-icons` adds shared project identity and semantic tab, resource, and service icons. Offline projects use the bundled current GoForj iOS asset without favicon calls; online projects can use their primary App favicon with the same local fallback. The frontend build, 248 unit tests, and 26 Chromium checks pass, with light/dark desktop and 430-pixel browser inspection. No daemon, lifecycle, or dependency changes belong to this slice. The isolated browser fixture on `127.0.0.1:39519` contains fake projects only.
+
 ## Prerelease pipeline continuation
 
-`feat/prerelease-artifacts` adds beta/RC tag publication from tested main commits, reusable native macOS/Ubuntu package gates, strict asset verification, build-only dispatch, and public preview limitations. Windows publication is intentionally gated until production signing is configured; its disposable certificate installer remains manual CI evidence only. No release tag has been created and no public artifact publication is claimed by this change. See `docs/releases.md` for operation and retry behavior. Verify the package rehearsal and PR checks before merge.
+`feat/prerelease-artifacts` adds beta/RC tag publication from tested main commits, reusable native macOS/Ubuntu package gates, strict asset verification, build-only dispatch, and public preview limitations. Windows publication is intentionally gated until production signing is configured; its disposable certificate installer remains manual CI evidence only. PR #7 is merged. The complete build-only rehearsal passed in GitHub Actions run `39178991761`, including both native package gates and asset assembly; publication was correctly skipped. No Harbor release tag has been created and no public artifact publication is claimed. See `docs/releases.md` for operation and retry behavior.
 ## Startup diagnostics continuation
 
-`feat/startup-diagnostics` contains the additive startup file consumer, control activity metadata, Vue timeline, and read-only Docker publication conflict diagnostics. Companion GoForj branch `feat/dev-progress-events` emits v1 startup records and advertises its capability. The installed global CLI remains unchanged and older CLIs use raw output. No lifecycle or readiness authority is inferred from diagnostics. Generated wire fixtures must move with their Go source. Native UI automation is disabled here; tray/dialog/consent/onboarding verification is not claimed by a fake-daemon smoke. Review PR checks and package rehearsal evidence before recording the tasks complete.
+`feat/startup-diagnostics` contains the additive startup file consumer, control activity metadata, Vue timeline, and read-only Docker publication conflict diagnostics. Companion GoForj branch `feat/dev-progress-events` emits v1 startup records and advertises its capability. The installed global CLI remains unchanged and older CLIs use raw output. No lifecycle or readiness authority is inferred from diagnostics. Generated wire fixtures must move with their Go source. Native UI automation is disabled here; tray/dialog/consent/onboarding verification is not claimed by a fake-daemon smoke. Harbor PR #8 and GoForj PR #248 are merged. The producer is published in GoForj v0.33.0; the published CLI was installed into an isolated temporary directory and verified to emit failure events with a private file mode. The global installed CLI was not changed.
 
 
 The opening implementation notes below are retained as historical context. The authoritative continuation and evidence boundary begins at [Read this first](#read-this-first).
@@ -41,10 +45,7 @@ The initial Working Now shortlist is:
 - [HARBOR-10](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/5345f49a-4022-4a74-b406-f10faf31fe4e): Explain wildcard port conflicts with the actual service and competing listener.
 - [HARBOR-17](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/e459f1af-47e4-457a-ac76-9ac188b0d4dd): Verify native desktop interactions on macOS.
 
-The accepted UI implementation is on
-`feat/project-workspace-design`; HARBOR-1 and HARBOR-2 are In Progress rather
-than Done. The structured startup-event work is planned and has not been
-implemented. Completed package work covers unsigned development artifacts,
+The accepted UI implementation is merged through PR #6 and HARBOR-2 is Done. Structured startup events and Docker port diagnostics are implemented and merged through PR #8, with the producer released in GoForj v0.33.0. Completed package work covers unsigned development artifacts,
 not signed stable installers or the full native consent matrix. Leave task
 dates and assignees unset until an actual commitment is made.
 
@@ -56,7 +57,7 @@ name, status, and labeled actions; adds snapshot-backed overview shortcuts and
 service summaries; gives development output the full working area; and removes
 the illustration from project working screens. Shared shadcn primitives and
 native/daemon contracts are unchanged. The user accepted this visual direction
-on 2026-10-18; merging and distribution remain pending. Frontend build, 237 unit tests, and 25 Chromium checks pass. Browser
+on 2026-10-18; PR #6 is merged and distribution remains pending. Frontend build, 237 unit tests, and 25 Chromium checks pass. Browser
 inspection covers dark/light desktop and a 430-pixel layout without horizontal
 overflow. The isolated fixture preview is served on `127.0.0.1:39517` while this
 session remains running.

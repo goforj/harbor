@@ -16,6 +16,8 @@ import {
   TriangleAlert,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
+import KindIcon from '@/components/harbor/KindIcon.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -185,7 +187,7 @@ async function removeOldNetworking() {
                 :to="`/projects/${encodeURIComponent(project.id)}`"
                 class="group flex min-w-0 items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
               >
-                <StatusBadge :status="project.state" />
+                <ProjectIcon :project="project" compact /><StatusBadge :status="project.state" />
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2"><span class="truncate text-sm font-medium">{{ project.name }}</span><Badge v-if="project.favorite" variant="secondary">Favorite</Badge></div>
                   <p class="truncate text-xs text-muted-foreground">Slug: {{ project.slug }}</p>
@@ -235,7 +237,7 @@ async function removeOldNetworking() {
             :aria-label="`Open ${resource.name} for ${resource.project_name}`"
             @click="openResource(resource.project_id, resource.id)"
           >
-            <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{{ resource.name }}</span><span class="block truncate text-xs text-muted-foreground">{{ resource.project_name }} · {{ resource.kind }}</span></span>
+            <KindIcon :kind="resource.kind" compact /><span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{{ resource.name }}</span><span class="block truncate text-xs text-muted-foreground">{{ resource.project_name }} · {{ resource.kind }}</span></span>
             <ArrowUpRight class="size-3.5 shrink-0 text-muted-foreground" />
           </button>
         </CardContent>

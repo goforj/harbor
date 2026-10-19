@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Check, ExternalLink, Folder, Server } from '@lucide/vue'
+import { Check } from '@lucide/vue'
 import {
   CommandDialog,
   CommandEmpty,
@@ -14,6 +14,8 @@ import {
 } from '@/components/ui/command'
 import { useHarborStore } from '@/stores/harbor'
 import StatusBadge from './StatusBadge.vue'
+import ProjectIcon from './ProjectIcon.vue'
+import KindIcon from './KindIcon.vue'
 import { harborNavigation } from './navigation'
 
 const props = withDefaults(defineProps<{ open?: boolean }>(), { open: false })
@@ -71,7 +73,7 @@ async function openResource(projectId: string, resourceId: string) {
           :value="`${project.name} ${project.path} ${project.slug}`"
           @select="navigate(`/projects/${encodeURIComponent(project.id)}`)"
         >
-          <Folder aria-hidden="true" />
+          <ProjectIcon :project="project" compact />
           <span class="min-w-0 flex-1 truncate">{{ project.name }}</span>
           <StatusBadge :status="project.state" compact />
         </CommandItem>
@@ -85,7 +87,7 @@ async function openResource(projectId: string, resourceId: string) {
           :value="`${service.name} ${service.project_name} ${service.kind}`"
           @select="navigate(`/services/${encodeURIComponent(service.project_id)}/${encodeURIComponent(service.id)}`)"
         >
-          <Server aria-hidden="true" />
+          <KindIcon :kind="service.kind" compact />
           <span class="min-w-0 flex-1 truncate">
             {{ service.name }}
             <span class="ml-1 text-muted-foreground">{{ service.project_name }}</span>
@@ -102,7 +104,7 @@ async function openResource(projectId: string, resourceId: string) {
           :value="`${resource.name} ${resource.project_name} ${resource.kind}`"
           @select="openResource(resource.project_id, resource.id)"
         >
-          <ExternalLink aria-hidden="true" />
+          <KindIcon :kind="resource.kind" compact />
           <span class="min-w-0 flex-1 truncate">
             {{ resource.name }}
             <span class="ml-1 text-muted-foreground">{{ resource.project_name }}</span>
