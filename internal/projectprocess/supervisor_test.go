@@ -98,6 +98,7 @@ func init() {
 	}
 	fmt.Fprintf(os.Stdout, "argument=%s\n", os.Args[1])
 	fmt.Fprintf(os.Stdout, "plain=%s\n", os.Getenv("FORJ_DEV_PLAIN"))
+	fmt.Fprintf(os.Stdout, "presentation=%s\n", os.Getenv("FORJ_DEV_PRESENTATION"))
 	fmt.Fprintf(os.Stdout, "managed-context=%s\n", os.Getenv(ManagedLaunchContextEnvironment))
 	fmt.Fprintf(os.Stdout, "app-name=%s\n", os.Getenv("APP_NAME"))
 	fmt.Fprintf(os.Stdout, "forj-app=%s\n", os.Getenv("FORJ_APP"))

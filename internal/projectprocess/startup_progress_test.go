@@ -1,11 +1,13 @@
 package projectprocess
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goforj/harbor/internal/projectruntime"
 )
@@ -72,8 +74,31 @@ func TestStartupProgressFilesAreExclusiveBoundedAndSessionScoped(t *testing.T) {
 
 // TestStartupProgressEnvironmentDoesNotLeakAnotherSession verifies child launches ignore ambient telemetry destinations.
 func TestStartupProgressEnvironmentDoesNotLeakAnotherSession(t *testing.T) {
-	got := withoutStartupProgressEnvironment([]string{"PATH=/bin", "FORJ_DEV_EVENTS_FILE=/other", "FORJ_DEV_EVENTS_SESSION=other"})
+	got := withoutStartupProgressEnvironment([]string{"PATH=/bin", "FORJ_DEV_EVENTS_FILE=/other", "FORJ_DEV_EVENTS_SESSION=other", "FORJ_DEV_PRESENTATION=embedded"})
 	if len(got) != 1 || got[0] != "PATH=/bin" {
 		t.Fatalf("ambient diagnostic environment leaked: %#v", got)
+	}
+}
+
+// TestStartRequestsEmbeddedPresentation verifies the launch contract without changing the ordinary forj argv.
+func TestStartRequestsEmbeddedPresentation(t *testing.T) {
+	installForjHelper(t, "exit")
+	output := &synchronizedBuffer{}
+	supervisor := newTestSupervisor(Options{GracePeriod: 100 * time.Millisecond, OutputSpoolDirectory: t.TempDir()})
+	t.Cleanup(func() { _ = supervisor.Close(context.Background()) })
+	handle, err := supervisor.Start(t.Context(), StartRequest{
+		ProjectID: "project-embedded", SessionID: "session-embedded", CheckoutRoot: t.TempDir(),
+		EnvironmentOverrides: projectProcessTestEnvironment(), Stdout: output, Stderr: output,
+		StartupProgress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutput(t, output, "presentation=embedded")
+	if arguments := handle.Info().Arguments; len(arguments) != 2 || arguments[1] != "dev" {
+		t.Fatalf("launch argv changed: %#v", arguments)
 	}
 }

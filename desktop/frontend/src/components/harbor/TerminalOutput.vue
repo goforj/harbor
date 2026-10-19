@@ -67,7 +67,7 @@ function openTerminalURL(event: MouseEvent, url: string) {
 
 <template>
   <div class="harbor-terminal-output whitespace-pre-wrap break-words" role="log" aria-live="off">
-    <div v-for="line in lines" :key="line.id" v-memo="[line]" class="min-h-5">
+    <div v-for="line in lines" :key="line.id" v-memo="[line]" class="harbor-terminal-line">
       <span v-for="(run, index) in line.runs" :key="index" :style="run.style"><template v-for="(segment, segmentIndex) in terminalLinkSegments(run.text)" :key="segmentIndex"><a v-if="segment.url" :href="segment.url" target="_blank" rel="noopener noreferrer" class="underline decoration-dotted underline-offset-2 hover:decoration-solid" @click="openTerminalURL($event, segment.url)">{{ segment.text }}</a><template v-else>{{ segment.text }}</template></template></span>
     </div>
   </div>

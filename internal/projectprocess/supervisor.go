@@ -37,6 +37,7 @@ const (
 var developmentLaunchIsolationNames = []string{
 	"FORJ_DEV_EVENTS_FILE",
 	"FORJ_DEV_EVENTS_SESSION",
+	"FORJ_DEV_PRESENTATION",
 	"APP_NAME",
 	"FORJ_APP",
 	"FORJ_BUILD_PROGRESS",
@@ -598,7 +599,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		// Optional diagnostics must never stop an otherwise valid project launch.
 		startupPath, _ = prepareStartupProgress(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID)
 		if startupPath != "" {
-			command.Env = append(command.Env, "FORJ_DEV_EVENTS_FILE="+startupPath, "FORJ_DEV_EVENTS_SESSION="+string(request.SessionID))
+			command.Env = append(command.Env, "FORJ_DEV_EVENTS_FILE="+startupPath, "FORJ_DEV_EVENTS_SESSION="+string(request.SessionID), "FORJ_DEV_PRESENTATION=embedded")
 		}
 	}
 	defer func() {

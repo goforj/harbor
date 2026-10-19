@@ -504,13 +504,15 @@
 }
 
 .project-log-toolbar {
-  background: color-mix(in srgb, var(--muted) 35%, var(--background));
+  background: #100d14;
+  border-bottom-color: #29232f;
 }
 
-.project-log-viewport {
-  background: #101112;
+.project-log-viewport,
+.harbor-log-viewport {
+  background: #0a080d;
+  color: #e2e2e2;
   font-size: 12px;
-  line-height: 1.8;
 }
 
 .summary-stat {
@@ -638,4 +640,17 @@
 
 .project-tabs[data-surface="overview"] [data-slot="card-header"] > div {
   width: 100%;
+}
+
+/* Terminal rows use a tight cell grid so box-drawing glyphs join between lines. */
+.harbor-terminal-output {
+  font-family: Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.2;
+  font-variant-ligatures: none;
+  letter-spacing: 0;
+}
+
+.harbor-terminal-line {
+  min-height: 1.2em;
 }

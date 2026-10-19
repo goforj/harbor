@@ -198,6 +198,14 @@ test('shows live output from the current project session', async ({ page }) => {
   await expect(output).toContainText('Building app: web')
   await expect(output).toContainText('Built web in 482ms')
   await expect(output).toContainText('migrations complete (0)')
+  const grid = await output.locator('.harbor-terminal-output').evaluate(element => {
+    const row = element.firstElementChild!
+    return { lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight), rowHeight: row.getBoundingClientRect().height }
+  })
+  expect(grid.lineHeight).toBeGreaterThanOrEqual(15)
+  expect(grid.lineHeight).toBeLessThanOrEqual(16)
+  expect(grid.rowHeight).toBeCloseTo(grid.lineHeight, 1)
+
 })
 
 test('shows an ambiguous recovered launch without leaving the project spinning', async ({ page }) => {

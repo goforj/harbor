@@ -4,6 +4,10 @@ Status: GitHub-hosted macOS, Linux, and Windows three-project trusted-HTTPS life
 
 Last updated: 2026-10-18
 
+## Development output continuation (2026-10-18)
+
+The active user checkout is `harbor-wails-v3` on `fix/development-output`. Semantic icons are merged through PR #9 and present locally. The output refinement removes excess terminal leading, centralizes the neutral surface/soft ANSI palette, and offers an embedded-presentation selector alongside private startup diagnostics. GoForj PR #249 consumes that independent selector and omits only the redundant resource inventory. GoForj PR #249 is merged and released as v0.33.1. The user explicitly approved updating the installed CLI and restarting Diablo Immortal Tracker. Harbor stopped it before the atomic CLI replacement, then started a fresh session: Ready, five resources, normal-trust HTTPS 200, no legacy readiness URL inventory, and 16 private startup events ending in completed. The previous CLI backup path is recorded locally in `/tmp/harbor-forj-output-fix-backup-path`. The active project is running; do not stop it for further visual checks. Finish Harbor PR #10 CI and merge before moving to the remaining native interaction gates.
+
 ## Semantic icon continuation (2026-10-18)
 
 `feat/semantic-ui-icons` adds shared project identity and semantic tab, resource, and service icons. Offline projects use the bundled current GoForj iOS asset without favicon calls; online projects can use their primary App favicon with the same local fallback. The frontend build, 248 unit tests, and 26 Chromium checks pass, with light/dark desktop and 430-pixel browser inspection. No daemon, lifecycle, or dependency changes belong to this slice. The isolated browser fixture on `127.0.0.1:39519` contains fake projects only.

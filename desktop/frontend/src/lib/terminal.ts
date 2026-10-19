@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'vue'
+import { terminalTheme } from './terminalTheme'
 
 export type TerminalRunStyle = CSSProperties
 
@@ -59,13 +60,13 @@ const maximumRetainedCells = 256 * 1024
 const minimumStylePruneThreshold = 4096
 const stylePruneHeadroom = 256
 const maximumPendingSequenceCharacters = 4096
-const defaultForeground = '#e4e4e7'
-const defaultBackground = '#09090b'
+const defaultForeground = terminalTheme.foreground
+const defaultBackground = terminalTheme.background
 const terminalColors = [
-  '#000000', '#cd3131', '#0dbc79', '#e5e510',
-  '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
-  '#666666', '#f14c4c', '#23d18b', '#f5f543',
-  '#3b8eea', '#d670d6', '#29b8db', '#ffffff',
+  terminalTheme.black, terminalTheme.red, terminalTheme.green, terminalTheme.yellow,
+  terminalTheme.blue, terminalTheme.magenta, terminalTheme.cyan, terminalTheme.white,
+  terminalTheme.brightBlack, terminalTheme.brightRed, terminalTheme.brightGreen, terminalTheme.brightYellow,
+  terminalTheme.brightBlue, terminalTheme.brightMagenta, terminalTheme.brightCyan, terminalTheme.brightWhite,
 ] as const
 
 // TerminalModel incrementally applies the terminal controls emitted by interactive development tools.
