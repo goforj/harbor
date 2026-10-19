@@ -556,3 +556,32 @@ func validConfirmation(
 	}
 	return confirmation
 }
+
+// TestExecuteResumesVerifiedEffectsWithoutLaunchingHelper proves retries cannot repeat privileged work.
+func TestExecuteResumesVerifiedEffectsWithoutLaunchingHelper(t *testing.T) {
+	for _, failure := range []string{"", "transport", "crossed revision"} {
+		t.Run(failure, func(t *testing.T) {
+			request := validRequest()
+			request.Resume = true
+			confirmation := validConfirmation(t, testOperationID, testPool, testRevision)
+			client := &fakeClient{confirmation: confirmation}
+			if failure == "transport" {
+				client.confirmErr = errTestFailure
+			}
+			if failure == "crossed revision" {
+				client.confirmation.Operation.ID = "operation-another"
+			}
+			launcher := &fakeLauncher{}
+			outcome, err := New(client, launcher).Execute(t.Context(), request)
+			if (err == nil) != (failure == "") {
+				t.Fatalf("resume error: %v", err)
+			}
+			if client.prepareCalls != 0 || launcher.calls != 0 || client.confirmCalls != 1 || !client.confirmRequests[0].Resume {
+				t.Fatal("resume prepared or launched privileged work")
+			}
+			if failure == "" && outcome.State != Succeeded {
+				t.Fatal("resume did not complete")
+			}
+		})
+	}
+}

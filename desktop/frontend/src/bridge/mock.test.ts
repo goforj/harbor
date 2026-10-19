@@ -50,6 +50,7 @@ describe('Harbor mock bridge', () => {
       remove_old_networking: 'RemoveOldNetworking',
       repair_network: 'RepairNetwork',
       expand_network: 'ExpandNetwork',
+      resume_network_setup:'ResumeNetworkSetup',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',
       start_project: 'StartProject',

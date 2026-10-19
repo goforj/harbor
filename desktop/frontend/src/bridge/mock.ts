@@ -428,6 +428,20 @@ export function createMockBridge(): HarborBridge {
     async repairNetwork() {
       return structuredClone(networkSetup ?? fixture.setup_network)
     },
+    async resumeNetworkSetup() {
+      const pending = snapshot.network_setup?.pending
+      if (!pending) throw new Error('No pending setup to resume.')
+      const operation = snapshot.operations.find(entry => entry.id === pending.operation_id)
+      if (!operation) throw new Error('Pending setup is unavailable.')
+      operation.state = 'succeeded'
+      operation.phase = 'completed'
+      operation.finished_at = new Date().toISOString()
+      snapshot.sequence += 1
+      status.sequence = snapshot.sequence
+      if (pending.kind === 'expansion') snapshot.network_capacity = 256
+      snapshot.network_setup = { configured: true }
+      return { operation: structuredClone(operation), revision: snapshot.sequence }
+    },
     async expandNetwork() {
       snapshot.network_capacity = 256
       snapshot.sequence += 1

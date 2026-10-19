@@ -104,6 +104,9 @@ func (client *Client) ConfirmNetworkSetupApproval(
 	if !containsCapability(client.peer.Session.Capabilities, CapabilityNetworkSetupV1) {
 		return NetworkSetupApprovalConfirmation{}, errors.New("Harbor daemon does not support network setup; upgrade or restart harbord")
 	}
+	if request.Resume && !containsCapability(client.peer.Session.Capabilities, CapabilityNetworkSetupRecoveryV1) {
+		return NetworkSetupApprovalConfirmation{}, errors.New("Harbor daemon does not support setup recovery; upgrade or restart harbord")
+	}
 	payload, err := client.session.Call(ctx, methodNetworkSetupApprovalConfirm, request)
 	if err != nil {
 		return NetworkSetupApprovalConfirmation{}, err
@@ -200,6 +203,9 @@ func (server *Server) networkSetupApprovalConfirmHandler(transportPeer local.Pee
 		if err != nil {
 			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
 		}
+		if approvalRequest.Resume && !containsCapability(caller.Session.Capabilities, CapabilityNetworkSetupRecoveryV1) {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, errors.New("setup recovery capability was not negotiated"))
+		}
 		confirmation, err := server.config.Authority.ConfirmNetworkSetupApproval(ctx, caller, approvalRequest)
 		if err != nil {
 			return nil, authorityError(err)
@@ -242,7 +248,7 @@ func validateNetworkSetupApprovalConfirmationCorrelation(
 	if err := confirmation.ValidateApproval(request.OperationID, request.ExpectedOperationRevision); err != nil {
 		return err
 	}
-	if confirmation.Pool != request.PoolEvidence.Pool {
+	if !request.Resume && confirmation.Pool != request.PoolEvidence.Pool {
 		return errors.New("network setup approval confirmation does not match the requested operation revision")
 	}
 	return nil
@@ -363,6 +369,7 @@ func decodeConfirmNetworkSetupApprovalRequest(payload []byte) (ConfirmNetworkSet
 	operationSeen := false
 	revisionSeen := false
 	evidenceSeen := false
+	resumeSeen := false
 	for decoder.More() {
 		fieldToken, err := decoder.Token()
 		if err != nil {
@@ -389,6 +396,19 @@ func decodeConfirmNetworkSetupApprovalRequest(payload []byte) (ConfirmNetworkSet
 				return ConfirmNetworkSetupApprovalRequest{}, fmt.Errorf("decode network setup approval confirmation revision: %w", err)
 			}
 			revisionSeen = true
+		case "resume":
+			if resumeSeen {
+				return ConfirmNetworkSetupApprovalRequest{}, errors.New("duplicate resume flag")
+			}
+			var flag json.RawMessage
+			if err := decoder.Decode(&flag); err != nil {
+				return ConfirmNetworkSetupApprovalRequest{}, err
+			}
+			if string(flag) != "true" && string(flag) != "false" {
+				return ConfirmNetworkSetupApprovalRequest{}, errors.New("resume must be a JSON boolean")
+			}
+			request.Resume = string(flag) == "true"
+			resumeSeen = true
 		case "pool_evidence":
 			if evidenceSeen {
 				return ConfirmNetworkSetupApprovalRequest{}, fmt.Errorf("network setup approval confirmation request contains duplicate field %q", field)
@@ -404,13 +424,19 @@ func decodeConfirmNetworkSetupApprovalRequest(payload []byte) (ConfirmNetworkSet
 	if err := finishNetworkSetupRequestDecoder(decoder, "network setup approval confirmation"); err != nil {
 		return ConfirmNetworkSetupApprovalRequest{}, err
 	}
-	if !operationSeen || !revisionSeen || !evidenceSeen {
+	if !operationSeen || !revisionSeen || (!evidenceSeen && !request.Resume) {
 		return ConfirmNetworkSetupApprovalRequest{}, errors.New("network setup approval confirmation request requires operation_id, expected_operation_revision, and pool_evidence")
 	}
-	request.PoolEvidence, err = decodeNetworkSetupPoolEvidence(poolEvidenceJSON)
-	if err != nil {
-		return ConfirmNetworkSetupApprovalRequest{}, err
+	if request.Resume && evidenceSeen {
+		return ConfirmNetworkSetupApprovalRequest{}, errors.New("resumption cannot provide replacement helper evidence")
 	}
+	if evidenceSeen {
+		request.PoolEvidence, err = decodeNetworkSetupPoolEvidence(poolEvidenceJSON)
+		if err != nil {
+			return ConfirmNetworkSetupApprovalRequest{}, err
+		}
+	}
+
 	if err := request.Validate(); err != nil {
 		return ConfirmNetworkSetupApprovalRequest{}, err
 	}

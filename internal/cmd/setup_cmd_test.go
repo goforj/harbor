@@ -559,3 +559,24 @@ func TestSetupCommandResumesExpansionAfterConcurrentUpdates(t *testing.T) {
 		t.Fatal("lost pending expansion")
 	}
 }
+
+// TestSetupCommandResumesRetainedConfirmation avoids another helper attempt after interrupted completion.
+func TestSetupCommandResumesRetainedConfirmation(t *testing.T) {
+	setup := setupCommandTestOperation(t, domain.OperationRequiresApproval, 7)
+	confirmation := setupCommandTestConfirmation(t, setup)
+	runner := &setupApprovalRunnerStub{outcome: networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}}
+	command, client, _ := newSetupCommandFixture(setup, runner)
+	command.Resume = true
+	client.snapshot.Operations = []domain.Operation{setup.Operation}
+	client.snapshot.NetworkSetup = &domain.NetworkSetupSnapshot{Pending: &domain.NetworkSetupRecovery{OperationID: setup.Operation.ID, IntentID: setup.Operation.IntentID, OperationRevision: 7, Kind: "setup", Phase: "confirmation"}}
+	if err := command.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.requests) != 1 || !runner.requests[0].Resume {
+		t.Fatal("CLI reopened helper approval")
+	}
+	client.snapshot.Operations = nil
+	if err := command.Run(t.Context()); err == nil {
+		t.Fatal("resume invented a new operation")
+	}
+}

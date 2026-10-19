@@ -39,6 +39,7 @@ function createUnavailableBridge(): HarborBridge {
     removeOldNetworking: unavailable,
     repairNetwork: unavailable,
     expandNetwork: unavailable,
+    resumeNetworkSetup: unavailable,
     setupNetwork: unavailable,
     startProject: unavailable,
     stopProject: unavailable,

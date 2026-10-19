@@ -87,6 +87,8 @@ const (
 	MethodRepairNetwork = "RepairNetwork"
 	// MethodExpandNetwork is the reviewed binding for approved identity-pool growth.
 	MethodExpandNetwork = "ExpandNetwork"
+	// MethodResumeNetworkSetup continues the exact daemon-owned pending setup.
+	MethodResumeNetworkSetup = "ResumeNetworkSetup"
 	// MethodStartProject is the generated Wails method that starts one registered project.
 	MethodStartProject = "StartProject"
 	// MethodStopProject is the generated Wails method that stops one registered project.
@@ -243,6 +245,8 @@ type AppContract interface {
 	RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOperation, error)
 	RepairNetwork() (control.NetworkSetupOperation, error)
 	ExpandNetwork() (control.NetworkSetupOperation, error)
+	// ResumeNetworkSetup resumes the existing phase without creating competing authority.
+	ResumeNetworkSetup() (control.NetworkSetupOperation, error)
 	SetupNetwork() (control.NetworkSetupOperation, error)
 	Snapshot() (domain.Snapshot, error)
 	StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
@@ -291,6 +295,7 @@ func MethodContracts() []MethodContract {
 		MethodRemoveOldNetworking:         {},
 		MethodRepairNetwork:               {},
 		MethodExpandNetwork:               {},
+		MethodResumeNetworkSetup:          {},
 		MethodSetupNetwork:                {},
 		MethodSnapshot:                    []string{},
 		MethodStartProject:                []string{"projectId", "intentId"},

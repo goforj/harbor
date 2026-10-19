@@ -41,6 +41,12 @@ type NetworkSetupPlanSource interface {
 
 // NetworkSetupStore commits or exactly replays a fully observed setup completion.
 type NetworkSetupStore interface {
+	// RetainNetworkSetupConfirmation records verified helper effects before finalization.
+	RetainNetworkSetupConfirmation(context.Context, state.CompleteNetworkSetupRequest) error
+	// NetworkSetupConfirmation reads only the exact approval's durable verified effects.
+	NetworkSetupConfirmation(context.Context, domain.OperationID, domain.Sequence) (helper.PoolMutationEvidence, error)
+	// DiscardNetworkSetupConfirmation retires stale proof without changing its pending approval.
+	DiscardNetworkSetupConfirmation(context.Context, domain.OperationID, domain.Sequence, helper.PoolMutationEvidence) error
 	// CompleteNetworkSetup atomically retires setup authority and creates the network foundation.
 	CompleteNetworkSetup(context.Context, state.CompleteNetworkSetupRequest) (state.CompleteNetworkSetupResult, error)
 }
@@ -125,6 +131,8 @@ type NetworkSetupConfirmRequest struct {
 	OperationID               domain.OperationID
 	ExpectedOperationRevision domain.Sequence
 	HelperPoolEvidence        helper.PoolMutationEvidence
+	Resume                    bool
+	RetainConfirmation        bool
 }
 
 // Validate rejects malformed or revision-free confirmation identities before durable state is read.
@@ -134,6 +142,12 @@ func (request NetworkSetupConfirmRequest) Validate() error {
 	}
 	if err := validateOperationRevision(request.ExpectedOperationRevision); err != nil {
 		return err
+	}
+	if request.Resume {
+		if request.HelperPoolEvidence.Pool != "" || len(request.HelperPoolEvidence.Identities) != 0 {
+			return fmt.Errorf("resumption cannot replace retained helper evidence")
+		}
+		return nil
 	}
 	return validateNetworkSetupHelperEvidence(request.HelperPoolEvidence)
 }
@@ -368,6 +382,16 @@ func (coordinator *NetworkSetupCoordinator) Confirm(
 		return state.CompleteNetworkSetupResult{}, fmt.Errorf("confirm network setup approval: %w", err)
 	}
 
+	if request.Resume {
+		if operation.Operation.State != domain.OperationRequiresApproval && operation.Operation.State != domain.OperationSucceeded {
+			return state.CompleteNetworkSetupResult{}, fmt.Errorf("setup resumption requires its selected approval or exact terminal result")
+		}
+		evidence, err := coordinator.store.NetworkSetupConfirmation(ctx, request.OperationID, request.ExpectedOperationRevision)
+		if err != nil {
+			return state.CompleteNetworkSetupResult{}, fmt.Errorf("read verified setup confirmation: %w", err)
+		}
+		request.HelperPoolEvidence = evidence
+	}
 	var confirmed ownership.Observation
 	var pool identity.Pool
 	var at time.Time
@@ -425,14 +449,32 @@ func (coordinator *NetworkSetupCoordinator) Confirm(
 	if err != nil {
 		return state.CompleteNetworkSetupResult{}, fmt.Errorf("confirm network setup approval: %w", err)
 	}
-	result, err := coordinator.store.CompleteNetworkSetup(ctx, state.CompleteNetworkSetupRequest{
+	if request.Resume && operation.Operation.State == domain.OperationRequiresApproval {
+		changed, err := networkSetupReadbackChanged(request.HelperPoolEvidence, observations)
+		if err != nil {
+			return state.CompleteNetworkSetupResult{}, err
+		}
+		if changed {
+			if err := coordinator.store.DiscardNetworkSetupConfirmation(ctx, request.OperationID, request.ExpectedOperationRevision, request.HelperPoolEvidence); err != nil {
+				return state.CompleteNetworkSetupResult{}, fmt.Errorf("discard changed network setup confirmation: %w", err)
+			}
+			return state.CompleteNetworkSetupResult{}, ErrNetworkSetupReadbackChanged
+		}
+	}
+	completion := state.CompleteNetworkSetupRequest{
 		OperationID:               request.OperationID,
 		ExpectedOperationRevision: request.ExpectedOperationRevision,
 		ConfirmedOwnership:        confirmed,
 		HelperPoolEvidence:        request.HelperPoolEvidence,
 		ObservedPool:              observations,
 		At:                        at,
-	})
+	}
+	if (request.RetainConfirmation || request.Resume) && operation.Operation.State == domain.OperationRequiresApproval {
+		if err := coordinator.store.RetainNetworkSetupConfirmation(ctx, completion); err != nil {
+			return state.CompleteNetworkSetupResult{}, fmt.Errorf("retain verified network setup confirmation: %w", err)
+		}
+	}
+	result, err := coordinator.store.CompleteNetworkSetup(ctx, completion)
 	if err != nil {
 		return state.CompleteNetworkSetupResult{}, fmt.Errorf("confirm network setup approval: complete setup: %w", err)
 	}
@@ -705,4 +747,26 @@ func wrapNetworkSetupError(message string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", message, err)
+}
+
+// ErrNetworkSetupReadbackChanged requires another explicit native approval after verified host facts change.
+var ErrNetworkSetupReadbackChanged = errors.New("network setup changed since verification; resume again to review administrator approval")
+
+// networkSetupReadbackChanged distinguishes proven drift from malformed or unavailable native observations.
+func networkSetupReadbackChanged(evidence helper.PoolMutationEvidence, observations []loopback.Observation) (bool, error) {
+	if len(evidence.Identities) != len(observations) {
+		return false, fmt.Errorf("network setup readback has an inconsistent address count")
+	}
+	changed := false
+	for index, observation := range observations {
+		if evidence.Identities[index].Address != observation.Address.String() {
+			return false, fmt.Errorf("network setup readback crossed an address")
+		}
+		fingerprint, err := observation.Fingerprint()
+		if err != nil {
+			return false, err
+		}
+		changed = changed || observation.State != loopback.StateExact || evidence.Identities[index].Observation.Fingerprint != fingerprint
+	}
+	return changed, nil
 }

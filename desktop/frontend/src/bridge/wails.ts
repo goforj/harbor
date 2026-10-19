@@ -21,6 +21,7 @@ interface AdditiveWailsAppBindings {
   RemoveOldNetworking(): ReturnType<HarborBridge['removeOldNetworking']>
   RepairNetwork(): ReturnType<HarborBridge['repairNetwork']>
   ExpandNetwork(): ReturnType<HarborBridge['expandNetwork']>
+  ResumeNetworkSetup(): ReturnType<HarborBridge['resumeNetworkSetup']>
   ResizeProjectTerminal(sessionId: string, columns: number, rows: number): ReturnType<HarborBridge['resizeProjectTerminal']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
   StartProjectTerminal(projectId: string, columns: number, rows: number, useEnvironmentOverrides: boolean): ReturnType<HarborBridge['startProjectTerminal']>
@@ -90,6 +91,7 @@ export function createWailsBridge(): HarborBridge {
   const removeOldNetworking = app?.RemoveOldNetworking
   const repairNetwork = app?.RepairNetwork
   const expandNetwork = app?.ExpandNetwork
+  const resumeNetworkSetup = app?.ResumeNetworkSetup
   const setupNetwork = app?.SetupNetwork
   const startProject = app?.StartProject
   const stopProject = app?.StopProject
@@ -160,6 +162,9 @@ export function createWailsBridge(): HarborBridge {
     expandNetwork: typeof expandNetwork === 'function'
       ? () => expandNetwork()
       : () => Promise.reject(new Error('Upgrade Harbor to expand network capacity.')),
+    resumeNetworkSetup: typeof resumeNetworkSetup === 'function'
+      ? () => resumeNetworkSetup()
+      : () => Promise.reject(new Error('Restart Harbor to load network setup recovery.')),
     setupNetwork: () => setupNetwork(),
     startProject: (projectId, intentId) => startProject(projectId, intentId),
     stopProject: (projectId, intentId) => stopProject(projectId, intentId),

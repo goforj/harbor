@@ -155,6 +155,9 @@ func stageNetworkSetupInTransaction(tx *gorm.DB, request StageNetworkSetupReques
 		)
 	}
 
+	if err := retireNetworkSetupConfirmation(tx); err != nil {
+		return OperationRecord{}, err
+	}
 	queued, err := insertQueuedNetworkSetupOperation(tx, request.Operation)
 	if err != nil {
 		return OperationRecord{}, err

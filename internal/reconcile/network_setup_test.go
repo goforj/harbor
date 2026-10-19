@@ -68,7 +68,9 @@ func (plans *networkSetupTestPlans) Resolve(ctx context.Context, request ticketi
 
 // networkSetupTestStore records one completion request through a fixture script.
 type networkSetupTestStore struct {
-	complete func(context.Context, state.CompleteNetworkSetupRequest) (state.CompleteNetworkSetupResult, error)
+	retained  *state.CompleteNetworkSetupRequest
+	retainErr error
+	complete  func(context.Context, state.CompleteNetworkSetupRequest) (state.CompleteNetworkSetupResult, error)
 }
 
 // CompleteNetworkSetup delegates one completion mutation to the fixture script.
@@ -881,4 +883,123 @@ func networkSetupUnexpectedIntent(context.Context, domain.IntentID) (state.Opera
 // networkSetupUnexpectedStage reports an unexpected journal staging mutation.
 func networkSetupUnexpectedStage(context.Context, state.StageNetworkSetupRequest) (state.OperationRecord, error) {
 	return state.OperationRecord{}, errNetworkSetupTest
+}
+
+// RetainNetworkSetupConfirmation records the separate durable boundary for recovery tests.
+func (store *networkSetupTestStore) RetainNetworkSetupConfirmation(_ context.Context, request state.CompleteNetworkSetupRequest) error {
+	if store.retainErr != nil {
+		return store.retainErr
+	}
+	store.retained = &request
+	return nil
+}
+
+// NetworkSetupConfirmation returns the previously verified effects without synthesizing approval.
+func (store *networkSetupTestStore) NetworkSetupConfirmation(_ context.Context, id domain.OperationID, revision domain.Sequence) (helper.PoolMutationEvidence, error) {
+	if store.retained == nil || store.retained.OperationID != id || store.retained.ExpectedOperationRevision != revision {
+		return helper.PoolMutationEvidence{}, state.ErrNetworkSetupConfirmationUnavailable
+	}
+	return store.retained.HelperPoolEvidence, nil
+}
+
+// DiscardNetworkSetupConfirmation drops only the fixture's selected pending proof.
+func (store *networkSetupTestStore) DiscardNetworkSetupConfirmation(ctx context.Context, id domain.OperationID, revision domain.Sequence, evidence helper.PoolMutationEvidence) error {
+	retained, err := store.NetworkSetupConfirmation(ctx, id, revision)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(retained, evidence) {
+		return errNetworkSetupTest
+	}
+	store.retained = nil
+	return nil
+}
+
+// TestNetworkSetupRecoveryRetainsEffectsBeforeCompletion verifies failure recovery and independent host readback.
+func TestNetworkSetupRecoveryRetainsEffectsBeforeCompletion(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	for _, scenario := range []string{"success", "retain failure", "completion failure", "drift", "observation failure", "malformed observation", "missing proof"} {
+		t.Run(scenario, func(t *testing.T) {
+			plan := networkSetupTestPlan(t, "operation-resume", 3, "501", "127.95.0.8/29")
+			approval := networkSetupApprovalOperation(t, plan.OperationID, "intent-resume", now.Add(-time.Minute))
+			evidence := networkSetupTestEvidence(plan.Pool.Prefix())
+			for index, address := range plan.Pool.Candidates() {
+				fingerprint, err := networkSetupTestObservation(address).Fingerprint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidence.Identities[index].Observation.Fingerprint = fingerprint
+			}
+			journal := networkSetupUnusedJournal()
+			journal.operation = func(context.Context, domain.OperationID) (state.OperationRecord, error) { return approval, nil }
+			plans := &networkSetupTestPlans{resolve: func(context.Context, ticketissuer.PoolRequest) (ticketissuer.PoolPlan, error) { return plan, nil }}
+			completed := 0
+			store := &networkSetupTestStore{complete: func(_ context.Context, request state.CompleteNetworkSetupRequest) (state.CompleteNetworkSetupResult, error) {
+				completed++
+				if storeProof := request.HelperPoolEvidence; !reflect.DeepEqual(storeProof, evidence) {
+					t.Fatal("completion replaced retained proof")
+				}
+				if scenario == "completion failure" {
+					return state.CompleteNetworkSetupResult{}, errNetworkSetupTest
+				}
+				return networkSetupTestCompletionResult(t, approval, plan.Pool, now, false), nil
+			}}
+			resume := scenario != "retain failure" && scenario != "completion failure"
+			if resume && scenario != "missing proof" {
+				store.retained = &state.CompleteNetworkSetupRequest{OperationID: plan.OperationID, ExpectedOperationRevision: plan.OperationRevision, HelperPoolEvidence: evidence}
+			}
+			if scenario == "retain failure" {
+				store.retainErr = errNetworkSetupTest
+			}
+			observed := 0
+			observer := &networkSetupTestLoopback{observe: func(_ context.Context, address netip.Addr) (loopback.Observation, error) {
+				observed++
+				if scenario == "observation failure" {
+					return loopback.Observation{}, errNetworkSetupTest
+				}
+				observation := networkSetupTestObservation(address)
+				if scenario == "drift" {
+					observation.State = loopback.StateAbsent
+					observation.Assignments = nil
+				}
+				if scenario == "malformed observation" {
+					observation.State = loopback.StateAbsent
+				}
+				return observation, nil
+			}}
+			coordinator := networkSetupTestCoordinator(now, journal, plans, store, networkSetupUnusedKeyFactory(), networkSetupUnusedSelector(), networkSetupUnusedIssuerFactory(), networkSetupAbsentOwnership(), observer)
+			request := NetworkSetupConfirmRequest{OperationID: plan.OperationID, ExpectedOperationRevision: plan.OperationRevision, Resume: resume, RetainConfirmation: true}
+			if !resume {
+				request.HelperPoolEvidence = evidence
+			}
+			_, err := coordinator.Confirm(t.Context(), request)
+			if scenario == "success" {
+				if err != nil || observed != plan.Pool.Capacity() || completed != 1 || store.retained == nil {
+					t.Fatalf("recovery: %v, observed=%d completed=%d", err, observed, completed)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("failure accepted")
+			}
+			if scenario == "completion failure" {
+				if store.retained == nil || completed != 1 {
+					t.Fatal("completion failure lost verified effects")
+				}
+			} else if completed != 0 {
+				t.Fatal("unverified effects were completed")
+			}
+			if scenario == "drift" {
+				if !errors.Is(err, ErrNetworkSetupReadbackChanged) || store.retained != nil {
+					t.Fatal("proven drift did not restore approval", err)
+				}
+			}
+			if (scenario == "observation failure" || scenario == "malformed observation") && store.retained == nil {
+				t.Fatal("indeterminate observation discarded verified evidence")
+			}
+			if scenario == "missing proof" && observed != 0 {
+				t.Fatal("missing evidence reached native observation")
+			}
+		})
+	}
 }

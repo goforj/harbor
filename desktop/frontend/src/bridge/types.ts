@@ -26,6 +26,7 @@ export interface HarborWireFixture {
     remove_old_networking: 'RemoveOldNetworking'
     repair_network: 'RepairNetwork'
     expand_network: 'ExpandNetwork'
+ resume_network_setup:'ResumeNetworkSetup'
     snapshot: 'Snapshot'
     setup_network: 'SetupNetwork'
     start_project: 'StartProject'
@@ -105,6 +106,7 @@ export interface HarborBridge {
   removeOldNetworking(): Promise<NetworkResolverPolicyMigrationOperation>
   repairNetwork(): Promise<NetworkSetupOperation>
   expandNetwork(): Promise<NetworkSetupOperation>
+  resumeNetworkSetup(): Promise<NetworkSetupOperation>
   setupNetwork(): Promise<NetworkSetupOperation>
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>

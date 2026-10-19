@@ -302,7 +302,8 @@ func (reference ResourceRef) Validate() error {
 // NetworkSetupSnapshot reports whether the daemon retains the complete networking setup.
 // It describes configuration, while project failures report subsequent repair needs.
 type NetworkSetupSnapshot struct {
-	Configured bool `json:"configured"`
+	Configured bool                  `json:"configured"`
+	Pending    *NetworkSetupRecovery `json:"pending,omitempty"`
 }
 
 // Snapshot is a complete authoritative replacement of Harbor's client-visible state.
@@ -320,6 +321,11 @@ type Snapshot struct {
 
 // Validate reports whether the complete snapshot is internally consistent.
 func (snapshot Snapshot) Validate() error {
+	if snapshot.NetworkSetup != nil && snapshot.NetworkSetup.Pending != nil {
+		if err := snapshot.NetworkSetup.Pending.Validate(snapshot.Sequence, snapshot.Operations); err != nil {
+			return err
+		}
+	}
 	if snapshot.NetworkCapacity < 0 || snapshot.NetworkCapacity > 65535 {
 		return fmt.Errorf("snapshot network capacity is outside the supported range")
 	}

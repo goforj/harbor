@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import NetworkSetupRecoveryCard from '@/components/harbor/NetworkSetupRecoveryCard.vue'
 import { computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -103,6 +104,7 @@ async function removeOldNetworking() {
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
+ <NetworkSetupRecoveryCard />
       <div v-if="store.error && !store.connectionMessage" class="flex items-start gap-3 rounded-lg border border-destructive/35 bg-destructive/10 px-4 py-3 text-sm" role="alert">
         <TriangleAlert class="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
         <div>

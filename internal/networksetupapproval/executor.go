@@ -41,6 +41,8 @@ type Request struct {
 	OperationID domain.OperationID
 	// ExpectedOperationRevision prevents approval from crossing a concurrent operation transition.
 	ExpectedOperationRevision domain.Sequence
+	// Resume confirms retained verified effects without preparing or launching another helper.
+	Resume bool
 }
 
 // Validate reports whether the request selects one exact approval revision.
@@ -110,6 +112,17 @@ func (executor *Executor) Execute(ctx context.Context, request Request) (Outcome
 	}
 	if err := request.Validate(); err != nil {
 		return Outcome{}, fmt.Errorf("validate network setup approval request: %w", err)
+	}
+
+	if request.Resume {
+		confirmation, err := executor.client.ConfirmNetworkSetupApproval(ctx, control.ConfirmNetworkSetupApprovalRequest{OperationID: request.OperationID, ExpectedOperationRevision: request.ExpectedOperationRevision, Resume: true})
+		if err != nil {
+			return indeterminateOutcome(), fmt.Errorf("resume network setup confirmation: %w", err)
+		}
+		if err := confirmation.ValidateApproval(request.OperationID, request.ExpectedOperationRevision); err != nil {
+			return indeterminateOutcome(), fmt.Errorf("%w: %w", ErrInconsistentResponse, err)
+		}
+		return Outcome{State: Succeeded, Confirmation: &confirmation}, nil
 	}
 
 	preparation, err := executor.prepare(ctx, request)

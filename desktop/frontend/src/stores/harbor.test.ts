@@ -6,6 +6,97 @@ import { mockSnapshot, mockStatus } from '@/bridge/mock'
 import type { ConnectionEvent, ConnectionState, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectRuntimeRepairNotActionableReason, ProjectUnregistration } from '@/domain/harbor'
 import { useHarborStore } from './harbor'
 
+describe('pending network setup recovery', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+  afterEach(() => vi.restoreAllMocks())
+
+  function pendingSnapshot(): HarborSnapshot {
+    const snapshot = mockSnapshot()
+    const operation = completedNetworkSetup().operation
+    operation.state = 'requires_approval'
+    operation.phase = 'awaiting_approval'
+    delete operation.finished_at
+    snapshot.operations = [operation]
+    snapshot.sequence = 42
+    snapshot.network_setup = {
+      configured: true,
+      pending: { operation_id: operation.id, intent_id: operation.intent_id, operation_revision: 40, kind: 'expansion', phase: 'confirmation' },
+    }
+    return snapshot
+  }
+
+  it('keeps the pending operation retryable after a failed response', async () => {
+    const snapshot = pendingSnapshot()
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(snapshot)
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValue({ ...mockStatus(), capabilities: ['control.network-setup.v1', 'control.network-setup-recovery.v1'], sequence: 42 })
+    const resume = vi.spyOn(harborBridge, 'resumeNetworkSetup')
+      .mockRejectedValueOnce(new Error('connection lost'))
+      .mockResolvedValueOnce(completedNetworkSetup())
+    const store = useHarborStore()
+    await store.initialize()
+    expect(store.networkSetupOnboarding).toBe(false)
+    await expect(store.resumeNetworkSetup()).resolves.toBeNull()
+    expect(store.networkSetupError).toBe('connection lost')
+    expect(store.networkSetupRecovery).toEqual(snapshot.network_setup!.pending)
+    await expect(store.resumeNetworkSetup()).resolves.toEqual(completedNetworkSetup())
+    expect(store.settingUpNetwork).toBe(false)
+    expect(store.networkSetupError).toBeNull()
+    expect(resume).toHaveBeenCalledTimes(2)
+  })
+
+  it('blocks stale and duplicate requests and rejects crossed or unsafe results', async () => {
+    const store = useHarborStore()
+    const snapshot = pendingSnapshot()
+    store.$patch({ snapshot, connectionState: 'connected', snapshotStale: false })
+    const resume = vi.spyOn(harborBridge, 'resumeNetworkSetup')
+    store.snapshotStale = true
+    await expect(store.resumeNetworkSetup()).resolves.toBeNull()
+    store.snapshotStale = false
+    store.connectionState = 'disconnected'
+    await expect(store.resumeNetworkSetup()).resolves.toBeNull()
+    expect(resume).not.toHaveBeenCalled()
+    store.connectionState = 'connected'
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(snapshot)
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValue({ ...mockStatus(), capabilities: ['control.network-setup.v1'], sequence: 42 })
+    for (const field of ['id', 'intent_id', 'state', 'phase', 'revision']) {
+      const result = completedNetworkSetup()
+      if (field === 'revision') result.revision = Number.MAX_SAFE_INTEGER + 1
+      else if (field === 'state') result.operation.state = 'running'
+      else result.operation[field as 'id' | 'intent_id' | 'phase'] = 'different'
+      resume.mockResolvedValueOnce(result)
+      await expect(store.resumeNetworkSetup()).resolves.toBeNull()
+      expect(store.networkSetupError).toContain('inconsistent setup recovery')
+    }
+    const waiting = deferred<NetworkSetupOperation>()
+    resume.mockReturnValueOnce(waiting.promise)
+    const first = store.resumeNetworkSetup()
+    await expect(store.resumeNetworkSetup()).resolves.toBeNull()
+    waiting.resolve(completedNetworkSetup())
+    await first
+    expect(resume).toHaveBeenCalledTimes(6)
+  })
+
+  it('discards a late response from a replaced daemon connection', async () => {
+    let connectionListener: ((event: ConnectionEvent) => void) | undefined
+    vi.spyOn(harborBridge, 'subscribeConnection').mockImplementation((listener) => {
+      connectionListener = listener
+      return () => undefined
+    })
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(pendingSnapshot())
+    vi.spyOn(harborBridge, 'getStatus').mockResolvedValue({ ...mockStatus(), capabilities: ['control.network-setup.v1'], sequence: 42 })
+    const store = useHarborStore()
+    await store.initialize()
+    const waiting = deferred<NetworkSetupOperation>()
+    vi.spyOn(harborBridge, 'resumeNetworkSetup').mockReturnValueOnce(waiting.promise)
+    const request = store.resumeNetworkSetup()
+    connectionListener?.({ state: 'disconnected' })
+    waiting.resolve(completedNetworkSetup())
+    await expect(request).resolves.toBeNull()
+    expect(store.networkSetupResult).toBeNull()
+    expect(store.settingUpNetwork).toBe(false)
+  })
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void

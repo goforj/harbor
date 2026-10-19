@@ -68,6 +68,7 @@ type NetworkDataPlaneSetupApprovalRunner interface {
 
 // SetupCmd completes the first-run network foundation through the unprivileged Harbor daemon client.
 type SetupCmd struct {
+	Resume            bool `name:"resume" help:"Continue the retained network setup from its last verified phase"`
 	ExpandPool        bool `name:"expand-pool" help:"Approve expanding a legacy pool to 256 identities while retaining project addresses"`
 	client            *DaemonClient
 	approval          NetworkSetupApprovalRunner
@@ -126,17 +127,24 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 	}
 
 	intentID := networkSetupIntentID
-	if command.ExpandPool {
+	resumeConfirmation := false
+	if command.ExpandPool || command.Resume {
 		snapshot, err := command.client.Snapshot(ctx)
 		if err != nil {
-			return fmt.Errorf("read pending network expansion: %w", err)
+			return fmt.Errorf("read pending network setup: %w", err)
 		}
 		pending, err := control.PendingNetworkSetupIntent(snapshot)
 		if err != nil {
-			return fmt.Errorf("select pending network expansion: %w", err)
+			return fmt.Errorf("select pending network setup: %w", err)
+		}
+		if command.Resume && pending == "" {
+			return fmt.Errorf("Harbor has no pending network setup to resume")
 		}
 		if pending != "" {
 			intentID = pending
+			if snapshot.NetworkSetup != nil && snapshot.NetworkSetup.Pending != nil {
+				resumeConfirmation = snapshot.NetworkSetup.Pending.IntentID == pending && snapshot.NetworkSetup.Pending.Phase == "confirmation"
+			}
 		} else {
 			intentID, err = newNetworkSetupRetryIntent(networkSetupIntentID)
 			if err != nil {
@@ -177,7 +185,7 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 			return fmt.Errorf("network setup succeeded in unsupported phase %q", setup.Operation.Phase)
 		}
 	case domain.OperationRequiresApproval:
-		if err := command.approve(ctx, setup); err != nil {
+		if err := command.approve(ctx, setup, resumeConfirmation); err != nil {
 			return err
 		}
 		if !command.fullSetup {
@@ -450,10 +458,11 @@ func networkDataPlaneApprovalError(phase string, state networkdataplaneapproval.
 }
 
 // approve delegates the exact optimistic revision without constructing or launching a privileged command.
-func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetupOperation) error {
+func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetupOperation, resume bool) error {
 	outcome, err := command.approval.Execute(ctx, networksetupapproval.Request{
 		OperationID:               setup.Operation.ID,
 		ExpectedOperationRevision: setup.Revision,
+		Resume:                    resume,
 	})
 	if err != nil {
 		return fmt.Errorf("approve network setup: %w", err)

@@ -614,9 +614,20 @@ func (a *App) approveNetworkSetup(
 	client controlClient,
 	setup control.NetworkSetupOperation,
 ) (control.NetworkSetupOperation, error) {
+	return a.runNetworkSetupApproval(ctx, client, setup, false)
+}
+
+// runNetworkSetupApproval resumes verified effects without opening a new privileged attempt.
+func (a *App) runNetworkSetupApproval(
+	ctx context.Context,
+	client controlClient,
+	setup control.NetworkSetupOperation,
+	resume bool,
+) (control.NetworkSetupOperation, error) {
 	request := networksetupapproval.Request{
 		OperationID:               setup.Operation.ID,
 		ExpectedOperationRevision: setup.Revision,
+		Resume:                    resume,
 	}
 	runner := a.setupApproval(client)
 	outcome, err := runner.Execute(ctx, request)

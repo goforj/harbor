@@ -13,13 +13,19 @@ import (
 
 // RuntimeState is the complete client and network input captured from one durable database instant.
 type RuntimeState struct {
-	Snapshot           domain.Snapshot
-	Network            NetworkRecord
-	NetworkInitialized bool
+	Snapshot            domain.Snapshot
+	Network             NetworkRecord
+	NetworkInitialized  bool
+	NetworkSetupPending *domain.NetworkSetupRecovery
 }
 
 // Validate rejects runtime inputs whose network lifecycle or project ownership is ambiguous.
 func (state RuntimeState) Validate() error {
+	if state.NetworkSetupPending != nil {
+		if err := state.NetworkSetupPending.Validate(state.Snapshot.Sequence, state.Snapshot.Operations); err != nil {
+			return err
+		}
+	}
 	if err := state.Snapshot.Validate(); err != nil {
 		return fmt.Errorf("runtime snapshot: %w", err)
 	}
@@ -210,10 +216,15 @@ func (store *Store) runtimeStateCandidate(tx *gorm.DB) (RuntimeState, error) {
 	if err != nil {
 		return RuntimeState{}, err
 	}
+	pending, err := readNetworkSetupRecovery(tx, snapshot)
+	if err != nil {
+		return RuntimeState{}, err
+	}
 	return RuntimeState{
-		Snapshot:           snapshot,
-		Network:            network,
-		NetworkInitialized: initialized,
+		NetworkSetupPending: pending,
+		Snapshot:            snapshot,
+		Network:             network,
+		NetworkInitialized:  initialized,
 	}, nil
 }
 

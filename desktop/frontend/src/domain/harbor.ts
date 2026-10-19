@@ -298,8 +298,16 @@ export interface ResourceRef {
   resource_id: string
 }
 
+export interface NetworkSetupRecovery {
+  operation_id: string
+  intent_id: string
+  operation_revision: number
+  kind: 'setup' | 'repair' | 'expansion'
+  phase: 'approval' | 'confirmation'
+}
+
 export interface HarborSnapshot {
-  network_setup?: { configured: boolean }
+  network_setup?: { configured: boolean; pending?: NetworkSetupRecovery }
   network_capacity?: number
   schema_version: number
   sequence: number

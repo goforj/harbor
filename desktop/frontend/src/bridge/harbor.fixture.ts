@@ -26,6 +26,7 @@ export interface WailsAppBindings {
   ResizeProjectTerminal(sessionId: string, columns: number, rows: number): Promise<void>
   ResourceIconURL(projectId: string, resourceId: string): Promise<string>
   RestartProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
+  ResumeNetworkSetup(): Promise<NetworkSetupOperation>
   RetryProjectRegistration(jobId: string): Promise<ProjectCreationProgress>
   SaveProjectEnvironmentFile(projectId: string, name: string, contents: string, revision: string): Promise<ProjectEnvironmentFile>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): Promise<ServiceLogs>
@@ -441,6 +442,7 @@ export const harborWireFixture = {
     "remove_old_networking": "RemoveOldNetworking",
     "repair_network": "RepairNetwork",
     "expand_network": "ExpandNetwork",
+    "resume_network_setup": "ResumeNetworkSetup",
     "setup_network": "SetupNetwork",
     "snapshot": "Snapshot",
     "start_project": "StartProject",

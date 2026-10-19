@@ -349,6 +349,10 @@ func (authority *Authority) Snapshot(ctx context.Context, _ control.Caller) (dom
 func publicControlSnapshot(runtimeState state.RuntimeState, routes httpRouteObserver) domain.Snapshot {
 	snapshot := cloneControlSnapshot(runtimeState.Snapshot)
 	snapshot.NetworkSetup = &domain.NetworkSetupSnapshot{Configured: runtimeState.NetworkInitialized && runtimeState.Network.Stage == state.NetworkStageFull}
+	if runtimeState.NetworkSetupPending != nil {
+		pending := *runtimeState.NetworkSetupPending
+		snapshot.NetworkSetup.Pending = &pending
+	}
 	if runtimeState.NetworkInitialized {
 		snapshot.NetworkCapacity = runtimeState.Network.Pool.Capacity()
 	}
@@ -519,17 +523,26 @@ func (authority *Authority) PrepareNetworkSetupApproval(
 // ConfirmNetworkSetupApproval projects one correlated atomic setup completion into the control protocol.
 func (authority *Authority) ConfirmNetworkSetupApproval(
 	ctx context.Context,
-	_ control.Caller,
+	caller control.Caller,
 	request control.ConfirmNetworkSetupApprovalRequest,
 ) (control.NetworkSetupApprovalConfirmation, error) {
 	ctx = normalizeContext(ctx)
 	if err := request.Validate(); err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, err
 	}
+	retainConfirmation := false
+	for _, capability := range caller.Session.Capabilities {
+		if capability == control.CapabilityNetworkSetupRecoveryV1 {
+			retainConfirmation = true
+			break
+		}
+	}
 	confirmed, err := authority.networkSetup.Confirm(ctx, reconcile.NetworkSetupConfirmRequest{
 		OperationID:               request.OperationID,
 		ExpectedOperationRevision: request.ExpectedOperationRevision,
 		HelperPoolEvidence:        request.PoolEvidence,
+		Resume:                    request.Resume,
+		RetainConfirmation:        retainConfirmation,
 	})
 	if err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, classifyNetworkSetupError(err)
@@ -552,7 +565,7 @@ func (authority *Authority) ConfirmNetworkSetupApproval(
 	if err := result.ValidateApproval(request.OperationID, request.ExpectedOperationRevision); err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("network setup approval confirmation result: %w", err)
 	}
-	if result.Pool != request.PoolEvidence.Pool {
+	if !request.Resume && result.Pool != request.PoolEvidence.Pool {
 		return control.NetworkSetupApprovalConfirmation{}, errors.New("network setup approval confirmation differs from its requested operation revision and pool")
 	}
 	return result, nil
@@ -1306,7 +1319,7 @@ func classifyNetworkSetupError(err error) error {
 	var staleRevision *state.StaleRevisionError
 	var networkConflict *state.NetworkInitializationConflictError
 	var poolExhaustion *identity.PoolSelectionExhaustionError
-	if errors.As(err, &intentConflict) ||
+	if errors.Is(err, reconcile.ErrNetworkSetupReadbackChanged) || errors.As(err, &intentConflict) ||
 		errors.As(err, &staleRevision) ||
 		errors.As(err, &networkConflict) ||
 		errors.As(err, &poolExhaustion) {

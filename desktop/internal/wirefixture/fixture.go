@@ -66,6 +66,7 @@ type MethodMetadata struct {
 	RemoveOldNetworking         string `json:"remove_old_networking"`
 	RepairNetwork               string `json:"repair_network"`
 	ExpandNetwork               string `json:"expand_network"`
+	ResumeNetworkSetup          string `json:"resume_network_setup"`
 	SetupNetwork                string `json:"setup_network"`
 	Snapshot                    string `json:"snapshot"`
 	StartProject                string `json:"start_project"`
@@ -163,6 +164,7 @@ func Fixture() Document {
 			RemoveOldNetworking:         desktopwire.MethodRemoveOldNetworking,
 			RepairNetwork:               desktopwire.MethodRepairNetwork,
 			ExpandNetwork:               desktopwire.MethodExpandNetwork,
+			ResumeNetworkSetup:          desktopwire.MethodResumeNetworkSetup,
 			SetupNetwork:                desktopwire.MethodSetupNetwork,
 			Snapshot:                    desktopwire.MethodSnapshot,
 			StartProject:                desktopwire.MethodStartProject,
@@ -578,6 +580,7 @@ func (document Document) Validate() error {
 		desktopwire.MethodRemoveOldNetworking:         document.Methods.RemoveOldNetworking,
 		desktopwire.MethodRepairNetwork:               document.Methods.RepairNetwork,
 		desktopwire.MethodExpandNetwork:               document.Methods.ExpandNetwork,
+		desktopwire.MethodResumeNetworkSetup:          document.Methods.ResumeNetworkSetup,
 		desktopwire.MethodSetupNetwork:                document.Methods.SetupNetwork,
 		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
 		desktopwire.MethodStartProject:                document.Methods.StartProject,

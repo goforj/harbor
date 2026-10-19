@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/goforj/harbor/internal/network/poolpolicy"
@@ -109,13 +110,34 @@ func (preparation NetworkSetupApprovalPreparation) Validate() error {
 type ConfirmNetworkSetupApprovalRequest struct {
 	OperationID               domain.OperationID          `json:"operation_id"`
 	ExpectedOperationRevision domain.Sequence             `json:"expected_operation_revision"`
-	PoolEvidence              helper.PoolMutationEvidence `json:"pool_evidence"`
+	PoolEvidence              helper.PoolMutationEvidence `json:"pool_evidence,omitempty"`
+	Resume                    bool                        `json:"resume,omitempty"`
+}
+
+// MarshalJSON omits replacement evidence when resuming the daemon's retained confirmation.
+func (request ConfirmNetworkSetupApprovalRequest) MarshalJSON() ([]byte, error) {
+	var evidence *helper.PoolMutationEvidence
+	if !request.Resume {
+		evidence = &request.PoolEvidence
+	}
+	return json.Marshal(struct {
+		OperationID               domain.OperationID           `json:"operation_id"`
+		ExpectedOperationRevision domain.Sequence              `json:"expected_operation_revision"`
+		PoolEvidence              *helper.PoolMutationEvidence `json:"pool_evidence,omitempty"`
+		Resume                    bool                         `json:"resume,omitempty"`
+	}{request.OperationID, request.ExpectedOperationRevision, evidence, request.Resume})
 }
 
 // Validate reports whether the confirmation identifies one revision and complete owned canonical pool evidence.
 func (request ConfirmNetworkSetupApprovalRequest) Validate() error {
 	if err := validateNetworkSetupApprovalSelection(request.OperationID, request.ExpectedOperationRevision); err != nil {
 		return err
+	}
+	if request.Resume {
+		if request.PoolEvidence.Pool != "" || len(request.PoolEvidence.Identities) != 0 {
+			return errors.New("resumption cannot replace retained helper evidence")
+		}
+		return nil
 	}
 	return validateNetworkSetupPoolEvidence(request.PoolEvidence)
 }

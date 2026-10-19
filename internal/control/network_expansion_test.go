@@ -1,7 +1,10 @@
 package control
 
 import (
+	"encoding/json"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/rpc"
+	"strings"
 	"testing"
 )
 
@@ -112,5 +115,48 @@ func TestPendingNetworkSetupIntentResumesOnlyOneValidatedApproval(t *testing.T) 
 	operation.ProjectID = "project-invalid"
 	if _, err := PendingNetworkSetupIntent(domain.Snapshot{Operations: []domain.Operation{operation}}); err == nil {
 		t.Fatal("accepted project setup authority")
+	}
+}
+
+// TestSetupResumeTransportUsesOnlyRetainedEvidence protects the narrow resume wire contract.
+func TestSetupResumeTransportUsesOnlyRetainedEvidence(t *testing.T) {
+	request := ConfirmNetworkSetupApprovalRequest{OperationID: "operation-network-setup", ExpectedOperationRevision: 3, Resume: true}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "pool_evidence") {
+		t.Fatal("resume marshaled replacement proof")
+	}
+	if decoded, err := decodeConfirmNetworkSetupApprovalRequest(body); err != nil || !decoded.Resume {
+		t.Fatal("resume decode", err)
+	}
+	for _, payload := range []string{
+		`{"operation_id":"operation-network-setup","expected_operation_revision":3,"resume":null}`,
+		`{"operation_id":"operation-network-setup","expected_operation_revision":3,"resume":"true"}`,
+		`{"operation_id":"operation-network-setup","expected_operation_revision":3,"resume":true,"resume":false}`,
+		`{"operation_id":"operation-network-setup","expected_operation_revision":3,"resume":true,"pool_evidence":{}}`,
+	} {
+		if _, err := decodeConfirmNetworkSetupApprovalRequest([]byte(payload)); err == nil {
+			t.Fatal("ambiguous resume accepted", payload)
+		}
+	}
+	replacement := request
+	replacement.PoolEvidence = validNetworkSetupPoolEvidence()
+	if replacement.Validate() == nil {
+		t.Fatal("resume accepted caller-replaced proof")
+	}
+	for _, role := range []rpc.Role{rpc.RoleCLI, rpc.RoleDesktop} {
+		t.Run(string(role), func(t *testing.T) {
+			confirmation := validNetworkSetupApprovalConfirmation()
+			confirmation.ApprovalRevision = 3
+			confirmation.NetworkRevision = 7
+			confirmation.Revision = 8
+			authority := &recordingAuthority{networkSetupConfirmation: confirmation}
+			running := newRunningControlClient(t, role, authority, nil)
+			if _, err := running.client.ConfirmNetworkSetupApproval(t.Context(), request); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
