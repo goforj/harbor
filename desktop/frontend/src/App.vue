@@ -49,7 +49,7 @@ const hasDetail = computed(() => {
       && route.params.serviceId.length > 0
   }
 
-  return route.name === 'system'
+  return route.name === 'settings'
 })
 
 const keydownHandler = (event: KeyboardEvent) => {
@@ -108,7 +108,7 @@ onBeforeUnmount(() => {
 
           <div class="min-h-0 flex-1">
             <div
-              v-if="!harbor.snapshot"
+              v-if="!harbor.snapshot && route.name !== 'settings'"
               class="flex h-full items-center justify-center p-6"
               :role="harbor.error ? 'alert' : 'status'"
             >

@@ -151,7 +151,9 @@ Atmospheric scenes are local transparent assets under `src/assets/illustrations/
 
 ## Terminal appearance preferences
 
-System includes a Terminal appearance card with a live preview and Follow app, Dark, and Light choices. Follow app is the default and tracks Harbor's resolved light/dark appearance, including system changes when the app follows the operating system. An explicit terminal choice remains independent. The preference is stored locally as `harbor.terminal-appearance`; unsupported stored values fall back to Follow app, and unavailable storage still permits a session-local change.
+The bottom navigation cog opens Settings, with Appearance and Daemon sections. Appearance contains both app and terminal preferences; daemon status and snapshot facts remain under Daemon. Existing `/system` links redirect to `/settings/daemon`. Settings has no entity search or count, and appearance remains available before a daemon snapshot arrives.
+
+Settings → Appearance includes separate app-theme controls and a Terminal appearance card with a live preview and Follow app, Dark, and Light choices. Follow app is the default and tracks Harbor's resolved light/dark appearance, including system changes when the app follows the operating system. An explicit terminal choice remains independent. The preference is stored locally as `harbor.terminal-appearance`; unsupported stored values fall back to Follow app, and unavailable storage still permits a session-local change.
 
 Both palettes use GoForj's code styling: the dark well is `#0A080D`, while light mode uses `#F6F8FA` with `#1F2328` text and white chrome. Standard ANSI colors and inverse defaults reference shared CSS variables so retained output updates without replay or cursor changes. Explicit extended RGB/color-cube values remain intact. The interactive terminal updates xterm's theme in place, preserving its live shell and scrollback. Appearance never changes a daemon setting or restarts a project.
 

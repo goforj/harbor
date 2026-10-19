@@ -3,7 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const OverviewView = () => import('@/views/OverviewView.vue')
 const ProjectView = () => import('@/views/ProjectView.vue')
 const ServiceView = () => import('@/views/ServiceView.vue')
-const SystemView = () => import('@/views/SystemView.vue')
+const SettingsView = () => import('@/views/SettingsView.vue')
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -12,7 +12,9 @@ const router = createRouter({
     { path: '/overview', name: 'overview', component: OverviewView, meta: { title: 'Overview' } },
     { path: '/projects/:projectId?', name: 'project', component: ProjectView, meta: { title: 'Projects' } },
     { path: '/services/:projectId?/:serviceId?', name: 'service', component: ServiceView, meta: { title: 'Services' } },
-    { path: '/system/:section?', name: 'system', component: SystemView, meta: { title: 'System' } },
+    { path: '/settings', redirect: '/settings/appearance' },
+    { path: '/settings/:section(appearance|daemon)', name: 'settings', component: SettingsView, meta: { title: 'Settings' } },
+    { path: '/system/:section?', redirect: '/settings/daemon' },
     { path: '/:pathMatch(.*)*', redirect: '/overview' },
   ],
 })

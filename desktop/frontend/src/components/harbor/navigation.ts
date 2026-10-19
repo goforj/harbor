@@ -35,8 +35,8 @@ export const harborNavigation: HarborNavigationItem[] = [
   },
   {
     destination: 'system',
-    label: 'System',
-    path: '/system',
+    label: 'Settings',
+    path: '/settings',
     icon: Settings,
   },
 ]

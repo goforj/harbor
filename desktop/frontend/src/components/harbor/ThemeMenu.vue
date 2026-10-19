@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { Check, Monitor, Moon, Sun } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import {
@@ -12,11 +11,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   setThemePreference,
-  themePreference,
+  currentThemePreference,
   type ThemePreference,
 } from '@/lib/theme'
 
-const preference = ref<ThemePreference>(themePreference())
+const preference = currentThemePreference
 
 const options = [
   { value: 'system' as const, label: 'System', icon: Monitor },
@@ -25,7 +24,6 @@ const options = [
 ]
 
 function chooseTheme(value: ThemePreference) {
-  preference.value = value
   setThemePreference(value)
 }
 </script>

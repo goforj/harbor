@@ -20,7 +20,7 @@ test('navigates from the Harbor overview to the project list', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Overview', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Projects', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Services', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'System', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Projects', exact: true }).click()
 
@@ -519,10 +519,12 @@ test('opens and closes the command menu with accessible keyboard focus', async (
   await expect(trigger).toBeFocused()
 })
 
-test('renders only status and snapshot facts on the system page', async ({ page }) => {
+test('preserves legacy daemon links separately from appearance settings', async ({ page }) => {
   await page.goto('/#/system', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.locator('#system-title')).toBeVisible()
+  await expect(page).toHaveURL(/#\/settings\/daemon$/)
+  await expect(page.locator('#system-title')).toHaveText('Daemon')
+  await expect(page.getByRole('radiogroup', { name: 'Terminal appearance', exact: true })).toHaveCount(0)
   await expect(page.getByText('Daemon status')).toBeVisible()
   await expect(page.getByText('Snapshot', { exact: true })).toBeVisible()
   await expect(page.getByText('control.v1')).toBeVisible()
@@ -530,11 +532,36 @@ test('renders only status and snapshot facts on the system page', async ({ page 
   await expect(page.getByText('HTTPS and trust')).toHaveCount(0)
 })
 
+test('opens appearance from the settings cog and keeps daemon diagnostics separate', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page).toHaveURL(/#\/settings\/appearance$/)
+  await expect(page.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'System app appearance', exact: true })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Follow app terminal appearance', exact: true })).toBeVisible()
+  await expect(page.getByText('Daemon status', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('searchbox', { name: 'Search settings' })).toHaveCount(0)
+  await page.getByRole('radio', { name: 'Light app appearance', exact: true }).check()
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('radio', { name: 'Light app appearance', exact: true })).toBeChecked()
+  await page.getByRole('link', { name: 'Daemon Connection and diagnostics' }).click()
+  await expect(page.getByText('Daemon status', { exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'Appearance App and terminal themes' }).click()
+  await expect(page.getByRole('radio', { name: 'Light app appearance', exact: true })).toBeChecked()
+  await page.setViewportSize({ width: 430, height: 800 })
+  await expect(page.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.getByRole('button', { name: 'More Harbor actions' }).click()
+  await page.getByRole('menuitem', { name: 'Settings', exact: true }).click()
+  await expect(page).toHaveURL(/#\/settings\/appearance$/)
+})
+
 test('persists terminal appearance and follows app appearance only when selected', async ({ page }) => {
   await page.addInitScript(() => {
     if (!localStorage.getItem('theme')) localStorage.setItem('theme', 'dark')
   })
-  await page.goto('/#/system', { waitUntil: 'domcontentloaded' })
+  await page.goto('/#/settings/appearance', { waitUntil: 'domcontentloaded' })
   const workspace = page.locator('.harbor-workspace')
   const preview = page.getByLabel('Terminal appearance preview')
   await expect(page.getByRole('radio', { name: 'Follow app terminal appearance', exact: true })).toBeChecked()
@@ -553,7 +580,7 @@ test('persists terminal appearance and follows app appearance only when selected
   await page.getByRole('tab', { name: 'Development output', exact: true }).click()
   await expect(page.getByLabel('Current project development output')).toHaveCSS('background-color', 'rgb(246, 248, 250)')
 
-  await page.goto('/#/system')
+  await page.goto('/#/settings/appearance')
   await page.getByRole('radio', { name: 'Dark terminal appearance', exact: true }).check()
   await page.getByRole('button', { name: 'Change appearance', exact: true }).click()
   await page.getByRole('menuitem', { name: 'Light', exact: true }).click()
@@ -777,6 +804,11 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
   await expect(detail.getByRole('heading', { name: 'Overview' })).toHaveCount(0)
   await expect(page.getByText('No overview yet', { exact: true })).toHaveCount(0)
 
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page.getByRole('radio', { name: 'Light app appearance', exact: true })).toBeVisible()
+  await page.getByRole('radio', { name: 'Light app appearance', exact: true }).check()
+  await page.goto('/#/overview')
+
   await page.evaluate(() => {
     const testWindow = window as typeof window & {
       emitHarborConnection(payload: { state: 'connecting' | 'connected' | 'disconnected' }): void
@@ -823,7 +855,7 @@ test('keeps search and appearance reachable from mobile navigation', async ({ pa
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'More Harbor actions' }).click()
 
-  await expect(page.getByRole('menuitem', { name: 'System', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'Settings', exact: true })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: 'Dark appearance' })).toBeVisible()
   await page.getByRole('menuitem', { name: 'Search Harbor' }).click()
 
