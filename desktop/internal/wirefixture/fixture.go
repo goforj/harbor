@@ -12,6 +12,7 @@ import (
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/rpc"
 )
 
@@ -278,6 +279,12 @@ func Fixture() Document {
 				ID:         "session-orders-api",
 				State:      domain.SessionAttached,
 				Generation: 2,
+				Startup: &projectruntime.StartupProgress{Events: []projectruntime.StartupEvent{
+					{SchemaVersion: 1, Session: "session-orders-api", Sequence: 1, Phase: "startup", Label: "Development startup", Status: "started"},
+					{SchemaVersion: 1, Session: "session-orders-api", Sequence: 2, Phase: "task", Label: "Run Docker Compose", Status: "started"},
+					{SchemaVersion: 1, Session: "session-orders-api", Sequence: 3, Phase: "task", Label: "Run Docker Compose", Status: "completed", ElapsedMS: 1200},
+					{SchemaVersion: 1, Session: "session-orders-api", Sequence: 4, Phase: "startup", Label: "Development startup", Status: "completed", ElapsedMS: 3400},
+				}},
 				Output: control.ProjectOutputChunk{
 					Available:  true,
 					NextCursor: uint64(len(projectOutput)),

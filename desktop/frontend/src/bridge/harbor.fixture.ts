@@ -358,6 +358,46 @@ export const harborWireFixture = {
         "has_more": false,
         "next_cursor": 70,
         "text": "· Building app: web\n  Built web in 482ms\n✔ migrations complete (0)\n"
+      },
+      "startup": {
+        "events": [
+          {
+            "schema_version": 1,
+            "session": "session-orders-api",
+            "sequence": 1,
+            "phase": "startup",
+            "label": "Development startup",
+            "status": "started",
+            "elapsed_ms": 0
+          },
+          {
+            "schema_version": 1,
+            "session": "session-orders-api",
+            "sequence": 2,
+            "phase": "task",
+            "label": "Run Docker Compose",
+            "status": "started",
+            "elapsed_ms": 0
+          },
+          {
+            "schema_version": 1,
+            "session": "session-orders-api",
+            "sequence": 3,
+            "phase": "task",
+            "label": "Run Docker Compose",
+            "status": "completed",
+            "elapsed_ms": 1200
+          },
+          {
+            "schema_version": 1,
+            "session": "session-orders-api",
+            "sequence": 4,
+            "phase": "startup",
+            "label": "Development startup",
+            "status": "completed",
+            "elapsed_ms": 3400
+          }
+        ]
       }
     }
   },

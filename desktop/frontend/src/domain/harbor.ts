@@ -212,6 +212,32 @@ export interface ProjectSessionActivity {
   state: SessionState
   generation: number
   output: ProjectOutputChunk
+  startup?: StartupProgress
+  diagnostics?: { port_conflicts: PortConflict[] }
+}
+
+export interface PortConflict {
+  service: string
+  address: string
+  port: number
+  protocol: string
+  listener: string
+  bound: string
+}
+
+export interface StartupEvent {
+  schema_version: 1
+  session: string
+  sequence: number
+  phase: 'startup' | 'task' | 'app.prepare' | 'frontend.build'
+  label: string
+  status: 'started' | 'completed' | 'failed' | 'cancelled'
+  elapsed_ms: number
+}
+
+export interface StartupProgress {
+  events: StartupEvent[]
+  invalid?: boolean
 }
 
 export interface ProjectActivity {

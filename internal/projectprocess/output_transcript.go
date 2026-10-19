@@ -121,6 +121,8 @@ func (supervisor *Supervisor) WaitOutput(
 		return OutputChunk{}, err
 	}
 
+	ctx, cancel := supervisor.startupOutputWaitContext(ctx, projectID, sessionID)
+	defer cancel()
 	supervisor.mu.Lock()
 	process := supervisor.projects[projectID]
 	if process != nil && supervisor.sessions[sessionID] == process {

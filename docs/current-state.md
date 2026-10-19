@@ -24,6 +24,14 @@ session remains running.
 
 The tag-driven `Prerelease artifacts` workflow admits beta/RC tags only after successful CI for the exact main commit. It reuses native macOS and Ubuntu package gates, verifies the tested bytes, and publishes them together with checksums and provenance as an unsigned GitHub prerelease. Manual dispatch performs the same build and sealing without publication. Windows public installers remain gated on production signing; its short-lived CI helper certificate must not leave the development acceptance workflow. Stable releases, genuine consent, reboot recovery, signing, and update proof remain separate gates. See [Publishing development previews](./releases.md).
 
+## Structured startup diagnostics (2026-10-18)
+
+The GoForj runtime supplies an optional owner-private startup event file to ordinary `forj dev` without changing its argv or delaying launch for another descriptor command. A supporting CLI emits bounded schema-v1 JSON Lines; older CLIs keep their existing raw output. Harbor validates exact session/sequence, schema, labels, status, file shape, and stream size before projecting a collapsible timeline in Overview and Development output. Quiet startup refresh is bounded; producer completion never marks a project ready. Startup metadata remains outside durable lifecycle state and raw child errors remain in the retained log.
+
+Failed project activity also performs bounded read-only Docker diagnostics. It compares checkout-admitted non-running containers' configured host binds to fresh running-container publications and reports the service, requested endpoint, and competing container. Wildcard IPv4 binds overlap a project loopback; distinct loopbacks and different protocols do not. Harbor performs no foreign-container mutation. Native process-only listeners and unavailable Engine observations retain raw-output troubleshooting rather than guessed owners.
+
+Local validation covers portable runtime/control/reconcile/authority tests, focused race tests and vet, producer task failure without leaked output, strict event admission, wildcard/exact/different-loopback ports, the frontend build, 241 frontend tests, generated-contract parity, and the isolated native WebView focus/hide/restore/binding/event smoke. Native UI automation is disabled on the local Mac, so genuine tray clicks, directory-dialog cancellation, shipping consent, and installed onboarding remain manual/product-worker gates. No installed GoForj CLI has been replaced by this work.
+
 ## Wails v3 desktop trial (2026-10-18)
 
 Initial startup now restores and focuses Harbor once both the native application and window are ready, regardless of event ordering. Later frontend reloads do not reactivate a hidden or background window. Lifecycle tests cover ordering and repeated ready events; the native smoke now verifies initial focus before checking hide/restore, bindings, and events.

@@ -35,6 +35,8 @@ const (
 )
 
 var developmentLaunchIsolationNames = []string{
+	"FORJ_DEV_EVENTS_FILE",
+	"FORJ_DEV_EVENTS_SESSION",
 	"APP_NAME",
 	"FORJ_APP",
 	"FORJ_BUILD_PROGRESS",
@@ -100,7 +102,9 @@ type StartRequest struct {
 	SessionID    domain.SessionID
 	CheckoutRoot string
 	// GoForjExecutable binds a descriptor preflight to the exact executable image that will be launched.
-	GoForjExecutable     string
+	GoForjExecutable string
+	// StartupProgress enables only a negotiated non-authoritative diagnostic stream.
+	StartupProgress      bool
 	EnvironmentOverrides EnvironmentOverrides
 	// ManagedLaunch carries one owner-only session credential without changing the ordinary dev argv.
 	ManagedLaunch *ManagedLaunchContext
@@ -588,7 +592,20 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 			_ = removeManagedLaunchContext(managedLaunchPath)
 		}
 	}()
-	command.Env = withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath)
+	command.Env = withoutStartupProgressEnvironment(withDevelopmentEnvironment(supervisor.environment, managedOverrides, managedLaunchPath))
+	startupPath := ""
+	if request.StartupProgress {
+		// Optional diagnostics must never stop an otherwise valid project launch.
+		startupPath, _ = prepareStartupProgress(supervisor.outputSpoolDirectory, request.ProjectID, request.SessionID)
+		if startupPath != "" {
+			command.Env = append(command.Env, "FORJ_DEV_EVENTS_FILE="+startupPath, "FORJ_DEV_EVENTS_SESSION="+string(request.SessionID))
+		}
+	}
+	defer func() {
+		if resultErr != nil && startupPath != "" {
+			_ = os.Remove(startupPath)
+		}
+	}()
 	stdout, stdoutChild, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open forj stdout: %w", err)
@@ -1306,6 +1323,7 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 			cleanupErr,
 			removeProjectLaunchTrace(info.CheckoutRoot),
 			removeOutputSpool(supervisor.outputSpoolDirectory, info.ProjectID, info.SessionID),
+			removeStartupProgress(supervisor.outputSpoolDirectory, info.ProjectID, info.SessionID),
 		)
 	}
 	cleanupErr = errors.Join(cleanupErr, removeManagedLaunchContext(process.managedLaunchPath))

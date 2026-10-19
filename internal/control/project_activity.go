@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/projectruntime"
 )
 
 const maximumProjectOutputChunkBytes = 64 * 1024
@@ -68,10 +69,12 @@ func (activity ProjectActivity) Validate() error {
 
 // ProjectSessionActivity describes current durable session state and bounded process output.
 type ProjectSessionActivity struct {
-	ID         domain.SessionID    `json:"id"`
-	State      domain.SessionState `json:"state"`
-	Generation uint64              `json:"generation"`
-	Output     ProjectOutputChunk  `json:"output"`
+	ID          domain.SessionID                  `json:"id"`
+	State       domain.SessionState               `json:"state"`
+	Generation  uint64                            `json:"generation"`
+	Output      ProjectOutputChunk                `json:"output"`
+	Startup     *projectruntime.StartupProgress   `json:"startup,omitempty"`
+	Diagnostics *projectruntime.LaunchDiagnostics `json:"diagnostics,omitempty"`
 }
 
 // Validate reports whether the session activity is safe for JavaScript and cursor transport.
@@ -84,6 +87,16 @@ func (activity ProjectSessionActivity) Validate() error {
 	}
 	if activity.Generation == 0 || activity.Generation > uint64(domain.MaximumSequence) {
 		return fmt.Errorf("project session generation must be between 1 and %d", domain.MaximumSequence)
+	}
+	if activity.Startup != nil {
+		if err := activity.Startup.Validate(string(activity.ID)); err != nil {
+			return err
+		}
+	}
+	if activity.Diagnostics != nil {
+		if err := activity.Diagnostics.Validate(); err != nil {
+			return err
+		}
 	}
 	return activity.Output.Validate()
 }

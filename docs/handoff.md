@@ -7,6 +7,9 @@ Last updated: 2026-10-18
 ## Prerelease pipeline continuation
 
 `feat/prerelease-artifacts` adds beta/RC tag publication from tested main commits, reusable native macOS/Ubuntu package gates, strict asset verification, build-only dispatch, and public preview limitations. Windows publication is intentionally gated until production signing is configured; its disposable certificate installer remains manual CI evidence only. No release tag has been created and no public artifact publication is claimed by this change. See `docs/releases.md` for operation and retry behavior. Verify the package rehearsal and PR checks before merge.
+## Startup diagnostics continuation
+
+`feat/startup-diagnostics` contains the additive startup file consumer, control activity metadata, Vue timeline, and read-only Docker publication conflict diagnostics. Companion GoForj branch `feat/dev-progress-events` emits v1 startup records and advertises its capability. The installed global CLI remains unchanged and older CLIs use raw output. No lifecycle or readiness authority is inferred from diagnostics. Generated wire fixtures must move with their Go source. Native UI automation is disabled here; tray/dialog/consent/onboarding verification is not claimed by a fake-daemon smoke. Review PR checks and package rehearsal evidence before recording the tasks complete.
 
 
 The opening implementation notes below are retained as historical context. The authoritative continuation and evidence boundary begins at [Read this first](#read-this-first).

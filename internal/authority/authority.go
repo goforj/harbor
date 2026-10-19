@@ -831,9 +831,11 @@ func (authority *Authority) ProjectActivity(
 	result := control.ProjectActivity{ProjectID: activity.ProjectID}
 	if activity.Session != nil {
 		result.Session = &control.ProjectSessionActivity{
-			ID:         activity.Session.ID,
-			State:      activity.Session.State,
-			Generation: activity.Session.Generation,
+			ID:          activity.Session.ID,
+			State:       activity.Session.State,
+			Generation:  activity.Session.Generation,
+			Startup:     activity.Session.Startup,
+			Diagnostics: activity.Session.Diagnostics,
 			Output: control.ProjectOutputChunk{
 				Available:  activity.Session.Output.Available,
 				Historical: activity.Session.Output.Historical,
