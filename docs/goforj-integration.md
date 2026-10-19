@@ -31,6 +31,14 @@ The integration consists of two versioned contracts:
 1. a static, secret-free project descriptor;
 2. a live managed-development session.
 
+## Optional startup diagnostics
+
+The production launcher now offers a separate startup event destination through `FORJ_DEV_EVENTS_FILE` and `FORJ_DEV_EVENTS_SESSION`. This is observation only and does not activate the dormant managed-session transport below. The argv remains exactly `forj dev`, preserving native process receipts and repair matching. No additional descriptor invocation blocks launch. Older GoForj versions ignore the selectors and continue with raw output; supporting CLIs advertise `dev-startup-progress.v1` for other consumers.
+
+The file is created exclusively in Harbor's private runtime/output directory, named by an opaque hash of project/session identity, with mode `0600` on Unix. A producer writes at most 256 records and 32 KiB. Harbor reads complete JSON Lines only, requires schema 1, exact session and contiguous sequence, known phases/statuses, bounded elapsed time, and safe display labels. Malformed optional data becomes unavailable and leaves raw output accessible. The producer includes configured task labels and durations, never commands, environment, errors, or subprocess output. Failed-session diagnostics can be retained with output; an owned normal stop removes the session file.
+
+Harbor keeps process supervision and independent HTTP readiness authoritative. A completed GoForj startup span means watcher reconciliation completed, not that Harbor may publish routes or report readiness. The desktop uses these records solely for a bounded, collapsible startup timeline. Read-only Docker diagnostics can additionally identify a conflicting running-container publication after failure; they grant no stop, repair, or container mutation capability.
+
 ## Current foundation
 
 GoForj already provides most of the project semantics Harbor needs:

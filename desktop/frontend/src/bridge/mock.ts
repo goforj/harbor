@@ -65,6 +65,9 @@ export function createMockBridge(): HarborBridge {
     }
     fixtureActivity.project_id = projectId
     fixtureActivity.session.id = `session-${projectId}`
+    if (fixtureActivity.session.startup) {
+      for (const event of fixtureActivity.session.startup.events) event.session = fixtureActivity.session.id
+    }
     const output = fixtureActivity.session.output
     const nextCursor = output.next_cursor
     if (sessionId && sessionId !== fixtureActivity.session.id) {

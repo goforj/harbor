@@ -227,6 +227,26 @@ describe('ProjectView project start output', () => {
     wrapper.unmount()
   })
 
+  it('identifies a competing wildcard container without offering to stop it', async () => {
+    const activity = structuredClone(harborWireFixture.project_activity)
+    const enriched = {
+      ...activity,
+      session: { ...activity.session, diagnostics: { port_conflicts: [{
+        service: 'mailpit', address: '127.77.59.72', port: 1025, protocol: 'tcp', listener: 'other-mailpit-1', bound: '0.0.0.0',
+      }] } },
+    }
+    vi.spyOn(harborBridge, 'getProjectActivity').mockResolvedValue(enriched)
+    const { store, wrapper } = await mountProject('orders-api')
+    store.projectById('orders-api')!.state = 'failed'
+    await flushPromises()
+    expect(wrapper.text()).toContain('A service port is already in use')
+    expect(wrapper.text()).toContain('127.77.59.72:1025/tcp')
+    expect(wrapper.text()).toContain('other-mailpit-1')
+    expect(wrapper.text()).toContain('0.0.0.0')
+    expect(wrapper.findAll('button').some(button => button.text().includes('Stop other-mailpit'))).toBe(false)
+    wrapper.unmount()
+  })
+
   it('does not claim a launch trace for failures that happened before a runtime started', async () => {
     const { store, wrapper } = await mountProject('reports')
     const project = store.projectById('reports')

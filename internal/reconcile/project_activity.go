@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -29,10 +31,12 @@ type ProjectActivity struct {
 
 // ProjectSessionActivity contains only current durable session state and daemon-owned output.
 type ProjectSessionActivity struct {
-	ID         domain.SessionID
-	State      domain.SessionState
-	Generation uint64
-	Output     projectprocess.OutputChunk
+	ID          domain.SessionID
+	State       domain.SessionState
+	Generation  uint64
+	Output      projectprocess.OutputChunk
+	Startup     *projectruntime.StartupProgress
+	Diagnostics *projectruntime.LaunchDiagnostics
 }
 
 // projectActivityState limits the read path to current registration and session facts.
@@ -141,13 +145,31 @@ func readCurrentProjectActivity(
 	if changedSession {
 		output.Reset = true
 	}
+	var startup *projectruntime.StartupProgress
+	if observer, ok := reader.(interface {
+		ReadStartupProgress(domain.ProjectID, domain.SessionID) *projectruntime.StartupProgress
+	}); ok {
+		startup = observer.ReadStartupProgress(request.ProjectID, session.ID)
+	}
+	var diagnostics *projectruntime.LaunchDiagnostics
+	if project.Project.State == domain.ProjectFailed {
+		if observer, ok := reader.(interface {
+			ObserveLaunchDiagnostics(context.Context, string) (*projectruntime.LaunchDiagnostics, error)
+		}); ok {
+			diagnosticContext, cancel := context.WithTimeout(ctx, 2*time.Second)
+			diagnostics, _ = observer.ObserveLaunchDiagnostics(diagnosticContext, project.Project.Path)
+			cancel()
+		}
+	}
 	return ProjectActivity{
 		ProjectID: request.ProjectID,
 		Session: &ProjectSessionActivity{
-			ID:         session.ID,
-			State:      session.State,
-			Generation: session.Generation,
-			Output:     output,
+			ID:          session.ID,
+			State:       session.State,
+			Generation:  session.Generation,
+			Output:      output,
+			Startup:     startup,
+			Diagnostics: diagnostics,
 		},
 	}, nil
 }

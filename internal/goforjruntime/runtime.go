@@ -230,6 +230,7 @@ func (runtime *Runtime) Launch(ctx context.Context, request projectruntime.Launc
 	overrides, _ := goForjLaunchEnvironmentOverrides(request.NetworkAssignment, request.EnvironmentOverrides)
 	handle, err := runtime.supervisor.Start(ctx, projectprocess.StartRequest{
 		ProjectID:            request.ProjectID,
+		StartupProgress:      true,
 		SessionID:            request.SessionID,
 		CheckoutRoot:         request.CheckoutRoot,
 		EnvironmentOverrides: overrides,
@@ -692,4 +693,14 @@ func outputBrokerSession(peer *projectprocess.OutputBrokerPeer) *domain.OutputBr
 			ArgumentDigest:     peer.Process.ArgumentDigest,
 		},
 	}
+}
+
+// ReadStartupProgress returns optional runtime diagnostics for a selected durable session.
+func (runtime *Runtime) ReadStartupProgress(project domain.ProjectID, session domain.SessionID) *projectruntime.StartupProgress {
+	return runtime.supervisor.ReadStartupProgress(project, session)
+}
+
+// ObserveLaunchDiagnostics projects fresh, read-only container conflicts for one registered checkout.
+func (runtime *Runtime) ObserveLaunchDiagnostics(ctx context.Context, checkout string) (*projectruntime.LaunchDiagnostics, error) {
+	return runtime.supervisor.ObserveLaunchDiagnostics(ctx, checkout)
 }

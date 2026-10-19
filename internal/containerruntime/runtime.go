@@ -69,6 +69,8 @@ type Container struct {
 	TTY         bool
 	Environment []string
 	Ports       []Port
+	// RequestedPorts contains host bindings retained even after a failed container launch.
+	RequestedPorts []Port
 }
 
 // Port describes one published or internal container port reported by the runtime.

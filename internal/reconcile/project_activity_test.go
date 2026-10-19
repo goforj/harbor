@@ -10,6 +10,7 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectprocess"
+	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
 )
 
@@ -21,6 +22,52 @@ type projectActivityTestState struct {
 	sessionErr   error
 	projectReads int
 	sessionReads int
+}
+
+// projectActivityDiagnosticReader adds optional observations without changing output or durable state.
+type projectActivityDiagnosticReader struct {
+	projectActivityTestReader
+	diagnosticCalls int
+	diagnosticErr   error
+}
+
+// ReadStartupProgress returns only diagnostic metadata for the currently selected session.
+func (reader *projectActivityDiagnosticReader) ReadStartupProgress(project domain.ProjectID, session domain.SessionID) *projectruntime.StartupProgress {
+	return &projectruntime.StartupProgress{Events: []projectruntime.StartupEvent{{SchemaVersion: 1, Session: string(session), Sequence: 1, Phase: "startup", Label: "Development startup", Status: "failed"}}}
+}
+
+// ObserveLaunchDiagnostics counts best-effort read-only observations for the failed checkout.
+func (reader *projectActivityDiagnosticReader) ObserveLaunchDiagnostics(context.Context, string) (*projectruntime.LaunchDiagnostics, error) {
+	reader.diagnosticCalls++
+	return &projectruntime.LaunchDiagnostics{PortConflicts: []projectruntime.PortConflict{}}, reader.diagnosticErr
+}
+
+// TestProjectActivityDiagnosticsDoNotOwnLifecycle preserves independent state and raw output when optional diagnostics fail.
+func TestProjectActivityDiagnosticsDoNotOwnLifecycle(t *testing.T) {
+	for _, state := range []domain.ProjectState{domain.ProjectFailed, domain.ProjectReady} {
+		for _, failed := range []bool{false, true} {
+			project := projectActivityTestProject()
+			project.Project.State = state
+			source := &projectActivityTestState{project: project, session: projectActivityTestSession()}
+			reader := &projectActivityDiagnosticReader{projectActivityTestReader: projectActivityTestReader{output: projectprocess.OutputChunk{Available: true, Text: "raw failure output\n"}}}
+			if failed {
+				reader.diagnosticErr = errors.New("Engine unavailable")
+			}
+			activity, err := readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{ProjectID: project.Project.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if activity.Session.Output.Text != "raw failure output\n" || activity.Session.State != source.session.State {
+				t.Fatal("optional metadata changed lifecycle or raw output")
+			}
+			if activity.Session.Startup.Events[0].Session != string(source.session.ID) {
+				t.Fatal("startup session selection changed")
+			}
+			if (reader.diagnosticCalls == 1) != (state == domain.ProjectFailed) {
+				t.Fatal("diagnostic observer called outside failure view")
+			}
+		}
+	}
 }
 
 // Project returns the configured current project record.

@@ -1,6 +1,18 @@
 import { expect, test } from '@playwright/test'
 import { harborWireFixture } from '../src/bridge/harbor.fixture'
 
+test('shows typed startup steps without changing project readiness', async ({ page }) => {
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
+  const timeline = page.locator('details').filter({ hasText: 'Startup steps completed' })
+  await expect(timeline).toBeVisible()
+  await timeline.locator('summary').click()
+  await expect(timeline.getByRole('list', { name: 'Development startup steps' })).toBeVisible()
+  await expect(timeline.getByText('Run Docker Compose', { exact: true })).toBeVisible()
+  await expect(timeline).toContainText('1.2 s')
+  await page.setViewportSize({ width: 430, height: 800 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
 test('navigates from the Harbor overview to the project list', async ({ page }) => {
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 

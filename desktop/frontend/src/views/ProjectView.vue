@@ -24,6 +24,7 @@ import {
   X,
 } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import StartupTimeline from '@/components/harbor/StartupTimeline.vue'
 import InteractiveTerminal from '@/components/harbor/InteractiveTerminal.vue'
 import ProjectConnectPanel from '@/components/harbor/ProjectConnectPanel.vue'
 import ProjectEnvironmentPanel from '@/components/harbor/ProjectEnvironmentPanel.vue'
@@ -733,6 +734,18 @@ async function setupNetworkAndStartProject() {
         </TabsList>
 
         <div class="project-tab-body" :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
+        <StartupTimeline v-if="projectActivitySession?.startup && (selectedDetailTab === 'overview' || selectedDetailTab === 'output')" :progress="projectActivitySession.startup" :settled="project.state !== 'starting' && project.state !== 'rebuilding'" />
+        <Alert v-if="project.state === 'failed' && projectActivitySession?.diagnostics?.port_conflicts.length" variant="destructive">
+          <TriangleAlert aria-hidden="true" />
+          <AlertTitle>A service port is already in use</AlertTitle>
+          <AlertDescription class="space-y-2">
+            <p v-for="conflict in projectActivitySession.diagnostics.port_conflicts" :key="`${conflict.service}:${conflict.address}:${conflict.port}:${conflict.listener}`" class="break-words">
+              <strong>{{ conflict.service }}</strong> requests <code>{{ conflict.address }}:{{ conflict.port }}/{{ conflict.protocol }}</code>.
+              <strong>{{ conflict.listener }}</strong> currently publishes that port on <code>{{ conflict.bound }}</code>.
+            </p>
+            <p>A wildcard bind such as <code>0.0.0.0</code> can block a project's loopback address. Stop or reconfigure the competing workload, then retry this project.</p>
+          </AlertDescription>
+        </Alert>
         <Alert
           v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
