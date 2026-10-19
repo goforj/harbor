@@ -4,11 +4,21 @@ Status: GitHub-hosted macOS, Linux, and Windows three-project trusted-HTTPS life
 
 Last updated: 2026-10-19
 
+## Final Harbor integration (2026-10-19)
+
+Harbor PR #11 is being reconciled around its full scope: graphical creation, resilient 256-identity networking, resumable setup, appearance, command-menu parity, and service artwork. GoForj PR #251 is merged, released as v0.34.0 at `4553ef30`, and installed at `/Users/cmiles/go/bin/forj` from the published module. Its schema matches Harbor's fixture. All external CLI source pins and expected generated-project versions are moved to 0.34.0; the relative desktop module replacement and framework dependency pins are unchanged.
+
+The native capacity step passed on hosted Linux, macOS, and Windows in run `39333621961` at `79e441d`. General CI on that head exposed two remaining test issues: the pure `internal/network/poolpolicy` dependency was not in the helper's reviewed graph, and the desktop creator fixture used a Unix-only absolute path. The focused fixes pass locally in `/tmp/harbor-integration-helper-boundary.log` and `/tmp/harbor-integration-creation-tests.log`. Final CI must pass before PR #11 merges.
+
+A real macOS native lifecycle proof passed in `/tmp/harbor-integration-native-create-start-stop.log` and `/tmp/harbor-integration-native-reopen-start-stop.log`: GUI creation through the released CLI, Ready, trusted HTTPS 200, Stop, native process exit, a fresh process finding the same stopped registration, another GUI Start, trusted HTTPS 200, and Stop. It used the production SPA and real Wails bindings against the existing daemon, with a minimal Vue/API project. The isolated probe checkout is recorded in `/tmp/harbor-integration-verification-directory`; its test-only probe is not a product change. Generated project files remain beneath `/tmp/harbor-lifecycle-verify-cbk_d1ye/project`. Fixture state, installer consent, daemon restart, and OS reboot are not substituted for this evidence.
+
+The earlier continuation sections are historical. In particular, their pending-publication and uncommitted-work notes are superseded by this section and the current Git state.
+
 ## Publication and native gate continuation (2026-10-19)
 
-GoForj's schema/argument creation contract is committed as `dab970eb` in `/Users/cmiles/code/goforj-harbor-events` and published for review at https://github.com/goforj/goforj/pull/251. Focused project-creation tests pass in `/tmp/goforj-creation-contract-final.log`. The built CLI emits one schema JSON object, and every field matches Harbor's committed fixture. The contract has not been merged or released.
+GoForj's schema/argument creation contract is committed as `dab970eb` in `/Users/cmiles/code/goforj-harbor-events` and published for review at https://github.com/goforj/goforj/pull/251. Focused project-creation tests pass in `/tmp/goforj-creation-contract-final.log`. The built CLI emits one schema JSON object, and every field matches Harbor's committed fixture. The contract is now merged and published as v0.34.0; see the final integration section above.
 
-The hosted platform-network workflow adds a `/24` adapter acceptance case with partial assignment replay, retained fingerprints, 100 simultaneous same-port listeners, and exact cleanup. It deliberately uses `127.77.253.0/24`, separate from the existing eight-address and three-project proof ranges, and refuses any pre-existing assignment before mutation. Portable proof and range-bound tests pass in `/tmp/harbor-native-capacity-{portable,bounds}.log`. Native CI results must be recorded before claiming this gate passes. Installer consent, protected ownership growth, and reboot acceptance remain separate.
+The hosted platform-network workflow adds a `/24` adapter acceptance case with partial assignment replay, retained fingerprints, 100 simultaneous same-port listeners, and exact cleanup. It deliberately uses `127.77.253.0/24`, separate from the existing eight-address and three-project proof ranges, and refuses any pre-existing assignment before mutation. Portable proof and range-bound tests pass in `/tmp/harbor-native-capacity-{portable,bounds}.log`. The native capacity step passed on all three hosted platforms in run `39333621961`. Installer consent, protected ownership growth, and reboot acceptance remain separate.
 
 ## Interrupted setup continuation (2026-10-19)
 

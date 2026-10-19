@@ -11,12 +11,12 @@ The current checkout requires:
 
 Runtime admission does not pin a GoForj version, revision, replacement, or working-tree state. Harbor rejects a binary whose embedded command or main-module identity is not canonical (including a replaced main module). The reviewed GoForj revision used by generated-project CI is a deterministic test input, not a runtime compatibility requirement. Harbor's `.goforj.yml` still records `goforj_version: 0.19.0` as render metadata; it does not override runtime executable admission.
 
-CI and development packaging select GoForj `v0.30.0`. To use the same released CLI locally:
+CI and development packaging select GoForj `v0.34.0`. To use the same released CLI locally:
 
 ```sh
-go install github.com/goforj/goforj/cmd/forj@v0.30.0
+go install github.com/goforj/goforj/cmd/forj@v0.34.0
 forj --version
-# v0.30.0
+# v0.34.0
 ```
 
 Run the complete development graph from the repository root:

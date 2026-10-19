@@ -123,6 +123,7 @@ func helperTargets() []string {
 }
 
 // reviewedRuntimeDependencies returns the exact audited graph available to one platform build.
+// The shared pool policy validates bounded address ranges without host or application authority.
 func reviewedRuntimeDependencies(target string) map[string]struct{} {
 	allowed := map[string]struct{}{
 		"github.com/goforj/harbor/cmd/helper":                          {},
@@ -137,6 +138,7 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 		"github.com/goforj/harbor/internal/host/ownership":             {},
 		"github.com/goforj/harbor/internal/host/ownershipreleaseproof": {},
 		"github.com/goforj/harbor/internal/identitytext":               {},
+		"github.com/goforj/harbor/internal/network/poolpolicy":         {},
 		"github.com/goforj/harbor/internal/platform/hostconflict":      {},
 		"github.com/goforj/harbor/internal/platform/loopback":          {},
 		"github.com/goforj/harbor/internal/platform/machinepaths":      {},

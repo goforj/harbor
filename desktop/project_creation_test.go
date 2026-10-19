@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,8 +54,9 @@ func creationTestApp(creator *fakeProjectCreator) (*App, *fakeControlClient) {
 }
 
 // creationTestRequest uses an intentionally non-GoForj field key.
-func creationTestRequest() projectcreation.Request {
-	return projectcreation.Request{ProviderID: "test-stack", SchemaVersion: 1, Options: map[string]string{"destination": "/tmp/new-project"}}
+func creationTestRequest(t *testing.T) projectcreation.Request {
+	t.Helper()
+	return projectcreation.Request{ProviderID: "test-stack", SchemaVersion: 1, Options: map[string]string{"destination": filepath.Join(t.TempDir(), "new-project")}}
 }
 
 // waitCreation waits only for the worker belonging to this test.
@@ -90,14 +92,15 @@ func TestCreateProjectSeparatesCreationAndRegistration(t *testing.T) {
 			if mode == "disconnected" {
 				app.client = nil
 			}
-			result, err := app.CreateProject(creationTestRequest())
+			request := creationTestRequest(t)
+			result, err := app.CreateProject(request)
 			if mode == "creation fails" || mode == "disconnected" {
 				if err == nil || client.registerPath != "" {
 					t.Fatalf("result=%+v err=%v", result, err)
 				}
 				return
 			}
-			if err != nil || result.Path != "/tmp/new-project" || client.registerPath != result.Path {
+			if err != nil || result.Path != request.Options["destination"] || client.registerPath != result.Path {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 			if mode == "registration fails" {
@@ -130,7 +133,7 @@ func TestCreateProjectSeparatesCreationAndRegistration(t *testing.T) {
 func TestCreationStreamsAndRejectsUnsafeRetries(t *testing.T) {
 	creator := &fakeProjectCreator{hold: make(chan struct{}), started: make(chan struct{})}
 	app, _ := creationTestApp(creator)
-	progress, err := app.StartProjectCreation(creationTestRequest())
+	progress, err := app.StartProjectCreation(creationTestRequest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +142,7 @@ func TestCreationStreamsAndRejectsUnsafeRetries(t *testing.T) {
 	if err != nil || !strings.Contains(live.Output, "rendering files") || live.Phase != "creating" {
 		t.Fatalf("%+v %v", live, err)
 	}
-	if _, err := app.StartProjectCreation(creationTestRequest()); err == nil {
+	if _, err := app.StartProjectCreation(creationTestRequest(t)); err == nil {
 		t.Fatal("concurrent renderer accepted")
 	}
 	if _, err := app.RetryProjectRegistration(progress.JobID); err == nil {
@@ -165,7 +168,7 @@ func TestCreationStreamsAndRejectsUnsafeRetries(t *testing.T) {
 // TestCreationFailureCannotRetryRegistration keeps incomplete directories out of daemon admission.
 func TestCreationFailureCannotRetryRegistration(t *testing.T) {
 	app, _ := creationTestApp(&fakeProjectCreator{failure: errors.New("render failed")})
-	progress, err := app.StartProjectCreation(creationTestRequest())
+	progress, err := app.StartProjectCreation(creationTestRequest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,12 +179,12 @@ func TestCreationFailureCannotRetryRegistration(t *testing.T) {
 	if _, err := app.RetryProjectRegistration(progress.JobID); err == nil {
 		t.Fatal("incomplete project admitted")
 	}
-	request := creationTestRequest()
+	request := creationTestRequest(t)
 	request.ProviderID = "unknown"
 	if _, err := app.StartProjectCreation(request); err == nil {
 		t.Fatal("unknown provider accepted")
 	}
-	request = creationTestRequest()
+	request = creationTestRequest(t)
 	request.Options["destination"] = "relative"
 	if _, err := app.StartProjectCreation(request); err == nil {
 		t.Fatal("relative path accepted")

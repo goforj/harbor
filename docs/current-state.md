@@ -1,10 +1,18 @@
 # Current Implementation State
 
+## Released CLI and native creation lifecycle (2026-10-19)
+
+GoForj PR #251 is merged as `4553ef30446b798a896ab2bb91bb1927caa428a1`, published as v0.34.0, and installed locally from that published module. CI, hosted lifecycle jobs, development package checks, and generated-project acceptance now select that CLI release. Existing project config metadata and Harbor's framework module dependencies are independent of this tool pin.
+
+A real macOS Wails window used the production SPA and bindings against the running daemon to create a minimal Vue/web API project through the wizard with the released CLI. Start reached Ready and normal system trust accepted HTTPS with status 200. After Stop and native desktop process exit, a fresh process found the same stopped registration, started it again through the UI, reached Ready, and served trusted HTTPS 200 before stopping. The temporary proof extended the opt-in native creation harness in an isolated checkout; no fixture bridge or fake daemon was used. The normal project registration cleanup preserves the generated checkout beneath `/tmp`. This is desktop close/reopen evidence with the existing daemon, not an OS reboot or fresh installer proof.
+
+The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. CI for these final integration fixes still needs to pass before merge.
+
 ## Hosted capacity gate (2026-10-19)
 
 The hosted platform-network API workflow now includes an explicitly selected, initially absent `/24` on Ubuntu, macOS, and Windows. Its new acceptance case creates a partial range, replays exact assignments unchanged while completing all 256 aliases, proves 100 simultaneous same-port listeners with authenticated responses, and conditionally removes only the native fingerprints created by that test. It verifies that all 256 aliases are absent afterward. Existing legacy `/29` adapter coverage remains.
 
-Portable proof and range-validation tests pass locally. Native execution is pending CI. This is adapter and socket acceptance, separate from protected ownership expansion, installer consent, full application workloads, and reboot restoration.
+Portable proof and range-validation tests pass locally. The native capacity step passed on hosted Ubuntu, macOS, and Windows in run `39333621961` at `79e441d`. This is adapter and socket acceptance, separate from protected ownership expansion, installer consent, full application workloads, and reboot restoration.
 
 ## Interrupted network setup recovery (2026-10-19)
 
