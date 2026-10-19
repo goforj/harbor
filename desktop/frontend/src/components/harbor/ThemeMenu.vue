@@ -11,11 +11,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-import {
   setThemePreference,
   themePreference,
   type ThemePreference,
@@ -37,25 +32,21 @@ function chooseTheme(value: ThemePreference) {
 
 <template>
   <DropdownMenu>
-    <Tooltip>
-      <TooltipTrigger as-child>
-        <DropdownMenuTrigger as-child>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="text-muted-foreground hover:text-foreground"
-            aria-label="Change appearance"
-          >
-            <Sun v-if="preference === 'light'" aria-hidden="true" />
-            <Moon v-else-if="preference === 'dark'" aria-hidden="true" />
-            <Monitor v-else aria-hidden="true" />
-          </Button>
-        </DropdownMenuTrigger>
-      </TooltipTrigger>
-      <TooltipContent side="right">Appearance</TooltipContent>
-    </Tooltip>
+    <DropdownMenuTrigger as-child>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="text-muted-foreground hover:text-foreground"
+        aria-label="Change appearance"
+        title="Appearance"
+      >
+        <Sun v-if="preference === 'light'" aria-hidden="true" />
+        <Moon v-else-if="preference === 'dark'" aria-hidden="true" />
+        <Monitor v-else aria-hidden="true" />
+      </Button>
+    </DropdownMenuTrigger>
 
-    <DropdownMenuContent side="right" align="end" class="w-40">
+    <DropdownMenuContent side="right" align="end" :collision-padding="8" class="w-40">
       <DropdownMenuLabel>Appearance</DropdownMenuLabel>
       <DropdownMenuSeparator />
       <DropdownMenuItem

@@ -15,6 +15,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useHarborStore } from '@/stores/harbor'
 import harborBackground from '@/assets/illustrations/harbor-background.png'
+import { terminalCSSVariables, terminalMode } from '@/lib/terminalAppearance'
 
 const route = useRoute()
 const harbor = useHarborStore()
@@ -75,7 +76,7 @@ onBeforeUnmount(() => {
 
 <template>
   <TooltipProvider :delay-duration="300">
-    <div class="harbor-workspace" :data-has-detail="hasDetail">
+    <div class="harbor-workspace" :data-has-detail="hasDetail" :data-terminal-mode="terminalMode" :style="terminalCSSVariables">
       <HarborIllustration v-if="route.name === 'overview'" :image="harborBackground" size="wide" fade="soft" />
 
       <Badge

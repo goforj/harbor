@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { Activity, Database, RefreshCw, Server } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
+import TerminalAppearanceSettings from '@/components/harbor/TerminalAppearanceSettings.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,12 +19,13 @@ const capturedAt = computed(() => store.snapshot?.captured_at
     <header class="flex items-start justify-between gap-4 border-b px-5 py-4 lg:px-7">
       <div class="min-w-0">
         <div class="flex items-center gap-2"><h1 id="system-title" class="truncate text-base font-semibold tracking-tight">System</h1><StatusBadge v-if="store.daemonStatus" :status="store.daemonStatus.state" /></div>
-        <p class="mt-1 text-xs text-muted-foreground">Facts available through the current Harbor control connection</p>
+        <p class="mt-1 text-xs text-muted-foreground">Appearance preferences and Harbor connection details</p>
       </div>
       <Button variant="outline" size="sm" :disabled="store.loading" @click="store.refresh"><RefreshCw :class="['size-3.5', store.loading && 'animate-spin']" />Refresh</Button>
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
+      <TerminalAppearanceSettings />
       <Card class="gap-0 rounded-lg py-0 shadow-none">
         <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Daemon status</CardTitle></div></CardHeader>
         <CardContent class="p-0">

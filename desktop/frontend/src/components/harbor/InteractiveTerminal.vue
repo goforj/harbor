@@ -2,7 +2,7 @@
 import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
-import { terminalTheme } from '@/lib/terminalTheme'
+import { activeTerminalTheme } from '@/lib/terminalAppearance'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { TerminalDimensions, TerminalSession } from '@/lib/terminalSession'
 
@@ -38,6 +38,10 @@ watch(() => props.active, (active) => {
   if (active) void activate()
 })
 
+watch(activeTerminalTheme, theme => {
+  if (terminal) terminal.options.theme = theme
+})
+
 onBeforeUnmount(() => {
   disposed = true
   resizeObserver?.disconnect()
@@ -65,7 +69,7 @@ async function initialize() {
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
     fontSize: 13,
     scrollback: 10_000,
-    theme: terminalTheme,
+    theme: activeTerminalTheme.value,
   })
   const fit = new FitAddon()
   terminal = emulator
@@ -143,7 +147,7 @@ async function reportSessionError(result: void | Promise<void>) {
 </script>
 
 <template>
-  <div class="harbor-interactive-terminal h-full min-h-0 w-full overflow-hidden p-3" :aria-label="ariaLabel" :style="{ backgroundColor: terminalTheme.background }" role="application">
+  <div class="harbor-interactive-terminal h-full min-h-0 w-full overflow-hidden p-3" :aria-label="ariaLabel" :style="{ backgroundColor: activeTerminalTheme.background }" role="application">
     <div ref="container" class="h-full min-h-0 w-full overflow-hidden" />
   </div>
 </template>

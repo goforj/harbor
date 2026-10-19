@@ -8,6 +8,12 @@ Project work is organized in [Harbor in Plane](https://plane.goforj.dev/goforj/p
 with identifier `HARBOR`. The board distinguishes completed foundations from
 remaining product verification and release gates; see the handoff for priorities.
 
+## Terminal appearance settings (2026-10-18)
+
+System now exposes Follow app, Dark, and Light terminal choices with a live preview. GoForj's pale light code surface and deep dark code surface apply consistently to project output, service logs, and interactive shells. The local preference survives reloads, validates stored values, and remains usable for a session when storage is blocked. Follow app tracks the resolved app theme; pinned choices remain independent. Existing ANSI scrollback recolors through CSS variables and open shells receive an in-place palette update, without replay, reconnect, or project restart.
+
+The appearance menu also anchors directly to its button instead of nesting two trigger wrappers, fixing offscreen placement at the bottom of the desktop rail. The production build, 256 frontend tests, and 27 Chromium checks pass, with dark/light card inspection. Tests cover preference persistence, unsupported storage values, unavailable storage, app-follow behavior, retained preview text, and shell continuity. Native consent, tray, and platform acceptance remain separate gates.
+
 ## Embedded development output (2026-10-18)
 
 The log viewer now uses tight terminal rows instead of the former 1.8 line spacing plus a 20-pixel row minimum, so box-drawing borders join. Streamed logs and interactive shells share the GoForj website code well's deeper near-black background (`#0A080D`) and a softer ANSI palette while preserving explicit RGB/256-color output. The frontend build, 248 unit tests, 26 Chromium checks, focused process-launch tests and race checks, and process-package vet pass. A fresh fixture server was required after branch/HMR changes to keep the existing dynamic bridge-mocking browser test on one module identity.

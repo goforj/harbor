@@ -23,7 +23,7 @@ describe('TerminalOutput', () => {
 
     expect(wrapper.text()).toBe('<script>alert(1)</script>')
     expect(wrapper.find('script').exists()).toBe(false)
-    expect(wrapper.get('span').attributes('style')).toContain('color: rgb(233, 139, 133)')
+    expect(wrapper.get('span').attributes('style')).toContain('color: var(--terminal-red)')
   })
 
   it('resets the model when retained output is replaced', async () => {

@@ -530,6 +530,45 @@ test('renders only status and snapshot facts on the system page', async ({ page 
   await expect(page.getByText('HTTPS and trust')).toHaveCount(0)
 })
 
+test('persists terminal appearance and follows app appearance only when selected', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('theme')) localStorage.setItem('theme', 'dark')
+  })
+  await page.goto('/#/system', { waitUntil: 'domcontentloaded' })
+  const workspace = page.locator('.harbor-workspace')
+  const preview = page.getByLabel('Terminal appearance preview')
+  await expect(page.getByRole('radio', { name: 'Follow app terminal appearance', exact: true })).toBeChecked()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'dark')
+  const retainedText = await preview.textContent()
+
+  await page.getByRole('radio', { name: 'Light terminal appearance', exact: true }).check()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'light')
+  await expect(preview).toHaveCSS('background-color', 'rgb(246, 248, 250)')
+  await expect(preview).toHaveCSS('color', 'rgb(31, 35, 40)')
+  expect(await preview.textContent()).toBe(retainedText)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('radio', { name: 'Light terminal appearance', exact: true })).toBeChecked()
+
+  await page.goto('/#/projects/orders-api')
+  await page.getByRole('tab', { name: 'Development output', exact: true }).click()
+  await expect(page.getByLabel('Current project development output')).toHaveCSS('background-color', 'rgb(246, 248, 250)')
+
+  await page.goto('/#/system')
+  await page.getByRole('radio', { name: 'Dark terminal appearance', exact: true }).check()
+  await page.getByRole('button', { name: 'Change appearance', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Light', exact: true }).click()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'dark')
+  await expect(preview).toHaveCSS('background-color', 'rgb(10, 8, 13)')
+
+  await page.getByRole('radio', { name: 'Follow app terminal appearance', exact: true }).check()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'light')
+  await page.getByRole('button', { name: 'Change appearance', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Dark', exact: true }).click()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'dark')
+  await page.setViewportSize({ width: 430, height: 800 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
 test('fails closed for a production browser unless its fixture is explicitly requested', async ({ page }) => {
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 

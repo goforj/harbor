@@ -149,6 +149,12 @@ Atmospheric scenes are local transparent assets under `src/assets/illustrations/
 
 `terminalTheme.ts` centralizes the deep near-black surface and restrained ANSI palette shared by streamed logs and the interactive shell. The `#0A080D` ground comes from the GoForj website code well, with a slightly lifted `#100D14` output toolbar. Explicit 256-color and RGB process output remains faithful. `TerminalOutput` uses 13-pixel Menlo with platform monospace fallbacks, a 1.2 line height, and rows with exactly the same minimum height; do not add independent row padding or a larger minimum height, which separates vertical box-drawing glyphs. Wrapping and safe links still use the bounded incremental terminal model, and copied text remains unstyled.
 
+## Terminal appearance preferences
+
+System includes a Terminal appearance card with a live preview and Follow app, Dark, and Light choices. Follow app is the default and tracks Harbor's resolved light/dark appearance, including system changes when the app follows the operating system. An explicit terminal choice remains independent. The preference is stored locally as `harbor.terminal-appearance`; unsupported stored values fall back to Follow app, and unavailable storage still permits a session-local change.
+
+Both palettes use GoForj's code styling: the dark well is `#0A080D`, while light mode uses `#F6F8FA` with `#1F2328` text and white chrome. Standard ANSI colors and inverse defaults reference shared CSS variables so retained output updates without replay or cursor changes. Explicit extended RGB/color-cube values remain intact. The interactive terminal updates xterm's theme in place, preserving its live shell and scrollback. Appearance never changes a daemon setting or restarts a project.
+
 ## State flow
 
 Pinia stores consume daemon snapshots and events; they do not become a second authority.
