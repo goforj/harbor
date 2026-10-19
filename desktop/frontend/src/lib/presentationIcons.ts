@@ -1,8 +1,20 @@
-import { Activity, AppWindow, BookOpen, Code2, Database, HardDrive, Layers, ListOrdered, Mail, Radar, Server, Waypoints } from '@lucide/vue'
+import { Activity, AppWindow, BookOpen, Code2, Database, FolderKanban, FolderOpen, FolderPlus, HardDrive, Layers, LayoutDashboard, ListOrdered, Mail, Monitor, Moon, Palette, Radar, RefreshCw, Server, Settings, Sun, Waypoints } from '@lucide/vue'
 
-// presentationIcon gives resource and service kinds one consistent visual vocabulary.
+// presentationIcon keeps navigation, actions, resources, and services in one visual vocabulary.
 export function presentationIcon(kind: string) {
   switch (kind) {
+    case 'overview': return { icon: LayoutDashboard, tone: 'docs' }
+    case 'projects': return { icon: FolderKanban, tone: 'application' }
+    case 'services':
+    case 'daemon': return { icon: Server, tone: 'service' }
+    case 'system': return { icon: Settings, tone: 'data' }
+    case 'appearance': return { icon: Palette, tone: 'data' }
+    case 'new-project': return { icon: FolderPlus, tone: 'application' }
+    case 'import-project': return { icon: FolderOpen, tone: 'docs' }
+    case 'refresh': return { icon: RefreshCw, tone: 'mail' }
+    case 'theme-system': return { icon: Monitor, tone: 'service' }
+    case 'theme-dark': return { icon: Moon, tone: 'data' }
+    case 'theme-light': return { icon: Sun, tone: 'cache' }
     case 'application': return { icon: AppWindow, tone: 'application' }
     case 'api-reference':
     case 'docs': return { icon: BookOpen, tone: 'docs' }

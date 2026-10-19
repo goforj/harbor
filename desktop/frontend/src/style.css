@@ -504,13 +504,13 @@
 }
 
 .project-log-toolbar {
-  background: var(--terminal-chrome, #100d14);
-  border-bottom-color: var(--terminal-border, #29232f);
+  background: var(--terminal-chrome, #171717);
+  border-bottom-color: var(--terminal-border, #2e2e2e);
 }
 
 .project-log-viewport,
 .harbor-log-viewport {
-  background: var(--terminal-background, #0a080d);
+  background: var(--terminal-background, #0b0b0b);
   color: var(--terminal-foreground, #e2e2e2);
   font-size: 12px;
 }

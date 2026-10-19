@@ -1,21 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { Check, Monitor, Moon, SquareTerminal, Sun } from '@lucide/vue'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { activeTerminalTheme, setTerminalAppearance, terminalAppearance } from '@/lib/terminalAppearance'
 import { terminalThemes } from '@/lib/terminalTheme'
-import { appliedTheme } from '@/lib/theme'
 import TerminalOutput from './TerminalOutput.vue'
 
 const options = [
-  { value: 'app', label: 'Follow app', description: 'Match Harbor appearance', icon: Monitor },
-  { value: 'dark', label: 'Dark', description: 'Deep GoForj code surface', icon: Moon },
+  { value: 'app', label: 'System', description: 'Follow Harbor’s theme', icon: Monitor },
+  { value: 'dark', label: 'Dark', description: 'Neutral near-black surface', icon: Moon },
   { value: 'light', label: 'Light', description: 'Clean GoForj code surface', icon: Sun },
 ] as const
 
-const choices = computed(() => options.map(option => ({
-  ...option, palette: terminalThemes[option.value === 'app' ? appliedTheme.value : option.value],
-})))
+const choices = options.map(option => ({
+  ...option, palettes: option.value === 'app' ? [terminalThemes.light, terminalThemes.dark] : [terminalThemes[option.value]],
+}))
 
 const preview = '\u001b[32m✔ Build complete\u001b[0m · 482 ms\n\u001b[34mHTTP\u001b[0m  GET /tasks  \u001b[32m200\u001b[0m\n\u001b[90mWatching for changes…\u001b[0m'
 </script>
@@ -31,10 +29,12 @@ const preview = '\u001b[32m✔ Build complete\u001b[0m · 482 ms\n\u001b[34mHTTP
         <label v-for="option in choices" :key="option.value" class="relative cursor-pointer">
           <input type="radio" name="terminal-appearance" :value="option.value" :aria-label="`${option.label} terminal appearance`" :checked="terminalAppearance === option.value" class="peer absolute inset-0 z-10 size-full cursor-pointer opacity-0" @change="setTerminalAppearance(option.value)">
           <div class="overflow-hidden rounded-lg border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background" :class="terminalAppearance === option.value ? 'border-primary ring-1 ring-primary' : 'border-border hover:border-muted-foreground/50'">
-            <div class="space-y-2 border-b px-4 py-4" :style="{ backgroundColor: option.palette.background }" aria-hidden="true">
-              <div class="h-1.5 w-2/3 rounded-full" :style="{ backgroundColor: option.palette.foreground, opacity: 0.8 }" />
-              <div class="h-1.5 w-1/2 rounded-full" :style="{ backgroundColor: option.palette.green }" />
-              <div class="h-1.5 w-4/5 rounded-full" :style="{ backgroundColor: option.palette.blue }" />
+            <div class="flex divide-x divide-border border-b" aria-hidden="true">
+              <div v-for="palette in option.palettes" :key="palette.background" class="min-w-0 flex-1 space-y-2 px-4 py-4" :style="{ backgroundColor: palette.background }">
+                <div class="h-1.5 w-2/3 rounded-full" :style="{ backgroundColor: palette.foreground, opacity: 0.8 }" />
+                <div class="h-1.5 w-1/2 rounded-full" :style="{ backgroundColor: palette.green }" />
+                <div class="h-1.5 w-4/5 rounded-full" :style="{ backgroundColor: palette.blue }" />
+              </div>
             </div>
             <div class="px-3 py-3">
               <span class="flex items-center gap-2 text-sm font-medium"><component :is="option.icon" class="size-3.5 text-muted-foreground" aria-hidden="true" />{{ option.label }}<Check v-if="terminalAppearance === option.value" class="ml-auto size-3.5 text-primary" aria-hidden="true" /></span>

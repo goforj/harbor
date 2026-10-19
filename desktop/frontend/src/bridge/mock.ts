@@ -1,6 +1,6 @@
 import { harborWireFixture } from './harbor.fixture'
 import type { HarborBridge } from './types'
-import type { DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentBinding, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { ProjectCreationProgress, ProjectCreationRequest, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentBinding, ProjectLifecycleOperation, ProjectRegistration, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 const fixture = harborWireFixture
 type ConfirmableProjectRuntimeRepairInspection = Extract<ProjectRuntimeRepairInspection, { disposition: 'confirmable' }>
@@ -30,6 +30,7 @@ export function createMockBridge(): HarborBridge {
   const attachedTerminals = new Set<string>()
   const environments = new Map<string, ProjectEnvironment>()
   let terminalSequence = 0
+  const creations = new Map<string, { progress: ProjectCreationProgress, request: ProjectCreationRequest, reads: number }>()
 
   // projectEnvironment gives each fixture project an independent editable file set.
   function projectEnvironment(projectId: string): ProjectEnvironment {
@@ -171,6 +172,54 @@ export function createMockBridge(): HarborBridge {
   }
 
   return {
+    async getProjectCreationProviders() { return [{ id: 'goforj', name: 'GoForj', description: 'Go applications and frontend starter kits' }] },
+    async getProjectCreationSchema(providerId) {
+      if (providerId !== 'goforj') throw new Error('Unsupported project stack.')
+      return structuredClone(fixture.project_creation_schema)
+    },
+    async startProjectCreation(request) {
+      if (request.provider_id !== 'goforj') throw new Error('Unsupported project stack.')
+      if (snapshot.projects.some(project => project.path === request.options.path)) throw new Error('Project directory is not empty.')
+      const progress: ProjectCreationProgress = { job_id: `creation-${Date.now()}`, provider_id: request.provider_id, path: request.options.path!, phase: 'creating', output: 'Rendering project files…\n', cursor: 1 }
+      creations.set(progress.job_id, { progress, request: structuredClone(request), reads: 0 })
+      return structuredClone(progress)
+    },
+    async getProjectCreationProgress(jobId) {
+      const job = creations.get(jobId)
+      if (!job) throw new Error('Creation job not found.')
+      job.reads++
+      if (job.reads === 1) {
+        job.progress.phase = 'registering'
+        job.progress.output = 'Project initialized successfully.\n'
+        job.progress.cursor++
+      } else if (!job.progress.result) {
+        job.progress.result = await this.createProject(job.request)
+        job.progress.phase = 'completed'
+        job.progress.output = ''
+      } else { job.progress.output = '' }
+      return structuredClone(job.progress)
+    },
+    async retryProjectRegistration(jobId) {
+      const job = creations.get(jobId)
+      if (!job) throw new Error('Creation job not found.')
+      if (job.progress.phase !== 'registration_failed' && job.progress.phase !== 'completed') throw new Error('Project files have not been created.')
+      if (!job.progress.result?.registration) job.progress.result = await this.createProject(job.request)
+      job.progress.phase = 'completed'
+      return structuredClone(job.progress)
+    },
+    async chooseProjectParent() { return '/workspace/apps' },
+    async createProject(request) {
+      const name = request.options.name!
+      const path = request.options.path!
+      if (snapshot.projects.some(project => project.path === path)) throw new Error('Project directory is not empty.')
+      const registration: ProjectRegistration = structuredClone(fixture.add_project.registration)
+      registration.project = { ...registration.project, id: `project-${Date.now()}`, name, path, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), state: 'stopped', apps: [], services: [], resources: [] }
+      snapshot.projects.push(registration.project)
+      snapshot.sequence += 1
+      registration.revision = snapshot.sequence
+      registration.created = true
+      return { path, output: 'Project initialized successfully.\n', registration }
+    },
     async addProject() {
       const registration: ProjectRegistration = structuredClone(fixture.add_project.registration)
       const existingIndex = snapshot.projects.findIndex((project) => project.id === registration.project.id)
@@ -371,11 +420,18 @@ export function createMockBridge(): HarborBridge {
         },
         revision,
       }
+      snapshot.network_setup = { configured: true }
       snapshot.sequence = revision
       status.sequence = revision
       return structuredClone(networkSetup)
     },
     async repairNetwork() {
+      return structuredClone(networkSetup ?? fixture.setup_network)
+    },
+    async expandNetwork() {
+      snapshot.network_capacity = 256
+      snapshot.sequence += 1
+      status.sequence = snapshot.sequence
       return structuredClone(networkSetup ?? fixture.setup_network)
     },
     async removeOldNetworking() {

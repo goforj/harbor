@@ -2404,6 +2404,74 @@ func TestRepairNetworkUsesFreshIntentAndRepairConfirmation(t *testing.T) {
 	}
 }
 
+// TestExpandNetworkRequestsExplicitCapacityApproval proves the desktop never replays completed bootstrap authority.
+func TestExpandNetworkRequestsExplicitCapacityApproval(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	const repairIntent domain.IntentID = "intent-network-repair"
+	app.setupIntent = func() (domain.IntentID, error) { return repairIntent, nil }
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	client.networkSetup.Operation.IntentID = repairIntent
+	confirmation := testNetworkSetupConfirmation(client.networkSetup, 9, 10)
+	confirmation.Repair = true
+	confirmation.Pool = "127.42.0.0/24"
+	runner := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{
+		State:        networksetupapproval.Succeeded,
+		Confirmation: &confirmation,
+	}}
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+		return runner
+	}
+
+	result, err := app.ExpandNetwork()
+	if err != nil {
+		t.Fatalf("ExpandNetwork() error = %v", err)
+	}
+	if !client.networkSetupReq.ExpandPool || client.networkSetupReq.IntentID != repairIntent ||
+		result.Operation.IntentID != repairIntent ||
+		result.Operation.State != domain.OperationSucceeded ||
+		result.Revision != 10 {
+		t.Fatalf("ExpandNetwork() = %#v, request = %#v", result, client.networkSetupReq)
+	}
+}
+
+// TestExpandNetworkResumesPendingApproval proves the desktop never replays completed bootstrap authority.
+func TestExpandNetworkResumesPendingApproval(t *testing.T) {
+	t.Parallel()
+
+	app, client := connectedTestApp()
+	const repairIntent domain.IntentID = "intent-network-repair"
+	app.setupIntent = func() (domain.IntentID, error) { return repairIntent, nil }
+	client.networkSetup = testNetworkSetupOperation(domain.OperationRequiresApproval, 7)
+	client.networkSetup.Operation.IntentID = repairIntent
+	client.snapshot.Operations = []domain.Operation{client.networkSetup.Operation}
+	app.setupIntent = func() (domain.IntentID, error) { return "intent-new-ignored", nil }
+	confirmation := testNetworkSetupConfirmation(client.networkSetup, 15, 16)
+	confirmation.Repair = true
+	confirmation.Expanded = true
+	confirmation.ApprovalRevision = 7
+	confirmation.Pool = "127.42.0.0/24"
+	runner := &fakeNetworkSetupApprovalRunner{outcome: networksetupapproval.Outcome{
+		State:        networksetupapproval.Succeeded,
+		Confirmation: &confirmation,
+	}}
+	app.setupApproval = func(networksetupapproval.Client) networkSetupApprovalRunner {
+		return runner
+	}
+
+	result, err := app.ExpandNetwork()
+	if err != nil {
+		t.Fatalf("ExpandNetwork() error = %v", err)
+	}
+	if !client.networkSetupReq.ExpandPool || client.networkSetupReq.IntentID != repairIntent ||
+		result.Operation.IntentID != repairIntent ||
+		result.Operation.State != domain.OperationSucceeded ||
+		result.Revision != 16 {
+		t.Fatalf("ExpandNetwork() = %#v, request = %#v", result, client.networkSetupReq)
+	}
+}
+
 // TestSetupNetworkRetainsSelectedConnectionThroughConfirmation prevents polling retirement from closing a session during native consent.
 func TestSetupNetworkRetainsSelectedConnectionThroughConfirmation(t *testing.T) {
 	t.Parallel()

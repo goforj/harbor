@@ -196,6 +196,9 @@ type snapshotCursor struct {
 
 // App owns the Wails lifecycle and the desktop's single persistent daemon connection.
 type App struct {
+	projectCreationMu     sync.Mutex
+	projectCreators       map[string]projectCreatorAdapter
+	projectCreationJobs   map[string]*projectCreationJob
 	mu                    sync.RWMutex
 	activityWaitMu        sync.Mutex
 	activityWaitID        uint64
@@ -243,6 +246,7 @@ func NewApp() *App {
 func newApp(factory clientFactory, emit eventEmitter, open resourceOpener, wait waitFunc) *App {
 	app := &App{
 		clientFactory:      factory,
+		projectCreators:    defaultProjectCreators(),
 		daemonPrerequisite: daemonprerequisite.New(),
 		events:             desktopwire.NewEmitter(emit),
 		open:               open,
@@ -314,6 +318,16 @@ func (a *App) SetupNetwork() (control.NetworkSetupOperation, error) {
 
 // RepairNetwork re-establishes the exact loopback pool already owned by this Harbor installation.
 func (a *App) RepairNetwork() (control.NetworkSetupOperation, error) {
+	return a.repairNetwork(false)
+}
+
+// ExpandNetwork approves additional identities while retaining existing project addresses and network policy.
+func (a *App) ExpandNetwork() (control.NetworkSetupOperation, error) {
+	return a.repairNetwork(true)
+}
+
+// repairNetwork shares the authenticated approval flow without widening an ordinary repair request.
+func (a *App) repairNetwork(expandPool bool) (control.NetworkSetupOperation, error) {
 	ctx, client, release, err := a.leaseCurrentConnection()
 	if err != nil {
 		return control.NetworkSetupOperation{}, err
@@ -324,7 +338,20 @@ func (a *App) RepairNetwork() (control.NetworkSetupOperation, error) {
 	if err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("create Harbor network repair: %w", err)
 	}
-	repair, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID})
+	if expandPool {
+		snapshot, err := client.Snapshot(ctx)
+		if err != nil {
+			return control.NetworkSetupOperation{}, fmt.Errorf("read pending Harbor network expansion: %w", err)
+		}
+		pending, err := control.PendingNetworkSetupIntent(snapshot)
+		if err != nil {
+			return control.NetworkSetupOperation{}, fmt.Errorf("select pending Harbor network expansion: %w", err)
+		}
+		if pending != "" {
+			intentID = pending
+		}
+	}
+	repair, err := client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{IntentID: intentID, ExpandPool: expandPool})
 	if err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("start Harbor network repair: %w", err)
 	}
@@ -614,17 +641,10 @@ func (a *App) approveNetworkSetup(
 	}
 
 	confirmation := *outcome.Confirmation
-	if err := confirmation.Validate(); err != nil {
+	if err := confirmation.ValidateApproval(setup.Operation.ID, setup.Revision); err != nil {
 		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup confirmation: %w", err)
 	}
-	expectedRevision := setup.Revision + 3
-	if confirmation.Repair {
-		expectedRevision = setup.Revision + 2
-	}
-	if confirmation.Operation.ID != setup.Operation.ID ||
-		confirmation.Operation.IntentID != setup.Operation.IntentID ||
-		(!confirmation.Repair && confirmation.NetworkRevision != setup.Revision+2) ||
-		confirmation.Revision != expectedRevision {
+	if confirmation.Operation.IntentID != setup.Operation.IntentID {
 		return control.NetworkSetupOperation{}, fmt.Errorf("validate Harbor network setup confirmation: result crossed the selected operation revision")
 	}
 
@@ -1803,6 +1823,7 @@ func (a *App) shutdown(_ context.Context) {
 	if cancel != nil {
 		cancel()
 	}
+	a.waitProjectCreations()
 	if client != nil {
 		_ = client.Close()
 	}

@@ -4,10 +4,9 @@ import { useRoute } from 'vue-router'
 import {
   Activity,
   Folder,
+  FolderPlus,
   RefreshCw,
   Search,
-  Palette,
-  Server,
   Star,
   TriangleAlert,
 } from '@lucide/vue'
@@ -18,10 +17,12 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { serviceOwnerLabel } from '@/lib/servicePresentation'
 import { useHarborStore } from '@/stores/harbor'
+import { showNewProjectDialog } from '@/lib/projectCreationDialog'
 import EntityRow from './EntityRow.vue'
 import ProjectIcon from './ProjectIcon.vue'
 import KindIcon from './KindIcon.vue'
-import { destinationFromPath, harborNavigation } from './navigation'
+import ServiceIcon from './ServiceIcon.vue'
+import { destinationFromPath, harborNavigation, harborSettingsNavigation } from './navigation'
 
 const route = useRoute()
 const store = useHarborStore()
@@ -96,6 +97,7 @@ function refresh() {
       <Badge v-if="store.snapshot && destination !== 'system'" variant="outline" class="h-5 min-w-5 rounded-md px-1.5 text-[0.6875rem] text-muted-foreground shadow-none">
         {{ resultCount }}
       </Badge>
+      <Button v-if="destination === 'projects'" variant="ghost" size="icon-sm" aria-label="New project" :disabled="store.connectionState !== 'connected'" @click="showNewProjectDialog"><FolderPlus class="size-3.5" /></Button>
       <Button
         v-if="destination !== 'system'"
         variant="ghost"
@@ -125,11 +127,8 @@ function refresh() {
     <Separator />
 
     <nav v-if="destination === 'system'" class="space-y-1 p-2" aria-label="Settings sections">
-      <EntityRow label="Appearance" description="App and terminal themes" to="/settings/appearance" :selected="route.params.section === 'appearance'">
-        <template #leading><Palette /></template>
-      </EntityRow>
-      <EntityRow label="Daemon" description="Connection and diagnostics" to="/settings/daemon" :selected="route.params.section === 'daemon'">
-        <template #leading><Server /></template>
+      <EntityRow v-for="item in harborSettingsNavigation" :key="item.section" :label="item.label" :description="item.description" :to="item.path" :selected="route.params.section === item.section">
+        <template #leading><component :is="item.icon" /></template>
       </EntityRow>
     </nav>
 
@@ -236,7 +235,7 @@ function refresh() {
               :selected="selectedProjectId === service.project_id && selectedServiceId === service.id"
               :to="`/services/${encodeURIComponent(service.project_id)}/${encodeURIComponent(service.id)}`"
             >
-              <template #leading><KindIcon :kind="service.kind" compact /></template>
+              <template #leading><ServiceIcon :service="service" compact /></template>
             </EntityRow>
           </div>
         </section>

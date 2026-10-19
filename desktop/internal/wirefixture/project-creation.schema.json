@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "goforj_version": "v0.33.1-local.project-creation",
+  "fields": [
+    {
+      "key": "name",
+      "label": "Project name",
+      "description": "A display name for your project",
+      "kind": "text",
+      "step": "Project",
+      "required": true,
+      "default": "",
+      "role": "name"
+    },
+    {
+      "key": "module",
+      "label": "Go module",
+      "description": "For example, github.com/yourname/yourapp",
+      "kind": "text",
+      "step": "Project",
+      "required": true,
+      "default": ""
+    },
+    {
+      "key": "path",
+      "label": "Project directory",
+      "description": "A new or empty directory",
+      "kind": "path",
+      "step": "Project",
+      "required": true,
+      "default": "",
+      "role": "directory"
+    },
+    {
+      "key": "components",
+      "label": "Components",
+      "description": "Required components are included automatically",
+      "kind": "multi",
+      "step": "Stack",
+      "default": [
+        "cli",
+        "docker",
+        "mail",
+        "auth",
+        "oauth",
+        "web_api",
+        "web_ui",
+        "metrics",
+        "observability",
+        "grafana",
+        "database_mysql",
+        "scheduler",
+        "cache",
+        "events",
+        "storage",
+        "jobs"
+      ],
+      "options": [
+        {
+          "value": "cli",
+          "label": "CLI",
+          "description": "Add commands to run and manage your app"
+        },
+        {
+          "value": "docker",
+          "label": "Docker",
+          "description": "Run databases and tools locally"
+        },
+        {
+          "value": "mail",
+          "label": "Mail",
+          "description": "Send email from your app"
+        },
+        {
+          "value": "auth",
+          "label": "Auth",
+          "description": "User sign up, login, and sessions",
+          "requires": [
+            "mail",
+            "web_api",
+            "cache"
+          ]
+        },
+        {
+          "value": "oauth",
+          "label": "OAuth",
+          "description": "Sign in with external providers",
+          "requires": [
+            "auth"
+          ]
+        },
+        {
+          "value": "web_api",
+          "label": "Web API",
+          "description": "Build endpoints for clients and frontends"
+        },
+        {
+          "value": "web_ui",
+          "label": "Web UI",
+          "description": "Serve a browser frontend"
+        },
+        {
+          "value": "metrics",
+          "label": "Metrics",
+          "description": "Track app health and request stats",
+          "requires": [
+            "web_api"
+          ]
+        },
+        {
+          "value": "observability",
+          "label": "Observability",
+          "description": "Collect local app metrics",
+          "requires": [
+            "docker",
+            "metrics"
+          ]
+        },
+        {
+          "value": "grafana",
+          "label": "Grafana",
+          "description": "View metrics dashboards",
+          "requires": [
+            "observability"
+          ]
+        },
+        {
+          "value": "database_mysql",
+          "label": "Database (MySQL)",
+          "description": "Store app data in MySQL",
+          "exclusive_group": "database"
+        },
+        {
+          "value": "database_postgres",
+          "label": "Database (Postgres)",
+          "description": "Store app data in Postgres",
+          "exclusive_group": "database"
+        },
+        {
+          "value": "database_sqlite",
+          "label": "Database (SQLite)",
+          "description": "Store app data in SQLite",
+          "exclusive_group": "database"
+        },
+        {
+          "value": "scheduler",
+          "label": "Scheduler",
+          "description": "Run tasks on a schedule"
+        },
+        {
+          "value": "cache",
+          "label": "Cache",
+          "description": "Cache temporary and computed values"
+        },
+        {
+          "value": "events",
+          "label": "Events",
+          "description": "Publish and subscribe to application events"
+        },
+        {
+          "value": "storage",
+          "label": "File Storage",
+          "description": "Store private and public files or objects"
+        },
+        {
+          "value": "jobs",
+          "label": "Background Jobs",
+          "description": "Send and process work outside requests"
+        }
+      ]
+    },
+    {
+      "key": "starter-kit",
+      "label": "Starter kit",
+      "kind": "select",
+      "step": "Stack",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "None",
+          "description": "Render a plain Web UI placeholder without an application starter"
+        },
+        {
+          "value": "vue",
+          "label": "Vue",
+          "description": "Vue, Vite, TypeScript, Tailwind, and Shadcn-Vue app shell",
+          "requires": [
+            "web_ui"
+          ]
+        },
+        {
+          "value": "react",
+          "label": "React",
+          "description": "React, Vite, TypeScript, Tailwind, and shadcn/ui app shell",
+          "requires": [
+            "web_ui"
+          ]
+        },
+        {
+          "value": "templ_htmx",
+          "label": "templ + htmx",
+          "description": "Server-rendered templ views with htmx and Tailwind",
+          "requires": [
+            "web_ui"
+          ]
+        }
+      ],
+      "requires": [
+        "web_ui"
+      ],
+      "depends_on": "components"
+    },
+    {
+      "key": "component-library",
+      "label": "Component library",
+      "description": "Include the starter kit's component examples",
+      "kind": "boolean",
+      "step": "Stack",
+      "default": true,
+      "requires": [
+        "web_ui"
+      ],
+      "depends_on": "components"
+    },
+    {
+      "key": "help-format",
+      "label": "CLI help format",
+      "kind": "select",
+      "step": "Options",
+      "default": "framework",
+      "options": [
+        {
+          "value": "framework",
+          "label": "Framework",
+          "description": "grouped command surface for app operations",
+          "preview": "Application command surface\n\napp\n  about           Show app environment and services\ncache\n  cache:shell     Open a configured cache shell\ndb\n  db:shell        Open a configured database shell\nmake\n  make:command    Create a new CLI command\n  make:migration  Create a new migration\nmigrate\n  migrate         Run database migrations"
+        },
+        {
+          "value": "guided",
+          "label": "Guided (clig.dev-inspired)",
+          "description": "external/user-facing CLI with examples and next steps",
+          "preview": "tasks\nTrack project tasks from the terminal\n\nExamples\n  tasks add \"Review PR\" --tag code\n  tasks list --all\n  tasks done 42\n\nUsage\n  tasks <command> [flags]\n\nCommon commands\n  add   Add a task\n  done  Mark a task complete\n  list  List open tasks\n\nFlags\n  -h, --help  Show help\n\nLearn more\n  tasks <command> --help"
+        },
+        {
+          "value": "external_cli",
+          "label": "External CLI",
+          "description": "compact help for small command tools",
+          "preview": "tasks\nTrack project tasks from the terminal\n\nUsage\n  tasks <command> [flags]\n\nCommands\n  add   Add a task\n  done  Mark a task complete\n  list  List open tasks\n\nRun \"tasks <command> --help\" for command details."
+        }
+      ]
+    },
+    {
+      "key": "atlas",
+      "label": "Atlas agent support",
+      "kind": "select",
+      "step": "Options",
+      "default": "recommended",
+      "options": [
+        {
+          "value": "recommended",
+          "label": "Recommended",
+          "description": "detected agents with guidelines, skills, and MCP"
+        },
+        {
+          "value": "minimal",
+          "label": "Minimal",
+          "description": "detected agents with guidelines only"
+        },
+        {
+          "value": "custom",
+          "label": "Custom",
+          "description": "choose agents and install surfaces"
+        },
+        {
+          "value": "skip",
+          "label": "Skip",
+          "description": "do not install local agent support"
+        }
+      ]
+    },
+    {
+      "key": "atlas-agents",
+      "label": "Agents",
+      "description": "Select at least one agent",
+      "kind": "multi",
+      "step": "Options",
+      "required": true,
+      "default": [
+        "codex"
+      ],
+      "options": [
+        {
+          "value": "codex",
+          "label": "Codex",
+          "description": ""
+        },
+        {
+          "value": "claude",
+          "label": "Claude Code",
+          "description": ""
+        },
+        {
+          "value": "copilot",
+          "label": "GitHub Copilot",
+          "description": ""
+        },
+        {
+          "value": "gemini",
+          "label": "Gemini CLI",
+          "description": ""
+        }
+      ],
+      "when": {
+        "atlas": "custom"
+      }
+    },
+    {
+      "key": "atlas-surfaces",
+      "label": "Agent integration",
+      "description": "Select at least one integration",
+      "kind": "multi",
+      "step": "Options",
+      "required": true,
+      "default": [
+        "guidelines",
+        "skills",
+        "mcp"
+      ],
+      "options": [
+        {
+          "value": "guidelines",
+          "label": "Guidelines",
+          "description": "project guidance for local agents"
+        },
+        {
+          "value": "skills",
+          "label": "Skills / prompts",
+          "description": "framework-specific reusable instructions"
+        },
+        {
+          "value": "mcp",
+          "label": "MCP server config",
+          "description": "read-only project tools and docs search"
+        }
+      ],
+      "when": {
+        "atlas": "custom"
+      }
+    },
+    {
+      "key": "demo",
+      "label": "Demo application",
+      "description": "Include the framework demo, using its MySQL and frontend defaults",
+      "kind": "boolean",
+      "step": "Options",
+      "default": false
+    }
+  ]
+}

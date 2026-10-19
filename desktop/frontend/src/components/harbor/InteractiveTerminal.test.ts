@@ -126,7 +126,7 @@ describe('InteractiveTerminal', () => {
     const wrapper = mount(InteractiveTerminal, { props: { session } })
     await nextTick()
     const emulator = mocks.terminals[0]!
-    expect(emulator.options.theme?.background).toBe('#0a080d')
+    expect(emulator.options.theme?.background).toBe('#0b0b0b')
     setTerminalAppearance('light')
     await nextTick()
     expect(emulator.options.theme?.background).toBe('#f6f8fa')

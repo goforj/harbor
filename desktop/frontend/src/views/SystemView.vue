@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Activity, Database, RefreshCw, Server } from '@lucide/vue'
+import { Activity, Database, Network, RefreshCw, Server } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,16 @@ const capturedAt = computed(() => store.snapshot?.captured_at
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
+      <Card v-if="store.snapshot?.network_capacity" class="gap-0 rounded-lg py-0 shadow-none">
+        <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Network class="size-4 text-sky-400" /><CardTitle class="text-sm">Project networking</CardTitle></div></CardHeader>
+        <CardContent class="space-y-3 p-4">
+          <p class="text-sm"><strong>{{ store.snapshot.network_capacity }}</strong> network identities</p>
+          <p v-if="store.snapshot.network_capacity < 256" class="text-xs text-muted-foreground">Expand the legacy pool to 256 identities, with room for 100 projects and secondary endpoints. Existing project addresses stay the same.</p>
+          <p v-else class="text-xs text-muted-foreground">Room for 100 projects and secondary endpoints.</p>
+          <Button v-if="store.snapshot.network_capacity < 256" size="sm" :disabled="store.settingUpNetwork || store.projectLifecycleBusy || store.snapshotStale || store.connectionState !== 'connected'" @click="store.expandNetwork"><Network class="size-3.5" />{{ store.settingUpNetwork ? 'Expanding networking…' : 'Expand network capacity' }}</Button>
+          <p v-if="store.networkSetupError" role="alert" class="text-xs text-destructive">{{ store.networkSetupError }}</p>
+        </CardContent>
+      </Card>
       <Card class="gap-0 rounded-lg py-0 shadow-none">
         <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Daemon status</CardTitle></div></CardHeader>
         <CardContent class="p-0">

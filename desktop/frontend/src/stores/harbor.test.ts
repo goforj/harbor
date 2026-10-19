@@ -442,7 +442,7 @@ describe('Harbor store', () => {
     expect(store.addingProject).toBe(false)
   })
 
-  it('keeps network setup available whenever the daemon supports it', async () => {
+  it('offers setup only when configuration is needed and supported', async () => {
     const supported = mockStatus()
     supported.capabilities.push('control.network-setup.v1')
     const empty = mockSnapshot()
@@ -474,6 +474,23 @@ describe('Harbor store', () => {
 
     await store.refresh()
     expect(store.networkSetupOnboarding).toBe(false)
+  })
+
+
+  it('uses current daemon configuration across fresh UI state and later network removal', async () => {
+    const store = useHarborStore()
+    const snapshot = mockSnapshot()
+    store.$patch({ snapshot: { ...snapshot, network_setup: { configured: true } }, daemonStatus: { ...mockStatus(), capabilities: ['control.network-setup.v1'] } })
+    expect(store.networkSetupResult).toBeNull()
+    expect(store.networkSetupOnboarding).toBe(false)
+    store.$patch({ snapshot: { ...snapshot, network_setup: { configured: false } } })
+    expect(store.networkSetupOnboarding).toBe(true)
+    const unknown = { ...snapshot }
+    delete unknown.network_setup
+    store.snapshot = unknown
+    expect(store.networkSetupOnboarding).toBe(false)
+    store.$patch({ networkSetupError: 'Network setup is required.' })
+    expect(store.networkSetupOnboarding).toBe(true)
   })
 
   it('serializes network setup, retains successful progress, and refreshes authoritative state', async () => {
@@ -531,6 +548,21 @@ describe('Harbor store', () => {
     expect(store.oldNetworkingRemovalError).toBeNull()
     pending.resolve(completedNetworkSetup())
     await setup
+  })
+
+  it('expands capacity only through the explicit bridge action and refreshes the resulting snapshot', async () => {
+    const store = useHarborStore()
+    store.$patch({ connectionState: 'connected' })
+    const expand = vi.spyOn(harborBridge, 'expandNetwork').mockResolvedValue(completedNetworkSetup())
+    const repair = vi.spyOn(harborBridge, 'repairNetwork')
+    const upgraded = mockSnapshot()
+    upgraded.network_capacity = 256
+    vi.spyOn(harborBridge, 'getSnapshot').mockResolvedValue(upgraded)
+    await expect(store.expandNetwork()).resolves.toMatchObject({ operation: { state: 'succeeded' } })
+    expect(expand).toHaveBeenCalledOnce()
+    expect(repair).not.toHaveBeenCalled()
+    expect(store.snapshot?.network_capacity).toBe(256)
+    expect(store.settingUpNetwork).toBe(false)
   })
 
   it('serializes old networking removal, reports failures, and refreshes authoritative state', async () => {

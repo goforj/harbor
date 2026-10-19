@@ -5,8 +5,8 @@ import { currentThemePreference, setThemePreference } from '@/lib/theme'
 
 const options = [
   { value: 'system', label: 'System', description: 'Follow your device', icon: Monitor },
-  { value: 'light', label: 'Light', description: 'A lighter workspace', icon: Sun },
   { value: 'dark', label: 'Dark', description: 'A darker workspace', icon: Moon },
+  { value: 'light', label: 'Light', description: 'A lighter workspace', icon: Sun },
 ] as const
 
 const preference = currentThemePreference

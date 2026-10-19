@@ -707,7 +707,7 @@ describe('ProjectView network admission', () => {
     wrapper.unmount()
   })
 
-  it('repairs missing owned loopback addresses before retrying project start', async () => {
+  it.each(['project.network.identity_unavailable', 'project.network.repair_required'])('repairs missing owned loopback addresses before retrying project start for %s', async (code) => {
     const { store, wrapper } = await mountProject()
     const repairNetwork = vi.spyOn(harborBridge, 'repairNetwork').mockResolvedValue(structuredClone(harborWireFixture.setup_network))
     const setupNetwork = vi.spyOn(harborBridge, 'setupNetwork')
@@ -722,13 +722,13 @@ describe('ProjectView network admission', () => {
         'orders-api': 'The assigned Harbor address is not configured exactly on this machine.',
       },
       projectLifecycleProblemCodes: {
-        'orders-api': 'project.network.identity_unavailable',
+        'orders-api': code,
       },
     })
     await wrapper.vm.$nextTick()
 
     expect(wrapper.text()).toContain('Harbor networking needs repair')
-    expect(wrapper.text()).toContain('macOS no longer has Harbor\'s assigned loopback addresses')
+    expect(wrapper.text()).toContain('Approve restoring the existing Harbor-owned addresses')
     const repair = bodyButton('Repair networking and start')
     await repair.click()
     await flushPromises()

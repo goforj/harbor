@@ -4,6 +4,8 @@ import { RouterView, useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import ContextPane from '@/components/harbor/ContextPane.vue'
 import HarborCommandMenu from '@/components/harbor/HarborCommandMenu.vue'
+import NewProjectDialog from '@/components/harbor/NewProjectDialog.vue'
+import { newProjectDialogOpen } from '@/lib/projectCreationDialog'
 import HarborIllustration from '@/components/harbor/HarborIllustration.vue'
 import HarborMobileNav from '@/components/harbor/HarborMobileNav.vue'
 import HarborRail from '@/components/harbor/HarborRail.vue'
@@ -137,6 +139,7 @@ onBeforeUnmount(() => {
     </div>
 
     <HarborCommandMenu v-model:open="commandOpen" />
+    <NewProjectDialog v-model:open="newProjectDialogOpen" />
     <Toaster rich-colors position="bottom-right" />
   </TooltipProvider>
 </template>

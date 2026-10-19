@@ -1,7 +1,14 @@
-import type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { ProjectCreationProvider, ProjectCreationProgress, ProjectCreationSchema, ProjectCreationRequest, ProjectCreationResult, AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
+    project_creation_providers: 'ProjectCreationProviders'
+    start_project_creation: 'StartProjectCreation'
+    project_creation_progress: 'ProjectCreationProgress'
+    retry_project_registration: 'RetryProjectRegistration'
+    project_creation_schema: 'ProjectCreationSchema'
+    choose_project_parent: 'ChooseProjectParent'
+    create_project: 'CreateProject'
     add_project: 'AddProject'
     approve_project_removal: 'ApproveProjectRemoval'
     confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair'
@@ -18,6 +25,7 @@ export interface HarborWireFixture {
     remove_project: 'RemoveProject'
     remove_old_networking: 'RemoveOldNetworking'
     repair_network: 'RepairNetwork'
+    expand_network: 'ExpandNetwork'
     snapshot: 'Snapshot'
     setup_network: 'SetupNetwork'
     start_project: 'StartProject'
@@ -40,6 +48,7 @@ export interface HarborWireFixture {
     connected: ConnectionEvent & { state: 'connected' }
     disconnected: ConnectionEvent & { state: 'disconnected' }
   }
+  project_creation_schema: ProjectCreationSchema
   status: DaemonStatus
   snapshot: HarborSnapshot
   add_project: AddProjectResult & { canceled: false; registration: NonNullable<AddProjectResult['registration']> }
@@ -70,6 +79,13 @@ export interface HarborWireFixture {
 }
 
 export interface HarborBridge {
+  getProjectCreationProviders(): Promise<ProjectCreationProvider[]>
+  startProjectCreation(request: ProjectCreationRequest): Promise<ProjectCreationProgress>
+  getProjectCreationProgress(jobId: string, cursor: number): Promise<ProjectCreationProgress>
+  retryProjectRegistration(jobId: string): Promise<ProjectCreationProgress>
+  getProjectCreationSchema(providerId: string): Promise<ProjectCreationSchema>
+  chooseProjectParent(): Promise<string>
+  createProject(request: ProjectCreationRequest): Promise<ProjectCreationResult>
   addProject(): Promise<AddProjectResult>
   approveProjectRemoval(projectId: string, intentId: string): Promise<ProjectUnregistration>
   confirmProjectRuntimeRepair(projectId: string, inspectionId: string, candidateFingerprint: string): Promise<ProjectRuntimeRepairConfirmation>
@@ -88,6 +104,7 @@ export interface HarborBridge {
   removeProject(projectId: string, intentId: string): Promise<ProjectUnregistration>
   removeOldNetworking(): Promise<NetworkResolverPolicyMigrationOperation>
   repairNetwork(): Promise<NetworkSetupOperation>
+  expandNetwork(): Promise<NetworkSetupOperation>
   setupNetwork(): Promise<NetworkSetupOperation>
   startProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>
   stopProject(projectId: string, intentId: string): Promise<ProjectLifecycleOperation>

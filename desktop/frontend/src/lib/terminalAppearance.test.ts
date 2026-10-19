@@ -12,7 +12,7 @@ describe('terminal appearance', () => {
     expect(appearance.terminalAppearance.value).toBe('app')
     applyTheme('dark')
     expect(appearance.terminalMode.value).toBe('dark')
-    expect(appearance.terminalCSSVariables.value['--terminal-background']).toBe('#0a080d')
+    expect(appearance.terminalCSSVariables.value['--terminal-background']).toBe('#0b0b0b')
     applyTheme('light')
     expect(appearance.terminalMode.value).toBe('light')
     expect(appearance.terminalCSSVariables.value['--terminal-background']).toBe('#f6f8fa')
